@@ -13,7 +13,8 @@ typedef enum {
     VALUE_ARRAY,
     VALUE_RECORD,
     VALUE_DATETIME,
-    VALUE_DURATION
+    VALUE_DURATION,
+    VALUE_FILE
 } ValueKind;
 
 typedef enum {
@@ -69,6 +70,7 @@ struct Value {
         } record;
         DateTime datetime;
         Duration duration;
+        char *file_path;
     } as;
 };
 
@@ -151,9 +153,19 @@ static Value value_duration(Duration duration) {
     return value;
 }
 
+static Value value_file(const char *path) {
+    Value value = {0};
+    value.kind = VALUE_FILE;
+    value.as.file_path = copy_string(path);
+    return value;
+}
+
 static Value value_copy(Value value) {
     if (value.kind == VALUE_STRING) {
         return value_string(value.as.string);
+    }
+    if (value.kind == VALUE_FILE) {
+        return value_file(value.as.file_path);
     }
     if (value.kind == VALUE_ARRAY) {
         Value *items = NULL;
@@ -192,6 +204,8 @@ static Value value_copy(Value value) {
 static void value_free(Value value) {
     if (value.kind == VALUE_STRING) {
         free(value.as.string);
+    } else if (value.kind == VALUE_FILE) {
+        free(value.as.file_path);
     } else if (value.kind == VALUE_ARRAY) {
         for (size_t i = 0; i < value.as.array.count; i++) {
             value_free(value.as.array.items[i]);
@@ -226,6 +240,8 @@ static int value_truthy(Value value) {
             value.as.duration.weeks || value.as.duration.days ||
             value.as.duration.hours || value.as.duration.minutes ||
             value.as.duration.seconds;
+    case VALUE_FILE:
+        return value.as.file_path[0] != '\0';
     case VALUE_NULL:
         return 0;
     }
@@ -319,6 +335,9 @@ static void value_print(Value value) {
         break;
     case VALUE_DURATION:
         printf("{duration}\n");
+        break;
+    case VALUE_FILE:
+        printf("%s\n", value.as.file_path);
         break;
     }
 }
@@ -692,7 +711,144 @@ static int array_is_numeric(Value array) {
     return 1;
 }
 
+static char *read_whole_file(const char *path, long *out_size) {
+    FILE *file = fopen(path, "rb");
+    if (!file) {
+        return NULL;
+    }
+    if (fseek(file, 0, SEEK_END) != 0) {
+        fclose(file);
+        return NULL;
+    }
+    long size = ftell(file);
+    if (size < 0) {
+        fclose(file);
+        return NULL;
+    }
+    rewind(file);
+
+    char *text = malloc((size_t)size + 1);
+    if (!text) {
+        abort();
+    }
+    size_t read_count = fread(text, 1, (size_t)size, file);
+    if (ferror(file)) {
+        free(text);
+        fclose(file);
+        return NULL;
+    }
+    text[read_count] = '\0';
+    fclose(file);
+    if (out_size) {
+        *out_size = (long)read_count;
+    }
+    return text;
+}
+
+static Value eval_file_call(AstExpr *expr) {
+    const char *name = expr->as.call.name;
+
+    if (strcmp(name, "exists") == 0 ||
+        strcmp(name, "read") == 0 ||
+        strcmp(name, "bytes") == 0 ||
+        strcmp(name, "lines") == 0 ||
+        strcmp(name, "chars") == 0) {
+        if (expr->as.call.args.count != 1) {
+            fprintf(stderr, "%s expects one file argument\n", name);
+            return value_null();
+        }
+        Value file_value = eval_expr(expr->as.call.args.items[0]);
+        if (file_value.kind != VALUE_FILE) {
+            fprintf(stderr, "%s expects a file reference\n", name);
+            value_free(file_value);
+            return value_null();
+        }
+
+        if (strcmp(name, "exists") == 0) {
+            FILE *file = fopen(file_value.as.file_path, "rb");
+            int exists = file != NULL;
+            if (file) {
+                fclose(file);
+            }
+            value_free(file_value);
+            return value_bool(exists);
+        }
+
+        long size = 0;
+        char *text = read_whole_file(file_value.as.file_path, &size);
+        if (!text) {
+            value_free(file_value);
+            return value_null();
+        }
+
+        if (strcmp(name, "read") == 0) {
+            Value result = value_string(text);
+            free(text);
+            value_free(file_value);
+            return result;
+        }
+        if (strcmp(name, "bytes") == 0 || strcmp(name, "chars") == 0) {
+            /* TODO: chars currently counts bytes, not Unicode code points. */
+            free(text);
+            value_free(file_value);
+            return value_number((double)size);
+        }
+
+        int lines = 0;
+        for (long i = 0; i < size; i++) {
+            if (text[i] == '\n') {
+                lines++;
+            }
+        }
+        if (size > 0 && text[size - 1] != '\n') {
+            lines++;
+        }
+        free(text);
+        value_free(file_value);
+        return value_number((double)lines);
+    }
+
+    if (strcmp(name, "write") == 0 || strcmp(name, "append") == 0) {
+        if (expr->as.call.args.count != 2) {
+            fprintf(stderr, "%s expects file and text arguments\n", name);
+            return value_null();
+        }
+        Value file_value = eval_expr(expr->as.call.args.items[0]);
+        Value text_value = eval_expr(expr->as.call.args.items[1]);
+        if (file_value.kind != VALUE_FILE || text_value.kind != VALUE_STRING) {
+            fprintf(stderr, "%s expects a file reference and string\n", name);
+            value_free(file_value);
+            value_free(text_value);
+            return value_null();
+        }
+        FILE *file = fopen(file_value.as.file_path, strcmp(name, "write") == 0 ? "wb" : "ab");
+        if (!file) {
+            value_free(file_value);
+            value_free(text_value);
+            return value_bool(0);
+        }
+        fputs(text_value.as.string, file);
+        int ok = ferror(file) == 0;
+        fclose(file);
+        value_free(file_value);
+        value_free(text_value);
+        return value_bool(ok);
+    }
+
+    return value_null();
+}
+
 static Value eval_call(AstExpr *expr) {
+    if (strcmp(expr->as.call.name, "exists") == 0 ||
+        strcmp(expr->as.call.name, "read") == 0 ||
+        strcmp(expr->as.call.name, "write") == 0 ||
+        strcmp(expr->as.call.name, "append") == 0 ||
+        strcmp(expr->as.call.name, "bytes") == 0 ||
+        strcmp(expr->as.call.name, "lines") == 0 ||
+        strcmp(expr->as.call.name, "chars") == 0) {
+        return eval_file_call(expr);
+    }
+
     if (expr->as.call.args.count != 1) {
         fprintf(stderr, "%s expects one array argument\n", expr->as.call.name);
         return value_null();
@@ -1091,6 +1247,16 @@ static Value apply_assignment_modifier(const char *modifier, Value value) {
         value_free(value);
         return value_datetime(datetime);
     }
+    if (strcmp(modifier, "file") == 0) {
+        if (value.kind != VALUE_STRING) {
+            fprintf(stderr, "file modifier expects a path string\n");
+            value_free(value);
+            return value_null();
+        }
+        Value file_value = value_file(value.as.string);
+        value_free(value);
+        return file_value;
+    }
 
     fprintf(stderr, "unsupported assignment modifier: %s\n", modifier);
     return value;
@@ -1120,6 +1286,11 @@ static void eval_stmt(AstStmt *stmt) {
     case AST_STMT_PRINT: {
         Value value = eval_expr(stmt->as.print);
         value_print(value);
+        value_free(value);
+        break;
+    }
+    case AST_STMT_EXPR: {
+        Value value = eval_expr(stmt->as.expr_stmt);
         value_free(value);
         break;
     }

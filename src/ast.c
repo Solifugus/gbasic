@@ -170,6 +170,13 @@ AstStmt *ast_print(AstExpr *expr) {
     return stmt;
 }
 
+AstStmt *ast_expr_stmt(AstExpr *expr) {
+    AstStmt *stmt = xmalloc(sizeof(*stmt));
+    stmt->kind = AST_STMT_EXPR;
+    stmt->as.expr_stmt = expr;
+    return stmt;
+}
+
 AstStmt *ast_if(AstExpr *condition, AstStmtList body) {
     AstStmt *stmt = xmalloc(sizeof(*stmt));
     stmt->kind = AST_STMT_IF;
@@ -283,6 +290,10 @@ static void dump_stmt(AstStmt *stmt, int indent) {
         printf("Print\n");
         dump_expr(stmt->as.print, indent + 1);
         break;
+    case AST_STMT_EXPR:
+        printf("ExpressionStatement\n");
+        dump_expr(stmt->as.expr_stmt, indent + 1);
+        break;
     case AST_STMT_IF:
         printf("If\n");
         dump_indent(indent + 1);
@@ -382,6 +393,9 @@ static void free_stmt(AstStmt *stmt) {
         break;
     case AST_STMT_PRINT:
         free_expr(stmt->as.print);
+        break;
+    case AST_STMT_EXPR:
+        free_expr(stmt->as.expr_stmt);
         break;
     case AST_STMT_IF:
         free_expr(stmt->as.if_stmt.condition);

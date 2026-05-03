@@ -7,6 +7,7 @@ typedef enum {
     AST_STMT_ASSIGN,
     AST_STMT_FIELD_ASSIGN,
     AST_STMT_PRINT,
+    AST_STMT_EXPR,
     AST_STMT_IF
 } AstStmtKind;
 
@@ -107,6 +108,7 @@ struct AstStmt {
             AstExpr *value;
         } field_assign;
         AstExpr *print;
+        AstExpr *expr_stmt;
         struct {
             AstExpr *condition;
             AstStmtList body;
@@ -137,6 +139,7 @@ AstExpr *ast_unary(char *op, AstExpr *expr);
 AstStmt *ast_assign(char *name, char *modifier, AstExpr *value);
 AstStmt *ast_field_assign(char *name, char *field, AstExpr *value);
 AstStmt *ast_print(AstExpr *expr);
+AstStmt *ast_expr_stmt(AstExpr *expr);
 AstStmt *ast_if(AstExpr *condition, AstStmtList body);
 
 void ast_dump(AstStmtList program);

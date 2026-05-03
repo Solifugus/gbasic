@@ -1,2 +1,3 @@
 *.o
 gbasic
+examples/tmp_file_test.txt

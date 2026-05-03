@@ -21,10 +21,33 @@ static char *copy_text(const char *start, int length) {
 }
 
 static char *copy_string_literal(const char *start, int length) {
-    if (length >= 2) {
-        return copy_text(start + 1, length - 2);
+    if (length < 2) {
+        return copy_text("", 0);
     }
-    return copy_text("", 0);
+
+    char *text = malloc((size_t)length - 1);
+    if (!text) {
+        abort();
+    }
+    int out = 0;
+    for (int i = 1; i < length - 1; i++) {
+        if (start[i] == '\\' && i + 1 < length - 1) {
+            i++;
+            if (start[i] == 'n') {
+                text[out++] = '\n';
+            } else if (start[i] == 't') {
+                text[out++] = '\t';
+            } else if (start[i] == '"' || start[i] == '\\') {
+                text[out++] = start[i];
+            } else {
+                text[out++] = start[i];
+            }
+        } else {
+            text[out++] = start[i];
+        }
+    }
+    text[out] = '\0';
+    return text;
 }
 
 static char *copy_const(const char *text) {
@@ -114,7 +137,7 @@ static void yyerror(const char *message);
 %define parse.error verbose
 
 %type <stmt_list> program statement_list
-%type <stmt> statement assignment print_statement if_statement
+%type <stmt> statement assignment print_statement call_statement if_statement
 %type <expr> expression or_expression and_expression comparison_expression
 %type <expr> additive_expression multiplicative_expression unary_expression postfix_expression primary
 %type <expr_list> argument_list argument_list_opt
@@ -137,6 +160,7 @@ statement_list
 statement
     : assignment NEWLINE { $$ = $1; }
     | print_statement NEWLINE { $$ = $1; }
+    | call_statement NEWLINE { $$ = $1; }
     | if_statement { $$ = $1; }
     ;
 
@@ -152,6 +176,10 @@ modifier
 
 print_statement
     : PRINT expression { $$ = ast_print($2); }
+    ;
+
+call_statement
+    : IDENT LPAREN argument_list_opt RPAREN { $$ = ast_expr_stmt(ast_call($1, $3)); }
     ;
 
 if_statement
