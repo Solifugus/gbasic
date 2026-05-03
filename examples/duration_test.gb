@@ -1,0 +1,8 @@
+start (date)= "2026-05-15 13:10:00"
+
+d1 = 1 hour 20 minutes
+d2 = 2 days
+
+print start
+print start + d1
+print start + d2

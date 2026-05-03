@@ -96,6 +96,13 @@ AstExpr *ast_record(AstRecordFieldList fields) {
     return expr;
 }
 
+AstExpr *ast_duration(AstDuration duration) {
+    AstExpr *expr = xmalloc(sizeof(*expr));
+    expr->kind = AST_EXPR_DURATION;
+    expr->as.duration = duration;
+    return expr;
+}
+
 AstExpr *ast_index(AstExpr *array, AstExpr *index) {
     AstExpr *expr = xmalloc(sizeof(*expr));
     expr->kind = AST_EXPR_INDEX;
@@ -212,6 +219,16 @@ static void dump_expr(AstExpr *expr, int indent) {
             dump_expr(expr->as.record.items[i].value, indent + 2);
         }
         break;
+    case AST_EXPR_DURATION:
+        printf("Duration years=%d months=%d weeks=%d days=%d hours=%d minutes=%d seconds=%d\n",
+               expr->as.duration.years,
+               expr->as.duration.months,
+               expr->as.duration.weeks,
+               expr->as.duration.days,
+               expr->as.duration.hours,
+               expr->as.duration.minutes,
+               expr->as.duration.seconds);
+        break;
     case AST_EXPR_INDEX:
         printf("Index\n");
         dump_indent(indent + 1);
@@ -317,6 +334,8 @@ static void free_expr(AstExpr *expr) {
             free_expr(expr->as.record.items[i].value);
         }
         free(expr->as.record.items);
+        break;
+    case AST_EXPR_DURATION:
         break;
     case AST_EXPR_INDEX:
         free_expr(expr->as.index.array);

@@ -17,6 +17,7 @@ typedef enum {
     AST_EXPR_BOOL,
     AST_EXPR_ARRAY,
     AST_EXPR_RECORD,
+    AST_EXPR_DURATION,
     AST_EXPR_INDEX,
     AST_EXPR_FIELD,
     AST_EXPR_CALL,
@@ -47,6 +48,16 @@ typedef struct {
     size_t count;
 } AstRecordFieldList;
 
+typedef struct {
+    int years;
+    int months;
+    int weeks;
+    int days;
+    int hours;
+    int minutes;
+    int seconds;
+} AstDuration;
+
 struct AstExpr {
     AstExprKind kind;
     union {
@@ -56,6 +67,7 @@ struct AstExpr {
         int boolean;
         AstExprList array;
         AstRecordFieldList record;
+        AstDuration duration;
         struct {
             AstExpr *array;
             AstExpr *index;
@@ -115,6 +127,7 @@ AstExpr *ast_ident(char *name);
 AstExpr *ast_bool(int value);
 AstExpr *ast_array(AstExprList items);
 AstExpr *ast_record(AstRecordFieldList fields);
+AstExpr *ast_duration(AstDuration duration);
 AstExpr *ast_index(AstExpr *array, AstExpr *index);
 AstExpr *ast_field(AstExpr *object, char *field);
 AstExpr *ast_call(char *name, AstExprList args);

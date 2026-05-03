@@ -45,7 +45,7 @@
 extern int yydebug;
 #endif
 /* "%code requires" blocks.  */
-#line 67 "src/parser.y"
+#line 94 "src/parser.y"
 
 #include "ast.h"
 
@@ -102,7 +102,7 @@ extern int yydebug;
 #if ! defined YYSTYPE && ! defined YYSTYPE_IS_DECLARED
 union YYSTYPE
 {
-#line 71 "src/parser.y"
+#line 98 "src/parser.y"
 
     double number;
     char *text;
@@ -111,8 +111,9 @@ union YYSTYPE
     AstStmtList stmt_list;
     AstExprList expr_list;
     AstRecordFieldList record_field_list;
+    AstDuration duration;
 
-#line 116 "src/parser.tab.h"
+#line 117 "src/parser.tab.h"
 
 };
 typedef union YYSTYPE YYSTYPE;

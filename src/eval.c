@@ -12,7 +12,8 @@ typedef enum {
     VALUE_BOOL,
     VALUE_ARRAY,
     VALUE_RECORD,
-    VALUE_DATETIME
+    VALUE_DATETIME,
+    VALUE_DURATION
 } ValueKind;
 
 typedef enum {
@@ -34,6 +35,16 @@ typedef struct {
     int time_only;
     DateTimePrecision precision;
 } DateTime;
+
+typedef struct {
+    int years;
+    int months;
+    int weeks;
+    int days;
+    int hours;
+    int minutes;
+    int seconds;
+} Duration;
 
 typedef struct Value Value;
 
@@ -57,6 +68,7 @@ struct Value {
             size_t count;
         } record;
         DateTime datetime;
+        Duration duration;
     } as;
 };
 
@@ -132,6 +144,13 @@ static Value value_datetime(DateTime datetime) {
     return value;
 }
 
+static Value value_duration(Duration duration) {
+    Value value = {0};
+    value.kind = VALUE_DURATION;
+    value.as.duration = duration;
+    return value;
+}
+
 static Value value_copy(Value value) {
     if (value.kind == VALUE_STRING) {
         return value_string(value.as.string);
@@ -202,6 +221,11 @@ static int value_truthy(Value value) {
         return value.as.record.count > 0;
     case VALUE_DATETIME:
         return 1;
+    case VALUE_DURATION:
+        return value.as.duration.years || value.as.duration.months ||
+            value.as.duration.weeks || value.as.duration.days ||
+            value.as.duration.hours || value.as.duration.minutes ||
+            value.as.duration.seconds;
     case VALUE_NULL:
         return 0;
     }
@@ -292,6 +316,9 @@ static void value_print(Value value) {
                    value.as.datetime.minute,
                    value.as.datetime.second);
         }
+        break;
+    case VALUE_DURATION:
+        printf("{duration}\n");
         break;
     }
 }
@@ -564,6 +591,87 @@ static int parse_time_value(const char *text, DateTime *out) {
     return 1;
 }
 
+static int is_leap_year(int year) {
+    return (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
+}
+
+static int days_in_month(int year, int month) {
+    static const int days[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+    if (month == 2 && is_leap_year(year)) {
+        return 29;
+    }
+    return days[month - 1];
+}
+
+static void normalize_datetime(DateTime *dt) {
+    while (dt->second >= 60) {
+        dt->second -= 60;
+        dt->minute++;
+    }
+    while (dt->second < 0) {
+        dt->second += 60;
+        dt->minute--;
+    }
+    while (dt->minute >= 60) {
+        dt->minute -= 60;
+        dt->hour++;
+    }
+    while (dt->minute < 0) {
+        dt->minute += 60;
+        dt->hour--;
+    }
+    while (dt->hour >= 24) {
+        dt->hour -= 24;
+        dt->day++;
+    }
+    while (dt->hour < 0) {
+        dt->hour += 24;
+        dt->day--;
+    }
+    while (dt->month > 12) {
+        dt->month -= 12;
+        dt->year++;
+    }
+    while (dt->month < 1) {
+        dt->month += 12;
+        dt->year--;
+    }
+    while (dt->day > days_in_month(dt->year, dt->month)) {
+        dt->day -= days_in_month(dt->year, dt->month);
+        dt->month++;
+        if (dt->month > 12) {
+            dt->month = 1;
+            dt->year++;
+        }
+    }
+    while (dt->day < 1) {
+        dt->month--;
+        if (dt->month < 1) {
+            dt->month = 12;
+            dt->year--;
+        }
+        dt->day += days_in_month(dt->year, dt->month);
+    }
+}
+
+static DateTime add_duration_to_datetime(DateTime dt, Duration duration, int sign) {
+    dt.year += sign * duration.years;
+    dt.month += sign * duration.months;
+    normalize_datetime(&dt);
+
+    dt.day += sign * (duration.weeks * 7 + duration.days);
+    dt.hour += sign * duration.hours;
+    dt.minute += sign * duration.minutes;
+    dt.second += sign * duration.seconds;
+    normalize_datetime(&dt);
+
+    if (dt.precision < PREC_SECOND &&
+        (duration.hours || duration.minutes || duration.seconds)) {
+        dt.precision = PREC_SECOND;
+    }
+    return dt;
+}
+
 static Value eval_expr(AstExpr *expr);
 
 static int number_compare(const void *left, const void *right) {
@@ -789,6 +897,28 @@ static Value eval_binary(AstExpr *expr) {
         return eval_comparison(expr, left, right);
     }
 
+    if ((strcmp(op, "+") == 0 || strcmp(op, "-") == 0) &&
+        left.kind == VALUE_DATETIME &&
+        right.kind == VALUE_DURATION) {
+        DateTime result = add_duration_to_datetime(left.as.datetime,
+                                                   right.as.duration,
+                                                   strcmp(op, "+") == 0 ? 1 : -1);
+        value_free(left);
+        value_free(right);
+        return value_datetime(result);
+    }
+
+    if (strcmp(op, "+") == 0 &&
+        left.kind == VALUE_DURATION &&
+        right.kind == VALUE_DATETIME) {
+        DateTime result = add_duration_to_datetime(right.as.datetime,
+                                                   left.as.duration,
+                                                   1);
+        value_free(left);
+        value_free(right);
+        return value_datetime(result);
+    }
+
     double a = value_number_or_zero(left);
     double b = value_number_or_zero(right);
     value_free(left);
@@ -812,6 +942,18 @@ static Value eval_expr(AstExpr *expr) {
         return env_get(expr->as.ident);
     case AST_EXPR_BOOL:
         return value_bool(expr->as.boolean);
+    case AST_EXPR_DURATION: {
+        Duration duration = {
+            expr->as.duration.years,
+            expr->as.duration.months,
+            expr->as.duration.weeks,
+            expr->as.duration.days,
+            expr->as.duration.hours,
+            expr->as.duration.minutes,
+            expr->as.duration.seconds
+        };
+        return value_duration(duration);
+    }
     case AST_EXPR_ARRAY: {
         Value *items = NULL;
         if (expr->as.array.count > 0) {

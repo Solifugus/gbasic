@@ -31,6 +31,33 @@ static char *copy_const(const char *text) {
     return copy_text(text, (int)strlen(text));
 }
 
+static int unit_is(const char *text, const char *unit) {
+    return strcmp(text, unit) == 0;
+}
+
+static AstDuration duration_add_unit(AstDuration duration, double amount, char *unit) {
+    int value = (int)amount;
+    if (unit_is(unit, "year") || unit_is(unit, "years")) {
+        duration.years += value;
+    } else if (unit_is(unit, "month") || unit_is(unit, "months")) {
+        duration.months += value;
+    } else if (unit_is(unit, "week") || unit_is(unit, "weeks")) {
+        duration.weeks += value;
+    } else if (unit_is(unit, "day") || unit_is(unit, "days")) {
+        duration.days += value;
+    } else if (unit_is(unit, "hour") || unit_is(unit, "hours")) {
+        duration.hours += value;
+    } else if (unit_is(unit, "minute") || unit_is(unit, "minutes")) {
+        duration.minutes += value;
+    } else if (unit_is(unit, "second") || unit_is(unit, "seconds")) {
+        duration.seconds += value;
+    } else {
+        fprintf(stderr, "unknown duration unit: %s\n", unit);
+    }
+    free(unit);
+    return duration;
+}
+
 static int modifier_lparen_ahead(const char *start) {
     const char *p = start + 1;
     int saw_term = 0;
@@ -76,6 +103,7 @@ static void yyerror(const char *message);
     AstStmtList stmt_list;
     AstExprList expr_list;
     AstRecordFieldList record_field_list;
+    AstDuration duration;
 }
 
 %token <number> NUMBER
@@ -91,6 +119,7 @@ static void yyerror(const char *message);
 %type <expr> additive_expression multiplicative_expression unary_expression postfix_expression primary
 %type <expr_list> argument_list argument_list_opt
 %type <record_field_list> record_field_list
+%type <duration> duration_terms
 %type <text> modifier comparison_operator
 
 %%
@@ -188,6 +217,7 @@ comparison_operator
 
 primary
     : NUMBER { $$ = ast_number($1); }
+    | duration_terms { $$ = ast_duration($1); }
     | STRING { $$ = ast_string($1); }
     | IDENT { $$ = ast_ident($1); }
     | IDENT LPAREN argument_list_opt RPAREN { $$ = ast_call($1, $3); }
@@ -197,6 +227,16 @@ primary
     | LBRACKET argument_list_opt RBRACKET { $$ = ast_array($2); }
     | LBRACE optional_newlines RBRACE { $$ = ast_record(ast_record_field_list_empty()); }
     | LBRACE optional_newlines record_field_list optional_newlines RBRACE { $$ = ast_record($3); }
+    ;
+
+duration_terms
+    : NUMBER IDENT {
+        AstDuration duration = {0};
+        $$ = duration_add_unit(duration, $1, $2);
+      }
+    | duration_terms NUMBER IDENT {
+        $$ = duration_add_unit($1, $2, $3);
+      }
     ;
 
 argument_list_opt
