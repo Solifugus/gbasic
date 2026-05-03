@@ -221,6 +221,20 @@ AstStmt *ast_return(AstExpr *expr) {
     return stmt;
 }
 
+AstStmt *ast_label(char *name) {
+    AstStmt *stmt = xmalloc(sizeof(*stmt));
+    stmt->kind = AST_STMT_LABEL;
+    stmt->as.label = name;
+    return stmt;
+}
+
+AstStmt *ast_goto(char *name) {
+    AstStmt *stmt = xmalloc(sizeof(*stmt));
+    stmt->kind = AST_STMT_GOTO;
+    stmt->as.goto_label = name;
+    return stmt;
+}
+
 AstStmt *ast_if(AstExpr *condition, AstStmtList body) {
     AstStmt *stmt = xmalloc(sizeof(*stmt));
     stmt->kind = AST_STMT_IF;
@@ -380,6 +394,12 @@ static void dump_stmt(AstStmt *stmt, int indent) {
             dump_expr(stmt->as.return_expr, indent + 1);
         }
         break;
+    case AST_STMT_LABEL:
+        printf("Label %s\n", stmt->as.label);
+        break;
+    case AST_STMT_GOTO:
+        printf("Goto %s\n", stmt->as.goto_label);
+        break;
     case AST_STMT_IF:
         printf("If\n");
         dump_indent(indent + 1);
@@ -502,6 +522,12 @@ static void free_stmt(AstStmt *stmt) {
         break;
     case AST_STMT_RETURN:
         free_expr(stmt->as.return_expr);
+        break;
+    case AST_STMT_LABEL:
+        free(stmt->as.label);
+        break;
+    case AST_STMT_GOTO:
+        free(stmt->as.goto_label);
         break;
     case AST_STMT_IF:
         free_expr(stmt->as.if_stmt.condition);

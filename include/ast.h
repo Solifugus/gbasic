@@ -12,6 +12,8 @@ typedef enum {
     AST_STMT_FOR_EACH,
     AST_STMT_FUNCTION,
     AST_STMT_RETURN,
+    AST_STMT_LABEL,
+    AST_STMT_GOTO,
     AST_STMT_IF
 } AstStmtKind;
 
@@ -133,6 +135,8 @@ struct AstStmt {
             AstStmtList body;
         } function;
         AstExpr *return_expr;
+        char *label;
+        char *goto_label;
         struct {
             AstExpr *condition;
             AstStmtList body;
@@ -170,6 +174,8 @@ AstStmt *ast_with_lock(AstExpr *file, AstStmtList body);
 AstStmt *ast_for_each(char *name, AstExpr *iterable, AstStmtList body);
 AstStmt *ast_function(char *name, AstNameList params, AstStmtList body);
 AstStmt *ast_return(AstExpr *expr);
+AstStmt *ast_label(char *name);
+AstStmt *ast_goto(char *name);
 AstStmt *ast_if(AstExpr *condition, AstStmtList body);
 
 void ast_dump(AstStmtList program);

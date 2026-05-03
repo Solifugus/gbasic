@@ -1,0 +1,10 @@
+function normalize(x)
+    if x < 0 then goto negative
+    return x
+
+negative:
+    return 0
+end function
+
+print normalize(5)
+print normalize(-3)

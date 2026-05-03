@@ -94,6 +94,8 @@ typedef struct {
 
 typedef struct {
     int did_return;
+    int did_goto;
+    char *goto_label;
     Value value;
 } EvalResult;
 
@@ -114,6 +116,7 @@ static FunctionDef *functions = NULL;
 static size_t function_count = 0;
 static LockEntry *locks = NULL;
 static size_t lock_count = 0;
+static int function_depth = 0;
 
 static char *copy_string(const char *text) {
     size_t length = strlen(text);
@@ -194,6 +197,27 @@ static Value value_dir(const char *path) {
     value.kind = VALUE_DIR;
     value.as.dir_path = copy_string(path);
     return value;
+}
+
+static EvalResult eval_no_result(void) {
+    EvalResult result = {0};
+    result.value = value_null();
+    return result;
+}
+
+static EvalResult eval_return(Value value) {
+    EvalResult result = {0};
+    result.did_return = 1;
+    result.value = value;
+    return result;
+}
+
+static EvalResult eval_goto(const char *label) {
+    EvalResult result = {0};
+    result.did_goto = 1;
+    result.goto_label = copy_string(label);
+    result.value = value_null();
+    return result;
 }
 
 static Value value_copy(Value value) {
@@ -820,6 +844,7 @@ static DateTime add_duration_to_datetime(DateTime dt, Duration duration, int sig
 }
 
 static Value eval_expr(AstExpr *expr);
+static EvalResult eval_stmt(AstStmt *stmt);
 static EvalResult eval_stmt_list(AstStmtList statements);
 
 static FunctionDef *function_find(const char *name) {
@@ -852,6 +877,17 @@ static void function_clear(void) {
     free(functions);
     functions = NULL;
     function_count = 0;
+}
+
+static int find_function_label(AstStmtList body, const char *label, size_t *out_index) {
+    for (size_t i = 0; i < body.count; i++) {
+        AstStmt *stmt = body.items[i];
+        if (stmt->kind == AST_STMT_LABEL && strcmp(stmt->as.label, label) == 0) {
+            *out_index = i;
+            return 1;
+        }
+    }
+    return 0;
 }
 
 static int number_compare(const void *left, const void *right) {
@@ -1136,7 +1172,32 @@ static Value eval_user_function(AstExpr *expr, FunctionDef *function) {
         env_set(stmt->as.function.params.items[i], arg);
     }
 
-    EvalResult result = eval_stmt_list(stmt->as.function.body);
+    function_depth++;
+    size_t pc = 0;
+    EvalResult result = eval_no_result();
+    while (pc < stmt->as.function.body.count) {
+        result = eval_stmt(stmt->as.function.body.items[pc]);
+        if (result.did_return) {
+            break;
+        }
+        if (result.did_goto) {
+            size_t target = 0;
+            if (!find_function_label(stmt->as.function.body, result.goto_label, &target)) {
+                fprintf(stderr, "unknown label in function %s: %s\n",
+                        stmt->as.function.name,
+                        result.goto_label);
+                free(result.goto_label);
+                result = eval_no_result();
+                break;
+            }
+            free(result.goto_label);
+            result = eval_no_result();
+            pc = target + 1;
+            continue;
+        }
+        pc++;
+    }
+    function_depth--;
     current_env = previous_env;
     env_clear(&local_env);
     if (result.did_return) {
@@ -1610,8 +1671,7 @@ static Value apply_assignment_modifier(const char *modifier, Value value) {
 }
 
 static EvalResult eval_stmt(AstStmt *stmt) {
-    EvalResult no_return = {0, {0}};
-    no_return.value = value_null();
+    EvalResult no_result = eval_no_result();
 
     switch (stmt->kind) {
     case AST_STMT_ASSIGN: {
@@ -1625,7 +1685,7 @@ static EvalResult eval_stmt(AstStmt *stmt) {
         if (!symbol || symbol->value.kind != VALUE_RECORD) {
             fprintf(stderr, "field assignment expects a record variable: %s\n",
                     stmt->as.field_assign.name);
-            return no_return;
+            return no_result;
         }
         Value value = eval_expr(stmt->as.field_assign.value);
         record_set(&symbol->value, stmt->as.field_assign.field, value);
@@ -1654,7 +1714,7 @@ static EvalResult eval_stmt(AstStmt *stmt) {
         if (lock_path(path)) {
             EvalResult result = eval_stmt_list(stmt->as.with_lock.body);
             unlock_path(path);
-            if (result.did_return) {
+            if (result.did_return || result.did_goto) {
                 free(path);
                 return result;
             }
@@ -1672,7 +1732,7 @@ static EvalResult eval_stmt(AstStmt *stmt) {
         for (size_t i = 0; i < iterable.as.array.count; i++) {
             env_set(stmt->as.for_each.name, value_copy(iterable.as.array.items[i]));
             EvalResult result = eval_stmt_list(stmt->as.for_each.body);
-            if (result.did_return) {
+            if (result.did_return || result.did_goto) {
                 value_free(iterable);
                 return result;
             }
@@ -1684,10 +1744,16 @@ static EvalResult eval_stmt(AstStmt *stmt) {
         function_register(stmt);
         break;
     case AST_STMT_RETURN: {
-        EvalResult result = {0, {0}};
-        result.did_return = 1;
-        result.value = stmt->as.return_expr ? eval_expr(stmt->as.return_expr) : value_null();
-        return result;
+        return eval_return(stmt->as.return_expr ? eval_expr(stmt->as.return_expr) : value_null());
+    }
+    case AST_STMT_LABEL:
+        break;
+    case AST_STMT_GOTO: {
+        if (function_depth == 0) {
+            fprintf(stderr, "goto is only supported inside functions for now\n");
+            break;
+        }
+        return eval_goto(stmt->as.goto_label);
     }
     case AST_STMT_IF: {
         Value condition = eval_expr(stmt->as.if_stmt.condition);
@@ -1695,7 +1761,7 @@ static EvalResult eval_stmt(AstStmt *stmt) {
         value_free(condition);
         if (truth) {
             EvalResult result = eval_stmt_list(stmt->as.if_stmt.body);
-            if (result.did_return) {
+            if (result.did_return || result.did_goto) {
                 return result;
             }
         }
@@ -1703,25 +1769,26 @@ static EvalResult eval_stmt(AstStmt *stmt) {
     }
     }
 
-    return no_return;
+    return no_result;
 }
 
 static EvalResult eval_stmt_list(AstStmtList statements) {
     for (size_t i = 0; i < statements.count; i++) {
         EvalResult result = eval_stmt(statements.items[i]);
-        if (result.did_return) {
+        if (result.did_return || result.did_goto) {
             return result;
         }
     }
-    EvalResult no_return = {0, {0}};
-    no_return.value = value_null();
-    return no_return;
+    return eval_no_result();
 }
 
 int eval_program(AstStmtList program) {
     EvalResult result = eval_stmt_list(program);
     if (result.did_return) {
         value_free(result.value);
+    }
+    if (result.did_goto) {
+        free(result.goto_label);
     }
     lock_clear();
     function_clear();
