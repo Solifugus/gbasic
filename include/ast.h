@@ -10,6 +10,8 @@ typedef enum {
     AST_STMT_EXPR,
     AST_STMT_WITH_LOCK,
     AST_STMT_FOR_EACH,
+    AST_STMT_FUNCTION,
+    AST_STMT_RETURN,
     AST_STMT_IF
 } AstStmtKind;
 
@@ -50,6 +52,11 @@ typedef struct {
     AstRecordField *items;
     size_t count;
 } AstRecordFieldList;
+
+typedef struct {
+    char **items;
+    size_t count;
+} AstNameList;
 
 typedef struct {
     int years;
@@ -121,6 +128,12 @@ struct AstStmt {
             AstStmtList body;
         } for_each;
         struct {
+            char *name;
+            AstNameList params;
+            AstStmtList body;
+        } function;
+        AstExpr *return_expr;
+        struct {
             AstExpr *condition;
             AstStmtList body;
         } if_stmt;
@@ -133,6 +146,8 @@ AstExprList ast_expr_list_empty(void);
 AstExprList ast_expr_list_append(AstExprList list, AstExpr *expr);
 AstRecordFieldList ast_record_field_list_empty(void);
 AstRecordFieldList ast_record_field_list_append(AstRecordFieldList list, char *name, AstExpr *value);
+AstNameList ast_name_list_empty(void);
+AstNameList ast_name_list_append(AstNameList list, char *name);
 
 AstExpr *ast_number(double value);
 AstExpr *ast_string(char *value);
@@ -153,6 +168,8 @@ AstStmt *ast_print(AstExpr *expr);
 AstStmt *ast_expr_stmt(AstExpr *expr);
 AstStmt *ast_with_lock(AstExpr *file, AstStmtList body);
 AstStmt *ast_for_each(char *name, AstExpr *iterable, AstStmtList body);
+AstStmt *ast_function(char *name, AstNameList params, AstStmtList body);
+AstStmt *ast_return(AstExpr *expr);
 AstStmt *ast_if(AstExpr *condition, AstStmtList body);
 
 void ast_dump(AstStmtList program);

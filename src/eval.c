@@ -93,11 +93,25 @@ typedef struct {
 } LockEntry;
 
 typedef struct {
+    int did_return;
+    Value value;
+} EvalResult;
+
+typedef struct Env {
     Symbol *items;
     size_t count;
+    struct Env *parent;
 } Env;
 
-static Env env = {0};
+typedef struct {
+    char *name;
+    AstStmt *stmt;
+} FunctionDef;
+
+static Env global_env = {0};
+static Env *current_env = &global_env;
+static FunctionDef *functions = NULL;
+static size_t function_count = 0;
 static LockEntry *locks = NULL;
 static size_t lock_count = 0;
 
@@ -374,31 +388,41 @@ static void value_print(Value value) {
     }
 }
 
+static Symbol *env_find_in_frame(Env *env, const char *name) {
+    for (size_t i = 0; i < env->count; i++) {
+        if (strcmp(env->items[i].name, name) == 0) {
+            return &env->items[i];
+        }
+    }
+    return NULL;
+}
+
 static Symbol *env_find(const char *name) {
-    for (size_t i = 0; i < env.count; i++) {
-        if (strcmp(env.items[i].name, name) == 0) {
-            return &env.items[i];
+    for (Env *env = current_env; env; env = env->parent) {
+        Symbol *symbol = env_find_in_frame(env, name);
+        if (symbol) {
+            return symbol;
         }
     }
     return NULL;
 }
 
 static void env_set(const char *name, Value value) {
-    Symbol *symbol = env_find(name);
+    Symbol *symbol = env_find_in_frame(current_env, name);
     if (symbol) {
         value_free(symbol->value);
         symbol->value = value;
         return;
     }
 
-    Symbol *items = realloc(env.items, sizeof(Symbol) * (env.count + 1));
+    Symbol *items = realloc(current_env->items, sizeof(Symbol) * (current_env->count + 1));
     if (!items) {
         abort();
     }
-    env.items = items;
-    env.items[env.count].name = copy_string(name);
-    env.items[env.count].value = value;
-    env.count++;
+    current_env->items = items;
+    current_env->items[current_env->count].name = copy_string(name);
+    current_env->items[current_env->count].value = value;
+    current_env->count++;
 }
 
 static Value env_get(const char *name) {
@@ -410,14 +434,14 @@ static Value env_get(const char *name) {
     return value_copy(symbol->value);
 }
 
-static void env_clear(void) {
-    for (size_t i = 0; i < env.count; i++) {
-        free(env.items[i].name);
-        value_free(env.items[i].value);
+static void env_clear(Env *env) {
+    for (size_t i = 0; i < env->count; i++) {
+        free(env->items[i].name);
+        value_free(env->items[i].value);
     }
-    free(env.items);
-    env.items = NULL;
-    env.count = 0;
+    free(env->items);
+    env->items = NULL;
+    env->count = 0;
 }
 
 static LockEntry *lock_find(const char *path) {
@@ -796,6 +820,39 @@ static DateTime add_duration_to_datetime(DateTime dt, Duration duration, int sig
 }
 
 static Value eval_expr(AstExpr *expr);
+static EvalResult eval_stmt_list(AstStmtList statements);
+
+static FunctionDef *function_find(const char *name) {
+    for (size_t i = 0; i < function_count; i++) {
+        if (strcmp(functions[i].name, name) == 0) {
+            return &functions[i];
+        }
+    }
+    return NULL;
+}
+
+static void function_register(AstStmt *stmt) {
+    FunctionDef *function = function_find(stmt->as.function.name);
+    if (function) {
+        function->stmt = stmt;
+        return;
+    }
+
+    FunctionDef *next = realloc(functions, sizeof(FunctionDef) * (function_count + 1));
+    if (!next) {
+        abort();
+    }
+    functions = next;
+    functions[function_count].name = stmt->as.function.name;
+    functions[function_count].stmt = stmt;
+    function_count++;
+}
+
+static void function_clear(void) {
+    free(functions);
+    functions = NULL;
+    function_count = 0;
+}
 
 static int number_compare(const void *left, const void *right) {
     double a = *(const double *)left;
@@ -1060,6 +1117,34 @@ static Value eval_dir_call(AstExpr *expr) {
     return value_array(items, count);
 }
 
+static Value eval_user_function(AstExpr *expr, FunctionDef *function) {
+    AstStmt *stmt = function->stmt;
+    if (expr->as.call.args.count != stmt->as.function.params.count) {
+        fprintf(stderr, "%s expects %zu arguments\n",
+                expr->as.call.name,
+                stmt->as.function.params.count);
+        return value_null();
+    }
+
+    Env local_env = {0};
+    local_env.parent = &global_env;
+    Env *previous_env = current_env;
+    current_env = &local_env;
+
+    for (size_t i = 0; i < expr->as.call.args.count; i++) {
+        Value arg = eval_expr(expr->as.call.args.items[i]);
+        env_set(stmt->as.function.params.items[i], arg);
+    }
+
+    EvalResult result = eval_stmt_list(stmt->as.function.body);
+    current_env = previous_env;
+    env_clear(&local_env);
+    if (result.did_return) {
+        return result.value;
+    }
+    return value_null();
+}
+
 static Value eval_call(AstExpr *expr) {
     if (strcmp(expr->as.call.name, "exists") == 0 ||
         strcmp(expr->as.call.name, "read") == 0 ||
@@ -1076,6 +1161,11 @@ static Value eval_call(AstExpr *expr) {
         strcmp(expr->as.call.name, "files") == 0 ||
         strcmp(expr->as.call.name, "folders") == 0) {
         return eval_dir_call(expr);
+    }
+
+    FunctionDef *function = function_find(expr->as.call.name);
+    if (function) {
+        return eval_user_function(expr, function);
     }
 
     if (expr->as.call.args.count != 1) {
@@ -1304,6 +1394,24 @@ static Value eval_binary(AstExpr *expr) {
         return value_datetime(result);
     }
 
+    if (strcmp(op, "+") == 0 &&
+        left.kind == VALUE_STRING &&
+        right.kind == VALUE_STRING) {
+        size_t left_len = strlen(left.as.string);
+        size_t right_len = strlen(right.as.string);
+        char *combined = malloc(left_len + right_len + 1);
+        if (!combined) {
+            abort();
+        }
+        memcpy(combined, left.as.string, left_len);
+        memcpy(combined + left_len, right.as.string, right_len + 1);
+        Value result = value_string(combined);
+        free(combined);
+        value_free(left);
+        value_free(right);
+        return result;
+    }
+
     double a = value_number_or_zero(left);
     double b = value_number_or_zero(right);
     value_free(left);
@@ -1501,9 +1609,10 @@ static Value apply_assignment_modifier(const char *modifier, Value value) {
     return value;
 }
 
-static void eval_stmt_list(AstStmtList statements);
+static EvalResult eval_stmt(AstStmt *stmt) {
+    EvalResult no_return = {0, {0}};
+    no_return.value = value_null();
 
-static void eval_stmt(AstStmt *stmt) {
     switch (stmt->kind) {
     case AST_STMT_ASSIGN: {
         Value value = eval_expr(stmt->as.assign.value);
@@ -1516,7 +1625,7 @@ static void eval_stmt(AstStmt *stmt) {
         if (!symbol || symbol->value.kind != VALUE_RECORD) {
             fprintf(stderr, "field assignment expects a record variable: %s\n",
                     stmt->as.field_assign.name);
-            break;
+            return no_return;
         }
         Value value = eval_expr(stmt->as.field_assign.value);
         record_set(&symbol->value, stmt->as.field_assign.field, value);
@@ -1543,8 +1652,12 @@ static void eval_stmt(AstStmt *stmt) {
         char *path = copy_string(file_value.as.file_path);
         value_free(file_value);
         if (lock_path(path)) {
-            eval_stmt_list(stmt->as.with_lock.body);
+            EvalResult result = eval_stmt_list(stmt->as.with_lock.body);
             unlock_path(path);
+            if (result.did_return) {
+                free(path);
+                return result;
+            }
         }
         free(path);
         break;
@@ -1558,32 +1671,60 @@ static void eval_stmt(AstStmt *stmt) {
         }
         for (size_t i = 0; i < iterable.as.array.count; i++) {
             env_set(stmt->as.for_each.name, value_copy(iterable.as.array.items[i]));
-            eval_stmt_list(stmt->as.for_each.body);
+            EvalResult result = eval_stmt_list(stmt->as.for_each.body);
+            if (result.did_return) {
+                value_free(iterable);
+                return result;
+            }
         }
         value_free(iterable);
         break;
+    }
+    case AST_STMT_FUNCTION:
+        function_register(stmt);
+        break;
+    case AST_STMT_RETURN: {
+        EvalResult result = {0, {0}};
+        result.did_return = 1;
+        result.value = stmt->as.return_expr ? eval_expr(stmt->as.return_expr) : value_null();
+        return result;
     }
     case AST_STMT_IF: {
         Value condition = eval_expr(stmt->as.if_stmt.condition);
         int truth = value_truthy(condition);
         value_free(condition);
         if (truth) {
-            eval_stmt_list(stmt->as.if_stmt.body);
+            EvalResult result = eval_stmt_list(stmt->as.if_stmt.body);
+            if (result.did_return) {
+                return result;
+            }
         }
         break;
     }
     }
+
+    return no_return;
 }
 
-static void eval_stmt_list(AstStmtList statements) {
+static EvalResult eval_stmt_list(AstStmtList statements) {
     for (size_t i = 0; i < statements.count; i++) {
-        eval_stmt(statements.items[i]);
+        EvalResult result = eval_stmt(statements.items[i]);
+        if (result.did_return) {
+            return result;
+        }
     }
+    EvalResult no_return = {0, {0}};
+    no_return.value = value_null();
+    return no_return;
 }
 
 int eval_program(AstStmtList program) {
-    eval_stmt_list(program);
+    EvalResult result = eval_stmt_list(program);
+    if (result.did_return) {
+        value_free(result.value);
+    }
     lock_clear();
-    env_clear();
+    function_clear();
+    env_clear(&global_env);
     return 0;
 }

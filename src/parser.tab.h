@@ -75,28 +75,30 @@ extern int yydebug;
     WITH = 270,                    /* WITH  */
     FOR = 271,                     /* FOR  */
     IN = 272,                      /* IN  */
-    OP_EQ = 273,                   /* OP_EQ  */
-    OP_NE = 274,                   /* OP_NE  */
-    OP_GT = 275,                   /* OP_GT  */
-    OP_LT = 276,                   /* OP_LT  */
-    OP_GE = 277,                   /* OP_GE  */
-    OP_LE = 278,                   /* OP_LE  */
-    OP_NGT = 279,                  /* OP_NGT  */
-    OP_NLT = 280,                  /* OP_NLT  */
-    PLUS = 281,                    /* PLUS  */
-    MINUS = 282,                   /* MINUS  */
-    STAR = 283,                    /* STAR  */
-    SLASH = 284,                   /* SLASH  */
-    LPAREN = 285,                  /* LPAREN  */
-    MOD_LPAREN = 286,              /* MOD_LPAREN  */
-    RPAREN = 287,                  /* RPAREN  */
-    LBRACKET = 288,                /* LBRACKET  */
-    RBRACKET = 289,                /* RBRACKET  */
-    LBRACE = 290,                  /* LBRACE  */
-    RBRACE = 291,                  /* RBRACE  */
-    COMMA = 292,                   /* COMMA  */
-    DOT = 293,                     /* DOT  */
-    NEWLINE = 294                  /* NEWLINE  */
+    FUNCTION = 273,                /* FUNCTION  */
+    RETURN = 274,                  /* RETURN  */
+    OP_EQ = 275,                   /* OP_EQ  */
+    OP_NE = 276,                   /* OP_NE  */
+    OP_GT = 277,                   /* OP_GT  */
+    OP_LT = 278,                   /* OP_LT  */
+    OP_GE = 279,                   /* OP_GE  */
+    OP_LE = 280,                   /* OP_LE  */
+    OP_NGT = 281,                  /* OP_NGT  */
+    OP_NLT = 282,                  /* OP_NLT  */
+    PLUS = 283,                    /* PLUS  */
+    MINUS = 284,                   /* MINUS  */
+    STAR = 285,                    /* STAR  */
+    SLASH = 286,                   /* SLASH  */
+    LPAREN = 287,                  /* LPAREN  */
+    MOD_LPAREN = 288,              /* MOD_LPAREN  */
+    RPAREN = 289,                  /* RPAREN  */
+    LBRACKET = 290,                /* LBRACKET  */
+    RBRACKET = 291,                /* RBRACKET  */
+    LBRACE = 292,                  /* LBRACE  */
+    RBRACE = 293,                  /* RBRACE  */
+    COMMA = 294,                   /* COMMA  */
+    DOT = 295,                     /* DOT  */
+    NEWLINE = 296                  /* NEWLINE  */
   };
   typedef enum yytokentype yytoken_kind_t;
 #endif
@@ -114,9 +116,10 @@ union YYSTYPE
     AstStmtList stmt_list;
     AstExprList expr_list;
     AstRecordFieldList record_field_list;
+    AstNameList name_list;
     AstDuration duration;
 
-#line 120 "src/parser.tab.h"
+#line 123 "src/parser.tab.h"
 
 };
 typedef union YYSTYPE YYSTYPE;

@@ -54,6 +54,17 @@ AstRecordFieldList ast_record_field_list_append(AstRecordFieldList list, char *n
     return list;
 }
 
+AstNameList ast_name_list_empty(void) {
+    AstNameList list = {0};
+    return list;
+}
+
+AstNameList ast_name_list_append(AstNameList list, char *name) {
+    list.items = xrealloc(list.items, sizeof(char *) * (list.count + 1));
+    list.items[list.count++] = name;
+    return list;
+}
+
 AstExpr *ast_number(double value) {
     AstExpr *expr = xmalloc(sizeof(*expr));
     expr->kind = AST_EXPR_NUMBER;
@@ -191,6 +202,22 @@ AstStmt *ast_for_each(char *name, AstExpr *iterable, AstStmtList body) {
     stmt->as.for_each.name = name;
     stmt->as.for_each.iterable = iterable;
     stmt->as.for_each.body = body;
+    return stmt;
+}
+
+AstStmt *ast_function(char *name, AstNameList params, AstStmtList body) {
+    AstStmt *stmt = xmalloc(sizeof(*stmt));
+    stmt->kind = AST_STMT_FUNCTION;
+    stmt->as.function.name = name;
+    stmt->as.function.params = params;
+    stmt->as.function.body = body;
+    return stmt;
+}
+
+AstStmt *ast_return(AstExpr *expr) {
+    AstStmt *stmt = xmalloc(sizeof(*stmt));
+    stmt->kind = AST_STMT_RETURN;
+    stmt->as.return_expr = expr;
     return stmt;
 }
 
@@ -333,6 +360,26 @@ static void dump_stmt(AstStmt *stmt, int indent) {
             dump_stmt(stmt->as.for_each.body.items[i], indent + 2);
         }
         break;
+    case AST_STMT_FUNCTION:
+        printf("Function %s\n", stmt->as.function.name);
+        dump_indent(indent + 1);
+        printf("Parameters");
+        for (size_t i = 0; i < stmt->as.function.params.count; i++) {
+            printf(" %s", stmt->as.function.params.items[i]);
+        }
+        printf("\n");
+        dump_indent(indent + 1);
+        printf("Body\n");
+        for (size_t i = 0; i < stmt->as.function.body.count; i++) {
+            dump_stmt(stmt->as.function.body.items[i], indent + 2);
+        }
+        break;
+    case AST_STMT_RETURN:
+        printf("Return\n");
+        if (stmt->as.return_expr) {
+            dump_expr(stmt->as.return_expr, indent + 1);
+        }
+        break;
     case AST_STMT_IF:
         printf("If\n");
         dump_indent(indent + 1);
@@ -444,6 +491,17 @@ static void free_stmt(AstStmt *stmt) {
         free(stmt->as.for_each.name);
         free_expr(stmt->as.for_each.iterable);
         ast_free_program(stmt->as.for_each.body);
+        break;
+    case AST_STMT_FUNCTION:
+        free(stmt->as.function.name);
+        for (size_t i = 0; i < stmt->as.function.params.count; i++) {
+            free(stmt->as.function.params.items[i]);
+        }
+        free(stmt->as.function.params.items);
+        ast_free_program(stmt->as.function.body);
+        break;
+    case AST_STMT_RETURN:
+        free_expr(stmt->as.return_expr);
         break;
     case AST_STMT_IF:
         free_expr(stmt->as.if_stmt.condition);

@@ -1,0 +1,10 @@
+function add(a, b)
+    return a + b
+end function
+
+function greet(name)
+    return "Hello, " + name
+end function
+
+print add(2, 3)
+print greet("Ada")
