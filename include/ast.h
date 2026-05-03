@@ -1,0 +1,104 @@
+#ifndef GBASIC_AST_H
+#define GBASIC_AST_H
+
+#include <stddef.h>
+
+typedef enum {
+    AST_STMT_ASSIGN,
+    AST_STMT_PRINT,
+    AST_STMT_IF
+} AstStmtKind;
+
+typedef enum {
+    AST_EXPR_NUMBER,
+    AST_EXPR_STRING,
+    AST_EXPR_IDENT,
+    AST_EXPR_BOOL,
+    AST_EXPR_ARRAY,
+    AST_EXPR_INDEX,
+    AST_EXPR_CALL,
+    AST_EXPR_BINARY,
+    AST_EXPR_UNARY
+} AstExprKind;
+
+typedef struct AstExpr AstExpr;
+typedef struct AstStmt AstStmt;
+
+typedef struct {
+    AstStmt **items;
+    size_t count;
+} AstStmtList;
+
+typedef struct {
+    AstExpr **items;
+    size_t count;
+} AstExprList;
+
+struct AstExpr {
+    AstExprKind kind;
+    union {
+        double number;
+        char *string;
+        char *ident;
+        int boolean;
+        AstExprList array;
+        struct {
+            AstExpr *array;
+            AstExpr *index;
+        } index;
+        struct {
+            char *name;
+            AstExprList args;
+        } call;
+        struct {
+            char *op;
+            char *modifier;
+            AstExpr *left;
+            AstExpr *right;
+        } binary;
+        struct {
+            char *op;
+            AstExpr *expr;
+        } unary;
+    } as;
+};
+
+struct AstStmt {
+    AstStmtKind kind;
+    union {
+        struct {
+            char *name;
+            char *modifier;
+            AstExpr *value;
+        } assign;
+        AstExpr *print;
+        struct {
+            AstExpr *condition;
+            AstStmtList body;
+        } if_stmt;
+    } as;
+};
+
+AstStmtList ast_stmt_list_empty(void);
+AstStmtList ast_stmt_list_append(AstStmtList list, AstStmt *stmt);
+AstExprList ast_expr_list_empty(void);
+AstExprList ast_expr_list_append(AstExprList list, AstExpr *expr);
+
+AstExpr *ast_number(double value);
+AstExpr *ast_string(char *value);
+AstExpr *ast_ident(char *name);
+AstExpr *ast_bool(int value);
+AstExpr *ast_array(AstExprList items);
+AstExpr *ast_index(AstExpr *array, AstExpr *index);
+AstExpr *ast_call(char *name, AstExprList args);
+AstExpr *ast_binary(char *op, char *modifier, AstExpr *left, AstExpr *right);
+AstExpr *ast_unary(char *op, AstExpr *expr);
+
+AstStmt *ast_assign(char *name, char *modifier, AstExpr *value);
+AstStmt *ast_print(AstExpr *expr);
+AstStmt *ast_if(AstExpr *condition, AstStmtList body);
+
+void ast_dump(AstStmtList program);
+void ast_free_program(AstStmtList program);
+
+#endif

@@ -1,0 +1,15 @@
+name = "Joe Barnes"
+balance(USD) = 19.95
+
+if name(caseless) = "joe barnes" then
+    print balance
+end if
+
+scores = [88, 91, 91, 74, 100]
+print len(scores)
+print sum(scores)
+print mean(scores)
+print median(scores)
+print mode(scores)
+print min(scores)
+print max(scores)
