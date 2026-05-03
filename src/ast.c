@@ -177,6 +177,14 @@ AstStmt *ast_expr_stmt(AstExpr *expr) {
     return stmt;
 }
 
+AstStmt *ast_with_lock(AstExpr *file, AstStmtList body) {
+    AstStmt *stmt = xmalloc(sizeof(*stmt));
+    stmt->kind = AST_STMT_WITH_LOCK;
+    stmt->as.with_lock.file = file;
+    stmt->as.with_lock.body = body;
+    return stmt;
+}
+
 AstStmt *ast_if(AstExpr *condition, AstStmtList body) {
     AstStmt *stmt = xmalloc(sizeof(*stmt));
     stmt->kind = AST_STMT_IF;
@@ -294,6 +302,17 @@ static void dump_stmt(AstStmt *stmt, int indent) {
         printf("ExpressionStatement\n");
         dump_expr(stmt->as.expr_stmt, indent + 1);
         break;
+    case AST_STMT_WITH_LOCK:
+        printf("WithLock\n");
+        dump_indent(indent + 1);
+        printf("File\n");
+        dump_expr(stmt->as.with_lock.file, indent + 2);
+        dump_indent(indent + 1);
+        printf("Body\n");
+        for (size_t i = 0; i < stmt->as.with_lock.body.count; i++) {
+            dump_stmt(stmt->as.with_lock.body.items[i], indent + 2);
+        }
+        break;
     case AST_STMT_IF:
         printf("If\n");
         dump_indent(indent + 1);
@@ -396,6 +415,10 @@ static void free_stmt(AstStmt *stmt) {
         break;
     case AST_STMT_EXPR:
         free_expr(stmt->as.expr_stmt);
+        break;
+    case AST_STMT_WITH_LOCK:
+        free_expr(stmt->as.with_lock.file);
+        ast_free_program(stmt->as.with_lock.body);
         break;
     case AST_STMT_IF:
         free_expr(stmt->as.if_stmt.condition);

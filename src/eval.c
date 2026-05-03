@@ -1,9 +1,12 @@
 #include "eval.h"
 
 #include <ctype.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/file.h>
+#include <unistd.h>
 
 typedef enum {
     VALUE_NULL,
@@ -80,11 +83,19 @@ typedef struct {
 } Symbol;
 
 typedef struct {
+    char *path;
+    int fd;
+    int depth;
+} LockEntry;
+
+typedef struct {
     Symbol *items;
     size_t count;
 } Env;
 
 static Env env = {0};
+static LockEntry *locks = NULL;
+static size_t lock_count = 0;
 
 static char *copy_string(const char *text) {
     size_t length = strlen(text);
@@ -386,6 +397,78 @@ static void env_clear(void) {
     free(env.items);
     env.items = NULL;
     env.count = 0;
+}
+
+static LockEntry *lock_find(const char *path) {
+    for (size_t i = 0; i < lock_count; i++) {
+        if (strcmp(locks[i].path, path) == 0) {
+            return &locks[i];
+        }
+    }
+    return NULL;
+}
+
+static int lock_path(const char *path) {
+    LockEntry *entry = lock_find(path);
+    if (entry) {
+        entry->depth++;
+        return 1;
+    }
+
+    int fd = open(path, O_RDWR | O_CREAT, 0666);
+    if (fd < 0) {
+        perror(path);
+        return 0;
+    }
+    if (flock(fd, LOCK_EX) != 0) {
+        perror(path);
+        close(fd);
+        return 0;
+    }
+
+    LockEntry *next = realloc(locks, sizeof(LockEntry) * (lock_count + 1));
+    if (!next) {
+        abort();
+    }
+    locks = next;
+    locks[lock_count].path = copy_string(path);
+    locks[lock_count].fd = fd;
+    locks[lock_count].depth = 1;
+    lock_count++;
+    return 1;
+}
+
+static int unlock_path(const char *path) {
+    for (size_t i = 0; i < lock_count; i++) {
+        if (strcmp(locks[i].path, path) == 0) {
+            locks[i].depth--;
+            if (locks[i].depth > 0) {
+                return 1;
+            }
+            int ok = flock(locks[i].fd, LOCK_UN) == 0;
+            close(locks[i].fd);
+            free(locks[i].path);
+            locks[i] = locks[lock_count - 1];
+            lock_count--;
+            if (lock_count == 0) {
+                free(locks);
+                locks = NULL;
+            }
+            return ok;
+        }
+    }
+    return 0;
+}
+
+static void lock_clear(void) {
+    while (lock_count > 0) {
+        flock(locks[lock_count - 1].fd, LOCK_UN);
+        close(locks[lock_count - 1].fd);
+        free(locks[lock_count - 1].path);
+        lock_count--;
+    }
+    free(locks);
+    locks = NULL;
 }
 
 static RecordField *record_find(Value *record, const char *name) {
@@ -752,7 +835,9 @@ static Value eval_file_call(AstExpr *expr) {
         strcmp(name, "read") == 0 ||
         strcmp(name, "bytes") == 0 ||
         strcmp(name, "lines") == 0 ||
-        strcmp(name, "chars") == 0) {
+        strcmp(name, "chars") == 0 ||
+        strcmp(name, "lock") == 0 ||
+        strcmp(name, "unlock") == 0) {
         if (expr->as.call.args.count != 1) {
             fprintf(stderr, "%s expects one file argument\n", name);
             return value_null();
@@ -772,6 +857,16 @@ static Value eval_file_call(AstExpr *expr) {
             }
             value_free(file_value);
             return value_bool(exists);
+        }
+        if (strcmp(name, "lock") == 0) {
+            int ok = lock_path(file_value.as.file_path);
+            value_free(file_value);
+            return value_bool(ok);
+        }
+        if (strcmp(name, "unlock") == 0) {
+            int ok = unlock_path(file_value.as.file_path);
+            value_free(file_value);
+            return value_bool(ok);
         }
 
         long size = 0;
@@ -843,6 +938,8 @@ static Value eval_call(AstExpr *expr) {
         strcmp(expr->as.call.name, "read") == 0 ||
         strcmp(expr->as.call.name, "write") == 0 ||
         strcmp(expr->as.call.name, "append") == 0 ||
+        strcmp(expr->as.call.name, "lock") == 0 ||
+        strcmp(expr->as.call.name, "unlock") == 0 ||
         strcmp(expr->as.call.name, "bytes") == 0 ||
         strcmp(expr->as.call.name, "lines") == 0 ||
         strcmp(expr->as.call.name, "chars") == 0) {
@@ -1294,6 +1391,22 @@ static void eval_stmt(AstStmt *stmt) {
         value_free(value);
         break;
     }
+    case AST_STMT_WITH_LOCK: {
+        Value file_value = eval_expr(stmt->as.with_lock.file);
+        if (file_value.kind != VALUE_FILE) {
+            fprintf(stderr, "with lock expects a file reference\n");
+            value_free(file_value);
+            break;
+        }
+        char *path = copy_string(file_value.as.file_path);
+        value_free(file_value);
+        if (lock_path(path)) {
+            eval_stmt_list(stmt->as.with_lock.body);
+            unlock_path(path);
+        }
+        free(path);
+        break;
+    }
     case AST_STMT_IF: {
         Value condition = eval_expr(stmt->as.if_stmt.condition);
         int truth = value_truthy(condition);
@@ -1314,6 +1427,7 @@ static void eval_stmt_list(AstStmtList statements) {
 
 int eval_program(AstStmtList program) {
     eval_stmt_list(program);
+    lock_clear();
     env_clear();
     return 0;
 }

@@ -1,3 +1,4 @@
 *.o
 gbasic
 examples/tmp_file_test.txt
+examples/tmp_lock_test.txt

@@ -131,13 +131,13 @@ static void yyerror(const char *message);
 
 %token <number> NUMBER
 %token <text> IDENT STRING
-%token IF THEN END PRINT TRUE FALSE AND OR NOT
+%token IF THEN END PRINT TRUE FALSE AND OR NOT WITH
 %token OP_EQ OP_NE OP_GT OP_LT OP_GE OP_LE OP_NGT OP_NLT
 %token PLUS MINUS STAR SLASH LPAREN MOD_LPAREN RPAREN LBRACKET RBRACKET LBRACE RBRACE COMMA DOT NEWLINE
 %define parse.error verbose
 
 %type <stmt_list> program statement_list
-%type <stmt> statement assignment print_statement call_statement if_statement
+%type <stmt> statement assignment print_statement call_statement with_lock_statement if_statement
 %type <expr> expression or_expression and_expression comparison_expression
 %type <expr> additive_expression multiplicative_expression unary_expression postfix_expression primary
 %type <expr_list> argument_list argument_list_opt
@@ -161,6 +161,7 @@ statement
     : assignment NEWLINE { $$ = $1; }
     | print_statement NEWLINE { $$ = $1; }
     | call_statement NEWLINE { $$ = $1; }
+    | with_lock_statement { $$ = $1; }
     | if_statement { $$ = $1; }
     ;
 
@@ -180,6 +181,18 @@ print_statement
 
 call_statement
     : IDENT LPAREN argument_list_opt RPAREN { $$ = ast_expr_stmt(ast_call($1, $3)); }
+    ;
+
+with_lock_statement
+    : WITH IDENT LPAREN expression RPAREN NEWLINE statement_list END WITH NEWLINE {
+        if (strcmp($2, "lock") != 0) {
+            yyerror("expected lock in with lock block");
+            free($2);
+            YYERROR;
+        }
+        free($2);
+        $$ = ast_with_lock($4, $7);
+      }
     ;
 
 if_statement
@@ -328,6 +341,7 @@ static int yylex(void) {
     case TOKEN_AND: return AND;
     case TOKEN_OR: return OR;
     case TOKEN_NOT: return NOT;
+    case TOKEN_WITH: return WITH;
     case TOKEN_OP_EQ: return OP_EQ;
     case TOKEN_OP_NE: return OP_NE;
     case TOKEN_OP_GT: return OP_GT;
