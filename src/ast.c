@@ -235,6 +235,13 @@ AstStmt *ast_goto(char *name) {
     return stmt;
 }
 
+AstStmt *ast_gosub(char *name) {
+    AstStmt *stmt = xmalloc(sizeof(*stmt));
+    stmt->kind = AST_STMT_GOSUB;
+    stmt->as.gosub_label = name;
+    return stmt;
+}
+
 AstStmt *ast_if(AstExpr *condition, AstStmtList body) {
     AstStmt *stmt = xmalloc(sizeof(*stmt));
     stmt->kind = AST_STMT_IF;
@@ -400,6 +407,9 @@ static void dump_stmt(AstStmt *stmt, int indent) {
     case AST_STMT_GOTO:
         printf("Goto %s\n", stmt->as.goto_label);
         break;
+    case AST_STMT_GOSUB:
+        printf("Gosub %s\n", stmt->as.gosub_label);
+        break;
     case AST_STMT_IF:
         printf("If\n");
         dump_indent(indent + 1);
@@ -528,6 +538,9 @@ static void free_stmt(AstStmt *stmt) {
         break;
     case AST_STMT_GOTO:
         free(stmt->as.goto_label);
+        break;
+    case AST_STMT_GOSUB:
+        free(stmt->as.gosub_label);
         break;
     case AST_STMT_IF:
         free_expr(stmt->as.if_stmt.condition);

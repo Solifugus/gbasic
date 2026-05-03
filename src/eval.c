@@ -94,8 +94,11 @@ typedef struct {
 
 typedef struct {
     int did_return;
+    int return_has_value;
     int did_goto;
     char *goto_label;
+    int did_gosub;
+    char *gosub_label;
     Value value;
 } EvalResult;
 
@@ -205,9 +208,10 @@ static EvalResult eval_no_result(void) {
     return result;
 }
 
-static EvalResult eval_return(Value value) {
+static EvalResult eval_return(Value value, int has_value) {
     EvalResult result = {0};
     result.did_return = 1;
+    result.return_has_value = has_value;
     result.value = value;
     return result;
 }
@@ -216,6 +220,14 @@ static EvalResult eval_goto(const char *label) {
     EvalResult result = {0};
     result.did_goto = 1;
     result.goto_label = copy_string(label);
+    result.value = value_null();
+    return result;
+}
+
+static EvalResult eval_gosub(const char *label) {
+    EvalResult result = {0};
+    result.did_gosub = 1;
+    result.gosub_label = copy_string(label);
     result.value = value_null();
     return result;
 }
@@ -1174,10 +1186,17 @@ static Value eval_user_function(AstExpr *expr, FunctionDef *function) {
 
     function_depth++;
     size_t pc = 0;
+    size_t *gosub_stack = NULL;
+    size_t gosub_count = 0;
     EvalResult result = eval_no_result();
     while (pc < stmt->as.function.body.count) {
         result = eval_stmt(stmt->as.function.body.items[pc]);
         if (result.did_return) {
+            if (!result.return_has_value && gosub_count > 0) {
+                pc = gosub_stack[--gosub_count];
+                result = eval_no_result();
+                continue;
+            }
             break;
         }
         if (result.did_goto) {
@@ -1195,8 +1214,30 @@ static Value eval_user_function(AstExpr *expr, FunctionDef *function) {
             pc = target + 1;
             continue;
         }
+        if (result.did_gosub) {
+            size_t target = 0;
+            if (!find_function_label(stmt->as.function.body, result.gosub_label, &target)) {
+                fprintf(stderr, "unknown label in function %s: %s\n",
+                        stmt->as.function.name,
+                        result.gosub_label);
+                free(result.gosub_label);
+                result = eval_no_result();
+                break;
+            }
+            free(result.gosub_label);
+            size_t *next = realloc(gosub_stack, sizeof(size_t) * (gosub_count + 1));
+            if (!next) {
+                abort();
+            }
+            gosub_stack = next;
+            gosub_stack[gosub_count++] = pc + 1;
+            result = eval_no_result();
+            pc = target + 1;
+            continue;
+        }
         pc++;
     }
+    free(gosub_stack);
     function_depth--;
     current_env = previous_env;
     env_clear(&local_env);
@@ -1714,7 +1755,7 @@ static EvalResult eval_stmt(AstStmt *stmt) {
         if (lock_path(path)) {
             EvalResult result = eval_stmt_list(stmt->as.with_lock.body);
             unlock_path(path);
-            if (result.did_return || result.did_goto) {
+            if (result.did_return || result.did_goto || result.did_gosub) {
                 free(path);
                 return result;
             }
@@ -1732,7 +1773,7 @@ static EvalResult eval_stmt(AstStmt *stmt) {
         for (size_t i = 0; i < iterable.as.array.count; i++) {
             env_set(stmt->as.for_each.name, value_copy(iterable.as.array.items[i]));
             EvalResult result = eval_stmt_list(stmt->as.for_each.body);
-            if (result.did_return || result.did_goto) {
+            if (result.did_return || result.did_goto || result.did_gosub) {
                 value_free(iterable);
                 return result;
             }
@@ -1744,7 +1785,8 @@ static EvalResult eval_stmt(AstStmt *stmt) {
         function_register(stmt);
         break;
     case AST_STMT_RETURN: {
-        return eval_return(stmt->as.return_expr ? eval_expr(stmt->as.return_expr) : value_null());
+        return eval_return(stmt->as.return_expr ? eval_expr(stmt->as.return_expr) : value_null(),
+                           stmt->as.return_expr != NULL);
     }
     case AST_STMT_LABEL:
         break;
@@ -1755,13 +1797,20 @@ static EvalResult eval_stmt(AstStmt *stmt) {
         }
         return eval_goto(stmt->as.goto_label);
     }
+    case AST_STMT_GOSUB: {
+        if (function_depth == 0) {
+            fprintf(stderr, "gosub is only supported inside functions for now\n");
+            break;
+        }
+        return eval_gosub(stmt->as.gosub_label);
+    }
     case AST_STMT_IF: {
         Value condition = eval_expr(stmt->as.if_stmt.condition);
         int truth = value_truthy(condition);
         value_free(condition);
         if (truth) {
             EvalResult result = eval_stmt_list(stmt->as.if_stmt.body);
-            if (result.did_return || result.did_goto) {
+            if (result.did_return || result.did_goto || result.did_gosub) {
                 return result;
             }
         }
@@ -1775,7 +1824,7 @@ static EvalResult eval_stmt(AstStmt *stmt) {
 static EvalResult eval_stmt_list(AstStmtList statements) {
     for (size_t i = 0; i < statements.count; i++) {
         EvalResult result = eval_stmt(statements.items[i]);
-        if (result.did_return || result.did_goto) {
+        if (result.did_return || result.did_goto || result.did_gosub) {
             return result;
         }
     }
@@ -1789,6 +1838,9 @@ int eval_program(AstStmtList program) {
     }
     if (result.did_goto) {
         free(result.goto_label);
+    }
+    if (result.did_gosub) {
+        free(result.gosub_label);
     }
     lock_clear();
     function_clear();

@@ -1,0 +1,15 @@
+function process()
+    gosub setup
+    gosub finish
+    return true
+
+setup:
+    print "setup"
+    return
+
+finish:
+    print "finish"
+    return
+end function
+
+print process()
