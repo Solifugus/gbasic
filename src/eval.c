@@ -2303,6 +2303,7 @@ static EvalResult eval_stmt_list(AstStmtList statements) {
 
 int eval_program(AstStmtList program) {
     EvalResult result = eval_stmt_list(program);
+    int exit_status = result.did_stop ? 1 : 0;
     if (result.did_return) {
         value_free(result.value);
     }
@@ -2323,5 +2324,5 @@ int eval_program(AstStmtList program) {
     watcher_clear();
     function_clear();
     env_clear(&global_env);
-    return 0;
+    return exit_status;
 }

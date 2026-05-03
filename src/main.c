@@ -102,13 +102,14 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+    int exit_status = 0;
     if (ast_only) {
         ast_dump(program);
     } else {
-        eval_program(program);
+        exit_status = eval_program(program);
     }
 
     ast_free_program(program);
     free(source);
-    return 0;
+    return exit_status;
 }
