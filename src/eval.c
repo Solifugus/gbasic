@@ -134,10 +134,18 @@ typedef struct {
     AstStmt *stmt;
 } FunctionDef;
 
+typedef struct {
+    char *name;
+    char *context;
+    AstStmt *stmt;
+} ModifierDef;
+
 static Env global_env = {0};
 static Env *current_env = &global_env;
 static FunctionDef *functions = NULL;
 static size_t function_count = 0;
+static ModifierDef *modifiers = NULL;
+static size_t modifier_count = 0;
 static LockEntry *locks = NULL;
 static size_t lock_count = 0;
 static int lock_cleanup_registered = 0;
@@ -1018,6 +1026,7 @@ static DateTime add_duration_to_datetime(DateTime dt, Duration duration, int sig
 }
 
 static Value eval_expr(AstExpr *expr);
+static Value eval_comparison(AstExpr *expr, Value left, Value right);
 static EvalResult eval_stmt(AstStmt *stmt);
 static EvalResult eval_stmt_list(AstStmtList statements);
 
@@ -1143,6 +1152,47 @@ static void function_clear(void) {
     free(functions);
     functions = NULL;
     function_count = 0;
+}
+
+static ModifierDef *modifier_find(const char *name, const char *context) {
+    for (size_t i = modifier_count; i > 0; i--) {
+        ModifierDef *modifier = &modifiers[i - 1];
+        if (strcmp(modifier->name, name) == 0 &&
+            strcmp(modifier->context, context) == 0) {
+            return modifier;
+        }
+    }
+    return NULL;
+}
+
+static void modifier_register(AstStmt *stmt) {
+    if (strcmp(stmt->as.modifier.context, "assign") != 0 &&
+        strcmp(stmt->as.modifier.context, "compare") != 0) {
+        runtime_error_raise("modifier context must be assign or compare", 1003, "modifier");
+        return;
+    }
+
+    ModifierDef *existing = modifier_find(stmt->as.modifier.name, stmt->as.modifier.context);
+    if (existing) {
+        existing->stmt = stmt;
+        return;
+    }
+
+    ModifierDef *next = realloc(modifiers, sizeof(ModifierDef) * (modifier_count + 1));
+    if (!next) {
+        abort();
+    }
+    modifiers = next;
+    modifiers[modifier_count].name = stmt->as.modifier.name;
+    modifiers[modifier_count].context = stmt->as.modifier.context;
+    modifiers[modifier_count].stmt = stmt;
+    modifier_count++;
+}
+
+static void modifier_clear(void) {
+    free(modifiers);
+    modifiers = NULL;
+    modifier_count = 0;
 }
 
 static int find_function_label(AstStmtList body, const char *label, size_t *out_index) {
@@ -1534,6 +1584,70 @@ static Value eval_call(AstExpr *expr) {
         return value_null();
     }
 
+    if (strcmp(expr->as.call.name, "lower") == 0) {
+        if (expr->as.call.args.count != 1) {
+            runtime_error_raise("lower expects one argument", 1003, "invalid function call");
+            return value_null();
+        }
+        Value value = eval_expr(expr->as.call.args.items[0]);
+        if (value.kind != VALUE_STRING) {
+            value_free(value);
+            runtime_error_raise("lower expects a string", 1003, "invalid function call");
+            return value_null();
+        }
+        char *text = copy_string(value.as.string);
+        for (char *p = text; *p; p++) {
+            *p = (char)tolower((unsigned char)*p);
+        }
+        Value result = value_string(text);
+        free(text);
+        value_free(value);
+        return result;
+    }
+
+    if (strcmp(expr->as.call.name, "round") == 0) {
+        if (expr->as.call.args.count != 2) {
+            runtime_error_raise("round expects two arguments", 1003, "invalid function call");
+            return value_null();
+        }
+        Value value = eval_expr(expr->as.call.args.items[0]);
+        Value places = eval_expr(expr->as.call.args.items[1]);
+        double scale = 1.0;
+        int n = (int)value_number_or_zero(places);
+        for (int i = 0; i < n; i++) {
+            scale *= 10.0;
+        }
+        double scaled = value_number_or_zero(value) * scale;
+        long long rounded = (long long)scaled;
+        value_free(value);
+        value_free(places);
+        return value_number((double)rounded / scale);
+    }
+
+    if (strcmp(expr->as.call.name, "compare") == 0) {
+        if (expr->as.call.args.count != 3) {
+            runtime_error_raise("compare expects three arguments", 1003, "invalid function call");
+            return value_null();
+        }
+        Value left = eval_expr(expr->as.call.args.items[0]);
+        Value op = eval_expr(expr->as.call.args.items[1]);
+        Value right = eval_expr(expr->as.call.args.items[2]);
+        if (op.kind != VALUE_STRING) {
+            value_free(left);
+            value_free(op);
+            value_free(right);
+            runtime_error_raise("compare expects an operator string", 1003, "invalid function call");
+            return value_null();
+        }
+        AstExpr fake = {0};
+        fake.kind = AST_EXPR_BINARY;
+        fake.as.binary.op = op.as.string;
+        fake.as.binary.modifier = ast_modifier_none();
+        Value result = eval_comparison(&fake, left, right);
+        value_free(op);
+        return result;
+    }
+
     if (strcmp(expr->as.call.name, "exists") == 0 ||
         strcmp(expr->as.call.name, "read") == 0 ||
         strcmp(expr->as.call.name, "write") == 0 ||
@@ -1647,9 +1761,95 @@ static Value eval_call(AstExpr *expr) {
     return value_number(result);
 }
 
+static void bind_modifier_args(AstStmt *stmt, AstModifierUse use) {
+    if (use.args.count != stmt->as.modifier.params.count) {
+        char message[256];
+        snprintf(message, sizeof(message), "modifier %s expects %zu arguments",
+                 stmt->as.modifier.name,
+                 stmt->as.modifier.params.count);
+        runtime_error_raise(message, 1003, "modifier");
+        return;
+    }
+    for (size_t i = 0; i < use.args.count; i++) {
+        Value arg = eval_expr(use.args.items[i]);
+        env_set(stmt->as.modifier.params.items[i], arg);
+    }
+}
+
+static Value eval_assign_modifier(AstModifierUse use, Value value) {
+    ModifierDef *modifier = modifier_find(use.name, "assign");
+    if (!modifier) {
+        char message[256];
+        snprintf(message, sizeof(message), "assign modifier not found: %s", use.name);
+        runtime_error_raise(message, 1003, "modifier");
+        value_free(value);
+        return value_null();
+    }
+
+    Env local_env = {0};
+    local_env.parent = &global_env;
+    Env *previous_env = current_env;
+    current_env = &local_env;
+    env_set("value", value);
+    bind_modifier_args(modifier->stmt, use);
+
+    EvalResult result = eval_stmt_list(modifier->stmt->as.modifier.body);
+    current_env = previous_env;
+    env_clear(&local_env);
+    if (result.did_return) {
+        return result.value;
+    }
+    return value_null();
+}
+
+static Value eval_compare_modifier(AstModifierUse use, const char *op, Value left, Value right) {
+    ModifierDef *modifier = modifier_find(use.name, "compare");
+    if (!modifier) {
+        char message[256];
+        snprintf(message, sizeof(message), "compare modifier not found: %s", use.name);
+        runtime_error_raise(message, 1003, "modifier");
+        value_free(left);
+        value_free(right);
+        return value_null();
+    }
+
+    Env local_env = {0};
+    local_env.parent = &global_env;
+    Env *previous_env = current_env;
+    current_env = &local_env;
+    env_set("left", left);
+    env_set("right", right);
+    env_set("operator", value_string(op));
+    bind_modifier_args(modifier->stmt, use);
+
+    EvalResult result = eval_stmt_list(modifier->stmt->as.modifier.body);
+    current_env = previous_env;
+    env_clear(&local_env);
+    if (result.did_return) {
+        return result.value;
+    }
+    return value_null();
+}
+
 static Value eval_comparison(AstExpr *expr, Value left, Value right) {
     const char *op = expr->as.binary.op;
     int result = 0;
+
+    if (expr->as.binary.modifier.name &&
+        modifier_find(expr->as.binary.modifier.name, "compare")) {
+        return eval_compare_modifier(expr->as.binary.modifier, op, left, right);
+    }
+
+    if (expr->as.binary.modifier.name &&
+        !modifier_is(expr->as.binary.modifier.name, "caseless")) {
+        char message[256];
+        snprintf(message, sizeof(message), "compare modifier not found: %s",
+                 expr->as.binary.modifier.name);
+        runtime_error_raise(message, 1003, "modifier");
+        value_free(left);
+        value_free(right);
+        return value_null();
+    }
 
     if (left.kind == VALUE_DATETIME && right.kind == VALUE_DATETIME) {
         int cmp = 0;
@@ -1688,7 +1888,7 @@ static Value eval_comparison(AstExpr *expr, Value left, Value right) {
         else if (strcmp(op, "<=") == 0) result = cmp <= 0;
         else if (strcmp(op, "!>") == 0) result = !(cmp > 0);
         else if (strcmp(op, "!<") == 0) result = !(cmp < 0);
-    } else if (modifier_is(expr->as.binary.modifier, "caseless") &&
+    } else if (modifier_is(expr->as.binary.modifier.name, "caseless") &&
         left.kind == VALUE_STRING &&
         right.kind == VALUE_STRING) {
         int equal = string_equal_caseless(left.as.string, right.as.string);
@@ -1983,18 +2183,22 @@ static Value eval_expr(AstExpr *expr) {
     return value_null();
 }
 
-static Value apply_assignment_modifier(const char *modifier, Value value) {
-    if (!modifier) {
+static Value apply_assignment_modifier(AstModifierUse modifier, Value value) {
+    if (!modifier.name) {
         return value;
     }
 
-    if (strcmp(modifier, "USD") == 0) {
+    if (modifier_find(modifier.name, "assign")) {
+        return eval_assign_modifier(modifier, value);
+    }
+
+    if (strcmp(modifier.name, "USD") == 0) {
         /* TODO: add a money runtime value. For now USD stores the numeric amount. */
         double amount = value_number_or_zero(value);
         value_free(value);
         return value_number(amount);
     }
-    if (strcmp(modifier, "date") == 0) {
+    if (strcmp(modifier.name, "date") == 0) {
         DateTime datetime;
         if (value.kind != VALUE_STRING || !parse_date_value(value.as.string, &datetime)) {
             fprintf(stderr, "date modifier expects an ISO-like date string\n");
@@ -2004,7 +2208,7 @@ static Value apply_assignment_modifier(const char *modifier, Value value) {
         value_free(value);
         return value_datetime(datetime);
     }
-    if (strcmp(modifier, "time") == 0) {
+    if (strcmp(modifier.name, "time") == 0) {
         DateTime datetime;
         if (value.kind != VALUE_STRING || !parse_time_value(value.as.string, &datetime)) {
             fprintf(stderr, "time modifier expects an ISO-like time string\n");
@@ -2014,7 +2218,7 @@ static Value apply_assignment_modifier(const char *modifier, Value value) {
         value_free(value);
         return value_datetime(datetime);
     }
-    if (strcmp(modifier, "file") == 0) {
+    if (strcmp(modifier.name, "file") == 0) {
         if (value.kind != VALUE_STRING) {
             fprintf(stderr, "file modifier expects a path string\n");
             value_free(value);
@@ -2024,7 +2228,7 @@ static Value apply_assignment_modifier(const char *modifier, Value value) {
         value_free(value);
         return file_value;
     }
-    if (strcmp(modifier, "dir") == 0) {
+    if (strcmp(modifier.name, "dir") == 0) {
         if (value.kind != VALUE_STRING) {
             fprintf(stderr, "dir modifier expects a path string\n");
             value_free(value);
@@ -2035,8 +2239,11 @@ static Value apply_assignment_modifier(const char *modifier, Value value) {
         return dir_value;
     }
 
-    fprintf(stderr, "unsupported assignment modifier: %s\n", modifier);
-    return value;
+    char message[256];
+    snprintf(message, sizeof(message), "assign modifier not found: %s", modifier.name);
+    runtime_error_raise(message, 1003, "modifier");
+    value_free(value);
+    return value_null();
 }
 
 static EvalResult eval_stmt(AstStmt *stmt) {
@@ -2174,6 +2381,9 @@ static EvalResult eval_stmt(AstStmt *stmt) {
     }
     case AST_STMT_FUNCTION:
         function_register(stmt);
+        break;
+    case AST_STMT_MODIFIER:
+        modifier_register(stmt);
         break;
     case AST_STMT_WATCH:
         watcher_register(stmt);
@@ -2322,6 +2532,7 @@ int eval_program(AstStmtList program) {
     runtime_stopped = 0;
     lock_clear();
     watcher_clear();
+    modifier_clear();
     function_clear();
     env_clear(&global_env);
     return exit_status;

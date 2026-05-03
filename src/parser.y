@@ -54,6 +54,21 @@ static char *copy_const(const char *text) {
     return copy_text(text, (int)strlen(text));
 }
 
+static char *join_words(char *left, char *right) {
+    size_t left_len = strlen(left);
+    size_t right_len = strlen(right);
+    char *joined = malloc(left_len + right_len + 2);
+    if (!joined) {
+        abort();
+    }
+    memcpy(joined, left, left_len);
+    joined[left_len] = ' ';
+    memcpy(joined + left_len + 1, right, right_len + 1);
+    free(left);
+    free(right);
+    return joined;
+}
+
 static int unit_is(const char *text, const char *unit) {
     return strcmp(text, unit) == 0;
 }
@@ -88,16 +103,40 @@ static int modifier_lparen_ahead(const char *start) {
     while (*p == ' ' || *p == '\t' || *p == '\r') {
         p++;
     }
-    if (!((*p >= 'A' && *p <= 'Z') || (*p >= 'a' && *p <= 'z') || *p == '_')) {
-        return 0;
-    }
-    saw_term = 1;
-    while ((*p >= 'A' && *p <= 'Z') || (*p >= 'a' && *p <= 'z') ||
-           (*p >= '0' && *p <= '9') || *p == '_') {
-        p++;
-    }
-    while (*p == ' ' || *p == '\t' || *p == '\r') {
-        p++;
+    while (*p && *p != ')' && *p != '\n') {
+        if ((*p >= 'A' && *p <= 'Z') || (*p >= 'a' && *p <= 'z') || *p == '_') {
+            saw_term = 1;
+            while ((*p >= 'A' && *p <= 'Z') || (*p >= 'a' && *p <= 'z') ||
+                   (*p >= '0' && *p <= '9') || *p == '_') {
+                p++;
+            }
+        } else if ((*p >= '0' && *p <= '9') || *p == '"') {
+            saw_term = 1;
+            if (*p == '"') {
+                p++;
+                while (*p && *p != '"' && *p != '\n') {
+                    p++;
+                }
+                if (*p != '"') {
+                    return 0;
+                }
+                p++;
+            } else {
+                while (*p >= '0' && *p <= '9') {
+                    p++;
+                }
+                if (*p == '.') {
+                    p++;
+                    while (*p >= '0' && *p <= '9') {
+                        p++;
+                    }
+                }
+            }
+        } else if (*p == ' ' || *p == '\t' || *p == '\r') {
+            p++;
+        } else {
+            return 0;
+        }
     }
     if (*p != ')' || !saw_term) {
         return 0;
@@ -127,26 +166,30 @@ static void yyerror(const char *message);
     AstExprList expr_list;
     AstRecordFieldList record_field_list;
     AstNameList name_list;
+    AstModifierUse modifier;
+    AstModifierSignature modifier_signature;
     AstDuration duration;
 }
 
 %token <number> NUMBER
 %token <text> IDENT STRING
-%token IF THEN END PRINT TRUE FALSE AND OR NOT WITH FOR IN FUNCTION RETURN GOTO GOSUB WATCH WITHOUT WATCHERS ON RESUME NEXT STOP ERROR_VALUE
+%token IF THEN END PRINT TRUE FALSE AND OR NOT WITH FOR IN FUNCTION RETURN GOTO GOSUB WATCH WITHOUT WATCHERS ON RESUME NEXT STOP ERROR_VALUE MODIFIER
 %token OP_EQ OP_NE OP_GT OP_LT OP_GE OP_LE OP_NGT OP_NLT
 %token PLUS MINUS STAR SLASH LPAREN MOD_LPAREN RPAREN LBRACKET RBRACKET LBRACE RBRACE COMMA DOT COLON NEWLINE
 %define parse.error verbose
 %locations
 
 %type <stmt_list> program statement_list
-%type <stmt> statement assignment print_statement call_statement with_lock_statement for_each_statement function_statement return_statement label_statement goto_statement gosub_statement watch_statement without_watchers_statement on_error_statement error_statement if_statement inline_statement
+%type <stmt> statement assignment print_statement call_statement with_lock_statement for_each_statement function_statement modifier_statement return_statement label_statement goto_statement gosub_statement watch_statement without_watchers_statement on_error_statement error_statement if_statement inline_statement
 %type <expr> expression or_expression and_expression comparison_expression
 %type <expr> additive_expression multiplicative_expression unary_expression postfix_expression primary
 %type <expr_list> argument_list argument_list_opt
 %type <record_field_list> record_field_list
 %type <name_list> parameter_list parameter_list_opt
+%type <modifier> modifier
+%type <modifier_signature> modifier_signature
 %type <duration> duration_terms
-%type <text> modifier comparison_operator
+%type <text> modifier_name modifier_context comparison_operator
 
 %%
 
@@ -167,6 +210,7 @@ statement
     | with_lock_statement { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
     | for_each_statement { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
     | function_statement { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
+    | modifier_statement { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
     | watch_statement { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
     | without_watchers_statement { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
     | on_error_statement NEWLINE { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
@@ -179,13 +223,24 @@ statement
     ;
 
 assignment
-    : IDENT OP_EQ expression { $$ = ast_assign($1, NULL, $3); }
+    : IDENT OP_EQ expression { $$ = ast_assign($1, ast_modifier_none(), $3); }
     | IDENT modifier OP_EQ expression { $$ = ast_assign($1, $2, $4); }
     | IDENT DOT IDENT OP_EQ expression { $$ = ast_field_assign($1, $3, $5); }
     ;
 
 modifier
-    : MOD_LPAREN IDENT RPAREN { $$ = $2; }
+    : MOD_LPAREN modifier_name RPAREN { $$ = ast_modifier_use($2, ast_expr_list_empty()); }
+    | MOD_LPAREN modifier_name NUMBER RPAREN {
+        $$ = ast_modifier_use($2, ast_expr_list_append(ast_expr_list_empty(), ast_number($3)));
+      }
+    | MOD_LPAREN modifier_name STRING RPAREN {
+        $$ = ast_modifier_use($2, ast_expr_list_append(ast_expr_list_empty(), ast_string($3)));
+      }
+    ;
+
+modifier_name
+    : IDENT { $$ = $1; }
+    | modifier_name IDENT { $$ = join_words($1, $2); }
     ;
 
 print_statement
@@ -228,6 +283,21 @@ function_statement
     : FUNCTION IDENT LPAREN parameter_list_opt RPAREN NEWLINE statement_list END FUNCTION NEWLINE {
         $$ = ast_function($2, $4, $7);
       }
+    ;
+
+modifier_statement
+    : MODIFIER modifier_signature FOR modifier_context NEWLINE statement_list END MODIFIER NEWLINE {
+        $$ = ast_modifier($2.name, $2.params, $4, $6);
+      }
+    ;
+
+modifier_signature
+    : modifier_name { $$ = ast_modifier_signature($1, ast_name_list_empty()); }
+    | IDENT LPAREN parameter_list_opt RPAREN { $$ = ast_modifier_signature($1, $3); }
+    ;
+
+modifier_context
+    : IDENT { $$ = $1; }
     ;
 
 watch_statement
@@ -289,30 +359,30 @@ expression
 
 or_expression
     : and_expression { $$ = $1; }
-    | or_expression OR and_expression { $$ = ast_binary(copy_const("or"), NULL, $1, $3); }
+    | or_expression OR and_expression { $$ = ast_binary(copy_const("or"), ast_modifier_none(), $1, $3); }
     ;
 
 and_expression
     : comparison_expression { $$ = $1; }
-    | and_expression AND comparison_expression { $$ = ast_binary(copy_const("and"), NULL, $1, $3); }
+    | and_expression AND comparison_expression { $$ = ast_binary(copy_const("and"), ast_modifier_none(), $1, $3); }
     ;
 
 comparison_expression
     : additive_expression { $$ = $1; }
-    | additive_expression comparison_operator additive_expression { $$ = ast_binary($2, NULL, $1, $3); }
+    | additive_expression comparison_operator additive_expression { $$ = ast_binary($2, ast_modifier_none(), $1, $3); }
     | additive_expression modifier comparison_operator additive_expression { $$ = ast_binary($3, $2, $1, $4); }
     ;
 
 additive_expression
     : multiplicative_expression { $$ = $1; }
-    | additive_expression PLUS multiplicative_expression { $$ = ast_binary(copy_const("+"), NULL, $1, $3); }
-    | additive_expression MINUS multiplicative_expression { $$ = ast_binary(copy_const("-"), NULL, $1, $3); }
+    | additive_expression PLUS multiplicative_expression { $$ = ast_binary(copy_const("+"), ast_modifier_none(), $1, $3); }
+    | additive_expression MINUS multiplicative_expression { $$ = ast_binary(copy_const("-"), ast_modifier_none(), $1, $3); }
     ;
 
 multiplicative_expression
     : unary_expression { $$ = $1; }
-    | multiplicative_expression STAR unary_expression { $$ = ast_binary(copy_const("*"), NULL, $1, $3); }
-    | multiplicative_expression SLASH unary_expression { $$ = ast_binary(copy_const("/"), NULL, $1, $3); }
+    | multiplicative_expression STAR unary_expression { $$ = ast_binary(copy_const("*"), ast_modifier_none(), $1, $3); }
+    | multiplicative_expression SLASH unary_expression { $$ = ast_binary(copy_const("/"), ast_modifier_none(), $1, $3); }
     ;
 
 unary_expression
@@ -453,6 +523,7 @@ static int yylex(void) {
     case TOKEN_NEXT: return NEXT;
     case TOKEN_STOP: return STOP;
     case TOKEN_ERROR_VALUE: return ERROR_VALUE;
+    case TOKEN_MODIFIER: return MODIFIER;
     case TOKEN_OP_EQ: return OP_EQ;
     case TOKEN_OP_NE: return OP_NE;
     case TOKEN_OP_GT: return OP_GT;

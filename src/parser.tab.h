@@ -45,7 +45,7 @@
 extern int yydebug;
 #endif
 /* "%code requires" blocks.  */
-#line 117 "src/parser.y"
+#line 156 "src/parser.y"
 
 #include "ast.h"
 
@@ -87,29 +87,30 @@ extern int yydebug;
     NEXT = 282,                    /* NEXT  */
     STOP = 283,                    /* STOP  */
     ERROR_VALUE = 284,             /* ERROR_VALUE  */
-    OP_EQ = 285,                   /* OP_EQ  */
-    OP_NE = 286,                   /* OP_NE  */
-    OP_GT = 287,                   /* OP_GT  */
-    OP_LT = 288,                   /* OP_LT  */
-    OP_GE = 289,                   /* OP_GE  */
-    OP_LE = 290,                   /* OP_LE  */
-    OP_NGT = 291,                  /* OP_NGT  */
-    OP_NLT = 292,                  /* OP_NLT  */
-    PLUS = 293,                    /* PLUS  */
-    MINUS = 294,                   /* MINUS  */
-    STAR = 295,                    /* STAR  */
-    SLASH = 296,                   /* SLASH  */
-    LPAREN = 297,                  /* LPAREN  */
-    MOD_LPAREN = 298,              /* MOD_LPAREN  */
-    RPAREN = 299,                  /* RPAREN  */
-    LBRACKET = 300,                /* LBRACKET  */
-    RBRACKET = 301,                /* RBRACKET  */
-    LBRACE = 302,                  /* LBRACE  */
-    RBRACE = 303,                  /* RBRACE  */
-    COMMA = 304,                   /* COMMA  */
-    DOT = 305,                     /* DOT  */
-    COLON = 306,                   /* COLON  */
-    NEWLINE = 307                  /* NEWLINE  */
+    MODIFIER = 285,                /* MODIFIER  */
+    OP_EQ = 286,                   /* OP_EQ  */
+    OP_NE = 287,                   /* OP_NE  */
+    OP_GT = 288,                   /* OP_GT  */
+    OP_LT = 289,                   /* OP_LT  */
+    OP_GE = 290,                   /* OP_GE  */
+    OP_LE = 291,                   /* OP_LE  */
+    OP_NGT = 292,                  /* OP_NGT  */
+    OP_NLT = 293,                  /* OP_NLT  */
+    PLUS = 294,                    /* PLUS  */
+    MINUS = 295,                   /* MINUS  */
+    STAR = 296,                    /* STAR  */
+    SLASH = 297,                   /* SLASH  */
+    LPAREN = 298,                  /* LPAREN  */
+    MOD_LPAREN = 299,              /* MOD_LPAREN  */
+    RPAREN = 300,                  /* RPAREN  */
+    LBRACKET = 301,                /* LBRACKET  */
+    RBRACKET = 302,                /* RBRACKET  */
+    LBRACE = 303,                  /* LBRACE  */
+    RBRACE = 304,                  /* RBRACE  */
+    COMMA = 305,                   /* COMMA  */
+    DOT = 306,                     /* DOT  */
+    COLON = 307,                   /* COLON  */
+    NEWLINE = 308                  /* NEWLINE  */
   };
   typedef enum yytokentype yytoken_kind_t;
 #endif
@@ -118,7 +119,7 @@ extern int yydebug;
 #if ! defined YYSTYPE && ! defined YYSTYPE_IS_DECLARED
 union YYSTYPE
 {
-#line 121 "src/parser.y"
+#line 160 "src/parser.y"
 
     double number;
     char *text;
@@ -128,9 +129,11 @@ union YYSTYPE
     AstExprList expr_list;
     AstRecordFieldList record_field_list;
     AstNameList name_list;
+    AstModifierUse modifier;
+    AstModifierSignature modifier_signature;
     AstDuration duration;
 
-#line 134 "src/parser.tab.h"
+#line 137 "src/parser.tab.h"
 
 };
 typedef union YYSTYPE YYSTYPE;

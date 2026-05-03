@@ -1,0 +1,20 @@
+modifier caseless for compare
+    return compare(lower(left), operator, lower(right))
+end modifier
+
+modifier rounded(n) for compare
+    return compare(round(left, n), operator, round(right, n))
+end modifier
+
+name = "Joe Barnes"
+
+if name(caseless)= "joe barnes" then
+    print "match"
+end if
+
+a = 1.234
+b = 1.235
+
+if a(rounded 2)= b then
+    print "rounded match"
+end if

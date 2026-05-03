@@ -138,7 +138,26 @@ AstExpr *ast_call(char *name, AstExprList args) {
     return expr;
 }
 
-AstExpr *ast_binary(char *op, char *modifier, AstExpr *left, AstExpr *right) {
+AstModifierUse ast_modifier_none(void) {
+    AstModifierUse modifier = {0};
+    return modifier;
+}
+
+AstModifierUse ast_modifier_use(char *name, AstExprList args) {
+    AstModifierUse modifier;
+    modifier.name = name;
+    modifier.args = args;
+    return modifier;
+}
+
+AstModifierSignature ast_modifier_signature(char *name, AstNameList params) {
+    AstModifierSignature signature;
+    signature.name = name;
+    signature.params = params;
+    return signature;
+}
+
+AstExpr *ast_binary(char *op, AstModifierUse modifier, AstExpr *left, AstExpr *right) {
     AstExpr *expr = xmalloc(sizeof(*expr));
     expr->kind = AST_EXPR_BINARY;
     expr->as.binary.op = op;
@@ -156,7 +175,7 @@ AstExpr *ast_unary(char *op, AstExpr *child) {
     return expr;
 }
 
-AstStmt *ast_assign(char *name, char *modifier, AstExpr *value) {
+AstStmt *ast_assign(char *name, AstModifierUse modifier, AstExpr *value) {
     AstStmt *stmt = xmalloc(sizeof(*stmt));
     stmt->kind = AST_STMT_ASSIGN;
     stmt->as.assign.name = name;
@@ -283,6 +302,16 @@ AstStmt *ast_error(AstExpr *message) {
     return stmt;
 }
 
+AstStmt *ast_modifier(char *name, AstNameList params, char *context, AstStmtList body) {
+    AstStmt *stmt = xmalloc(sizeof(*stmt));
+    stmt->kind = AST_STMT_MODIFIER;
+    stmt->as.modifier.name = name;
+    stmt->as.modifier.params = params;
+    stmt->as.modifier.context = context;
+    stmt->as.modifier.body = body;
+    return stmt;
+}
+
 AstStmt *ast_if(AstExpr *condition, AstStmtList body) {
     AstStmt *stmt = xmalloc(sizeof(*stmt));
     stmt->kind = AST_STMT_IF;
@@ -368,8 +397,11 @@ static void dump_expr(AstExpr *expr, int indent) {
         }
         break;
     case AST_EXPR_BINARY:
-        if (expr->as.binary.modifier) {
-            printf("Binary %s modifier(%s)\n", expr->as.binary.op, expr->as.binary.modifier);
+        if (expr->as.binary.modifier.name) {
+            printf("Binary %s modifier(%s)\n", expr->as.binary.op, expr->as.binary.modifier.name);
+            for (size_t i = 0; i < expr->as.binary.modifier.args.count; i++) {
+                dump_expr(expr->as.binary.modifier.args.items[i], indent + 1);
+            }
         } else {
             printf("Binary %s\n", expr->as.binary.op);
         }
@@ -387,8 +419,11 @@ static void dump_stmt(AstStmt *stmt, int indent) {
     dump_indent(indent);
     switch (stmt->kind) {
     case AST_STMT_ASSIGN:
-        if (stmt->as.assign.modifier) {
-            printf("Assign %s modifier(%s)\n", stmt->as.assign.name, stmt->as.assign.modifier);
+        if (stmt->as.assign.modifier.name) {
+            printf("Assign %s modifier(%s)\n", stmt->as.assign.name, stmt->as.assign.modifier.name);
+            for (size_t i = 0; i < stmt->as.assign.modifier.args.count; i++) {
+                dump_expr(stmt->as.assign.modifier.args.items[i], indent + 1);
+            }
         } else {
             printf("Assign %s\n", stmt->as.assign.name);
         }
@@ -490,6 +525,20 @@ static void dump_stmt(AstStmt *stmt, int indent) {
         printf("Error\n");
         dump_expr(stmt->as.error_message, indent + 1);
         break;
+    case AST_STMT_MODIFIER:
+        printf("Modifier %s for %s\n", stmt->as.modifier.name, stmt->as.modifier.context);
+        dump_indent(indent + 1);
+        printf("Parameters");
+        for (size_t i = 0; i < stmt->as.modifier.params.count; i++) {
+            printf(" %s", stmt->as.modifier.params.items[i]);
+        }
+        printf("\n");
+        dump_indent(indent + 1);
+        printf("Body\n");
+        for (size_t i = 0; i < stmt->as.modifier.body.count; i++) {
+            dump_stmt(stmt->as.modifier.body.items[i], indent + 2);
+        }
+        break;
     case AST_STMT_IF:
         printf("If\n");
         dump_indent(indent + 1);
@@ -525,7 +574,11 @@ static void free_expr(AstExpr *expr) {
         break;
     case AST_EXPR_BINARY:
         free(expr->as.binary.op);
-        free(expr->as.binary.modifier);
+        free(expr->as.binary.modifier.name);
+        for (size_t i = 0; i < expr->as.binary.modifier.args.count; i++) {
+            free_expr(expr->as.binary.modifier.args.items[i]);
+        }
+        free(expr->as.binary.modifier.args.items);
         free_expr(expr->as.binary.left);
         free_expr(expr->as.binary.right);
         break;
@@ -579,7 +632,11 @@ static void free_stmt(AstStmt *stmt) {
     switch (stmt->kind) {
     case AST_STMT_ASSIGN:
         free(stmt->as.assign.name);
-        free(stmt->as.assign.modifier);
+        free(stmt->as.assign.modifier.name);
+        for (size_t i = 0; i < stmt->as.assign.modifier.args.count; i++) {
+            free_expr(stmt->as.assign.modifier.args.items[i]);
+        }
+        free(stmt->as.assign.modifier.args.items);
         free_expr(stmt->as.assign.value);
         break;
     case AST_STMT_FIELD_ASSIGN:
@@ -640,6 +697,15 @@ static void free_stmt(AstStmt *stmt) {
         break;
     case AST_STMT_ERROR:
         free_expr(stmt->as.error_message);
+        break;
+    case AST_STMT_MODIFIER:
+        free(stmt->as.modifier.name);
+        for (size_t i = 0; i < stmt->as.modifier.params.count; i++) {
+            free(stmt->as.modifier.params.items[i]);
+        }
+        free(stmt->as.modifier.params.items);
+        free(stmt->as.modifier.context);
+        ast_free_program(stmt->as.modifier.body);
         break;
     case AST_STMT_IF:
         free_expr(stmt->as.if_stmt.condition);

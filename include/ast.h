@@ -21,6 +21,7 @@ typedef enum {
     AST_STMT_ON_ERROR_RESUME_NEXT,
     AST_STMT_ON_ERROR_STOP,
     AST_STMT_ERROR,
+    AST_STMT_MODIFIER,
     AST_STMT_IF
 } AstStmtKind;
 
@@ -68,6 +69,16 @@ typedef struct {
 } AstNameList;
 
 typedef struct {
+    char *name;
+    AstExprList args;
+} AstModifierUse;
+
+typedef struct {
+    char *name;
+    AstNameList params;
+} AstModifierSignature;
+
+typedef struct {
     int years;
     int months;
     int weeks;
@@ -101,7 +112,7 @@ struct AstExpr {
         } call;
         struct {
             char *op;
-            char *modifier;
+            AstModifierUse modifier;
             AstExpr *left;
             AstExpr *right;
         } binary;
@@ -119,7 +130,7 @@ struct AstStmt {
     union {
         struct {
             char *name;
-            char *modifier;
+            AstModifierUse modifier;
             AstExpr *value;
         } assign;
         struct {
@@ -155,6 +166,12 @@ struct AstStmt {
         char *on_error_label;
         AstExpr *error_message;
         struct {
+            char *name;
+            AstNameList params;
+            char *context;
+            AstStmtList body;
+        } modifier;
+        struct {
             AstExpr *condition;
             AstStmtList body;
         } if_stmt;
@@ -180,10 +197,13 @@ AstExpr *ast_duration(AstDuration duration);
 AstExpr *ast_index(AstExpr *array, AstExpr *index);
 AstExpr *ast_field(AstExpr *object, char *field);
 AstExpr *ast_call(char *name, AstExprList args);
-AstExpr *ast_binary(char *op, char *modifier, AstExpr *left, AstExpr *right);
+AstModifierUse ast_modifier_none(void);
+AstModifierUse ast_modifier_use(char *name, AstExprList args);
+AstModifierSignature ast_modifier_signature(char *name, AstNameList params);
+AstExpr *ast_binary(char *op, AstModifierUse modifier, AstExpr *left, AstExpr *right);
 AstExpr *ast_unary(char *op, AstExpr *expr);
 
-AstStmt *ast_assign(char *name, char *modifier, AstExpr *value);
+AstStmt *ast_assign(char *name, AstModifierUse modifier, AstExpr *value);
 AstStmt *ast_field_assign(char *name, char *field, AstExpr *value);
 AstStmt *ast_print(AstExpr *expr);
 AstStmt *ast_expr_stmt(AstExpr *expr);
@@ -200,6 +220,7 @@ AstStmt *ast_on_error_goto(char *label);
 AstStmt *ast_on_error_resume_next(void);
 AstStmt *ast_on_error_stop(void);
 AstStmt *ast_error(AstExpr *message);
+AstStmt *ast_modifier(char *name, AstNameList params, char *context, AstStmtList body);
 AstStmt *ast_if(AstExpr *condition, AstStmtList body);
 AstStmt *ast_stmt_position(AstStmt *stmt, int line, int column);
 
