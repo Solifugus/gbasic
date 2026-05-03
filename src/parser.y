@@ -75,19 +75,22 @@ static void yyerror(const char *message);
     AstStmt *stmt;
     AstStmtList stmt_list;
     AstExprList expr_list;
+    AstRecordFieldList record_field_list;
 }
 
 %token <number> NUMBER
 %token <text> IDENT STRING
 %token IF THEN END PRINT TRUE FALSE AND OR NOT
 %token OP_EQ OP_NE OP_GT OP_LT OP_GE OP_LE OP_NGT OP_NLT
-%token PLUS MINUS STAR SLASH LPAREN MOD_LPAREN RPAREN LBRACKET RBRACKET COMMA NEWLINE
+%token PLUS MINUS STAR SLASH LPAREN MOD_LPAREN RPAREN LBRACKET RBRACKET LBRACE RBRACE COMMA DOT NEWLINE
+%define parse.error verbose
 
 %type <stmt_list> program statement_list
 %type <stmt> statement assignment print_statement if_statement
 %type <expr> expression or_expression and_expression comparison_expression
 %type <expr> additive_expression multiplicative_expression unary_expression postfix_expression primary
 %type <expr_list> argument_list argument_list_opt
+%type <record_field_list> record_field_list
 %type <text> modifier comparison_operator
 
 %%
@@ -111,6 +114,7 @@ statement
 assignment
     : IDENT OP_EQ expression { $$ = ast_assign($1, NULL, $3); }
     | IDENT modifier OP_EQ expression { $$ = ast_assign($1, $2, $4); }
+    | IDENT DOT IDENT OP_EQ expression { $$ = ast_field_assign($1, $3, $5); }
     ;
 
 modifier
@@ -168,6 +172,7 @@ unary_expression
 postfix_expression
     : primary { $$ = $1; }
     | postfix_expression LBRACKET expression RBRACKET { $$ = ast_index($1, $3); }
+    | postfix_expression DOT IDENT { $$ = ast_field($1, $3); }
     ;
 
 comparison_operator
@@ -190,6 +195,8 @@ primary
     | FALSE { $$ = ast_bool(0); }
     | LPAREN expression RPAREN { $$ = $2; }
     | LBRACKET argument_list_opt RBRACKET { $$ = ast_array($2); }
+    | LBRACE optional_newlines RBRACE { $$ = ast_record(ast_record_field_list_empty()); }
+    | LBRACE optional_newlines record_field_list optional_newlines RBRACE { $$ = ast_record($3); }
     ;
 
 argument_list_opt
@@ -200,6 +207,16 @@ argument_list_opt
 argument_list
     : expression { $$ = ast_expr_list_append(ast_expr_list_empty(), $1); }
     | argument_list COMMA expression { $$ = ast_expr_list_append($1, $3); }
+    ;
+
+record_field_list
+    : IDENT OP_EQ expression { $$ = ast_record_field_list_append(ast_record_field_list_empty(), $1, $3); }
+    | record_field_list COMMA optional_newlines IDENT OP_EQ expression { $$ = ast_record_field_list_append($1, $4, $6); }
+    ;
+
+optional_newlines
+    : %empty
+    | optional_newlines NEWLINE
     ;
 
 %%
@@ -264,6 +281,9 @@ static int yylex(void) {
     case TOKEN_LBRACKET: return LBRACKET;
     case TOKEN_RBRACKET: return RBRACKET;
     case TOKEN_COMMA: return COMMA;
+    case TOKEN_LBRACE: return LBRACE;
+    case TOKEN_RBRACE: return RBRACE;
+    case TOKEN_DOT: return DOT;
     case TOKEN_NEWLINE: return NEWLINE;
     case TOKEN_ERROR:
         fprintf(stderr, "lexer error at %d:%d\n", token.line, token.column);

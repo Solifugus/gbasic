@@ -1,0 +1,12 @@
+customer = {
+    name = "Ada",
+    age = 37,
+    balance = 120.00
+}
+
+print customer.name
+customer.name = "Grace"
+print customer.name
+
+field = "age"
+print customer[field]

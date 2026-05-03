@@ -89,8 +89,11 @@ extern int yydebug;
     RPAREN = 284,                  /* RPAREN  */
     LBRACKET = 285,                /* LBRACKET  */
     RBRACKET = 286,                /* RBRACKET  */
-    COMMA = 287,                   /* COMMA  */
-    NEWLINE = 288                  /* NEWLINE  */
+    LBRACE = 287,                  /* LBRACE  */
+    RBRACE = 288,                  /* RBRACE  */
+    COMMA = 289,                   /* COMMA  */
+    DOT = 290,                     /* DOT  */
+    NEWLINE = 291                  /* NEWLINE  */
   };
   typedef enum yytokentype yytoken_kind_t;
 #endif
@@ -107,8 +110,9 @@ union YYSTYPE
     AstStmt *stmt;
     AstStmtList stmt_list;
     AstExprList expr_list;
+    AstRecordFieldList record_field_list;
 
-#line 112 "src/parser.tab.h"
+#line 116 "src/parser.tab.h"
 
 };
 typedef union YYSTYPE YYSTYPE;

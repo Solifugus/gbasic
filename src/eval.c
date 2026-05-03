@@ -10,21 +10,33 @@ typedef enum {
     VALUE_NUMBER,
     VALUE_STRING,
     VALUE_BOOL,
-    VALUE_ARRAY
+    VALUE_ARRAY,
+    VALUE_RECORD
 } ValueKind;
 
+typedef struct Value Value;
+
 typedef struct {
+    char *name;
+    Value *value;
+} RecordField;
+
+struct Value {
     ValueKind kind;
     union {
         double number;
         char *string;
         int boolean;
         struct {
-            double *items;
+            Value *items;
             size_t count;
         } array;
+        struct {
+            RecordField *fields;
+            size_t count;
+        } record;
     } as;
-} Value;
+};
 
 typedef struct {
     char *name;
@@ -75,11 +87,19 @@ static Value value_bool(int boolean) {
     return value;
 }
 
-static Value value_array(double *items, size_t count) {
+static Value value_array(Value *items, size_t count) {
     Value value = {0};
     value.kind = VALUE_ARRAY;
     value.as.array.items = items;
     value.as.array.count = count;
+    return value;
+}
+
+static Value value_record(RecordField *fields, size_t count) {
+    Value value = {0};
+    value.kind = VALUE_RECORD;
+    value.as.record.fields = fields;
+    value.as.record.count = count;
     return value;
 }
 
@@ -88,15 +108,35 @@ static Value value_copy(Value value) {
         return value_string(value.as.string);
     }
     if (value.kind == VALUE_ARRAY) {
-        double *items = NULL;
+        Value *items = NULL;
         if (value.as.array.count > 0) {
-            items = malloc(sizeof(double) * value.as.array.count);
+            items = malloc(sizeof(Value) * value.as.array.count);
             if (!items) {
                 abort();
             }
-            memcpy(items, value.as.array.items, sizeof(double) * value.as.array.count);
+            for (size_t i = 0; i < value.as.array.count; i++) {
+                items[i] = value_copy(value.as.array.items[i]);
+            }
         }
         return value_array(items, value.as.array.count);
+    }
+    if (value.kind == VALUE_RECORD) {
+        RecordField *fields = NULL;
+        if (value.as.record.count > 0) {
+            fields = malloc(sizeof(RecordField) * value.as.record.count);
+            if (!fields) {
+                abort();
+            }
+            for (size_t i = 0; i < value.as.record.count; i++) {
+                fields[i].name = copy_string(value.as.record.fields[i].name);
+                fields[i].value = malloc(sizeof(Value));
+                if (!fields[i].value) {
+                    abort();
+                }
+                *fields[i].value = value_copy(*value.as.record.fields[i].value);
+            }
+        }
+        return value_record(fields, value.as.record.count);
     }
     return value;
 }
@@ -105,7 +145,17 @@ static void value_free(Value value) {
     if (value.kind == VALUE_STRING) {
         free(value.as.string);
     } else if (value.kind == VALUE_ARRAY) {
+        for (size_t i = 0; i < value.as.array.count; i++) {
+            value_free(value.as.array.items[i]);
+        }
         free(value.as.array.items);
+    } else if (value.kind == VALUE_RECORD) {
+        for (size_t i = 0; i < value.as.record.count; i++) {
+            free(value.as.record.fields[i].name);
+            value_free(*value.as.record.fields[i].value);
+            free(value.as.record.fields[i].value);
+        }
+        free(value.as.record.fields);
     }
 }
 
@@ -119,6 +169,8 @@ static int value_truthy(Value value) {
         return value.as.string[0] != '\0';
     case VALUE_ARRAY:
         return value.as.array.count > 0;
+    case VALUE_RECORD:
+        return value.as.record.count > 0;
     case VALUE_NULL:
         return 0;
     }
@@ -155,9 +207,16 @@ static void value_print(Value value) {
             if (i > 0) {
                 printf(", ");
             }
-            printf("%g", value.as.array.items[i]);
+            if (value.as.array.items[i].kind == VALUE_NUMBER) {
+                printf("%g", value.as.array.items[i].as.number);
+            } else {
+                printf("?");
+            }
         }
         printf("]\n");
+        break;
+    case VALUE_RECORD:
+        printf("{record}\n");
         break;
     }
 }
@@ -208,6 +267,42 @@ static void env_clear(void) {
     env.count = 0;
 }
 
+static RecordField *record_find(Value *record, const char *name) {
+    if (record->kind != VALUE_RECORD) {
+        return NULL;
+    }
+    for (size_t i = 0; i < record->as.record.count; i++) {
+        if (strcmp(record->as.record.fields[i].name, name) == 0) {
+            return &record->as.record.fields[i];
+        }
+    }
+    return NULL;
+}
+
+static void record_set(Value *record, const char *name, Value value) {
+    RecordField *field = record_find(record, name);
+    if (field) {
+        value_free(*field->value);
+        *field->value = value;
+        return;
+    }
+
+    RecordField *fields = realloc(record->as.record.fields,
+                                  sizeof(RecordField) * (record->as.record.count + 1));
+    if (!fields) {
+        abort();
+    }
+    record->as.record.fields = fields;
+    field = &record->as.record.fields[record->as.record.count];
+    field->name = copy_string(name);
+    field->value = malloc(sizeof(Value));
+    if (!field->value) {
+        abort();
+    }
+    *field->value = value;
+    record->as.record.count++;
+}
+
 static int string_equal_caseless(const char *left, const char *right) {
     while (*left && *right) {
         if (tolower((unsigned char)*left) != tolower((unsigned char)*right)) {
@@ -231,6 +326,18 @@ static int number_compare(const void *left, const void *right) {
     return (a > b) - (a < b);
 }
 
+static int array_is_numeric(Value array) {
+    if (array.kind != VALUE_ARRAY) {
+        return 0;
+    }
+    for (size_t i = 0; i < array.as.array.count; i++) {
+        if (array.as.array.items[i].kind != VALUE_NUMBER) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
 static Value eval_call(AstExpr *expr) {
     if (expr->as.call.args.count != 1) {
         fprintf(stderr, "%s expects one array argument\n", expr->as.call.name);
@@ -238,8 +345,8 @@ static Value eval_call(AstExpr *expr) {
     }
 
     Value arg = eval_expr(expr->as.call.args.items[0]);
-    if (arg.kind != VALUE_ARRAY) {
-        fprintf(stderr, "%s expects an array\n", expr->as.call.name);
+    if (!array_is_numeric(arg)) {
+        fprintf(stderr, "%s expects a numeric array\n", expr->as.call.name);
         value_free(arg);
         return value_null();
     }
@@ -256,23 +363,23 @@ static Value eval_call(AstExpr *expr) {
         return value_null();
     } else if (strcmp(name, "sum") == 0 || strcmp(name, "mean") == 0) {
         for (size_t i = 0; i < count; i++) {
-            result += arg.as.array.items[i];
+            result += arg.as.array.items[i].as.number;
         }
         if (strcmp(name, "mean") == 0) {
             result /= (double)count;
         }
     } else if (strcmp(name, "min") == 0) {
-        result = arg.as.array.items[0];
+        result = arg.as.array.items[0].as.number;
         for (size_t i = 1; i < count; i++) {
-            if (arg.as.array.items[i] < result) {
-                result = arg.as.array.items[i];
+            if (arg.as.array.items[i].as.number < result) {
+                result = arg.as.array.items[i].as.number;
             }
         }
     } else if (strcmp(name, "max") == 0) {
-        result = arg.as.array.items[0];
+        result = arg.as.array.items[0].as.number;
         for (size_t i = 1; i < count; i++) {
-            if (arg.as.array.items[i] > result) {
-                result = arg.as.array.items[i];
+            if (arg.as.array.items[i].as.number > result) {
+                result = arg.as.array.items[i].as.number;
             }
         }
     } else if (strcmp(name, "median") == 0) {
@@ -280,7 +387,9 @@ static Value eval_call(AstExpr *expr) {
         if (!sorted) {
             abort();
         }
-        memcpy(sorted, arg.as.array.items, sizeof(double) * count);
+        for (size_t i = 0; i < count; i++) {
+            sorted[i] = arg.as.array.items[i].as.number;
+        }
         qsort(sorted, count, sizeof(double), number_compare);
         if (count % 2 == 1) {
             result = sorted[count / 2];
@@ -289,18 +398,18 @@ static Value eval_call(AstExpr *expr) {
         }
         free(sorted);
     } else if (strcmp(name, "mode") == 0) {
-        result = arg.as.array.items[0];
+        result = arg.as.array.items[0].as.number;
         size_t best_count = 0;
         for (size_t i = 0; i < count; i++) {
             size_t current_count = 0;
             for (size_t j = 0; j < count; j++) {
-                if (arg.as.array.items[i] == arg.as.array.items[j]) {
+                if (arg.as.array.items[i].as.number == arg.as.array.items[j].as.number) {
                     current_count++;
                 }
             }
             if (current_count > best_count) {
                 best_count = current_count;
-                result = arg.as.array.items[i];
+                result = arg.as.array.items[i].as.number;
             }
         }
     } else {
@@ -421,45 +530,86 @@ static Value eval_expr(AstExpr *expr) {
     case AST_EXPR_BOOL:
         return value_bool(expr->as.boolean);
     case AST_EXPR_ARRAY: {
-        double *items = NULL;
+        Value *items = NULL;
         if (expr->as.array.count > 0) {
-            items = malloc(sizeof(double) * expr->as.array.count);
+            items = malloc(sizeof(Value) * expr->as.array.count);
             if (!items) {
                 abort();
             }
         }
         for (size_t i = 0; i < expr->as.array.count; i++) {
-            Value item = eval_expr(expr->as.array.items[i]);
-            if (item.kind != VALUE_NUMBER) {
-                fprintf(stderr, "array literals currently support numbers only\n");
-                items[i] = 0.0;
-            } else {
-                items[i] = item.as.number;
-            }
-            value_free(item);
+            items[i] = eval_expr(expr->as.array.items[i]);
         }
         return value_array(items, expr->as.array.count);
+    }
+    case AST_EXPR_RECORD: {
+        RecordField *fields = NULL;
+        if (expr->as.record.count > 0) {
+            fields = malloc(sizeof(RecordField) * expr->as.record.count);
+            if (!fields) {
+                abort();
+            }
+        }
+        for (size_t i = 0; i < expr->as.record.count; i++) {
+            fields[i].name = copy_string(expr->as.record.items[i].name);
+            fields[i].value = malloc(sizeof(Value));
+            if (!fields[i].value) {
+                abort();
+            }
+            *fields[i].value = eval_expr(expr->as.record.items[i].value);
+        }
+        return value_record(fields, expr->as.record.count);
     }
     case AST_EXPR_INDEX: {
         Value array = eval_expr(expr->as.index.array);
         Value index = eval_expr(expr->as.index.index);
-        if (array.kind != VALUE_ARRAY || index.kind != VALUE_NUMBER) {
-            fprintf(stderr, "indexing expects array[number]\n");
+        if (array.kind == VALUE_ARRAY && index.kind == VALUE_NUMBER) {
+            int position = (int)index.as.number;
+            if (position < 0 || (size_t)position >= array.as.array.count) {
+                fprintf(stderr, "array index out of range\n");
+                value_free(array);
+                value_free(index);
+                return value_null();
+            }
+            Value result = value_copy(array.as.array.items[position]);
             value_free(array);
             value_free(index);
-            return value_null();
+            return result;
         }
-        int position = (int)index.as.number;
-        if (position < 0 || (size_t)position >= array.as.array.count) {
-            fprintf(stderr, "array index out of range\n");
+        if (array.kind == VALUE_RECORD && index.kind == VALUE_STRING) {
+            RecordField *field = record_find(&array, index.as.string);
+            if (!field) {
+                fprintf(stderr, "unknown record field: %s\n", index.as.string);
+                value_free(array);
+                value_free(index);
+                return value_null();
+            }
+            Value result = value_copy(*field->value);
             value_free(array);
             value_free(index);
-            return value_null();
+            return result;
         }
-        double result = array.as.array.items[position];
+        fprintf(stderr, "indexing expects array[number] or record[string]\n");
         value_free(array);
         value_free(index);
-        return value_number(result);
+        return value_null();
+    }
+    case AST_EXPR_FIELD: {
+        Value object = eval_expr(expr->as.field.object);
+        if (object.kind != VALUE_RECORD) {
+            fprintf(stderr, "field access expects a record\n");
+            value_free(object);
+            return value_null();
+        }
+        RecordField *field = record_find(&object, expr->as.field.field);
+        if (!field) {
+            fprintf(stderr, "unknown record field: %s\n", expr->as.field.field);
+            value_free(object);
+            return value_null();
+        }
+        Value result = value_copy(*field->value);
+        value_free(object);
+        return result;
     }
     case AST_EXPR_CALL:
         return eval_call(expr);
@@ -509,6 +659,17 @@ static void eval_stmt(AstStmt *stmt) {
         Value value = eval_expr(stmt->as.assign.value);
         value = apply_assignment_modifier(stmt->as.assign.modifier, value);
         env_set(stmt->as.assign.name, value);
+        break;
+    }
+    case AST_STMT_FIELD_ASSIGN: {
+        Symbol *symbol = env_find(stmt->as.field_assign.name);
+        if (!symbol || symbol->value.kind != VALUE_RECORD) {
+            fprintf(stderr, "field assignment expects a record variable: %s\n",
+                    stmt->as.field_assign.name);
+            break;
+        }
+        Value value = eval_expr(stmt->as.field_assign.value);
+        record_set(&symbol->value, stmt->as.field_assign.field, value);
         break;
     }
     case AST_STMT_PRINT: {

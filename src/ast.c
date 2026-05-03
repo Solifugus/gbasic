@@ -41,6 +41,19 @@ AstExprList ast_expr_list_append(AstExprList list, AstExpr *expr) {
     return list;
 }
 
+AstRecordFieldList ast_record_field_list_empty(void) {
+    AstRecordFieldList list = {0};
+    return list;
+}
+
+AstRecordFieldList ast_record_field_list_append(AstRecordFieldList list, char *name, AstExpr *value) {
+    list.items = xrealloc(list.items, sizeof(AstRecordField) * (list.count + 1));
+    list.items[list.count].name = name;
+    list.items[list.count].value = value;
+    list.count++;
+    return list;
+}
+
 AstExpr *ast_number(double value) {
     AstExpr *expr = xmalloc(sizeof(*expr));
     expr->kind = AST_EXPR_NUMBER;
@@ -76,11 +89,26 @@ AstExpr *ast_array(AstExprList items) {
     return expr;
 }
 
+AstExpr *ast_record(AstRecordFieldList fields) {
+    AstExpr *expr = xmalloc(sizeof(*expr));
+    expr->kind = AST_EXPR_RECORD;
+    expr->as.record = fields;
+    return expr;
+}
+
 AstExpr *ast_index(AstExpr *array, AstExpr *index) {
     AstExpr *expr = xmalloc(sizeof(*expr));
     expr->kind = AST_EXPR_INDEX;
     expr->as.index.array = array;
     expr->as.index.index = index;
+    return expr;
+}
+
+AstExpr *ast_field(AstExpr *object, char *field) {
+    AstExpr *expr = xmalloc(sizeof(*expr));
+    expr->kind = AST_EXPR_FIELD;
+    expr->as.field.object = object;
+    expr->as.field.field = field;
     return expr;
 }
 
@@ -116,6 +144,15 @@ AstStmt *ast_assign(char *name, char *modifier, AstExpr *value) {
     stmt->as.assign.name = name;
     stmt->as.assign.modifier = modifier;
     stmt->as.assign.value = value;
+    return stmt;
+}
+
+AstStmt *ast_field_assign(char *name, char *field, AstExpr *value) {
+    AstStmt *stmt = xmalloc(sizeof(*stmt));
+    stmt->kind = AST_STMT_FIELD_ASSIGN;
+    stmt->as.field_assign.name = name;
+    stmt->as.field_assign.field = field;
+    stmt->as.field_assign.value = value;
     return stmt;
 }
 
@@ -167,6 +204,14 @@ static void dump_expr(AstExpr *expr, int indent) {
             dump_expr(expr->as.array.items[i], indent + 1);
         }
         break;
+    case AST_EXPR_RECORD:
+        printf("Record\n");
+        for (size_t i = 0; i < expr->as.record.count; i++) {
+            dump_indent(indent + 1);
+            printf("Field %s\n", expr->as.record.items[i].name);
+            dump_expr(expr->as.record.items[i].value, indent + 2);
+        }
+        break;
     case AST_EXPR_INDEX:
         printf("Index\n");
         dump_indent(indent + 1);
@@ -175,6 +220,10 @@ static void dump_expr(AstExpr *expr, int indent) {
         dump_indent(indent + 1);
         printf("Subscript\n");
         dump_expr(expr->as.index.index, indent + 2);
+        break;
+    case AST_EXPR_FIELD:
+        printf("FieldAccess %s\n", expr->as.field.field);
+        dump_expr(expr->as.field.object, indent + 1);
         break;
     case AST_EXPR_CALL:
         printf("Call %s\n", expr->as.call.name);
@@ -208,6 +257,10 @@ static void dump_stmt(AstStmt *stmt, int indent) {
             printf("Assign %s\n", stmt->as.assign.name);
         }
         dump_expr(stmt->as.assign.value, indent + 1);
+        break;
+    case AST_STMT_FIELD_ASSIGN:
+        printf("FieldAssign %s.%s\n", stmt->as.field_assign.name, stmt->as.field_assign.field);
+        dump_expr(stmt->as.field_assign.value, indent + 1);
         break;
     case AST_STMT_PRINT:
         printf("Print\n");
@@ -258,9 +311,20 @@ static void free_expr(AstExpr *expr) {
         }
         free(expr->as.array.items);
         break;
+    case AST_EXPR_RECORD:
+        for (size_t i = 0; i < expr->as.record.count; i++) {
+            free(expr->as.record.items[i].name);
+            free_expr(expr->as.record.items[i].value);
+        }
+        free(expr->as.record.items);
+        break;
     case AST_EXPR_INDEX:
         free_expr(expr->as.index.array);
         free_expr(expr->as.index.index);
+        break;
+    case AST_EXPR_FIELD:
+        free_expr(expr->as.field.object);
+        free(expr->as.field.field);
         break;
     case AST_EXPR_CALL:
         free(expr->as.call.name);
@@ -291,6 +355,11 @@ static void free_stmt(AstStmt *stmt) {
         free(stmt->as.assign.name);
         free(stmt->as.assign.modifier);
         free_expr(stmt->as.assign.value);
+        break;
+    case AST_STMT_FIELD_ASSIGN:
+        free(stmt->as.field_assign.name);
+        free(stmt->as.field_assign.field);
+        free_expr(stmt->as.field_assign.value);
         break;
     case AST_STMT_PRINT:
         free_expr(stmt->as.print);
