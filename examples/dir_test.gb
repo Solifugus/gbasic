@@ -1,0 +1,7 @@
+folder (dir)= "examples"
+
+items = list(folder)
+
+for item in items
+    print item.name
+end for

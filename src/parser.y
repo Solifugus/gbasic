@@ -131,13 +131,13 @@ static void yyerror(const char *message);
 
 %token <number> NUMBER
 %token <text> IDENT STRING
-%token IF THEN END PRINT TRUE FALSE AND OR NOT WITH
+%token IF THEN END PRINT TRUE FALSE AND OR NOT WITH FOR IN
 %token OP_EQ OP_NE OP_GT OP_LT OP_GE OP_LE OP_NGT OP_NLT
 %token PLUS MINUS STAR SLASH LPAREN MOD_LPAREN RPAREN LBRACKET RBRACKET LBRACE RBRACE COMMA DOT NEWLINE
 %define parse.error verbose
 
 %type <stmt_list> program statement_list
-%type <stmt> statement assignment print_statement call_statement with_lock_statement if_statement
+%type <stmt> statement assignment print_statement call_statement with_lock_statement for_each_statement if_statement
 %type <expr> expression or_expression and_expression comparison_expression
 %type <expr> additive_expression multiplicative_expression unary_expression postfix_expression primary
 %type <expr_list> argument_list argument_list_opt
@@ -162,6 +162,7 @@ statement
     | print_statement NEWLINE { $$ = $1; }
     | call_statement NEWLINE { $$ = $1; }
     | with_lock_statement { $$ = $1; }
+    | for_each_statement { $$ = $1; }
     | if_statement { $$ = $1; }
     ;
 
@@ -192,6 +193,12 @@ with_lock_statement
         }
         free($2);
         $$ = ast_with_lock($4, $7);
+      }
+    ;
+
+for_each_statement
+    : FOR IDENT IN expression NEWLINE statement_list END FOR NEWLINE {
+        $$ = ast_for_each($2, $4, $6);
       }
     ;
 
@@ -342,6 +349,8 @@ static int yylex(void) {
     case TOKEN_OR: return OR;
     case TOKEN_NOT: return NOT;
     case TOKEN_WITH: return WITH;
+    case TOKEN_FOR: return FOR;
+    case TOKEN_IN: return IN;
     case TOKEN_OP_EQ: return OP_EQ;
     case TOKEN_OP_NE: return OP_NE;
     case TOKEN_OP_GT: return OP_GT;

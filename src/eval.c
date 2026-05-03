@@ -1,11 +1,13 @@
 #include "eval.h"
 
 #include <ctype.h>
+#include <dirent.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/file.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 typedef enum {
@@ -17,7 +19,8 @@ typedef enum {
     VALUE_RECORD,
     VALUE_DATETIME,
     VALUE_DURATION,
-    VALUE_FILE
+    VALUE_FILE,
+    VALUE_DIR
 } ValueKind;
 
 typedef enum {
@@ -74,6 +77,7 @@ struct Value {
         DateTime datetime;
         Duration duration;
         char *file_path;
+        char *dir_path;
     } as;
 };
 
@@ -171,12 +175,22 @@ static Value value_file(const char *path) {
     return value;
 }
 
+static Value value_dir(const char *path) {
+    Value value = {0};
+    value.kind = VALUE_DIR;
+    value.as.dir_path = copy_string(path);
+    return value;
+}
+
 static Value value_copy(Value value) {
     if (value.kind == VALUE_STRING) {
         return value_string(value.as.string);
     }
     if (value.kind == VALUE_FILE) {
         return value_file(value.as.file_path);
+    }
+    if (value.kind == VALUE_DIR) {
+        return value_dir(value.as.dir_path);
     }
     if (value.kind == VALUE_ARRAY) {
         Value *items = NULL;
@@ -217,6 +231,8 @@ static void value_free(Value value) {
         free(value.as.string);
     } else if (value.kind == VALUE_FILE) {
         free(value.as.file_path);
+    } else if (value.kind == VALUE_DIR) {
+        free(value.as.dir_path);
     } else if (value.kind == VALUE_ARRAY) {
         for (size_t i = 0; i < value.as.array.count; i++) {
             value_free(value.as.array.items[i]);
@@ -253,6 +269,8 @@ static int value_truthy(Value value) {
             value.as.duration.seconds;
     case VALUE_FILE:
         return value.as.file_path[0] != '\0';
+    case VALUE_DIR:
+        return value.as.dir_path[0] != '\0';
     case VALUE_NULL:
         return 0;
     }
@@ -349,6 +367,9 @@ static void value_print(Value value) {
         break;
     case VALUE_FILE:
         printf("%s\n", value.as.file_path);
+        break;
+    case VALUE_DIR:
+        printf("%s\n", value.as.dir_path);
         break;
     }
 }
@@ -933,6 +954,112 @@ static Value eval_file_call(AstExpr *expr) {
     return value_null();
 }
 
+static Value make_dir_entry(const char *folder, const char *name, const char *type) {
+    size_t folder_len = strlen(folder);
+    size_t name_len = strlen(name);
+    int needs_slash = folder_len > 0 && folder[folder_len - 1] != '/';
+    char *path = malloc(folder_len + (size_t)needs_slash + name_len + 1);
+    if (!path) {
+        abort();
+    }
+    memcpy(path, folder, folder_len);
+    if (needs_slash) {
+        path[folder_len] = '/';
+    }
+    memcpy(path + folder_len + (size_t)needs_slash, name, name_len);
+    path[folder_len + (size_t)needs_slash + name_len] = '\0';
+
+    RecordField *fields = malloc(sizeof(RecordField) * 3);
+    if (!fields) {
+        abort();
+    }
+
+    fields[0].name = copy_string("name");
+    fields[0].value = malloc(sizeof(Value));
+    fields[1].name = copy_string("path");
+    fields[1].value = malloc(sizeof(Value));
+    fields[2].name = copy_string("type");
+    fields[2].value = malloc(sizeof(Value));
+    if (!fields[0].value || !fields[1].value || !fields[2].value) {
+        abort();
+    }
+
+    *fields[0].value = value_string(name);
+    *fields[1].value = value_string(path);
+    *fields[2].value = value_string(type);
+    free(path);
+    return value_record(fields, 3);
+}
+
+static Value eval_dir_call(AstExpr *expr) {
+    const char *name = expr->as.call.name;
+    if (expr->as.call.args.count != 1) {
+        fprintf(stderr, "%s expects one directory argument\n", name);
+        return value_null();
+    }
+
+    Value dir_value = eval_expr(expr->as.call.args.items[0]);
+    if (dir_value.kind != VALUE_DIR) {
+        fprintf(stderr, "%s expects a directory reference\n", name);
+        value_free(dir_value);
+        return value_null();
+    }
+
+    DIR *dir = opendir(dir_value.as.dir_path);
+    if (!dir) {
+        value_free(dir_value);
+        return value_array(NULL, 0);
+    }
+
+    Value *items = NULL;
+    size_t count = 0;
+    struct dirent *entry;
+    while ((entry = readdir(dir)) != NULL) {
+        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
+            continue;
+        }
+
+        size_t folder_len = strlen(dir_value.as.dir_path);
+        size_t name_len = strlen(entry->d_name);
+        int needs_slash = folder_len > 0 && dir_value.as.dir_path[folder_len - 1] != '/';
+        char *path = malloc(folder_len + (size_t)needs_slash + name_len + 1);
+        if (!path) {
+            abort();
+        }
+        memcpy(path, dir_value.as.dir_path, folder_len);
+        if (needs_slash) {
+            path[folder_len] = '/';
+        }
+        memcpy(path + folder_len + (size_t)needs_slash, entry->d_name, name_len);
+        path[folder_len + (size_t)needs_slash + name_len] = '\0';
+
+        struct stat st;
+        const char *type = "file";
+        if (stat(path, &st) == 0 && S_ISDIR(st.st_mode)) {
+            type = "folder";
+        }
+        free(path);
+
+        if (strcmp(name, "files") == 0 && strcmp(type, "file") != 0) {
+            continue;
+        }
+        if (strcmp(name, "folders") == 0 && strcmp(type, "folder") != 0) {
+            continue;
+        }
+
+        Value *next = realloc(items, sizeof(Value) * (count + 1));
+        if (!next) {
+            abort();
+        }
+        items = next;
+        items[count++] = make_dir_entry(dir_value.as.dir_path, entry->d_name, type);
+    }
+
+    closedir(dir);
+    value_free(dir_value);
+    return value_array(items, count);
+}
+
 static Value eval_call(AstExpr *expr) {
     if (strcmp(expr->as.call.name, "exists") == 0 ||
         strcmp(expr->as.call.name, "read") == 0 ||
@@ -944,6 +1071,11 @@ static Value eval_call(AstExpr *expr) {
         strcmp(expr->as.call.name, "lines") == 0 ||
         strcmp(expr->as.call.name, "chars") == 0) {
         return eval_file_call(expr);
+    }
+    if (strcmp(expr->as.call.name, "list") == 0 ||
+        strcmp(expr->as.call.name, "files") == 0 ||
+        strcmp(expr->as.call.name, "folders") == 0) {
+        return eval_dir_call(expr);
     }
 
     if (expr->as.call.args.count != 1) {
@@ -1354,6 +1486,16 @@ static Value apply_assignment_modifier(const char *modifier, Value value) {
         value_free(value);
         return file_value;
     }
+    if (strcmp(modifier, "dir") == 0) {
+        if (value.kind != VALUE_STRING) {
+            fprintf(stderr, "dir modifier expects a path string\n");
+            value_free(value);
+            return value_null();
+        }
+        Value dir_value = value_dir(value.as.string);
+        value_free(value);
+        return dir_value;
+    }
 
     fprintf(stderr, "unsupported assignment modifier: %s\n", modifier);
     return value;
@@ -1405,6 +1547,20 @@ static void eval_stmt(AstStmt *stmt) {
             unlock_path(path);
         }
         free(path);
+        break;
+    }
+    case AST_STMT_FOR_EACH: {
+        Value iterable = eval_expr(stmt->as.for_each.iterable);
+        if (iterable.kind != VALUE_ARRAY) {
+            fprintf(stderr, "for in expects an array\n");
+            value_free(iterable);
+            break;
+        }
+        for (size_t i = 0; i < iterable.as.array.count; i++) {
+            env_set(stmt->as.for_each.name, value_copy(iterable.as.array.items[i]));
+            eval_stmt_list(stmt->as.for_each.body);
+        }
+        value_free(iterable);
         break;
     }
     case AST_STMT_IF: {

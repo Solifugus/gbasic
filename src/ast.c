@@ -185,6 +185,15 @@ AstStmt *ast_with_lock(AstExpr *file, AstStmtList body) {
     return stmt;
 }
 
+AstStmt *ast_for_each(char *name, AstExpr *iterable, AstStmtList body) {
+    AstStmt *stmt = xmalloc(sizeof(*stmt));
+    stmt->kind = AST_STMT_FOR_EACH;
+    stmt->as.for_each.name = name;
+    stmt->as.for_each.iterable = iterable;
+    stmt->as.for_each.body = body;
+    return stmt;
+}
+
 AstStmt *ast_if(AstExpr *condition, AstStmtList body) {
     AstStmt *stmt = xmalloc(sizeof(*stmt));
     stmt->kind = AST_STMT_IF;
@@ -313,6 +322,17 @@ static void dump_stmt(AstStmt *stmt, int indent) {
             dump_stmt(stmt->as.with_lock.body.items[i], indent + 2);
         }
         break;
+    case AST_STMT_FOR_EACH:
+        printf("ForEach %s\n", stmt->as.for_each.name);
+        dump_indent(indent + 1);
+        printf("Iterable\n");
+        dump_expr(stmt->as.for_each.iterable, indent + 2);
+        dump_indent(indent + 1);
+        printf("Body\n");
+        for (size_t i = 0; i < stmt->as.for_each.body.count; i++) {
+            dump_stmt(stmt->as.for_each.body.items[i], indent + 2);
+        }
+        break;
     case AST_STMT_IF:
         printf("If\n");
         dump_indent(indent + 1);
@@ -419,6 +439,11 @@ static void free_stmt(AstStmt *stmt) {
     case AST_STMT_WITH_LOCK:
         free_expr(stmt->as.with_lock.file);
         ast_free_program(stmt->as.with_lock.body);
+        break;
+    case AST_STMT_FOR_EACH:
+        free(stmt->as.for_each.name);
+        free_expr(stmt->as.for_each.iterable);
+        ast_free_program(stmt->as.for_each.body);
         break;
     case AST_STMT_IF:
         free_expr(stmt->as.if_stmt.condition);
