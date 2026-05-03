@@ -3,6 +3,7 @@
 #include <ctype.h>
 #include <dirent.h>
 #include <fcntl.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -123,6 +124,8 @@ static FunctionDef *functions = NULL;
 static size_t function_count = 0;
 static LockEntry *locks = NULL;
 static size_t lock_count = 0;
+static int lock_cleanup_registered = 0;
+static volatile sig_atomic_t lock_signal_cleanup_started = 0;
 static WatcherDef *watchers = NULL;
 static size_t watcher_count = 0;
 static size_t *watcher_queue = NULL;
@@ -499,10 +502,57 @@ static LockEntry *lock_find(const char *path) {
     return NULL;
 }
 
+static void lock_clear(void) {
+    while (lock_count > 0) {
+        flock(locks[lock_count - 1].fd, LOCK_UN);
+        close(locks[lock_count - 1].fd);
+        free(locks[lock_count - 1].path);
+        lock_count--;
+    }
+    free(locks);
+    locks = NULL;
+}
+
+static void lock_cleanup_on_exit(void) {
+    lock_clear();
+}
+
+static void lock_cleanup_on_signal(int signal_number) {
+    if (lock_signal_cleanup_started) {
+        _exit(128 + signal_number);
+    }
+    lock_signal_cleanup_started = 1;
+
+    for (size_t i = 0; i < lock_count; i++) {
+        if (locks[i].fd >= 0) {
+            close(locks[i].fd);
+            locks[i].fd = -1;
+        }
+    }
+    _exit(128 + signal_number);
+}
+
+static void lock_install_cleanup(void) {
+    if (lock_cleanup_registered) {
+        return;
+    }
+
+    if (atexit(lock_cleanup_on_exit) != 0) {
+        fprintf(stderr, "failed to register lock cleanup\n");
+    }
+
+    signal(SIGINT, lock_cleanup_on_signal);
+    signal(SIGTERM, lock_cleanup_on_signal);
+    signal(SIGHUP, lock_cleanup_on_signal);
+
+    lock_cleanup_registered = 1;
+}
+
 static int lock_path(const char *path) {
     LockEntry *entry = lock_find(path);
     if (entry) {
         entry->depth++;
+        lock_install_cleanup();
         return 1;
     }
 
@@ -526,6 +576,7 @@ static int lock_path(const char *path) {
     locks[lock_count].fd = fd;
     locks[lock_count].depth = 1;
     lock_count++;
+    lock_install_cleanup();
     return 1;
 }
 
@@ -549,17 +600,6 @@ static int unlock_path(const char *path) {
         }
     }
     return 0;
-}
-
-static void lock_clear(void) {
-    while (lock_count > 0) {
-        flock(locks[lock_count - 1].fd, LOCK_UN);
-        close(locks[lock_count - 1].fd);
-        free(locks[lock_count - 1].path);
-        lock_count--;
-    }
-    free(locks);
-    locks = NULL;
 }
 
 static RecordField *record_find(Value *record, const char *name) {
