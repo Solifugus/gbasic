@@ -11,8 +11,29 @@ typedef enum {
     VALUE_STRING,
     VALUE_BOOL,
     VALUE_ARRAY,
-    VALUE_RECORD
+    VALUE_RECORD,
+    VALUE_DATETIME
 } ValueKind;
+
+typedef enum {
+    PREC_YEAR = 1,
+    PREC_MONTH,
+    PREC_DAY,
+    PREC_HOUR,
+    PREC_MINUTE,
+    PREC_SECOND
+} DateTimePrecision;
+
+typedef struct {
+    int year;
+    int month;
+    int day;
+    int hour;
+    int minute;
+    int second;
+    int time_only;
+    DateTimePrecision precision;
+} DateTime;
 
 typedef struct Value Value;
 
@@ -35,6 +56,7 @@ struct Value {
             RecordField *fields;
             size_t count;
         } record;
+        DateTime datetime;
     } as;
 };
 
@@ -100,6 +122,13 @@ static Value value_record(RecordField *fields, size_t count) {
     value.kind = VALUE_RECORD;
     value.as.record.fields = fields;
     value.as.record.count = count;
+    return value;
+}
+
+static Value value_datetime(DateTime datetime) {
+    Value value = {0};
+    value.kind = VALUE_DATETIME;
+    value.as.datetime = datetime;
     return value;
 }
 
@@ -171,6 +200,8 @@ static int value_truthy(Value value) {
         return value.as.array.count > 0;
     case VALUE_RECORD:
         return value.as.record.count > 0;
+    case VALUE_DATETIME:
+        return 1;
     case VALUE_NULL:
         return 0;
     }
@@ -217,6 +248,50 @@ static void value_print(Value value) {
         break;
     case VALUE_RECORD:
         printf("{record}\n");
+        break;
+    case VALUE_DATETIME:
+        if (value.as.datetime.time_only) {
+            if (value.as.datetime.precision == PREC_HOUR) {
+                printf("%02d\n", value.as.datetime.hour);
+            } else if (value.as.datetime.precision == PREC_MINUTE) {
+                printf("%02d:%02d\n", value.as.datetime.hour, value.as.datetime.minute);
+            } else {
+                printf("%02d:%02d:%02d\n",
+                       value.as.datetime.hour,
+                       value.as.datetime.minute,
+                       value.as.datetime.second);
+            }
+        } else if (value.as.datetime.precision == PREC_YEAR) {
+            printf("%04d\n", value.as.datetime.year);
+        } else if (value.as.datetime.precision == PREC_MONTH) {
+            printf("%04d-%02d\n", value.as.datetime.year, value.as.datetime.month);
+        } else if (value.as.datetime.precision == PREC_DAY) {
+            printf("%04d-%02d-%02d\n",
+                   value.as.datetime.year,
+                   value.as.datetime.month,
+                   value.as.datetime.day);
+        } else if (value.as.datetime.precision == PREC_HOUR) {
+            printf("%04d-%02d-%02d %02d\n",
+                   value.as.datetime.year,
+                   value.as.datetime.month,
+                   value.as.datetime.day,
+                   value.as.datetime.hour);
+        } else if (value.as.datetime.precision == PREC_MINUTE) {
+            printf("%04d-%02d-%02d %02d:%02d\n",
+                   value.as.datetime.year,
+                   value.as.datetime.month,
+                   value.as.datetime.day,
+                   value.as.datetime.hour,
+                   value.as.datetime.minute);
+        } else {
+            printf("%04d-%02d-%02d %02d:%02d:%02d\n",
+                   value.as.datetime.year,
+                   value.as.datetime.month,
+                   value.as.datetime.day,
+                   value.as.datetime.hour,
+                   value.as.datetime.minute,
+                   value.as.datetime.second);
+        }
         break;
     }
 }
@@ -316,6 +391,177 @@ static int string_equal_caseless(const char *left, const char *right) {
 
 static int modifier_is(const char *modifier, const char *name) {
     return modifier && strcmp(modifier, name) == 0;
+}
+
+static int all_digits(const char *text, int start, int count) {
+    for (int i = 0; i < count; i++) {
+        if (!isdigit((unsigned char)text[start + i])) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int parse_int_span(const char *text, int start, int count) {
+    int value = 0;
+    for (int i = 0; i < count; i++) {
+        value = value * 10 + (text[start + i] - '0');
+    }
+    return value;
+}
+
+static int valid_date_parts(DateTime dt) {
+    if (dt.time_only) {
+        if (dt.hour < 0 || dt.hour > 23) {
+            return 0;
+        }
+        if (dt.precision >= PREC_MINUTE && (dt.minute < 0 || dt.minute > 59)) {
+            return 0;
+        }
+        if (dt.precision >= PREC_SECOND && (dt.second < 0 || dt.second > 59)) {
+            return 0;
+        }
+        return 1;
+    }
+    if (dt.month < 1 || dt.month > 12) {
+        return 0;
+    }
+    if (dt.precision >= PREC_DAY && (dt.day < 1 || dt.day > 31)) {
+        return 0;
+    }
+    if (dt.precision >= PREC_HOUR && (dt.hour < 0 || dt.hour > 23)) {
+        return 0;
+    }
+    if (dt.precision >= PREC_MINUTE && (dt.minute < 0 || dt.minute > 59)) {
+        return 0;
+    }
+    if (dt.precision >= PREC_SECOND && (dt.second < 0 || dt.second > 59)) {
+        return 0;
+    }
+    return 1;
+}
+
+static int parse_date_value(const char *text, DateTime *out) {
+    size_t len = strlen(text);
+    DateTime dt = {0};
+    dt.month = 1;
+    dt.day = 1;
+
+    if (len < 4 || !all_digits(text, 0, 4)) {
+        return 0;
+    }
+    dt.year = parse_int_span(text, 0, 4);
+    dt.precision = PREC_YEAR;
+    if (len == 4) {
+        *out = dt;
+        return 1;
+    }
+
+    if (len < 7 || text[4] != '-' || !all_digits(text, 5, 2)) {
+        return 0;
+    }
+    dt.month = parse_int_span(text, 5, 2);
+    dt.precision = PREC_MONTH;
+    if (len == 7) {
+        if (!valid_date_parts(dt)) {
+            return 0;
+        }
+        *out = dt;
+        return 1;
+    }
+
+    if (len < 10 || text[7] != '-' || !all_digits(text, 8, 2)) {
+        return 0;
+    }
+    dt.day = parse_int_span(text, 8, 2);
+    dt.precision = PREC_DAY;
+    if (len == 10) {
+        if (!valid_date_parts(dt)) {
+            return 0;
+        }
+        *out = dt;
+        return 1;
+    }
+
+    if (len < 13 || text[10] != ' ' || !all_digits(text, 11, 2)) {
+        return 0;
+    }
+    dt.hour = parse_int_span(text, 11, 2);
+    dt.precision = PREC_HOUR;
+    if (len == 13) {
+        if (!valid_date_parts(dt)) {
+            return 0;
+        }
+        *out = dt;
+        return 1;
+    }
+
+    if (len < 16 || text[13] != ':' || !all_digits(text, 14, 2)) {
+        return 0;
+    }
+    dt.minute = parse_int_span(text, 14, 2);
+    dt.precision = PREC_MINUTE;
+    if (len == 16) {
+        if (!valid_date_parts(dt)) {
+            return 0;
+        }
+        *out = dt;
+        return 1;
+    }
+
+    if (len != 19 || text[16] != ':' || !all_digits(text, 17, 2)) {
+        return 0;
+    }
+    dt.second = parse_int_span(text, 17, 2);
+    dt.precision = PREC_SECOND;
+    if (!valid_date_parts(dt)) {
+        return 0;
+    }
+    *out = dt;
+    return 1;
+}
+
+static int parse_time_value(const char *text, DateTime *out) {
+    size_t len = strlen(text);
+    DateTime dt = {0};
+    dt.time_only = 1;
+
+    if (len < 2 || !all_digits(text, 0, 2)) {
+        return 0;
+    }
+    dt.hour = parse_int_span(text, 0, 2);
+    dt.precision = PREC_HOUR;
+    if (len == 2) {
+        if (!valid_date_parts(dt)) {
+            return 0;
+        }
+        *out = dt;
+        return 1;
+    }
+
+    if (len < 5 || text[2] != ':' || !all_digits(text, 3, 2)) {
+        return 0;
+    }
+    dt.minute = parse_int_span(text, 3, 2);
+    dt.precision = PREC_MINUTE;
+    if (len == 5) {
+        if (!valid_date_parts(dt)) {
+            return 0;
+        }
+        *out = dt;
+        return 1;
+    }
+
+    if (len != 8 || text[5] != ':' || !all_digits(text, 6, 2)) {
+        return 0;
+    }
+    dt.second = parse_int_span(text, 6, 2);
+    dt.precision = PREC_SECOND;
+    if (!valid_date_parts(dt)) {
+        return 0;
+    }
+    *out = dt;
+    return 1;
 }
 
 static Value eval_expr(AstExpr *expr);
@@ -426,7 +672,44 @@ static Value eval_comparison(AstExpr *expr, Value left, Value right) {
     const char *op = expr->as.binary.op;
     int result = 0;
 
-    if (modifier_is(expr->as.binary.modifier, "caseless") &&
+    if (left.kind == VALUE_DATETIME && right.kind == VALUE_DATETIME) {
+        int cmp = 0;
+        DateTimePrecision precision =
+            left.as.datetime.precision < right.as.datetime.precision
+                ? left.as.datetime.precision
+                : right.as.datetime.precision;
+
+        if (left.as.datetime.time_only != right.as.datetime.time_only) {
+            cmp = 1;
+        } else if (!left.as.datetime.time_only && precision >= PREC_YEAR &&
+                   left.as.datetime.year != right.as.datetime.year) {
+            cmp = left.as.datetime.year < right.as.datetime.year ? -1 : 1;
+        } else if (!left.as.datetime.time_only && precision >= PREC_MONTH &&
+                   left.as.datetime.month != right.as.datetime.month) {
+            cmp = left.as.datetime.month < right.as.datetime.month ? -1 : 1;
+        } else if (!left.as.datetime.time_only && precision >= PREC_DAY &&
+                   left.as.datetime.day != right.as.datetime.day) {
+            cmp = left.as.datetime.day < right.as.datetime.day ? -1 : 1;
+        } else if (precision >= PREC_HOUR &&
+                   left.as.datetime.hour != right.as.datetime.hour) {
+            cmp = left.as.datetime.hour < right.as.datetime.hour ? -1 : 1;
+        } else if (precision >= PREC_MINUTE &&
+                   left.as.datetime.minute != right.as.datetime.minute) {
+            cmp = left.as.datetime.minute < right.as.datetime.minute ? -1 : 1;
+        } else if (precision >= PREC_SECOND &&
+                   left.as.datetime.second != right.as.datetime.second) {
+            cmp = left.as.datetime.second < right.as.datetime.second ? -1 : 1;
+        }
+
+        if (strcmp(op, "=") == 0) result = cmp == 0;
+        else if (strcmp(op, "!=") == 0) result = cmp != 0;
+        else if (strcmp(op, ">") == 0) result = cmp > 0;
+        else if (strcmp(op, "<") == 0) result = cmp < 0;
+        else if (strcmp(op, ">=") == 0) result = cmp >= 0;
+        else if (strcmp(op, "<=") == 0) result = cmp <= 0;
+        else if (strcmp(op, "!>") == 0) result = !(cmp > 0);
+        else if (strcmp(op, "!<") == 0) result = !(cmp < 0);
+    } else if (modifier_is(expr->as.binary.modifier, "caseless") &&
         left.kind == VALUE_STRING &&
         right.kind == VALUE_STRING) {
         int equal = string_equal_caseless(left.as.string, right.as.string);
@@ -645,6 +928,26 @@ static Value apply_assignment_modifier(const char *modifier, Value value) {
         double amount = value_number_or_zero(value);
         value_free(value);
         return value_number(amount);
+    }
+    if (strcmp(modifier, "date") == 0) {
+        DateTime datetime;
+        if (value.kind != VALUE_STRING || !parse_date_value(value.as.string, &datetime)) {
+            fprintf(stderr, "date modifier expects an ISO-like date string\n");
+            value_free(value);
+            return value_null();
+        }
+        value_free(value);
+        return value_datetime(datetime);
+    }
+    if (strcmp(modifier, "time") == 0) {
+        DateTime datetime;
+        if (value.kind != VALUE_STRING || !parse_time_value(value.as.string, &datetime)) {
+            fprintf(stderr, "time modifier expects an ISO-like time string\n");
+            value_free(value);
+            return value_null();
+        }
+        value_free(value);
+        return value_datetime(datetime);
     }
 
     fprintf(stderr, "unsupported assignment modifier: %s\n", modifier);
