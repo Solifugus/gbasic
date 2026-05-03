@@ -132,13 +132,14 @@ static void yyerror(const char *message);
 
 %token <number> NUMBER
 %token <text> IDENT STRING
-%token IF THEN END PRINT TRUE FALSE AND OR NOT WITH FOR IN FUNCTION RETURN GOTO GOSUB WATCH WITHOUT WATCHERS
+%token IF THEN END PRINT TRUE FALSE AND OR NOT WITH FOR IN FUNCTION RETURN GOTO GOSUB WATCH WITHOUT WATCHERS ON RESUME NEXT STOP ERROR_VALUE
 %token OP_EQ OP_NE OP_GT OP_LT OP_GE OP_LE OP_NGT OP_NLT
 %token PLUS MINUS STAR SLASH LPAREN MOD_LPAREN RPAREN LBRACKET RBRACKET LBRACE RBRACE COMMA DOT COLON NEWLINE
 %define parse.error verbose
+%locations
 
 %type <stmt_list> program statement_list
-%type <stmt> statement assignment print_statement call_statement with_lock_statement for_each_statement function_statement return_statement label_statement goto_statement gosub_statement watch_statement without_watchers_statement if_statement inline_statement
+%type <stmt> statement assignment print_statement call_statement with_lock_statement for_each_statement function_statement return_statement label_statement goto_statement gosub_statement watch_statement without_watchers_statement on_error_statement error_statement if_statement inline_statement
 %type <expr> expression or_expression and_expression comparison_expression
 %type <expr> additive_expression multiplicative_expression unary_expression postfix_expression primary
 %type <expr_list> argument_list argument_list_opt
@@ -160,19 +161,21 @@ statement_list
     ;
 
 statement
-    : assignment NEWLINE { $$ = $1; }
-    | print_statement NEWLINE { $$ = $1; }
-    | call_statement NEWLINE { $$ = $1; }
-    | with_lock_statement { $$ = $1; }
-    | for_each_statement { $$ = $1; }
-    | function_statement { $$ = $1; }
-    | watch_statement { $$ = $1; }
-    | without_watchers_statement { $$ = $1; }
-    | return_statement NEWLINE { $$ = $1; }
-    | label_statement NEWLINE { $$ = $1; }
-    | goto_statement NEWLINE { $$ = $1; }
-    | gosub_statement NEWLINE { $$ = $1; }
-    | if_statement { $$ = $1; }
+    : assignment NEWLINE { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
+    | print_statement NEWLINE { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
+    | call_statement NEWLINE { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
+    | with_lock_statement { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
+    | for_each_statement { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
+    | function_statement { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
+    | watch_statement { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
+    | without_watchers_statement { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
+    | on_error_statement NEWLINE { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
+    | error_statement NEWLINE { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
+    | return_statement NEWLINE { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
+    | label_statement NEWLINE { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
+    | goto_statement NEWLINE { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
+    | gosub_statement NEWLINE { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
+    | if_statement { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
     ;
 
 assignment
@@ -191,6 +194,16 @@ print_statement
 
 call_statement
     : IDENT LPAREN argument_list_opt RPAREN { $$ = ast_expr_stmt(ast_call($1, $3)); }
+    | ERROR_VALUE DOT IDENT LPAREN argument_list_opt RPAREN {
+        size_t length = strlen("error.") + strlen($3);
+        char *name = malloc(length + 1);
+        if (!name) {
+            abort();
+        }
+        snprintf(name, length + 1, "error.%s", $3);
+        free($3);
+        $$ = ast_expr_stmt(ast_call(name, $5));
+      }
     ;
 
 with_lock_statement
@@ -227,6 +240,16 @@ without_watchers_statement
     : WITHOUT WATCHERS NEWLINE statement_list END WITHOUT NEWLINE {
         $$ = ast_without_watchers($4);
       }
+    ;
+
+on_error_statement
+    : ON ERROR_VALUE GOTO IDENT { $$ = ast_on_error_goto($4); }
+    | ON ERROR_VALUE RESUME NEXT { $$ = ast_on_error_resume_next(); }
+    | ON ERROR_VALUE STOP { $$ = ast_on_error_stop(); }
+    ;
+
+error_statement
+    : ERROR_VALUE expression { $$ = ast_error($2); }
     ;
 
 return_statement
@@ -321,6 +344,7 @@ primary
     | STRING { $$ = ast_string($1); }
     | IDENT { $$ = ast_ident($1); }
     | IDENT LPAREN argument_list_opt RPAREN { $$ = ast_call($1, $3); }
+    | ERROR_VALUE { $$ = ast_ident(copy_const("error")); }
     | TRUE { $$ = ast_bool(1); }
     | FALSE { $$ = ast_bool(0); }
     | LPAREN expression RPAREN { $$ = $2; }
@@ -389,6 +413,10 @@ int parse_source(const char *source, AstStmtList *out_program) {
 
 static int yylex(void) {
     Token token = lexer_next(active_lexer);
+    yylloc.first_line = token.line;
+    yylloc.first_column = token.column;
+    yylloc.last_line = token.line;
+    yylloc.last_column = token.column + token.length;
 
     switch (token.type) {
     case TOKEN_EOF: return 0;
@@ -420,6 +448,11 @@ static int yylex(void) {
     case TOKEN_WATCH: return WATCH;
     case TOKEN_WITHOUT: return WITHOUT;
     case TOKEN_WATCHERS: return WATCHERS;
+    case TOKEN_ON: return ON;
+    case TOKEN_RESUME: return RESUME;
+    case TOKEN_NEXT: return NEXT;
+    case TOKEN_STOP: return STOP;
+    case TOKEN_ERROR_VALUE: return ERROR_VALUE;
     case TOKEN_OP_EQ: return OP_EQ;
     case TOKEN_OP_NE: return OP_NE;
     case TOKEN_OP_GT: return OP_GT;

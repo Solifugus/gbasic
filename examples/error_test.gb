@@ -1,0 +1,65 @@
+on error resume next
+
+print missing_value
+if error then
+    print error.message
+    print error.line
+    print error.column
+    print error.code
+    print error.source
+    error.clear()
+end if
+
+x = 1 / 0
+if error then
+    print error.message
+    error.clear()
+end if
+
+unknown()
+if error then
+    print error.source
+    error.clear()
+end if
+
+f (file)= "examples/no_such_error_file.txt"
+print read(f)
+if error then
+    print error.source
+    error.clear()
+end if
+
+on error goto failed
+error "explicit failure"
+print "not reached"
+
+failed:
+print error.message
+if error then
+    print "error still set"
+end if
+error.clear()
+
+function failer()
+    x = 1 / 0
+    return 99
+end function
+
+on error resume next
+print failer()
+if error then
+    print "function error propagated"
+    error.clear()
+end if
+
+lockfile (file)= "examples/tmp_error_lock_test.txt"
+with lock(lockfile)
+    error "locked failure"
+end with
+if error then
+    print error.message
+    error.clear()
+end if
+
+on error stop
+print "done"

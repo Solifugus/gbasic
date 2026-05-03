@@ -257,11 +257,43 @@ AstStmt *ast_without_watchers(AstStmtList body) {
     return stmt;
 }
 
+AstStmt *ast_on_error_goto(char *label) {
+    AstStmt *stmt = xmalloc(sizeof(*stmt));
+    stmt->kind = AST_STMT_ON_ERROR_GOTO;
+    stmt->as.on_error_label = label;
+    return stmt;
+}
+
+AstStmt *ast_on_error_resume_next(void) {
+    AstStmt *stmt = xmalloc(sizeof(*stmt));
+    stmt->kind = AST_STMT_ON_ERROR_RESUME_NEXT;
+    return stmt;
+}
+
+AstStmt *ast_on_error_stop(void) {
+    AstStmt *stmt = xmalloc(sizeof(*stmt));
+    stmt->kind = AST_STMT_ON_ERROR_STOP;
+    return stmt;
+}
+
+AstStmt *ast_error(AstExpr *message) {
+    AstStmt *stmt = xmalloc(sizeof(*stmt));
+    stmt->kind = AST_STMT_ERROR;
+    stmt->as.error_message = message;
+    return stmt;
+}
+
 AstStmt *ast_if(AstExpr *condition, AstStmtList body) {
     AstStmt *stmt = xmalloc(sizeof(*stmt));
     stmt->kind = AST_STMT_IF;
     stmt->as.if_stmt.condition = condition;
     stmt->as.if_stmt.body = body;
+    return stmt;
+}
+
+AstStmt *ast_stmt_position(AstStmt *stmt, int line, int column) {
+    stmt->line = line;
+    stmt->column = column;
     return stmt;
 }
 
@@ -445,6 +477,19 @@ static void dump_stmt(AstStmt *stmt, int indent) {
             dump_stmt(stmt->as.without_watchers.items[i], indent + 2);
         }
         break;
+    case AST_STMT_ON_ERROR_GOTO:
+        printf("OnErrorGoto %s\n", stmt->as.on_error_label);
+        break;
+    case AST_STMT_ON_ERROR_RESUME_NEXT:
+        printf("OnErrorResumeNext\n");
+        break;
+    case AST_STMT_ON_ERROR_STOP:
+        printf("OnErrorStop\n");
+        break;
+    case AST_STMT_ERROR:
+        printf("Error\n");
+        dump_expr(stmt->as.error_message, indent + 1);
+        break;
     case AST_STMT_IF:
         printf("If\n");
         dump_indent(indent + 1);
@@ -586,6 +631,15 @@ static void free_stmt(AstStmt *stmt) {
         break;
     case AST_STMT_WITHOUT_WATCHERS:
         ast_free_program(stmt->as.without_watchers);
+        break;
+    case AST_STMT_ON_ERROR_GOTO:
+        free(stmt->as.on_error_label);
+        break;
+    case AST_STMT_ON_ERROR_RESUME_NEXT:
+    case AST_STMT_ON_ERROR_STOP:
+        break;
+    case AST_STMT_ERROR:
+        free_expr(stmt->as.error_message);
         break;
     case AST_STMT_IF:
         free_expr(stmt->as.if_stmt.condition);

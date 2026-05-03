@@ -19,6 +19,7 @@ examples=(
     goto_test.gb
     gosub_test.gb
     watch_test.gb
+    error_test.gb
 )
 
 for example in "${examples[@]}"; do

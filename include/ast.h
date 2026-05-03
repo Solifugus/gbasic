@@ -17,6 +17,10 @@ typedef enum {
     AST_STMT_GOSUB,
     AST_STMT_WATCH,
     AST_STMT_WITHOUT_WATCHERS,
+    AST_STMT_ON_ERROR_GOTO,
+    AST_STMT_ON_ERROR_RESUME_NEXT,
+    AST_STMT_ON_ERROR_STOP,
+    AST_STMT_ERROR,
     AST_STMT_IF
 } AstStmtKind;
 
@@ -110,6 +114,8 @@ struct AstExpr {
 
 struct AstStmt {
     AstStmtKind kind;
+    int line;
+    int column;
     union {
         struct {
             char *name;
@@ -146,6 +152,8 @@ struct AstStmt {
             AstStmtList body;
         } watch;
         AstStmtList without_watchers;
+        char *on_error_label;
+        AstExpr *error_message;
         struct {
             AstExpr *condition;
             AstStmtList body;
@@ -188,7 +196,12 @@ AstStmt *ast_goto(char *name);
 AstStmt *ast_gosub(char *name);
 AstStmt *ast_watch(AstNameList names, AstStmtList body);
 AstStmt *ast_without_watchers(AstStmtList body);
+AstStmt *ast_on_error_goto(char *label);
+AstStmt *ast_on_error_resume_next(void);
+AstStmt *ast_on_error_stop(void);
+AstStmt *ast_error(AstExpr *message);
 AstStmt *ast_if(AstExpr *condition, AstStmtList body);
+AstStmt *ast_stmt_position(AstStmt *stmt, int line, int column);
 
 void ast_dump(AstStmtList program);
 void ast_free_program(AstStmtList program);

@@ -97,6 +97,21 @@ typedef struct {
     AstStmt *stmt;
 } WatcherDef;
 
+typedef enum {
+    ERROR_MODE_STOP,
+    ERROR_MODE_GOTO,
+    ERROR_MODE_RESUME_NEXT
+} ErrorMode;
+
+typedef struct {
+    int active;
+    char *message;
+    int line;
+    int column;
+    int code;
+    char *source;
+} RuntimeError;
+
 typedef struct {
     int did_return;
     int return_has_value;
@@ -104,6 +119,7 @@ typedef struct {
     char *goto_label;
     int did_gosub;
     char *gosub_label;
+    int did_stop;
     Value value;
 } EvalResult;
 
@@ -133,6 +149,14 @@ static size_t watcher_queue_count = 0;
 static int function_depth = 0;
 static int watcher_suppressed = 0;
 static int watcher_draining = 0;
+static RuntimeError current_error = {0};
+static ErrorMode error_mode = ERROR_MODE_STOP;
+static char *error_goto_label = NULL;
+static int runtime_stopped = 0;
+static int error_generation = 0;
+static char *pending_error_goto_label = NULL;
+static int current_line = 0;
+static int current_column = 0;
 
 static char *copy_string(const char *text) {
     size_t length = strlen(text);
@@ -243,6 +267,89 @@ static EvalResult eval_gosub(const char *label) {
     result.gosub_label = copy_string(label);
     result.value = value_null();
     return result;
+}
+
+static EvalResult eval_stop(void) {
+    EvalResult result = {0};
+    result.did_stop = 1;
+    result.value = value_null();
+    return result;
+}
+
+static void error_clear_state(void) {
+    free(current_error.message);
+    free(current_error.source);
+    memset(&current_error, 0, sizeof(current_error));
+}
+
+static void error_set_state(const char *message, int code, const char *source) {
+    error_clear_state();
+    current_error.active = 1;
+    current_error.message = copy_string(message);
+    current_error.line = current_line;
+    current_error.column = current_column;
+    current_error.code = code;
+    current_error.source = copy_string(source ? source : "runtime");
+}
+
+static void runtime_error_raise(const char *message, int code, const char *source) {
+    error_set_state(message, code, source);
+    error_generation++;
+
+    if (error_mode == ERROR_MODE_GOTO && error_goto_label) {
+        free(pending_error_goto_label);
+        pending_error_goto_label = error_goto_label;
+        error_goto_label = NULL;
+        error_mode = ERROR_MODE_STOP;
+        return;
+    }
+
+    if (error_mode == ERROR_MODE_STOP) {
+        fprintf(stderr, "runtime error at %d:%d: %s\n",
+                current_error.line,
+                current_error.column,
+                current_error.message);
+        runtime_stopped = 1;
+    }
+}
+
+static EvalResult eval_error_result(void) {
+    if (pending_error_goto_label) {
+        char *label = pending_error_goto_label;
+        pending_error_goto_label = NULL;
+        EvalResult result = eval_goto(label);
+        free(label);
+        return result;
+    }
+    if (runtime_stopped) {
+        return eval_stop();
+    }
+    return eval_no_result();
+}
+
+static int error_action_pending(void) {
+    return pending_error_goto_label != NULL || runtime_stopped;
+}
+
+static Value value_error_object(void) {
+    RecordField *fields = malloc(sizeof(RecordField) * 5);
+    if (!fields) {
+        abort();
+    }
+    const char *names[] = {"message", "line", "column", "code", "source"};
+    for (size_t i = 0; i < 5; i++) {
+        fields[i].name = copy_string(names[i]);
+        fields[i].value = malloc(sizeof(Value));
+        if (!fields[i].value) {
+            abort();
+        }
+    }
+    *fields[0].value = value_string(current_error.active ? current_error.message : "");
+    *fields[1].value = value_number(current_error.active ? current_error.line : 0);
+    *fields[2].value = value_number(current_error.active ? current_error.column : 0);
+    *fields[3].value = value_number(current_error.active ? current_error.code : 0);
+    *fields[4].value = value_string(current_error.active ? current_error.source : "");
+    return value_record(fields, 5);
 }
 
 static Value value_copy(Value value) {
@@ -475,9 +582,14 @@ static void env_set(const char *name, Value value) {
 }
 
 static Value env_get(const char *name) {
+    if (strcmp(name, "error") == 0) {
+        return value_bool(current_error.active);
+    }
     Symbol *symbol = env_find(name);
     if (!symbol) {
-        fprintf(stderr, "undefined variable: %s\n", name);
+        char message[256];
+        snprintf(message, sizeof(message), "undefined variable: %s", name);
+        runtime_error_raise(message, 1001, "undefined variable");
         return value_null();
     }
     return value_copy(symbol->value);
@@ -1107,12 +1219,20 @@ static Value eval_file_call(AstExpr *expr) {
         strcmp(name, "lock") == 0 ||
         strcmp(name, "unlock") == 0) {
         if (expr->as.call.args.count != 1) {
-            fprintf(stderr, "%s expects one file argument\n", name);
+            char message[256];
+            snprintf(message, sizeof(message), "%s expects one file argument", name);
+            runtime_error_raise(message, 1004, "file operation");
             return value_null();
         }
         Value file_value = eval_expr(expr->as.call.args.items[0]);
+        if (error_action_pending()) {
+            value_free(file_value);
+            return value_null();
+        }
         if (file_value.kind != VALUE_FILE) {
-            fprintf(stderr, "%s expects a file reference\n", name);
+            char message[256];
+            snprintf(message, sizeof(message), "%s expects a file reference", name);
+            runtime_error_raise(message, 1004, "file operation");
             value_free(file_value);
             return value_null();
         }
@@ -1140,6 +1260,9 @@ static Value eval_file_call(AstExpr *expr) {
         long size = 0;
         char *text = read_whole_file(file_value.as.file_path, &size);
         if (!text) {
+            char message[512];
+            snprintf(message, sizeof(message), "could not read file: %s", file_value.as.file_path);
+            runtime_error_raise(message, 1004, "file operation");
             value_free(file_value);
             return value_null();
         }
@@ -1173,19 +1296,31 @@ static Value eval_file_call(AstExpr *expr) {
 
     if (strcmp(name, "write") == 0 || strcmp(name, "append") == 0) {
         if (expr->as.call.args.count != 2) {
-            fprintf(stderr, "%s expects file and text arguments\n", name);
+            char message[256];
+            snprintf(message, sizeof(message), "%s expects file and text arguments", name);
+            runtime_error_raise(message, 1004, "file operation");
             return value_null();
         }
         Value file_value = eval_expr(expr->as.call.args.items[0]);
         Value text_value = eval_expr(expr->as.call.args.items[1]);
+        if (error_action_pending()) {
+            value_free(file_value);
+            value_free(text_value);
+            return value_null();
+        }
         if (file_value.kind != VALUE_FILE || text_value.kind != VALUE_STRING) {
-            fprintf(stderr, "%s expects a file reference and string\n", name);
+            char message[256];
+            snprintf(message, sizeof(message), "%s expects a file reference and string", name);
+            runtime_error_raise(message, 1004, "file operation");
             value_free(file_value);
             value_free(text_value);
             return value_null();
         }
         FILE *file = fopen(file_value.as.file_path, strcmp(name, "write") == 0 ? "wb" : "ab");
         if (!file) {
+            char message[512];
+            snprintf(message, sizeof(message), "could not write file: %s", file_value.as.file_path);
+            runtime_error_raise(message, 1004, "file operation");
             value_free(file_value);
             value_free(text_value);
             return value_bool(0);
@@ -1390,6 +1525,15 @@ static Value eval_user_function(AstExpr *expr, FunctionDef *function) {
 }
 
 static Value eval_call(AstExpr *expr) {
+    if (strcmp(expr->as.call.name, "error.clear") == 0) {
+        if (expr->as.call.args.count != 0) {
+            runtime_error_raise("error.clear expects no arguments", 1003, "invalid function call");
+            return value_null();
+        }
+        error_clear_state();
+        return value_null();
+    }
+
     if (strcmp(expr->as.call.name, "exists") == 0 ||
         strcmp(expr->as.call.name, "read") == 0 ||
         strcmp(expr->as.call.name, "write") == 0 ||
@@ -1413,13 +1557,17 @@ static Value eval_call(AstExpr *expr) {
     }
 
     if (expr->as.call.args.count != 1) {
-        fprintf(stderr, "%s expects one array argument\n", expr->as.call.name);
+        char message[256];
+        snprintf(message, sizeof(message), "invalid function call: %s", expr->as.call.name);
+        runtime_error_raise(message, 1003, "invalid function call");
         return value_null();
     }
 
     Value arg = eval_expr(expr->as.call.args.items[0]);
     if (!array_is_numeric(arg)) {
-        fprintf(stderr, "%s expects a numeric array\n", expr->as.call.name);
+        char message[256];
+        snprintf(message, sizeof(message), "%s expects a numeric array", expr->as.call.name);
+        runtime_error_raise(message, 1003, "invalid function call");
         value_free(arg);
         return value_null();
     }
@@ -1431,7 +1579,9 @@ static Value eval_call(AstExpr *expr) {
     if (strcmp(name, "len") == 0) {
         result = (double)count;
     } else if (count == 0) {
-        fprintf(stderr, "%s expects a non-empty array\n", name);
+        char message[256];
+        snprintf(message, sizeof(message), "%s expects a non-empty array", name);
+        runtime_error_raise(message, 1003, "invalid function call");
         value_free(arg);
         return value_null();
     } else if (strcmp(name, "sum") == 0 || strcmp(name, "mean") == 0) {
@@ -1486,7 +1636,9 @@ static Value eval_call(AstExpr *expr) {
             }
         }
     } else {
-        fprintf(stderr, "unknown function: %s\n", name);
+        char message[256];
+        snprintf(message, sizeof(message), "unknown function: %s", name);
+        runtime_error_raise(message, 1003, "invalid function call");
         value_free(arg);
         return value_null();
     }
@@ -1603,7 +1755,16 @@ static Value eval_binary(AstExpr *expr) {
     }
 
     Value left = eval_expr(expr->as.binary.left);
+    if (error_action_pending()) {
+        value_free(left);
+        return value_null();
+    }
     Value right = eval_expr(expr->as.binary.right);
+    if (error_action_pending()) {
+        value_free(left);
+        value_free(right);
+        return value_null();
+    }
 
     if (strcmp(op, "=") == 0 ||
         strcmp(op, "!=") == 0 ||
@@ -1664,7 +1825,13 @@ static Value eval_binary(AstExpr *expr) {
     if (strcmp(op, "+") == 0) return value_number(a + b);
     if (strcmp(op, "-") == 0) return value_number(a - b);
     if (strcmp(op, "*") == 0) return value_number(a * b);
-    if (strcmp(op, "/") == 0) return value_number(a / b);
+    if (strcmp(op, "/") == 0) {
+        if (b == 0.0) {
+            runtime_error_raise("division by zero", 1002, "division");
+            return value_null();
+        }
+        return value_number(a / b);
+    }
 
     return value_null();
 }
@@ -1725,6 +1892,11 @@ static Value eval_expr(AstExpr *expr) {
     case AST_EXPR_INDEX: {
         Value array = eval_expr(expr->as.index.array);
         Value index = eval_expr(expr->as.index.index);
+        if (error_action_pending()) {
+            value_free(array);
+            value_free(index);
+            return value_null();
+        }
         if (array.kind == VALUE_ARRAY && index.kind == VALUE_NUMBER) {
             int position = (int)index.as.number;
             if (position < 0 || (size_t)position >= array.as.array.count) {
@@ -1757,15 +1929,29 @@ static Value eval_expr(AstExpr *expr) {
         return value_null();
     }
     case AST_EXPR_FIELD: {
+        if (expr->as.field.object->kind == AST_EXPR_IDENT &&
+            strcmp(expr->as.field.object->as.ident, "error") == 0) {
+            Value object = value_error_object();
+            RecordField *field = record_find(&object, expr->as.field.field);
+            Value result = field ? value_copy(*field->value) : value_null();
+            value_free(object);
+            return result;
+        }
         Value object = eval_expr(expr->as.field.object);
+        if (error_action_pending()) {
+            value_free(object);
+            return value_null();
+        }
         if (object.kind != VALUE_RECORD) {
-            fprintf(stderr, "field access expects a record\n");
+            runtime_error_raise("field access expects a record", 1003, "field access");
             value_free(object);
             return value_null();
         }
         RecordField *field = record_find(&object, expr->as.field.field);
         if (!field) {
-            fprintf(stderr, "unknown record field: %s\n", expr->as.field.field);
+            char message[256];
+            snprintf(message, sizeof(message), "unknown record field: %s", expr->as.field.field);
+            runtime_error_raise(message, 1003, "field access");
             value_free(object);
             return value_null();
         }
@@ -1855,11 +2041,28 @@ static Value apply_assignment_modifier(const char *modifier, Value value) {
 
 static EvalResult eval_stmt(AstStmt *stmt) {
     EvalResult no_result = eval_no_result();
+    int previous_line = current_line;
+    int previous_column = current_column;
+    current_line = stmt->line;
+    current_column = stmt->column;
 
     switch (stmt->kind) {
     case AST_STMT_ASSIGN: {
+        int before_error = error_generation;
         Value value = eval_expr(stmt->as.assign.value);
+        if (error_generation != before_error) {
+            value_free(value);
+            current_line = previous_line;
+            current_column = previous_column;
+            return eval_error_result();
+        }
         value = apply_assignment_modifier(stmt->as.assign.modifier, value);
+        if (error_generation != before_error) {
+            value_free(value);
+            current_line = previous_line;
+            current_column = previous_column;
+            return eval_error_result();
+        }
         env_set(stmt->as.assign.name, value);
         watcher_trigger(stmt->as.assign.name);
         break;
@@ -1869,37 +2072,71 @@ static EvalResult eval_stmt(AstStmt *stmt) {
         if (!symbol || symbol->value.kind != VALUE_RECORD) {
             fprintf(stderr, "field assignment expects a record variable: %s\n",
                     stmt->as.field_assign.name);
+            current_line = previous_line;
+            current_column = previous_column;
             return no_result;
         }
+        int before_error = error_generation;
         Value value = eval_expr(stmt->as.field_assign.value);
+        if (error_generation != before_error) {
+            value_free(value);
+            current_line = previous_line;
+            current_column = previous_column;
+            return eval_error_result();
+        }
         record_set(&symbol->value, stmt->as.field_assign.field, value);
         break;
     }
     case AST_STMT_PRINT: {
+        int before_error = error_generation;
         Value value = eval_expr(stmt->as.print);
+        if (error_generation != before_error) {
+            value_free(value);
+            current_line = previous_line;
+            current_column = previous_column;
+            return eval_error_result();
+        }
         value_print(value);
         value_free(value);
         break;
     }
     case AST_STMT_EXPR: {
+        int before_error = error_generation;
         Value value = eval_expr(stmt->as.expr_stmt);
+        if (error_generation != before_error) {
+            value_free(value);
+            current_line = previous_line;
+            current_column = previous_column;
+            return eval_error_result();
+        }
         value_free(value);
         break;
     }
     case AST_STMT_WITH_LOCK: {
+        int before_error = error_generation;
         Value file_value = eval_expr(stmt->as.with_lock.file);
-        if (file_value.kind != VALUE_FILE) {
-            fprintf(stderr, "with lock expects a file reference\n");
+        if (error_generation != before_error) {
             value_free(file_value);
-            break;
+            current_line = previous_line;
+            current_column = previous_column;
+            return eval_error_result();
+        }
+        if (file_value.kind != VALUE_FILE) {
+            runtime_error_raise("with lock expects a file reference", 1004, "file operation");
+            value_free(file_value);
+            current_line = previous_line;
+            current_column = previous_column;
+            return eval_error_result();
         }
         char *path = copy_string(file_value.as.file_path);
         value_free(file_value);
         if (lock_path(path)) {
             EvalResult result = eval_stmt_list(stmt->as.with_lock.body);
             unlock_path(path);
-            if (result.did_return || result.did_goto || result.did_gosub) {
+            if (result.did_return || result.did_goto || result.did_gosub || result.did_stop) {
                 free(path);
+                current_line = previous_line;
+                current_column = previous_column;
                 return result;
             }
         }
@@ -1907,17 +2144,28 @@ static EvalResult eval_stmt(AstStmt *stmt) {
         break;
     }
     case AST_STMT_FOR_EACH: {
+        int before_error = error_generation;
         Value iterable = eval_expr(stmt->as.for_each.iterable);
-        if (iterable.kind != VALUE_ARRAY) {
-            fprintf(stderr, "for in expects an array\n");
+        if (error_generation != before_error) {
             value_free(iterable);
-            break;
+            current_line = previous_line;
+            current_column = previous_column;
+            return eval_error_result();
+        }
+        if (iterable.kind != VALUE_ARRAY) {
+            runtime_error_raise("for in expects an array", 1003, "invalid operation");
+            value_free(iterable);
+            current_line = previous_line;
+            current_column = previous_column;
+            return eval_error_result();
         }
         for (size_t i = 0; i < iterable.as.array.count; i++) {
             env_set(stmt->as.for_each.name, value_copy(iterable.as.array.items[i]));
             EvalResult result = eval_stmt_list(stmt->as.for_each.body);
-            if (result.did_return || result.did_goto || result.did_gosub) {
+            if (result.did_return || result.did_goto || result.did_gosub || result.did_stop) {
                 value_free(iterable);
+                current_line = previous_line;
+                current_column = previous_column;
                 return result;
             }
         }
@@ -1934,14 +2182,59 @@ static EvalResult eval_stmt(AstStmt *stmt) {
         watcher_suppressed++;
         EvalResult result = eval_stmt_list(stmt->as.without_watchers);
         watcher_suppressed--;
-        if (result.did_return || result.did_goto || result.did_gosub) {
+        if (result.did_return || result.did_goto || result.did_gosub || result.did_stop) {
+            current_line = previous_line;
+            current_column = previous_column;
             return result;
         }
         break;
     }
+    case AST_STMT_ON_ERROR_GOTO:
+        free(error_goto_label);
+        error_goto_label = copy_string(stmt->as.on_error_label);
+        error_mode = ERROR_MODE_GOTO;
+        break;
+    case AST_STMT_ON_ERROR_RESUME_NEXT:
+        free(error_goto_label);
+        error_goto_label = NULL;
+        error_mode = ERROR_MODE_RESUME_NEXT;
+        break;
+    case AST_STMT_ON_ERROR_STOP:
+        free(error_goto_label);
+        error_goto_label = NULL;
+        error_mode = ERROR_MODE_STOP;
+        break;
+    case AST_STMT_ERROR: {
+        int before_error = error_generation;
+        Value value = eval_expr(stmt->as.error_message);
+        if (error_generation != before_error) {
+            value_free(value);
+            current_line = previous_line;
+            current_column = previous_column;
+            return eval_error_result();
+        }
+        const char *message = value.kind == VALUE_STRING ? value.as.string : "explicit error";
+        runtime_error_raise(message, 2000, "explicit error");
+        value_free(value);
+        if (error_action_pending()) {
+            current_line = previous_line;
+            current_column = previous_column;
+            return eval_error_result();
+        }
+        break;
+    }
     case AST_STMT_RETURN: {
-        return eval_return(stmt->as.return_expr ? eval_expr(stmt->as.return_expr) : value_null(),
-                           stmt->as.return_expr != NULL);
+        int before_error = error_generation;
+        Value value = stmt->as.return_expr ? eval_expr(stmt->as.return_expr) : value_null();
+        if (error_generation != before_error) {
+            value_free(value);
+            current_line = previous_line;
+            current_column = previous_column;
+            return eval_error_result();
+        }
+        current_line = previous_line;
+        current_column = previous_column;
+        return eval_return(value, stmt->as.return_expr != NULL);
     }
     case AST_STMT_LABEL:
         break;
@@ -1960,12 +2253,21 @@ static EvalResult eval_stmt(AstStmt *stmt) {
         return eval_gosub(stmt->as.gosub_label);
     }
     case AST_STMT_IF: {
+        int before_error = error_generation;
         Value condition = eval_expr(stmt->as.if_stmt.condition);
+        if (error_generation != before_error) {
+            value_free(condition);
+            current_line = previous_line;
+            current_column = previous_column;
+            return eval_error_result();
+        }
         int truth = value_truthy(condition);
         value_free(condition);
         if (truth) {
             EvalResult result = eval_stmt_list(stmt->as.if_stmt.body);
-            if (result.did_return || result.did_goto || result.did_gosub) {
+            if (result.did_return || result.did_goto || result.did_gosub || result.did_stop) {
+                current_line = previous_line;
+                current_column = previous_column;
                 return result;
             }
         }
@@ -1973,15 +2275,28 @@ static EvalResult eval_stmt(AstStmt *stmt) {
     }
     }
 
+    current_line = previous_line;
+    current_column = previous_column;
     return no_result;
 }
 
 static EvalResult eval_stmt_list(AstStmtList statements) {
-    for (size_t i = 0; i < statements.count; i++) {
-        EvalResult result = eval_stmt(statements.items[i]);
-        if (result.did_return || result.did_goto || result.did_gosub) {
+    size_t pc = 0;
+    while (pc < statements.count) {
+        EvalResult result = eval_stmt(statements.items[pc]);
+        if (result.did_goto) {
+            size_t target = 0;
+            if (find_function_label(statements, result.goto_label, &target)) {
+                free(result.goto_label);
+                pc = target + 1;
+                continue;
+            }
             return result;
         }
+        if (result.did_return || result.did_gosub || result.did_stop) {
+            return result;
+        }
+        pc++;
     }
     return eval_no_result();
 }
@@ -1997,6 +2312,13 @@ int eval_program(AstStmtList program) {
     if (result.did_gosub) {
         free(result.gosub_label);
     }
+    free(error_goto_label);
+    error_goto_label = NULL;
+    free(pending_error_goto_label);
+    pending_error_goto_label = NULL;
+    error_clear_state();
+    error_mode = ERROR_MODE_STOP;
+    runtime_stopped = 0;
     lock_clear();
     watcher_clear();
     function_clear();
