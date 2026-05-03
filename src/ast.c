@@ -242,6 +242,21 @@ AstStmt *ast_gosub(char *name) {
     return stmt;
 }
 
+AstStmt *ast_watch(AstNameList names, AstStmtList body) {
+    AstStmt *stmt = xmalloc(sizeof(*stmt));
+    stmt->kind = AST_STMT_WATCH;
+    stmt->as.watch.names = names;
+    stmt->as.watch.body = body;
+    return stmt;
+}
+
+AstStmt *ast_without_watchers(AstStmtList body) {
+    AstStmt *stmt = xmalloc(sizeof(*stmt));
+    stmt->kind = AST_STMT_WITHOUT_WATCHERS;
+    stmt->as.without_watchers = body;
+    return stmt;
+}
+
 AstStmt *ast_if(AstExpr *condition, AstStmtList body) {
     AstStmt *stmt = xmalloc(sizeof(*stmt));
     stmt->kind = AST_STMT_IF;
@@ -410,6 +425,26 @@ static void dump_stmt(AstStmt *stmt, int indent) {
     case AST_STMT_GOSUB:
         printf("Gosub %s\n", stmt->as.gosub_label);
         break;
+    case AST_STMT_WATCH:
+        printf("Watch");
+        for (size_t i = 0; i < stmt->as.watch.names.count; i++) {
+            printf(" %s", stmt->as.watch.names.items[i]);
+        }
+        printf("\n");
+        dump_indent(indent + 1);
+        printf("Body\n");
+        for (size_t i = 0; i < stmt->as.watch.body.count; i++) {
+            dump_stmt(stmt->as.watch.body.items[i], indent + 2);
+        }
+        break;
+    case AST_STMT_WITHOUT_WATCHERS:
+        printf("WithoutWatchers\n");
+        dump_indent(indent + 1);
+        printf("Body\n");
+        for (size_t i = 0; i < stmt->as.without_watchers.count; i++) {
+            dump_stmt(stmt->as.without_watchers.items[i], indent + 2);
+        }
+        break;
     case AST_STMT_IF:
         printf("If\n");
         dump_indent(indent + 1);
@@ -541,6 +576,16 @@ static void free_stmt(AstStmt *stmt) {
         break;
     case AST_STMT_GOSUB:
         free(stmt->as.gosub_label);
+        break;
+    case AST_STMT_WATCH:
+        for (size_t i = 0; i < stmt->as.watch.names.count; i++) {
+            free(stmt->as.watch.names.items[i]);
+        }
+        free(stmt->as.watch.names.items);
+        ast_free_program(stmt->as.watch.body);
+        break;
+    case AST_STMT_WITHOUT_WATCHERS:
+        ast_free_program(stmt->as.without_watchers);
         break;
     case AST_STMT_IF:
         free_expr(stmt->as.if_stmt.condition);

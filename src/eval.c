@@ -93,6 +93,10 @@ typedef struct {
 } LockEntry;
 
 typedef struct {
+    AstStmt *stmt;
+} WatcherDef;
+
+typedef struct {
     int did_return;
     int return_has_value;
     int did_goto;
@@ -119,7 +123,13 @@ static FunctionDef *functions = NULL;
 static size_t function_count = 0;
 static LockEntry *locks = NULL;
 static size_t lock_count = 0;
+static WatcherDef *watchers = NULL;
+static size_t watcher_count = 0;
+static size_t *watcher_queue = NULL;
+static size_t watcher_queue_count = 0;
 static int function_depth = 0;
+static int watcher_suppressed = 0;
+static int watcher_draining = 0;
 
 static char *copy_string(const char *text) {
     size_t length = strlen(text);
@@ -858,6 +868,98 @@ static DateTime add_duration_to_datetime(DateTime dt, Duration duration, int sig
 static Value eval_expr(AstExpr *expr);
 static EvalResult eval_stmt(AstStmt *stmt);
 static EvalResult eval_stmt_list(AstStmtList statements);
+
+static int watcher_matches(AstStmt *watcher, const char *name) {
+    for (size_t i = 0; i < watcher->as.watch.names.count; i++) {
+        if (strcmp(watcher->as.watch.names.items[i], name) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void watcher_enqueue(size_t index) {
+    size_t *next = realloc(watcher_queue, sizeof(size_t) * (watcher_queue_count + 1));
+    if (!next) {
+        abort();
+    }
+    watcher_queue = next;
+    watcher_queue[watcher_queue_count++] = index;
+}
+
+static void watcher_drain(void) {
+    if (watcher_draining) {
+        return;
+    }
+
+    watcher_draining = 1;
+    size_t cursor = 0;
+    size_t steps = 0;
+    while (cursor < watcher_queue_count) {
+        if (++steps > 10000) {
+            fprintf(stderr, "watcher queue limit reached\n");
+            break;
+        }
+        size_t index = watcher_queue[cursor++];
+        if (index < watcher_count) {
+            EvalResult result = eval_stmt_list(watchers[index].stmt->as.watch.body);
+            if (result.did_return) {
+                value_free(result.value);
+            }
+            if (result.did_goto) {
+                free(result.goto_label);
+            }
+            if (result.did_gosub) {
+                free(result.gosub_label);
+            }
+        }
+    }
+
+    free(watcher_queue);
+    watcher_queue = NULL;
+    watcher_queue_count = 0;
+    watcher_draining = 0;
+}
+
+static void watcher_trigger(const char *name) {
+    if (watcher_suppressed || current_env != &global_env) {
+        return;
+    }
+    for (size_t i = 0; i < watcher_count; i++) {
+        if (watcher_matches(watchers[i].stmt, name)) {
+            watcher_enqueue(i);
+        }
+    }
+    watcher_drain();
+}
+
+static void watcher_register(AstStmt *stmt) {
+    if (current_env != &global_env) {
+        fprintf(stderr, "watch may only be registered at top level for now\n");
+        return;
+    }
+
+    WatcherDef *next = realloc(watchers, sizeof(WatcherDef) * (watcher_count + 1));
+    if (!next) {
+        abort();
+    }
+    watchers = next;
+    watchers[watcher_count].stmt = stmt;
+    watcher_enqueue(watcher_count);
+    watcher_count++;
+    watcher_drain();
+}
+
+static void watcher_clear(void) {
+    free(watchers);
+    watchers = NULL;
+    watcher_count = 0;
+    free(watcher_queue);
+    watcher_queue = NULL;
+    watcher_queue_count = 0;
+    watcher_suppressed = 0;
+    watcher_draining = 0;
+}
 
 static FunctionDef *function_find(const char *name) {
     for (size_t i = 0; i < function_count; i++) {
@@ -1719,6 +1821,7 @@ static EvalResult eval_stmt(AstStmt *stmt) {
         Value value = eval_expr(stmt->as.assign.value);
         value = apply_assignment_modifier(stmt->as.assign.modifier, value);
         env_set(stmt->as.assign.name, value);
+        watcher_trigger(stmt->as.assign.name);
         break;
     }
     case AST_STMT_FIELD_ASSIGN: {
@@ -1784,6 +1887,18 @@ static EvalResult eval_stmt(AstStmt *stmt) {
     case AST_STMT_FUNCTION:
         function_register(stmt);
         break;
+    case AST_STMT_WATCH:
+        watcher_register(stmt);
+        break;
+    case AST_STMT_WITHOUT_WATCHERS: {
+        watcher_suppressed++;
+        EvalResult result = eval_stmt_list(stmt->as.without_watchers);
+        watcher_suppressed--;
+        if (result.did_return || result.did_goto || result.did_gosub) {
+            return result;
+        }
+        break;
+    }
     case AST_STMT_RETURN: {
         return eval_return(stmt->as.return_expr ? eval_expr(stmt->as.return_expr) : value_null(),
                            stmt->as.return_expr != NULL);
@@ -1843,6 +1958,7 @@ int eval_program(AstStmtList program) {
         free(result.gosub_label);
     }
     lock_clear();
+    watcher_clear();
     function_clear();
     env_clear(&global_env);
     return 0;

@@ -15,6 +15,8 @@ typedef enum {
     AST_STMT_LABEL,
     AST_STMT_GOTO,
     AST_STMT_GOSUB,
+    AST_STMT_WATCH,
+    AST_STMT_WITHOUT_WATCHERS,
     AST_STMT_IF
 } AstStmtKind;
 
@@ -140,6 +142,11 @@ struct AstStmt {
         char *goto_label;
         char *gosub_label;
         struct {
+            AstNameList names;
+            AstStmtList body;
+        } watch;
+        AstStmtList without_watchers;
+        struct {
             AstExpr *condition;
             AstStmtList body;
         } if_stmt;
@@ -179,6 +186,8 @@ AstStmt *ast_return(AstExpr *expr);
 AstStmt *ast_label(char *name);
 AstStmt *ast_goto(char *name);
 AstStmt *ast_gosub(char *name);
+AstStmt *ast_watch(AstNameList names, AstStmtList body);
+AstStmt *ast_without_watchers(AstStmtList body);
 AstStmt *ast_if(AstExpr *condition, AstStmtList body);
 
 void ast_dump(AstStmtList program);

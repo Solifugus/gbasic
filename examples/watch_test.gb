@@ -1,0 +1,20 @@
+a = 10
+b = 20
+
+watch(a, b)
+    c = a + b
+end watch
+
+print c
+
+a = 15
+print c
+
+without watchers
+    a = 100
+end without
+
+print c
+
+b = 5
+print c
