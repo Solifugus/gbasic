@@ -22,6 +22,7 @@ examples=(
     error_test.gb
     modifier_test.gb
     money_test.bas
+    string_test.bas
     builtin_test.bas
     builtin_override_test.bas
     program_test.bas

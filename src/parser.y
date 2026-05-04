@@ -20,7 +20,8 @@ static char *copy_text(const char *start, int length) {
     return text;
 }
 
-static char *copy_string_literal(const char *start, int length) {
+static char *copy_string_literal(const char *start, int length, int *ok) {
+    *ok = 1;
     if (length < 2) {
         return copy_text("", 0);
     }
@@ -31,7 +32,13 @@ static char *copy_string_literal(const char *start, int length) {
     }
     int out = 0;
     for (int i = 1; i < length - 1; i++) {
-        if (start[i] == '\\' && i + 1 < length - 1) {
+        if (start[i] == '\\') {
+            if (i + 1 >= length - 1) {
+                fprintf(stderr, "runtime error: unterminated escape sequence\n");
+                *ok = 0;
+                free(text);
+                return NULL;
+            }
             i++;
             if (start[i] == 'n') {
                 text[out++] = '\n';
@@ -40,7 +47,10 @@ static char *copy_string_literal(const char *start, int length) {
             } else if (start[i] == '"' || start[i] == '\\') {
                 text[out++] = start[i];
             } else {
-                text[out++] = start[i];
+                fprintf(stderr, "runtime error: invalid escape sequence: \\%c\n", start[i]);
+                *ok = 0;
+                free(text);
+                return NULL;
             }
         } else {
             text[out++] = start[i];
@@ -627,8 +637,14 @@ static int yylex(void) {
         yylval.number = strtod(token.start, NULL);
         return NUMBER;
     case TOKEN_STRING:
-        yylval.text = copy_string_literal(token.start, token.length);
+    {
+        int ok = 0;
+        yylval.text = copy_string_literal(token.start, token.length, &ok);
+        if (!ok) {
+            return 0;
+        }
         return STRING;
+    }
     case TOKEN_MOD_CONTENT:
         yylval.text = copy_text(token.start, token.length);
         return MOD_CONTENT;
@@ -690,7 +706,14 @@ static int yylex(void) {
     case TOKEN_COLON: return COLON;
     case TOKEN_NEWLINE: return NEWLINE;
     case TOKEN_ERROR:
-        fprintf(stderr, "lexer error at %d:%d\n", token.line, token.column);
+        if (active_lexer->error_message[0]) {
+            fprintf(stderr, "runtime error at %d:%d: %s\n",
+                    token.line,
+                    token.column,
+                    active_lexer->error_message);
+        } else {
+            fprintf(stderr, "lexer error at %d:%d\n", token.line, token.column);
+        }
         return 0;
     default:
         fprintf(stderr, "unexpected token %s at %d:%d\n",

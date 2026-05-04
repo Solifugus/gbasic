@@ -78,6 +78,7 @@ typedef struct {
 typedef struct {
     const char *source;
     const char *current;
+    char error_message[96];
     int line;
     int column;
     int modifier_content_mode;

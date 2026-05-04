@@ -1,6 +1,7 @@
 #include "lexer.h"
 
 #include <ctype.h>
+#include <stdio.h>
 #include <string.h>
 
 static int is_at_end(Lexer *lexer) {
@@ -46,6 +47,11 @@ static Token error_token(Lexer *lexer, const char *start, int line, int column) 
     return make_token(lexer, TOKEN_ERROR, start, line, column);
 }
 
+static Token error_token_message(Lexer *lexer, const char *start, int line, int column, const char *message) {
+    snprintf(lexer->error_message, sizeof(lexer->error_message), "%s", message);
+    return error_token(lexer, start, line, column);
+}
+
 static int match(Lexer *lexer, char expected) {
     if (is_at_end(lexer) || *lexer->current != expected) {
         return 0;
@@ -70,16 +76,28 @@ static void skip_spaces_and_comments(Lexer *lexer) {
 }
 
 static Token string_token(Lexer *lexer, const char *start, int line, int column) {
-    while (peek(lexer) != '"' && peek(lexer) != '\n' && !is_at_end(lexer)) {
-        advance(lexer);
+    while (!is_at_end(lexer)) {
+        char ch = advance(lexer);
+        if (ch == '"') {
+            return make_token(lexer, TOKEN_STRING, start, line, column);
+        }
+        if (ch == '\n') {
+            return error_token_message(lexer, start, line, column, "unterminated string");
+        }
+        if (ch == '\\') {
+            if (is_at_end(lexer) || peek(lexer) == '\n') {
+                return error_token_message(lexer, start, line, column, "unterminated escape sequence");
+            }
+            char esc = advance(lexer);
+            if (esc != 'n' && esc != 't' && esc != '\\' && esc != '"') {
+                char message[96];
+                snprintf(message, sizeof(message), "invalid escape sequence: \\%c", esc);
+                return error_token_message(lexer, start, line, column, message);
+            }
+        }
     }
 
-    if (is_at_end(lexer) || peek(lexer) == '\n') {
-        return error_token(lexer, start, line, column);
-    }
-
-    advance(lexer);
-    return make_token(lexer, TOKEN_STRING, start, line, column);
+    return error_token_message(lexer, start, line, column, "unterminated string");
 }
 
 static Token modifier_content_token(Lexer *lexer) {
@@ -191,6 +209,7 @@ static Token identifier_token(Lexer *lexer, const char *start, int line, int col
 void lexer_init(Lexer *lexer, const char *source) {
     lexer->source = source;
     lexer->current = source;
+    lexer->error_message[0] = '\0';
     lexer->line = 1;
     lexer->column = 1;
     lexer->modifier_content_mode = 0;
