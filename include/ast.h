@@ -22,6 +22,9 @@ typedef enum {
     AST_STMT_ON_ERROR_STOP,
     AST_STMT_ERROR,
     AST_STMT_MODIFIER,
+    AST_STMT_PROGRAM,
+    AST_STMT_LIBRARY,
+    AST_STMT_USE,
     AST_STMT_IF
 } AstStmtKind;
 
@@ -169,8 +172,22 @@ struct AstStmt {
             char *name;
             AstNameList params;
             char *context;
+            int exported;
             AstStmtList body;
         } modifier;
+        struct {
+            char *name;
+            AstNameList args;
+            AstStmtList body;
+        } program;
+        struct {
+            char *name;
+            AstStmtList body;
+        } library;
+        struct {
+            char *name;
+            char *path;
+        } use_stmt;
         struct {
             AstExpr *condition;
             AstStmtList body;
@@ -220,7 +237,10 @@ AstStmt *ast_on_error_goto(char *label);
 AstStmt *ast_on_error_resume_next(void);
 AstStmt *ast_on_error_stop(void);
 AstStmt *ast_error(AstExpr *message);
-AstStmt *ast_modifier(char *name, AstNameList params, char *context, AstStmtList body);
+AstStmt *ast_modifier(char *name, AstNameList params, char *context, int exported, AstStmtList body);
+AstStmt *ast_program(char *name, AstNameList args, AstStmtList body);
+AstStmt *ast_library(char *name, AstStmtList body);
+AstStmt *ast_use(char *name, char *path);
 AstStmt *ast_if(AstExpr *condition, AstStmtList body);
 AstStmt *ast_stmt_position(AstStmt *stmt, int line, int column);
 

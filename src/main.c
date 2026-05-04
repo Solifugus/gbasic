@@ -106,6 +106,7 @@ int main(int argc, char **argv) {
     if (ast_only) {
         ast_dump(program);
     } else {
+        eval_set_source_path(path);
         exit_status = eval_program(program);
     }
 

@@ -143,6 +143,10 @@ static int keyword_equals(const char *start, int length, const char *keyword) {
 }
 
 static TokenType identifier_type(const char *start, int length) {
+    if (keyword_equals(start, length, "program")) return TOKEN_PROGRAM;
+    if (keyword_equals(start, length, "library")) return TOKEN_LIBRARY;
+    if (keyword_equals(start, length, "use")) return TOKEN_USE;
+    if (keyword_equals(start, length, "export")) return TOKEN_EXPORT;
     if (keyword_equals(start, length, "if")) return TOKEN_IF;
     if (keyword_equals(start, length, "then")) return TOKEN_THEN;
     if (keyword_equals(start, length, "else")) return TOKEN_ELSE;
@@ -256,6 +260,10 @@ const char *token_type_name(TokenType type) {
     case TOKEN_NUMBER: return "NUMBER";
     case TOKEN_STRING: return "STRING";
     case TOKEN_MOD_CONTENT: return "MOD_CONTENT";
+    case TOKEN_PROGRAM: return "PROGRAM";
+    case TOKEN_LIBRARY: return "LIBRARY";
+    case TOKEN_USE: return "USE";
+    case TOKEN_EXPORT: return "EXPORT";
     case TOKEN_IF: return "IF";
     case TOKEN_THEN: return "THEN";
     case TOKEN_ELSE: return "ELSE";

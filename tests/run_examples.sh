@@ -21,6 +21,10 @@ examples=(
     watch_test.gb
     error_test.gb
     modifier_test.gb
+    program_test.bas
+    library_test.bas
+    use_test.bas
+    use_from_test.bas
 )
 
 for example in "${examples[@]}"; do

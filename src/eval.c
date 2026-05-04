@@ -11,6 +11,8 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+int parse_source(const char *source, AstStmtList *out_program);
+
 typedef enum {
     VALUE_NULL,
     VALUE_NUMBER,
@@ -132,13 +134,27 @@ typedef struct Env {
 typedef struct {
     char *name;
     AstStmt *stmt;
+    int imported;
+    char *library;
 } FunctionDef;
 
 typedef struct {
     char *name;
     char *context;
     AstStmt *stmt;
+    int imported;
+    char *library;
 } ModifierDef;
+
+typedef struct {
+    char *path;
+    AstStmtList program;
+} LoadedFile;
+
+typedef struct {
+    char *path;
+    char *library;
+} UsePair;
 
 static Env global_env = {0};
 static Env *current_env = &global_env;
@@ -165,6 +181,15 @@ static int error_generation = 0;
 static char *pending_error_goto_label = NULL;
 static int current_line = 0;
 static int current_column = 0;
+static AstStmtList active_root = {0};
+static char *root_source_path = NULL;
+static char *current_import_path = NULL;
+static LoadedFile *loaded_files = NULL;
+static size_t loaded_file_count = 0;
+static UsePair *used_pairs = NULL;
+static size_t used_pair_count = 0;
+static UsePair *use_stack = NULL;
+static size_t use_stack_count = 0;
 
 static char *copy_string(const char *text) {
     size_t length = strlen(text);
@@ -174,6 +199,11 @@ static char *copy_string(const char *text) {
     }
     memcpy(copy, text, length + 1);
     return copy;
+}
+
+void eval_set_source_path(const char *path) {
+    free(root_source_path);
+    root_source_path = path ? copy_string(path) : NULL;
 }
 
 static Value value_null(void) {
@@ -1131,10 +1161,23 @@ static FunctionDef *function_find(const char *name) {
     return NULL;
 }
 
-static void function_register(AstStmt *stmt) {
+static void function_register_def(AstStmt *stmt, int imported, const char *library) {
     FunctionDef *function = function_find(stmt->as.function.name);
     if (function) {
+        if (imported && !function->imported) {
+            return;
+        }
+        if (imported && function->imported) {
+            fprintf(stderr,
+                    "warning: function '%s' from library '%s' overrides function from library '%s'\n",
+                    stmt->as.function.name,
+                    library,
+                    function->library ? function->library : "");
+        }
         function->stmt = stmt;
+        function->imported = imported;
+        free(function->library);
+        function->library = library ? copy_string(library) : NULL;
         return;
     }
 
@@ -1145,10 +1188,19 @@ static void function_register(AstStmt *stmt) {
     functions = next;
     functions[function_count].name = stmt->as.function.name;
     functions[function_count].stmt = stmt;
+    functions[function_count].imported = imported;
+    functions[function_count].library = library ? copy_string(library) : NULL;
     function_count++;
 }
 
+static void function_register(AstStmt *stmt) {
+    function_register_def(stmt, 0, NULL);
+}
+
 static void function_clear(void) {
+    for (size_t i = 0; i < function_count; i++) {
+        free(functions[i].library);
+    }
     free(functions);
     functions = NULL;
     function_count = 0;
@@ -1211,7 +1263,7 @@ static ModifierDef *modifier_resolve(AstModifierUse use, const char *context, co
     return best;
 }
 
-static void modifier_register(AstStmt *stmt) {
+static void modifier_register_def(AstStmt *stmt, int imported, const char *library) {
     if (strcmp(stmt->as.modifier.context, "assign") != 0 &&
         strcmp(stmt->as.modifier.context, "compare") != 0) {
         runtime_error_raise("modifier context must be assign or compare", 1003, "modifier");
@@ -1220,7 +1272,20 @@ static void modifier_register(AstStmt *stmt) {
 
     ModifierDef *existing = modifier_find(stmt->as.modifier.name, stmt->as.modifier.context);
     if (existing) {
+        if (imported && !existing->imported) {
+            return;
+        }
+        if (imported && existing->imported) {
+            fprintf(stderr,
+                    "warning: modifier '%s' from library '%s' overrides modifier from library '%s'\n",
+                    stmt->as.modifier.name,
+                    library,
+                    existing->library ? existing->library : "");
+        }
         existing->stmt = stmt;
+        existing->imported = imported;
+        free(existing->library);
+        existing->library = library ? copy_string(library) : NULL;
         return;
     }
 
@@ -1232,13 +1297,280 @@ static void modifier_register(AstStmt *stmt) {
     modifiers[modifier_count].name = stmt->as.modifier.name;
     modifiers[modifier_count].context = stmt->as.modifier.context;
     modifiers[modifier_count].stmt = stmt;
+    modifiers[modifier_count].imported = imported;
+    modifiers[modifier_count].library = library ? copy_string(library) : NULL;
     modifier_count++;
 }
 
+static void modifier_register(AstStmt *stmt) {
+    modifier_register_def(stmt, 0, NULL);
+}
+
 static void modifier_clear(void) {
+    for (size_t i = 0; i < modifier_count; i++) {
+        free(modifiers[i].library);
+    }
     free(modifiers);
     modifiers = NULL;
     modifier_count = 0;
+}
+
+static AstStmt *library_find(const char *name) {
+    for (size_t i = 0; i < active_root.count; i++) {
+        AstStmt *stmt = active_root.items[i];
+        if (stmt->kind == AST_STMT_LIBRARY && strcmp(stmt->as.library.name, name) == 0) {
+            return stmt;
+        }
+    }
+    return NULL;
+}
+
+static AstStmt *library_find_in(AstStmtList program, const char *name) {
+    for (size_t i = 0; i < program.count; i++) {
+        AstStmt *stmt = program.items[i];
+        if (stmt->kind == AST_STMT_LIBRARY && strcmp(stmt->as.library.name, name) == 0) {
+            return stmt;
+        }
+    }
+    return NULL;
+}
+
+static char *dirname_copy(const char *path) {
+    const char *slash = strrchr(path, '/');
+    if (!slash) {
+        return copy_string(".");
+    }
+    if (slash == path) {
+        return copy_string("/");
+    }
+    size_t len = (size_t)(slash - path);
+    char *dir = malloc(len + 1);
+    if (!dir) {
+        abort();
+    }
+    memcpy(dir, path, len);
+    dir[len] = '\0';
+    return dir;
+}
+
+static char *resolve_use_path(const char *base_file, const char *use_path) {
+    if (use_path[0] == '/') {
+        return copy_string(use_path);
+    }
+    char *dir = dirname_copy(base_file ? base_file : ".");
+    size_t dir_len = strlen(dir);
+    size_t path_len = strlen(use_path);
+    int needs_slash = dir_len > 0 && dir[dir_len - 1] != '/';
+    char *resolved = malloc(dir_len + (size_t)needs_slash + path_len + 1);
+    if (!resolved) {
+        abort();
+    }
+    memcpy(resolved, dir, dir_len);
+    if (needs_slash) {
+        resolved[dir_len] = '/';
+    }
+    memcpy(resolved + dir_len + (size_t)needs_slash, use_path, path_len + 1);
+    free(dir);
+    return resolved;
+}
+
+static char *read_source_file(const char *path) {
+    FILE *file = fopen(path, "rb");
+    if (!file) {
+        return NULL;
+    }
+    if (fseek(file, 0, SEEK_END) != 0) {
+        fclose(file);
+        return NULL;
+    }
+    long size = ftell(file);
+    if (size < 0) {
+        fclose(file);
+        return NULL;
+    }
+    rewind(file);
+    char *source = malloc((size_t)size + 1);
+    if (!source) {
+        abort();
+    }
+    size_t read_count = fread(source, 1, (size_t)size, file);
+    if (ferror(file)) {
+        free(source);
+        fclose(file);
+        return NULL;
+    }
+    source[read_count] = '\0';
+    fclose(file);
+    return source;
+}
+
+static LoadedFile *loaded_file_find(const char *path) {
+    for (size_t i = 0; i < loaded_file_count; i++) {
+        if (strcmp(loaded_files[i].path, path) == 0) {
+            return &loaded_files[i];
+        }
+    }
+    return NULL;
+}
+
+static LoadedFile *loaded_file_get(const char *path) {
+    LoadedFile *loaded = loaded_file_find(path);
+    if (loaded) {
+        return loaded;
+    }
+
+    char *source = read_source_file(path);
+    if (!source) {
+        char message[512];
+        snprintf(message, sizeof(message), "could not load library file: %s", path);
+        runtime_error_raise(message, 1003, "use");
+        return NULL;
+    }
+
+    AstStmtList program = ast_stmt_list_empty();
+    if (parse_source(source, &program) != 0) {
+        free(source);
+        char message[512];
+        snprintf(message, sizeof(message), "could not parse library file: %s", path);
+        runtime_error_raise(message, 1003, "use");
+        return NULL;
+    }
+    free(source);
+
+    LoadedFile *next = realloc(loaded_files, sizeof(LoadedFile) * (loaded_file_count + 1));
+    if (!next) {
+        abort();
+    }
+    loaded_files = next;
+    loaded_files[loaded_file_count].path = copy_string(path);
+    loaded_files[loaded_file_count].program = program;
+    loaded_file_count++;
+    return &loaded_files[loaded_file_count - 1];
+}
+
+static int use_pair_contains(UsePair *pairs, size_t count, const char *path, const char *library) {
+    for (size_t i = 0; i < count; i++) {
+        if (strcmp(pairs[i].path, path) == 0 && strcmp(pairs[i].library, library) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void use_pair_add(UsePair **pairs, size_t *count, const char *path, const char *library) {
+    UsePair *next = realloc(*pairs, sizeof(UsePair) * (*count + 1));
+    if (!next) {
+        abort();
+    }
+    *pairs = next;
+    (*pairs)[*count].path = copy_string(path);
+    (*pairs)[*count].library = copy_string(library);
+    (*count)++;
+}
+
+static void use_pair_pop(UsePair *pairs, size_t *count) {
+    if (*count == 0) {
+        return;
+    }
+    (*count)--;
+    free(pairs[*count].path);
+    free(pairs[*count].library);
+}
+
+static void use_pairs_clear(UsePair **pairs, size_t *count) {
+    for (size_t i = 0; i < *count; i++) {
+        free((*pairs)[i].path);
+        free((*pairs)[i].library);
+    }
+    free(*pairs);
+    *pairs = NULL;
+    *count = 0;
+}
+
+static void loaded_files_clear(void) {
+    for (size_t i = 0; i < loaded_file_count; i++) {
+        free(loaded_files[i].path);
+        ast_free_program(loaded_files[i].program);
+    }
+    free(loaded_files);
+    loaded_files = NULL;
+    loaded_file_count = 0;
+}
+
+static void library_import_from_block(AstStmt *library);
+
+static void library_import(const char *name, const char *path) {
+    AstStmt *library = NULL;
+    char *resolved = NULL;
+    char *previous_import_path = NULL;
+
+    if (path) {
+        const char *base = current_import_path ? current_import_path : root_source_path;
+        resolved = resolve_use_path(base, path);
+        if (use_pair_contains(used_pairs, used_pair_count, resolved, name)) {
+            free(resolved);
+            return;
+        }
+        if (use_pair_contains(use_stack, use_stack_count, resolved, name)) {
+            char message[512];
+            snprintf(message, sizeof(message), "circular use detected for %s from %s", name, resolved);
+            runtime_error_raise(message, 1003, "use");
+            free(resolved);
+            return;
+        }
+        use_pair_add(&use_stack, &use_stack_count, resolved, name);
+        LoadedFile *loaded = loaded_file_get(resolved);
+        if (!loaded) {
+            use_pair_pop(use_stack, &use_stack_count);
+            free(resolved);
+            return;
+        }
+        library = library_find_in(loaded->program, name);
+        if (!library) {
+            char message[512];
+            snprintf(message, sizeof(message), "library not found: %s in %s", name, resolved);
+            runtime_error_raise(message, 1003, "use");
+            use_pair_pop(use_stack, &use_stack_count);
+            free(resolved);
+            return;
+        }
+        previous_import_path = current_import_path;
+        current_import_path = resolved;
+        library_import_from_block(library);
+        current_import_path = previous_import_path;
+        use_pair_pop(use_stack, &use_stack_count);
+        if (!error_action_pending()) {
+            use_pair_add(&used_pairs, &used_pair_count, resolved, name);
+        }
+        free(resolved);
+        return;
+    }
+
+    library = library_find(name);
+    if (!library) {
+        char message[256];
+        snprintf(message, sizeof(message), "library not found: %s", name);
+        runtime_error_raise(message, 1003, "use");
+        return;
+    }
+
+    library_import_from_block(library);
+}
+
+static void library_import_from_block(AstStmt *library) {
+    for (size_t i = 0; i < library->as.library.body.count; i++) {
+        AstStmt *stmt = library->as.library.body.items[i];
+        if (stmt->kind == AST_STMT_USE) {
+            library_import(stmt->as.use_stmt.name, stmt->as.use_stmt.path);
+            if (error_action_pending()) {
+                return;
+            }
+        } else if (stmt->kind == AST_STMT_FUNCTION) {
+            function_register_def(stmt, 1, library->as.library.name);
+        } else if (stmt->kind == AST_STMT_MODIFIER && stmt->as.modifier.exported) {
+            modifier_register_def(stmt, 1, library->as.library.name);
+        }
+    }
 }
 
 static int find_function_label(AstStmtList body, const char *label, size_t *out_index) {
@@ -1644,6 +1976,27 @@ static Value eval_call(AstExpr *expr) {
         char *text = copy_string(value.as.string);
         for (char *p = text; *p; p++) {
             *p = (char)tolower((unsigned char)*p);
+        }
+        Value result = value_string(text);
+        free(text);
+        value_free(value);
+        return result;
+    }
+
+    if (strcmp(expr->as.call.name, "upper") == 0) {
+        if (expr->as.call.args.count != 1) {
+            runtime_error_raise("upper expects one argument", 1003, "invalid function call");
+            return value_null();
+        }
+        Value value = eval_expr(expr->as.call.args.items[0]);
+        if (value.kind != VALUE_STRING) {
+            value_free(value);
+            runtime_error_raise("upper expects a string", 1003, "invalid function call");
+            return value_null();
+        }
+        char *text = copy_string(value.as.string);
+        for (char *p = text; *p; p++) {
+            *p = (char)toupper((unsigned char)*p);
         }
         Value result = value_string(text);
         free(text);
@@ -2515,6 +2868,17 @@ static EvalResult eval_stmt(AstStmt *stmt) {
     case AST_STMT_MODIFIER:
         modifier_register(stmt);
         break;
+    case AST_STMT_PROGRAM:
+    case AST_STMT_LIBRARY:
+        break;
+    case AST_STMT_USE:
+        library_import(stmt->as.use_stmt.name, stmt->as.use_stmt.path);
+        if (error_action_pending()) {
+            current_line = previous_line;
+            current_column = previous_column;
+            return eval_error_result();
+        }
+        break;
     case AST_STMT_WATCH:
         watcher_register(stmt);
         break;
@@ -2642,7 +3006,21 @@ static EvalResult eval_stmt_list(AstStmtList statements) {
 }
 
 int eval_program(AstStmtList program) {
-    EvalResult result = eval_stmt_list(program);
+    active_root = program;
+    AstStmt *program_block = NULL;
+    for (size_t i = 0; i < program.count; i++) {
+        if (program.items[i]->kind == AST_STMT_PROGRAM) {
+            if (program_block) {
+                runtime_error_raise("only one program block may execute", 1003, "program");
+                break;
+            }
+            program_block = program.items[i];
+        }
+    }
+
+    EvalResult result = runtime_stopped
+        ? eval_stop()
+        : eval_stmt_list(program_block ? program_block->as.program.body : program);
     int exit_status = result.did_stop ? 1 : 0;
     if (result.did_return) {
         value_free(result.value);
@@ -2664,6 +3042,14 @@ int eval_program(AstStmtList program) {
     watcher_clear();
     modifier_clear();
     function_clear();
+    loaded_files_clear();
+    use_pairs_clear(&used_pairs, &used_pair_count);
+    use_pairs_clear(&use_stack, &use_stack_count);
+    free(current_import_path);
+    current_import_path = NULL;
+    free(root_source_path);
+    root_source_path = NULL;
     env_clear(&global_env);
+    active_root = ast_stmt_list_empty();
     return exit_status;
 }

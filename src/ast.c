@@ -302,13 +302,39 @@ AstStmt *ast_error(AstExpr *message) {
     return stmt;
 }
 
-AstStmt *ast_modifier(char *name, AstNameList params, char *context, AstStmtList body) {
+AstStmt *ast_modifier(char *name, AstNameList params, char *context, int exported, AstStmtList body) {
     AstStmt *stmt = xmalloc(sizeof(*stmt));
     stmt->kind = AST_STMT_MODIFIER;
     stmt->as.modifier.name = name;
     stmt->as.modifier.params = params;
     stmt->as.modifier.context = context;
+    stmt->as.modifier.exported = exported;
     stmt->as.modifier.body = body;
+    return stmt;
+}
+
+AstStmt *ast_program(char *name, AstNameList args, AstStmtList body) {
+    AstStmt *stmt = xmalloc(sizeof(*stmt));
+    stmt->kind = AST_STMT_PROGRAM;
+    stmt->as.program.name = name;
+    stmt->as.program.args = args;
+    stmt->as.program.body = body;
+    return stmt;
+}
+
+AstStmt *ast_library(char *name, AstStmtList body) {
+    AstStmt *stmt = xmalloc(sizeof(*stmt));
+    stmt->kind = AST_STMT_LIBRARY;
+    stmt->as.library.name = name;
+    stmt->as.library.body = body;
+    return stmt;
+}
+
+AstStmt *ast_use(char *name, char *path) {
+    AstStmt *stmt = xmalloc(sizeof(*stmt));
+    stmt->kind = AST_STMT_USE;
+    stmt->as.use_stmt.name = name;
+    stmt->as.use_stmt.path = path;
     return stmt;
 }
 
@@ -526,7 +552,10 @@ static void dump_stmt(AstStmt *stmt, int indent) {
         dump_expr(stmt->as.error_message, indent + 1);
         break;
     case AST_STMT_MODIFIER:
-        printf("Modifier %s for %s\n", stmt->as.modifier.name, stmt->as.modifier.context);
+        printf("%sModifier %s for %s\n",
+               stmt->as.modifier.exported ? "Export " : "",
+               stmt->as.modifier.name,
+               stmt->as.modifier.context);
         dump_indent(indent + 1);
         printf("Parameters");
         for (size_t i = 0; i < stmt->as.modifier.params.count; i++) {
@@ -537,6 +566,35 @@ static void dump_stmt(AstStmt *stmt, int indent) {
         printf("Body\n");
         for (size_t i = 0; i < stmt->as.modifier.body.count; i++) {
             dump_stmt(stmt->as.modifier.body.items[i], indent + 2);
+        }
+        break;
+    case AST_STMT_PROGRAM:
+        printf("ProgramBlock %s\n", stmt->as.program.name);
+        dump_indent(indent + 1);
+        printf("Args");
+        for (size_t i = 0; i < stmt->as.program.args.count; i++) {
+            printf(" %s", stmt->as.program.args.items[i]);
+        }
+        printf("\n");
+        dump_indent(indent + 1);
+        printf("Body\n");
+        for (size_t i = 0; i < stmt->as.program.body.count; i++) {
+            dump_stmt(stmt->as.program.body.items[i], indent + 2);
+        }
+        break;
+    case AST_STMT_LIBRARY:
+        printf("Library %s\n", stmt->as.library.name);
+        dump_indent(indent + 1);
+        printf("Body\n");
+        for (size_t i = 0; i < stmt->as.library.body.count; i++) {
+            dump_stmt(stmt->as.library.body.items[i], indent + 2);
+        }
+        break;
+    case AST_STMT_USE:
+        if (stmt->as.use_stmt.path) {
+            printf("Use %s from \"%s\"\n", stmt->as.use_stmt.name, stmt->as.use_stmt.path);
+        } else {
+            printf("Use %s\n", stmt->as.use_stmt.name);
         }
         break;
     case AST_STMT_IF:
@@ -706,6 +764,22 @@ static void free_stmt(AstStmt *stmt) {
         free(stmt->as.modifier.params.items);
         free(stmt->as.modifier.context);
         ast_free_program(stmt->as.modifier.body);
+        break;
+    case AST_STMT_PROGRAM:
+        free(stmt->as.program.name);
+        for (size_t i = 0; i < stmt->as.program.args.count; i++) {
+            free(stmt->as.program.args.items[i]);
+        }
+        free(stmt->as.program.args.items);
+        ast_free_program(stmt->as.program.body);
+        break;
+    case AST_STMT_LIBRARY:
+        free(stmt->as.library.name);
+        ast_free_program(stmt->as.library.body);
+        break;
+    case AST_STMT_USE:
+        free(stmt->as.use_stmt.name);
+        free(stmt->as.use_stmt.path);
         break;
     case AST_STMT_IF:
         free_expr(stmt->as.if_stmt.condition);

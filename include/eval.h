@@ -4,5 +4,6 @@
 #include "ast.h"
 
 int eval_program(AstStmtList program);
+void eval_set_source_path(const char *path);
 
 #endif

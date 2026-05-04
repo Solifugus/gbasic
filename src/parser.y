@@ -176,14 +176,14 @@ static void yyerror(const char *message);
 
 %token <number> NUMBER
 %token <text> IDENT STRING MOD_CONTENT
-%token IF THEN END PRINT TRUE FALSE AND OR NOT WITH FOR TO IN FUNCTION RETURN GOTO GOSUB WATCH WITHOUT WATCHERS ON RESUME NEXT STOP ERROR_VALUE MODIFIER
+%token IF THEN END PRINT TRUE FALSE AND OR NOT WITH FOR TO IN FUNCTION RETURN GOTO GOSUB WATCH WITHOUT WATCHERS ON RESUME NEXT STOP ERROR_VALUE MODIFIER PROGRAM LIBRARY USE EXPORT
 %token OP_EQ OP_NE OP_GT OP_LT OP_GE OP_LE OP_NGT OP_NLT
 %token PLUS MINUS STAR SLASH LPAREN MOD_LPAREN RPAREN LBRACKET RBRACKET LBRACE RBRACE COMMA DOT COLON NEWLINE
 %define parse.error verbose
 %locations
 
 %type <stmt_list> program statement_list
-%type <stmt> statement assignment print_statement call_statement with_lock_statement for_each_statement function_statement modifier_statement return_statement label_statement goto_statement gosub_statement watch_statement without_watchers_statement on_error_statement error_statement if_statement inline_statement
+%type <stmt> statement assignment print_statement call_statement with_lock_statement for_each_statement function_statement modifier_statement program_statement library_statement use_statement return_statement label_statement goto_statement gosub_statement watch_statement without_watchers_statement on_error_statement error_statement if_statement inline_statement
 %type <expr> expression or_expression and_expression comparison_expression
 %type <expr> additive_expression multiplicative_expression unary_expression postfix_expression primary
 %type <expr_list> argument_list argument_list_opt
@@ -214,6 +214,9 @@ statement
     | for_each_statement { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
     | function_statement { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
     | modifier_statement { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
+    | program_statement { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
+    | library_statement { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
+    | use_statement NEWLINE { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
     | watch_statement { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
     | without_watchers_statement { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
     | on_error_statement NEWLINE { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
@@ -289,7 +292,37 @@ function_statement
 
 modifier_statement
     : MODIFIER modifier_signature FOR modifier_context NEWLINE statement_list END MODIFIER NEWLINE {
-        $$ = ast_modifier($2.name, $2.params, $4, $6);
+        $$ = ast_modifier($2.name, $2.params, $4, 0, $6);
+      }
+    | EXPORT MODIFIER modifier_signature FOR modifier_context NEWLINE statement_list END MODIFIER NEWLINE {
+        $$ = ast_modifier($3.name, $3.params, $5, 1, $7);
+      }
+    ;
+
+program_statement
+    : PROGRAM IDENT LPAREN parameter_list_opt RPAREN NEWLINE statement_list END PROGRAM NEWLINE {
+        $$ = ast_program($2, $4, $7);
+      }
+    ;
+
+library_statement
+    : LIBRARY IDENT NEWLINE statement_list END LIBRARY NEWLINE {
+        $$ = ast_library($2, $4);
+      }
+    ;
+
+use_statement
+    : USE IDENT { $$ = ast_use($2, NULL); }
+    | USE IDENT IDENT STRING {
+        if (strcmp($3, "from") != 0) {
+            yyerror("expected from in use statement");
+            free($2);
+            free($3);
+            free($4);
+            YYERROR;
+        }
+        free($3);
+        $$ = ast_use($2, $4);
       }
     ;
 
@@ -530,6 +563,10 @@ static int yylex(void) {
     case TOKEN_STOP: return STOP;
     case TOKEN_ERROR_VALUE: return ERROR_VALUE;
     case TOKEN_MODIFIER: return MODIFIER;
+    case TOKEN_PROGRAM: return PROGRAM;
+    case TOKEN_LIBRARY: return LIBRARY;
+    case TOKEN_USE: return USE;
+    case TOKEN_EXPORT: return EXPORT;
     case TOKEN_OP_EQ: return OP_EQ;
     case TOKEN_OP_NE: return OP_NE;
     case TOKEN_OP_GT: return OP_GT;
