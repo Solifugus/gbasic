@@ -1,0 +1,2 @@
+s = "bad\
+print s

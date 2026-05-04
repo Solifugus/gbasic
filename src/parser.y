@@ -7,6 +7,7 @@
 #include <string.h>
 
 static Lexer *active_lexer;
+static int lexer_error_reported;
 
 AstStmtList parsed_program;
 
@@ -609,6 +610,7 @@ int parse_source(const char *source, AstStmtList *out_program) {
     Lexer lexer;
     lexer_init(&lexer, source);
     active_lexer = &lexer;
+    lexer_error_reported = 0;
     parsed_program = ast_stmt_list_empty();
 
     int result = yyparse();
@@ -641,6 +643,7 @@ static int yylex(void) {
         int ok = 0;
         yylval.text = copy_string_literal(token.start, token.length, &ok);
         if (!ok) {
+            lexer_error_reported = 1;
             return 0;
         }
         return STRING;
@@ -714,6 +717,7 @@ static int yylex(void) {
         } else {
             fprintf(stderr, "lexer error at %d:%d\n", token.line, token.column);
         }
+        lexer_error_reported = 1;
         return 0;
     default:
         fprintf(stderr, "unexpected token %s at %d:%d\n",
@@ -723,5 +727,8 @@ static int yylex(void) {
 }
 
 static void yyerror(const char *message) {
+    if (lexer_error_reported) {
+        return;
+    }
     fprintf(stderr, "parse error: %s\n", message);
 }
