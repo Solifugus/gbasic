@@ -82,6 +82,37 @@ static Token string_token(Lexer *lexer, const char *start, int line, int column)
     return make_token(lexer, TOKEN_STRING, start, line, column);
 }
 
+static Token modifier_content_token(Lexer *lexer) {
+    const char *start = lexer->current;
+    int line = lexer->line;
+    int column = lexer->column;
+    int in_string = 0;
+
+    while (!is_at_end(lexer)) {
+        char ch = peek(lexer);
+        if (ch == '"' && (lexer->current == start || lexer->current[-1] != '\\')) {
+            in_string = !in_string;
+        }
+        if (!in_string && ch == ')') {
+            Token token = make_token(lexer, TOKEN_MOD_CONTENT, start, line, column);
+            advance(lexer);
+            lexer->modifier_content_mode = 0;
+            return token;
+        }
+        if (ch == '\n') {
+            break;
+        }
+        advance(lexer);
+    }
+
+    lexer->modifier_content_mode = 0;
+    return error_token(lexer, start, line, column);
+}
+
+void lexer_begin_modifier_content(Lexer *lexer) {
+    lexer->modifier_content_mode = 1;
+}
+
 static Token number_token(Lexer *lexer, const char *start, int line, int column) {
     while (isdigit((unsigned char)peek(lexer))) {
         advance(lexer);
@@ -158,9 +189,14 @@ void lexer_init(Lexer *lexer, const char *source) {
     lexer->current = source;
     lexer->line = 1;
     lexer->column = 1;
+    lexer->modifier_content_mode = 0;
 }
 
 Token lexer_next(Lexer *lexer) {
+    if (lexer->modifier_content_mode) {
+        return modifier_content_token(lexer);
+    }
+
     skip_spaces_and_comments(lexer);
 
     const char *start = lexer->current;
@@ -219,6 +255,7 @@ const char *token_type_name(TokenType type) {
     case TOKEN_IDENT: return "IDENT";
     case TOKEN_NUMBER: return "NUMBER";
     case TOKEN_STRING: return "STRING";
+    case TOKEN_MOD_CONTENT: return "MOD_CONTENT";
     case TOKEN_IF: return "IF";
     case TOKEN_THEN: return "THEN";
     case TOKEN_ELSE: return "ELSE";

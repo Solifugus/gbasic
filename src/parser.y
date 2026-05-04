@@ -134,6 +134,9 @@ static int modifier_lparen_ahead(const char *start) {
             }
         } else if (*p == ' ' || *p == '\t' || *p == '\r') {
             p++;
+        } else if (*p == '+' || *p == '-' || *p == '*' || *p == '/' ||
+                   *p == '.' || *p == '[' || *p == ']' || *p == ',') {
+            p++;
         } else {
             return 0;
         }
@@ -172,8 +175,8 @@ static void yyerror(const char *message);
 }
 
 %token <number> NUMBER
-%token <text> IDENT STRING
-%token IF THEN END PRINT TRUE FALSE AND OR NOT WITH FOR IN FUNCTION RETURN GOTO GOSUB WATCH WITHOUT WATCHERS ON RESUME NEXT STOP ERROR_VALUE MODIFIER
+%token <text> IDENT STRING MOD_CONTENT
+%token IF THEN END PRINT TRUE FALSE AND OR NOT WITH FOR TO IN FUNCTION RETURN GOTO GOSUB WATCH WITHOUT WATCHERS ON RESUME NEXT STOP ERROR_VALUE MODIFIER
 %token OP_EQ OP_NE OP_GT OP_LT OP_GE OP_LE OP_NGT OP_NLT
 %token PLUS MINUS STAR SLASH LPAREN MOD_LPAREN RPAREN LBRACKET RBRACKET LBRACE RBRACE COMMA DOT COLON NEWLINE
 %define parse.error verbose
@@ -189,7 +192,7 @@ static void yyerror(const char *message);
 %type <modifier> modifier
 %type <modifier_signature> modifier_signature
 %type <duration> duration_terms
-%type <text> modifier_name modifier_context comparison_operator
+%type <text> modifier_name modifier_word modifier_context comparison_operator
 
 %%
 
@@ -229,18 +232,17 @@ assignment
     ;
 
 modifier
-    : MOD_LPAREN modifier_name RPAREN { $$ = ast_modifier_use($2, ast_expr_list_empty()); }
-    | MOD_LPAREN modifier_name NUMBER RPAREN {
-        $$ = ast_modifier_use($2, ast_expr_list_append(ast_expr_list_empty(), ast_number($3)));
-      }
-    | MOD_LPAREN modifier_name STRING RPAREN {
-        $$ = ast_modifier_use($2, ast_expr_list_append(ast_expr_list_empty(), ast_string($3)));
-      }
+    : MOD_LPAREN MOD_CONTENT { $$ = ast_modifier_use($2, ast_expr_list_empty()); }
     ;
 
 modifier_name
+    : modifier_word { $$ = $1; }
+    | modifier_name modifier_word { $$ = join_words($1, $2); }
+    ;
+
+modifier_word
     : IDENT { $$ = $1; }
-    | modifier_name IDENT { $$ = join_words($1, $2); }
+    | TO { $$ = copy_const("to"); }
     ;
 
 print_statement
@@ -293,7 +295,7 @@ modifier_statement
 
 modifier_signature
     : modifier_name { $$ = ast_modifier_signature($1, ast_name_list_empty()); }
-    | IDENT LPAREN parameter_list_opt RPAREN { $$ = ast_modifier_signature($1, $3); }
+    | modifier_name LPAREN parameter_list_opt RPAREN { $$ = ast_modifier_signature($1, $3); }
     ;
 
 modifier_context
@@ -499,6 +501,9 @@ static int yylex(void) {
     case TOKEN_STRING:
         yylval.text = copy_string_literal(token.start, token.length);
         return STRING;
+    case TOKEN_MOD_CONTENT:
+        yylval.text = copy_text(token.start, token.length);
+        return MOD_CONTENT;
     case TOKEN_IF: return IF;
     case TOKEN_THEN: return THEN;
     case TOKEN_END: return END;
@@ -510,6 +515,7 @@ static int yylex(void) {
     case TOKEN_NOT: return NOT;
     case TOKEN_WITH: return WITH;
     case TOKEN_FOR: return FOR;
+    case TOKEN_TO: return TO;
     case TOKEN_IN: return IN;
     case TOKEN_FUNCTION: return FUNCTION;
     case TOKEN_RETURN: return RETURN;
@@ -538,6 +544,7 @@ static int yylex(void) {
     case TOKEN_SLASH: return SLASH;
     case TOKEN_LPAREN:
         if (modifier_lparen_ahead(token.start)) {
+            lexer_begin_modifier_content(active_lexer);
             return MOD_LPAREN;
         }
         return LPAREN;

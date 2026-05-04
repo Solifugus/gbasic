@@ -1165,6 +1165,52 @@ static ModifierDef *modifier_find(const char *name, const char *context) {
     return NULL;
 }
 
+static int modifier_phrase_matches(const char *phrase, const char *name, const char **args_start) {
+    size_t name_len = strlen(name);
+    while (*phrase == ' ' || *phrase == '\t') {
+        phrase++;
+    }
+    if (strncmp(phrase, name, name_len) != 0) {
+        return 0;
+    }
+    if (phrase[name_len] == '\0') {
+        *args_start = phrase + name_len;
+        return 1;
+    }
+    if (phrase[name_len] == ' ' || phrase[name_len] == '\t') {
+        const char *p = phrase + name_len;
+        while (*p == ' ' || *p == '\t') {
+            p++;
+        }
+        *args_start = p;
+        return 1;
+    }
+    return 0;
+}
+
+static ModifierDef *modifier_resolve(AstModifierUse use, const char *context, const char **args_start) {
+    ModifierDef *best = NULL;
+    const char *best_args = NULL;
+    size_t best_len = 0;
+    for (size_t i = modifier_count; i > 0; i--) {
+        ModifierDef *modifier = &modifiers[i - 1];
+        const char *candidate_args = NULL;
+        if (strcmp(modifier->context, context) == 0 &&
+            modifier_phrase_matches(use.name, modifier->name, &candidate_args)) {
+            size_t len = strlen(modifier->name);
+            if (!best || len > best_len) {
+                best = modifier;
+                best_args = candidate_args;
+                best_len = len;
+            }
+        }
+    }
+    if (best) {
+        *args_start = best_args;
+    }
+    return best;
+}
+
 static void modifier_register(AstStmt *stmt) {
     if (strcmp(stmt->as.modifier.context, "assign") != 0 &&
         strcmp(stmt->as.modifier.context, "compare") != 0) {
@@ -1618,7 +1664,7 @@ static Value eval_call(AstExpr *expr) {
             scale *= 10.0;
         }
         double scaled = value_number_or_zero(value) * scale;
-        long long rounded = (long long)scaled;
+        long long rounded = scaled >= 0 ? (long long)(scaled + 0.5) : (long long)(scaled - 0.5);
         value_free(value);
         value_free(places);
         return value_number((double)rounded / scale);
@@ -1761,23 +1807,104 @@ static Value eval_call(AstExpr *expr) {
     return value_number(result);
 }
 
-static void bind_modifier_args(AstStmt *stmt, AstModifierUse use) {
-    if (use.args.count != stmt->as.modifier.params.count) {
+static char *copy_trimmed_span(const char *start, size_t length) {
+    while (length > 0 && (*start == ' ' || *start == '\t')) {
+        start++;
+        length--;
+    }
+    while (length > 0 && (start[length - 1] == ' ' || start[length - 1] == '\t')) {
+        length--;
+    }
+    char *text = malloc(length + 1);
+    if (!text) {
+        abort();
+    }
+    memcpy(text, start, length);
+    text[length] = '\0';
+    return text;
+}
+
+static Value eval_modifier_arg_text(const char *text) {
+    while (*text == ' ' || *text == '\t') {
+        text++;
+    }
+    size_t len = strlen(text);
+    while (len > 0 && (text[len - 1] == ' ' || text[len - 1] == '\t')) {
+        len--;
+    }
+    if (len == 0) {
+        return value_null();
+    }
+    if (text[0] == '"' && len >= 2 && text[len - 1] == '"') {
+        char *inner = copy_trimmed_span(text + 1, len - 2);
+        Value value = value_string(inner);
+        free(inner);
+        return value;
+    }
+    char *end = NULL;
+    double number = strtod(text, &end);
+    if (end && (size_t)(end - text) == len) {
+        return value_number(number);
+    }
+
+    char *name = copy_trimmed_span(text, len);
+    Value value = env_get(name);
+    free(name);
+    return value;
+}
+
+static void bind_modifier_args(AstStmt *stmt, const char *args_text) {
+    size_t expected = stmt->as.modifier.params.count;
+    while (*args_text == ' ' || *args_text == '\t') {
+        args_text++;
+    }
+    if (expected == 0) {
+        if (*args_text != '\0') {
+            char message[256];
+            snprintf(message, sizeof(message), "modifier %s expects no arguments",
+                     stmt->as.modifier.name);
+            runtime_error_raise(message, 1003, "modifier");
+        }
+        return;
+    }
+    if (*args_text == '\0') {
         char message[256];
         snprintf(message, sizeof(message), "modifier %s expects %zu arguments",
                  stmt->as.modifier.name,
-                 stmt->as.modifier.params.count);
+                 expected);
         runtime_error_raise(message, 1003, "modifier");
         return;
     }
-    for (size_t i = 0; i < use.args.count; i++) {
-        Value arg = eval_expr(use.args.items[i]);
-        env_set(stmt->as.modifier.params.items[i], arg);
+
+    if (expected == 1) {
+        env_set(stmt->as.modifier.params.items[0], eval_modifier_arg_text(args_text));
+        return;
+    }
+
+    const char *start = args_text;
+    for (size_t i = 0; i < expected; i++) {
+        const char *end = strchr(start, ',');
+        if (!end && i + 1 < expected) {
+            char message[256];
+            snprintf(message, sizeof(message), "modifier %s expects %zu arguments",
+                     stmt->as.modifier.name,
+                     expected);
+            runtime_error_raise(message, 1003, "modifier");
+            return;
+        }
+        char *arg_text = end ? copy_trimmed_span(start, (size_t)(end - start)) : copy_string(start);
+        env_set(stmt->as.modifier.params.items[i], eval_modifier_arg_text(arg_text));
+        free(arg_text);
+        if (!end) {
+            break;
+        }
+        start = end + 1;
     }
 }
 
 static Value eval_assign_modifier(AstModifierUse use, Value value) {
-    ModifierDef *modifier = modifier_find(use.name, "assign");
+    const char *args_text = "";
+    ModifierDef *modifier = modifier_resolve(use, "assign", &args_text);
     if (!modifier) {
         char message[256];
         snprintf(message, sizeof(message), "assign modifier not found: %s", use.name);
@@ -1791,7 +1918,7 @@ static Value eval_assign_modifier(AstModifierUse use, Value value) {
     Env *previous_env = current_env;
     current_env = &local_env;
     env_set("value", value);
-    bind_modifier_args(modifier->stmt, use);
+    bind_modifier_args(modifier->stmt, args_text);
 
     EvalResult result = eval_stmt_list(modifier->stmt->as.modifier.body);
     current_env = previous_env;
@@ -1803,7 +1930,8 @@ static Value eval_assign_modifier(AstModifierUse use, Value value) {
 }
 
 static Value eval_compare_modifier(AstModifierUse use, const char *op, Value left, Value right) {
-    ModifierDef *modifier = modifier_find(use.name, "compare");
+    const char *args_text = "";
+    ModifierDef *modifier = modifier_resolve(use, "compare", &args_text);
     if (!modifier) {
         char message[256];
         snprintf(message, sizeof(message), "compare modifier not found: %s", use.name);
@@ -1820,7 +1948,7 @@ static Value eval_compare_modifier(AstModifierUse use, const char *op, Value lef
     env_set("left", left);
     env_set("right", right);
     env_set("operator", value_string(op));
-    bind_modifier_args(modifier->stmt, use);
+    bind_modifier_args(modifier->stmt, args_text);
 
     EvalResult result = eval_stmt_list(modifier->stmt->as.modifier.body);
     current_env = previous_env;
@@ -1835,8 +1963,9 @@ static Value eval_comparison(AstExpr *expr, Value left, Value right) {
     const char *op = expr->as.binary.op;
     int result = 0;
 
+    const char *modifier_args_text = "";
     if (expr->as.binary.modifier.name &&
-        modifier_find(expr->as.binary.modifier.name, "compare")) {
+        modifier_resolve(expr->as.binary.modifier, "compare", &modifier_args_text)) {
         return eval_compare_modifier(expr->as.binary.modifier, op, left, right);
     }
 
@@ -2188,7 +2317,8 @@ static Value apply_assignment_modifier(AstModifierUse modifier, Value value) {
         return value;
     }
 
-    if (modifier_find(modifier.name, "assign")) {
+    const char *args_text = "";
+    if (modifier_resolve(modifier, "assign", &args_text)) {
         return eval_assign_modifier(modifier, value);
     }
 

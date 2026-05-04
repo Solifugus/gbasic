@@ -6,6 +6,7 @@ typedef enum {
     TOKEN_IDENT,
     TOKEN_NUMBER,
     TOKEN_STRING,
+    TOKEN_MOD_CONTENT,
     TOKEN_IF,
     TOKEN_THEN,
     TOKEN_ELSE,
@@ -75,9 +76,11 @@ typedef struct {
     const char *current;
     int line;
     int column;
+    int modifier_content_mode;
 } Lexer;
 
 void lexer_init(Lexer *lexer, const char *source);
+void lexer_begin_modifier_content(Lexer *lexer);
 Token lexer_next(Lexer *lexer);
 const char *token_type_name(TokenType type);
 
