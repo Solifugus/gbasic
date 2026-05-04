@@ -21,6 +21,7 @@ examples=(
     watch_test.gb
     error_test.gb
     modifier_test.gb
+    money_test.bas
     builtin_test.bas
     builtin_override_test.bas
     program_test.bas

@@ -23,6 +23,7 @@ typedef enum {
     VALUE_RECORD,
     VALUE_DATETIME,
     VALUE_DURATION,
+    VALUE_MONEY,
     VALUE_FILE,
     VALUE_DIR
 } ValueKind;
@@ -80,6 +81,7 @@ struct Value {
         } record;
         DateTime datetime;
         Duration duration;
+        long long cents;
         char *file_path;
         char *dir_path;
     } as;
@@ -272,6 +274,13 @@ static Value value_duration(Duration duration) {
     Value value = {0};
     value.kind = VALUE_DURATION;
     value.as.duration = duration;
+    return value;
+}
+
+static Value value_money(long long cents) {
+    Value value = {0};
+    value.kind = VALUE_MONEY;
+    value.as.cents = cents;
     return value;
 }
 
@@ -487,6 +496,8 @@ static int value_truthy(Value value) {
             value.as.duration.weeks || value.as.duration.days ||
             value.as.duration.hours || value.as.duration.minutes ||
             value.as.duration.seconds;
+    case VALUE_MONEY:
+        return value.as.cents != 0;
     case VALUE_FILE:
         return value.as.file_path[0] != '\0';
     case VALUE_DIR:
@@ -505,6 +516,11 @@ static double value_number_or_zero(Value value) {
         return value.as.boolean ? 1.0 : 0.0;
     }
     return 0.0;
+}
+
+static long long round_to_cents(double amount) {
+    double scaled = amount * 100.0;
+    return scaled >= 0 ? (long long)(scaled + 0.5) : (long long)(scaled - 0.5);
 }
 
 static void value_print(Value value) {
@@ -585,6 +601,15 @@ static void value_print(Value value) {
     case VALUE_DURATION:
         printf("{duration}\n");
         break;
+    case VALUE_MONEY: {
+        long long cents = value.as.cents;
+        if (cents < 0) {
+            printf("-");
+            cents = -cents;
+        }
+        printf("%lld.%02lld\n", cents / 100, cents % 100);
+        break;
+    }
     case VALUE_FILE:
         printf("%s\n", value.as.file_path);
         break;
@@ -2766,6 +2791,22 @@ static Value eval_comparison(AstExpr *expr, Value left, Value right) {
         else if (strcmp(op, "<=") == 0) result = cmp <= 0;
         else if (strcmp(op, "!>") == 0) result = cmp <= 0;
         else if (strcmp(op, "!<") == 0) result = cmp >= 0;
+    } else if (left.kind == VALUE_MONEY && right.kind == VALUE_MONEY) {
+        long long a = left.as.cents;
+        long long b = right.as.cents;
+        if (strcmp(op, "=") == 0) result = a == b;
+        else if (strcmp(op, "!=") == 0) result = a != b;
+        else if (strcmp(op, ">") == 0) result = a > b;
+        else if (strcmp(op, "<") == 0) result = a < b;
+        else if (strcmp(op, ">=") == 0) result = a >= b;
+        else if (strcmp(op, "<=") == 0) result = a <= b;
+        else if (strcmp(op, "!>") == 0) result = !(a > b);
+        else if (strcmp(op, "!<") == 0) result = !(a < b);
+    } else if (left.kind == VALUE_MONEY || right.kind == VALUE_MONEY) {
+        runtime_error_raise("money comparison requires money values", 1003, "money");
+        value_free(left);
+        value_free(right);
+        return value_null();
     } else {
         double a = value_number_or_zero(left);
         double b = value_number_or_zero(right);
@@ -2874,6 +2915,44 @@ static Value eval_binary(AstExpr *expr) {
         value_free(left);
         value_free(right);
         return result;
+    }
+
+    if (left.kind == VALUE_MONEY || right.kind == VALUE_MONEY) {
+        if (left.kind == VALUE_MONEY && right.kind == VALUE_MONEY &&
+            (strcmp(op, "+") == 0 || strcmp(op, "-") == 0)) {
+            long long cents = strcmp(op, "+") == 0
+                ? left.as.cents + right.as.cents
+                : left.as.cents - right.as.cents;
+            value_free(left);
+            value_free(right);
+            return value_money(cents);
+        }
+        if (left.kind == VALUE_MONEY && right.kind == VALUE_NUMBER &&
+            (strcmp(op, "*") == 0 || strcmp(op, "/") == 0)) {
+            double number = right.as.number;
+            if (strcmp(op, "/") == 0 && number == 0.0) {
+                value_free(left);
+                value_free(right);
+                runtime_error_raise("division by zero", 1002, "division");
+                return value_null();
+            }
+            double amount = strcmp(op, "*") == 0
+                ? (double)left.as.cents * number
+                : (double)left.as.cents / number;
+            value_free(left);
+            value_free(right);
+            return value_money(round_to_cents(amount / 100.0));
+        }
+        if (left.kind == VALUE_NUMBER && right.kind == VALUE_MONEY && strcmp(op, "*") == 0) {
+            double amount = left.as.number * (double)right.as.cents;
+            value_free(left);
+            value_free(right);
+            return value_money(round_to_cents(amount / 100.0));
+        }
+        value_free(left);
+        value_free(right);
+        runtime_error_raise("invalid money operation", 1003, "money");
+        return value_null();
     }
 
     double a = value_number_or_zero(left);
@@ -3053,10 +3132,14 @@ static Value apply_assignment_modifier(AstModifierUse modifier, Value value) {
     }
 
     if (!modifier.library && strcmp(modifier.name, "USD") == 0) {
-        /* TODO: add a money runtime value. For now USD stores the numeric amount. */
-        double amount = value_number_or_zero(value);
+        if (value.kind != VALUE_NUMBER) {
+            runtime_error_raise("USD modifier expects a number", 1003, "money");
+            value_free(value);
+            return value_null();
+        }
+        long long cents = round_to_cents(value.as.number);
         value_free(value);
-        return value_number(amount);
+        return value_money(cents);
     }
     if (!modifier.library && strcmp(modifier.name, "date") == 0) {
         DateTime datetime;
