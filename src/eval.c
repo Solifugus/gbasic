@@ -143,6 +143,7 @@ typedef struct {
     char *context;
     AstStmt *stmt;
     int imported;
+    int warned;
     char *library;
 } ModifierDef;
 
@@ -1240,6 +1241,14 @@ static int modifier_phrase_matches(const char *phrase, const char *name, const c
     return 0;
 }
 
+static void modifier_use_label(AstModifierUse use, char *buffer, size_t size) {
+    if (use.library) {
+        snprintf(buffer, size, "%s.%s", use.library, use.name);
+    } else {
+        snprintf(buffer, size, "%s", use.name);
+    }
+}
+
 static ModifierDef *modifier_resolve(AstModifierUse use, const char *context, const char **args_start) {
     ModifierDef *best = NULL;
     const char *best_args = NULL;
@@ -1248,6 +1257,8 @@ static ModifierDef *modifier_resolve(AstModifierUse use, const char *context, co
         ModifierDef *modifier = &modifiers[i - 1];
         const char *candidate_args = NULL;
         if (strcmp(modifier->context, context) == 0 &&
+            (!use.library ||
+             (modifier->library && strcmp(modifier->library, use.library) == 0)) &&
             modifier_phrase_matches(use.name, modifier->name, &candidate_args)) {
             size_t len = strlen(modifier->name);
             if (!best || len > best_len) {
@@ -1259,6 +1270,26 @@ static ModifierDef *modifier_resolve(AstModifierUse use, const char *context, co
     }
     if (best) {
         *args_start = best_args;
+        if (!use.library && best->imported && !best->warned) {
+            for (size_t i = modifier_count; i > 0; i--) {
+                ModifierDef *other = &modifiers[i - 1];
+                if (other == best || !other->imported) {
+                    continue;
+                }
+                if (strcmp(other->context, best->context) == 0 &&
+                    strcmp(other->name, best->name) == 0 &&
+                    other->library && best->library &&
+                    strcmp(other->library, best->library) != 0) {
+                    fprintf(stderr,
+                            "warning: modifier '%s' from library '%s' overrides modifier from library '%s'\n",
+                            best->name,
+                            best->library,
+                            other->library);
+                    best->warned = 1;
+                    break;
+                }
+            }
+        }
     }
     return best;
 }
@@ -1276,12 +1307,11 @@ static void modifier_register_def(AstStmt *stmt, int imported, const char *libra
             return;
         }
         if (imported && existing->imported) {
-            fprintf(stderr,
-                    "warning: modifier '%s' from library '%s' overrides modifier from library '%s'\n",
-                    stmt->as.modifier.name,
-                    library,
-                    existing->library ? existing->library : "");
+            existing = NULL;
         }
+    }
+
+    if (existing) {
         existing->stmt = stmt;
         existing->imported = imported;
         free(existing->library);
@@ -1298,6 +1328,7 @@ static void modifier_register_def(AstStmt *stmt, int imported, const char *libra
     modifiers[modifier_count].context = stmt->as.modifier.context;
     modifiers[modifier_count].stmt = stmt;
     modifiers[modifier_count].imported = imported;
+    modifiers[modifier_count].warned = 0;
     modifiers[modifier_count].library = library ? copy_string(library) : NULL;
     modifier_count++;
 }
@@ -2260,7 +2291,9 @@ static Value eval_assign_modifier(AstModifierUse use, Value value) {
     ModifierDef *modifier = modifier_resolve(use, "assign", &args_text);
     if (!modifier) {
         char message[256];
-        snprintf(message, sizeof(message), "assign modifier not found: %s", use.name);
+        char label[160];
+        modifier_use_label(use, label, sizeof(label));
+        snprintf(message, sizeof(message), "assign modifier not found: %s", label);
         runtime_error_raise(message, 1003, "modifier");
         value_free(value);
         return value_null();
@@ -2287,7 +2320,9 @@ static Value eval_compare_modifier(AstModifierUse use, const char *op, Value lef
     ModifierDef *modifier = modifier_resolve(use, "compare", &args_text);
     if (!modifier) {
         char message[256];
-        snprintf(message, sizeof(message), "compare modifier not found: %s", use.name);
+        char label[160];
+        modifier_use_label(use, label, sizeof(label));
+        snprintf(message, sizeof(message), "compare modifier not found: %s", label);
         runtime_error_raise(message, 1003, "modifier");
         value_free(left);
         value_free(right);
@@ -2323,10 +2358,12 @@ static Value eval_comparison(AstExpr *expr, Value left, Value right) {
     }
 
     if (expr->as.binary.modifier.name &&
-        !modifier_is(expr->as.binary.modifier.name, "caseless")) {
+        (expr->as.binary.modifier.library ||
+         !modifier_is(expr->as.binary.modifier.name, "caseless"))) {
         char message[256];
-        snprintf(message, sizeof(message), "compare modifier not found: %s",
-                 expr->as.binary.modifier.name);
+        char label[160];
+        modifier_use_label(expr->as.binary.modifier, label, sizeof(label));
+        snprintf(message, sizeof(message), "compare modifier not found: %s", label);
         runtime_error_raise(message, 1003, "modifier");
         value_free(left);
         value_free(right);
@@ -2370,7 +2407,8 @@ static Value eval_comparison(AstExpr *expr, Value left, Value right) {
         else if (strcmp(op, "<=") == 0) result = cmp <= 0;
         else if (strcmp(op, "!>") == 0) result = !(cmp > 0);
         else if (strcmp(op, "!<") == 0) result = !(cmp < 0);
-    } else if (modifier_is(expr->as.binary.modifier.name, "caseless") &&
+    } else if (!expr->as.binary.modifier.library &&
+        modifier_is(expr->as.binary.modifier.name, "caseless") &&
         left.kind == VALUE_STRING &&
         right.kind == VALUE_STRING) {
         int equal = string_equal_caseless(left.as.string, right.as.string);
@@ -2675,13 +2713,13 @@ static Value apply_assignment_modifier(AstModifierUse modifier, Value value) {
         return eval_assign_modifier(modifier, value);
     }
 
-    if (strcmp(modifier.name, "USD") == 0) {
+    if (!modifier.library && strcmp(modifier.name, "USD") == 0) {
         /* TODO: add a money runtime value. For now USD stores the numeric amount. */
         double amount = value_number_or_zero(value);
         value_free(value);
         return value_number(amount);
     }
-    if (strcmp(modifier.name, "date") == 0) {
+    if (!modifier.library && strcmp(modifier.name, "date") == 0) {
         DateTime datetime;
         if (value.kind != VALUE_STRING || !parse_date_value(value.as.string, &datetime)) {
             fprintf(stderr, "date modifier expects an ISO-like date string\n");
@@ -2691,7 +2729,7 @@ static Value apply_assignment_modifier(AstModifierUse modifier, Value value) {
         value_free(value);
         return value_datetime(datetime);
     }
-    if (strcmp(modifier.name, "time") == 0) {
+    if (!modifier.library && strcmp(modifier.name, "time") == 0) {
         DateTime datetime;
         if (value.kind != VALUE_STRING || !parse_time_value(value.as.string, &datetime)) {
             fprintf(stderr, "time modifier expects an ISO-like time string\n");
@@ -2701,7 +2739,7 @@ static Value apply_assignment_modifier(AstModifierUse modifier, Value value) {
         value_free(value);
         return value_datetime(datetime);
     }
-    if (strcmp(modifier.name, "file") == 0) {
+    if (!modifier.library && strcmp(modifier.name, "file") == 0) {
         if (value.kind != VALUE_STRING) {
             fprintf(stderr, "file modifier expects a path string\n");
             value_free(value);
@@ -2711,7 +2749,7 @@ static Value apply_assignment_modifier(AstModifierUse modifier, Value value) {
         value_free(value);
         return file_value;
     }
-    if (strcmp(modifier.name, "dir") == 0) {
+    if (!modifier.library && strcmp(modifier.name, "dir") == 0) {
         if (value.kind != VALUE_STRING) {
             fprintf(stderr, "dir modifier expects a path string\n");
             value_free(value);
@@ -2723,7 +2761,9 @@ static Value apply_assignment_modifier(AstModifierUse modifier, Value value) {
     }
 
     char message[256];
-    snprintf(message, sizeof(message), "assign modifier not found: %s", modifier.name);
+    char label[160];
+    modifier_use_label(modifier, label, sizeof(label));
+    snprintf(message, sizeof(message), "assign modifier not found: %s", label);
     runtime_error_raise(message, 1003, "modifier");
     value_free(value);
     return value_null();

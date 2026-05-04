@@ -72,6 +72,7 @@ typedef struct {
 } AstNameList;
 
 typedef struct {
+    char *library;
     char *name;
     AstExprList args;
 } AstModifierUse;

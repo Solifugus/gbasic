@@ -69,6 +69,44 @@ static char *join_words(char *left, char *right) {
     return joined;
 }
 
+static AstModifierUse parse_modifier_use(char *text) {
+    AstModifierUse modifier = ast_modifier_use(text, ast_expr_list_empty());
+    char *dot = strchr(modifier.name, '.');
+    if (!dot) {
+        return modifier;
+    }
+
+    char *start = modifier.name;
+    while (*start == ' ' || *start == '\t') {
+        start++;
+    }
+    char *library_end = dot;
+    while (library_end > start && (library_end[-1] == ' ' || library_end[-1] == '\t')) {
+        library_end--;
+    }
+    char *name_start = dot + 1;
+    while (*name_start == ' ' || *name_start == '\t') {
+        name_start++;
+    }
+    if (library_end == start || *name_start == '\0') {
+        return modifier;
+    }
+
+    size_t library_len = (size_t)(library_end - start);
+    char *library = malloc(library_len + 1);
+    if (!library) {
+        abort();
+    }
+    memcpy(library, start, library_len);
+    library[library_len] = '\0';
+
+    char *name = copy_const(name_start);
+    free(modifier.name);
+    modifier.library = library;
+    modifier.name = name;
+    return modifier;
+}
+
 static int unit_is(const char *text, const char *unit) {
     return strcmp(text, unit) == 0;
 }
@@ -235,7 +273,7 @@ assignment
     ;
 
 modifier
-    : MOD_LPAREN MOD_CONTENT { $$ = ast_modifier_use($2, ast_expr_list_empty()); }
+    : MOD_LPAREN MOD_CONTENT { $$ = parse_modifier_use($2); }
     ;
 
 modifier_name
