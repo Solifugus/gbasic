@@ -32,11 +32,38 @@ examples=(
 
 for example in "${examples[@]}"; do
     path="examples/$example"
-    if ./gbasic "$path" >/dev/null; then
-        printf 'PASS %s\n' "$path"
+    expected="${path%.*}.out"
+    stdout_file="$(mktemp)"
+    stderr_file="$(mktemp)"
+
+    if ./gbasic "$path" >"$stdout_file" 2>"$stderr_file"; then
+        if [[ -f "$expected" ]]; then
+            actual_text="$(cat "$stdout_file")"
+            expected_text="$(cat "$expected")"
+            if [[ "$actual_text" == "$expected_text" ]]; then
+                printf 'PASS %s\n' "$path"
+            else
+                printf 'FAIL %s\n' "$path"
+                printf 'stdout mismatch against %s\n' "$expected"
+                actual_norm="$(mktemp)"
+                expected_norm="$(mktemp)"
+                printf '%s\n' "$actual_text" >"$actual_norm"
+                printf '%s\n' "$expected_text" >"$expected_norm"
+                diff -u "$expected_norm" "$actual_norm" || true
+                rm -f "$actual_norm" "$expected_norm" "$stdout_file" "$stderr_file"
+                exit 1
+            fi
+        else
+            printf 'PASS %s\n' "$path"
+        fi
+        rm -f "$stdout_file" "$stderr_file"
     else
         status=$?
         printf 'FAIL %s\n' "$path"
+        if [[ -s "$stderr_file" ]]; then
+            cat "$stderr_file"
+        fi
+        rm -f "$stdout_file" "$stderr_file"
         exit "$status"
     fi
 done
