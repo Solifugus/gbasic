@@ -158,6 +158,11 @@ typedef struct {
     char *library;
 } UsePair;
 
+typedef struct {
+    char *path;
+    AstStmt *library;
+} LibraryMatch;
+
 static Env global_env = {0};
 static Env *current_env = &global_env;
 static FunctionDef *functions = NULL;
@@ -192,6 +197,10 @@ static UsePair *used_pairs = NULL;
 static size_t used_pair_count = 0;
 static UsePair *use_stack = NULL;
 static size_t use_stack_count = 0;
+
+static int path_equal(const char *left, const char *right) {
+    return left && right && strcmp(left, right) == 0;
+}
 
 static char *copy_string(const char *text) {
     size_t length = strlen(text);
@@ -1451,6 +1460,38 @@ static char *resolve_use_path(const char *base_file, const char *use_path) {
     return resolved;
 }
 
+static char *join_path(const char *dir, const char *name) {
+    size_t dir_len = strlen(dir);
+    size_t name_len = strlen(name);
+    int needs_slash = dir_len > 0 && dir[dir_len - 1] != '/';
+    char *path = malloc(dir_len + (size_t)needs_slash + name_len + 1);
+    if (!path) {
+        abort();
+    }
+    memcpy(path, dir, dir_len);
+    if (needs_slash) {
+        path[dir_len] = '/';
+    }
+    memcpy(path + dir_len + (size_t)needs_slash, name, name_len + 1);
+    return path;
+}
+
+static int has_bas_extension(const char *path) {
+    size_t len = strlen(path);
+    return len >= 4 && strcmp(path + len - 4, ".bas") == 0;
+}
+
+static char *library_filename(const char *name) {
+    size_t name_len = strlen(name);
+    char *filename = malloc(name_len + strlen(".bas") + 1);
+    if (!filename) {
+        abort();
+    }
+    memcpy(filename, name, name_len);
+    memcpy(filename + name_len, ".bas", strlen(".bas") + 1);
+    return filename;
+}
+
 static char *read_source_file(const char *path) {
     FILE *file = fopen(path, "rb");
     if (!file) {
@@ -1574,6 +1615,132 @@ static void loaded_files_clear(void) {
     loaded_file_count = 0;
 }
 
+static void library_match_add(LibraryMatch **matches, size_t *count, const char *path, AstStmt *library) {
+    LibraryMatch *next = realloc(*matches, sizeof(LibraryMatch) * (*count + 1));
+    if (!next) {
+        abort();
+    }
+    *matches = next;
+    (*matches)[*count].path = copy_string(path);
+    (*matches)[*count].library = library;
+    (*count)++;
+}
+
+static void library_matches_clear(LibraryMatch *matches, size_t count) {
+    for (size_t i = 0; i < count; i++) {
+        free(matches[i].path);
+    }
+    free(matches);
+}
+
+static int library_match_seen(LibraryMatch *matches, size_t count, const char *path) {
+    for (size_t i = 0; i < count; i++) {
+        if (strcmp(matches[i].path, path) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void search_file_for_library(const char *path,
+                                    const char *name,
+                                    LibraryMatch **matches,
+                                    size_t *match_count) {
+    if (!has_bas_extension(path) ||
+        path_equal(path, root_source_path) ||
+        path_equal(path, current_import_path) ||
+        library_match_seen(*matches, *match_count, path)) {
+        return;
+    }
+
+    LoadedFile *loaded = loaded_file_get(path);
+    if (!loaded) {
+        return;
+    }
+
+    AstStmt *library = library_find_in(loaded->program, name);
+    if (library) {
+        library_match_add(matches, match_count, path, library);
+    }
+}
+
+static void search_directory_for_library(const char *dir_path,
+                                         const char *name,
+                                         int recursive,
+                                         int exact_filename,
+                                         LibraryMatch **matches,
+                                         size_t *match_count) {
+    DIR *dir = opendir(dir_path);
+    if (!dir) {
+        return;
+    }
+
+    char *expected_filename = exact_filename ? library_filename(name) : NULL;
+    struct dirent *entry = NULL;
+    while ((entry = readdir(dir)) != NULL) {
+        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
+            continue;
+        }
+
+        char *path = join_path(dir_path, entry->d_name);
+        struct stat st;
+        if (stat(path, &st) == 0) {
+            if (S_ISREG(st.st_mode)) {
+                if (!exact_filename || strcmp(entry->d_name, expected_filename) == 0) {
+                    search_file_for_library(path, name, matches, match_count);
+                }
+                if (error_action_pending()) {
+                    free(path);
+                    break;
+                }
+            } else if (recursive && S_ISDIR(st.st_mode)) {
+                search_directory_for_library(path, name, 1, exact_filename, matches, match_count);
+                if (error_action_pending()) {
+                    free(path);
+                    break;
+                }
+            }
+        }
+        free(path);
+    }
+
+    free(expected_filename);
+    closedir(dir);
+}
+
+static void search_gbasic_path_for_library(const char *name,
+                                           int exact_filename,
+                                           LibraryMatch **matches,
+                                           size_t *match_count) {
+    const char *gbasic_path = getenv("GBASIC_PATH");
+    if (!gbasic_path || gbasic_path[0] == '\0') {
+        return;
+    }
+
+    const char *start = gbasic_path;
+    while (*start) {
+        const char *end = strchr(start, ':');
+        size_t len = end ? (size_t)(end - start) : strlen(start);
+        if (len > 0) {
+            char *dir = malloc(len + 1);
+            if (!dir) {
+                abort();
+            }
+            memcpy(dir, start, len);
+            dir[len] = '\0';
+            search_directory_for_library(dir, name, 1, exact_filename, matches, match_count);
+            free(dir);
+            if (error_action_pending()) {
+                return;
+            }
+        }
+        if (!end) {
+            break;
+        }
+        start = end + 1;
+    }
+}
+
 static void library_import_from_block(AstStmt *library);
 
 static void library_import(const char *name, const char *path) {
@@ -1624,14 +1791,92 @@ static void library_import(const char *name, const char *path) {
     }
 
     library = library_find(name);
-    if (!library) {
-        char message[256];
-        snprintf(message, sizeof(message), "library not found: %s", name);
-        runtime_error_raise(message, 1003, "use");
+    if (library) {
+        const char *source_path = root_source_path ? root_source_path : "<current>";
+        if (use_pair_contains(used_pairs, used_pair_count, source_path, name)) {
+            return;
+        }
+        if (use_pair_contains(use_stack, use_stack_count, source_path, name)) {
+            char message[512];
+            snprintf(message, sizeof(message), "circular use detected for %s from %s", name, source_path);
+            runtime_error_raise(message, 1003, "use");
+            return;
+        }
+
+        use_pair_add(&use_stack, &use_stack_count, source_path, name);
+        library_import_from_block(library);
+        use_pair_pop(use_stack, &use_stack_count);
+        if (!error_action_pending()) {
+            use_pair_add(&used_pairs, &used_pair_count, source_path, name);
+        }
         return;
     }
 
-    library_import_from_block(library);
+    LibraryMatch *matches = NULL;
+    size_t match_count = 0;
+    const char *base = current_import_path ? current_import_path : root_source_path;
+    char *base_dir = dirname_copy(base ? base : ".");
+
+    search_directory_for_library(base_dir, name, 0, 1, &matches, &match_count);
+    if (!error_action_pending()) {
+        search_directory_for_library(base_dir, name, 1, 1, &matches, &match_count);
+    }
+    if (!error_action_pending()) {
+        search_gbasic_path_for_library(name, 1, &matches, &match_count);
+    }
+    if (!error_action_pending() && match_count == 0) {
+        search_directory_for_library(base_dir, name, 0, 0, &matches, &match_count);
+    }
+    if (!error_action_pending() && match_count == 0) {
+        search_directory_for_library(base_dir, name, 1, 0, &matches, &match_count);
+    }
+    if (!error_action_pending() && match_count == 0) {
+        search_gbasic_path_for_library(name, 0, &matches, &match_count);
+    }
+    free(base_dir);
+
+    if (error_action_pending()) {
+        library_matches_clear(matches, match_count);
+        return;
+    }
+
+    if (match_count == 0) {
+        char message[256];
+        snprintf(message, sizeof(message), "library not found: %s", name);
+        runtime_error_raise(message, 1003, "use");
+        library_matches_clear(matches, match_count);
+        return;
+    }
+
+    if (use_pair_contains(used_pairs, used_pair_count, matches[0].path, name)) {
+        library_matches_clear(matches, match_count);
+        return;
+    }
+    if (use_pair_contains(use_stack, use_stack_count, matches[0].path, name)) {
+        char message[512];
+        snprintf(message, sizeof(message), "circular use detected for %s from %s", name, matches[0].path);
+        runtime_error_raise(message, 1003, "use");
+        library_matches_clear(matches, match_count);
+        return;
+    }
+
+    for (size_t i = 1; i < match_count; i++) {
+        fprintf(stderr,
+                "warning: additional library '%s' match ignored: %s\n",
+                name,
+                matches[i].path);
+    }
+
+    use_pair_add(&use_stack, &use_stack_count, matches[0].path, name);
+    previous_import_path = current_import_path;
+    current_import_path = matches[0].path;
+    library_import_from_block(matches[0].library);
+    current_import_path = previous_import_path;
+    use_pair_pop(use_stack, &use_stack_count);
+    if (!error_action_pending()) {
+        use_pair_add(&used_pairs, &used_pair_count, matches[0].path, name);
+    }
+    library_matches_clear(matches, match_count);
 }
 
 static void library_import_from_block(AstStmt *library) {

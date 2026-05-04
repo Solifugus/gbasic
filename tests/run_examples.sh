@@ -25,6 +25,7 @@ examples=(
     library_test.bas
     use_test.bas
     use_from_test.bas
+    use_search_test.bas
     qualified_modifier_test.bas
     qualified_function_test.bas
 )
