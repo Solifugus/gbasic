@@ -135,6 +135,7 @@ typedef struct {
     char *name;
     AstStmt *stmt;
     int imported;
+    int warned;
     char *library;
 } FunctionDef;
 
@@ -1153,27 +1154,71 @@ static void watcher_clear(void) {
     watcher_draining = 0;
 }
 
-static FunctionDef *function_find(const char *name) {
+static FunctionDef *function_find_local(const char *name) {
     for (size_t i = 0; i < function_count; i++) {
-        if (strcmp(functions[i].name, name) == 0) {
+        if (!functions[i].imported && strcmp(functions[i].name, name) == 0) {
             return &functions[i];
         }
     }
     return NULL;
 }
 
+static FunctionDef *function_resolve(const char *library, const char *name) {
+    if (library) {
+        for (size_t i = function_count; i > 0; i--) {
+            FunctionDef *function = &functions[i - 1];
+            if (function->imported &&
+                function->library &&
+                strcmp(function->library, library) == 0 &&
+                strcmp(function->name, name) == 0) {
+                return function;
+            }
+        }
+        return NULL;
+    }
+
+    FunctionDef *local = function_find_local(name);
+    if (local) {
+        return local;
+    }
+
+    FunctionDef *best = NULL;
+    for (size_t i = function_count; i > 0; i--) {
+        FunctionDef *function = &functions[i - 1];
+        if (function->imported && strcmp(function->name, name) == 0) {
+            best = function;
+            break;
+        }
+    }
+
+    if (best && !best->warned) {
+        for (size_t i = function_count; i > 0; i--) {
+            FunctionDef *other = &functions[i - 1];
+            if (other == best || !other->imported) {
+                continue;
+            }
+            if (strcmp(other->name, best->name) == 0 &&
+                other->library && best->library &&
+                strcmp(other->library, best->library) != 0) {
+                fprintf(stderr,
+                        "warning: function '%s' from library '%s' overrides function from library '%s'\n",
+                        best->name,
+                        best->library,
+                        other->library);
+                best->warned = 1;
+                break;
+            }
+        }
+    }
+
+    return best;
+}
+
 static void function_register_def(AstStmt *stmt, int imported, const char *library) {
-    FunctionDef *function = function_find(stmt->as.function.name);
+    FunctionDef *function = function_find_local(stmt->as.function.name);
     if (function) {
         if (imported && !function->imported) {
             return;
-        }
-        if (imported && function->imported) {
-            fprintf(stderr,
-                    "warning: function '%s' from library '%s' overrides function from library '%s'\n",
-                    stmt->as.function.name,
-                    library,
-                    function->library ? function->library : "");
         }
         function->stmt = stmt;
         function->imported = imported;
@@ -1190,6 +1235,7 @@ static void function_register_def(AstStmt *stmt, int imported, const char *libra
     functions[function_count].name = stmt->as.function.name;
     functions[function_count].stmt = stmt;
     functions[function_count].imported = imported;
+    functions[function_count].warned = 0;
     functions[function_count].library = library ? copy_string(library) : NULL;
     function_count++;
 }
@@ -1983,7 +2029,29 @@ static Value eval_user_function(AstExpr *expr, FunctionDef *function) {
     return value_null();
 }
 
+static void call_label(AstExpr *expr, char *buffer, size_t size) {
+    if (expr->as.call.library) {
+        snprintf(buffer, size, "%s.%s", expr->as.call.library, expr->as.call.name);
+    } else {
+        snprintf(buffer, size, "%s", expr->as.call.name);
+    }
+}
+
 static Value eval_call(AstExpr *expr) {
+    if (expr->as.call.library) {
+        FunctionDef *function = function_resolve(expr->as.call.library, expr->as.call.name);
+        if (function) {
+            return eval_user_function(expr, function);
+        }
+
+        char message[256];
+        char label[160];
+        call_label(expr, label, sizeof(label));
+        snprintf(message, sizeof(message), "invalid function call: %s", label);
+        runtime_error_raise(message, 1003, "invalid function call");
+        return value_null();
+    }
+
     if (strcmp(expr->as.call.name, "error.clear") == 0) {
         if (expr->as.call.args.count != 0) {
             runtime_error_raise("error.clear expects no arguments", 1003, "invalid function call");
@@ -2095,7 +2163,7 @@ static Value eval_call(AstExpr *expr) {
         return eval_dir_call(expr);
     }
 
-    FunctionDef *function = function_find(expr->as.call.name);
+    FunctionDef *function = function_resolve(NULL, expr->as.call.name);
     if (function) {
         return eval_user_function(expr, function);
     }

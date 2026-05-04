@@ -49,7 +49,20 @@ extern int yydebug;
 
 #include "ast.h"
 
-#line 53 "src/parser.tab.h"
+typedef enum {
+    IDENT_SUFFIX_NONE,
+    IDENT_SUFFIX_CALL,
+    IDENT_SUFFIX_FIELD,
+    IDENT_SUFFIX_QUALIFIED_CALL
+} AstIdentSuffixKind;
+
+typedef struct {
+    AstIdentSuffixKind kind;
+    char *name;
+    AstExprList args;
+} AstIdentSuffix;
+
+#line 66 "src/parser.tab.h"
 
 /* Token kinds.  */
 #ifndef YYTOKENTYPE
@@ -114,9 +127,10 @@ extern int yydebug;
     LBRACE = 309,                  /* LBRACE  */
     RBRACE = 310,                  /* RBRACE  */
     COMMA = 311,                   /* COMMA  */
-    DOT = 312,                     /* DOT  */
-    COLON = 313,                   /* COLON  */
-    NEWLINE = 314                  /* NEWLINE  */
+    COLON = 312,                   /* COLON  */
+    NEWLINE = 313,                 /* NEWLINE  */
+    NO_DOT = 314,                  /* NO_DOT  */
+    DOT = 315                      /* DOT  */
   };
   typedef enum yytokentype yytoken_kind_t;
 #endif
@@ -125,7 +139,7 @@ extern int yydebug;
 #if ! defined YYSTYPE && ! defined YYSTYPE_IS_DECLARED
 union YYSTYPE
 {
-#line 201 "src/parser.y"
+#line 214 "src/parser.y"
 
     double number;
     char *text;
@@ -138,8 +152,9 @@ union YYSTYPE
     AstModifierUse modifier;
     AstModifierSignature modifier_signature;
     AstDuration duration;
+    AstIdentSuffix ident_suffix;
 
-#line 143 "src/parser.tab.h"
+#line 158 "src/parser.tab.h"
 
 };
 typedef union YYSTYPE YYSTYPE;

@@ -196,6 +196,19 @@ static void yyerror(const char *message);
 
 %code requires {
 #include "ast.h"
+
+typedef enum {
+    IDENT_SUFFIX_NONE,
+    IDENT_SUFFIX_CALL,
+    IDENT_SUFFIX_FIELD,
+    IDENT_SUFFIX_QUALIFIED_CALL
+} AstIdentSuffixKind;
+
+typedef struct {
+    AstIdentSuffixKind kind;
+    char *name;
+    AstExprList args;
+} AstIdentSuffix;
 }
 
 %union {
@@ -210,13 +223,16 @@ static void yyerror(const char *message);
     AstModifierUse modifier;
     AstModifierSignature modifier_signature;
     AstDuration duration;
+    AstIdentSuffix ident_suffix;
 }
 
 %token <number> NUMBER
 %token <text> IDENT STRING MOD_CONTENT
 %token IF THEN END PRINT TRUE FALSE AND OR NOT WITH FOR TO IN FUNCTION RETURN GOTO GOSUB WATCH WITHOUT WATCHERS ON RESUME NEXT STOP ERROR_VALUE MODIFIER PROGRAM LIBRARY USE EXPORT
 %token OP_EQ OP_NE OP_GT OP_LT OP_GE OP_LE OP_NGT OP_NLT
-%token PLUS MINUS STAR SLASH LPAREN MOD_LPAREN RPAREN LBRACKET RBRACKET LBRACE RBRACE COMMA DOT COLON NEWLINE
+%token PLUS MINUS STAR SLASH LPAREN MOD_LPAREN RPAREN LBRACKET RBRACKET LBRACE RBRACE COMMA COLON NEWLINE
+%precedence NO_DOT
+%left DOT
 %define parse.error verbose
 %locations
 
@@ -230,6 +246,7 @@ static void yyerror(const char *message);
 %type <modifier> modifier
 %type <modifier_signature> modifier_signature
 %type <duration> duration_terms
+%type <ident_suffix> ident_suffix ident_dot_suffix
 %type <text> modifier_name modifier_word modifier_context comparison_operator
 
 %%
@@ -292,6 +309,7 @@ print_statement
 
 call_statement
     : IDENT LPAREN argument_list_opt RPAREN { $$ = ast_expr_stmt(ast_call($1, $3)); }
+    | IDENT DOT IDENT LPAREN argument_list_opt RPAREN { $$ = ast_expr_stmt(ast_qualified_call($1, $3, $5)); }
     | ERROR_VALUE DOT IDENT LPAREN argument_list_opt RPAREN {
         size_t length = strlen("error.") + strlen($3);
         char *name = malloc(length + 1);
@@ -485,8 +503,17 @@ primary
     : NUMBER { $$ = ast_number($1); }
     | duration_terms { $$ = ast_duration($1); }
     | STRING { $$ = ast_string($1); }
-    | IDENT { $$ = ast_ident($1); }
-    | IDENT LPAREN argument_list_opt RPAREN { $$ = ast_call($1, $3); }
+    | IDENT ident_suffix {
+        if ($2.kind == IDENT_SUFFIX_CALL) {
+            $$ = ast_call($1, $2.args);
+        } else if ($2.kind == IDENT_SUFFIX_FIELD) {
+            $$ = ast_field(ast_ident($1), $2.name);
+        } else if ($2.kind == IDENT_SUFFIX_QUALIFIED_CALL) {
+            $$ = ast_qualified_call($1, $2.name, $2.args);
+        } else {
+            $$ = ast_ident($1);
+        }
+      }
     | ERROR_VALUE { $$ = ast_ident(copy_const("error")); }
     | TRUE { $$ = ast_bool(1); }
     | FALSE { $$ = ast_bool(0); }
@@ -494,6 +521,36 @@ primary
     | LBRACKET argument_list_opt RBRACKET { $$ = ast_array($2); }
     | LBRACE optional_newlines RBRACE { $$ = ast_record(ast_record_field_list_empty()); }
     | LBRACE optional_newlines record_field_list optional_newlines RBRACE { $$ = ast_record($3); }
+    ;
+
+ident_suffix
+    : %empty %prec NO_DOT {
+        $$.kind = IDENT_SUFFIX_NONE;
+        $$.name = NULL;
+        $$.args = ast_expr_list_empty();
+      }
+    | LPAREN argument_list_opt RPAREN {
+        $$.kind = IDENT_SUFFIX_CALL;
+        $$.name = NULL;
+        $$.args = $2;
+      }
+    | DOT IDENT ident_dot_suffix {
+        $$ = $3;
+        $$.name = $2;
+      }
+    ;
+
+ident_dot_suffix
+    : %empty {
+        $$.kind = IDENT_SUFFIX_FIELD;
+        $$.name = NULL;
+        $$.args = ast_expr_list_empty();
+      }
+    | LPAREN argument_list_opt RPAREN {
+        $$.kind = IDENT_SUFFIX_QUALIFIED_CALL;
+        $$.name = NULL;
+        $$.args = $2;
+      }
     ;
 
 duration_terms

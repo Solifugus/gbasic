@@ -111,6 +111,7 @@ struct AstExpr {
             char *field;
         } field;
         struct {
+            char *library;
             char *name;
             AstExprList args;
         } call;
@@ -215,6 +216,7 @@ AstExpr *ast_duration(AstDuration duration);
 AstExpr *ast_index(AstExpr *array, AstExpr *index);
 AstExpr *ast_field(AstExpr *object, char *field);
 AstExpr *ast_call(char *name, AstExprList args);
+AstExpr *ast_qualified_call(char *library, char *name, AstExprList args);
 AstModifierUse ast_modifier_none(void);
 AstModifierUse ast_modifier_use(char *name, AstExprList args);
 AstModifierSignature ast_modifier_signature(char *name, AstNameList params);

@@ -133,8 +133,15 @@ AstExpr *ast_field(AstExpr *object, char *field) {
 AstExpr *ast_call(char *name, AstExprList args) {
     AstExpr *expr = xmalloc(sizeof(*expr));
     expr->kind = AST_EXPR_CALL;
+    expr->as.call.library = NULL;
     expr->as.call.name = name;
     expr->as.call.args = args;
+    return expr;
+}
+
+AstExpr *ast_qualified_call(char *library, char *name, AstExprList args) {
+    AstExpr *expr = ast_call(name, args);
+    expr->as.call.library = library;
     return expr;
 }
 
@@ -418,7 +425,11 @@ static void dump_expr(AstExpr *expr, int indent) {
         dump_expr(expr->as.field.object, indent + 1);
         break;
     case AST_EXPR_CALL:
-        printf("Call %s\n", expr->as.call.name);
+        if (expr->as.call.library) {
+            printf("Call %s.%s\n", expr->as.call.library, expr->as.call.name);
+        } else {
+            printf("Call %s\n", expr->as.call.name);
+        }
         for (size_t i = 0; i < expr->as.call.args.count; i++) {
             dump_expr(expr->as.call.args.items[i], indent + 1);
         }
@@ -680,6 +691,7 @@ static void free_expr(AstExpr *expr) {
         free(expr->as.field.field);
         break;
     case AST_EXPR_CALL:
+        free(expr->as.call.library);
         free(expr->as.call.name);
         for (size_t i = 0; i < expr->as.call.args.count; i++) {
             free_expr(expr->as.call.args.items[i]);
