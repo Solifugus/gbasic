@@ -1,4 +1,5 @@
 #include "ast.h"
+#include "builtins.h"
 #include "eval.h"
 #include "lexer.h"
 
@@ -212,18 +213,7 @@ static ParsedFile *parsed_file_get(AddUsesContext *ctx, const char *path) {
 }
 
 static int builtin_function(const char *name) {
-    const char *builtins[] = {
-        "error.clear", "lower", "upper", "round", "compare",
-        "exists", "read", "write", "append", "lock", "unlock", "bytes", "lines", "chars",
-        "list", "files", "folders",
-        "len", "sum", "mean", "median", "mode", "min", "max"
-    };
-    for (size_t i = 0; i < sizeof(builtins) / sizeof(builtins[0]); i++) {
-        if (strcmp(name, builtins[i]) == 0) {
-            return 1;
-        }
-    }
-    return 0;
+    return gbasic_builtin_function(name);
 }
 
 static int builtin_modifier(const char *name, const char *context) {

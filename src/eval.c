@@ -1,4 +1,5 @@
 #include "eval.h"
+#include "builtins.h"
 
 #include <ctype.h>
 #include <dirent.h>
@@ -1224,6 +1225,19 @@ static FunctionDef *function_resolve(const char *library, const char *name) {
 }
 
 static void function_register_def(AstStmt *stmt, int imported, const char *library) {
+    if (gbasic_builtin_function(stmt->as.function.name)) {
+        if (imported) {
+            fprintf(stderr,
+                    "warning: function '%s' from library '%s' has same name as a built-in; unqualified calls use the built-in\n",
+                    stmt->as.function.name,
+                    library ? library : "");
+        } else {
+            fprintf(stderr,
+                    "warning: local function '%s' overrides built-in function\n",
+                    stmt->as.function.name);
+        }
+    }
+
     FunctionDef *function = function_find_local(stmt->as.function.name);
     if (function) {
         if (imported && !function->imported) {
@@ -2306,6 +2320,11 @@ static Value eval_call(AstExpr *expr) {
         return value_null();
     }
 
+    FunctionDef *local_function = function_find_local(expr->as.call.name);
+    if (local_function) {
+        return eval_user_function(expr, local_function);
+    }
+
     if (strcmp(expr->as.call.name, "lower") == 0) {
         if (expr->as.call.args.count != 1) {
             runtime_error_raise("lower expects one argument", 1003, "invalid function call");
@@ -2408,28 +2427,24 @@ static Value eval_call(AstExpr *expr) {
         return eval_dir_call(expr);
     }
 
-    FunctionDef *function = function_resolve(NULL, expr->as.call.name);
-    if (function) {
-        return eval_user_function(expr, function);
-    }
-
-    if (expr->as.call.args.count != 1) {
-        char message[256];
-        snprintf(message, sizeof(message), "invalid function call: %s", expr->as.call.name);
-        runtime_error_raise(message, 1003, "invalid function call");
-        return value_null();
-    }
-
-    Value arg = eval_expr(expr->as.call.args.items[0]);
-    if (!array_is_numeric(arg)) {
-        char message[256];
-        snprintf(message, sizeof(message), "%s expects a numeric array", expr->as.call.name);
-        runtime_error_raise(message, 1003, "invalid function call");
-        value_free(arg);
-        return value_null();
-    }
-
     const char *name = expr->as.call.name;
+    if (gbasic_builtin_function(name)) {
+        if (expr->as.call.args.count != 1) {
+            char message[256];
+            snprintf(message, sizeof(message), "invalid function call: %s", expr->as.call.name);
+            runtime_error_raise(message, 1003, "invalid function call");
+            return value_null();
+        }
+
+        Value arg = eval_expr(expr->as.call.args.items[0]);
+        if (!array_is_numeric(arg)) {
+            char message[256];
+            snprintf(message, sizeof(message), "%s expects a numeric array", expr->as.call.name);
+            runtime_error_raise(message, 1003, "invalid function call");
+            value_free(arg);
+            return value_null();
+        }
+
     size_t count = arg.as.array.count;
     double result = 0.0;
 
@@ -2502,6 +2517,17 @@ static Value eval_call(AstExpr *expr) {
 
     value_free(arg);
     return value_number(result);
+    }
+
+    FunctionDef *function = function_resolve(NULL, expr->as.call.name);
+    if (function) {
+        return eval_user_function(expr, function);
+    }
+
+    char message[256];
+    snprintf(message, sizeof(message), "invalid function call: %s", expr->as.call.name);
+    runtime_error_raise(message, 1003, "invalid function call");
+    return value_null();
 }
 
 static char *copy_trimmed_span(const char *start, size_t length) {
