@@ -438,7 +438,7 @@ return_statement
     ;
 
 label_statement
-    : IDENT COLON { $$ = ast_label($1); }
+    : variable_name COLON { $$ = ast_label($1); }
     ;
 
 goto_statement

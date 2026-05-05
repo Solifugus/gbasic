@@ -12,6 +12,7 @@ examples=(
     datetime_test.gb
     datetime_lens_test.bas
     dates_lib_test.bas
+    keyword_stability_test.bas
     duration_test.gb
     file_test.gb
     lock_test.gb
