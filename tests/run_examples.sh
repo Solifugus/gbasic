@@ -24,6 +24,7 @@ examples=(
     watch_test.gb
     error_test.gb
     modifier_test.gb
+    modifier_library_regression_test.bas
     money_test.bas
     string_test.bas
     builtin_test.bas

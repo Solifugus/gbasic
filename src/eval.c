@@ -1493,6 +1493,11 @@ static void modifier_register_def(AstStmt *stmt, int imported, const char *libra
         }
         if (imported && existing->imported) {
             existing = NULL;
+        } else if (!imported && existing->imported && existing->library) {
+            fprintf(stderr,
+                    "warning: local modifier '%s' overrides modifier from library '%s'\n",
+                    stmt->as.modifier.name,
+                    existing->library);
         }
     }
 
