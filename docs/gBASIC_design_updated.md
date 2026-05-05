@@ -205,6 +205,26 @@ Behavior:
 
 ---
 
+## Date/Time Core Scope
+
+Core provides primitive lenses. Libraries provide human conveniences.
+
+Core date/time modifiers:
+
+- (date)
+- (time)
+- (datetime)
+- (year)
+- (month)
+- (day)
+- (hour)
+- (minute)
+- (second)
+
+Do not put end of month, next monday, previous friday, day name, or business day into core. Those should be written later as gBASIC libraries using the primitives.
+
+---
+
 ## File Lock Safety
 
 - All locks are tracked in a runtime registry

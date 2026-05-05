@@ -10,6 +10,7 @@ examples=(
     parse_test.gb
     record_test.gb
     datetime_test.gb
+    datetime_lens_test.bas
     duration_test.gb
     file_test.gb
     lock_test.gb

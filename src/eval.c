@@ -1011,6 +1011,97 @@ static int parse_time_value(const char *text, DateTime *out) {
     return 1;
 }
 
+static int datetime_lens_precision(const char *name, DateTimePrecision *out) {
+    if (modifier_is(name, "year")) {
+        *out = PREC_YEAR;
+        return 1;
+    }
+    if (modifier_is(name, "month")) {
+        *out = PREC_MONTH;
+        return 1;
+    }
+    if (modifier_is(name, "day")) {
+        *out = PREC_DAY;
+        return 1;
+    }
+    if (modifier_is(name, "hour")) {
+        *out = PREC_HOUR;
+        return 1;
+    }
+    if (modifier_is(name, "minute")) {
+        *out = PREC_MINUTE;
+        return 1;
+    }
+    if (modifier_is(name, "second")) {
+        *out = PREC_SECOND;
+        return 1;
+    }
+    return 0;
+}
+
+static DateTime datetime_apply_lens(DateTime dt, DateTimePrecision lens) {
+    dt.precision = lens;
+    if (lens < PREC_SECOND) {
+        dt.second = 0;
+    }
+    if (lens < PREC_MINUTE) {
+        dt.minute = 0;
+    }
+    if (lens < PREC_HOUR) {
+        dt.hour = 0;
+    }
+    if (!dt.time_only) {
+        if (lens < PREC_DAY) {
+            dt.day = 1;
+        }
+        if (lens < PREC_MONTH) {
+            dt.month = 1;
+        }
+    }
+    return dt;
+}
+
+static int parse_datetime_like_value(const char *text, DateTime *out) {
+    return parse_date_value(text, out) || parse_time_value(text, out);
+}
+
+static Value apply_datetime_lens_to_value(Value value,
+                                          DateTimePrecision lens,
+                                          const char *modifier_name,
+                                          int *ok) {
+    DateTime dt;
+    *ok = 1;
+    if (value.kind == VALUE_DATETIME) {
+        dt = value.as.datetime;
+    } else if (value.kind == VALUE_STRING && parse_datetime_like_value(value.as.string, &dt)) {
+        /* parsed below */
+    } else {
+        char message[256];
+        snprintf(message, sizeof(message), "%s lens expects a date/time value", modifier_name);
+        runtime_error_raise(message, 1003, "datetime");
+        value_free(value);
+        *ok = 0;
+        return value_null();
+    }
+
+    value_free(value);
+    if (dt.time_only && lens < PREC_HOUR) {
+        char message[256];
+        snprintf(message, sizeof(message), "%s lens cannot be applied to a time-only value", modifier_name);
+        runtime_error_raise(message, 1003, "datetime");
+        *ok = 0;
+        return value_null();
+    }
+    if (dt.precision < lens) {
+        char message[256];
+        snprintf(message, sizeof(message), "%s lens requires sufficient date/time precision", modifier_name);
+        runtime_error_raise(message, 1003, "datetime");
+        *ok = 0;
+        return value_null();
+    }
+    return value_datetime(datetime_apply_lens(dt, lens));
+}
+
 static int is_leap_year(int year) {
     return (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
 }
@@ -2721,6 +2812,34 @@ static Value eval_comparison(AstExpr *expr, Value left, Value right) {
         return eval_compare_modifier(expr->as.binary.modifier, op, left, right);
     }
 
+    DateTimePrecision lens = PREC_YEAR;
+    if (expr->as.binary.modifier.name &&
+        !expr->as.binary.modifier.library &&
+        datetime_lens_precision(expr->as.binary.modifier.name, &lens)) {
+        int ok = 0;
+        Value lensed_left = apply_datetime_lens_to_value(left,
+                                                         lens,
+                                                         expr->as.binary.modifier.name,
+                                                         &ok);
+        if (!ok) {
+            value_free(right);
+            return value_null();
+        }
+        Value lensed_right = apply_datetime_lens_to_value(right,
+                                                          lens,
+                                                          expr->as.binary.modifier.name,
+                                                          &ok);
+        if (!ok) {
+            value_free(lensed_left);
+            return value_null();
+        }
+        AstExpr fake = {0};
+        fake.kind = AST_EXPR_BINARY;
+        fake.as.binary.op = expr->as.binary.op;
+        fake.as.binary.modifier = ast_modifier_none();
+        return eval_comparison(&fake, lensed_left, lensed_right);
+    }
+
     if (expr->as.binary.modifier.name &&
         (expr->as.binary.modifier.library ||
          !modifier_is(expr->as.binary.modifier.name, "caseless"))) {
@@ -3160,6 +3279,11 @@ static Value apply_assignment_modifier(AstModifierUse modifier, Value value) {
         }
         value_free(value);
         return value_datetime(datetime);
+    }
+    DateTimePrecision lens = PREC_YEAR;
+    if (!modifier.library && datetime_lens_precision(modifier.name, &lens)) {
+        int ok = 0;
+        return apply_datetime_lens_to_value(value, lens, modifier.name, &ok);
     }
     if (!modifier.library && strcmp(modifier.name, "file") == 0) {
         if (value.kind != VALUE_STRING) {

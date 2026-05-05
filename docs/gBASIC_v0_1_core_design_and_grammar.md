@@ -254,13 +254,7 @@ modifier date for assign
 end modifier
 ```
 
-Weekday modifier:
-
-```basic
-modifier wednesday after for assign
-    return nextweekday(value, "Wednesday")
-end modifier
-```
+Human date conveniences such as weekday-relative assignment are not core modifiers. They should be written later as gBASIC libraries using the primitive date/time lenses.
 
 Parameterized modifier:
 
@@ -540,6 +534,24 @@ meeting (date)= "2026-05-15 15:30"
 moment (time)= "15:30:02"
 ```
 
+Core provides primitive lenses. Libraries provide human conveniences.
+
+Core date/time modifiers:
+
+```basic
+date
+time
+datetime
+year
+month
+day
+hour
+minute
+second
+```
+
+Do not put end of month, next monday, previous friday, day name, or business day into core. Those belong in gBASIC libraries built on the primitive lenses.
+
 Date/time values should preserve precision.
 
 A date with only year-month-day has day precision.
@@ -574,9 +586,11 @@ if a = b then
 end if
 ```
 
-### Date/Time Support Functions
+### Date/Time Libraries
 
-Initial date/time functions may include:
+Human convenience functions should be provided by libraries, not core.
+
+Examples of library-level functions:
 
 ```basic
 dayname(d)

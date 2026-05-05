@@ -341,9 +341,34 @@ User-defined modifiers may shadow built-ins, but the compiler should warn.
 USD
 date
 time
+datetime
+year
+month
+day
+hour
+minute
+second
 file
 dir
 ```
+
+Core provides primitive lenses. Libraries provide human conveniences.
+
+The core date/time modifiers are:
+
+```basic
+date
+time
+datetime
+year
+month
+day
+hour
+minute
+second
+```
+
+Do not put end of month, next monday, previous friday, day name, or business day into core. Those should be written later as gBASIC libraries using the primitive lenses.
 
 ### Comparison
 
@@ -352,7 +377,7 @@ caseless
 rounded n
 ```
 
-Date/time values already support precision-aware ordinary comparison. Explicit date/time comparison modifiers such as `day`, `month`, or `year` may be added later but are not required for v0.1.
+Date/time values already support precision-aware ordinary comparison.
 
 ---
 
