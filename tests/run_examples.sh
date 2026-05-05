@@ -76,6 +76,37 @@ for example in "${examples[@]}"; do
     fi
 done
 
+help_file="$(mktemp)"
+if ./gbasic --help >"$help_file"; then
+    printf 'PASS %s\n' "gbasic --help"
+else
+    status=$?
+    printf 'FAIL %s\n' "gbasic --help"
+    rm -f "$help_file"
+    exit "$status"
+fi
+rm -f "$help_file"
+
+version_file="$(mktemp)"
+if ./gbasic --version >"$version_file"; then
+    version_text="$(cat "$version_file")"
+    if [[ "$version_text" == "gBASIC 0.1.0-dev" ]]; then
+        printf 'PASS %s\n' "gbasic --version"
+    else
+        printf 'FAIL %s\n' "gbasic --version"
+        printf 'expected: gBASIC 0.1.0-dev\n'
+        printf 'actual: %s\n' "$version_text"
+        rm -f "$version_file"
+        exit 1
+    fi
+else
+    status=$?
+    printf 'FAIL %s\n' "gbasic --version"
+    rm -f "$version_file"
+    exit "$status"
+fi
+rm -f "$version_file"
+
 stdout_file="$(mktemp)"
 stderr_file="$(mktemp)"
 if ./gbasic --add-uses examples/add_uses_builtins_test.bas >"$stdout_file" 2>"$stderr_file"; then

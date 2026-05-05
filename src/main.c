@@ -11,6 +11,21 @@
 
 int parse_source(const char *source, AstStmtList *out_program);
 
+static void print_help(const char *argv0) {
+    printf("usage:\n");
+    printf("  %s FILE\n", argv0);
+    printf("  %s --tokens FILE\n", argv0);
+    printf("  %s --ast FILE\n", argv0);
+    printf("  %s --add-uses FILE\n", argv0);
+    printf("\n");
+    printf("flags:\n");
+    printf("  --help          show this help\n");
+    printf("  --version       show version\n");
+    printf("  --tokens FILE   print lexer tokens\n");
+    printf("  --ast FILE      parse and print AST\n");
+    printf("  --add-uses FILE analyze unresolved calls/modifiers and print source with use statements\n");
+}
+
 static void print_tokens(const char *source) {
     Lexer lexer;
     lexer_init(&lexer, source);
@@ -665,7 +680,13 @@ int main(int argc, char **argv) {
     int add_uses = 0;
     const char *path = NULL;
 
-    if (argc == 2) {
+    if (argc == 2 && strcmp(argv[1], "--help") == 0) {
+        print_help(argv[0]);
+        return 0;
+    } else if (argc == 2 && strcmp(argv[1], "--version") == 0) {
+        printf("gBASIC 0.1.0-dev\n");
+        return 0;
+    } else if (argc == 2) {
         path = argv[1];
     } else if (argc == 3 && strcmp(argv[1], "--ast") == 0) {
         ast_only = 1;
@@ -677,7 +698,8 @@ int main(int argc, char **argv) {
         add_uses = 1;
         path = argv[2];
     } else {
-        fprintf(stderr, "usage: %s [--ast|--tokens|--add-uses] file.gb\n", argv[0]);
+        fprintf(stderr, "usage: %s [--ast|--tokens|--add-uses] FILE\n", argv[0]);
+        fprintf(stderr, "try '%s --help'\n", argv[0]);
         return 2;
     }
 
