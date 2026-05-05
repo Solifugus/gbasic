@@ -185,7 +185,7 @@ Examples:
 balance (USD)= 19.95
 name (caseless)= "joe"
 invoice.total (rounded 2)= expected
-due (wednesday after)= today
+amount (rounded to 2)= expected
 ```
 
 ### Modifier Namespace
@@ -590,17 +590,7 @@ end if
 
 Human convenience functions should be provided by libraries, not core.
 
-Examples of library-level functions:
-
-```basic
-dayname(d)
-endofmonth(d)
-startofweek(d)
-endofweek(d)
-daysbetween(a, b)
-nextweekday(d, "Wednesday")
-nextbusinessday(d, calendar)
-```
+Examples include end-of-month, day-name, next/previous weekday, and business-day behavior. These are not core features; they should be implemented later as gBASIC libraries using the primitive lenses.
 
 ---
 
@@ -824,15 +814,7 @@ sort
 
 ### Date/Time
 
-```basic
-dayname
-endofmonth
-startofweek
-endofweek
-daysbetween
-nextweekday
-nextbusinessday
-```
+Date/time convenience behavior is library territory. Core only provides primitive lenses: `date`, `time`, `datetime`, `year`, `month`, `day`, `hour`, `minute`, and `second`.
 
 ### Files
 
@@ -1059,7 +1041,7 @@ This allows:
 ```basic
 name(caseless)= "joe"
 amount(rounded 2)= expected
-due(wednesday after)= today
+amount(rounded to 2)= expected
 ```
 
 ### Expressions
@@ -1317,7 +1299,7 @@ modifier_signature
 This supports multi-word modifiers such as:
 
 ```basic
-modifier wednesday after for assign
+modifier rounded to for compare
 ```
 
 ### Modifier Context

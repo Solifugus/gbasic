@@ -2331,15 +2331,26 @@ static Value eval_user_function(AstExpr *expr, FunctionDef *function) {
         return value_null();
     }
 
+    Value *args = NULL;
+    if (expr->as.call.args.count > 0) {
+        args = malloc(sizeof(Value) * expr->as.call.args.count);
+        if (!args) {
+            abort();
+        }
+    }
+    for (size_t i = 0; i < expr->as.call.args.count; i++) {
+        args[i] = eval_expr(expr->as.call.args.items[i]);
+    }
+
     Env local_env = {0};
     local_env.parent = &global_env;
     Env *previous_env = current_env;
     current_env = &local_env;
 
     for (size_t i = 0; i < expr->as.call.args.count; i++) {
-        Value arg = eval_expr(expr->as.call.args.items[i]);
-        env_set(stmt->as.function.params.items[i], arg);
+        env_set(stmt->as.function.params.items[i], args[i]);
     }
+    free(args);
 
     function_depth++;
     size_t pc = 0;

@@ -258,7 +258,7 @@ typedef struct {
 %type <modifier_signature> modifier_signature
 %type <duration> duration_terms
 %type <ident_suffix> ident_suffix ident_dot_suffix
-%type <text> modifier_name modifier_word modifier_context comparison_operator
+%type <text> modifier_name modifier_word modifier_context comparison_operator variable_name
 
 %%
 
@@ -295,9 +295,15 @@ statement
     ;
 
 assignment
-    : IDENT OP_EQ expression { $$ = ast_assign($1, ast_modifier_none(), $3); }
-    | IDENT modifier OP_EQ expression { $$ = ast_assign($1, $2, $4); }
+    : variable_name OP_EQ expression { $$ = ast_assign($1, ast_modifier_none(), $3); }
+    | variable_name modifier OP_EQ expression { $$ = ast_assign($1, $2, $4); }
     | IDENT DOT IDENT OP_EQ expression { $$ = ast_field_assign($1, $3, $5); }
+    ;
+
+variable_name
+    : IDENT { $$ = $1; }
+    | END { $$ = copy_const("end"); }
+    | NEXT { $$ = copy_const("next"); }
     ;
 
 modifier
@@ -312,6 +318,8 @@ modifier_name
 modifier_word
     : IDENT { $$ = $1; }
     | TO { $$ = copy_const("to"); }
+    | END { $$ = copy_const("end"); }
+    | NEXT { $$ = copy_const("next"); }
     ;
 
 print_statement
@@ -514,7 +522,7 @@ primary
     : NUMBER { $$ = ast_number($1); }
     | duration_terms { $$ = ast_duration($1); }
     | STRING { $$ = ast_string($1); }
-    | IDENT ident_suffix {
+    | variable_name ident_suffix {
         if ($2.kind == IDENT_SUFFIX_CALL) {
             $$ = ast_call($1, $2.args);
         } else if ($2.kind == IDENT_SUFFIX_FIELD) {

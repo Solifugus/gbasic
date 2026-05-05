@@ -16,7 +16,7 @@ Examples:
 balance(USD)= 19.95
 name(caseless)= "joe barnes"
 amount(rounded 2)= expected
-due(wednesday after)= today
+amount(rounded to 2)= expected
 ```
 
 Spacing is not semantically important:
@@ -167,15 +167,17 @@ Modifiers may contain multiple words.
 Example:
 
 ```basic
-modifier wednesday after for assign
-    return nextweekday(value, "Wednesday")
+modifier rounded to(n) for compare
+    return compare(round(left, n), operator, round(right, n))
 end modifier
 ```
 
 Use:
 
 ```basic
-due(wednesday after)= today
+if amount(rounded to 2)= expected then
+    print "close enough"
+end if
 ```
 
 Multi-word modifiers make the language more readable and support intent-like phrasing.
@@ -558,8 +560,8 @@ end program
 ### Library
 
 ```basic
-library dates
-    function endofmonth(d)
+library calendar
+    function convenience(d)
         ...
     end function
 end library
@@ -631,7 +633,7 @@ Before:
 
 ```basic
 program myprog(args)
-    print endofmonth(today)
+    print convenience(today)
 end program
 ```
 
@@ -639,9 +641,9 @@ After:
 
 ```basic
 program myprog(args)
-    use dates
+    use calendar
 
-    print endofmonth(today)
+    print convenience(today)
 end program
 ```
 

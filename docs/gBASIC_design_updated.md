@@ -155,8 +155,8 @@ If a new error occurs while an error is already active:
 
 ### Library Definition
 
-library dates
-    function endofmonth(d)
+library calendar
+    function convenience(d)
         ...
     end function
 end library
