@@ -240,7 +240,7 @@ typedef struct {
 %token <number> NUMBER
 %token <text> IDENT STRING MOD_CONTENT
 %token IF THEN END PRINT TRUE FALSE AND OR NOT WITH FOR TO IN FUNCTION RETURN GOTO GOSUB WATCH WITHOUT WATCHERS ON RESUME NEXT STOP ERROR_VALUE MODIFIER PROGRAM LIBRARY LOAD USE EXPORT
-%token OP_EQ OP_NE OP_GT OP_LT OP_GE OP_LE OP_NGT OP_NLT
+%token OP_EQ OP_NE OP_GT OP_LT OP_GE OP_LE OP_NGT OP_NLT OP_NGE OP_NLE
 %token PLUS MINUS STAR SLASH LPAREN MOD_LPAREN RPAREN LBRACKET RBRACKET LBRACE RBRACE COMMA COLON NEWLINE
 %precedence NO_DOT
 %left DOT
@@ -528,6 +528,8 @@ comparison_operator
     | OP_LE { $$ = copy_const("<="); }
     | OP_NGT { $$ = copy_const("!>"); }
     | OP_NLT { $$ = copy_const("!<"); }
+    | OP_NGE { $$ = copy_const("!>="); }
+    | OP_NLE { $$ = copy_const("!<="); }
     ;
 
 primary
@@ -710,6 +712,8 @@ static int yylex(void) {
     case TOKEN_OP_LE: return OP_LE;
     case TOKEN_OP_NGT: return OP_NGT;
     case TOKEN_OP_NLT: return OP_NLT;
+    case TOKEN_OP_NGE: return OP_NGE;
+    case TOKEN_OP_NLE: return OP_NLE;
     case TOKEN_PLUS: return PLUS;
     case TOKEN_MINUS: return MINUS;
     case TOKEN_STAR: return STAR;

@@ -51,6 +51,8 @@ typedef enum {
     TOKEN_OP_LE,
     TOKEN_OP_NGT,
     TOKEN_OP_NLT,
+    TOKEN_OP_NGE,
+    TOKEN_OP_NLE,
     TOKEN_PLUS,
     TOKEN_MINUS,
     TOKEN_STAR,

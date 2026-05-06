@@ -246,8 +246,14 @@ Token lexer_next(Lexer *lexer) {
     case '=': return make_token(lexer, TOKEN_OP_EQ, start, line, column);
     case '!':
         if (match(lexer, '=')) return make_token(lexer, TOKEN_OP_NE, start, line, column);
-        if (match(lexer, '>')) return make_token(lexer, TOKEN_OP_NGT, start, line, column);
-        if (match(lexer, '<')) return make_token(lexer, TOKEN_OP_NLT, start, line, column);
+        if (match(lexer, '>')) {
+            if (match(lexer, '=')) return make_token(lexer, TOKEN_OP_NGE, start, line, column);
+            return make_token(lexer, TOKEN_OP_NGT, start, line, column);
+        }
+        if (match(lexer, '<')) {
+            if (match(lexer, '=')) return make_token(lexer, TOKEN_OP_NLE, start, line, column);
+            return make_token(lexer, TOKEN_OP_NLT, start, line, column);
+        }
         break;
     case '>':
         if (match(lexer, '=')) return make_token(lexer, TOKEN_OP_GE, start, line, column);
@@ -324,6 +330,8 @@ const char *token_type_name(TokenType type) {
     case TOKEN_OP_LE: return "OP_LE";
     case TOKEN_OP_NGT: return "OP_NGT";
     case TOKEN_OP_NLT: return "OP_NLT";
+    case TOKEN_OP_NGE: return "OP_NGE";
+    case TOKEN_OP_NLE: return "OP_NLE";
     case TOKEN_PLUS: return "PLUS";
     case TOKEN_MINUS: return "MINUS";
     case TOKEN_STAR: return "STAR";

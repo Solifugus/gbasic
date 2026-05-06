@@ -116,22 +116,24 @@ typedef struct {
     OP_LE = 298,                   /* OP_LE  */
     OP_NGT = 299,                  /* OP_NGT  */
     OP_NLT = 300,                  /* OP_NLT  */
-    PLUS = 301,                    /* PLUS  */
-    MINUS = 302,                   /* MINUS  */
-    STAR = 303,                    /* STAR  */
-    SLASH = 304,                   /* SLASH  */
-    LPAREN = 305,                  /* LPAREN  */
-    MOD_LPAREN = 306,              /* MOD_LPAREN  */
-    RPAREN = 307,                  /* RPAREN  */
-    LBRACKET = 308,                /* LBRACKET  */
-    RBRACKET = 309,                /* RBRACKET  */
-    LBRACE = 310,                  /* LBRACE  */
-    RBRACE = 311,                  /* RBRACE  */
-    COMMA = 312,                   /* COMMA  */
-    COLON = 313,                   /* COLON  */
-    NEWLINE = 314,                 /* NEWLINE  */
-    NO_DOT = 315,                  /* NO_DOT  */
-    DOT = 316                      /* DOT  */
+    OP_NGE = 301,                  /* OP_NGE  */
+    OP_NLE = 302,                  /* OP_NLE  */
+    PLUS = 303,                    /* PLUS  */
+    MINUS = 304,                   /* MINUS  */
+    STAR = 305,                    /* STAR  */
+    SLASH = 306,                   /* SLASH  */
+    LPAREN = 307,                  /* LPAREN  */
+    MOD_LPAREN = 308,              /* MOD_LPAREN  */
+    RPAREN = 309,                  /* RPAREN  */
+    LBRACKET = 310,                /* LBRACKET  */
+    RBRACKET = 311,                /* RBRACKET  */
+    LBRACE = 312,                  /* LBRACE  */
+    RBRACE = 313,                  /* RBRACE  */
+    COMMA = 314,                   /* COMMA  */
+    COLON = 315,                   /* COLON  */
+    NEWLINE = 316,                 /* NEWLINE  */
+    NO_DOT = 317,                  /* NO_DOT  */
+    DOT = 318                      /* DOT  */
   };
   typedef enum yytokentype yytoken_kind_t;
 #endif
@@ -155,7 +157,7 @@ union YYSTYPE
     AstDuration duration;
     AstIdentSuffix ident_suffix;
 
-#line 159 "src/parser.tab.h"
+#line 161 "src/parser.tab.h"
 
 };
 typedef union YYSTYPE YYSTYPE;

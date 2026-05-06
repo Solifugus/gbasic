@@ -2906,6 +2906,8 @@ static Value eval_comparison(AstExpr *expr, Value left, Value right) {
         else if (strcmp(op, "<=") == 0) result = cmp <= 0;
         else if (strcmp(op, "!>") == 0) result = !(cmp > 0);
         else if (strcmp(op, "!<") == 0) result = !(cmp < 0);
+        else if (strcmp(op, "!>=") == 0) result = !(cmp >= 0);
+        else if (strcmp(op, "!<=") == 0) result = !(cmp <= 0);
     } else if (!expr->as.binary.modifier.library &&
         modifier_is(expr->as.binary.modifier.name, "caseless") &&
         left.kind == VALUE_STRING &&
@@ -2926,6 +2928,8 @@ static Value eval_comparison(AstExpr *expr, Value left, Value right) {
         else if (strcmp(op, "<=") == 0) result = cmp <= 0;
         else if (strcmp(op, "!>") == 0) result = cmp <= 0;
         else if (strcmp(op, "!<") == 0) result = cmp >= 0;
+        else if (strcmp(op, "!>=") == 0) result = cmp < 0;
+        else if (strcmp(op, "!<=") == 0) result = cmp > 0;
     } else if (left.kind == VALUE_MONEY && right.kind == VALUE_MONEY) {
         long long a = left.as.cents;
         long long b = right.as.cents;
@@ -2937,6 +2941,8 @@ static Value eval_comparison(AstExpr *expr, Value left, Value right) {
         else if (strcmp(op, "<=") == 0) result = a <= b;
         else if (strcmp(op, "!>") == 0) result = !(a > b);
         else if (strcmp(op, "!<") == 0) result = !(a < b);
+        else if (strcmp(op, "!>=") == 0) result = !(a >= b);
+        else if (strcmp(op, "!<=") == 0) result = !(a <= b);
     } else if (left.kind == VALUE_MONEY || right.kind == VALUE_MONEY) {
         runtime_error_raise("money comparison requires money values", 1003, "money");
         value_free(left);
@@ -2953,6 +2959,8 @@ static Value eval_comparison(AstExpr *expr, Value left, Value right) {
         else if (strcmp(op, "<=") == 0) result = a <= b;
         else if (strcmp(op, "!>") == 0) result = !(a > b);
         else if (strcmp(op, "!<") == 0) result = !(a < b);
+        else if (strcmp(op, "!>=") == 0) result = !(a >= b);
+        else if (strcmp(op, "!<=") == 0) result = !(a <= b);
     }
 
     value_free(left);
@@ -3008,7 +3016,9 @@ static Value eval_binary(AstExpr *expr) {
         strcmp(op, ">=") == 0 ||
         strcmp(op, "<=") == 0 ||
         strcmp(op, "!>") == 0 ||
-        strcmp(op, "!<") == 0) {
+        strcmp(op, "!<") == 0 ||
+        strcmp(op, "!>=") == 0 ||
+        strcmp(op, "!<=") == 0) {
         return eval_comparison(expr, left, right);
     }
 
