@@ -15,6 +15,8 @@ cases=(
     negative_split_empty_separator
     negative_join_type
     negative_join_element_type
+    negative_modifier_split_empty
+    negative_modifier_join_element_type
 )
 
 for name in "${cases[@]}"; do

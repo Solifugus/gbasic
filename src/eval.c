@@ -2452,6 +2452,184 @@ static int values_equal(Value left, Value right) {
     return equal;
 }
 
+static Value builtin_len_value(Value value) {
+    if (value.kind == VALUE_ARRAY) {
+        double count = (double)value.as.array.count;
+        value_free(value);
+        return value_number(count);
+    }
+    if (value.kind == VALUE_STRING) {
+        double count = (double)strlen(value.as.string);
+        value_free(value);
+        return value_number(count);
+    }
+    value_free(value);
+    runtime_error_raise("len expects string or array", 1003, "invalid function call");
+    return value_null();
+}
+
+static Value builtin_trim_value(Value text) {
+    if (text.kind != VALUE_STRING) {
+        value_free(text);
+        runtime_error_raise("trim expects a string", 1003, "invalid function call");
+        return value_null();
+    }
+    const char *start = text.as.string;
+    while (*start && isspace((unsigned char)*start)) {
+        start++;
+    }
+    const char *end = text.as.string + strlen(text.as.string);
+    while (end > start && isspace((unsigned char)end[-1])) {
+        end--;
+    }
+    size_t length = (size_t)(end - start);
+    char *trimmed = malloc(length + 1);
+    if (!trimmed) {
+        abort();
+    }
+    memcpy(trimmed, start, length);
+    trimmed[length] = '\0';
+    Value result = value_string(trimmed);
+    free(trimmed);
+    value_free(text);
+    return result;
+}
+
+static Value builtin_split_value(Value text, Value separator, int has_separator) {
+    if (text.kind != VALUE_STRING) {
+        value_free(text);
+        value_free(separator);
+        runtime_error_raise("split expects a string", 1003, "invalid function call");
+        return value_null();
+    }
+
+    if (has_separator) {
+        if (separator.kind != VALUE_STRING) {
+            value_free(text);
+            value_free(separator);
+            runtime_error_raise("split separator must be a string", 1003, "invalid function call");
+            return value_null();
+        }
+        if (separator.as.string[0] == '\0') {
+            value_free(text);
+            value_free(separator);
+            runtime_error_raise("split separator cannot be empty", 1003, "invalid function call");
+            return value_null();
+        }
+    }
+
+    Value *items = NULL;
+    size_t count = 0;
+    if (!has_separator) {
+        const char *p = text.as.string;
+        while (*p) {
+            while (*p && isspace((unsigned char)*p)) {
+                p++;
+            }
+            const char *start = p;
+            while (*p && !isspace((unsigned char)*p)) {
+                p++;
+            }
+            if (p > start) {
+                size_t length = (size_t)(p - start);
+                char *part = malloc(length + 1);
+                if (!part) {
+                    abort();
+                }
+                memcpy(part, start, length);
+                part[length] = '\0';
+                Value *next = realloc(items, sizeof(Value) * (count + 1));
+                if (!next) {
+                    abort();
+                }
+                items = next;
+                items[count++] = value_string(part);
+                free(part);
+            }
+        }
+    } else {
+        const char *sep = separator.as.string;
+        size_t sep_len = strlen(sep);
+        const char *start = text.as.string;
+        for (;;) {
+            const char *found = strstr(start, sep);
+            size_t length = found ? (size_t)(found - start) : strlen(start);
+            char *part = malloc(length + 1);
+            if (!part) {
+                abort();
+            }
+            memcpy(part, start, length);
+            part[length] = '\0';
+            Value *next = realloc(items, sizeof(Value) * (count + 1));
+            if (!next) {
+                abort();
+            }
+            items = next;
+            items[count++] = value_string(part);
+            free(part);
+            if (!found) {
+                break;
+            }
+            start = found + sep_len;
+        }
+    }
+
+    value_free(text);
+    value_free(separator);
+    return value_array(items, count);
+}
+
+static Value builtin_join_value(Value array, Value separator) {
+    if (array.kind != VALUE_ARRAY) {
+        value_free(array);
+        value_free(separator);
+        runtime_error_raise("join expects an array", 1003, "invalid function call");
+        return value_null();
+    }
+    if (separator.kind != VALUE_STRING) {
+        value_free(array);
+        value_free(separator);
+        runtime_error_raise("join separator must be a string", 1003, "invalid function call");
+        return value_null();
+    }
+
+    size_t sep_len = strlen(separator.as.string);
+    size_t total = 0;
+    for (size_t i = 0; i < array.as.array.count; i++) {
+        if (array.as.array.items[i].kind != VALUE_STRING) {
+            value_free(array);
+            value_free(separator);
+            runtime_error_raise("join array elements must be strings", 1003, "invalid function call");
+            return value_null();
+        }
+        total += strlen(array.as.array.items[i].as.string);
+        if (i > 0) {
+            total += sep_len;
+        }
+    }
+
+    char *joined = malloc(total + 1);
+    if (!joined) {
+        abort();
+    }
+    size_t offset = 0;
+    for (size_t i = 0; i < array.as.array.count; i++) {
+        if (i > 0) {
+            memcpy(joined + offset, separator.as.string, sep_len);
+            offset += sep_len;
+        }
+        size_t part_len = strlen(array.as.array.items[i].as.string);
+        memcpy(joined + offset, array.as.array.items[i].as.string, part_len);
+        offset += part_len;
+    }
+    joined[offset] = '\0';
+    Value result = value_string(joined);
+    free(joined);
+    value_free(array);
+    value_free(separator);
+    return result;
+}
+
 static Value eval_call(AstExpr *expr) {
     if (expr->as.call.library) {
         FunctionDef *function = function_resolve(expr->as.call.library, expr->as.call.name);
@@ -2792,31 +2970,7 @@ static Value eval_call(AstExpr *expr) {
             runtime_error_raise("trim expects one argument", 1003, "invalid function call");
             return value_null();
         }
-        Value text = eval_expr(expr->as.call.args.items[0]);
-        if (text.kind != VALUE_STRING) {
-            value_free(text);
-            runtime_error_raise("trim expects a string", 1003, "invalid function call");
-            return value_null();
-        }
-        const char *start = text.as.string;
-        while (*start && isspace((unsigned char)*start)) {
-            start++;
-        }
-        const char *end = text.as.string + strlen(text.as.string);
-        while (end > start && isspace((unsigned char)end[-1])) {
-            end--;
-        }
-        size_t length = (size_t)(end - start);
-        char *trimmed = malloc(length + 1);
-        if (!trimmed) {
-            abort();
-        }
-        memcpy(trimmed, start, length);
-        trimmed[length] = '\0';
-        Value result = value_string(trimmed);
-        free(trimmed);
-        value_free(text);
-        return result;
+        return builtin_trim_value(eval_expr(expr->as.call.args.items[0]));
     }
 
     if (strcmp(expr->as.call.name, "split") == 0) {
@@ -2825,89 +2979,12 @@ static Value eval_call(AstExpr *expr) {
             return value_null();
         }
         Value text = eval_expr(expr->as.call.args.items[0]);
-        if (text.kind != VALUE_STRING) {
-            value_free(text);
-            runtime_error_raise("split expects a string", 1003, "invalid function call");
-            return value_null();
-        }
-
         Value separator = value_null();
-        int whitespace_mode = expr->as.call.args.count == 1;
-        if (!whitespace_mode) {
+        int has_separator = expr->as.call.args.count == 2;
+        if (has_separator) {
             separator = eval_expr(expr->as.call.args.items[1]);
-            if (separator.kind != VALUE_STRING) {
-                value_free(text);
-                value_free(separator);
-                runtime_error_raise("split separator must be a string", 1003, "invalid function call");
-                return value_null();
-            }
-            if (separator.as.string[0] == '\0') {
-                value_free(text);
-                value_free(separator);
-                runtime_error_raise("split separator cannot be empty", 1003, "invalid function call");
-                return value_null();
-            }
         }
-
-        Value *items = NULL;
-        size_t count = 0;
-        if (whitespace_mode) {
-            const char *p = text.as.string;
-            while (*p) {
-                while (*p && isspace((unsigned char)*p)) {
-                    p++;
-                }
-                const char *start = p;
-                while (*p && !isspace((unsigned char)*p)) {
-                    p++;
-                }
-                if (p > start) {
-                    size_t length = (size_t)(p - start);
-                    char *part = malloc(length + 1);
-                    if (!part) {
-                        abort();
-                    }
-                    memcpy(part, start, length);
-                    part[length] = '\0';
-                    Value *next = realloc(items, sizeof(Value) * (count + 1));
-                    if (!next) {
-                        abort();
-                    }
-                    items = next;
-                    items[count++] = value_string(part);
-                    free(part);
-                }
-            }
-        } else {
-            const char *sep = separator.as.string;
-            size_t sep_len = strlen(sep);
-            const char *start = text.as.string;
-            for (;;) {
-                const char *found = strstr(start, sep);
-                size_t length = found ? (size_t)(found - start) : strlen(start);
-                char *part = malloc(length + 1);
-                if (!part) {
-                    abort();
-                }
-                memcpy(part, start, length);
-                part[length] = '\0';
-                Value *next = realloc(items, sizeof(Value) * (count + 1));
-                if (!next) {
-                    abort();
-                }
-                items = next;
-                items[count++] = value_string(part);
-                free(part);
-                if (!found) {
-                    break;
-                }
-                start = found + sep_len;
-            }
-        }
-
-        value_free(text);
-        value_free(separator);
-        return value_array(items, count);
+        return builtin_split_value(text, separator, has_separator);
     }
 
     if (strcmp(expr->as.call.name, "join") == 0) {
@@ -2921,54 +2998,7 @@ static Value eval_call(AstExpr *expr) {
             value_free(separator);
             separator = eval_expr(expr->as.call.args.items[1]);
         }
-        if (array.kind != VALUE_ARRAY) {
-            value_free(array);
-            value_free(separator);
-            runtime_error_raise("join expects an array", 1003, "invalid function call");
-            return value_null();
-        }
-        if (separator.kind != VALUE_STRING) {
-            value_free(array);
-            value_free(separator);
-            runtime_error_raise("join separator must be a string", 1003, "invalid function call");
-            return value_null();
-        }
-
-        size_t sep_len = strlen(separator.as.string);
-        size_t total = 0;
-        for (size_t i = 0; i < array.as.array.count; i++) {
-            if (array.as.array.items[i].kind != VALUE_STRING) {
-                value_free(array);
-                value_free(separator);
-                runtime_error_raise("join array elements must be strings", 1003, "invalid function call");
-                return value_null();
-            }
-            total += strlen(array.as.array.items[i].as.string);
-            if (i > 0) {
-                total += sep_len;
-            }
-        }
-
-        char *joined = malloc(total + 1);
-        if (!joined) {
-            abort();
-        }
-        size_t offset = 0;
-        for (size_t i = 0; i < array.as.array.count; i++) {
-            if (i > 0) {
-                memcpy(joined + offset, separator.as.string, sep_len);
-                offset += sep_len;
-            }
-            size_t part_len = strlen(array.as.array.items[i].as.string);
-            memcpy(joined + offset, array.as.array.items[i].as.string, part_len);
-            offset += part_len;
-        }
-        joined[offset] = '\0';
-        Value result = value_string(joined);
-        free(joined);
-        value_free(array);
-        value_free(separator);
-        return result;
+        return builtin_join_value(array, separator);
     }
 
     if (strcmp(expr->as.call.name, "len") == 0) {
@@ -2976,15 +3006,7 @@ static Value eval_call(AstExpr *expr) {
             runtime_error_raise("len expects one argument", 1003, "invalid function call");
             return value_null();
         }
-        Value value = eval_expr(expr->as.call.args.items[0]);
-        if (value.kind != VALUE_ARRAY) {
-            value_free(value);
-            runtime_error_raise("len expects an array", 1003, "invalid function call");
-            return value_null();
-        }
-        double count = (double)value.as.array.count;
-        value_free(value);
-        return value_number(count);
+        return builtin_len_value(eval_expr(expr->as.call.args.items[0]));
     }
 
     if (strcmp(expr->as.call.name, "exists") == 0 ||
@@ -3136,7 +3158,12 @@ static Value eval_modifier_arg_text(const char *text) {
         return value_null();
     }
     if (text[0] == '"' && len >= 2 && text[len - 1] == '"') {
-        char *inner = copy_trimmed_span(text + 1, len - 2);
+        char *inner = malloc(len - 1);
+        if (!inner) {
+            abort();
+        }
+        memcpy(inner, text + 1, len - 2);
+        inner[len - 2] = '\0';
         Value value = value_string(inner);
         free(inner);
         return value;
@@ -3151,6 +3178,74 @@ static Value eval_modifier_arg_text(const char *text) {
     Value value = env_get(name);
     free(name);
     return value;
+}
+
+static const char *builtin_modifier_args_text(const char *phrase, const char *name) {
+    size_t name_len = strlen(name);
+    while (*phrase == ' ' || *phrase == '\t') {
+        phrase++;
+    }
+    if (strncmp(phrase, name, name_len) != 0) {
+        return NULL;
+    }
+    if (phrase[name_len] == '\0') {
+        return phrase + name_len;
+    }
+    if (phrase[name_len] == ' ' || phrase[name_len] == '\t') {
+        const char *args = phrase + name_len;
+        while (*args == ' ' || *args == '\t') {
+            args++;
+        }
+        return args;
+    }
+    return NULL;
+}
+
+static int modifier_args_empty(const char *args_text) {
+    while (*args_text == ' ' || *args_text == '\t') {
+        args_text++;
+    }
+    return *args_text == '\0';
+}
+
+static int modifier_args_have_comma(const char *args_text) {
+    int in_string = 0;
+    int escape = 0;
+    for (const char *p = args_text; *p; p++) {
+        if (escape) {
+            escape = 0;
+            continue;
+        }
+        if (*p == '\\' && in_string) {
+            escape = 1;
+            continue;
+        }
+        if (*p == '"') {
+            in_string = !in_string;
+            continue;
+        }
+        if (*p == ',' && !in_string) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static Value eval_optional_modifier_arg(const char *modifier_name,
+                                        const char *args_text,
+                                        int *has_arg) {
+    *has_arg = 0;
+    if (modifier_args_empty(args_text)) {
+        return value_null();
+    }
+    if (modifier_args_have_comma(args_text)) {
+        char message[128];
+        snprintf(message, sizeof(message), "%s modifier expects zero or one argument", modifier_name);
+        runtime_error_raise(message, 1003, "modifier");
+        return value_null();
+    }
+    *has_arg = 1;
+    return eval_modifier_arg_text(args_text);
 }
 
 static void bind_modifier_args(AstStmt *stmt, const char *args_text) {
@@ -3778,6 +3873,51 @@ static Value apply_assignment_modifier(AstModifierUse modifier, Value value) {
     if (!modifier.library && datetime_lens_precision(modifier.name, &lens)) {
         int ok = 0;
         return apply_datetime_lens_to_value(value, lens, modifier.name, &ok);
+    }
+    const char *builtin_args = NULL;
+    if (!modifier.library &&
+        (builtin_args = builtin_modifier_args_text(modifier.name, "trimmed")) != NULL) {
+        if (!modifier_args_empty(builtin_args)) {
+            runtime_error_raise("trimmed modifier expects no arguments", 1003, "modifier");
+            value_free(value);
+            return value_null();
+        }
+        return builtin_trim_value(value);
+    }
+    if (!modifier.library &&
+        (builtin_args = builtin_modifier_args_text(modifier.name, "split")) != NULL) {
+        int has_arg = 0;
+        Value separator = eval_optional_modifier_arg("split", builtin_args, &has_arg);
+        if (error_action_pending()) {
+            value_free(value);
+            value_free(separator);
+            return value_null();
+        }
+        return builtin_split_value(value, separator, has_arg);
+    }
+    if (!modifier.library &&
+        (builtin_args = builtin_modifier_args_text(modifier.name, "join")) != NULL) {
+        int has_arg = 0;
+        Value separator = eval_optional_modifier_arg("join", builtin_args, &has_arg);
+        if (error_action_pending()) {
+            value_free(value);
+            value_free(separator);
+            return value_null();
+        }
+        if (!has_arg) {
+            value_free(separator);
+            separator = value_string(" ");
+        }
+        return builtin_join_value(value, separator);
+    }
+    if (!modifier.library &&
+        (builtin_args = builtin_modifier_args_text(modifier.name, "length")) != NULL) {
+        if (!modifier_args_empty(builtin_args)) {
+            runtime_error_raise("length modifier expects no arguments", 1003, "modifier");
+            value_free(value);
+            return value_null();
+        }
+        return builtin_len_value(value);
     }
     if (!modifier.library && strcmp(modifier.name, "file") == 0) {
         if (value.kind != VALUE_STRING) {

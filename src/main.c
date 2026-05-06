@@ -233,6 +233,8 @@ static int builtin_function(const char *name) {
     return gbasic_builtin_function(name);
 }
 
+static int modifier_phrase_matches_main(const char *phrase, const char *name);
+
 static int builtin_modifier(const char *name, const char *context) {
     if (strcmp(context, "compare") == 0) {
         return strcmp(name, "caseless") == 0;
@@ -240,7 +242,11 @@ static int builtin_modifier(const char *name, const char *context) {
     if (strcmp(context, "assign") == 0) {
         return strcmp(name, "USD") == 0 || strcmp(name, "date") == 0 ||
             strcmp(name, "time") == 0 || strcmp(name, "file") == 0 ||
-            strcmp(name, "dir") == 0;
+            strcmp(name, "dir") == 0 ||
+            modifier_phrase_matches_main(name, "trimmed") ||
+            modifier_phrase_matches_main(name, "split") ||
+            modifier_phrase_matches_main(name, "join") ||
+            modifier_phrase_matches_main(name, "length");
     }
     return 0;
 }
