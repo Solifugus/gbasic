@@ -239,7 +239,7 @@ typedef struct {
 
 %token <number> NUMBER
 %token <text> IDENT STRING MOD_CONTENT
-%token IF THEN END PRINT TRUE FALSE AND OR NOT WITH FOR TO IN FUNCTION RETURN GOTO GOSUB WATCH WITHOUT WATCHERS ON RESUME NEXT STOP ERROR_VALUE MODIFIER PROGRAM LIBRARY USE EXPORT
+%token IF THEN END PRINT TRUE FALSE AND OR NOT WITH FOR TO IN FUNCTION RETURN GOTO GOSUB WATCH WITHOUT WATCHERS ON RESUME NEXT STOP ERROR_VALUE MODIFIER PROGRAM LIBRARY LOAD USE EXPORT
 %token OP_EQ OP_NE OP_GT OP_LT OP_GE OP_LE OP_NGT OP_NLT
 %token PLUS MINUS STAR SLASH LPAREN MOD_LPAREN RPAREN LBRACKET RBRACKET LBRACE RBRACE COMMA COLON NEWLINE
 %precedence NO_DOT
@@ -388,9 +388,21 @@ library_statement
 
 use_statement
     : USE IDENT { $$ = ast_use($2, NULL); }
+    | LOAD IDENT { $$ = ast_use($2, NULL); }
     | USE IDENT IDENT STRING {
         if (strcmp($3, "from") != 0) {
             yyerror("expected from in use statement");
+            free($2);
+            free($3);
+            free($4);
+            YYERROR;
+        }
+        free($3);
+        $$ = ast_use($2, $4);
+      }
+    | LOAD IDENT IDENT STRING {
+        if (strcmp($3, "from") != 0) {
+            yyerror("expected from in load statement");
             free($2);
             free($3);
             free($4);
@@ -687,6 +699,7 @@ static int yylex(void) {
     case TOKEN_MODIFIER: return MODIFIER;
     case TOKEN_PROGRAM: return PROGRAM;
     case TOKEN_LIBRARY: return LIBRARY;
+    case TOKEN_LOAD: return LOAD;
     case TOKEN_USE: return USE;
     case TOKEN_EXPORT: return EXPORT;
     case TOKEN_OP_EQ: return OP_EQ;

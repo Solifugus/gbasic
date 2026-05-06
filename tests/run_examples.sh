@@ -31,6 +31,8 @@ examples=(
     builtin_override_test.bas
     program_test.bas
     library_test.bas
+    load_test.bas
+    load_from_test.bas
     use_test.bas
     use_from_test.bas
     use_search_test.bas

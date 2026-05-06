@@ -9,6 +9,7 @@ typedef enum {
     TOKEN_MOD_CONTENT,
     TOKEN_PROGRAM,
     TOKEN_LIBRARY,
+    TOKEN_LOAD,
     TOKEN_USE,
     TOKEN_EXPORT,
     TOKEN_IF,
