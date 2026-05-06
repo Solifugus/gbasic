@@ -33,6 +33,7 @@ typedef enum {
     AST_EXPR_STRING,
     AST_EXPR_IDENT,
     AST_EXPR_BOOL,
+    AST_EXPR_NULL,
     AST_EXPR_ARRAY,
     AST_EXPR_RECORD,
     AST_EXPR_DURATION,
@@ -210,6 +211,7 @@ AstExpr *ast_number(double value);
 AstExpr *ast_string(char *value);
 AstExpr *ast_ident(char *name);
 AstExpr *ast_bool(int value);
+AstExpr *ast_null(void);
 AstExpr *ast_array(AstExprList items);
 AstExpr *ast_record(AstRecordFieldList fields);
 AstExpr *ast_duration(AstDuration duration);

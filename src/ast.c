@@ -93,6 +93,12 @@ AstExpr *ast_bool(int value) {
     return expr;
 }
 
+AstExpr *ast_null(void) {
+    AstExpr *expr = xmalloc(sizeof(*expr));
+    expr->kind = AST_EXPR_NULL;
+    return expr;
+}
+
 AstExpr *ast_array(AstExprList items) {
     AstExpr *expr = xmalloc(sizeof(*expr));
     expr->kind = AST_EXPR_ARRAY;
@@ -386,6 +392,9 @@ static void dump_expr(AstExpr *expr, int indent) {
         break;
     case AST_EXPR_BOOL:
         printf("Boolean %s\n", expr->as.boolean ? "true" : "false");
+        break;
+    case AST_EXPR_NULL:
+        printf("Nothing\n");
         break;
     case AST_EXPR_ARRAY:
         printf("Array\n");
@@ -704,6 +713,7 @@ static void free_expr(AstExpr *expr) {
         break;
     case AST_EXPR_NUMBER:
     case AST_EXPR_BOOL:
+    case AST_EXPR_NULL:
         break;
     }
 

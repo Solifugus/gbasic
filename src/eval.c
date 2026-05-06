@@ -2992,6 +2992,10 @@ static Value eval_comparison(AstExpr *expr, Value left, Value right) {
         value_free(left);
         value_free(right);
         return value_null();
+    } else if (left.kind == VALUE_NULL || right.kind == VALUE_NULL) {
+        int equal = left.kind == VALUE_NULL && right.kind == VALUE_NULL;
+        if (strcmp(op, "=") == 0) result = equal;
+        else if (strcmp(op, "!=") == 0) result = !equal;
     } else {
         double a = value_number_or_zero(left);
         double b = value_number_or_zero(right);
@@ -3173,6 +3177,8 @@ static Value eval_expr(AstExpr *expr) {
         return env_get(expr->as.ident);
     case AST_EXPR_BOOL:
         return value_bool(expr->as.boolean);
+    case AST_EXPR_NULL:
+        return value_null();
     case AST_EXPR_DURATION: {
         Duration duration = {
             expr->as.duration.years,

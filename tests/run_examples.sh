@@ -27,6 +27,7 @@ examples=(
     modifier_library_regression_test.bas
     negated_comparison_test.bas
     money_test.bas
+    nothing_test.bas
     print_parens_test.bas
     string_test.bas
     builtin_test.bas

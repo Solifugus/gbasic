@@ -530,6 +530,7 @@ static void analyze_expr(AddUsesContext *ctx, AstExpr *expr) {
     case AST_EXPR_STRING:
     case AST_EXPR_IDENT:
     case AST_EXPR_BOOL:
+    case AST_EXPR_NULL:
     case AST_EXPR_DURATION:
         break;
     }

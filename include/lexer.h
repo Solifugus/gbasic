@@ -39,6 +39,7 @@ typedef enum {
     TOKEN_ERROR_VALUE,
     TOKEN_TRUE,
     TOKEN_FALSE,
+    TOKEN_NOTHING,
     TOKEN_AND,
     TOKEN_OR,
     TOKEN_NOT,
