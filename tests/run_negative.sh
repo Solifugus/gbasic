@@ -7,6 +7,8 @@ cases=(
     negative_invalid_escape
     negative_unterminated_string
     negative_unknown_order
+    negative_find_type
+    negative_function_assignment
 )
 
 for name in "${cases[@]}"; do

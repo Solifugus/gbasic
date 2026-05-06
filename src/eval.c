@@ -2441,6 +2441,17 @@ static void call_label(AstExpr *expr, char *buffer, size_t size) {
     }
 }
 
+static int values_equal(Value left, Value right) {
+    AstExpr fake = {0};
+    fake.kind = AST_EXPR_BINARY;
+    fake.as.binary.op = "=";
+    fake.as.binary.modifier = ast_modifier_none();
+    Value result = eval_comparison(&fake, left, right);
+    int equal = result.kind == VALUE_BOOL && result.as.boolean;
+    value_free(result);
+    return equal;
+}
+
 static Value eval_call(AstExpr *expr) {
     if (expr->as.call.library) {
         FunctionDef *function = function_resolve(expr->as.call.library, expr->as.call.name);
@@ -2597,6 +2608,60 @@ static Value eval_call(AstExpr *expr) {
         Value result = eval_comparison(&fake, left, right);
         value_free(op);
         return result;
+    }
+
+    if (strcmp(expr->as.call.name, "find") == 0) {
+        if (expr->as.call.args.count != 2) {
+            runtime_error_raise("find expects two arguments", 1003, "invalid function call");
+            return value_null();
+        }
+        Value value = eval_expr(expr->as.call.args.items[0]);
+        Value target = eval_expr(expr->as.call.args.items[1]);
+        if (error_action_pending()) {
+            value_free(value);
+            value_free(target);
+            return value_null();
+        }
+
+        if (value.kind == VALUE_STRING && target.kind == VALUE_STRING) {
+            char *found = strstr(value.as.string, target.as.string);
+            Value result = found
+                ? value_number((double)(found - value.as.string))
+                : value_null();
+            value_free(value);
+            value_free(target);
+            return result;
+        }
+
+        if (value.kind == VALUE_ARRAY) {
+            for (size_t i = 0; i < value.as.array.count; i++) {
+                if (values_equal(value_copy(value.as.array.items[i]), value_copy(target))) {
+                    value_free(value);
+                    value_free(target);
+                    return value_number((double)i);
+                }
+                if (error_action_pending()) {
+                    value_free(value);
+                    value_free(target);
+                    return value_null();
+                }
+            }
+            value_free(value);
+            value_free(target);
+            return value_null();
+        }
+
+        if (value.kind == VALUE_STRING || target.kind == VALUE_STRING) {
+            value_free(value);
+            value_free(target);
+            runtime_error_raise("find string search expects string arguments", 1003, "invalid function call");
+            return value_null();
+        }
+
+        value_free(value);
+        value_free(target);
+        runtime_error_raise("find expects string or array as first argument", 1003, "invalid function call");
+        return value_null();
     }
 
     if (strcmp(expr->as.call.name, "exists") == 0 ||

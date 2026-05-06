@@ -10,6 +10,7 @@ int gbasic_builtin_function(const char *name) {
         "input",
         "round",
         "len",
+        "find",
         "sum",
         "mean",
         "median",

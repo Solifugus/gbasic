@@ -183,8 +183,10 @@ static int modifier_lparen_ahead(const char *start) {
             }
         } else if (*p == ' ' || *p == '\t' || *p == '\r') {
             p++;
+        } else if (*p == ',') {
+            return 0;
         } else if (*p == '+' || *p == '-' || *p == '*' || *p == '/' ||
-                   *p == '.' || *p == '[' || *p == ']' || *p == ',') {
+                   *p == '.' || *p == '[' || *p == ']') {
             p++;
         } else {
             return 0;

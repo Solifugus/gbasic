@@ -15,6 +15,7 @@ examples=(
     keyword_stability_test.bas
     duration_test.gb
     file_test.gb
+    find_test.bas
     lock_test.gb
     lock_cleanup_test.gb
     dir_test.gb
@@ -28,6 +29,7 @@ examples=(
     negated_comparison_test.bas
     money_test.bas
     nothing_test.bas
+    parser_hardening_test.bas
     print_parens_test.bas
     string_test.bas
     unknown_test.bas
