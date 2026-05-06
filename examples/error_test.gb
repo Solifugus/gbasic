@@ -16,7 +16,7 @@ if error then
     error.clear()
 end if
 
-unknown()
+missing_function()
 if error then
     print error.source
     error.clear()

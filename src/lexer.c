@@ -194,6 +194,7 @@ static TokenType identifier_type(const char *start, int length) {
     if (keyword_equals(start, length, "true")) return TOKEN_TRUE;
     if (keyword_equals(start, length, "false")) return TOKEN_FALSE;
     if (keyword_equals(start, length, "nothing")) return TOKEN_NOTHING;
+    if (keyword_equals(start, length, "unknown")) return TOKEN_UNKNOWN;
     if (keyword_equals(start, length, "and")) return TOKEN_AND;
     if (keyword_equals(start, length, "or")) return TOKEN_OR;
     if (keyword_equals(start, length, "not")) return TOKEN_NOT;
@@ -320,6 +321,7 @@ const char *token_type_name(TokenType type) {
     case TOKEN_TRUE: return "TRUE";
     case TOKEN_FALSE: return "FALSE";
     case TOKEN_NOTHING: return "NOTHING";
+    case TOKEN_UNKNOWN: return "UNKNOWN";
     case TOKEN_AND: return "AND";
     case TOKEN_OR: return "OR";
     case TOKEN_NOT: return "NOT";

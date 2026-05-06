@@ -6,6 +6,7 @@ cd "$(dirname "$0")/.."
 cases=(
     negative_invalid_escape
     negative_unterminated_string
+    negative_unknown_order
 )
 
 for name in "${cases[@]}"; do

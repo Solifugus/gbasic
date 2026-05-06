@@ -40,6 +40,7 @@ typedef enum {
     TOKEN_TRUE,
     TOKEN_FALSE,
     TOKEN_NOTHING,
+    TOKEN_UNKNOWN,
     TOKEN_AND,
     TOKEN_OR,
     TOKEN_NOT,

@@ -99,6 +99,12 @@ AstExpr *ast_null(void) {
     return expr;
 }
 
+AstExpr *ast_unknown(void) {
+    AstExpr *expr = xmalloc(sizeof(*expr));
+    expr->kind = AST_EXPR_UNKNOWN;
+    return expr;
+}
+
 AstExpr *ast_array(AstExprList items) {
     AstExpr *expr = xmalloc(sizeof(*expr));
     expr->kind = AST_EXPR_ARRAY;
@@ -395,6 +401,9 @@ static void dump_expr(AstExpr *expr, int indent) {
         break;
     case AST_EXPR_NULL:
         printf("Nothing\n");
+        break;
+    case AST_EXPR_UNKNOWN:
+        printf("Unknown\n");
         break;
     case AST_EXPR_ARRAY:
         printf("Array\n");
@@ -714,6 +723,7 @@ static void free_expr(AstExpr *expr) {
     case AST_EXPR_NUMBER:
     case AST_EXPR_BOOL:
     case AST_EXPR_NULL:
+    case AST_EXPR_UNKNOWN:
         break;
     }
 

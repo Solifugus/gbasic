@@ -30,6 +30,7 @@ examples=(
     nothing_test.bas
     print_parens_test.bas
     string_test.bas
+    unknown_test.bas
     builtin_test.bas
     builtin_override_test.bas
     program_test.bas

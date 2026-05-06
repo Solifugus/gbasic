@@ -16,6 +16,7 @@ int parse_source(const char *source, AstStmtList *out_program);
 
 typedef enum {
     VALUE_NULL,
+    VALUE_UNKNOWN,
     VALUE_NUMBER,
     VALUE_STRING,
     VALUE_BOOL,
@@ -223,6 +224,12 @@ void eval_set_source_path(const char *path) {
 static Value value_null(void) {
     Value value = {0};
     value.kind = VALUE_NULL;
+    return value;
+}
+
+static Value value_unknown(void) {
+    Value value = {0};
+    value.kind = VALUE_UNKNOWN;
     return value;
 }
 
@@ -504,6 +511,9 @@ static int value_truthy(Value value) {
         return value.as.dir_path[0] != '\0';
     case VALUE_NULL:
         return 0;
+    case VALUE_UNKNOWN:
+        runtime_error_raise("unknown cannot be used as a condition", 1003, "unknown");
+        return 0;
     }
     return 0;
 }
@@ -527,6 +537,9 @@ static void value_print(Value value) {
     switch (value.kind) {
     case VALUE_NULL:
         printf("nothing\n");
+        break;
+    case VALUE_UNKNOWN:
+        printf("unknown\n");
         break;
     case VALUE_NUMBER:
         printf("%g\n", value.as.number);
@@ -2992,10 +3005,18 @@ static Value eval_comparison(AstExpr *expr, Value left, Value right) {
         value_free(left);
         value_free(right);
         return value_null();
-    } else if (left.kind == VALUE_NULL || right.kind == VALUE_NULL) {
-        int equal = left.kind == VALUE_NULL && right.kind == VALUE_NULL;
+    } else if (left.kind == VALUE_NULL || right.kind == VALUE_NULL ||
+               left.kind == VALUE_UNKNOWN || right.kind == VALUE_UNKNOWN) {
+        int equal = left.kind == right.kind &&
+            (left.kind == VALUE_NULL || left.kind == VALUE_UNKNOWN);
         if (strcmp(op, "=") == 0) result = equal;
         else if (strcmp(op, "!=") == 0) result = !equal;
+        else {
+            runtime_error_raise("unknown and nothing support only = and !=", 1003, "comparison");
+            value_free(left);
+            value_free(right);
+            return value_null();
+        }
     } else {
         double a = value_number_or_zero(left);
         double b = value_number_or_zero(right);
@@ -3148,6 +3169,13 @@ static Value eval_binary(AstExpr *expr) {
         return value_null();
     }
 
+    if (left.kind == VALUE_UNKNOWN || right.kind == VALUE_UNKNOWN) {
+        value_free(left);
+        value_free(right);
+        runtime_error_raise("unknown cannot be used in arithmetic", 1003, "unknown");
+        return value_null();
+    }
+
     double a = value_number_or_zero(left);
     double b = value_number_or_zero(right);
     value_free(left);
@@ -3179,6 +3207,8 @@ static Value eval_expr(AstExpr *expr) {
         return value_bool(expr->as.boolean);
     case AST_EXPR_NULL:
         return value_null();
+    case AST_EXPR_UNKNOWN:
+        return value_unknown();
     case AST_EXPR_DURATION: {
         Duration duration = {
             expr->as.duration.years,

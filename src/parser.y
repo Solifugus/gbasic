@@ -239,7 +239,7 @@ typedef struct {
 
 %token <number> NUMBER
 %token <text> IDENT STRING MOD_CONTENT
-%token IF THEN END PRINT TRUE FALSE NOTHING AND OR NOT WITH FOR TO IN FUNCTION RETURN GOTO GOSUB WATCH WITHOUT WATCHERS ON RESUME NEXT STOP ERROR_VALUE MODIFIER PROGRAM LIBRARY LOAD USE EXPORT
+%token IF THEN END PRINT TRUE FALSE NOTHING UNKNOWN_VALUE AND OR NOT WITH FOR TO IN FUNCTION RETURN GOTO GOSUB WATCH WITHOUT WATCHERS ON RESUME NEXT STOP ERROR_VALUE MODIFIER PROGRAM LIBRARY LOAD USE EXPORT
 %token OP_EQ OP_NE OP_GT OP_LT OP_GE OP_LE OP_NGT OP_NLT OP_NGE OP_NLE
 %token PLUS MINUS STAR SLASH LPAREN MOD_LPAREN RPAREN LBRACKET RBRACKET LBRACE RBRACE COMMA COLON NEWLINE
 %precedence NO_DOT
@@ -551,6 +551,7 @@ primary
     | TRUE { $$ = ast_bool(1); }
     | FALSE { $$ = ast_bool(0); }
     | NOTHING { $$ = ast_null(); }
+    | UNKNOWN_VALUE { $$ = ast_unknown(); }
     | LPAREN expression RPAREN { $$ = $2; }
     | LBRACKET argument_list_opt RBRACKET { $$ = ast_array($2); }
     | LBRACE optional_newlines RBRACE { $$ = ast_record(ast_record_field_list_empty()); }
@@ -681,6 +682,7 @@ static int yylex(void) {
     case TOKEN_TRUE: return TRUE;
     case TOKEN_FALSE: return FALSE;
     case TOKEN_NOTHING: return NOTHING;
+    case TOKEN_UNKNOWN: return UNKNOWN_VALUE;
     case TOKEN_AND: return AND;
     case TOKEN_OR: return OR;
     case TOKEN_NOT: return NOT;
