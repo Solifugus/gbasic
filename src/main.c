@@ -16,6 +16,7 @@ static void print_help(const char *argv0) {
     printf("  %s FILE\n", argv0);
     printf("  %s --tokens FILE\n", argv0);
     printf("  %s --ast FILE\n", argv0);
+    printf("  %s --add-loads FILE\n", argv0);
     printf("  %s --add-uses FILE\n", argv0);
     printf("\n");
     printf("flags:\n");
@@ -23,7 +24,8 @@ static void print_help(const char *argv0) {
     printf("  --version       show version\n");
     printf("  --tokens FILE   print lexer tokens\n");
     printf("  --ast FILE      parse and print AST\n");
-    printf("  --add-uses FILE analyze unresolved calls/modifiers and print source with use statements\n");
+    printf("  --add-loads FILE analyze unresolved calls/modifiers and print source with load statements\n");
+    printf("  --add-uses FILE  compatibility alias; emits use statements\n");
 }
 
 static void print_tokens(const char *source) {
@@ -636,10 +638,14 @@ static size_t offset_after_line(const char *source, int line) {
     return strlen(source);
 }
 
-static void output_with_uses(const char *source, size_t offset, const char *indent, StringList *uses) {
+static void output_with_loads(const char *source,
+                              size_t offset,
+                              const char *indent,
+                              const char *keyword,
+                              StringList *uses) {
     fwrite(source, 1, offset, stdout);
     for (size_t i = 0; i < uses->count; i++) {
-        printf("%suse %s\n", indent, uses->items[i]);
+        printf("%s%s %s\n", indent, keyword, uses->items[i]);
     }
     if (uses->count > 0) {
         printf("\n");
@@ -647,7 +653,10 @@ static void output_with_uses(const char *source, size_t offset, const char *inde
     fputs(source + offset, stdout);
 }
 
-static int add_uses_mode(const char *path, const char *source, AstStmtList program) {
+static int add_loads_mode(const char *path,
+                          const char *source,
+                          AstStmtList program,
+                          const char *keyword) {
     AddUsesContext ctx = {0};
     ctx.root_path = path;
     ctx.root_program = program;
@@ -658,7 +667,7 @@ static int add_uses_mode(const char *path, const char *source, AstStmtList progr
     analyze_stmt_list(&ctx, body);
 
     size_t offset = program_block ? offset_after_line(source, program_block->line) : 0;
-    output_with_uses(source, offset, program_block ? "    " : "", &ctx.insert_uses);
+    output_with_loads(source, offset, program_block ? "    " : "", keyword, &ctx.insert_uses);
 
     string_list_free(&ctx.local_functions);
     string_list_free(&ctx.local_assign_modifiers);
@@ -677,7 +686,7 @@ static int add_uses_mode(const char *path, const char *source, AstStmtList progr
 int main(int argc, char **argv) {
     int ast_only = 0;
     int tokens_only = 0;
-    int add_uses = 0;
+    const char *add_loads_keyword = NULL;
     const char *path = NULL;
 
     if (argc == 2 && strcmp(argv[1], "--help") == 0) {
@@ -694,11 +703,14 @@ int main(int argc, char **argv) {
     } else if (argc == 3 && strcmp(argv[1], "--tokens") == 0) {
         tokens_only = 1;
         path = argv[2];
+    } else if (argc == 3 && strcmp(argv[1], "--add-loads") == 0) {
+        add_loads_keyword = "load";
+        path = argv[2];
     } else if (argc == 3 && strcmp(argv[1], "--add-uses") == 0) {
-        add_uses = 1;
+        add_loads_keyword = "use";
         path = argv[2];
     } else {
-        fprintf(stderr, "usage: %s [--ast|--tokens|--add-uses] FILE\n", argv[0]);
+        fprintf(stderr, "usage: %s [--ast|--tokens|--add-loads|--add-uses] FILE\n", argv[0]);
         fprintf(stderr, "try '%s --help'\n", argv[0]);
         return 2;
     }
@@ -723,8 +735,8 @@ int main(int argc, char **argv) {
     int exit_status = 0;
     if (ast_only) {
         ast_dump(program);
-    } else if (add_uses) {
-        exit_status = add_uses_mode(path, source, program);
+    } else if (add_loads_keyword) {
+        exit_status = add_loads_mode(path, source, program, add_loads_keyword);
     } else {
         eval_set_source_path(path);
         exit_status = eval_program(program);

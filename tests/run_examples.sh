@@ -111,6 +111,62 @@ rm -f "$version_file"
 
 stdout_file="$(mktemp)"
 stderr_file="$(mktemp)"
+if ./gbasic --add-loads examples/add_uses_test.bas >"$stdout_file" 2>"$stderr_file"; then
+    actual_text="$(cat "$stdout_file")"
+    expected_text="$(cat examples/add_loads_test.out)"
+    if [[ "$actual_text" == "$expected_text" ]]; then
+        printf 'PASS %s\n' "examples/add_uses_test.bas --add-loads"
+    else
+        printf 'FAIL %s\n' "examples/add_uses_test.bas --add-loads"
+        actual_norm="$(mktemp)"
+        expected_norm="$(mktemp)"
+        printf '%s\n' "$actual_text" >"$actual_norm"
+        printf '%s\n' "$expected_text" >"$expected_norm"
+        diff -u "$expected_norm" "$actual_norm" || true
+        rm -f "$actual_norm" "$expected_norm" "$stdout_file" "$stderr_file"
+        exit 1
+    fi
+else
+    status=$?
+    printf 'FAIL %s\n' "examples/add_uses_test.bas --add-loads"
+    if [[ -s "$stderr_file" ]]; then
+        cat "$stderr_file"
+    fi
+    rm -f "$stdout_file" "$stderr_file"
+    exit "$status"
+fi
+rm -f "$stdout_file" "$stderr_file"
+
+stdout_file="$(mktemp)"
+stderr_file="$(mktemp)"
+if ./gbasic --add-uses examples/add_uses_test.bas >"$stdout_file" 2>"$stderr_file"; then
+    actual_text="$(cat "$stdout_file")"
+    expected_text="$(cat examples/add_uses_insert_test.out)"
+    if [[ "$actual_text" == "$expected_text" ]]; then
+        printf 'PASS %s\n' "examples/add_uses_test.bas --add-uses"
+    else
+        printf 'FAIL %s\n' "examples/add_uses_test.bas --add-uses"
+        actual_norm="$(mktemp)"
+        expected_norm="$(mktemp)"
+        printf '%s\n' "$actual_text" >"$actual_norm"
+        printf '%s\n' "$expected_text" >"$expected_norm"
+        diff -u "$expected_norm" "$actual_norm" || true
+        rm -f "$actual_norm" "$expected_norm" "$stdout_file" "$stderr_file"
+        exit 1
+    fi
+else
+    status=$?
+    printf 'FAIL %s\n' "examples/add_uses_test.bas --add-uses"
+    if [[ -s "$stderr_file" ]]; then
+        cat "$stderr_file"
+    fi
+    rm -f "$stdout_file" "$stderr_file"
+    exit "$status"
+fi
+rm -f "$stdout_file" "$stderr_file"
+
+stdout_file="$(mktemp)"
+stderr_file="$(mktemp)"
 if ./gbasic --add-uses examples/add_uses_builtins_test.bas >"$stdout_file" 2>"$stderr_file"; then
     actual_text="$(cat "$stdout_file")"
     expected_text="$(cat examples/add_uses_builtins_test.out)"
