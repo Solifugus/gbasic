@@ -2664,6 +2664,129 @@ static Value eval_call(AstExpr *expr) {
         return value_null();
     }
 
+    if (strcmp(expr->as.call.name, "left") == 0 ||
+        strcmp(expr->as.call.name, "right") == 0) {
+        const char *name = expr->as.call.name;
+        if (expr->as.call.args.count != 2) {
+            char message[80];
+            snprintf(message, sizeof(message), "%s expects two arguments", name);
+            runtime_error_raise(message, 1003, "invalid function call");
+            return value_null();
+        }
+        Value text = eval_expr(expr->as.call.args.items[0]);
+        Value count_value = eval_expr(expr->as.call.args.items[1]);
+        if (text.kind != VALUE_STRING || count_value.kind != VALUE_NUMBER) {
+            value_free(text);
+            value_free(count_value);
+            char message[96];
+            snprintf(message, sizeof(message), "%s expects string and number", name);
+            runtime_error_raise(message, 1003, "invalid function call");
+            return value_null();
+        }
+        size_t text_len = strlen(text.as.string);
+        int requested = (int)count_value.as.number;
+        size_t count = requested < 0 ? 0 : (size_t)requested;
+        if (count > text_len) {
+            count = text_len;
+        }
+        size_t start = strcmp(name, "right") == 0 ? text_len - count : 0;
+        char *result_text = malloc(count + 1);
+        if (!result_text) {
+            abort();
+        }
+        memcpy(result_text, text.as.string + start, count);
+        result_text[count] = '\0';
+        Value result = value_string(result_text);
+        free(result_text);
+        value_free(text);
+        value_free(count_value);
+        return result;
+    }
+
+    if (strcmp(expr->as.call.name, "mid") == 0) {
+        if (expr->as.call.args.count != 3 && expr->as.call.args.count != 4) {
+            runtime_error_raise("mid expects three or four arguments", 1003, "invalid function call");
+            return value_null();
+        }
+        Value text = eval_expr(expr->as.call.args.items[0]);
+        Value start_value = eval_expr(expr->as.call.args.items[1]);
+        Value count_value = eval_expr(expr->as.call.args.items[2]);
+        if (text.kind != VALUE_STRING ||
+            start_value.kind != VALUE_NUMBER ||
+            count_value.kind != VALUE_NUMBER) {
+            value_free(text);
+            value_free(start_value);
+            value_free(count_value);
+            runtime_error_raise("mid expects string, number, number", 1003, "invalid function call");
+            return value_null();
+        }
+
+        size_t text_len = strlen(text.as.string);
+        int raw_start = (int)start_value.as.number;
+        int raw_count = (int)count_value.as.number;
+        size_t start = raw_start < 0 ? 0 : (size_t)raw_start;
+        size_t count = raw_count < 0 ? 0 : (size_t)raw_count;
+
+        if (expr->as.call.args.count == 3) {
+            if (start >= text_len) {
+                value_free(text);
+                value_free(start_value);
+                value_free(count_value);
+                return value_string("");
+            }
+            if (count > text_len - start) {
+                count = text_len - start;
+            }
+            char *result_text = malloc(count + 1);
+            if (!result_text) {
+                abort();
+            }
+            memcpy(result_text, text.as.string + start, count);
+            result_text[count] = '\0';
+            Value result = value_string(result_text);
+            free(result_text);
+            value_free(text);
+            value_free(start_value);
+            value_free(count_value);
+            return result;
+        }
+
+        Value replacement = eval_expr(expr->as.call.args.items[3]);
+        if (replacement.kind != VALUE_STRING) {
+            value_free(text);
+            value_free(start_value);
+            value_free(count_value);
+            value_free(replacement);
+            runtime_error_raise("mid replacement expects a string", 1003, "invalid function call");
+            return value_null();
+        }
+        if (start > text_len) {
+            start = text_len;
+        }
+        if (count > text_len - start) {
+            count = text_len - start;
+        }
+        size_t replacement_len = strlen(replacement.as.string);
+        size_t result_len = start + replacement_len + (text_len - start - count);
+        char *result_text = malloc(result_len + 1);
+        if (!result_text) {
+            abort();
+        }
+        memcpy(result_text, text.as.string, start);
+        memcpy(result_text + start, replacement.as.string, replacement_len);
+        memcpy(result_text + start + replacement_len,
+               text.as.string + start + count,
+               text_len - start - count);
+        result_text[result_len] = '\0';
+        Value result = value_string(result_text);
+        free(result_text);
+        value_free(text);
+        value_free(start_value);
+        value_free(count_value);
+        value_free(replacement);
+        return result;
+    }
+
     if (strcmp(expr->as.call.name, "exists") == 0 ||
         strcmp(expr->as.call.name, "read") == 0 ||
         strcmp(expr->as.call.name, "write") == 0 ||

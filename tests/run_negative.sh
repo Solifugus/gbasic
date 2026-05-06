@@ -9,6 +9,8 @@ cases=(
     negative_unknown_order
     negative_find_type
     negative_function_assignment
+    negative_left_type
+    negative_mid_arity
 )
 
 for name in "${cases[@]}"; do
