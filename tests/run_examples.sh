@@ -33,10 +33,13 @@ examples=(
     number_string_modifier_test.bas
     parser_hardening_test.bas
     print_parens_test.bas
+    split_find_join_integration_test.bas
     split_join_test.bas
+    string_modifier_pipeline_test.bas
     string_helpers_test.bas
     string_test.bas
     unknown_test.bas
+    unknown_nothing_distinction_integration_test.bas
     builtin_test.bas
     builtin_override_test.bas
     program_test.bas
@@ -139,6 +142,62 @@ if printf 'Ada\n' | ./gbasic examples/input_test.bas >"$stdout_file" 2>"$stderr_
 else
     status=$?
     printf 'FAIL %s\n' "examples/input_test.bas"
+    if [[ -s "$stderr_file" ]]; then
+        cat "$stderr_file"
+    fi
+    rm -f "$stdout_file" "$stderr_file"
+    exit "$status"
+fi
+rm -f "$stdout_file" "$stderr_file"
+
+stdout_file="$(mktemp)"
+stderr_file="$(mktemp)"
+if printf '  Joe Jones  \n' | ./gbasic examples/input_trimmed_integration_test.bas >"$stdout_file" 2>"$stderr_file"; then
+    actual_text="$(cat "$stdout_file")"
+    expected_text="$(cat examples/input_trimmed_integration_test.out)"
+    if [[ "$actual_text" == "$expected_text" ]]; then
+        printf 'PASS %s\n' "examples/input_trimmed_integration_test.bas"
+    else
+        printf 'FAIL %s\n' "examples/input_trimmed_integration_test.bas"
+        actual_norm="$(mktemp)"
+        expected_norm="$(mktemp)"
+        printf '%s\n' "$actual_text" >"$actual_norm"
+        printf '%s\n' "$expected_text" >"$expected_norm"
+        diff -u "$expected_norm" "$actual_norm" || true
+        rm -f "$actual_norm" "$expected_norm" "$stdout_file" "$stderr_file"
+        exit 1
+    fi
+else
+    status=$?
+    printf 'FAIL %s\n' "examples/input_trimmed_integration_test.bas"
+    if [[ -s "$stderr_file" ]]; then
+        cat "$stderr_file"
+    fi
+    rm -f "$stdout_file" "$stderr_file"
+    exit "$status"
+fi
+rm -f "$stdout_file" "$stderr_file"
+
+stdout_file="$(mktemp)"
+stderr_file="$(mktemp)"
+if printf '41\n' | ./gbasic examples/input_number_integration_test.bas >"$stdout_file" 2>"$stderr_file"; then
+    actual_text="$(cat "$stdout_file")"
+    expected_text="$(cat examples/input_number_integration_test.out)"
+    if [[ "$actual_text" == "$expected_text" ]]; then
+        printf 'PASS %s\n' "examples/input_number_integration_test.bas"
+    else
+        printf 'FAIL %s\n' "examples/input_number_integration_test.bas"
+        actual_norm="$(mktemp)"
+        expected_norm="$(mktemp)"
+        printf '%s\n' "$actual_text" >"$actual_norm"
+        printf '%s\n' "$expected_text" >"$expected_norm"
+        diff -u "$expected_norm" "$actual_norm" || true
+        rm -f "$actual_norm" "$expected_norm" "$stdout_file" "$stderr_file"
+        exit 1
+    fi
+else
+    status=$?
+    printf 'FAIL %s\n' "examples/input_number_integration_test.bas"
     if [[ -s "$stderr_file" ]]; then
         cat "$stderr_file"
     fi
