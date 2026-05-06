@@ -2499,6 +2499,50 @@ static Value eval_call(AstExpr *expr) {
         return result;
     }
 
+    if (strcmp(expr->as.call.name, "input") == 0) {
+        if (expr->as.call.args.count > 1) {
+            runtime_error_raise("input expects zero or one argument", 1003, "invalid function call");
+            return value_null();
+        }
+        if (expr->as.call.args.count == 1) {
+            Value prompt = eval_expr(expr->as.call.args.items[0]);
+            if (prompt.kind != VALUE_STRING) {
+                value_free(prompt);
+                runtime_error_raise("input prompt must be a string", 1003, "invalid function call");
+                return value_null();
+            }
+            printf("%s", prompt.as.string);
+            fflush(stdout);
+            value_free(prompt);
+        }
+
+        size_t capacity = 128;
+        size_t length = 0;
+        char *line = malloc(capacity);
+        if (!line) {
+            abort();
+        }
+        int ch = 0;
+        while ((ch = fgetc(stdin)) != EOF && ch != '\n') {
+            if (length + 1 >= capacity) {
+                capacity *= 2;
+                char *next = realloc(line, capacity);
+                if (!next) {
+                    abort();
+                }
+                line = next;
+            }
+            line[length++] = (char)ch;
+        }
+        if (length > 0 && line[length - 1] == '\r') {
+            length--;
+        }
+        line[length] = '\0';
+        Value result = value_string(line);
+        free(line);
+        return result;
+    }
+
     if (strcmp(expr->as.call.name, "round") == 0) {
         if (expr->as.call.args.count != 2) {
             runtime_error_raise("round expects two arguments", 1003, "invalid function call");

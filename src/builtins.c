@@ -7,6 +7,7 @@ int gbasic_builtin_function(const char *name) {
         "compare",
         "lower",
         "upper",
+        "input",
         "round",
         "len",
         "sum",
