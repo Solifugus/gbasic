@@ -3,6 +3,7 @@
 
 #include <ctype.h>
 #include <dirent.h>
+#include <errno.h>
 #include <fcntl.h>
 #include <signal.h>
 #include <stdio.h>
@@ -2630,6 +2631,78 @@ static Value builtin_join_value(Value array, Value separator) {
     return result;
 }
 
+static Value builtin_number_modifier_value(Value value) {
+    if (value.kind == VALUE_NUMBER) {
+        return value;
+    }
+    if (value.kind != VALUE_STRING) {
+        value_free(value);
+        runtime_error_raise("number modifier expects a number or numeric string", 1003, "modifier");
+        return value_null();
+    }
+
+    const char *start = value.as.string;
+    while (*start && isspace((unsigned char)*start)) {
+        start++;
+    }
+    const char *end = value.as.string + strlen(value.as.string);
+    while (end > start && isspace((unsigned char)end[-1])) {
+        end--;
+    }
+    if (start == end) {
+        value_free(value);
+        runtime_error_raise("number modifier expects a valid number string", 1003, "modifier");
+        return value_null();
+    }
+
+    char *trimmed = malloc((size_t)(end - start) + 1);
+    if (!trimmed) {
+        abort();
+    }
+    memcpy(trimmed, start, (size_t)(end - start));
+    trimmed[end - start] = '\0';
+
+    errno = 0;
+    char *parse_end = NULL;
+    double number = strtod(trimmed, &parse_end);
+    if (errno == ERANGE || parse_end == trimmed || *parse_end != '\0') {
+        free(trimmed);
+        value_free(value);
+        runtime_error_raise("number modifier expects a valid number string", 1003, "modifier");
+        return value_null();
+    }
+
+    free(trimmed);
+    value_free(value);
+    return value_number(number);
+}
+
+static Value builtin_string_modifier_value(Value value) {
+    char buffer[128];
+    switch (value.kind) {
+    case VALUE_STRING:
+        return value;
+    case VALUE_NUMBER:
+        snprintf(buffer, sizeof(buffer), "%g", value.as.number);
+        value_free(value);
+        return value_string(buffer);
+    case VALUE_BOOL:
+        snprintf(buffer, sizeof(buffer), "%s", value.as.boolean ? "true" : "false");
+        value_free(value);
+        return value_string(buffer);
+    case VALUE_NULL:
+        value_free(value);
+        return value_string("nothing");
+    case VALUE_UNKNOWN:
+        value_free(value);
+        return value_string("unknown");
+    default:
+        value_free(value);
+        runtime_error_raise("string modifier expects scalar value", 1003, "modifier");
+        return value_null();
+    }
+}
+
 static Value eval_call(AstExpr *expr) {
     if (expr->as.call.library) {
         FunctionDef *function = function_resolve(expr->as.call.library, expr->as.call.name);
@@ -3918,6 +3991,24 @@ static Value apply_assignment_modifier(AstModifierUse modifier, Value value) {
             return value_null();
         }
         return builtin_len_value(value);
+    }
+    if (!modifier.library &&
+        (builtin_args = builtin_modifier_args_text(modifier.name, "number")) != NULL) {
+        if (!modifier_args_empty(builtin_args)) {
+            runtime_error_raise("number modifier expects no arguments", 1003, "modifier");
+            value_free(value);
+            return value_null();
+        }
+        return builtin_number_modifier_value(value);
+    }
+    if (!modifier.library &&
+        (builtin_args = builtin_modifier_args_text(modifier.name, "string")) != NULL) {
+        if (!modifier_args_empty(builtin_args)) {
+            runtime_error_raise("string modifier expects no arguments", 1003, "modifier");
+            value_free(value);
+            return value_null();
+        }
+        return builtin_string_modifier_value(value);
     }
     if (!modifier.library && strcmp(modifier.name, "file") == 0) {
         if (value.kind != VALUE_STRING) {

@@ -30,6 +30,7 @@ examples=(
     negated_comparison_test.bas
     money_test.bas
     nothing_test.bas
+    number_string_modifier_test.bas
     parser_hardening_test.bas
     print_parens_test.bas
     split_join_test.bas

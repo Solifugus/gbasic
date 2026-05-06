@@ -246,7 +246,9 @@ static int builtin_modifier(const char *name, const char *context) {
             modifier_phrase_matches_main(name, "trimmed") ||
             modifier_phrase_matches_main(name, "split") ||
             modifier_phrase_matches_main(name, "join") ||
-            modifier_phrase_matches_main(name, "length");
+            modifier_phrase_matches_main(name, "length") ||
+            modifier_phrase_matches_main(name, "number") ||
+            modifier_phrase_matches_main(name, "string");
     }
     return 0;
 }
