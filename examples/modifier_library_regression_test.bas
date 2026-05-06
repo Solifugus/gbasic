@@ -41,40 +41,40 @@ library stricttext
 end library
 
 program demo(args)
-    use private_mods
-    use exported_mods
-    use imported_base
-    use first_mods
-    use second_mods
-    use text
-    use stricttext
+    load private_mods
+    load exported_mods
+    load imported_base
+    load first_mods
+    load second_mods
+    load text
+    load stricttext
 
     on error resume next
     hidden(whisper)= "HELLO"
     if error then
-        print "private modifier unavailable"
+        print("private modifier unavailable")
         error.clear()
     end if
     on error stop
 
     loud(shout)= "hello"
-    print loud
+    print(loud)
 
     modifier marker for assign
         return lower(value)
     end modifier
 
     local(marker)= "LOCAL"
-    print local
+    print(local)
 
     selected(pick)= "ignored"
-    print selected
+    print(selected)
 
     name = "Joe"
     if name(text.caseless)= "joe" then
-        print "qualified text match"
+        print("qualified text match")
     end if
     if name(stricttext.caseless)= "joe" then
-        print "qualified strict match"
+        print("qualified strict match")
     end if
 end program

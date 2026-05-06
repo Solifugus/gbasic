@@ -3,5 +3,5 @@ program demo(args)
         return 123
     end function
 
-    print mean([1, 2, 3])
+    print(mean([1, 2, 3]))
 end program

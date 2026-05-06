@@ -9,11 +9,11 @@ This repository contains the v0.1 C implementation. It is intentionally small: a
 Implemented v0.1 pieces include:
 
 - Lexer, parser, AST dump, and evaluator
-- Variables, assignment, `print`, `if`, `for item in items`
+- Variables, assignment, `print(...)`, `input(...)`, `if`, `for item in items`
 - Arrays, records, indexing, field access
 - User functions, labels, `goto`, `gosub`
 - User-defined modifiers for assignment and comparison
-- Program and library blocks with explicit `use`
+- Program and library blocks with explicit `load`
 - File, directory, date/time, duration, and money values
 - Watchers and basic error handling
 - Smoke and expected-output tests for examples
@@ -61,11 +61,13 @@ Print the AST:
 ./gbasic --ast examples/parse_test.gb
 ```
 
-Analyze unresolved calls/modifiers and print source with suggested `use` statements:
+Analyze unresolved calls/modifiers and print source with suggested `load` statements:
 
 ```sh
-./gbasic --add-uses examples/add_uses_test.bas
+./gbasic --add-loads examples/add_uses_test.bas
 ```
+
+Compatibility note: `use` and `--add-uses` still work for now, but new examples should prefer `load` and `--add-loads`.
 
 ## Tests
 
@@ -95,7 +97,7 @@ Modifier comparison:
 ```basic
 name = "Joe Barnes"
 if name(caseless)= "joe barnes" then
-    print "match"
+    print("match")
 end if
 ```
 
@@ -106,10 +108,10 @@ function add(a, b)
     return a + b
 end function
 
-print add(2, 3)
+print(add(2, 3))
 ```
 
-Library and `use`:
+Library and `load`:
 
 ```basic
 library math
@@ -119,8 +121,8 @@ library math
 end library
 
 program demo(args)
-    use math
-    print double(21)
+    load math
+    print(double(21))
 end program
 ```
 
@@ -134,9 +136,9 @@ watch(a, b)
     c = a + b
 end watch
 
-print c
+print(c)
 a = 15
-print c
+print(c)
 ```
 
 Error handling:
@@ -144,9 +146,9 @@ Error handling:
 ```basic
 on error resume next
 
-print missing_value
+print(missing_value)
 if error then
-    print error.message
+    print(error.message)
     error.clear()
 end if
 ```

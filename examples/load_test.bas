@@ -14,8 +14,8 @@ program demo(args)
     load math
     load text
 
-    print add(2, 3)
+    print(add(2, 3))
 
     msg(shout)= "hello"
-    print msg
+    print(msg)
 end program

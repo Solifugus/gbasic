@@ -11,16 +11,16 @@ library stricttext
 end library
 
 program demo(args)
-    use text
-    use stricttext
+    load text
+    load stricttext
 
     name = "Joe"
 
     if name(text.caseless)= "joe" then
-        print "text match"
+        print("text match")
     end if
 
     if name(stricttext.caseless)= "joe" then
-        print "strict match"
+        print("strict match")
     end if
 end program

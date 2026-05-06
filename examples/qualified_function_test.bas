@@ -11,9 +11,9 @@ library weirdmath
 end library
 
 program demo(args)
-    use math
-    use weirdmath
+    load math
+    load weirdmath
 
-    print math.add(2, 3)
-    print weirdmath.add(2, 3)
+    print(math.add(2, 3))
+    print(weirdmath.add(2, 3))
 end program

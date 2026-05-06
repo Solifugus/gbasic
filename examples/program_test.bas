@@ -1,3 +1,3 @@
 program demo(args)
-    print "hello from program"
+    print("hello from program")
 end program
