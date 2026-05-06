@@ -31,6 +31,7 @@ examples=(
     nothing_test.bas
     parser_hardening_test.bas
     print_parens_test.bas
+    split_join_test.bas
     string_helpers_test.bas
     string_test.bas
     unknown_test.bas

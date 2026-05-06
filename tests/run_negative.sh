@@ -11,6 +11,10 @@ cases=(
     negative_function_assignment
     negative_left_type
     negative_mid_arity
+    negative_trim_type
+    negative_split_empty_separator
+    negative_join_type
+    negative_join_element_type
 )
 
 for name in "${cases[@]}"; do
