@@ -2631,6 +2631,64 @@ static Value builtin_join_value(Value array, Value separator) {
     return result;
 }
 
+static Value append_to_array_value(Value array, Value item, int prepend) {
+    if (array.kind != VALUE_ARRAY) {
+        value_free(array);
+        value_free(item);
+        runtime_error_raise(prepend ? "prepend expects an array" : "append expects an array",
+                            1003,
+                            "invalid function call");
+        return value_null();
+    }
+
+    Value *items = malloc(sizeof(Value) * (array.as.array.count + 1));
+    if (!items) {
+        abort();
+    }
+    if (prepend) {
+        items[0] = item;
+        for (size_t i = 0; i < array.as.array.count; i++) {
+            items[i + 1] = array.as.array.items[i];
+        }
+    } else {
+        for (size_t i = 0; i < array.as.array.count; i++) {
+            items[i] = array.as.array.items[i];
+        }
+        items[array.as.array.count] = item;
+    }
+    free(array.as.array.items);
+    array.as.array.items = items;
+    array.as.array.count++;
+    return array;
+}
+
+static Value append_to_array_symbol(Symbol *symbol, Value item, int prepend) {
+    if (!symbol || symbol->value.kind != VALUE_ARRAY) {
+        value_free(item);
+        runtime_error_raise(prepend ? "prepend expects an array" : "append expects an array",
+                            1003,
+                            "invalid function call");
+        return value_null();
+    }
+
+    Value *items = realloc(symbol->value.as.array.items,
+                           sizeof(Value) * (symbol->value.as.array.count + 1));
+    if (!items) {
+        abort();
+    }
+    symbol->value.as.array.items = items;
+    if (prepend) {
+        memmove(symbol->value.as.array.items + 1,
+                symbol->value.as.array.items,
+                sizeof(Value) * symbol->value.as.array.count);
+        symbol->value.as.array.items[0] = item;
+    } else {
+        symbol->value.as.array.items[symbol->value.as.array.count] = item;
+    }
+    symbol->value.as.array.count++;
+    return value_copy(symbol->value);
+}
+
 static Value builtin_number_modifier_value(Value value) {
     if (value.kind == VALUE_NUMBER) {
         return value;
@@ -3072,6 +3130,49 @@ static Value eval_call(AstExpr *expr) {
             separator = eval_expr(expr->as.call.args.items[1]);
         }
         return builtin_join_value(array, separator);
+    }
+
+    if (strcmp(expr->as.call.name, "append") == 0 ||
+        strcmp(expr->as.call.name, "prepend") == 0) {
+        int prepend = strcmp(expr->as.call.name, "prepend") == 0;
+        if (expr->as.call.args.count != 2) {
+            runtime_error_raise(prepend ? "prepend expects two arguments" : "append expects two arguments",
+                                1003,
+                                "invalid function call");
+            return value_null();
+        }
+        AstExpr *array_expr = expr->as.call.args.items[0];
+        if (!prepend && array_expr->kind == AST_EXPR_IDENT) {
+            Symbol *symbol = env_find(array_expr->as.ident);
+            if (symbol && symbol->value.kind == VALUE_FILE) {
+                return eval_file_call(expr);
+            }
+        }
+        Value item = eval_expr(expr->as.call.args.items[1]);
+        if (error_action_pending()) {
+            value_free(item);
+            return value_null();
+        }
+
+        if (array_expr->kind == AST_EXPR_IDENT) {
+            Symbol *symbol = env_find(array_expr->as.ident);
+            if (!symbol) {
+                value_free(item);
+                char message[256];
+                snprintf(message, sizeof(message), "undefined variable: %s", array_expr->as.ident);
+                runtime_error_raise(message, 1001, "undefined variable");
+                return value_null();
+            }
+            return append_to_array_symbol(symbol, item, prepend);
+        }
+
+        Value array = eval_expr(array_expr);
+        if (error_action_pending()) {
+            value_free(array);
+            value_free(item);
+            return value_null();
+        }
+        return append_to_array_value(array, item, prepend);
     }
 
     if (strcmp(expr->as.call.name, "len") == 0) {

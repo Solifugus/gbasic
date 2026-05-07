@@ -7,6 +7,7 @@ make clean
 make
 
 examples=(
+    array_append_prepend_test.bas
     parse_test.gb
     record_test.gb
     datetime_test.gb

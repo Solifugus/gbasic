@@ -4,6 +4,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 cases=(
+    negative_append_type
     negative_invalid_escape
     negative_unterminated_string
     negative_unknown_order
