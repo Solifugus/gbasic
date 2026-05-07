@@ -5020,6 +5020,30 @@ static EvalResult eval_stmt(AstStmt *stmt) {
         }
         break;
     }
+    case AST_STMT_WHILE: {
+        for (;;) {
+            int before_error = error_generation;
+            Value condition = eval_expr(stmt->as.while_stmt.condition);
+            if (error_generation != before_error) {
+                value_free(condition);
+                current_line = previous_line;
+                current_column = previous_column;
+                return eval_error_result();
+            }
+            int truth = value_truthy(condition);
+            value_free(condition);
+            if (!truth) {
+                break;
+            }
+            EvalResult result = eval_stmt_list(stmt->as.while_stmt.body);
+            if (result.did_return || result.did_goto || result.did_gosub || result.did_stop) {
+                current_line = previous_line;
+                current_column = previous_column;
+                return result;
+            }
+        }
+        break;
+    }
     }
 
     current_line = previous_line;

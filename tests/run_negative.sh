@@ -27,6 +27,7 @@ cases=(
     negative_foo_assignment
     negative_getname_assignment
     negative_function_result_modifier
+    negative_while_missing_end
     negative_left_type
     negative_mid_arity
     negative_trim_type

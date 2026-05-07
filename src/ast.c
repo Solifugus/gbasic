@@ -366,6 +366,14 @@ AstStmt *ast_if(AstExpr *condition, AstStmtList body) {
     return stmt;
 }
 
+AstStmt *ast_while(AstExpr *condition, AstStmtList body) {
+    AstStmt *stmt = xmalloc(sizeof(*stmt));
+    stmt->kind = AST_STMT_WHILE;
+    stmt->as.while_stmt.condition = condition;
+    stmt->as.while_stmt.body = body;
+    return stmt;
+}
+
 AstStmt *ast_stmt_position(AstStmt *stmt, int line, int column) {
     stmt->line = line;
     stmt->column = column;
@@ -652,6 +660,17 @@ static void dump_stmt(AstStmt *stmt, int indent) {
             dump_stmt(stmt->as.if_stmt.body.items[i], indent + 2);
         }
         break;
+    case AST_STMT_WHILE:
+        printf("While\n");
+        dump_indent(indent + 1);
+        printf("Condition\n");
+        dump_expr(stmt->as.while_stmt.condition, indent + 2);
+        dump_indent(indent + 1);
+        printf("Body\n");
+        for (size_t i = 0; i < stmt->as.while_stmt.body.count; i++) {
+            dump_stmt(stmt->as.while_stmt.body.items[i], indent + 2);
+        }
+        break;
     }
 }
 
@@ -833,6 +852,10 @@ static void free_stmt(AstStmt *stmt) {
     case AST_STMT_IF:
         free_expr(stmt->as.if_stmt.condition);
         ast_free_program(stmt->as.if_stmt.body);
+        break;
+    case AST_STMT_WHILE:
+        free_expr(stmt->as.while_stmt.condition);
+        ast_free_program(stmt->as.while_stmt.body);
         break;
     }
 

@@ -586,6 +586,10 @@ static void analyze_stmt(AddUsesContext *ctx, AstStmt *stmt) {
         analyze_expr(ctx, stmt->as.if_stmt.condition);
         analyze_stmt_list(ctx, stmt->as.if_stmt.body);
         break;
+    case AST_STMT_WHILE:
+        analyze_expr(ctx, stmt->as.while_stmt.condition);
+        analyze_stmt_list(ctx, stmt->as.while_stmt.body);
+        break;
     case AST_STMT_FUNCTION:
         analyze_stmt_list(ctx, stmt->as.function.body);
         break;

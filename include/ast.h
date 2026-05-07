@@ -25,7 +25,8 @@ typedef enum {
     AST_STMT_PROGRAM,
     AST_STMT_LIBRARY,
     AST_STMT_USE,
-    AST_STMT_IF
+    AST_STMT_IF,
+    AST_STMT_WHILE
 } AstStmtKind;
 
 typedef enum {
@@ -196,6 +197,10 @@ struct AstStmt {
             AstExpr *condition;
             AstStmtList body;
         } if_stmt;
+        struct {
+            AstExpr *condition;
+            AstStmtList body;
+        } while_stmt;
     } as;
 };
 
@@ -249,6 +254,7 @@ AstStmt *ast_program(char *name, AstNameList args, AstStmtList body);
 AstStmt *ast_library(char *name, AstStmtList body);
 AstStmt *ast_use(char *name, char *path);
 AstStmt *ast_if(AstExpr *condition, AstStmtList body);
+AstStmt *ast_while(AstExpr *condition, AstStmtList body);
 AstStmt *ast_stmt_position(AstStmt *stmt, int line, int column);
 
 void ast_dump(AstStmtList program);

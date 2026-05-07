@@ -30,6 +30,7 @@ examples=(
     goto_test.gb
     gosub_test.gb
     watch_test.gb
+    while_test.bas
     error_test.gb
     modifier_test.gb
     modifier_library_regression_test.bas

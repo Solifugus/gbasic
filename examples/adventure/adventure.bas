@@ -41,86 +41,85 @@ function play()
     print("")
     describe(location, lamp_taken, inventory)
 
-loop:
-    command(trimmed)= input(">")
-    words(split)= command
-    if len(words) = 0 then goto loop
+    while true
+        command(trimmed)= input(">")
+        words(split)= command
+        if len(words) != 0 then
+            verb = words[0]
+            noun = ""
+            if len(words) > 1 then
+                noun = words[1]
+            end if
 
-    verb = words[0]
-    noun = ""
-    if len(words) > 1 then
-        noun = words[1]
-    end if
+            handled = false
 
-    handled = false
+            if verb = "look" then
+                describe(location, lamp_taken, inventory)
+                handled = true
+            end if
 
-    if verb = "look" then
-        describe(location, lamp_taken, inventory)
-        handled = true
-    end if
+            if verb = "inventory" then
+                show_inventory(inventory)
+                handled = true
+            end if
 
-    if verb = "inventory" then
-        show_inventory(inventory)
-        handled = true
-    end if
+            if verb = "take" and noun = "lamp" then
+                if location = "cellar" and lamp_taken = false then
+                    append(inventory, "lamp")
+                    lamp_taken = true
+                    print("Taken.")
+                    handled = true
+                end if
+                if handled = false then
+                    print("You do not see a lamp here.")
+                    handled = true
+                end if
+            end if
 
-    if verb = "take" and noun = "lamp" then
-        if location = "cellar" and lamp_taken = false then
-            append(inventory, "lamp")
-            lamp_taken = true
-            print("Taken.")
-            handled = true
+            if verb = "go" and noun = "north" then
+                if location = "cellar" then
+                    location = "hall"
+                    describe(location, lamp_taken, inventory)
+                    handled = true
+                end if
+                if location = "hall" and handled = false then
+                    location = "library"
+                    describe(location, lamp_taken, inventory)
+                    handled = true
+                end if
+                if handled = false then
+                    print("You cannot go north from here.")
+                    handled = true
+                end if
+            end if
+
+            if verb = "go" and noun = "south" then
+                if location = "library" then
+                    location = "hall"
+                    describe(location, lamp_taken, inventory)
+                    handled = true
+                end if
+                if location = "hall" and handled = false then
+                    location = "cellar"
+                    describe(location, lamp_taken, inventory)
+                    handled = true
+                end if
+                if handled = false then
+                    print("You cannot go south from here.")
+                    handled = true
+                end if
+            end if
+
+            if verb = "quit" then
+                print("Goodbye.")
+                return
+            end if
+
+            if handled = false then
+                print("I do not understand that command.")
+            end if
         end if
-        if handled = false then
-            print("You do not see a lamp here.")
-            handled = true
-        end if
-    end if
-
-    if verb = "go" and noun = "north" then
-        if location = "cellar" then
-            location = "hall"
-            describe(location, lamp_taken, inventory)
-            handled = true
-        end if
-        if location = "hall" and handled = false then
-            location = "library"
-            describe(location, lamp_taken, inventory)
-            handled = true
-        end if
-        if handled = false then
-            print("You cannot go north from here.")
-            handled = true
-        end if
-    end if
-
-    if verb = "go" and noun = "south" then
-        if location = "library" then
-            location = "hall"
-            describe(location, lamp_taken, inventory)
-            handled = true
-        end if
-        if location = "hall" and handled = false then
-            location = "cellar"
-            describe(location, lamp_taken, inventory)
-            handled = true
-        end if
-        if handled = false then
-            print("You cannot go south from here.")
-            handled = true
-        end if
-    end if
-
-    if verb = "quit" then
-        print("Goodbye.")
-        return
-    end if
-
-    if handled = false then
-        print("I do not understand that command.")
-    end if
-
-    goto loop
+    end while
 end function
 
 play()
