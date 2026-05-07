@@ -13,6 +13,11 @@ cases=(
     negative_take_first_empty
     negative_take_last_empty
     negative_reverse_type
+    negative_unique_type
+    negative_unique_nested_array
+    negative_sort_type
+    negative_sort_mixed
+    negative_sort_nested_array
     negative_invalid_escape
     negative_unterminated_string
     negative_unknown_order

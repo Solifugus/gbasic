@@ -24,6 +24,8 @@ int gbasic_builtin_function(const char *name) {
         "take_first",
         "take_last",
         "reverse",
+        "unique",
+        "sort",
         "sum",
         "mean",
         "median",

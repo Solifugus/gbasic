@@ -2918,6 +2918,231 @@ static Value reverse_array_symbol(Symbol *symbol) {
     return value_copy(symbol->value);
 }
 
+static int value_unique_comparable(Value value) {
+    return value.kind == VALUE_NUMBER ||
+        value.kind == VALUE_STRING ||
+        value.kind == VALUE_BOOL ||
+        value.kind == VALUE_NULL ||
+        value.kind == VALUE_UNKNOWN;
+}
+
+static int unique_values_equal(Value left, Value right) {
+    if (left.kind != right.kind) {
+        return 0;
+    }
+    switch (left.kind) {
+    case VALUE_NUMBER:
+        return left.as.number == right.as.number;
+    case VALUE_STRING:
+        return strcmp(left.as.string, right.as.string) == 0;
+    case VALUE_BOOL:
+        return left.as.boolean == right.as.boolean;
+    case VALUE_NULL:
+    case VALUE_UNKNOWN:
+        return 1;
+    default:
+        return 0;
+    }
+}
+
+static int array_all_unique_comparable(Value array) {
+    if (array.kind != VALUE_ARRAY) {
+        runtime_error_raise("unique expects an array", 1003, "invalid function call");
+        return 0;
+    }
+    for (size_t i = 0; i < array.as.array.count; i++) {
+        if (!value_unique_comparable(array.as.array.items[i])) {
+            runtime_error_raise("unique supports only scalar array values",
+                                1003,
+                                "invalid function call");
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static Value unique_array_value(Value array) {
+    if (!array_all_unique_comparable(array)) {
+        value_free(array);
+        return value_null();
+    }
+
+    size_t write = 0;
+    for (size_t i = 0; i < array.as.array.count; i++) {
+        int duplicate = 0;
+        for (size_t j = 0; j < write; j++) {
+            if (unique_values_equal(array.as.array.items[i], array.as.array.items[j])) {
+                duplicate = 1;
+                break;
+            }
+        }
+        if (duplicate) {
+            value_free(array.as.array.items[i]);
+        } else {
+            if (write != i) {
+                array.as.array.items[write] = array.as.array.items[i];
+            }
+            write++;
+        }
+    }
+    array.as.array.count = write;
+    if (write == 0) {
+        free(array.as.array.items);
+        array.as.array.items = NULL;
+    } else {
+        Value *items = realloc(array.as.array.items, sizeof(Value) * write);
+        if (items) {
+            array.as.array.items = items;
+        }
+    }
+    return array;
+}
+
+static Value unique_array_symbol(Symbol *symbol) {
+    if (!symbol || symbol->value.kind != VALUE_ARRAY) {
+        runtime_error_raise("unique expects an array", 1003, "invalid function call");
+        return value_null();
+    }
+    if (!array_all_unique_comparable(symbol->value)) {
+        return value_null();
+    }
+
+    size_t write = 0;
+    for (size_t i = 0; i < symbol->value.as.array.count; i++) {
+        int duplicate = 0;
+        for (size_t j = 0; j < write; j++) {
+            if (unique_values_equal(symbol->value.as.array.items[i],
+                                    symbol->value.as.array.items[j])) {
+                duplicate = 1;
+                break;
+            }
+        }
+        if (duplicate) {
+            value_free(symbol->value.as.array.items[i]);
+        } else {
+            if (write != i) {
+                symbol->value.as.array.items[write] = symbol->value.as.array.items[i];
+            }
+            write++;
+        }
+    }
+    symbol->value.as.array.count = write;
+    if (write == 0) {
+        free(symbol->value.as.array.items);
+        symbol->value.as.array.items = NULL;
+    } else {
+        Value *items = realloc(symbol->value.as.array.items, sizeof(Value) * write);
+        if (items) {
+            symbol->value.as.array.items = items;
+        }
+    }
+    return value_copy(symbol->value);
+}
+
+static int value_sort_rank(Value value) {
+    if (value.kind == VALUE_NULL) {
+        return 0;
+    }
+    if (value.kind == VALUE_UNKNOWN) {
+        return 1;
+    }
+    return 2;
+}
+
+static int value_sort_comparable(Value value) {
+    return value.kind == VALUE_NUMBER ||
+        value.kind == VALUE_STRING ||
+        value.kind == VALUE_BOOL ||
+        value.kind == VALUE_NULL ||
+        value.kind == VALUE_UNKNOWN;
+}
+
+static int array_all_sort_comparable(Value array) {
+    if (array.kind != VALUE_ARRAY) {
+        runtime_error_raise("sort expects an array", 1003, "invalid function call");
+        return 0;
+    }
+
+    ValueKind ordinary_kind = VALUE_NULL;
+    int have_ordinary_kind = 0;
+    for (size_t i = 0; i < array.as.array.count; i++) {
+        Value item = array.as.array.items[i];
+        if (!value_sort_comparable(item)) {
+            runtime_error_raise("sort supports only scalar array values",
+                                1003,
+                                "invalid function call");
+            return 0;
+        }
+        if (item.kind == VALUE_NULL || item.kind == VALUE_UNKNOWN) {
+            continue;
+        }
+        if (!have_ordinary_kind) {
+            ordinary_kind = item.kind;
+            have_ordinary_kind = 1;
+        } else if (ordinary_kind != item.kind) {
+            runtime_error_raise("sort requires ordinary values to have the same type",
+                                1003,
+                                "invalid function call");
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int sort_value_compare(const void *left_ptr, const void *right_ptr) {
+    const Value *left = left_ptr;
+    const Value *right = right_ptr;
+    int left_rank = value_sort_rank(*left);
+    int right_rank = value_sort_rank(*right);
+    if (left_rank != right_rank) {
+        return left_rank < right_rank ? -1 : 1;
+    }
+    if (left_rank < 2) {
+        return 0;
+    }
+
+    if (left->kind == VALUE_NUMBER) {
+        if (left->as.number < right->as.number) return -1;
+        if (left->as.number > right->as.number) return 1;
+        return 0;
+    }
+    if (left->kind == VALUE_STRING) {
+        return strcmp(left->as.string, right->as.string);
+    }
+    if (left->kind == VALUE_BOOL) {
+        return left->as.boolean - right->as.boolean;
+    }
+    return 0;
+}
+
+static Value sort_array_value(Value array) {
+    if (!array_all_sort_comparable(array)) {
+        value_free(array);
+        return value_null();
+    }
+    if (array.as.array.count > 1) {
+        qsort(array.as.array.items, array.as.array.count, sizeof(Value), sort_value_compare);
+    }
+    return array;
+}
+
+static Value sort_array_symbol(Symbol *symbol) {
+    if (!symbol || symbol->value.kind != VALUE_ARRAY) {
+        runtime_error_raise("sort expects an array", 1003, "invalid function call");
+        return value_null();
+    }
+    if (!array_all_sort_comparable(symbol->value)) {
+        return value_null();
+    }
+    if (symbol->value.as.array.count > 1) {
+        qsort(symbol->value.as.array.items,
+              symbol->value.as.array.count,
+              sizeof(Value),
+              sort_value_compare);
+    }
+    return value_copy(symbol->value);
+}
+
 static Value builtin_number_modifier_value(Value value) {
     if (value.kind == VALUE_NUMBER) {
         return value;
@@ -3527,6 +3752,58 @@ static Value eval_call(AstExpr *expr) {
             return value_null();
         }
         return reverse_array_value(array);
+    }
+
+    if (strcmp(expr->as.call.name, "unique") == 0) {
+        if (expr->as.call.args.count != 1) {
+            runtime_error_raise("unique expects one argument", 1003, "invalid function call");
+            return value_null();
+        }
+
+        AstExpr *array_expr = expr->as.call.args.items[0];
+        if (array_expr->kind == AST_EXPR_IDENT) {
+            Symbol *symbol = env_find(array_expr->as.ident);
+            if (!symbol) {
+                char message[256];
+                snprintf(message, sizeof(message), "undefined variable: %s", array_expr->as.ident);
+                runtime_error_raise(message, 1001, "undefined variable");
+                return value_null();
+            }
+            return unique_array_symbol(symbol);
+        }
+
+        Value array = eval_expr(array_expr);
+        if (error_action_pending()) {
+            value_free(array);
+            return value_null();
+        }
+        return unique_array_value(array);
+    }
+
+    if (strcmp(expr->as.call.name, "sort") == 0) {
+        if (expr->as.call.args.count != 1) {
+            runtime_error_raise("sort expects one argument", 1003, "invalid function call");
+            return value_null();
+        }
+
+        AstExpr *array_expr = expr->as.call.args.items[0];
+        if (array_expr->kind == AST_EXPR_IDENT) {
+            Symbol *symbol = env_find(array_expr->as.ident);
+            if (!symbol) {
+                char message[256];
+                snprintf(message, sizeof(message), "undefined variable: %s", array_expr->as.ident);
+                runtime_error_raise(message, 1001, "undefined variable");
+                return value_null();
+            }
+            return sort_array_symbol(symbol);
+        }
+
+        Value array = eval_expr(array_expr);
+        if (error_action_pending()) {
+            value_free(array);
+            return value_null();
+        }
+        return sort_array_value(array);
     }
 
     if (strcmp(expr->as.call.name, "len") == 0) {
