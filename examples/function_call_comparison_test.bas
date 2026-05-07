@@ -16,6 +16,17 @@ if mean(scores) >= 80 then
     print("good")
 end if
 
+function foo(x)
+    return x
+end function
+
+if foo(1) = 1 then
+    print("user function comparison ok")
+end if
+
+x = foo(1)
+print(x)
+
 name = "Joe"
 if name(caseless) = "joe" then
     print("modifier ok")

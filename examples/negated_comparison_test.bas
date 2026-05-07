@@ -26,10 +26,13 @@ if 5 !<= 4 then
     print "5 !<= 4 true"
 end if
 
-if 3(pass through)!>= 4 then
+n = 3
+m = 5
+
+if n(pass through)!>= 4 then
     print "modifier !>= true"
 end if
 
-if 5(pass through)!<= 4 then
+if m(pass through)!<= 4 then
     print "modifier !<= true"
 end if

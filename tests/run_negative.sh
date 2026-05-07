@@ -24,6 +24,9 @@ cases=(
     negative_find_type
     negative_function_assignment
     negative_len_assignment
+    negative_foo_assignment
+    negative_getname_assignment
+    negative_function_result_modifier
     negative_left_type
     negative_mid_arity
     negative_trim_type

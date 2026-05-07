@@ -66,6 +66,105 @@ static char *copy_const(const char *text) {
     return copy_text(text, (int)strlen(text));
 }
 
+static int ascii_lower(int ch) {
+    return ch >= 'A' && ch <= 'Z' ? ch - 'A' + 'a' : ch;
+}
+
+static int is_ident_start_char(char ch) {
+    return (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || ch == '_';
+}
+
+static int is_ident_char(char ch) {
+    return is_ident_start_char(ch) || (ch >= '0' && ch <= '9');
+}
+
+static int keyword_at(const char *p, const char *keyword) {
+    const char *k = keyword;
+    while (*k) {
+        if (ascii_lower((unsigned char)*p) != *k) {
+            return 0;
+        }
+        p++;
+        k++;
+    }
+    return !is_ident_char(*p);
+}
+
+static int source_declares_function(const char *name) {
+    const char *p = active_lexer->source;
+    size_t name_len = strlen(name);
+    int in_string = 0;
+    int in_comment = 0;
+
+    while (*p) {
+        if (in_comment) {
+            if (*p == '\n') {
+                in_comment = 0;
+            }
+            p++;
+            continue;
+        }
+        if (in_string) {
+            if (*p == '\\' && p[1]) {
+                p += 2;
+                continue;
+            }
+            if (*p == '"') {
+                in_string = 0;
+            }
+            p++;
+            continue;
+        }
+        if (*p == '\'') {
+            in_comment = 1;
+            p++;
+            continue;
+        }
+        if (*p == '"') {
+            in_string = 1;
+            p++;
+            continue;
+        }
+        if ((p == active_lexer->source || !is_ident_char(p[-1])) &&
+            keyword_at(p, "function")) {
+            p += strlen("function");
+            while (*p == ' ' || *p == '\t' || *p == '\r') {
+                p++;
+            }
+            const char *start = p;
+            if (!is_ident_start_char(*p)) {
+                continue;
+            }
+            while (is_ident_char(*p)) {
+                p++;
+            }
+            if ((size_t)(p - start) == name_len && strncmp(start, name, name_len) == 0) {
+                return 1;
+            }
+            continue;
+        }
+        p++;
+    }
+
+    return 0;
+}
+
+static int is_modifier_target_expr(AstExpr *expr) {
+    if (!expr) {
+        return 0;
+    }
+    if (expr->kind == AST_EXPR_IDENT) {
+        return 1;
+    }
+    if (expr->kind == AST_EXPR_FIELD) {
+        return is_modifier_target_expr(expr->as.field.object);
+    }
+    if (expr->kind == AST_EXPR_INDEX) {
+        return is_modifier_target_expr(expr->as.index.array);
+    }
+    return 0;
+}
+
 static char *join_words(char *left, char *right) {
     size_t left_len = strlen(left);
     size_t right_len = strlen(right);
@@ -221,9 +320,9 @@ static int modifier_lparen_ahead(const char *start) {
     }
     if (name_start < name_end) {
         char *name = copy_text(name_start, (int)(name_end - name_start));
-        int is_builtin = gbasic_builtin_function(name);
+        int is_function = gbasic_builtin_function(name) || source_declares_function(name);
         free(name);
-        if (is_builtin) {
+        if (is_function) {
             return 0;
         }
     }
@@ -522,7 +621,13 @@ and_expression
 comparison_expression
     : additive_expression { $$ = $1; }
     | additive_expression comparison_operator additive_expression { $$ = ast_binary($2, ast_modifier_none(), $1, $3); }
-    | additive_expression modifier comparison_operator additive_expression { $$ = ast_binary($3, $2, $1, $4); }
+    | additive_expression modifier comparison_operator additive_expression {
+        if (!is_modifier_target_expr($1)) {
+            yyerror("modifier target must be a variable, field, or index");
+            YYERROR;
+        }
+        $$ = ast_binary($3, $2, $1, $4);
+      }
     ;
 
 additive_expression
