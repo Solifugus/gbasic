@@ -32,6 +32,7 @@ examples=(
     if_else_test.bas
     watch_test.gb
     while_test.bas
+    while_break_continue_test.bas
     error_test.gb
     modifier_test.gb
     modifier_library_regression_test.bas

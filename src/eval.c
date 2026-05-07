@@ -127,6 +127,8 @@ typedef struct {
     int did_gosub;
     char *gosub_label;
     int did_stop;
+    int did_break;
+    int did_continue;
     Value value;
 } EvalResult;
 
@@ -183,6 +185,7 @@ static size_t watcher_count = 0;
 static size_t *watcher_queue = NULL;
 static size_t watcher_queue_count = 0;
 static int function_depth = 0;
+static int loop_depth = 0;
 static int watcher_suppressed = 0;
 static int watcher_draining = 0;
 static RuntimeError current_error = {0};
@@ -341,6 +344,25 @@ static EvalResult eval_stop(void) {
     result.did_stop = 1;
     result.value = value_null();
     return result;
+}
+
+static EvalResult eval_break(void) {
+    EvalResult result = {0};
+    result.did_break = 1;
+    result.value = value_null();
+    return result;
+}
+
+static EvalResult eval_continue(void) {
+    EvalResult result = {0};
+    result.did_continue = 1;
+    result.value = value_null();
+    return result;
+}
+
+static int eval_result_exits_block(EvalResult result) {
+    return result.did_return || result.did_goto || result.did_gosub ||
+           result.did_stop || result.did_break || result.did_continue;
 }
 
 static void error_clear_state(void) {
@@ -1244,6 +1266,9 @@ static void watcher_drain(void) {
             }
             if (result.did_gosub) {
                 free(result.gosub_label);
+            }
+            if (result.did_break || result.did_continue) {
+                value_free(result.value);
             }
         }
     }
@@ -2422,6 +2447,9 @@ static Value eval_user_function(AstExpr *expr, FunctionDef *function) {
             pc = target + 1;
             continue;
         }
+        if (result.did_break || result.did_continue || result.did_stop) {
+            break;
+        }
         pc++;
     }
     free(gosub_stack);
@@ -2430,6 +2458,12 @@ static Value eval_user_function(AstExpr *expr, FunctionDef *function) {
     env_clear(&local_env);
     if (result.did_return) {
         return result.value;
+    }
+    if (result.did_break || result.did_continue) {
+        runtime_error_raise(result.did_break ? "break outside while loop" : "continue outside while loop",
+                            1003,
+                            "invalid control flow");
+        value_free(result.value);
     }
     return value_null();
 }
@@ -4128,6 +4162,12 @@ static Value eval_assign_modifier(AstModifierUse use, Value value) {
     if (result.did_return) {
         return result.value;
     }
+    if (result.did_break || result.did_continue) {
+        runtime_error_raise(result.did_break ? "break outside while loop" : "continue outside while loop",
+                            1003,
+                            "invalid control flow");
+        value_free(result.value);
+    }
     return value_null();
 }
 
@@ -4159,6 +4199,12 @@ static Value eval_compare_modifier(AstModifierUse use, const char *op, Value lef
     env_clear(&local_env);
     if (result.did_return) {
         return result.value;
+    }
+    if (result.did_break || result.did_continue) {
+        runtime_error_raise(result.did_break ? "break outside while loop" : "continue outside while loop",
+                            1003,
+                            "invalid control flow");
+        value_free(result.value);
     }
     return value_null();
 }
@@ -4866,7 +4912,7 @@ static EvalResult eval_stmt(AstStmt *stmt) {
         if (lock_path(path)) {
             EvalResult result = eval_stmt_list(stmt->as.with_lock.body);
             unlock_path(path);
-            if (result.did_return || result.did_goto || result.did_gosub || result.did_stop) {
+            if (eval_result_exits_block(result)) {
                 free(path);
                 current_line = previous_line;
                 current_column = previous_column;
@@ -4895,7 +4941,7 @@ static EvalResult eval_stmt(AstStmt *stmt) {
         for (size_t i = 0; i < iterable.as.array.count; i++) {
             env_set(stmt->as.for_each.name, value_copy(iterable.as.array.items[i]));
             EvalResult result = eval_stmt_list(stmt->as.for_each.body);
-            if (result.did_return || result.did_goto || result.did_gosub || result.did_stop) {
+            if (eval_result_exits_block(result)) {
                 value_free(iterable);
                 current_line = previous_line;
                 current_column = previous_column;
@@ -4929,7 +4975,7 @@ static EvalResult eval_stmt(AstStmt *stmt) {
         watcher_suppressed++;
         EvalResult result = eval_stmt_list(stmt->as.without_watchers);
         watcher_suppressed--;
-        if (result.did_return || result.did_goto || result.did_gosub || result.did_stop) {
+        if (eval_result_exits_block(result)) {
             current_line = previous_line;
             current_column = previous_column;
             return result;
@@ -4999,6 +5045,26 @@ static EvalResult eval_stmt(AstStmt *stmt) {
         }
         return eval_gosub(stmt->as.gosub_label);
     }
+    case AST_STMT_BREAK:
+        if (loop_depth == 0) {
+            runtime_error_raise("break outside while loop", 1003, "invalid control flow");
+            current_line = previous_line;
+            current_column = previous_column;
+            return eval_error_result();
+        }
+        current_line = previous_line;
+        current_column = previous_column;
+        return eval_break();
+    case AST_STMT_CONTINUE:
+        if (loop_depth == 0) {
+            runtime_error_raise("continue outside while loop", 1003, "invalid control flow");
+            current_line = previous_line;
+            current_column = previous_column;
+            return eval_error_result();
+        }
+        current_line = previous_line;
+        current_column = previous_column;
+        return eval_continue();
     case AST_STMT_IF: {
         int before_error = error_generation;
         Value condition = eval_expr(stmt->as.if_stmt.condition);
@@ -5012,14 +5078,14 @@ static EvalResult eval_stmt(AstStmt *stmt) {
         value_free(condition);
         if (truth) {
             EvalResult result = eval_stmt_list(stmt->as.if_stmt.body);
-            if (result.did_return || result.did_goto || result.did_gosub || result.did_stop) {
+            if (eval_result_exits_block(result)) {
                 current_line = previous_line;
                 current_column = previous_column;
                 return result;
             }
         } else {
             EvalResult result = eval_stmt_list(stmt->as.if_stmt.else_body);
-            if (result.did_return || result.did_goto || result.did_gosub || result.did_stop) {
+            if (eval_result_exits_block(result)) {
                 current_line = previous_line;
                 current_column = previous_column;
                 return result;
@@ -5028,11 +5094,13 @@ static EvalResult eval_stmt(AstStmt *stmt) {
         break;
     }
     case AST_STMT_WHILE: {
+        loop_depth++;
         for (;;) {
             int before_error = error_generation;
             Value condition = eval_expr(stmt->as.while_stmt.condition);
             if (error_generation != before_error) {
                 value_free(condition);
+                loop_depth--;
                 current_line = previous_line;
                 current_column = previous_column;
                 return eval_error_result();
@@ -5043,12 +5111,22 @@ static EvalResult eval_stmt(AstStmt *stmt) {
                 break;
             }
             EvalResult result = eval_stmt_list(stmt->as.while_stmt.body);
-            if (result.did_return || result.did_goto || result.did_gosub || result.did_stop) {
+            if (result.did_break) {
+                value_free(result.value);
+                break;
+            }
+            if (result.did_continue) {
+                value_free(result.value);
+                continue;
+            }
+            if (eval_result_exits_block(result)) {
+                loop_depth--;
                 current_line = previous_line;
                 current_column = previous_column;
                 return result;
             }
         }
+        loop_depth--;
         break;
     }
     }
@@ -5071,7 +5149,8 @@ static EvalResult eval_stmt_list(AstStmtList statements) {
             }
             return result;
         }
-        if (result.did_return || result.did_gosub || result.did_stop) {
+        if (result.did_return || result.did_gosub || result.did_stop ||
+            result.did_break || result.did_continue) {
             return result;
         }
         pc++;
@@ -5105,6 +5184,10 @@ int eval_program(AstStmtList program) {
     if (result.did_gosub) {
         free(result.gosub_label);
     }
+    if (result.did_break || result.did_continue) {
+        value_free(result.value);
+        exit_status = 1;
+    }
     free(error_goto_label);
     error_goto_label = NULL;
     free(pending_error_goto_label);
@@ -5112,6 +5195,7 @@ int eval_program(AstStmtList program) {
     error_clear_state();
     error_mode = ERROR_MODE_STOP;
     runtime_stopped = 0;
+    loop_depth = 0;
     lock_clear();
     watcher_clear();
     modifier_clear();

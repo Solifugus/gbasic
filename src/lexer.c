@@ -174,6 +174,8 @@ static TokenType identifier_type(const char *start, int length) {
     if (keyword_equals(start, length, "to")) return TOKEN_TO;
     if (keyword_equals(start, length, "step")) return TOKEN_STEP;
     if (keyword_equals(start, length, "while")) return TOKEN_WHILE;
+    if (keyword_equals(start, length, "break")) return TOKEN_BREAK;
+    if (keyword_equals(start, length, "continue")) return TOKEN_CONTINUE;
     if (keyword_equals(start, length, "function")) return TOKEN_FUNCTION;
     if (keyword_equals(start, length, "return")) return TOKEN_RETURN;
     if (keyword_equals(start, length, "print")) return TOKEN_PRINT;
@@ -301,6 +303,8 @@ const char *token_type_name(TokenType type) {
     case TOKEN_TO: return "TO";
     case TOKEN_STEP: return "STEP";
     case TOKEN_WHILE: return "WHILE";
+    case TOKEN_BREAK: return "BREAK";
+    case TOKEN_CONTINUE: return "CONTINUE";
     case TOKEN_FUNCTION: return "FUNCTION";
     case TOKEN_RETURN: return "RETURN";
     case TOKEN_PRINT: return "PRINT";

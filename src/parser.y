@@ -368,7 +368,7 @@ typedef struct {
 
 %token <number> NUMBER
 %token <text> IDENT STRING MOD_CONTENT
-%token IF THEN ELSE END PRINT TRUE FALSE NOTHING UNKNOWN_VALUE AND OR NOT WITH FOR TO IN WHILE FUNCTION RETURN GOTO GOSUB WATCH WITHOUT WATCHERS ON RESUME NEXT STOP ERROR_VALUE MODIFIER PROGRAM LIBRARY LOAD USE EXPORT
+%token IF THEN ELSE END PRINT TRUE FALSE NOTHING UNKNOWN_VALUE AND OR NOT WITH FOR TO IN WHILE BREAK CONTINUE FUNCTION RETURN GOTO GOSUB WATCH WITHOUT WATCHERS ON RESUME NEXT STOP ERROR_VALUE MODIFIER PROGRAM LIBRARY LOAD USE EXPORT
 %token OP_EQ OP_NE OP_GT OP_LT OP_GE OP_LE OP_NGT OP_NLT OP_NGE OP_NLE
 %token PLUS MINUS STAR SLASH LPAREN MOD_LPAREN RPAREN LBRACKET RBRACKET LBRACE RBRACE COMMA COLON NEWLINE
 %precedence NO_DOT
@@ -377,7 +377,7 @@ typedef struct {
 %locations
 
 %type <stmt_list> program statement_list
-%type <stmt> statement assignment print_statement call_statement with_lock_statement for_each_statement while_statement function_statement modifier_statement program_statement library_statement use_statement return_statement label_statement goto_statement gosub_statement watch_statement without_watchers_statement on_error_statement error_statement if_statement inline_statement
+%type <stmt> statement assignment print_statement call_statement with_lock_statement for_each_statement while_statement function_statement modifier_statement program_statement library_statement use_statement return_statement label_statement goto_statement gosub_statement break_statement continue_statement watch_statement without_watchers_statement on_error_statement error_statement if_statement inline_statement
 %type <expr> expression or_expression and_expression comparison_expression
 %type <expr> additive_expression multiplicative_expression unary_expression postfix_expression primary
 %type <expr_list> argument_list argument_list_opt
@@ -421,6 +421,8 @@ statement
     | label_statement NEWLINE { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
     | goto_statement NEWLINE { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
     | gosub_statement NEWLINE { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
+    | break_statement NEWLINE { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
+    | continue_statement NEWLINE { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
     | if_statement { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
     ;
 
@@ -595,6 +597,14 @@ goto_statement
 
 gosub_statement
     : GOSUB IDENT { $$ = ast_gosub($2); }
+    ;
+
+break_statement
+    : BREAK { $$ = ast_break(); }
+    ;
+
+continue_statement
+    : CONTINUE { $$ = ast_continue(); }
     ;
 
 if_statement
@@ -838,6 +848,8 @@ static int yylex(void) {
     case TOKEN_TO: return TO;
     case TOKEN_IN: return IN;
     case TOKEN_WHILE: return WHILE;
+    case TOKEN_BREAK: return BREAK;
+    case TOKEN_CONTINUE: return CONTINUE;
     case TOKEN_FUNCTION: return FUNCTION;
     case TOKEN_RETURN: return RETURN;
     case TOKEN_GOTO: return GOTO;

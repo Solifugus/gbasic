@@ -26,7 +26,9 @@ typedef enum {
     AST_STMT_LIBRARY,
     AST_STMT_USE,
     AST_STMT_IF,
-    AST_STMT_WHILE
+    AST_STMT_WHILE,
+    AST_STMT_BREAK,
+    AST_STMT_CONTINUE
 } AstStmtKind;
 
 typedef enum {
@@ -256,6 +258,8 @@ AstStmt *ast_library(char *name, AstStmtList body);
 AstStmt *ast_use(char *name, char *path);
 AstStmt *ast_if(AstExpr *condition, AstStmtList body);
 AstStmt *ast_while(AstExpr *condition, AstStmtList body);
+AstStmt *ast_break(void);
+AstStmt *ast_continue(void);
 AstStmt *ast_stmt_position(AstStmt *stmt, int line, int column);
 
 void ast_dump(AstStmtList program);

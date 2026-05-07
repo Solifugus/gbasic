@@ -106,7 +106,7 @@ function play()
 
             if verb = "quit" then
                 print("Goodbye.")
-                return
+                break
             end if
 
             if handled = false then
@@ -114,6 +114,7 @@ function play()
             end if
         end if
     end while
+    return
 end function
 
 play()

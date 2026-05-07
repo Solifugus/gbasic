@@ -601,6 +601,8 @@ static void analyze_stmt(AddUsesContext *ctx, AstStmt *stmt) {
     case AST_STMT_LABEL:
     case AST_STMT_GOTO:
     case AST_STMT_GOSUB:
+    case AST_STMT_BREAK:
+    case AST_STMT_CONTINUE:
     case AST_STMT_ON_ERROR_GOTO:
     case AST_STMT_ON_ERROR_RESUME_NEXT:
     case AST_STMT_ON_ERROR_STOP:

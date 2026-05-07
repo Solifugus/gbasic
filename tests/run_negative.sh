@@ -28,6 +28,8 @@ cases=(
     negative_getname_assignment
     negative_function_result_modifier
     negative_while_missing_end
+    negative_break_outside_loop
+    negative_continue_outside_loop
     negative_left_type
     negative_mid_arity
     negative_trim_type
