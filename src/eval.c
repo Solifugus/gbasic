@@ -2891,6 +2891,33 @@ static Value take_from_array_symbol(Symbol *symbol, int take_last) {
     return result;
 }
 
+static void reverse_array_items(Value *items, size_t count) {
+    for (size_t i = 0; i < count / 2; i++) {
+        Value tmp = items[i];
+        items[i] = items[count - i - 1];
+        items[count - i - 1] = tmp;
+    }
+}
+
+static Value reverse_array_value(Value array) {
+    if (array.kind != VALUE_ARRAY) {
+        value_free(array);
+        runtime_error_raise("reverse expects an array", 1003, "invalid function call");
+        return value_null();
+    }
+    reverse_array_items(array.as.array.items, array.as.array.count);
+    return array;
+}
+
+static Value reverse_array_symbol(Symbol *symbol) {
+    if (!symbol || symbol->value.kind != VALUE_ARRAY) {
+        runtime_error_raise("reverse expects an array", 1003, "invalid function call");
+        return value_null();
+    }
+    reverse_array_items(symbol->value.as.array.items, symbol->value.as.array.count);
+    return value_copy(symbol->value);
+}
+
 static Value builtin_number_modifier_value(Value value) {
     if (value.kind == VALUE_NUMBER) {
         return value;
@@ -3474,6 +3501,32 @@ static Value eval_call(AstExpr *expr) {
             return value_null();
         }
         return take_from_array_value(array, take_last);
+    }
+
+    if (strcmp(expr->as.call.name, "reverse") == 0) {
+        if (expr->as.call.args.count != 1) {
+            runtime_error_raise("reverse expects one argument", 1003, "invalid function call");
+            return value_null();
+        }
+
+        AstExpr *array_expr = expr->as.call.args.items[0];
+        if (array_expr->kind == AST_EXPR_IDENT) {
+            Symbol *symbol = env_find(array_expr->as.ident);
+            if (!symbol) {
+                char message[256];
+                snprintf(message, sizeof(message), "undefined variable: %s", array_expr->as.ident);
+                runtime_error_raise(message, 1001, "undefined variable");
+                return value_null();
+            }
+            return reverse_array_symbol(symbol);
+        }
+
+        Value array = eval_expr(array_expr);
+        if (error_action_pending()) {
+            value_free(array);
+            return value_null();
+        }
+        return reverse_array_value(array);
     }
 
     if (strcmp(expr->as.call.name, "len") == 0) {

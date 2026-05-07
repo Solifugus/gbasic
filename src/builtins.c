@@ -23,6 +23,7 @@ int gbasic_builtin_function(const char *name) {
         "remove",
         "take_first",
         "take_last",
+        "reverse",
         "sum",
         "mean",
         "median",

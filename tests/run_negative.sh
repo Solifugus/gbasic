@@ -12,6 +12,7 @@ cases=(
     negative_take_first_type
     negative_take_first_empty
     negative_take_last_empty
+    negative_reverse_type
     negative_invalid_escape
     negative_unterminated_string
     negative_unknown_order
