@@ -22,6 +22,7 @@ examples=(
     duration_test.gb
     file_test.gb
     find_test.bas
+    function_call_comparison_test.bas
     lock_test.gb
     lock_cleanup_test.gb
     dir_test.gb
@@ -204,6 +205,34 @@ if printf '41\n' | ./gbasic examples/input_number_integration_test.bas >"$stdout
 else
     status=$?
     printf 'FAIL %s\n' "examples/input_number_integration_test.bas"
+    if [[ -s "$stderr_file" ]]; then
+        cat "$stderr_file"
+    fi
+    rm -f "$stdout_file" "$stderr_file"
+    exit "$status"
+fi
+rm -f "$stdout_file" "$stderr_file"
+
+stdout_file="$(mktemp)"
+stderr_file="$(mktemp)"
+if printf 'look\ntake lamp\ninventory\ngo north\ngo north\nlook\nquit\n' | ./gbasic examples/adventure/adventure.bas >"$stdout_file" 2>"$stderr_file"; then
+    actual_text="$(cat "$stdout_file")"
+    expected_text="$(cat examples/adventure/adventure.out)"
+    if [[ "$actual_text" == "$expected_text" ]]; then
+        printf 'PASS %s\n' "examples/adventure/adventure.bas"
+    else
+        printf 'FAIL %s\n' "examples/adventure/adventure.bas"
+        actual_norm="$(mktemp)"
+        expected_norm="$(mktemp)"
+        printf '%s\n' "$actual_text" >"$actual_norm"
+        printf '%s\n' "$expected_text" >"$expected_norm"
+        diff -u "$expected_norm" "$actual_norm" || true
+        rm -f "$actual_norm" "$expected_norm" "$stdout_file" "$stderr_file"
+        exit 1
+    fi
+else
+    status=$?
+    printf 'FAIL %s\n' "examples/adventure/adventure.bas"
     if [[ -s "$stderr_file" ]]; then
         cat "$stderr_file"
     fi

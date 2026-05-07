@@ -66,28 +66,28 @@ library dates
     end function
 
     function days_between(a, b)
-        left(day)= a
-        right(day)= b
+        start_date(day)= a
+        end_date(day)= b
         count = 0
 
-        if left = right then
+        if start_date = end_date then
             return 0
         end if
-        if left > right then goto backward
+        if start_date > end_date then goto backward
 
     forward:
-        if left = right then
+        if start_date = end_date then
             return count
         end if
-        left = left + 1 day
+        start_date = start_date + 1 day
         count = count + 1
         goto forward
 
     backward:
-        if left = right then
+        if start_date = end_date then
             return -count
         end if
-        left = left - 1 day
+        start_date = start_date - 1 day
         count = count + 1
         goto backward
     end function

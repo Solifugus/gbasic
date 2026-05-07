@@ -1,5 +1,6 @@
 %{
 #include "ast.h"
+#include "builtins.h"
 #include "lexer.h"
 
 #include <stdio.h>
@@ -199,8 +200,35 @@ static int modifier_lparen_ahead(const char *start) {
     while (*p == ' ' || *p == '\t' || *p == '\r') {
         p++;
     }
-    return *p == '=' || *p == '>' || *p == '<' ||
+    int followed_by_comparison = *p == '=' || *p == '>' || *p == '<' ||
         (*p == '!' && (p[1] == '=' || p[1] == '>' || p[1] == '<'));
+    if (!followed_by_comparison) {
+        return 0;
+    }
+
+    const char *name_end = start;
+    while (name_end > active_lexer->source &&
+           (name_end[-1] == ' ' || name_end[-1] == '\t' || name_end[-1] == '\r')) {
+        name_end--;
+    }
+    const char *name_start = name_end;
+    while (name_start > active_lexer->source &&
+           ((name_start[-1] >= 'A' && name_start[-1] <= 'Z') ||
+            (name_start[-1] >= 'a' && name_start[-1] <= 'z') ||
+            (name_start[-1] >= '0' && name_start[-1] <= '9') ||
+            name_start[-1] == '_')) {
+        name_start--;
+    }
+    if (name_start < name_end) {
+        char *name = copy_text(name_start, (int)(name_end - name_start));
+        int is_builtin = gbasic_builtin_function(name);
+        free(name);
+        if (is_builtin) {
+            return 0;
+        }
+    }
+
+    return 1;
 }
 
 static int yylex(void);
