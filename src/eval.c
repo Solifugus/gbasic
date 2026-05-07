@@ -2824,6 +2824,73 @@ static Value remove_from_array_symbol(Symbol *symbol, int index) {
     return value_copy(symbol->value);
 }
 
+static Value take_from_array_value(Value array, int take_last) {
+    if (array.kind != VALUE_ARRAY) {
+        value_free(array);
+        runtime_error_raise(take_last ? "take_last expects an array" : "take_first expects an array",
+                            1003,
+                            "invalid function call");
+        return value_null();
+    }
+    if (array.as.array.count == 0) {
+        value_free(array);
+        runtime_error_raise(take_last ? "take_last expects a non-empty array" : "take_first expects a non-empty array",
+                            1003,
+                            "invalid function call");
+        return value_null();
+    }
+
+    size_t index = take_last ? array.as.array.count - 1 : 0;
+    Value result = array.as.array.items[index];
+    for (size_t i = index + 1; i < array.as.array.count; i++) {
+        array.as.array.items[i - 1] = array.as.array.items[i];
+    }
+    array.as.array.count--;
+    if (array.as.array.count == 0) {
+        free(array.as.array.items);
+    } else {
+        Value *items = realloc(array.as.array.items, sizeof(Value) * array.as.array.count);
+        if (items) {
+            array.as.array.items = items;
+        }
+        value_free(array);
+    }
+    return result;
+}
+
+static Value take_from_array_symbol(Symbol *symbol, int take_last) {
+    if (!symbol || symbol->value.kind != VALUE_ARRAY) {
+        runtime_error_raise(take_last ? "take_last expects an array" : "take_first expects an array",
+                            1003,
+                            "invalid function call");
+        return value_null();
+    }
+    if (symbol->value.as.array.count == 0) {
+        runtime_error_raise(take_last ? "take_last expects a non-empty array" : "take_first expects a non-empty array",
+                            1003,
+                            "invalid function call");
+        return value_null();
+    }
+
+    size_t index = take_last ? symbol->value.as.array.count - 1 : 0;
+    Value result = symbol->value.as.array.items[index];
+    for (size_t i = index + 1; i < symbol->value.as.array.count; i++) {
+        symbol->value.as.array.items[i - 1] = symbol->value.as.array.items[i];
+    }
+    symbol->value.as.array.count--;
+    if (symbol->value.as.array.count == 0) {
+        free(symbol->value.as.array.items);
+        symbol->value.as.array.items = NULL;
+    } else {
+        Value *items = realloc(symbol->value.as.array.items,
+                               sizeof(Value) * symbol->value.as.array.count);
+        if (items) {
+            symbol->value.as.array.items = items;
+        }
+    }
+    return result;
+}
+
 static Value builtin_number_modifier_value(Value value) {
     if (value.kind == VALUE_NUMBER) {
         return value;
@@ -3377,6 +3444,36 @@ static Value eval_call(AstExpr *expr) {
             return value_null();
         }
         return remove_from_array_value(array, index);
+    }
+
+    if (strcmp(expr->as.call.name, "take_first") == 0 ||
+        strcmp(expr->as.call.name, "take_last") == 0) {
+        int take_last = strcmp(expr->as.call.name, "take_last") == 0;
+        if (expr->as.call.args.count != 1) {
+            runtime_error_raise(take_last ? "take_last expects one argument" : "take_first expects one argument",
+                                1003,
+                                "invalid function call");
+            return value_null();
+        }
+
+        AstExpr *array_expr = expr->as.call.args.items[0];
+        if (array_expr->kind == AST_EXPR_IDENT) {
+            Symbol *symbol = env_find(array_expr->as.ident);
+            if (!symbol) {
+                char message[256];
+                snprintf(message, sizeof(message), "undefined variable: %s", array_expr->as.ident);
+                runtime_error_raise(message, 1001, "undefined variable");
+                return value_null();
+            }
+            return take_from_array_symbol(symbol, take_last);
+        }
+
+        Value array = eval_expr(array_expr);
+        if (error_action_pending()) {
+            value_free(array);
+            return value_null();
+        }
+        return take_from_array_value(array, take_last);
     }
 
     if (strcmp(expr->as.call.name, "len") == 0) {

@@ -9,6 +9,9 @@ cases=(
     negative_insert_bounds
     negative_remove_bounds
     negative_insert_fractional
+    negative_take_first_type
+    negative_take_first_empty
+    negative_take_last_empty
     negative_invalid_escape
     negative_unterminated_string
     negative_unknown_order

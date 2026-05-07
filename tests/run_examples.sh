@@ -9,6 +9,7 @@ make
 examples=(
     array_append_prepend_test.bas
     array_insert_remove_test.bas
+    array_take_test.bas
     parse_test.gb
     record_test.gb
     datetime_test.gb

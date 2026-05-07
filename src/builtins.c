@@ -21,6 +21,8 @@ int gbasic_builtin_function(const char *name) {
         "prepend",
         "insert",
         "remove",
+        "take_first",
+        "take_last",
         "sum",
         "mean",
         "median",
