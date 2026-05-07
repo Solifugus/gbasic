@@ -2530,6 +2530,38 @@ static Value builtin_trim_value(Value text) {
     return result;
 }
 
+static Value builtin_lower_value(Value value) {
+    if (value.kind != VALUE_STRING) {
+        value_free(value);
+        runtime_error_raise("lower expects a string", 1003, "invalid function call");
+        return value_null();
+    }
+    char *text = copy_string(value.as.string);
+    for (char *p = text; *p; p++) {
+        *p = (char)tolower((unsigned char)*p);
+    }
+    Value result = value_string(text);
+    free(text);
+    value_free(value);
+    return result;
+}
+
+static Value builtin_upper_value(Value value) {
+    if (value.kind != VALUE_STRING) {
+        value_free(value);
+        runtime_error_raise("upper expects a string", 1003, "invalid function call");
+        return value_null();
+    }
+    char *text = copy_string(value.as.string);
+    for (char *p = text; *p; p++) {
+        *p = (char)toupper((unsigned char)*p);
+    }
+    Value result = value_string(text);
+    free(text);
+    value_free(value);
+    return result;
+}
+
 static Value builtin_split_value(Value text, Value separator, int has_separator) {
     if (text.kind != VALUE_STRING) {
         value_free(text);
@@ -3283,20 +3315,7 @@ static Value eval_call(AstExpr *expr) {
             runtime_error_raise("lower expects one argument", 1003, "invalid function call");
             return value_null();
         }
-        Value value = eval_expr(expr->as.call.args.items[0]);
-        if (value.kind != VALUE_STRING) {
-            value_free(value);
-            runtime_error_raise("lower expects a string", 1003, "invalid function call");
-            return value_null();
-        }
-        char *text = copy_string(value.as.string);
-        for (char *p = text; *p; p++) {
-            *p = (char)tolower((unsigned char)*p);
-        }
-        Value result = value_string(text);
-        free(text);
-        value_free(value);
-        return result;
+        return builtin_lower_value(eval_expr(expr->as.call.args.items[0]));
     }
 
     if (strcmp(expr->as.call.name, "upper") == 0) {
@@ -3304,20 +3323,7 @@ static Value eval_call(AstExpr *expr) {
             runtime_error_raise("upper expects one argument", 1003, "invalid function call");
             return value_null();
         }
-        Value value = eval_expr(expr->as.call.args.items[0]);
-        if (value.kind != VALUE_STRING) {
-            value_free(value);
-            runtime_error_raise("upper expects a string", 1003, "invalid function call");
-            return value_null();
-        }
-        char *text = copy_string(value.as.string);
-        for (char *p = text; *p; p++) {
-            *p = (char)toupper((unsigned char)*p);
-        }
-        Value result = value_string(text);
-        free(text);
-        value_free(value);
-        return result;
+        return builtin_upper_value(eval_expr(expr->as.call.args.items[0]));
     }
 
     if (strcmp(expr->as.call.name, "input") == 0) {
@@ -4734,6 +4740,24 @@ static Value apply_assignment_modifier(AstModifierUse modifier, Value value) {
             return value_null();
         }
         return builtin_trim_value(value);
+    }
+    if (!modifier.library &&
+        (builtin_args = builtin_modifier_args_text(modifier.name, "lowered")) != NULL) {
+        if (!modifier_args_empty(builtin_args)) {
+            runtime_error_raise("lowered modifier expects no arguments", 1003, "modifier");
+            value_free(value);
+            return value_null();
+        }
+        return builtin_lower_value(value);
+    }
+    if (!modifier.library &&
+        (builtin_args = builtin_modifier_args_text(modifier.name, "uppered")) != NULL) {
+        if (!modifier_args_empty(builtin_args)) {
+            runtime_error_raise("uppered modifier expects no arguments", 1003, "modifier");
+            value_free(value);
+            return value_null();
+        }
+        return builtin_upper_value(value);
     }
     if (!modifier.library &&
         (builtin_args = builtin_modifier_args_text(modifier.name, "split")) != NULL) {

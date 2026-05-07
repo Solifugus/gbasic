@@ -43,6 +43,7 @@ function play()
 
     while true
         command(trimmed)= input(">")
+        command(lowered)= command
         words(split)= command
         if len(words) != 0 then
             verb = words[0]

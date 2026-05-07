@@ -6,7 +6,7 @@ Useful features used:
 
 - `input(">")`
 - `print(...)`
-- assignment modifiers: `(trimmed)` and `(split)`
+- assignment modifiers: `(trimmed)`, `(lowered)`, and `(split)`
 - arrays with `append`, `join`, and `find`
 - functions
 - `while` loops
@@ -19,4 +19,4 @@ Language gaps worked around:
 - An earlier version used separate `if` blocks for false paths, which exposed the need for `else`.
 - There are no dictionaries/maps yet, so room navigation and descriptions are direct conditionals instead of data tables.
 - `continue` exists now, but the command dispatch remains intentionally linear.
-- There is no case-normalization modifier in the example; commands are expected in lower case.
+- Lowercase normalization is now supported, so commands may be typed in mixed case.

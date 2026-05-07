@@ -25,6 +25,7 @@ examples=(
     function_call_comparison_test.bas
     lock_test.gb
     lock_cleanup_test.gb
+    lower_upper_modifier_test.bas
     dir_test.gb
     function_test.gb
     goto_test.gb

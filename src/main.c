@@ -244,6 +244,8 @@ static int builtin_modifier(const char *name, const char *context) {
             strcmp(name, "time") == 0 || strcmp(name, "file") == 0 ||
             strcmp(name, "dir") == 0 ||
             modifier_phrase_matches_main(name, "trimmed") ||
+            modifier_phrase_matches_main(name, "lowered") ||
+            modifier_phrase_matches_main(name, "uppered") ||
             modifier_phrase_matches_main(name, "split") ||
             modifier_phrase_matches_main(name, "join") ||
             modifier_phrase_matches_main(name, "length") ||
