@@ -2689,6 +2689,141 @@ static Value append_to_array_symbol(Symbol *symbol, Value item, int prepend) {
     return value_copy(symbol->value);
 }
 
+static int array_index_from_value(Value index_value, const char *name, int *out_index) {
+    if (index_value.kind != VALUE_NUMBER) {
+        value_free(index_value);
+        char message[128];
+        snprintf(message, sizeof(message), "%s index must be a number", name);
+        runtime_error_raise(message, 1003, "invalid function call");
+        return 0;
+    }
+    int index = (int)index_value.as.number;
+    if ((double)index != index_value.as.number) {
+        value_free(index_value);
+        char message[128];
+        snprintf(message, sizeof(message), "%s index must be an integer", name);
+        runtime_error_raise(message, 1003, "invalid function call");
+        return 0;
+    }
+    value_free(index_value);
+    *out_index = index;
+    return 1;
+}
+
+static Value insert_into_array_value(Value array, int index, Value item) {
+    if (array.kind != VALUE_ARRAY) {
+        value_free(array);
+        value_free(item);
+        runtime_error_raise("insert expects an array", 1003, "invalid function call");
+        return value_null();
+    }
+    if (index < 0 || (size_t)index > array.as.array.count) {
+        value_free(array);
+        value_free(item);
+        runtime_error_raise("insert index out of range", 1003, "invalid function call");
+        return value_null();
+    }
+
+    Value *items = malloc(sizeof(Value) * (array.as.array.count + 1));
+    if (!items) {
+        abort();
+    }
+    for (size_t i = 0; i < (size_t)index; i++) {
+        items[i] = array.as.array.items[i];
+    }
+    items[index] = item;
+    for (size_t i = (size_t)index; i < array.as.array.count; i++) {
+        items[i + 1] = array.as.array.items[i];
+    }
+    free(array.as.array.items);
+    array.as.array.items = items;
+    array.as.array.count++;
+    return array;
+}
+
+static Value insert_into_array_symbol(Symbol *symbol, int index, Value item) {
+    if (!symbol || symbol->value.kind != VALUE_ARRAY) {
+        value_free(item);
+        runtime_error_raise("insert expects an array", 1003, "invalid function call");
+        return value_null();
+    }
+    if (index < 0 || (size_t)index > symbol->value.as.array.count) {
+        value_free(item);
+        runtime_error_raise("insert index out of range", 1003, "invalid function call");
+        return value_null();
+    }
+
+    Value *items = realloc(symbol->value.as.array.items,
+                           sizeof(Value) * (symbol->value.as.array.count + 1));
+    if (!items) {
+        abort();
+    }
+    symbol->value.as.array.items = items;
+    memmove(symbol->value.as.array.items + index + 1,
+            symbol->value.as.array.items + index,
+            sizeof(Value) * (symbol->value.as.array.count - (size_t)index));
+    symbol->value.as.array.items[index] = item;
+    symbol->value.as.array.count++;
+    return value_copy(symbol->value);
+}
+
+static Value remove_from_array_value(Value array, int index) {
+    if (array.kind != VALUE_ARRAY) {
+        value_free(array);
+        runtime_error_raise("remove expects an array", 1003, "invalid function call");
+        return value_null();
+    }
+    if (index < 0 || (size_t)index >= array.as.array.count) {
+        value_free(array);
+        runtime_error_raise("remove index out of range", 1003, "invalid function call");
+        return value_null();
+    }
+
+    value_free(array.as.array.items[index]);
+    for (size_t i = (size_t)index + 1; i < array.as.array.count; i++) {
+        array.as.array.items[i - 1] = array.as.array.items[i];
+    }
+    array.as.array.count--;
+    if (array.as.array.count == 0) {
+        free(array.as.array.items);
+        array.as.array.items = NULL;
+        return array;
+    }
+    Value *items = realloc(array.as.array.items, sizeof(Value) * array.as.array.count);
+    if (items) {
+        array.as.array.items = items;
+    }
+    return array;
+}
+
+static Value remove_from_array_symbol(Symbol *symbol, int index) {
+    if (!symbol || symbol->value.kind != VALUE_ARRAY) {
+        runtime_error_raise("remove expects an array", 1003, "invalid function call");
+        return value_null();
+    }
+    if (index < 0 || (size_t)index >= symbol->value.as.array.count) {
+        runtime_error_raise("remove index out of range", 1003, "invalid function call");
+        return value_null();
+    }
+
+    value_free(symbol->value.as.array.items[index]);
+    for (size_t i = (size_t)index + 1; i < symbol->value.as.array.count; i++) {
+        symbol->value.as.array.items[i - 1] = symbol->value.as.array.items[i];
+    }
+    symbol->value.as.array.count--;
+    if (symbol->value.as.array.count == 0) {
+        free(symbol->value.as.array.items);
+        symbol->value.as.array.items = NULL;
+    } else {
+        Value *items = realloc(symbol->value.as.array.items,
+                               sizeof(Value) * symbol->value.as.array.count);
+        if (items) {
+            symbol->value.as.array.items = items;
+        }
+    }
+    return value_copy(symbol->value);
+}
+
 static Value builtin_number_modifier_value(Value value) {
     if (value.kind == VALUE_NUMBER) {
         return value;
@@ -3173,6 +3308,75 @@ static Value eval_call(AstExpr *expr) {
             return value_null();
         }
         return append_to_array_value(array, item, prepend);
+    }
+
+    if (strcmp(expr->as.call.name, "insert") == 0) {
+        if (expr->as.call.args.count != 3) {
+            runtime_error_raise("insert expects three arguments", 1003, "invalid function call");
+            return value_null();
+        }
+        int index = 0;
+        Value index_value = eval_expr(expr->as.call.args.items[1]);
+        if (error_action_pending() || !array_index_from_value(index_value, "insert", &index)) {
+            return value_null();
+        }
+        Value item = eval_expr(expr->as.call.args.items[2]);
+        if (error_action_pending()) {
+            value_free(item);
+            return value_null();
+        }
+
+        AstExpr *array_expr = expr->as.call.args.items[0];
+        if (array_expr->kind == AST_EXPR_IDENT) {
+            Symbol *symbol = env_find(array_expr->as.ident);
+            if (!symbol) {
+                value_free(item);
+                char message[256];
+                snprintf(message, sizeof(message), "undefined variable: %s", array_expr->as.ident);
+                runtime_error_raise(message, 1001, "undefined variable");
+                return value_null();
+            }
+            return insert_into_array_symbol(symbol, index, item);
+        }
+
+        Value array = eval_expr(array_expr);
+        if (error_action_pending()) {
+            value_free(array);
+            value_free(item);
+            return value_null();
+        }
+        return insert_into_array_value(array, index, item);
+    }
+
+    if (strcmp(expr->as.call.name, "remove") == 0) {
+        if (expr->as.call.args.count != 2) {
+            runtime_error_raise("remove expects two arguments", 1003, "invalid function call");
+            return value_null();
+        }
+        int index = 0;
+        Value index_value = eval_expr(expr->as.call.args.items[1]);
+        if (error_action_pending() || !array_index_from_value(index_value, "remove", &index)) {
+            return value_null();
+        }
+
+        AstExpr *array_expr = expr->as.call.args.items[0];
+        if (array_expr->kind == AST_EXPR_IDENT) {
+            Symbol *symbol = env_find(array_expr->as.ident);
+            if (!symbol) {
+                char message[256];
+                snprintf(message, sizeof(message), "undefined variable: %s", array_expr->as.ident);
+                runtime_error_raise(message, 1001, "undefined variable");
+                return value_null();
+            }
+            return remove_from_array_symbol(symbol, index);
+        }
+
+        Value array = eval_expr(array_expr);
+        if (error_action_pending()) {
+            value_free(array);
+            return value_null();
+        }
+        return remove_from_array_value(array, index);
     }
 
     if (strcmp(expr->as.call.name, "len") == 0) {

@@ -19,6 +19,8 @@ int gbasic_builtin_function(const char *name) {
         "join",
         "append",
         "prepend",
+        "insert",
+        "remove",
         "sum",
         "mean",
         "median",

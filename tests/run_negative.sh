@@ -5,6 +5,10 @@ cd "$(dirname "$0")/.."
 
 cases=(
     negative_append_type
+    negative_insert_type
+    negative_insert_bounds
+    negative_remove_bounds
+    negative_insert_fractional
     negative_invalid_escape
     negative_unterminated_string
     negative_unknown_order
