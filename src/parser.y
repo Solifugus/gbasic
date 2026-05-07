@@ -368,7 +368,7 @@ typedef struct {
 
 %token <number> NUMBER
 %token <text> IDENT STRING MOD_CONTENT
-%token IF THEN END PRINT TRUE FALSE NOTHING UNKNOWN_VALUE AND OR NOT WITH FOR TO IN WHILE FUNCTION RETURN GOTO GOSUB WATCH WITHOUT WATCHERS ON RESUME NEXT STOP ERROR_VALUE MODIFIER PROGRAM LIBRARY LOAD USE EXPORT
+%token IF THEN ELSE END PRINT TRUE FALSE NOTHING UNKNOWN_VALUE AND OR NOT WITH FOR TO IN WHILE FUNCTION RETURN GOTO GOSUB WATCH WITHOUT WATCHERS ON RESUME NEXT STOP ERROR_VALUE MODIFIER PROGRAM LIBRARY LOAD USE EXPORT
 %token OP_EQ OP_NE OP_GT OP_LT OP_GE OP_LE OP_NGT OP_NLT OP_NGE OP_NLE
 %token PLUS MINUS STAR SLASH LPAREN MOD_LPAREN RPAREN LBRACKET RBRACKET LBRACE RBRACE COMMA COLON NEWLINE
 %precedence NO_DOT
@@ -601,6 +601,10 @@ if_statement
     : IF expression THEN NEWLINE statement_list END IF NEWLINE {
         $$ = ast_if($2, $5);
       }
+    | IF expression THEN NEWLINE statement_list ELSE NEWLINE statement_list END IF NEWLINE {
+        $$ = ast_if($2, $5);
+        $$->as.if_stmt.else_body = $8;
+      }
     | IF expression THEN inline_statement NEWLINE {
         $$ = ast_if($2, ast_stmt_list_append(ast_stmt_list_empty(), $4));
       }
@@ -819,6 +823,7 @@ static int yylex(void) {
         return MOD_CONTENT;
     case TOKEN_IF: return IF;
     case TOKEN_THEN: return THEN;
+    case TOKEN_ELSE: return ELSE;
     case TOKEN_END: return END;
     case TOKEN_PRINT: return PRINT;
     case TOKEN_TRUE: return TRUE;

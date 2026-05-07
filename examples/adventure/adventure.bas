@@ -68,46 +68,40 @@ function play()
                     append(inventory, "lamp")
                     lamp_taken = true
                     print("Taken.")
-                    handled = true
-                end if
-                if handled = false then
+                else
                     print("You do not see a lamp here.")
-                    handled = true
                 end if
+                handled = true
             end if
 
             if verb = "go" and noun = "north" then
                 if location = "cellar" then
                     location = "hall"
                     describe(location, lamp_taken, inventory)
-                    handled = true
+                else
+                    if location = "hall" then
+                        location = "library"
+                        describe(location, lamp_taken, inventory)
+                    else
+                        print("You cannot go north from here.")
+                    end if
                 end if
-                if location = "hall" and handled = false then
-                    location = "library"
-                    describe(location, lamp_taken, inventory)
-                    handled = true
-                end if
-                if handled = false then
-                    print("You cannot go north from here.")
-                    handled = true
-                end if
+                handled = true
             end if
 
             if verb = "go" and noun = "south" then
                 if location = "library" then
                     location = "hall"
                     describe(location, lamp_taken, inventory)
-                    handled = true
+                else
+                    if location = "hall" then
+                        location = "cellar"
+                        describe(location, lamp_taken, inventory)
+                    else
+                        print("You cannot go south from here.")
+                    end if
                 end if
-                if location = "hall" and handled = false then
-                    location = "cellar"
-                    describe(location, lamp_taken, inventory)
-                    handled = true
-                end if
-                if handled = false then
-                    print("You cannot go south from here.")
-                    handled = true
-                end if
+                handled = true
             end if
 
             if verb = "quit" then

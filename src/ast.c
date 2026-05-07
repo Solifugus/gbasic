@@ -363,6 +363,7 @@ AstStmt *ast_if(AstExpr *condition, AstStmtList body) {
     stmt->kind = AST_STMT_IF;
     stmt->as.if_stmt.condition = condition;
     stmt->as.if_stmt.body = body;
+    stmt->as.if_stmt.else_body = ast_stmt_list_empty();
     return stmt;
 }
 
@@ -659,6 +660,13 @@ static void dump_stmt(AstStmt *stmt, int indent) {
         for (size_t i = 0; i < stmt->as.if_stmt.body.count; i++) {
             dump_stmt(stmt->as.if_stmt.body.items[i], indent + 2);
         }
+        if (stmt->as.if_stmt.else_body.count > 0) {
+            dump_indent(indent + 1);
+            printf("Else\n");
+            for (size_t i = 0; i < stmt->as.if_stmt.else_body.count; i++) {
+                dump_stmt(stmt->as.if_stmt.else_body.items[i], indent + 2);
+            }
+        }
         break;
     case AST_STMT_WHILE:
         printf("While\n");
@@ -852,6 +860,7 @@ static void free_stmt(AstStmt *stmt) {
     case AST_STMT_IF:
         free_expr(stmt->as.if_stmt.condition);
         ast_free_program(stmt->as.if_stmt.body);
+        ast_free_program(stmt->as.if_stmt.else_body);
         break;
     case AST_STMT_WHILE:
         free_expr(stmt->as.while_stmt.condition);

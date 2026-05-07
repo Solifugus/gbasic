@@ -5017,6 +5017,13 @@ static EvalResult eval_stmt(AstStmt *stmt) {
                 current_column = previous_column;
                 return result;
             }
+        } else {
+            EvalResult result = eval_stmt_list(stmt->as.if_stmt.else_body);
+            if (result.did_return || result.did_goto || result.did_gosub || result.did_stop) {
+                current_line = previous_line;
+                current_column = previous_column;
+                return result;
+            }
         }
         break;
     }

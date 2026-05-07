@@ -196,6 +196,7 @@ struct AstStmt {
         struct {
             AstExpr *condition;
             AstStmtList body;
+            AstStmtList else_body;
         } if_stmt;
         struct {
             AstExpr *condition;

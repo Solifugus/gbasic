@@ -29,6 +29,7 @@ examples=(
     function_test.gb
     goto_test.gb
     gosub_test.gb
+    if_else_test.bas
     watch_test.gb
     while_test.bas
     error_test.gb
