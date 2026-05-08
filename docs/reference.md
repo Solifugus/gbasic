@@ -27,7 +27,7 @@ Unknown escapes and unterminated strings are lexer errors and exit nonzero.
 Keywords include:
 
 ```text
-if then else end print for to step while function return dim as
+if then else end print for to step while break continue function return dim as
 watch without watchers modifier goto gosub with and or not in
 program library load use export on error resume next stop
 ```
@@ -71,6 +71,8 @@ If:
 ```basic
 if expression then
     statement
+else
+    statement
 end if
 ```
 
@@ -79,6 +81,16 @@ Inline `goto` and `gosub` are also supported:
 ```basic
 if x < 0 then goto negative
 ```
+
+While:
+
+```basic
+while condition
+    statement
+end while
+```
+
+`break` exits the nearest enclosing `while`. `continue` skips to the next iteration.
 
 For-each:
 
@@ -251,6 +263,20 @@ add(2, 3)
 math.add(2, 3)
 ```
 
+Function calls may appear in comparisons:
+
+```basic
+if len(words) = 0 then
+    print("empty")
+end if
+```
+
+Function calls are expressions, not lvalues. This is invalid:
+
+```basic
+len(words) = 0
+```
+
 Durations:
 
 ```basic
@@ -308,6 +334,8 @@ a(math.rounded to 2)= b
 
 Assignment modifiers transform assigned values. Comparison modifiers transform or implement comparisons.
 
+Modifiers apply only in assignment and comparison contexts. In v0.1, modifiers apply to variables, record fields, and array elements, not to function-call results.
+
 Define an assignment modifier:
 
 ```basic
@@ -360,7 +388,7 @@ Resolution:
 
 Built-in/core modifiers include:
 
-- Assignment: `USD`, `date`, `time`, `datetime`, `year`, `month`, `day`, `hour`, `minute`, `second`, `file`, `dir`, `trimmed`, `split`, `join`, `length`, `number`, `string`
+- Assignment: `USD`, `date`, `time`, `datetime`, `year`, `month`, `day`, `hour`, `minute`, `second`, `file`, `dir`, `trimmed`, `lowered`, `uppered`, `split`, `join`, `length`, `number`, `string`
 - Comparison: `caseless`, date/time lens comparisons
 
 ## Libraries
@@ -486,6 +514,18 @@ Always-available helper functions:
 - `join(array)`
 - `join(array, separator)`
 
+Array helper functions:
+
+- `append(array, value)`
+- `prepend(array, value)`
+- `insert(array, index, value)`
+- `remove(array, index)`
+- `take_first(array)`
+- `take_last(array)`
+- `reverse(array)`
+- `unique(array)`
+- `sort(array)`
+
 Array aggregate functions:
 
 - `len(value)`
@@ -519,6 +559,11 @@ Directory entries are records with:
 - `name`
 - `path`
 - `type`
+
+## Living Examples
+
+- `examples/adventure/adventure.bas` is a small text adventure using current input, print, modifiers, arrays, functions, `if`/`else`, `while`, and `break`.
+- `examples/adventure/NOTES.md` records design-friction notes from that example.
 
 ## CLI Flags
 

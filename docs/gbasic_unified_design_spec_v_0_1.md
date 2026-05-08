@@ -130,7 +130,7 @@ but apostrophe comments are preferred for v0.1.
 - Nothing
 - Unknown
 
-Strings are Unicode.
+Strings are stored as C strings. UTF-8 text is accepted, but current string length, indexing, and case conversion helpers are byte-oriented unless a helper states otherwise.
 
 Booleans:
 
@@ -151,10 +151,10 @@ if x = nothing then
 end if
 ```
 
-Assignment to `nothing` deletes or unsets the value.
+Assignment to `nothing` currently stores the null/nothing value. Deletion or unset semantics are deferred.
 
 ```basic
-customer.middle_name = nothing
+x = nothing
 ```
 
 This means the value is absent, not merely blank.
@@ -474,6 +474,8 @@ dir
 number
 string
 trimmed
+lowered
+uppered
 split
 join
 length
@@ -483,6 +485,8 @@ Examples:
 
 ```basic
 name(trimmed)= "  joe jones   "
+name(lowered)= "Joe Jones"
+code(uppered)= "abc"
 fruit(split)= "apple banana orange"
 fruit(split ",")= "apple,banana,orange"
 line(join ", ")= fruit
@@ -495,6 +499,8 @@ age(number)= input("Enter your age: ")
 `join` implies that the assigned variable receives a string.
 
 `length` assigns the length of the incoming value.
+
+`lowered` and `uppered` assign the lowercase or uppercase version of an incoming string.
 
 These string and collection-oriented modifiers may live in a core library rather than in the irreducible language core. The core requirement is that the modifier system be powerful enough to define them.
 
@@ -602,21 +608,15 @@ else
 end if
 ```
 
-## For
+## For Each
 
 ```basic
-for i = 1 to 10
-    print(i)
+for score in scores
+    print(score)
 end for
 ```
 
-Optional step:
-
-```basic
-for i = 10 to 1 step -1
-    print(i)
-end for
-```
+Numeric `for i = ... to ... step ...` loops are not implemented in the current v0.1 interpreter.
 
 ## While
 
@@ -626,12 +626,19 @@ while x < 10
 end while
 ```
 
-## For Each
+`break` exits the nearest enclosing `while`. `continue` skips the rest of the current loop body and begins the next iteration.
 
 ```basic
-for score in scores
-    print(score)
-end for
+while true
+    command(lowered)= input(">")
+    if command = "quit" then
+        break
+    end if
+    if command = "" then
+        continue
+    end if
+    print(command)
+end while
 ```
 
 ---
@@ -1243,6 +1250,8 @@ split(value)
 split(value, separator)
 join(values)
 join(values, separator)
+lower(value)
+upper(value)
 ```
 
 `len`, `left`, `right`, and `mid` preserve BASIC identity.
@@ -1396,9 +1405,31 @@ name (caseless) = "joe"
 ## Disambiguation Rule
 
 ```text
-If a parenthesized term follows a valid lvalue or expression and precedes an assignment or comparison operator, it is parsed as an operator modifier.
+If a parenthesized modifier term follows a valid assignment/comparison target and precedes an assignment or comparison operator, it is parsed as an operator modifier.
 
 Otherwise it is parsed normally as a function call or grouped expression.
+```
+
+Function calls are expressions, not lvalues. They may appear in comparisons:
+
+```basic
+if len(words) = 0 then
+    print("empty")
+end if
+```
+
+They may not be assignment targets:
+
+```basic
+len(words) = 0   ' invalid
+```
+
+In v0.1, modifiers apply to variables, record fields, and array elements, not to function-call results:
+
+```basic
+if getname()(caseless)= "joe" then   ' invalid in v0.1
+    print("match")
+end if
 ```
 
 ## Lexer Direction
@@ -1463,9 +1494,7 @@ Currently stabilized:
 
 ## High-Value Next Steps
 
-- input()
 - stdlib/strings.bas
-- nothing/null semantics
 - CLI args
 - REPL
 
@@ -1507,6 +1536,11 @@ end if
 part = mid(line, 1, 5)
 line = mid(line, 1, 5, "fruit")
 ```
+
+Living example:
+
+- `examples/adventure/adventure.bas` exercises input, print, assignment modifiers, arrays, functions, `if`/`else`, `while`, `break`, and string helpers.
+- `examples/adventure/NOTES.md` records design-friction notes from that example.
 
 Watcher test:
 

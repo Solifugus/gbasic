@@ -84,6 +84,19 @@ Modifier bodies receive built-in variables:
 - Assign modifiers receive `value`.
 - Compare modifiers receive `left`, `right`, and `operator`.
 
+Useful built-in assignment modifiers include:
+
+```basic
+command(trimmed)= input(">")
+command(lowered)= command
+code(uppered)= "abc"
+words(split)= "apple banana orange"
+line(join ", ")= words
+n(length)= line
+age(number)= "42"
+text(string)= age
+```
+
 ## Arrays And Records
 
 Arrays use brackets:
@@ -95,6 +108,15 @@ print(scores[0])
 print(len(scores))
 print(mean(scores))
 print(mode(scores))
+```
+
+Array helpers modify or return arrays:
+
+```basic
+items = ["banana"]
+append(items, "orange")
+prepend(items, "apple")
+print(join(items, ", "))
 ```
 
 Records use braces and `name = value` fields:
@@ -146,6 +168,65 @@ negative:
 end function
 
 print(normalize(-3))
+```
+
+Function calls are expressions, so they can be compared:
+
+```basic
+words = []
+if len(words) = 0 then
+    print("empty")
+end if
+```
+
+Function calls are not assignment targets. `len(words) = 0` is invalid.
+
+## Control Flow
+
+Use `if`/`else` for branches:
+
+```basic
+if ready then
+    print("ready")
+else
+    print("waiting")
+end if
+```
+
+Use `while` for loops:
+
+```basic
+i = 0
+while i < 3
+    print(i)
+    i = i + 1
+end while
+```
+
+`break` exits the nearest `while`; `continue` skips to the next iteration:
+
+```basic
+i = 0
+while i < 5
+    i = i + 1
+    if i = 3 then
+        continue
+    end if
+    print(i)
+end while
+```
+
+## Nothing And Unknown
+
+`nothing` is deliberate absence. `unknown` is a distinct value for information that exists but is not known yet.
+
+```basic
+x = nothing
+y = unknown
+
+if x != y then
+    print("distinct")
+end if
 ```
 
 ## Errors
@@ -359,3 +440,9 @@ end if
 ```
 
 Money supports money-to-money addition, subtraction, and comparisons. Multiplication and division are supported with numbers.
+
+## Larger Example
+
+See `examples/adventure/adventure.bas` for a small Infocom-style text adventure using `input(">")`, `print(...)`, `(trimmed)`, `(lowered)`, `(split)`, `find`, arrays, functions, `if`/`else`, `while`, and `break`.
+
+The companion `examples/adventure/NOTES.md` records design-friction notes discovered while writing the example.

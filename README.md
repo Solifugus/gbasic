@@ -9,7 +9,7 @@ This repository contains the v0.1 C implementation. It is intentionally small: a
 Implemented v0.1 pieces include:
 
 - Lexer, parser, AST dump, and evaluator
-- Variables, assignment, `print(...)`, `input(...)`, `if`, `for item in items`
+- Variables, assignment, `print(...)`, `input(...)`, `if`/`else`, `while`, `break`, `continue`, `for item in items`
 - Arrays, records, indexing, field access
 - User functions, labels, `goto`, `gosub`
 - User-defined modifiers for assignment and comparison
@@ -69,6 +69,8 @@ Analyze unresolved calls/modifiers and print source with suggested `load` statem
 
 Compatibility note: `use` and `--add-uses` still work for now, but new examples should prefer `load` and `--add-loads`.
 
+See [examples/adventure/adventure.bas](examples/adventure/adventure.bas) for a small text-adventure example using current control flow, input, modifiers, arrays, and functions. [examples/adventure/NOTES.md](examples/adventure/NOTES.md) records design-friction notes found while writing it.
+
 ## Tests
 
 Run all example smoke and expected-output tests:
@@ -90,6 +92,8 @@ Modifier assignment:
 ```basic
 price(USD)= 19.95
 due(date)= "2026-05-15"
+command(trimmed)= input(">")
+command(lowered)= command
 ```
 
 Modifier comparison:
@@ -110,6 +114,36 @@ end function
 
 print(add(2, 3))
 ```
+
+Control flow:
+
+```basic
+i = 0
+while true
+    if i = 3 then
+        break
+    else
+        print(i)
+    end if
+    i = i + 1
+end while
+```
+
+Values and comparisons:
+
+```basic
+words(split)= "apple banana orange"
+
+if len(words) != 0 then
+    print(join(words, ", "))
+else
+    print(nothing)
+end if
+
+status = unknown
+```
+
+Function calls are expressions, not assignment targets: `if len(words) = 0 then` is valid, but `len(words) = 0` is invalid.
 
 Library and `load`:
 
