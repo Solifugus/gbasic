@@ -552,11 +552,9 @@ static void analyze_stmt_list(AddUsesContext *ctx, AstStmtList list);
 static void analyze_stmt(AddUsesContext *ctx, AstStmt *stmt) {
     switch (stmt->kind) {
     case AST_STMT_ASSIGN:
+        analyze_expr(ctx, stmt->as.assign.target);
         analyze_expr(ctx, stmt->as.assign.value);
         analyze_modifier(ctx, stmt->as.assign.modifier, "assign");
-        break;
-    case AST_STMT_FIELD_ASSIGN:
-        analyze_expr(ctx, stmt->as.field_assign.value);
         break;
     case AST_STMT_PRINT:
         analyze_expr(ctx, stmt->as.print);
@@ -592,6 +590,14 @@ static void analyze_stmt(AddUsesContext *ctx, AstStmt *stmt) {
     case AST_STMT_WHILE:
         analyze_expr(ctx, stmt->as.while_stmt.condition);
         analyze_stmt_list(ctx, stmt->as.while_stmt.body);
+        break;
+    case AST_STMT_CONSIDER:
+        analyze_expr(ctx, stmt->as.consider.subject);
+        for (size_t i = 0; i < stmt->as.consider.branches.count; i++) {
+            analyze_expr(ctx, stmt->as.consider.branches.items[i].match);
+            analyze_stmt_list(ctx, stmt->as.consider.branches.items[i].body);
+        }
+        analyze_stmt_list(ctx, stmt->as.consider.else_body);
         break;
     case AST_STMT_FUNCTION:
         analyze_stmt_list(ctx, stmt->as.function.body);

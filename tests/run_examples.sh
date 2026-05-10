@@ -30,6 +30,7 @@ examples=(
     function_test.gb
     goto_test.gb
     gosub_test.gb
+    helper_functions_test.bas
     if_else_test.bas
     watch_test.gb
     while_test.bas
@@ -40,12 +41,18 @@ examples=(
     modifier_string_helpers_test.bas
     negated_comparison_test.bas
     money_test.bas
+    multiline_string_test.bas
     nothing_test.bas
     number_string_modifier_test.bas
+    consider_test.bas
+    dynamic_record_access_test.bas
+    nested_lvalue_test.bas
     parser_hardening_test.bas
     print_parens_test.bas
     split_find_join_integration_test.bas
     split_join_test.bas
+    serialization_test.bas
+    quote_test.bas
     string_modifier_pipeline_test.bas
     string_helpers_test.bas
     string_test.bas
@@ -219,7 +226,7 @@ rm -f "$stdout_file" "$stderr_file"
 
 stdout_file="$(mktemp)"
 stderr_file="$(mktemp)"
-if printf 'look\ntake lamp\ninventory\ngo north\ngo north\nlook\nquit\n' | ./gbasic examples/adventure/adventure.bas >"$stdout_file" 2>"$stderr_file"; then
+if printf 'help\nnorth\nnorth\nlook\nsouth\nsouth\ntake lamp\ngo north\nnorth\nlook\neast\nlook\ntake note\nread note\nwest\nsouth\neast\ntake brass key\nwest\nwest\nnorth\nlook\ninventory\ndrop note\ninventory\nquit\n' | ./gbasic examples/adventure/adventure.bas >"$stdout_file" 2>"$stderr_file"; then
     actual_text="$(cat "$stdout_file")"
     expected_text="$(cat examples/adventure/adventure.out)"
     if [[ "$actual_text" == "$expected_text" ]]; then

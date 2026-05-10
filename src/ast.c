@@ -54,6 +54,19 @@ AstRecordFieldList ast_record_field_list_append(AstRecordFieldList list, char *n
     return list;
 }
 
+AstConsiderBranchList ast_consider_branch_list_empty(void) {
+    AstConsiderBranchList list = {0};
+    return list;
+}
+
+AstConsiderBranchList ast_consider_branch_list_append(AstConsiderBranchList list, AstExpr *match, AstStmtList body) {
+    list.items = xrealloc(list.items, sizeof(AstConsiderBranch) * (list.count + 1));
+    list.items[list.count].match = match;
+    list.items[list.count].body = body;
+    list.count++;
+    return list;
+}
+
 AstNameList ast_name_list_empty(void) {
     AstNameList list = {0};
     return list;
@@ -195,21 +208,12 @@ AstExpr *ast_unary(char *op, AstExpr *child) {
     return expr;
 }
 
-AstStmt *ast_assign(char *name, AstModifierUse modifier, AstExpr *value) {
+AstStmt *ast_assign(AstExpr *target, AstModifierUse modifier, AstExpr *value) {
     AstStmt *stmt = xmalloc(sizeof(*stmt));
     stmt->kind = AST_STMT_ASSIGN;
-    stmt->as.assign.name = name;
+    stmt->as.assign.target = target;
     stmt->as.assign.modifier = modifier;
     stmt->as.assign.value = value;
-    return stmt;
-}
-
-AstStmt *ast_field_assign(char *name, char *field, AstExpr *value) {
-    AstStmt *stmt = xmalloc(sizeof(*stmt));
-    stmt->kind = AST_STMT_FIELD_ASSIGN;
-    stmt->as.field_assign.name = name;
-    stmt->as.field_assign.field = field;
-    stmt->as.field_assign.value = value;
     return stmt;
 }
 
@@ -375,6 +379,15 @@ AstStmt *ast_while(AstExpr *condition, AstStmtList body) {
     return stmt;
 }
 
+AstStmt *ast_consider(AstExpr *subject, AstConsiderBranchList branches, AstStmtList else_body) {
+    AstStmt *stmt = xmalloc(sizeof(*stmt));
+    stmt->kind = AST_STMT_CONSIDER;
+    stmt->as.consider.subject = subject;
+    stmt->as.consider.branches = branches;
+    stmt->as.consider.else_body = else_body;
+    return stmt;
+}
+
 AstStmt *ast_break(void) {
     AstStmt *stmt = xmalloc(sizeof(*stmt));
     stmt->kind = AST_STMT_BREAK;
@@ -505,24 +518,25 @@ static void dump_stmt(AstStmt *stmt, int indent) {
     case AST_STMT_ASSIGN:
         if (stmt->as.assign.modifier.name) {
             if (stmt->as.assign.modifier.library) {
-                printf("Assign %s modifier(%s.%s)\n",
-                       stmt->as.assign.name,
+                printf("Assign modifier(%s.%s)\n",
                        stmt->as.assign.modifier.library,
                        stmt->as.assign.modifier.name);
             } else {
-                printf("Assign %s modifier(%s)\n", stmt->as.assign.name, stmt->as.assign.modifier.name);
+                printf("Assign modifier(%s)\n", stmt->as.assign.modifier.name);
             }
+            dump_indent(indent + 1);
+            printf("Target\n");
+            dump_expr(stmt->as.assign.target, indent + 2);
             for (size_t i = 0; i < stmt->as.assign.modifier.args.count; i++) {
                 dump_expr(stmt->as.assign.modifier.args.items[i], indent + 1);
             }
         } else {
-            printf("Assign %s\n", stmt->as.assign.name);
+            printf("Assign\n");
+            dump_indent(indent + 1);
+            printf("Target\n");
+            dump_expr(stmt->as.assign.target, indent + 2);
         }
         dump_expr(stmt->as.assign.value, indent + 1);
-        break;
-    case AST_STMT_FIELD_ASSIGN:
-        printf("FieldAssign %s.%s\n", stmt->as.field_assign.name, stmt->as.field_assign.field);
-        dump_expr(stmt->as.field_assign.value, indent + 1);
         break;
     case AST_STMT_PRINT:
         printf("Print\n");
@@ -691,6 +705,29 @@ static void dump_stmt(AstStmt *stmt, int indent) {
             dump_stmt(stmt->as.while_stmt.body.items[i], indent + 2);
         }
         break;
+    case AST_STMT_CONSIDER:
+        printf("Consider\n");
+        dump_indent(indent + 1);
+        printf("Subject\n");
+        dump_expr(stmt->as.consider.subject, indent + 2);
+        for (size_t i = 0; i < stmt->as.consider.branches.count; i++) {
+            dump_indent(indent + 1);
+            printf("Case\n");
+            dump_expr(stmt->as.consider.branches.items[i].match, indent + 2);
+            dump_indent(indent + 1);
+            printf("Body\n");
+            for (size_t j = 0; j < stmt->as.consider.branches.items[i].body.count; j++) {
+                dump_stmt(stmt->as.consider.branches.items[i].body.items[j], indent + 2);
+            }
+        }
+        if (stmt->as.consider.else_body.count > 0) {
+            dump_indent(indent + 1);
+            printf("Else\n");
+            for (size_t i = 0; i < stmt->as.consider.else_body.count; i++) {
+                dump_stmt(stmt->as.consider.else_body.items[i], indent + 2);
+            }
+        }
+        break;
     case AST_STMT_BREAK:
         printf("Break\n");
         break;
@@ -782,7 +819,7 @@ static void free_stmt(AstStmt *stmt) {
 
     switch (stmt->kind) {
     case AST_STMT_ASSIGN:
-        free(stmt->as.assign.name);
+        free_expr(stmt->as.assign.target);
         free(stmt->as.assign.modifier.library);
         free(stmt->as.assign.modifier.name);
         for (size_t i = 0; i < stmt->as.assign.modifier.args.count; i++) {
@@ -790,11 +827,6 @@ static void free_stmt(AstStmt *stmt) {
         }
         free(stmt->as.assign.modifier.args.items);
         free_expr(stmt->as.assign.value);
-        break;
-    case AST_STMT_FIELD_ASSIGN:
-        free(stmt->as.field_assign.name);
-        free(stmt->as.field_assign.field);
-        free_expr(stmt->as.field_assign.value);
         break;
     case AST_STMT_PRINT:
         free_expr(stmt->as.print);
@@ -883,6 +915,15 @@ static void free_stmt(AstStmt *stmt) {
     case AST_STMT_WHILE:
         free_expr(stmt->as.while_stmt.condition);
         ast_free_program(stmt->as.while_stmt.body);
+        break;
+    case AST_STMT_CONSIDER:
+        free_expr(stmt->as.consider.subject);
+        for (size_t i = 0; i < stmt->as.consider.branches.count; i++) {
+            free_expr(stmt->as.consider.branches.items[i].match);
+            ast_free_program(stmt->as.consider.branches.items[i].body);
+        }
+        free(stmt->as.consider.branches.items);
+        ast_free_program(stmt->as.consider.else_body);
         break;
     case AST_STMT_BREAK:
     case AST_STMT_CONTINUE:

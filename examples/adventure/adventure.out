@@ -2,11 +2,35 @@ The Lantern Room
 
 The cellar is cold and low. Stone steps lead north.
 A brass lamp rests beside a cracked barrel.
+>Commands: look, north, south, east, west, go north, take ITEM, drop ITEM, read ITEM, inventory, help, quit
+>You are in a narrow hall. The cellar lies south, the library north, the kitchen east, and the garden west.
+>The library is too dark to read. Shelves loom like walls.
+>The library is too dark to read. Shelves loom like walls.
+>You are in a narrow hall. The cellar lies south, the library north, the kitchen east, and the garden west.
 >The cellar is cold and low. Stone steps lead north.
 A brass lamp rests beside a cracked barrel.
 >Taken.
->You are carrying: lamp
->You are in a narrow hall. The cellar lies south, and a library waits north.
->The lamp glows over rows of dusty books. One title reads The Lantern Room.
->The lamp glows over rows of dusty books. One title reads The Lantern Room.
+>You are in a narrow hall. The cellar lies south, the library north, the kitchen east, and the garden west.
+>The lamp glows over rows of dusty books. A study door stands east.
+>The lamp glows over rows of dusty books. A study door stands east.
+>The study is cramped and dust-choked. A desk faces the library door to the west.
+A folded note lies on the desk.
+>The study is cramped and dust-choked. A desk faces the library door to the west.
+A folded note lies on the desk.
+>Taken.
+>The note says: The garden gate listens for brass, not force.
+>The lamp glows over rows of dusty books. A study door stands east.
+>You are in a narrow hall. The cellar lies south, the library north, the kitchen east, and the garden west.
+>The kitchen smells of cold ashes. A back window looks toward the garden.
+A brass key hangs from a nail by the stove.
+>Taken.
+>You are in a narrow hall. The cellar lies south, the library north, the kitchen east, and the garden west.
+>Wet paths cross a moonlit garden. The hall is east.
+A locked iron gate blocks the path north.
+>The brass key turns. The gate opens.
+A brick tunnel runs under the garden. Damp air moves from the north, but the passage has collapsed.
+>A brick tunnel runs under the garden. Damp air moves from the north, but the passage has collapsed.
+>You are carrying: lamp, note, brass key
+>Dropped.
+>You are carrying: lamp, brass key
 >Goodbye.

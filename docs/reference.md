@@ -10,7 +10,7 @@ Tokens:
 
 - Identifiers: alphabetic or underscore start, followed by letters, digits, or underscores.
 - Numbers: decimal numeric literals.
-- Strings: double-quoted string literals.
+- Strings: double-quoted string literals. Literal newlines may appear inside strings.
 - Booleans: `true`, `false`.
 - Newlines terminate most statements.
 - Apostrophe comments start with `'` and continue to end of line.
@@ -24,10 +24,16 @@ Supported string escapes:
 
 Unknown escapes and unterminated strings are lexer errors and exit nonzero.
 
+```basic
+description = "You are in a stone hall.
+Water drips from the ceiling.
+A passage leads north."
+```
+
 Keywords include:
 
 ```text
-if then else end print for to step while break continue function return dim as
+if then else consider end print for to step while break continue function return dim as
 watch without watchers modifier goto gosub with and or not in
 program library load use export on error resume next stop
 ```
@@ -52,10 +58,14 @@ x(modifier)= expression
 x(modifier args)= expression
 ```
 
-Field assignment:
+Assignment targets may be variables, array elements, record fields, or nested paths combining indexes and fields:
 
 ```basic
 customer.name = "Grace"
+inventory[0] = "lamp"
+items[i].location = "inventory"
+world.rooms[index].visited = true
+player.inventory[slot].name = "key"
 ```
 
 Print:
@@ -91,6 +101,23 @@ end while
 ```
 
 `break` exits the nearest enclosing `while`. `continue` skips to the next iteration.
+
+Consider:
+
+```basic
+consider command
+if "look" then
+    look()
+if "inventory" then
+    show_inventory()
+else
+    print("I do not understand.")
+end consider
+```
+
+`consider expression` evaluates the subject once. Each branch `if expression then` at the same indentation as the `consider` line compares the subject with that expression using `=` and executes only the first matching branch. `else` is optional and runs only when no branch matched. `break` inside a consider branch exits the consider block; if a consider block is inside a loop, that break does not exit the loop. `continue` is not special for consider, so inside a loop it keeps its loop meaning.
+
+Normal `if` blocks are separate boolean control flow outside a consider block. Inside consider, top-level `if expression then` starts a match branch.
 
 For-each:
 
@@ -256,6 +283,16 @@ customer.name
 customer[field]
 ```
 
+`customer.name` uses a static field name. `customer[field]` evaluates `field` at runtime and requires the left side to be a record and the key to be a string. Reading a missing dynamic field returns `unknown`; assigning one creates or updates that field:
+
+```basic
+field = "nickname"
+print(customer[field])
+customer[field] = "Ada"
+```
+
+Bracket access keeps its array behavior when the left side is an array and the index is numeric. Arrays do not accept string keys, and records do not accept numeric keys.
+
 Function calls:
 
 ```basic
@@ -275,6 +312,16 @@ Function calls are expressions, not lvalues. This is invalid:
 
 ```basic
 len(words) = 0
+foo() = 1
+items()[0] = 1
+get_player().name = "Bob"
+```
+
+Nested lvalues may combine static fields, array indexes, and dynamic record keys:
+
+```basic
+areas[i][direction] = 4
+world.rooms[i][direction] = 3
 ```
 
 Durations:
@@ -503,7 +550,13 @@ Always-available helper functions:
 - `upper(text)`
 - `round(number, places)`
 - `input(prompt)`
+- `encode(value)`
+- `decode(text)`
+- `quote(value)`
 - `find(value, target)`
+- `contains(array, value)`
+- `remove_value(array, value)`
+- `find_by(records, field_name, value)`
 - `left(value, count)`
 - `right(value, count)`
 - `mid(value, start, count)`
@@ -513,6 +566,9 @@ Always-available helper functions:
 - `split(text, separator)`
 - `join(array)`
 - `join(array, separator)`
+- `join_from(array, start_index, separator)`
+- `first(array)`
+- `rest(array)`
 
 Array helper functions:
 
@@ -520,11 +576,31 @@ Array helper functions:
 - `prepend(array, value)`
 - `insert(array, index, value)`
 - `remove(array, index)`
+- `remove_value(array, value)`
 - `take_first(array)`
 - `take_last(array)`
 - `reverse(array)`
 - `unique(array)`
 - `sort(array)`
+
+`contains(array, value)` returns true when the array contains a matching value. `remove_value(array, value)` removes the first matching value and returns the resulting array; when the first argument is a variable, that array is updated in place. `find_by(records, field_name, value)` returns the first matching record index or `nothing`. `join_from(array, start_index, separator)` joins string elements from `start_index` to the end and returns `""` when the start is out of range. `first(array)` returns the first element or `nothing`; `rest(array)` returns a new array without the first element.
+
+Serialization helpers:
+
+```basic
+text = encode(project)
+loaded = decode(text)
+```
+
+`encode` supports numbers, strings, booleans, `nothing`, `unknown`, arrays, and records. Strings escape quotes, backslashes, tabs, carriage returns, and newlines. Records are encoded as JSON-like objects with quoted field names. `decode` reads the same format back into gBASIC values and raises a runtime error for malformed text.
+
+Source generation helper:
+
+```basic
+line = "description = " + quote(description)
+```
+
+`quote(value)` returns a complete gBASIC string literal, including surrounding double quotes. String contents escape `"`, `\`, tab, carriage return, and newline; newlines are emitted as `\n` instead of literal line breaks. Scalar non-string values use the same conversion as the `(string)` modifier, so `quote(42)` returns `"42"` and `quote(nothing)` returns `"nothing"`. Arrays, records, files, directories, and other non-scalar values raise a runtime error. Because the output is also a decode-compatible string value, `decode(quote(text))` round-trips strings.
 
 Array aggregate functions:
 

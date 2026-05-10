@@ -5,7 +5,6 @@
 
 typedef enum {
     AST_STMT_ASSIGN,
-    AST_STMT_FIELD_ASSIGN,
     AST_STMT_PRINT,
     AST_STMT_EXPR,
     AST_STMT_WITH_LOCK,
@@ -27,6 +26,7 @@ typedef enum {
     AST_STMT_USE,
     AST_STMT_IF,
     AST_STMT_WHILE,
+    AST_STMT_CONSIDER,
     AST_STMT_BREAK,
     AST_STMT_CONTINUE
 } AstStmtKind;
@@ -70,6 +70,16 @@ typedef struct {
     AstRecordField *items;
     size_t count;
 } AstRecordFieldList;
+
+typedef struct {
+    AstExpr *match;
+    AstStmtList body;
+} AstConsiderBranch;
+
+typedef struct {
+    AstConsiderBranch *items;
+    size_t count;
+} AstConsiderBranchList;
 
 typedef struct {
     char **items;
@@ -139,15 +149,10 @@ struct AstStmt {
     int column;
     union {
         struct {
-            char *name;
+            AstExpr *target;
             AstModifierUse modifier;
             AstExpr *value;
         } assign;
-        struct {
-            char *name;
-            char *field;
-            AstExpr *value;
-        } field_assign;
         AstExpr *print;
         AstExpr *expr_stmt;
         struct {
@@ -204,6 +209,11 @@ struct AstStmt {
             AstExpr *condition;
             AstStmtList body;
         } while_stmt;
+        struct {
+            AstExpr *subject;
+            AstConsiderBranchList branches;
+            AstStmtList else_body;
+        } consider;
     } as;
 };
 
@@ -213,6 +223,8 @@ AstExprList ast_expr_list_empty(void);
 AstExprList ast_expr_list_append(AstExprList list, AstExpr *expr);
 AstRecordFieldList ast_record_field_list_empty(void);
 AstRecordFieldList ast_record_field_list_append(AstRecordFieldList list, char *name, AstExpr *value);
+AstConsiderBranchList ast_consider_branch_list_empty(void);
+AstConsiderBranchList ast_consider_branch_list_append(AstConsiderBranchList list, AstExpr *match, AstStmtList body);
 AstNameList ast_name_list_empty(void);
 AstNameList ast_name_list_append(AstNameList list, char *name);
 
@@ -235,8 +247,7 @@ AstModifierSignature ast_modifier_signature(char *name, AstNameList params);
 AstExpr *ast_binary(char *op, AstModifierUse modifier, AstExpr *left, AstExpr *right);
 AstExpr *ast_unary(char *op, AstExpr *expr);
 
-AstStmt *ast_assign(char *name, AstModifierUse modifier, AstExpr *value);
-AstStmt *ast_field_assign(char *name, char *field, AstExpr *value);
+AstStmt *ast_assign(AstExpr *target, AstModifierUse modifier, AstExpr *value);
 AstStmt *ast_print(AstExpr *expr);
 AstStmt *ast_expr_stmt(AstExpr *expr);
 AstStmt *ast_with_lock(AstExpr *file, AstStmtList body);
@@ -258,6 +269,7 @@ AstStmt *ast_library(char *name, AstStmtList body);
 AstStmt *ast_use(char *name, char *path);
 AstStmt *ast_if(AstExpr *condition, AstStmtList body);
 AstStmt *ast_while(AstExpr *condition, AstStmtList body);
+AstStmt *ast_consider(AstExpr *subject, AstConsiderBranchList branches, AstStmtList else_body);
 AstStmt *ast_break(void);
 AstStmt *ast_continue(void);
 AstStmt *ast_stmt_position(AstStmt *stmt, int line, int column);

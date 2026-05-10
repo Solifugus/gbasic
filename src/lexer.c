@@ -81,9 +81,6 @@ static Token string_token(Lexer *lexer, const char *start, int line, int column)
         if (ch == '"') {
             return make_token(lexer, TOKEN_STRING, start, line, column);
         }
-        if (ch == '\n') {
-            return error_token_message(lexer, start, line, column, "unterminated string");
-        }
         if (ch == '\\') {
             if (is_at_end(lexer) || peek(lexer) == '\n') {
                 return error_token_message(lexer, start, line, column, "unterminated escape sequence");
@@ -160,6 +157,10 @@ static int keyword_equals(const char *start, int length, const char *keyword) {
     return 1;
 }
 
+static int text_equals_keyword(const char *start, const char *end, const char *keyword) {
+    return keyword_equals(start, (int)(end - start), keyword);
+}
+
 static TokenType identifier_type(const char *start, int length) {
     if (keyword_equals(start, length, "program")) return TOKEN_PROGRAM;
     if (keyword_equals(start, length, "library")) return TOKEN_LIBRARY;
@@ -174,6 +175,7 @@ static TokenType identifier_type(const char *start, int length) {
     if (keyword_equals(start, length, "to")) return TOKEN_TO;
     if (keyword_equals(start, length, "step")) return TOKEN_STEP;
     if (keyword_equals(start, length, "while")) return TOKEN_WHILE;
+    if (keyword_equals(start, length, "consider")) return TOKEN_CONSIDER;
     if (keyword_equals(start, length, "break")) return TOKEN_BREAK;
     if (keyword_equals(start, length, "continue")) return TOKEN_CONTINUE;
     if (keyword_equals(start, length, "function")) return TOKEN_FUNCTION;
@@ -208,7 +210,43 @@ static Token identifier_token(Lexer *lexer, const char *start, int line, int col
     while (isalnum((unsigned char)peek(lexer)) || peek(lexer) == '_') {
         advance(lexer);
     }
-    return make_token(lexer, identifier_type(start, (int)(lexer->current - start)), start, line, column);
+    if (text_equals_keyword(start, lexer->current, "end")) {
+        const char *saved_current = lexer->current;
+        int saved_line = lexer->line;
+        int saved_column = lexer->column;
+        while (peek(lexer) == ' ' || peek(lexer) == '\t' || peek(lexer) == '\r') {
+            advance(lexer);
+        }
+        const char *word_start = lexer->current;
+        while (isalnum((unsigned char)peek(lexer)) || peek(lexer) == '_') {
+            advance(lexer);
+        }
+        if (text_equals_keyword(word_start, lexer->current, "consider")) {
+            if (lexer->consider_depth > 0) {
+                lexer->consider_depth--;
+            }
+            return make_token(lexer, TOKEN_END_CONSIDER, start, line, column);
+        }
+        lexer->current = saved_current;
+        lexer->line = saved_line;
+        lexer->column = saved_column;
+    }
+    TokenType type = identifier_type(start, (int)(lexer->current - start));
+    if (type == TOKEN_CONSIDER) {
+        if (lexer->consider_depth < 64) {
+            lexer->consider_columns[lexer->consider_depth] = column;
+        }
+        lexer->consider_depth++;
+    } else if (lexer->consider_depth > 0 &&
+               column == lexer->consider_columns[lexer->consider_depth - 1] &&
+               type == TOKEN_IF) {
+        type = TOKEN_CONSIDER_IF;
+    } else if (lexer->consider_depth > 0 &&
+               column == lexer->consider_columns[lexer->consider_depth - 1] &&
+               type == TOKEN_ELSE) {
+        type = TOKEN_CONSIDER_ELSE;
+    }
+    return make_token(lexer, type, start, line, column);
 }
 
 void lexer_init(Lexer *lexer, const char *source) {
@@ -218,6 +256,7 @@ void lexer_init(Lexer *lexer, const char *source) {
     lexer->line = 1;
     lexer->column = 1;
     lexer->modifier_content_mode = 0;
+    lexer->consider_depth = 0;
 }
 
 Token lexer_next(Lexer *lexer) {
@@ -296,13 +335,17 @@ const char *token_type_name(TokenType type) {
     case TOKEN_USE: return "USE";
     case TOKEN_EXPORT: return "EXPORT";
     case TOKEN_IF: return "IF";
+    case TOKEN_CONSIDER_IF: return "CONSIDER_IF";
     case TOKEN_THEN: return "THEN";
     case TOKEN_ELSE: return "ELSE";
+    case TOKEN_CONSIDER_ELSE: return "CONSIDER_ELSE";
     case TOKEN_END: return "END";
+    case TOKEN_END_CONSIDER: return "END_CONSIDER";
     case TOKEN_FOR: return "FOR";
     case TOKEN_TO: return "TO";
     case TOKEN_STEP: return "STEP";
     case TOKEN_WHILE: return "WHILE";
+    case TOKEN_CONSIDER: return "CONSIDER";
     case TOKEN_BREAK: return "BREAK";
     case TOKEN_CONTINUE: return "CONTINUE";
     case TOKEN_FUNCTION: return "FUNCTION";

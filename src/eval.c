@@ -186,6 +186,7 @@ static size_t *watcher_queue = NULL;
 static size_t watcher_queue_count = 0;
 static int function_depth = 0;
 static int loop_depth = 0;
+static int consider_depth = 0;
 static int watcher_suppressed = 0;
 static int watcher_draining = 0;
 static RuntimeError current_error = {0};
@@ -2890,6 +2891,85 @@ static Value remove_from_array_symbol(Symbol *symbol, int index) {
     return value_copy(symbol->value);
 }
 
+static int array_find_index(Value array, Value target, size_t *out_index) {
+    if (array.kind != VALUE_ARRAY) {
+        return 0;
+    }
+    for (size_t i = 0; i < array.as.array.count; i++) {
+        if (values_equal(value_copy(array.as.array.items[i]), value_copy(target))) {
+            *out_index = i;
+            return 1;
+        }
+        if (error_action_pending()) {
+            return 0;
+        }
+    }
+    return 0;
+}
+
+static Value remove_value_from_array_value(Value array, Value target) {
+    if (array.kind != VALUE_ARRAY) {
+        value_free(array);
+        value_free(target);
+        runtime_error_raise("remove_value expects an array", 1003, "invalid function call");
+        return value_null();
+    }
+
+    size_t index = 0;
+    if (!array_find_index(array, target, &index)) {
+        value_free(target);
+        if (error_action_pending()) {
+            value_free(array);
+            return value_null();
+        }
+        return array;
+    }
+    value_free(target);
+    return remove_from_array_value(array, (int)index);
+}
+
+static Value remove_value_from_array_symbol(Symbol *symbol, Value target) {
+    if (!symbol || symbol->value.kind != VALUE_ARRAY) {
+        value_free(target);
+        runtime_error_raise("remove_value expects an array", 1003, "invalid function call");
+        return value_null();
+    }
+
+    size_t index = 0;
+    if (!array_find_index(symbol->value, target, &index)) {
+        value_free(target);
+        if (error_action_pending()) {
+            return value_null();
+        }
+        return value_copy(symbol->value);
+    }
+    value_free(target);
+    return remove_from_array_symbol(symbol, (int)index);
+}
+
+static Value array_rest_value(Value array) {
+    if (array.kind != VALUE_ARRAY) {
+        value_free(array);
+        runtime_error_raise("rest expects an array", 1003, "invalid function call");
+        return value_null();
+    }
+    if (array.as.array.count <= 1) {
+        value_free(array);
+        return value_array(NULL, 0);
+    }
+
+    size_t count = array.as.array.count - 1;
+    Value *items = malloc(sizeof(Value) * count);
+    if (!items) {
+        abort();
+    }
+    for (size_t i = 0; i < count; i++) {
+        items[i] = value_copy(array.as.array.items[i + 1]);
+    }
+    value_free(array);
+    return value_array(items, count);
+}
+
 static Value take_from_array_value(Value array, int take_last) {
     if (array.kind != VALUE_ARRAY) {
         value_free(array);
@@ -3281,6 +3361,450 @@ static Value builtin_string_modifier_value(Value value) {
     }
 }
 
+typedef struct {
+    char *items;
+    size_t length;
+    size_t capacity;
+} StringBuilder;
+
+static void sb_init(StringBuilder *builder) {
+    builder->capacity = 128;
+    builder->length = 0;
+    builder->items = malloc(builder->capacity);
+    if (!builder->items) {
+        abort();
+    }
+    builder->items[0] = '\0';
+}
+
+static void sb_append_char(StringBuilder *builder, char ch) {
+    if (builder->length + 2 > builder->capacity) {
+        builder->capacity *= 2;
+        char *items = realloc(builder->items, builder->capacity);
+        if (!items) {
+            abort();
+        }
+        builder->items = items;
+    }
+    builder->items[builder->length++] = ch;
+    builder->items[builder->length] = '\0';
+}
+
+static void sb_append_text(StringBuilder *builder, const char *text) {
+    while (*text) {
+        sb_append_char(builder, *text);
+        text++;
+    }
+}
+
+static char *sb_take(StringBuilder *builder) {
+    char *items = builder->items;
+    builder->items = NULL;
+    builder->length = 0;
+    builder->capacity = 0;
+    return items;
+}
+
+static void encode_string_literal(StringBuilder *builder, const char *text) {
+    sb_append_char(builder, '"');
+    while (*text) {
+        unsigned char ch = (unsigned char)*text;
+        if (ch == '"') {
+            sb_append_text(builder, "\\\"");
+        } else if (ch == '\\') {
+            sb_append_text(builder, "\\\\");
+        } else if (ch == '\n') {
+            sb_append_text(builder, "\\n");
+        } else if (ch == '\t') {
+            sb_append_text(builder, "\\t");
+        } else if (ch == '\r') {
+            sb_append_text(builder, "\\r");
+        } else {
+            sb_append_char(builder, (char)ch);
+        }
+        text++;
+    }
+    sb_append_char(builder, '"');
+}
+
+static int encode_value_to_builder(StringBuilder *builder, Value value) {
+    char number[64];
+    switch (value.kind) {
+    case VALUE_NULL:
+        sb_append_text(builder, "nothing");
+        return 1;
+    case VALUE_UNKNOWN:
+        sb_append_text(builder, "unknown");
+        return 1;
+    case VALUE_NUMBER:
+        snprintf(number, sizeof(number), "%.17g", value.as.number);
+        sb_append_text(builder, number);
+        return 1;
+    case VALUE_STRING:
+        encode_string_literal(builder, value.as.string);
+        return 1;
+    case VALUE_BOOL:
+        sb_append_text(builder, value.as.boolean ? "true" : "false");
+        return 1;
+    case VALUE_ARRAY:
+        sb_append_char(builder, '[');
+        for (size_t i = 0; i < value.as.array.count; i++) {
+            if (i > 0) {
+                sb_append_char(builder, ',');
+            }
+            if (!encode_value_to_builder(builder, value.as.array.items[i])) {
+                return 0;
+            }
+        }
+        sb_append_char(builder, ']');
+        return 1;
+    case VALUE_RECORD:
+        sb_append_char(builder, '{');
+        for (size_t i = 0; i < value.as.record.count; i++) {
+            if (i > 0) {
+                sb_append_char(builder, ',');
+            }
+            encode_string_literal(builder, value.as.record.fields[i].name);
+            sb_append_char(builder, ':');
+            if (!encode_value_to_builder(builder, *value.as.record.fields[i].value)) {
+                return 0;
+            }
+        }
+        sb_append_char(builder, '}');
+        return 1;
+    case VALUE_DATETIME:
+    case VALUE_DURATION:
+    case VALUE_MONEY:
+    case VALUE_FILE:
+    case VALUE_DIR:
+        runtime_error_raise("encode supports numbers, strings, booleans, nothing, unknown, arrays, and records",
+                            1003,
+                            "serialization");
+        return 0;
+    }
+    return 0;
+}
+
+static Value builtin_encode_value(Value value) {
+    StringBuilder builder;
+    sb_init(&builder);
+    if (!encode_value_to_builder(&builder, value)) {
+        free(builder.items);
+        value_free(value);
+        return value_null();
+    }
+    char *text = sb_take(&builder);
+    Value result = value_string(text);
+    free(text);
+    value_free(value);
+    return result;
+}
+
+static Value builtin_quote_value(Value value) {
+    char buffer[128];
+    Value text;
+    switch (value.kind) {
+    case VALUE_STRING:
+        text = value;
+        break;
+    case VALUE_NUMBER:
+        snprintf(buffer, sizeof(buffer), "%g", value.as.number);
+        value_free(value);
+        text = value_string(buffer);
+        break;
+    case VALUE_BOOL:
+        snprintf(buffer, sizeof(buffer), "%s", value.as.boolean ? "true" : "false");
+        value_free(value);
+        text = value_string(buffer);
+        break;
+    case VALUE_NULL:
+        value_free(value);
+        text = value_string("nothing");
+        break;
+    case VALUE_UNKNOWN:
+        value_free(value);
+        text = value_string("unknown");
+        break;
+    default:
+        value_free(value);
+        runtime_error_raise("quote expects a scalar value", 1003, "source generation");
+        return value_null();
+    }
+
+    StringBuilder builder;
+    sb_init(&builder);
+    encode_string_literal(&builder, text.as.string);
+    char *literal = sb_take(&builder);
+    Value result = value_string(literal);
+    free(literal);
+    value_free(text);
+    return result;
+}
+
+typedef struct {
+    const char *text;
+    size_t pos;
+    int ok;
+    char message[160];
+} DecodeParser;
+
+static void decode_error(DecodeParser *parser, const char *message) {
+    if (parser->ok) {
+        snprintf(parser->message, sizeof(parser->message), "%s at byte %zu", message, parser->pos);
+    }
+    parser->ok = 0;
+}
+
+static void decode_skip_ws(DecodeParser *parser) {
+    while (isspace((unsigned char)parser->text[parser->pos])) {
+        parser->pos++;
+    }
+}
+
+static int decode_match_text(DecodeParser *parser, const char *text) {
+    size_t len = strlen(text);
+    if (strncmp(parser->text + parser->pos, text, len) != 0) {
+        return 0;
+    }
+    parser->pos += len;
+    return 1;
+}
+
+static Value decode_parse_value(DecodeParser *parser);
+
+static Value decode_parse_string(DecodeParser *parser) {
+    if (parser->text[parser->pos] != '"') {
+        decode_error(parser, "expected string");
+        return value_null();
+    }
+    parser->pos++;
+
+    StringBuilder builder;
+    sb_init(&builder);
+    while (parser->text[parser->pos]) {
+        char ch = parser->text[parser->pos++];
+        if (ch == '"') {
+            char *text = sb_take(&builder);
+            Value result = value_string(text);
+            free(text);
+            return result;
+        }
+        if (ch == '\\') {
+            char esc = parser->text[parser->pos++];
+            if (esc == '\0') {
+                free(builder.items);
+                decode_error(parser, "unterminated escape sequence");
+                return value_null();
+            }
+            if (esc == 'n') {
+                sb_append_char(&builder, '\n');
+            } else if (esc == 't') {
+                sb_append_char(&builder, '\t');
+            } else if (esc == 'r') {
+                sb_append_char(&builder, '\r');
+            } else if (esc == '"' || esc == '\\') {
+                sb_append_char(&builder, esc);
+            } else {
+                free(builder.items);
+                decode_error(parser, "invalid escape sequence");
+                return value_null();
+            }
+        } else {
+            sb_append_char(&builder, ch);
+        }
+    }
+
+    free(builder.items);
+    decode_error(parser, "unterminated string");
+    return value_null();
+}
+
+static Value decode_parse_array(DecodeParser *parser) {
+    parser->pos++;
+    Value *items = NULL;
+    size_t count = 0;
+    decode_skip_ws(parser);
+    if (parser->text[parser->pos] == ']') {
+        parser->pos++;
+        return value_array(NULL, 0);
+    }
+
+    while (parser->ok) {
+        Value item = decode_parse_value(parser);
+        if (!parser->ok) {
+            value_free(item);
+            break;
+        }
+        Value *next = realloc(items, sizeof(Value) * (count + 1));
+        if (!next) {
+            abort();
+        }
+        items = next;
+        items[count++] = item;
+
+        decode_skip_ws(parser);
+        if (parser->text[parser->pos] == ',') {
+            parser->pos++;
+            decode_skip_ws(parser);
+            continue;
+        }
+        if (parser->text[parser->pos] == ']') {
+            parser->pos++;
+            return value_array(items, count);
+        }
+        decode_error(parser, "expected ',' or ']'");
+        break;
+    }
+
+    for (size_t i = 0; i < count; i++) {
+        value_free(items[i]);
+    }
+    free(items);
+    return value_null();
+}
+
+static Value decode_parse_record(DecodeParser *parser) {
+    parser->pos++;
+    RecordField *fields = NULL;
+    size_t count = 0;
+    decode_skip_ws(parser);
+    if (parser->text[parser->pos] == '}') {
+        parser->pos++;
+        return value_record(NULL, 0);
+    }
+
+    while (parser->ok) {
+        Value key = decode_parse_string(parser);
+        if (!parser->ok) {
+            value_free(key);
+            break;
+        }
+        decode_skip_ws(parser);
+        if (parser->text[parser->pos] != ':') {
+            value_free(key);
+            decode_error(parser, "expected ':'");
+            break;
+        }
+        parser->pos++;
+        Value value = decode_parse_value(parser);
+        if (!parser->ok) {
+            value_free(key);
+            value_free(value);
+            break;
+        }
+
+        RecordField *next = realloc(fields, sizeof(RecordField) * (count + 1));
+        if (!next) {
+            abort();
+        }
+        fields = next;
+        fields[count].name = copy_string(key.as.string);
+        fields[count].value = malloc(sizeof(Value));
+        if (!fields[count].value) {
+            abort();
+        }
+        *fields[count].value = value;
+        count++;
+        value_free(key);
+
+        decode_skip_ws(parser);
+        if (parser->text[parser->pos] == ',') {
+            parser->pos++;
+            decode_skip_ws(parser);
+            continue;
+        }
+        if (parser->text[parser->pos] == '}') {
+            parser->pos++;
+            return value_record(fields, count);
+        }
+        decode_error(parser, "expected ',' or '}'");
+        break;
+    }
+
+    for (size_t i = 0; i < count; i++) {
+        free(fields[i].name);
+        value_free(*fields[i].value);
+        free(fields[i].value);
+    }
+    free(fields);
+    return value_null();
+}
+
+static Value decode_parse_number(DecodeParser *parser) {
+    const char *start = parser->text + parser->pos;
+    char *end = NULL;
+    errno = 0;
+    double number = strtod(start, &end);
+    if (end == start || errno == ERANGE) {
+        decode_error(parser, "invalid number");
+        return value_null();
+    }
+    parser->pos += (size_t)(end - start);
+    return value_number(number);
+}
+
+static Value decode_parse_value(DecodeParser *parser) {
+    decode_skip_ws(parser);
+    char ch = parser->text[parser->pos];
+    if (ch == '"') {
+        return decode_parse_string(parser);
+    }
+    if (ch == '[') {
+        return decode_parse_array(parser);
+    }
+    if (ch == '{') {
+        return decode_parse_record(parser);
+    }
+    if (decode_match_text(parser, "true")) {
+        return value_bool(1);
+    }
+    if (decode_match_text(parser, "false")) {
+        return value_bool(0);
+    }
+    if (decode_match_text(parser, "nothing")) {
+        return value_null();
+    }
+    if (decode_match_text(parser, "unknown")) {
+        return value_unknown();
+    }
+    if (ch == '-' || ch == '+' || ch == '.' || isdigit((unsigned char)ch)) {
+        return decode_parse_number(parser);
+    }
+    decode_error(parser, "expected value");
+    return value_null();
+}
+
+static Value builtin_decode_text(Value text) {
+    if (text.kind != VALUE_STRING) {
+        value_free(text);
+        runtime_error_raise("decode expects a string", 1003, "serialization");
+        return value_null();
+    }
+
+    DecodeParser parser = {0};
+    parser.text = text.as.string;
+    parser.ok = 1;
+    Value result = decode_parse_value(&parser);
+    if (parser.ok) {
+        decode_skip_ws(&parser);
+        if (parser.text[parser.pos] != '\0') {
+            value_free(result);
+            decode_error(&parser, "unexpected trailing text");
+            result = value_null();
+        }
+    }
+    if (!parser.ok) {
+        char message[220];
+        snprintf(message, sizeof(message), "decode error: %s", parser.message);
+        runtime_error_raise(message, 1003, "serialization");
+        value_free(result);
+        value_free(text);
+        return value_null();
+    }
+    value_free(text);
+    return result;
+}
+
 static Value eval_call(AstExpr *expr) {
     if (expr->as.call.library) {
         FunctionDef *function = function_resolve(expr->as.call.library, expr->as.call.name);
@@ -3368,6 +3892,30 @@ static Value eval_call(AstExpr *expr) {
         Value result = value_string(line);
         free(line);
         return result;
+    }
+
+    if (strcmp(expr->as.call.name, "encode") == 0) {
+        if (expr->as.call.args.count != 1) {
+            runtime_error_raise("encode expects one argument", 1003, "serialization");
+            return value_null();
+        }
+        return builtin_encode_value(eval_expr(expr->as.call.args.items[0]));
+    }
+
+    if (strcmp(expr->as.call.name, "decode") == 0) {
+        if (expr->as.call.args.count != 1) {
+            runtime_error_raise("decode expects one argument", 1003, "serialization");
+            return value_null();
+        }
+        return builtin_decode_text(eval_expr(expr->as.call.args.items[0]));
+    }
+
+    if (strcmp(expr->as.call.name, "quote") == 0) {
+        if (expr->as.call.args.count != 1) {
+            runtime_error_raise("quote expects one argument", 1003, "source generation");
+            return value_null();
+        }
+        return builtin_quote_value(eval_expr(expr->as.call.args.items[0]));
     }
 
     if (strcmp(expr->as.call.name, "round") == 0) {
@@ -3465,6 +4013,195 @@ static Value eval_call(AstExpr *expr) {
         value_free(target);
         runtime_error_raise("find expects string or array as first argument", 1003, "invalid function call");
         return value_null();
+    }
+
+    if (strcmp(expr->as.call.name, "contains") == 0) {
+        if (expr->as.call.args.count != 2) {
+            runtime_error_raise("contains expects two arguments", 1003, "invalid function call");
+            return value_null();
+        }
+        Value array = eval_expr(expr->as.call.args.items[0]);
+        Value target = eval_expr(expr->as.call.args.items[1]);
+        if (error_action_pending()) {
+            value_free(array);
+            value_free(target);
+            return value_null();
+        }
+        if (array.kind != VALUE_ARRAY) {
+            value_free(array);
+            value_free(target);
+            runtime_error_raise("contains expects an array", 1003, "invalid function call");
+            return value_null();
+        }
+
+        size_t index = 0;
+        int found = array_find_index(array, target, &index);
+        value_free(array);
+        value_free(target);
+        if (error_action_pending()) {
+            return value_null();
+        }
+        return value_bool(found);
+    }
+
+    if (strcmp(expr->as.call.name, "remove_value") == 0) {
+        if (expr->as.call.args.count != 2) {
+            runtime_error_raise("remove_value expects two arguments", 1003, "invalid function call");
+            return value_null();
+        }
+        AstExpr *array_expr = expr->as.call.args.items[0];
+        Value target = eval_expr(expr->as.call.args.items[1]);
+        if (error_action_pending()) {
+            value_free(target);
+            return value_null();
+        }
+
+        if (array_expr->kind == AST_EXPR_IDENT) {
+            Symbol *symbol = env_find(array_expr->as.ident);
+            if (!symbol) {
+                value_free(target);
+                char message[256];
+                snprintf(message, sizeof(message), "undefined variable: %s", array_expr->as.ident);
+                runtime_error_raise(message, 1001, "undefined variable");
+                return value_null();
+            }
+            return remove_value_from_array_symbol(symbol, target);
+        }
+
+        Value array = eval_expr(array_expr);
+        if (error_action_pending()) {
+            value_free(array);
+            value_free(target);
+            return value_null();
+        }
+        return remove_value_from_array_value(array, target);
+    }
+
+    if (strcmp(expr->as.call.name, "find_by") == 0) {
+        if (expr->as.call.args.count != 3) {
+            runtime_error_raise("find_by expects three arguments", 1003, "invalid function call");
+            return value_null();
+        }
+        Value records = eval_expr(expr->as.call.args.items[0]);
+        Value field_name = eval_expr(expr->as.call.args.items[1]);
+        Value target = eval_expr(expr->as.call.args.items[2]);
+        if (error_action_pending()) {
+            value_free(records);
+            value_free(field_name);
+            value_free(target);
+            return value_null();
+        }
+        if (records.kind != VALUE_ARRAY || field_name.kind != VALUE_STRING) {
+            value_free(records);
+            value_free(field_name);
+            value_free(target);
+            runtime_error_raise("find_by expects array, string, value", 1003, "invalid function call");
+            return value_null();
+        }
+
+        for (size_t i = 0; i < records.as.array.count; i++) {
+            Value *item = &records.as.array.items[i];
+            if (item->kind != VALUE_RECORD) {
+                continue;
+            }
+            RecordField *field = record_find(item, field_name.as.string);
+            if (!field) {
+                continue;
+            }
+            if (values_equal(value_copy(*field->value), value_copy(target))) {
+                value_free(records);
+                value_free(field_name);
+                value_free(target);
+                return value_number((double)i);
+            }
+            if (error_action_pending()) {
+                value_free(records);
+                value_free(field_name);
+                value_free(target);
+                return value_null();
+            }
+        }
+        value_free(records);
+        value_free(field_name);
+        value_free(target);
+        return value_null();
+    }
+
+    if (strcmp(expr->as.call.name, "join_from") == 0) {
+        if (expr->as.call.args.count != 3) {
+            runtime_error_raise("join_from expects three arguments", 1003, "invalid function call");
+            return value_null();
+        }
+        Value array = eval_expr(expr->as.call.args.items[0]);
+        Value start_value = eval_expr(expr->as.call.args.items[1]);
+        Value separator = eval_expr(expr->as.call.args.items[2]);
+        if (error_action_pending()) {
+            value_free(array);
+            value_free(start_value);
+            value_free(separator);
+            return value_null();
+        }
+        if (array.kind != VALUE_ARRAY || start_value.kind != VALUE_NUMBER) {
+            value_free(array);
+            value_free(start_value);
+            value_free(separator);
+            runtime_error_raise("join_from expects array, number, string", 1003, "invalid function call");
+            return value_null();
+        }
+        int start_index = 0;
+        if (!array_index_from_value(start_value, "join_from", &start_index)) {
+            value_free(array);
+            value_free(separator);
+            return value_null();
+        }
+        if (start_index < 0 || (size_t)start_index >= array.as.array.count) {
+            value_free(array);
+            value_free(separator);
+            return value_string("");
+        }
+
+        size_t count = array.as.array.count - (size_t)start_index;
+        Value *items = malloc(sizeof(Value) * count);
+        if (!items) {
+            abort();
+        }
+        for (size_t i = 0; i < count; i++) {
+            items[i] = value_copy(array.as.array.items[(size_t)start_index + i]);
+        }
+        value_free(array);
+        return builtin_join_value(value_array(items, count), separator);
+    }
+
+    if (strcmp(expr->as.call.name, "first") == 0) {
+        if (expr->as.call.args.count != 1) {
+            runtime_error_raise("first expects one argument", 1003, "invalid function call");
+            return value_null();
+        }
+        Value array = eval_expr(expr->as.call.args.items[0]);
+        if (error_action_pending()) {
+            value_free(array);
+            return value_null();
+        }
+        if (array.kind != VALUE_ARRAY) {
+            value_free(array);
+            runtime_error_raise("first expects an array", 1003, "invalid function call");
+            return value_null();
+        }
+        if (array.as.array.count == 0) {
+            value_free(array);
+            return value_null();
+        }
+        Value result = value_copy(array.as.array.items[0]);
+        value_free(array);
+        return result;
+    }
+
+    if (strcmp(expr->as.call.name, "rest") == 0) {
+        if (expr->as.call.args.count != 1) {
+            runtime_error_raise("rest expects one argument", 1003, "invalid function call");
+            return value_null();
+        }
+        return array_rest_value(eval_expr(expr->as.call.args.items[0]));
     }
 
     if (strcmp(expr->as.call.name, "left") == 0 ||
@@ -4535,6 +5272,22 @@ static Value eval_binary(AstExpr *expr) {
     return value_null();
 }
 
+static int values_equal_for_consider(Value subject, Value candidate) {
+    AstExpr comparison = {0};
+    comparison.kind = AST_EXPR_BINARY;
+    comparison.as.binary.op = "=";
+    comparison.as.binary.modifier = ast_modifier_none();
+
+    Value result = eval_comparison(&comparison, value_copy(subject), value_copy(candidate));
+    if (error_action_pending()) {
+        value_free(result);
+        return 0;
+    }
+    int equal = result.kind == VALUE_BOOL && result.as.boolean;
+    value_free(result);
+    return equal;
+}
+
 static Value eval_expr(AstExpr *expr) {
     switch (expr->kind) {
     case AST_EXPR_NUMBER:
@@ -4616,19 +5369,18 @@ static Value eval_expr(AstExpr *expr) {
         if (array.kind == VALUE_RECORD && index.kind == VALUE_STRING) {
             RecordField *field = record_find(&array, index.as.string);
             if (!field) {
-                fprintf(stderr, "unknown record field: %s\n", index.as.string);
                 value_free(array);
                 value_free(index);
-                return value_null();
+                return value_unknown();
             }
             Value result = value_copy(*field->value);
             value_free(array);
             value_free(index);
             return result;
         }
-        fprintf(stderr, "indexing expects array[number] or record[string]\n");
         value_free(array);
         value_free(index);
+        runtime_error_raise("indexing expects array[number] or record[string]", 1003, "indexing");
         return value_null();
     }
     case AST_EXPR_FIELD: {
@@ -4842,6 +5594,146 @@ static Value apply_assignment_modifier(AstModifierUse modifier, Value value) {
     return value_null();
 }
 
+static const char *lvalue_root_name(AstExpr *target) {
+    if (!target) {
+        return NULL;
+    }
+    switch (target->kind) {
+    case AST_EXPR_IDENT:
+        return target->as.ident;
+    case AST_EXPR_FIELD:
+        return lvalue_root_name(target->as.field.object);
+    case AST_EXPR_INDEX:
+        return lvalue_root_name(target->as.index.array);
+    default:
+        return NULL;
+    }
+}
+
+static Value *resolve_lvalue_ref(AstExpr *target) {
+    switch (target->kind) {
+    case AST_EXPR_IDENT: {
+        Symbol *symbol = env_find(target->as.ident);
+        if (!symbol) {
+            char message[256];
+            snprintf(message, sizeof(message), "undefined variable: %s", target->as.ident);
+            runtime_error_raise(message, 1001, "undefined variable");
+            return NULL;
+        }
+        return &symbol->value;
+    }
+    case AST_EXPR_FIELD: {
+        Value *object = resolve_lvalue_ref(target->as.field.object);
+        if (!object) {
+            return NULL;
+        }
+        if (object->kind != VALUE_RECORD) {
+            runtime_error_raise("field assignment target expects a record", 1003, "assignment");
+            return NULL;
+        }
+        RecordField *field = record_find(object, target->as.field.field);
+        if (!field) {
+            char message[256];
+            snprintf(message, sizeof(message), "unknown record field: %s", target->as.field.field);
+            runtime_error_raise(message, 1003, "assignment");
+            return NULL;
+        }
+        return field->value;
+    }
+    case AST_EXPR_INDEX: {
+        Value *container = resolve_lvalue_ref(target->as.index.array);
+        if (!container) {
+            return NULL;
+        }
+        Value index = eval_expr(target->as.index.index);
+        if (error_action_pending()) {
+            value_free(index);
+            return NULL;
+        }
+        if (container->kind == VALUE_ARRAY && index.kind == VALUE_NUMBER) {
+            int position = (int)index.as.number;
+            value_free(index);
+            if (position < 0 || (size_t)position >= container->as.array.count) {
+                runtime_error_raise("array index out of range", 1003, "assignment");
+                return NULL;
+            }
+            return &container->as.array.items[position];
+        }
+        if (container->kind == VALUE_RECORD && index.kind == VALUE_STRING) {
+            RecordField *field = record_find(container, index.as.string);
+            if (!field) {
+                char message[256];
+                snprintf(message, sizeof(message), "unknown record field: %s", index.as.string);
+                value_free(index);
+                runtime_error_raise(message, 1003, "assignment");
+                return NULL;
+            }
+            value_free(index);
+            return field->value;
+        }
+        value_free(index);
+        runtime_error_raise("assignment index expects array[number] or record[string]", 1003, "assignment");
+        return NULL;
+    }
+    default:
+        runtime_error_raise("invalid assignment target", 1003, "assignment");
+        return NULL;
+    }
+}
+
+static int assign_lvalue(AstExpr *target, Value value) {
+    switch (target->kind) {
+    case AST_EXPR_IDENT:
+        env_set(target->as.ident, value);
+        return 1;
+    case AST_EXPR_FIELD: {
+        Value *object = resolve_lvalue_ref(target->as.field.object);
+        if (!object) {
+            return 0;
+        }
+        if (object->kind != VALUE_RECORD) {
+            runtime_error_raise("field assignment target expects a record", 1003, "assignment");
+            return 0;
+        }
+        record_set(object, target->as.field.field, value);
+        return 1;
+    }
+    case AST_EXPR_INDEX: {
+        Value *container = resolve_lvalue_ref(target->as.index.array);
+        if (!container) {
+            return 0;
+        }
+        Value index = eval_expr(target->as.index.index);
+        if (error_action_pending()) {
+            value_free(index);
+            return 0;
+        }
+        if (container->kind == VALUE_ARRAY && index.kind == VALUE_NUMBER) {
+            int position = (int)index.as.number;
+            value_free(index);
+            if (position < 0 || (size_t)position >= container->as.array.count) {
+                runtime_error_raise("array index out of range", 1003, "assignment");
+                return 0;
+            }
+            value_free(container->as.array.items[position]);
+            container->as.array.items[position] = value;
+            return 1;
+        }
+        if (container->kind == VALUE_RECORD && index.kind == VALUE_STRING) {
+            record_set(container, index.as.string, value);
+            value_free(index);
+            return 1;
+        }
+        value_free(index);
+        runtime_error_raise("assignment index expects array[number] or record[string]", 1003, "assignment");
+        return 0;
+    }
+    default:
+        runtime_error_raise("invalid assignment target", 1003, "assignment");
+        return 0;
+    }
+}
+
 static EvalResult eval_stmt(AstStmt *stmt) {
     EvalResult no_result = eval_no_result();
     int previous_line = current_line;
@@ -4866,28 +5758,16 @@ static EvalResult eval_stmt(AstStmt *stmt) {
             current_column = previous_column;
             return eval_error_result();
         }
-        env_set(stmt->as.assign.name, value);
-        watcher_trigger(stmt->as.assign.name);
-        break;
-    }
-    case AST_STMT_FIELD_ASSIGN: {
-        Symbol *symbol = env_find(stmt->as.field_assign.name);
-        if (!symbol || symbol->value.kind != VALUE_RECORD) {
-            fprintf(stderr, "field assignment expects a record variable: %s\n",
-                    stmt->as.field_assign.name);
-            current_line = previous_line;
-            current_column = previous_column;
-            return no_result;
-        }
-        int before_error = error_generation;
-        Value value = eval_expr(stmt->as.field_assign.value);
-        if (error_generation != before_error) {
+        if (!assign_lvalue(stmt->as.assign.target, value)) {
             value_free(value);
             current_line = previous_line;
             current_column = previous_column;
             return eval_error_result();
         }
-        record_set(&symbol->value, stmt->as.field_assign.field, value);
+        const char *root_name = lvalue_root_name(stmt->as.assign.target);
+        if (root_name) {
+            watcher_trigger(root_name);
+        }
         break;
     }
     case AST_STMT_PRINT: {
@@ -5070,8 +5950,8 @@ static EvalResult eval_stmt(AstStmt *stmt) {
         return eval_gosub(stmt->as.gosub_label);
     }
     case AST_STMT_BREAK:
-        if (loop_depth == 0) {
-            runtime_error_raise("break outside while loop", 1003, "invalid control flow");
+        if (loop_depth == 0 && consider_depth == 0) {
+            runtime_error_raise("break outside while loop or consider block", 1003, "invalid control flow");
             current_line = previous_line;
             current_column = previous_column;
             return eval_error_result();
@@ -5153,6 +6033,62 @@ static EvalResult eval_stmt(AstStmt *stmt) {
         loop_depth--;
         break;
     }
+    case AST_STMT_CONSIDER: {
+        int before_error = error_generation;
+        Value subject = eval_expr(stmt->as.consider.subject);
+        if (error_generation != before_error) {
+            value_free(subject);
+            current_line = previous_line;
+            current_column = previous_column;
+            return eval_error_result();
+        }
+
+        int matched = 0;
+        EvalResult result = eval_no_result();
+        for (size_t i = 0; i < stmt->as.consider.branches.count; i++) {
+            Value candidate = eval_expr(stmt->as.consider.branches.items[i].match);
+            if (error_generation != before_error) {
+                value_free(candidate);
+                value_free(subject);
+                current_line = previous_line;
+                current_column = previous_column;
+                return eval_error_result();
+            }
+            int equal = values_equal_for_consider(subject, candidate);
+            value_free(candidate);
+            if (error_generation != before_error) {
+                value_free(subject);
+                current_line = previous_line;
+                current_column = previous_column;
+                return eval_error_result();
+            }
+            if (equal) {
+                matched = 1;
+                consider_depth++;
+                result = eval_stmt_list(stmt->as.consider.branches.items[i].body);
+                consider_depth--;
+                break;
+            }
+        }
+
+        if (!matched && stmt->as.consider.else_body.count > 0) {
+            consider_depth++;
+            result = eval_stmt_list(stmt->as.consider.else_body);
+            consider_depth--;
+        }
+
+        value_free(subject);
+        if (result.did_break) {
+            value_free(result.value);
+            break;
+        }
+        if (eval_result_exits_block(result)) {
+            current_line = previous_line;
+            current_column = previous_column;
+            return result;
+        }
+        break;
+    }
     }
 
     current_line = previous_line;
@@ -5220,6 +6156,7 @@ int eval_program(AstStmtList program) {
     error_mode = ERROR_MODE_STOP;
     runtime_stopped = 0;
     loop_depth = 0;
+    consider_depth = 0;
     lock_clear();
     watcher_clear();
     modifier_clear();

@@ -132,6 +132,15 @@ but apostrophe comments are preferred for v0.1.
 
 Strings are stored as C strings. UTF-8 text is accepted, but current string length, indexing, and case conversion helpers are byte-oriented unless a helper states otherwise.
 
+Double-quoted strings may contain literal newline characters:
+
+```basic
+description = "You are in a stone hall.
+Water drips from the ceiling."
+```
+
+Escapes such as `\n`, `\t`, `\"`, and `\\` remain supported. Unknown escapes and unclosed multiline strings are lexer errors.
+
 Booleans:
 
 ```basic
@@ -200,12 +209,18 @@ Assignment targets may be:
 - variables
 - record fields
 - array elements
+- nested paths combining fields and indexes
+- dynamic record fields addressed by string keys
 
 Examples:
 
 ```basic
 customer.name = "Ada"
 scores[0] = 95
+items[i].location = "inventory"
+world.rooms[index].visited = true
+player.inventory[slot].name = "key"
+world.rooms[index][direction] = 3
 ```
 
 Function calls are not valid assignment targets.
@@ -214,6 +229,8 @@ Invalid:
 
 ```basic
 getname() = "Joe"
+items()[0] = 1
+get_player().name = "Bob"
 ```
 
 ---
@@ -641,6 +658,27 @@ while true
 end while
 ```
 
+## Consider
+
+`consider` is a dispatch block for command and menu style branching.
+
+```basic
+consider command
+if "look" then
+    look()
+if "inventory" then
+    show_inventory()
+if "quit" then
+    break
+else
+    print("I do not understand.")
+end consider
+```
+
+The subject expression is evaluated once. Each branch expression at the same indentation as the `consider` line is compared to the subject using normal `=` comparison semantics. The first matching branch executes, later branches are skipped, and `else` executes only if no branch matched. At most one `else` branch is valid.
+
+Inside a consider block, top-level `if expression then` introduces a consider branch rather than a boolean `if`. Normal `if`/`else`/`end if` blocks outside consider are unchanged. `break` exits the consider block. `continue` has no special consider behavior; inside an enclosing loop it continues that loop.
+
 ---
 
 # 10. Functions
@@ -740,7 +778,10 @@ Dynamic access:
 ```basic
 field = "name"
 print(customer[field])
+customer[field] = "Grace"
 ```
+
+Dynamic access evaluates the key expression at runtime. If the left side is a record, the key must be a string. Reading a missing dynamic field returns `unknown`; assigning a missing dynamic field creates it. Arrays keep numeric bracket indexing, so `array["name"]` is invalid and `record[2]` is invalid unless numeric record indexing is added later.
 
 ---
 
@@ -1212,7 +1253,49 @@ if find(users, "george") != nothing then
 end if
 ```
 
+Related helper functions:
+
+- `contains(array, value)` returns true if an array contains a matching value.
+- `remove_value(array, value)` removes the first matching value and returns the resulting array. When the first argument is a variable, the variable is updated in place.
+- `find_by(records, field_name, value)` searches an array of records and returns the first index whose dynamic field value matches `value`, or `nothing` when no record matches.
+- `join_from(array, start_index, separator)` joins string elements from `start_index` through the end. If `start_index` is out of range, it returns `""`.
+- `first(array)` returns the first element, or `nothing` for an empty array.
+- `rest(array)` returns a new array containing all elements after the first. Empty and one-element arrays return `[]`.
+
 No `indexof` alias is included in v0.1. `find` is the standard vocabulary.
+
+## Serialization
+
+`encode(value)` returns a JSON-like string that `decode(text)` can read back.
+
+Supported values are numbers, strings, booleans, `nothing`, `unknown`, arrays, and records.
+
+```basic
+project = {
+    title = "The Lantern Room",
+    areas = areas,
+    items = items,
+    triggers = triggers
+}
+
+text = encode(project)
+loaded = decode(text)
+print(loaded.title)
+```
+
+Strings escape quotes, backslashes, tabs, carriage returns, and newlines. Records are encoded as objects with quoted field names. This is intended as a small gBASIC data format, not a full JSON interoperability layer.
+
+## Source String Quoting
+
+`quote(value)` returns a complete gBASIC string literal suitable for generated source code.
+
+```basic
+line = "description = " + quote(description)
+```
+
+The result includes the surrounding double quotes. It escapes quotes, backslashes, tabs, carriage returns, and newlines; newlines are represented as `\n` rather than literal line breaks. This keeps generated files easy to emit one line at a time and remains compatible with `decode(quote(text))` for strings.
+
+String values are quoted directly. Non-string scalar values use `(string)` conversion behavior. Arrays, records, files, directories, and other non-scalar values are runtime errors.
 
 ---
 
@@ -1281,11 +1364,17 @@ append(array, value)
 prepend(array, value)
 insert(array, index, value)
 remove(array, index)
+remove_value(array, value)
 take_first(array)
 take_last(array)
 reverse(array)
 unique(array)
 sort(array)
+contains(array, value)
+find_by(records, field_name, value)
+join_from(array, start_index, separator)
+first(array)
+rest(array)
 ```
 
 Avoid `push` and `pop` as primary vocabulary in v0.1.

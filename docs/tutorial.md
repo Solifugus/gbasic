@@ -40,6 +40,16 @@ print(ready)
 
 Identifiers are case-sensitive in storage. Keyword-like names such as `end` and `next` are accepted in the limited places where the parser explicitly allows them as identifiers.
 
+Strings use double quotes and may contain literal newlines:
+
+```basic
+description = "You are in a stone hall.
+Water drips from the ceiling."
+print(description)
+```
+
+Escapes such as `\n`, `\t`, `\"`, and `\\` still work. Unknown escapes and strings that reach end-of-file before a closing quote are errors.
+
 ## Modifiers
 
 Modifiers attach domain meaning to assignment or comparison.
@@ -117,7 +127,39 @@ items = ["banana"]
 append(items, "orange")
 prepend(items, "apple")
 print(join(items, ", "))
+
+if contains(items, "banana") then
+    print("has banana")
+end if
+
+words = ["take", "brass", "key"]
+print(join_from(words, 1, " "))
 ```
+
+Use `remove_value(items, value)` to remove the first matching value. It returns the resulting array and also updates the array when the first argument is a variable. `first(items)` returns the first element or `nothing`; `rest(items)` returns a new array containing all but the first element. `find_by(records, field_name, value)` searches an array of records and returns the first matching index or `nothing`.
+
+Use `encode(value)` and `decode(text)` to save and load plain gBASIC data:
+
+```basic
+project = {title = "The Lantern Room", items = items}
+text = encode(project)
+copy = decode(text)
+print(copy.title)
+```
+
+The format is JSON-like and supports numbers, strings, booleans, `nothing`, `unknown`, arrays, and records.
+
+Use `quote(value)` when generating gBASIC source code that contains string literals:
+
+```basic
+description = "A room called \"Hall\".
+Water drips from C:\\caves."
+
+line = "description = " + quote(description)
+print(line)
+```
+
+`quote` returns the surrounding double quotes and escapes quotes, backslashes, tabs, carriage returns, and newlines. Newlines are written as `\n`, which keeps generated source compact and still round-trips with `decode(quote(description))`. Non-string scalar values are converted the same way as the `(string)` modifier; arrays and records are errors.
 
 Records use braces and `name = value` fields:
 
@@ -135,7 +177,16 @@ print(customer.name)
 
 field = "age"
 print(customer[field])
+print(customer["nickname"])
+customer["nickname"] = "Amazing Grace"
+print(customer.nickname)
+
+items = [{name = "lamp", location = "cellar"}]
+items[0].location = "inventory"
+print(items[0].location)
 ```
+
+`customer[field]` is dynamic record access: the key expression must produce a string. A missing dynamic field reads as `unknown`, while assignment creates the field.
 
 ## Functions
 
@@ -215,6 +266,21 @@ while i < 5
     print(i)
 end while
 ```
+
+Use `consider` for command or menu dispatch:
+
+```basic
+consider command
+if "look" then
+    look()
+if "inventory" then
+    show_inventory()
+else
+    print("I do not understand.")
+end consider
+```
+
+The subject after `consider` is evaluated once. Each branch at the same indentation as `consider` compares the subject to the branch expression with `=`, and only the first match runs. `else` runs only if nothing matched. `break` exits the consider block; inside a loop, `continue` still applies to the loop.
 
 ## Nothing And Unknown
 

@@ -13,13 +13,17 @@ typedef enum {
     TOKEN_USE,
     TOKEN_EXPORT,
     TOKEN_IF,
+    TOKEN_CONSIDER_IF,
     TOKEN_THEN,
     TOKEN_ELSE,
+    TOKEN_CONSIDER_ELSE,
     TOKEN_END,
+    TOKEN_END_CONSIDER,
     TOKEN_FOR,
     TOKEN_TO,
     TOKEN_STEP,
     TOKEN_WHILE,
+    TOKEN_CONSIDER,
     TOKEN_BREAK,
     TOKEN_CONTINUE,
     TOKEN_FUNCTION,
@@ -89,6 +93,8 @@ typedef struct {
     int line;
     int column;
     int modifier_content_mode;
+    int consider_depth;
+    int consider_columns[64];
 } Lexer;
 
 void lexer_init(Lexer *lexer, const char *source);

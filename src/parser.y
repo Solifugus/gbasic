@@ -359,6 +359,7 @@ typedef struct {
     AstStmtList stmt_list;
     AstExprList expr_list;
     AstRecordFieldList record_field_list;
+    AstConsiderBranchList consider_branch_list;
     AstNameList name_list;
     AstModifierUse modifier;
     AstModifierSignature modifier_signature;
@@ -368,7 +369,7 @@ typedef struct {
 
 %token <number> NUMBER
 %token <text> IDENT STRING MOD_CONTENT
-%token IF THEN ELSE END PRINT TRUE FALSE NOTHING UNKNOWN_VALUE AND OR NOT WITH FOR TO IN WHILE BREAK CONTINUE FUNCTION RETURN GOTO GOSUB WATCH WITHOUT WATCHERS ON RESUME NEXT STOP ERROR_VALUE MODIFIER PROGRAM LIBRARY LOAD USE EXPORT
+%token IF CONSIDER_IF THEN ELSE CONSIDER_ELSE END END_CONSIDER PRINT TRUE FALSE NOTHING UNKNOWN_VALUE AND OR NOT WITH FOR TO IN WHILE CONSIDER BREAK CONTINUE FUNCTION RETURN GOTO GOSUB WATCH WITHOUT WATCHERS ON RESUME NEXT STOP ERROR_VALUE MODIFIER PROGRAM LIBRARY LOAD USE EXPORT
 %token OP_EQ OP_NE OP_GT OP_LT OP_GE OP_LE OP_NGT OP_NLT OP_NGE OP_NLE
 %token PLUS MINUS STAR SLASH LPAREN MOD_LPAREN RPAREN LBRACKET RBRACKET LBRACE RBRACE COMMA COLON NEWLINE
 %precedence NO_DOT
@@ -376,12 +377,13 @@ typedef struct {
 %define parse.error verbose
 %locations
 
-%type <stmt_list> program statement_list
-%type <stmt> statement assignment print_statement call_statement with_lock_statement for_each_statement while_statement function_statement modifier_statement program_statement library_statement use_statement return_statement label_statement goto_statement gosub_statement break_statement continue_statement watch_statement without_watchers_statement on_error_statement error_statement if_statement inline_statement
+%type <stmt_list> program statement_list consider_statement_list consider_else_opt
+%type <stmt> statement assignment print_statement call_statement with_lock_statement for_each_statement while_statement consider_statement consider_body_statement function_statement modifier_statement program_statement library_statement use_statement return_statement label_statement goto_statement gosub_statement break_statement continue_statement watch_statement without_watchers_statement on_error_statement error_statement if_statement inline_statement
 %type <expr> expression or_expression and_expression comparison_expression
-%type <expr> additive_expression multiplicative_expression unary_expression postfix_expression primary
+%type <expr> additive_expression multiplicative_expression unary_expression postfix_expression primary lvalue
 %type <expr_list> argument_list argument_list_opt
 %type <record_field_list> record_field_list
+%type <consider_branch_list> consider_branch_list
 %type <name_list> parameter_list parameter_list_opt
 %type <modifier> modifier
 %type <modifier_signature> modifier_signature
@@ -408,6 +410,7 @@ statement
     | with_lock_statement { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
     | for_each_statement { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
     | while_statement { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
+    | consider_statement { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
     | function_statement { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
     | modifier_statement { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
     | program_statement { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
@@ -427,15 +430,26 @@ statement
     ;
 
 assignment
-    : variable_name OP_EQ expression { $$ = ast_assign($1, ast_modifier_none(), $3); }
-    | variable_name modifier OP_EQ expression { $$ = ast_assign($1, $2, $4); }
-    | IDENT DOT IDENT OP_EQ expression { $$ = ast_field_assign($1, $3, $5); }
+    : lvalue OP_EQ expression { $$ = ast_assign($1, ast_modifier_none(), $3); }
+    | lvalue modifier OP_EQ expression {
+        if (!is_modifier_target_expr($1)) {
+            yyerror("modifier target must be a variable, field, or index");
+            YYERROR;
+        }
+        $$ = ast_assign($1, $2, $4);
+      }
+    ;
+
+lvalue
+    : variable_name %prec NO_DOT { $$ = ast_ident($1); }
+    | lvalue LBRACKET expression RBRACKET %prec NO_DOT { $$ = ast_index($1, $3); }
+    | lvalue DOT IDENT %prec NO_DOT { $$ = ast_field($1, $3); }
     ;
 
 variable_name
-    : IDENT { $$ = $1; }
-    | END { $$ = copy_const("end"); }
-    | NEXT { $$ = copy_const("next"); }
+    : IDENT %prec NO_DOT { $$ = $1; }
+    | END %prec NO_DOT { $$ = copy_const("end"); }
+    | NEXT %prec NO_DOT { $$ = copy_const("next"); }
     ;
 
 modifier
@@ -460,7 +474,6 @@ print_statement
 
 call_statement
     : IDENT LPAREN argument_list_opt RPAREN { $$ = ast_expr_stmt(ast_call($1, $3)); }
-    | IDENT DOT IDENT LPAREN argument_list_opt RPAREN { $$ = ast_expr_stmt(ast_qualified_call($1, $3, $5)); }
     | ERROR_VALUE DOT IDENT LPAREN argument_list_opt RPAREN {
         size_t length = strlen("error.") + strlen($3);
         char *name = malloc(length + 1);
@@ -495,6 +508,58 @@ while_statement
     : WHILE expression NEWLINE statement_list END WHILE NEWLINE {
         $$ = ast_while($2, $4);
       }
+    ;
+
+consider_statement
+    : CONSIDER expression NEWLINE consider_branch_list consider_else_opt END_CONSIDER NEWLINE {
+        $$ = ast_consider($2, $4, $5);
+      }
+    ;
+
+consider_branch_list
+    : CONSIDER_IF expression THEN NEWLINE consider_statement_list {
+        $$ = ast_consider_branch_list_append(ast_consider_branch_list_empty(), $2, $5);
+      }
+    | consider_branch_list CONSIDER_IF expression THEN NEWLINE consider_statement_list {
+        $$ = ast_consider_branch_list_append($1, $3, $6);
+      }
+    ;
+
+consider_else_opt
+    : %empty { $$ = ast_stmt_list_empty(); }
+    | CONSIDER_ELSE NEWLINE consider_statement_list { $$ = $3; }
+    ;
+
+consider_statement_list
+    : %empty { $$ = ast_stmt_list_empty(); }
+    | consider_statement_list NEWLINE { $$ = $1; }
+    | consider_statement_list consider_body_statement { $$ = ast_stmt_list_append($1, $2); }
+    ;
+
+consider_body_statement
+    : assignment NEWLINE { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
+    | print_statement NEWLINE { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
+    | call_statement NEWLINE { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
+    | with_lock_statement { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
+    | for_each_statement { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
+    | while_statement { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
+    | consider_statement { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
+    | function_statement { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
+    | modifier_statement { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
+    | program_statement { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
+    | library_statement { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
+    | use_statement NEWLINE { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
+    | watch_statement { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
+    | without_watchers_statement { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
+    | on_error_statement NEWLINE { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
+    | error_statement NEWLINE { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
+    | return_statement NEWLINE { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
+    | label_statement NEWLINE { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
+    | goto_statement NEWLINE { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
+    | gosub_statement NEWLINE { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
+    | break_statement NEWLINE { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
+    | continue_statement NEWLINE { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
+    | if_statement { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
     ;
 
 function_statement
@@ -832,9 +897,12 @@ static int yylex(void) {
         yylval.text = copy_text(token.start, token.length);
         return MOD_CONTENT;
     case TOKEN_IF: return IF;
+    case TOKEN_CONSIDER_IF: return CONSIDER_IF;
     case TOKEN_THEN: return THEN;
     case TOKEN_ELSE: return ELSE;
+    case TOKEN_CONSIDER_ELSE: return CONSIDER_ELSE;
     case TOKEN_END: return END;
+    case TOKEN_END_CONSIDER: return END_CONSIDER;
     case TOKEN_PRINT: return PRINT;
     case TOKEN_TRUE: return TRUE;
     case TOKEN_FALSE: return FALSE;
@@ -848,6 +916,7 @@ static int yylex(void) {
     case TOKEN_TO: return TO;
     case TOKEN_IN: return IN;
     case TOKEN_WHILE: return WHILE;
+    case TOKEN_CONSIDER: return CONSIDER;
     case TOKEN_BREAK: return BREAK;
     case TOKEN_CONTINUE: return CONTINUE;
     case TOKEN_FUNCTION: return FUNCTION;

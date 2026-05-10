@@ -9,7 +9,7 @@ This repository contains the v0.1 C implementation. It is intentionally small: a
 Implemented v0.1 pieces include:
 
 - Lexer, parser, AST dump, and evaluator
-- Variables, assignment, `print(...)`, `input(...)`, `if`/`else`, `while`, `break`, `continue`, `for item in items`
+- Variables, assignment, `print(...)`, `input(...)`, `if`/`else`, `consider`, `while`, `break`, `continue`, `for item in items`
 - Arrays, records, indexing, field access
 - User functions, labels, `goto`, `gosub`
 - User-defined modifiers for assignment and comparison
@@ -127,6 +127,15 @@ while true
     end if
     i = i + 1
 end while
+
+consider command
+if "look" then
+    look()
+if "inventory" then
+    show_inventory()
+else
+    print("I do not understand.")
+end consider
 ```
 
 Values and comparisons:
@@ -140,10 +149,22 @@ else
     print(nothing)
 end if
 
+noun = join_from(words, 1, " ")
+print(contains(words, "banana"))
+
+saved = encode({title = "Demo", words = words})
+loaded = decode(saved)
+print(loaded.title)
+
+line = "print(" + quote("hello \"BASIC\"") + ")"
+print(line)
+
 status = unknown
 ```
 
-Function calls are expressions, not assignment targets: `if len(words) = 0 then` is valid, but `len(words) = 0` is invalid.
+Nested assignment works for variables, array elements, record fields, and combinations such as `items[i].location = "inventory"` or `world.rooms[index].visited = true`. Records support static field access with `record.field` and dynamic field access with `record[key]` when `key` is a string; missing dynamic reads return `unknown`, and dynamic assignment creates the field when needed.
+
+Function calls are expressions, not assignment targets: `if len(words) = 0 then` is valid, but `len(words) = 0`, `foo() = 1`, and `get_player().name = "Bob"` are invalid.
 
 Library and `load`:
 

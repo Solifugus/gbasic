@@ -20,6 +20,8 @@ cases=(
     negative_sort_nested_array
     negative_invalid_escape
     negative_unterminated_string
+    negative_multiline_unterminated_string
+    negative_multiline_string_line_tracking
     negative_unknown_order
     negative_find_type
     negative_function_assignment
@@ -27,6 +29,18 @@ cases=(
     negative_foo_assignment
     negative_getname_assignment
     negative_function_result_modifier
+    negative_call_lvalue_index
+    negative_call_lvalue_field
+    negative_call_lvalue_dynamic_index
+    negative_temporary_lvalue
+    negative_malformed_lvalue
+    negative_array_string_key
+    negative_record_numeric_key
+    negative_noncontainer_dynamic_lookup
+    negative_consider_missing_end
+    negative_consider_else_before_if
+    negative_consider_duplicate_else
+    negative_consider_malformed
     negative_while_missing_end
     negative_break_outside_loop
     negative_continue_outside_loop
@@ -41,6 +55,8 @@ cases=(
     negative_lowered_modifier_type
     negative_uppered_modifier_type
     negative_number_modifier_invalid
+    negative_decode_malformed
+    negative_quote_record
 )
 
 for name in "${cases[@]}"; do

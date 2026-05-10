@@ -1,0 +1,16 @@
+"hello"
+"He said \"hi\""
+"C:\\tmp\\game.bas"
+""
+"line one\nline two"
+"tab\there"
+"carriage\rreturn"
+"already has \\n text"
+round
+trip "ok" \ done
+description = "A room called \"Hall\".\nWater drips from C:\\caves."
+A room called "Hall".
+Water drips from C:\caves.
+"42"
+"true"
+"nothing"
