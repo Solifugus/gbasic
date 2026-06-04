@@ -66,6 +66,18 @@ static char *copy_const(const char *text) {
     return copy_text(text, (int)strlen(text));
 }
 
+static void split_qualified_ident(char *text, char **library, char **name) {
+    char *dot = strchr(text, '.');
+    if (!dot) {
+        *library = text;
+        *name = copy_const("");
+        return;
+    }
+    *dot = '\0';
+    *library = text;
+    *name = copy_const(dot + 1);
+}
+
 static int ascii_lower(int ch) {
     return ch >= 'A' && ch <= 'Z' ? ch - 'A' + 'a' : ch;
 }
@@ -368,7 +380,7 @@ typedef struct {
 }
 
 %token <number> NUMBER
-%token <text> IDENT STRING MOD_CONTENT
+%token <text> IDENT STRING MOD_CONTENT QUALIFIED_IDENT
 %token IF CONSIDER_IF THEN ELSE CONSIDER_ELSE END END_CONSIDER PRINT TRUE FALSE NOTHING UNKNOWN_VALUE AND OR NOT WITH FOR TO IN WHILE CONSIDER BREAK CONTINUE FUNCTION RETURN GOTO GOSUB WATCH WITHOUT WATCHERS ON RESUME NEXT STOP ERROR_VALUE MODIFIER PROGRAM LIBRARY LOAD USE EXPORT
 %token OP_EQ OP_NE OP_GT OP_LT OP_GE OP_LE OP_NGT OP_NLT OP_NGE OP_NLE
 %token PLUS MINUS STAR SLASH LPAREN MOD_LPAREN RPAREN LBRACKET RBRACKET LBRACE RBRACE COMMA COLON NEWLINE
@@ -381,7 +393,7 @@ typedef struct {
 %type <stmt> statement assignment print_statement call_statement with_lock_statement for_each_statement while_statement consider_statement consider_body_statement function_statement modifier_statement program_statement library_statement use_statement return_statement label_statement goto_statement gosub_statement break_statement continue_statement watch_statement without_watchers_statement on_error_statement error_statement if_statement inline_statement
 %type <expr> expression or_expression and_expression comparison_expression
 %type <expr> additive_expression multiplicative_expression unary_expression postfix_expression primary lvalue
-%type <expr_list> argument_list argument_list_opt
+%type <expr_list> argument_list argument_list_opt array_argument_list
 %type <record_field_list> record_field_list
 %type <consider_branch_list> consider_branch_list
 %type <name_list> parameter_list parameter_list_opt
@@ -474,6 +486,12 @@ print_statement
 
 call_statement
     : IDENT LPAREN argument_list_opt RPAREN { $$ = ast_expr_stmt(ast_call($1, $3)); }
+    | QUALIFIED_IDENT LPAREN argument_list_opt RPAREN {
+        char *library = NULL;
+        char *name = NULL;
+        split_qualified_ident($1, &library, &name);
+        $$ = ast_expr_stmt(ast_qualified_call(library, name, $3));
+      }
     | ERROR_VALUE DOT IDENT LPAREN argument_list_opt RPAREN {
         size_t length = strlen("error.") + strlen($3);
         char *name = malloc(length + 1);
@@ -592,6 +610,8 @@ library_statement
 use_statement
     : USE IDENT { $$ = ast_use($2, NULL); }
     | LOAD IDENT { $$ = ast_use($2, NULL); }
+    | USE STRING { $$ = ast_use($2, NULL); }
+    | LOAD STRING { $$ = ast_use($2, NULL); }
     | USE IDENT IDENT STRING {
         if (strcmp($3, "from") != 0) {
             yyerror("expected from in use statement");
@@ -768,13 +788,20 @@ primary
             $$ = ast_ident($1);
         }
       }
+    | QUALIFIED_IDENT LPAREN argument_list_opt RPAREN {
+        char *library = NULL;
+        char *name = NULL;
+        split_qualified_ident($1, &library, &name);
+        $$ = ast_qualified_call(library, name, $3);
+      }
     | ERROR_VALUE { $$ = ast_ident(copy_const("error")); }
     | TRUE { $$ = ast_bool(1); }
     | FALSE { $$ = ast_bool(0); }
     | NOTHING { $$ = ast_null(); }
     | UNKNOWN_VALUE { $$ = ast_unknown(); }
     | LPAREN expression RPAREN { $$ = $2; }
-    | LBRACKET argument_list_opt RBRACKET { $$ = ast_array($2); }
+    | LBRACKET optional_newlines RBRACKET { $$ = ast_array(ast_expr_list_empty()); }
+    | LBRACKET optional_newlines array_argument_list optional_newlines RBRACKET { $$ = ast_array($3); }
     | LBRACE optional_newlines RBRACE { $$ = ast_record(ast_record_field_list_empty()); }
     | LBRACE optional_newlines record_field_list optional_newlines RBRACE { $$ = ast_record($3); }
     ;
@@ -829,6 +856,11 @@ argument_list
     | argument_list COMMA expression { $$ = ast_expr_list_append($1, $3); }
     ;
 
+array_argument_list
+    : expression { $$ = ast_expr_list_append(ast_expr_list_empty(), $1); }
+    | array_argument_list COMMA optional_newlines expression { $$ = ast_expr_list_append($1, $4); }
+    ;
+
 parameter_list_opt
     : %empty { $$ = ast_name_list_empty(); }
     | parameter_list { $$ = $1; }
@@ -841,7 +873,9 @@ parameter_list
 
 record_field_list
     : IDENT OP_EQ expression { $$ = ast_record_field_list_append(ast_record_field_list_empty(), $1, $3); }
+    | IDENT COLON expression { $$ = ast_record_field_list_append(ast_record_field_list_empty(), $1, $3); }
     | record_field_list COMMA optional_newlines IDENT OP_EQ expression { $$ = ast_record_field_list_append($1, $4, $6); }
+    | record_field_list COMMA optional_newlines IDENT COLON expression { $$ = ast_record_field_list_append($1, $4, $6); }
     ;
 
 optional_newlines
@@ -880,6 +914,9 @@ static int yylex(void) {
     case TOKEN_IDENT:
         yylval.text = copy_text(token.start, token.length);
         return IDENT;
+    case TOKEN_QUALIFIED_IDENT:
+        yylval.text = copy_text(token.start, token.length);
+        return QUALIFIED_IDENT;
     case TOKEN_NUMBER:
         yylval.number = strtod(token.start, NULL);
         return NUMBER;

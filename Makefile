@@ -1,5 +1,15 @@
 CC := cc
 CFLAGS := -std=c11 -Wall -Wextra -Wpedantic -Iinclude -g
+GTK_AVAILABLE := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --exists gtk+-3.0 && printf 1 || printf 0)
+GTK_CFLAGS := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --cflags gtk+-3.0 2>/dev/null)
+GTK_LIBS := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --libs gtk+-3.0 2>/dev/null)
+
+ifeq ($(GTK_AVAILABLE),1)
+CFLAGS += -DHAVE_GTK=1 $(GTK_CFLAGS)
+LDLIBS += $(GTK_LIBS)
+else
+CFLAGS += -DHAVE_GTK=0
+endif
 
 OBJS := src/main.o src/lexer.o src/parser.tab.o src/ast.o src/eval.o src/builtins.o
 
@@ -8,7 +18,7 @@ OBJS := src/main.o src/lexer.o src/parser.tab.o src/ast.o src/eval.o src/builtin
 all: gbasic
 
 gbasic: $(OBJS)
-	$(CC) $(CFLAGS) -o $@ $(OBJS)
+	$(CC) $(CFLAGS) -o $@ $(OBJS) $(LDLIBS)
 
 src/parser.tab.c src/parser.tab.h: src/parser.y include/ast.h include/lexer.h
 	bison -d -o src/parser.tab.c src/parser.y

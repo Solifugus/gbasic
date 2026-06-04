@@ -4,6 +4,7 @@
 typedef enum {
     TOKEN_EOF,
     TOKEN_IDENT,
+    TOKEN_QUALIFIED_IDENT,
     TOKEN_NUMBER,
     TOKEN_STRING,
     TOKEN_MOD_CONTENT,

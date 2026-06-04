@@ -13,6 +13,10 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#if HAVE_GTK
+#include <gtk/gtk.h>
+#endif
+
 int parse_source(const char *source, AstStmtList *out_program);
 
 typedef enum {
@@ -206,6 +210,28 @@ static UsePair *used_pairs = NULL;
 static size_t used_pair_count = 0;
 static UsePair *use_stack = NULL;
 static size_t use_stack_count = 0;
+static int gui_library_loaded = 0;
+
+#if HAVE_GTK
+typedef struct {
+    char *id;
+    GtkWidget *widget;
+} GuiWidgetBinding;
+
+typedef struct {
+    char *handle_id;
+    GtkWidget *window;
+    GuiWidgetBinding *bindings;
+    size_t binding_count;
+    int closed;
+} GuiNativeWindow;
+
+static GuiNativeWindow *gui_windows = NULL;
+static size_t gui_window_count = 0;
+static int gui_next_window_id = 1;
+static int gui_gtk_init_attempted = 0;
+static int gui_gtk_available = 0;
+#endif
 
 static int path_equal(const char *left, const char *right) {
     return left && right && strcmp(left, right) == 0;
@@ -861,6 +887,522 @@ static void record_set(Value *record, const char *name, Value value) {
     *field->value = value;
     record->as.record.count++;
 }
+
+static int value_is_integer_number(Value value) {
+    if (value.kind != VALUE_NUMBER) {
+        return 0;
+    }
+    double whole = (double)(int)value.as.number;
+    return value.as.number == whole;
+}
+
+static int gui_component_is_container(const char *component) {
+    return strcmp(component, "vert") == 0 || strcmp(component, "horiz") == 0;
+}
+
+static int gui_component_known(const char *component) {
+    return strcmp(component, "vert") == 0 ||
+           strcmp(component, "horiz") == 0 ||
+           strcmp(component, "label") == 0 ||
+           strcmp(component, "input") == 0 ||
+           strcmp(component, "button") == 0 ||
+           strcmp(component, "spacer") == 0;
+}
+
+static RecordField *gui_require_record_field(Value *record,
+                                             const char *name,
+                                             ValueKind kind,
+                                             const char *context) {
+    RecordField *field = record_find(record, name);
+    if (!field) {
+        char message[256];
+        snprintf(message, sizeof(message), "%s missing required field: %s", context, name);
+        runtime_error_raise(message, 1003, "gui");
+        return NULL;
+    }
+    if (field->value->kind != kind) {
+        char message[256];
+        snprintf(message, sizeof(message), "%s field '%s' has wrong type", context, name);
+        runtime_error_raise(message, 1003, "gui");
+        return NULL;
+    }
+    return field;
+}
+
+static int gui_optional_bool_field(Value *record, const char *name, int fallback) {
+    RecordField *field = record_find(record, name);
+    if (!field) {
+        return fallback;
+    }
+    if (field->value->kind != VALUE_BOOL) {
+        char message[256];
+        snprintf(message, sizeof(message), "gui field '%s' must be boolean", name);
+        runtime_error_raise(message, 1003, "gui");
+        return fallback;
+    }
+    return field->value->as.boolean;
+}
+
+static int gui_optional_int_field(Value *record, const char *name, int fallback) {
+    RecordField *field = record_find(record, name);
+    if (!field) {
+        return fallback;
+    }
+    if (!value_is_integer_number(*field->value)) {
+        char message[256];
+        snprintf(message, sizeof(message), "gui field '%s' must be an integer number", name);
+        runtime_error_raise(message, 1003, "gui");
+        return fallback;
+    }
+    return (int)field->value->as.number;
+}
+
+typedef struct {
+    char **ids;
+    size_t count;
+} GuiIdSet;
+
+static void gui_id_set_clear(GuiIdSet *set) {
+    for (size_t i = 0; i < set->count; i++) {
+        free(set->ids[i]);
+    }
+    free(set->ids);
+    set->ids = NULL;
+    set->count = 0;
+}
+
+static int gui_id_set_contains(GuiIdSet *set, const char *id) {
+    for (size_t i = 0; i < set->count; i++) {
+        if (strcmp(set->ids[i], id) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void gui_id_set_add(GuiIdSet *set, const char *id) {
+    char **next = realloc(set->ids, sizeof(char *) * (set->count + 1));
+    if (!next) {
+        abort();
+    }
+    set->ids = next;
+    set->ids[set->count++] = copy_string(id);
+}
+
+static int gui_validate_widget_tree(Value *widget, GuiIdSet *ids) {
+    if (widget->kind != VALUE_RECORD) {
+        runtime_error_raise("gui widget must be a record", 1003, "gui");
+        return 0;
+    }
+
+    RecordField *id_field = gui_require_record_field(widget, "id", VALUE_STRING, "gui widget");
+    if (!id_field) {
+        return 0;
+    }
+    if (id_field->value->as.string[0] == '\0') {
+        runtime_error_raise("gui widget id must not be empty", 1003, "gui");
+        return 0;
+    }
+    if (gui_id_set_contains(ids, id_field->value->as.string)) {
+        char message[256];
+        snprintf(message, sizeof(message), "duplicate gui widget id: %s", id_field->value->as.string);
+        runtime_error_raise(message, 1003, "gui");
+        return 0;
+    }
+    gui_id_set_add(ids, id_field->value->as.string);
+
+    RecordField *component_field =
+        gui_require_record_field(widget, "component", VALUE_STRING, "gui widget");
+    if (!component_field) {
+        return 0;
+    }
+    const char *component = component_field->value->as.string;
+    if (!gui_component_known(component)) {
+        char message[256];
+        snprintf(message, sizeof(message), "unknown gui component: %s", component);
+        runtime_error_raise(message, 1003, "gui");
+        return 0;
+    }
+
+    if (record_find(widget, "width") && !value_is_integer_number(*record_find(widget, "width")->value)) {
+        runtime_error_raise("gui field 'width' must be an integer number", 1003, "gui");
+        return 0;
+    }
+    if (record_find(widget, "height") && !value_is_integer_number(*record_find(widget, "height")->value)) {
+        runtime_error_raise("gui field 'height' must be an integer number", 1003, "gui");
+        return 0;
+    }
+    if (record_find(widget, "enabled") && record_find(widget, "enabled")->value->kind != VALUE_BOOL) {
+        runtime_error_raise("gui field 'enabled' must be boolean", 1003, "gui");
+        return 0;
+    }
+    if (record_find(widget, "visible") && record_find(widget, "visible")->value->kind != VALUE_BOOL) {
+        runtime_error_raise("gui field 'visible' must be boolean", 1003, "gui");
+        return 0;
+    }
+
+    if (gui_component_is_container(component)) {
+        RecordField *spacing = record_find(widget, "spacing");
+        if (spacing && !value_is_integer_number(*spacing->value)) {
+            runtime_error_raise("gui field 'spacing' must be an integer number", 1003, "gui");
+            return 0;
+        }
+        RecordField *contains = record_find(widget, "contains");
+        if (!contains) {
+            Value *items = NULL;
+            record_set(widget, "contains", value_array(items, 0));
+            contains = record_find(widget, "contains");
+        }
+        if (contains->value->kind != VALUE_ARRAY) {
+            runtime_error_raise("gui container field 'contains' must be an array", 1003, "gui");
+            return 0;
+        }
+        for (size_t i = 0; i < contains->value->as.array.count; i++) {
+            if (!gui_validate_widget_tree(&contains->value->as.array.items[i], ids)) {
+                return 0;
+            }
+        }
+        return 1;
+    }
+
+    if (strcmp(component, "label") == 0) {
+        return gui_require_record_field(widget, "value", VALUE_STRING, "gui label") != NULL;
+    }
+    if (strcmp(component, "input") == 0) {
+        return gui_require_record_field(widget, "value", VALUE_STRING, "gui input") != NULL;
+    }
+    if (strcmp(component, "button") == 0) {
+        if (!gui_require_record_field(widget, "label", VALUE_STRING, "gui button")) {
+            return 0;
+        }
+        RecordField *value = record_find(widget, "value");
+        if (!value) {
+            record_set(widget, "value", value_bool(0));
+            return 1;
+        }
+        if (value->value->kind != VALUE_BOOL) {
+            runtime_error_raise("gui button field 'value' must be boolean", 1003, "gui");
+            return 0;
+        }
+        return 1;
+    }
+
+    return 1;
+}
+
+static void gui_collect_widget_refs(Value *window_value, Value *widget) {
+    RecordField *id_field = record_find(widget, "id");
+    if (id_field && id_field->value->kind == VALUE_STRING) {
+        record_set(window_value, id_field->value->as.string, value_copy(*widget));
+    }
+
+    RecordField *contains = record_find(widget, "contains");
+    if (!contains || contains->value->kind != VALUE_ARRAY) {
+        return;
+    }
+    for (size_t i = 0; i < contains->value->as.array.count; i++) {
+        gui_collect_widget_refs(window_value, &contains->value->as.array.items[i]);
+    }
+}
+
+static Value eval_expr(AstExpr *expr);
+
+#if HAVE_GTK
+static GuiNativeWindow *gui_window_registry_find(const char *handle_id);
+#endif
+static char *gui_create_native_window(Value *ui, int width, int height, const char *title);
+
+static void gui_free_window_args(Value width_value,
+                                 Value height_value,
+                                 Value title_value,
+                                 Value ui_value) {
+    value_free(width_value);
+    value_free(height_value);
+    value_free(title_value);
+    value_free(ui_value);
+}
+
+static Value gui_eval_window_call(AstExpr *expr) {
+    if (expr->as.call.args.count != 4) {
+        runtime_error_raise("gui.window expects four arguments", 1003, "gui");
+        return value_null();
+    }
+
+    Value width_value = eval_expr(expr->as.call.args.items[0]);
+    Value height_value = eval_expr(expr->as.call.args.items[1]);
+    Value title_value = eval_expr(expr->as.call.args.items[2]);
+    Value ui_value = eval_expr(expr->as.call.args.items[3]);
+    if (error_action_pending()) {
+        gui_free_window_args(width_value, height_value, title_value, ui_value);
+        return value_null();
+    }
+
+    if (!value_is_integer_number(width_value) || !value_is_integer_number(height_value)) {
+        gui_free_window_args(width_value, height_value, title_value, ui_value);
+        runtime_error_raise("gui.window width and height must be integer numbers", 1003, "gui");
+        return value_null();
+    }
+    if (title_value.kind != VALUE_STRING) {
+        gui_free_window_args(width_value, height_value, title_value, ui_value);
+        runtime_error_raise("gui.window title must be a string", 1003, "gui");
+        return value_null();
+    }
+    if (ui_value.kind != VALUE_RECORD) {
+        gui_free_window_args(width_value, height_value, title_value, ui_value);
+        runtime_error_raise("gui.window ui must be a record", 1003, "gui");
+        return value_null();
+    }
+
+    GuiIdSet ids = {0};
+    int ok = gui_validate_widget_tree(&ui_value, &ids);
+    gui_id_set_clear(&ids);
+    if (!ok || error_action_pending()) {
+        gui_free_window_args(width_value, height_value, title_value, ui_value);
+        return value_null();
+    }
+
+    char *handle_id = gui_create_native_window(&ui_value,
+                                               (int)width_value.as.number,
+                                               (int)height_value.as.number,
+                                               title_value.as.string);
+    if (error_action_pending() || !handle_id) {
+        gui_free_window_args(width_value, height_value, title_value, ui_value);
+        free(handle_id);
+        return value_null();
+    }
+
+    Value window_value = value_record(NULL, 0);
+    record_set(&window_value, "@window_id", value_string(handle_id));
+    record_set(&window_value, "@root", value_copy(ui_value));
+    gui_collect_widget_refs(&window_value, &ui_value);
+
+    free(handle_id);
+    gui_free_window_args(width_value, height_value, title_value, ui_value);
+    return window_value;
+}
+
+static Value gui_eval_run_call(AstExpr *expr) {
+    if (expr->as.call.args.count != 1) {
+        runtime_error_raise("gui.run expects one argument", 1003, "gui");
+        return value_null();
+    }
+
+    Value window_value = eval_expr(expr->as.call.args.items[0]);
+    if (error_action_pending()) {
+        value_free(window_value);
+        return value_null();
+    }
+    if (window_value.kind != VALUE_RECORD) {
+        value_free(window_value);
+        runtime_error_raise("gui.run expects a window record", 1003, "gui");
+        return value_null();
+    }
+
+    RecordField *handle_field = record_find(&window_value, "@window_id");
+    if (!handle_field || handle_field->value->kind != VALUE_STRING) {
+        value_free(window_value);
+        runtime_error_raise("gui.run expects a window created by gui.window", 1003, "gui");
+        return value_null();
+    }
+
+#if HAVE_GTK
+    GuiNativeWindow *window = gui_window_registry_find(handle_field->value->as.string);
+    if (!window || !window->window) {
+        value_free(window_value);
+        runtime_error_raise("gui window handle is invalid", 1003, "gui");
+        return value_null();
+    }
+    gtk_widget_show_all(window->window);
+    while (!window->closed) {
+        gtk_main_iteration_do(TRUE);
+    }
+#else
+    gui_ensure_gtk_available();
+    if (error_action_pending()) {
+        value_free(window_value);
+        return value_null();
+    }
+#endif
+
+    value_free(window_value);
+    return value_null();
+}
+
+#if HAVE_GTK
+static int gui_ensure_gtk_available(void) {
+    if (gui_gtk_init_attempted) {
+        return gui_gtk_available;
+    }
+    gui_gtk_init_attempted = 1;
+    gui_gtk_available = gtk_init_check(NULL, NULL);
+    if (!gui_gtk_available) {
+        runtime_error_raise("GTK could not be initialized", 1003, "gui");
+    }
+    return gui_gtk_available;
+}
+
+static void gui_window_binding_add(GuiNativeWindow *window, const char *id, GtkWidget *widget) {
+    GuiWidgetBinding *next = realloc(window->bindings,
+                                     sizeof(GuiWidgetBinding) * (window->binding_count + 1));
+    if (!next) {
+        abort();
+    }
+    window->bindings = next;
+    window->bindings[window->binding_count].id = copy_string(id);
+    window->bindings[window->binding_count].widget = widget;
+    window->binding_count++;
+}
+
+static void gui_apply_widget_state(GtkWidget *widget, Value *node) {
+    int width = gui_optional_int_field(node, "width", -1);
+    int height = gui_optional_int_field(node, "height", -1);
+    if (error_action_pending()) {
+        return;
+    }
+    if (width >= 0 || height >= 0) {
+        gtk_widget_set_size_request(widget, width, height);
+    }
+    gtk_widget_set_sensitive(widget, gui_optional_bool_field(node, "enabled", 1));
+    if (error_action_pending()) {
+        return;
+    }
+    if (!gui_optional_bool_field(node, "visible", 1)) {
+        gtk_widget_hide(widget);
+    }
+}
+
+static GtkWidget *gui_build_gtk_widget(Value *node, GuiNativeWindow *window) {
+    RecordField *component_field = record_find(node, "component");
+    RecordField *id_field = record_find(node, "id");
+    const char *component = component_field->value->as.string;
+    GtkWidget *widget = NULL;
+
+    if (strcmp(component, "vert") == 0 || strcmp(component, "horiz") == 0) {
+        GtkOrientation orientation = strcmp(component, "vert") == 0
+            ? GTK_ORIENTATION_VERTICAL
+            : GTK_ORIENTATION_HORIZONTAL;
+        int spacing = gui_optional_int_field(node, "spacing", 0);
+        if (error_action_pending()) {
+            return NULL;
+        }
+        widget = gtk_box_new(orientation, spacing);
+        RecordField *contains = record_find(node, "contains");
+        if (contains && contains->value->kind == VALUE_ARRAY) {
+            for (size_t i = 0; i < contains->value->as.array.count; i++) {
+                GtkWidget *child = gui_build_gtk_widget(&contains->value->as.array.items[i], window);
+                if (error_action_pending()) {
+                    return NULL;
+                }
+                gtk_box_pack_start(GTK_BOX(widget), child, FALSE, FALSE, 0);
+            }
+        }
+    } else if (strcmp(component, "label") == 0) {
+        widget = gtk_label_new(record_find(node, "value")->value->as.string);
+    } else if (strcmp(component, "input") == 0) {
+        widget = gtk_entry_new();
+        gtk_entry_set_text(GTK_ENTRY(widget), record_find(node, "value")->value->as.string);
+    } else if (strcmp(component, "button") == 0) {
+        widget = gtk_toggle_button_new_with_label(record_find(node, "label")->value->as.string);
+        gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(widget),
+                                     record_find(node, "value")->value->as.boolean);
+    } else if (strcmp(component, "spacer") == 0) {
+        widget = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    }
+
+    gui_apply_widget_state(widget, node);
+    if (error_action_pending()) {
+        return NULL;
+    }
+    gui_window_binding_add(window, id_field->value->as.string, widget);
+    return widget;
+}
+
+static GuiNativeWindow *gui_window_registry_find(const char *handle_id) {
+    for (size_t i = 0; i < gui_window_count; i++) {
+        if (strcmp(gui_windows[i].handle_id, handle_id) == 0) {
+            return &gui_windows[i];
+        }
+    }
+    return NULL;
+}
+
+static void gui_on_window_destroy(GtkWidget *widget, gpointer data) {
+    (void)widget;
+    GuiNativeWindow *window = data;
+    if (window) {
+        window->closed = 1;
+        window->window = NULL;
+    }
+}
+
+static char *gui_create_native_window(Value *ui, int width, int height, const char *title) {
+    if (!gui_ensure_gtk_available()) {
+        return NULL;
+    }
+
+    GuiNativeWindow *next = realloc(gui_windows, sizeof(GuiNativeWindow) * (gui_window_count + 1));
+    if (!next) {
+        abort();
+    }
+    gui_windows = next;
+    GuiNativeWindow *window = &gui_windows[gui_window_count];
+    memset(window, 0, sizeof(*window));
+    gui_window_count++;
+
+    char handle_id[64];
+    snprintf(handle_id, sizeof(handle_id), "gui-window-%d", gui_next_window_id++);
+    window->handle_id = copy_string(handle_id);
+    window->window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+    gtk_window_set_title(GTK_WINDOW(window->window), title);
+    gtk_window_set_default_size(GTK_WINDOW(window->window), width, height);
+
+    GtkWidget *root_widget = gui_build_gtk_widget(ui, window);
+    if (error_action_pending()) {
+        return NULL;
+    }
+    gtk_container_add(GTK_CONTAINER(window->window), root_widget);
+    g_signal_connect(window->window, "destroy", G_CALLBACK(gui_on_window_destroy), window);
+    return copy_string(window->handle_id);
+}
+
+static void gui_clear_native_windows(void) {
+    for (size_t i = 0; i < gui_window_count; i++) {
+        for (size_t j = 0; j < gui_windows[i].binding_count; j++) {
+            free(gui_windows[i].bindings[j].id);
+        }
+        free(gui_windows[i].bindings);
+        free(gui_windows[i].handle_id);
+        if (gui_windows[i].window) {
+            gtk_widget_destroy(gui_windows[i].window);
+        }
+    }
+    free(gui_windows);
+    gui_windows = NULL;
+    gui_window_count = 0;
+    gui_next_window_id = 1;
+    gui_gtk_init_attempted = 0;
+    gui_gtk_available = 0;
+}
+#else
+static int gui_ensure_gtk_available(void) {
+    runtime_error_raise("gui support is unavailable; install GTK 3 development packages and rebuild",
+                        1003,
+                        "gui");
+    return 0;
+}
+
+static char *gui_create_native_window(Value *ui, int width, int height, const char *title) {
+    (void)ui;
+    (void)width;
+    (void)height;
+    (void)title;
+    gui_ensure_gtk_available();
+    return NULL;
+}
+
+static void gui_clear_native_windows(void) {
+}
+#endif
 
 static int string_equal_caseless(const char *left, const char *right) {
     while (*left && *right) {
@@ -2055,6 +2597,9 @@ static void library_import(const char *name, const char *path) {
 }
 
 static void library_import_from_block(AstStmt *library) {
+    if (strcmp(library->as.library.name, "gui") == 0) {
+        gui_library_loaded = 1;
+    }
     for (size_t i = 0; i < library->as.library.body.count; i++) {
         AstStmt *stmt = library->as.library.body.items[i];
         if (stmt->kind == AST_STMT_USE) {
@@ -3807,6 +4352,21 @@ static Value builtin_decode_text(Value text) {
 
 static Value eval_call(AstExpr *expr) {
     if (expr->as.call.library) {
+        if (strcmp(expr->as.call.library, "gui") == 0) {
+            if (!gui_library_loaded) {
+                runtime_error_raise("library not loaded: gui", 1003, "gui");
+                return value_null();
+            }
+
+            if (strcmp(expr->as.call.name, "window") == 0) {
+                return gui_eval_window_call(expr);
+            }
+
+            if (strcmp(expr->as.call.name, "run") == 0) {
+                return gui_eval_run_call(expr);
+            }
+        }
+
         FunctionDef *function = function_resolve(expr->as.call.library, expr->as.call.name);
         if (function) {
             return eval_user_function(expr, function);
@@ -6164,6 +6724,8 @@ int eval_program(AstStmtList program) {
     loaded_files_clear();
     use_pairs_clear(&used_pairs, &used_pair_count);
     use_pairs_clear(&use_stack, &use_stack_count);
+    gui_clear_native_windows();
+    gui_library_loaded = 0;
     free(current_import_path);
     current_import_path = NULL;
     free(root_source_path);

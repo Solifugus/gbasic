@@ -232,6 +232,34 @@ static Token identifier_token(Lexer *lexer, const char *start, int line, int col
         lexer->column = saved_column;
     }
     TokenType type = identifier_type(start, (int)(lexer->current - start));
+    if (type == TOKEN_IDENT && peek(lexer) == '.' &&
+        (isalpha((unsigned char)peek_next(lexer)) || peek_next(lexer) == '_')) {
+        const char *saved_current = lexer->current;
+        int saved_line = lexer->line;
+        int saved_column = lexer->column;
+
+        advance(lexer);
+        while (isalnum((unsigned char)peek(lexer)) || peek(lexer) == '_') {
+            advance(lexer);
+        }
+
+        const char *after_second_ident = lexer->current;
+        int after_second_line = lexer->line;
+        int after_second_column = lexer->column;
+        while (peek(lexer) == ' ' || peek(lexer) == '\t' || peek(lexer) == '\r') {
+            advance(lexer);
+        }
+        if (peek(lexer) == '(') {
+            lexer->current = after_second_ident;
+            lexer->line = after_second_line;
+            lexer->column = after_second_column;
+            return make_token(lexer, TOKEN_QUALIFIED_IDENT, start, line, column);
+        }
+
+        lexer->current = saved_current;
+        lexer->line = saved_line;
+        lexer->column = saved_column;
+    }
     if (type == TOKEN_CONSIDER) {
         if (lexer->consider_depth < 64) {
             lexer->consider_columns[lexer->consider_depth] = column;
@@ -326,6 +354,7 @@ const char *token_type_name(TokenType type) {
     switch (type) {
     case TOKEN_EOF: return "EOF";
     case TOKEN_IDENT: return "IDENT";
+    case TOKEN_QUALIFIED_IDENT: return "QUALIFIED_IDENT";
     case TOKEN_NUMBER: return "NUMBER";
     case TOKEN_STRING: return "STRING";
     case TOKEN_MOD_CONTENT: return "MOD_CONTENT";

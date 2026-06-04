@@ -27,12 +27,21 @@ Requirements:
 - C compiler with C11 support
 - `make`
 - `bison`
+- optional: `pkg-config` and GTK 3 development headers for GUI support
+
+Linux packages for the GTK proof of concept:
+
+- Debian/Ubuntu: `libgtk-3-dev pkg-config`
+- Fedora: `gtk3-devel pkgconf-pkg-config`
+- Arch: `gtk3 pkgconf`
 
 Build:
 
 ```sh
 make
 ```
+
+If GTK 3 development files are available, `make` enables the Stage 2 GUI proof of concept automatically. If GTK is unavailable, the interpreter still builds and runs non-GUI programs, but `gui.window(...)` and `gui.run(...)` fail with a clear runtime error.
 
 Clean and rebuild:
 
@@ -84,6 +93,14 @@ Run negative lexer/parser diagnostic tests:
 ```sh
 ./tests/run_negative.sh
 ```
+
+Manual GUI proof-of-concept run:
+
+```sh
+GBASIC_PATH=stdlib ./gbasic examples/gui/demo.bas
+```
+
+See [examples/gui/README.md](examples/gui/README.md) for manual verification steps.
 
 ## Language Examples
 
@@ -179,6 +196,12 @@ program demo(args)
     load math
     print(double(21))
 end program
+```
+
+String `load` form for library names is also accepted:
+
+```basic
+load "gui"
 ```
 
 Watcher:
