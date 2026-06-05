@@ -1,13 +1,26 @@
 # GUI Demo
 
-This demo exercises the Stage 2 GTK proof of concept renderer only.
+These demos exercise the current GTK proof of concept through Stage 6A.
 
-Current Stage 2 scope:
+Current implemented scope:
 
-- static rendering from the initial record tree
-- no live value synchronization back into rendered widgets
-- no watcher integration with the GUI event loop
-- no dynamic widget tree mutation after `gui.window(...)`
+- static rendering from the current record tree at `gui.run(win)` time
+- `gui.window(...)` returns a stable window record
+- widgets are addressable as `win.<id>`
+- pre-run record mutations are reflected in the first rendered window
+- committed input changes update the live widget record
+- button clicks set the live button `value` to `true`
+- queued GUI-originated value changes trigger normal gBASIC watchers after the GTK event iteration
+- watcher-driven record changes now refresh existing GTK widgets after watcher execution
+
+Still not implemented:
+
+- dynamic widget tree mutation after `gui.window(...)`
+
+Current Stage 6A note:
+
+- refresh is limited to already-rendered widgets
+- no structural rebuilds or dynamic widget creation/removal happen yet
 
 ## Requirements
 
@@ -23,6 +36,18 @@ From the repository root:
 GBASIC_PATH=stdlib ./gbasic examples/gui/demo.bas
 ```
 
+Access-pattern demo:
+
+```sh
+GBASIC_PATH=stdlib ./gbasic examples/gui/access_demo.bas
+```
+
+Watcher demo:
+
+```sh
+GBASIC_PATH=stdlib ./gbasic examples/gui/watch_demo.bas
+```
+
 ## Manual Test Steps
 
 1. Build with `make clean && make`.
@@ -31,6 +56,31 @@ GBASIC_PATH=stdlib ./gbasic examples/gui/demo.bas
 4. Verify the layout is vertical with spacing between rows.
 5. Verify the first label shows `Hello gBASIC GUI`.
 6. Verify the input starts empty.
-7. Verify the button shows `Save`.
-8. Verify the final label shows `Ready`.
-9. Close the window and confirm the process exits cleanly.
+7. Verify the button shows `Commit`, not `Save`.
+8. Verify the final label shows `Changed before run`.
+9. Type text into the input, then press Enter or move focus away.
+10. Click the button.
+11. Close the window and confirm the process exits cleanly.
+
+Access demo follow-up:
+
+1. Run `GBASIC_PATH=stdlib ./gbasic examples/gui/access_demo.bas`.
+2. Verify the first printed line before the window opens is `Ada`.
+3. In the window, change the input text and commit it with Enter or focus loss.
+4. Click the `Commit` button.
+5. Close the window.
+6. Verify the next printed line is the committed input text.
+7. Verify the final printed line is `true`.
+
+Watcher demo follow-up:
+
+1. Run `GBASIC_PATH=stdlib ./gbasic examples/gui/watch_demo.bas`.
+2. Change the input text and commit it with Enter or focus loss.
+3. Verify `name committed` and the committed text print in the terminal.
+4. Verify the visible status label updates to `Committed: ...`.
+5. Click the `Save` button.
+6. Verify `save clicked` prints in the terminal.
+7. Verify the status label updates to `Saved via watcher`.
+8. Verify the button caption returns to `Save` and the button is no longer visually down.
+9. Close the window.
+10. Verify the final printed line is the last watcher-written `win.status.value`.

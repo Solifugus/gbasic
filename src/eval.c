@@ -213,18 +213,33 @@ static size_t use_stack_count = 0;
 static int gui_library_loaded = 0;
 
 #if HAVE_GTK
+typedef struct GuiNativeWindow GuiNativeWindow;
+
 typedef struct {
     char *id;
     GtkWidget *widget;
+    Value *widget_record;
+    GuiNativeWindow *window;
 } GuiWidgetBinding;
 
 typedef struct {
+    char *window_handle_id;
+    char *widget_id;
+    char *field_name;
+    Value new_value;
+} GuiPendingMutation;
+
+struct GuiNativeWindow {
     char *handle_id;
+    char *watch_root_path;
     GtkWidget *window;
     GuiWidgetBinding *bindings;
     size_t binding_count;
+    GuiPendingMutation *pending_mutations;
+    size_t pending_mutation_count;
+    int sync_depth;
     int closed;
-} GuiNativeWindow;
+};
 
 static GuiNativeWindow *gui_windows = NULL;
 static size_t gui_window_count = 0;
@@ -888,6 +903,8 @@ static void record_set(Value *record, const char *name, Value value) {
     record->as.record.count++;
 }
 
+static int string_equal_caseless(const char *left, const char *right);
+
 static int value_is_integer_number(Value value) {
     if (value.kind != VALUE_NUMBER) {
         return 0;
@@ -987,6 +1004,44 @@ static void gui_id_set_add(GuiIdSet *set, const char *id) {
     }
     set->ids = next;
     set->ids[set->count++] = copy_string(id);
+}
+
+static int gui_window_field_reserved(const char *name) {
+    return strcmp(name, "_window") == 0 ||
+           strcmp(name, "_root") == 0 ||
+           strcmp(name, "_ids") == 0;
+}
+
+static int gui_id_is_keyword(const char *name) {
+    static const char *keywords[] = {
+        "if", "then", "else", "end", "print", "for", "to", "step", "while",
+        "consider", "break", "continue", "function", "return", "goto", "gosub",
+        "watch", "without", "watchers", "modifier", "program", "library",
+        "load", "use", "export", "on", "error", "resume", "next", "stop",
+        "true", "false", "nothing", "unknown", "and", "or", "not", "with", "in"
+    };
+
+    for (size_t i = 0; i < sizeof(keywords) / sizeof(keywords[0]); i++) {
+        if (string_equal_caseless(name, keywords[i])) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int gui_id_is_exposable_identifier(const char *id) {
+    if (!id || id[0] == '\0') {
+        return 0;
+    }
+    if (!(isalpha((unsigned char)id[0]) || id[0] == '_')) {
+        return 0;
+    }
+    for (size_t i = 1; id[i] != '\0'; i++) {
+        if (!(isalnum((unsigned char)id[i]) || id[i] == '_')) {
+            return 0;
+        }
+    }
+    return !gui_id_is_keyword(id);
 }
 
 static int gui_validate_widget_tree(Value *widget, GuiIdSet *ids) {
@@ -1090,27 +1145,152 @@ static int gui_validate_widget_tree(Value *widget, GuiIdSet *ids) {
     return 1;
 }
 
-static void gui_collect_widget_refs(Value *window_value, Value *widget) {
-    RecordField *id_field = record_find(widget, "id");
-    if (id_field && id_field->value->kind == VALUE_STRING) {
-        record_set(window_value, id_field->value->as.string, value_copy(*widget));
-    }
-
-    RecordField *contains = record_find(widget, "contains");
-    if (!contains || contains->value->kind != VALUE_ARRAY) {
-        return;
-    }
-    for (size_t i = 0; i < contains->value->as.array.count; i++) {
-        gui_collect_widget_refs(window_value, &contains->value->as.array.items[i]);
-    }
-}
-
 static Value eval_expr(AstExpr *expr);
+static Value *resolve_lvalue_ref(AstExpr *target);
+static char *lvalue_watch_path(AstExpr *target);
 
 #if HAVE_GTK
 static GuiNativeWindow *gui_window_registry_find(const char *handle_id);
+static void gui_window_flush_mutations(GuiNativeWindow *window);
+static void gui_window_refresh_widgets(GuiNativeWindow *window);
 #endif
-static char *gui_create_native_window(Value *ui, int width, int height, const char *title);
+static char *gui_create_native_window(Value *ui,
+                                      int width,
+                                      int height,
+                                      const char *title,
+                                      const char *watch_root_path);
+static void watcher_trigger_change(const char *path);
+
+static int gui_build_widget_lookup(Value *lookup, Value *widget, const size_t *path, size_t depth) {
+    RecordField *id_field = record_find(widget, "id");
+    if (!id_field || id_field->value->kind != VALUE_STRING) {
+        runtime_error_raise("gui widget missing required field: id", 1003, "gui");
+        return 0;
+    }
+
+    const char *id = id_field->value->as.string;
+    if (gui_window_field_reserved(id)) {
+        char message[256];
+        snprintf(message, sizeof(message), "gui widget id collides with window field: %s", id);
+        runtime_error_raise(message, 1003, "gui");
+        return 0;
+    }
+    if (!gui_id_is_exposable_identifier(id)) {
+        char message[256];
+        snprintf(message, sizeof(message), "gui widget id is not exposable as win.%s", id);
+        runtime_error_raise(message, 1003, "gui");
+        return 0;
+    }
+
+    Value *items = NULL;
+    if (depth > 0) {
+        items = malloc(sizeof(Value) * depth);
+        if (!items) {
+            abort();
+        }
+        for (size_t i = 0; i < depth; i++) {
+            items[i] = value_number((double)path[i]);
+        }
+    }
+    record_set(lookup, id, value_array(items, depth));
+
+    RecordField *contains = record_find(widget, "contains");
+    if (!contains || contains->value->kind != VALUE_ARRAY) {
+        return 1;
+    }
+    for (size_t i = 0; i < contains->value->as.array.count; i++) {
+        size_t child_path[256];
+        if (depth >= sizeof(child_path) / sizeof(child_path[0])) {
+            runtime_error_raise("gui widget tree nesting too deep", 1003, "gui");
+            return 0;
+        }
+        for (size_t j = 0; j < depth; j++) {
+            child_path[j] = path[j];
+        }
+        child_path[depth] = i;
+        if (!gui_build_widget_lookup(lookup,
+                                     &contains->value->as.array.items[i],
+                                     child_path,
+                                     depth + 1)) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int gui_window_fields(Value *window,
+                             RecordField **window_meta,
+                             RecordField **root_field,
+                             RecordField **ids_field) {
+    if (!window || window->kind != VALUE_RECORD) {
+        return 0;
+    }
+
+    RecordField *meta = record_find(window, "_window");
+    RecordField *root = record_find(window, "_root");
+    RecordField *ids = record_find(window, "_ids");
+    if (!meta || !root || !ids) {
+        return 0;
+    }
+    if (meta->value->kind != VALUE_RECORD ||
+        root->value->kind != VALUE_RECORD ||
+        ids->value->kind != VALUE_RECORD) {
+        return 0;
+    }
+
+    if (window_meta) {
+        *window_meta = meta;
+    }
+    if (root_field) {
+        *root_field = root;
+    }
+    if (ids_field) {
+        *ids_field = ids;
+    }
+    return 1;
+}
+
+static Value *gui_window_lookup_widget_ref(Value *window, const char *id) {
+    RecordField *root_field = NULL;
+    RecordField *ids_field = NULL;
+    if (!gui_window_fields(window, NULL, &root_field, &ids_field)) {
+        return NULL;
+    }
+
+    RecordField *path_field = record_find(ids_field->value, id);
+    if (!path_field) {
+        return NULL;
+    }
+    if (path_field->value->kind != VALUE_ARRAY) {
+        runtime_error_raise("gui window id lookup is malformed", 1003, "gui");
+        return NULL;
+    }
+
+    Value *current = root_field->value;
+    for (size_t i = 0; i < path_field->value->as.array.count; i++) {
+        Value step = path_field->value->as.array.items[i];
+        if (!value_is_integer_number(step)) {
+            runtime_error_raise("gui window id lookup path is malformed", 1003, "gui");
+            return NULL;
+        }
+        if (current->kind != VALUE_RECORD) {
+            runtime_error_raise("gui window root lookup is malformed", 1003, "gui");
+            return NULL;
+        }
+        RecordField *contains = record_find(current, "contains");
+        if (!contains || contains->value->kind != VALUE_ARRAY) {
+            runtime_error_raise("gui window root lookup is malformed", 1003, "gui");
+            return NULL;
+        }
+        int index = (int)step.as.number;
+        if (index < 0 || (size_t)index >= contains->value->as.array.count) {
+            runtime_error_raise("gui window id lookup path is out of range", 1003, "gui");
+            return NULL;
+        }
+        current = &contains->value->as.array.items[index];
+    }
+    return current;
+}
 
 static void gui_free_window_args(Value width_value,
                                  Value height_value,
@@ -1161,23 +1341,27 @@ static Value gui_eval_window_call(AstExpr *expr) {
         return value_null();
     }
 
-    char *handle_id = gui_create_native_window(&ui_value,
-                                               (int)width_value.as.number,
-                                               (int)height_value.as.number,
-                                               title_value.as.string);
-    if (error_action_pending() || !handle_id) {
+    Value window_meta = value_record(NULL, 0);
+    Value ids_value = value_record(NULL, 0);
+    size_t root_path[1] = {0};
+    if (!gui_build_widget_lookup(&ids_value, &ui_value, root_path, 0) || error_action_pending()) {
+        value_free(ids_value);
         gui_free_window_args(width_value, height_value, title_value, ui_value);
-        free(handle_id);
         return value_null();
     }
 
-    Value window_value = value_record(NULL, 0);
-    record_set(&window_value, "@window_id", value_string(handle_id));
-    record_set(&window_value, "@root", value_copy(ui_value));
-    gui_collect_widget_refs(&window_value, &ui_value);
+    record_set(&window_meta, "width", value_number(width_value.as.number));
+    record_set(&window_meta, "height", value_number(height_value.as.number));
+    record_set(&window_meta, "title", value_string(title_value.as.string));
 
-    free(handle_id);
-    gui_free_window_args(width_value, height_value, title_value, ui_value);
+    Value window_value = value_record(NULL, 0);
+    record_set(&window_value, "_window", window_meta);
+    record_set(&window_value, "_root", ui_value);
+    record_set(&window_value, "_ids", ids_value);
+
+    value_free(width_value);
+    value_free(height_value);
+    value_free(title_value);
     return window_value;
 }
 
@@ -1187,44 +1371,110 @@ static Value gui_eval_run_call(AstExpr *expr) {
         return value_null();
     }
 
-    Value window_value = eval_expr(expr->as.call.args.items[0]);
-    if (error_action_pending()) {
-        value_free(window_value);
-        return value_null();
+    AstExpr *window_expr = expr->as.call.args.items[0];
+    Value *live_window = NULL;
+    Value window_value = value_null();
+    int owns_window_value = 0;
+
+    if (window_expr->kind == AST_EXPR_IDENT ||
+        window_expr->kind == AST_EXPR_FIELD ||
+        window_expr->kind == AST_EXPR_INDEX) {
+        live_window = resolve_lvalue_ref(window_expr);
+        if (error_action_pending()) {
+            return value_null();
+        }
     }
-    if (window_value.kind != VALUE_RECORD) {
-        value_free(window_value);
+    if (!live_window) {
+        window_value = eval_expr(window_expr);
+        if (error_action_pending()) {
+            value_free(window_value);
+            return value_null();
+        }
+        live_window = &window_value;
+        owns_window_value = 1;
+    }
+
+    if (live_window->kind != VALUE_RECORD) {
+        if (owns_window_value) {
+            value_free(window_value);
+        }
         runtime_error_raise("gui.run expects a window record", 1003, "gui");
         return value_null();
     }
 
-    RecordField *handle_field = record_find(&window_value, "@window_id");
-    if (!handle_field || handle_field->value->kind != VALUE_STRING) {
-        value_free(window_value);
+    RecordField *window_meta = NULL;
+    if (!gui_window_fields(live_window, &window_meta, NULL, NULL)) {
+        if (owns_window_value) {
+            value_free(window_value);
+        }
+        runtime_error_raise("gui.run expects a window created by gui.window", 1003, "gui");
+        return value_null();
+    }
+    RecordField *width_field = record_find(window_meta->value, "width");
+    RecordField *height_field = record_find(window_meta->value, "height");
+    RecordField *title_field = record_find(window_meta->value, "title");
+    RecordField *root_field = NULL;
+    if (!width_field || !height_field || !title_field ||
+        width_field->value->kind != VALUE_NUMBER ||
+        height_field->value->kind != VALUE_NUMBER ||
+        title_field->value->kind != VALUE_STRING ||
+        !gui_window_fields(live_window, &window_meta, &root_field, NULL)) {
+        if (owns_window_value) {
+            value_free(window_value);
+        }
         runtime_error_raise("gui.run expects a window created by gui.window", 1003, "gui");
         return value_null();
     }
 
 #if HAVE_GTK
-    GuiNativeWindow *window = gui_window_registry_find(handle_field->value->as.string);
+    char *watch_root_path = NULL;
+    if (window_expr->kind == AST_EXPR_IDENT ||
+        window_expr->kind == AST_EXPR_FIELD ||
+        window_expr->kind == AST_EXPR_INDEX) {
+        watch_root_path = lvalue_watch_path(window_expr);
+    }
+    char *handle_id = gui_create_native_window(root_field->value,
+                                               (int)width_field->value->as.number,
+                                               (int)height_field->value->as.number,
+                                               title_field->value->as.string,
+                                               watch_root_path);
+    free(watch_root_path);
+    if (error_action_pending() || !handle_id) {
+        if (owns_window_value) {
+            value_free(window_value);
+        }
+        free(handle_id);
+        return value_null();
+    }
+    GuiNativeWindow *window = gui_window_registry_find(handle_id);
+    free(handle_id);
     if (!window || !window->window) {
-        value_free(window_value);
+        if (owns_window_value) {
+            value_free(window_value);
+        }
         runtime_error_raise("gui window handle is invalid", 1003, "gui");
         return value_null();
     }
     gtk_widget_show_all(window->window);
+    gui_window_refresh_widgets(window);
     while (!window->closed) {
         gtk_main_iteration_do(TRUE);
+        gui_window_flush_mutations(window);
     }
+    gui_window_flush_mutations(window);
 #else
     gui_ensure_gtk_available();
     if (error_action_pending()) {
-        value_free(window_value);
+        if (owns_window_value) {
+            value_free(window_value);
+        }
         return value_null();
     }
 #endif
 
-    value_free(window_value);
+    if (owns_window_value) {
+        value_free(window_value);
+    }
     return value_null();
 }
 
@@ -1241,7 +1491,10 @@ static int gui_ensure_gtk_available(void) {
     return gui_gtk_available;
 }
 
-static void gui_window_binding_add(GuiNativeWindow *window, const char *id, GtkWidget *widget) {
+static void gui_window_binding_add(GuiNativeWindow *window,
+                                   const char *id,
+                                   GtkWidget *widget,
+                                   Value *widget_record) {
     GuiWidgetBinding *next = realloc(window->bindings,
                                      sizeof(GuiWidgetBinding) * (window->binding_count + 1));
     if (!next) {
@@ -1250,7 +1503,171 @@ static void gui_window_binding_add(GuiNativeWindow *window, const char *id, GtkW
     window->bindings = next;
     window->bindings[window->binding_count].id = copy_string(id);
     window->bindings[window->binding_count].widget = widget;
+    window->bindings[window->binding_count].widget_record = widget_record;
+    window->bindings[window->binding_count].window = window;
     window->binding_count++;
+}
+
+static void gui_pending_mutation_clear(GuiPendingMutation *mutation) {
+    if (!mutation) {
+        return;
+    }
+    free(mutation->window_handle_id);
+    free(mutation->widget_id);
+    free(mutation->field_name);
+    value_free(mutation->new_value);
+    memset(mutation, 0, sizeof(*mutation));
+}
+
+static void gui_window_clear_pending_mutations(GuiNativeWindow *window) {
+    if (!window) {
+        return;
+    }
+    for (size_t i = 0; i < window->pending_mutation_count; i++) {
+        gui_pending_mutation_clear(&window->pending_mutations[i]);
+    }
+    free(window->pending_mutations);
+    window->pending_mutations = NULL;
+    window->pending_mutation_count = 0;
+}
+
+static void gui_window_enqueue_mutation(GuiNativeWindow *window,
+                                        const char *widget_id,
+                                        const char *field_name,
+                                        Value new_value) {
+    if (!window || !widget_id || !field_name) {
+        value_free(new_value);
+        return;
+    }
+    if (window->sync_depth > 0) {
+        value_free(new_value);
+        return;
+    }
+
+    for (size_t i = 0; i < window->pending_mutation_count; i++) {
+        GuiPendingMutation *mutation = &window->pending_mutations[i];
+        if (strcmp(mutation->widget_id, widget_id) == 0 &&
+            strcmp(mutation->field_name, field_name) == 0) {
+            value_free(mutation->new_value);
+            mutation->new_value = new_value;
+            return;
+        }
+    }
+
+    GuiPendingMutation *next = realloc(window->pending_mutations,
+                                       sizeof(GuiPendingMutation) * (window->pending_mutation_count + 1));
+    if (!next) {
+        abort();
+    }
+    window->pending_mutations = next;
+    GuiPendingMutation *mutation = &window->pending_mutations[window->pending_mutation_count];
+    memset(mutation, 0, sizeof(*mutation));
+    mutation->window_handle_id = copy_string(window->handle_id);
+    mutation->widget_id = copy_string(widget_id);
+    mutation->field_name = copy_string(field_name);
+    mutation->new_value = new_value;
+    window->pending_mutation_count++;
+}
+
+static void gui_window_flush_mutations(GuiNativeWindow *window) {
+    if (!window || window->pending_mutation_count == 0) {
+        return;
+    }
+    if (window->watch_root_path) {
+        for (size_t i = 0; i < window->pending_mutation_count; i++) {
+            GuiPendingMutation *mutation = &window->pending_mutations[i];
+            size_t length = strlen(window->watch_root_path) +
+                            1 + strlen(mutation->widget_id) +
+                            1 + strlen(mutation->field_name);
+            char *watch_path = malloc(length + 1);
+            if (!watch_path) {
+                abort();
+            }
+            snprintf(watch_path,
+                     length + 1,
+                     "%s.%s.%s",
+                     window->watch_root_path,
+                     mutation->widget_id,
+                     mutation->field_name);
+            watcher_trigger_change(watch_path);
+            free(watch_path);
+            if (error_action_pending()) {
+                break;
+            }
+        }
+    }
+    if (!error_action_pending()) {
+        gui_window_refresh_widgets(window);
+    }
+    gui_window_clear_pending_mutations(window);
+}
+
+static int gui_widget_set_string_field(Value *widget_record, const char *field_name, const char *text) {
+    if (!widget_record || widget_record->kind != VALUE_RECORD) {
+        return 0;
+    }
+    RecordField *field = record_find(widget_record, field_name);
+    if (!field || field->value->kind != VALUE_STRING) {
+        return 0;
+    }
+    const char *next_text = text ? text : "";
+    if (strcmp(field->value->as.string, next_text) == 0) {
+        return 0;
+    }
+    value_free(*field->value);
+    *field->value = value_string(next_text);
+    return 1;
+}
+
+static int gui_widget_set_bool_field(Value *widget_record, const char *field_name, int boolean) {
+    if (!widget_record || widget_record->kind != VALUE_RECORD) {
+        return 0;
+    }
+    RecordField *field = record_find(widget_record, field_name);
+    if (!field || field->value->kind != VALUE_BOOL) {
+        return 0;
+    }
+    int next_boolean = boolean != 0;
+    if (field->value->as.boolean == next_boolean) {
+        return 0;
+    }
+    value_free(*field->value);
+    *field->value = value_bool(next_boolean);
+    return 1;
+}
+
+static void gui_on_entry_commit(GtkWidget *widget, gpointer data) {
+    GuiWidgetBinding *binding = data;
+    if (!binding) {
+        return;
+    }
+    const char *text = gtk_entry_get_text(GTK_ENTRY(widget));
+    if (gui_widget_set_string_field(binding->widget_record, "value", text)) {
+        gui_window_enqueue_mutation(binding->window,
+                                    binding->id,
+                                    "value",
+                                    value_string(text));
+    }
+}
+
+static gboolean gui_on_entry_focus_out(GtkWidget *widget, GdkEventFocus *event, gpointer data) {
+    (void)event;
+    gui_on_entry_commit(widget, data);
+    return FALSE;
+}
+
+static void gui_on_button_clicked(GtkWidget *widget, gpointer data) {
+    GuiWidgetBinding *binding = data;
+    if (!binding) {
+        return;
+    }
+    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(widget), TRUE);
+    if (gui_widget_set_bool_field(binding->widget_record, "value", 1)) {
+        gui_window_enqueue_mutation(binding->window,
+                                    binding->id,
+                                    "value",
+                                    value_bool(1));
+    }
 }
 
 static void gui_apply_widget_state(GtkWidget *widget, Value *node) {
@@ -1266,9 +1683,66 @@ static void gui_apply_widget_state(GtkWidget *widget, Value *node) {
     if (error_action_pending()) {
         return;
     }
-    if (!gui_optional_bool_field(node, "visible", 1)) {
+    if (gui_optional_bool_field(node, "visible", 1)) {
+        gtk_widget_show(widget);
+    } else {
         gtk_widget_hide(widget);
     }
+}
+
+static void gui_refresh_widget_binding(GuiWidgetBinding *binding) {
+    if (!binding || !binding->widget_record || binding->widget_record->kind != VALUE_RECORD) {
+        return;
+    }
+
+    RecordField *component_field = record_find(binding->widget_record, "component");
+    if (!component_field || component_field->value->kind != VALUE_STRING) {
+        return;
+    }
+
+    const char *component = component_field->value->as.string;
+    GtkWidget *widget = binding->widget;
+    Value *record = binding->widget_record;
+
+    if (strcmp(component, "label") == 0) {
+        RecordField *value_field = record_find(record, "value");
+        if (value_field && value_field->value->kind == VALUE_STRING) {
+            gtk_label_set_text(GTK_LABEL(widget), value_field->value->as.string);
+        }
+    } else if (strcmp(component, "input") == 0) {
+        RecordField *value_field = record_find(record, "value");
+        if (value_field && value_field->value->kind == VALUE_STRING) {
+            const char *current = gtk_entry_get_text(GTK_ENTRY(widget));
+            if (strcmp(current, value_field->value->as.string) != 0) {
+                gtk_entry_set_text(GTK_ENTRY(widget), value_field->value->as.string);
+            }
+        }
+    } else if (strcmp(component, "button") == 0) {
+        RecordField *label_field = record_find(record, "label");
+        RecordField *value_field = record_find(record, "value");
+        if (label_field && label_field->value->kind == VALUE_STRING) {
+            gtk_button_set_label(GTK_BUTTON(widget), label_field->value->as.string);
+        }
+        if (value_field && value_field->value->kind == VALUE_BOOL) {
+            gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(widget), value_field->value->as.boolean);
+        }
+    }
+
+    gui_apply_widget_state(widget, record);
+}
+
+static void gui_window_refresh_widgets(GuiNativeWindow *window) {
+    if (!window) {
+        return;
+    }
+    window->sync_depth++;
+    for (size_t i = 0; i < window->binding_count; i++) {
+        gui_refresh_widget_binding(&window->bindings[i]);
+        if (error_action_pending()) {
+            break;
+        }
+    }
+    window->sync_depth--;
 }
 
 static GtkWidget *gui_build_gtk_widget(Value *node, GuiNativeWindow *window) {
@@ -1276,6 +1750,7 @@ static GtkWidget *gui_build_gtk_widget(Value *node, GuiNativeWindow *window) {
     RecordField *id_field = record_find(node, "id");
     const char *component = component_field->value->as.string;
     GtkWidget *widget = NULL;
+    GuiWidgetBinding *binding = NULL;
 
     if (strcmp(component, "vert") == 0 || strcmp(component, "horiz") == 0) {
         GtkOrientation orientation = strcmp(component, "vert") == 0
@@ -1313,7 +1788,14 @@ static GtkWidget *gui_build_gtk_widget(Value *node, GuiNativeWindow *window) {
     if (error_action_pending()) {
         return NULL;
     }
-    gui_window_binding_add(window, id_field->value->as.string, widget);
+    gui_window_binding_add(window, id_field->value->as.string, widget, node);
+    binding = &window->bindings[window->binding_count - 1];
+    if (strcmp(component, "input") == 0) {
+        g_signal_connect(widget, "activate", G_CALLBACK(gui_on_entry_commit), binding);
+        g_signal_connect(widget, "focus-out-event", G_CALLBACK(gui_on_entry_focus_out), binding);
+    } else if (strcmp(component, "button") == 0) {
+        g_signal_connect(widget, "clicked", G_CALLBACK(gui_on_button_clicked), binding);
+    }
     return widget;
 }
 
@@ -1335,7 +1817,11 @@ static void gui_on_window_destroy(GtkWidget *widget, gpointer data) {
     }
 }
 
-static char *gui_create_native_window(Value *ui, int width, int height, const char *title) {
+static char *gui_create_native_window(Value *ui,
+                                      int width,
+                                      int height,
+                                      const char *title,
+                                      const char *watch_root_path) {
     if (!gui_ensure_gtk_available()) {
         return NULL;
     }
@@ -1352,6 +1838,7 @@ static char *gui_create_native_window(Value *ui, int width, int height, const ch
     char handle_id[64];
     snprintf(handle_id, sizeof(handle_id), "gui-window-%d", gui_next_window_id++);
     window->handle_id = copy_string(handle_id);
+    window->watch_root_path = watch_root_path ? copy_string(watch_root_path) : NULL;
     window->window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
     gtk_window_set_title(GTK_WINDOW(window->window), title);
     gtk_window_set_default_size(GTK_WINDOW(window->window), width, height);
@@ -1370,8 +1857,10 @@ static void gui_clear_native_windows(void) {
         for (size_t j = 0; j < gui_windows[i].binding_count; j++) {
             free(gui_windows[i].bindings[j].id);
         }
+        gui_window_clear_pending_mutations(&gui_windows[i]);
         free(gui_windows[i].bindings);
         free(gui_windows[i].handle_id);
+        free(gui_windows[i].watch_root_path);
         if (gui_windows[i].window) {
             gtk_widget_destroy(gui_windows[i].window);
         }
@@ -1391,11 +1880,16 @@ static int gui_ensure_gtk_available(void) {
     return 0;
 }
 
-static char *gui_create_native_window(Value *ui, int width, int height, const char *title) {
+static char *gui_create_native_window(Value *ui,
+                                      int width,
+                                      int height,
+                                      const char *title,
+                                      const char *watch_root_path) {
     (void)ui;
     (void)width;
     (void)height;
     (void)title;
+    (void)watch_root_path;
     gui_ensure_gtk_available();
     return NULL;
 }
@@ -1767,9 +2261,17 @@ static Value eval_comparison(AstExpr *expr, Value left, Value right);
 static EvalResult eval_stmt(AstStmt *stmt);
 static EvalResult eval_stmt_list(AstStmtList statements);
 
-static int watcher_matches(AstStmt *watcher, const char *name) {
+static int watcher_name_matches_change(const char *watch_name, const char *changed_path) {
+    size_t watch_length = strlen(watch_name);
+    if (strncmp(watch_name, changed_path, watch_length) != 0) {
+        return 0;
+    }
+    return changed_path[watch_length] == '\0' || changed_path[watch_length] == '.';
+}
+
+static int watcher_matches_change(AstStmt *watcher, const char *changed_path) {
     for (size_t i = 0; i < watcher->as.watch.names.count; i++) {
-        if (strcmp(watcher->as.watch.names.items[i], name) == 0) {
+        if (watcher_name_matches_change(watcher->as.watch.names.items[i], changed_path)) {
             return 1;
         }
     }
@@ -1822,12 +2324,12 @@ static void watcher_drain(void) {
     watcher_draining = 0;
 }
 
-static void watcher_trigger(const char *name) {
+static void watcher_trigger_change(const char *path) {
     if (watcher_suppressed || current_env != &global_env) {
         return;
     }
     for (size_t i = 0; i < watcher_count; i++) {
-        if (watcher_matches(watchers[i].stmt, name)) {
+        if (watcher_matches_change(watchers[i].stmt, path)) {
             watcher_enqueue(i);
         }
     }
@@ -5964,6 +6466,12 @@ static Value eval_expr(AstExpr *expr) {
         }
         RecordField *field = record_find(&object, expr->as.field.field);
         if (!field) {
+            Value *widget = gui_window_lookup_widget_ref(&object, expr->as.field.field);
+            if (widget) {
+                Value result = value_copy(*widget);
+                value_free(object);
+                return result;
+            }
             char message[256];
             snprintf(message, sizeof(message), "unknown record field: %s", expr->as.field.field);
             runtime_error_raise(message, 1003, "field access");
@@ -6170,6 +6678,39 @@ static const char *lvalue_root_name(AstExpr *target) {
     }
 }
 
+static char *lvalue_watch_path(AstExpr *target) {
+    if (!target) {
+        return NULL;
+    }
+    switch (target->kind) {
+    case AST_EXPR_IDENT:
+        return copy_string(target->as.ident);
+    case AST_EXPR_FIELD: {
+        char *object_path = lvalue_watch_path(target->as.field.object);
+        if (!object_path) {
+            return NULL;
+        }
+        size_t object_length = strlen(object_path);
+        size_t field_length = strlen(target->as.field.field);
+        char *path = malloc(object_length + 1 + field_length + 1);
+        if (!path) {
+            abort();
+        }
+        snprintf(path,
+                 object_length + 1 + field_length + 1,
+                 "%s.%s",
+                 object_path,
+                 target->as.field.field);
+        free(object_path);
+        return path;
+    }
+    case AST_EXPR_INDEX:
+        return lvalue_watch_path(target->as.index.array);
+    default:
+        return NULL;
+    }
+}
+
 static Value *resolve_lvalue_ref(AstExpr *target) {
     switch (target->kind) {
     case AST_EXPR_IDENT: {
@@ -6193,6 +6734,10 @@ static Value *resolve_lvalue_ref(AstExpr *target) {
         }
         RecordField *field = record_find(object, target->as.field.field);
         if (!field) {
+            Value *widget = gui_window_lookup_widget_ref(object, target->as.field.field);
+            if (widget) {
+                return widget;
+            }
             char message[256];
             snprintf(message, sizeof(message), "unknown record field: %s", target->as.field.field);
             runtime_error_raise(message, 1003, "assignment");
@@ -6324,9 +6869,15 @@ static EvalResult eval_stmt(AstStmt *stmt) {
             current_column = previous_column;
             return eval_error_result();
         }
-        const char *root_name = lvalue_root_name(stmt->as.assign.target);
-        if (root_name) {
-            watcher_trigger(root_name);
+        char *watch_path = lvalue_watch_path(stmt->as.assign.target);
+        if (watch_path) {
+            watcher_trigger_change(watch_path);
+            free(watch_path);
+        } else {
+            const char *root_name = lvalue_root_name(stmt->as.assign.target);
+            if (root_name) {
+                watcher_trigger_change(root_name);
+            }
         }
         break;
     }

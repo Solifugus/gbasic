@@ -60,6 +60,8 @@ cases=(
     negative_gui_duplicate_id
     negative_gui_missing_id
     negative_gui_unknown_component
+    negative_gui_reserved_id
+    negative_gui_invalid_id
 )
 
 for name in "${cases[@]}"; do

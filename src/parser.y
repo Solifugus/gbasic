@@ -66,6 +66,21 @@ static char *copy_const(const char *text) {
     return copy_text(text, (int)strlen(text));
 }
 
+static char *join_watch_path(char *left, char *right) {
+    size_t left_len = strlen(left);
+    size_t right_len = strlen(right);
+    char *text = malloc(left_len + 1 + right_len + 1);
+    if (!text) {
+        abort();
+    }
+    memcpy(text, left, left_len);
+    text[left_len] = '.';
+    memcpy(text + left_len + 1, right, right_len + 1);
+    free(left);
+    free(right);
+    return text;
+}
+
 static void split_qualified_ident(char *text, char **library, char **name) {
     char *dot = strchr(text, '.');
     if (!dot) {
@@ -396,12 +411,12 @@ typedef struct {
 %type <expr_list> argument_list argument_list_opt array_argument_list
 %type <record_field_list> record_field_list
 %type <consider_branch_list> consider_branch_list
-%type <name_list> parameter_list parameter_list_opt
+%type <name_list> parameter_list parameter_list_opt watch_target_list
 %type <modifier> modifier
 %type <modifier_signature> modifier_signature
 %type <duration> duration_terms
 %type <ident_suffix> ident_suffix ident_dot_suffix
-%type <text> modifier_name modifier_word modifier_context comparison_operator variable_name
+%type <text> modifier_name modifier_word modifier_context comparison_operator variable_name watch_target_path
 
 %%
 
@@ -646,9 +661,22 @@ modifier_context
     ;
 
 watch_statement
-    : WATCH LPAREN parameter_list RPAREN NEWLINE statement_list END WATCH NEWLINE {
+    : WATCH LPAREN watch_target_list RPAREN NEWLINE statement_list END WATCH NEWLINE {
         $$ = ast_watch($3, $6);
       }
+    | WATCH watch_target_list NEWLINE statement_list END WATCH NEWLINE {
+        $$ = ast_watch($2, $4);
+      }
+    ;
+
+watch_target_list
+    : watch_target_path { $$ = ast_name_list_append(ast_name_list_empty(), $1); }
+    | watch_target_list COMMA watch_target_path { $$ = ast_name_list_append($1, $3); }
+    ;
+
+watch_target_path
+    : variable_name { $$ = $1; }
+    | watch_target_path DOT IDENT { $$ = join_watch_path($1, $3); }
     ;
 
 without_watchers_statement

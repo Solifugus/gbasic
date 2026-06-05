@@ -13,4 +13,8 @@ ui = {
 }
 
 win = gui.window(400, 300, "Demo", ui)
+win.status.value = "Changed before run"
+win.save.label = "Commit"
+win.save.value = false
+print(win.name.value)
 gui.run(win)

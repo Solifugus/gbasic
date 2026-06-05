@@ -33,6 +33,7 @@ examples=(
     helper_functions_test.bas
     if_else_test.bas
     watch_test.gb
+    watch_path_test.bas
     while_test.bas
     while_break_continue_test.bas
     error_test.gb

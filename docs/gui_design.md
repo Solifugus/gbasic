@@ -6,11 +6,15 @@ This document defines a future declarative GUI system for gBASIC.
 
 Implementation status note:
 
-- current implementation is Stage 2 only
-- Stage 2 is limited to static GTK rendering of the initial record tree
-- Stage 2 does not include live value synchronization
-- Stage 2 does not include watcher integration with the GUI event loop
-- Stage 2 does not include dynamic widget tree mutation after `gui.window(...)`
+- current implementation reaches Stage 6A
+- GTK is still the only backend
+- `gui.run(win)` renders from the current live record tree at run time
+- committed input changes update live widget records
+- button clicks set live button `value` fields to `true`
+- Stage 5A queue plumbing records backend-originated GUI mutations internally
+- queued GUI-originated value changes now trigger normal gBASIC watchers after the GTK event iteration
+- watcher-driven record changes now refresh existing GTK widgets after watcher execution
+- dynamic widget tree mutation after `gui.window(...)` is not implemented yet
 
 The core model is:
 
@@ -309,8 +313,10 @@ Parameters:
 
 The returned `win` should provide:
 
+- window metadata
 - access to the root widget tree
-- practical access to widgets by `id` where possible
+- id lookup information
+- practical access to widgets by `id`
 - the handle passed into `gui.run(win)`
 
 Desired usage:
@@ -318,16 +324,35 @@ Desired usage:
 ```basic
 win.save.value = true
 win.status.value = "Busy"
+print(win.name.value)
 ```
 
-This implies the window object should expose named widget references for reachable ids where practical. Since every widget has an id and duplicate ids are illegal within a window, the backend can maintain a reliable id-to-widget mapping for watcher-friendly access.
+This implies the window object should expose named widget references through:
+
+```basic
+win.<id>
+```
+
+Since every widget has an id and duplicate ids are illegal within a window, the backend can maintain a reliable id-to-widget mapping for watcher-friendly access.
+
+Example:
+
+```basic
+win.status.value = "Ready"
+win.save.value = false
+print(win.name.value)
+```
+
+The exposed widget records should reference the same underlying widget records stored in the root UI tree. They must not be detached copies.
 
 An implementation may choose for `win` to contain:
 
 - window metadata
 - the root UI tree
-- resolved references to id-addressable widgets
+- id lookup information used to resolve `win.<id>`
 - backend-private state not directly exposed to user code
+
+If a widget id would collide with an existing window field name, window construction should fail with a clear runtime error. Widget ids intended for `win.<id>` access should also be valid identifier-like names.
 
 The public-facing model should still feel like ordinary record access.
 
@@ -348,6 +373,15 @@ gui.run(win)
 - propagate programmatic widget changes back into the rendered UI
 
 After `gui.window(...)`, the widget tree structure is fixed for v1. `gui.run(win)` should therefore operate on a stable tree whose values and properties remain live and mutable.
+
+At minimum, the initial render performed by `gui.run(win)` should use the current widget record values at run time. This means mutations made after `gui.window(...)` but before `gui.run(win)` should be visible in the first rendered window.
+
+Current implementation note:
+
+- initial render uses the current live widget records when `gui.run(win)` starts
+- backend-originated input commits and button clicks mutate those same live records
+- watcher-driven behavior after those mutations is not integrated yet
+- programmatic record changes made after the window is shown do not yet refresh GTK widgets
 
 For v1, a single top-level blocking event loop is sufficient. The first implementation should prefer simplicity over advanced lifecycle features such as multiple loop modes, nested modal stacks, or asynchronous scheduling APIs.
 
@@ -379,6 +413,11 @@ GTK backend responsibilities should include:
 - when `input.value` changes from code, update the text field
 - when `button.value` changes, update pressed/down appearance
 - when `visible` or `enabled` changes, update the backend widget state
+
+Current implementation note:
+
+- user-originated GTK changes already mutate the live gBASIC records
+- record-to-GTK live refresh after `gui.run(win)` starts is a later stage
 
 ### Maintain id-to-widget mapping
 
@@ -480,12 +519,18 @@ The first implementation should be staged conservatively.
 - enforce required ids and reject duplicate ids
 - no full live synchronization required yet
 
-### Stage 3: Live value updates
+### Stage 3: Window object and id access
 
-- reflect programmatic changes from gBASIC records into rendered widgets
 - establish internal id mapping
+- expose widgets as `win.<id>`
+- ensure exposed records refer to the live widget tree
 
-### Stage 4: Button and input value mutation
+### Stage 4A: Initial render from current record values
+
+- render from the current live record tree at `gui.run(win)` time
+- reflect pre-run record mutations in the first window shown
+
+### Stage 4B: Button and input value mutation
 
 - propagate committed input changes into `input.value`
 - propagate button clicks into `button.value = true`
