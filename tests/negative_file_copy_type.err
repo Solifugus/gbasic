@@ -1,0 +1,1 @@
+runtime error at tests/negative_file_copy_type.bas:2:1: copy expects a file reference and file reference or string target

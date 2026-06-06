@@ -1,0 +1,1 @@
+runtime error at tests/negative_file_copy_target.bas:2:1: could not copy file: tests/negative_file_copy_target.bas -> tests/file-operation-missing-dir/copy.txt

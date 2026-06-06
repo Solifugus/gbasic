@@ -3372,6 +3372,81 @@ static char *read_whole_file(const char *path, long *out_size) {
     return text;
 }
 
+static const char *file_target_path(Value value) {
+    if (value.kind == VALUE_FILE) {
+        return value.as.file_path;
+    }
+    if (value.kind == VALUE_STRING) {
+        return value.as.string;
+    }
+    return NULL;
+}
+
+static int copy_file_path(const char *source_path, const char *target_path) {
+    if (strcmp(source_path, target_path) == 0) {
+        return 0;
+    }
+
+    FILE *source = fopen(source_path, "rb");
+    if (!source) {
+        return 0;
+    }
+
+    struct stat source_stat;
+    int has_source_stat = stat(source_path, &source_stat) == 0;
+    FILE *target = fopen(target_path, "wb");
+    if (!target) {
+        fclose(source);
+        return 0;
+    }
+
+    char buffer[8192];
+    int ok = 1;
+    size_t count;
+    while ((count = fread(buffer, 1, sizeof(buffer), source)) > 0) {
+        if (fwrite(buffer, 1, count, target) != count) {
+            ok = 0;
+            break;
+        }
+    }
+    if (ferror(source)) {
+        ok = 0;
+    }
+    if (fclose(target) != 0) {
+        ok = 0;
+    }
+    fclose(source);
+
+    if (ok && has_source_stat &&
+        chmod(target_path, source_stat.st_mode & (S_IRWXU | S_IRWXG | S_IRWXO)) != 0) {
+        ok = 0;
+    }
+    if (!ok) {
+        unlink(target_path);
+    }
+    return ok;
+}
+
+static int move_file_path(const char *source_path, const char *target_path) {
+    if (rename(source_path, target_path) == 0) {
+        return 1;
+    }
+    if (errno != EXDEV || !copy_file_path(source_path, target_path)) {
+        return 0;
+    }
+    if (unlink(source_path) == 0) {
+        return 1;
+    }
+    unlink(target_path);
+    return 0;
+}
+
+static int file_value_compare(const void *left, const void *right) {
+    const Value *a = left;
+    const Value *b = right;
+    return strcmp(a->as.file_path, b->as.file_path);
+}
+
 static Value eval_file_call(AstExpr *expr) {
     const char *name = expr->as.call.name;
 
@@ -3456,6 +3531,157 @@ static Value eval_file_call(AstExpr *expr) {
         free(text);
         value_free(file_value);
         return value_number((double)lines);
+    }
+
+    if (strcmp(name, "delete") == 0) {
+        if (expr->as.call.args.count != 1) {
+            runtime_error_raise("delete expects one file argument", 1004, "file operation");
+            return value_null();
+        }
+        Value file_value = eval_expr(expr->as.call.args.items[0]);
+        if (error_action_pending()) {
+            value_free(file_value);
+            return value_null();
+        }
+        if (file_value.kind != VALUE_FILE) {
+            runtime_error_raise("delete expects a file reference", 1004, "file operation");
+            value_free(file_value);
+            return value_null();
+        }
+        if (unlink(file_value.as.file_path) != 0) {
+            char message[512];
+            snprintf(message, sizeof(message), "could not delete file: %s", file_value.as.file_path);
+            runtime_error_raise(message, 1004, "file operation");
+            value_free(file_value);
+            return value_null();
+        }
+        value_free(file_value);
+        return value_bool(1);
+    }
+
+    if (strcmp(name, "copy") == 0 || strcmp(name, "move") == 0) {
+        if (expr->as.call.args.count != 2) {
+            char message[256];
+            snprintf(message, sizeof(message), "%s expects source and target arguments", name);
+            runtime_error_raise(message, 1004, "file operation");
+            return value_null();
+        }
+        Value source = eval_expr(expr->as.call.args.items[0]);
+        Value target = eval_expr(expr->as.call.args.items[1]);
+        if (error_action_pending()) {
+            value_free(source);
+            value_free(target);
+            return value_null();
+        }
+        const char *target_path = file_target_path(target);
+        if (source.kind != VALUE_FILE || !target_path) {
+            char message[256];
+            snprintf(message,
+                     sizeof(message),
+                     "%s expects a file reference and file reference or string target",
+                     name);
+            runtime_error_raise(message, 1004, "file operation");
+            value_free(source);
+            value_free(target);
+            return value_null();
+        }
+
+        int ok = strcmp(name, "copy") == 0
+                     ? copy_file_path(source.as.file_path, target_path)
+                     : move_file_path(source.as.file_path, target_path);
+        if (!ok) {
+            char message[1024];
+            snprintf(message,
+                     sizeof(message),
+                     "could not %s file: %s -> %s",
+                     name,
+                     source.as.file_path,
+                     target_path);
+            runtime_error_raise(message, 1004, "file operation");
+            value_free(source);
+            value_free(target);
+            return value_null();
+        }
+        value_free(source);
+        value_free(target);
+        return value_bool(1);
+    }
+
+    if (strcmp(name, "list_files") == 0) {
+        if (expr->as.call.args.count != 1) {
+            runtime_error_raise("list_files expects one path argument", 1004, "file operation");
+            return value_null();
+        }
+        Value path_value = eval_expr(expr->as.call.args.items[0]);
+        if (error_action_pending()) {
+            value_free(path_value);
+            return value_null();
+        }
+        const char *path = NULL;
+        if (path_value.kind == VALUE_STRING) {
+            path = path_value.as.string;
+        } else if (path_value.kind == VALUE_DIR) {
+            path = path_value.as.dir_path;
+        }
+        if (!path) {
+            runtime_error_raise("list_files expects a string or directory reference",
+                                1004,
+                                "file operation");
+            value_free(path_value);
+            return value_null();
+        }
+
+        DIR *dir = opendir(path);
+        if (!dir) {
+            char message[512];
+            snprintf(message, sizeof(message), "could not list files: %s", path);
+            runtime_error_raise(message, 1004, "file operation");
+            value_free(path_value);
+            return value_null();
+        }
+
+        Value *items = NULL;
+        size_t count = 0;
+        int read_failed = 0;
+        for (;;) {
+            errno = 0;
+            struct dirent *entry = readdir(dir);
+            if (!entry) {
+                read_failed = errno != 0;
+                break;
+            }
+            if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
+                continue;
+            }
+            char *entry_path = join_path(path, entry->d_name);
+            struct stat st;
+            if (stat(entry_path, &st) == 0 && S_ISREG(st.st_mode)) {
+                Value *next = realloc(items, sizeof(Value) * (count + 1));
+                if (!next) {
+                    abort();
+                }
+                items = next;
+                items[count++] = value_file(entry_path);
+            }
+            free(entry_path);
+        }
+        if (closedir(dir) != 0 || read_failed) {
+            for (size_t i = 0; i < count; i++) {
+                value_free(items[i]);
+            }
+            free(items);
+            char message[512];
+            snprintf(message, sizeof(message), "could not list files: %s", path);
+            runtime_error_raise(message, 1004, "file operation");
+            value_free(path_value);
+            return value_null();
+        }
+
+        if (count > 1) {
+            qsort(items, count, sizeof(Value), file_value_compare);
+        }
+        value_free(path_value);
+        return value_array(items, count);
     }
 
     if (strcmp(name, "write") == 0 || strcmp(name, "append") == 0) {
@@ -6646,6 +6872,10 @@ static Value eval_call(AstExpr *expr) {
         strcmp(expr->as.call.name, "read") == 0 ||
         strcmp(expr->as.call.name, "write") == 0 ||
         strcmp(expr->as.call.name, "append") == 0 ||
+        strcmp(expr->as.call.name, "delete") == 0 ||
+        strcmp(expr->as.call.name, "copy") == 0 ||
+        strcmp(expr->as.call.name, "move") == 0 ||
+        strcmp(expr->as.call.name, "list_files") == 0 ||
         strcmp(expr->as.call.name, "lock") == 0 ||
         strcmp(expr->as.call.name, "unlock") == 0 ||
         strcmp(expr->as.call.name, "bytes") == 0 ||

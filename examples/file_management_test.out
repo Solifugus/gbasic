@@ -1,0 +1,13 @@
+true
+phase one
+
+true
+false
+phase one
+
+file: examples/file_management_fixture/phase1_moved.txt
+file: examples/file_management_fixture/phase1_source.txt
+true
+true
+false
+false

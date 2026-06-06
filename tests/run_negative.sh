@@ -53,6 +53,14 @@ cases=(
     negative_continue_outside_loop
     negative_for_each_number
     negative_for_each_record
+    negative_file_delete_type
+    negative_file_copy_type
+    negative_file_move_type
+    negative_file_list_type
+    negative_file_copy_missing
+    negative_file_move_missing
+    negative_file_copy_target
+    negative_file_move_target
     negative_left_type
     negative_mid_arity
     negative_trim_type

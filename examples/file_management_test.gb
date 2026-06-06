@@ -1,0 +1,36 @@
+folder_path = "examples/file_management_fixture"
+folder(dir)= folder_path
+source(file)= folder_path + "/phase1_source.txt"
+copied(file)= folder_path + "/phase1_copied.txt"
+moved(file)= folder_path + "/phase1_moved.txt"
+
+if exists(source) then
+    delete(source)
+end if
+if exists(copied) then
+    delete(copied)
+end if
+if exists(moved) then
+    delete(moved)
+end if
+
+write(source, "phase one\n")
+
+print copy(source, copied)
+print read(copied)
+print move(copied, folder_path + "/phase1_moved.txt")
+print exists(copied)
+print read(moved)
+
+entries = list_files(folder)
+for each entry in entries
+    path = string(entry)
+    if starts_with(path, folder_path + "/phase1_") then
+        print type(entry) + ": " + path
+    end if
+end for
+
+print delete(source)
+print delete(moved)
+print exists(source)
+print exists(moved)

@@ -24,6 +24,7 @@ examples=(
     keyword_stability_test.bas
     duration_test.gb
     file_test.gb
+    file_management_test.gb
     find_test.bas
     function_call_comparison_test.bas
     lock_test.gb

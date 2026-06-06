@@ -1,0 +1,1 @@
+runtime error at tests/negative_file_copy_missing.bas:2:1: could not copy file: tests/file-operation-source-does-not-exist.txt -> tests/file-operation-copy.txt
