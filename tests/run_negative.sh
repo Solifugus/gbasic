@@ -61,6 +61,11 @@ cases=(
     negative_file_move_missing
     negative_file_copy_target
     negative_file_move_target
+    negative_make_dir_type
+    negative_remove_dir_type
+    negative_remove_dir_missing
+    negative_remove_dir_nonempty
+    negative_make_dir_exists
     negative_left_type
     negative_mid_arity
     negative_trim_type

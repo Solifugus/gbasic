@@ -53,6 +53,8 @@ int gbasic_builtin_function(const char *name) {
         "copy",
         "move",
         "list_files",
+        "make_dir",
+        "remove_dir",
         "prepend",
         "insert",
         "remove",

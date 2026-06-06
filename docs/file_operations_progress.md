@@ -4,7 +4,7 @@ Last verified: 2026-06-06
 
 ## Status
 
-Phase 1 is **complete**.
+Phases 1 and 2 are **complete**.
 
 Implemented core functions:
 
@@ -35,6 +35,23 @@ Implemented core functions:
 Existing `list(folder)`, `files(folder)`, and `folders(folder)` behavior was not
 changed.
 
+Phase 2 core functions:
+
+- `make_dir(path)`
+  - accepts a string, file reference, or directory reference
+  - creates one directory with normal process permissions and umask
+  - does not create missing parent directories
+  - returns `true` on success
+  - raises a file-operation runtime error if creation fails, including when the
+    path already exists
+- `remove_dir(path)`
+  - accepts a string, file reference, or directory reference
+  - removes one empty directory
+  - does not recursively remove contents
+  - returns `true` on success
+  - raises a file-operation runtime error when the directory is missing,
+    non-empty, or cannot otherwise be removed
+
 ## Files Changed
 
 - `src/eval.c`
@@ -55,7 +72,23 @@ changed.
 - `tests/run_negative.sh`
   - registered the new negative cases
 - `docs/file_operations_progress.md`
-  - records Phase 1 implementation and verification
+  - records Phase 1 and Phase 2 implementation and verification
+
+Phase 2 files:
+
+- `src/eval.c`
+  - added typed path handling and non-recursive `mkdir`/`rmdir` operations
+- `src/builtins.c`
+  - registered `make_dir` and `remove_dir` as core functions
+- `examples/directory_management_test.gb`
+  - added positive string-path and directory-value coverage
+- `examples/directory_management_test.out`
+  - added expected output
+- `tests/negative_make_dir_*.bas`, `tests/negative_remove_dir_*.bas`, and
+  matching `.err` files
+  - added Phase 2 failure coverage
+- `tests/run_examples.sh` and `tests/run_negative.sh`
+  - registered the Phase 2 tests
 
 ## Tests Added
 
@@ -82,6 +115,22 @@ Negative coverage verifies:
 - invalid target path for `copy`
 - invalid target path for `move`
 
+Phase 2 positive coverage verifies:
+
+- creating a directory from a string path
+- removing an empty directory through a directory value
+- creating a directory through a directory value
+- removing an empty directory from a string path
+- repeatable cleanup with no directory left after success
+
+Phase 2 negative coverage verifies:
+
+- invalid `make_dir` argument type
+- invalid `remove_dir` argument type
+- removing a missing directory
+- removing a non-empty directory without recursive deletion
+- creating a directory at an existing path
+
 ## Verification
 
 Commands run on 2026-06-06:
@@ -92,9 +141,15 @@ Commands run on 2026-06-06:
 - `./tests/run_negative.sh`: passed, including all eight new file-operation
   negative cases.
 
+Phase 2 verification on 2026-06-06:
+
+- `make clean && make`: passed without warnings.
+- `./tests/run_examples.sh`: passed, including
+  `examples/directory_management_test.gb`.
+- `./tests/run_negative.sh`: passed, including all five Phase 2 negative cases.
+
 ## Next Recommended Phase
 
-Define Phase 2 semantics and tests before implementation. The next coherent
-step is explicit overwrite policy plus line-oriented reads, followed separately
-by directory creation/removal. No `overwrite()`, `read_lines()`, `make_dir()`,
-or `remove_dir()` functionality was implemented in Phase 1.
+Define Phase 3 semantics and tests before implementation. The next coherent
+phase is explicit overwrite policy and line-oriented reads. No `overwrite()` or
+`read_lines()` functionality was implemented in Phase 2.

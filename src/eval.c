@@ -3382,6 +3382,13 @@ static const char *file_target_path(Value value) {
     return NULL;
 }
 
+static const char *directory_path(Value value) {
+    if (value.kind == VALUE_DIR) {
+        return value.as.dir_path;
+    }
+    return file_target_path(value);
+}
+
 static int copy_file_path(const char *source_path, const char *target_path) {
     if (strcmp(source_path, target_path) == 0) {
         return 0;
@@ -3682,6 +3689,48 @@ static Value eval_file_call(AstExpr *expr) {
         }
         value_free(path_value);
         return value_array(items, count);
+    }
+
+    if (strcmp(name, "make_dir") == 0 || strcmp(name, "remove_dir") == 0) {
+        if (expr->as.call.args.count != 1) {
+            char message[256];
+            snprintf(message, sizeof(message), "%s expects one path argument", name);
+            runtime_error_raise(message, 1004, "file operation");
+            return value_null();
+        }
+        Value path_value = eval_expr(expr->as.call.args.items[0]);
+        if (error_action_pending()) {
+            value_free(path_value);
+            return value_null();
+        }
+        const char *path = directory_path(path_value);
+        if (!path) {
+            char message[256];
+            snprintf(message,
+                     sizeof(message),
+                     "%s expects a string, file reference, or directory reference",
+                     name);
+            runtime_error_raise(message, 1004, "file operation");
+            value_free(path_value);
+            return value_null();
+        }
+
+        int ok = strcmp(name, "make_dir") == 0
+                     ? mkdir(path, 0777) == 0
+                     : rmdir(path) == 0;
+        if (!ok) {
+            char message[512];
+            snprintf(message,
+                     sizeof(message),
+                     "could not %s directory: %s",
+                     strcmp(name, "make_dir") == 0 ? "create" : "remove",
+                     path);
+            runtime_error_raise(message, 1004, "file operation");
+            value_free(path_value);
+            return value_null();
+        }
+        value_free(path_value);
+        return value_bool(1);
     }
 
     if (strcmp(name, "write") == 0 || strcmp(name, "append") == 0) {
@@ -6876,6 +6925,8 @@ static Value eval_call(AstExpr *expr) {
         strcmp(expr->as.call.name, "copy") == 0 ||
         strcmp(expr->as.call.name, "move") == 0 ||
         strcmp(expr->as.call.name, "list_files") == 0 ||
+        strcmp(expr->as.call.name, "make_dir") == 0 ||
+        strcmp(expr->as.call.name, "remove_dir") == 0 ||
         strcmp(expr->as.call.name, "lock") == 0 ||
         strcmp(expr->as.call.name, "unlock") == 0 ||
         strcmp(expr->as.call.name, "bytes") == 0 ||

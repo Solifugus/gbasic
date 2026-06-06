@@ -1,0 +1,1 @@
+runtime error at tests/negative_make_dir_type.bas:1:1: make_dir expects a string, file reference, or directory reference

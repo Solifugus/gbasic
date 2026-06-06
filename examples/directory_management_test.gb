@@ -1,0 +1,7 @@
+path = "examples/phase2_directory_management_test"
+folder(dir)= path
+
+print make_dir(path)
+print remove_dir(folder)
+print make_dir(folder)
+print remove_dir(path)
