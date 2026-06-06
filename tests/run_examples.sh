@@ -39,6 +39,7 @@ examples=(
     watch_path_test.bas
     while_test.bas
     while_break_continue_test.bas
+    for_each_test.bas
     error_test.gb
     modifier_test.gb
     modifier_library_regression_test.bas

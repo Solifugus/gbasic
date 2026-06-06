@@ -372,6 +372,7 @@ const char *token_type_name(TokenType type) {
     case TOKEN_END: return "END";
     case TOKEN_END_CONSIDER: return "END_CONSIDER";
     case TOKEN_FOR: return "FOR";
+    case TOKEN_EACH: return "EACH";
     case TOKEN_TO: return "TO";
     case TOKEN_STEP: return "STEP";
     case TOKEN_WHILE: return "WHILE";

@@ -51,6 +51,8 @@ cases=(
     negative_while_missing_end
     negative_break_outside_loop
     negative_continue_outside_loop
+    negative_for_each_number
+    negative_for_each_record
     negative_left_type
     negative_mid_arity
     negative_trim_type

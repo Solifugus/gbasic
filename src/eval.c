@@ -8044,6 +8044,10 @@ static EvalResult eval_stmt(AstStmt *stmt) {
         for (size_t i = 0; i < iterable.as.array.count; i++) {
             env_set(stmt->as.for_each.name, value_copy(iterable.as.array.items[i]));
             EvalResult result = eval_stmt_list(stmt->as.for_each.body);
+            if (result.did_break) {
+                value_free(result.value);
+                break;
+            }
             if (result.did_continue) {
                 value_free(result.value);
                 continue;
