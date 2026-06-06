@@ -26,6 +26,7 @@ examples=(
     file_test.gb
     file_management_test.gb
     directory_management_test.gb
+    file_overwrite_test.gb
     find_test.bas
     function_call_comparison_test.bas
     lock_test.gb

@@ -1,0 +1,1 @@
+runtime error at tests/negative_overwrite_text_type.bas:2:1: overwrite expects text to be a string

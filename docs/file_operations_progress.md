@@ -4,7 +4,7 @@ Last verified: 2026-06-06
 
 ## Status
 
-Phases 1 and 2 are **complete**.
+Phases 1, 2, and 3 are **complete**.
 
 Implemented core functions:
 
@@ -52,6 +52,22 @@ Phase 2 core functions:
   - raises a file-operation runtime error when the directory is missing,
     non-empty, or cannot otherwise be removed
 
+Phase 3 core function:
+
+- `overwrite(f, text, pos)`
+  - requires a file value, string text, and non-negative integer position
+  - interprets position as a byte offset, consistent with `bytes(f)`
+  - replaces bytes starting at the requested position without inserting or
+    truncating
+  - permits position equal to file size, which appends the text
+  - rejects positions beyond end of file
+  - permits empty text and leaves file contents unchanged
+  - requires the file to already exist
+  - returns `true` on success
+  - raises a file-operation runtime error on validation or I/O failure
+
+Existing `write()` and `append()` behavior was not changed.
+
 ## Files Changed
 
 - `src/eval.c`
@@ -89,6 +105,21 @@ Phase 2 files:
   - added Phase 2 failure coverage
 - `tests/run_examples.sh` and `tests/run_negative.sh`
   - registered the Phase 2 tests
+
+Phase 3 files:
+
+- `src/eval.c`
+  - added validated non-truncating positioned writes through `r+b`
+- `src/builtins.c`
+  - registered `overwrite` as a core function
+- `examples/file_overwrite_test.gb`
+  - added repeatable overwrite behavior and cleanup coverage
+- `examples/file_overwrite_test.out`
+  - added expected output
+- `tests/negative_overwrite_*.bas` and matching `.err` files
+  - added Phase 3 validation and missing-file coverage
+- `tests/run_examples.sh` and `tests/run_negative.sh`
+  - registered the Phase 3 tests
 
 ## Tests Added
 
@@ -131,6 +162,23 @@ Phase 2 negative coverage verifies:
 - removing a non-empty directory without recursive deletion
 - creating a directory at an existing path
 
+Phase 3 positive coverage verifies:
+
+- replacement at an interior byte position
+- preservation of trailing file contents
+- empty text leaving the file unchanged
+- position equal to `bytes(f)` appending text
+- successful cleanup and post-delete absence
+
+Phase 3 negative coverage verifies:
+
+- invalid file argument
+- non-string text
+- negative position
+- non-integer position
+- position beyond end of file
+- missing file
+
 ## Verification
 
 Commands run on 2026-06-06:
@@ -148,8 +196,15 @@ Phase 2 verification on 2026-06-06:
   `examples/directory_management_test.gb`.
 - `./tests/run_negative.sh`: passed, including all five Phase 2 negative cases.
 
+Phase 3 verification on 2026-06-06:
+
+- `make clean && make`: passed without warnings.
+- `./tests/run_examples.sh`: passed, including
+  `examples/file_overwrite_test.gb`.
+- `./tests/run_negative.sh`: passed, including all six Phase 3 negative cases.
+
 ## Next Recommended Phase
 
-Define Phase 3 semantics and tests before implementation. The next coherent
-phase is explicit overwrite policy and line-oriented reads. No `overwrite()` or
-`read_lines()` functionality was implemented in Phase 2.
+Define Phase 4 semantics and tests before implementation. The next coherent
+phase is line-oriented reads through `read_lines()`. No `read_lines()`
+functionality was implemented in Phase 3.

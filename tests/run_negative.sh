@@ -66,6 +66,12 @@ cases=(
     negative_remove_dir_missing
     negative_remove_dir_nonempty
     negative_make_dir_exists
+    negative_overwrite_file_type
+    negative_overwrite_text_type
+    negative_overwrite_negative_position
+    negative_overwrite_fractional_position
+    negative_overwrite_beyond_eof
+    negative_overwrite_missing
     negative_left_type
     negative_mid_arity
     negative_trim_type

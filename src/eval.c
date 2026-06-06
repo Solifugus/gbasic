@@ -5,6 +5,7 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <math.h>
 #include <signal.h>
 #include <stdio.h>
@@ -3733,6 +3734,127 @@ static Value eval_file_call(AstExpr *expr) {
         return value_bool(1);
     }
 
+    if (strcmp(name, "overwrite") == 0) {
+        if (expr->as.call.args.count != 3) {
+            runtime_error_raise("overwrite expects file, text, and position arguments",
+                                1004,
+                                "file operation");
+            return value_null();
+        }
+        Value file_value = eval_expr(expr->as.call.args.items[0]);
+        Value text_value = eval_expr(expr->as.call.args.items[1]);
+        Value position_value = eval_expr(expr->as.call.args.items[2]);
+        if (error_action_pending()) {
+            value_free(file_value);
+            value_free(text_value);
+            value_free(position_value);
+            return value_null();
+        }
+        if (file_value.kind != VALUE_FILE) {
+            runtime_error_raise("overwrite expects a file reference", 1004, "file operation");
+            value_free(file_value);
+            value_free(text_value);
+            value_free(position_value);
+            return value_null();
+        }
+        if (text_value.kind != VALUE_STRING) {
+            runtime_error_raise("overwrite expects text to be a string", 1004, "file operation");
+            value_free(file_value);
+            value_free(text_value);
+            value_free(position_value);
+            return value_null();
+        }
+        if (position_value.kind != VALUE_NUMBER ||
+            !isfinite(position_value.as.number) ||
+            position_value.as.number != floor(position_value.as.number)) {
+            runtime_error_raise("overwrite position must be an integer", 1004, "file operation");
+            value_free(file_value);
+            value_free(text_value);
+            value_free(position_value);
+            return value_null();
+        }
+        if (position_value.as.number < 0) {
+            runtime_error_raise("overwrite position must be non-negative", 1004, "file operation");
+            value_free(file_value);
+            value_free(text_value);
+            value_free(position_value);
+            return value_null();
+        }
+        if (position_value.as.number > LONG_MAX) {
+            runtime_error_raise("overwrite position is beyond end of file", 1004, "file operation");
+            value_free(file_value);
+            value_free(text_value);
+            value_free(position_value);
+            return value_null();
+        }
+
+        FILE *file = fopen(file_value.as.file_path, "r+b");
+        if (!file) {
+            char message[512];
+            snprintf(message,
+                     sizeof(message),
+                     "could not overwrite file: %s",
+                     file_value.as.file_path);
+            runtime_error_raise(message, 1004, "file operation");
+            value_free(file_value);
+            value_free(text_value);
+            value_free(position_value);
+            return value_null();
+        }
+        int ok = fseek(file, 0, SEEK_END) == 0;
+        long size = ok ? ftell(file) : -1;
+        long position = (long)position_value.as.number;
+        if (!ok || size < 0) {
+            fclose(file);
+            char message[512];
+            snprintf(message,
+                     sizeof(message),
+                     "could not overwrite file: %s",
+                     file_value.as.file_path);
+            runtime_error_raise(message, 1004, "file operation");
+            value_free(file_value);
+            value_free(text_value);
+            value_free(position_value);
+            return value_null();
+        }
+        if (position > size) {
+            fclose(file);
+            runtime_error_raise("overwrite position is beyond end of file",
+                                1004,
+                                "file operation");
+            value_free(file_value);
+            value_free(text_value);
+            value_free(position_value);
+            return value_null();
+        }
+
+        size_t text_size = strlen(text_value.as.string);
+        ok = fseek(file, position, SEEK_SET) == 0;
+        if (ok && text_size > 0) {
+            ok = fwrite(text_value.as.string, 1, text_size, file) == text_size;
+        }
+        if (fclose(file) != 0) {
+            ok = 0;
+        }
+        if (!ok) {
+            char message[512];
+            snprintf(message,
+                     sizeof(message),
+                     "could not overwrite file: %s",
+                     file_value.as.file_path);
+            runtime_error_raise(message, 1004, "file operation");
+            value_free(file_value);
+            value_free(text_value);
+            value_free(position_value);
+            return value_null();
+        }
+
+        value_free(file_value);
+        value_free(text_value);
+        value_free(position_value);
+        return value_bool(1);
+    }
+
     if (strcmp(name, "write") == 0 || strcmp(name, "append") == 0) {
         if (expr->as.call.args.count != 2) {
             char message[256];
@@ -6927,6 +7049,7 @@ static Value eval_call(AstExpr *expr) {
         strcmp(expr->as.call.name, "list_files") == 0 ||
         strcmp(expr->as.call.name, "make_dir") == 0 ||
         strcmp(expr->as.call.name, "remove_dir") == 0 ||
+        strcmp(expr->as.call.name, "overwrite") == 0 ||
         strcmp(expr->as.call.name, "lock") == 0 ||
         strcmp(expr->as.call.name, "unlock") == 0 ||
         strcmp(expr->as.call.name, "bytes") == 0 ||

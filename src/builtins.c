@@ -55,6 +55,7 @@ int gbasic_builtin_function(const char *name) {
         "list_files",
         "make_dir",
         "remove_dir",
+        "overwrite",
         "prepend",
         "insert",
         "remove",

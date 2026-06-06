@@ -1,0 +1,1 @@
+runtime error at tests/negative_overwrite_beyond_eof.bas:2:1: overwrite position is beyond end of file

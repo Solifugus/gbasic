@@ -1,0 +1,18 @@
+f(file)= "examples/tmp_file_overwrite_test.txt"
+
+if exists(f) then
+    delete(f)
+end if
+
+write(f, "ABCDEFGHIJ")
+print overwrite(f, "xyz", 3)
+print read(f)
+
+print overwrite(f, "", 0)
+print read(f)
+
+print overwrite(f, "KLM", bytes(f))
+print read(f)
+
+print delete(f)
+print exists(f)
