@@ -1,1 +1,1 @@
-runtime error at 1:1: split separator cannot be empty
+runtime error at tests/negative_modifier_split_empty.bas:1:1: split separator cannot be empty

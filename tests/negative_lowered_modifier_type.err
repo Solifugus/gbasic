@@ -1,1 +1,1 @@
-runtime error at 1:1: lower expects a string
+runtime error at tests/negative_lowered_modifier_type.bas:1:1: lower expects a string

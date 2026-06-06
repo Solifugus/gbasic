@@ -1,1 +1,1 @@
-parse error: syntax error, unexpected NEWLINE, expecting RBRACKET
+parse error at tests/negative_malformed_lvalue.bas:1:21: syntax error, unexpected NEWLINE, expecting RBRACKET

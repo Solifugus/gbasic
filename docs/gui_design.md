@@ -41,6 +41,7 @@ load "gui"
 ui = {
     id:"main",
     component:"vert",
+    spacing:"between",
     contains:[
         { id:"name", component:"input", value:"" },
         { id:"save", component:"button", label:"Save", value:false },
@@ -103,6 +104,7 @@ Each widget is a record. The common fields for v1 are:
 - `width`
 - `height`
 - `spacing`
+  - Optional container distribution mode: `"start"`, `"end"`, `"between"`, `"around"`, or `"center"`.
 
 Proposed meanings:
 
@@ -125,14 +127,14 @@ Proposed meanings:
 - `height`
   - Optional height hint.
 - `spacing`
-  - Optional spacing hint for container children.
+  - Optional container distribution mode for child layout.
 
 Reasonable v1 defaults:
 
 - `enabled = true`
 - `visible = true`
 - `contains = []` for containers
-- `spacing = 0` when omitted
+- `spacing = "start"` when omitted
 - `button.value = false` when not explicitly set
 
 Id rules:
@@ -153,7 +155,7 @@ Vertical container.
 
 - lays out children top to bottom
 - children come from `contains`
-- `spacing` controls vertical gap between children
+- `spacing` controls how children are distributed vertically
 - `value` is normally unused
 
 ### `horiz`
@@ -162,7 +164,7 @@ Horizontal container.
 
 - lays out children left to right
 - children come from `contains`
-- `spacing` controls horizontal gap between children
+- `spacing` controls how children are distributed horizontally
 - `value` is normally unused
 
 ### `label`
@@ -238,6 +240,14 @@ The intended model is:
 4. Those record mutations flow back to the backend, which updates the rendered UI.
 
 For inputs, watcher-visible changes occur on committed values only. Intermediate typing is backend-local until Enter or focus loss commits the new `value`.
+
+Layout note:
+
+- `spacing:"start"` packs children at the start of the container axis
+- `spacing:"end"` packs children at the end of the container axis
+- `spacing:"between"` distributes free space between children
+- `spacing:"around"` distributes free space before, between, and after children
+- `spacing:"center"` centers the child group with free space on both sides
 
 This keeps GUI behavior in ordinary language code:
 

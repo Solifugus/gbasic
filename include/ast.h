@@ -109,6 +109,8 @@ typedef struct {
 
 struct AstExpr {
     AstExprKind kind;
+    int line;
+    int column;
     union {
         double number;
         char *string;
@@ -246,6 +248,7 @@ AstModifierUse ast_modifier_use(char *name, AstExprList args);
 AstModifierSignature ast_modifier_signature(char *name, AstNameList params);
 AstExpr *ast_binary(char *op, AstModifierUse modifier, AstExpr *left, AstExpr *right);
 AstExpr *ast_unary(char *op, AstExpr *expr);
+AstExpr *ast_expr_position(AstExpr *expr, int line, int column);
 
 AstStmt *ast_assign(AstExpr *target, AstModifierUse modifier, AstExpr *value);
 AstStmt *ast_print(AstExpr *expr);

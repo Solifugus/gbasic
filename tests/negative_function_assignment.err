@@ -1,1 +1,1 @@
-parse error: syntax error, unexpected OP_EQ, expecting NEWLINE
+parse error at tests/negative_function_assignment.bas:1:22: syntax error, unexpected OP_EQ, expecting NEWLINE

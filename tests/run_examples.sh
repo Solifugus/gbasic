@@ -7,12 +7,15 @@ make clean
 make
 
 examples=(
+    arithmetic_number_modifier_test.bas
     array_append_prepend_test.bas
     array_insert_remove_test.bas
     array_reverse_test.bas
     array_sort_test.bas
     array_take_test.bas
     array_unique_test.bas
+    type_builtin_test.bas
+    string_concat_test.bas
     parse_test.gb
     record_test.gb
     datetime_test.gb
@@ -217,6 +220,34 @@ if printf '41\n' | ./gbasic examples/input_number_integration_test.bas >"$stdout
 else
     status=$?
     printf 'FAIL %s\n' "examples/input_number_integration_test.bas"
+    if [[ -s "$stderr_file" ]]; then
+        cat "$stderr_file"
+    fi
+    rm -f "$stdout_file" "$stderr_file"
+    exit "$status"
+fi
+rm -f "$stdout_file" "$stderr_file"
+
+stdout_file="$(mktemp)"
+stderr_file="$(mktemp)"
+if printf 'Ada\n41\n' | ./gbasic examples/input_birth_year_concat_test.bas >"$stdout_file" 2>"$stderr_file"; then
+    actual_text="$(cat "$stdout_file")"
+    expected_text="$(cat examples/input_birth_year_concat_test.out)"
+    if [[ "$actual_text" == "$expected_text" ]]; then
+        printf 'PASS %s\n' "examples/input_birth_year_concat_test.bas"
+    else
+        printf 'FAIL %s\n' "examples/input_birth_year_concat_test.bas"
+        actual_norm="$(mktemp)"
+        expected_norm="$(mktemp)"
+        printf '%s\n' "$actual_text" >"$actual_norm"
+        printf '%s\n' "$expected_text" >"$expected_norm"
+        diff -u "$expected_norm" "$actual_norm" || true
+        rm -f "$actual_norm" "$expected_norm" "$stdout_file" "$stderr_file"
+        exit 1
+    fi
+else
+    status=$?
+    printf 'FAIL %s\n' "examples/input_birth_year_concat_test.bas"
     if [[ -s "$stderr_file" ]]; then
         cat "$stderr_file"
     fi

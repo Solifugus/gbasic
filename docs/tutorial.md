@@ -107,6 +107,8 @@ age(number)= "42"
 text(string)= age
 ```
 
+`input(...)` returns strings. Use `(number)` when you want numeric input. Arithmetic stays strict for `-`, `*`, and `/`, and `+` only does numeric addition when neither operand is a string. If either operand is a string, `+` converts both values with canonical string conversion and concatenates them.
+
 ## Arrays And Records
 
 Arrays use brackets:
@@ -149,6 +151,15 @@ print(copy.title)
 
 The format is JSON-like and supports numbers, strings, booleans, `nothing`, `unknown`, arrays, and records.
 
+Use `string(value)` or the `(string)` modifier when you want canonical display text:
+
+```basic
+line = "You were born in " + birth_year + "."
+print(string(project))
+```
+
+Arrays and records use the same textual shape as `encode(value)`, but `string(value)` is display-oriented while `encode(value)` is serialization.
+
 Use `quote(value)` when generating gBASIC source code that contains string literals:
 
 ```basic
@@ -159,7 +170,7 @@ line = "description = " + quote(description)
 print(line)
 ```
 
-`quote` returns the surrounding double quotes and escapes quotes, backslashes, tabs, carriage returns, and newlines. Newlines are written as `\n`, which keeps generated source compact and still round-trips with `decode(quote(description))`. Non-string scalar values are converted the same way as the `(string)` modifier; arrays and records are errors.
+`quote` returns the surrounding double quotes and escapes quotes, backslashes, tabs, carriage returns, and newlines. Newlines are written as `\n`, which keeps generated source compact and still round-trips with `decode(quote(description))`. Non-string scalar values use the same scalar conversion as `string(value)`; arrays and records are still errors for `quote`.
 
 Records use braces and `name = value` fields:
 

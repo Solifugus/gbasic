@@ -1,1 +1,1 @@
-parse error: syntax error, unexpected LBRACKET, expecting NEWLINE
+parse error at tests/negative_call_lvalue_dynamic_index.bas:6:11: syntax error, unexpected LBRACKET, expecting NEWLINE

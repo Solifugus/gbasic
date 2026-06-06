@@ -1,1 +1,1 @@
-runtime error at 1:1: unique supports only scalar array values
+runtime error at tests/negative_unique_nested_array.bas:1:1: unique supports only scalar array values

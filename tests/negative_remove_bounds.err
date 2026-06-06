@@ -1,1 +1,1 @@
-runtime error at 1:1: remove index out of range
+runtime error at tests/negative_remove_bounds.bas:1:1: remove index out of range

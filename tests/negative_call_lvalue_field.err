@@ -1,1 +1,1 @@
-parse error: syntax error, unexpected DOT, expecting NEWLINE
+parse error at tests/negative_call_lvalue_field.bas:7:13: syntax error, unexpected DOT, expecting NEWLINE

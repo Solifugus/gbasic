@@ -1,1 +1,1 @@
-parse error: syntax error, unexpected CONSIDER_ELSE, expecting CONSIDER_IF
+parse error at tests/negative_consider_else_before_if.bas:3:1: syntax error, unexpected CONSIDER_ELSE, expecting CONSIDER_IF

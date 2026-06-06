@@ -18,6 +18,7 @@
 #endif
 
 int parse_source(const char *source, AstStmtList *out_program);
+void parse_set_source_path(const char *path);
 
 typedef enum {
     VALUE_NULL,
@@ -233,7 +234,7 @@ struct GuiNativeWindow {
     char *handle_id;
     char *watch_root_path;
     GtkWidget *window;
-    GuiWidgetBinding *bindings;
+    GuiWidgetBinding **bindings;
     size_t binding_count;
     GuiPendingMutation *pending_mutations;
     size_t pending_mutation_count;
@@ -250,6 +251,36 @@ static int gui_gtk_available = 0;
 
 static int path_equal(const char *left, const char *right) {
     return left && right && strcmp(left, right) == 0;
+}
+
+static const char *value_kind_name(ValueKind kind) {
+    switch (kind) {
+    case VALUE_NULL:
+        return "nothing";
+    case VALUE_UNKNOWN:
+        return "unknown";
+    case VALUE_NUMBER:
+        return "number";
+    case VALUE_STRING:
+        return "string";
+    case VALUE_BOOL:
+        return "boolean";
+    case VALUE_ARRAY:
+        return "array";
+    case VALUE_RECORD:
+        return "record";
+    case VALUE_DATETIME:
+        return "datetime";
+    case VALUE_DURATION:
+        return "duration";
+    case VALUE_MONEY:
+        return "money";
+    case VALUE_FILE:
+        return "file";
+    case VALUE_DIR:
+        return "directory";
+    }
+    return "value";
 }
 
 static char *copy_string(const char *text) {
@@ -423,6 +454,16 @@ static void error_set_state(const char *message, int code, const char *source) {
     current_error.source = copy_string(source ? source : "runtime");
 }
 
+static const char *runtime_error_path(void) {
+    if (current_import_path && current_import_path[0]) {
+        return current_import_path;
+    }
+    if (root_source_path && root_source_path[0]) {
+        return root_source_path;
+    }
+    return NULL;
+}
+
 static void runtime_error_raise(const char *message, int code, const char *source) {
     error_set_state(message, code, source);
     error_generation++;
@@ -436,10 +477,19 @@ static void runtime_error_raise(const char *message, int code, const char *sourc
     }
 
     if (error_mode == ERROR_MODE_STOP) {
-        fprintf(stderr, "runtime error at %d:%d: %s\n",
-                current_error.line,
-                current_error.column,
-                current_error.message);
+        const char *path = runtime_error_path();
+        if (path) {
+            fprintf(stderr, "runtime error at %s:%d:%d: %s\n",
+                    path,
+                    current_error.line,
+                    current_error.column,
+                    current_error.message);
+        } else {
+            fprintf(stderr, "runtime error at %d:%d: %s\n",
+                    current_error.line,
+                    current_error.column,
+                    current_error.message);
+        }
         runtime_stopped = 1;
     }
 }
@@ -591,6 +641,22 @@ static double value_number_or_zero(Value value) {
         return value.as.boolean ? 1.0 : 0.0;
     }
     return 0.0;
+}
+
+static int value_number_for_arithmetic(Value value, const char *op, double *out_number) {
+    if (value.kind == VALUE_NUMBER) {
+        *out_number = value.as.number;
+        return 1;
+    }
+
+    char message[256];
+    snprintf(message,
+             sizeof(message),
+             "arithmetic operator '%s' expected number but got %s",
+             op,
+             value_kind_name(value.kind));
+    runtime_error_raise(message, 1003, "arithmetic");
+    return 0;
 }
 
 static long long round_to_cents(double amount) {
@@ -974,6 +1040,57 @@ static int gui_optional_int_field(Value *record, const char *name, int fallback)
     return (int)field->value->as.number;
 }
 
+typedef enum {
+    GUI_SPACING_START,
+    GUI_SPACING_END,
+    GUI_SPACING_BETWEEN,
+    GUI_SPACING_AROUND,
+    GUI_SPACING_CENTER
+} GuiSpacingMode;
+
+static int gui_spacing_mode_from_text(const char *text, GuiSpacingMode *out_mode) {
+    if (!text || !out_mode) {
+        return 0;
+    }
+    if (strcmp(text, "start") == 0) {
+        *out_mode = GUI_SPACING_START;
+        return 1;
+    }
+    if (strcmp(text, "end") == 0) {
+        *out_mode = GUI_SPACING_END;
+        return 1;
+    }
+    if (strcmp(text, "between") == 0) {
+        *out_mode = GUI_SPACING_BETWEEN;
+        return 1;
+    }
+    if (strcmp(text, "around") == 0) {
+        *out_mode = GUI_SPACING_AROUND;
+        return 1;
+    }
+    if (strcmp(text, "center") == 0) {
+        *out_mode = GUI_SPACING_CENTER;
+        return 1;
+    }
+    return 0;
+}
+
+static int gui_spacing_mode_for_record(Value *record, GuiSpacingMode *out_mode) {
+    RecordField *field = record_find(record, "spacing");
+    if (!field) {
+        *out_mode = GUI_SPACING_START;
+        return 1;
+    }
+    if (field->value->kind != VALUE_STRING ||
+        !gui_spacing_mode_from_text(field->value->as.string, out_mode)) {
+        runtime_error_raise("gui field 'spacing' must be one of start, end, between, around, center",
+                            1003,
+                            "gui");
+        return 0;
+    }
+    return 1;
+}
+
 typedef struct {
     char **ids;
     size_t count;
@@ -1097,9 +1214,8 @@ static int gui_validate_widget_tree(Value *widget, GuiIdSet *ids) {
     }
 
     if (gui_component_is_container(component)) {
-        RecordField *spacing = record_find(widget, "spacing");
-        if (spacing && !value_is_integer_number(*spacing->value)) {
-            runtime_error_raise("gui field 'spacing' must be an integer number", 1003, "gui");
+        GuiSpacingMode spacing_mode = GUI_SPACING_START;
+        if (!gui_spacing_mode_for_record(widget, &spacing_mode)) {
             return 0;
         }
         RecordField *contains = record_find(widget, "contains");
@@ -1479,6 +1595,29 @@ static Value gui_eval_run_call(AstExpr *expr) {
 }
 
 #if HAVE_GTK
+static GtkWidget *gui_build_gtk_widget(Value *node, GuiNativeWindow *window);
+
+static GtkWidget *gui_build_flexible_spacer(GtkOrientation orientation) {
+    GtkWidget *spacer = gtk_box_new(orientation, 0);
+    gtk_widget_show(spacer);
+    return spacer;
+}
+
+static void gui_box_pack_flexible_spacer(GtkWidget *box, GtkOrientation orientation) {
+    GtkWidget *spacer = gui_build_flexible_spacer(orientation);
+    gtk_box_pack_start(GTK_BOX(box), spacer, TRUE, TRUE, 0);
+}
+
+static void gui_box_pack_child(GtkWidget *box, GtkWidget *child) {
+    gtk_box_pack_start(GTK_BOX(box), child, FALSE, FALSE, 0);
+}
+
+static void gui_box_pack_children(Value *contains_value,
+                                  GtkWidget *box,
+                                  GtkOrientation orientation,
+                                  GuiNativeWindow *window,
+                                  GuiSpacingMode spacing_mode);
+
 static int gui_ensure_gtk_available(void) {
     if (gui_gtk_init_attempted) {
         return gui_gtk_available;
@@ -1495,16 +1634,21 @@ static void gui_window_binding_add(GuiNativeWindow *window,
                                    const char *id,
                                    GtkWidget *widget,
                                    Value *widget_record) {
-    GuiWidgetBinding *next = realloc(window->bindings,
-                                     sizeof(GuiWidgetBinding) * (window->binding_count + 1));
+    GuiWidgetBinding **next = realloc(window->bindings,
+                                      sizeof(GuiWidgetBinding *) * (window->binding_count + 1));
     if (!next) {
         abort();
     }
     window->bindings = next;
-    window->bindings[window->binding_count].id = copy_string(id);
-    window->bindings[window->binding_count].widget = widget;
-    window->bindings[window->binding_count].widget_record = widget_record;
-    window->bindings[window->binding_count].window = window;
+    GuiWidgetBinding *binding = malloc(sizeof(GuiWidgetBinding));
+    if (!binding) {
+        abort();
+    }
+    binding->id = copy_string(id);
+    binding->widget = widget;
+    binding->widget_record = widget_record;
+    binding->window = window;
+    window->bindings[window->binding_count] = binding;
     window->binding_count++;
 }
 
@@ -1661,7 +1805,9 @@ static void gui_on_button_clicked(GtkWidget *widget, gpointer data) {
     if (!binding) {
         return;
     }
-    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(widget), TRUE);
+    if (!gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(widget))) {
+        gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(widget), TRUE);
+    }
     if (gui_widget_set_bool_field(binding->widget_record, "value", 1)) {
         gui_window_enqueue_mutation(binding->window,
                                     binding->id,
@@ -1679,11 +1825,15 @@ static void gui_apply_widget_state(GtkWidget *widget, Value *node) {
     if (width >= 0 || height >= 0) {
         gtk_widget_set_size_request(widget, width, height);
     }
-    gtk_widget_set_sensitive(widget, gui_optional_bool_field(node, "enabled", 1));
+    int enabled = gui_optional_bool_field(node, "enabled", 1);
+    if ((gtk_widget_get_sensitive(widget) != 0) != (enabled != 0)) {
+        gtk_widget_set_sensitive(widget, enabled);
+    }
     if (error_action_pending()) {
         return;
     }
-    if (gui_optional_bool_field(node, "visible", 1)) {
+    int visible = gui_optional_bool_field(node, "visible", 1);
+    if (visible) {
         gtk_widget_show(widget);
     } else {
         gtk_widget_hide(widget);
@@ -1707,7 +1857,10 @@ static void gui_refresh_widget_binding(GuiWidgetBinding *binding) {
     if (strcmp(component, "label") == 0) {
         RecordField *value_field = record_find(record, "value");
         if (value_field && value_field->value->kind == VALUE_STRING) {
-            gtk_label_set_text(GTK_LABEL(widget), value_field->value->as.string);
+            const char *current = gtk_label_get_text(GTK_LABEL(widget));
+            if (strcmp(current, value_field->value->as.string) != 0) {
+                gtk_label_set_text(GTK_LABEL(widget), value_field->value->as.string);
+            }
         }
     } else if (strcmp(component, "input") == 0) {
         RecordField *value_field = record_find(record, "value");
@@ -1721,10 +1874,17 @@ static void gui_refresh_widget_binding(GuiWidgetBinding *binding) {
         RecordField *label_field = record_find(record, "label");
         RecordField *value_field = record_find(record, "value");
         if (label_field && label_field->value->kind == VALUE_STRING) {
-            gtk_button_set_label(GTK_BUTTON(widget), label_field->value->as.string);
+            const char *current = gtk_button_get_label(GTK_BUTTON(widget));
+            if (!current || strcmp(current, label_field->value->as.string) != 0) {
+                gtk_button_set_label(GTK_BUTTON(widget), label_field->value->as.string);
+            }
         }
         if (value_field && value_field->value->kind == VALUE_BOOL) {
-            gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(widget), value_field->value->as.boolean);
+            int current = gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(widget)) != 0;
+            int next = value_field->value->as.boolean != 0;
+            if (current != next) {
+                gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(widget), next);
+            }
         }
     }
 
@@ -1737,12 +1897,44 @@ static void gui_window_refresh_widgets(GuiNativeWindow *window) {
     }
     window->sync_depth++;
     for (size_t i = 0; i < window->binding_count; i++) {
-        gui_refresh_widget_binding(&window->bindings[i]);
+        gui_refresh_widget_binding(window->bindings[i]);
         if (error_action_pending()) {
             break;
         }
     }
     window->sync_depth--;
+}
+
+static void gui_box_pack_children(Value *contains_value,
+                                  GtkWidget *box,
+                                  GtkOrientation orientation,
+                                  GuiNativeWindow *window,
+                                  GuiSpacingMode spacing_mode) {
+    size_t count = contains_value ? contains_value->as.array.count : 0;
+
+    if (spacing_mode == GUI_SPACING_END ||
+        spacing_mode == GUI_SPACING_CENTER ||
+        spacing_mode == GUI_SPACING_AROUND) {
+        gui_box_pack_flexible_spacer(box, orientation);
+    }
+
+    for (size_t i = 0; i < count; i++) {
+        if ((spacing_mode == GUI_SPACING_BETWEEN ||
+             spacing_mode == GUI_SPACING_AROUND) && i > 0) {
+            gui_box_pack_flexible_spacer(box, orientation);
+        }
+
+        GtkWidget *child = gui_build_gtk_widget(&contains_value->as.array.items[i], window);
+        if (error_action_pending()) {
+            return;
+        }
+        gui_box_pack_child(box, child);
+    }
+
+    if (spacing_mode == GUI_SPACING_CENTER ||
+        spacing_mode == GUI_SPACING_AROUND) {
+        gui_box_pack_flexible_spacer(box, orientation);
+    }
 }
 
 static GtkWidget *gui_build_gtk_widget(Value *node, GuiNativeWindow *window) {
@@ -1756,19 +1948,16 @@ static GtkWidget *gui_build_gtk_widget(Value *node, GuiNativeWindow *window) {
         GtkOrientation orientation = strcmp(component, "vert") == 0
             ? GTK_ORIENTATION_VERTICAL
             : GTK_ORIENTATION_HORIZONTAL;
-        int spacing = gui_optional_int_field(node, "spacing", 0);
-        if (error_action_pending()) {
+        GuiSpacingMode spacing_mode = GUI_SPACING_START;
+        if (!gui_spacing_mode_for_record(node, &spacing_mode) || error_action_pending()) {
             return NULL;
         }
-        widget = gtk_box_new(orientation, spacing);
+        widget = gtk_box_new(orientation, 0);
         RecordField *contains = record_find(node, "contains");
         if (contains && contains->value->kind == VALUE_ARRAY) {
-            for (size_t i = 0; i < contains->value->as.array.count; i++) {
-                GtkWidget *child = gui_build_gtk_widget(&contains->value->as.array.items[i], window);
-                if (error_action_pending()) {
-                    return NULL;
-                }
-                gtk_box_pack_start(GTK_BOX(widget), child, FALSE, FALSE, 0);
+            gui_box_pack_children(contains->value, widget, orientation, window, spacing_mode);
+            if (error_action_pending()) {
+                return NULL;
             }
         }
     } else if (strcmp(component, "label") == 0) {
@@ -1789,7 +1978,7 @@ static GtkWidget *gui_build_gtk_widget(Value *node, GuiNativeWindow *window) {
         return NULL;
     }
     gui_window_binding_add(window, id_field->value->as.string, widget, node);
-    binding = &window->bindings[window->binding_count - 1];
+    binding = window->bindings[window->binding_count - 1];
     if (strcmp(component, "input") == 0) {
         g_signal_connect(widget, "activate", G_CALLBACK(gui_on_entry_commit), binding);
         g_signal_connect(widget, "focus-out-event", G_CALLBACK(gui_on_entry_focus_out), binding);
@@ -1855,7 +2044,8 @@ static char *gui_create_native_window(Value *ui,
 static void gui_clear_native_windows(void) {
     for (size_t i = 0; i < gui_window_count; i++) {
         for (size_t j = 0; j < gui_windows[i].binding_count; j++) {
-            free(gui_windows[i].bindings[j].id);
+            free(gui_windows[i].bindings[j]->id);
+            free(gui_windows[i].bindings[j]);
         }
         gui_window_clear_pending_mutations(&gui_windows[i]);
         free(gui_windows[i].bindings);
@@ -2765,6 +2955,7 @@ static LoadedFile *loaded_file_get(const char *path) {
     }
 
     AstStmtList program = ast_stmt_list_empty();
+    parse_set_source_path(path);
     if (parse_source(source, &program) != 0) {
         free(source);
         char message[512];
@@ -4308,6 +4499,38 @@ static int sort_value_compare(const void *left_ptr, const void *right_ptr) {
     return 0;
 }
 
+static Value builtin_string_value(Value value);
+
+static const char *builtin_type_name(Value value) {
+    switch (value.kind) {
+    case VALUE_NUMBER:
+        return "number";
+    case VALUE_STRING:
+        return "string";
+    case VALUE_BOOL:
+        return "boolean";
+    case VALUE_ARRAY:
+        return "array";
+    case VALUE_RECORD:
+        return "record";
+    case VALUE_NULL:
+        return "nothing";
+    case VALUE_UNKNOWN:
+        return "unknown";
+    case VALUE_DATETIME:
+        return "datetime";
+    case VALUE_DURATION:
+        return "duration";
+    case VALUE_MONEY:
+        return "money";
+    case VALUE_FILE:
+        return "file";
+    case VALUE_DIR:
+        return "directory";
+    }
+    return "value";
+}
+
 static Value sort_array_value(Value array) {
     if (!array_all_sort_comparable(array)) {
         value_free(array);
@@ -4383,29 +4606,7 @@ static Value builtin_number_modifier_value(Value value) {
 }
 
 static Value builtin_string_modifier_value(Value value) {
-    char buffer[128];
-    switch (value.kind) {
-    case VALUE_STRING:
-        return value;
-    case VALUE_NUMBER:
-        snprintf(buffer, sizeof(buffer), "%g", value.as.number);
-        value_free(value);
-        return value_string(buffer);
-    case VALUE_BOOL:
-        snprintf(buffer, sizeof(buffer), "%s", value.as.boolean ? "true" : "false");
-        value_free(value);
-        return value_string(buffer);
-    case VALUE_NULL:
-        value_free(value);
-        return value_string("nothing");
-    case VALUE_UNKNOWN:
-        value_free(value);
-        return value_string("unknown");
-    default:
-        value_free(value);
-        runtime_error_raise("string modifier expects scalar value", 1003, "modifier");
-        return value_null();
-    }
+    return builtin_string_value(value);
 }
 
 typedef struct {
@@ -4472,6 +4673,133 @@ static void encode_string_literal(StringBuilder *builder, const char *text) {
         text++;
     }
     sb_append_char(builder, '"');
+}
+
+static int encode_value_to_builder(StringBuilder *builder, Value value);
+
+static Value builtin_string_value(Value value) {
+    char buffer[128];
+    StringBuilder builder;
+    int used_builder = 0;
+
+    switch (value.kind) {
+    case VALUE_STRING:
+        return value;
+    case VALUE_NUMBER:
+        snprintf(buffer, sizeof(buffer), "%g", value.as.number);
+        value_free(value);
+        return value_string(buffer);
+    case VALUE_BOOL:
+        if (value.as.boolean) {
+            value_free(value);
+            return value_string("true");
+        }
+        value_free(value);
+        return value_string("false");
+    case VALUE_NULL:
+        value_free(value);
+        return value_string("nothing");
+    case VALUE_UNKNOWN:
+        value_free(value);
+        return value_string("unknown");
+    case VALUE_ARRAY:
+    case VALUE_RECORD:
+        sb_init(&builder);
+        used_builder = 1;
+        if (!encode_value_to_builder(&builder, value)) {
+            free(builder.items);
+            value_free(value);
+            return value_null();
+        }
+        break;
+    case VALUE_DATETIME:
+        if (value.as.datetime.time_only) {
+            if (value.as.datetime.precision == PREC_HOUR) {
+                snprintf(buffer, sizeof(buffer), "%02d", value.as.datetime.hour);
+            } else if (value.as.datetime.precision == PREC_MINUTE) {
+                snprintf(buffer, sizeof(buffer), "%02d:%02d",
+                         value.as.datetime.hour,
+                         value.as.datetime.minute);
+            } else {
+                snprintf(buffer, sizeof(buffer), "%02d:%02d:%02d",
+                         value.as.datetime.hour,
+                         value.as.datetime.minute,
+                         value.as.datetime.second);
+            }
+        } else if (value.as.datetime.precision == PREC_YEAR) {
+            snprintf(buffer, sizeof(buffer), "%04d", value.as.datetime.year);
+        } else if (value.as.datetime.precision == PREC_MONTH) {
+            snprintf(buffer, sizeof(buffer), "%04d-%02d",
+                     value.as.datetime.year,
+                     value.as.datetime.month);
+        } else if (value.as.datetime.precision == PREC_DAY) {
+            snprintf(buffer, sizeof(buffer), "%04d-%02d-%02d",
+                     value.as.datetime.year,
+                     value.as.datetime.month,
+                     value.as.datetime.day);
+        } else if (value.as.datetime.precision == PREC_HOUR) {
+            snprintf(buffer, sizeof(buffer), "%04d-%02d-%02d %02d",
+                     value.as.datetime.year,
+                     value.as.datetime.month,
+                     value.as.datetime.day,
+                     value.as.datetime.hour);
+        } else if (value.as.datetime.precision == PREC_MINUTE) {
+            snprintf(buffer, sizeof(buffer), "%04d-%02d-%02d %02d:%02d",
+                     value.as.datetime.year,
+                     value.as.datetime.month,
+                     value.as.datetime.day,
+                     value.as.datetime.hour,
+                     value.as.datetime.minute);
+        } else {
+            snprintf(buffer, sizeof(buffer), "%04d-%02d-%02d %02d:%02d:%02d",
+                     value.as.datetime.year,
+                     value.as.datetime.month,
+                     value.as.datetime.day,
+                     value.as.datetime.hour,
+                     value.as.datetime.minute,
+                     value.as.datetime.second);
+        }
+        value_free(value);
+        return value_string(buffer);
+    case VALUE_DURATION:
+        value_free(value);
+        return value_string("{duration}");
+    case VALUE_MONEY: {
+        long long cents = value.as.cents;
+        long long abs_cents = cents < 0 ? -cents : cents;
+        snprintf(buffer,
+                 sizeof(buffer),
+                 cents < 0 ? "-%lld.%02lld" : "%lld.%02lld",
+                 abs_cents / 100,
+                 abs_cents % 100);
+        value_free(value);
+        return value_string(buffer);
+    }
+    case VALUE_FILE:
+    {
+        Value result = value_string(value.as.file_path);
+        value_free(value);
+        return result;
+    }
+    case VALUE_DIR:
+    {
+        Value result = value_string(value.as.dir_path);
+        value_free(value);
+        return result;
+    }
+    }
+
+    if (!used_builder) {
+        value_free(value);
+        runtime_error_raise("string conversion failed", 1003, "modifier");
+        return value_null();
+    }
+
+    char *text = sb_take(&builder);
+    Value result = value_string(text);
+    free(text);
+    value_free(value);
+    return result;
 }
 
 static int encode_value_to_builder(StringBuilder *builder, Value value) {
@@ -4910,6 +5238,67 @@ static Value eval_call(AstExpr *expr) {
             return value_null();
         }
         return builtin_upper_value(eval_expr(expr->as.call.args.items[0]));
+    }
+
+    if (strcmp(expr->as.call.name, "string") == 0) {
+        if (expr->as.call.args.count != 1) {
+            runtime_error_raise("string expects one argument", 1003, "invalid function call");
+            return value_null();
+        }
+        return builtin_string_value(eval_expr(expr->as.call.args.items[0]));
+    }
+
+    if (strcmp(expr->as.call.name, "type") == 0) {
+        if (expr->as.call.args.count != 1) {
+            runtime_error_raise("type expects one argument", 1003, "invalid function call");
+            return value_null();
+        }
+        Value value = eval_expr(expr->as.call.args.items[0]);
+        if (error_action_pending()) {
+            value_free(value);
+            return value_null();
+        }
+        const char *name = builtin_type_name(value);
+        value_free(value);
+        return value_string(name);
+    }
+
+    if (strcmp(expr->as.call.name, "is_string") == 0 ||
+        strcmp(expr->as.call.name, "is_number") == 0 ||
+        strcmp(expr->as.call.name, "is_boolean") == 0 ||
+        strcmp(expr->as.call.name, "is_array") == 0 ||
+        strcmp(expr->as.call.name, "is_record") == 0 ||
+        strcmp(expr->as.call.name, "is_nothing") == 0 ||
+        strcmp(expr->as.call.name, "is_unknown") == 0) {
+        if (expr->as.call.args.count != 1) {
+            char message[128];
+            snprintf(message, sizeof(message), "%s expects one argument", expr->as.call.name);
+            runtime_error_raise(message, 1003, "invalid function call");
+            return value_null();
+        }
+        Value value = eval_expr(expr->as.call.args.items[0]);
+        if (error_action_pending()) {
+            value_free(value);
+            return value_null();
+        }
+        int result = 0;
+        if (strcmp(expr->as.call.name, "is_string") == 0) {
+            result = value.kind == VALUE_STRING;
+        } else if (strcmp(expr->as.call.name, "is_number") == 0) {
+            result = value.kind == VALUE_NUMBER;
+        } else if (strcmp(expr->as.call.name, "is_boolean") == 0) {
+            result = value.kind == VALUE_BOOL;
+        } else if (strcmp(expr->as.call.name, "is_array") == 0) {
+            result = value.kind == VALUE_ARRAY;
+        } else if (strcmp(expr->as.call.name, "is_record") == 0) {
+            result = value.kind == VALUE_RECORD;
+        } else if (strcmp(expr->as.call.name, "is_nothing") == 0) {
+            result = value.kind == VALUE_NULL;
+        } else if (strcmp(expr->as.call.name, "is_unknown") == 0) {
+            result = value.kind == VALUE_UNKNOWN;
+        }
+        value_free(value);
+        return value_bool(result);
     }
 
     if (strcmp(expr->as.call.name, "input") == 0) {
@@ -6178,17 +6567,27 @@ static Value eval_comparison(AstExpr *expr, Value left, Value right) {
 
 static Value eval_binary(AstExpr *expr) {
     const char *op = expr->as.binary.op;
+    int previous_line = current_line;
+    int previous_column = current_column;
+    if (expr->line > 0) {
+        current_line = expr->line;
+        current_column = expr->column > 0 ? expr->column : previous_column;
+    }
 
     if (strcmp(op, "and") == 0) {
         Value left = eval_expr(expr->as.binary.left);
         int left_truth = value_truthy(left);
         value_free(left);
         if (!left_truth) {
+            current_line = previous_line;
+            current_column = previous_column;
             return value_bool(0);
         }
         Value right = eval_expr(expr->as.binary.right);
         int right_truth = value_truthy(right);
         value_free(right);
+        current_line = previous_line;
+        current_column = previous_column;
         return value_bool(right_truth);
     }
 
@@ -6197,23 +6596,31 @@ static Value eval_binary(AstExpr *expr) {
         int left_truth = value_truthy(left);
         value_free(left);
         if (left_truth) {
+            current_line = previous_line;
+            current_column = previous_column;
             return value_bool(1);
         }
         Value right = eval_expr(expr->as.binary.right);
         int right_truth = value_truthy(right);
         value_free(right);
+        current_line = previous_line;
+        current_column = previous_column;
         return value_bool(right_truth);
     }
 
     Value left = eval_expr(expr->as.binary.left);
     if (error_action_pending()) {
         value_free(left);
+        current_line = previous_line;
+        current_column = previous_column;
         return value_null();
     }
     Value right = eval_expr(expr->as.binary.right);
     if (error_action_pending()) {
         value_free(left);
         value_free(right);
+        current_line = previous_line;
+        current_column = previous_column;
         return value_null();
     }
 
@@ -6227,7 +6634,10 @@ static Value eval_binary(AstExpr *expr) {
         strcmp(op, "!<") == 0 ||
         strcmp(op, "!>=") == 0 ||
         strcmp(op, "!<=") == 0) {
-        return eval_comparison(expr, left, right);
+        Value result = eval_comparison(expr, left, right);
+        current_line = previous_line;
+        current_column = previous_column;
+        return result;
     }
 
     if ((strcmp(op, "+") == 0 || strcmp(op, "-") == 0) &&
@@ -6238,6 +6648,8 @@ static Value eval_binary(AstExpr *expr) {
                                                    strcmp(op, "+") == 0 ? 1 : -1);
         value_free(left);
         value_free(right);
+        current_line = previous_line;
+        current_column = previous_column;
         return value_datetime(result);
     }
 
@@ -6249,24 +6661,41 @@ static Value eval_binary(AstExpr *expr) {
                                                    1);
         value_free(left);
         value_free(right);
+        current_line = previous_line;
+        current_column = previous_column;
         return value_datetime(result);
     }
 
     if (strcmp(op, "+") == 0 &&
-        left.kind == VALUE_STRING &&
-        right.kind == VALUE_STRING) {
-        size_t left_len = strlen(left.as.string);
-        size_t right_len = strlen(right.as.string);
+        (left.kind == VALUE_STRING || right.kind == VALUE_STRING)) {
+        Value left_text = builtin_string_value(left);
+        if (error_action_pending()) {
+            value_free(right);
+            current_line = previous_line;
+            current_column = previous_column;
+            return value_null();
+        }
+        Value right_text = builtin_string_value(right);
+        if (error_action_pending()) {
+            value_free(left_text);
+            current_line = previous_line;
+            current_column = previous_column;
+            return value_null();
+        }
+        size_t left_len = strlen(left_text.as.string);
+        size_t right_len = strlen(right_text.as.string);
         char *combined = malloc(left_len + right_len + 1);
         if (!combined) {
             abort();
         }
-        memcpy(combined, left.as.string, left_len);
-        memcpy(combined + left_len, right.as.string, right_len + 1);
+        memcpy(combined, left_text.as.string, left_len);
+        memcpy(combined + left_len, right_text.as.string, right_len + 1);
         Value result = value_string(combined);
         free(combined);
-        value_free(left);
-        value_free(right);
+        value_free(left_text);
+        value_free(right_text);
+        current_line = previous_line;
+        current_column = previous_column;
         return result;
     }
 
@@ -6278,6 +6707,8 @@ static Value eval_binary(AstExpr *expr) {
                 : left.as.cents - right.as.cents;
             value_free(left);
             value_free(right);
+            current_line = previous_line;
+            current_column = previous_column;
             return value_money(cents);
         }
         if (left.kind == VALUE_MONEY && right.kind == VALUE_NUMBER &&
@@ -6287,6 +6718,8 @@ static Value eval_binary(AstExpr *expr) {
                 value_free(left);
                 value_free(right);
                 runtime_error_raise("division by zero", 1002, "division");
+                current_line = previous_line;
+                current_column = previous_column;
                 return value_null();
             }
             double amount = strcmp(op, "*") == 0
@@ -6294,17 +6727,23 @@ static Value eval_binary(AstExpr *expr) {
                 : (double)left.as.cents / number;
             value_free(left);
             value_free(right);
+            current_line = previous_line;
+            current_column = previous_column;
             return value_money(round_to_cents(amount / 100.0));
         }
         if (left.kind == VALUE_NUMBER && right.kind == VALUE_MONEY && strcmp(op, "*") == 0) {
             double amount = left.as.number * (double)right.as.cents;
             value_free(left);
             value_free(right);
+            current_line = previous_line;
+            current_column = previous_column;
             return value_money(round_to_cents(amount / 100.0));
         }
         value_free(left);
         value_free(right);
         runtime_error_raise("invalid money operation", 1003, "money");
+        current_line = previous_line;
+        current_column = previous_column;
         return value_null();
     }
 
@@ -6312,25 +6751,59 @@ static Value eval_binary(AstExpr *expr) {
         value_free(left);
         value_free(right);
         runtime_error_raise("unknown cannot be used in arithmetic", 1003, "unknown");
+        current_line = previous_line;
+        current_column = previous_column;
         return value_null();
     }
 
-    double a = value_number_or_zero(left);
-    double b = value_number_or_zero(right);
+    double a = 0.0;
+    double b = 0.0;
+    if (!value_number_for_arithmetic(left, op, &a)) {
+        value_free(left);
+        value_free(right);
+        current_line = previous_line;
+        current_column = previous_column;
+        return value_null();
+    }
+    if (!value_number_for_arithmetic(right, op, &b)) {
+        value_free(left);
+        value_free(right);
+        current_line = previous_line;
+        current_column = previous_column;
+        return value_null();
+    }
     value_free(left);
     value_free(right);
 
-    if (strcmp(op, "+") == 0) return value_number(a + b);
-    if (strcmp(op, "-") == 0) return value_number(a - b);
-    if (strcmp(op, "*") == 0) return value_number(a * b);
+    if (strcmp(op, "+") == 0) {
+        current_line = previous_line;
+        current_column = previous_column;
+        return value_number(a + b);
+    }
+    if (strcmp(op, "-") == 0) {
+        current_line = previous_line;
+        current_column = previous_column;
+        return value_number(a - b);
+    }
+    if (strcmp(op, "*") == 0) {
+        current_line = previous_line;
+        current_column = previous_column;
+        return value_number(a * b);
+    }
     if (strcmp(op, "/") == 0) {
         if (b == 0.0) {
             runtime_error_raise("division by zero", 1002, "division");
+            current_line = previous_line;
+            current_column = previous_column;
             return value_null();
         }
+        current_line = previous_line;
+        current_column = previous_column;
         return value_number(a / b);
     }
 
+    current_line = previous_line;
+    current_column = previous_column;
     return value_null();
 }
 
@@ -6494,9 +6967,23 @@ static Value eval_expr(AstExpr *expr) {
             return value_bool(result);
         }
         if (strcmp(expr->as.unary.op, "-") == 0) {
-            double result = -value_number_or_zero(value);
+            int previous_line = current_line;
+            int previous_column = current_column;
+            if (expr->line > 0) {
+                current_line = expr->line;
+                current_column = expr->column > 0 ? expr->column : previous_column;
+            }
+            double number = 0.0;
+            if (!value_number_for_arithmetic(value, expr->as.unary.op, &number)) {
+                value_free(value);
+                current_line = previous_line;
+                current_column = previous_column;
+                return value_null();
+            }
             value_free(value);
-            return value_number(result);
+            current_line = previous_line;
+            current_column = previous_column;
+            return value_number(-number);
         }
         value_free(value);
         return value_null();

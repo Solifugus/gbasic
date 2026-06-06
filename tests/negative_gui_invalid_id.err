@@ -1,1 +1,1 @@
-runtime error at 11:1: gui widget id is not exposable as win.save-button
+runtime error at tests/negative_gui_invalid_id.bas:11:1: gui widget id is not exposable as win.save-button

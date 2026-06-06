@@ -1,1 +1,1 @@
-runtime error at 1:1: decode error: expected value at byte 8
+runtime error at tests/negative_decode_malformed.bas:1:1: decode error: expected value at byte 8

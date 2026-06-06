@@ -78,86 +78,82 @@ AstNameList ast_name_list_append(AstNameList list, char *name) {
     return list;
 }
 
-AstExpr *ast_number(double value) {
+static AstExpr *ast_expr_new(AstExprKind kind) {
     AstExpr *expr = xmalloc(sizeof(*expr));
-    expr->kind = AST_EXPR_NUMBER;
+    expr->kind = kind;
+    expr->line = 0;
+    expr->column = 0;
+    return expr;
+}
+
+AstExpr *ast_number(double value) {
+    AstExpr *expr = ast_expr_new(AST_EXPR_NUMBER);
     expr->as.number = value;
     return expr;
 }
 
 AstExpr *ast_string(char *value) {
-    AstExpr *expr = xmalloc(sizeof(*expr));
-    expr->kind = AST_EXPR_STRING;
+    AstExpr *expr = ast_expr_new(AST_EXPR_STRING);
     expr->as.string = value;
     return expr;
 }
 
 AstExpr *ast_ident(char *name) {
-    AstExpr *expr = xmalloc(sizeof(*expr));
-    expr->kind = AST_EXPR_IDENT;
+    AstExpr *expr = ast_expr_new(AST_EXPR_IDENT);
     expr->as.ident = name;
     return expr;
 }
 
 AstExpr *ast_bool(int value) {
-    AstExpr *expr = xmalloc(sizeof(*expr));
-    expr->kind = AST_EXPR_BOOL;
+    AstExpr *expr = ast_expr_new(AST_EXPR_BOOL);
     expr->as.boolean = value;
     return expr;
 }
 
 AstExpr *ast_null(void) {
-    AstExpr *expr = xmalloc(sizeof(*expr));
-    expr->kind = AST_EXPR_NULL;
+    AstExpr *expr = ast_expr_new(AST_EXPR_NULL);
     return expr;
 }
 
 AstExpr *ast_unknown(void) {
-    AstExpr *expr = xmalloc(sizeof(*expr));
-    expr->kind = AST_EXPR_UNKNOWN;
+    AstExpr *expr = ast_expr_new(AST_EXPR_UNKNOWN);
     return expr;
 }
 
 AstExpr *ast_array(AstExprList items) {
-    AstExpr *expr = xmalloc(sizeof(*expr));
-    expr->kind = AST_EXPR_ARRAY;
+    AstExpr *expr = ast_expr_new(AST_EXPR_ARRAY);
     expr->as.array = items;
     return expr;
 }
 
 AstExpr *ast_record(AstRecordFieldList fields) {
-    AstExpr *expr = xmalloc(sizeof(*expr));
-    expr->kind = AST_EXPR_RECORD;
+    AstExpr *expr = ast_expr_new(AST_EXPR_RECORD);
     expr->as.record = fields;
     return expr;
 }
 
 AstExpr *ast_duration(AstDuration duration) {
-    AstExpr *expr = xmalloc(sizeof(*expr));
-    expr->kind = AST_EXPR_DURATION;
+    AstExpr *expr = ast_expr_new(AST_EXPR_DURATION);
     expr->as.duration = duration;
     return expr;
 }
 
 AstExpr *ast_index(AstExpr *array, AstExpr *index) {
-    AstExpr *expr = xmalloc(sizeof(*expr));
-    expr->kind = AST_EXPR_INDEX;
+    AstExpr *expr = ast_expr_new(AST_EXPR_INDEX);
     expr->as.index.array = array;
     expr->as.index.index = index;
     return expr;
 }
 
 AstExpr *ast_field(AstExpr *object, char *field) {
-    AstExpr *expr = xmalloc(sizeof(*expr));
-    expr->kind = AST_EXPR_FIELD;
+    AstExpr *expr = ast_expr_new(AST_EXPR_FIELD);
     expr->as.field.object = object;
     expr->as.field.field = field;
     return expr;
 }
 
 AstExpr *ast_call(char *name, AstExprList args) {
-    AstExpr *expr = xmalloc(sizeof(*expr));
-    expr->kind = AST_EXPR_CALL;
+    AstExpr *expr = ast_expr_new(AST_EXPR_CALL);
     expr->as.call.library = NULL;
     expr->as.call.name = name;
     expr->as.call.args = args;
@@ -191,8 +187,7 @@ AstModifierSignature ast_modifier_signature(char *name, AstNameList params) {
 }
 
 AstExpr *ast_binary(char *op, AstModifierUse modifier, AstExpr *left, AstExpr *right) {
-    AstExpr *expr = xmalloc(sizeof(*expr));
-    expr->kind = AST_EXPR_BINARY;
+    AstExpr *expr = ast_expr_new(AST_EXPR_BINARY);
     expr->as.binary.op = op;
     expr->as.binary.modifier = modifier;
     expr->as.binary.left = left;
@@ -201,10 +196,18 @@ AstExpr *ast_binary(char *op, AstModifierUse modifier, AstExpr *left, AstExpr *r
 }
 
 AstExpr *ast_unary(char *op, AstExpr *child) {
-    AstExpr *expr = xmalloc(sizeof(*expr));
-    expr->kind = AST_EXPR_UNARY;
+    AstExpr *expr = ast_expr_new(AST_EXPR_UNARY);
     expr->as.unary.op = op;
     expr->as.unary.expr = child;
+    return expr;
+}
+
+AstExpr *ast_expr_position(AstExpr *expr, int line, int column) {
+    if (!expr) {
+        return NULL;
+    }
+    expr->line = line;
+    expr->column = column;
     return expr;
 }
 

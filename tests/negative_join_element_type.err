@@ -1,1 +1,1 @@
-runtime error at 1:1: join array elements must be strings
+runtime error at tests/negative_join_element_type.bas:1:1: join array elements must be strings

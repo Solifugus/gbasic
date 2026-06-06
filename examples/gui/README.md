@@ -48,12 +48,24 @@ Watcher demo:
 GBASIC_PATH=stdlib ./gbasic examples/gui/watch_demo.bas
 ```
 
+Calculator demo:
+
+```sh
+GBASIC_PATH=stdlib ./gbasic examples/gui/calculator.bas
+```
+
+Unit converter demo:
+
+```sh
+GBASIC_PATH=stdlib ./gbasic examples/gui/unit_converter.bas
+```
+
 ## Manual Test Steps
 
 1. Build with `make clean && make`.
 2. Run `GBASIC_PATH=stdlib ./gbasic examples/gui/demo.bas`.
 3. Verify a window titled `Demo` appears.
-4. Verify the layout is vertical with spacing between rows.
+4. Verify the layout is vertical and the container uses the declared `spacing` distribution.
 5. Verify the first label shows `Hello gBASIC GUI`.
 6. Verify the input starts empty.
 7. Verify the button shows `Commit`, not `Save`.
@@ -84,3 +96,22 @@ Watcher demo follow-up:
 8. Verify the button caption returns to `Save` and the button is no longer visually down.
 9. Close the window.
 10. Verify the final printed line is the last watcher-written `win.status.value`.
+
+Calculator demo follow-up:
+
+1. Run `GBASIC_PATH=stdlib ./gbasic examples/gui/calculator.bas`.
+2. Change either input and commit it with Enter or focus loss.
+3. Click `+`, `-`, `*`, or `/`.
+4. Verify the result label updates immediately.
+5. Verify the status label reports the operation.
+6. Try a non-numeric input and verify the status label reports which side is invalid.
+7. Try dividing by `0` and verify the status label reports the error.
+
+Unit converter demo follow-up:
+
+1. Run `GBASIC_PATH=stdlib ./gbasic examples/gui/unit_converter.bas`.
+2. Change the Celsius or Fahrenheit input and commit it with Enter or focus loss.
+3. Click `C -> F` or `F -> C`.
+4. Verify the other input updates immediately.
+5. Verify the result label and status label update.
+6. Click `C -> K` and verify the result label shows Kelvin.

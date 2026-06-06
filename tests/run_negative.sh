@@ -19,6 +19,13 @@ cases=(
     negative_sort_mixed
     negative_sort_nested_array
     negative_invalid_escape
+    negative_add_bool
+    negative_add_nothing
+    negative_add_array
+    negative_add_record
+    negative_type_builtin_arity
+    negative_string_arithmetic
+    negative_unary_string_arithmetic
     negative_unterminated_string
     negative_multiline_unterminated_string
     negative_multiline_string_line_tracking
@@ -60,6 +67,7 @@ cases=(
     negative_gui_duplicate_id
     negative_gui_missing_id
     negative_gui_unknown_component
+    negative_gui_invalid_spacing
     negative_gui_reserved_id
     negative_gui_invalid_id
 )

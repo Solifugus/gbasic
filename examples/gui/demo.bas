@@ -3,7 +3,7 @@ load "gui"
 ui = {
     id:"main",
     component:"vert",
-    spacing:8,
+    spacing:"between",
     contains:[
         { id:"title", component:"label", value:"Hello gBASIC GUI" },
         { id:"name", component:"input", value:"" },

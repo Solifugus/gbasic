@@ -5,6 +5,15 @@
 int gbasic_builtin_function(const char *name) {
     static const char *builtins[] = {
         "compare",
+        "string",
+        "type",
+        "is_string",
+        "is_number",
+        "is_boolean",
+        "is_array",
+        "is_record",
+        "is_nothing",
+        "is_unknown",
         "lower",
         "upper",
         "input",

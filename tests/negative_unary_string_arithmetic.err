@@ -1,0 +1,1 @@
+runtime error at tests/negative_unary_string_arithmetic.bas:2:7: arithmetic operator '-' expected number but got string

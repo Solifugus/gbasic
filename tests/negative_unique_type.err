@@ -1,1 +1,1 @@
-runtime error at 1:1: unique expects an array
+runtime error at tests/negative_unique_type.bas:1:1: unique expects an array

@@ -1,1 +1,1 @@
-runtime error at 11:1: gui widget id collides with window field: _root
+runtime error at tests/negative_gui_reserved_id.bas:11:1: gui widget id collides with window field: _root

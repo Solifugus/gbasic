@@ -546,6 +546,7 @@ Errors propagate out of functions. `with lock` unlocks on error, and `without wa
 Always-available helper functions:
 
 - `compare(a, operator, b)`
+- `string(value)`
 - `lower(text)`
 - `upper(text)`
 - `round(number, places)`
@@ -585,6 +586,24 @@ Array helper functions:
 
 `contains(array, value)` returns true when the array contains a matching value. `remove_value(array, value)` removes the first matching value and returns the resulting array; when the first argument is a variable, that array is updated in place. `find_by(records, field_name, value)` returns the first matching record index or `nothing`. `join_from(array, start_index, separator)` joins string elements from `start_index` to the end and returns `""` when the start is out of range. `first(array)` returns the first element or `nothing`; `rest(array)` returns a new array without the first element.
 
+Input and arithmetic rules:
+
+- `input(...)` returns a string
+- use `(number)` when you want numeric input
+- `-`, `*`, and `/` require numbers
+- `+` does numeric addition when neither operand is a string
+- if either operand is a string, `+` converts both operands with canonical string conversion and concatenates them
+
+Canonical string conversion:
+
+```basic
+text = string(project)
+label(string)= count
+line = "You were born in " + birth_year + "."
+```
+
+`string(value)` and the `(string)` modifier use the same canonical conversion. Numbers print as normal numbers, strings stay unquoted, booleans become `true` or `false`, `nothing` becomes `nothing`, `unknown` becomes `unknown`, and arrays and records use the same textual shape as `encode(value)`.
+
 Serialization helpers:
 
 ```basic
@@ -594,13 +613,15 @@ loaded = decode(text)
 
 `encode` supports numbers, strings, booleans, `nothing`, `unknown`, arrays, and records. Strings escape quotes, backslashes, tabs, carriage returns, and newlines. Records are encoded as JSON-like objects with quoted field names. `decode` reads the same format back into gBASIC values and raises a runtime error for malformed text.
 
+`string(value)` may look the same as `encode(value)` for arrays and records, but the concepts differ: `string(value)` is canonical display text, while `encode(value)` is serialization meant for `decode(...)`.
+
 Source generation helper:
 
 ```basic
 line = "description = " + quote(description)
 ```
 
-`quote(value)` returns a complete gBASIC string literal, including surrounding double quotes. String contents escape `"`, `\`, tab, carriage return, and newline; newlines are emitted as `\n` instead of literal line breaks. Scalar non-string values use the same conversion as the `(string)` modifier, so `quote(42)` returns `"42"` and `quote(nothing)` returns `"nothing"`. Arrays, records, files, directories, and other non-scalar values raise a runtime error. Because the output is also a decode-compatible string value, `decode(quote(text))` round-trips strings.
+`quote(value)` returns a complete gBASIC string literal, including surrounding double quotes. String contents escape `"`, `\`, tab, carriage return, and newline; newlines are emitted as `\n` instead of literal line breaks. Scalar non-string values use the same scalar conversion as `string(value)`, so `quote(42)` returns `"42"` and `quote(nothing)` returns `"nothing"`. Arrays, records, files, directories, and other non-scalar values raise a runtime error. Because the output is also a decode-compatible string value, `decode(quote(text))` round-trips strings.
 
 Array aggregate functions:
 

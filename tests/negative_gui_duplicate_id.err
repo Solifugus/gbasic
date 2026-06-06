@@ -1,1 +1,1 @@
-runtime error at 12:1: duplicate gui widget id: save
+runtime error at tests/negative_gui_duplicate_id.bas:12:1: duplicate gui widget id: save

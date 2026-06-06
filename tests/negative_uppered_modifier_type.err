@@ -1,1 +1,1 @@
-runtime error at 1:1: upper expects a string
+runtime error at tests/negative_uppered_modifier_type.bas:1:1: upper expects a string

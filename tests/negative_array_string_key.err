@@ -1,1 +1,1 @@
-runtime error at 2:1: indexing expects array[number] or record[string]
+runtime error at tests/negative_array_string_key.bas:2:1: indexing expects array[number] or record[string]

@@ -1,1 +1,1 @@
-runtime error at 1:1: insert index must be an integer
+runtime error at tests/negative_insert_fractional.bas:1:1: insert index must be an integer

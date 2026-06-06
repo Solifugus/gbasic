@@ -10,6 +10,7 @@
 #include <sys/stat.h>
 
 int parse_source(const char *source, AstStmtList *out_program);
+void parse_set_source_path(const char *path);
 
 static void print_help(const char *argv0) {
     printf("usage:\n");
@@ -212,6 +213,7 @@ static ParsedFile *parsed_file_get(AddUsesContext *ctx, const char *path) {
         return NULL;
     }
     AstStmtList program = ast_stmt_list_empty();
+    parse_set_source_path(path);
     if (parse_source(source, &program) != 0) {
         free(source);
         return NULL;
@@ -752,6 +754,7 @@ int main(int argc, char **argv) {
     }
 
     AstStmtList program = ast_stmt_list_empty();
+    parse_set_source_path(path);
     if (parse_source(source, &program) != 0) {
         free(source);
         return 1;

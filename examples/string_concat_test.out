@@ -1,0 +1,13 @@
+Age: 55
+55 years old
+You were born in 1984.
+nothing = nothing
+unknown = unknown
+array = [1,2,3]
+record = {"name":"Grace","age":35}
+[1,2,3]
+{"name":"Grace","age":35}
+hello
+[1,2]
+{"name":"Grace"}
+3

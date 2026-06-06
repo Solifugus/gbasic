@@ -1,1 +1,1 @@
-parse error: syntax error, unexpected CONSIDER_ELSE, expecting END_CONSIDER
+parse error at tests/negative_consider_duplicate_else.bas:7:1: syntax error, unexpected CONSIDER_ELSE, expecting END_CONSIDER

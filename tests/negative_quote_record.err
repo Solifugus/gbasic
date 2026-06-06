@@ -1,1 +1,1 @@
-runtime error at 1:1: quote expects a scalar value
+runtime error at tests/negative_quote_record.bas:1:1: quote expects a scalar value

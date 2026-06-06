@@ -3,7 +3,7 @@ load "gui"
 ui = {
     id:"main",
     component:"vert",
-    spacing:8,
+    spacing:"between",
     contains:[
         { id:"name", component:"input", value:"Ada" },
         { id:"save", component:"button", label:"Save", value:true },

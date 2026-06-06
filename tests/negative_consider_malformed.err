@@ -1,1 +1,1 @@
-parse error: syntax error, unexpected NEWLINE
+parse error at tests/negative_consider_malformed.bas:1:9: syntax error, unexpected NEWLINE

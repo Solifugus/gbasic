@@ -110,8 +110,18 @@ Modifier assignment:
 price(USD)= 19.95
 due(date)= "2026-05-15"
 command(trimmed)= input(">")
+age(number)= input("Age: ")
 command(lowered)= command
 ```
+
+`input(...)` returns a string. Use the `(number)` modifier when you want numeric input, and keep arithmetic operands numeric. gBASIC no longer silently treats strings as `0` in arithmetic expressions.
+
+`+` is split between arithmetic and concatenation:
+
+- if neither operand is a string, `+` is numeric addition and both operands must be numbers
+- if either operand is a string, both operands are converted with canonical string conversion and concatenated
+
+This means `"You were born in " + birth_year + "."` works, while `1 + true` and `1 + nothing` still raise runtime errors.
 
 Modifier comparison:
 
@@ -178,6 +188,15 @@ print(line)
 
 status = unknown
 ```
+
+Canonical string conversion:
+
+```basic
+print("Age: " + 55)
+print(string({name = "Grace", age = 35}))
+```
+
+`string(value)` and the `(string)` modifier convert values to display text. Arrays and records use the same textual shape as `encode(value)`, but `string(value)` is display-oriented while `encode(value)` is serialization. `quote(value)` remains separate and returns a valid gBASIC source literal, including surrounding quotes for strings.
 
 Nested assignment works for variables, array elements, record fields, and combinations such as `items[i].location = "inventory"` or `world.rooms[index].visited = true`. Records support static field access with `record.field` and dynamic field access with `record[key]` when `key` is a string; missing dynamic reads return `unknown`, and dynamic assignment creates the field when needed.
 

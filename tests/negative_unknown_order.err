@@ -1,1 +1,1 @@
-runtime error at 1:1: unknown and nothing support only = and !=
+runtime error at tests/negative_unknown_order.bas:1:12: unknown and nothing support only = and !=

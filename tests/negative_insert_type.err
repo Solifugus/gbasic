@@ -1,1 +1,1 @@
-runtime error at 1:1: insert expects an array
+runtime error at tests/negative_insert_type.bas:1:1: insert expects an array

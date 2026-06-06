@@ -9,8 +9,26 @@
 
 static Lexer *active_lexer;
 static int lexer_error_reported;
+static const char *active_parse_path;
 
 AstStmtList parsed_program;
+
+static void report_parse_issue(const char *kind, int line, int column, const char *message) {
+    if (active_parse_path && active_parse_path[0]) {
+        fprintf(stderr, "%s at %s:%d:%d: %s\n",
+                kind,
+                active_parse_path,
+                line,
+                column,
+                message);
+    } else {
+        fprintf(stderr, "%s at %d:%d: %s\n",
+                kind,
+                line,
+                column,
+                message);
+    }
+}
 
 static char *copy_text(const char *start, int length) {
     char *text = malloc((size_t)length + 1);
@@ -22,7 +40,7 @@ static char *copy_text(const char *start, int length) {
     return text;
 }
 
-static char *copy_string_literal(const char *start, int length, int *ok) {
+static char *copy_string_literal(const char *start, int length, int line, int column, int *ok) {
     *ok = 1;
     if (length < 2) {
         return copy_text("", 0);
@@ -36,7 +54,7 @@ static char *copy_string_literal(const char *start, int length, int *ok) {
     for (int i = 1; i < length - 1; i++) {
         if (start[i] == '\\') {
             if (i + 1 >= length - 1) {
-                fprintf(stderr, "runtime error: unterminated escape sequence\n");
+                report_parse_issue("runtime error", line, column, "unterminated escape sequence");
                 *ok = 0;
                 free(text);
                 return NULL;
@@ -49,7 +67,9 @@ static char *copy_string_literal(const char *start, int length, int *ok) {
             } else if (start[i] == '"' || start[i] == '\\') {
                 text[out++] = start[i];
             } else {
-                fprintf(stderr, "runtime error: invalid escape sequence: \\%c\n", start[i]);
+                char message[64];
+                snprintf(message, sizeof(message), "invalid escape sequence: \\%c", start[i]);
+                report_parse_issue("runtime error", line, column, message);
                 *ok = 0;
                 free(text);
                 return NULL;
@@ -190,6 +210,10 @@ static int is_modifier_target_expr(AstExpr *expr) {
         return is_modifier_target_expr(expr->as.index.array);
     }
     return 0;
+}
+
+static AstExpr *expr_at(AstExpr *expr, int line, int column) {
+    return ast_expr_position(expr, line, column);
 }
 
 static char *join_words(char *left, char *right) {
@@ -468,9 +492,9 @@ assignment
     ;
 
 lvalue
-    : variable_name %prec NO_DOT { $$ = ast_ident($1); }
-    | lvalue LBRACKET expression RBRACKET %prec NO_DOT { $$ = ast_index($1, $3); }
-    | lvalue DOT IDENT %prec NO_DOT { $$ = ast_field($1, $3); }
+    : variable_name %prec NO_DOT { $$ = expr_at(ast_ident($1), @1.first_line, @1.first_column); }
+    | lvalue LBRACKET expression RBRACKET %prec NO_DOT { $$ = expr_at(ast_index($1, $3), @2.first_line, @2.first_column); }
+    | lvalue DOT IDENT %prec NO_DOT { $$ = expr_at(ast_field($1, $3), @2.first_line, @2.first_column); }
     ;
 
 variable_name
@@ -744,48 +768,48 @@ expression
 
 or_expression
     : and_expression { $$ = $1; }
-    | or_expression OR and_expression { $$ = ast_binary(copy_const("or"), ast_modifier_none(), $1, $3); }
+    | or_expression OR and_expression { $$ = expr_at(ast_binary(copy_const("or"), ast_modifier_none(), $1, $3), @2.first_line, @2.first_column); }
     ;
 
 and_expression
     : comparison_expression { $$ = $1; }
-    | and_expression AND comparison_expression { $$ = ast_binary(copy_const("and"), ast_modifier_none(), $1, $3); }
+    | and_expression AND comparison_expression { $$ = expr_at(ast_binary(copy_const("and"), ast_modifier_none(), $1, $3), @2.first_line, @2.first_column); }
     ;
 
 comparison_expression
     : additive_expression { $$ = $1; }
-    | additive_expression comparison_operator additive_expression { $$ = ast_binary($2, ast_modifier_none(), $1, $3); }
+    | additive_expression comparison_operator additive_expression { $$ = expr_at(ast_binary($2, ast_modifier_none(), $1, $3), @2.first_line, @2.first_column); }
     | additive_expression modifier comparison_operator additive_expression {
         if (!is_modifier_target_expr($1)) {
             yyerror("modifier target must be a variable, field, or index");
             YYERROR;
         }
-        $$ = ast_binary($3, $2, $1, $4);
+        $$ = expr_at(ast_binary($3, $2, $1, $4), @3.first_line, @3.first_column);
       }
     ;
 
 additive_expression
     : multiplicative_expression { $$ = $1; }
-    | additive_expression PLUS multiplicative_expression { $$ = ast_binary(copy_const("+"), ast_modifier_none(), $1, $3); }
-    | additive_expression MINUS multiplicative_expression { $$ = ast_binary(copy_const("-"), ast_modifier_none(), $1, $3); }
+    | additive_expression PLUS multiplicative_expression { $$ = expr_at(ast_binary(copy_const("+"), ast_modifier_none(), $1, $3), @2.first_line, @2.first_column); }
+    | additive_expression MINUS multiplicative_expression { $$ = expr_at(ast_binary(copy_const("-"), ast_modifier_none(), $1, $3), @2.first_line, @2.first_column); }
     ;
 
 multiplicative_expression
     : unary_expression { $$ = $1; }
-    | multiplicative_expression STAR unary_expression { $$ = ast_binary(copy_const("*"), ast_modifier_none(), $1, $3); }
-    | multiplicative_expression SLASH unary_expression { $$ = ast_binary(copy_const("/"), ast_modifier_none(), $1, $3); }
+    | multiplicative_expression STAR unary_expression { $$ = expr_at(ast_binary(copy_const("*"), ast_modifier_none(), $1, $3), @2.first_line, @2.first_column); }
+    | multiplicative_expression SLASH unary_expression { $$ = expr_at(ast_binary(copy_const("/"), ast_modifier_none(), $1, $3), @2.first_line, @2.first_column); }
     ;
 
 unary_expression
     : postfix_expression { $$ = $1; }
-    | NOT unary_expression { $$ = ast_unary(copy_const("not"), $2); }
-    | MINUS unary_expression { $$ = ast_unary(copy_const("-"), $2); }
+    | NOT unary_expression { $$ = expr_at(ast_unary(copy_const("not"), $2), @1.first_line, @1.first_column); }
+    | MINUS unary_expression { $$ = expr_at(ast_unary(copy_const("-"), $2), @1.first_line, @1.first_column); }
     ;
 
 postfix_expression
     : primary { $$ = $1; }
-    | postfix_expression LBRACKET expression RBRACKET { $$ = ast_index($1, $3); }
-    | postfix_expression DOT IDENT { $$ = ast_field($1, $3); }
+    | postfix_expression LBRACKET expression RBRACKET { $$ = expr_at(ast_index($1, $3), @2.first_line, @2.first_column); }
+    | postfix_expression DOT IDENT { $$ = expr_at(ast_field($1, $3), @2.first_line, @2.first_column); }
     ;
 
 comparison_operator
@@ -802,36 +826,36 @@ comparison_operator
     ;
 
 primary
-    : NUMBER { $$ = ast_number($1); }
-    | duration_terms { $$ = ast_duration($1); }
-    | STRING { $$ = ast_string($1); }
+    : NUMBER { $$ = expr_at(ast_number($1), @1.first_line, @1.first_column); }
+    | duration_terms { $$ = expr_at(ast_duration($1), @1.first_line, @1.first_column); }
+    | STRING { $$ = expr_at(ast_string($1), @1.first_line, @1.first_column); }
     | variable_name ident_suffix {
         if ($2.kind == IDENT_SUFFIX_CALL) {
-            $$ = ast_call($1, $2.args);
+            $$ = expr_at(ast_call($1, $2.args), @1.first_line, @1.first_column);
         } else if ($2.kind == IDENT_SUFFIX_FIELD) {
-            $$ = ast_field(ast_ident($1), $2.name);
+            $$ = expr_at(ast_field(expr_at(ast_ident($1), @1.first_line, @1.first_column), $2.name), @2.first_line, @2.first_column);
         } else if ($2.kind == IDENT_SUFFIX_QUALIFIED_CALL) {
-            $$ = ast_qualified_call($1, $2.name, $2.args);
+            $$ = expr_at(ast_qualified_call($1, $2.name, $2.args), @2.first_line, @2.first_column);
         } else {
-            $$ = ast_ident($1);
+            $$ = expr_at(ast_ident($1), @1.first_line, @1.first_column);
         }
       }
     | QUALIFIED_IDENT LPAREN argument_list_opt RPAREN {
         char *library = NULL;
         char *name = NULL;
         split_qualified_ident($1, &library, &name);
-        $$ = ast_qualified_call(library, name, $3);
+        $$ = expr_at(ast_qualified_call(library, name, $3), @1.first_line, @1.first_column);
       }
-    | ERROR_VALUE { $$ = ast_ident(copy_const("error")); }
-    | TRUE { $$ = ast_bool(1); }
-    | FALSE { $$ = ast_bool(0); }
-    | NOTHING { $$ = ast_null(); }
-    | UNKNOWN_VALUE { $$ = ast_unknown(); }
+    | ERROR_VALUE { $$ = expr_at(ast_ident(copy_const("error")), @1.first_line, @1.first_column); }
+    | TRUE { $$ = expr_at(ast_bool(1), @1.first_line, @1.first_column); }
+    | FALSE { $$ = expr_at(ast_bool(0), @1.first_line, @1.first_column); }
+    | NOTHING { $$ = expr_at(ast_null(), @1.first_line, @1.first_column); }
+    | UNKNOWN_VALUE { $$ = expr_at(ast_unknown(), @1.first_line, @1.first_column); }
     | LPAREN expression RPAREN { $$ = $2; }
-    | LBRACKET optional_newlines RBRACKET { $$ = ast_array(ast_expr_list_empty()); }
-    | LBRACKET optional_newlines array_argument_list optional_newlines RBRACKET { $$ = ast_array($3); }
-    | LBRACE optional_newlines RBRACE { $$ = ast_record(ast_record_field_list_empty()); }
-    | LBRACE optional_newlines record_field_list optional_newlines RBRACE { $$ = ast_record($3); }
+    | LBRACKET optional_newlines RBRACKET { $$ = expr_at(ast_array(ast_expr_list_empty()), @1.first_line, @1.first_column); }
+    | LBRACKET optional_newlines array_argument_list optional_newlines RBRACKET { $$ = expr_at(ast_array($3), @1.first_line, @1.first_column); }
+    | LBRACE optional_newlines RBRACE { $$ = expr_at(ast_record(ast_record_field_list_empty()), @1.first_line, @1.first_column); }
+    | LBRACE optional_newlines record_field_list optional_newlines RBRACE { $$ = expr_at(ast_record($3), @1.first_line, @1.first_column); }
     ;
 
 ident_suffix
@@ -930,6 +954,10 @@ int parse_source(const char *source, AstStmtList *out_program) {
     return 0;
 }
 
+void parse_set_source_path(const char *path) {
+    active_parse_path = path;
+}
+
 static int yylex(void) {
     Token token = lexer_next(active_lexer);
     yylloc.first_line = token.line;
@@ -951,7 +979,7 @@ static int yylex(void) {
     case TOKEN_STRING:
     {
         int ok = 0;
-        yylval.text = copy_string_literal(token.start, token.length, &ok);
+        yylval.text = copy_string_literal(token.start, token.length, token.line, token.column, &ok);
         if (!ok) {
             lexer_error_reported = 1;
             return 0;
@@ -1033,12 +1061,9 @@ static int yylex(void) {
     case TOKEN_NEWLINE: return NEWLINE;
     case TOKEN_ERROR:
         if (active_lexer->error_message[0]) {
-            fprintf(stderr, "runtime error at %d:%d: %s\n",
-                    token.line,
-                    token.column,
-                    active_lexer->error_message);
+            report_parse_issue("runtime error", token.line, token.column, active_lexer->error_message);
         } else {
-            fprintf(stderr, "lexer error at %d:%d\n", token.line, token.column);
+            report_parse_issue("lexer error", token.line, token.column, "unexpected token");
         }
         lexer_error_reported = 1;
         return 0;
@@ -1053,5 +1078,17 @@ static void yyerror(const char *message) {
     if (lexer_error_reported) {
         return;
     }
-    fprintf(stderr, "parse error: %s\n", message);
+    int line = yylloc.first_line;
+    int column = yylloc.first_column;
+    if (line <= 0 && active_lexer) {
+        line = active_lexer->line;
+        column = active_lexer->column;
+    }
+    if (line <= 0) {
+        line = 1;
+    }
+    if (column <= 0) {
+        column = 1;
+    }
+    report_parse_issue("parse error", line, column, message);
 }
