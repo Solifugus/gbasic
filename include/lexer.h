@@ -52,6 +52,7 @@ typedef enum {
     TOKEN_OR,
     TOKEN_NOT,
     TOKEN_IN,
+    TOKEN_EACH,
     TOKEN_OP_EQ,
     TOKEN_OP_NE,
     TOKEN_OP_GT,

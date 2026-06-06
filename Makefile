@@ -6,9 +6,10 @@ GTK_LIBS := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --libs g
 
 ifeq ($(GTK_AVAILABLE),1)
 CFLAGS += -DHAVE_GTK=1 $(GTK_CFLAGS)
-LDLIBS += $(GTK_LIBS)
+LDLIBS += $(GTK_LIBS) -lm
 else
 CFLAGS += -DHAVE_GTK=0
+LDLIBS += -lm
 endif
 
 OBJS := src/main.o src/lexer.o src/parser.tab.o src/ast.o src/eval.o src/builtins.o

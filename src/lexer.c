@@ -203,6 +203,7 @@ static TokenType identifier_type(const char *start, int length) {
     if (keyword_equals(start, length, "or")) return TOKEN_OR;
     if (keyword_equals(start, length, "not")) return TOKEN_NOT;
     if (keyword_equals(start, length, "in")) return TOKEN_IN;
+    if (keyword_equals(start, length, "each")) return TOKEN_EACH;
     return TOKEN_IDENT;
 }
 

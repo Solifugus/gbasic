@@ -142,6 +142,49 @@ end function
 print(add(2, 3))
 ```
 
+## Core Builtin Functions
+
+gBASIC includes always-available core functions that don't require loading libraries:
+
+**Type inspection:**
+```basic
+print(type("hello"))           # "string"
+print(is_array([1, 2, 3]))     # true
+print(is_record({x:1}))        # true
+```
+
+**Strict conversion:**
+```basic
+num = number("42")             # Convert string to number
+text = string(123)             # Convert number to string
+arr = array("[1, 2, 3]")       # Decode JSON string to array
+```
+
+**String helpers:**
+```basic
+print(replace("hello", "l", "x"))     # "hexxo"
+print(starts_with("hello", "he"))     # true
+print(repeat("ha", 3))                # "hahaha"
+```
+
+**Record helpers:**
+```basic
+rec = {name:"John", age:30}
+print(keys(rec))                      # array of keys
+print(values(rec))                    # array of values
+print(has(rec, "name"))               # true
+new_rec = remove_key(rec, "age")      # new record without age
+```
+
+**Counting:**
+```basic
+print(count("hello"))          # 5 (string length)
+print(count([1, 2, 3]))        # 3 (array elements)
+print(count({x:1, y:2}))       # 2 (record fields)
+```
+
+These functions maintain strict type checking and provide clear error messages for invalid arguments.
+
 Control flow:
 
 ```basic

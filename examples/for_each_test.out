@@ -1,0 +1,18 @@
+Testing for each:
+lamp
+key
+coin
+Testing old for in syntax:
+lamp
+key
+coin
+Testing record iteration:
+name: Ada
+score: 10
+Testing values iteration:
+Value: Ada
+Value: 10
+Testing break and continue:
+Number: 1
+Number: 2
+Number: 4

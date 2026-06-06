@@ -366,6 +366,143 @@ without watchers
 end without
 ```
 
+## Core Builtin Functions
+
+gBASIC provides always-available core functions that don't require loading libraries. These functions maintain strict type checking and provide helpful error messages.
+
+### Working with Types
+
+Check what type a value is:
+
+```basic
+print(type(42))           # "number"
+print(type("hello"))      # "string"  
+print(type([1, 2, 3]))    # "array"
+print(type({x:1}))        # "record"
+print(type(true))         # "boolean"
+print(type(nothing))      # "nothing"
+
+if is_string(name) then
+    print("name is a string")
+end if
+
+if is_array(scores) then
+    print("scores has " + count(scores) + " elements")
+end if
+```
+
+### Converting Values
+
+Convert between types explicitly:
+
+```basic
+' Convert strings to numbers
+age(number)= input("Age: ")   # Using modifier
+age = number(input("Age: "))  # Using function
+
+' Convert anything to string  
+message = "You scored " + string(score) + " points"
+
+' Decode JSON strings
+data = array("[1, 2, 3]")     # Creates [1, 2, 3]
+config = record("{\"debug\": true}")  # Creates {debug: true}
+
+' Convert string flags to booleans
+debug = boolean("true")       # true
+verbose = boolean("false")    # false
+```
+
+The difference between conversion functions:
+- `string(value)` - convert any value to its string representation
+- `encode(value)` - serialize structured data to JSON
+- `decode(text)` - parse JSON back into values
+- `quote(value)` - create gBASIC source code with proper escaping
+
+### String Processing
+
+Work with text efficiently:
+
+```basic
+text = "hello world"
+
+' Replace text (all occurrences)
+fixed = replace(text, "world", "gBASIC")   # "hello gBASIC"
+
+' Check prefixes and suffixes
+if starts_with(filename, "temp_") then
+    print("temporary file")
+end if
+
+if ends_with(filename, ".txt") then
+    print("text file")
+end if
+
+' Repeat text
+border = repeat("=", 40)   # "========================================"
+print(border)
+```
+
+### Working with Records
+
+Extract information from records:
+
+```basic
+person = {name: "Alice", age: 30, city: "Portland"}
+
+' Get all keys and values
+field_names = keys(person)      # ["name", "age", "city"]
+field_values = values(person)   # ["Alice", 30, "Portland"]
+
+' Check if a field exists
+if has(person, "email") then
+    print("Email: " + person.email)
+else
+    print("No email on file")
+end if
+
+' Create modified copies (immutable)
+public_info = remove_key(person, "age")
+# person is unchanged, public_info is {name: "Alice", city: "Portland"}
+```
+
+### Counting Things
+
+Count elements in collections:
+
+```basic
+' String length
+message = "Hello"
+chars = count(message)     # 5
+
+' Array elements
+items = [1, 2, 3, 4, 5]
+total = count(items)       # 5
+
+' Record fields  
+person = {name: "Bob", age: 25}
+fields = count(person)     # 2
+
+' Empty collections
+print(count(""))           # 0
+print(count([]))           # 0  
+print(count({}))           # 0
+```
+
+### Error Handling
+
+Core functions provide clear errors for invalid arguments:
+
+```basic
+' Type errors
+count(42)                  # Error: count requires string, array, or record
+number("hello")            # Error: invalid numeric string
+boolean("maybe")           # Error: expected "true" or "false"
+
+' Missing arguments
+type()                     # Error: type expects one argument
+has(person)                # Error: has expects two arguments
+```
+
 ## Libraries And Load
 
 Libraries collect functions and exported modifiers.

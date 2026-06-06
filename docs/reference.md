@@ -541,12 +541,148 @@ end if
 
 Errors propagate out of functions. `with lock` unlocks on error, and `without watchers` restores watcher behavior after its block.
 
-## Built-Ins
+## Core Builtin Functions
+
+gBASIC includes always-available core functions that don't require loading libraries. These maintain strict type checking and provide clear error messages.
+
+### Type Inspection
+
+**`type(value)`** - Returns the type of a value as a string:
+```basic
+type(42)         # "number"  
+type("hello")    # "string"
+type(true)       # "boolean"
+type([1, 2])     # "array"
+type({x:1})      # "record"
+type(nothing)    # "nothing"
+type(unknown)    # "unknown"
+```
+
+**Type predicates** - Return `true` or `false`:
+- `is_string(value)` - checks if value is a string
+- `is_number(value)` - checks if value is a number  
+- `is_boolean(value)` - checks if value is a boolean
+- `is_array(value)` - checks if value is an array
+- `is_record(value)` - checks if value is a record
+- `is_nothing(value)` - checks if value is `nothing`
+- `is_unknown(value)` - checks if value is `unknown`
+
+### Strict Conversion
+
+**`string(value)`** - Converts values to strings using canonical string representation.
+
+**`number(value)`** - Converts strings to numbers:
+```basic
+number("42")     # 42
+number("3.14")   # 3.14
+number("abc")    # runtime error
+```
+
+**`boolean(value)`** - Converts strings to booleans:
+```basic
+boolean("true")   # true
+boolean("false")  # false
+boolean("maybe")  # runtime error
+```
+
+**`array(value)`** - Decodes JSON strings to arrays, passes arrays unchanged:
+```basic
+array("[1, 2, 3]")  # [1, 2, 3]
+array([4, 5, 6])    # [4, 5, 6]
+```
+
+**`record(value)`** - Decodes JSON strings to records, passes records unchanged:
+```basic
+record("{\"x\":1, \"y\":2}")  # {x:1, y:2}
+record({a:1, b:2})            # {a:1, b:2}
+```
+
+### String Helpers
+
+**`replace(text, from, to)`** - Replaces all occurrences of `from` with `to`:
+```basic
+replace("hello", "l", "x")     # "hexxo"
+replace("hello world", "o", "0")  # "hell0 w0rld"
+```
+
+**`starts_with(text, prefix)`** - Returns `true` if text starts with prefix:
+```basic
+starts_with("hello", "he")     # true
+starts_with("hello", "lo")     # false
+```
+
+**`ends_with(text, suffix)`** - Returns `true` if text ends with suffix:
+```basic
+ends_with("hello", "lo")       # true
+ends_with("hello", "he")       # false
+```
+
+**`repeat(text, count)`** - Repeats text count times:
+```basic
+repeat("ha", 3)                # "hahaha"
+repeat("x", 0)                 # ""
+```
+
+### Record Helpers
+
+**`keys(record)`** - Returns array of key strings:
+```basic
+keys({x:1, y:2})               # ["x", "y"]
+keys({})                       # []
+```
+
+**`values(record)`** - Returns array of record values:
+```basic
+values({x:1, y:2})             # [1, 2]
+values({})                     # []
+```
+
+**`has(record, key)`** - Returns `true` if record contains key:
+```basic
+has({x:1, y:2}, "x")           # true
+has({x:1, y:2}, "z")           # false
+```
+
+**`remove_key(record, key)`** - Returns new record without the key (immutable):
+```basic
+rec = {x:1, y:2}
+new_rec = remove_key(rec, "x")  # {y:2}
+# rec is unchanged: {x:1, y:2}
+remove_key(rec, "z")            # {x:1, y:2} (copy when key missing)
+```
+
+### Counting
+
+**`count(value)`** - Returns count/length for strings, arrays, and records:
+```basic
+count("hello")                 # 5 (string length)
+count([1, 2, 3])               # 3 (array elements)
+count({x:1, y:2})              # 2 (record fields)
+count("")                      # 0
+count([])                      # 0
+count({})                      # 0
+```
+
+### Core vs Library Functions
+
+**Core functions** (`string`, `number`, `type`, etc.) are always available and don't require `load`.
+
+**Conversion function differences:**
+- `string(value)` - canonical string conversion for any value
+- `encode(value)` - JSON serialization for structured data
+- `decode(text)` - JSON parsing to recreate values
+- `quote(value)` - gBASIC source code literal with escaping
+
+**Arithmetic behavior:**
+- `+` performs string concatenation when either operand is a string
+- `-`, `*`, `/` remain strict numeric arithmetic only
+- All conversion functions are explicit and strict
+
+### Other Built-Ins
 
 Always-available helper functions:
 
 - `compare(a, operator, b)`
-- `string(value)`
 - `lower(text)`
 - `upper(text)`
 - `round(number, places)`

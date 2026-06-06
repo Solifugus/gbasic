@@ -5,6 +5,7 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <math.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -3699,7 +3700,7 @@ static Value eval_user_function(AstExpr *expr, FunctionDef *function) {
         return result.value;
     }
     if (result.did_break || result.did_continue) {
-        runtime_error_raise(result.did_break ? "break outside while loop" : "continue outside while loop",
+        runtime_error_raise(result.did_break ? "break outside loop" : "continue outside loop",
                             1003,
                             "invalid control flow");
         value_free(result.value);
@@ -5248,6 +5249,605 @@ static Value eval_call(AstExpr *expr) {
         return builtin_string_value(eval_expr(expr->as.call.args.items[0]));
     }
 
+    if (strcmp(expr->as.call.name, "number") == 0) {
+        if (expr->as.call.args.count != 1) {
+            runtime_error_raise("number expects one argument", 1003, "invalid function call");
+            return value_null();
+        }
+        Value value = eval_expr(expr->as.call.args.items[0]);
+        if (error_action_pending()) {
+            value_free(value);
+            return value_null();
+        }
+        if (value.kind == VALUE_NUMBER) {
+            return value;
+        }
+        if (value.kind == VALUE_STRING) {
+            char *end;
+            double result = strtod(value.as.string, &end);
+            if (*end != '\0' || value.as.string[0] == '\0') {
+                value_free(value);
+                runtime_error_raise("number conversion failed: invalid numeric string", 1003, "invalid conversion");
+                return value_null();
+            }
+            value_free(value);
+            return value_number(result);
+        }
+        value_free(value);
+        runtime_error_raise("number conversion failed: unsupported type", 1003, "invalid conversion");
+        return value_null();
+    }
+
+    if (strcmp(expr->as.call.name, "boolean") == 0) {
+        if (expr->as.call.args.count != 1) {
+            runtime_error_raise("boolean expects one argument", 1003, "invalid function call");
+            return value_null();
+        }
+        Value value = eval_expr(expr->as.call.args.items[0]);
+        if (error_action_pending()) {
+            value_free(value);
+            return value_null();
+        }
+        if (value.kind == VALUE_BOOL) {
+            return value;
+        }
+        if (value.kind == VALUE_STRING) {
+            if (strcmp(value.as.string, "true") == 0) {
+                value_free(value);
+                return value_bool(1);
+            }
+            if (strcmp(value.as.string, "false") == 0) {
+                value_free(value);
+                return value_bool(0);
+            }
+            value_free(value);
+            runtime_error_raise("boolean conversion failed: expected \"true\" or \"false\"", 1003, "invalid conversion");
+            return value_null();
+        }
+        value_free(value);
+        runtime_error_raise("boolean conversion failed: unsupported type", 1003, "invalid conversion");
+        return value_null();
+    }
+
+    if (strcmp(expr->as.call.name, "array") == 0) {
+        if (expr->as.call.args.count != 1) {
+            runtime_error_raise("array expects one argument", 1003, "invalid function call");
+            return value_null();
+        }
+        Value value = eval_expr(expr->as.call.args.items[0]);
+        if (error_action_pending()) {
+            value_free(value);
+            return value_null();
+        }
+        if (value.kind == VALUE_ARRAY) {
+            return value;
+        }
+        if (value.kind == VALUE_STRING) {
+            Value decoded = builtin_decode_text(value);
+            if (error_action_pending()) {
+                return value_null();
+            }
+            if (decoded.kind != VALUE_ARRAY) {
+                value_free(decoded);
+                runtime_error_raise("array conversion failed: decoded value is not an array", 1003, "invalid conversion");
+                return value_null();
+            }
+            return decoded;
+        }
+        value_free(value);
+        runtime_error_raise("array conversion failed: unsupported type", 1003, "invalid conversion");
+        return value_null();
+    }
+
+    if (strcmp(expr->as.call.name, "record") == 0) {
+        if (expr->as.call.args.count != 1) {
+            runtime_error_raise("record expects one argument", 1003, "invalid function call");
+            return value_null();
+        }
+        Value value = eval_expr(expr->as.call.args.items[0]);
+        if (error_action_pending()) {
+            value_free(value);
+            return value_null();
+        }
+        if (value.kind == VALUE_RECORD) {
+            return value;
+        }
+        if (value.kind == VALUE_STRING) {
+            Value decoded = builtin_decode_text(value);
+            if (error_action_pending()) {
+                return value_null();
+            }
+            if (decoded.kind != VALUE_RECORD) {
+                value_free(decoded);
+                runtime_error_raise("record conversion failed: decoded value is not a record", 1003, "invalid conversion");
+                return value_null();
+            }
+            return decoded;
+        }
+        value_free(value);
+        runtime_error_raise("record conversion failed: unsupported type", 1003, "invalid conversion");
+        return value_null();
+    }
+
+    if (strcmp(expr->as.call.name, "replace") == 0) {
+        if (expr->as.call.args.count != 3) {
+            runtime_error_raise("replace expects three arguments", 1003, "invalid function call");
+            return value_null();
+        }
+        Value text = eval_expr(expr->as.call.args.items[0]);
+        if (error_action_pending()) {
+            value_free(text);
+            return value_null();
+        }
+        Value from = eval_expr(expr->as.call.args.items[1]);
+        if (error_action_pending()) {
+            value_free(text);
+            value_free(from);
+            return value_null();
+        }
+        Value to = eval_expr(expr->as.call.args.items[2]);
+        if (error_action_pending()) {
+            value_free(text);
+            value_free(from);
+            value_free(to);
+            return value_null();
+        }
+
+        if (text.kind != VALUE_STRING) {
+            value_free(text);
+            value_free(from);
+            value_free(to);
+            runtime_error_raise("replace: first argument must be a string", 1003, "invalid argument type");
+            return value_null();
+        }
+        if (from.kind != VALUE_STRING) {
+            value_free(text);
+            value_free(from);
+            value_free(to);
+            runtime_error_raise("replace: second argument must be a string", 1003, "invalid argument type");
+            return value_null();
+        }
+        if (to.kind != VALUE_STRING) {
+            value_free(text);
+            value_free(from);
+            value_free(to);
+            runtime_error_raise("replace: third argument must be a string", 1003, "invalid argument type");
+            return value_null();
+        }
+
+        if (strlen(from.as.string) == 0) {
+            value_free(text);
+            value_free(from);
+            value_free(to);
+            runtime_error_raise("replace: search string cannot be empty", 1003, "invalid argument");
+            return value_null();
+        }
+
+        const char *text_str = text.as.string;
+        const char *from_str = from.as.string;
+        const char *to_str = to.as.string;
+        size_t from_len = strlen(from_str);
+        size_t to_len = strlen(to_str);
+
+        // Count occurrences to calculate result size
+        size_t count = 0;
+        const char *pos = text_str;
+        while ((pos = strstr(pos, from_str)) != NULL) {
+            count++;
+            pos += from_len;
+        }
+
+        if (count == 0) {
+            // No replacements needed
+            Value result = value_string(text_str);
+            value_free(text);
+            value_free(from);
+            value_free(to);
+            return result;
+        }
+
+        // Calculate new string size
+        size_t text_len = strlen(text_str);
+        size_t new_len = text_len - (count * from_len) + (count * to_len);
+
+        char *result_str = malloc(new_len + 1);
+        if (!result_str) {
+            value_free(text);
+            value_free(from);
+            value_free(to);
+            runtime_error_raise("replace: memory allocation failed", 1003, "system error");
+            return value_null();
+        }
+
+        char *result_pos = result_str;
+        const char *current = text_str;
+
+        while ((pos = strstr(current, from_str)) != NULL) {
+            // Copy text before match
+            size_t before_len = pos - current;
+            memcpy(result_pos, current, before_len);
+            result_pos += before_len;
+
+            // Copy replacement text
+            memcpy(result_pos, to_str, to_len);
+            result_pos += to_len;
+
+            // Move past the match
+            current = pos + from_len;
+        }
+
+        // Copy remaining text
+        strcpy(result_pos, current);
+
+        Value result = value_string(result_str);
+        free(result_str);
+        value_free(text);
+        value_free(from);
+        value_free(to);
+        return result;
+    }
+
+    if (strcmp(expr->as.call.name, "starts_with") == 0) {
+        if (expr->as.call.args.count != 2) {
+            runtime_error_raise("starts_with expects two arguments", 1003, "invalid function call");
+            return value_null();
+        }
+        Value text = eval_expr(expr->as.call.args.items[0]);
+        if (error_action_pending()) {
+            value_free(text);
+            return value_null();
+        }
+        Value prefix = eval_expr(expr->as.call.args.items[1]);
+        if (error_action_pending()) {
+            value_free(text);
+            value_free(prefix);
+            return value_null();
+        }
+
+        if (text.kind != VALUE_STRING) {
+            value_free(text);
+            value_free(prefix);
+            runtime_error_raise("starts_with: first argument must be a string", 1003, "invalid argument type");
+            return value_null();
+        }
+        if (prefix.kind != VALUE_STRING) {
+            value_free(text);
+            value_free(prefix);
+            runtime_error_raise("starts_with: second argument must be a string", 1003, "invalid argument type");
+            return value_null();
+        }
+
+        int result = strncmp(text.as.string, prefix.as.string, strlen(prefix.as.string)) == 0;
+        value_free(text);
+        value_free(prefix);
+        return value_bool(result);
+    }
+
+    if (strcmp(expr->as.call.name, "ends_with") == 0) {
+        if (expr->as.call.args.count != 2) {
+            runtime_error_raise("ends_with expects two arguments", 1003, "invalid function call");
+            return value_null();
+        }
+        Value text = eval_expr(expr->as.call.args.items[0]);
+        if (error_action_pending()) {
+            value_free(text);
+            return value_null();
+        }
+        Value suffix = eval_expr(expr->as.call.args.items[1]);
+        if (error_action_pending()) {
+            value_free(text);
+            value_free(suffix);
+            return value_null();
+        }
+
+        if (text.kind != VALUE_STRING) {
+            value_free(text);
+            value_free(suffix);
+            runtime_error_raise("ends_with: first argument must be a string", 1003, "invalid argument type");
+            return value_null();
+        }
+        if (suffix.kind != VALUE_STRING) {
+            value_free(text);
+            value_free(suffix);
+            runtime_error_raise("ends_with: second argument must be a string", 1003, "invalid argument type");
+            return value_null();
+        }
+
+        size_t text_len = strlen(text.as.string);
+        size_t suffix_len = strlen(suffix.as.string);
+
+        int result = 0;
+        if (suffix_len <= text_len) {
+            result = strcmp(text.as.string + text_len - suffix_len, suffix.as.string) == 0;
+        }
+
+        value_free(text);
+        value_free(suffix);
+        return value_bool(result);
+    }
+
+    if (strcmp(expr->as.call.name, "repeat") == 0) {
+        if (expr->as.call.args.count != 2) {
+            runtime_error_raise("repeat expects two arguments", 1003, "invalid function call");
+            return value_null();
+        }
+        Value text = eval_expr(expr->as.call.args.items[0]);
+        if (error_action_pending()) {
+            value_free(text);
+            return value_null();
+        }
+        Value count_val = eval_expr(expr->as.call.args.items[1]);
+        if (error_action_pending()) {
+            value_free(text);
+            value_free(count_val);
+            return value_null();
+        }
+
+        if (text.kind != VALUE_STRING) {
+            value_free(text);
+            value_free(count_val);
+            runtime_error_raise("repeat: first argument must be a string", 1003, "invalid argument type");
+            return value_null();
+        }
+        if (count_val.kind != VALUE_NUMBER) {
+            value_free(text);
+            value_free(count_val);
+            runtime_error_raise("repeat: second argument must be a number", 1003, "invalid argument type");
+            return value_null();
+        }
+
+        double count_double = count_val.as.number;
+        if (count_double != floor(count_double)) {
+            value_free(text);
+            value_free(count_val);
+            runtime_error_raise("repeat: count must be an integer", 1003, "invalid argument");
+            return value_null();
+        }
+        if (count_double < 0) {
+            value_free(text);
+            value_free(count_val);
+            runtime_error_raise("repeat: count must be non-negative", 1003, "invalid argument");
+            return value_null();
+        }
+
+        int count = (int)count_double;
+        if (count == 0) {
+            value_free(text);
+            value_free(count_val);
+            return value_string("");
+        }
+
+        size_t text_len = strlen(text.as.string);
+        size_t result_len = text_len * count;
+
+        char *result_str = malloc(result_len + 1);
+        if (!result_str) {
+            value_free(text);
+            value_free(count_val);
+            runtime_error_raise("repeat: memory allocation failed", 1003, "system error");
+            return value_null();
+        }
+
+        char *pos = result_str;
+        for (int i = 0; i < count; i++) {
+            strcpy(pos, text.as.string);
+            pos += text_len;
+        }
+
+        Value result = value_string(result_str);
+        free(result_str);
+        value_free(text);
+        value_free(count_val);
+        return result;
+    }
+
+    if (strcmp(expr->as.call.name, "keys") == 0) {
+        if (expr->as.call.args.count != 1) {
+            runtime_error_raise("keys expects one argument", 1003, "invalid function call");
+            return value_null();
+        }
+        Value record = eval_expr(expr->as.call.args.items[0]);
+        if (error_action_pending()) {
+            value_free(record);
+            return value_null();
+        }
+
+        if (record.kind != VALUE_RECORD) {
+            value_free(record);
+            runtime_error_raise("keys: argument must be a record", 1003, "invalid argument type");
+            return value_null();
+        }
+
+        // Create array of keys
+        size_t key_count = record.as.record.count;
+        Value *keys = malloc(sizeof(Value) * key_count);
+        if (!keys && key_count > 0) {
+            value_free(record);
+            runtime_error_raise("keys: memory allocation failed", 1003, "system error");
+            return value_null();
+        }
+
+        for (size_t i = 0; i < key_count; i++) {
+            keys[i] = value_string(record.as.record.fields[i].name);
+        }
+
+        Value result = value_array(keys, key_count);
+        value_free(record);
+        return result;
+    }
+
+    if (strcmp(expr->as.call.name, "values") == 0) {
+        if (expr->as.call.args.count != 1) {
+            runtime_error_raise("values expects one argument", 1003, "invalid function call");
+            return value_null();
+        }
+        Value record = eval_expr(expr->as.call.args.items[0]);
+        if (error_action_pending()) {
+            value_free(record);
+            return value_null();
+        }
+
+        if (record.kind != VALUE_RECORD) {
+            value_free(record);
+            runtime_error_raise("values: argument must be a record", 1003, "invalid argument type");
+            return value_null();
+        }
+
+        // Create array of values
+        size_t value_count = record.as.record.count;
+        Value *values = malloc(sizeof(Value) * value_count);
+        if (!values && value_count > 0) {
+            value_free(record);
+            runtime_error_raise("values: memory allocation failed", 1003, "system error");
+            return value_null();
+        }
+
+        for (size_t i = 0; i < value_count; i++) {
+            values[i] = value_copy(*record.as.record.fields[i].value);
+        }
+
+        Value result = value_array(values, value_count);
+        value_free(record);
+        return result;
+    }
+
+    if (strcmp(expr->as.call.name, "has") == 0) {
+        if (expr->as.call.args.count != 2) {
+            runtime_error_raise("has expects two arguments", 1003, "invalid function call");
+            return value_null();
+        }
+        Value record = eval_expr(expr->as.call.args.items[0]);
+        if (error_action_pending()) {
+            value_free(record);
+            return value_null();
+        }
+        Value key = eval_expr(expr->as.call.args.items[1]);
+        if (error_action_pending()) {
+            value_free(record);
+            value_free(key);
+            return value_null();
+        }
+
+        if (record.kind != VALUE_RECORD) {
+            value_free(record);
+            value_free(key);
+            runtime_error_raise("has: first argument must be a record", 1003, "invalid argument type");
+            return value_null();
+        }
+        if (key.kind != VALUE_STRING) {
+            value_free(record);
+            value_free(key);
+            runtime_error_raise("has: second argument must be a string", 1003, "invalid argument type");
+            return value_null();
+        }
+
+        // Check if key exists
+        RecordField *field = record_find(&record, key.as.string);
+        int result = field != NULL;
+
+        value_free(record);
+        value_free(key);
+        return value_bool(result);
+    }
+
+    if (strcmp(expr->as.call.name, "remove_key") == 0) {
+        if (expr->as.call.args.count != 2) {
+            runtime_error_raise("remove_key expects two arguments", 1003, "invalid function call");
+            return value_null();
+        }
+        Value record = eval_expr(expr->as.call.args.items[0]);
+        if (error_action_pending()) {
+            value_free(record);
+            return value_null();
+        }
+        Value key = eval_expr(expr->as.call.args.items[1]);
+        if (error_action_pending()) {
+            value_free(record);
+            value_free(key);
+            return value_null();
+        }
+
+        if (record.kind != VALUE_RECORD) {
+            value_free(record);
+            value_free(key);
+            runtime_error_raise("remove_key: first argument must be a record", 1003, "invalid argument type");
+            return value_null();
+        }
+        if (key.kind != VALUE_STRING) {
+            value_free(record);
+            value_free(key);
+            runtime_error_raise("remove_key: second argument must be a string", 1003, "invalid argument type");
+            return value_null();
+        }
+
+        // Create new record without the specified key
+        size_t original_count = record.as.record.count;
+        RecordField *new_fields = NULL;
+        size_t new_count = 0;
+
+        // Count fields to keep and allocate
+        for (size_t i = 0; i < original_count; i++) {
+            if (strcmp(record.as.record.fields[i].name, key.as.string) != 0) {
+                new_count++;
+            }
+        }
+
+        if (new_count > 0) {
+            new_fields = malloc(sizeof(RecordField) * new_count);
+            if (!new_fields) {
+                value_free(record);
+                value_free(key);
+                runtime_error_raise("remove_key: memory allocation failed", 1003, "system error");
+                return value_null();
+            }
+
+            // Copy fields except the one to remove
+            size_t new_index = 0;
+            for (size_t i = 0; i < original_count; i++) {
+                if (strcmp(record.as.record.fields[i].name, key.as.string) != 0) {
+                    new_fields[new_index].name = malloc(strlen(record.as.record.fields[i].name) + 1);
+                    strcpy(new_fields[new_index].name, record.as.record.fields[i].name);
+                    new_fields[new_index].value = malloc(sizeof(Value));
+                    *new_fields[new_index].value = value_copy(*record.as.record.fields[i].value);
+                    new_index++;
+                }
+            }
+        }
+
+        Value result = value_record(new_fields, new_count);
+        value_free(record);
+        value_free(key);
+        return result;
+    }
+
+    if (strcmp(expr->as.call.name, "count") == 0) {
+        if (expr->as.call.args.count != 1) {
+            runtime_error_raise("count expects one argument", 1003, "invalid function call");
+            return value_null();
+        }
+        Value value = eval_expr(expr->as.call.args.items[0]);
+        if (error_action_pending()) {
+            value_free(value);
+            return value_null();
+        }
+
+        int result;
+        if (value.kind == VALUE_STRING) {
+            result = (int)strlen(value.as.string);
+        } else if (value.kind == VALUE_ARRAY) {
+            result = (int)value.as.array.count;
+        } else if (value.kind == VALUE_RECORD) {
+            result = (int)value.as.record.count;
+        } else {
+            value_free(value);
+            runtime_error_raise("count: argument must be a string, array, or record", 1003, "invalid argument type");
+            return value_null();
+        }
+
+        value_free(value);
+        return value_number((double)result);
+    }
+
     if (strcmp(expr->as.call.name, "type") == 0) {
         if (expr->as.call.args.count != 1) {
             runtime_error_raise("type expects one argument", 1003, "invalid function call");
@@ -6357,7 +6957,7 @@ static Value eval_assign_modifier(AstModifierUse use, Value value) {
         return result.value;
     }
     if (result.did_break || result.did_continue) {
-        runtime_error_raise(result.did_break ? "break outside while loop" : "continue outside while loop",
+        runtime_error_raise(result.did_break ? "break outside loop" : "continue outside loop",
                             1003,
                             "invalid control flow");
         value_free(result.value);
@@ -6395,7 +6995,7 @@ static Value eval_compare_modifier(AstModifierUse use, const char *op, Value lef
         return result.value;
     }
     if (result.did_break || result.did_continue) {
-        runtime_error_raise(result.did_break ? "break outside while loop" : "continue outside while loop",
+        runtime_error_raise(result.did_break ? "break outside loop" : "continue outside loop",
                             1003,
                             "invalid control flow");
         value_free(result.value);
@@ -7440,16 +8040,23 @@ static EvalResult eval_stmt(AstStmt *stmt) {
             current_column = previous_column;
             return eval_error_result();
         }
+        loop_depth++;
         for (size_t i = 0; i < iterable.as.array.count; i++) {
             env_set(stmt->as.for_each.name, value_copy(iterable.as.array.items[i]));
             EvalResult result = eval_stmt_list(stmt->as.for_each.body);
+            if (result.did_continue) {
+                value_free(result.value);
+                continue;
+            }
             if (eval_result_exits_block(result)) {
+                loop_depth--;
                 value_free(iterable);
                 current_line = previous_line;
                 current_column = previous_column;
                 return result;
             }
         }
+        loop_depth--;
         value_free(iterable);
         break;
     }
@@ -7549,7 +8156,7 @@ static EvalResult eval_stmt(AstStmt *stmt) {
     }
     case AST_STMT_BREAK:
         if (loop_depth == 0 && consider_depth == 0) {
-            runtime_error_raise("break outside while loop or consider block", 1003, "invalid control flow");
+            runtime_error_raise("break outside loop or consider block", 1003, "invalid control flow");
             current_line = previous_line;
             current_column = previous_column;
             return eval_error_result();
@@ -7559,7 +8166,7 @@ static EvalResult eval_stmt(AstStmt *stmt) {
         return eval_break();
     case AST_STMT_CONTINUE:
         if (loop_depth == 0) {
-            runtime_error_raise("continue outside while loop", 1003, "invalid control flow");
+            runtime_error_raise("continue outside loop", 1003, "invalid control flow");
             current_line = previous_line;
             current_column = previous_column;
             return eval_error_result();

@@ -1,0 +1,3 @@
+count: argument must be a string, array, or record
+Action: invalid argument type
+Error code: 1003

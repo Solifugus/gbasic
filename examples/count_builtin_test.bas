@@ -1,0 +1,6 @@
+print(count("hello"))
+print(count([1, 2, 3]))
+print(count({x:1, y:2}))
+print(count(""))
+print(count([]))
+print(count({}))
