@@ -2,8 +2,9 @@
 
 ## Status
 
-Design and development plan only. No webserver runtime implementation is
-proposed by this document.
+Phase 1 is implemented. This document records the queue/watch design and
+future-phase plan; see `docs/webserver_progress.md` for current implementation
+status and verification.
 
 ## Core Principle
 
@@ -101,7 +102,9 @@ ordinary record:
     id:1,
     method:"POST",
     path:"/messages",
-    query:"draft=true",
+    query:{
+        draft:"true"
+    },
     headers:{},
     body:"{\"message\":\"hello\"}",
     json:{
@@ -115,10 +118,14 @@ Fields:
 - `id`: unique positive number assigned by the server
 - `method`: uppercase HTTP method string
 - `path`: request path, retaining percent encoding in Phase 1
-- `query`: raw query text without the leading `?`, or `""`
+- `query`: record of percent-decoded query parameter names and string values;
+  duplicate names use last-wins behavior in Phase 1
 - `headers`: record with lowercase header names
 - `body`: request body as a string
 - `json`: present only when a non-empty body parses successfully as JSON
+- `remote_ip`: peer IP address as a string
+- `remote_port`: peer port as a number
+- `timestamp`: UTC request timestamp as an ISO 8601 string
 
 `requests` remains application-owned as a queue. The module only appends new
 request records. Application code normally consumes them with
@@ -556,8 +563,8 @@ client connection churn.
 - Should unsupported binary request bodies receive 400 or 415?
 - Should duplicate request headers remain last-wins for compatibility with
   WebClient Phase 1, or move both modules to duplicate-preserving arrays later?
-- Should request `path` remain percent-encoded, and should decoding be a
-  separate explicit helper?
+- Should a future phase also expose the raw query string alongside the parsed
+  `query` record?
 - Should malformed HTTP be answered directly by native code without entering
   `server.requests`? The recommendation is yes.
 - Should `server.requests` and `server.responses` be protected from wholesale

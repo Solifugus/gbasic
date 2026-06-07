@@ -1,0 +1,15 @@
+200
+GET|/inspect|Ada Lovelace||present|127.0.0.1|true|true
+201
+application/json
+Grace
+true
+200
+true|{bad
+200
+text/plain
+0
+504
+Gateway Timeout
+200
+bye

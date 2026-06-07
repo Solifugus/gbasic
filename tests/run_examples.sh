@@ -58,6 +58,7 @@ examples=(
     consider_test.bas
     dynamic_record_access_test.bas
     nested_lvalue_test.bas
+    nested_array_mutation_test.bas
     parser_hardening_test.bas
     print_parens_test.bas
     split_find_join_integration_test.bas

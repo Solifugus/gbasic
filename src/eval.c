@@ -7,12 +7,17 @@
 #include <fcntl.h>
 #include <limits.h>
 #include <math.h>
+#include <poll.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/socket.h>
 #include <sys/file.h>
 #include <sys/stat.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <time.h>
 #include <unistd.h>
 
 #if HAVE_GTK
@@ -31,6 +36,8 @@ int parse_source(const char *source, AstStmtList *out_program);
 void parse_set_source_path(const char *path);
 
 typedef struct PgConnectionValue PgConnectionValue;
+typedef struct WebServer WebServer;
+typedef struct WebServerClient WebServerClient;
 
 typedef enum {
     VALUE_NULL,
@@ -237,6 +244,14 @@ static int gui_library_loaded = 0;
 static int pg_library_loaded = 0;
 static int webclient_library_loaded = 0;
 static int webclient_curl_initialized = 0;
+static int webserver_library_loaded = 0;
+static WebServer *webservers = NULL;
+static size_t webserver_count = 0;
+static unsigned long webserver_next_id = 1;
+
+static Value webserver_eval_call(AstExpr *expr);
+static int webserver_run_event_loop(void);
+static void webserver_clear(void);
 
 #if HAVE_GTK
 typedef struct GuiNativeWindow GuiNativeWindow;
@@ -1319,6 +1334,8 @@ static int gui_validate_widget_tree(Value *widget, GuiIdSet *ids) {
 
 static Value eval_expr(AstExpr *expr);
 static Value *resolve_lvalue_ref(AstExpr *target);
+static char *lvalue_watch_path(AstExpr *target);
+static int webserver_validate_response_append(AstExpr *target, Value item);
 static char *lvalue_watch_path(AstExpr *target);
 
 #if HAVE_GTK
@@ -3245,6 +3262,11 @@ static void library_import(const char *name, const char *path) {
         return;
     }
 
+    if (!path && strcmp(name, "webserver") == 0) {
+        webserver_library_loaded = 1;
+        return;
+    }
+
     if (path) {
         const char *base = current_import_path ? current_import_path : root_source_path;
         resolved = resolve_use_path(base, path);
@@ -4662,8 +4684,8 @@ static Value append_to_array_value(Value array, Value item, int prepend) {
     return array;
 }
 
-static Value append_to_array_symbol(Symbol *symbol, Value item, int prepend) {
-    if (!symbol || symbol->value.kind != VALUE_ARRAY) {
+static Value append_to_array_ref(Value *array, Value item, int prepend) {
+    if (!array || array->kind != VALUE_ARRAY) {
         value_free(item);
         runtime_error_raise(prepend ? "prepend expects an array" : "append expects an array",
                             1003,
@@ -4671,22 +4693,22 @@ static Value append_to_array_symbol(Symbol *symbol, Value item, int prepend) {
         return value_null();
     }
 
-    Value *items = realloc(symbol->value.as.array.items,
-                           sizeof(Value) * (symbol->value.as.array.count + 1));
+    Value *items = realloc(array->as.array.items,
+                           sizeof(Value) * (array->as.array.count + 1));
     if (!items) {
         abort();
     }
-    symbol->value.as.array.items = items;
+    array->as.array.items = items;
     if (prepend) {
-        memmove(symbol->value.as.array.items + 1,
-                symbol->value.as.array.items,
-                sizeof(Value) * symbol->value.as.array.count);
-        symbol->value.as.array.items[0] = item;
+        memmove(array->as.array.items + 1,
+                array->as.array.items,
+                sizeof(Value) * array->as.array.count);
+        array->as.array.items[0] = item;
     } else {
-        symbol->value.as.array.items[symbol->value.as.array.count] = item;
+        array->as.array.items[array->as.array.count] = item;
     }
-    symbol->value.as.array.count++;
-    return value_copy(symbol->value);
+    array->as.array.count++;
+    return value_copy(*array);
 }
 
 static int array_index_from_value(Value index_value, const char *name, int *out_index) {
@@ -4937,34 +4959,34 @@ static Value take_from_array_value(Value array, int take_last) {
     return result;
 }
 
-static Value take_from_array_symbol(Symbol *symbol, int take_last) {
-    if (!symbol || symbol->value.kind != VALUE_ARRAY) {
+static Value take_from_array_ref(Value *array, int take_last) {
+    if (!array || array->kind != VALUE_ARRAY) {
         runtime_error_raise(take_last ? "take_last expects an array" : "take_first expects an array",
                             1003,
                             "invalid function call");
         return value_null();
     }
-    if (symbol->value.as.array.count == 0) {
+    if (array->as.array.count == 0) {
         runtime_error_raise(take_last ? "take_last expects a non-empty array" : "take_first expects a non-empty array",
                             1003,
                             "invalid function call");
         return value_null();
     }
 
-    size_t index = take_last ? symbol->value.as.array.count - 1 : 0;
-    Value result = symbol->value.as.array.items[index];
-    for (size_t i = index + 1; i < symbol->value.as.array.count; i++) {
-        symbol->value.as.array.items[i - 1] = symbol->value.as.array.items[i];
+    size_t index = take_last ? array->as.array.count - 1 : 0;
+    Value result = array->as.array.items[index];
+    for (size_t i = index + 1; i < array->as.array.count; i++) {
+        array->as.array.items[i - 1] = array->as.array.items[i];
     }
-    symbol->value.as.array.count--;
-    if (symbol->value.as.array.count == 0) {
-        free(symbol->value.as.array.items);
-        symbol->value.as.array.items = NULL;
+    array->as.array.count--;
+    if (array->as.array.count == 0) {
+        free(array->as.array.items);
+        array->as.array.items = NULL;
     } else {
-        Value *items = realloc(symbol->value.as.array.items,
-                               sizeof(Value) * symbol->value.as.array.count);
+        Value *items = realloc(array->as.array.items,
+                               sizeof(Value) * array->as.array.count);
         if (items) {
-            symbol->value.as.array.items = items;
+            array->as.array.items = items;
         }
     }
     return result;
@@ -6639,6 +6661,966 @@ static Value webclient_eval_call(AstExpr *expr) {
 }
 #endif
 
+#define WEBSERVER_ERROR_CODE 4001
+#define WEBSERVER_DEFAULT_TIMEOUT_SECONDS 30.0
+#define WEBSERVER_MAX_REQUEST_SIZE (8u * 1024u * 1024u)
+#define WEBSERVER_MAX_HEADER_SIZE (64u * 1024u)
+
+struct WebServerClient {
+    int fd;
+    unsigned long id;
+    char *buffer;
+    size_t length;
+    size_t capacity;
+    int waiting_response;
+    double deadline;
+    char remote_ip[64];
+    int remote_port;
+};
+
+struct WebServer {
+    unsigned long id;
+    int listen_fd;
+    int port;
+    int running;
+    int shutdown_requested;
+    unsigned long next_request_id;
+    WebServerClient *clients;
+    size_t client_count;
+};
+
+static void webserver_raise(const char *message) {
+    runtime_error_raise(message, WEBSERVER_ERROR_CODE, "webserver");
+}
+
+static double webserver_now(void) {
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) == 0) {
+        return (double)ts.tv_sec + (double)ts.tv_nsec / 1000000000.0;
+    }
+    return (double)time(NULL);
+}
+
+static double webserver_timeout_seconds(void) {
+    const char *override = getenv("GBASIC_WEBSERVER_TIMEOUT");
+    if (override && override[0]) {
+        char *end = NULL;
+        double value = strtod(override, &end);
+        if (end && *end == '\0' && value > 0.0 && isfinite(value)) {
+            return value;
+        }
+    }
+    return WEBSERVER_DEFAULT_TIMEOUT_SECONDS;
+}
+
+static int webserver_set_blocking_mode(int fd, int blocking) {
+    int flags = fcntl(fd, F_GETFL, 0);
+    if (flags < 0) {
+        return 0;
+    }
+    int next = blocking ? (flags & ~O_NONBLOCK) : (flags | O_NONBLOCK);
+    return fcntl(fd, F_SETFL, next) == 0;
+}
+
+static WebServer *webserver_find(unsigned long id) {
+    for (size_t i = 0; i < webserver_count; i++) {
+        if (webservers[i].id == id) {
+            return &webservers[i];
+        }
+    }
+    return NULL;
+}
+
+static int webserver_record_id(Value *record, unsigned long *out_id) {
+    if (!record || record->kind != VALUE_RECORD) {
+        return 0;
+    }
+    RecordField *field = record_find(record, "_webserver_id");
+    int id = 0;
+    if (!field || !value_is_integer_number(*field->value)) {
+        return 0;
+    }
+    id = (int)field->value->as.number;
+    if (id <= 0) {
+        return 0;
+    }
+    *out_id = (unsigned long)id;
+    return 1;
+}
+
+static Value *webserver_find_record(unsigned long id, const char **out_name) {
+    for (size_t i = 0; i < global_env.count; i++) {
+        unsigned long record_id = 0;
+        if (webserver_record_id(&global_env.items[i].value, &record_id) &&
+            record_id == id) {
+            if (out_name) {
+                *out_name = global_env.items[i].name;
+            }
+            return &global_env.items[i].value;
+        }
+    }
+    return NULL;
+}
+
+static Value *webserver_field(Value *record, const char *name) {
+    RecordField *field = record_find(record, name);
+    return field ? field->value : NULL;
+}
+
+static void webserver_client_close(WebServer *server, size_t index) {
+    close(server->clients[index].fd);
+    free(server->clients[index].buffer);
+    server->clients[index] = server->clients[server->client_count - 1];
+    server->client_count--;
+    if (server->client_count == 0) {
+        free(server->clients);
+        server->clients = NULL;
+    } else {
+        WebServerClient *clients = realloc(server->clients,
+                                           sizeof(WebServerClient) * server->client_count);
+        if (clients) {
+            server->clients = clients;
+        }
+    }
+}
+
+static void webserver_close_native(WebServer *server) {
+    if (server->listen_fd >= 0) {
+        close(server->listen_fd);
+        server->listen_fd = -1;
+    }
+    while (server->client_count > 0) {
+        webserver_client_close(server, server->client_count - 1);
+    }
+    server->running = 0;
+}
+
+static void webserver_set_running(WebServer *server, int running) {
+    server->running = running;
+    Value *record = webserver_find_record(server->id, NULL);
+    if (record) {
+        record_set(record, "running", value_bool(running));
+    }
+}
+
+static int webserver_any_active(void) {
+    for (size_t i = 0; i < webserver_count; i++) {
+        if (webservers[i].running || webservers[i].client_count > 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int webserver_token_char(unsigned char ch) {
+    return isalnum(ch) ||
+        ch == '!' || ch == '#' || ch == '$' || ch == '%' || ch == '&' ||
+        ch == '\'' || ch == '*' || ch == '+' || ch == '-' || ch == '.' ||
+        ch == '^' || ch == '_' || ch == '`' || ch == '|' || ch == '~';
+}
+
+static int webserver_valid_header_name(const char *text) {
+    if (!text || !text[0]) {
+        return 0;
+    }
+    for (const unsigned char *cursor = (const unsigned char *)text;
+         *cursor;
+         cursor++) {
+        if (!webserver_token_char(*cursor)) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int webserver_integer(Value value, int *out) {
+    if (!value_is_integer_number(value)) {
+        return 0;
+    }
+    *out = (int)value.as.number;
+    return 1;
+}
+
+static int webserver_pending_request(WebServer *server, unsigned long id) {
+    for (size_t i = 0; i < server->client_count; i++) {
+        if (server->clients[i].waiting_response && server->clients[i].id == id) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int webserver_validate_response_value(WebServer *server,
+                                             Value response,
+                                             int require_pending) {
+    if (response.kind != VALUE_RECORD) {
+        webserver_raise("webserver response must be a record");
+        return 0;
+    }
+    RecordField *id_field = record_find(&response, "id");
+    int id = 0;
+    if (!id_field) {
+        webserver_raise("webserver response requires an id field");
+        return 0;
+    }
+    if (!webserver_integer(*id_field->value, &id) || id <= 0) {
+        webserver_raise("webserver response id must be a positive integer");
+        return 0;
+    }
+    if (require_pending && !webserver_pending_request(server, (unsigned long)id)) {
+        webserver_raise("webserver response id does not match a pending request");
+        return 0;
+    }
+    RecordField *status = record_find(&response, "status");
+    if (status) {
+        int code = 0;
+        if (!webserver_integer(*status->value, &code) || code < 100 || code > 599) {
+            webserver_raise("webserver response status must be an integer HTTP status");
+            return 0;
+        }
+    }
+    RecordField *headers = record_find(&response, "headers");
+    if (headers) {
+        if (headers->value->kind != VALUE_RECORD) {
+            webserver_raise("webserver response headers must be a record");
+            return 0;
+        }
+        for (size_t i = 0; i < headers->value->as.record.count; i++) {
+            RecordField *field = &headers->value->as.record.fields[i];
+            if (!webserver_valid_header_name(field->name)) {
+                webserver_raise("webserver response header name is invalid");
+                return 0;
+            }
+            if (field->value->kind != VALUE_STRING) {
+                webserver_raise("webserver response header values must be strings");
+                return 0;
+            }
+            if (strchr(field->value->as.string, '\r') ||
+                strchr(field->value->as.string, '\n')) {
+                webserver_raise("webserver response header value is invalid");
+                return 0;
+            }
+        }
+    }
+    RecordField *body = record_find(&response, "body");
+    if (body && body->value->kind != VALUE_STRING) {
+        webserver_raise("webserver response body must be a string");
+        return 0;
+    }
+    return 1;
+}
+
+static int webserver_validate_response_append(AstExpr *target, Value item) {
+    if (!target || target->kind != AST_EXPR_FIELD ||
+        strcmp(target->as.field.field, "responses") != 0) {
+        return 1;
+    }
+    Value *record = resolve_lvalue_ref(target->as.field.object);
+    unsigned long id = 0;
+    if (!webserver_record_id(record, &id)) {
+        return 1;
+    }
+    WebServer *server = webserver_find(id);
+    if (!server) {
+        webserver_raise("webserver response target is closed");
+        return 0;
+    }
+    return webserver_validate_response_value(server, item, server->client_count > 0);
+}
+
+static void webserver_array_remove(Value *array, size_t index) {
+    value_free(array->as.array.items[index]);
+    for (size_t i = index + 1; i < array->as.array.count; i++) {
+        array->as.array.items[i - 1] = array->as.array.items[i];
+    }
+    array->as.array.count--;
+    if (array->as.array.count == 0) {
+        free(array->as.array.items);
+        array->as.array.items = NULL;
+    } else {
+        Value *items = realloc(array->as.array.items,
+                               sizeof(Value) * array->as.array.count);
+        if (items) {
+            array->as.array.items = items;
+        }
+    }
+}
+
+static char *webserver_percent_decode(const char *text, size_t length) {
+    char *decoded = malloc(length + 1);
+    if (!decoded) {
+        abort();
+    }
+    size_t out = 0;
+    for (size_t i = 0; i < length; i++) {
+        if (text[i] == '%' && i + 2 < length &&
+            isxdigit((unsigned char)text[i + 1]) &&
+            isxdigit((unsigned char)text[i + 2])) {
+            char hex[3] = {text[i + 1], text[i + 2], '\0'};
+            decoded[out++] = (char)strtol(hex, NULL, 16);
+            i += 2;
+        } else if (text[i] == '+') {
+            decoded[out++] = ' ';
+        } else {
+            decoded[out++] = text[i];
+        }
+    }
+    decoded[out] = '\0';
+    return decoded;
+}
+
+static Value webserver_query_record(const char *query) {
+    Value record = value_record(NULL, 0);
+    const char *cursor = query;
+    while (*cursor) {
+        const char *amp = strchr(cursor, '&');
+        size_t length = amp ? (size_t)(amp - cursor) : strlen(cursor);
+        const char *eq = memchr(cursor, '=', length);
+        size_t name_length = eq ? (size_t)(eq - cursor) : length;
+        size_t value_length = eq ? length - name_length - 1 : 0;
+        if (name_length > 0) {
+            char *name = webserver_percent_decode(cursor, name_length);
+            char *value = webserver_percent_decode(eq ? eq + 1 : "", value_length);
+            record_set(&record, name, value_string(value));
+            free(name);
+            free(value);
+        }
+        if (!amp) {
+            break;
+        }
+        cursor = amp + 1;
+    }
+    return record;
+}
+
+static char *webserver_trim_copy(const char *start, size_t length) {
+    while (length > 0 && isspace((unsigned char)*start)) {
+        start++;
+        length--;
+    }
+    while (length > 0 && isspace((unsigned char)start[length - 1])) {
+        length--;
+    }
+    char *copy = malloc(length + 1);
+    if (!copy) {
+        abort();
+    }
+    memcpy(copy, start, length);
+    copy[length] = '\0';
+    return copy;
+}
+
+static int webserver_decode_json(const char *body, Value *out) {
+    DecodeParser parser = {0};
+    parser.text = body;
+    parser.ok = 1;
+    parser.json_only = 1;
+    Value result = decode_parse_value(&parser);
+    if (parser.ok) {
+        decode_skip_ws(&parser);
+        if (parser.text[parser.pos] == '\0') {
+            *out = result;
+            return 1;
+        }
+    }
+    value_free(result);
+    return 0;
+}
+
+static char *webserver_timestamp(void) {
+    time_t now = time(NULL);
+    struct tm value;
+    char buffer[32] = "";
+    if (gmtime_r(&now, &value)) {
+        strftime(buffer, sizeof(buffer), "%Y-%m-%dT%H:%M:%SZ", &value);
+    }
+    return copy_string(buffer);
+}
+
+static Value webserver_make_request(WebServerClient *client,
+                                    const char *method,
+                                    const char *path,
+                                    const char *query,
+                                    Value headers,
+                                    const char *body) {
+    Value request = value_record(NULL, 0);
+    record_set(&request, "id", value_number((double)client->id));
+    record_set(&request, "method", value_string(method));
+    record_set(&request, "path", value_string(path));
+    record_set(&request, "query", webserver_query_record(query));
+    record_set(&request, "headers", headers);
+    record_set(&request, "body", value_string(body));
+    if (body[0]) {
+        Value json;
+        if (webserver_decode_json(body, &json)) {
+            record_set(&request, "json", json);
+        }
+    }
+    record_set(&request, "remote_ip", value_string(client->remote_ip));
+    record_set(&request, "remote_port", value_number((double)client->remote_port));
+    char *timestamp = webserver_timestamp();
+    record_set(&request, "timestamp", value_string(timestamp));
+    free(timestamp);
+    return request;
+}
+
+static int webserver_parse_request(WebServer *server, WebServerClient *client) {
+    char *end = strstr(client->buffer, "\r\n\r\n");
+    size_t delimiter = 4;
+    if (!end) {
+        end = strstr(client->buffer, "\n\n");
+        delimiter = 2;
+    }
+    if (!end) {
+        return client->length > WEBSERVER_MAX_HEADER_SIZE ? -413 : 0;
+    }
+    size_t header_length = (size_t)(end - client->buffer);
+    if (header_length > WEBSERVER_MAX_HEADER_SIZE) {
+        return -413;
+    }
+    char *text = malloc(header_length + 1);
+    if (!text) {
+        abort();
+    }
+    memcpy(text, client->buffer, header_length);
+    text[header_length] = '\0';
+    char *first_end = strpbrk(text, "\r\n");
+    if (!first_end) {
+        free(text);
+        return -400;
+    }
+    *first_end = '\0';
+    char *method = strtok(text, " ");
+    char *target = strtok(NULL, " ");
+    char *version = strtok(NULL, " ");
+    if (!method || !target || !version || strncmp(version, "HTTP/", 5) != 0) {
+        free(text);
+        return -400;
+    }
+    for (char *p = method; *p; p++) {
+        *p = (char)toupper((unsigned char)*p);
+    }
+    char *question = strchr(target, '?');
+    char *query = "";
+    if (question) {
+        *question = '\0';
+        query = question + 1;
+    }
+
+    Value headers = value_record(NULL, 0);
+    size_t content_length = 0;
+    char *cursor = first_end + 1;
+    while (*cursor) {
+        while (*cursor == '\r' || *cursor == '\n') {
+            cursor++;
+        }
+        if (!*cursor) {
+            break;
+        }
+        char *next = strpbrk(cursor, "\r\n");
+        size_t line_length = next ? (size_t)(next - cursor) : strlen(cursor);
+        char *colon = memchr(cursor, ':', line_length);
+        if (colon) {
+            size_t name_length = (size_t)(colon - cursor);
+            char *name = webserver_trim_copy(cursor, name_length);
+            for (char *p = name; *p; p++) {
+                *p = (char)tolower((unsigned char)*p);
+            }
+            char *value = webserver_trim_copy(colon + 1,
+                                              line_length - (size_t)(colon + 1 - cursor));
+            record_set(&headers, name, value_string(value));
+            if (strcmp(name, "content-length") == 0) {
+                char *parse_end = NULL;
+                unsigned long parsed = strtoul(value, &parse_end, 10);
+                if (!parse_end || *parse_end != '\0') {
+                    free(name);
+                    free(value);
+                    value_free(headers);
+                    free(text);
+                    return -400;
+                }
+                content_length = (size_t)parsed;
+            }
+            free(name);
+            free(value);
+        }
+        if (!next) {
+            break;
+        }
+        cursor = next + 1;
+    }
+    if (content_length > WEBSERVER_MAX_REQUEST_SIZE) {
+        value_free(headers);
+        free(text);
+        return -413;
+    }
+    size_t body_offset = header_length + delimiter;
+    if (client->length < body_offset + content_length) {
+        value_free(headers);
+        free(text);
+        return 0;
+    }
+    const char *body_start = client->buffer + body_offset;
+    if (memchr(body_start, '\0', content_length)) {
+        value_free(headers);
+        free(text);
+        return -415;
+    }
+    char *body = malloc(content_length + 1);
+    if (!body) {
+        abort();
+    }
+    memcpy(body, body_start, content_length);
+    body[content_length] = '\0';
+
+    client->id = server->next_request_id++;
+    client->waiting_response = 1;
+    client->deadline = webserver_now() + webserver_timeout_seconds();
+    Value request = webserver_make_request(client, method, target, query, headers, body);
+    free(body);
+    free(text);
+
+    const char *server_name = NULL;
+    Value *server_record = webserver_find_record(server->id, &server_name);
+    Value *requests = server_record ? webserver_field(server_record, "requests") : NULL;
+    if (!requests || requests->kind != VALUE_ARRAY || !server_name) {
+        value_free(request);
+        return -500;
+    }
+    Value ignored = append_to_array_ref(requests, request, 0);
+    value_free(ignored);
+    char watch_path[256];
+    snprintf(watch_path, sizeof(watch_path), "%s.requests", server_name);
+    watcher_trigger_change(watch_path);
+    return 1;
+}
+
+static const char *webserver_reason(int status) {
+    switch (status) {
+    case 200: return "OK";
+    case 201: return "Created";
+    case 400: return "Bad Request";
+    case 413: return "Payload Too Large";
+    case 415: return "Unsupported Media Type";
+    case 500: return "Internal Server Error";
+    case 503: return "Service Unavailable";
+    case 504: return "Gateway Timeout";
+    default: return "OK";
+    }
+}
+
+static void webserver_write_all(int fd, const char *data, size_t length) {
+    size_t offset = 0;
+    while (offset < length) {
+#ifdef MSG_NOSIGNAL
+        ssize_t written = send(fd, data + offset, length - offset, MSG_NOSIGNAL);
+#else
+        ssize_t written = send(fd, data + offset, length - offset, 0);
+#endif
+        if (written <= 0) {
+            return;
+        }
+        offset += (size_t)written;
+    }
+}
+
+static void webserver_send(WebServerClient *client,
+                           int status,
+                           Value *headers,
+                           const char *body) {
+    const char *payload = body ? body : "";
+    webserver_set_blocking_mode(client->fd, 1);
+    char prefix[256];
+    int prefix_length = snprintf(prefix,
+                                 sizeof(prefix),
+                                 "HTTP/1.1 %d %s\r\nContent-Length: %zu\r\nConnection: close\r\n",
+                                 status,
+                                 webserver_reason(status),
+                                 strlen(payload));
+    if (prefix_length > 0) {
+        webserver_write_all(client->fd, prefix, (size_t)prefix_length);
+    }
+    int content_type = 0;
+    if (headers && headers->kind == VALUE_RECORD) {
+        for (size_t i = 0; i < headers->as.record.count; i++) {
+            RecordField *field = &headers->as.record.fields[i];
+            if (string_equal_caseless(field->name, "content-length") ||
+                string_equal_caseless(field->name, "connection")) {
+                continue;
+            }
+            if (string_equal_caseless(field->name, "content-type")) {
+                content_type = 1;
+            }
+            size_t line_length = strlen(field->name) +
+                strlen(field->value->as.string) + 5;
+            char *line = malloc(line_length);
+            if (!line) {
+                abort();
+            }
+            snprintf(line, line_length, "%s: %s\r\n",
+                     field->name, field->value->as.string);
+            webserver_write_all(client->fd, line, strlen(line));
+            free(line);
+        }
+    }
+    if (!content_type) {
+        webserver_write_all(client->fd,
+                            "Content-Type: text/plain\r\n",
+                            strlen("Content-Type: text/plain\r\n"));
+    }
+    webserver_write_all(client->fd, "\r\n", 2);
+    if (payload[0]) {
+        webserver_write_all(client->fd, payload, strlen(payload));
+    }
+}
+
+static WebServerClient *webserver_find_client(WebServer *server,
+                                              unsigned long id,
+                                              size_t *out_index) {
+    for (size_t i = 0; i < server->client_count; i++) {
+        if (server->clients[i].waiting_response && server->clients[i].id == id) {
+            *out_index = i;
+            return &server->clients[i];
+        }
+    }
+    return NULL;
+}
+
+static void webserver_process_responses(WebServer *server) {
+    Value *record = webserver_find_record(server->id, NULL);
+    Value *responses = record ? webserver_field(record, "responses") : NULL;
+    if (!responses || responses->kind != VALUE_ARRAY) {
+        return;
+    }
+    while (responses->as.array.count > 0) {
+        Value response = responses->as.array.items[0];
+        if (!webserver_validate_response_value(server, response, 1)) {
+            return;
+        }
+        int id = 0;
+        webserver_integer(*record_find(&response, "id")->value, &id);
+        size_t client_index = 0;
+        WebServerClient *client = webserver_find_client(server,
+                                                        (unsigned long)id,
+                                                        &client_index);
+        if (!client) {
+            webserver_raise("webserver response id does not match a pending request");
+            return;
+        }
+        RecordField *status = record_find(&response, "status");
+        RecordField *headers = record_find(&response, "headers");
+        RecordField *body = record_find(&response, "body");
+        webserver_send(client,
+                       status ? (int)status->value->as.number : 200,
+                       headers ? headers->value : NULL,
+                       body ? body->value->as.string : "");
+        webserver_client_close(server, client_index);
+        webserver_array_remove(responses, 0);
+    }
+}
+
+static void webserver_send_error(WebServer *server,
+                                 size_t client_index,
+                                 int status,
+                                 const char *body) {
+    webserver_send(&server->clients[client_index], status, NULL, body);
+    webserver_client_close(server, client_index);
+}
+
+static void webserver_accept(WebServer *server) {
+    for (;;) {
+        struct sockaddr_in address;
+        socklen_t length = sizeof(address);
+        int fd = accept(server->listen_fd, (struct sockaddr *)&address, &length);
+        if (fd < 0) {
+            return;
+        }
+        webserver_set_blocking_mode(fd, 0);
+        WebServerClient *clients = realloc(server->clients,
+                                           sizeof(WebServerClient) * (server->client_count + 1));
+        if (!clients) {
+            abort();
+        }
+        server->clients = clients;
+        WebServerClient *client = &server->clients[server->client_count++];
+        memset(client, 0, sizeof(*client));
+        client->fd = fd;
+        const char *ip = inet_ntoa(address.sin_addr);
+        snprintf(client->remote_ip, sizeof(client->remote_ip), "%s", ip ? ip : "");
+        client->remote_port = ntohs(address.sin_port);
+    }
+}
+
+static void webserver_read_client(WebServer *server, size_t index) {
+    WebServerClient *client = &server->clients[index];
+    char chunk[4096];
+    ssize_t count = recv(client->fd, chunk, sizeof(chunk), 0);
+    if (count <= 0) {
+        if (count == 0 || (errno != EAGAIN && errno != EWOULDBLOCK)) {
+            webserver_client_close(server, index);
+        }
+        return;
+    }
+    if (client->length + (size_t)count >
+        WEBSERVER_MAX_REQUEST_SIZE + WEBSERVER_MAX_HEADER_SIZE) {
+        webserver_send_error(server, index, 413, "Payload Too Large");
+        return;
+    }
+    size_t needed = client->length + (size_t)count + 1;
+    if (needed > client->capacity) {
+        size_t capacity = client->capacity ? client->capacity : 4096;
+        while (capacity < needed) {
+            capacity *= 2;
+        }
+        char *buffer = realloc(client->buffer, capacity);
+        if (!buffer) {
+            abort();
+        }
+        client->buffer = buffer;
+        client->capacity = capacity;
+    }
+    memcpy(client->buffer + client->length, chunk, (size_t)count);
+    client->length += (size_t)count;
+    client->buffer[client->length] = '\0';
+    int parsed = webserver_parse_request(server, client);
+    if (parsed < 0) {
+        int status = -parsed;
+        webserver_send_error(server, index, status, webserver_reason(status));
+    }
+}
+
+static void webserver_sync_shutdown(WebServer *server) {
+    Value *record = webserver_find_record(server->id, NULL);
+    Value *running = record ? webserver_field(record, "running") : NULL;
+    if (!record || (running && running->kind == VALUE_BOOL && !running->as.boolean)) {
+        server->shutdown_requested = 1;
+    }
+}
+
+static void webserver_finish_shutdown(WebServer *server) {
+    if (!server->shutdown_requested) {
+        return;
+    }
+    if (server->listen_fd >= 0) {
+        close(server->listen_fd);
+        server->listen_fd = -1;
+    }
+    while (server->client_count > 0) {
+        webserver_send_error(server, 0, 503, "Service Unavailable");
+    }
+    webserver_set_running(server, 0);
+}
+
+static void webserver_check_timeouts(WebServer *server) {
+    double now = webserver_now();
+    size_t i = 0;
+    while (i < server->client_count) {
+        if (server->clients[i].waiting_response && now >= server->clients[i].deadline) {
+            webserver_send_error(server, i, 504, "Gateway Timeout");
+        } else {
+            i++;
+        }
+    }
+}
+
+static int webserver_run_event_loop(void) {
+    while (webserver_any_active() && !runtime_stopped) {
+        for (size_t i = 0; i < webserver_count; i++) {
+            webserver_sync_shutdown(&webservers[i]);
+            webserver_process_responses(&webservers[i]);
+            if (error_action_pending()) {
+                return 1;
+            }
+            webserver_finish_shutdown(&webservers[i]);
+        }
+
+        size_t descriptor_count = 0;
+        for (size_t i = 0; i < webserver_count; i++) {
+            if (webservers[i].running && !webservers[i].shutdown_requested) {
+                descriptor_count++;
+            }
+            descriptor_count += webservers[i].client_count;
+        }
+        if (descriptor_count == 0) {
+            break;
+        }
+        struct pollfd *pollfds = calloc(descriptor_count, sizeof(struct pollfd));
+        if (!pollfds) {
+            abort();
+        }
+        size_t cursor = 0;
+        for (size_t i = 0; i < webserver_count; i++) {
+            if (webservers[i].running && !webservers[i].shutdown_requested) {
+                pollfds[cursor].fd = webservers[i].listen_fd;
+                pollfds[cursor].events = POLLIN;
+                cursor++;
+            }
+            for (size_t j = 0; j < webservers[i].client_count; j++) {
+                pollfds[cursor].fd = webservers[i].clients[j].fd;
+                pollfds[cursor].events =
+                    webservers[i].clients[j].waiting_response ? 0 : POLLIN;
+                cursor++;
+            }
+        }
+        int ready = poll(pollfds, descriptor_count, 50);
+        if (ready < 0 && errno != EINTR) {
+            free(pollfds);
+            webserver_raise("webserver poll failed");
+            return 1;
+        }
+        cursor = 0;
+        for (size_t i = 0; i < webserver_count; i++) {
+            size_t polled_client_count = webservers[i].client_count;
+            if (webservers[i].running && !webservers[i].shutdown_requested) {
+                if (pollfds[cursor].revents & POLLIN) {
+                    webserver_accept(&webservers[i]);
+                }
+                cursor++;
+            }
+            for (size_t j = 0; j < polled_client_count; j++) {
+                int fd = pollfds[cursor].fd;
+                short events = pollfds[cursor].revents;
+                cursor++;
+                size_t current = 0;
+                while (current < webservers[i].client_count &&
+                       webservers[i].clients[current].fd != fd) {
+                    current++;
+                }
+                if (current >= webservers[i].client_count) {
+                    continue;
+                }
+                if (events & (POLLERR | POLLHUP | POLLNVAL)) {
+                    webserver_client_close(&webservers[i], current);
+                } else if ((events & POLLIN) &&
+                           !webservers[i].clients[current].waiting_response) {
+                    webserver_read_client(&webservers[i], current);
+                }
+                if (error_action_pending()) {
+                    free(pollfds);
+                    return 1;
+                }
+            }
+            webserver_process_responses(&webservers[i]);
+            webserver_check_timeouts(&webservers[i]);
+        }
+        free(pollfds);
+    }
+    return error_action_pending() ? 1 : 0;
+}
+
+static Value webserver_eval_listen(AstExpr *expr) {
+    if (expr->as.call.args.count != 1) {
+        webserver_raise("webserver.listen expects one argument");
+        return value_null();
+    }
+    Value port_value = eval_expr(expr->as.call.args.items[0]);
+    int port = 0;
+    if (error_action_pending()) {
+        value_free(port_value);
+        return value_null();
+    }
+    if (!webserver_integer(port_value, &port) || port < 0 || port > 65535) {
+        value_free(port_value);
+        webserver_raise("webserver.listen port must be an integer from 0 to 65535");
+        return value_null();
+    }
+    value_free(port_value);
+
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) {
+        webserver_raise("webserver could not create socket");
+        return value_null();
+    }
+    int reuse = 1;
+    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
+    struct sockaddr_in address;
+    memset(&address, 0, sizeof(address));
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    address.sin_port = htons((uint16_t)port);
+    if (bind(fd, (struct sockaddr *)&address, sizeof(address)) != 0 ||
+        listen(fd, 16) != 0 ||
+        !webserver_set_blocking_mode(fd, 0)) {
+        close(fd);
+        webserver_raise("webserver could not bind and listen on loopback");
+        return value_null();
+    }
+    socklen_t length = sizeof(address);
+    if (getsockname(fd, (struct sockaddr *)&address, &length) != 0) {
+        close(fd);
+        webserver_raise("webserver could not determine bound port");
+        return value_null();
+    }
+
+    WebServer *servers = realloc(webservers, sizeof(WebServer) * (webserver_count + 1));
+    if (!servers) {
+        abort();
+    }
+    webservers = servers;
+    WebServer *server = &webservers[webserver_count++];
+    memset(server, 0, sizeof(*server));
+    server->id = webserver_next_id++;
+    server->listen_fd = fd;
+    server->port = ntohs(address.sin_port);
+    server->running = 1;
+    server->next_request_id = 1;
+
+    Value record = value_record(NULL, 0);
+    record_set(&record, "_webserver_id", value_number((double)server->id));
+    record_set(&record, "port", value_number((double)server->port));
+    record_set(&record, "running", value_bool(1));
+    record_set(&record, "requests", value_array(NULL, 0));
+    record_set(&record, "responses", value_array(NULL, 0));
+    return record;
+}
+
+static Value webserver_eval_close(AstExpr *expr) {
+    if (expr->as.call.args.count != 1) {
+        webserver_raise("webserver.close expects one argument");
+        return value_null();
+    }
+    Value value = eval_expr(expr->as.call.args.items[0]);
+    unsigned long id = 0;
+    if (error_action_pending()) {
+        value_free(value);
+        return value_null();
+    }
+    if (!webserver_record_id(&value, &id) || !webserver_find(id)) {
+        value_free(value);
+        webserver_raise("webserver.close expects a server record");
+        return value_null();
+    }
+    value_free(value);
+    WebServer *server = webserver_find(id);
+    server->shutdown_requested = 1;
+    webserver_set_running(server, 0);
+    return value_bool(1);
+}
+
+static Value webserver_eval_call(AstExpr *expr) {
+    if (strcmp(expr->as.call.name, "listen") == 0) {
+        return webserver_eval_listen(expr);
+    }
+    if (strcmp(expr->as.call.name, "close") == 0) {
+        return webserver_eval_close(expr);
+    }
+    char message[256];
+    snprintf(message, sizeof(message), "invalid function call: webserver.%s",
+             expr->as.call.name);
+    webserver_raise(message);
+    return value_null();
+}
+
+static void webserver_clear(void) {
+    for (size_t i = 0; i < webserver_count; i++) {
+        webserver_close_native(&webservers[i]);
+    }
+    free(webservers);
+    webservers = NULL;
+    webserver_count = 0;
+    webserver_next_id = 1;
+}
+
 #if HAVE_LIBPQ
 #define PG_ERROR_CODE 2001
 
@@ -7492,6 +8474,16 @@ static Value pg_eval_call(AstExpr *expr) {
 
 static Value eval_call(AstExpr *expr) {
     if (expr->as.call.library) {
+        if (strcmp(expr->as.call.library, "webserver") == 0) {
+            if (!webserver_library_loaded) {
+                runtime_error_raise("library not loaded: webserver",
+                                    4001,
+                                    "webserver");
+                return value_null();
+            }
+            return webserver_eval_call(expr);
+        }
+
         if (strcmp(expr->as.call.library, "webclient") == 0) {
             if (!webclient_library_loaded) {
                 runtime_error_raise("library not loaded: webclient",
@@ -8777,16 +9769,27 @@ static Value eval_call(AstExpr *expr) {
             return value_null();
         }
 
-        if (array_expr->kind == AST_EXPR_IDENT) {
-            Symbol *symbol = env_find(array_expr->as.ident);
-            if (!symbol) {
+        if (array_expr->kind == AST_EXPR_IDENT ||
+            array_expr->kind == AST_EXPR_FIELD ||
+            array_expr->kind == AST_EXPR_INDEX) {
+            if (!prepend && !webserver_validate_response_append(array_expr, item)) {
                 value_free(item);
-                char message[256];
-                snprintf(message, sizeof(message), "undefined variable: %s", array_expr->as.ident);
-                runtime_error_raise(message, 1001, "undefined variable");
                 return value_null();
             }
-            return append_to_array_symbol(symbol, item, prepend);
+            Value *array = resolve_lvalue_ref(array_expr);
+            if (!array) {
+                value_free(item);
+                return value_null();
+            }
+            Value result = append_to_array_ref(array, item, prepend);
+            if (!error_action_pending()) {
+                char *watch_path = lvalue_watch_path(array_expr);
+                if (watch_path) {
+                    watcher_trigger_change(watch_path);
+                    free(watch_path);
+                }
+            }
+            return result;
         }
 
         Value array = eval_expr(array_expr);
@@ -8878,15 +9881,22 @@ static Value eval_call(AstExpr *expr) {
         }
 
         AstExpr *array_expr = expr->as.call.args.items[0];
-        if (array_expr->kind == AST_EXPR_IDENT) {
-            Symbol *symbol = env_find(array_expr->as.ident);
-            if (!symbol) {
-                char message[256];
-                snprintf(message, sizeof(message), "undefined variable: %s", array_expr->as.ident);
-                runtime_error_raise(message, 1001, "undefined variable");
+        if (array_expr->kind == AST_EXPR_IDENT ||
+            array_expr->kind == AST_EXPR_FIELD ||
+            array_expr->kind == AST_EXPR_INDEX) {
+            Value *array = resolve_lvalue_ref(array_expr);
+            if (!array) {
                 return value_null();
             }
-            return take_from_array_symbol(symbol, take_last);
+            Value result = take_from_array_ref(array, take_last);
+            if (!error_action_pending()) {
+                char *watch_path = lvalue_watch_path(array_expr);
+                if (watch_path) {
+                    watcher_trigger_change(watch_path);
+                    free(watch_path);
+                }
+            }
+            return result;
         }
 
         Value array = eval_expr(array_expr);
@@ -10713,6 +11723,9 @@ int eval_program(AstStmtList program) {
         value_free(result.value);
         exit_status = 1;
     }
+    if (!exit_status && webserver_any_active()) {
+        exit_status = webserver_run_event_loop();
+    }
     free(error_goto_label);
     error_goto_label = NULL;
     free(pending_error_goto_label);
@@ -10733,6 +11746,8 @@ int eval_program(AstStmtList program) {
     gui_library_loaded = 0;
     pg_library_loaded = 0;
     webclient_library_loaded = 0;
+    webserver_library_loaded = 0;
+    webserver_clear();
     if (webclient_curl_initialized) {
 #if HAVE_LIBCURL
         curl_global_cleanup();

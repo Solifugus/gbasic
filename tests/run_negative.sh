@@ -48,6 +48,11 @@ cases=(
     negative_webclient_request_header_value
     negative_webclient_request_body_type
     negative_webclient_malformed_url
+    negative_webserver_listen_port
+    negative_webserver_response_missing_id
+    negative_webserver_response_body_type
+    negative_webserver_response_headers_type
+    negative_webserver_response_header_value
     negative_find_type
     negative_function_assignment
     negative_len_assignment
