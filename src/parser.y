@@ -423,12 +423,14 @@ typedef struct {
 %token IF CONSIDER_IF THEN ELSE CONSIDER_ELSE END END_CONSIDER PRINT TRUE FALSE NOTHING UNKNOWN_VALUE AND OR NOT WITH FOR TO IN EACH WHILE CONSIDER BREAK CONTINUE FUNCTION RETURN GOTO GOSUB WATCH WITHOUT WATCHERS ON RESUME NEXT STOP ERROR_VALUE MODIFIER PROGRAM LIBRARY LOAD USE EXPORT
 %token OP_EQ OP_NE OP_GT OP_LT OP_GE OP_LE OP_NGT OP_NLT OP_NGE OP_NLE
 %token PLUS MINUS STAR SLASH LPAREN MOD_LPAREN RPAREN LBRACKET RBRACKET LBRACE RBRACE COMMA COLON NEWLINE
+%precedence IF_WITHOUT_ELSE
+%precedence ELSE
 %precedence NO_DOT
 %left DOT
 %define parse.error verbose
 %locations
 
-%type <stmt_list> program statement_list consider_statement_list consider_else_opt
+%type <stmt_list> program statement_list consider_statement_list consider_else_opt if_block_tail if_inline_tail
 %type <stmt> statement assignment print_statement call_statement with_lock_statement for_each_statement while_statement consider_statement consider_body_statement function_statement modifier_statement program_statement library_statement use_statement return_statement label_statement goto_statement gosub_statement break_statement continue_statement watch_statement without_watchers_statement on_error_statement error_statement if_statement inline_statement
 %type <expr> expression or_expression and_expression comparison_expression
 %type <expr> additive_expression multiplicative_expression unary_expression postfix_expression primary lvalue
@@ -748,21 +750,52 @@ continue_statement
     ;
 
 if_statement
-    : IF expression THEN NEWLINE statement_list END IF NEWLINE {
+    : IF expression THEN NEWLINE statement_list if_block_tail {
         $$ = ast_if($2, $5);
+        $$->as.if_stmt.else_body = $6;
       }
-    | IF expression THEN NEWLINE statement_list ELSE NEWLINE statement_list END IF NEWLINE {
-        $$ = ast_if($2, $5);
-        $$->as.if_stmt.else_body = $8;
-      }
-    | IF expression THEN inline_statement NEWLINE {
+    | IF expression THEN inline_statement NEWLINE if_inline_tail {
         $$ = ast_if($2, ast_stmt_list_append(ast_stmt_list_empty(), $4));
+        $$->as.if_stmt.else_body = $6;
+      }
+    ;
+
+if_block_tail
+    : END IF NEWLINE {
+        $$ = ast_stmt_list_empty();
+      }
+    | ELSE inline_statement NEWLINE {
+        $$ = ast_stmt_list_append(ast_stmt_list_empty(), $2);
+      }
+    | ELSE NEWLINE statement_list END IF NEWLINE {
+        $$ = $3;
+      }
+    ;
+
+if_inline_tail
+    : %empty %prec IF_WITHOUT_ELSE {
+        $$ = ast_stmt_list_empty();
+      }
+    | ELSE inline_statement NEWLINE {
+        $$ = ast_stmt_list_append(ast_stmt_list_empty(), $2);
+      }
+    | ELSE NEWLINE statement_list END IF NEWLINE {
+        $$ = $3;
       }
     ;
 
 inline_statement
-    : goto_statement { $$ = $1; }
-    | gosub_statement { $$ = $1; }
+    : assignment { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
+    | print_statement { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
+    | call_statement { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
+    | use_statement { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
+    | on_error_statement { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
+    | error_statement { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
+    | return_statement { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
+    | goto_statement { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
+    | gosub_statement { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
+    | break_statement { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
+    | continue_statement { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
     ;
 
 expression

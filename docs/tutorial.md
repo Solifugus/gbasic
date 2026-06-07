@@ -199,6 +199,70 @@ print(items[0].location)
 
 `customer[field]` is dynamic record access: the key expression must produce a string. A missing dynamic field reads as `unknown`, while assignment creates the field.
 
+## Calling Web APIs
+
+When gBASIC is built with libcurl, load the WebClient module to make outgoing
+HTTP and HTTPS requests:
+
+```basic
+load webclient
+
+response = webclient.get("https://example.com")
+print(response.status)
+print(response.reason)
+print(response.body)
+```
+
+The response record always has numeric `status`, string `reason`, record
+`headers`, and string `body` fields. HTTP statuses such as 404 and 500 are
+responses, not runtime errors.
+
+`webclient.post` accepts only a string body. Encode records and arrays
+explicitly when an API expects JSON:
+
+```basic
+payload = {name:"Ada", active:true}
+response = webclient.post(
+    "https://api.example.com/users",
+    encode(payload)
+)
+```
+
+For custom methods, headers, bodies, or timeouts, use
+`webclient.request(record)`:
+
+```basic
+headers = {}
+headers["Content-Type"] = "application/json"
+headers["X-Client"] = "gbasic"
+
+response = webclient.request({
+    method:"POST",
+    url:"https://api.example.com/users",
+    headers:headers,
+    body:encode({name:"Ada"}),
+    timeout:15
+})
+```
+
+When a response body is valid JSON, WebClient adds a decoded `json` field.
+Otherwise the field is absent and the original body remains available:
+
+```basic
+response = webclient.get("https://api.example.com/users/1")
+
+if not is_unknown(response["json"]) then
+    print(response.json.name)
+else
+    print(response.body)
+end if
+```
+
+Network, DNS, connection, TLS, malformed URL, and timeout failures are runtime
+errors. libcurl is optional at build time, so `load webclient` reports a clear
+error when support was not compiled in. WebClient only sends outgoing
+requests; a future webserver will be a separate module.
+
 ## Functions
 
 Functions use parameters and `return`.
@@ -254,6 +318,44 @@ else
     print("waiting")
 end if
 ```
+
+For a short branch, place one statement on the same line as `then`:
+
+```basic
+if ready then print("ready")
+```
+
+An inline `else` also ends the conditional without `end if`:
+
+```basic
+if ready then print("ready")
+else print("waiting")
+```
+
+The `then` branch may remain multiline when the final `else` branch is inline:
+
+```basic
+if ready then
+    print("ready")
+    start_work()
+else print("waiting")
+```
+
+When the final branch begins on the next line, keep `end if`:
+
+```basic
+if ready then print("ready")
+else
+    print("waiting")
+    check_again()
+end if
+```
+
+Inline branches contain one non-block statement, such as an assignment,
+`print`, function call, `return`, `goto`, `break`, or `continue`. Use the
+multiline form for nested conditionals, loops, functions, watchers, and other
+block statements. As with conventional conditional syntax, `else` belongs to
+the nearest unmatched inline `if`.
 
 Use `while` for loops:
 

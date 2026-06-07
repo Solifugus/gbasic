@@ -641,6 +641,33 @@ else
 end if
 ```
 
+One non-block statement may follow `then` or `else` on the same line:
+
+```basic
+if x > 10 then print("large")
+
+if x > 10 then
+    print("large")
+else print("small")
+
+if x > 10 then print("large")
+else print("small")
+```
+
+When the final branch is inline, `end if` is omitted. When the final branch
+starts after a newline, it remains a block and requires `end if`:
+
+```basic
+if x > 10 then print("large")
+else
+    print("small")
+end if
+```
+
+Inline branches support assignment, `print`, calls, `load`, error controls,
+`return`, `goto`, `gosub`, `break`, and `continue`. Compound statements remain
+multiline. An `else` belongs to the nearest unmatched inline `if`.
+
 ## For Each
 
 ```basic

@@ -86,11 +86,35 @@ else
 end if
 ```
 
-Inline `goto` and `gosub` are also supported:
+One simple statement may follow `then` or `else` on the same line:
 
 ```basic
-if x < 0 then goto negative
+if x = y then print("matches")
+
+if x = y then
+    print("matches")
+else print("no match")
+
+if x = y then print("matches")
+else print("no match")
 ```
+
+`end if` is not required when the final branch is an inline statement. If the
+final branch starts on the line after `then` or `else`, it is a block and still
+requires `end if`:
+
+```basic
+if x = y then print("matches")
+else
+    print("no match")
+end if
+```
+
+Inline branches accept assignment, `print`, function calls, `load`, `on error`,
+`error`, `return`, `goto`, `gosub`, `break`, and `continue`. Compound statements
+such as nested `if`, `while`, `for`, `consider`, functions, watchers, and
+`with lock` remain multiline. An `else` is associated with the nearest
+unmatched inline `if`.
 
 While:
 
@@ -581,6 +605,84 @@ are errors. `bigint` and `numeric` results remain strings to avoid precision
 loss. JSON results decode to normal arrays, records, and scalar values.
 PostgreSQL errors use `error.source = "postgres"` and include SQLSTATE when
 available.
+
+## WebClient Module
+
+WebClient support is available when gBASIC is built with libcurl. It performs
+synchronous outgoing HTTP and HTTPS requests:
+
+```basic
+load webclient
+
+response = webclient.get("https://example.com")
+print(response.status)
+print(response.body)
+```
+
+The module provides:
+
+- `webclient.get(url)`
+- `webclient.post(url, body)`
+- `webclient.request(request_record)`
+
+URLs and request bodies must be strings. `webclient.request` accepts a record
+with a required string `url` and these optional fields:
+
+- `method`: string, default `GET`
+- `headers`: record whose keys and values are strings
+- `body`: string
+- `timeout`: positive number of seconds
+
+Records and arrays are not automatically converted to JSON request bodies.
+Call `encode(value)` explicitly:
+
+```basic
+response = webclient.post(
+    "https://api.example.com/events",
+    encode({name:"launch", active:true})
+)
+```
+
+Use `webclient.request` for custom headers:
+
+```basic
+headers = {}
+headers["Content-Type"] = "application/json"
+headers["X-Client"] = "gbasic"
+
+response = webclient.request({
+    method:"POST",
+    url:"https://api.example.com/events",
+    headers:headers,
+    body:encode({name:"launch"})
+})
+```
+
+Every completed HTTP exchange returns a response record with:
+
+- `status`: numeric HTTP status code
+- `reason`: reason text, or an empty string when unavailable
+- `headers`: record with lowercase header names
+- `body`: response body as a string
+- `json`: decoded JSON value, present only when parsing succeeds
+
+Test for the optional JSON field through dynamic record access:
+
+```basic
+response = webclient.get("https://api.example.com/events/1")
+if not is_unknown(response["json"]) then
+    print(response.json.name)
+end if
+```
+
+Invalid JSON does not raise an error; `body` remains available and `json` is
+omitted. HTTP statuses such as 404 and 500 also return normal response records.
+Network, DNS, connection, TLS, malformed-URL, and timeout failures are runtime
+errors with `error.source = "webclient"`.
+
+libcurl is optional at build time. A build without it remains usable, but
+`load webclient` reports that the module is unavailable. WebClient is for
+outgoing requests only. A webserver, if added later, will be a separate module.
 
 ## Core Builtin Functions
 

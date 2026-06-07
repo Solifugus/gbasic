@@ -16,6 +16,7 @@ Implemented v0.1 pieces include:
 - Program and library blocks with explicit `load`
 - File, directory, date/time, duration, and money values
 - Synchronous PostgreSQL access through the optional libpq-backed `pg` module
+- Synchronous HTTP and HTTPS requests through the optional libcurl-backed `webclient` module
 - Watchers and basic error handling
 - Smoke and expected-output tests for examples
 
@@ -30,6 +31,7 @@ Requirements:
 - `bison`
 - optional: `pkg-config` and GTK 3 development headers for GUI support
 - optional: `pkg-config` and libpq development headers for PostgreSQL support
+- optional: `pkg-config` and libcurl development headers for WebClient support
 
 Linux packages for the GTK proof of concept:
 
@@ -48,6 +50,10 @@ If GTK 3 development files are available, `make` enables the Stage 2 GUI proof o
 If libpq development files are available, `make` enables `load pg`
 automatically. Without libpq, the interpreter still builds and reports that
 PostgreSQL support is unavailable when the module is loaded.
+
+If libcurl development files are available, `make` enables `load webclient`
+automatically. Without libcurl, the interpreter still builds and reports that
+WebClient support is unavailable when the module is loaded.
 
 Clean and rebuild:
 
@@ -107,6 +113,12 @@ environment variables:
 GBASIC_POSTGRES_TEST=1 PGDATABASE=my_test_database ./tests/run_postgres.sh
 ```
 
+Run the loopback WebClient integration test:
+
+```sh
+./tests/run_webclient.sh
+```
+
 Manual GUI proof-of-concept run:
 
 ```sh
@@ -154,6 +166,57 @@ end function
 
 print(add(2, 3))
 ```
+
+## WebClient
+
+Load `webclient` to make outgoing HTTP or HTTPS requests:
+
+```basic
+load webclient
+
+response = webclient.get("https://example.com")
+print(response.status)
+print(response.body)
+```
+
+Request bodies must be strings. Use `encode(value)` explicitly when sending
+JSON, and use `webclient.request` when custom headers are needed:
+
+```basic
+headers = {}
+headers["Content-Type"] = "application/json"
+
+response = webclient.request({
+    method:"POST",
+    url:"https://api.example.com/users",
+    headers:headers,
+    body:encode({name:"Ada", active:true})
+})
+```
+
+`webclient.post(url, body)` is the shorter form when no custom headers are
+needed:
+
+```basic
+response = webclient.post(
+    "https://api.example.com/messages",
+    encode({message:"hello"})
+)
+```
+
+A response contains `status`, `reason`, `headers`, and string `body` fields.
+When the body is valid JSON, it also contains a decoded `json` field:
+
+```basic
+response = webclient.get("https://api.example.com/users/1")
+if not is_unknown(response["json"]) then
+    print(response.json.name)
+end if
+```
+
+HTTP statuses such as 404 and 500 return response records. Network, DNS, TLS,
+malformed URL, and timeout failures are runtime errors. WebClient is for
+outgoing requests only; a future webserver will be a separate module.
 
 ## Core Builtin Functions
 
@@ -257,6 +320,17 @@ print(string({name = "Grace", age = 35}))
 Nested assignment works for variables, array elements, record fields, and combinations such as `items[i].location = "inventory"` or `world.rooms[index].visited = true`. Records support static field access with `record.field` and dynamic field access with `record[key]` when `key` is a string; missing dynamic reads return `unknown`, and dynamic assignment creates the field when needed.
 
 Function calls are expressions, not assignment targets: `if len(words) = 0 then` is valid, but `len(words) = 0`, `foo() = 1`, and `get_player().name = "Bob"` are invalid.
+
+Short conditionals may place one statement on the same line as `then` or
+`else`. When the final branch is inline, `end if` is omitted:
+
+```basic
+if ready then print("ready")
+else print("waiting")
+```
+
+A final branch whose body begins on the next line remains a block and requires
+`end if`.
 
 Library and `load`:
 

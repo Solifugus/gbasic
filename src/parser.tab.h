@@ -144,8 +144,9 @@ typedef struct {
     COMMA = 326,                   /* COMMA  */
     COLON = 327,                   /* COLON  */
     NEWLINE = 328,                 /* NEWLINE  */
-    NO_DOT = 329,                  /* NO_DOT  */
-    DOT = 330                      /* DOT  */
+    IF_WITHOUT_ELSE = 329,         /* IF_WITHOUT_ELSE  */
+    NO_DOT = 330,                  /* NO_DOT  */
+    DOT = 331                      /* DOT  */
   };
   typedef enum yytokentype yytoken_kind_t;
 #endif
@@ -170,7 +171,7 @@ union YYSTYPE
     AstDuration duration;
     AstIdentSuffix ident_suffix;
 
-#line 174 "src/parser.tab.h"
+#line 175 "src/parser.tab.h"
 
 };
 typedef union YYSTYPE YYSTYPE;

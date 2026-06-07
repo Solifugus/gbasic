@@ -1,0 +1,15 @@
+inline then
+block then, inline else
+inline then and else
+inline then, block else
+7
+else matches nearest if
+inline call
+yes
+no
+inline goto
+inline gosub
+subroutine done
+loop 1
+loop 3
+after inline if

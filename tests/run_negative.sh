@@ -66,6 +66,8 @@ cases=(
     negative_consider_else_before_if
     negative_consider_duplicate_else
     negative_consider_malformed
+    negative_inline_if_block_else_missing_end
+    negative_inline_if_compound_statement
     negative_while_missing_end
     negative_break_outside_loop
     negative_continue_outside_loop

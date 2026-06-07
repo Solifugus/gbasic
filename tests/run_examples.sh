@@ -40,6 +40,7 @@ examples=(
     gosub_test.gb
     helper_functions_test.bas
     if_else_test.bas
+    inline_if_test.bas
     watch_test.gb
     watch_path_test.bas
     while_test.bas

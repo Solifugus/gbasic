@@ -321,6 +321,31 @@ else
 end if
 ```
 
+A branch may instead contain one non-block statement on the same line as
+`then` or `else`:
+
+```basic
+if x > 10 then print "large"
+
+if x > 10 then print "large"
+else print "small"
+```
+
+`end if` is omitted when the final branch is inline. A final branch that starts
+after a newline remains a block and requires `end if`:
+
+```basic
+if x > 10 then print "large"
+else
+    print "small"
+end if
+```
+
+Inline branches accept assignment, print, call, load, error-control, return,
+goto/gosub, break, and continue statements. Nested conditionals, loops,
+functions, watchers, and other compound statements remain block-only. An
+`else` associates with the nearest unmatched inline `if`.
+
 ### For
 
 ```basic
@@ -1179,10 +1204,39 @@ print_statement
 
 ```text
 if_statement
-    : IF expression THEN NEWLINE statement_list END IF NEWLINE
-    | IF expression THEN NEWLINE statement_list ELSE NEWLINE statement_list END IF NEWLINE
+    : IF expression THEN NEWLINE statement_list if_block_tail
+    | IF expression THEN inline_statement NEWLINE if_inline_tail
+    ;
+
+if_block_tail
+    : END IF NEWLINE
+    | ELSE inline_statement NEWLINE
+    | ELSE NEWLINE statement_list END IF NEWLINE
+    ;
+
+if_inline_tail
+    : %empty
+    | ELSE inline_statement NEWLINE
+    | ELSE NEWLINE statement_list END IF NEWLINE
+    ;
+
+inline_statement
+    : assignment
+    | print_statement
+    | call_statement
+    | use_statement
+    | on_error_statement
+    | error_statement
+    | return_statement
+    | goto_statement
+    | gosub_statement
+    | break_statement
+    | continue_statement
     ;
 ```
+
+The empty `if_inline_tail` has lower precedence than `ELSE`, so an `else`
+associates with the nearest unmatched inline `if`.
 
 ### For
 

@@ -4,7 +4,7 @@ Last verified: 2026-06-07
 
 ## Status
 
-WebClient Phase 1 is complete.
+WebClient Phase 1 is implemented, documented, and complete.
 
 Implemented compiled standard module:
 
@@ -118,6 +118,12 @@ responses are rejected because gBASIC does not yet have a binary value.
   - contains the original broader design and future-phase plan
 - `docs/webclient_progress.md`
   - records the implemented Phase 1 contract and verification
+- `README.md`
+  - documents build availability, testing, core API behavior, and examples
+- `docs/reference.md`
+  - provides the complete Phase 1 API and response contract
+- `docs/tutorial.md`
+  - adds practical GET, JSON POST, custom-header, and JSON-response examples
 
 ## Tests Added
 
@@ -159,6 +165,20 @@ Verified on 2026-06-07:
 - `make clean && make LIBCURL_AVAILABLE=0` - passed
 - loading `webclient` in a no-libcurl build - produced the expected clear
   runtime error
+
+The documentation sweep was reverified on 2026-06-07 with the clean build,
+example suite, negative suite, and loopback WebClient integration test. The
+repository does not contain `tests/run_webclient_integration.sh`;
+`tests/run_webclient.sh` is the current integration runner.
+
+The Phase 1 documentation sweep covers:
+
+- `load webclient` and all three request entry points
+- response fields and optional JSON decoding
+- explicit request-body encoding
+- HTTP status versus transport error behavior
+- optional libcurl build support
+- the outgoing-request-only module boundary
 
 ## Known Limitations
 
