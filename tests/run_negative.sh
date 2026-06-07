@@ -38,6 +38,16 @@ cases=(
     negative_pg_query_connection
     negative_pg_exec_arity
     negative_pg_transaction_type
+    negative_webclient_get_url_type
+    negative_webclient_post_url_type
+    negative_webclient_post_body_type
+    negative_webclient_request_type
+    negative_webclient_request_missing_url
+    negative_webclient_request_method_type
+    negative_webclient_request_headers_type
+    negative_webclient_request_header_value
+    negative_webclient_request_body_type
+    negative_webclient_malformed_url
     negative_find_type
     negative_function_assignment
     negative_len_assignment

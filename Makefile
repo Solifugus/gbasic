@@ -6,6 +6,9 @@ GTK_LIBS := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --libs g
 LIBPQ_AVAILABLE := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --exists libpq && printf 1 || printf 0)
 LIBPQ_CFLAGS := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --cflags libpq 2>/dev/null)
 LIBPQ_LIBS := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --libs libpq 2>/dev/null)
+LIBCURL_AVAILABLE := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --exists libcurl && printf 1 || printf 0)
+LIBCURL_CFLAGS := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --cflags libcurl 2>/dev/null)
+LIBCURL_LIBS := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --libs libcurl 2>/dev/null)
 
 ifeq ($(GTK_AVAILABLE),1)
 CFLAGS += -DHAVE_GTK=1 $(GTK_CFLAGS)
@@ -20,6 +23,13 @@ CFLAGS += -DHAVE_LIBPQ=1 $(LIBPQ_CFLAGS)
 LDLIBS += $(LIBPQ_LIBS)
 else
 CFLAGS += -DHAVE_LIBPQ=0
+endif
+
+ifeq ($(LIBCURL_AVAILABLE),1)
+CFLAGS += -DHAVE_LIBCURL=1 $(LIBCURL_CFLAGS)
+LDLIBS += $(LIBCURL_LIBS)
+else
+CFLAGS += -DHAVE_LIBCURL=0
 endif
 
 OBJS := src/main.o src/lexer.o src/parser.tab.o src/ast.o src/eval.o src/builtins.o

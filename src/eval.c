@@ -23,6 +23,10 @@
 #include <libpq-fe.h>
 #endif
 
+#if HAVE_LIBCURL
+#include <curl/curl.h>
+#endif
+
 int parse_source(const char *source, AstStmtList *out_program);
 void parse_set_source_path(const char *path);
 
@@ -231,6 +235,8 @@ static UsePair *use_stack = NULL;
 static size_t use_stack_count = 0;
 static int gui_library_loaded = 0;
 static int pg_library_loaded = 0;
+static int webclient_library_loaded = 0;
+static int webclient_curl_initialized = 0;
 
 #if HAVE_GTK
 typedef struct GuiNativeWindow GuiNativeWindow;
@@ -3219,6 +3225,26 @@ static void library_import(const char *name, const char *path) {
         return;
     }
 
+    if (!path && strcmp(name, "webclient") == 0) {
+#if HAVE_LIBCURL
+        if (!webclient_curl_initialized) {
+            if (curl_global_init(CURL_GLOBAL_DEFAULT) != CURLE_OK) {
+                runtime_error_raise("could not initialize libcurl",
+                                    3001,
+                                    "webclient");
+                return;
+            }
+            webclient_curl_initialized = 1;
+        }
+        webclient_library_loaded = 1;
+#else
+        runtime_error_raise("WebClient support is not available in this build",
+                            3001,
+                            "webclient");
+#endif
+        return;
+    }
+
     if (path) {
         const char *base = current_import_path ? current_import_path : root_source_path;
         resolved = resolve_use_path(base, path);
@@ -5595,6 +5621,7 @@ typedef struct {
     const char *text;
     size_t pos;
     int ok;
+    int json_only;
     char message[160];
 } DecodeParser;
 
@@ -5735,6 +5762,11 @@ static Value decode_parse_string(DecodeParser *parser) {
                 return value_null();
             }
         } else {
+            if (parser->json_only && (unsigned char)ch < 0x20) {
+                free(builder.items);
+                decode_error(parser, "unescaped control character");
+                return value_null();
+            }
             sb_append_char(&builder, ch);
         }
     }
@@ -5856,6 +5888,71 @@ static Value decode_parse_record(DecodeParser *parser) {
 }
 
 static Value decode_parse_number(DecodeParser *parser) {
+    if (parser->json_only) {
+        size_t start_pos = parser->pos;
+        if (parser->text[parser->pos] == '-') {
+            parser->pos++;
+        }
+        if (parser->text[parser->pos] == '0') {
+            parser->pos++;
+            if (isdigit((unsigned char)parser->text[parser->pos])) {
+                decode_error(parser, "invalid JSON number");
+                return value_null();
+            }
+        } else if (parser->text[parser->pos] >= '1' &&
+                   parser->text[parser->pos] <= '9') {
+            while (isdigit((unsigned char)parser->text[parser->pos])) {
+                parser->pos++;
+            }
+        } else {
+            decode_error(parser, "invalid JSON number");
+            return value_null();
+        }
+        if (parser->text[parser->pos] == '.') {
+            parser->pos++;
+            if (!isdigit((unsigned char)parser->text[parser->pos])) {
+                decode_error(parser, "invalid JSON number");
+                return value_null();
+            }
+            while (isdigit((unsigned char)parser->text[parser->pos])) {
+                parser->pos++;
+            }
+        }
+        if (parser->text[parser->pos] == 'e' ||
+            parser->text[parser->pos] == 'E') {
+            parser->pos++;
+            if (parser->text[parser->pos] == '+' ||
+                parser->text[parser->pos] == '-') {
+                parser->pos++;
+            }
+            if (!isdigit((unsigned char)parser->text[parser->pos])) {
+                decode_error(parser, "invalid JSON number");
+                return value_null();
+            }
+            while (isdigit((unsigned char)parser->text[parser->pos])) {
+                parser->pos++;
+            }
+        }
+
+        size_t length = parser->pos - start_pos;
+        char *number_text = malloc(length + 1);
+        if (!number_text) {
+            abort();
+        }
+        memcpy(number_text, parser->text + start_pos, length);
+        number_text[length] = '\0';
+        errno = 0;
+        char *end = NULL;
+        double number = strtod(number_text, &end);
+        int valid = errno != ERANGE && end && *end == '\0';
+        free(number_text);
+        if (!valid) {
+            decode_error(parser, "invalid JSON number");
+            return value_null();
+        }
+        return value_number(number);
+    }
+
     const char *start = parser->text + parser->pos;
     char *end = NULL;
     errno = 0;
@@ -5886,16 +5983,18 @@ static Value decode_parse_value(DecodeParser *parser) {
     if (decode_match_text(parser, "false")) {
         return value_bool(0);
     }
-    if (decode_match_text(parser, "nothing")) {
+    if (!parser->json_only && decode_match_text(parser, "nothing")) {
         return value_null();
     }
     if (decode_match_text(parser, "null")) {
         return value_null();
     }
-    if (decode_match_text(parser, "unknown")) {
+    if (!parser->json_only && decode_match_text(parser, "unknown")) {
         return value_unknown();
     }
-    if (ch == '-' || ch == '+' || ch == '.' || isdigit((unsigned char)ch)) {
+    if (ch == '-' ||
+        (!parser->json_only && (ch == '+' || ch == '.')) ||
+        isdigit((unsigned char)ch)) {
         return decode_parse_number(parser);
     }
     decode_error(parser, "expected value");
@@ -5932,6 +6031,613 @@ static Value builtin_decode_text(Value text) {
     value_free(text);
     return result;
 }
+
+#if HAVE_LIBCURL
+#define WEBCLIENT_ERROR_CODE 3001
+#define WEBCLIENT_DEFAULT_TIMEOUT_SECONDS 30.0
+#define WEBCLIENT_MAX_RESPONSE_SIZE (32u * 1024u * 1024u)
+
+typedef struct {
+    char *data;
+    size_t length;
+    size_t capacity;
+    int too_large;
+} WebclientBuffer;
+
+typedef struct {
+    Value headers;
+    char *reason;
+} WebclientResponseMetadata;
+
+typedef struct {
+    char *method;
+    char *url;
+    char *body;
+    int has_body;
+    double timeout;
+    struct curl_slist *headers;
+} WebclientRequest;
+
+static void webclient_raise(const char *message) {
+    runtime_error_raise(message, WEBCLIENT_ERROR_CODE, "webclient");
+}
+
+static void webclient_buffer_free(WebclientBuffer *buffer) {
+    free(buffer->data);
+    memset(buffer, 0, sizeof(*buffer));
+}
+
+static size_t webclient_write_callback(char *data,
+                                       size_t size,
+                                       size_t count,
+                                       void *userdata) {
+    WebclientBuffer *buffer = userdata;
+    if (size != 0 && count > SIZE_MAX / size) {
+        buffer->too_large = 1;
+        return 0;
+    }
+    size_t bytes = size * count;
+    if (bytes > WEBCLIENT_MAX_RESPONSE_SIZE - buffer->length) {
+        buffer->too_large = 1;
+        return 0;
+    }
+    size_t needed = buffer->length + bytes + 1;
+    if (needed > buffer->capacity) {
+        size_t capacity = buffer->capacity ? buffer->capacity : 4096;
+        while (capacity < needed) {
+            if (capacity > (WEBCLIENT_MAX_RESPONSE_SIZE + 1) / 2) {
+                capacity = WEBCLIENT_MAX_RESPONSE_SIZE + 1;
+                break;
+            }
+            capacity *= 2;
+        }
+        char *next = realloc(buffer->data, capacity);
+        if (!next) {
+            abort();
+        }
+        buffer->data = next;
+        buffer->capacity = capacity;
+    }
+    if (bytes > 0) {
+        memcpy(buffer->data + buffer->length, data, bytes);
+        buffer->length += bytes;
+    }
+    buffer->data[buffer->length] = '\0';
+    return bytes;
+}
+
+static char *webclient_trimmed_copy(const char *start, size_t length) {
+    while (length > 0 && isspace((unsigned char)*start)) {
+        start++;
+        length--;
+    }
+    while (length > 0 && isspace((unsigned char)start[length - 1])) {
+        length--;
+    }
+    char *copy = malloc(length + 1);
+    if (!copy) {
+        abort();
+    }
+    memcpy(copy, start, length);
+    copy[length] = '\0';
+    return copy;
+}
+
+static void webclient_reset_response_headers(WebclientResponseMetadata *metadata) {
+    value_free(metadata->headers);
+    metadata->headers = value_record(NULL, 0);
+    free(metadata->reason);
+    metadata->reason = copy_string("");
+}
+
+static size_t webclient_header_callback(char *data,
+                                        size_t size,
+                                        size_t count,
+                                        void *userdata) {
+    WebclientResponseMetadata *metadata = userdata;
+    if (size != 0 && count > SIZE_MAX / size) {
+        return 0;
+    }
+    size_t bytes = size * count;
+    if (bytes >= 5 && strncmp(data, "HTTP/", 5) == 0) {
+        webclient_reset_response_headers(metadata);
+        const char *line_end = data + bytes;
+        while (line_end > data &&
+               (line_end[-1] == '\r' || line_end[-1] == '\n')) {
+            line_end--;
+        }
+        const char *first_space = memchr(data, ' ', (size_t)(line_end - data));
+        if (first_space) {
+            const char *second_space = memchr(first_space + 1,
+                                              ' ',
+                                              (size_t)(line_end - first_space - 1));
+            if (second_space && second_space + 1 < line_end) {
+                free(metadata->reason);
+                metadata->reason = webclient_trimmed_copy(
+                    second_space + 1,
+                    (size_t)(line_end - second_space - 1));
+            }
+        }
+        return bytes;
+    }
+
+    char *colon = memchr(data, ':', bytes);
+    if (!colon) {
+        return bytes;
+    }
+    size_t name_length = (size_t)(colon - data);
+    while (name_length > 0 &&
+           isspace((unsigned char)data[name_length - 1])) {
+        name_length--;
+    }
+    if (name_length == 0) {
+        return bytes;
+    }
+
+    char *name = malloc(name_length + 1);
+    if (!name) {
+        abort();
+    }
+    for (size_t i = 0; i < name_length; i++) {
+        name[i] = (char)tolower((unsigned char)data[i]);
+    }
+    name[name_length] = '\0';
+
+    const char *value_start = colon + 1;
+    size_t value_length = bytes - (size_t)(value_start - data);
+    char *value = webclient_trimmed_copy(value_start, value_length);
+    record_set(&metadata->headers, name, value_string(value));
+    free(value);
+    free(name);
+    return bytes;
+}
+
+static int webclient_token_char(unsigned char ch) {
+    return isalnum(ch) ||
+        ch == '!' || ch == '#' || ch == '$' || ch == '%' || ch == '&' ||
+        ch == '\'' || ch == '*' || ch == '+' || ch == '-' || ch == '.' ||
+        ch == '^' || ch == '_' || ch == '`' || ch == '|' || ch == '~';
+}
+
+static int webclient_valid_token(const char *text) {
+    if (!text[0]) {
+        return 0;
+    }
+    for (const unsigned char *cursor = (const unsigned char *)text;
+         *cursor;
+         cursor++) {
+        if (!webclient_token_char(*cursor)) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static char *webclient_upper_method(const char *method) {
+    if (!webclient_valid_token(method)) {
+        webclient_raise("webclient request method is invalid");
+        return NULL;
+    }
+    size_t length = strlen(method);
+    char *upper = malloc(length + 1);
+    if (!upper) {
+        abort();
+    }
+    for (size_t i = 0; i < length; i++) {
+        upper[i] = (char)toupper((unsigned char)method[i]);
+    }
+    upper[length] = '\0';
+    return upper;
+}
+
+static int webclient_url_has_supported_scheme(const char *url) {
+    return strncmp(url, "http://", 7) == 0 ||
+        strncmp(url, "https://", 8) == 0;
+}
+
+static int webclient_append_request_headers(struct curl_slist **headers,
+                                            Value record) {
+    if (record.kind != VALUE_RECORD) {
+        webclient_raise("webclient request headers must be a record");
+        return 0;
+    }
+    for (size_t i = 0; i < record.as.record.count; i++) {
+        RecordField *field = &record.as.record.fields[i];
+        if (!webclient_valid_token(field->name)) {
+            webclient_raise("webclient request header name is invalid");
+            return 0;
+        }
+        if (field->value->kind != VALUE_STRING) {
+            webclient_raise("webclient request header values must be strings");
+            return 0;
+        }
+        if (strchr(field->value->as.string, '\r') ||
+            strchr(field->value->as.string, '\n')) {
+            webclient_raise("webclient request header value is invalid");
+            return 0;
+        }
+        size_t name_length = strlen(field->name);
+        size_t value_length = strlen(field->value->as.string);
+        char *line = malloc(name_length + value_length + 3);
+        if (!line) {
+            abort();
+        }
+        snprintf(line,
+                 name_length + value_length + 3,
+                 "%s: %s",
+                 field->name,
+                 field->value->as.string);
+        struct curl_slist *next = curl_slist_append(*headers, line);
+        free(line);
+        if (!next) {
+            abort();
+        }
+        *headers = next;
+    }
+    return 1;
+}
+
+static void webclient_request_free(WebclientRequest *request) {
+    free(request->method);
+    free(request->url);
+    free(request->body);
+    curl_slist_free_all(request->headers);
+    memset(request, 0, sizeof(*request));
+}
+
+static int webclient_validate_url(const char *url) {
+    if (!url[0]) {
+        webclient_raise("webclient URL must not be empty");
+        return 0;
+    }
+    if (!webclient_url_has_supported_scheme(url)) {
+        webclient_raise("webclient URL must use http:// or https://");
+        return 0;
+    }
+    const char *authority = url + (strncmp(url, "https://", 8) == 0 ? 8 : 7);
+    if (!authority[0] ||
+        authority[0] == '/' ||
+        strpbrk(url, " \t\r\n") != NULL) {
+        webclient_raise("webclient URL is malformed");
+        return 0;
+    }
+    return 1;
+}
+
+static int webclient_decode_json(const char *body, Value *out) {
+    DecodeParser parser = {0};
+    parser.text = body;
+    parser.ok = 1;
+    parser.json_only = 1;
+    Value result = decode_parse_value(&parser);
+    if (parser.ok) {
+        decode_skip_ws(&parser);
+        if (parser.text[parser.pos] != '\0') {
+            value_free(result);
+            return 0;
+        }
+        *out = result;
+        return 1;
+    }
+    value_free(result);
+    return 0;
+}
+
+static Value webclient_response_value(long status,
+                                      WebclientResponseMetadata *metadata,
+                                      WebclientBuffer *body) {
+    if (memchr(body->data ? body->data : "", '\0', body->length)) {
+        webclient_raise("webclient binary responses are not supported");
+        return value_null();
+    }
+
+    Value response = value_record(NULL, 0);
+    record_set(&response, "status", value_number((double)status));
+    record_set(&response,
+               "reason",
+               value_string(metadata->reason ? metadata->reason : ""));
+    record_set(&response, "headers", value_copy(metadata->headers));
+    record_set(&response, "body", value_string(body->data ? body->data : ""));
+
+    if (body->length > 0) {
+        Value json;
+        if (webclient_decode_json(body->data, &json)) {
+            record_set(&response, "json", json);
+        }
+    }
+    return response;
+}
+
+static Value webclient_perform(WebclientRequest *request) {
+    CURL *curl = curl_easy_init();
+    if (!curl) {
+        webclient_raise("could not create libcurl request");
+        return value_null();
+    }
+
+    WebclientBuffer body = {0};
+    WebclientResponseMetadata metadata = {0};
+    metadata.headers = value_record(NULL, 0);
+    metadata.reason = copy_string("");
+    char error_buffer[CURL_ERROR_SIZE] = {0};
+
+    curl_easy_setopt(curl, CURLOPT_URL, request->url);
+    curl_easy_setopt(curl, CURLOPT_PROTOCOLS_STR, "http,https");
+    curl_easy_setopt(curl, CURLOPT_REDIR_PROTOCOLS_STR, "http,https");
+    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+    curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 10L);
+    long timeout_ms = (long)ceil(request->timeout * 1000.0);
+    if (timeout_ms < 1) {
+        timeout_ms = 1;
+    }
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, timeout_ms);
+    long connect_timeout = timeout_ms;
+    if (connect_timeout > 10000L) {
+        connect_timeout = 10000L;
+    }
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT_MS, connect_timeout);
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, "gBASIC/0.1 webclient");
+    curl_easy_setopt(curl, CURLOPT_ACCEPT_ENCODING, "");
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, webclient_write_callback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &body);
+    curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, webclient_header_callback);
+    curl_easy_setopt(curl, CURLOPT_HEADERDATA, &metadata);
+    curl_easy_setopt(curl, CURLOPT_ERRORBUFFER, error_buffer);
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, request->headers);
+
+    if (strcmp(request->method, "GET") == 0 && !request->has_body) {
+        curl_easy_setopt(curl, CURLOPT_HTTPGET, 1L);
+    } else if (strcmp(request->method, "POST") == 0) {
+        curl_easy_setopt(curl, CURLOPT_POST, 1L);
+        curl_easy_setopt(curl,
+                         CURLOPT_POSTFIELDS,
+                         request->has_body ? request->body : "");
+        curl_easy_setopt(curl,
+                         CURLOPT_POSTFIELDSIZE_LARGE,
+                         (curl_off_t)(request->has_body
+                             ? strlen(request->body)
+                             : 0));
+    } else if (strcmp(request->method, "HEAD") == 0) {
+        curl_easy_setopt(curl, CURLOPT_NOBODY, 1L);
+        curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, "HEAD");
+    } else {
+        curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, request->method);
+        if (request->has_body) {
+            curl_easy_setopt(curl, CURLOPT_POSTFIELDS, request->body);
+            curl_easy_setopt(curl,
+                             CURLOPT_POSTFIELDSIZE_LARGE,
+                             (curl_off_t)strlen(request->body));
+        }
+    }
+
+    CURLcode code = curl_easy_perform(curl);
+    long status = 0;
+    if (code == CURLE_OK) {
+        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
+    }
+
+    Value response = value_null();
+    if (code != CURLE_OK) {
+        if (body.too_large) {
+            webclient_raise("webclient response exceeds the 32 MiB limit");
+        } else {
+            char message[1024];
+            const char *detail = error_buffer[0]
+                ? error_buffer
+                : curl_easy_strerror(code);
+            snprintf(message, sizeof(message), "webclient request failed: %s", detail);
+            webclient_raise(message);
+        }
+    } else {
+        response = webclient_response_value(status, &metadata, &body);
+    }
+
+    curl_easy_cleanup(curl);
+    webclient_buffer_free(&body);
+    value_free(metadata.headers);
+    free(metadata.reason);
+    return response;
+}
+
+static int webclient_request_from_record(Value record, WebclientRequest *request) {
+    static const char *allowed[] = {
+        "method", "url", "headers", "body", "timeout"
+    };
+    for (size_t i = 0; i < record.as.record.count; i++) {
+        int known = 0;
+        for (size_t j = 0; j < sizeof(allowed) / sizeof(allowed[0]); j++) {
+            if (strcmp(record.as.record.fields[i].name, allowed[j]) == 0) {
+                known = 1;
+                break;
+            }
+        }
+        if (!known) {
+            char message[256];
+            snprintf(message,
+                     sizeof(message),
+                     "unknown webclient request field: %s",
+                     record.as.record.fields[i].name);
+            webclient_raise(message);
+            return 0;
+        }
+    }
+
+    RecordField *url = record_find(&record, "url");
+    if (!url) {
+        webclient_raise("webclient.request requires a url field");
+        return 0;
+    }
+    if (url->value->kind != VALUE_STRING) {
+        webclient_raise("webclient request url must be a string");
+        return 0;
+    }
+    if (!webclient_validate_url(url->value->as.string)) {
+        return 0;
+    }
+    request->url = copy_string(url->value->as.string);
+
+    RecordField *method = record_find(&record, "method");
+    if (method && method->value->kind != VALUE_STRING) {
+        webclient_raise("webclient request method must be a string");
+        return 0;
+    }
+    request->method = webclient_upper_method(
+        method ? method->value->as.string : "GET");
+    if (!request->method) {
+        return 0;
+    }
+
+    RecordField *headers = record_find(&record, "headers");
+    if (headers &&
+        !webclient_append_request_headers(&request->headers, *headers->value)) {
+        return 0;
+    }
+
+    RecordField *body = record_find(&record, "body");
+    if (body) {
+        if (body->value->kind != VALUE_STRING) {
+            webclient_raise("webclient request body must be a string");
+            return 0;
+        }
+        request->body = copy_string(body->value->as.string);
+        request->has_body = 1;
+    }
+
+    request->timeout = WEBCLIENT_DEFAULT_TIMEOUT_SECONDS;
+    RecordField *timeout = record_find(&record, "timeout");
+    if (timeout) {
+        if (timeout->value->kind != VALUE_NUMBER ||
+            !isfinite(timeout->value->as.number) ||
+            timeout->value->as.number <= 0 ||
+            timeout->value->as.number > (double)LONG_MAX / 1000.0) {
+            webclient_raise("webclient request timeout must be a positive number");
+            return 0;
+        }
+        request->timeout = timeout->value->as.number;
+    }
+    return 1;
+}
+
+static Value webclient_eval_get(AstExpr *expr) {
+    if (expr->as.call.args.count != 1) {
+        webclient_raise("webclient.get expects one argument");
+        return value_null();
+    }
+    Value url = eval_expr(expr->as.call.args.items[0]);
+    if (error_action_pending()) {
+        value_free(url);
+        return value_null();
+    }
+    if (url.kind != VALUE_STRING) {
+        value_free(url);
+        webclient_raise("webclient.get url must be a string");
+        return value_null();
+    }
+    if (!webclient_validate_url(url.as.string)) {
+        value_free(url);
+        return value_null();
+    }
+
+    WebclientRequest request = {0};
+    request.method = copy_string("GET");
+    request.url = copy_string(url.as.string);
+    request.timeout = WEBCLIENT_DEFAULT_TIMEOUT_SECONDS;
+    value_free(url);
+    Value response = webclient_perform(&request);
+    webclient_request_free(&request);
+    return response;
+}
+
+static Value webclient_eval_post(AstExpr *expr) {
+    if (expr->as.call.args.count != 2) {
+        webclient_raise("webclient.post expects two arguments");
+        return value_null();
+    }
+    Value url = eval_expr(expr->as.call.args.items[0]);
+    Value body = eval_expr(expr->as.call.args.items[1]);
+    if (error_action_pending()) {
+        value_free(url);
+        value_free(body);
+        return value_null();
+    }
+    if (url.kind != VALUE_STRING) {
+        value_free(url);
+        value_free(body);
+        webclient_raise("webclient.post url must be a string");
+        return value_null();
+    }
+    if (body.kind != VALUE_STRING) {
+        value_free(url);
+        value_free(body);
+        webclient_raise("webclient.post body must be a string");
+        return value_null();
+    }
+    if (!webclient_validate_url(url.as.string)) {
+        value_free(url);
+        value_free(body);
+        return value_null();
+    }
+
+    WebclientRequest request = {0};
+    request.method = copy_string("POST");
+    request.url = copy_string(url.as.string);
+    request.body = copy_string(body.as.string);
+    request.has_body = 1;
+    request.timeout = WEBCLIENT_DEFAULT_TIMEOUT_SECONDS;
+    value_free(url);
+    value_free(body);
+    Value response = webclient_perform(&request);
+    webclient_request_free(&request);
+    return response;
+}
+
+static Value webclient_eval_request(AstExpr *expr) {
+    if (expr->as.call.args.count != 1) {
+        webclient_raise("webclient.request expects one argument");
+        return value_null();
+    }
+    Value record = eval_expr(expr->as.call.args.items[0]);
+    if (error_action_pending()) {
+        value_free(record);
+        return value_null();
+    }
+    if (record.kind != VALUE_RECORD) {
+        value_free(record);
+        webclient_raise("webclient.request expects a record");
+        return value_null();
+    }
+
+    WebclientRequest request = {0};
+    if (!webclient_request_from_record(record, &request)) {
+        value_free(record);
+        webclient_request_free(&request);
+        return value_null();
+    }
+    value_free(record);
+    Value response = webclient_perform(&request);
+    webclient_request_free(&request);
+    return response;
+}
+
+static Value webclient_eval_call(AstExpr *expr) {
+    if (strcmp(expr->as.call.name, "get") == 0) {
+        return webclient_eval_get(expr);
+    }
+    if (strcmp(expr->as.call.name, "post") == 0) {
+        return webclient_eval_post(expr);
+    }
+    if (strcmp(expr->as.call.name, "request") == 0) {
+        return webclient_eval_request(expr);
+    }
+    char message[256];
+    snprintf(message,
+             sizeof(message),
+             "invalid function call: webclient.%s",
+             expr->as.call.name);
+    webclient_raise(message);
+    return value_null();
+}
+#endif
 
 #if HAVE_LIBPQ
 #define PG_ERROR_CODE 2001
@@ -6786,6 +7492,23 @@ static Value pg_eval_call(AstExpr *expr) {
 
 static Value eval_call(AstExpr *expr) {
     if (expr->as.call.library) {
+        if (strcmp(expr->as.call.library, "webclient") == 0) {
+            if (!webclient_library_loaded) {
+                runtime_error_raise("library not loaded: webclient",
+                                    3001,
+                                    "webclient");
+                return value_null();
+            }
+#if HAVE_LIBCURL
+            return webclient_eval_call(expr);
+#else
+            runtime_error_raise("WebClient support is not available in this build",
+                                3001,
+                                "webclient");
+            return value_null();
+#endif
+        }
+
         if (strcmp(expr->as.call.library, "pg") == 0) {
             if (!pg_library_loaded) {
                 runtime_error_raise("library not loaded: pg", 2001, "postgres");
@@ -10009,6 +10732,13 @@ int eval_program(AstStmtList program) {
     gui_clear_native_windows();
     gui_library_loaded = 0;
     pg_library_loaded = 0;
+    webclient_library_loaded = 0;
+    if (webclient_curl_initialized) {
+#if HAVE_LIBCURL
+        curl_global_cleanup();
+#endif
+        webclient_curl_initialized = 0;
+    }
     free(current_import_path);
     current_import_path = NULL;
     free(root_source_path);
