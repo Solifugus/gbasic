@@ -3,6 +3,9 @@ CFLAGS := -std=c11 -Wall -Wextra -Wpedantic -Iinclude -g
 GTK_AVAILABLE := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --exists gtk+-3.0 && printf 1 || printf 0)
 GTK_CFLAGS := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --cflags gtk+-3.0 2>/dev/null)
 GTK_LIBS := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --libs gtk+-3.0 2>/dev/null)
+LIBPQ_AVAILABLE := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --exists libpq && printf 1 || printf 0)
+LIBPQ_CFLAGS := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --cflags libpq 2>/dev/null)
+LIBPQ_LIBS := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --libs libpq 2>/dev/null)
 
 ifeq ($(GTK_AVAILABLE),1)
 CFLAGS += -DHAVE_GTK=1 $(GTK_CFLAGS)
@@ -10,6 +13,13 @@ LDLIBS += $(GTK_LIBS) -lm
 else
 CFLAGS += -DHAVE_GTK=0
 LDLIBS += -lm
+endif
+
+ifeq ($(LIBPQ_AVAILABLE),1)
+CFLAGS += -DHAVE_LIBPQ=1 $(LIBPQ_CFLAGS)
+LDLIBS += $(LIBPQ_LIBS)
+else
+CFLAGS += -DHAVE_LIBPQ=0
 endif
 
 OBJS := src/main.o src/lexer.o src/parser.tab.o src/ast.o src/eval.o src/builtins.o

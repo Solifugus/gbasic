@@ -20,7 +20,7 @@ print(len(vals))
 if vals[0] = nothing then
     print("nothing first")
 end if
-if vals[1] = unknown then
+if is_unknown(vals[1]) then
     print("unknown second")
 end if
 

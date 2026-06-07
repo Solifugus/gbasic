@@ -1,0 +1,1 @@
+runtime error at tests/negative_path_join_too_many.bas:1:1: join_path expects two path arguments

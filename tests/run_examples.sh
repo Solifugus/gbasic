@@ -27,6 +27,8 @@ examples=(
     file_management_test.gb
     directory_management_test.gb
     file_overwrite_test.gb
+    path_utilities_test.gb
+    read_lines_test.gb
     find_test.bas
     function_call_comparison_test.bas
     lock_test.gb
@@ -66,6 +68,7 @@ examples=(
     string_test.bas
     unknown_test.bas
     unknown_nothing_distinction_integration_test.bas
+    postgres_module_test.bas
     builtin_test.bas
     builtin_override_test.bas
     program_test.bas

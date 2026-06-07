@@ -19,8 +19,14 @@
 #include <gtk/gtk.h>
 #endif
 
+#if HAVE_LIBPQ
+#include <libpq-fe.h>
+#endif
+
 int parse_source(const char *source, AstStmtList *out_program);
 void parse_set_source_path(const char *path);
+
+typedef struct PgConnectionValue PgConnectionValue;
 
 typedef enum {
     VALUE_NULL,
@@ -34,7 +40,8 @@ typedef enum {
     VALUE_DURATION,
     VALUE_MONEY,
     VALUE_FILE,
-    VALUE_DIR
+    VALUE_DIR,
+    VALUE_POSTGRES_CONNECTION
 } ValueKind;
 
 typedef enum {
@@ -93,7 +100,16 @@ struct Value {
         long long cents;
         char *file_path;
         char *dir_path;
+        PgConnectionValue *postgres_connection;
     } as;
+};
+
+struct PgConnectionValue {
+#if HAVE_LIBPQ
+    PGconn *connection;
+#endif
+    size_t ref_count;
+    int closed;
 };
 
 typedef struct {
@@ -214,6 +230,7 @@ static size_t used_pair_count = 0;
 static UsePair *use_stack = NULL;
 static size_t use_stack_count = 0;
 static int gui_library_loaded = 0;
+static int pg_library_loaded = 0;
 
 #if HAVE_GTK
 typedef struct GuiNativeWindow GuiNativeWindow;
@@ -281,6 +298,8 @@ static const char *value_kind_name(ValueKind kind) {
         return "file";
     case VALUE_DIR:
         return "directory";
+    case VALUE_POSTGRES_CONNECTION:
+        return "postgres_connection";
     }
     return "value";
 }
@@ -381,6 +400,13 @@ static Value value_dir(const char *path) {
     Value value = {0};
     value.kind = VALUE_DIR;
     value.as.dir_path = copy_string(path);
+    return value;
+}
+
+static Value value_postgres_connection(PgConnectionValue *connection) {
+    Value value = {0};
+    value.kind = VALUE_POSTGRES_CONNECTION;
+    value.as.postgres_connection = connection;
     return value;
 }
 
@@ -545,6 +571,10 @@ static Value value_copy(Value value) {
     if (value.kind == VALUE_DIR) {
         return value_dir(value.as.dir_path);
     }
+    if (value.kind == VALUE_POSTGRES_CONNECTION) {
+        value.as.postgres_connection->ref_count++;
+        return value_postgres_connection(value.as.postgres_connection);
+    }
     if (value.kind == VALUE_ARRAY) {
         Value *items = NULL;
         if (value.as.array.count > 0) {
@@ -598,6 +628,16 @@ static void value_free(Value value) {
             free(value.as.record.fields[i].value);
         }
         free(value.as.record.fields);
+    } else if (value.kind == VALUE_POSTGRES_CONNECTION) {
+        PgConnectionValue *connection = value.as.postgres_connection;
+        if (connection && --connection->ref_count == 0) {
+#if HAVE_LIBPQ
+            if (!connection->closed && connection->connection) {
+                PQfinish(connection->connection);
+            }
+#endif
+            free(connection);
+        }
     }
 }
 
@@ -626,6 +666,11 @@ static int value_truthy(Value value) {
         return value.as.file_path[0] != '\0';
     case VALUE_DIR:
         return value.as.dir_path[0] != '\0';
+    case VALUE_POSTGRES_CONNECTION:
+        runtime_error_raise("postgres connection cannot be used as a condition",
+                            2001,
+                            "postgres");
+        return 0;
     case VALUE_NULL:
         return 0;
     case VALUE_UNKNOWN:
@@ -761,6 +806,9 @@ static void value_print(Value value) {
         break;
     case VALUE_DIR:
         printf("%s\n", value.as.dir_path);
+        break;
+    case VALUE_POSTGRES_CONNECTION:
+        printf("<postgres_connection>\n");
         break;
     }
 }
@@ -3160,6 +3208,17 @@ static void library_import(const char *name, const char *path) {
     char *resolved = NULL;
     char *previous_import_path = NULL;
 
+    if (!path && strcmp(name, "pg") == 0) {
+#if HAVE_LIBPQ
+        pg_library_loaded = 1;
+#else
+        runtime_error_raise("PostgreSQL support is not available in this build",
+                            2001,
+                            "postgres");
+#endif
+        return;
+    }
+
     if (path) {
         const char *base = current_import_path ? current_import_path : root_source_path;
         resolved = resolve_use_path(base, path);
@@ -3373,6 +3432,60 @@ static char *read_whole_file(const char *path, long *out_size) {
     return text;
 }
 
+static Value lines_from_text(const char *text, size_t size) {
+    Value *items = NULL;
+    size_t count = 0;
+    size_t start = 0;
+
+    for (size_t i = 0; i < size; i++) {
+        if (text[i] != '\n') {
+            continue;
+        }
+        size_t line_length = i - start;
+        if (line_length > 0 && text[start + line_length - 1] == '\r') {
+            line_length--;
+        }
+        char *line = malloc(line_length + 1);
+        if (!line) {
+            abort();
+        }
+        memcpy(line, text + start, line_length);
+        line[line_length] = '\0';
+
+        Value *next = realloc(items, sizeof(Value) * (count + 1));
+        if (!next) {
+            abort();
+        }
+        items = next;
+        items[count++] = value_string(line);
+        free(line);
+        start = i + 1;
+    }
+
+    if (start < size) {
+        size_t line_length = size - start;
+        if (line_length > 0 && text[start + line_length - 1] == '\r') {
+            line_length--;
+        }
+        char *line = malloc(line_length + 1);
+        if (!line) {
+            abort();
+        }
+        memcpy(line, text + start, line_length);
+        line[line_length] = '\0';
+
+        Value *next = realloc(items, sizeof(Value) * (count + 1));
+        if (!next) {
+            abort();
+        }
+        items = next;
+        items[count++] = value_string(line);
+        free(line);
+    }
+
+    return value_array(items, count);
+}
+
 static const char *file_target_path(Value value) {
     if (value.kind == VALUE_FILE) {
         return value.as.file_path;
@@ -3388,6 +3501,157 @@ static const char *directory_path(Value value) {
         return value.as.dir_path;
     }
     return file_target_path(value);
+}
+
+static char *join_path_utility(const char *left, const char *right) {
+    size_t left_len = strlen(left);
+    while (left_len > 1 && left[left_len - 1] == '/') {
+        left_len--;
+    }
+
+    const char *right_start = right;
+    if (left_len > 0) {
+        while (*right_start == '/') {
+            right_start++;
+        }
+    }
+    size_t right_len = strlen(right_start);
+    int needs_slash = left_len > 0 && right_len > 0 && left[left_len - 1] != '/';
+
+    char *result = malloc(left_len + (size_t)needs_slash + right_len + 1);
+    if (!result) {
+        abort();
+    }
+    memcpy(result, left, left_len);
+    if (needs_slash) {
+        result[left_len] = '/';
+    }
+    memcpy(result + left_len + (size_t)needs_slash, right_start, right_len);
+    result[left_len + (size_t)needs_slash + right_len] = '\0';
+    return result;
+}
+
+static size_t path_length_without_trailing_separators(const char *path) {
+    size_t length = strlen(path);
+    while (length > 1 && path[length - 1] == '/') {
+        length--;
+    }
+    return length;
+}
+
+static Value eval_path_call(AstExpr *expr) {
+    const char *name = expr->as.call.name;
+    size_t expected_count = strcmp(name, "join_path") == 0 ? 2 : 1;
+    if (expr->as.call.args.count != expected_count) {
+        char message[256];
+        snprintf(message,
+                 sizeof(message),
+                 "%s expects %s",
+                 name,
+                 expected_count == 2 ? "two path arguments" : "one path argument");
+        runtime_error_raise(message, 1004, "path operation");
+        return value_null();
+    }
+
+    Value first = eval_expr(expr->as.call.args.items[0]);
+    Value second = value_null();
+    if (expected_count == 2) {
+        second = eval_expr(expr->as.call.args.items[1]);
+    }
+    if (error_action_pending()) {
+        value_free(first);
+        value_free(second);
+        return value_null();
+    }
+
+    const char *first_path = directory_path(first);
+    const char *second_path = expected_count == 2 ? directory_path(second) : NULL;
+    if (!first_path || (expected_count == 2 && !second_path)) {
+        char message[256];
+        snprintf(message,
+                 sizeof(message),
+                 "%s expects %s",
+                 name,
+                 expected_count == 2
+                     ? "string, file reference, or directory reference arguments"
+                     : "a string, file reference, or directory reference");
+        runtime_error_raise(message, 1004, "path operation");
+        value_free(first);
+        value_free(second);
+        return value_null();
+    }
+
+    Value result = value_null();
+    if (strcmp(name, "join_path") == 0) {
+        char *joined = join_path_utility(first_path, second_path);
+        result = value_string(joined);
+        free(joined);
+    } else {
+        size_t length = path_length_without_trailing_separators(first_path);
+        const char *slash = NULL;
+        for (size_t i = length; i > 0; i--) {
+            if (first_path[i - 1] == '/') {
+                slash = first_path + i - 1;
+                break;
+            }
+        }
+
+        if (strcmp(name, "file_name") == 0) {
+            const char *base = slash ? slash + 1 : first_path;
+            size_t base_length = length - (size_t)(base - first_path);
+            char *text = malloc(base_length + 1);
+            if (!text) {
+                abort();
+            }
+            memcpy(text, base, base_length);
+            text[base_length] = '\0';
+            result = value_string(text);
+            free(text);
+        } else if (strcmp(name, "directory_name") == 0) {
+            if (!slash) {
+                result = value_string(".");
+            } else if (slash == first_path) {
+                result = value_string("/");
+            } else {
+                size_t dir_length = (size_t)(slash - first_path);
+                char *text = malloc(dir_length + 1);
+                if (!text) {
+                    abort();
+                }
+                memcpy(text, first_path, dir_length);
+                text[dir_length] = '\0';
+                result = value_string(text);
+                free(text);
+            }
+        } else {
+            const char *base = slash ? slash + 1 : first_path;
+            size_t base_length = length - (size_t)(base - first_path);
+            const char *dot = NULL;
+            for (size_t i = base_length; i > 1; i--) {
+                if (base[i - 1] == '.') {
+                    dot = base + i - 1;
+                    break;
+                }
+            }
+            if (!dot) {
+                result = value_string("");
+            } else {
+                size_t extension_length = base_length - (size_t)(dot + 1 - base);
+                char *text = malloc(extension_length + 1);
+                if (!text) {
+                    abort();
+                }
+                memcpy(text, dot + 1, extension_length);
+                text[extension_length] = '\0';
+                result = value_string(text);
+                free(text);
+            }
+        }
+    }
+
+    value_free(first);
+    value_free(second);
+    return result;
 }
 
 static int copy_file_path(const char *source_path, const char *target_path) {
@@ -3460,6 +3724,7 @@ static Value eval_file_call(AstExpr *expr) {
 
     if (strcmp(name, "exists") == 0 ||
         strcmp(name, "read") == 0 ||
+        strcmp(name, "read_lines") == 0 ||
         strcmp(name, "bytes") == 0 ||
         strcmp(name, "lines") == 0 ||
         strcmp(name, "chars") == 0 ||
@@ -3516,6 +3781,12 @@ static Value eval_file_call(AstExpr *expr) {
 
         if (strcmp(name, "read") == 0) {
             Value result = value_string(text);
+            free(text);
+            value_free(file_value);
+            return result;
+        }
+        if (strcmp(name, "read_lines") == 0) {
+            Value result = lines_from_text(text, (size_t)size);
             free(text);
             value_free(file_value);
             return result;
@@ -4925,6 +5196,8 @@ static const char *builtin_type_name(Value value) {
         return "file";
     case VALUE_DIR:
         return "directory";
+    case VALUE_POSTGRES_CONNECTION:
+        return "postgres_connection";
     }
     return "value";
 }
@@ -5185,6 +5458,9 @@ static Value builtin_string_value(Value value) {
         value_free(value);
         return result;
     }
+    case VALUE_POSTGRES_CONNECTION:
+        value_free(value);
+        return value_string("<postgres_connection>");
     }
 
     if (!used_builder) {
@@ -5250,6 +5526,7 @@ static int encode_value_to_builder(StringBuilder *builder, Value value) {
     case VALUE_MONEY:
     case VALUE_FILE:
     case VALUE_DIR:
+    case VALUE_POSTGRES_CONNECTION:
         runtime_error_raise("encode supports numbers, strings, booleans, nothing, unknown, arrays, and records",
                             1003,
                             "serialization");
@@ -5345,6 +5622,45 @@ static int decode_match_text(DecodeParser *parser, const char *text) {
 
 static Value decode_parse_value(DecodeParser *parser);
 
+static int decode_hex_digit(char ch) {
+    if (ch >= '0' && ch <= '9') return ch - '0';
+    if (ch >= 'a' && ch <= 'f') return ch - 'a' + 10;
+    if (ch >= 'A' && ch <= 'F') return ch - 'A' + 10;
+    return -1;
+}
+
+static int decode_unicode_escape(DecodeParser *parser, unsigned *out) {
+    unsigned value = 0;
+    for (int i = 0; i < 4; i++) {
+        int digit = decode_hex_digit(parser->text[parser->pos++]);
+        if (digit < 0) {
+            decode_error(parser, "invalid unicode escape");
+            return 0;
+        }
+        value = value * 16u + (unsigned)digit;
+    }
+    *out = value;
+    return 1;
+}
+
+static void decode_append_utf8(StringBuilder *builder, unsigned codepoint) {
+    if (codepoint <= 0x7f) {
+        sb_append_char(builder, (char)codepoint);
+    } else if (codepoint <= 0x7ff) {
+        sb_append_char(builder, (char)(0xc0u | (codepoint >> 6)));
+        sb_append_char(builder, (char)(0x80u | (codepoint & 0x3fu)));
+    } else if (codepoint <= 0xffff) {
+        sb_append_char(builder, (char)(0xe0u | (codepoint >> 12)));
+        sb_append_char(builder, (char)(0x80u | ((codepoint >> 6) & 0x3fu)));
+        sb_append_char(builder, (char)(0x80u | (codepoint & 0x3fu)));
+    } else {
+        sb_append_char(builder, (char)(0xf0u | (codepoint >> 18)));
+        sb_append_char(builder, (char)(0x80u | ((codepoint >> 12) & 0x3fu)));
+        sb_append_char(builder, (char)(0x80u | ((codepoint >> 6) & 0x3fu)));
+        sb_append_char(builder, (char)(0x80u | (codepoint & 0x3fu)));
+    }
+}
+
 static Value decode_parse_string(DecodeParser *parser) {
     if (parser->text[parser->pos] != '"') {
         decode_error(parser, "expected string");
@@ -5375,8 +5691,44 @@ static Value decode_parse_string(DecodeParser *parser) {
                 sb_append_char(&builder, '\t');
             } else if (esc == 'r') {
                 sb_append_char(&builder, '\r');
-            } else if (esc == '"' || esc == '\\') {
+            } else if (esc == 'b') {
+                sb_append_char(&builder, '\b');
+            } else if (esc == 'f') {
+                sb_append_char(&builder, '\f');
+            } else if (esc == '"' || esc == '\\' || esc == '/') {
                 sb_append_char(&builder, esc);
+            } else if (esc == 'u') {
+                unsigned codepoint = 0;
+                if (!decode_unicode_escape(parser, &codepoint)) {
+                    free(builder.items);
+                    return value_null();
+                }
+                if (codepoint >= 0xd800 && codepoint <= 0xdbff) {
+                    if (parser->text[parser->pos] != '\\' ||
+                        parser->text[parser->pos + 1] != 'u') {
+                        free(builder.items);
+                        decode_error(parser, "invalid unicode surrogate pair");
+                        return value_null();
+                    }
+                    parser->pos += 2;
+                    unsigned low = 0;
+                    if (!decode_unicode_escape(parser, &low) ||
+                        low < 0xdc00 || low > 0xdfff) {
+                        free(builder.items);
+                        if (parser->ok) {
+                            decode_error(parser, "invalid unicode surrogate pair");
+                        }
+                        return value_null();
+                    }
+                    codepoint = 0x10000u +
+                        ((codepoint - 0xd800u) << 10) +
+                        (low - 0xdc00u);
+                } else if (codepoint >= 0xdc00 && codepoint <= 0xdfff) {
+                    free(builder.items);
+                    decode_error(parser, "invalid unicode surrogate pair");
+                    return value_null();
+                }
+                decode_append_utf8(&builder, codepoint);
             } else {
                 free(builder.items);
                 decode_error(parser, "invalid escape sequence");
@@ -5537,6 +5889,9 @@ static Value decode_parse_value(DecodeParser *parser) {
     if (decode_match_text(parser, "nothing")) {
         return value_null();
     }
+    if (decode_match_text(parser, "null")) {
+        return value_null();
+    }
     if (decode_match_text(parser, "unknown")) {
         return value_unknown();
     }
@@ -5578,8 +5933,874 @@ static Value builtin_decode_text(Value text) {
     return result;
 }
 
+#if HAVE_LIBPQ
+#define PG_ERROR_CODE 2001
+
+typedef struct {
+    char **values;
+    const char **pointers;
+    int count;
+} PgParameterList;
+
+static void pg_raise_message(const char *message) {
+    runtime_error_raise(message, PG_ERROR_CODE, "postgres");
+}
+
+static void pg_raise_connection_error(PGconn *connection, const char *prefix) {
+    const char *detail = connection ? PQerrorMessage(connection) : "";
+    size_t detail_len = strlen(detail);
+    while (detail_len > 0 &&
+           (detail[detail_len - 1] == '\n' || detail[detail_len - 1] == '\r')) {
+        detail_len--;
+    }
+    char message[1024];
+    if (detail_len > 0) {
+        snprintf(message, sizeof(message), "%s: %.*s", prefix, (int)detail_len, detail);
+    } else {
+        snprintf(message, sizeof(message), "%s", prefix);
+    }
+    pg_raise_message(message);
+}
+
+static void pg_raise_result_error(PGconn *connection, PGresult *result) {
+    const char *detail = result ? PQresultErrorMessage(result) : NULL;
+    if (!detail || detail[0] == '\0') {
+        pg_raise_connection_error(connection, "PostgreSQL operation failed");
+        return;
+    }
+
+    size_t detail_len = strlen(detail);
+    while (detail_len > 0 &&
+           (detail[detail_len - 1] == '\n' || detail[detail_len - 1] == '\r')) {
+        detail_len--;
+    }
+    const char *sqlstate = PQresultErrorField(result, PG_DIAG_SQLSTATE);
+    char message[1200];
+    if (sqlstate && sqlstate[0]) {
+        snprintf(message,
+                 sizeof(message),
+                 "%.*s [SQLSTATE %s]",
+                 (int)detail_len,
+                 detail,
+                 sqlstate);
+    } else {
+        snprintf(message, sizeof(message), "%.*s", (int)detail_len, detail);
+    }
+    pg_raise_message(message);
+}
+
+static PgConnectionValue *pg_connection_from_value(Value value) {
+    if (value.kind != VALUE_POSTGRES_CONNECTION) {
+        pg_raise_message("pg operation expects a postgres_connection");
+        return NULL;
+    }
+    PgConnectionValue *connection = value.as.postgres_connection;
+    if (!connection || connection->closed || !connection->connection) {
+        pg_raise_message("postgres connection is closed");
+        return NULL;
+    }
+    return connection;
+}
+
+static int pg_config_field_allowed(const char *name) {
+    static const char *allowed[] = {
+        "host",
+        "port",
+        "database",
+        "user",
+        "password",
+        "sslmode",
+        "connect_timeout",
+        "application_name"
+    };
+    for (size_t i = 0; i < sizeof(allowed) / sizeof(allowed[0]); i++) {
+        if (strcmp(name, allowed[i]) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static const char *pg_config_keyword(const char *name) {
+    return strcmp(name, "database") == 0 ? "dbname" : name;
+}
+
+static char *pg_integer_text(Value value, const char *field_name) {
+    if (value.kind == VALUE_STRING) {
+        return copy_string(value.as.string);
+    }
+    if (value.kind == VALUE_NUMBER &&
+        isfinite(value.as.number) &&
+        floor(value.as.number) == value.as.number &&
+        value.as.number >= 0 &&
+        value.as.number <= 2147483647.0) {
+        char buffer[32];
+        snprintf(buffer, sizeof(buffer), "%.0f", value.as.number);
+        return copy_string(buffer);
+    }
+    char message[256];
+    snprintf(message,
+             sizeof(message),
+             "pg.connect config field '%s' expects a non-negative integer or string",
+             field_name);
+    pg_raise_message(message);
+    return NULL;
+}
+
+static char *pg_config_value_text(const char *field_name, Value value) {
+    if (strcmp(field_name, "port") == 0 ||
+        strcmp(field_name, "connect_timeout") == 0) {
+        return pg_integer_text(value, field_name);
+    }
+    if (value.kind != VALUE_STRING) {
+        char message[256];
+        snprintf(message,
+                 sizeof(message),
+                 "pg.connect config field '%s' expects a string",
+                 field_name);
+        pg_raise_message(message);
+        return NULL;
+    }
+    return copy_string(value.as.string);
+}
+
+static Value pg_eval_connect(AstExpr *expr) {
+    if (expr->as.call.args.count != 1) {
+        pg_raise_message("pg.connect expects one argument");
+        return value_null();
+    }
+
+    Value config = eval_expr(expr->as.call.args.items[0]);
+    if (error_action_pending()) {
+        value_free(config);
+        return value_null();
+    }
+    if (config.kind != VALUE_RECORD) {
+        value_free(config);
+        pg_raise_message("pg.connect expects a config record");
+        return value_null();
+    }
+
+    int before_error = error_generation;
+    size_t count = config.as.record.count;
+    const char **keywords = calloc(count + 1, sizeof(char *));
+    const char **values = calloc(count + 1, sizeof(char *));
+    char **owned_values = calloc(count, sizeof(char *));
+    if (!keywords || !values || !owned_values) {
+        abort();
+    }
+
+    size_t used = 0;
+    for (size_t i = 0; i < count; i++) {
+        RecordField *field = &config.as.record.fields[i];
+        if (!pg_config_field_allowed(field->name)) {
+            char message[256];
+            snprintf(message,
+                     sizeof(message),
+                     "unknown pg.connect config field: %s",
+                     field->name);
+            pg_raise_message(message);
+            break;
+        }
+        if (field->value->kind == VALUE_NULL) {
+            continue;
+        }
+        char *text = pg_config_value_text(field->name, *field->value);
+        if (!text) {
+            break;
+        }
+        keywords[used] = pg_config_keyword(field->name);
+        values[used] = text;
+        owned_values[used] = text;
+        used++;
+    }
+
+    if (error_generation != before_error) {
+        for (size_t i = 0; i < used; i++) {
+            free(owned_values[i]);
+        }
+        free(owned_values);
+        free(values);
+        free(keywords);
+        value_free(config);
+        return value_null();
+    }
+
+    PGconn *native = PQconnectdbParams(keywords, values, 0);
+    for (size_t i = 0; i < used; i++) {
+        free(owned_values[i]);
+    }
+    free(owned_values);
+    free(values);
+    free(keywords);
+    value_free(config);
+
+    if (!native) {
+        pg_raise_message("could not allocate PostgreSQL connection");
+        return value_null();
+    }
+    if (PQstatus(native) != CONNECTION_OK) {
+        pg_raise_connection_error(native, "PostgreSQL connection failed");
+        PQfinish(native);
+        return value_null();
+    }
+
+    PgConnectionValue *connection = calloc(1, sizeof(PgConnectionValue));
+    if (!connection) {
+        PQfinish(native);
+        abort();
+    }
+    connection->connection = native;
+    connection->ref_count = 1;
+    return value_postgres_connection(connection);
+}
+
+static Value pg_eval_close(AstExpr *expr) {
+    if (expr->as.call.args.count != 1) {
+        pg_raise_message("pg.close expects one argument");
+        return value_null();
+    }
+    Value value = eval_expr(expr->as.call.args.items[0]);
+    if (error_action_pending()) {
+        value_free(value);
+        return value_null();
+    }
+    if (value.kind != VALUE_POSTGRES_CONNECTION) {
+        value_free(value);
+        pg_raise_message("pg.close expects a postgres_connection");
+        return value_null();
+    }
+    PgConnectionValue *connection = value.as.postgres_connection;
+    if (!connection || connection->closed) {
+        value_free(value);
+        pg_raise_message("postgres connection is already closed");
+        return value_null();
+    }
+    PQfinish(connection->connection);
+    connection->connection = NULL;
+    connection->closed = 1;
+    value_free(value);
+    return value_bool(1);
+}
+
+static void pg_json_append_string(StringBuilder *builder, const char *text) {
+    static const char hex[] = "0123456789abcdef";
+    sb_append_char(builder, '"');
+    for (const unsigned char *cursor = (const unsigned char *)text; *cursor; cursor++) {
+        unsigned char ch = *cursor;
+        if (ch == '"' || ch == '\\') {
+            sb_append_char(builder, '\\');
+            sb_append_char(builder, (char)ch);
+        } else if (ch == '\b') {
+            sb_append_text(builder, "\\b");
+        } else if (ch == '\f') {
+            sb_append_text(builder, "\\f");
+        } else if (ch == '\n') {
+            sb_append_text(builder, "\\n");
+        } else if (ch == '\r') {
+            sb_append_text(builder, "\\r");
+        } else if (ch == '\t') {
+            sb_append_text(builder, "\\t");
+        } else if (ch < 0x20) {
+            sb_append_text(builder, "\\u00");
+            sb_append_char(builder, hex[ch >> 4]);
+            sb_append_char(builder, hex[ch & 0x0f]);
+        } else {
+            sb_append_char(builder, (char)ch);
+        }
+    }
+    sb_append_char(builder, '"');
+}
+
+static int pg_json_append_value(StringBuilder *builder, Value value) {
+    char number[64];
+    switch (value.kind) {
+    case VALUE_NULL:
+        sb_append_text(builder, "null");
+        return 1;
+    case VALUE_BOOL:
+        sb_append_text(builder, value.as.boolean ? "true" : "false");
+        return 1;
+    case VALUE_NUMBER:
+        if (!isfinite(value.as.number)) {
+            pg_raise_message("PostgreSQL JSON parameters require finite numbers");
+            return 0;
+        }
+        snprintf(number, sizeof(number), "%.17g", value.as.number);
+        sb_append_text(builder, number);
+        return 1;
+    case VALUE_STRING:
+        pg_json_append_string(builder, value.as.string);
+        return 1;
+    case VALUE_ARRAY:
+        sb_append_char(builder, '[');
+        for (size_t i = 0; i < value.as.array.count; i++) {
+            if (i > 0) {
+                sb_append_char(builder, ',');
+            }
+            if (!pg_json_append_value(builder, value.as.array.items[i])) {
+                return 0;
+            }
+        }
+        sb_append_char(builder, ']');
+        return 1;
+    case VALUE_RECORD:
+        sb_append_char(builder, '{');
+        for (size_t i = 0; i < value.as.record.count; i++) {
+            if (i > 0) {
+                sb_append_char(builder, ',');
+            }
+            pg_json_append_string(builder, value.as.record.fields[i].name);
+            sb_append_char(builder, ':');
+            if (!pg_json_append_value(builder, *value.as.record.fields[i].value)) {
+                return 0;
+            }
+        }
+        sb_append_char(builder, '}');
+        return 1;
+    default:
+        pg_raise_message("PostgreSQL JSON parameters support only records, arrays, strings, numbers, booleans, and nothing");
+        return 0;
+    }
+}
+
+static char *pg_datetime_text(DateTime datetime) {
+    char buffer[64];
+    if (datetime.time_only) {
+        if (datetime.precision == PREC_HOUR) {
+            snprintf(buffer, sizeof(buffer), "%02d:00:00", datetime.hour);
+        } else if (datetime.precision == PREC_MINUTE) {
+            snprintf(buffer,
+                     sizeof(buffer),
+                     "%02d:%02d:00",
+                     datetime.hour,
+                     datetime.minute);
+        } else {
+            snprintf(buffer,
+                     sizeof(buffer),
+                     "%02d:%02d:%02d",
+                     datetime.hour,
+                     datetime.minute,
+                     datetime.second);
+        }
+    } else if (datetime.precision < PREC_DAY) {
+        pg_raise_message("PostgreSQL date parameters require day precision");
+        return NULL;
+    } else if (datetime.precision == PREC_DAY) {
+        snprintf(buffer,
+                 sizeof(buffer),
+                 "%04d-%02d-%02d",
+                 datetime.year,
+                 datetime.month,
+                 datetime.day);
+    } else {
+        snprintf(buffer,
+                 sizeof(buffer),
+                 "%04d-%02d-%02d %02d:%02d:%02d",
+                 datetime.year,
+                 datetime.month,
+                 datetime.day,
+                 datetime.hour,
+                 datetime.minute,
+                 datetime.second);
+    }
+    return copy_string(buffer);
+}
+
+static char *pg_parameter_text(Value value) {
+    char buffer[64];
+    switch (value.kind) {
+    case VALUE_STRING:
+        return copy_string(value.as.string);
+    case VALUE_BOOL:
+        return copy_string(value.as.boolean ? "true" : "false");
+    case VALUE_NUMBER:
+        if (!isfinite(value.as.number)) {
+            pg_raise_message("PostgreSQL number parameters must be finite");
+            return NULL;
+        }
+        snprintf(buffer, sizeof(buffer), "%.17g", value.as.number);
+        return copy_string(buffer);
+    case VALUE_DATETIME:
+        return pg_datetime_text(value.as.datetime);
+    case VALUE_ARRAY:
+    case VALUE_RECORD: {
+        StringBuilder builder;
+        sb_init(&builder);
+        if (!pg_json_append_value(&builder, value)) {
+            free(builder.items);
+            return NULL;
+        }
+        return sb_take(&builder);
+    }
+    case VALUE_NULL:
+        return NULL;
+    default:
+        pg_raise_message("unsupported PostgreSQL parameter type");
+        return NULL;
+    }
+}
+
+static void pg_parameter_list_clear(PgParameterList *params) {
+    for (int i = 0; i < params->count; i++) {
+        free(params->values[i]);
+    }
+    free(params->values);
+    free(params->pointers);
+    memset(params, 0, sizeof(*params));
+}
+
+static int pg_parameter_list_build(Value value, PgParameterList *out) {
+    if (value.kind != VALUE_ARRAY) {
+        pg_raise_message("PostgreSQL query parameters must be an array");
+        return 0;
+    }
+    if (value.as.array.count > INT_MAX) {
+        pg_raise_message("too many PostgreSQL query parameters");
+        return 0;
+    }
+
+    out->count = (int)value.as.array.count;
+    out->values = calloc(value.as.array.count, sizeof(char *));
+    out->pointers = calloc(value.as.array.count, sizeof(char *));
+    if (value.as.array.count > 0 && (!out->values || !out->pointers)) {
+        abort();
+    }
+    for (size_t i = 0; i < value.as.array.count; i++) {
+        Value item = value.as.array.items[i];
+        if (item.kind == VALUE_NULL) {
+            out->pointers[i] = NULL;
+            continue;
+        }
+        out->values[i] = pg_parameter_text(item);
+        if (!out->values[i]) {
+            pg_parameter_list_clear(out);
+            return 0;
+        }
+        out->pointers[i] = out->values[i];
+    }
+    return 1;
+}
+
+static PGresult *pg_execute_sql(PgConnectionValue *connection,
+                                const char *sql,
+                                PgParameterList *params) {
+    if (params) {
+        return PQexecParams(connection->connection,
+                            sql,
+                            params->count,
+                            NULL,
+                            params->pointers,
+                            NULL,
+                            NULL,
+                            0);
+    }
+    return PQexec(connection->connection, sql);
+}
+
+static int pg_oid_is_array(Oid oid) {
+    static const Oid array_oids[] = {
+        1000, 1001, 1002, 1003, 1005, 1007, 1009, 1014, 1015, 1016,
+        1021, 1022, 1028, 1115, 1182, 1183, 1185, 1187, 1231, 199,
+        2951, 3807
+    };
+    for (size_t i = 0; i < sizeof(array_oids) / sizeof(array_oids[0]); i++) {
+        if (oid == array_oids[i]) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static Value pg_decode_json(const char *text) {
+    DecodeParser parser = {0};
+    parser.text = text;
+    parser.ok = 1;
+    Value result = decode_parse_value(&parser);
+    if (parser.ok) {
+        decode_skip_ws(&parser);
+        if (parser.text[parser.pos] != '\0') {
+            value_free(result);
+            decode_error(&parser, "unexpected trailing text");
+            result = value_null();
+        }
+    }
+    if (!parser.ok) {
+        char message[256];
+        snprintf(message, sizeof(message), "invalid PostgreSQL JSON result: %s", parser.message);
+        pg_raise_message(message);
+        value_free(result);
+        result = value_null();
+    }
+    return result;
+}
+
+static int pg_parse_datetime_result(const char *text, int time_only, Value *out) {
+    char normalized[20];
+    size_t required = time_only ? 8 : 19;
+    size_t length = strlen(text);
+    if (length < required) {
+        return 0;
+    }
+    memcpy(normalized, text, required);
+    normalized[required] = '\0';
+    if (!time_only && normalized[10] == 'T') {
+        normalized[10] = ' ';
+    }
+    DateTime datetime;
+    int ok = time_only
+        ? parse_time_value(normalized, &datetime)
+        : parse_date_value(normalized, &datetime);
+    if (!ok) {
+        return 0;
+    }
+    *out = value_datetime(datetime);
+    return 1;
+}
+
+static int pg_parse_number_result(const char *text, double *out) {
+    errno = 0;
+    char *end = NULL;
+    double number = strtod(text, &end);
+    if (errno == ERANGE || end == text || *end != '\0') {
+        return 0;
+    }
+    *out = number;
+    return 1;
+}
+
+static Value pg_result_value(PGresult *result, int row, int column) {
+    if (PQgetisnull(result, row, column)) {
+        return value_null();
+    }
+
+    Oid oid = PQftype(result, column);
+    const char *text = PQgetvalue(result, row, column);
+    if (pg_oid_is_array(oid)) {
+        pg_raise_message("PostgreSQL array result types are not supported");
+        return value_null();
+    }
+    if (oid == 16) {
+        if (strcmp(text, "t") == 0 || strcmp(text, "true") == 0) {
+            return value_bool(1);
+        }
+        if (strcmp(text, "f") == 0 || strcmp(text, "false") == 0) {
+            return value_bool(0);
+        }
+        pg_raise_message("invalid PostgreSQL boolean result");
+        return value_null();
+    }
+    if (oid == 21 || oid == 23 || oid == 700 || oid == 701) {
+        double number = 0.0;
+        if (!pg_parse_number_result(text, &number)) {
+            pg_raise_message("invalid PostgreSQL numeric result");
+            return value_null();
+        }
+        return value_number(number);
+    }
+    if (oid == 20 || oid == 1700 || oid == 1184 || oid == 1186) {
+        return value_string(text);
+    }
+    if (oid == 114 || oid == 3802) {
+        return pg_decode_json(text);
+    }
+    if (oid == 1082) {
+        DateTime datetime;
+        if (!parse_date_value(text, &datetime)) {
+            pg_raise_message("invalid PostgreSQL date result");
+            return value_null();
+        }
+        return value_datetime(datetime);
+    }
+    if (oid == 1083) {
+        Value value;
+        if (!pg_parse_datetime_result(text, 1, &value)) {
+            pg_raise_message("invalid PostgreSQL time result");
+            return value_null();
+        }
+        return value;
+    }
+    if (oid == 1114) {
+        Value value;
+        if (!pg_parse_datetime_result(text, 0, &value)) {
+            pg_raise_message("invalid PostgreSQL timestamp result");
+            return value_null();
+        }
+        return value;
+    }
+    if (oid == 17) {
+        pg_raise_message("PostgreSQL bytea results are not supported");
+        return value_null();
+    }
+    return value_string(text);
+}
+
+static Value pg_rows_from_result(PGresult *result) {
+    int columns = PQnfields(result);
+    int rows = PQntuples(result);
+    for (int i = 0; i < columns; i++) {
+        const char *name = PQfname(result, i);
+        for (int j = 0; j < i; j++) {
+            if (strcmp(name, PQfname(result, j)) == 0) {
+                char message[256];
+                snprintf(message,
+                         sizeof(message),
+                         "duplicate PostgreSQL result column: %s",
+                         name);
+                pg_raise_message(message);
+                return value_null();
+            }
+        }
+    }
+
+    Value *items = rows > 0 ? calloc((size_t)rows, sizeof(Value)) : NULL;
+    if (rows > 0 && !items) {
+        abort();
+    }
+    int completed = 0;
+    for (int row = 0; row < rows; row++) {
+        RecordField *fields = columns > 0
+            ? calloc((size_t)columns, sizeof(RecordField))
+            : NULL;
+        if (columns > 0 && !fields) {
+            abort();
+        }
+        int completed_fields = 0;
+        for (int column = 0; column < columns; column++) {
+            int before_error = error_generation;
+            fields[column].name = copy_string(PQfname(result, column));
+            fields[column].value = malloc(sizeof(Value));
+            if (!fields[column].value) {
+                abort();
+            }
+            *fields[column].value = pg_result_value(result, row, column);
+            completed_fields++;
+            if (error_generation != before_error) {
+                for (int i = 0; i < completed_fields; i++) {
+                    free(fields[i].name);
+                    value_free(*fields[i].value);
+                    free(fields[i].value);
+                }
+                free(fields);
+                for (int i = 0; i < completed; i++) {
+                    value_free(items[i]);
+                }
+                free(items);
+                return value_null();
+            }
+        }
+        items[row] = value_record(fields, (size_t)columns);
+        completed++;
+    }
+    return value_array(items, (size_t)rows);
+}
+
+static Value pg_command_result(PGresult *result) {
+    const char *status = PQcmdStatus(result);
+    size_t command_len = strcspn(status, " ");
+    char *command = malloc(command_len + 1);
+    if (!command) {
+        abort();
+    }
+    memcpy(command, status, command_len);
+    command[command_len] = '\0';
+
+    RecordField *fields = calloc(2, sizeof(RecordField));
+    if (!fields) {
+        abort();
+    }
+    fields[0].name = copy_string("command");
+    fields[0].value = malloc(sizeof(Value));
+    fields[1].name = copy_string("rows_affected");
+    fields[1].value = malloc(sizeof(Value));
+    if (!fields[0].value || !fields[1].value) {
+        abort();
+    }
+    *fields[0].value = value_string(command);
+    free(command);
+
+    const char *tuples = PQcmdTuples(result);
+    if (tuples && tuples[0]) {
+        double count = 0.0;
+        if (!pg_parse_number_result(tuples, &count)) {
+            for (size_t i = 0; i < 2; i++) {
+                free(fields[i].name);
+                if (fields[i].value) {
+                    if (i == 0) {
+                        value_free(*fields[i].value);
+                    }
+                    free(fields[i].value);
+                }
+            }
+            free(fields);
+            pg_raise_message("invalid PostgreSQL affected-row count");
+            return value_null();
+        }
+        *fields[1].value = value_number(count);
+    } else {
+        *fields[1].value = value_null();
+    }
+    return value_record(fields, 2);
+}
+
+static Value pg_eval_sql(AstExpr *expr, int query_mode) {
+    if (expr->as.call.args.count != 2 && expr->as.call.args.count != 3) {
+        pg_raise_message(query_mode
+            ? "pg.query expects two or three arguments"
+            : "pg.exec expects two or three arguments");
+        return value_null();
+    }
+
+    Value connection_value = eval_expr(expr->as.call.args.items[0]);
+    if (error_action_pending()) {
+        value_free(connection_value);
+        return value_null();
+    }
+    PgConnectionValue *connection = pg_connection_from_value(connection_value);
+    if (!connection) {
+        value_free(connection_value);
+        return value_null();
+    }
+
+    Value sql = eval_expr(expr->as.call.args.items[1]);
+    if (error_action_pending()) {
+        value_free(sql);
+        value_free(connection_value);
+        return value_null();
+    }
+    if (sql.kind != VALUE_STRING) {
+        value_free(sql);
+        value_free(connection_value);
+        pg_raise_message(query_mode
+            ? "pg.query SQL must be a string"
+            : "pg.exec SQL must be a string");
+        return value_null();
+    }
+
+    PgParameterList params = {0};
+    Value params_value = value_null();
+    PgParameterList *params_ptr = NULL;
+    if (expr->as.call.args.count == 3) {
+        params_value = eval_expr(expr->as.call.args.items[2]);
+        if (error_action_pending() ||
+            !pg_parameter_list_build(params_value, &params)) {
+            value_free(params_value);
+            value_free(sql);
+            value_free(connection_value);
+            return value_null();
+        }
+        params_ptr = &params;
+    }
+
+    PGresult *result = pg_execute_sql(connection, sql.as.string, params_ptr);
+    pg_parameter_list_clear(&params);
+    value_free(params_value);
+    value_free(sql);
+    if (!result) {
+        pg_raise_connection_error(connection->connection, "PostgreSQL operation failed");
+        value_free(connection_value);
+        return value_null();
+    }
+
+    ExecStatusType status = PQresultStatus(result);
+    Value converted = value_null();
+    if (query_mode && status == PGRES_TUPLES_OK) {
+        converted = pg_rows_from_result(result);
+    } else if (query_mode && status == PGRES_COMMAND_OK) {
+        converted = value_array(NULL, 0);
+    } else if (!query_mode && status == PGRES_COMMAND_OK) {
+        converted = pg_command_result(result);
+    } else if (!query_mode && status == PGRES_TUPLES_OK) {
+        pg_raise_message("pg.exec cannot discard row results; use pg.query");
+    } else {
+        pg_raise_result_error(connection->connection, result);
+    }
+    PQclear(result);
+    value_free(connection_value);
+    return converted;
+}
+
+static Value pg_eval_transaction(AstExpr *expr, const char *sql, const char *name) {
+    if (expr->as.call.args.count != 1) {
+        char message[128];
+        snprintf(message, sizeof(message), "pg.%s expects one argument", name);
+        pg_raise_message(message);
+        return value_null();
+    }
+    Value connection_value = eval_expr(expr->as.call.args.items[0]);
+    if (error_action_pending()) {
+        value_free(connection_value);
+        return value_null();
+    }
+    PgConnectionValue *connection = pg_connection_from_value(connection_value);
+    if (!connection) {
+        value_free(connection_value);
+        return value_null();
+    }
+    PGresult *result = PQexec(connection->connection, sql);
+    if (!result) {
+        pg_raise_connection_error(connection->connection, "PostgreSQL transaction command failed");
+        value_free(connection_value);
+        return value_null();
+    }
+    if (PQresultStatus(result) != PGRES_COMMAND_OK) {
+        pg_raise_result_error(connection->connection, result);
+        PQclear(result);
+        value_free(connection_value);
+        return value_null();
+    }
+    PQclear(result);
+    value_free(connection_value);
+    return value_bool(1);
+}
+
+static Value pg_eval_call(AstExpr *expr) {
+    const char *name = expr->as.call.name;
+    if (strcmp(name, "connect") == 0) {
+        return pg_eval_connect(expr);
+    }
+    if (strcmp(name, "close") == 0) {
+        return pg_eval_close(expr);
+    }
+    if (strcmp(name, "query") == 0) {
+        return pg_eval_sql(expr, 1);
+    }
+    if (strcmp(name, "exec") == 0) {
+        return pg_eval_sql(expr, 0);
+    }
+    if (strcmp(name, "begin") == 0) {
+        return pg_eval_transaction(expr, "BEGIN", "begin");
+    }
+    if (strcmp(name, "commit") == 0) {
+        return pg_eval_transaction(expr, "COMMIT", "commit");
+    }
+    if (strcmp(name, "rollback") == 0) {
+        return pg_eval_transaction(expr, "ROLLBACK", "rollback");
+    }
+    char message[256];
+    snprintf(message, sizeof(message), "invalid function call: pg.%s", name);
+    pg_raise_message(message);
+    return value_null();
+}
+#endif
+
 static Value eval_call(AstExpr *expr) {
     if (expr->as.call.library) {
+        if (strcmp(expr->as.call.library, "pg") == 0) {
+            if (!pg_library_loaded) {
+                runtime_error_raise("library not loaded: pg", 2001, "postgres");
+                return value_null();
+            }
+#if HAVE_LIBPQ
+            return pg_eval_call(expr);
+#else
+            runtime_error_raise("PostgreSQL support is not available in this build",
+                                2001,
+                                "postgres");
+            return value_null();
+#endif
+        }
+
         if (strcmp(expr->as.call.library, "gui") == 0) {
             if (!gui_library_loaded) {
                 runtime_error_raise("library not loaded: gui", 1003, "gui");
@@ -7039,8 +8260,16 @@ static Value eval_call(AstExpr *expr) {
         return builtin_len_value(eval_expr(expr->as.call.args.items[0]));
     }
 
+    if (strcmp(expr->as.call.name, "join_path") == 0 ||
+        strcmp(expr->as.call.name, "file_name") == 0 ||
+        strcmp(expr->as.call.name, "directory_name") == 0 ||
+        strcmp(expr->as.call.name, "extension") == 0) {
+        return eval_path_call(expr);
+    }
+
     if (strcmp(expr->as.call.name, "exists") == 0 ||
         strcmp(expr->as.call.name, "read") == 0 ||
+        strcmp(expr->as.call.name, "read_lines") == 0 ||
         strcmp(expr->as.call.name, "write") == 0 ||
         strcmp(expr->as.call.name, "append") == 0 ||
         strcmp(expr->as.call.name, "delete") == 0 ||
@@ -8779,6 +10008,7 @@ int eval_program(AstStmtList program) {
     use_pairs_clear(&use_stack, &use_stack_count);
     gui_clear_native_windows();
     gui_library_loaded = 0;
+    pg_library_loaded = 0;
     free(current_import_path);
     current_import_path = NULL;
     free(root_source_path);

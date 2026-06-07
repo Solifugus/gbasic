@@ -15,6 +15,7 @@ Implemented v0.1 pieces include:
 - User-defined modifiers for assignment and comparison
 - Program and library blocks with explicit `load`
 - File, directory, date/time, duration, and money values
+- Synchronous PostgreSQL access through the optional libpq-backed `pg` module
 - Watchers and basic error handling
 - Smoke and expected-output tests for examples
 
@@ -28,6 +29,7 @@ Requirements:
 - `make`
 - `bison`
 - optional: `pkg-config` and GTK 3 development headers for GUI support
+- optional: `pkg-config` and libpq development headers for PostgreSQL support
 
 Linux packages for the GTK proof of concept:
 
@@ -42,6 +44,10 @@ make
 ```
 
 If GTK 3 development files are available, `make` enables the Stage 2 GUI proof of concept automatically. If GTK is unavailable, the interpreter still builds and runs non-GUI programs, but `gui.window(...)` and `gui.run(...)` fail with a clear runtime error.
+
+If libpq development files are available, `make` enables `load pg`
+automatically. Without libpq, the interpreter still builds and reports that
+PostgreSQL support is unavailable when the module is loaded.
 
 Clean and rebuild:
 
@@ -92,6 +98,13 @@ Run negative lexer/parser diagnostic tests:
 
 ```sh
 ./tests/run_negative.sh
+```
+
+Run the live PostgreSQL integration test using standard libpq connection
+environment variables:
+
+```sh
+GBASIC_POSTGRES_TEST=1 PGDATABASE=my_test_database ./tests/run_postgres.sh
 ```
 
 Manual GUI proof-of-concept run:

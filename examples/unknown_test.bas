@@ -1,10 +1,10 @@
 x = unknown
 
-if x = unknown then
+if is_unknown(x) then
     print("unknown")
 end if
 
-if x != unknown then
+if not is_unknown(x) then
     print("not unknown")
 end if
 
@@ -17,6 +17,6 @@ end if
 x = "hello"
 x = unknown
 
-if x = unknown then
+if is_unknown(x) then
     print("stored unknown")
 end if

@@ -4,7 +4,7 @@ Last verified: 2026-06-06
 
 ## Status
 
-Phases 1, 2, and 3 are **complete**.
+Phases 1 through 5 are **complete**.
 
 Implemented core functions:
 
@@ -68,6 +68,37 @@ Phase 3 core function:
 
 Existing `write()` and `append()` behavior was not changed.
 
+Phase 4 core path functions:
+
+- `join_path(a, b)`
+  - accepts strings, file references, and directory references
+  - returns a string
+  - uses `/` separators consistently with the existing runtime
+  - removes duplicate separators at the join boundary
+- `file_name(path)`
+  - returns the final path component as a string
+- `directory_name(path)`
+  - returns the directory portion as a string
+  - returns `.` when the path has no directory component
+- `extension(path)`
+  - returns the final filename extension without the dot
+  - returns an empty string for extensionless names and leading-dot files
+
+The extraction functions ignore trailing separators. These functions manipulate
+path text only and do not require the referenced path to exist.
+
+Phase 5 core function:
+
+- `read_lines(f)`
+  - requires a file value
+  - returns an array of strings
+  - removes terminating `\n` and an optional preceding `\r`
+  - preserves empty lines and all other whitespace
+  - returns an unterminated final line
+  - returns an empty array for an empty file
+  - does not add a synthetic empty line after a terminating newline
+  - raises a file-operation runtime error for invalid arguments or read failure
+
 ## Files Changed
 
 - `src/eval.c`
@@ -120,6 +151,36 @@ Phase 3 files:
   - added Phase 3 validation and missing-file coverage
 - `tests/run_examples.sh` and `tests/run_negative.sh`
   - registered the Phase 3 tests
+
+Phase 4 files:
+
+- `src/eval.c`
+  - added typed path conversion, join normalization, and component extraction
+- `src/builtins.c`
+  - registered the four path utilities as core functions
+- `examples/path_utilities_test.gb`
+  - added positive string, file-value, and directory-value coverage
+- `examples/path_utilities_test.out`
+  - added expected output
+- `tests/negative_path_*.bas` and matching `.err` files
+  - added type, missing-argument, and extra-argument coverage
+- `tests/run_examples.sh` and `tests/run_negative.sh`
+  - registered the Phase 4 tests
+
+Phase 5 files:
+
+- `src/eval.c`
+  - added whole-file line splitting and `read_lines` file dispatch
+- `src/builtins.c`
+  - registered `read_lines` as a core function
+- `examples/read_lines_test.gb`
+  - added repeatable positive coverage and direct for-each use
+- `examples/read_lines_test.out`
+  - added expected output
+- `tests/negative_read_lines_*.bas` and matching `.err` files
+  - added type, missing-file, and argument-count coverage
+- `tests/run_examples.sh` and `tests/run_negative.sh`
+  - registered the Phase 5 tests
 
 ## Tests Added
 
@@ -179,6 +240,42 @@ Phase 3 negative coverage verifies:
 - position beyond end of file
 - missing file
 
+Phase 4 positive coverage verifies:
+
+- joining paths with and without trailing or leading separators
+- joining from a directory value
+- root and empty-base joins
+- filename extraction from strings and file values
+- directory extraction from strings and file values
+- final extension extraction from single-dot and multi-dot names
+- empty extensions for extensionless names and leading-dot files
+
+Phase 4 negative coverage verifies:
+
+- invalid binary path argument types
+- invalid unary path argument types
+- missing binary arguments
+- missing unary arguments
+- extra binary arguments
+- extra unary arguments
+
+Phase 5 positive coverage verifies:
+
+- normal newline-terminated text
+- empty files returning an empty array
+- preserved blank lines
+- preserved leading and trailing spaces
+- a final line without a terminating newline
+- direct iteration with `for each`
+- repeatable cleanup of generated files
+
+Phase 5 negative coverage verifies:
+
+- invalid file argument type
+- missing file
+- no arguments
+- too many arguments
+
 ## Verification
 
 Commands run on 2026-06-06:
@@ -203,8 +300,23 @@ Phase 3 verification on 2026-06-06:
   `examples/file_overwrite_test.gb`.
 - `./tests/run_negative.sh`: passed, including all six Phase 3 negative cases.
 
+Phase 4 verification on 2026-06-06:
+
+- `make clean && make`: passed without warnings.
+- `./tests/run_examples.sh`: passed, including
+  `examples/path_utilities_test.gb`.
+- `./tests/run_negative.sh`: passed, including all six Phase 4 negative cases.
+
+Phase 5 verification on 2026-06-06:
+
+- `make clean && make`: passed without warnings.
+- `./tests/run_examples.sh`: passed, including
+  `examples/read_lines_test.gb`.
+- `./tests/run_negative.sh`: passed, including all four Phase 5 negative cases.
+
 ## Next Recommended Phase
 
-Define Phase 4 semantics and tests before implementation. The next coherent
-phase is line-oriented reads through `read_lines()`. No `read_lines()`
-functionality was implemented in Phase 3.
+Define Phase 6 semantics and tests before implementation. A coherent next phase
+would address bounded or streaming file reads without changing `read_lines()`.
+No recursive file operations, environment functions, database functions, or
+SQLite support were implemented in Phase 5.

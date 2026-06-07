@@ -48,7 +48,7 @@ end function
 
 function room_exit(room, direction)
     next = room[direction]
-    if next = unknown then
+    if is_unknown(next) then
         return ""
     end if
     return next

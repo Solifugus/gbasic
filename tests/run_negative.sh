@@ -30,6 +30,14 @@ cases=(
     negative_multiline_unterminated_string
     negative_multiline_string_line_tracking
     negative_unknown_order
+    negative_pg_not_loaded
+    negative_pg_connect_type
+    negative_pg_connect_field
+    negative_pg_close_type
+    negative_pg_query_arity
+    negative_pg_query_connection
+    negative_pg_exec_arity
+    negative_pg_transaction_type
     negative_find_type
     negative_function_assignment
     negative_len_assignment
@@ -72,6 +80,16 @@ cases=(
     negative_overwrite_fractional_position
     negative_overwrite_beyond_eof
     negative_overwrite_missing
+    negative_path_join_type
+    negative_path_unary_type
+    negative_path_join_missing
+    negative_path_unary_missing
+    negative_path_join_too_many
+    negative_path_unary_too_many
+    negative_read_lines_type
+    negative_read_lines_missing
+    negative_read_lines_no_arguments
+    negative_read_lines_too_many
     negative_left_type
     negative_mid_arity
     negative_trim_type

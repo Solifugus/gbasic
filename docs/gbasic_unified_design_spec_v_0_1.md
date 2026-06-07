@@ -183,7 +183,23 @@ customer.phone = nothing   ' no phone value exists
 customer.phone = ""        ' known blank string
 ```
 
-Errors are not converted into `unknown` automatically. Failed operations, such as division by zero, remain errors.
+`unknown` is an explicit sentinel, not a third boolean value. It does not
+propagate through comparisons or boolean expressions using SQL-style
+three-valued logic. Use `is_unknown(value)` to test for it:
+
+```basic
+if is_unknown(customer.phone) then
+    print("phone value is not known")
+end if
+```
+
+Using `unknown` directly as a condition is a runtime error. Arithmetic and
+ordering operations involving `unknown` are also runtime errors. Equality
+checks involving `unknown` remain supported for compatibility, but new code
+should use `is_unknown(value)` when testing whether a value is unknown.
+
+Errors are not converted into `unknown` automatically. Failed operations, such
+as division by zero, remain errors.
 
 ---
 

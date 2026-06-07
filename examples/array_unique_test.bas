@@ -15,7 +15,7 @@ print(len(vals))
 if vals[0] = nothing then
     print("nothing")
 end if
-if vals[1] = unknown then
+if is_unknown(vals[1]) then
     print("unknown")
 end if
 

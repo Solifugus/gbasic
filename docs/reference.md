@@ -541,6 +541,47 @@ end if
 
 Errors propagate out of functions. `with lock` unlocks on error, and `without watchers` restores watcher behavior after its block.
 
+## PostgreSQL Module
+
+PostgreSQL support is available when gBASIC is built with libpq. Load the
+compiled standard module before using its qualified API:
+
+```basic
+load pg
+
+db = pg.connect({
+    host:"localhost",
+    database:"worksplicer",
+    user:"app",
+    password:"secret"
+})
+
+rows = pg.query(db, "select id, name from users where active = $1", [true])
+result = pg.exec(db, "update users set active = false where id = $1", [10])
+
+pg.close(db)
+```
+
+Connections are opaque `postgres_connection` values. They close explicitly
+with `pg.close` and automatically during interpreter cleanup.
+
+The module provides:
+
+- `pg.connect(config_record)`
+- `pg.close(connection)`
+- `pg.query(connection, sql[, params])`
+- `pg.exec(connection, sql[, params])`
+- `pg.begin(connection)`
+- `pg.commit(connection)`
+- `pg.rollback(connection)`
+
+Parameters are arrays and are bound separately through libpq. SQL `NULL`
+maps to `nothing`. Query results are arrays of records; duplicate column names
+are errors. `bigint` and `numeric` results remain strings to avoid precision
+loss. JSON results decode to normal arrays, records, and scalar values.
+PostgreSQL errors use `error.source = "postgres"` and include SQLSTATE when
+available.
+
 ## Core Builtin Functions
 
 gBASIC includes always-available core functions that don't require loading libraries. These maintain strict type checking and provide clear error messages.
@@ -747,7 +788,7 @@ text = encode(project)
 loaded = decode(text)
 ```
 
-`encode` supports numbers, strings, booleans, `nothing`, `unknown`, arrays, and records. Strings escape quotes, backslashes, tabs, carriage returns, and newlines. Records are encoded as JSON-like objects with quoted field names. `decode` reads the same format back into gBASIC values and raises a runtime error for malformed text.
+`encode` supports numbers, strings, booleans, `nothing`, `unknown`, arrays, and records. Strings escape quotes, backslashes, tabs, carriage returns, and newlines. Records are encoded as JSON-like objects with quoted field names. `decode` reads the same format back into gBASIC values, accepts JSON `null` as `nothing`, supports standard JSON string escapes, and raises a runtime error for malformed text.
 
 `string(value)` may look the same as `encode(value)` for arrays and records, but the concepts differ: `string(value)` is canonical display text, while `encode(value)` is serialization meant for `decode(...)`.
 

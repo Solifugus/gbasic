@@ -1,0 +1,44 @@
+normal(file)= "examples/tmp_read_lines_normal.txt"
+empty(file)= "examples/tmp_read_lines_empty.txt"
+blank(file)= "examples/tmp_read_lines_blank.txt"
+final(file)= "examples/tmp_read_lines_final.txt"
+
+if exists(normal) then
+    delete(normal)
+end if
+if exists(empty) then
+    delete(empty)
+end if
+if exists(blank) then
+    delete(blank)
+end if
+if exists(final) then
+    delete(final)
+end if
+
+write(normal, "hello\nworld\n")
+write(empty, "")
+write(blank, "hello\n\n  world  \n")
+write(final, "last line without newline")
+
+print "normal"
+for each line in read_lines(normal)
+    print "[" + line + "]"
+end for
+
+print "empty: " + string(len(read_lines(empty)))
+
+print "blank"
+for each line in read_lines(blank)
+    print "[" + line + "]"
+end for
+
+print "final"
+for each line in read_lines(final)
+    print "[" + line + "]"
+end for
+
+delete(normal)
+delete(empty)
+delete(blank)
+delete(final)

@@ -1,0 +1,1 @@
+runtime error at tests/negative_pg_close_type.bas:2:1: pg.close expects a postgres_connection

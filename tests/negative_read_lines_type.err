@@ -1,0 +1,1 @@
+runtime error at tests/negative_read_lines_type.bas:1:1: read_lines expects a file reference

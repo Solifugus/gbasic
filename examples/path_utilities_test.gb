@@ -1,0 +1,17 @@
+folder(dir)= "/home/matt/"
+file(file)= "/home/matt/archive.tar.gz"
+
+print join_path("/home/matt", "test.txt")
+print join_path(folder, "/test.txt")
+print join_path("/", "test.txt")
+print join_path("", "test.txt")
+
+print file_name("/home/matt/test.txt")
+print file_name(file)
+print directory_name("/home/matt/test.txt")
+print directory_name(file)
+
+print extension("/home/matt/test.txt")
+print extension(file)
+print "[" + extension("/home/matt/README") + "]"
+print "[" + extension("/home/matt/.profile") + "]"

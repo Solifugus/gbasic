@@ -1,0 +1,10 @@
+normal
+[hello]
+[world]
+empty: 0
+blank
+[hello]
+[]
+[  world  ]
+final
+[last line without newline]
