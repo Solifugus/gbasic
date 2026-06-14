@@ -81,4 +81,3 @@ fi
 if diff -u tests/webserver_integration.out "$client_stdout"; then
     printf 'PASS tests/webserver_integration.bas\n'
 fi
-
