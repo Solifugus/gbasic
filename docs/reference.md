@@ -682,7 +682,98 @@ errors with `error.source = "webclient"`.
 
 libcurl is optional at build time. A build without it remains usable, but
 `load webclient` reports that the module is unavailable. WebClient is for
-outgoing requests only. A webserver, if added later, will be a separate module.
+outgoing requests only. Incoming requests use the separate WebServer module.
+
+## WebServer Module
+
+WebServer Phase 1 provides a loopback HTTP/1.1 server using live records,
+ordinary arrays, and watchers:
+
+```basic
+load webserver
+
+server = webserver.listen(8080)
+
+watch(server.requests)
+    while count(server.requests) > 0
+        req = take_first(server.requests)
+        append(server.responses, {
+            id:req.id,
+            body:"Hello World"
+        })
+    end while
+end watch
+```
+
+The module provides:
+
+- `webserver.listen(port)`
+- `webserver.close(server)`
+
+`port` must be an integer from 0 through 65535. Phase 1 binds to
+`127.0.0.1`. Port `0` requests an operating-system-assigned ephemeral port,
+which is exposed through `server.port`.
+
+The returned live server record contains:
+
+- `port`: actual bound port
+- `running`: boolean listener state
+- `requests`: incoming request queue
+- `responses`: outgoing response queue
+
+Each request record contains:
+
+- `id`: positive server-generated request ID
+- `method`: uppercase method
+- `path`: request path
+- `query`: record of percent-decoded string parameters
+- `headers`: record with lowercase names
+- `body`: request body string
+- `json`: decoded JSON value, present only when parsing succeeds
+- `remote_ip`: peer IP string
+- `remote_port`: peer port number
+- `timestamp`: UTC ISO 8601 string
+
+Invalid JSON leaves `body` unchanged and omits `json`. Duplicate query
+parameters and request headers use last-wins behavior.
+
+Application code appends response records to `server.responses`:
+
+```basic
+headers = {}
+headers["content-type"] = "application/json"
+
+append(server.responses, {
+    id:req.id,
+    status:201,
+    headers:headers,
+    body:encode({saved:true})
+})
+```
+
+Response fields:
+
+- `id`: required positive integer matching a pending request
+- `status`: optional HTTP status, default `200`
+- `headers`: optional record of string values, default `{}`
+- `body`: optional string, default `""`
+
+The server supplies `Content-Length`, closes the connection after the response,
+and defaults the content type to `text/plain`. If no matching response is
+queued within 30 seconds, the client receives HTTP 504.
+
+Shutdown forms:
+
+```basic
+webserver.close(server)
+server.running = false
+```
+
+WebServer is single-threaded in Phase 1. It supports one request per connection
+with `Content-Length` request bodies. It does not support chunked requests,
+public binding, routing APIs, middleware, static files, templates, cookies,
+sessions, multipart uploads, streaming, WebSockets, TLS, or asynchronous
+application code.
 
 ## Core Builtin Functions
 

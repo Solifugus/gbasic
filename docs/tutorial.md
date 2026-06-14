@@ -261,7 +261,106 @@ end if
 Network, DNS, connection, TLS, malformed URL, and timeout failures are runtime
 errors. libcurl is optional at build time, so `load webclient` reports a clear
 error when support was not compiled in. WebClient only sends outgoing
-requests; a future webserver will be a separate module.
+requests; incoming requests use the separate WebServer module.
+
+## Serving HTTP Requests
+
+WebServer follows gBASIC's watcher model rather than registering callback
+functions. Start a loopback server, watch its request queue, and append replies
+to its response queue:
+
+```basic
+load webserver
+
+server = webserver.listen(8080)
+
+watch(server.requests)
+    while count(server.requests) > 0
+        req = take_first(server.requests)
+
+        append(server.responses, {
+            id:req.id,
+            body:"Hello World"
+        })
+    end while
+end watch
+```
+
+Run the program and request `http://127.0.0.1:8080/`. The watcher removes the
+request from `server.requests`, then queues a response with the same request
+ID.
+
+The live server record provides:
+
+```basic
+print(server.port)
+print(server.running)
+print(count(server.requests))
+print(count(server.responses))
+```
+
+Port `0` asks the operating system to choose an available port:
+
+```basic
+server = webserver.listen(0)
+print(server.port)
+```
+
+Request records provide method, path, query parameters, headers, body, and
+client details:
+
+```basic
+print(req.method)
+print(req.path)
+print(req.query.search)
+print(req.headers["content-type"])
+print(req.remote_ip)
+print(req.remote_port)
+print(req.timestamp)
+```
+
+`req.query` is a record of percent-decoded string values. Header names are
+lowercase. The request body is always a string.
+
+When the body contains valid JSON, the request also has a decoded `json`
+field:
+
+```basic
+if not is_unknown(req["json"]) then
+    print(req.json.name)
+else
+    print(req.body)
+end if
+```
+
+Build JSON responses explicitly with `encode()` and a content-type header:
+
+```basic
+headers = {}
+headers["content-type"] = "application/json"
+
+append(server.responses, {
+    id:req.id,
+    status:201,
+    headers:headers,
+    body:encode({accepted:true})
+})
+```
+
+Only `id` is required. Status defaults to `200`, headers to `{}`, and body to
+`""`. If no response is queued within 30 seconds, WebServer sends HTTP 504 and
+continues running.
+
+Stop the server explicitly:
+
+```basic
+webserver.close(server)
+```
+
+Setting `server.running = false` also requests shutdown. Phase 1 binds only to
+`127.0.0.1`, handles one HTTP/1.1 request per connection, and requires
+`Content-Length` for request bodies. Routing, TLS, WebSockets, streaming,
+static files, middleware, sessions, and cookies are not included.
 
 ## Functions
 

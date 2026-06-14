@@ -3,6 +3,16 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
+cleanup_example_artifacts() {
+    rm -f \
+        examples/tmp_error_lock_test.txt \
+        examples/tmp_file_test.txt \
+        examples/tmp_lock_cleanup_test.txt \
+        examples/tmp_lock_test.txt
+}
+
+trap cleanup_example_artifacts EXIT
+
 make clean
 make
 

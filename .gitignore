@@ -1,9 +1,7 @@
 *.o
 gbasic
-examples/tmp_file_test.txt
-examples/tmp_lock_test.txt
-examples/tmp_lock_cleanup_test.txt
-examples/tmp_error_lock_test.txt
-
-# Local document archive scratch area
-docs/archive/
+parser.tab.c
+parser.tab.h
+src/parser.tab.c
+src/parser.tab.h
+examples/tmp_*.txt

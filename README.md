@@ -1,59 +1,73 @@
 # gBASIC
 
-gBASIC is an experimental BASIC-family language focused on readable business-style programs, explicit modifiers, small libraries, and practical runtime values such as dates, files, directories, money, arrays, and records.
+gBASIC is an experimental BASIC-family language for readable, practical
+programs. It combines familiar control flow with arrays, records, modifiers,
+watchers, files, dates, money, PostgreSQL, HTTP clients, and a queue-based HTTP
+server.
 
-This repository contains the v0.1 C implementation. It is intentionally small: a hand-written lexer, a Bison parser, an AST, and a minimal evaluator. The language and runtime are still experimental and should be treated as `0.1.0-dev`.
+This repository contains the C implementation of gBASIC
+`0.1.0-dev`. The language and runtime are under active development and are not
+yet production-stable.
 
 ## Current Status
 
-Implemented v0.1 pieces include:
+Implemented language features include:
 
-- Lexer, parser, AST dump, and evaluator
-- Variables, assignment, `print(...)`, `input(...)`, `if`/`else`, `consider`, `while`, `break`, `continue`, `for item in items`
-- Arrays, records, indexing, field access
-- User functions, labels, `goto`, `gosub`
-- User-defined modifiers for assignment and comparison
-- Program and library blocks with explicit `load`
-- File, directory, date/time, duration, and money values
-- Synchronous PostgreSQL access through the optional libpq-backed `pg` module
-- Synchronous HTTP and HTTPS requests through the optional libcurl-backed `webclient` module
-- Watchers and basic error handling
-- Smoke and expected-output tests for examples
+- a hand-written lexer, Bison parser, AST, and tree-walking evaluator
+- variables, strict expressions, assignment, `print`, and `input`
+- multiline and short inline `if`/`else`, `consider`, and `while`
+- array iteration with `for each item in items` and `for item in items`
+- `break` and `continue`
+- arrays, records, nested assignment, and dynamic record access
+- functions, programs, libraries, `load`, labels, `goto`, and `gosub`
+- assignment and comparison modifiers
+- watchers, locks, and runtime error handling
+- distinct `nothing` and `unknown` values
+- date/time, duration, money, file, and directory values
+- JSON-like serialization with `encode` and `decode`
 
-Notable limitations remain: the runtime is not optimized, the standard library is tiny, diagnostics are basic, and several documented future features are not implemented yet.
+Implemented runtime and module features include:
 
-## Build
+- core file management, directory management, path utilities, and
+  `read_lines`
+- synchronous PostgreSQL access through the optional libpq-backed `pg` module
+- synchronous HTTP and HTTPS requests through the optional libcurl-backed
+  `webclient` module
+- a built-in loopback HTTP server using live request and response queues
+- an optional GTK 3 GUI proof of concept through Stage 6A
 
-Requirements:
+The repository also contains two larger language exercises:
 
-- C compiler with C11 support
+- [Adventure](examples/adventure/adventure.bas), a small text adventure
+- [BAG](examples/bag/README.md), a menu-driven BASIC Adventure Generator
+
+## Quick Start
+
+Required build tools:
+
+- a C11 compiler
 - `make`
 - `bison`
-- optional: `pkg-config` and GTK 3 development headers for GUI support
-- optional: `pkg-config` and libpq development headers for PostgreSQL support
-- optional: `pkg-config` and libcurl development headers for WebClient support
 
-Linux packages for the GTK proof of concept:
+Optional dependencies are detected through `pkg-config`:
 
-- Debian/Ubuntu: `libgtk-3-dev pkg-config`
-- Fedora: `gtk3-devel pkgconf-pkg-config`
-- Arch: `gtk3 pkgconf`
+| Dependency | Enables |
+| --- | --- |
+| GTK 3 | GUI proof of concept |
+| libpq | `load pg` |
+| libcurl | `load webclient` |
 
-Build:
+Build the interpreter:
 
 ```sh
 make
 ```
 
-If GTK 3 development files are available, `make` enables the Stage 2 GUI proof of concept automatically. If GTK is unavailable, the interpreter still builds and runs non-GUI programs, but `gui.window(...)` and `gui.run(...)` fail with a clear runtime error.
+Run a program:
 
-If libpq development files are available, `make` enables `load pg`
-automatically. Without libpq, the interpreter still builds and reports that
-PostgreSQL support is unavailable when the module is loaded.
-
-If libcurl development files are available, `make` enables `load webclient`
-automatically. Without libcurl, the interpreter still builds and reports that
-WebClient support is unavailable when the module is loaded.
+```sh
+./gbasic examples/adventure/adventure.bas
+```
 
 Clean and rebuild:
 
@@ -62,114 +76,154 @@ make clean
 make
 ```
 
-## Run
+The interpreter still builds when an optional dependency is unavailable.
+Loading or calling the affected feature then produces a clear runtime error.
+The built-in WebServer uses POSIX sockets and has no external HTTP dependency.
 
-Run a program:
-
-```sh
-./gbasic examples/parse_test.gb
-```
-
-Print tokens:
+## Command Line
 
 ```sh
-./gbasic --tokens examples/lexer_test.gb
+./gbasic program.bas
+./gbasic --tokens program.bas
+./gbasic --ast program.bas
+./gbasic --add-loads program.bas
+./gbasic --version
 ```
 
-Print the AST:
+`--add-loads` analyzes unresolved calls and modifiers, then prints source with
+suggested `load` statements. The older `use` syntax and `--add-uses` option
+remain temporarily supported for compatibility.
 
-```sh
-./gbasic --ast examples/parse_test.gb
+## Language Example
+
+```basic
+people = [
+    {name:"Ada", active:true},
+    {name:"Grace", active:false}
+]
+
+for each person in people
+    if not person.active then continue
+    print(person.name + " is active")
+end for
+
+if count(people) = 2 then print("Two people loaded")
 ```
 
-Analyze unresolved calls/modifiers and print source with suggested `load` statements:
+Multiline conditionals remain available:
 
-```sh
-./gbasic --add-loads examples/add_uses_test.bas
+```basic
+if ready then
+    print("ready")
+else
+    print("waiting")
+end if
 ```
 
-Compatibility note: `use` and `--add-uses` still work for now, but new examples should prefer `load` and `--add-loads`.
+Short conditionals omit `end if` when their final branch is inline:
 
-See [examples/adventure/adventure.bas](examples/adventure/adventure.bas) for a small text-adventure example using current control flow, input, modifiers, arrays, and functions. [examples/adventure/NOTES.md](examples/adventure/NOTES.md) records design-friction notes found while writing it.
-
-## Tests
-
-Run all example smoke and expected-output tests:
-
-```sh
-./tests/run_examples.sh
+```basic
+if ready then print("ready")
+else print("waiting")
 ```
 
-Run negative lexer/parser diagnostic tests:
+See [docs/tutorial.md](docs/tutorial.md) for a guided introduction and
+[docs/reference.md](docs/reference.md) for the detailed language and runtime
+reference.
 
-```sh
-./tests/run_negative.sh
-```
+## Values And Modifiers
 
-Run the live PostgreSQL integration test using standard libpq connection
-environment variables:
-
-```sh
-GBASIC_POSTGRES_TEST=1 PGDATABASE=my_test_database ./tests/run_postgres.sh
-```
-
-Run the loopback WebClient integration test:
-
-```sh
-./tests/run_webclient.sh
-```
-
-Manual GUI proof-of-concept run:
-
-```sh
-GBASIC_PATH=stdlib ./gbasic examples/gui/demo.bas
-```
-
-See [examples/gui/README.md](examples/gui/README.md) for manual verification steps.
-
-## Language Examples
-
-Modifier assignment:
+Modifiers validate or transform values during assignment and comparison:
 
 ```basic
 price(USD)= 19.95
 due(date)= "2026-05-15"
 command(trimmed)= input(">")
 age(number)= input("Age: ")
-command(lowered)= command
+
+if command(caseless)= "quit" then print("Goodbye")
 ```
 
-`input(...)` returns a string. Use the `(number)` modifier when you want numeric input, and keep arithmetic operands numeric. gBASIC no longer silently treats strings as `0` in arithmetic expressions.
+Arithmetic is strict. `-`, `*`, and `/` require numbers. `+` performs numeric
+addition unless either operand is a string, in which case canonical string
+conversion and concatenation are used.
 
-`+` is split between arithmetic and concatenation:
-
-- if neither operand is a string, `+` is numeric addition and both operands must be numbers
-- if either operand is a string, both operands are converted with canonical string conversion and concatenated
-
-This means `"You were born in " + birth_year + "."` works, while `1 + true` and `1 + nothing` still raise runtime errors.
-
-Modifier comparison:
+`nothing` represents deliberate absence. `unknown` represents an unavailable
+or not-yet-known value and is also returned by missing dynamic record reads:
 
 ```basic
-name = "Joe Barnes"
-if name(caseless)= "joe barnes" then
-    print("match")
-end if
+customer = {name:"Ada"}
+middle_name = customer["middle_name"]
+
+if is_unknown(middle_name) then print("Middle name is unknown")
 ```
 
-Function:
+## Files And Paths
+
+File and directory values use assignment modifiers:
 
 ```basic
-function add(a, b)
-    return a + b
-end function
-
-print(add(2, 3))
+input_file(file)= "input.txt"
+output_dir(directory)= "output"
 ```
+
+Core file operations include:
+
+- `read`, `write`, `append`, `overwrite`, `bytes`, and `exists`
+- `delete`, `copy`, and `move`
+- `list`, `files`, `folders`, and `list_files`
+- `make_dir` and non-recursive `remove_dir`
+- `join_path`, `file_name`, `directory_name`, and `extension`
+- `read_lines`, which returns an array of strings suitable for `for each`
+
+Example:
+
+```basic
+log(file)= "app.log"
+write(log, "started\nready\n")
+
+for each line in read_lines(log)
+    print(line)
+end for
+```
+
+Filesystem failures are runtime errors. `remove_dir` removes only empty
+directories; recursive file operations are not implemented.
+
+## PostgreSQL
+
+PostgreSQL support is synchronous and available when gBASIC is built with
+libpq:
+
+```basic
+load pg
+
+db = pg.connect({
+    host:"localhost",
+    database:"worksplicer",
+    user:"app",
+    password:"secret"
+})
+
+rows = pg.query(db, "select id, name from users where active = $1", [true])
+result = pg.exec(db, "update users set active = false where id = $1", [10])
+
+pg.close(db)
+```
+
+The module provides `pg.connect`, `pg.close`, `pg.query`, `pg.exec`,
+`pg.begin`, `pg.commit`, and `pg.rollback`. Parameters are arrays bound through
+libpq. Query results are arrays of records, SQL `NULL` maps to `nothing`, and
+PostgreSQL errors include SQLSTATE information when available.
+
+`bigint` and `numeric` results currently remain strings to avoid silent
+floating-point precision loss. Prepared statements, pooling, asynchronous
+queries, `COPY`, and `LISTEN`/`NOTIFY` are not implemented.
 
 ## WebClient
 
-Load `webclient` to make outgoing HTTP or HTTPS requests:
+WebClient performs synchronous outgoing HTTP and HTTPS requests when libcurl
+is available:
 
 ```basic
 load webclient
@@ -179,8 +233,13 @@ print(response.status)
 print(response.body)
 ```
 
-Request bodies must be strings. Use `encode(value)` explicitly when sending
-JSON, and use `webclient.request` when custom headers are needed:
+The Phase 1 API is:
+
+- `webclient.get(url)`
+- `webclient.post(url, body)`
+- `webclient.request(request_record)`
+
+Request bodies must be strings. Encode structured JSON explicitly:
 
 ```basic
 headers = {}
@@ -188,197 +247,139 @@ headers["Content-Type"] = "application/json"
 
 response = webclient.request({
     method:"POST",
-    url:"https://api.example.com/users",
+    url:"https://api.example.com/events",
     headers:headers,
-    body:encode({name:"Ada", active:true})
+    body:encode({name:"launch", active:true}),
+    timeout:10
 })
 ```
 
-`webclient.post(url, body)` is the shorter form when no custom headers are
-needed:
+Responses contain `status`, `reason`, lowercase `headers`, and string `body`.
+When JSON parsing succeeds, the response also contains `json`:
 
 ```basic
-response = webclient.post(
-    "https://api.example.com/messages",
-    encode({message:"hello"})
-)
+if not is_unknown(response["json"]) then print(response.json)
 ```
 
-A response contains `status`, `reason`, `headers`, and string `body` fields.
-When the body is valid JSON, it also contains a decoded `json` field:
+HTTP statuses such as 404 and 500 return response records. DNS, connection,
+TLS, malformed-URL, and timeout failures are runtime errors.
+
+## WebServer
+
+WebServer Phase 1 uses watchers and live queues instead of callback handlers:
 
 ```basic
-response = webclient.get("https://api.example.com/users/1")
-if not is_unknown(response["json"]) then
-    print(response.json.name)
-end if
-```
+load webserver
 
-HTTP statuses such as 404 and 500 return response records. Network, DNS, TLS,
-malformed URL, and timeout failures are runtime errors. WebClient is for
-outgoing requests only; a future webserver will be a separate module.
+server = webserver.listen(8080)
 
-## Core Builtin Functions
-
-gBASIC includes always-available core functions that don't require loading libraries:
-
-**Type inspection:**
-```basic
-print(type("hello"))           # "string"
-print(is_array([1, 2, 3]))     # true
-print(is_record({x:1}))        # true
-```
-
-**Strict conversion:**
-```basic
-num = number("42")             # Convert string to number
-text = string(123)             # Convert number to string
-arr = array("[1, 2, 3]")       # Decode JSON string to array
-```
-
-**String helpers:**
-```basic
-print(replace("hello", "l", "x"))     # "hexxo"
-print(starts_with("hello", "he"))     # true
-print(repeat("ha", 3))                # "hahaha"
-```
-
-**Record helpers:**
-```basic
-rec = {name:"John", age:30}
-print(keys(rec))                      # array of keys
-print(values(rec))                    # array of values
-print(has(rec, "name"))               # true
-new_rec = remove_key(rec, "age")      # new record without age
-```
-
-**Counting:**
-```basic
-print(count("hello"))          # 5 (string length)
-print(count([1, 2, 3]))        # 3 (array elements)
-print(count({x:1, y:2}))       # 2 (record fields)
-```
-
-These functions maintain strict type checking and provide clear error messages for invalid arguments.
-
-Control flow:
-
-```basic
-i = 0
-while true
-    if i = 3 then
-        break
-    else
-        print(i)
-    end if
-    i = i + 1
-end while
-
-consider command
-if "look" then
-    look()
-if "inventory" then
-    show_inventory()
-else
-    print("I do not understand.")
-end consider
-```
-
-Values and comparisons:
-
-```basic
-words(split)= "apple banana orange"
-
-if len(words) != 0 then
-    print(join(words, ", "))
-else
-    print(nothing)
-end if
-
-noun = join_from(words, 1, " ")
-print(contains(words, "banana"))
-
-saved = encode({title = "Demo", words = words})
-loaded = decode(saved)
-print(loaded.title)
-
-line = "print(" + quote("hello \"BASIC\"") + ")"
-print(line)
-
-status = unknown
-```
-
-Canonical string conversion:
-
-```basic
-print("Age: " + 55)
-print(string({name = "Grace", age = 35}))
-```
-
-`string(value)` and the `(string)` modifier convert values to display text. Arrays and records use the same textual shape as `encode(value)`, but `string(value)` is display-oriented while `encode(value)` is serialization. `quote(value)` remains separate and returns a valid gBASIC source literal, including surrounding quotes for strings.
-
-Nested assignment works for variables, array elements, record fields, and combinations such as `items[i].location = "inventory"` or `world.rooms[index].visited = true`. Records support static field access with `record.field` and dynamic field access with `record[key]` when `key` is a string; missing dynamic reads return `unknown`, and dynamic assignment creates the field when needed.
-
-Function calls are expressions, not assignment targets: `if len(words) = 0 then` is valid, but `len(words) = 0`, `foo() = 1`, and `get_player().name = "Bob"` are invalid.
-
-Short conditionals may place one statement on the same line as `then` or
-`else`. When the final branch is inline, `end if` is omitted:
-
-```basic
-if ready then print("ready")
-else print("waiting")
-```
-
-A final branch whose body begins on the next line remains a block and requires
-`end if`.
-
-Library and `load`:
-
-```basic
-library math
-    function double(x)
-        return x * 2
-    end function
-end library
-
-program demo(args)
-    load math
-    print(double(21))
-end program
-```
-
-String `load` form for library names is also accepted:
-
-```basic
-load "gui"
-```
-
-Watcher:
-
-```basic
-a = 10
-b = 20
-
-watch(a, b)
-    c = a + b
+watch(server.requests)
+    while count(server.requests) > 0
+        req = take_first(server.requests)
+        append(server.responses, {
+            id:req.id,
+            body:"Hello World"
+        })
+    end while
 end watch
-
-print(c)
-a = 15
-print(c)
 ```
 
-Error handling:
+`webserver.listen(port)` binds immediately to `127.0.0.1`. Port `0` selects an
+available ephemeral port. Incoming request records are appended to
+`server.requests`; application responses are appended to `server.responses`
+and matched by request `id`.
+
+Requests include method, path, parsed query parameters, lowercase headers,
+string body, peer information, timestamp, and optional decoded `json`.
+Response status defaults to 200, headers to `{}`, and body to `""`.
+Unanswered requests receive HTTP 504 after 30 seconds.
+
+Shut down with either:
 
 ```basic
-on error resume next
-
-print(missing_value)
-if error then
-    print(error.message)
-    error.clear()
-end if
+webserver.close(server)
+server.running = false
 ```
+
+Phase 1 is a single-threaded, loopback-only HTTP/1.1 server. It does not
+provide public binding, TLS, routing, middleware, static files, streaming,
+chunked request bodies, or WebSockets.
+
+## GUI
+
+When GTK 3 development files are available, the build enables the current GUI
+proof of concept. It supports record-defined windows, addressable widgets,
+GUI-originated watcher updates, and watcher-driven refresh of existing
+widgets. Dynamic widget-tree mutation is not implemented.
+
+Run the demos with the standard-library path configured:
+
+```sh
+GBASIC_PATH=stdlib ./gbasic examples/gui/demo.bas
+GBASIC_PATH=stdlib ./gbasic examples/gui/watch_demo.bas
+GBASIC_PATH=stdlib ./gbasic examples/gui/calculator.bas
+```
+
+See [examples/gui/README.md](examples/gui/README.md) for the implemented scope
+and manual verification steps.
+
+## Tests
+
+Build and run the baseline suites:
+
+```sh
+make clean && make
+./tests/run_examples.sh
+./tests/run_negative.sh
+```
+
+Run module and application integration tests:
+
+```sh
+./tests/run_webclient.sh
+./tests/run_webserver.sh
+bash tests/run_bag_smoke.sh
+```
+
+The WebClient and WebServer runners use local loopback fixtures and skip
+cleanly when their environment is unavailable.
+
+The PostgreSQL integration test is opt-in and uses normal libpq environment
+variables:
+
+```sh
+GBASIC_POSTGRES_TEST=1 PGDATABASE=my_test_database ./tests/run_postgres.sh
+```
+
+GUI testing remains manual because it requires a display.
+
+## Documentation
+
+- [Tutorial](docs/tutorial.md)
+- [Language and runtime reference](docs/reference.md)
+- [Core design and grammar](docs/gBASIC_v0_1_core_design_and_grammar.md)
+- [PostgreSQL design and implementation status](docs/postgres_design.md)
+- [WebClient design](docs/webclient_design.md)
+- [WebServer design](docs/webserver_design.md)
+- [GUI design](docs/gui_design.md)
+- [Completed development history](docs/historical_development_archive.md)
+
+Design documents may discuss unimplemented future work. The historical archive
+summarizes completed phases without keeping each temporary tracker active.
+
+## Project Limitations
+
+gBASIC remains an experimental interpreter:
+
+- the evaluator is tree-walking and not optimized
+- diagnostics and tooling are still developing
+- optional modules depend on platform libraries
+- the WebServer is intentionally limited to local development use
+- the GUI is a proof of concept rather than a complete toolkit
+- module APIs and language details may change before a stable release
+
+Check the implementation status documents before relying on a design proposal
+as an available feature.
 
 ## Version
 
@@ -386,7 +387,7 @@ end if
 ./gbasic --version
 ```
 
-prints:
+Current output:
 
 ```text
 gBASIC 0.1.0-dev

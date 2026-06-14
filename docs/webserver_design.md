@@ -3,8 +3,9 @@
 ## Status
 
 Phase 1 is implemented. This document records the queue/watch design and
-future-phase plan; see `docs/webserver_progress.md` for current implementation
-status and verification.
+future-phase plan. See `docs/project_state.md` for current implementation
+status and `docs/historical_development_archive.md` for the completed Phase 1
+history.
 
 ## Core Principle
 
