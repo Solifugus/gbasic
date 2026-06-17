@@ -4,7 +4,7 @@ Updated: 2026-06-16
 
 ## Summary
 
-Phase 1 of `docs/datetime_comparison_plan.md` is complete.
+Phases 1 and 2 of `docs/datetime_comparison_plan.md` are complete.
 
 Bare date/time comparison is now exact. The previous lower-of-two-precisions
 comparison was removed from bare operators.
@@ -19,6 +19,10 @@ a {day}= b
 
 Old comparison syntax was not removed. Watcher behavior was not changed.
 
+Phase 2 verified that date/time comparison lenses truncate both operands to
+the named precision before applying the exact comparison relation, across all
+comparison operators.
+
 ## Files Changed
 
 Production:
@@ -31,6 +35,8 @@ Tests:
 * `examples/datetime_test.out`
 * `examples/datetime_exact_comparison_test.bas`
 * `examples/datetime_exact_comparison_test.out`
+* `examples/datetime_lens_operator_test.bas`
+* `examples/datetime_lens_operator_test.out`
 * `tests/negative_datetime_string_comparison.bas`
 * `tests/negative_datetime_string_comparison.err`
 * `tests/run_examples.sh`
@@ -118,6 +124,24 @@ Added `tests/negative_datetime_string_comparison.bas` covering:
 
 * bare date/time-to-string comparison raises a runtime error
 
+## Phase 2 Lens Coverage
+
+Added `examples/datetime_lens_operator_test.bas` covering:
+
+* `{day}=`, `{day}<`, `{day}<=`, `{day}>`, `{day}>=`, `{day}!=`,
+  `{day}!<`, and `{day}!>`
+* `{month}=` and `{month}<`
+* `{year}=` and `{year}<`
+* `{hour}=` and `{hour}<`
+* `{minute}=` and `{minute}<`
+* `{second}=` and `{second}<`
+* bare exact comparison remains exact after lens checks
+* old explicit `(day)` comparison syntax still works
+
+No evaluator changes were required for Phase 2. The existing lens path already
+applies `apply_datetime_lens_to_value()` to both operands and then compares the
+truncated results through exact bare comparison.
+
 ## PostgreSQL Impact
 
 PostgreSQL date/time value mapping was not changed.
@@ -162,10 +186,12 @@ SKIP tests/postgres_integration.bas (set GBASIC_POSTGRES_TEST=1 and standard PG*
 
 ## Next Recommended Phase
 
-Proceed to the lens-focused follow-up from `docs/datetime_comparison_plan.md`:
+Remaining datetime comparison work:
 
-* broaden explicit lens coverage for date/time ordering
-* update any remaining tutorial/reference examples that imply bare
-  precision-aware comparison
+* update any remaining tutorial examples that imply bare precision-aware
+  comparison
 * add PostgreSQL date/time comparison integration coverage when a configured
   PostgreSQL test environment is available
+* decide whether `compare(a, operator, b)` needs an explicit source-level
+  lens-capable helper form, or whether lens syntax remains the only public
+  precision-aware comparison API
