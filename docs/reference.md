@@ -275,6 +275,22 @@ a !>= b
 a !<= b
 ```
 
+Date/time bare comparisons are exact. Two date/time values are equal only when
+their stored date/time fields and stored precision match. For precision-aware
+comparison, use an explicit comparison lens:
+
+```basic
+d(date)= "2026-05-15"
+t(date)= "2026-05-15 12:05:03"
+
+if d != t then print("different precision")
+if d {day}= t then print("same day")
+```
+
+Bare date/time ordering compares the represented start instant first, then
+uses stored precision as a tie-breaker with less precise values ordered before
+more precise values at the same start instant.
+
 Logical operators:
 
 ```basic
@@ -974,6 +990,9 @@ Array helper functions:
 - `sort(array)`
 
 `contains(array, value)` returns true when the array contains a matching value. `remove_value(array, value)` removes the first matching value and returns the resulting array; when the first argument is a variable, that array is updated in place. `find_by(records, field_name, value)` returns the first matching record index or `nothing`. `join_from(array, start_index, separator)` joins string elements from `start_index` to the end and returns `""` when the start is out of range. `first(array)` returns the first element or `nothing`; `rest(array)` returns a new array without the first element.
+
+`sort()` and `unique()` support scalar arrays. Date/time values use exact
+date/time equality and ordering, not same-day or same-month comparison.
 
 Input and arithmetic rules:
 

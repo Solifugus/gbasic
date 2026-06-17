@@ -2,11 +2,19 @@ d (date)= "2026-05-15"
 m (date)= "2026-05-15 12:05:03"
 month (date)= "2026-05"
 
-if d = m then
+if d != m then
+    print "different precision"
+end if
+
+if d {day}= m then
     print "same day"
 end if
 
-if month = d then
+if month != d then
+    print "different month precision"
+end if
+
+if month {month}= d then
     print "same month"
 end if
 

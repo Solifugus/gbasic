@@ -2438,6 +2438,55 @@ static Value apply_datetime_lens_to_value(Value value,
     return value_datetime(datetime_apply_lens(dt, lens));
 }
 
+static int compare_ints(int left, int right) {
+    if (left < right) {
+        return -1;
+    }
+    if (left > right) {
+        return 1;
+    }
+    return 0;
+}
+
+static int datetime_compare_exact(DateTime left, DateTime right) {
+    int cmp = compare_ints(left.time_only ? 1 : 0, right.time_only ? 1 : 0);
+    if (cmp != 0) {
+        return cmp;
+    }
+
+    if (!left.time_only) {
+        cmp = compare_ints(left.year, right.year);
+        if (cmp != 0) return cmp;
+        cmp = compare_ints(left.month, right.month);
+        if (cmp != 0) return cmp;
+        cmp = compare_ints(left.day, right.day);
+        if (cmp != 0) return cmp;
+    }
+
+    cmp = compare_ints(left.hour, right.hour);
+    if (cmp != 0) return cmp;
+    cmp = compare_ints(left.minute, right.minute);
+    if (cmp != 0) return cmp;
+    cmp = compare_ints(left.second, right.second);
+    if (cmp != 0) return cmp;
+
+    return compare_ints((int)left.precision, (int)right.precision);
+}
+
+static int comparison_result_from_cmp(const char *op, int cmp) {
+    if (strcmp(op, "=") == 0) return cmp == 0;
+    if (strcmp(op, "!=") == 0) return cmp != 0;
+    if (strcmp(op, ">") == 0) return cmp > 0;
+    if (strcmp(op, "<") == 0) return cmp < 0;
+    if (strcmp(op, ">=") == 0) return cmp >= 0;
+    if (strcmp(op, "<=") == 0) return cmp <= 0;
+    if (strcmp(op, "!>") == 0) return !(cmp > 0);
+    if (strcmp(op, "!<") == 0) return !(cmp < 0);
+    if (strcmp(op, "!>=") == 0) return !(cmp >= 0);
+    if (strcmp(op, "!<=") == 0) return !(cmp <= 0);
+    return 0;
+}
+
 static int is_leap_year(int year) {
     return (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
 }
@@ -5023,6 +5072,7 @@ static int value_unique_comparable(Value value) {
     return value.kind == VALUE_NUMBER ||
         value.kind == VALUE_STRING ||
         value.kind == VALUE_BOOL ||
+        value.kind == VALUE_DATETIME ||
         value.kind == VALUE_NULL ||
         value.kind == VALUE_UNKNOWN;
 }
@@ -5038,6 +5088,8 @@ static int unique_values_equal(Value left, Value right) {
         return strcmp(left.as.string, right.as.string) == 0;
     case VALUE_BOOL:
         return left.as.boolean == right.as.boolean;
+    case VALUE_DATETIME:
+        return datetime_compare_exact(left.as.datetime, right.as.datetime) == 0;
     case VALUE_NULL:
     case VALUE_UNKNOWN:
         return 1;
@@ -5154,6 +5206,7 @@ static int value_sort_comparable(Value value) {
     return value.kind == VALUE_NUMBER ||
         value.kind == VALUE_STRING ||
         value.kind == VALUE_BOOL ||
+        value.kind == VALUE_DATETIME ||
         value.kind == VALUE_NULL ||
         value.kind == VALUE_UNKNOWN;
 }
@@ -5212,6 +5265,9 @@ static int sort_value_compare(const void *left_ptr, const void *right_ptr) {
     }
     if (left->kind == VALUE_BOOL) {
         return left->as.boolean - right->as.boolean;
+    }
+    if (left->kind == VALUE_DATETIME) {
+        return datetime_compare_exact(left->as.datetime, right->as.datetime);
     }
     return 0;
 }
@@ -10421,44 +10477,13 @@ static Value eval_comparison(AstExpr *expr, Value left, Value right) {
     }
 
     if (left.kind == VALUE_DATETIME && right.kind == VALUE_DATETIME) {
-        int cmp = 0;
-        DateTimePrecision precision =
-            left.as.datetime.precision < right.as.datetime.precision
-                ? left.as.datetime.precision
-                : right.as.datetime.precision;
-
-        if (left.as.datetime.time_only != right.as.datetime.time_only) {
-            cmp = 1;
-        } else if (!left.as.datetime.time_only && precision >= PREC_YEAR &&
-                   left.as.datetime.year != right.as.datetime.year) {
-            cmp = left.as.datetime.year < right.as.datetime.year ? -1 : 1;
-        } else if (!left.as.datetime.time_only && precision >= PREC_MONTH &&
-                   left.as.datetime.month != right.as.datetime.month) {
-            cmp = left.as.datetime.month < right.as.datetime.month ? -1 : 1;
-        } else if (!left.as.datetime.time_only && precision >= PREC_DAY &&
-                   left.as.datetime.day != right.as.datetime.day) {
-            cmp = left.as.datetime.day < right.as.datetime.day ? -1 : 1;
-        } else if (precision >= PREC_HOUR &&
-                   left.as.datetime.hour != right.as.datetime.hour) {
-            cmp = left.as.datetime.hour < right.as.datetime.hour ? -1 : 1;
-        } else if (precision >= PREC_MINUTE &&
-                   left.as.datetime.minute != right.as.datetime.minute) {
-            cmp = left.as.datetime.minute < right.as.datetime.minute ? -1 : 1;
-        } else if (precision >= PREC_SECOND &&
-                   left.as.datetime.second != right.as.datetime.second) {
-            cmp = left.as.datetime.second < right.as.datetime.second ? -1 : 1;
-        }
-
-        if (strcmp(op, "=") == 0) result = cmp == 0;
-        else if (strcmp(op, "!=") == 0) result = cmp != 0;
-        else if (strcmp(op, ">") == 0) result = cmp > 0;
-        else if (strcmp(op, "<") == 0) result = cmp < 0;
-        else if (strcmp(op, ">=") == 0) result = cmp >= 0;
-        else if (strcmp(op, "<=") == 0) result = cmp <= 0;
-        else if (strcmp(op, "!>") == 0) result = !(cmp > 0);
-        else if (strcmp(op, "!<") == 0) result = !(cmp < 0);
-        else if (strcmp(op, "!>=") == 0) result = !(cmp >= 0);
-        else if (strcmp(op, "!<=") == 0) result = !(cmp <= 0);
+        int cmp = datetime_compare_exact(left.as.datetime, right.as.datetime);
+        result = comparison_result_from_cmp(op, cmp);
+    } else if (left.kind == VALUE_DATETIME || right.kind == VALUE_DATETIME) {
+        runtime_error_raise("date/time comparison requires date/time values", 1003, "datetime");
+        value_free(left);
+        value_free(right);
+        return value_null();
     } else if (!expr->as.binary.modifier.library &&
         modifier_is(expr->as.binary.modifier.name, "caseless") &&
         left.kind == VALUE_STRING &&
