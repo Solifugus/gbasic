@@ -128,6 +128,47 @@ void lexer_begin_modifier_content(Lexer *lexer) {
     lexer->modifier_content_mode = 1;
 }
 
+static Token lens_content_token(Lexer *lexer) {
+    const char *start = lexer->current;
+    int line = lexer->line;
+    int column = lexer->column;
+    int in_string = 0;
+    int escape = 0;
+
+    while (!is_at_end(lexer)) {
+        char ch = peek(lexer);
+        if (escape) {
+            escape = 0;
+            advance(lexer);
+            continue;
+        }
+        if (in_string && ch == '\\') {
+            escape = 1;
+            advance(lexer);
+            continue;
+        }
+        if (ch == '"') {
+            in_string = !in_string;
+        }
+        if (!in_string && ch == '}') {
+            Token token = make_token(lexer, TOKEN_LENS_CONTENT, start, line, column);
+            lexer->lens_content_mode = 0;
+            return token;
+        }
+        if (ch == '\n') {
+            break;
+        }
+        advance(lexer);
+    }
+
+    lexer->lens_content_mode = 0;
+    return error_token(lexer, start, line, column);
+}
+
+void lexer_begin_lens_content(Lexer *lexer) {
+    lexer->lens_content_mode = 1;
+}
+
 static Token number_token(Lexer *lexer, const char *start, int line, int column) {
     while (isdigit((unsigned char)peek(lexer))) {
         advance(lexer);
@@ -285,12 +326,16 @@ void lexer_init(Lexer *lexer, const char *source) {
     lexer->line = 1;
     lexer->column = 1;
     lexer->modifier_content_mode = 0;
+    lexer->lens_content_mode = 0;
     lexer->consider_depth = 0;
 }
 
 Token lexer_next(Lexer *lexer) {
     if (lexer->modifier_content_mode) {
         return modifier_content_token(lexer);
+    }
+    if (lexer->lens_content_mode) {
+        return lens_content_token(lexer);
     }
 
     skip_spaces_and_comments(lexer);
@@ -359,6 +404,7 @@ const char *token_type_name(TokenType type) {
     case TOKEN_NUMBER: return "NUMBER";
     case TOKEN_STRING: return "STRING";
     case TOKEN_MOD_CONTENT: return "MOD_CONTENT";
+    case TOKEN_LENS_CONTENT: return "LENS_CONTENT";
     case TOKEN_PROGRAM: return "PROGRAM";
     case TOKEN_LIBRARY: return "LIBRARY";
     case TOKEN_LOAD: return "LOAD";

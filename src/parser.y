@@ -419,7 +419,7 @@ typedef struct {
 }
 
 %token <number> NUMBER
-%token <text> IDENT STRING MOD_CONTENT QUALIFIED_IDENT
+%token <text> IDENT STRING MOD_CONTENT LENS_CONTENT QUALIFIED_IDENT
 %token IF CONSIDER_IF THEN ELSE CONSIDER_ELSE END END_CONSIDER PRINT TRUE FALSE NOTHING UNKNOWN_VALUE AND OR NOT WITH FOR TO IN EACH WHILE CONSIDER BREAK CONTINUE FUNCTION RETURN GOTO GOSUB WATCH WITHOUT WATCHERS ON RESUME NEXT STOP ERROR_VALUE MODIFIER PROGRAM LIBRARY LOAD USE EXPORT
 %token OP_EQ OP_NE OP_GT OP_LT OP_GE OP_LE OP_NGT OP_NLT OP_NGE OP_NLE
 %token PLUS MINUS STAR SLASH LPAREN MOD_LPAREN RPAREN LBRACKET RBRACKET LBRACE RBRACE COMMA COLON NEWLINE
@@ -438,7 +438,7 @@ typedef struct {
 %type <record_field_list> record_field_list
 %type <consider_branch_list> consider_branch_list
 %type <name_list> parameter_list parameter_list_opt watch_target_list
-%type <modifier> modifier
+%type <modifier> modifier comparison_lens
 %type <modifier_signature> modifier_signature
 %type <duration> duration_terms
 %type <ident_suffix> ident_suffix ident_dot_suffix
@@ -507,6 +507,12 @@ variable_name
 
 modifier
     : MOD_LPAREN MOD_CONTENT { $$ = parse_modifier_use($2); }
+    ;
+
+comparison_lens
+    : LBRACE { lexer_begin_lens_content(active_lexer); } LENS_CONTENT RBRACE {
+        $$ = parse_modifier_use($3);
+      }
     ;
 
 modifier_name
@@ -815,6 +821,9 @@ and_expression
 comparison_expression
     : additive_expression { $$ = $1; }
     | additive_expression comparison_operator additive_expression { $$ = expr_at(ast_binary($2, ast_modifier_none(), $1, $3), @2.first_line, @2.first_column); }
+    | additive_expression comparison_lens comparison_operator additive_expression {
+        $$ = expr_at(ast_binary($3, $2, $1, $4), @3.first_line, @3.first_column);
+      }
     | additive_expression modifier comparison_operator additive_expression {
         if (!is_modifier_target_expr($1)) {
             yyerror("modifier target must be a variable, field, or index");
@@ -1025,6 +1034,9 @@ static int yylex(void) {
     case TOKEN_MOD_CONTENT:
         yylval.text = copy_text(token.start, token.length);
         return MOD_CONTENT;
+    case TOKEN_LENS_CONTENT:
+        yylval.text = copy_text(token.start, token.length);
+        return LENS_CONTENT;
     case TOKEN_IF: return IF;
     case TOKEN_CONSIDER_IF: return CONSIDER_IF;
     case TOKEN_THEN: return THEN;

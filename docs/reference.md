@@ -398,14 +398,33 @@ Modifier use:
 
 ```basic
 x(USD)= 19.95
-name(caseless)= "joe"
-a(rounded 2)= b
-a(math.rounded to 2)= b
+name {caseless}= "joe"
+a {rounded 2}= b
+a {math.rounded to 2}= b
 ```
 
 Assignment modifiers transform assigned values. Comparison modifiers transform or implement comparisons.
 
 Modifiers apply only in assignment and comparison contexts. In v0.1, modifiers apply to variables, record fields, and array elements, not to function-call results.
+
+Comparison modifiers use brace lens syntax:
+
+```basic
+left {modifier}= right
+left {modifier args}< right
+left {modifier args}>= right
+```
+
+The older parenthesized comparison syntax remains temporarily supported during
+the migration:
+
+```basic
+name(caseless)= "joe"
+a(rounded 2)= b
+```
+
+That comparison form is deprecated and will be removed in a later phase.
+Parenthesized assignment modifiers are not deprecated.
 
 Define an assignment modifier:
 
@@ -515,7 +534,7 @@ math.add(2, 3)
 Qualified modifier calls:
 
 ```basic
-name(text.caseless)= "joe"
+name {text.caseless}= "joe"
 ```
 
 ## Errors

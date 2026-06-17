@@ -8,6 +8,7 @@ typedef enum {
     TOKEN_NUMBER,
     TOKEN_STRING,
     TOKEN_MOD_CONTENT,
+    TOKEN_LENS_CONTENT,
     TOKEN_PROGRAM,
     TOKEN_LIBRARY,
     TOKEN_LOAD,
@@ -95,12 +96,14 @@ typedef struct {
     int line;
     int column;
     int modifier_content_mode;
+    int lens_content_mode;
     int consider_depth;
     int consider_columns[64];
 } Lexer;
 
 void lexer_init(Lexer *lexer, const char *source);
 void lexer_begin_modifier_content(Lexer *lexer);
+void lexer_begin_lens_content(Lexer *lexer);
 Token lexer_next(Lexer *lexer);
 const char *token_type_name(TokenType type);
 

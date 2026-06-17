@@ -66,6 +66,8 @@ examples=(
     nothing_test.bas
     number_string_modifier_test.bas
     consider_test.bas
+    comparison_lens_test.bas
+    comparison_lens_parser_hardening_test.bas
     dynamic_record_access_test.bas
     nested_lvalue_test.bas
     nested_array_mutation_test.bas
