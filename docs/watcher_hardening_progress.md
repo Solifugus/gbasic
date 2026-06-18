@@ -96,6 +96,63 @@ Coverage includes:
 Each section prints `2`: one registration execution plus one actual changed
 write.
 
+## Phase 2 Status
+
+Watcher Hardening Phase 2 is implemented and verified.
+
+The watcher queue now deduplicates only pending entries within the currently
+active drain cycle. If a watcher is already pending, later triggers skip adding
+another queue entry. The watcher still reads live values when it eventually
+executes, so latest state wins.
+
+This is queue-management-only deduplication. It does not batch ordinary
+top-level mutations, does not coalesce mutation records, and does not change
+collection mutator behavior.
+
+## Phase 2 Files Changed
+
+- `src/eval.c`
+- `tests/run_examples.sh`
+- `examples/watcher_cascade_dedup_test.bas`
+- `examples/watcher_cascade_dedup_test.out`
+- `docs/watcher_hardening_progress.md`
+
+## Phase 2 Implementation
+
+Updated watcher state and queue management:
+
+- `WatcherDef` now stores a `pending` flag.
+- `watcher_enqueue()` returns without enqueueing when the watcher is already
+  pending.
+- `watcher_enqueue()` marks the watcher pending when it appends a queue entry.
+- `watcher_drain()` clears a watcher's pending flag immediately before
+  executing that watcher body.
+- `watcher_clear_pending()` clears any remaining pending flags when a drain
+  completes or is abandoned by the current queue limit behavior.
+- `watcher_register()` initializes the pending flag before the immediate
+  registration enqueue.
+
+Clearing pending before execution preserves cascade behavior: a watcher that
+has already run can still be enqueued again by a later mutation in the same
+drain. This phase does not change the existing 10,000 execution limit or its
+direct stderr reporting.
+
+## Phase 2 Tests Added
+
+Added and registered:
+
+- `examples/watcher_cascade_dedup_test.bas`
+- `examples/watcher_cascade_dedup_test.out`
+
+Coverage includes:
+
+- watcher A triggers watcher B twice while B is already pending
+- B runs once for that cascade
+- B observes the latest value
+- separate top-level mutations still trigger separate B executions
+- distinct pending watchers preserve source/registration order
+- run-on-registration remains immediate
+
 ## Verification Results
 
 Commands run:
@@ -112,7 +169,8 @@ Results:
 
 - `make clean && make`: pass
 - `./tests/run_examples.sh`: pass, including
-  `examples/watcher_value_change_guard_test.bas`
+  `examples/watcher_value_change_guard_test.bas` and
+  `examples/watcher_cascade_dedup_test.bas`
 - `./tests/run_negative.sh`: pass
 - `./tests/run_webclient.sh`: pass
 - `./tests/run_webserver.sh`: pass
@@ -122,7 +180,7 @@ Results:
 Preserved behavior:
 
 - watchers still run once when registered
-- watcher queue order and duplicate enqueue behavior are unchanged
+- watcher queue order for distinct pending watchers is preserved
 - watcher execution remains immediate and synchronous on mutation
 - `without watchers` behavior is unchanged
 - collection mutators are unchanged
@@ -133,6 +191,8 @@ Preserved behavior:
 Intentional behavior change:
 
 - assignment of a storage-equal value no longer notifies watchers
+- within one active watcher-drain cycle, a watcher already pending is not
+  enqueued again
 
 Known remaining limitations:
 
@@ -140,16 +200,21 @@ Known remaining limitations:
   `take_first`/`take_last` use lvalue-aware notification, while `insert`,
   `remove`, `remove_value`, `reverse`, `sort`, and `unique` still need the
   later mutator contract phase
-- watcher queue duplicate entries are still possible
 - watcher cycle exhaustion is still the old direct stderr limit, not a
   structured runtime error
 - path matching is still one-way prefix matching
 
 ## Next Recommended Phase
 
-Proceed to Watcher Hardening Phase 2: cascade deduplication within a single
-watcher drain cycle.
+Proceed to Watcher Hardening Phase 3: structured watcher cycle error.
 
-Do not combine Phase 2 with mutator unification or structured cycle errors.
-Keep the next change limited to queue pending-state management so any ordering
-regressions are easy to isolate.
+Do not combine Phase 3 with mutator unification or prefix matching changes.
+Keep the next change limited to replacing the current watcher queue limit with
+a catchable structured runtime error and preserving queue cleanup.
+
+## Remaining Watcher Phases
+
+- Phase 3: structured watcher cycle error
+- Phase 4: unified mutator notification contract
+- Phase 5: symmetric prefix notification
+- final documentation and cleanup pass

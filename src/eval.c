@@ -136,6 +136,7 @@ typedef struct {
 
 typedef struct {
     AstStmt *stmt;
+    int pending;
 } WatcherDef;
 
 typedef enum {
@@ -2670,12 +2671,22 @@ static int watcher_matches_change(AstStmt *watcher, const char *changed_path) {
 }
 
 static void watcher_enqueue(size_t index) {
+    if (watchers[index].pending) {
+        return;
+    }
     size_t *next = realloc(watcher_queue, sizeof(size_t) * (watcher_queue_count + 1));
     if (!next) {
         abort();
     }
     watcher_queue = next;
+    watchers[index].pending = 1;
     watcher_queue[watcher_queue_count++] = index;
+}
+
+static void watcher_clear_pending(void) {
+    for (size_t i = 0; i < watcher_count; i++) {
+        watchers[i].pending = 0;
+    }
 }
 
 static void watcher_drain(void) {
@@ -2693,6 +2704,7 @@ static void watcher_drain(void) {
         }
         size_t index = watcher_queue[cursor++];
         if (index < watcher_count) {
+            watchers[index].pending = 0;
             EvalResult result = eval_stmt_list(watchers[index].stmt->as.watch.body);
             if (result.did_return) {
                 value_free(result.value);
@@ -2712,6 +2724,7 @@ static void watcher_drain(void) {
     free(watcher_queue);
     watcher_queue = NULL;
     watcher_queue_count = 0;
+    watcher_clear_pending();
     watcher_draining = 0;
 }
 
@@ -2739,6 +2752,7 @@ static void watcher_register(AstStmt *stmt) {
     }
     watchers = next;
     watchers[watcher_count].stmt = stmt;
+    watchers[watcher_count].pending = 0;
     watcher_enqueue(watcher_count);
     watcher_count++;
     watcher_drain();

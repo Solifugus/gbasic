@@ -56,6 +56,7 @@ examples=(
     watch_test.gb
     watch_path_test.bas
     watcher_value_change_guard_test.bas
+    watcher_cascade_dedup_test.bas
     while_test.bas
     while_break_continue_test.bas
     for_each_test.bas
