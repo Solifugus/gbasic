@@ -1016,6 +1016,18 @@ static RecordField *record_find(Value *record, const char *name) {
     return NULL;
 }
 
+static const RecordField *record_find_const(const Value *record, const char *name) {
+    if (record->kind != VALUE_RECORD) {
+        return NULL;
+    }
+    for (size_t i = 0; i < record->as.record.count; i++) {
+        if (strcmp(record->as.record.fields[i].name, name) == 0) {
+            return &record->as.record.fields[i];
+        }
+    }
+    return NULL;
+}
+
 static void record_set(Value *record, const char *name, Value value) {
     RecordField *field = record_find(record, name);
     if (field) {
@@ -1038,6 +1050,73 @@ static void record_set(Value *record, const char *name, Value value) {
     }
     *field->value = value;
     record->as.record.count++;
+}
+
+static int value_storage_equal(const Value *left, const Value *right) {
+    if (left->kind != right->kind) {
+        return 0;
+    }
+
+    switch (left->kind) {
+    case VALUE_NULL:
+    case VALUE_UNKNOWN:
+        return 1;
+    case VALUE_NUMBER:
+        /* If NaN enters the runtime through native code, treat it as changed. */
+        return left->as.number == right->as.number;
+    case VALUE_STRING:
+        return strcmp(left->as.string, right->as.string) == 0;
+    case VALUE_BOOL:
+        return left->as.boolean == right->as.boolean;
+    case VALUE_ARRAY:
+        if (left->as.array.count != right->as.array.count) {
+            return 0;
+        }
+        for (size_t i = 0; i < left->as.array.count; i++) {
+            if (!value_storage_equal(&left->as.array.items[i], &right->as.array.items[i])) {
+                return 0;
+            }
+        }
+        return 1;
+    case VALUE_RECORD:
+        if (left->as.record.count != right->as.record.count) {
+            return 0;
+        }
+        for (size_t i = 0; i < left->as.record.count; i++) {
+            const RecordField *left_field = &left->as.record.fields[i];
+            const RecordField *right_field = record_find_const(right, left_field->name);
+            if (!right_field || !value_storage_equal(left_field->value, right_field->value)) {
+                return 0;
+            }
+        }
+        return 1;
+    case VALUE_DATETIME:
+        return left->as.datetime.year == right->as.datetime.year &&
+            left->as.datetime.month == right->as.datetime.month &&
+            left->as.datetime.day == right->as.datetime.day &&
+            left->as.datetime.hour == right->as.datetime.hour &&
+            left->as.datetime.minute == right->as.datetime.minute &&
+            left->as.datetime.second == right->as.datetime.second &&
+            left->as.datetime.time_only == right->as.datetime.time_only &&
+            left->as.datetime.precision == right->as.datetime.precision;
+    case VALUE_DURATION:
+        return left->as.duration.years == right->as.duration.years &&
+            left->as.duration.months == right->as.duration.months &&
+            left->as.duration.weeks == right->as.duration.weeks &&
+            left->as.duration.days == right->as.duration.days &&
+            left->as.duration.hours == right->as.duration.hours &&
+            left->as.duration.minutes == right->as.duration.minutes &&
+            left->as.duration.seconds == right->as.duration.seconds;
+    case VALUE_MONEY:
+        return left->as.cents == right->as.cents;
+    case VALUE_FILE:
+        return strcmp(left->as.file_path, right->as.file_path) == 0;
+    case VALUE_DIR:
+        return strcmp(left->as.dir_path, right->as.dir_path) == 0;
+    case VALUE_POSTGRES_CONNECTION:
+        return left->as.postgres_connection == right->as.postgres_connection;
+    }
+    return 0;
 }
 
 static int string_equal_caseless(const char *left, const char *right);
@@ -11264,56 +11343,83 @@ static Value *resolve_lvalue_ref(AstExpr *target) {
     }
 }
 
-static int assign_lvalue(AstExpr *target, Value value) {
+typedef enum {
+    LVALUE_ASSIGN_ERROR,
+    LVALUE_ASSIGN_UNCHANGED,
+    LVALUE_ASSIGN_CHANGED
+} LValueAssignResult;
+
+static LValueAssignResult assign_lvalue(AstExpr *target, Value value) {
     switch (target->kind) {
-    case AST_EXPR_IDENT:
+    case AST_EXPR_IDENT: {
+        Symbol *symbol = env_find_in_frame(current_env, target->as.ident);
+        if (symbol && value_storage_equal(&symbol->value, &value)) {
+            value_free(value);
+            return LVALUE_ASSIGN_UNCHANGED;
+        }
         env_set(target->as.ident, value);
-        return 1;
+        return LVALUE_ASSIGN_CHANGED;
+    }
     case AST_EXPR_FIELD: {
         Value *object = resolve_lvalue_ref(target->as.field.object);
         if (!object) {
-            return 0;
+            return LVALUE_ASSIGN_ERROR;
         }
         if (object->kind != VALUE_RECORD) {
             runtime_error_raise("field assignment target expects a record", 1003, "assignment");
-            return 0;
+            return LVALUE_ASSIGN_ERROR;
+        }
+        RecordField *field = record_find(object, target->as.field.field);
+        if (field && value_storage_equal(field->value, &value)) {
+            value_free(value);
+            return LVALUE_ASSIGN_UNCHANGED;
         }
         record_set(object, target->as.field.field, value);
-        return 1;
+        return LVALUE_ASSIGN_CHANGED;
     }
     case AST_EXPR_INDEX: {
         Value *container = resolve_lvalue_ref(target->as.index.array);
         if (!container) {
-            return 0;
+            return LVALUE_ASSIGN_ERROR;
         }
         Value index = eval_expr(target->as.index.index);
         if (error_action_pending()) {
             value_free(index);
-            return 0;
+            return LVALUE_ASSIGN_ERROR;
         }
         if (container->kind == VALUE_ARRAY && index.kind == VALUE_NUMBER) {
             int position = (int)index.as.number;
             value_free(index);
             if (position < 0 || (size_t)position >= container->as.array.count) {
                 runtime_error_raise("array index out of range", 1003, "assignment");
-                return 0;
+                return LVALUE_ASSIGN_ERROR;
+            }
+            if (value_storage_equal(&container->as.array.items[position], &value)) {
+                value_free(value);
+                return LVALUE_ASSIGN_UNCHANGED;
             }
             value_free(container->as.array.items[position]);
             container->as.array.items[position] = value;
-            return 1;
+            return LVALUE_ASSIGN_CHANGED;
         }
         if (container->kind == VALUE_RECORD && index.kind == VALUE_STRING) {
+            RecordField *field = record_find(container, index.as.string);
+            if (field && value_storage_equal(field->value, &value)) {
+                value_free(value);
+                value_free(index);
+                return LVALUE_ASSIGN_UNCHANGED;
+            }
             record_set(container, index.as.string, value);
             value_free(index);
-            return 1;
+            return LVALUE_ASSIGN_CHANGED;
         }
         value_free(index);
         runtime_error_raise("assignment index expects array[number] or record[string]", 1003, "assignment");
-        return 0;
+        return LVALUE_ASSIGN_ERROR;
     }
     default:
         runtime_error_raise("invalid assignment target", 1003, "assignment");
-        return 0;
+        return LVALUE_ASSIGN_ERROR;
     }
 }
 
@@ -11341,11 +11447,15 @@ static EvalResult eval_stmt(AstStmt *stmt) {
             current_column = previous_column;
             return eval_error_result();
         }
-        if (!assign_lvalue(stmt->as.assign.target, value)) {
+        LValueAssignResult assign_result = assign_lvalue(stmt->as.assign.target, value);
+        if (assign_result == LVALUE_ASSIGN_ERROR) {
             value_free(value);
             current_line = previous_line;
             current_column = previous_column;
             return eval_error_result();
+        }
+        if (assign_result == LVALUE_ASSIGN_UNCHANGED) {
+            break;
         }
         char *watch_path = lvalue_watch_path(stmt->as.assign.target);
         if (watch_path) {
