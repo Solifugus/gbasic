@@ -229,6 +229,99 @@ Coverage includes:
 - a later independent finite watcher drain still works after a caught cycle
   error
 
+## Phase 4 Status
+
+Watcher Hardening Phase 4 is implemented and verified.
+
+Language-level mutating array builtins now use a unified lvalue-aware
+notification contract. When the first argument is an identifier, field, or
+index lvalue, the builtin mutates the stored value, returns the same kind of
+result as before, and notifies watchers exactly once after the final stored
+value is complete.
+
+No non-mutating helpers were changed. `remove_key()` was audited and left
+unchanged because it is documented as immutable and returns a new record.
+Native WebServer response queue consumption remains unnotified because it is
+internal transport maintenance, not execution of a language mutator.
+
+## Phase 4 Files Changed
+
+- `src/eval.c`
+- `tests/run_examples.sh`
+- `examples/watcher_mutator_notification_test.bas`
+- `examples/watcher_mutator_notification_test.out`
+- `docs/watcher_hardening_progress.md`
+
+## Phase 4 Implementation
+
+Added common dispatch helpers:
+
+- `notify_lvalue_mutation()`
+- `expr_is_lvalue_path()`
+
+Converted symbol-only in-place helpers to lvalue-reference helpers:
+
+- `insert_into_array_ref()`
+- `remove_from_array_ref()`
+- `remove_value_from_array_ref()`
+- `reverse_array_ref()`
+- `unique_array_ref()`
+- `sort_array_ref()`
+
+Mutator call dispatch now recognizes identifier, field, and index lvalues for
+all audited mutating array builtins. Watch notification happens once after a
+successful operation through `notify_lvalue_mutation()`.
+
+Change/no-change behavior:
+
+- `append`, `prepend`, `insert`, `remove`, `take_first`, and `take_last`
+  always notify after successful stored mutation.
+- `remove_value` notifies only when it finds and removes a matching value.
+- `reverse` notifies only when the reversed stored value is storage-different.
+- `sort` notifies only when sorting changes stored order.
+- `unique` notifies only when at least one duplicate is removed.
+
+## Mutators Audited
+
+Included and unified:
+
+- `append`
+- `prepend`
+- `insert`
+- `remove`
+- `remove_value`
+- `take_first`
+- `take_last`
+- `reverse`
+- `sort`
+- `unique`
+
+Audited and excluded:
+
+- `remove_key`: immutable record helper; returns a new record and does not
+  mutate stored values.
+- `first`, `rest`, `contains`, `find`, `find_by`, `join`, and related helpers:
+  read-only or functional.
+- file `append`: file I/O operation, not a collection mutator.
+
+## Phase 4 Tests Added
+
+Added and registered:
+
+- `examples/watcher_mutator_notification_test.bas`
+- `examples/watcher_mutator_notification_test.out`
+
+Coverage includes:
+
+- `watch state.items` on a nested record path
+- exact one notification for `append`, `prepend`, `insert`, `remove`,
+  `take_first`, `take_last`, `reverse`, `sort`, `unique`, and `remove_value`
+- watcher sees the final state after each mutation
+- existing return-value behavior for array-mutating builtins
+- no notification for no-op `reverse`, already-sorted `sort`, already-unique
+  `unique`, and no-match `remove_value`
+- root array mutation still notifies exactly once
+
 ## Verification Results
 
 Commands run:
@@ -247,7 +340,8 @@ Results:
 - `./tests/run_examples.sh`: pass, including
   `examples/watcher_value_change_guard_test.bas` and
   `examples/watcher_cascade_dedup_test.bas`, and
-  `examples/watcher_cycle_error_test.bas`
+  `examples/watcher_cycle_error_test.bas`, and
+  `examples/watcher_mutator_notification_test.bas`
 - `./tests/run_negative.sh`: pass, including `tests/negative_watcher_cycle.bas`
 - `./tests/run_webclient.sh`: pass
 - `./tests/run_webserver.sh`: pass
@@ -260,7 +354,7 @@ Preserved behavior:
 - watcher queue order for distinct pending watchers is preserved
 - watcher execution remains immediate and synchronous on mutation
 - `without watchers` behavior is unchanged
-- collection mutators are unchanged
+- collection mutator return values and validation behavior are preserved
 - GUI queued mutation timing is unchanged
 - WebServer request/response queue behavior is unchanged
 - language `=` and `values_equal()` are unchanged
@@ -273,25 +367,22 @@ Intentional behavior change:
   enqueued again
 - hitting the watcher execution cap raises a structured runtime error with
   code `1005` and source `watcher`
+- mutating array builtins now use the same lvalue-aware watcher notification
+  path and notify exactly once after successful stored mutation
 
 Known remaining limitations:
 
-- collection mutators are still not uniform; `append`/`prepend` and
-  `take_first`/`take_last` use lvalue-aware notification, while `insert`,
-  `remove`, `remove_value`, `reverse`, `sort`, and `unique` still need the
-  later mutator contract phase
 - path matching is still one-way prefix matching
 
 ## Next Recommended Phase
 
-Proceed to Watcher Hardening Phase 4: unified mutator notification contract.
+Proceed to Watcher Hardening Phase 5: symmetric prefix notification.
 
-Do not combine Phase 4 with symmetric prefix matching. Keep the next change
-limited to making mutating collection builtins notify exactly once, after final
-mutation, through the same lvalue-aware watcher path.
+Keep the next change limited to watcher path matching. Do not revisit mutator
+semantics, queue ordering, or cycle errors while implementing parent
+replacement notifying child watchers.
 
 ## Remaining Watcher Phases
 
-- Phase 4: unified mutator notification contract
 - Phase 5: symmetric prefix notification
 - final documentation and cleanup pass

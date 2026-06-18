@@ -58,6 +58,7 @@ examples=(
     watcher_value_change_guard_test.bas
     watcher_cascade_dedup_test.bas
     watcher_cycle_error_test.bas
+    watcher_mutator_notification_test.bas
     while_test.bas
     while_break_continue_test.bas
     for_each_test.bas

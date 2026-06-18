@@ -1,0 +1,14 @@
+b,c,d|a,b,c,d|a,b,x,c,d|a,b,c,d|b,c,d|b,c|c,b|b,c|b,c,b|b,c|c
+11
+b,c,d
+a,b,c,d
+a,b,x,c,d
+a,b,c,d
+a
+d
+c,b
+b,c
+b,c
+c
+true
+1

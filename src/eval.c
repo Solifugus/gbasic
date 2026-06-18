@@ -2799,6 +2799,22 @@ static void watcher_clear(void) {
     watcher_drain_origin_column = 0;
 }
 
+static int notify_lvalue_mutation(AstExpr *target) {
+    char *watch_path = lvalue_watch_path(target);
+    if (!watch_path) {
+        return 1;
+    }
+    int ok = watcher_trigger_change(watch_path);
+    free(watch_path);
+    return ok;
+}
+
+static int expr_is_lvalue_path(AstExpr *expr) {
+    return expr->kind == AST_EXPR_IDENT ||
+        expr->kind == AST_EXPR_FIELD ||
+        expr->kind == AST_EXPR_INDEX;
+}
+
 static FunctionDef *function_find_local(const char *name) {
     for (size_t i = 0; i < function_count; i++) {
         if (!functions[i].imported && strcmp(functions[i].name, name) == 0) {
@@ -4935,30 +4951,30 @@ static Value insert_into_array_value(Value array, int index, Value item) {
     return array;
 }
 
-static Value insert_into_array_symbol(Symbol *symbol, int index, Value item) {
-    if (!symbol || symbol->value.kind != VALUE_ARRAY) {
+static Value insert_into_array_ref(Value *array, int index, Value item) {
+    if (!array || array->kind != VALUE_ARRAY) {
         value_free(item);
         runtime_error_raise("insert expects an array", 1003, "invalid function call");
         return value_null();
     }
-    if (index < 0 || (size_t)index > symbol->value.as.array.count) {
+    if (index < 0 || (size_t)index > array->as.array.count) {
         value_free(item);
         runtime_error_raise("insert index out of range", 1003, "invalid function call");
         return value_null();
     }
 
-    Value *items = realloc(symbol->value.as.array.items,
-                           sizeof(Value) * (symbol->value.as.array.count + 1));
+    Value *items = realloc(array->as.array.items,
+                           sizeof(Value) * (array->as.array.count + 1));
     if (!items) {
         abort();
     }
-    symbol->value.as.array.items = items;
-    memmove(symbol->value.as.array.items + index + 1,
-            symbol->value.as.array.items + index,
-            sizeof(Value) * (symbol->value.as.array.count - (size_t)index));
-    symbol->value.as.array.items[index] = item;
-    symbol->value.as.array.count++;
-    return value_copy(symbol->value);
+    array->as.array.items = items;
+    memmove(array->as.array.items + index + 1,
+            array->as.array.items + index,
+            sizeof(Value) * (array->as.array.count - (size_t)index));
+    array->as.array.items[index] = item;
+    array->as.array.count++;
+    return value_copy(*array);
 }
 
 static Value remove_from_array_value(Value array, int index) {
@@ -4990,32 +5006,32 @@ static Value remove_from_array_value(Value array, int index) {
     return array;
 }
 
-static Value remove_from_array_symbol(Symbol *symbol, int index) {
-    if (!symbol || symbol->value.kind != VALUE_ARRAY) {
+static Value remove_from_array_ref(Value *array, int index) {
+    if (!array || array->kind != VALUE_ARRAY) {
         runtime_error_raise("remove expects an array", 1003, "invalid function call");
         return value_null();
     }
-    if (index < 0 || (size_t)index >= symbol->value.as.array.count) {
+    if (index < 0 || (size_t)index >= array->as.array.count) {
         runtime_error_raise("remove index out of range", 1003, "invalid function call");
         return value_null();
     }
 
-    value_free(symbol->value.as.array.items[index]);
-    for (size_t i = (size_t)index + 1; i < symbol->value.as.array.count; i++) {
-        symbol->value.as.array.items[i - 1] = symbol->value.as.array.items[i];
+    value_free(array->as.array.items[index]);
+    for (size_t i = (size_t)index + 1; i < array->as.array.count; i++) {
+        array->as.array.items[i - 1] = array->as.array.items[i];
     }
-    symbol->value.as.array.count--;
-    if (symbol->value.as.array.count == 0) {
-        free(symbol->value.as.array.items);
-        symbol->value.as.array.items = NULL;
+    array->as.array.count--;
+    if (array->as.array.count == 0) {
+        free(array->as.array.items);
+        array->as.array.items = NULL;
     } else {
-        Value *items = realloc(symbol->value.as.array.items,
-                               sizeof(Value) * symbol->value.as.array.count);
+        Value *items = realloc(array->as.array.items,
+                               sizeof(Value) * array->as.array.count);
         if (items) {
-            symbol->value.as.array.items = items;
+            array->as.array.items = items;
         }
     }
-    return value_copy(symbol->value);
+    return value_copy(*array);
 }
 
 static int array_find_index(Value array, Value target, size_t *out_index) {
@@ -5055,23 +5071,25 @@ static Value remove_value_from_array_value(Value array, Value target) {
     return remove_from_array_value(array, (int)index);
 }
 
-static Value remove_value_from_array_symbol(Symbol *symbol, Value target) {
-    if (!symbol || symbol->value.kind != VALUE_ARRAY) {
+static Value remove_value_from_array_ref(Value *array, Value target, int *changed) {
+    *changed = 0;
+    if (!array || array->kind != VALUE_ARRAY) {
         value_free(target);
         runtime_error_raise("remove_value expects an array", 1003, "invalid function call");
         return value_null();
     }
 
     size_t index = 0;
-    if (!array_find_index(symbol->value, target, &index)) {
+    if (!array_find_index(*array, target, &index)) {
         value_free(target);
         if (error_action_pending()) {
             return value_null();
         }
-        return value_copy(symbol->value);
+        return value_copy(*array);
     }
     value_free(target);
-    return remove_from_array_symbol(symbol, (int)index);
+    *changed = 1;
+    return remove_from_array_ref(array, (int)index);
 }
 
 static Value array_rest_value(Value array) {
@@ -5182,13 +5200,21 @@ static Value reverse_array_value(Value array) {
     return array;
 }
 
-static Value reverse_array_symbol(Symbol *symbol) {
-    if (!symbol || symbol->value.kind != VALUE_ARRAY) {
+static Value reverse_array_ref(Value *array, int *changed) {
+    *changed = 0;
+    if (!array || array->kind != VALUE_ARRAY) {
         runtime_error_raise("reverse expects an array", 1003, "invalid function call");
         return value_null();
     }
-    reverse_array_items(symbol->value.as.array.items, symbol->value.as.array.count);
-    return value_copy(symbol->value);
+    for (size_t i = 0; i < array->as.array.count / 2; i++) {
+        if (!value_storage_equal(&array->as.array.items[i],
+                                 &array->as.array.items[array->as.array.count - i - 1])) {
+            *changed = 1;
+            break;
+        }
+    }
+    reverse_array_items(array->as.array.items, array->as.array.count);
+    return value_copy(*array);
 }
 
 static int value_unique_comparable(Value value) {
@@ -5274,45 +5300,47 @@ static Value unique_array_value(Value array) {
     return array;
 }
 
-static Value unique_array_symbol(Symbol *symbol) {
-    if (!symbol || symbol->value.kind != VALUE_ARRAY) {
+static Value unique_array_ref(Value *array, int *changed) {
+    *changed = 0;
+    if (!array || array->kind != VALUE_ARRAY) {
         runtime_error_raise("unique expects an array", 1003, "invalid function call");
         return value_null();
     }
-    if (!array_all_unique_comparable(symbol->value)) {
+    if (!array_all_unique_comparable(*array)) {
         return value_null();
     }
 
     size_t write = 0;
-    for (size_t i = 0; i < symbol->value.as.array.count; i++) {
+    for (size_t i = 0; i < array->as.array.count; i++) {
         int duplicate = 0;
         for (size_t j = 0; j < write; j++) {
-            if (unique_values_equal(symbol->value.as.array.items[i],
-                                    symbol->value.as.array.items[j])) {
+            if (unique_values_equal(array->as.array.items[i],
+                                    array->as.array.items[j])) {
                 duplicate = 1;
                 break;
             }
         }
         if (duplicate) {
-            value_free(symbol->value.as.array.items[i]);
+            *changed = 1;
+            value_free(array->as.array.items[i]);
         } else {
             if (write != i) {
-                symbol->value.as.array.items[write] = symbol->value.as.array.items[i];
+                array->as.array.items[write] = array->as.array.items[i];
             }
             write++;
         }
     }
-    symbol->value.as.array.count = write;
+    array->as.array.count = write;
     if (write == 0) {
-        free(symbol->value.as.array.items);
-        symbol->value.as.array.items = NULL;
+        free(array->as.array.items);
+        array->as.array.items = NULL;
     } else {
-        Value *items = realloc(symbol->value.as.array.items, sizeof(Value) * write);
+        Value *items = realloc(array->as.array.items, sizeof(Value) * write);
         if (items) {
-            symbol->value.as.array.items = items;
+            array->as.array.items = items;
         }
     }
-    return value_copy(symbol->value);
+    return value_copy(*array);
 }
 
 static int value_sort_rank(Value value) {
@@ -5440,21 +5468,25 @@ static Value sort_array_value(Value array) {
     return array;
 }
 
-static Value sort_array_symbol(Symbol *symbol) {
-    if (!symbol || symbol->value.kind != VALUE_ARRAY) {
+static Value sort_array_ref(Value *array, int *changed) {
+    *changed = 0;
+    if (!array || array->kind != VALUE_ARRAY) {
         runtime_error_raise("sort expects an array", 1003, "invalid function call");
         return value_null();
     }
-    if (!array_all_sort_comparable(symbol->value)) {
+    if (!array_all_sort_comparable(*array)) {
         return value_null();
     }
-    if (symbol->value.as.array.count > 1) {
-        qsort(symbol->value.as.array.items,
-              symbol->value.as.array.count,
+    Value before = value_copy(*array);
+    if (array->as.array.count > 1) {
+        qsort(array->as.array.items,
+              array->as.array.count,
               sizeof(Value),
               sort_value_compare);
     }
-    return value_copy(symbol->value);
+    *changed = !value_storage_equal(&before, array);
+    value_free(before);
+    return value_copy(*array);
 }
 
 static Value builtin_number_modifier_value(Value value) {
@@ -9621,16 +9653,18 @@ static Value eval_call(AstExpr *expr) {
             return value_null();
         }
 
-        if (array_expr->kind == AST_EXPR_IDENT) {
-            Symbol *symbol = env_find(array_expr->as.ident);
-            if (!symbol) {
+        if (expr_is_lvalue_path(array_expr)) {
+            Value *array = resolve_lvalue_ref(array_expr);
+            if (!array) {
                 value_free(target);
-                char message[256];
-                snprintf(message, sizeof(message), "undefined variable: %s", array_expr->as.ident);
-                runtime_error_raise(message, 1001, "undefined variable");
                 return value_null();
             }
-            return remove_value_from_array_symbol(symbol, target);
+            int changed = 0;
+            Value result = remove_value_from_array_ref(array, target, &changed);
+            if (changed && !error_action_pending() && !notify_lvalue_mutation(array_expr)) {
+                return result;
+            }
+            return result;
         }
 
         Value array = eval_expr(array_expr);
@@ -9950,9 +9984,7 @@ static Value eval_call(AstExpr *expr) {
             return value_null();
         }
 
-        if (array_expr->kind == AST_EXPR_IDENT ||
-            array_expr->kind == AST_EXPR_FIELD ||
-            array_expr->kind == AST_EXPR_INDEX) {
+        if (expr_is_lvalue_path(array_expr)) {
             if (!prepend && !webserver_validate_response_append(array_expr, item)) {
                 value_free(item);
                 return value_null();
@@ -9964,13 +9996,8 @@ static Value eval_call(AstExpr *expr) {
             }
             Value result = append_to_array_ref(array, item, prepend);
             if (!error_action_pending()) {
-                char *watch_path = lvalue_watch_path(array_expr);
-                if (watch_path) {
-                    int watcher_ok = watcher_trigger_change(watch_path);
-                    free(watch_path);
-                    if (!watcher_ok) {
-                        return result;
-                    }
+                if (!notify_lvalue_mutation(array_expr)) {
+                    return result;
                 }
             }
             return result;
@@ -10002,16 +10029,17 @@ static Value eval_call(AstExpr *expr) {
         }
 
         AstExpr *array_expr = expr->as.call.args.items[0];
-        if (array_expr->kind == AST_EXPR_IDENT) {
-            Symbol *symbol = env_find(array_expr->as.ident);
-            if (!symbol) {
+        if (expr_is_lvalue_path(array_expr)) {
+            Value *array = resolve_lvalue_ref(array_expr);
+            if (!array) {
                 value_free(item);
-                char message[256];
-                snprintf(message, sizeof(message), "undefined variable: %s", array_expr->as.ident);
-                runtime_error_raise(message, 1001, "undefined variable");
                 return value_null();
             }
-            return insert_into_array_symbol(symbol, index, item);
+            Value result = insert_into_array_ref(array, index, item);
+            if (!error_action_pending() && !notify_lvalue_mutation(array_expr)) {
+                return result;
+            }
+            return result;
         }
 
         Value array = eval_expr(array_expr);
@@ -10035,15 +10063,16 @@ static Value eval_call(AstExpr *expr) {
         }
 
         AstExpr *array_expr = expr->as.call.args.items[0];
-        if (array_expr->kind == AST_EXPR_IDENT) {
-            Symbol *symbol = env_find(array_expr->as.ident);
-            if (!symbol) {
-                char message[256];
-                snprintf(message, sizeof(message), "undefined variable: %s", array_expr->as.ident);
-                runtime_error_raise(message, 1001, "undefined variable");
+        if (expr_is_lvalue_path(array_expr)) {
+            Value *array = resolve_lvalue_ref(array_expr);
+            if (!array) {
                 return value_null();
             }
-            return remove_from_array_symbol(symbol, index);
+            Value result = remove_from_array_ref(array, index);
+            if (!error_action_pending() && !notify_lvalue_mutation(array_expr)) {
+                return result;
+            }
+            return result;
         }
 
         Value array = eval_expr(array_expr);
@@ -10065,22 +10094,15 @@ static Value eval_call(AstExpr *expr) {
         }
 
         AstExpr *array_expr = expr->as.call.args.items[0];
-        if (array_expr->kind == AST_EXPR_IDENT ||
-            array_expr->kind == AST_EXPR_FIELD ||
-            array_expr->kind == AST_EXPR_INDEX) {
+        if (expr_is_lvalue_path(array_expr)) {
             Value *array = resolve_lvalue_ref(array_expr);
             if (!array) {
                 return value_null();
             }
             Value result = take_from_array_ref(array, take_last);
             if (!error_action_pending()) {
-                char *watch_path = lvalue_watch_path(array_expr);
-                if (watch_path) {
-                    int watcher_ok = watcher_trigger_change(watch_path);
-                    free(watch_path);
-                    if (!watcher_ok) {
-                        return result;
-                    }
+                if (!notify_lvalue_mutation(array_expr)) {
+                    return result;
                 }
             }
             return result;
@@ -10101,15 +10123,17 @@ static Value eval_call(AstExpr *expr) {
         }
 
         AstExpr *array_expr = expr->as.call.args.items[0];
-        if (array_expr->kind == AST_EXPR_IDENT) {
-            Symbol *symbol = env_find(array_expr->as.ident);
-            if (!symbol) {
-                char message[256];
-                snprintf(message, sizeof(message), "undefined variable: %s", array_expr->as.ident);
-                runtime_error_raise(message, 1001, "undefined variable");
+        if (expr_is_lvalue_path(array_expr)) {
+            Value *array = resolve_lvalue_ref(array_expr);
+            if (!array) {
                 return value_null();
             }
-            return reverse_array_symbol(symbol);
+            int changed = 0;
+            Value result = reverse_array_ref(array, &changed);
+            if (changed && !error_action_pending() && !notify_lvalue_mutation(array_expr)) {
+                return result;
+            }
+            return result;
         }
 
         Value array = eval_expr(array_expr);
@@ -10127,15 +10151,17 @@ static Value eval_call(AstExpr *expr) {
         }
 
         AstExpr *array_expr = expr->as.call.args.items[0];
-        if (array_expr->kind == AST_EXPR_IDENT) {
-            Symbol *symbol = env_find(array_expr->as.ident);
-            if (!symbol) {
-                char message[256];
-                snprintf(message, sizeof(message), "undefined variable: %s", array_expr->as.ident);
-                runtime_error_raise(message, 1001, "undefined variable");
+        if (expr_is_lvalue_path(array_expr)) {
+            Value *array = resolve_lvalue_ref(array_expr);
+            if (!array) {
                 return value_null();
             }
-            return unique_array_symbol(symbol);
+            int changed = 0;
+            Value result = unique_array_ref(array, &changed);
+            if (changed && !error_action_pending() && !notify_lvalue_mutation(array_expr)) {
+                return result;
+            }
+            return result;
         }
 
         Value array = eval_expr(array_expr);
@@ -10153,15 +10179,17 @@ static Value eval_call(AstExpr *expr) {
         }
 
         AstExpr *array_expr = expr->as.call.args.items[0];
-        if (array_expr->kind == AST_EXPR_IDENT) {
-            Symbol *symbol = env_find(array_expr->as.ident);
-            if (!symbol) {
-                char message[256];
-                snprintf(message, sizeof(message), "undefined variable: %s", array_expr->as.ident);
-                runtime_error_raise(message, 1001, "undefined variable");
+        if (expr_is_lvalue_path(array_expr)) {
+            Value *array = resolve_lvalue_ref(array_expr);
+            if (!array) {
                 return value_null();
             }
-            return sort_array_symbol(symbol);
+            int changed = 0;
+            Value result = sort_array_ref(array, &changed);
+            if (changed && !error_action_pending() && !notify_lvalue_mutation(array_expr)) {
+                return result;
+            }
+            return result;
         }
 
         Value array = eval_expr(array_expr);
