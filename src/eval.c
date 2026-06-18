@@ -219,11 +219,17 @@ static WatcherDef *watchers = NULL;
 static size_t watcher_count = 0;
 static size_t *watcher_queue = NULL;
 static size_t watcher_queue_count = 0;
+static int watcher_drain_origin_line = 0;
+static int watcher_drain_origin_column = 0;
 static int function_depth = 0;
 static int loop_depth = 0;
 static int consider_depth = 0;
 static int watcher_suppressed = 0;
 static int watcher_draining = 0;
+enum {
+    WATCHER_EXECUTION_LIMIT = 10000,
+    WATCHER_CYCLE_ERROR_CODE = 1005
+};
 static RuntimeError current_error = {0};
 static ErrorMode error_mode = ERROR_MODE_STOP;
 static char *error_goto_label = NULL;
@@ -1428,7 +1434,7 @@ static char *gui_create_native_window(Value *ui,
                                       int height,
                                       const char *title,
                                       const char *watch_root_path);
-static void watcher_trigger_change(const char *path);
+static int watcher_trigger_change(const char *path);
 
 static int gui_build_widget_lookup(Value *lookup, Value *widget, const size_t *path, size_t depth) {
     RecordField *id_field = record_find(widget, "id");
@@ -1886,9 +1892,9 @@ static void gui_window_flush_mutations(GuiNativeWindow *window) {
                      window->watch_root_path,
                      mutation->widget_id,
                      mutation->field_name);
-            watcher_trigger_change(watch_path);
+            int watcher_ok = watcher_trigger_change(watch_path);
             free(watch_path);
-            if (error_action_pending()) {
+            if (!watcher_ok || error_action_pending()) {
                 break;
             }
         }
@@ -2689,17 +2695,31 @@ static void watcher_clear_pending(void) {
     }
 }
 
-static void watcher_drain(void) {
+static int watcher_drain(void) {
     if (watcher_draining) {
-        return;
+        return 1;
     }
 
     watcher_draining = 1;
+    if (watcher_drain_origin_line == 0) {
+        watcher_drain_origin_line = current_line;
+        watcher_drain_origin_column = current_column;
+    }
     size_t cursor = 0;
     size_t steps = 0;
+    int ok = 1;
     while (cursor < watcher_queue_count) {
-        if (++steps > 10000) {
-            fprintf(stderr, "watcher queue limit reached\n");
+        if (++steps > WATCHER_EXECUTION_LIMIT) {
+            int previous_line = current_line;
+            int previous_column = current_column;
+            current_line = watcher_drain_origin_line;
+            current_column = watcher_drain_origin_column;
+            runtime_error_raise("watcher cycle exceeded 10000 executions in one drain cycle",
+                                WATCHER_CYCLE_ERROR_CODE,
+                                "watcher");
+            current_line = previous_line;
+            current_column = previous_column;
+            ok = 0;
             break;
         }
         size_t index = watcher_queue[cursor++];
@@ -2726,24 +2746,32 @@ static void watcher_drain(void) {
     watcher_queue_count = 0;
     watcher_clear_pending();
     watcher_draining = 0;
+    watcher_drain_origin_line = 0;
+    watcher_drain_origin_column = 0;
+    return ok;
 }
 
-static void watcher_trigger_change(const char *path) {
+static int watcher_trigger_change(const char *path) {
     if (watcher_suppressed || current_env != &global_env) {
-        return;
+        return 1;
+    }
+    int start_drain = !watcher_draining && watcher_queue_count == 0;
+    if (start_drain) {
+        watcher_drain_origin_line = current_line;
+        watcher_drain_origin_column = current_column;
     }
     for (size_t i = 0; i < watcher_count; i++) {
         if (watcher_matches_change(watchers[i].stmt, path)) {
             watcher_enqueue(i);
         }
     }
-    watcher_drain();
+    return watcher_drain();
 }
 
-static void watcher_register(AstStmt *stmt) {
+static int watcher_register(AstStmt *stmt) {
     if (current_env != &global_env) {
         fprintf(stderr, "watch may only be registered at top level for now\n");
-        return;
+        return 1;
     }
 
     WatcherDef *next = realloc(watchers, sizeof(WatcherDef) * (watcher_count + 1));
@@ -2755,7 +2783,7 @@ static void watcher_register(AstStmt *stmt) {
     watchers[watcher_count].pending = 0;
     watcher_enqueue(watcher_count);
     watcher_count++;
-    watcher_drain();
+    return watcher_drain();
 }
 
 static void watcher_clear(void) {
@@ -2767,6 +2795,8 @@ static void watcher_clear(void) {
     watcher_queue_count = 0;
     watcher_suppressed = 0;
     watcher_draining = 0;
+    watcher_drain_origin_line = 0;
+    watcher_drain_origin_column = 0;
 }
 
 static FunctionDef *function_find_local(const char *name) {
@@ -7340,7 +7370,9 @@ static int webserver_parse_request(WebServer *server, WebServerClient *client) {
     value_free(ignored);
     char watch_path[256];
     snprintf(watch_path, sizeof(watch_path), "%s.requests", server_name);
-    watcher_trigger_change(watch_path);
+    if (!watcher_trigger_change(watch_path)) {
+        return -500;
+    }
     return 1;
 }
 
@@ -9934,8 +9966,11 @@ static Value eval_call(AstExpr *expr) {
             if (!error_action_pending()) {
                 char *watch_path = lvalue_watch_path(array_expr);
                 if (watch_path) {
-                    watcher_trigger_change(watch_path);
+                    int watcher_ok = watcher_trigger_change(watch_path);
                     free(watch_path);
+                    if (!watcher_ok) {
+                        return result;
+                    }
                 }
             }
             return result;
@@ -10041,8 +10076,11 @@ static Value eval_call(AstExpr *expr) {
             if (!error_action_pending()) {
                 char *watch_path = lvalue_watch_path(array_expr);
                 if (watch_path) {
-                    watcher_trigger_change(watch_path);
+                    int watcher_ok = watcher_trigger_change(watch_path);
                     free(watch_path);
+                    if (!watcher_ok) {
+                        return result;
+                    }
                 }
             }
             return result;
@@ -11473,12 +11511,21 @@ static EvalResult eval_stmt(AstStmt *stmt) {
         }
         char *watch_path = lvalue_watch_path(stmt->as.assign.target);
         if (watch_path) {
-            watcher_trigger_change(watch_path);
+            int watcher_ok = watcher_trigger_change(watch_path);
             free(watch_path);
+            if (!watcher_ok) {
+                current_line = previous_line;
+                current_column = previous_column;
+                return eval_error_result();
+            }
         } else {
             const char *root_name = lvalue_root_name(stmt->as.assign.target);
             if (root_name) {
-                watcher_trigger_change(root_name);
+                if (!watcher_trigger_change(root_name)) {
+                    current_line = previous_line;
+                    current_column = previous_column;
+                    return eval_error_result();
+                }
             }
         }
         break;
@@ -11597,7 +11644,11 @@ static EvalResult eval_stmt(AstStmt *stmt) {
         }
         break;
     case AST_STMT_WATCH:
-        watcher_register(stmt);
+        if (!watcher_register(stmt)) {
+            current_line = previous_line;
+            current_column = previous_column;
+            return eval_error_result();
+        }
         break;
     case AST_STMT_WITHOUT_WATCHERS: {
         watcher_suppressed++;

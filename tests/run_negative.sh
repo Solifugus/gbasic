@@ -127,6 +127,7 @@ cases=(
     negative_gui_invalid_spacing
     negative_gui_reserved_id
     negative_gui_invalid_id
+    negative_watcher_cycle
 )
 
 for name in "${cases[@]}"; do

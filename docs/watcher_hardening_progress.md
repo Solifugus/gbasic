@@ -153,6 +153,82 @@ Coverage includes:
 - distinct pending watchers preserve source/registration order
 - run-on-registration remains immediate
 
+## Phase 3 Status
+
+Watcher Hardening Phase 3 is implemented and verified.
+
+The watcher execution cap is still 10,000 executions per drain cycle, but
+reaching the cap now raises a normal structured runtime error instead of
+printing a watcher-specific stderr line and silently discarding the queue.
+
+## Phase 3 Files Changed
+
+- `src/eval.c`
+- `tests/run_examples.sh`
+- `tests/run_negative.sh`
+- `examples/watcher_cycle_error_test.bas`
+- `examples/watcher_cycle_error_test.out`
+- `tests/negative_watcher_cycle.bas`
+- `tests/negative_watcher_cycle.err`
+- `docs/watcher_hardening_progress.md`
+
+## Phase 3 Implementation
+
+Added watcher error constants:
+
+- `WATCHER_EXECUTION_LIMIT = 10000`
+- `WATCHER_CYCLE_ERROR_CODE = 1005`
+
+Updated watcher dispatch:
+
+- `watcher_drain()` now returns success/failure.
+- `watcher_trigger_change()` now returns success/failure.
+- `watcher_register()` now returns success/failure for run-on-registration
+  execution.
+- `watcher_drain()` captures the line and column of the mutation or
+  registration that started the drain, and uses that location for the cap
+  error.
+- Hitting the cap calls `runtime_error_raise()`, stops the current drain,
+  discards remaining queue entries, clears pending flags, and clears the
+  draining flag.
+- Assignment and lvalue-aware `append`/`prepend`/`take_first`/`take_last`
+  paths now observe watcher trigger failure and let existing statement error
+  handling decide whether to stop, goto, or resume.
+- GUI and WebServer native trigger sites now observe watcher trigger failure
+  instead of continuing after a cap error.
+
+Exact structured error contract:
+
+- symbolic name: `watcher_cycle`
+- code: `1005`
+- source: `watcher`
+- message: `watcher cycle exceeded 10000 executions in one drain cycle`
+
+Uncaught formatting uses the normal runtime error path, for example:
+
+```text
+runtime error at tests/negative_watcher_cycle.bas:2:1: watcher cycle exceeded 10000 executions in one drain cycle
+```
+
+## Phase 3 Tests Added
+
+Added and registered:
+
+- `examples/watcher_cycle_error_test.bas`
+- `examples/watcher_cycle_error_test.out`
+- `tests/negative_watcher_cycle.bas`
+- `tests/negative_watcher_cycle.err`
+
+Coverage includes:
+
+- watcher loop exceeds the cap
+- uncaught cycle exits nonzero through the negative runner
+- stderr uses normal `runtime error at file:line:column` formatting
+- catchable `on error resume next` path exposes `error.message`,
+  `error.code`, `error.source`, and source line information
+- a later independent finite watcher drain still works after a caught cycle
+  error
+
 ## Verification Results
 
 Commands run:
@@ -170,8 +246,9 @@ Results:
 - `make clean && make`: pass
 - `./tests/run_examples.sh`: pass, including
   `examples/watcher_value_change_guard_test.bas` and
-  `examples/watcher_cascade_dedup_test.bas`
-- `./tests/run_negative.sh`: pass
+  `examples/watcher_cascade_dedup_test.bas`, and
+  `examples/watcher_cycle_error_test.bas`
+- `./tests/run_negative.sh`: pass, including `tests/negative_watcher_cycle.bas`
 - `./tests/run_webclient.sh`: pass
 - `./tests/run_webserver.sh`: pass
 
@@ -187,12 +264,15 @@ Preserved behavior:
 - GUI queued mutation timing is unchanged
 - WebServer request/response queue behavior is unchanged
 - language `=` and `values_equal()` are unchanged
+- watcher execution cap value remains 10,000
 
 Intentional behavior change:
 
 - assignment of a storage-equal value no longer notifies watchers
 - within one active watcher-drain cycle, a watcher already pending is not
   enqueued again
+- hitting the watcher execution cap raises a structured runtime error with
+  code `1005` and source `watcher`
 
 Known remaining limitations:
 
@@ -200,21 +280,18 @@ Known remaining limitations:
   `take_first`/`take_last` use lvalue-aware notification, while `insert`,
   `remove`, `remove_value`, `reverse`, `sort`, and `unique` still need the
   later mutator contract phase
-- watcher cycle exhaustion is still the old direct stderr limit, not a
-  structured runtime error
 - path matching is still one-way prefix matching
 
 ## Next Recommended Phase
 
-Proceed to Watcher Hardening Phase 3: structured watcher cycle error.
+Proceed to Watcher Hardening Phase 4: unified mutator notification contract.
 
-Do not combine Phase 3 with mutator unification or prefix matching changes.
-Keep the next change limited to replacing the current watcher queue limit with
-a catchable structured runtime error and preserving queue cleanup.
+Do not combine Phase 4 with symmetric prefix matching. Keep the next change
+limited to making mutating collection builtins notify exactly once, after final
+mutation, through the same lvalue-aware watcher path.
 
 ## Remaining Watcher Phases
 
-- Phase 3: structured watcher cycle error
 - Phase 4: unified mutator notification contract
 - Phase 5: symmetric prefix notification
 - final documentation and cleanup pass
