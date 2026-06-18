@@ -2659,12 +2659,17 @@ static Value eval_comparison(AstExpr *expr, Value left, Value right);
 static EvalResult eval_stmt(AstStmt *stmt);
 static EvalResult eval_stmt_list(AstStmtList statements);
 
-static int watcher_name_matches_change(const char *watch_name, const char *changed_path) {
-    size_t watch_length = strlen(watch_name);
-    if (strncmp(watch_name, changed_path, watch_length) != 0) {
+static int path_is_dot_prefix(const char *prefix, const char *path) {
+    size_t prefix_length = strlen(prefix);
+    if (strncmp(prefix, path, prefix_length) != 0) {
         return 0;
     }
-    return changed_path[watch_length] == '\0' || changed_path[watch_length] == '.';
+    return path[prefix_length] == '\0' || path[prefix_length] == '.';
+}
+
+static int watcher_name_matches_change(const char *watch_name, const char *changed_path) {
+    return path_is_dot_prefix(watch_name, changed_path) ||
+        path_is_dot_prefix(changed_path, watch_name);
 }
 
 static int watcher_matches_change(AstStmt *watcher, const char *changed_path) {

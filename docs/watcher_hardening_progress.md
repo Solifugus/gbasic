@@ -322,6 +322,56 @@ Coverage includes:
   `unique`, and no-match `remove_value`
 - root array mutation still notifies exactly once
 
+## Phase 5 Status
+
+Watcher Hardening Phase 5 is implemented and verified.
+
+Watcher path matching is now symmetric at dot boundaries. A watcher matches a
+change when the watched path and changed path are equal, when the watched path
+is a dot-boundary prefix of the changed path, or when the changed path is a
+dot-boundary prefix of the watched path.
+
+This preserves parent-observes-child behavior and adds child-observes-parent
+replacement behavior. Array indexes remain collapsed to their containing array
+path; this phase did not add index/key-aware watcher identities.
+
+## Phase 5 Files Changed
+
+- `src/eval.c`
+- `tests/run_examples.sh`
+- `examples/watch_symmetric_path_test.bas`
+- `examples/watch_symmetric_path_test.out`
+- `docs/watcher_hardening_progress.md`
+
+## Phase 5 Implementation
+
+Updated watcher path matching:
+
+- added `path_is_dot_prefix()`
+- changed `watcher_name_matches_change()` to match either prefix direction
+
+The dot-boundary rule prevents false prefix matches such as `state` matching
+`statement` or `state.name` matching `state.namespace`.
+
+## Phase 5 Tests Added
+
+Added and registered:
+
+- `examples/watch_symmetric_path_test.bas`
+- `examples/watch_symmetric_path_test.out`
+
+Coverage includes:
+
+- `watch(state)` fires when `state.value.inner` changes
+- `watch(state.value)` fires when `state` is replaced
+- `watch(state.value.inner)` fires when `state` is replaced
+- unrelated paths do not fire
+- sibling paths do not notify each other
+- multiple child watchers run in source/registration order after parent
+  replacement
+- equal parent replacement remains suppressed by Phase 1
+- nested array mutation behavior from Phase 4 still passes
+
 ## Verification Results
 
 Commands run:
@@ -338,6 +388,7 @@ Results:
 
 - `make clean && make`: pass
 - `./tests/run_examples.sh`: pass, including
+  `examples/watch_symmetric_path_test.bas`,
   `examples/watcher_value_change_guard_test.bas` and
   `examples/watcher_cascade_dedup_test.bas`, and
   `examples/watcher_cycle_error_test.bas`, and
@@ -369,20 +420,25 @@ Intentional behavior change:
   code `1005` and source `watcher`
 - mutating array builtins now use the same lvalue-aware watcher notification
   path and notify exactly once after successful stored mutation
+- watcher path matching is symmetric at dot boundaries, so parent replacement
+  invalidates descendant watchers
 
-Known remaining limitations:
+Known remaining limitations and follow-up work:
 
-- path matching is still one-way prefix matching
+- array indexes and dynamic keys are still collapsed to their containing array
+  or record path; index/key-aware watcher identities remain outside this
+  hardening pass
+- GUI behavior still has manual coverage only
 
 ## Next Recommended Phase
 
-Proceed to Watcher Hardening Phase 5: symmetric prefix notification.
+Watcher hardening phases 1 through 5 are complete.
 
-Keep the next change limited to watcher path matching. Do not revisit mutator
-semantics, queue ordering, or cycle errors while implementing parent
-replacement notifying child watchers.
+Recommended next step is a documentation cleanup pass across `docs/reference.md`,
+`docs/implementation_validation.md`, `docs/gui_design.md`, and
+`docs/webserver_design.md` so user-facing and design docs reflect the completed
+watcher behavior.
 
 ## Remaining Watcher Phases
 
-- Phase 5: symmetric prefix notification
 - final documentation and cleanup pass
