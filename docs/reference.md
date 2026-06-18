@@ -186,6 +186,39 @@ without watchers
 end without
 ```
 
+`watch(...)` registers a watcher over one or more stored paths. The watcher
+body runs once immediately at registration. Later, watcher triggering is
+immediate and synchronous: a storage-changing mutation runs matching watchers
+before execution continues past the mutating statement.
+
+Watcher notifications use storage-change detection. Equal-value writes do not
+trigger watchers. Arrays and records are compared deeply for this internal
+watcher guard; this does not change language comparison semantics for `=`.
+
+Watcher path matching is symmetric at dot boundaries:
+
+- `watch(state)` sees `state.value` changes
+- `watch(state.value)` sees wholesale replacement of `state`
+- unrelated paths and false string prefixes such as `state` and `statement`
+  do not match
+
+Array indexes are tracked at the containing array path rather than as
+index-specific watcher identities.
+
+During one active watcher-drain cycle, a watcher that is already pending is
+not enqueued again. It executes once and reads the latest live state. Separate
+top-level mutations still produce separate synchronous watcher drains.
+
+Runaway watcher cascades keep the execution cap and now raise a structured
+runtime error if the cap is reached:
+
+- `error.code = 1005`
+- `error.source = "watcher"`
+- message: `watcher cycle exceeded 10000 executions in one drain cycle`
+
+`without watchers` suppresses watcher triggering for mutations inside the
+block, then restores the previous watcher state when the block exits.
+
 Lock block:
 
 ```basic
@@ -756,6 +789,12 @@ The returned live server record contains:
 - `requests`: incoming request queue
 - `responses`: outgoing response queue
 
+`server.requests` and `server.responses` use ordinary watcher behavior. Native
+request arrival appends to `server.requests`; application code usually consumes
+requests with `take_first(server.requests)` and queues replies with
+`append(server.responses, ...)`. Those language-level queue mutations notify
+watchers once after the stored array mutation completes.
+
 Each request record contains:
 
 - `id`: positive server-generated request ID
@@ -989,7 +1028,14 @@ Array helper functions:
 - `unique(array)`
 - `sort(array)`
 
-`contains(array, value)` returns true when the array contains a matching value. `remove_value(array, value)` removes the first matching value and returns the resulting array; when the first argument is a variable, that array is updated in place. `find_by(records, field_name, value)` returns the first matching record index or `nothing`. `join_from(array, start_index, separator)` joins string elements from `start_index` to the end and returns `""` when the start is out of range. `first(array)` returns the first element or `nothing`; `rest(array)` returns a new array without the first element.
+`contains(array, value)` returns true when the array contains a matching value. `remove_value(array, value)` removes the first matching value and returns the resulting array; when the first argument is an assignable path, that array is updated in place. `find_by(records, field_name, value)` returns the first matching record index or `nothing`. `join_from(array, start_index, separator)` joins string elements from `start_index` to the end and returns `""` when the start is out of range. `first(array)` returns the first element or `nothing`; `rest(array)` returns a new array without the first element.
+
+When `append`, `prepend`, `insert`, `remove`, `remove_value`, `take_first`,
+`take_last`, `reverse`, `sort`, or `unique` mutates a stored array through an
+assignable path, matching watchers are notified once after the completed
+mutation. Mutators that leave the stored array unchanged, such as no-match
+`remove_value`, already-sorted `sort`, already-unique `unique`, or a no-op
+`reverse`, do not notify watchers.
 
 `sort()` and `unique()` support scalar arrays. Date/time values use exact
 date/time equality and ordering, not same-day or same-month comparison.

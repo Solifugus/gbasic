@@ -1,5 +1,7 @@
 # gBASIC
 
+![Byte Beaver, the gBASIC mascot](docs/assets/mascot.png)
+
 gBASIC is an experimental BASIC-family language for readable, practical
 programs. It combines familiar control flow with arrays, records, modifiers,
 watchers, files, dates, money, PostgreSQL, HTTP clients, and a queue-based HTTP
@@ -130,6 +132,38 @@ else print("waiting")
 See [docs/tutorial.md](docs/tutorial.md) for a guided introduction and
 [docs/reference.md](docs/reference.md) for the detailed language and runtime
 reference.
+
+## Watchers
+
+Watchers are immediate reactive blocks over stored paths:
+
+```basic
+total = 0
+
+watch(total)
+    print(total)
+end watch
+
+total = 1
+```
+
+A watcher runs once when it is registered. After that, mutations trigger
+watchers synchronously, before execution continues past the mutating statement,
+but only when the stored value actually changes. Equal-value writes do not
+trigger watchers.
+
+Watcher path matching is symmetric at dot boundaries. `watch(state)` observes
+changes to `state.value`, and `watch(state.value)` observes wholesale
+replacement of `state`. Array indexes are tracked at the containing array path.
+
+During one active watcher drain, a watcher already pending is not enqueued
+again; it runs once against the latest state. Cycles and runaway cascades raise
+runtime error code `1005` from source `watcher` after the execution cap is
+reached.
+
+Collection mutators such as `append`, `prepend`, `insert`, `remove`,
+`take_first`, `take_last`, `reverse`, `sort`, and `unique` notify watchers
+once, after the stored collection mutation completes.
 
 ## Values And Modifiers
 
@@ -287,7 +321,9 @@ end watch
 `webserver.listen(port)` binds immediately to `127.0.0.1`. Port `0` selects an
 available ephemeral port. Incoming request records are appended to
 `server.requests`; application responses are appended to `server.responses`
-and matched by request `id`.
+and matched by request `id`. These queues are ordinary watched arrays, so
+`take_first(server.requests)` and `append(server.responses, ...)` use the same
+watcher rules as other collection mutations.
 
 Requests include method, path, parsed query parameters, lowercase headers,
 string body, peer information, timestamp, and optional decoded `json`.
@@ -310,7 +346,9 @@ chunked request bodies, or WebSockets.
 When GTK 3 development files are available, the build enables the current GUI
 proof of concept. It supports record-defined windows, addressable widgets,
 GUI-originated watcher updates, and watcher-driven refresh of existing
-widgets. Dynamic widget-tree mutation is not implemented.
+widgets. GUI event batching is local to the GUI event loop; once a
+GUI-originated mutation is applied to gBASIC storage, ordinary watcher behavior
+applies. Dynamic widget-tree mutation is not implemented.
 
 Run the demos with the standard-library path configured:
 

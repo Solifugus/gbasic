@@ -288,7 +288,9 @@ end watch
 
 Run the program and request `http://127.0.0.1:8080/`. The watcher removes the
 request from `server.requests`, then queues a response with the same request
-ID.
+ID. The request and response queues are ordinary watched arrays:
+`take_first(server.requests)` and `append(server.responses, ...)` notify
+watchers once after the stored queue mutation completes.
 
 The live server record provides:
 
@@ -543,7 +545,9 @@ error.clear()
 
 ## Watchers
 
-Watchers run after assignments to watched top-level variables.
+Watchers are immediate reactive blocks over stored paths. A watcher runs once
+when it is registered, then runs synchronously after later storage-changing
+mutations to matching paths.
 
 ```basic
 a = 10
@@ -558,6 +562,31 @@ print(c)
 a = 15
 print(c)
 ```
+
+Equal-value writes do not trigger watchers:
+
+```basic
+count = 0
+
+watch(count)
+    print(count)
+end watch
+
+count = 0   # no second run
+count = 1   # runs
+```
+
+Matching is symmetric at dot boundaries. `watch(state)` sees changes to
+`state.value`, and `watch(state.value)` sees replacement of `state`. Array
+indexes are tracked at the containing array path.
+
+During one active watcher cascade, a watcher that is already pending is not
+queued again. It runs once and sees the latest state. Runaway watcher cascades
+raise runtime error code `1005` from source `watcher`.
+
+Collection mutators such as `append`, `prepend`, `insert`, `remove`,
+`take_first`, `take_last`, `reverse`, `sort`, and `unique` notify watchers
+once after the stored collection mutation completes.
 
 Suppress watcher triggering with `without watchers`:
 

@@ -1,5 +1,28 @@
 # Watcher Hardening Progress
 
+## Final Watcher Semantics
+
+Watcher hardening phases 1 through 5 are complete. The implemented watcher
+contract is:
+
+- watchers run once when registered
+- later watcher execution remains immediate and synchronous on mutation
+- watcher triggering is guarded by storage equality; equal-value writes do not
+  notify watchers
+- during one active watcher-drain cycle, an already pending watcher is not
+  enqueued again and runs once against the latest live state
+- runaway cascades raise structured runtime error code `1005` from source
+  `watcher` with message
+  `watcher cycle exceeded 10000 executions in one drain cycle`
+- collection mutators notify once after the completed stored mutation through
+  the lvalue-aware watcher path
+- watcher path matching is symmetric at dot boundaries, so parent watchers see
+  child changes and child watchers see parent replacement
+- GUI batching remains GUI-local; once GUI-originated mutations reach gBASIC
+  storage, ordinary watcher behavior applies
+- WebServer `server.requests` and `server.responses` are ordinary live queues
+  that use ordinary watcher behavior
+
 ## Phase 1 Status
 
 Watcher Hardening Phase 1 is implemented and verified.
@@ -432,13 +455,41 @@ Known remaining limitations and follow-up work:
 
 ## Next Recommended Phase
 
-Watcher hardening phases 1 through 5 are complete.
-
-Recommended next step is a documentation cleanup pass across `docs/reference.md`,
-`docs/implementation_validation.md`, `docs/gui_design.md`, and
-`docs/webserver_design.md` so user-facing and design docs reflect the completed
-watcher behavior.
+Watcher hardening phases 1 through 5 are complete. The public watcher
+semantics are now documented in `README.md`, `docs/reference.md`, and
+`docs/tutorial.md`.
 
 ## Remaining Watcher Phases
 
-- final documentation and cleanup pass
+- none for the planned hardening pass
+
+## Documentation Pass Verification
+
+The final watcher semantics documentation pass updated `README.md`,
+`docs/reference.md`, `docs/tutorial.md`, and this progress document. No runtime
+source files were changed in this pass.
+
+Commands run:
+
+```sh
+make clean && make
+./tests/run_examples.sh
+./tests/run_negative.sh
+./tests/run_webclient.sh
+./tests/run_webserver.sh
+bash tests/run_bag_smoke.sh
+./tests/run_postgres.sh
+```
+
+Results:
+
+- `make clean && make`: pass
+- `./tests/run_examples.sh`: pass
+- `./tests/run_negative.sh`: pass on sequential rerun
+- `./tests/run_webclient.sh`: pass
+- `./tests/run_webserver.sh`: pass
+- `bash tests/run_bag_smoke.sh`: pass; the script is not executable, so it was
+  run through `bash`
+- `./tests/run_postgres.sh`: skipped by design because
+  `GBASIC_POSTGRES_TEST=1` and the standard `PG*` connection variables were
+  not set
