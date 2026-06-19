@@ -669,6 +669,20 @@ results are arrays of records; duplicate column names are errors. SQLite blob
 parameters and results are not currently supported. SQLite errors use
 `error.source = "sqlite"`.
 
+SQLite type mapping:
+
+| SQLite storage class | gBASIC value | Notes |
+| --- | --- | --- |
+| `NULL` | `nothing` | Database null is absence |
+| `INTEGER` | number | Large integers may lose precision in gBASIC's floating-point number type |
+| `REAL` | number | Stored as a gBASIC number |
+| `TEXT` | string | No date/time guessing is applied |
+| `BLOB` | runtime error | Native blob values are future work |
+
+Parameters support `nothing`, booleans, numbers, strings, and date/time
+values. Booleans bind as integer `1` or `0` because SQLite has no separate
+boolean storage class. Date/time values bind as ISO-like text.
+
 ## PostgreSQL Module
 
 PostgreSQL support is available when gBASIC is built with libpq. Load the

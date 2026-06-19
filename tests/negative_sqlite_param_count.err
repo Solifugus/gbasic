@@ -1,0 +1,1 @@
+runtime error at tests/negative_sqlite_param_count.bas:3:1: SQLite statement expects 1 parameters but got 0

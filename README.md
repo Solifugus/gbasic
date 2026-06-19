@@ -248,6 +248,19 @@ Parameters are arrays bound through sqlite3 positional placeholders. Query
 results are arrays of records, SQL `NULL` maps to `nothing`, and duplicate
 column names are errors. Blob values are not currently supported.
 
+SQLite value mapping is intentionally direct:
+
+| SQLite storage class | gBASIC value | Notes |
+| --- | --- | --- |
+| `NULL` | `nothing` | Database null is absence |
+| `INTEGER` | number | Large integers may lose precision in gBASIC's floating-point number type |
+| `REAL` | number | Stored as a gBASIC number |
+| `TEXT` | string | No date/time guessing is applied |
+| `BLOB` | runtime error | Native blob values are future work |
+
+Boolean parameters bind as integer `1` or `0` because SQLite has no separate
+boolean storage class.
+
 ## PostgreSQL
 
 PostgreSQL support is synchronous and available when gBASIC is built with

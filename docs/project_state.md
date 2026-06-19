@@ -91,6 +91,7 @@ GUI verification remains manual.
 - `docs/reference.md`: implemented language and runtime behavior
 - `docs/tutorial.md`: guided usage
 - `docs/gBASIC_v0_1_core_design_and_grammar.md`: core grammar/design
+- `docs/sqlite_design.md`: SQLite API and future phases
 - `docs/postgres_design.md`: PostgreSQL API and future phases
 - `docs/webclient_design.md`: WebClient API and future phases
 - `docs/webserver_design.md`: WebServer API and future phases

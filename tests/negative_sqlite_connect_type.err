@@ -1,0 +1,1 @@
+runtime error at tests/negative_sqlite_connect_type.bas:2:1: sqlite.connect expects a database path string

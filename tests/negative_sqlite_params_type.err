@@ -1,0 +1,1 @@
+runtime error at tests/negative_sqlite_params_type.bas:3:1: SQLite query parameters must be an array
