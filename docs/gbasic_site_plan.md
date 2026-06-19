@@ -38,13 +38,13 @@ Acceptance criteria:
 
 ## Phase 1: Database Foundation
 
-- [ ] Add schema SQL for pages, forum categories, topics, posts, and moderation
+- [x] Add schema SQL for pages, forum categories, topics, posts, and moderation
       state.
-- [ ] Add seed data for a local demo.
-- [ ] Add a setup/reset script or gBASIC setup program for local development.
-- [ ] Decide how tests isolate data, such as a configurable schema prefix or
+- [x] Add seed data for a local demo.
+- [x] Add a setup/reset script or gBASIC setup program for local development.
+- [x] Decide how tests isolate data, such as a configurable schema prefix or
       temporary test tables.
-- [ ] Document required `PG*` environment variables.
+- [x] Document required `PG*` environment variables.
 
 Acceptance criteria:
 

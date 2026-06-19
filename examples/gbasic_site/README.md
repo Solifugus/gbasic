@@ -6,16 +6,17 @@ auth, and deployment story mature.
 
 ## Current Scope
 
-Phase 0 only establishes the project shape:
+The app currently includes the project shape and initial Postgres foundation:
 
 - `site.bas`: loopback webserver entry point
-- `sql/`: future Postgres schema, seed, and reset scripts
+- `setup.bas`: initializes and seeds app tables in the configured Postgres database
+- `sql/`: Postgres schema, seed, and reset scripts
 - `static/`: vanilla CSS and JavaScript assets
 - `tests/`: app-specific client/test helpers
 
 The app currently serves a small local home page, a stylesheet, a tiny script,
-and a shutdown route used by the test runner. Postgres-backed pages and forum
-data come in later phases.
+and a shutdown route used by the test runner. Runtime pages still use static
+content; reading pages and forum data from Postgres comes in later phases.
 
 ## Run Locally
 
@@ -42,8 +43,23 @@ From the repository root:
 The runner starts the app on an ephemeral loopback port, performs a few HTTP
 checks, and shuts it down.
 
-## Future Postgres Setup
+## Postgres Setup
 
-The app will use normal libpq environment variables when database-backed
-features are added, such as `PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER`, and
-`PGPASSWORD`.
+The app uses normal libpq environment variables:
+
+```sh
+export PGHOST=127.0.0.1
+export PGPORT=5432
+export PGDATABASE=gbasic_site_dev
+export PGUSER=gbasic_site
+```
+
+Use `~/.pgpass` or `PGPASSWORD` for credentials.
+
+Initialize/reset the app tables and seed data:
+
+```sh
+./gbasic examples/gbasic_site/setup.bas
+```
+
+This creates and resets only `gbasic_site_*` tables in the configured database.

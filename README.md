@@ -419,6 +419,7 @@ Run module and application integration tests:
 ./tests/run_webserver.sh
 ./tests/run_sqlite.sh
 ./tests/run_gbasic_site.sh
+GBASIC_SITE_POSTGRES_TEST=1 ./tests/run_gbasic_site_postgres.sh
 bash tests/run_bag_smoke.sh
 ```
 
