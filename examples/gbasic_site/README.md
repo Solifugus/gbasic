@@ -56,6 +56,21 @@ export PGUSER=gbasic_site
 
 Use `~/.pgpass` or `PGPASSWORD` for credentials.
 
+For a local development database on systems with `sudo -u postgres psql`, this
+helper creates/updates a dedicated role and database and writes a matching
+`~/.pgpass` entry:
+
+```sh
+examples/gbasic_site/scripts/setup_postgres_dev.sh
+```
+
+You can override defaults:
+
+```sh
+DB_NAME=gbasic_site_dev DB_USER=gbasic_site DB_HOST=127.0.0.1 DB_PORT=5432 \
+    examples/gbasic_site/scripts/setup_postgres_dev.sh
+```
+
 Initialize/reset the app tables and seed data:
 
 ```sh

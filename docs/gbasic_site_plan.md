@@ -45,6 +45,7 @@ Acceptance criteria:
 - [x] Decide how tests isolate data, such as a configurable schema prefix or
       temporary test tables.
 - [x] Document required `PG*` environment variables.
+- [x] Add a local Postgres setup helper based on standard libpq credentials.
 
 Acceptance criteria:
 
