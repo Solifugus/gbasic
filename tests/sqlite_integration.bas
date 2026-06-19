@@ -9,6 +9,7 @@ print(created.command)
 inserted = sqlite.exec(db, "insert into gbasic_sqlite_test (id, active, name, score, optional) values (?, ?, ?, ?, ?)", [1, true, "Ada", 12.5, nothing])
 print(inserted.command)
 print(inserted.rows_affected)
+print(sqlite.last_insert_rowid(db))
 
 rows = sqlite.query(db, "select id, active, name, score, optional from gbasic_sqlite_test where id = ?", [1])
 print(count(rows))

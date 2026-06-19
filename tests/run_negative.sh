@@ -35,10 +35,14 @@ cases=(
     negative_pg_not_loaded
     negative_pg_connect_type
     negative_pg_connect_field
+    negative_pg_close_arity
     negative_pg_close_type
     negative_pg_query_arity
     negative_pg_query_connection
     negative_pg_exec_arity
+    negative_pg_begin_arity
+    negative_pg_commit_arity
+    negative_pg_rollback_arity
     negative_pg_transaction_type
     negative_webclient_get_url_type
     negative_webclient_post_url_type

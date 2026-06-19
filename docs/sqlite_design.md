@@ -32,6 +32,8 @@ result = sqlite.exec(db, "update users set active = 0 where id = ?", [10])
 sqlite.begin(db)
 sqlite.commit(db)
 sqlite.rollback(db)
+
+rowid = sqlite.last_insert_rowid(db)
 ```
 
 Connections are opaque `sqlite_connection` values. They close explicitly with
@@ -79,6 +81,9 @@ The returned record contains:
 - `command`: uppercase first SQL word, such as `"INSERT"` or `"UPDATE"`
 - `rows_affected`: `sqlite3_changes()` as a number
 
+`sqlite.last_insert_rowid(db)` returns `sqlite3_last_insert_rowid()` for that
+connection as a number.
+
 ## Transactions
 
 `sqlite.begin`, `sqlite.commit`, and `sqlite.rollback` execute direct
@@ -103,7 +108,6 @@ and backend-specific semantics are clear.
 
 ## Future Work
 
-- `sqlite.last_insert_rowid(db)`
 - `sqlite.changes(db)` or a consistent command-result extension
 - readonly/open flags
 - busy timeout configuration

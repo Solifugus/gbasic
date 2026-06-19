@@ -662,6 +662,7 @@ The module provides:
 - `sqlite.begin(connection)`
 - `sqlite.commit(connection)`
 - `sqlite.rollback(connection)`
+- `sqlite.last_insert_rowid(connection)`
 
 Parameters are arrays and are bound separately through sqlite3. Use SQLite
 positional placeholders such as `?`. SQL `NULL` maps to `nothing`. Query
@@ -682,6 +683,9 @@ SQLite type mapping:
 Parameters support `nothing`, booleans, numbers, strings, and date/time
 values. Booleans bind as integer `1` or `0` because SQLite has no separate
 boolean storage class. Date/time values bind as ISO-like text.
+
+`sqlite.last_insert_rowid(connection)` returns SQLite's last inserted rowid for
+that connection as a number.
 
 ## PostgreSQL Module
 

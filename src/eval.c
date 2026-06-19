@@ -8452,6 +8452,26 @@ static Value sqlite_eval_transaction(AstExpr *expr, const char *sql, const char 
     return value_bool(1);
 }
 
+static Value sqlite_eval_last_insert_rowid(AstExpr *expr) {
+    if (expr->as.call.args.count != 1) {
+        sqlite_raise_message("sqlite.last_insert_rowid expects one argument");
+        return value_null();
+    }
+    Value connection_value = eval_expr(expr->as.call.args.items[0]);
+    if (error_action_pending()) {
+        value_free(connection_value);
+        return value_null();
+    }
+    SqliteConnectionValue *connection = sqlite_connection_from_value(connection_value);
+    if (!connection) {
+        value_free(connection_value);
+        return value_null();
+    }
+    sqlite3_int64 rowid = sqlite3_last_insert_rowid(connection->connection);
+    value_free(connection_value);
+    return value_number((double)rowid);
+}
+
 static Value sqlite_eval_call(AstExpr *expr) {
     const char *name = expr->as.call.name;
     if (strcmp(name, "connect") == 0) {
@@ -8474,6 +8494,9 @@ static Value sqlite_eval_call(AstExpr *expr) {
     }
     if (strcmp(name, "rollback") == 0) {
         return sqlite_eval_transaction(expr, "ROLLBACK", "rollback");
+    }
+    if (strcmp(name, "last_insert_rowid") == 0) {
+        return sqlite_eval_last_insert_rowid(expr);
     }
     char message[256];
     snprintf(message, sizeof(message), "invalid function call: sqlite.%s", name);

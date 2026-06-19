@@ -1,0 +1,1 @@
+runtime error at tests/negative_pg_rollback_arity.bas:2:1: pg.rollback expects one argument

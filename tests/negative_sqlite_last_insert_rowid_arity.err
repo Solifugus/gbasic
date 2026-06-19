@@ -1,0 +1,1 @@
+runtime error at tests/negative_sqlite_last_insert_rowid_arity.bas:2:1: sqlite.last_insert_rowid expects one argument

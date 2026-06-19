@@ -36,6 +36,7 @@ negative_cases=(
     negative_sqlite_param_count
     negative_sqlite_exec_rows
     negative_sqlite_blob_result
+    negative_sqlite_last_insert_rowid_arity
 )
 
 for name in "${negative_cases[@]}"; do

@@ -243,7 +243,8 @@ sqlite.close(db)
 ```
 
 The module provides `sqlite.connect`, `sqlite.close`, `sqlite.query`,
-`sqlite.exec`, `sqlite.begin`, `sqlite.commit`, and `sqlite.rollback`.
+`sqlite.exec`, `sqlite.begin`, `sqlite.commit`, `sqlite.rollback`, and
+`sqlite.last_insert_rowid`.
 Parameters are arrays bound through sqlite3 positional placeholders. Query
 results are arrays of records, SQL `NULL` maps to `nothing`, and duplicate
 column names are errors. Blob values are not currently supported.
@@ -260,6 +261,9 @@ SQLite value mapping is intentionally direct:
 
 Boolean parameters bind as integer `1` or `0` because SQLite has no separate
 boolean storage class.
+
+`sqlite.last_insert_rowid(db)` returns SQLite's last inserted rowid for that
+connection as a number.
 
 ## PostgreSQL
 

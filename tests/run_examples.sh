@@ -89,6 +89,7 @@ examples=(
     string_test.bas
     unknown_test.bas
     unknown_nothing_distinction_integration_test.bas
+    sqlite_module_test.bas
     postgres_module_test.bas
     builtin_test.bas
     builtin_override_test.bas

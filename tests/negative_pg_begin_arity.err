@@ -1,0 +1,1 @@
+runtime error at tests/negative_pg_begin_arity.bas:2:1: pg.begin expects one argument
