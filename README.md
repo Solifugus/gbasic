@@ -418,11 +418,12 @@ Run module and application integration tests:
 ./tests/run_webclient.sh
 ./tests/run_webserver.sh
 ./tests/run_sqlite.sh
+./tests/run_gbasic_site.sh
 bash tests/run_bag_smoke.sh
 ```
 
 The SQLite runner skips when sqlite3 development files are unavailable.
-The WebClient and WebServer runners use local loopback fixtures and skip
+The WebClient, WebServer, and gBASIC site runners use local loopback fixtures and skip
 cleanly when their environment is unavailable.
 
 The PostgreSQL integration test is opt-in and uses normal libpq environment

@@ -21,14 +21,14 @@ worth maintaining in this repo.
 
 ## Phase 0: Project Shape
 
-- [ ] Create `examples/gbasic_site/`.
-- [ ] Add `README.md` with local setup, Postgres requirements, and current
+- [x] Create `examples/gbasic_site/`.
+- [x] Add `README.md` with local setup, Postgres requirements, and current
       limitations.
-- [ ] Add an app entry point, likely `site.bas`.
-- [ ] Add a local runner script under `tests/`.
-- [ ] Add the runner to docs but keep it opt-in if it needs a configured
+- [x] Add an app entry point, likely `site.bas`.
+- [x] Add a local runner script under `tests/`.
+- [x] Add the runner to docs but keep it opt-in if it needs a configured
       Postgres database.
-- [ ] Define the initial directory layout for app code, SQL, static assets,
+- [x] Define the initial directory layout for app code, SQL, static assets,
       and tests.
 
 Acceptance criteria:
