@@ -4,8 +4,8 @@
 
 gBASIC is an experimental BASIC-family language for readable, practical
 programs. It combines familiar control flow with arrays, records, modifiers,
-watchers, files, dates, money, PostgreSQL, HTTP clients, and a queue-based HTTP
-server.
+watchers, files, dates, money, SQLite, PostgreSQL, HTTP clients, and a
+queue-based HTTP server.
 
 This repository contains the C implementation of gBASIC
 `0.1.0-dev`. The language and runtime are under active development and are not
@@ -32,6 +32,7 @@ Implemented runtime and module features include:
 
 - core file management, directory management, path utilities, and
   `read_lines`
+- synchronous SQLite access through the optional sqlite3-backed `sqlite` module
 - synchronous PostgreSQL access through the optional libpq-backed `pg` module
 - synchronous HTTP and HTTPS requests through the optional libcurl-backed
   `webclient` module
@@ -224,6 +225,29 @@ end for
 Filesystem failures are runtime errors. `remove_dir` removes only empty
 directories; recursive file operations are not implemented.
 
+## SQLite
+
+SQLite support is synchronous and available when gBASIC is built with
+sqlite3:
+
+```basic
+load sqlite
+
+db = sqlite.connect("app.db")
+
+sqlite.exec(db, "create table if not exists users (id integer primary key, name text, active integer)")
+sqlite.exec(db, "insert into users (name, active) values (?, ?)", ["Ada", true])
+rows = sqlite.query(db, "select id, name from users where active = ?", [true])
+
+sqlite.close(db)
+```
+
+The module provides `sqlite.connect`, `sqlite.close`, `sqlite.query`,
+`sqlite.exec`, `sqlite.begin`, `sqlite.commit`, and `sqlite.rollback`.
+Parameters are arrays bound through sqlite3 positional placeholders. Query
+results are arrays of records, SQL `NULL` maps to `nothing`, and duplicate
+column names are errors. Blob values are not currently supported.
+
 ## PostgreSQL
 
 PostgreSQL support is synchronous and available when gBASIC is built with
@@ -376,9 +400,11 @@ Run module and application integration tests:
 ```sh
 ./tests/run_webclient.sh
 ./tests/run_webserver.sh
+./tests/run_sqlite.sh
 bash tests/run_bag_smoke.sh
 ```
 
+The SQLite runner skips when sqlite3 development files are unavailable.
 The WebClient and WebServer runners use local loopback fixtures and skip
 cleanly when their environment is unavailable.
 

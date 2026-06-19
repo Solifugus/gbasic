@@ -633,6 +633,42 @@ end if
 
 Errors propagate out of functions. `with lock` unlocks on error, and `without watchers` restores watcher behavior after its block.
 
+## SQLite Module
+
+SQLite support is available when gBASIC is built with sqlite3. Load the
+compiled standard module before using its qualified API:
+
+```basic
+load sqlite
+
+db = sqlite.connect("app.db")
+
+sqlite.exec(db, "create table if not exists users (id integer primary key, name text, active integer)")
+sqlite.exec(db, "insert into users (name, active) values (?, ?)", ["Ada", true])
+rows = sqlite.query(db, "select id, name from users where active = ?", [true])
+
+sqlite.close(db)
+```
+
+Connections are opaque `sqlite_connection` values. They close explicitly with
+`sqlite.close` and automatically during interpreter cleanup.
+
+The module provides:
+
+- `sqlite.connect(path_string)`
+- `sqlite.close(connection)`
+- `sqlite.query(connection, sql[, params])`
+- `sqlite.exec(connection, sql[, params])`
+- `sqlite.begin(connection)`
+- `sqlite.commit(connection)`
+- `sqlite.rollback(connection)`
+
+Parameters are arrays and are bound separately through sqlite3. Use SQLite
+positional placeholders such as `?`. SQL `NULL` maps to `nothing`. Query
+results are arrays of records; duplicate column names are errors. SQLite blob
+parameters and results are not currently supported. SQLite errors use
+`error.source = "sqlite"`.
+
 ## PostgreSQL Module
 
 PostgreSQL support is available when gBASIC is built with libpq. Load the

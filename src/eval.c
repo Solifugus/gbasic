@@ -28,6 +28,10 @@
 #include <libpq-fe.h>
 #endif
 
+#if HAVE_SQLITE3
+#include <sqlite3.h>
+#endif
+
 #if HAVE_LIBCURL
 #include <curl/curl.h>
 #endif
@@ -36,6 +40,7 @@ int parse_source(const char *source, AstStmtList *out_program);
 void parse_set_source_path(const char *path);
 
 typedef struct PgConnectionValue PgConnectionValue;
+typedef struct SqliteConnectionValue SqliteConnectionValue;
 typedef struct WebServer WebServer;
 typedef struct WebServerClient WebServerClient;
 
@@ -52,7 +57,8 @@ typedef enum {
     VALUE_MONEY,
     VALUE_FILE,
     VALUE_DIR,
-    VALUE_POSTGRES_CONNECTION
+    VALUE_POSTGRES_CONNECTION,
+    VALUE_SQLITE_CONNECTION
 } ValueKind;
 
 typedef enum {
@@ -112,12 +118,21 @@ struct Value {
         char *file_path;
         char *dir_path;
         PgConnectionValue *postgres_connection;
+        SqliteConnectionValue *sqlite_connection;
     } as;
 };
 
 struct PgConnectionValue {
 #if HAVE_LIBPQ
     PGconn *connection;
+#endif
+    size_t ref_count;
+    int closed;
+};
+
+struct SqliteConnectionValue {
+#if HAVE_SQLITE3
+    sqlite3 *connection;
 #endif
     size_t ref_count;
     int closed;
@@ -249,6 +264,7 @@ static UsePair *use_stack = NULL;
 static size_t use_stack_count = 0;
 static int gui_library_loaded = 0;
 static int pg_library_loaded = 0;
+static int sqlite_library_loaded = 0;
 static int webclient_library_loaded = 0;
 static int webclient_curl_initialized = 0;
 static int webserver_library_loaded = 0;
@@ -328,6 +344,8 @@ static const char *value_kind_name(ValueKind kind) {
         return "directory";
     case VALUE_POSTGRES_CONNECTION:
         return "postgres_connection";
+    case VALUE_SQLITE_CONNECTION:
+        return "sqlite_connection";
     }
     return "value";
 }
@@ -435,6 +453,13 @@ static Value value_postgres_connection(PgConnectionValue *connection) {
     Value value = {0};
     value.kind = VALUE_POSTGRES_CONNECTION;
     value.as.postgres_connection = connection;
+    return value;
+}
+
+static Value value_sqlite_connection(SqliteConnectionValue *connection) {
+    Value value = {0};
+    value.kind = VALUE_SQLITE_CONNECTION;
+    value.as.sqlite_connection = connection;
     return value;
 }
 
@@ -603,6 +628,10 @@ static Value value_copy(Value value) {
         value.as.postgres_connection->ref_count++;
         return value_postgres_connection(value.as.postgres_connection);
     }
+    if (value.kind == VALUE_SQLITE_CONNECTION) {
+        value.as.sqlite_connection->ref_count++;
+        return value_sqlite_connection(value.as.sqlite_connection);
+    }
     if (value.kind == VALUE_ARRAY) {
         Value *items = NULL;
         if (value.as.array.count > 0) {
@@ -666,6 +695,16 @@ static void value_free(Value value) {
 #endif
             free(connection);
         }
+    } else if (value.kind == VALUE_SQLITE_CONNECTION) {
+        SqliteConnectionValue *connection = value.as.sqlite_connection;
+        if (connection && --connection->ref_count == 0) {
+#if HAVE_SQLITE3
+            if (!connection->closed && connection->connection) {
+                sqlite3_close(connection->connection);
+            }
+#endif
+            free(connection);
+        }
     }
 }
 
@@ -698,6 +737,11 @@ static int value_truthy(Value value) {
         runtime_error_raise("postgres connection cannot be used as a condition",
                             2001,
                             "postgres");
+        return 0;
+    case VALUE_SQLITE_CONNECTION:
+        runtime_error_raise("sqlite connection cannot be used as a condition",
+                            2002,
+                            "sqlite");
         return 0;
     case VALUE_NULL:
         return 0;
@@ -837,6 +881,9 @@ static void value_print(Value value) {
         break;
     case VALUE_POSTGRES_CONNECTION:
         printf("<postgres_connection>\n");
+        break;
+    case VALUE_SQLITE_CONNECTION:
+        printf("<sqlite_connection>\n");
         break;
     }
 }
@@ -1122,6 +1169,8 @@ static int value_storage_equal(const Value *left, const Value *right) {
         return strcmp(left->as.dir_path, right->as.dir_path) == 0;
     case VALUE_POSTGRES_CONNECTION:
         return left->as.postgres_connection == right->as.postgres_connection;
+    case VALUE_SQLITE_CONNECTION:
+        return left->as.sqlite_connection == right->as.sqlite_connection;
     }
     return 0;
 }
@@ -3435,6 +3484,17 @@ static void library_import(const char *name, const char *path) {
         return;
     }
 
+    if (!path && strcmp(name, "sqlite") == 0) {
+#if HAVE_SQLITE3
+        sqlite_library_loaded = 1;
+#else
+        runtime_error_raise("SQLite support is not available in this build",
+                            2002,
+                            "sqlite");
+#endif
+        return;
+    }
+
     if (!path && strcmp(name, "webclient") == 0) {
 #if HAVE_LIBCURL
         if (!webclient_curl_initialized) {
@@ -5458,6 +5518,8 @@ static const char *builtin_type_name(Value value) {
         return "directory";
     case VALUE_POSTGRES_CONNECTION:
         return "postgres_connection";
+    case VALUE_SQLITE_CONNECTION:
+        return "sqlite_connection";
     }
     return "value";
 }
@@ -5725,6 +5787,9 @@ static Value builtin_string_value(Value value) {
     case VALUE_POSTGRES_CONNECTION:
         value_free(value);
         return value_string("<postgres_connection>");
+    case VALUE_SQLITE_CONNECTION:
+        value_free(value);
+        return value_string("<sqlite_connection>");
     }
 
     if (!used_builder) {
@@ -5791,6 +5856,7 @@ static int encode_value_to_builder(StringBuilder *builder, Value value) {
     case VALUE_FILE:
     case VALUE_DIR:
     case VALUE_POSTGRES_CONNECTION:
+    case VALUE_SQLITE_CONNECTION:
         runtime_error_raise("encode supports numbers, strings, booleans, nothing, unknown, arrays, and records",
                             1003,
                             "serialization");
@@ -7839,6 +7905,583 @@ static void webserver_clear(void) {
     webserver_next_id = 1;
 }
 
+#if HAVE_SQLITE3
+#define SQLITE_ERROR_CODE 2002
+
+typedef struct {
+    sqlite3_stmt *statement;
+    char **values;
+    int count;
+} SqliteParameterList;
+
+static void sqlite_raise_message(const char *message) {
+    runtime_error_raise(message, SQLITE_ERROR_CODE, "sqlite");
+}
+
+static void sqlite_raise_connection_error(sqlite3 *connection, const char *prefix) {
+    const char *detail = connection ? sqlite3_errmsg(connection) : "";
+    char message[1024];
+    if (detail && detail[0]) {
+        snprintf(message, sizeof(message), "%s: %s", prefix, detail);
+    } else {
+        snprintf(message, sizeof(message), "%s", prefix);
+    }
+    sqlite_raise_message(message);
+}
+
+static SqliteConnectionValue *sqlite_connection_from_value(Value value) {
+    if (value.kind != VALUE_SQLITE_CONNECTION) {
+        sqlite_raise_message("sqlite operation expects a sqlite_connection");
+        return NULL;
+    }
+    SqliteConnectionValue *connection = value.as.sqlite_connection;
+    if (!connection || connection->closed || !connection->connection) {
+        sqlite_raise_message("sqlite connection is closed");
+        return NULL;
+    }
+    return connection;
+}
+
+static char *sqlite_datetime_text(DateTime datetime) {
+    char buffer[64];
+    if (datetime.time_only) {
+        if (datetime.precision == PREC_HOUR) {
+            snprintf(buffer, sizeof(buffer), "%02d:00:00", datetime.hour);
+        } else if (datetime.precision == PREC_MINUTE) {
+            snprintf(buffer,
+                     sizeof(buffer),
+                     "%02d:%02d:00",
+                     datetime.hour,
+                     datetime.minute);
+        } else {
+            snprintf(buffer,
+                     sizeof(buffer),
+                     "%02d:%02d:%02d",
+                     datetime.hour,
+                     datetime.minute,
+                     datetime.second);
+        }
+    } else if (datetime.precision < PREC_DAY) {
+        sqlite_raise_message("SQLite date parameters require day precision");
+        return NULL;
+    } else if (datetime.precision == PREC_DAY) {
+        snprintf(buffer,
+                 sizeof(buffer),
+                 "%04d-%02d-%02d",
+                 datetime.year,
+                 datetime.month,
+                 datetime.day);
+    } else {
+        snprintf(buffer,
+                 sizeof(buffer),
+                 "%04d-%02d-%02d %02d:%02d:%02d",
+                 datetime.year,
+                 datetime.month,
+                 datetime.day,
+                 datetime.hour,
+                 datetime.minute,
+                 datetime.second);
+    }
+    return copy_string(buffer);
+}
+
+static Value sqlite_eval_connect(AstExpr *expr) {
+    if (expr->as.call.args.count != 1) {
+        sqlite_raise_message("sqlite.connect expects one argument");
+        return value_null();
+    }
+
+    Value path = eval_expr(expr->as.call.args.items[0]);
+    if (error_action_pending()) {
+        value_free(path);
+        return value_null();
+    }
+    if (path.kind != VALUE_STRING) {
+        value_free(path);
+        sqlite_raise_message("sqlite.connect expects a database path string");
+        return value_null();
+    }
+
+    sqlite3 *native = NULL;
+    int rc = sqlite3_open_v2(path.as.string,
+                             &native,
+                             SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE,
+                             NULL);
+    value_free(path);
+    if (rc != SQLITE_OK) {
+        sqlite_raise_connection_error(native, "SQLite connection failed");
+        if (native) {
+            sqlite3_close(native);
+        }
+        return value_null();
+    }
+
+    SqliteConnectionValue *connection = calloc(1, sizeof(SqliteConnectionValue));
+    if (!connection) {
+        sqlite3_close(native);
+        abort();
+    }
+    connection->connection = native;
+    connection->ref_count = 1;
+    return value_sqlite_connection(connection);
+}
+
+static Value sqlite_eval_close(AstExpr *expr) {
+    if (expr->as.call.args.count != 1) {
+        sqlite_raise_message("sqlite.close expects one argument");
+        return value_null();
+    }
+    Value value = eval_expr(expr->as.call.args.items[0]);
+    if (error_action_pending()) {
+        value_free(value);
+        return value_null();
+    }
+    if (value.kind != VALUE_SQLITE_CONNECTION) {
+        value_free(value);
+        sqlite_raise_message("sqlite.close expects a sqlite_connection");
+        return value_null();
+    }
+    SqliteConnectionValue *connection = value.as.sqlite_connection;
+    if (!connection || connection->closed) {
+        value_free(value);
+        sqlite_raise_message("sqlite connection is already closed");
+        return value_null();
+    }
+    int rc = sqlite3_close(connection->connection);
+    if (rc != SQLITE_OK) {
+        sqlite_raise_connection_error(connection->connection, "SQLite close failed");
+        value_free(value);
+        return value_null();
+    }
+    connection->connection = NULL;
+    connection->closed = 1;
+    value_free(value);
+    return value_bool(1);
+}
+
+static char *sqlite_parameter_text(Value value) {
+    switch (value.kind) {
+    case VALUE_STRING:
+        return copy_string(value.as.string);
+    case VALUE_DATETIME:
+        return sqlite_datetime_text(value.as.datetime);
+    default:
+        sqlite_raise_message("unsupported SQLite text parameter type");
+        return NULL;
+    }
+}
+
+static int sqlite_bind_value(sqlite3_stmt *statement, int index, Value value, char **owned_text) {
+    int rc = SQLITE_OK;
+    *owned_text = NULL;
+    switch (value.kind) {
+    case VALUE_NULL:
+        rc = sqlite3_bind_null(statement, index);
+        break;
+    case VALUE_BOOL:
+        rc = sqlite3_bind_int64(statement, index, value.as.boolean ? 1 : 0);
+        break;
+    case VALUE_NUMBER:
+        if (!isfinite(value.as.number)) {
+            sqlite_raise_message("SQLite number parameters must be finite");
+            return 0;
+        }
+        rc = sqlite3_bind_double(statement, index, value.as.number);
+        break;
+    case VALUE_STRING:
+    case VALUE_DATETIME:
+        *owned_text = sqlite_parameter_text(value);
+        if (!*owned_text) {
+            return 0;
+        }
+        rc = sqlite3_bind_text(statement, index, *owned_text, -1, SQLITE_TRANSIENT);
+        break;
+    default:
+        sqlite_raise_message("unsupported SQLite parameter type");
+        return 0;
+    }
+    if (rc != SQLITE_OK) {
+        sqlite_raise_message("could not bind SQLite parameter");
+        return 0;
+    }
+    return 1;
+}
+
+static void sqlite_parameter_list_clear(SqliteParameterList *params) {
+    if (params->statement) {
+        sqlite3_finalize(params->statement);
+    }
+    for (int i = 0; i < params->count; i++) {
+        free(params->values[i]);
+    }
+    free(params->values);
+    memset(params, 0, sizeof(*params));
+}
+
+static int sqlite_sql_tail_is_empty(const char *tail) {
+    while (*tail) {
+        if (!isspace((unsigned char)*tail)) {
+            return 0;
+        }
+        tail++;
+    }
+    return 1;
+}
+
+static int sqlite_prepare_statement(SqliteConnectionValue *connection,
+                                    const char *sql,
+                                    Value *params_value,
+                                    SqliteParameterList *out) {
+    const char *tail = NULL;
+    int rc = sqlite3_prepare_v2(connection->connection, sql, -1, &out->statement, &tail);
+    if (rc != SQLITE_OK) {
+        sqlite_raise_connection_error(connection->connection, "SQLite prepare failed");
+        return 0;
+    }
+    if (!out->statement) {
+        sqlite_raise_message("SQLite SQL must contain a statement");
+        return 0;
+    }
+    if (tail && !sqlite_sql_tail_is_empty(tail)) {
+        sqlite_raise_message("SQLite query expects exactly one statement");
+        return 0;
+    }
+
+    int expected = sqlite3_bind_parameter_count(out->statement);
+    if (params_value) {
+        if (params_value->kind != VALUE_ARRAY) {
+            sqlite_raise_message("SQLite query parameters must be an array");
+            return 0;
+        }
+        if (params_value->as.array.count > INT_MAX) {
+            sqlite_raise_message("too many SQLite query parameters");
+            return 0;
+        }
+        out->count = (int)params_value->as.array.count;
+    } else {
+        out->count = 0;
+    }
+    if (out->count != expected) {
+        char message[160];
+        snprintf(message,
+                 sizeof(message),
+                 "SQLite statement expects %d parameters but got %d",
+                 expected,
+                 out->count);
+        sqlite_raise_message(message);
+        return 0;
+    }
+    out->values = out->count > 0 ? calloc((size_t)out->count, sizeof(char *)) : NULL;
+    if (out->count > 0 && !out->values) {
+        abort();
+    }
+    for (int i = 0; i < out->count; i++) {
+        if (!sqlite_bind_value(out->statement,
+                               i + 1,
+                               params_value->as.array.items[i],
+                               &out->values[i])) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static Value sqlite_column_value(sqlite3_stmt *statement, int column) {
+    int type = sqlite3_column_type(statement, column);
+    switch (type) {
+    case SQLITE_NULL:
+        return value_null();
+    case SQLITE_INTEGER:
+        return value_number((double)sqlite3_column_int64(statement, column));
+    case SQLITE_FLOAT:
+        return value_number(sqlite3_column_double(statement, column));
+    case SQLITE_TEXT:
+        return value_string((const char *)sqlite3_column_text(statement, column));
+    case SQLITE_BLOB:
+        sqlite_raise_message("SQLite blob results are not supported");
+        return value_null();
+    default:
+        sqlite_raise_message("unsupported SQLite result type");
+        return value_null();
+    }
+}
+
+static int sqlite_result_columns_are_unique(sqlite3_stmt *statement) {
+    int columns = sqlite3_column_count(statement);
+    for (int i = 0; i < columns; i++) {
+        const char *name = sqlite3_column_name(statement, i);
+        for (int j = 0; j < i; j++) {
+            if (strcmp(name, sqlite3_column_name(statement, j)) == 0) {
+                char message[256];
+                snprintf(message,
+                         sizeof(message),
+                         "duplicate SQLite result column: %s",
+                         name);
+                sqlite_raise_message(message);
+                return 0;
+            }
+        }
+    }
+    return 1;
+}
+
+static int sqlite_rows_append(Value **items, size_t *count, size_t *capacity, Value row) {
+    if (*count == *capacity) {
+        size_t next = *capacity == 0 ? 8 : *capacity * 2;
+        Value *resized = realloc(*items, sizeof(Value) * next);
+        if (!resized) {
+            abort();
+        }
+        *items = resized;
+        *capacity = next;
+    }
+    (*items)[*count] = row;
+    (*count)++;
+    return 1;
+}
+
+static Value sqlite_rows_from_statement(sqlite3 *native, sqlite3_stmt *statement) {
+    if (!sqlite_result_columns_are_unique(statement)) {
+        return value_null();
+    }
+
+    int columns = sqlite3_column_count(statement);
+    Value *items = NULL;
+    size_t count = 0;
+    size_t capacity = 0;
+    for (;;) {
+        int rc = sqlite3_step(statement);
+        if (rc == SQLITE_DONE) {
+            break;
+        }
+        if (rc != SQLITE_ROW) {
+            sqlite_raise_connection_error(native, "SQLite query failed");
+            for (size_t i = 0; i < count; i++) {
+                value_free(items[i]);
+            }
+            free(items);
+            return value_null();
+        }
+
+        RecordField *fields = columns > 0
+            ? calloc((size_t)columns, sizeof(RecordField))
+            : NULL;
+        if (columns > 0 && !fields) {
+            abort();
+        }
+        int completed_fields = 0;
+        for (int column = 0; column < columns; column++) {
+            int before_error = error_generation;
+            fields[column].name = copy_string(sqlite3_column_name(statement, column));
+            fields[column].value = malloc(sizeof(Value));
+            if (!fields[column].value) {
+                abort();
+            }
+            *fields[column].value = sqlite_column_value(statement, column);
+            completed_fields++;
+            if (error_generation != before_error) {
+                for (int i = 0; i < completed_fields; i++) {
+                    free(fields[i].name);
+                    value_free(*fields[i].value);
+                    free(fields[i].value);
+                }
+                free(fields);
+                for (size_t i = 0; i < count; i++) {
+                    value_free(items[i]);
+                }
+                free(items);
+                return value_null();
+            }
+        }
+        sqlite_rows_append(&items, &count, &capacity, value_record(fields, (size_t)columns));
+    }
+    return value_array(items, count);
+}
+
+static char *sqlite_command_name(const char *sql) {
+    while (*sql && isspace((unsigned char)*sql)) {
+        sql++;
+    }
+    size_t length = 0;
+    while (sql[length] && (isalpha((unsigned char)sql[length]) || sql[length] == '_')) {
+        length++;
+    }
+    if (length == 0) {
+        return copy_string("SQL");
+    }
+    char *name = malloc(length + 1);
+    if (!name) {
+        abort();
+    }
+    for (size_t i = 0; i < length; i++) {
+        name[i] = (char)toupper((unsigned char)sql[i]);
+    }
+    name[length] = '\0';
+    return name;
+}
+
+static Value sqlite_command_result(sqlite3 *native, const char *sql) {
+    RecordField *fields = calloc(2, sizeof(RecordField));
+    if (!fields) {
+        abort();
+    }
+    fields[0].name = copy_string("command");
+    fields[0].value = malloc(sizeof(Value));
+    fields[1].name = copy_string("rows_affected");
+    fields[1].value = malloc(sizeof(Value));
+    if (!fields[0].value || !fields[1].value) {
+        abort();
+    }
+    char *command = sqlite_command_name(sql);
+    *fields[0].value = value_string(command);
+    free(command);
+    *fields[1].value = value_number((double)sqlite3_changes(native));
+    return value_record(fields, 2);
+}
+
+static Value sqlite_eval_sql(AstExpr *expr, int query_mode) {
+    if (expr->as.call.args.count != 2 && expr->as.call.args.count != 3) {
+        sqlite_raise_message(query_mode
+            ? "sqlite.query expects two or three arguments"
+            : "sqlite.exec expects two or three arguments");
+        return value_null();
+    }
+
+    Value connection_value = eval_expr(expr->as.call.args.items[0]);
+    if (error_action_pending()) {
+        value_free(connection_value);
+        return value_null();
+    }
+    SqliteConnectionValue *connection = sqlite_connection_from_value(connection_value);
+    if (!connection) {
+        value_free(connection_value);
+        return value_null();
+    }
+
+    Value sql = eval_expr(expr->as.call.args.items[1]);
+    if (error_action_pending()) {
+        value_free(sql);
+        value_free(connection_value);
+        return value_null();
+    }
+    if (sql.kind != VALUE_STRING) {
+        value_free(sql);
+        value_free(connection_value);
+        sqlite_raise_message(query_mode
+            ? "sqlite.query SQL must be a string"
+            : "sqlite.exec SQL must be a string");
+        return value_null();
+    }
+
+    Value params_value = value_null();
+    Value *params_ptr = NULL;
+    if (expr->as.call.args.count == 3) {
+        params_value = eval_expr(expr->as.call.args.items[2]);
+        if (error_action_pending()) {
+            value_free(params_value);
+            value_free(sql);
+            value_free(connection_value);
+            return value_null();
+        }
+        params_ptr = &params_value;
+    }
+
+    SqliteParameterList params = {0};
+    if (!sqlite_prepare_statement(connection, sql.as.string, params_ptr, &params)) {
+        sqlite_parameter_list_clear(&params);
+        value_free(params_value);
+        value_free(sql);
+        value_free(connection_value);
+        return value_null();
+    }
+
+    int columns = sqlite3_column_count(params.statement);
+    Value converted = value_null();
+    if (query_mode) {
+        converted = sqlite_rows_from_statement(connection->connection, params.statement);
+    } else if (columns > 0) {
+        sqlite_raise_message("sqlite.exec cannot discard row results; use sqlite.query");
+    } else {
+        int rc = sqlite3_step(params.statement);
+        if (rc == SQLITE_DONE) {
+            converted = sqlite_command_result(connection->connection, sql.as.string);
+        } else {
+            sqlite_raise_connection_error(connection->connection, "SQLite exec failed");
+        }
+    }
+
+    sqlite_parameter_list_clear(&params);
+    value_free(params_value);
+    value_free(sql);
+    value_free(connection_value);
+    return converted;
+}
+
+static Value sqlite_eval_transaction(AstExpr *expr, const char *sql, const char *name) {
+    if (expr->as.call.args.count != 1) {
+        char message[128];
+        snprintf(message, sizeof(message), "sqlite.%s expects one argument", name);
+        sqlite_raise_message(message);
+        return value_null();
+    }
+    Value connection_value = eval_expr(expr->as.call.args.items[0]);
+    if (error_action_pending()) {
+        value_free(connection_value);
+        return value_null();
+    }
+    SqliteConnectionValue *connection = sqlite_connection_from_value(connection_value);
+    if (!connection) {
+        value_free(connection_value);
+        return value_null();
+    }
+    char *error = NULL;
+    int rc = sqlite3_exec(connection->connection, sql, NULL, NULL, &error);
+    if (rc != SQLITE_OK) {
+        char message[1024];
+        snprintf(message,
+                 sizeof(message),
+                 "SQLite transaction command failed: %s",
+                 error ? error : sqlite3_errmsg(connection->connection));
+        sqlite3_free(error);
+        sqlite_raise_message(message);
+        value_free(connection_value);
+        return value_null();
+    }
+    sqlite3_free(error);
+    value_free(connection_value);
+    return value_bool(1);
+}
+
+static Value sqlite_eval_call(AstExpr *expr) {
+    const char *name = expr->as.call.name;
+    if (strcmp(name, "connect") == 0) {
+        return sqlite_eval_connect(expr);
+    }
+    if (strcmp(name, "close") == 0) {
+        return sqlite_eval_close(expr);
+    }
+    if (strcmp(name, "query") == 0) {
+        return sqlite_eval_sql(expr, 1);
+    }
+    if (strcmp(name, "exec") == 0) {
+        return sqlite_eval_sql(expr, 0);
+    }
+    if (strcmp(name, "begin") == 0) {
+        return sqlite_eval_transaction(expr, "BEGIN", "begin");
+    }
+    if (strcmp(name, "commit") == 0) {
+        return sqlite_eval_transaction(expr, "COMMIT", "commit");
+    }
+    if (strcmp(name, "rollback") == 0) {
+        return sqlite_eval_transaction(expr, "ROLLBACK", "rollback");
+    }
+    char message[256];
+    snprintf(message, sizeof(message), "invalid function call: sqlite.%s", name);
+    sqlite_raise_message(message);
+    return value_null();
+}
+#endif
+
 #if HAVE_LIBPQ
 #define PG_ERROR_CODE 2001
 
@@ -8730,6 +9373,21 @@ static Value eval_call(AstExpr *expr) {
             runtime_error_raise("PostgreSQL support is not available in this build",
                                 2001,
                                 "postgres");
+            return value_null();
+#endif
+        }
+
+        if (strcmp(expr->as.call.library, "sqlite") == 0) {
+            if (!sqlite_library_loaded) {
+                runtime_error_raise("library not loaded: sqlite", 2002, "sqlite");
+                return value_null();
+            }
+#if HAVE_SQLITE3
+            return sqlite_eval_call(expr);
+#else
+            runtime_error_raise("SQLite support is not available in this build",
+                                2002,
+                                "sqlite");
             return value_null();
 #endif
         }

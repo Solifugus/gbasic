@@ -36,6 +36,7 @@ development phases are summarized in `docs/historical_development_archive.md`.
 - non-recursive directory creation/removal
 - path manipulation helpers
 - `read_lines`
+- optional synchronous SQLite module backed by sqlite3
 - optional synchronous PostgreSQL module backed by libpq
 - optional synchronous WebClient module backed by libcurl
 - built-in loopback WebServer using watcher-driven request/response queues
@@ -44,6 +45,7 @@ development phases are summarized in `docs/historical_development_archive.md`.
 ## Optional Dependencies
 
 - GTK 3 enables the GUI implementation.
+- sqlite3 enables `load sqlite`.
 - libpq enables `load pg`.
 - libcurl enables `load webclient`.
 - WebServer uses POSIX sockets and has no external HTTP dependency.
@@ -66,6 +68,7 @@ Integration suites:
 ```sh
 ./tests/run_webclient.sh
 ./tests/run_webserver.sh
+./tests/run_sqlite.sh
 GBASIC_POSTGRES_TEST=1 ./tests/run_postgres.sh
 bash tests/run_bag_smoke.sh
 ```
@@ -76,6 +79,7 @@ GUI verification remains manual.
 
 - experimental, non-optimized interpreter
 - evolving diagnostics and module APIs
+- SQLite is synchronous and has no prepared-statement API exposed to gBASIC
 - PostgreSQL is synchronous and has no pooling or prepared-statement API
 - WebClient is synchronous and string-body only
 - WebServer is single-threaded, loopback-only, and intentionally minimal
