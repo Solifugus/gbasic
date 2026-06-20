@@ -387,6 +387,14 @@ function text_response(req, status, content_type, body)
     }
 end function
 
+function method_not_allowed(req)
+    return text_response(req, 405, "text/plain; charset=utf-8", "method not allowed")
+end function
+
+function posting(req)
+    return req.method = "POST"
+end function
+
 function log_request(req, response)
     print(req.timestamp + " " + req.remote_ip + " " + req.method + " " + req.path + " " + string(response.status))
 end function
@@ -419,20 +427,20 @@ function route_request(db, req)
         return admin_page(db, req)
     end if
     if req.path = "/admin/hide-topic" then
-        if req.method = "POST" then
+        if posting(req) then
             return hide_topic(db, req)
         end if
-        return text_response(req, 405, "text/plain; charset=utf-8", "method not allowed")
+        return method_not_allowed(req)
     end if
     if req.path = "/admin/hide-post" then
-        if req.method = "POST" then
+        if posting(req) then
             return hide_post(db, req)
         end if
-        return text_response(req, 405, "text/plain; charset=utf-8", "method not allowed")
+        return method_not_allowed(req)
     end if
     if starts_with(req.path, "/forum/") and ends_with(req.path, "/new") then
         category_slug = path_between(req.path, "/forum/", "/new")
-        if req.method = "POST" then
+        if posting(req) then
             return create_topic(db, req, category_slug)
         end if
         return new_topic_form_page(db, req, category_slug)
@@ -442,7 +450,7 @@ function route_request(db, req)
     end if
     if starts_with(req.path, "/topic/") and ends_with(req.path, "/reply") then
         topic_id_text = path_between(req.path, "/topic/", "/reply")
-        if req.method = "POST" then
+        if posting(req) then
             return create_reply(db, req, topic_id_text)
         end if
         return reply_form_page(db, req, topic_id_text)
