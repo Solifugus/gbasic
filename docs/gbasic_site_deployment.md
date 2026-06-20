@@ -6,17 +6,66 @@ the forum or admin paths on the internet.
 
 ## Serving Model
 
-Run the gBASIC app on loopback and put nginx or Caddy in front of it.
+Run the gBASIC app on loopback and put nginx in front of it.
 
-- Terminate TLS in nginx or Caddy.
+- Terminate TLS in nginx.
 - Proxy dynamic requests to the gBASIC loopback listener.
 - Serve immutable static files from the reverse proxy when possible.
 - Keep Postgres on localhost or a private network.
 - Do not bind the current gBASIC webserver directly to a public interface.
 
-Caddy is the smaller operational default because it handles certificates with
-less configuration. nginx is still a reasonable choice if the server already
-uses it.
+nginx is the default deployment target for this project because it matches the
+server stack already in use. Caddy remains a reasonable alternative if a future
+deployment wants automatic certificate management with less configuration.
+
+## nginx Sketch
+
+The exact paths, domain, and service port will change, but the first public
+shape should look like this:
+
+```nginx
+server {
+    listen 80;
+    server_name example.org;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl http2;
+    server_name example.org;
+
+    ssl_certificate /etc/letsencrypt/live/example.org/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/example.org/privkey.pem;
+
+    access_log /var/log/nginx/gbasic-site.access.log;
+    error_log /var/log/nginx/gbasic-site.error.log;
+
+    client_max_body_size 64k;
+    proxy_read_timeout 10s;
+    proxy_send_timeout 10s;
+
+    location /static/ {
+        root /srv/gbasic;
+        try_files $uri =404;
+    }
+
+    location /admin {
+        return 404;
+    }
+
+    location / {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+```
+
+This deliberately blocks `/admin` at nginx until the app has real sessions,
+CSRF protection, and production-grade auth.
 
 ## Bind Address
 
@@ -107,7 +156,7 @@ Before publishing on the public-IP server:
 - create an admin token only if the admin path is still local-only,
 - run the gBASIC app as a supervised service,
 - bind the app to loopback,
-- configure Caddy or nginx with TLS,
+- configure nginx with TLS,
 - proxy dynamic traffic to the loopback app,
 - configure request-size limits in the proxy,
 - enable proxy access logs and app stderr/stdout capture,
