@@ -68,6 +68,12 @@ True
 not found
 200
 True
+200
+True
+200
+True
+200
+True
 True
 403
 invalid csrf token
@@ -79,12 +85,18 @@ True
 True
 200
 True
+200
+True
 403
 invalid csrf token
 400
 invalid post_id
 200
 False
+200
+True
+200
+True
 200
 True
 404

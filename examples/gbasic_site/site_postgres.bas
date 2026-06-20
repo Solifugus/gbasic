@@ -321,6 +321,8 @@ function admin_page(db, req)
         body = body + "<article class=\"list-item\"><h2>" + html_escape(topic.title) + "</h2><p>" + html_escape(moderation_summary(topic)) + " in " + html_escape(topic.category_title) + ", started by " + html_escape(topic.author_name) + "</p>"
         if not topic.hidden then
             body = body + "<form class=\"inline-form\" method=\"post\" action=\"/admin/hide-topic\">" + csrf_field() + admin_token_field(token) + topic_id_field(topic.id) + "<button type=\"submit\">Hide topic</button></form>"
+        else
+            body = body + "<form class=\"inline-form\" method=\"post\" action=\"/admin/unhide-topic\">" + csrf_field() + admin_token_field(token) + topic_id_field(topic.id) + "<button type=\"submit\">Unhide topic</button></form>"
         end if
         body = body + "</article>"
     end for
@@ -329,6 +331,8 @@ function admin_page(db, req)
         body = body + "<article class=\"list-item\"><h2>Reply #" + string(post.id) + "</h2><p>" + html_escape(moderation_summary(post)) + " on " + html_escape(post.topic_title) + ", by " + html_escape(post.author_name) + "</p><p>" + html_escape(post.body) + "</p>"
         if not post.hidden then
             body = body + "<form class=\"inline-form\" method=\"post\" action=\"/admin/hide-post\">" + csrf_field() + admin_token_field(token) + post_id_field(post.id) + "<button type=\"submit\">Hide reply</button></form>"
+        else
+            body = body + "<form class=\"inline-form\" method=\"post\" action=\"/admin/unhide-post\">" + csrf_field() + admin_token_field(token) + post_id_field(post.id) + "<button type=\"submit\">Unhide reply</button></form>"
         end if
         body = body + "</article>"
     end for
@@ -354,6 +358,24 @@ function hide_topic(db, req)
     return shell_response(req, 200, "Topic hidden", body)
 end function
 
+function unhide_topic(db, req)
+    form = form_decode(req.body)
+    if not csrf_valid(form) then
+        return csrf_forbidden(req)
+    end if
+    if not admin_authorized(form) then
+        return forbidden(req)
+    end if
+    id_error = form_id_error(form, "topic_id")
+    if id_error != "" then
+        return bad_request(req, id_error)
+    end if
+    topic_id = form_integer_id(form, "topic_id")
+    pg.exec(db, "update gbasic_site_topics set hidden = false, moderated_at = null, moderated_by = null, updated_at = now() where id = $1", [topic_id])
+    body = "<h1>Topic restored</h1><p><a href=\"/admin\">Back to admin</a></p>"
+    return shell_response(req, 200, "Topic restored", body)
+end function
+
 function hide_post(db, req)
     form = form_decode(req.body)
     if not csrf_valid(form) then
@@ -370,6 +392,24 @@ function hide_post(db, req)
     pg.exec(db, "update gbasic_site_posts set hidden = true, moderated_at = now(), moderated_by = $2, updated_at = now() where id = $1", [post_id, "local-admin"])
     body = "<h1>Reply hidden</h1><p><a href=\"/admin\">Back to admin</a></p>"
     return shell_response(req, 200, "Reply hidden", body)
+end function
+
+function unhide_post(db, req)
+    form = form_decode(req.body)
+    if not csrf_valid(form) then
+        return csrf_forbidden(req)
+    end if
+    if not admin_authorized(form) then
+        return forbidden(req)
+    end if
+    id_error = form_id_error(form, "post_id")
+    if id_error != "" then
+        return bad_request(req, id_error)
+    end if
+    post_id = form_integer_id(form, "post_id")
+    pg.exec(db, "update gbasic_site_posts set hidden = false, moderated_at = null, moderated_by = null, updated_at = now() where id = $1", [post_id])
+    body = "<h1>Reply restored</h1><p><a href=\"/admin\">Back to admin</a></p>"
+    return shell_response(req, 200, "Reply restored", body)
 end function
 
 function topic_page(db, req, topic_id_text)
@@ -515,9 +555,21 @@ function route_request(db, req)
         end if
         return method_not_allowed(req)
     end if
+    if req.path = "/admin/unhide-topic" then
+        if posting(req) then
+            return unhide_topic(db, req)
+        end if
+        return method_not_allowed(req)
+    end if
     if req.path = "/admin/hide-post" then
         if posting(req) then
             return hide_post(db, req)
+        end if
+        return method_not_allowed(req)
+    end if
+    if req.path = "/admin/unhide-post" then
+        if posting(req) then
+            return unhide_post(db, req)
         end if
         return method_not_allowed(req)
     end if

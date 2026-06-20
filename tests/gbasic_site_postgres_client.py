@@ -224,6 +224,22 @@ def main():
     print(status)
     print(body)
 
+    status, _, body = get(port, "/admin?token=test-admin-token")
+    print(status)
+    print("Unhide topic" in body)
+
+    status, _, body = post_form(
+        port,
+        "/admin/unhide-topic",
+        {"token": "test-admin-token", "topic_id": "2"},
+    )
+    print(status)
+    print("Topic restored" in body)
+
+    status, _, body = get(port, "/topic/2")
+    print(status)
+    print("Dogfood topic" in body)
+
     status, _, body = get(port, "/topic/1/reply")
     print(status)
     print("<form" in body)
@@ -266,6 +282,10 @@ def main():
     print(status)
     print("Reply hidden" in body)
 
+    status, _, body = get(port, "/admin?token=test-admin-token")
+    print(status)
+    print("Unhide reply" in body)
+
     status, _, body = post_form(
         port,
         "/admin/hide-post",
@@ -287,9 +307,21 @@ def main():
     print(status)
     print("Reply from a form" in body)
 
+    status, _, body = post_form(
+        port,
+        "/admin/unhide-post",
+        {"token": "test-admin-token", "post_id": "3"},
+    )
+    print(status)
+    print("Reply restored" in body)
+
+    status, _, body = get(port, "/topic/1")
+    print(status)
+    print("Reply from a form" in body)
+
     status, _, body = get(port, "/admin?token=test-admin-token")
     print(status)
-    print("hidden by local-admin" in body)
+    print("visible" in body)
 
     status, _, body = get(port, "/missing")
     print(status)
