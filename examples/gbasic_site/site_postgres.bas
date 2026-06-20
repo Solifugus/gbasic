@@ -220,12 +220,20 @@ function post_id_field(post_id)
     return hidden_input("post_id", string(post_id))
 end function
 
+function visible_categories(db)
+    return pg.query(db, "select slug, title, description from gbasic_site_categories where hidden = false order by title")
+end function
+
+function visible_category(db, slug)
+    return pg.query(db, "select id, slug, title, description from gbasic_site_categories where slug = $1 and hidden = false", [slug])
+end function
+
 function replyable_topics(db, topic_id)
     return pg.query(db, "select id, title from gbasic_site_topics where id = $1 and hidden = false and locked = false", [topic_id])
 end function
 
 function forum_categories_page(db, req)
-    rows = pg.query(db, "select slug, title, description from gbasic_site_categories where hidden = false order by title")
+    rows = visible_categories(db)
     body = "<h1>Forum</h1><p>Read-only discussion areas backed by Postgres.</p><div class=\"stack\">"
     for each category in rows
         body = body + "<article class=\"list-item\"><h2><a href=\"/forum/" + html_escape(category.slug) + "\">" + html_escape(category.title) + "</a></h2><p>" + html_escape(category.description) + "</p></article>"
@@ -235,7 +243,7 @@ function forum_categories_page(db, req)
 end function
 
 function category_page(db, req, slug)
-    categories = pg.query(db, "select id, slug, title, description from gbasic_site_categories where slug = $1 and hidden = false", [slug])
+    categories = visible_category(db, slug)
     if len(categories) = 0 then
         return not_found(req)
     end if
@@ -251,7 +259,7 @@ function category_page(db, req, slug)
 end function
 
 function new_topic_form_page(db, req, slug)
-    categories = pg.query(db, "select slug, title from gbasic_site_categories where slug = $1 and hidden = false", [slug])
+    categories = visible_category(db, slug)
     if len(categories) = 0 then
         return not_found(req)
     end if
@@ -260,7 +268,7 @@ function new_topic_form_page(db, req, slug)
 end function
 
 function create_topic(db, req, slug)
-    categories = pg.query(db, "select id, slug, title from gbasic_site_categories where slug = $1 and hidden = false", [slug])
+    categories = visible_category(db, slug)
     if len(categories) = 0 then
         return not_found(req)
     end if
