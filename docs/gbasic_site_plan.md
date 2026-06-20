@@ -89,7 +89,7 @@ Acceptance criteria:
 - [x] Add an admin-only moderation path.
 - [x] Add delete/hide actions for posts and topics.
 - [x] Add visible moderation state in the database.
-- [ ] Add audit fields such as created/updated/moderated timestamps.
+- [x] Add audit fields such as created/updated/moderated timestamps.
 - [x] Keep the first auth mechanism intentionally narrow until password/session
       support is designed.
 

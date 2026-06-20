@@ -143,11 +143,20 @@ function create_topic(db, req, slug)
     return text_response(req, 201, "text/html; charset=utf-8", shell_page("Topic created", body))
 end function
 
-function moderation_state(hidden)
-    if hidden then
+function moderation_summary(row)
+    if not row.hidden then
+        return "visible"
+    end if
+    if is_unknown(row["moderated_by"]) then
         return "hidden"
     end if
-    return "visible"
+    if is_nothing(row.moderated_by) then
+        return "hidden"
+    end if
+    if row.moderated_by = "" then
+        return "hidden"
+    end if
+    return "hidden by " + row.moderated_by
 end function
 
 function admin_page(db, req)
@@ -157,12 +166,12 @@ function admin_page(db, req)
     end if
 
     token = form_value(req.query, "token")
-    topics = pg.query(db, "select t.id, t.title, t.author_name, t.hidden, c.title as category_title from gbasic_site_topics t join gbasic_site_categories c on c.id = t.category_id order by t.id")
-    posts = pg.query(db, "select p.id, p.author_name, p.body, p.hidden, t.title as topic_title from gbasic_site_posts p join gbasic_site_topics t on t.id = p.topic_id order by p.id")
+    topics = pg.query(db, "select t.id, t.title, t.author_name, t.hidden, t.moderated_by, c.title as category_title from gbasic_site_topics t join gbasic_site_categories c on c.id = t.category_id order by t.id")
+    posts = pg.query(db, "select p.id, p.author_name, p.body, p.hidden, p.moderated_by, t.title as topic_title from gbasic_site_posts p join gbasic_site_topics t on t.id = p.topic_id order by p.id")
 
     body = "<h1>Admin</h1><p>Local moderation tools for hiding topics and replies.</p><h2>Topics</h2><div class=\"stack\">"
     for each topic in topics
-        body = body + "<article class=\"list-item\"><h2>" + html_escape(topic.title) + "</h2><p>" + html_escape(moderation_state(topic.hidden)) + " in " + html_escape(topic.category_title) + ", started by " + html_escape(topic.author_name) + "</p>"
+        body = body + "<article class=\"list-item\"><h2>" + html_escape(topic.title) + "</h2><p>" + html_escape(moderation_summary(topic)) + " in " + html_escape(topic.category_title) + ", started by " + html_escape(topic.author_name) + "</p>"
         if not topic.hidden then
             body = body + "<form class=\"inline-form\" method=\"post\" action=\"/admin/hide-topic\"><input type=\"hidden\" name=\"token\" value=\"" + html_escape(token) + "\"><input type=\"hidden\" name=\"topic_id\" value=\"" + string(topic.id) + "\"><button type=\"submit\">Hide topic</button></form>"
         end if
@@ -170,7 +179,7 @@ function admin_page(db, req)
     end for
     body = body + "</div><h2>Replies</h2><div class=\"stack\">"
     for each post in posts
-        body = body + "<article class=\"list-item\"><h2>Reply #" + string(post.id) + "</h2><p>" + html_escape(moderation_state(post.hidden)) + " on " + html_escape(post.topic_title) + ", by " + html_escape(post.author_name) + "</p><p>" + html_escape(post.body) + "</p>"
+        body = body + "<article class=\"list-item\"><h2>Reply #" + string(post.id) + "</h2><p>" + html_escape(moderation_summary(post)) + " on " + html_escape(post.topic_title) + ", by " + html_escape(post.author_name) + "</p><p>" + html_escape(post.body) + "</p>"
         if not post.hidden then
             body = body + "<form class=\"inline-form\" method=\"post\" action=\"/admin/hide-post\"><input type=\"hidden\" name=\"token\" value=\"" + html_escape(token) + "\"><input type=\"hidden\" name=\"post_id\" value=\"" + string(post.id) + "\"><button type=\"submit\">Hide reply</button></form>"
         end if
@@ -189,7 +198,7 @@ function hide_topic(db, req)
         return text_response(req, 400, "text/plain; charset=utf-8", "missing topic_id")
     end if
     topic_id = number(form.topic_id)
-    pg.exec(db, "update gbasic_site_topics set hidden = true, updated_at = now() where id = $1", [topic_id])
+    pg.exec(db, "update gbasic_site_topics set hidden = true, moderated_at = now(), moderated_by = $2, updated_at = now() where id = $1", [topic_id, "local-admin"])
     body = "<h1>Topic hidden</h1><p><a href=\"/admin\">Back to admin</a></p>"
     return text_response(req, 200, "text/html; charset=utf-8", shell_page("Topic hidden", body))
 end function
@@ -203,7 +212,7 @@ function hide_post(db, req)
         return text_response(req, 400, "text/plain; charset=utf-8", "missing post_id")
     end if
     post_id = number(form.post_id)
-    pg.exec(db, "update gbasic_site_posts set hidden = true where id = $1", [post_id])
+    pg.exec(db, "update gbasic_site_posts set hidden = true, moderated_at = now(), moderated_by = $2, updated_at = now() where id = $1", [post_id, "local-admin"])
     body = "<h1>Reply hidden</h1><p><a href=\"/admin\">Back to admin</a></p>"
     return text_response(req, 200, "text/html; charset=utf-8", shell_page("Reply hidden", body))
 end function

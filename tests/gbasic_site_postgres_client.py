@@ -140,6 +140,10 @@ def main():
     print(status)
     print("Reply from a form" in body)
 
+    status, _, body = get(port, "/admin?token=test-admin-token")
+    print(status)
+    print("hidden by local-admin" in body)
+
     status, _, body = get(port, "/missing")
     print(status)
     print(body)
