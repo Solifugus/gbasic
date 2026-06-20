@@ -75,6 +75,39 @@ function form_value(values, key)
     return trim(values[key])
 end function
 
+function too_long(text, max_len)
+    return len(text) > max_len
+end function
+
+function topic_validation_error(title, author, body_text)
+    if title = "" or author = "" or body_text = "" then
+        return "Title, name, and body are required."
+    end if
+    if too_long(title, 120) then
+        return "Title must be 120 characters or fewer."
+    end if
+    if too_long(author, 80) then
+        return "Name must be 80 characters or fewer."
+    end if
+    if too_long(body_text, 4000) then
+        return "Body must be 4000 characters or fewer."
+    end if
+    return ""
+end function
+
+function reply_validation_error(author, body_text)
+    if author = "" or body_text = "" then
+        return "Name and body are required."
+    end if
+    if too_long(author, 80) then
+        return "Name must be 80 characters or fewer."
+    end if
+    if too_long(body_text, 4000) then
+        return "Body must be 4000 characters or fewer."
+    end if
+    return ""
+end function
+
 function admin_token()
     token_file(file)= "examples/gbasic_site/admin_token.txt"
     if not exists(token_file) then
@@ -122,7 +155,7 @@ function new_topic_form_page(db, req, slug)
     if len(categories) = 0 then
         return text_response(req, 404, "text/plain; charset=utf-8", "not found")
     end if
-    body = "<h1>Create topic</h1><form method=\"post\" action=\"/forum/" + html_escape(categories[0].slug) + "/new\"><label>Title<input name=\"title\" required></label><label>Name<input name=\"author_name\" required></label><label>Body<textarea name=\"body\" required></textarea></label><button type=\"submit\">Post topic</button></form><p><a href=\"/forum/" + html_escape(categories[0].slug) + "\">Back to " + html_escape(categories[0].title) + "</a></p>"
+    body = "<h1>Create topic</h1><form method=\"post\" action=\"/forum/" + html_escape(categories[0].slug) + "/new\"><label>Title<input name=\"title\" maxlength=\"120\" required></label><label>Name<input name=\"author_name\" maxlength=\"80\" required></label><label>Body<textarea name=\"body\" maxlength=\"4000\" required></textarea></label><button type=\"submit\">Post topic</button></form><p><a href=\"/forum/" + html_escape(categories[0].slug) + "\">Back to " + html_escape(categories[0].title) + "</a></p>"
     return text_response(req, 200, "text/html; charset=utf-8", shell_page("Create topic", body))
 end function
 
@@ -135,8 +168,9 @@ function create_topic(db, req, slug)
     title = trim(form.title)
     author = trim(form.author_name)
     body_text = trim(form.body)
-    if title = "" or author = "" or body_text = "" then
-        body = "<h1>Create topic</h1><p>Title, name, and body are required.</p><p><a href=\"/forum/" + html_escape(slug) + "/new\">Try again</a></p>"
+    validation_error = topic_validation_error(title, author, body_text)
+    if validation_error != "" then
+        body = "<h1>Create topic</h1><p>" + html_escape(validation_error) + "</p><p><a href=\"/forum/" + html_escape(slug) + "/new\">Try again</a></p>"
         return text_response(req, 400, "text/html; charset=utf-8", shell_page("Create topic", body))
     end if
     rows = pg.query(db, "insert into gbasic_site_topics (category_id, title, author_name, body) values ($1, $2, $3, $4) returning id", [categories[0].id, title, author, body_text])
@@ -242,7 +276,7 @@ function reply_form_page(db, req, topic_id_text)
     if len(topics) = 0 then
         return text_response(req, 404, "text/plain; charset=utf-8", "not found")
     end if
-    body = "<h1>Reply to " + html_escape(topics[0].title) + "</h1><form method=\"post\" action=\"/topic/" + string(topics[0].id) + "/reply\"><label>Name<input name=\"author_name\" required></label><label>Body<textarea name=\"body\" required></textarea></label><button type=\"submit\">Post reply</button></form><p><a href=\"/topic/" + string(topics[0].id) + "\">Back to topic</a></p>"
+    body = "<h1>Reply to " + html_escape(topics[0].title) + "</h1><form method=\"post\" action=\"/topic/" + string(topics[0].id) + "/reply\"><label>Name<input name=\"author_name\" maxlength=\"80\" required></label><label>Body<textarea name=\"body\" maxlength=\"4000\" required></textarea></label><button type=\"submit\">Post reply</button></form><p><a href=\"/topic/" + string(topics[0].id) + "\">Back to topic</a></p>"
     return text_response(req, 200, "text/html; charset=utf-8", shell_page("Reply", body))
 end function
 
@@ -255,8 +289,9 @@ function create_reply(db, req, topic_id_text)
     form = form_decode(req.body)
     author = trim(form.author_name)
     body_text = trim(form.body)
-    if author = "" or body_text = "" then
-        body = "<h1>Reply</h1><p>Name and body are required.</p><p><a href=\"/topic/" + string(topic_id) + "/reply\">Try again</a></p>"
+    validation_error = reply_validation_error(author, body_text)
+    if validation_error != "" then
+        body = "<h1>Reply</h1><p>" + html_escape(validation_error) + "</p><p><a href=\"/topic/" + string(topic_id) + "/reply\">Try again</a></p>"
         return text_response(req, 400, "text/html; charset=utf-8", shell_page("Reply", body))
     end if
     pg.exec(db, "insert into gbasic_site_posts (topic_id, author_name, body) values ($1, $2, $3)", [topic_id, author, body_text])

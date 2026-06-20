@@ -90,8 +90,9 @@ The forum write paths need limits before public use:
 - response/write timeouts,
 - clear `413` or `400` responses for oversized or malformed submissions.
 
-The current app validates required fields, but it does not yet enforce size
-limits.
+The app currently enforces field length limits for forum names, titles, and
+post bodies. A reverse proxy `client_max_body_size` limit is still needed to
+reject oversized requests before the app reads them.
 
 ## Logging
 

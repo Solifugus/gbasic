@@ -19,6 +19,8 @@ after the app proves the need.
 - App-local form decoding is possible for simple create-topic and create-reply
   forms, but complete
   percent-decoding wants a standard helper or a byte-to-character primitive.
+- Form validation works in app code, but named validation helpers or a small
+  standard pattern would reduce repetitive HTML error handling.
 - Path routing is currently manual string comparison. Prefix, parameter, and
   path-segment helpers would make routes like `/forum/general` and `/topic/1`
   clearer.

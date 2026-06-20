@@ -78,6 +78,14 @@ def main():
     status, _, body = post_form(
         port,
         "/forum/general/new",
+        {"title": "x" * 121, "author_name": "Tester", "body": "Too long"},
+    )
+    print(status)
+    print("120 characters or fewer" in body)
+
+    status, _, body = post_form(
+        port,
+        "/forum/general/new",
         {
             "title": "Dogfood topic",
             "author_name": "Tester",
@@ -156,6 +164,14 @@ def main():
     )
     print(status)
     print("Reply posted" in body)
+
+    status, _, body = post_form(
+        port,
+        "/topic/1/reply",
+        {"author_name": "Tester", "body": "x" * 4001},
+    )
+    print(status)
+    print("4000 characters or fewer" in body)
 
     status, _, body = get(port, "/topic/1")
     print(status)
