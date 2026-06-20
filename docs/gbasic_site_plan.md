@@ -72,8 +72,8 @@ Acceptance criteria:
 
 ## Phase 3: Forum Prototype
 
-- [ ] Render forum category and topic lists.
-- [ ] Render topic detail pages with replies.
+- [x] Render forum category and topic lists.
+- [x] Render topic detail pages with replies.
 - [ ] Add create-topic and create-reply forms.
 - [ ] Validate form input server-side.
 - [ ] Store posts in Postgres with parameterized SQL.

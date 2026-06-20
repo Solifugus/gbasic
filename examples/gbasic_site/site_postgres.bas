@@ -23,6 +23,51 @@ function page_body(page, include_nav)
     return body + "</section></main>"
 end function
 
+function shell_page(title, content)
+    return html_page(title, "<main class=\"shell\">" + content + "</main>")
+end function
+
+function forum_categories_page(db, req)
+    rows = pg.query(db, "select slug, title, description from gbasic_site_categories where hidden = false order by title")
+    body = "<h1>Forum</h1><p>Read-only discussion areas backed by Postgres.</p><div class=\"stack\">"
+    for each category in rows
+        body = body + "<article class=\"list-item\"><h2><a href=\"/forum/" + html_escape(category.slug) + "\">" + html_escape(category.title) + "</a></h2><p>" + html_escape(category.description) + "</p></article>"
+    end for
+    body = body + "</div><p><a href=\"/\">Back home</a></p>"
+    return text_response(req, 200, "text/html; charset=utf-8", shell_page("gBASIC Forum", body))
+end function
+
+function category_page(db, req, slug)
+    categories = pg.query(db, "select id, slug, title, description from gbasic_site_categories where slug = $1 and hidden = false", [slug])
+    if len(categories) = 0 then
+        return text_response(req, 404, "text/plain; charset=utf-8", "not found")
+    end if
+
+    topics = pg.query(db, "select id, title, author_name, body from gbasic_site_topics where category_id = $1 and hidden = false order by updated_at desc, id desc", [categories[0].id])
+    body = "<h1>" + html_escape(categories[0].title) + "</h1><p>" + html_escape(categories[0].description) + "</p><div class=\"stack\">"
+    for each topic in topics
+        body = body + "<article class=\"list-item\"><h2><a href=\"/topic/" + string(topic.id) + "\">" + html_escape(topic.title) + "</a></h2><p>Started by " + html_escape(topic.author_name) + "</p><p>" + html_escape(topic.body) + "</p></article>"
+    end for
+    body = body + "</div><p><a href=\"/forum\">Back to forum</a></p>"
+    return text_response(req, 200, "text/html; charset=utf-8", shell_page(categories[0].title, body))
+end function
+
+function topic_page(db, req, topic_id_text)
+    topic_id = number(topic_id_text)
+    topics = pg.query(db, "select t.id, t.title, t.author_name, t.body, c.slug as category_slug, c.title as category_title from gbasic_site_topics t join gbasic_site_categories c on c.id = t.category_id where t.id = $1 and t.hidden = false and c.hidden = false", [topic_id])
+    if len(topics) = 0 then
+        return text_response(req, 404, "text/plain; charset=utf-8", "not found")
+    end if
+
+    posts = pg.query(db, "select author_name, body from gbasic_site_posts where topic_id = $1 and hidden = false order by id", [topic_id])
+    body = "<p><a href=\"/forum/" + html_escape(topics[0].category_slug) + "\">" + html_escape(topics[0].category_title) + "</a></p><h1>" + html_escape(topics[0].title) + "</h1><article class=\"list-item\"><p>Started by " + html_escape(topics[0].author_name) + "</p><p>" + html_escape(topics[0].body) + "</p></article><h2>Replies</h2><div class=\"stack\">"
+    for each post in posts
+        body = body + "<article class=\"list-item\"><p>Reply by " + html_escape(post.author_name) + "</p><p>" + html_escape(post.body) + "</p></article>"
+    end for
+    body = body + "</div>"
+    return text_response(req, 200, "text/html; charset=utf-8", shell_page(topics[0].title, body))
+end function
+
 function text_response(req, status, content_type, body)
     headers = {}
     headers["content-type"] = content_type
@@ -50,7 +95,13 @@ function route_request(db, req)
         return page_response(db, req, "docs", false)
     end if
     if req.path = "/forum" then
-        return page_response(db, req, "forum", false)
+        return forum_categories_page(db, req)
+    end if
+    if starts_with(req.path, "/forum/") then
+        return category_page(db, req, mid(req.path, 7, len(req.path) - 7))
+    end if
+    if starts_with(req.path, "/topic/") then
+        return topic_page(db, req, mid(req.path, 7, len(req.path) - 7))
     end if
     if req.path = "/static/site.css" then
         css_file(file)= "examples/gbasic_site/static/site.css"

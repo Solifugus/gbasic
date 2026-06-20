@@ -67,3 +67,24 @@ nav a {
     border-bottom: 2px solid var(--line);
     text-decoration: none;
 }
+
+.stack {
+    display: grid;
+    gap: 16px;
+    margin: 28px 0;
+}
+
+.list-item {
+    border-top: 1px solid var(--line);
+    padding-top: 16px;
+}
+
+.list-item h2 {
+    margin: 0 0 8px;
+    font-size: 1.25rem;
+    letter-spacing: 0;
+}
+
+.list-item p {
+    margin: 8px 0 0;
+}

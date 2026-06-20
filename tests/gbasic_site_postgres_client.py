@@ -28,7 +28,16 @@ def main():
 
     status, _, body = request(port, "/forum")
     print(status)
-    print("A small Postgres-backed discussion space." in body)
+    print("Questions, ideas, and project discussion." in body)
+
+    status, _, body = request(port, "/forum/general")
+    print(status)
+    print("Welcome to the gBASIC forum" in body)
+
+    status, _, body = request(port, "/topic/1")
+    print(status)
+    print("This seeded topic proves the Postgres-backed forum tables are ready." in body)
+    print("Reply support is wired into the initial schema." in body)
 
     status, _, body = request(port, "/missing")
     print(status)

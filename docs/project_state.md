@@ -93,6 +93,7 @@ GUI verification remains manual.
 - `docs/reference.md`: implemented language and runtime behavior
 - `docs/tutorial.md`: guided usage
 - `docs/gBASIC_v0_1_core_design_and_grammar.md`: core grammar/design
+- `docs/gbasic_dogfood_notes.md`: language/runtime friction found while building examples
 - `docs/gbasic_site_plan.md`: Postgres-backed sample site plan
 - `docs/sqlite_design.md`: SQLite API and future phases
 - `docs/postgres_design.md`: PostgreSQL API and future phases
