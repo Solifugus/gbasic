@@ -92,6 +92,15 @@ function is_integer_text(text)
     return rest = ""
 end function
 
+function path_after(path, prefix)
+    return mid(path, len(prefix), len(path) - len(prefix))
+end function
+
+function path_between(path, prefix, suffix)
+    tail = path_after(path, prefix)
+    return left(tail, len(tail) - len(suffix))
+end function
+
 function too_long(text, max_len)
     return len(text) > max_len
 end function
@@ -422,24 +431,24 @@ function route_request(db, req)
         return text_response(req, 405, "text/plain; charset=utf-8", "method not allowed")
     end if
     if starts_with(req.path, "/forum/") and ends_with(req.path, "/new") then
-        category_slug = mid(req.path, 7, len(req.path) - 11)
+        category_slug = path_between(req.path, "/forum/", "/new")
         if req.method = "POST" then
             return create_topic(db, req, category_slug)
         end if
         return new_topic_form_page(db, req, category_slug)
     end if
     if starts_with(req.path, "/forum/") then
-        return category_page(db, req, mid(req.path, 7, len(req.path) - 7))
+        return category_page(db, req, path_after(req.path, "/forum/"))
     end if
     if starts_with(req.path, "/topic/") and ends_with(req.path, "/reply") then
-        topic_id_text = mid(req.path, 7, len(req.path) - 13)
+        topic_id_text = path_between(req.path, "/topic/", "/reply")
         if req.method = "POST" then
             return create_reply(db, req, topic_id_text)
         end if
         return reply_form_page(db, req, topic_id_text)
     end if
     if starts_with(req.path, "/topic/") then
-        return topic_page(db, req, mid(req.path, 7, len(req.path) - 7))
+        return topic_page(db, req, path_after(req.path, "/topic/"))
     end if
     if req.path = "/static/site.css" then
         css_file(file)= "examples/gbasic_site/static/site.css"
