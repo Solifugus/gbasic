@@ -140,6 +140,7 @@ deployment needs real authentication before write/admin paths are exposed:
 - a way to revoke compromised credentials.
 
 The current admin token should never be treated as a production auth system.
+The target auth/session model is tracked in `docs/gbasic_site_auth_plan.md`.
 
 ## First Deployment Checklist
 

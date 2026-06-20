@@ -146,7 +146,8 @@ examples/gbasic_site/scripts/restore_postgres.sh examples/gbasic_site/backups/<b
 Do not publish the app directly yet. The current deployment inventory is in
 `docs/gbasic_site_deployment.md`; it assumes a loopback gBASIC app behind
 nginx and calls out the auth, CSRF, spam-prevention, logging, and backup work
-needed before public forum use.
+needed before public forum use. The target authentication/session model is in
+`docs/gbasic_site_auth_plan.md`.
 
 Deployment templates live in `examples/gbasic_site/deploy/`:
 

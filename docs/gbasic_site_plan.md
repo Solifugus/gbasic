@@ -122,6 +122,7 @@ Acceptance criteria:
 - [x] Add backup/restore notes for Postgres.
 - [x] Add spam prevention plan.
 - [x] Add CSRF/session/password hashing design before real public accounts.
+      See `docs/gbasic_site_auth_plan.md`.
 - [x] Add deployment checklist for the user's public-IP server.
 
 Acceptance criteria:
@@ -136,6 +137,5 @@ Acceptance criteria:
   gBASIC, or database-backed pages?
 - Should static assets be served by gBASIC for dogfooding or by the reverse
   proxy for operational simplicity?
-- What is the smallest acceptable auth model for the first moderation pass?
 - Which missing web helpers belong in the standard library versus this sample
   app?
