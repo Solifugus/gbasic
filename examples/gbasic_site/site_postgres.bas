@@ -231,7 +231,7 @@ function forum_categories_page(db, req)
         body = body + "<article class=\"list-item\"><h2><a href=\"/forum/" + html_escape(category.slug) + "\">" + html_escape(category.title) + "</a></h2><p>" + html_escape(category.description) + "</p></article>"
     end for
     body = body + "</div><p><a href=\"/\">Back home</a></p>"
-    return text_response(req, 200, "text/html; charset=utf-8", shell_page("gBASIC Forum", body))
+    return shell_response(req, 200, "gBASIC Forum", body)
 end function
 
 function category_page(db, req, slug)
@@ -247,7 +247,7 @@ function category_page(db, req, slug)
         body = body + "<article class=\"list-item\"><h2><a href=\"/topic/" + string(topic.id) + "\">" + html_escape(topic.title) + "</a></h2><p>Started by " + html_escape(topic.author_name) + "</p><p>" + html_escape(topic.body) + "</p></article>"
     end for
     body = body + "</div><p><a href=\"/forum\">Back to forum</a></p>"
-    return text_response(req, 200, "text/html; charset=utf-8", shell_page(categories[0].title, body))
+    return shell_response(req, 200, categories[0].title, body)
 end function
 
 function new_topic_form_page(db, req, slug)
@@ -256,7 +256,7 @@ function new_topic_form_page(db, req, slug)
         return not_found(req)
     end if
     body = "<h1>Create topic</h1><form method=\"post\" action=\"/forum/" + html_escape(categories[0].slug) + "/new\">" + csrf_field() + text_input("Title", "title", 120) + text_input("Name", "author_name", 80) + text_area("Body", "body", 4000) + "<button type=\"submit\">Post topic</button></form><p><a href=\"/forum/" + html_escape(categories[0].slug) + "\">Back to " + html_escape(categories[0].title) + "</a></p>"
-    return text_response(req, 200, "text/html; charset=utf-8", shell_page("Create topic", body))
+    return shell_response(req, 200, "Create topic", body)
 end function
 
 function create_topic(db, req, slug)
@@ -274,11 +274,11 @@ function create_topic(db, req, slug)
     validation_error = topic_validation_error(title, author, body_text)
     if validation_error != "" then
         body = "<h1>Create topic</h1><p>" + html_escape(validation_error) + "</p><p><a href=\"/forum/" + html_escape(slug) + "/new\">Try again</a></p>"
-        return text_response(req, 400, "text/html; charset=utf-8", shell_page("Create topic", body))
+        return shell_response(req, 400, "Create topic", body)
     end if
     rows = pg.query(db, "insert into gbasic_site_topics (category_id, title, author_name, body) values ($1, $2, $3, $4) returning id", [categories[0].id, title, author, body_text])
     body = "<h1>Topic created</h1><p><a href=\"/topic/" + string(rows[0].id) + "\">View " + html_escape(title) + "</a></p><p><a href=\"/forum/" + html_escape(categories[0].slug) + "\">Back to " + html_escape(categories[0].title) + "</a></p>"
-    return text_response(req, 201, "text/html; charset=utf-8", shell_page("Topic created", body))
+    return shell_response(req, 201, "Topic created", body)
 end function
 
 function moderation_summary(row)
@@ -300,7 +300,7 @@ end function
 function admin_page(db, req)
     if not admin_authorized(req.query) then
         body = "<h1>Admin</h1><p>Enter the local moderation token.</p><form method=\"get\" action=\"/admin\">" + text_input("Token", "token", 200) + "<button type=\"submit\">Open admin</button></form><p><a href=\"/forum\">Back to forum</a></p>"
-        return text_response(req, 403, "text/html; charset=utf-8", shell_page("Admin", body))
+        return shell_response(req, 403, "Admin", body)
     end if
 
     token = form_value(req.query, "token")
@@ -325,7 +325,7 @@ function admin_page(db, req)
         body = body + "</article>"
     end for
     body = body + "</div><p><a href=\"/forum\">Back to forum</a></p>"
-    return text_response(req, 200, "text/html; charset=utf-8", shell_page("Admin", body))
+    return shell_response(req, 200, "Admin", body)
 end function
 
 function hide_topic(db, req)
@@ -343,7 +343,7 @@ function hide_topic(db, req)
     topic_id = form_integer_id(form, "topic_id")
     pg.exec(db, "update gbasic_site_topics set hidden = true, moderated_at = now(), moderated_by = $2, updated_at = now() where id = $1", [topic_id, "local-admin"])
     body = "<h1>Topic hidden</h1><p><a href=\"/admin\">Back to admin</a></p>"
-    return text_response(req, 200, "text/html; charset=utf-8", shell_page("Topic hidden", body))
+    return shell_response(req, 200, "Topic hidden", body)
 end function
 
 function hide_post(db, req)
@@ -361,7 +361,7 @@ function hide_post(db, req)
     post_id = form_integer_id(form, "post_id")
     pg.exec(db, "update gbasic_site_posts set hidden = true, moderated_at = now(), moderated_by = $2, updated_at = now() where id = $1", [post_id, "local-admin"])
     body = "<h1>Reply hidden</h1><p><a href=\"/admin\">Back to admin</a></p>"
-    return text_response(req, 200, "text/html; charset=utf-8", shell_page("Reply hidden", body))
+    return shell_response(req, 200, "Reply hidden", body)
 end function
 
 function topic_page(db, req, topic_id_text)
@@ -381,7 +381,7 @@ function topic_page(db, req, topic_id_text)
         body = body + "<article class=\"list-item\"><p>Reply by " + html_escape(post.author_name) + "</p><p>" + html_escape(post.body) + "</p></article>"
     end for
     body = body + "</div><p><a href=\"/topic/" + string(topics[0].id) + "/reply\">Reply</a></p>"
-    return text_response(req, 200, "text/html; charset=utf-8", shell_page(topics[0].title, body))
+    return shell_response(req, 200, topics[0].title, body)
 end function
 
 function reply_form_page(db, req, topic_id_text)
@@ -394,7 +394,7 @@ function reply_form_page(db, req, topic_id_text)
         return not_found(req)
     end if
     body = "<h1>Reply to " + html_escape(topics[0].title) + "</h1><form method=\"post\" action=\"/topic/" + string(topics[0].id) + "/reply\">" + csrf_field() + text_input("Name", "author_name", 80) + text_area("Body", "body", 4000) + "<button type=\"submit\">Post reply</button></form><p><a href=\"/topic/" + string(topics[0].id) + "\">Back to topic</a></p>"
-    return text_response(req, 200, "text/html; charset=utf-8", shell_page("Reply", body))
+    return shell_response(req, 200, "Reply", body)
 end function
 
 function create_reply(db, req, topic_id_text)
@@ -415,11 +415,11 @@ function create_reply(db, req, topic_id_text)
     validation_error = reply_validation_error(author, body_text)
     if validation_error != "" then
         body = "<h1>Reply</h1><p>" + html_escape(validation_error) + "</p><p><a href=\"/topic/" + string(topic_id) + "/reply\">Try again</a></p>"
-        return text_response(req, 400, "text/html; charset=utf-8", shell_page("Reply", body))
+        return shell_response(req, 400, "Reply", body)
     end if
     pg.exec(db, "insert into gbasic_site_posts (topic_id, author_name, body) values ($1, $2, $3)", [topic_id, author, body_text])
     body = "<h1>Reply posted</h1><p><a href=\"/topic/" + string(topic_id) + "\">Back to " + html_escape(topics[0].title) + "</a></p>"
-    return text_response(req, 201, "text/html; charset=utf-8", shell_page("Reply posted", body))
+    return shell_response(req, 201, "Reply posted", body)
 end function
 
 function text_response(req, status, content_type, body)
@@ -431,6 +431,14 @@ function text_response(req, status, content_type, body)
         headers:headers,
         body:body
     }
+end function
+
+function html_response(req, status, body)
+    return text_response(req, status, "text/html; charset=utf-8", body)
+end function
+
+function shell_response(req, status, title, body)
+    return html_response(req, status, shell_page(title, body))
 end function
 
 function plain_response(req, status, body)
@@ -466,7 +474,7 @@ function page_response(db, req, slug, include_nav)
     if len(rows) = 0 then
         return not_found(req)
     end if
-    return text_response(req, 200, "text/html; charset=utf-8", html_page(rows[0].title, page_body(rows[0], include_nav)))
+    return html_response(req, 200, html_page(rows[0].title, page_body(rows[0], include_nav)))
 end function
 
 function route_request(db, req)
