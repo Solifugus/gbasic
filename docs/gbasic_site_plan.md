@@ -86,11 +86,11 @@ Acceptance criteria:
 
 ## Phase 4: Admin and Moderation
 
-- [ ] Add an admin-only moderation path.
-- [ ] Add delete/hide actions for posts and topics.
-- [ ] Add visible moderation state in the database.
+- [x] Add an admin-only moderation path.
+- [x] Add delete/hide actions for posts and topics.
+- [x] Add visible moderation state in the database.
 - [ ] Add audit fields such as created/updated/moderated timestamps.
-- [ ] Keep the first auth mechanism intentionally narrow until password/session
+- [x] Keep the first auth mechanism intentionally narrow until password/session
       support is designed.
 
 Acceptance criteria:
@@ -103,8 +103,8 @@ Acceptance criteria:
 - [ ] Add loopback HTTP tests for public pages.
 - [ ] Add tests for create-topic and create-reply flows.
 - [ ] Add tests for validation failures.
-- [ ] Add tests for moderation behavior.
-- [ ] Add database reset/setup to the test runner.
+- [x] Add tests for moderation behavior.
+- [x] Add database reset/setup to the test runner.
 
 Acceptance criteria:
 

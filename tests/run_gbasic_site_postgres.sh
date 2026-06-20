@@ -20,6 +20,7 @@ setup_stderr="$(mktemp)"
 check_stdout="$(mktemp)"
 check_stderr="$(mktemp)"
 port_file="examples/gbasic_site/tmp_port.txt"
+admin_token_file="examples/gbasic_site/admin_token.txt"
 server_stdout="$(mktemp)"
 server_stderr="$(mktemp)"
 client_stdout="$(mktemp)"
@@ -33,7 +34,7 @@ cleanup() {
     fi
     rm -f "$setup_stdout" "$setup_stderr" "$check_stdout" "$check_stderr" \
         "$server_stdout" "$server_stderr" "$client_stdout" "$client_stderr" \
-        "$port_file"
+        "$port_file" "$admin_token_file"
 }
 trap cleanup EXIT
 
@@ -62,6 +63,7 @@ else
 fi
 
 rm -f "$port_file"
+printf 'test-admin-token\n' >"$admin_token_file"
 GBASIC_WEBSERVER_TIMEOUT=0.2 ./gbasic examples/gbasic_site/site_postgres.bas \
     >"$server_stdout" 2>"$server_stderr" &
 server_pid=$!

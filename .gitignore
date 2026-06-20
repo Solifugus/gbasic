@@ -5,3 +5,4 @@ parser.tab.h
 src/parser.tab.c
 src/parser.tab.h
 examples/tmp_*.txt
+examples/gbasic_site/admin_token.txt

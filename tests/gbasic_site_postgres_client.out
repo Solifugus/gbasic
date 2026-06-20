@@ -18,12 +18,27 @@ True
 True
 200
 True
+403
+True
+200
+True
+True
+403
+forbidden
+200
+True
+200
+False
 200
 True
 201
 True
 200
 True
+200
+True
+200
+False
 404
 not found
 200

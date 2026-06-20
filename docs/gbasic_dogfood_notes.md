@@ -9,6 +9,9 @@ after the app proves the need.
 - Page templates are readable with multiline strings, but interpolation such as
   `f"...{expr}..."` would reduce concatenation noise.
 - App configuration wants an `env(name)` helper.
+- The first admin token uses a local file because there is no runtime
+  environment-variable helper yet. That is workable for tests, but awkward for
+  deployment docs and secret handling.
 - Static file serving currently needs explicit routes and typed file
   references.
 - HTML escaping is app-local but should probably become a standard-library

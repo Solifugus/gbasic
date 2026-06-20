@@ -68,6 +68,29 @@ function shell_page(title, content)
     return html_page(title, "<main class=\"shell\">" + content + "</main>")
 end function
 
+function form_value(values, key)
+    if is_unknown(values[key]) then
+        return ""
+    end if
+    return trim(values[key])
+end function
+
+function admin_token()
+    token_file(file)= "examples/gbasic_site/admin_token.txt"
+    if not exists(token_file) then
+        return ""
+    end if
+    return trim(read(token_file))
+end function
+
+function admin_authorized(values)
+    token = admin_token()
+    if token = "" then
+        return false
+    end if
+    return form_value(values, "token") = token
+end function
+
 function forum_categories_page(db, req)
     rows = pg.query(db, "select slug, title, description from gbasic_site_categories where hidden = false order by title")
     body = "<h1>Forum</h1><p>Read-only discussion areas backed by Postgres.</p><div class=\"stack\">"
@@ -118,6 +141,71 @@ function create_topic(db, req, slug)
     rows = pg.query(db, "insert into gbasic_site_topics (category_id, title, author_name, body) values ($1, $2, $3, $4) returning id", [categories[0].id, title, author, body_text])
     body = "<h1>Topic created</h1><p><a href=\"/topic/" + string(rows[0].id) + "\">View " + html_escape(title) + "</a></p><p><a href=\"/forum/" + html_escape(categories[0].slug) + "\">Back to " + html_escape(categories[0].title) + "</a></p>"
     return text_response(req, 201, "text/html; charset=utf-8", shell_page("Topic created", body))
+end function
+
+function moderation_state(hidden)
+    if hidden then
+        return "hidden"
+    end if
+    return "visible"
+end function
+
+function admin_page(db, req)
+    if not admin_authorized(req.query) then
+        body = "<h1>Admin</h1><p>Enter the local moderation token.</p><form method=\"get\" action=\"/admin\"><label>Token<input name=\"token\" required></label><button type=\"submit\">Open admin</button></form><p><a href=\"/forum\">Back to forum</a></p>"
+        return text_response(req, 403, "text/html; charset=utf-8", shell_page("Admin", body))
+    end if
+
+    token = form_value(req.query, "token")
+    topics = pg.query(db, "select t.id, t.title, t.author_name, t.hidden, c.title as category_title from gbasic_site_topics t join gbasic_site_categories c on c.id = t.category_id order by t.id")
+    posts = pg.query(db, "select p.id, p.author_name, p.body, p.hidden, t.title as topic_title from gbasic_site_posts p join gbasic_site_topics t on t.id = p.topic_id order by p.id")
+
+    body = "<h1>Admin</h1><p>Local moderation tools for hiding topics and replies.</p><h2>Topics</h2><div class=\"stack\">"
+    for each topic in topics
+        body = body + "<article class=\"list-item\"><h2>" + html_escape(topic.title) + "</h2><p>" + html_escape(moderation_state(topic.hidden)) + " in " + html_escape(topic.category_title) + ", started by " + html_escape(topic.author_name) + "</p>"
+        if not topic.hidden then
+            body = body + "<form class=\"inline-form\" method=\"post\" action=\"/admin/hide-topic\"><input type=\"hidden\" name=\"token\" value=\"" + html_escape(token) + "\"><input type=\"hidden\" name=\"topic_id\" value=\"" + string(topic.id) + "\"><button type=\"submit\">Hide topic</button></form>"
+        end if
+        body = body + "</article>"
+    end for
+    body = body + "</div><h2>Replies</h2><div class=\"stack\">"
+    for each post in posts
+        body = body + "<article class=\"list-item\"><h2>Reply #" + string(post.id) + "</h2><p>" + html_escape(moderation_state(post.hidden)) + " on " + html_escape(post.topic_title) + ", by " + html_escape(post.author_name) + "</p><p>" + html_escape(post.body) + "</p>"
+        if not post.hidden then
+            body = body + "<form class=\"inline-form\" method=\"post\" action=\"/admin/hide-post\"><input type=\"hidden\" name=\"token\" value=\"" + html_escape(token) + "\"><input type=\"hidden\" name=\"post_id\" value=\"" + string(post.id) + "\"><button type=\"submit\">Hide reply</button></form>"
+        end if
+        body = body + "</article>"
+    end for
+    body = body + "</div><p><a href=\"/forum\">Back to forum</a></p>"
+    return text_response(req, 200, "text/html; charset=utf-8", shell_page("Admin", body))
+end function
+
+function hide_topic(db, req)
+    form = form_decode(req.body)
+    if not admin_authorized(form) then
+        return text_response(req, 403, "text/plain; charset=utf-8", "forbidden")
+    end if
+    if form_value(form, "topic_id") = "" then
+        return text_response(req, 400, "text/plain; charset=utf-8", "missing topic_id")
+    end if
+    topic_id = number(form.topic_id)
+    pg.exec(db, "update gbasic_site_topics set hidden = true, updated_at = now() where id = $1", [topic_id])
+    body = "<h1>Topic hidden</h1><p><a href=\"/admin\">Back to admin</a></p>"
+    return text_response(req, 200, "text/html; charset=utf-8", shell_page("Topic hidden", body))
+end function
+
+function hide_post(db, req)
+    form = form_decode(req.body)
+    if not admin_authorized(form) then
+        return text_response(req, 403, "text/plain; charset=utf-8", "forbidden")
+    end if
+    if form_value(form, "post_id") = "" then
+        return text_response(req, 400, "text/plain; charset=utf-8", "missing post_id")
+    end if
+    post_id = number(form.post_id)
+    pg.exec(db, "update gbasic_site_posts set hidden = true where id = $1", [post_id])
+    body = "<h1>Reply hidden</h1><p><a href=\"/admin\">Back to admin</a></p>"
+    return text_response(req, 200, "text/html; charset=utf-8", shell_page("Reply hidden", body))
 end function
 
 function topic_page(db, req, topic_id_text)
@@ -192,6 +280,21 @@ function route_request(db, req)
     end if
     if req.path = "/forum" then
         return forum_categories_page(db, req)
+    end if
+    if req.path = "/admin" then
+        return admin_page(db, req)
+    end if
+    if req.path = "/admin/hide-topic" then
+        if req.method = "POST" then
+            return hide_topic(db, req)
+        end if
+        return text_response(req, 405, "text/plain; charset=utf-8", "method not allowed")
+    end if
+    if req.path = "/admin/hide-post" then
+        if req.method = "POST" then
+            return hide_post(db, req)
+        end if
+        return text_response(req, 405, "text/plain; charset=utf-8", "method not allowed")
     end if
     if req.path = "/forum/general/new" then
         if req.method = "POST" then

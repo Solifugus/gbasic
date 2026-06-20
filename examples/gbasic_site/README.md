@@ -17,7 +17,7 @@ The app currently includes the project shape and initial Postgres foundation:
 
 The static app serves a small local home page, a stylesheet, a tiny script, and
 a shutdown route used by the test runner. The Postgres-backed app renders the
-home, docs, and forum placeholder pages from `gbasic_site_pages`.
+home, docs, forum pages, and narrow local moderation tools from Postgres.
 
 ## Run Locally
 
@@ -40,6 +40,17 @@ After Postgres setup, run the database-backed entry point:
 ```
 
 It also writes the selected port to `examples/gbasic_site/tmp_port.txt`.
+
+The local admin page requires a token file:
+
+```sh
+cp examples/gbasic_site/admin_token.example.txt examples/gbasic_site/admin_token.txt
+chmod 600 examples/gbasic_site/admin_token.txt
+```
+
+Open `/admin?token=<token>` to view moderation tools. This token-file approach
+is intentionally temporary until gBASIC has a better configuration and auth
+story.
 
 ## Tests
 
