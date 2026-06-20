@@ -63,6 +63,10 @@ def main():
     print("This seeded topic proves the Postgres-backed forum tables are ready." in body)
     print("Reply support is wired into the initial schema." in body)
 
+    status, _, body = get(port, "/topic/not-a-number")
+    print(status)
+    print(body)
+
     status, _, body = get(port, "/forum/general/new")
     print(status)
     print("<form" in body)
@@ -137,6 +141,14 @@ def main():
     print(status)
     print(body)
 
+    status, _, body = post_form(
+        port,
+        "/admin/hide-topic",
+        {"token": "test-admin-token", "topic_id": "abc"},
+    )
+    print(status)
+    print(body)
+
     status, _, body = get(port, "/topic/2")
     print(status)
     print("Dogfood topic" in body)
@@ -184,6 +196,14 @@ def main():
     )
     print(status)
     print("Reply hidden" in body)
+
+    status, _, body = post_form(
+        port,
+        "/admin/hide-post",
+        {"token": "test-admin-token", "post_id": "abc"},
+    )
+    print(status)
+    print(body)
 
     status, _, body = get(port, "/topic/1")
     print(status)

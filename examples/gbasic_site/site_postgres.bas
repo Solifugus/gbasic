@@ -75,6 +75,23 @@ function form_value(values, key)
     return trim(values[key])
 end function
 
+function is_integer_text(text)
+    if text = "" then
+        return false
+    end if
+    rest = replace(text, "0", "")
+    rest = replace(rest, "1", "")
+    rest = replace(rest, "2", "")
+    rest = replace(rest, "3", "")
+    rest = replace(rest, "4", "")
+    rest = replace(rest, "5", "")
+    rest = replace(rest, "6", "")
+    rest = replace(rest, "7", "")
+    rest = replace(rest, "8", "")
+    rest = replace(rest, "9", "")
+    return rest = ""
+end function
+
 function too_long(text, max_len)
     return len(text) > max_len
 end function
@@ -233,6 +250,9 @@ function hide_topic(db, req)
     if form_value(form, "topic_id") = "" then
         return text_response(req, 400, "text/plain; charset=utf-8", "missing topic_id")
     end if
+    if not is_integer_text(form_value(form, "topic_id")) then
+        return text_response(req, 400, "text/plain; charset=utf-8", "invalid topic_id")
+    end if
     topic_id = number(form.topic_id)
     pg.exec(db, "update gbasic_site_topics set hidden = true, moderated_at = now(), moderated_by = $2, updated_at = now() where id = $1", [topic_id, "local-admin"])
     body = "<h1>Topic hidden</h1><p><a href=\"/admin\">Back to admin</a></p>"
@@ -247,6 +267,9 @@ function hide_post(db, req)
     if form_value(form, "post_id") = "" then
         return text_response(req, 400, "text/plain; charset=utf-8", "missing post_id")
     end if
+    if not is_integer_text(form_value(form, "post_id")) then
+        return text_response(req, 400, "text/plain; charset=utf-8", "invalid post_id")
+    end if
     post_id = number(form.post_id)
     pg.exec(db, "update gbasic_site_posts set hidden = true, moderated_at = now(), moderated_by = $2, updated_at = now() where id = $1", [post_id, "local-admin"])
     body = "<h1>Reply hidden</h1><p><a href=\"/admin\">Back to admin</a></p>"
@@ -254,6 +277,9 @@ function hide_post(db, req)
 end function
 
 function topic_page(db, req, topic_id_text)
+    if not is_integer_text(topic_id_text) then
+        return text_response(req, 400, "text/plain; charset=utf-8", "invalid topic id")
+    end if
     topic_id = number(topic_id_text)
     topics = pg.query(db, "select t.id, t.title, t.author_name, t.body, c.slug as category_slug, c.title as category_title from gbasic_site_topics t join gbasic_site_categories c on c.id = t.category_id where t.id = $1 and t.hidden = false and c.hidden = false", [topic_id])
     if len(topics) = 0 then
@@ -271,6 +297,9 @@ function topic_page(db, req, topic_id_text)
 end function
 
 function reply_form_page(db, req, topic_id_text)
+    if not is_integer_text(topic_id_text) then
+        return text_response(req, 400, "text/plain; charset=utf-8", "invalid topic id")
+    end if
     topic_id = number(topic_id_text)
     topics = pg.query(db, "select id, title from gbasic_site_topics where id = $1 and hidden = false and locked = false", [topic_id])
     if len(topics) = 0 then
@@ -281,6 +310,9 @@ function reply_form_page(db, req, topic_id_text)
 end function
 
 function create_reply(db, req, topic_id_text)
+    if not is_integer_text(topic_id_text) then
+        return text_response(req, 400, "text/plain; charset=utf-8", "invalid topic id")
+    end if
     topic_id = number(topic_id_text)
     topics = pg.query(db, "select id, title from gbasic_site_topics where id = $1 and hidden = false and locked = false", [topic_id])
     if len(topics) = 0 then
