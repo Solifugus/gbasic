@@ -16,6 +16,8 @@ True
 True
 400
 invalid topic id
+400
+invalid topic id
 200
 True
 True
@@ -45,6 +47,12 @@ forbidden
 invalid csrf token
 400
 invalid topic_id
+200
+True
+200
+True
+201
+True
 200
 True
 200

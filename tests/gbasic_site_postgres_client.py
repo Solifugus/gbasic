@@ -71,6 +71,10 @@ def main():
     print(status)
     print(body)
 
+    status, _, body = get(port, "/topic/not-a-number/reply")
+    print(status)
+    print(body)
+
     status, _, body = get(port, "/forum/general/new")
     print(status)
     print("<form" in body)
@@ -177,6 +181,22 @@ def main():
     print(status)
     print("Dogfood topic" in body)
 
+    status, _, body = get(port, "/topic/2/reply")
+    print(status)
+    print("Reply to Dogfood topic" in body)
+
+    status, _, body = post_form(
+        port,
+        "/topic/2/reply",
+        {"author_name": "Tester", "body": "Reply to a new topic"},
+    )
+    print(status)
+    print("Reply posted" in body)
+
+    status, _, body = get(port, "/topic/2")
+    print(status)
+    print("Reply to a new topic" in body)
+
     status, _, body = post_form(
         port,
         "/admin/hide-topic",
@@ -226,7 +246,7 @@ def main():
     status, _, body = post_form(
         port,
         "/admin/hide-post",
-        {"token": "test-admin-token", "post_id": "2"},
+        {"token": "test-admin-token", "post_id": "3"},
     )
     print(status)
     print("Reply hidden" in body)

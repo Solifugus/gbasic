@@ -430,11 +430,12 @@ function route_request(db, req)
     if starts_with(req.path, "/forum/") then
         return category_page(db, req, mid(req.path, 7, len(req.path) - 7))
     end if
-    if req.path = "/topic/1/reply" then
+    if starts_with(req.path, "/topic/") and ends_with(req.path, "/reply") then
+        topic_id_text = mid(req.path, 7, len(req.path) - 13)
         if req.method = "POST" then
-            return create_reply(db, req, "1")
+            return create_reply(db, req, topic_id_text)
         end if
-        return reply_form_page(db, req, "1")
+        return reply_form_page(db, req, topic_id_text)
     end if
     if starts_with(req.path, "/topic/") then
         return topic_page(db, req, mid(req.path, 7, len(req.path) - 7))
