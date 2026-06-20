@@ -2,11 +2,12 @@
 
 import http.client
 import sys
+import urllib.parse
 
 
-def request(port, path):
+def request(port, method, path, body=None, headers=None):
     connection = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
-    connection.request("GET", path)
+    connection.request(method, path, body=body, headers=headers or {})
     response = connection.getresponse()
     body = response.read().decode("utf-8")
     headers = {name.lower(): value for name, value in response.getheaders()}
@@ -14,36 +15,95 @@ def request(port, path):
     return response.status, headers, body
 
 
+def get(port, path):
+    return request(port, "GET", path)
+
+
+def post_form(port, path, fields):
+    body = urllib.parse.urlencode(fields)
+    return request(
+        port,
+        "POST",
+        path,
+        body=body,
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+    )
+
+
 def main():
     port = int(sys.argv[1])
 
-    status, headers, body = request(port, "/")
+    status, headers, body = get(port, "/")
     print(status)
     print(headers.get("content-type", ""))
     print("Readable programs, practical web experiments." in body)
 
-    status, _, body = request(port, "/docs")
+    status, _, body = get(port, "/docs")
     print(status)
     print("Guides and examples for learning gBASIC." in body)
 
-    status, _, body = request(port, "/forum")
+    status, _, body = get(port, "/forum")
     print(status)
     print("Questions, ideas, and project discussion." in body)
 
-    status, _, body = request(port, "/forum/general")
+    status, _, body = get(port, "/forum/general")
     print(status)
     print("Welcome to the gBASIC forum" in body)
 
-    status, _, body = request(port, "/topic/1")
+    status, _, body = get(port, "/topic/1")
     print(status)
     print("This seeded topic proves the Postgres-backed forum tables are ready." in body)
     print("Reply support is wired into the initial schema." in body)
 
-    status, _, body = request(port, "/missing")
+    status, _, body = get(port, "/forum/general/new")
+    print(status)
+    print("<form" in body)
+
+    status, _, body = post_form(
+        port,
+        "/forum/general/new",
+        {"title": "", "author_name": "Tester", "body": "Missing title"},
+    )
+    print(status)
+    print("required" in body)
+
+    status, _, body = post_form(
+        port,
+        "/forum/general/new",
+        {
+            "title": "Dogfood topic",
+            "author_name": "Tester",
+            "body": "Posted through a form",
+        },
+    )
+    print(status)
+    print("Topic created" in body)
+
+    status, _, body = get(port, "/forum/general")
+    print(status)
+    print("Dogfood topic" in body)
+
+    status, _, body = get(port, "/topic/1/reply")
+    print(status)
+    print("<form" in body)
+
+    status, _, body = post_form(
+        port,
+        "/topic/1/reply",
+        {"author_name": "Tester", "body": "Reply from a form"},
+    )
+    print(status)
+    print("Reply posted" in body)
+
+    status, _, body = get(port, "/topic/1")
+    print(status)
+    print("Reply from a form" in body)
+
+    status, _, body = get(port, "/missing")
     print(status)
     print(body)
 
-    status, _, body = request(port, "/shutdown")
+    status, _, body = get(port, "/shutdown")
     print(status)
     print(body)
 

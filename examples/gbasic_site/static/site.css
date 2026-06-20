@@ -88,3 +88,43 @@ nav a {
 .list-item p {
     margin: 8px 0 0;
 }
+
+form {
+    display: grid;
+    gap: 16px;
+    max-width: 640px;
+    margin: 28px 0;
+}
+
+label {
+    display: grid;
+    gap: 6px;
+    color: var(--muted);
+    font-weight: 650;
+}
+
+input,
+textarea {
+    width: 100%;
+    border: 1px solid var(--line);
+    background: #fff;
+    color: var(--ink);
+    font: inherit;
+    padding: 10px 12px;
+}
+
+textarea {
+    min-height: 140px;
+    resize: vertical;
+}
+
+button {
+    justify-self: start;
+    border: 1px solid var(--accent);
+    background: var(--accent);
+    color: #fff;
+    font: inherit;
+    font-weight: 700;
+    padding: 10px 14px;
+    cursor: pointer;
+}

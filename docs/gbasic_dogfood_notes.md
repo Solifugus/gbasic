@@ -13,8 +13,9 @@ after the app proves the need.
   references.
 - HTML escaping is app-local but should probably become a standard-library
   helper.
-- URL/form decoding helpers will be needed before create-topic and create-reply
-  forms.
+- App-local form decoding is possible for simple create-topic and create-reply
+  forms, but complete
+  percent-decoding wants a standard helper or a byte-to-character primitive.
 - Path routing is currently manual string comparison. Prefix, parameter, and
   path-segment helpers would make routes like `/forum/general` and `/topic/1`
   clearer.

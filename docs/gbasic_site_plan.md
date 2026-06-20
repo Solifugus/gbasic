@@ -74,9 +74,9 @@ Acceptance criteria:
 
 - [x] Render forum category and topic lists.
 - [x] Render topic detail pages with replies.
-- [ ] Add create-topic and create-reply forms.
-- [ ] Validate form input server-side.
-- [ ] Store posts in Postgres with parameterized SQL.
+- [x] Add create-topic and create-reply forms.
+- [x] Validate form input server-side.
+- [x] Store posts in Postgres with parameterized SQL.
 - [ ] Add simple pagination or result limits before public deployment.
 
 Acceptance criteria:
