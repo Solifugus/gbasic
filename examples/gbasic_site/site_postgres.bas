@@ -154,6 +154,14 @@ function hidden_input(name, value)
     return "<input type=\"hidden\" name=\"" + html_escape(name) + "\" value=\"" + html_escape(value) + "\">"
 end function
 
+function text_input(label, name, maxlength)
+    return "<label>" + html_escape(label) + "<input name=\"" + html_escape(name) + "\" maxlength=\"" + string(maxlength) + "\" required></label>"
+end function
+
+function text_area(label, name, maxlength)
+    return "<label>" + html_escape(label) + "<textarea name=\"" + html_escape(name) + "\" maxlength=\"" + string(maxlength) + "\" required></textarea></label>"
+end function
+
 function csrf_field()
     return hidden_input("csrf_token", csrf_token())
 end function
@@ -221,7 +229,7 @@ function new_topic_form_page(db, req, slug)
     if len(categories) = 0 then
         return text_response(req, 404, "text/plain; charset=utf-8", "not found")
     end if
-    body = "<h1>Create topic</h1><form method=\"post\" action=\"/forum/" + html_escape(categories[0].slug) + "/new\">" + csrf_field() + "<label>Title<input name=\"title\" maxlength=\"120\" required></label><label>Name<input name=\"author_name\" maxlength=\"80\" required></label><label>Body<textarea name=\"body\" maxlength=\"4000\" required></textarea></label><button type=\"submit\">Post topic</button></form><p><a href=\"/forum/" + html_escape(categories[0].slug) + "\">Back to " + html_escape(categories[0].title) + "</a></p>"
+    body = "<h1>Create topic</h1><form method=\"post\" action=\"/forum/" + html_escape(categories[0].slug) + "/new\">" + csrf_field() + text_input("Title", "title", 120) + text_input("Name", "author_name", 80) + text_area("Body", "body", 4000) + "<button type=\"submit\">Post topic</button></form><p><a href=\"/forum/" + html_escape(categories[0].slug) + "\">Back to " + html_escape(categories[0].title) + "</a></p>"
     return text_response(req, 200, "text/html; charset=utf-8", shell_page("Create topic", body))
 end function
 
@@ -265,7 +273,7 @@ end function
 
 function admin_page(db, req)
     if not admin_authorized(req.query) then
-        body = "<h1>Admin</h1><p>Enter the local moderation token.</p><form method=\"get\" action=\"/admin\"><label>Token<input name=\"token\" required></label><button type=\"submit\">Open admin</button></form><p><a href=\"/forum\">Back to forum</a></p>"
+        body = "<h1>Admin</h1><p>Enter the local moderation token.</p><form method=\"get\" action=\"/admin\">" + text_input("Token", "token", 200) + "<button type=\"submit\">Open admin</button></form><p><a href=\"/forum\">Back to forum</a></p>"
         return text_response(req, 403, "text/html; charset=utf-8", shell_page("Admin", body))
     end if
 
@@ -363,7 +371,7 @@ function reply_form_page(db, req, topic_id_text)
     if len(topics) = 0 then
         return text_response(req, 404, "text/plain; charset=utf-8", "not found")
     end if
-    body = "<h1>Reply to " + html_escape(topics[0].title) + "</h1><form method=\"post\" action=\"/topic/" + string(topics[0].id) + "/reply\">" + csrf_field() + "<label>Name<input name=\"author_name\" maxlength=\"80\" required></label><label>Body<textarea name=\"body\" maxlength=\"4000\" required></textarea></label><button type=\"submit\">Post reply</button></form><p><a href=\"/topic/" + string(topics[0].id) + "\">Back to topic</a></p>"
+    body = "<h1>Reply to " + html_escape(topics[0].title) + "</h1><form method=\"post\" action=\"/topic/" + string(topics[0].id) + "/reply\">" + csrf_field() + text_input("Name", "author_name", 80) + text_area("Body", "body", 4000) + "<button type=\"submit\">Post reply</button></form><p><a href=\"/topic/" + string(topics[0].id) + "\">Back to topic</a></p>"
     return text_response(req, 200, "text/html; charset=utf-8", shell_page("Reply", body))
 end function
 
