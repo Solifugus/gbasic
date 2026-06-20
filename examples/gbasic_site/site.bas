@@ -30,6 +30,10 @@ function text_response(req, status, content_type, body)
     }
 end function
 
+function log_request(req, response)
+    print(req.timestamp + " " + req.remote_ip + " " + req.method + " " + req.path + " " + string(response.status))
+end function
+
 function route_request(req)
     if req.path = "/" then
         return text_response(req, 200, "text/html; charset=utf-8", home_page())
@@ -59,15 +63,21 @@ if exists(port_file) then delete(port_file)
 
 server = webserver.listen(0)
 write(port_file, string(server.port))
+print("gbasic_site listening on 127.0.0.1:" + string(server.port))
 
 watch(server.requests)
     while count(server.requests) > 0
         req = take_first(server.requests)
         if req.path = "/shutdown" then
-            append(server.responses, text_response(req, 200, "text/plain; charset=utf-8", "bye"))
+            response = text_response(req, 200, "text/plain; charset=utf-8", "bye")
+            append(server.responses, response)
+            log_request(req, response)
+            print("gbasic_site shutdown")
             webserver.close(server)
         else
-            append(server.responses, route_request(req))
+            response = route_request(req)
+            append(server.responses, response)
+            log_request(req, response)
         end if
     end while
 end watch

@@ -104,8 +104,9 @@ Public deployment needs structured enough logs to debug abuse and failures:
 - moderation actions with topic/post id and moderator label,
 - startup/shutdown events.
 
-The first version can rely on reverse-proxy access logs plus captured stdout
-and stderr from the gBASIC process.
+The app emits startup, shutdown, and simple request/status lines to stdout.
+The first deployment can combine those with nginx access logs and captured
+stderr from the gBASIC process.
 
 ## Backups
 

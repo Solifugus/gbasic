@@ -310,6 +310,10 @@ function text_response(req, status, content_type, body)
     }
 end function
 
+function log_request(req, response)
+    print(req.timestamp + " " + req.remote_ip + " " + req.method + " " + req.path + " " + string(response.status))
+end function
+
 function page_response(db, req, slug, include_nav)
     rows = pg.query(db, "select title, body from gbasic_site_pages where slug = $1 and published = true", [slug])
     if len(rows) = 0 then
@@ -387,16 +391,22 @@ if exists(port_file) then delete(port_file)
 db = pg.connect({})
 server = webserver.listen(0)
 write(port_file, string(server.port))
+print("gbasic_site_postgres listening on 127.0.0.1:" + string(server.port))
 
 watch(server.requests)
     while count(server.requests) > 0
         req = take_first(server.requests)
         if req.path = "/shutdown" then
-            append(server.responses, text_response(req, 200, "text/plain; charset=utf-8", "bye"))
+            response = text_response(req, 200, "text/plain; charset=utf-8", "bye")
+            append(server.responses, response)
+            log_request(req, response)
+            print("gbasic_site_postgres shutdown")
             pg.close(db)
             webserver.close(server)
         else
-            append(server.responses, route_request(db, req))
+            response = route_request(db, req)
+            append(server.responses, response)
+            log_request(req, response)
         end if
     end while
 end watch
