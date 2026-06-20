@@ -1,6 +1,8 @@
 insert into gbasic_site_pages (slug, title, body) values
     ('home', 'gBASIC', 'Readable programs, practical web experiments.'),
-    ('docs', 'Docs', 'Guides and examples for learning gBASIC.'),
+    ('docs', 'Docs', 'Start with readable expressions, records, arrays, files, SQL modules, and the loopback webserver examples in this repository.'),
+    ('about', 'About gBASIC', 'gBASIC is a small readable programming language for practical scripts, experiments, and application dogfooding. It takes inspiration from BASIC while growing modern features where they pay for themselves.'),
+    ('examples', 'Examples', 'Explore the checked-in examples for files, arrays, SQLite, Postgres, web clients, web servers, and small applications. The site itself is becoming one of those examples.'),
     ('forum', 'Forum', 'A small Postgres-backed discussion space.');
 
 insert into gbasic_site_categories (slug, title, description) values

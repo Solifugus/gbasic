@@ -17,8 +17,8 @@ The app currently includes the project shape and initial Postgres foundation:
 
 The static app serves a small local home page, a stylesheet, a tiny script, and
 a shutdown route used by the test runner. The Postgres-backed app renders the
-home, docs, capped forum pages, and narrow local moderation tools from
-Postgres.
+home, docs, about, examples, capped forum pages, and narrow local moderation
+tools from Postgres.
 
 ## Run Locally
 

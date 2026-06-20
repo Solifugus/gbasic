@@ -57,9 +57,9 @@ end function
 function page_body(page, include_nav)
     body = "<main class=\"shell\"><section class=\"hero\"><p class=\"eyebrow\">gBASIC sample app</p><h1>" + html_escape(page.title) + "</h1><p>" + html_escape(page.body) + "</p>"
     if include_nav then
-        body = body + "<nav><a href=\"/docs\">Docs</a><a href=\"/forum\">Forum</a></nav>"
+        body = body + "<nav><a href=\"/docs\">Docs</a><a href=\"/examples\">Examples</a><a href=\"/about\">About</a><a href=\"/forum\">Forum</a></nav>"
     else
-        body = body + "<p><a href=\"/\">Back home</a></p>"
+        body = body + "<nav><a href=\"/\">Home</a><a href=\"/docs\">Docs</a><a href=\"/examples\">Examples</a><a href=\"/about\">About</a><a href=\"/forum\">Forum</a></nav>"
     end if
     return body + "</section></main>"
 end function
@@ -289,6 +289,12 @@ function route_request(db, req)
     end if
     if req.path = "/docs" then
         return page_response(db, req, "docs", false)
+    end if
+    if req.path = "/examples" then
+        return page_response(db, req, "examples", false)
+    end if
+    if req.path = "/about" then
+        return page_response(db, req, "about", false)
     end if
     if req.path = "/forum" then
         return forum_categories_page(db, req)

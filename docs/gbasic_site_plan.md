@@ -60,7 +60,7 @@ Acceptance criteria:
 - [ ] Add URL/form decoding helpers if the runtime does not already provide
       enough behavior.
 - [x] Render Postgres-backed home, docs, and forum placeholder pages.
-- [ ] Render fuller docs/about/examples pages.
+- [x] Render fuller docs/about/examples pages.
 - [x] Serve minimal static CSS and JavaScript through gBASIC or a documented
       local reverse-proxy/static-file path.
 

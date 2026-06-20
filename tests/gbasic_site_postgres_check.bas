@@ -8,6 +8,9 @@ print(len(pages))
 home = pg.query(db, "select title from gbasic_site_pages where slug = $1", ["home"])
 print(home[0].title)
 
+examples = pg.query(db, "select title from gbasic_site_pages where slug = $1", ["examples"])
+print(examples[0].title)
+
 categories = pg.query(db, "select slug, title from gbasic_site_categories where hidden = false order by slug")
 print(len(categories))
 print(categories[0].slug)

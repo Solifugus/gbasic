@@ -40,7 +40,15 @@ def main():
 
     status, _, body = get(port, "/docs")
     print(status)
-    print("Guides and examples for learning gBASIC." in body)
+    print("SQL modules" in body)
+
+    status, _, body = get(port, "/examples")
+    print(status)
+    print("The site itself is becoming one of those examples." in body)
+
+    status, _, body = get(port, "/about")
+    print(status)
+    print("takes inspiration from BASIC" in body)
 
     status, _, body = get(port, "/forum")
     print(status)
