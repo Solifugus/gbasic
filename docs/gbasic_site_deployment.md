@@ -118,6 +118,12 @@ Postgres is the durable state. A public deployment needs:
 - periodic restore tests,
 - a retention policy.
 
+The sample app includes `examples/gbasic_site/scripts/backup_postgres.sh` and
+`examples/gbasic_site/scripts/restore_postgres.sh`. They use the same `DB_*`
+or libpq `PG*` variables as setup. Keep generated dumps outside the repository
+or in the ignored `examples/gbasic_site/backups/` directory, then copy them
+off-server.
+
 The app setup script resets development tables and must not be used against a
 production database.
 

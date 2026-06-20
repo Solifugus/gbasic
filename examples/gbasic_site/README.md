@@ -107,6 +107,22 @@ Initialize/reset the app tables and seed data:
 
 This creates and resets only `gbasic_site_*` tables in the configured database.
 
+## Backups
+
+Create a local custom-format Postgres dump:
+
+```sh
+examples/gbasic_site/scripts/backup_postgres.sh
+```
+
+Restore requires an explicit confirmation string because it can replace app
+tables:
+
+```sh
+export GBASIC_SITE_RESTORE_CONFIRM=restore-gbasic_site_dev
+examples/gbasic_site/scripts/restore_postgres.sh examples/gbasic_site/backups/<backup>.dump
+```
+
 ## Deployment Notes
 
 Do not publish the app directly yet. The current deployment inventory is in
