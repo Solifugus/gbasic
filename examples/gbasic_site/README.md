@@ -106,3 +106,10 @@ Initialize/reset the app tables and seed data:
 ```
 
 This creates and resets only `gbasic_site_*` tables in the configured database.
+
+## Deployment Notes
+
+Do not publish the app directly yet. The current deployment inventory is in
+`docs/gbasic_site_deployment.md`; it assumes a loopback gBASIC app behind Caddy
+or nginx and calls out the auth, CSRF, spam-prevention, logging, and backup
+work needed before public forum use.

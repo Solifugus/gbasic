@@ -100,9 +100,9 @@ Acceptance criteria:
 
 ## Phase 5: Test Coverage
 
-- [ ] Add loopback HTTP tests for public pages.
-- [ ] Add tests for create-topic and create-reply flows.
-- [ ] Add tests for validation failures.
+- [x] Add loopback HTTP tests for public pages.
+- [x] Add tests for create-topic and create-reply flows.
+- [x] Add tests for validation failures.
 - [x] Add tests for moderation behavior.
 - [x] Add database reset/setup to the test runner.
 
@@ -114,15 +114,15 @@ Acceptance criteria:
 
 ## Phase 6: Production Hardening Inventory
 
-- [ ] Decide how the app runs behind nginx or Caddy.
-- [ ] Add bind-address/public-listener design work if gBASIC should serve
+- [x] Decide how the app runs behind nginx or Caddy.
+- [x] Add bind-address/public-listener design work if gBASIC should serve
       directly beyond loopback.
-- [ ] Add request size and timeout review for forum forms.
-- [ ] Add logging plan.
-- [ ] Add backup/restore notes for Postgres.
-- [ ] Add spam prevention plan.
-- [ ] Add CSRF/session/password hashing design before real public accounts.
-- [ ] Add deployment checklist for the user's public-IP server.
+- [x] Add request size and timeout review for forum forms.
+- [x] Add logging plan.
+- [x] Add backup/restore notes for Postgres.
+- [x] Add spam prevention plan.
+- [x] Add CSRF/session/password hashing design before real public accounts.
+- [x] Add deployment checklist for the user's public-IP server.
 
 Acceptance criteria:
 
