@@ -221,7 +221,7 @@ function post_id_field(post_id)
 end function
 
 function visible_categories(db)
-    return pg.query(db, "select slug, title, description from gbasic_site_categories where hidden = false order by title")
+    return pg.query(db, "select c.slug, c.title, c.description, count(distinct t.id)::text as topic_count, count(p.id)::text as reply_count, coalesce(to_char(max(greatest(t.updated_at, coalesce(p.updated_at, t.updated_at))), 'YYYY-MM-DD HH24:MI'), 'No activity') as latest_activity from gbasic_site_categories c left join gbasic_site_topics t on t.category_id = c.id and t.hidden = false left join gbasic_site_posts p on p.topic_id = t.id and p.hidden = false where c.hidden = false group by c.id, c.slug, c.title, c.description order by c.title")
 end function
 
 function visible_category(db, slug)
@@ -236,7 +236,7 @@ function forum_categories_page(db, req)
     rows = visible_categories(db)
     body = "<h1>Forum</h1><p>Read-only discussion areas backed by Postgres.</p><div class=\"stack\">"
     for each category in rows
-        body = body + "<article class=\"list-item\"><h2><a href=\"/forum/" + html_escape(category.slug) + "\">" + html_escape(category.title) + "</a></h2><p>" + html_escape(category.description) + "</p></article>"
+        body = body + "<article class=\"list-item\"><h2><a href=\"/forum/" + html_escape(category.slug) + "\">" + html_escape(category.title) + "</a></h2><p>" + html_escape(category.description) + "</p><p>" + html_escape(category.topic_count) + " topics, " + html_escape(category.reply_count) + " replies. Latest activity: " + html_escape(category.latest_activity) + ".</p></article>"
     end for
     body = body + "</div><p><a href=\"/\">Back home</a></p>"
     return shell_response(req, 200, "gBASIC Forum", body)
@@ -249,10 +249,10 @@ function category_page(db, req, slug)
     end if
 
     topic_limit = 20
-    topics = pg.query(db, "select id, title, author_name, body from gbasic_site_topics where category_id = $1 and hidden = false order by updated_at desc, id desc limit $2", [categories[0].id, topic_limit])
+    topics = pg.query(db, "select t.id, t.title, t.author_name, t.body, count(p.id)::text as reply_count, to_char(greatest(t.updated_at, coalesce(max(p.updated_at), t.updated_at)), 'YYYY-MM-DD HH24:MI') as latest_activity from gbasic_site_topics t left join gbasic_site_posts p on p.topic_id = t.id and p.hidden = false where t.category_id = $1 and t.hidden = false group by t.id, t.title, t.author_name, t.body, t.updated_at order by greatest(t.updated_at, coalesce(max(p.updated_at), t.updated_at)) desc, t.id desc limit $2", [categories[0].id, topic_limit])
     body = "<h1>" + html_escape(categories[0].title) + "</h1><p>" + html_escape(categories[0].description) + "</p><p><a href=\"/forum/" + html_escape(categories[0].slug) + "/new\">Create topic</a></p><p>Showing the latest " + string(topic_limit) + " topics.</p><div class=\"stack\">"
     for each topic in topics
-        body = body + "<article class=\"list-item\"><h2><a href=\"/topic/" + string(topic.id) + "\">" + html_escape(topic.title) + "</a></h2><p>Started by " + html_escape(topic.author_name) + "</p><p>" + html_escape(topic.body) + "</p></article>"
+        body = body + "<article class=\"list-item\"><h2><a href=\"/topic/" + string(topic.id) + "\">" + html_escape(topic.title) + "</a></h2><p>Started by " + html_escape(topic.author_name) + ". " + html_escape(topic.reply_count) + " replies. Latest activity: " + html_escape(topic.latest_activity) + ".</p><p>" + html_escape(topic.body) + "</p></article>"
     end for
     body = body + "</div><p><a href=\"/forum\">Back to forum</a></p>"
     return shell_response(req, 200, categories[0].title, body)
@@ -426,6 +426,7 @@ function create_reply(db, req, topic_id_text)
         return shell_response(req, 400, "Reply", body)
     end if
     pg.exec(db, "insert into gbasic_site_posts (topic_id, author_name, body) values ($1, $2, $3)", [topic_id, author, body_text])
+    pg.exec(db, "update gbasic_site_topics set updated_at = now() where id = $1", [topic_id])
     body = "<h1>Reply posted</h1><p><a href=\"/topic/" + string(topic_id) + "\">Back to " + html_escape(topics[0].title) + "</a></p>"
     return shell_response(req, 201, "Reply posted", body)
 end function

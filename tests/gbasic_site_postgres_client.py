@@ -57,10 +57,12 @@ def main():
     status, _, body = get(port, "/forum")
     print(status)
     print("Questions, ideas, and project discussion." in body)
+    print("1 topics, 1 replies. Latest activity:" in body)
 
     status, _, body = get(port, "/forum/general")
     print(status)
     print("Welcome to the gBASIC forum" in body)
+    print("1 replies. Latest activity:" in body)
 
     status, _, body = get(port, "/topic/1")
     print(status)
@@ -132,6 +134,7 @@ def main():
     status, _, body = get(port, "/forum/general")
     print(status)
     print("Dogfood topic" in body)
+    print("0 replies. Latest activity:" in body)
 
     for index in range(25):
         status, _, body = post_form(
