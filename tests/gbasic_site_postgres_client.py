@@ -80,6 +80,18 @@ def main():
     print("<form" in body)
     print('name="csrf_token"' in body)
 
+    status, _, body = get(port, "/forum/missing/new")
+    print(status)
+    print(body)
+
+    status, _, body = post_form(
+        port,
+        "/forum/missing/new",
+        {"title": "Missing", "author_name": "Tester", "body": "No category"},
+    )
+    print(status)
+    print(body)
+
     status, _, body = post_form(
         port,
         "/forum/general/new",

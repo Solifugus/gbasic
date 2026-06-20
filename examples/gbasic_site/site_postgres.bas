@@ -421,11 +421,12 @@ function route_request(db, req)
         end if
         return text_response(req, 405, "text/plain; charset=utf-8", "method not allowed")
     end if
-    if req.path = "/forum/general/new" then
+    if starts_with(req.path, "/forum/") and ends_with(req.path, "/new") then
+        category_slug = mid(req.path, 7, len(req.path) - 11)
         if req.method = "POST" then
-            return create_topic(db, req, "general")
+            return create_topic(db, req, category_slug)
         end if
-        return new_topic_form_page(db, req, "general")
+        return new_topic_form_page(db, req, category_slug)
     end if
     if starts_with(req.path, "/forum/") then
         return category_page(db, req, mid(req.path, 7, len(req.path) - 7))

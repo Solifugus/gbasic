@@ -21,6 +21,10 @@ invalid topic id
 200
 True
 True
+404
+not found
+404
+not found
 403
 invalid csrf token
 400
