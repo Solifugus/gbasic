@@ -54,13 +54,14 @@ Acceptance criteria:
 
 ## Phase 2: Minimal Web Surface
 
-- [ ] Build a webserver loop using the existing request/response queue model.
-- [ ] Add routing helpers for method/path dispatch inside the app.
-- [ ] Add HTML escaping helpers.
+- [x] Build a webserver loop using the existing request/response queue model.
+- [x] Add routing helpers for method/path dispatch inside the app.
+- [x] Add HTML escaping helpers.
 - [ ] Add URL/form decoding helpers if the runtime does not already provide
       enough behavior.
-- [ ] Render a home page, docs/about page, and examples page.
-- [ ] Serve minimal static CSS and JavaScript through gBASIC or a documented
+- [x] Render Postgres-backed home, docs, and forum placeholder pages.
+- [ ] Render fuller docs/about/examples pages.
+- [x] Serve minimal static CSS and JavaScript through gBASIC or a documented
       local reverse-proxy/static-file path.
 
 Acceptance criteria:

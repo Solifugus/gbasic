@@ -9,14 +9,15 @@ auth, and deployment story mature.
 The app currently includes the project shape and initial Postgres foundation:
 
 - `site.bas`: loopback webserver entry point
+- `site_postgres.bas`: Postgres-backed loopback webserver entry point
 - `setup.bas`: initializes and seeds app tables in the configured Postgres database
 - `sql/`: Postgres schema, seed, and reset scripts
 - `static/`: vanilla CSS and JavaScript assets
 - `tests/`: app-specific client/test helpers
 
-The app currently serves a small local home page, a stylesheet, a tiny script,
-and a shutdown route used by the test runner. Runtime pages still use static
-content; reading pages and forum data from Postgres comes in later phases.
+The static app serves a small local home page, a stylesheet, a tiny script, and
+a shutdown route used by the test runner. The Postgres-backed app renders the
+home, docs, and forum placeholder pages from `gbasic_site_pages`.
 
 ## Run Locally
 
@@ -32,6 +33,14 @@ Open `http://127.0.0.1:<port>/`.
 The server binds to an operating-system-assigned loopback port through
 gBASIC's current WebServer module. Do not expose this app publicly yet.
 
+After Postgres setup, run the database-backed entry point:
+
+```sh
+./gbasic examples/gbasic_site/site_postgres.bas
+```
+
+It also writes the selected port to `examples/gbasic_site/tmp_port.txt`.
+
 ## Tests
 
 From the repository root:
@@ -42,6 +51,12 @@ From the repository root:
 
 The runner starts the app on an ephemeral loopback port, performs a few HTTP
 checks, and shuts it down.
+
+For the Postgres-backed app:
+
+```sh
+GBASIC_SITE_POSTGRES_TEST=1 ./tests/run_gbasic_site_postgres.sh
+```
 
 ## Postgres Setup
 
