@@ -150,8 +150,12 @@ function csrf_token()
     return trim(read(token_file))
 end function
 
+function hidden_input(name, value)
+    return "<input type=\"hidden\" name=\"" + html_escape(name) + "\" value=\"" + html_escape(value) + "\">"
+end function
+
 function csrf_field()
-    return "<input type=\"hidden\" name=\"csrf_token\" value=\"" + html_escape(csrf_token()) + "\">"
+    return hidden_input("csrf_token", csrf_token())
 end function
 
 function csrf_valid(values)
@@ -172,6 +176,18 @@ function admin_authorized(values)
         return false
     end if
     return form_value(values, "token") = token
+end function
+
+function admin_token_field(token)
+    return hidden_input("token", token)
+end function
+
+function topic_id_field(topic_id)
+    return hidden_input("topic_id", string(topic_id))
+end function
+
+function post_id_field(post_id)
+    return hidden_input("post_id", string(post_id))
 end function
 
 function forum_categories_page(db, req)
@@ -262,7 +278,7 @@ function admin_page(db, req)
     for each topic in topics
         body = body + "<article class=\"list-item\"><h2>" + html_escape(topic.title) + "</h2><p>" + html_escape(moderation_summary(topic)) + " in " + html_escape(topic.category_title) + ", started by " + html_escape(topic.author_name) + "</p>"
         if not topic.hidden then
-            body = body + "<form class=\"inline-form\" method=\"post\" action=\"/admin/hide-topic\">" + csrf_field() + "<input type=\"hidden\" name=\"token\" value=\"" + html_escape(token) + "\"><input type=\"hidden\" name=\"topic_id\" value=\"" + string(topic.id) + "\"><button type=\"submit\">Hide topic</button></form>"
+            body = body + "<form class=\"inline-form\" method=\"post\" action=\"/admin/hide-topic\">" + csrf_field() + admin_token_field(token) + topic_id_field(topic.id) + "<button type=\"submit\">Hide topic</button></form>"
         end if
         body = body + "</article>"
     end for
@@ -270,7 +286,7 @@ function admin_page(db, req)
     for each post in posts
         body = body + "<article class=\"list-item\"><h2>Reply #" + string(post.id) + "</h2><p>" + html_escape(moderation_summary(post)) + " on " + html_escape(post.topic_title) + ", by " + html_escape(post.author_name) + "</p><p>" + html_escape(post.body) + "</p>"
         if not post.hidden then
-            body = body + "<form class=\"inline-form\" method=\"post\" action=\"/admin/hide-post\">" + csrf_field() + "<input type=\"hidden\" name=\"token\" value=\"" + html_escape(token) + "\"><input type=\"hidden\" name=\"post_id\" value=\"" + string(post.id) + "\"><button type=\"submit\">Hide reply</button></form>"
+            body = body + "<form class=\"inline-form\" method=\"post\" action=\"/admin/hide-post\">" + csrf_field() + admin_token_field(token) + post_id_field(post.id) + "<button type=\"submit\">Hide reply</button></form>"
         end if
         body = body + "</article>"
     end for
