@@ -83,6 +83,27 @@ def main():
     print(status)
     print("Dogfood topic" in body)
 
+    for index in range(25):
+        status, _, body = post_form(
+            port,
+            "/forum/general/new",
+            {
+                "title": f"Paged topic {index}",
+                "author_name": "Tester",
+                "body": "Topic used to prove the category limit",
+            },
+        )
+        if status != 201:
+            print(status)
+            print(body)
+            return
+
+    status, _, body = get(port, "/forum/general")
+    print(status)
+    print("Showing the latest 20 topics." in body)
+    print("Paged topic 24" in body)
+    print("Paged topic 0" in body)
+
     status, _, body = get(port, "/admin")
     print(status)
     print("Enter the local moderation token." in body)
@@ -100,6 +121,10 @@ def main():
     print(status)
     print(body)
 
+    status, _, body = get(port, "/topic/2")
+    print(status)
+    print("Dogfood topic" in body)
+
     status, _, body = post_form(
         port,
         "/admin/hide-topic",
@@ -108,9 +133,9 @@ def main():
     print(status)
     print("Topic hidden" in body)
 
-    status, _, body = get(port, "/forum/general")
+    status, _, body = get(port, "/topic/2")
     print(status)
-    print("Dogfood topic" in body)
+    print(body)
 
     status, _, body = get(port, "/topic/1/reply")
     print(status)

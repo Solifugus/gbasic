@@ -77,7 +77,7 @@ Acceptance criteria:
 - [x] Add create-topic and create-reply forms.
 - [x] Validate form input server-side.
 - [x] Store posts in Postgres with parameterized SQL.
-- [ ] Add simple pagination or result limits before public deployment.
+- [x] Add simple pagination or result limits before public deployment.
 
 Acceptance criteria:
 

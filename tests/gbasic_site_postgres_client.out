@@ -18,6 +18,10 @@ True
 True
 200
 True
+200
+True
+True
+False
 403
 True
 200
@@ -28,7 +32,9 @@ forbidden
 200
 True
 200
-False
+True
+404
+not found
 200
 True
 201

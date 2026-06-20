@@ -107,8 +107,9 @@ function category_page(db, req, slug)
         return text_response(req, 404, "text/plain; charset=utf-8", "not found")
     end if
 
-    topics = pg.query(db, "select id, title, author_name, body from gbasic_site_topics where category_id = $1 and hidden = false order by updated_at desc, id desc", [categories[0].id])
-    body = "<h1>" + html_escape(categories[0].title) + "</h1><p>" + html_escape(categories[0].description) + "</p><p><a href=\"/forum/" + html_escape(categories[0].slug) + "/new\">Create topic</a></p><div class=\"stack\">"
+    topic_limit = 20
+    topics = pg.query(db, "select id, title, author_name, body from gbasic_site_topics where category_id = $1 and hidden = false order by updated_at desc, id desc limit $2", [categories[0].id, topic_limit])
+    body = "<h1>" + html_escape(categories[0].title) + "</h1><p>" + html_escape(categories[0].description) + "</p><p><a href=\"/forum/" + html_escape(categories[0].slug) + "/new\">Create topic</a></p><p>Showing the latest " + string(topic_limit) + " topics.</p><div class=\"stack\">"
     for each topic in topics
         body = body + "<article class=\"list-item\"><h2><a href=\"/topic/" + string(topic.id) + "\">" + html_escape(topic.title) + "</a></h2><p>Started by " + html_escape(topic.author_name) + "</p><p>" + html_escape(topic.body) + "</p></article>"
     end for
@@ -166,10 +167,11 @@ function admin_page(db, req)
     end if
 
     token = form_value(req.query, "token")
-    topics = pg.query(db, "select t.id, t.title, t.author_name, t.hidden, t.moderated_by, c.title as category_title from gbasic_site_topics t join gbasic_site_categories c on c.id = t.category_id order by t.id")
-    posts = pg.query(db, "select p.id, p.author_name, p.body, p.hidden, p.moderated_by, t.title as topic_title from gbasic_site_posts p join gbasic_site_topics t on t.id = p.topic_id order by p.id")
+    admin_limit = 50
+    topics = pg.query(db, "select t.id, t.title, t.author_name, t.hidden, t.moderated_by, c.title as category_title from gbasic_site_topics t join gbasic_site_categories c on c.id = t.category_id order by t.id desc limit $1", [admin_limit])
+    posts = pg.query(db, "select p.id, p.author_name, p.body, p.hidden, p.moderated_by, t.title as topic_title from gbasic_site_posts p join gbasic_site_topics t on t.id = p.topic_id order by p.id desc limit $1", [admin_limit])
 
-    body = "<h1>Admin</h1><p>Local moderation tools for hiding topics and replies.</p><h2>Topics</h2><div class=\"stack\">"
+    body = "<h1>Admin</h1><p>Local moderation tools for hiding topics and replies. Showing the latest " + string(admin_limit) + " topics and replies.</p><h2>Topics</h2><div class=\"stack\">"
     for each topic in topics
         body = body + "<article class=\"list-item\"><h2>" + html_escape(topic.title) + "</h2><p>" + html_escape(moderation_summary(topic)) + " in " + html_escape(topic.category_title) + ", started by " + html_escape(topic.author_name) + "</p>"
         if not topic.hidden then
@@ -224,8 +226,9 @@ function topic_page(db, req, topic_id_text)
         return text_response(req, 404, "text/plain; charset=utf-8", "not found")
     end if
 
-    posts = pg.query(db, "select author_name, body from gbasic_site_posts where topic_id = $1 and hidden = false order by id", [topic_id])
-    body = "<p><a href=\"/forum/" + html_escape(topics[0].category_slug) + "\">" + html_escape(topics[0].category_title) + "</a></p><h1>" + html_escape(topics[0].title) + "</h1><article class=\"list-item\"><p>Started by " + html_escape(topics[0].author_name) + "</p><p>" + html_escape(topics[0].body) + "</p></article><h2>Replies</h2><div class=\"stack\">"
+    reply_limit = 50
+    posts = pg.query(db, "select author_name, body from gbasic_site_posts where topic_id = $1 and hidden = false order by id limit $2", [topic_id, reply_limit])
+    body = "<p><a href=\"/forum/" + html_escape(topics[0].category_slug) + "\">" + html_escape(topics[0].category_title) + "</a></p><h1>" + html_escape(topics[0].title) + "</h1><article class=\"list-item\"><p>Started by " + html_escape(topics[0].author_name) + "</p><p>" + html_escape(topics[0].body) + "</p></article><h2>Replies</h2><p>Showing the first " + string(reply_limit) + " replies.</p><div class=\"stack\">"
     for each post in posts
         body = body + "<article class=\"list-item\"><p>Reply by " + html_escape(post.author_name) + "</p><p>" + html_escape(post.body) + "</p></article>"
     end for
