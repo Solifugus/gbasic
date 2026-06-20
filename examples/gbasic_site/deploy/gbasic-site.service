@@ -1,0 +1,29 @@
+# Example systemd unit for the gBASIC Postgres sample app.
+#
+# Install as /etc/systemd/system/gbasic-site.service after adjusting paths,
+# user/group, and the EnvironmentFile location.
+
+[Unit]
+Description=gBASIC sample site
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=gbasic
+Group=gbasic
+WorkingDirectory=/srv/gbasic
+EnvironmentFile=/etc/gbasic-site/site.env
+Environment=GBASIC_WEBSERVER_TIMEOUT=0.2
+ExecStart=/srv/gbasic/gbasic /srv/gbasic/examples/gbasic_site/site_postgres.bas
+Restart=on-failure
+RestartSec=5
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/srv/gbasic/examples/gbasic_site
+
+[Install]
+WantedBy=multi-user.target

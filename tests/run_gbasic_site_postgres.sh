@@ -20,8 +20,11 @@ setup_stderr="$(mktemp)"
 check_stdout="$(mktemp)"
 check_stderr="$(mktemp)"
 port_file="examples/gbasic_site/tmp_port.txt"
+server_port_file="examples/gbasic_site/server_port.txt"
 admin_token_file="examples/gbasic_site/admin_token.txt"
 csrf_token_file="examples/gbasic_site/csrf_token.txt"
+server_port_backup="$(mktemp)"
+had_server_port=0
 server_stdout="$(mktemp)"
 server_stderr="$(mktemp)"
 client_stdout="$(mktemp)"
@@ -33,9 +36,15 @@ cleanup() {
         kill "$server_pid" 2>/dev/null || true
         wait "$server_pid" 2>/dev/null || true
     fi
+    if [[ "$had_server_port" == "1" ]]; then
+        cp "$server_port_backup" "$server_port_file"
+    else
+        rm -f "$server_port_file"
+    fi
     rm -f "$setup_stdout" "$setup_stderr" "$check_stdout" "$check_stderr" \
         "$server_stdout" "$server_stderr" "$client_stdout" "$client_stderr" \
         "$port_file" "$admin_token_file" "$csrf_token_file"
+    rm -f "$server_port_backup"
 }
 trap cleanup EXIT
 
@@ -63,7 +72,12 @@ else
     exit "$status"
 fi
 
+if [[ -e "$server_port_file" ]]; then
+    cp "$server_port_file" "$server_port_backup"
+    had_server_port=1
+fi
 rm -f "$port_file"
+printf '0\n' >"$server_port_file"
 printf 'test-admin-token\n' >"$admin_token_file"
 printf 'test-csrf-token\n' >"$csrf_token_file"
 GBASIC_WEBSERVER_TIMEOUT=0.2 ./gbasic examples/gbasic_site/site_postgres.bas \

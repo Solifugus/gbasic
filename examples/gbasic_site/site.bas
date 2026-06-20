@@ -30,6 +30,42 @@ function text_response(req, status, content_type, body)
     }
 end function
 
+function configured_port()
+    config_file(file)= "examples/gbasic_site/server_port.txt"
+    if not exists(config_file) then
+        return 0
+    end if
+    port_text = trim(read(config_file))
+    if port_text = "" then
+        return 0
+    end if
+    if not is_integer_text(port_text) then
+        error "server_port.txt must contain an integer port"
+    end if
+    port = number(port_text)
+    if port < 0 or port > 65535 then
+        error "server_port.txt port must be between 0 and 65535"
+    end if
+    return port
+end function
+
+function is_integer_text(text)
+    if text = "" then
+        return false
+    end if
+    rest = replace(text, "0", "")
+    rest = replace(rest, "1", "")
+    rest = replace(rest, "2", "")
+    rest = replace(rest, "3", "")
+    rest = replace(rest, "4", "")
+    rest = replace(rest, "5", "")
+    rest = replace(rest, "6", "")
+    rest = replace(rest, "7", "")
+    rest = replace(rest, "8", "")
+    rest = replace(rest, "9", "")
+    return rest = ""
+end function
+
 function file_response(req, content_type, source)
     return text_response(req, 200, content_type, read(source))
 end function
@@ -65,7 +101,7 @@ end function
 port_file(file)= "examples/gbasic_site/tmp_port.txt"
 if exists(port_file) then delete(port_file)
 
-server = webserver.listen(0)
+server = webserver.listen(configured_port())
 write(port_file, string(server.port))
 print("gbasic_site listening on 127.0.0.1:" + string(server.port))
 

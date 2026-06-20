@@ -16,6 +16,9 @@ fi
 make
 
 port_file="examples/gbasic_site/tmp_port.txt"
+server_port_file="examples/gbasic_site/server_port.txt"
+server_port_backup="$(mktemp)"
+had_server_port=0
 server_stdout="$(mktemp)"
 server_stderr="$(mktemp)"
 client_stdout="$(mktemp)"
@@ -27,11 +30,22 @@ cleanup() {
         kill "$server_pid" 2>/dev/null || true
         wait "$server_pid" 2>/dev/null || true
     fi
+    if [[ "$had_server_port" == "1" ]]; then
+        cp "$server_port_backup" "$server_port_file"
+    else
+        rm -f "$server_port_file"
+    fi
     rm -f "$port_file" "$server_stdout" "$server_stderr" "$client_stdout" "$client_stderr"
+    rm -f "$server_port_backup"
 }
 trap cleanup EXIT
 
+if [[ -e "$server_port_file" ]]; then
+    cp "$server_port_file" "$server_port_backup"
+    had_server_port=1
+fi
 rm -f "$port_file"
+printf '0\n' >"$server_port_file"
 GBASIC_WEBSERVER_TIMEOUT=0.2 ./gbasic examples/gbasic_site/site.bas \
     >"$server_stdout" 2>"$server_stderr" &
 server_pid=$!

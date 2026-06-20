@@ -13,6 +13,7 @@ The app currently includes the project shape and initial Postgres foundation:
 - `setup.bas`: initializes and seeds app tables in the configured Postgres database
 - `sql/`: Postgres schema, seed, and reset scripts
 - `static/`: vanilla CSS and JavaScript assets
+- `deploy/`: example nginx, systemd, and environment-file templates
 - `tests/`: app-specific client/test helpers
 
 The static app serves a small local home page, a stylesheet, a tiny script, and
@@ -33,6 +34,16 @@ Open `http://127.0.0.1:<port>/`.
 
 The server binds to an operating-system-assigned loopback port through
 gBASIC's current WebServer module. Do not expose this app publicly yet.
+
+For deployment-style local runs, copy the example port file to request a stable
+loopback port:
+
+```sh
+cp examples/gbasic_site/server_port.example.txt examples/gbasic_site/server_port.txt
+```
+
+The test runners temporarily ignore and restore this local file so tests can
+continue using ephemeral ports.
 
 After Postgres setup, run the database-backed entry point:
 
@@ -136,3 +147,9 @@ Do not publish the app directly yet. The current deployment inventory is in
 `docs/gbasic_site_deployment.md`; it assumes a loopback gBASIC app behind
 nginx and calls out the auth, CSRF, spam-prevention, logging, and backup work
 needed before public forum use.
+
+Deployment templates live in `examples/gbasic_site/deploy/`:
+
+- `gbasic-site.nginx.conf`
+- `gbasic-site.service`
+- `site.env.example`

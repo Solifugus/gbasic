@@ -92,6 +92,25 @@ function is_integer_text(text)
     return rest = ""
 end function
 
+function configured_port()
+    config_file(file)= "examples/gbasic_site/server_port.txt"
+    if not exists(config_file) then
+        return 0
+    end if
+    port_text = trim(read(config_file))
+    if port_text = "" then
+        return 0
+    end if
+    if not is_integer_text(port_text) then
+        error "server_port.txt must contain an integer port"
+    end if
+    port = number(port_text)
+    if port < 0 or port > 65535 then
+        error "server_port.txt port must be between 0 and 65535"
+    end if
+    return port
+end function
+
 function topic_id_from_path(text)
     if not is_integer_text(text) then
         return -1
@@ -611,7 +630,7 @@ port_file(file)= "examples/gbasic_site/tmp_port.txt"
 if exists(port_file) then delete(port_file)
 
 db = pg.connect({})
-server = webserver.listen(0)
+server = webserver.listen(configured_port())
 write(port_file, string(server.port))
 print("gbasic_site_postgres listening on 127.0.0.1:" + string(server.port))
 

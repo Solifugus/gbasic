@@ -20,52 +20,39 @@ deployment wants automatic certificate management with less configuration.
 
 ## nginx Sketch
 
-The exact paths, domain, and service port will change, but the first public
-shape should look like this:
+The exact paths and domain will change, but the first public shape is captured
+in `examples/gbasic_site/deploy/gbasic-site.nginx.conf`.
 
-```nginx
-server {
-    listen 80;
-    server_name example.org;
-    return 301 https://$host$request_uri;
-}
-
-server {
-    listen 443 ssl http2;
-    server_name example.org;
-
-    ssl_certificate /etc/letsencrypt/live/example.org/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/example.org/privkey.pem;
-
-    access_log /var/log/nginx/gbasic-site.access.log;
-    error_log /var/log/nginx/gbasic-site.error.log;
-
-    client_max_body_size 64k;
-    proxy_read_timeout 10s;
-    proxy_send_timeout 10s;
-
-    location /static/ {
-        root /srv/gbasic;
-        try_files $uri =404;
-    }
-
-    location /admin {
-        return 404;
-    }
-
-    location / {
-        proxy_pass http://127.0.0.1:8080;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-    }
-}
-```
+That example terminates TLS, serves `/static/` directly, proxies dynamic
+traffic to `127.0.0.1:8080`, and deliberately blocks `/admin`.
 
 This deliberately blocks `/admin` at nginx until the app has real sessions,
 CSRF protection, and production-grade auth.
+
+## Stable Loopback Port
+
+Local tests use port `0` so the operating system can choose an ephemeral port.
+nginx and systemd need a stable target. For deployment-style runs, create:
+
+```sh
+cp examples/gbasic_site/server_port.example.txt examples/gbasic_site/server_port.txt
+```
+
+The example file uses `8080`, matching the nginx template. The app still binds
+to loopback through the WebServer module. The test runners temporarily move any
+local `server_port.txt` aside and restore it when they finish.
+
+## systemd Sketch
+
+Example service and environment files live at:
+
+- `examples/gbasic_site/deploy/gbasic-site.service`
+- `examples/gbasic_site/deploy/site.env.example`
+
+Before installing them, adjust the Unix user, repository path, database name,
+and service environment location for the target server. The environment example
+uses `PGPASSFILE=/etc/gbasic-site/pgpass`; keep that file, or any file that
+contains a database password, readable only by trusted users.
 
 ## Bind Address
 
@@ -162,6 +149,8 @@ Before publishing on the public-IP server:
 - create a dedicated Postgres role and database,
 - run the setup program only against the intended database,
 - create an admin token only if the admin path is still local-only,
+- create `examples/gbasic_site/server_port.txt` with the loopback port used by
+  nginx,
 - run the gBASIC app as a supervised service,
 - bind the app to loopback,
 - configure nginx with TLS,
