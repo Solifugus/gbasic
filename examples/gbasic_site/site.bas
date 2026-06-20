@@ -30,6 +30,10 @@ function text_response(req, status, content_type, body)
     }
 end function
 
+function file_response(req, content_type, source)
+    return text_response(req, 200, content_type, read(source))
+end function
+
 function log_request(req, response)
     print(req.timestamp + " " + req.remote_ip + " " + req.method + " " + req.path + " " + string(response.status))
 end function
@@ -46,11 +50,11 @@ function route_request(req)
     end if
     if req.path = "/static/site.css" then
         css_file(file)= "examples/gbasic_site/static/site.css"
-        return text_response(req, 200, "text/css; charset=utf-8", read(css_file))
+        return file_response(req, "text/css; charset=utf-8", css_file)
     end if
     if req.path = "/static/site.js" then
         js_file(file)= "examples/gbasic_site/static/site.js"
-        return text_response(req, 200, "application/javascript; charset=utf-8", read(js_file))
+        return file_response(req, "application/javascript; charset=utf-8", js_file)
     end if
     if req.path = "/health" then
         return text_response(req, 200, "text/plain; charset=utf-8", "ok")

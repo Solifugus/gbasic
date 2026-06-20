@@ -441,6 +441,10 @@ function text_response(req, status, content_type, body)
     }
 end function
 
+function file_response(req, content_type, source)
+    return text_response(req, 200, content_type, read(source))
+end function
+
 function html_response(req, status, body)
     return text_response(req, status, "text/html; charset=utf-8", body)
 end function
@@ -538,11 +542,11 @@ function route_request(db, req)
     end if
     if req.path = "/static/site.css" then
         css_file(file)= "examples/gbasic_site/static/site.css"
-        return text_response(req, 200, "text/css; charset=utf-8", read(css_file))
+        return file_response(req, "text/css; charset=utf-8", css_file)
     end if
     if req.path = "/static/site.js" then
         js_file(file)= "examples/gbasic_site/static/site.js"
-        return text_response(req, 200, "application/javascript; charset=utf-8", read(js_file))
+        return file_response(req, "application/javascript; charset=utf-8", js_file)
     end if
     if req.path = "/health" then
         return plain_response(req, 200, "ok")
