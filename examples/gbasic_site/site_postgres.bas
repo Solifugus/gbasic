@@ -99,6 +99,21 @@ function topic_id_from_path(text)
     return number(text)
 end function
 
+function form_id_error(values, key)
+    value = form_value(values, key)
+    if value = "" then
+        return "missing " + key
+    end if
+    if not is_integer_text(value) then
+        return "invalid " + key
+    end if
+    return ""
+end function
+
+function form_integer_id(values, key)
+    return number(form_value(values, key))
+end function
+
 function path_after(path, prefix)
     return mid(path, len(prefix), len(path) - len(prefix))
 end function
@@ -321,13 +336,11 @@ function hide_topic(db, req)
     if not admin_authorized(form) then
         return forbidden(req)
     end if
-    if form_value(form, "topic_id") = "" then
-        return bad_request(req, "missing topic_id")
+    id_error = form_id_error(form, "topic_id")
+    if id_error != "" then
+        return bad_request(req, id_error)
     end if
-    if not is_integer_text(form_value(form, "topic_id")) then
-        return bad_request(req, "invalid topic_id")
-    end if
-    topic_id = number(form.topic_id)
+    topic_id = form_integer_id(form, "topic_id")
     pg.exec(db, "update gbasic_site_topics set hidden = true, moderated_at = now(), moderated_by = $2, updated_at = now() where id = $1", [topic_id, "local-admin"])
     body = "<h1>Topic hidden</h1><p><a href=\"/admin\">Back to admin</a></p>"
     return text_response(req, 200, "text/html; charset=utf-8", shell_page("Topic hidden", body))
@@ -341,13 +354,11 @@ function hide_post(db, req)
     if not admin_authorized(form) then
         return forbidden(req)
     end if
-    if form_value(form, "post_id") = "" then
-        return bad_request(req, "missing post_id")
+    id_error = form_id_error(form, "post_id")
+    if id_error != "" then
+        return bad_request(req, id_error)
     end if
-    if not is_integer_text(form_value(form, "post_id")) then
-        return bad_request(req, "invalid post_id")
-    end if
-    post_id = number(form.post_id)
+    post_id = form_integer_id(form, "post_id")
     pg.exec(db, "update gbasic_site_posts set hidden = true, moderated_at = now(), moderated_by = $2, updated_at = now() where id = $1", [post_id, "local-admin"])
     body = "<h1>Reply hidden</h1><p><a href=\"/admin\">Back to admin</a></p>"
     return text_response(req, 200, "text/html; charset=utf-8", shell_page("Reply hidden", body))
