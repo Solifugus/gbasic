@@ -18,6 +18,9 @@ True
 invalid topic id
 200
 True
+True
+403
+invalid csrf token
 400
 True
 400
@@ -35,8 +38,11 @@ True
 200
 True
 True
+True
 403
 forbidden
+403
+invalid csrf token
 400
 invalid topic_id
 200
@@ -47,6 +53,9 @@ True
 not found
 200
 True
+True
+403
+invalid csrf token
 201
 True
 400
@@ -55,6 +64,8 @@ True
 True
 200
 True
+403
+invalid csrf token
 400
 invalid post_id
 200

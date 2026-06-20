@@ -133,6 +133,30 @@ function admin_token()
     return trim(read(token_file))
 end function
 
+function csrf_token()
+    token_file(file)= "examples/gbasic_site/csrf_token.txt"
+    if not exists(token_file) then
+        return ""
+    end if
+    return trim(read(token_file))
+end function
+
+function csrf_field()
+    return "<input type=\"hidden\" name=\"csrf_token\" value=\"" + html_escape(csrf_token()) + "\">"
+end function
+
+function csrf_valid(values)
+    token = csrf_token()
+    if token = "" then
+        return false
+    end if
+    return form_value(values, "csrf_token") = token
+end function
+
+function csrf_forbidden(req)
+    return text_response(req, 403, "text/plain; charset=utf-8", "invalid csrf token")
+end function
+
 function admin_authorized(values)
     token = admin_token()
     if token = "" then
@@ -172,7 +196,7 @@ function new_topic_form_page(db, req, slug)
     if len(categories) = 0 then
         return text_response(req, 404, "text/plain; charset=utf-8", "not found")
     end if
-    body = "<h1>Create topic</h1><form method=\"post\" action=\"/forum/" + html_escape(categories[0].slug) + "/new\"><label>Title<input name=\"title\" maxlength=\"120\" required></label><label>Name<input name=\"author_name\" maxlength=\"80\" required></label><label>Body<textarea name=\"body\" maxlength=\"4000\" required></textarea></label><button type=\"submit\">Post topic</button></form><p><a href=\"/forum/" + html_escape(categories[0].slug) + "\">Back to " + html_escape(categories[0].title) + "</a></p>"
+    body = "<h1>Create topic</h1><form method=\"post\" action=\"/forum/" + html_escape(categories[0].slug) + "/new\">" + csrf_field() + "<label>Title<input name=\"title\" maxlength=\"120\" required></label><label>Name<input name=\"author_name\" maxlength=\"80\" required></label><label>Body<textarea name=\"body\" maxlength=\"4000\" required></textarea></label><button type=\"submit\">Post topic</button></form><p><a href=\"/forum/" + html_escape(categories[0].slug) + "\">Back to " + html_escape(categories[0].title) + "</a></p>"
     return text_response(req, 200, "text/html; charset=utf-8", shell_page("Create topic", body))
 end function
 
@@ -182,6 +206,9 @@ function create_topic(db, req, slug)
         return text_response(req, 404, "text/plain; charset=utf-8", "not found")
     end if
     form = form_decode(req.body)
+    if not csrf_valid(form) then
+        return csrf_forbidden(req)
+    end if
     title = trim(form.title)
     author = trim(form.author_name)
     body_text = trim(form.body)
@@ -226,7 +253,7 @@ function admin_page(db, req)
     for each topic in topics
         body = body + "<article class=\"list-item\"><h2>" + html_escape(topic.title) + "</h2><p>" + html_escape(moderation_summary(topic)) + " in " + html_escape(topic.category_title) + ", started by " + html_escape(topic.author_name) + "</p>"
         if not topic.hidden then
-            body = body + "<form class=\"inline-form\" method=\"post\" action=\"/admin/hide-topic\"><input type=\"hidden\" name=\"token\" value=\"" + html_escape(token) + "\"><input type=\"hidden\" name=\"topic_id\" value=\"" + string(topic.id) + "\"><button type=\"submit\">Hide topic</button></form>"
+            body = body + "<form class=\"inline-form\" method=\"post\" action=\"/admin/hide-topic\">" + csrf_field() + "<input type=\"hidden\" name=\"token\" value=\"" + html_escape(token) + "\"><input type=\"hidden\" name=\"topic_id\" value=\"" + string(topic.id) + "\"><button type=\"submit\">Hide topic</button></form>"
         end if
         body = body + "</article>"
     end for
@@ -234,7 +261,7 @@ function admin_page(db, req)
     for each post in posts
         body = body + "<article class=\"list-item\"><h2>Reply #" + string(post.id) + "</h2><p>" + html_escape(moderation_summary(post)) + " on " + html_escape(post.topic_title) + ", by " + html_escape(post.author_name) + "</p><p>" + html_escape(post.body) + "</p>"
         if not post.hidden then
-            body = body + "<form class=\"inline-form\" method=\"post\" action=\"/admin/hide-post\"><input type=\"hidden\" name=\"token\" value=\"" + html_escape(token) + "\"><input type=\"hidden\" name=\"post_id\" value=\"" + string(post.id) + "\"><button type=\"submit\">Hide reply</button></form>"
+            body = body + "<form class=\"inline-form\" method=\"post\" action=\"/admin/hide-post\">" + csrf_field() + "<input type=\"hidden\" name=\"token\" value=\"" + html_escape(token) + "\"><input type=\"hidden\" name=\"post_id\" value=\"" + string(post.id) + "\"><button type=\"submit\">Hide reply</button></form>"
         end if
         body = body + "</article>"
     end for
@@ -244,6 +271,9 @@ end function
 
 function hide_topic(db, req)
     form = form_decode(req.body)
+    if not csrf_valid(form) then
+        return csrf_forbidden(req)
+    end if
     if not admin_authorized(form) then
         return text_response(req, 403, "text/plain; charset=utf-8", "forbidden")
     end if
@@ -261,6 +291,9 @@ end function
 
 function hide_post(db, req)
     form = form_decode(req.body)
+    if not csrf_valid(form) then
+        return csrf_forbidden(req)
+    end if
     if not admin_authorized(form) then
         return text_response(req, 403, "text/plain; charset=utf-8", "forbidden")
     end if
@@ -305,7 +338,7 @@ function reply_form_page(db, req, topic_id_text)
     if len(topics) = 0 then
         return text_response(req, 404, "text/plain; charset=utf-8", "not found")
     end if
-    body = "<h1>Reply to " + html_escape(topics[0].title) + "</h1><form method=\"post\" action=\"/topic/" + string(topics[0].id) + "/reply\"><label>Name<input name=\"author_name\" maxlength=\"80\" required></label><label>Body<textarea name=\"body\" maxlength=\"4000\" required></textarea></label><button type=\"submit\">Post reply</button></form><p><a href=\"/topic/" + string(topics[0].id) + "\">Back to topic</a></p>"
+    body = "<h1>Reply to " + html_escape(topics[0].title) + "</h1><form method=\"post\" action=\"/topic/" + string(topics[0].id) + "/reply\">" + csrf_field() + "<label>Name<input name=\"author_name\" maxlength=\"80\" required></label><label>Body<textarea name=\"body\" maxlength=\"4000\" required></textarea></label><button type=\"submit\">Post reply</button></form><p><a href=\"/topic/" + string(topics[0].id) + "\">Back to topic</a></p>"
     return text_response(req, 200, "text/html; charset=utf-8", shell_page("Reply", body))
 end function
 
@@ -319,6 +352,9 @@ function create_reply(db, req, topic_id_text)
         return text_response(req, 404, "text/plain; charset=utf-8", "not found")
     end if
     form = form_decode(req.body)
+    if not csrf_valid(form) then
+        return csrf_forbidden(req)
+    end if
     author = trim(form.author_name)
     body_text = trim(form.body)
     validation_error = reply_validation_error(author, body_text)

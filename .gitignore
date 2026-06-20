@@ -6,4 +6,5 @@ src/parser.tab.c
 src/parser.tab.h
 examples/tmp_*.txt
 examples/gbasic_site/admin_token.txt
+examples/gbasic_site/csrf_token.txt
 examples/gbasic_site/backups/

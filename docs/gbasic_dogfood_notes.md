@@ -12,6 +12,8 @@ after the app proves the need.
 - The first admin token uses a local file because there is no runtime
   environment-variable helper yet. That is workable for tests, but awkward for
   deployment docs and secret handling.
+- The first CSRF token is also file-backed because the runtime does not yet
+  have random bytes, signed cookies, or session helpers.
 - Static file serving currently needs explicit routes and typed file
   references.
 - HTML escaping is app-local but should probably become a standard-library

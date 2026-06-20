@@ -49,10 +49,17 @@ cp examples/gbasic_site/admin_token.example.txt examples/gbasic_site/admin_token
 chmod 600 examples/gbasic_site/admin_token.txt
 ```
 
+State-changing forms also require a local CSRF token file:
+
+```sh
+cp examples/gbasic_site/csrf_token.example.txt examples/gbasic_site/csrf_token.txt
+chmod 600 examples/gbasic_site/csrf_token.txt
+```
+
 Open `/admin?token=<token>` to view moderation tools. Hide actions record
 moderation timestamps and a local moderator label, but not the token itself.
-This token-file approach is intentionally temporary until gBASIC has a better
-configuration and auth story.
+These token-file approaches are intentionally temporary until gBASIC has a
+better configuration, session, and auth story.
 
 ## Tests
 

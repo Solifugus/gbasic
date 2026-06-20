@@ -4,6 +4,8 @@ import http.client
 import sys
 import urllib.parse
 
+CSRF_TOKEN = "test-csrf-token"
+
 
 def request(port, method, path, body=None, headers=None):
     connection = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
@@ -19,7 +21,9 @@ def get(port, path):
     return request(port, "GET", path)
 
 
-def post_form(port, path, fields):
+def post_form(port, path, fields, csrf=True):
+    if csrf:
+        fields = {**fields, "csrf_token": CSRF_TOKEN}
     body = urllib.parse.urlencode(fields)
     return request(
         port,
@@ -70,6 +74,16 @@ def main():
     status, _, body = get(port, "/forum/general/new")
     print(status)
     print("<form" in body)
+    print('name="csrf_token"' in body)
+
+    status, _, body = post_form(
+        port,
+        "/forum/general/new",
+        {"title": "No CSRF", "author_name": "Tester", "body": "Missing token"},
+        csrf=False,
+    )
+    print(status)
+    print(body)
 
     status, _, body = post_form(
         port,
@@ -132,11 +146,21 @@ def main():
     print(status)
     print("Dogfood topic" in body)
     print("Reply support is wired into the initial schema." in body)
+    print('name="csrf_token"' in body)
 
     status, _, body = post_form(
         port,
         "/admin/hide-topic",
         {"token": "bad-token", "topic_id": "1"},
+    )
+    print(status)
+    print(body)
+
+    status, _, body = post_form(
+        port,
+        "/admin/hide-topic",
+        {"token": "test-admin-token", "topic_id": "1"},
+        csrf=False,
     )
     print(status)
     print(body)
@@ -168,6 +192,16 @@ def main():
     status, _, body = get(port, "/topic/1/reply")
     print(status)
     print("<form" in body)
+    print('name="csrf_token"' in body)
+
+    status, _, body = post_form(
+        port,
+        "/topic/1/reply",
+        {"author_name": "Tester", "body": "Missing csrf"},
+        csrf=False,
+    )
+    print(status)
+    print(body)
 
     status, _, body = post_form(
         port,
@@ -196,6 +230,15 @@ def main():
     )
     print(status)
     print("Reply hidden" in body)
+
+    status, _, body = post_form(
+        port,
+        "/admin/hide-post",
+        {"token": "test-admin-token", "post_id": "1"},
+        csrf=False,
+    )
+    print(status)
+    print(body)
 
     status, _, body = post_form(
         port,
