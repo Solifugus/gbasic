@@ -175,7 +175,7 @@ function csrf_valid(values)
 end function
 
 function csrf_forbidden(req)
-    return text_response(req, 403, "text/plain; charset=utf-8", "invalid csrf token")
+    return plain_response(req, 403, "invalid csrf token")
 end function
 
 function admin_authorized(values)
@@ -211,7 +211,7 @@ end function
 function category_page(db, req, slug)
     categories = pg.query(db, "select id, slug, title, description from gbasic_site_categories where slug = $1 and hidden = false", [slug])
     if len(categories) = 0 then
-        return text_response(req, 404, "text/plain; charset=utf-8", "not found")
+        return not_found(req)
     end if
 
     topic_limit = 20
@@ -227,7 +227,7 @@ end function
 function new_topic_form_page(db, req, slug)
     categories = pg.query(db, "select slug, title from gbasic_site_categories where slug = $1 and hidden = false", [slug])
     if len(categories) = 0 then
-        return text_response(req, 404, "text/plain; charset=utf-8", "not found")
+        return not_found(req)
     end if
     body = "<h1>Create topic</h1><form method=\"post\" action=\"/forum/" + html_escape(categories[0].slug) + "/new\">" + csrf_field() + text_input("Title", "title", 120) + text_input("Name", "author_name", 80) + text_area("Body", "body", 4000) + "<button type=\"submit\">Post topic</button></form><p><a href=\"/forum/" + html_escape(categories[0].slug) + "\">Back to " + html_escape(categories[0].title) + "</a></p>"
     return text_response(req, 200, "text/html; charset=utf-8", shell_page("Create topic", body))
@@ -236,7 +236,7 @@ end function
 function create_topic(db, req, slug)
     categories = pg.query(db, "select id, slug, title from gbasic_site_categories where slug = $1 and hidden = false", [slug])
     if len(categories) = 0 then
-        return text_response(req, 404, "text/plain; charset=utf-8", "not found")
+        return not_found(req)
     end if
     form = form_decode(req.body)
     if not csrf_valid(form) then
@@ -308,13 +308,13 @@ function hide_topic(db, req)
         return csrf_forbidden(req)
     end if
     if not admin_authorized(form) then
-        return text_response(req, 403, "text/plain; charset=utf-8", "forbidden")
+        return forbidden(req)
     end if
     if form_value(form, "topic_id") = "" then
-        return text_response(req, 400, "text/plain; charset=utf-8", "missing topic_id")
+        return bad_request(req, "missing topic_id")
     end if
     if not is_integer_text(form_value(form, "topic_id")) then
-        return text_response(req, 400, "text/plain; charset=utf-8", "invalid topic_id")
+        return bad_request(req, "invalid topic_id")
     end if
     topic_id = number(form.topic_id)
     pg.exec(db, "update gbasic_site_topics set hidden = true, moderated_at = now(), moderated_by = $2, updated_at = now() where id = $1", [topic_id, "local-admin"])
@@ -328,13 +328,13 @@ function hide_post(db, req)
         return csrf_forbidden(req)
     end if
     if not admin_authorized(form) then
-        return text_response(req, 403, "text/plain; charset=utf-8", "forbidden")
+        return forbidden(req)
     end if
     if form_value(form, "post_id") = "" then
-        return text_response(req, 400, "text/plain; charset=utf-8", "missing post_id")
+        return bad_request(req, "missing post_id")
     end if
     if not is_integer_text(form_value(form, "post_id")) then
-        return text_response(req, 400, "text/plain; charset=utf-8", "invalid post_id")
+        return bad_request(req, "invalid post_id")
     end if
     post_id = number(form.post_id)
     pg.exec(db, "update gbasic_site_posts set hidden = true, moderated_at = now(), moderated_by = $2, updated_at = now() where id = $1", [post_id, "local-admin"])
@@ -344,12 +344,12 @@ end function
 
 function topic_page(db, req, topic_id_text)
     if not is_integer_text(topic_id_text) then
-        return text_response(req, 400, "text/plain; charset=utf-8", "invalid topic id")
+        return bad_request(req, "invalid topic id")
     end if
     topic_id = number(topic_id_text)
     topics = pg.query(db, "select t.id, t.title, t.author_name, t.body, c.slug as category_slug, c.title as category_title from gbasic_site_topics t join gbasic_site_categories c on c.id = t.category_id where t.id = $1 and t.hidden = false and c.hidden = false", [topic_id])
     if len(topics) = 0 then
-        return text_response(req, 404, "text/plain; charset=utf-8", "not found")
+        return not_found(req)
     end if
 
     reply_limit = 50
@@ -364,12 +364,12 @@ end function
 
 function reply_form_page(db, req, topic_id_text)
     if not is_integer_text(topic_id_text) then
-        return text_response(req, 400, "text/plain; charset=utf-8", "invalid topic id")
+        return bad_request(req, "invalid topic id")
     end if
     topic_id = number(topic_id_text)
     topics = pg.query(db, "select id, title from gbasic_site_topics where id = $1 and hidden = false and locked = false", [topic_id])
     if len(topics) = 0 then
-        return text_response(req, 404, "text/plain; charset=utf-8", "not found")
+        return not_found(req)
     end if
     body = "<h1>Reply to " + html_escape(topics[0].title) + "</h1><form method=\"post\" action=\"/topic/" + string(topics[0].id) + "/reply\">" + csrf_field() + text_input("Name", "author_name", 80) + text_area("Body", "body", 4000) + "<button type=\"submit\">Post reply</button></form><p><a href=\"/topic/" + string(topics[0].id) + "\">Back to topic</a></p>"
     return text_response(req, 200, "text/html; charset=utf-8", shell_page("Reply", body))
@@ -377,12 +377,12 @@ end function
 
 function create_reply(db, req, topic_id_text)
     if not is_integer_text(topic_id_text) then
-        return text_response(req, 400, "text/plain; charset=utf-8", "invalid topic id")
+        return bad_request(req, "invalid topic id")
     end if
     topic_id = number(topic_id_text)
     topics = pg.query(db, "select id, title from gbasic_site_topics where id = $1 and hidden = false and locked = false", [topic_id])
     if len(topics) = 0 then
-        return text_response(req, 404, "text/plain; charset=utf-8", "not found")
+        return not_found(req)
     end if
     form = form_decode(req.body)
     if not csrf_valid(form) then
@@ -411,8 +411,24 @@ function text_response(req, status, content_type, body)
     }
 end function
 
+function plain_response(req, status, body)
+    return text_response(req, status, "text/plain; charset=utf-8", body)
+end function
+
+function bad_request(req, message)
+    return plain_response(req, 400, message)
+end function
+
+function forbidden(req)
+    return plain_response(req, 403, "forbidden")
+end function
+
+function not_found(req)
+    return plain_response(req, 404, "not found")
+end function
+
 function method_not_allowed(req)
-    return text_response(req, 405, "text/plain; charset=utf-8", "method not allowed")
+    return plain_response(req, 405, "method not allowed")
 end function
 
 function posting(req)
@@ -426,7 +442,7 @@ end function
 function page_response(db, req, slug, include_nav)
     rows = pg.query(db, "select title, body from gbasic_site_pages where slug = $1 and published = true", [slug])
     if len(rows) = 0 then
-        return text_response(req, 404, "text/plain; charset=utf-8", "not found")
+        return not_found(req)
     end if
     return text_response(req, 200, "text/html; charset=utf-8", html_page(rows[0].title, page_body(rows[0], include_nav)))
 end function
@@ -491,9 +507,9 @@ function route_request(db, req)
         return text_response(req, 200, "application/javascript; charset=utf-8", read(js_file))
     end if
     if req.path = "/health" then
-        return text_response(req, 200, "text/plain; charset=utf-8", "ok")
+        return plain_response(req, 200, "ok")
     end if
-    return text_response(req, 404, "text/plain; charset=utf-8", "not found")
+    return not_found(req)
 end function
 
 port_file(file)= "examples/gbasic_site/tmp_port.txt"
@@ -508,7 +524,7 @@ watch(server.requests)
     while count(server.requests) > 0
         req = take_first(server.requests)
         if req.path = "/shutdown" then
-            response = text_response(req, 200, "text/plain; charset=utf-8", "bye")
+            response = plain_response(req, 200, "bye")
             append(server.responses, response)
             log_request(req, response)
             print("gbasic_site_postgres shutdown")
