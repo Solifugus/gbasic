@@ -92,6 +92,13 @@ function is_integer_text(text)
     return rest = ""
 end function
 
+function topic_id_from_path(text)
+    if not is_integer_text(text) then
+        return -1
+    end if
+    return number(text)
+end function
+
 function path_after(path, prefix)
     return mid(path, len(prefix), len(path) - len(prefix))
 end function
@@ -196,6 +203,10 @@ end function
 
 function post_id_field(post_id)
     return hidden_input("post_id", string(post_id))
+end function
+
+function replyable_topics(db, topic_id)
+    return pg.query(db, "select id, title from gbasic_site_topics where id = $1 and hidden = false and locked = false", [topic_id])
 end function
 
 function forum_categories_page(db, req)
@@ -343,10 +354,10 @@ function hide_post(db, req)
 end function
 
 function topic_page(db, req, topic_id_text)
-    if not is_integer_text(topic_id_text) then
+    topic_id = topic_id_from_path(topic_id_text)
+    if topic_id < 0 then
         return bad_request(req, "invalid topic id")
     end if
-    topic_id = number(topic_id_text)
     topics = pg.query(db, "select t.id, t.title, t.author_name, t.body, c.slug as category_slug, c.title as category_title from gbasic_site_topics t join gbasic_site_categories c on c.id = t.category_id where t.id = $1 and t.hidden = false and c.hidden = false", [topic_id])
     if len(topics) = 0 then
         return not_found(req)
@@ -363,11 +374,11 @@ function topic_page(db, req, topic_id_text)
 end function
 
 function reply_form_page(db, req, topic_id_text)
-    if not is_integer_text(topic_id_text) then
+    topic_id = topic_id_from_path(topic_id_text)
+    if topic_id < 0 then
         return bad_request(req, "invalid topic id")
     end if
-    topic_id = number(topic_id_text)
-    topics = pg.query(db, "select id, title from gbasic_site_topics where id = $1 and hidden = false and locked = false", [topic_id])
+    topics = replyable_topics(db, topic_id)
     if len(topics) = 0 then
         return not_found(req)
     end if
@@ -376,11 +387,11 @@ function reply_form_page(db, req, topic_id_text)
 end function
 
 function create_reply(db, req, topic_id_text)
-    if not is_integer_text(topic_id_text) then
+    topic_id = topic_id_from_path(topic_id_text)
+    if topic_id < 0 then
         return bad_request(req, "invalid topic id")
     end if
-    topic_id = number(topic_id_text)
-    topics = pg.query(db, "select id, title from gbasic_site_topics where id = $1 and hidden = false and locked = false", [topic_id])
+    topics = replyable_topics(db, topic_id)
     if len(topics) = 0 then
         return not_found(req)
     end if
