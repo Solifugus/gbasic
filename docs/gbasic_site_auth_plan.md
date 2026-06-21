@@ -98,7 +98,8 @@ another and must remain development-only.
 Dogfooding the site points to these remaining runtime or standard-library
 needs:
 
-- cryptographically secure random bytes,
+- cryptographically secure token generation is available through
+  `secure_token(length)`, but raw random bytes are not exposed,
 - password hashing helper,
 - cookie parse/format helpers,
 - redirect response helper,
@@ -124,7 +125,7 @@ as spam friction, not authentication.
 The auth plan is ready to move from design to implementation when:
 
 - gBASIC can read service configuration through `env(name)`,
-- gBASIC can generate secure random tokens,
+- gBASIC can generate secure random tokens through `secure_token(length)`,
 - password hashing has a safe standard helper,
 - WebServer apps can read request cookies,
 - response helpers can set cookies,

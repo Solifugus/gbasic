@@ -36,6 +36,8 @@
 #include <curl/curl.h>
 #endif
 
+#define SECURE_TOKEN_MAX_LENGTH 4096
+
 int parse_source(const char *source, AstStmtList *out_program);
 void parse_set_source_path(const char *path);
 
@@ -9478,6 +9480,78 @@ static Value eval_call(AstExpr *expr) {
             return value_unknown();
         }
         return value_string(value);
+    }
+
+    if (strcmp(expr->as.call.name, "secure_token") == 0) {
+        if (expr->as.call.args.count != 1) {
+            runtime_error_raise("secure_token expects one argument", 1003, "invalid function call");
+            return value_null();
+        }
+        Value length_value = eval_expr(expr->as.call.args.items[0]);
+        if (error_action_pending()) {
+            value_free(length_value);
+            return value_null();
+        }
+        if (length_value.kind != VALUE_NUMBER) {
+            value_free(length_value);
+            runtime_error_raise("secure_token expects a number", 1003, "invalid function call");
+            return value_null();
+        }
+        double length_double = length_value.as.number;
+        value_free(length_value);
+        if (!isfinite(length_double) || length_double != floor(length_double)) {
+            runtime_error_raise("secure_token length must be an integer", 1003, "invalid function call");
+            return value_null();
+        }
+        if (length_double < 1 || length_double > SECURE_TOKEN_MAX_LENGTH) {
+            runtime_error_raise("secure_token length must be between 1 and 4096", 1003, "invalid function call");
+            return value_null();
+        }
+
+        size_t length = (size_t)length_double;
+        unsigned char *random_bytes = malloc(length);
+        char *token = malloc(length + 1);
+        if (!random_bytes || !token) {
+            free(random_bytes);
+            free(token);
+            abort();
+        }
+
+        int fd = open("/dev/urandom", O_RDONLY);
+        if (fd < 0) {
+            free(random_bytes);
+            free(token);
+            runtime_error_raise("secure_token could not read secure random bytes", 1003, "random");
+            return value_null();
+        }
+
+        size_t offset = 0;
+        while (offset < length) {
+            ssize_t count = read(fd, random_bytes + offset, length - offset);
+            if (count < 0 && errno == EINTR) {
+                continue;
+            }
+            if (count <= 0) {
+                close(fd);
+                free(random_bytes);
+                free(token);
+                runtime_error_raise("secure_token could not read secure random bytes", 1003, "random");
+                return value_null();
+            }
+            offset += (size_t)count;
+        }
+        close(fd);
+
+        static const char alphabet[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+        for (size_t i = 0; i < length; i++) {
+            token[i] = alphabet[random_bytes[i] & 63];
+        }
+        token[length] = '\0';
+        free(random_bytes);
+
+        Value result = value_string(token);
+        free(token);
+        return result;
     }
 
     if (strcmp(expr->as.call.name, "lower") == 0) {

@@ -16,8 +16,9 @@ after the app proves the need.
 - The deployment port can now come from `GBASIC_SITE_PORT`, with the local
   `server_port.txt` file kept as a fallback.
 - The first CSRF token can now come from `GBASIC_SITE_CSRF_TOKEN`, but it is
-  still a shared development token because the runtime does not yet have random
-  bytes, signed cookies, or session helpers.
+  still a shared development token because the site does not yet have signed
+  cookies or session helpers. `secure_token(length)` now provides a runtime
+  primitive for future per-session tokens.
 - Static file serving currently needs explicit routes and typed file
   references.
 - HTML escaping is app-local but should probably become a standard-library

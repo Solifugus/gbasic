@@ -920,6 +920,18 @@ if is_unknown(port) then
 end if
 ```
 
+### Secure Tokens
+
+**`secure_token(length)`** - Returns a cryptographically random URL-safe token
+using the characters `A-Z`, `a-z`, `0-9`, `-`, and `_`. `length` must be an
+integer from `1` through `4096`. The return value is text, so it is suitable for
+session ids, CSRF tokens, invite codes, and similar application secrets.
+
+```basic
+session_id = secure_token(43)
+csrf_token = secure_token(43)
+```
+
 ### Type Inspection
 
 **`type(value)`** - Returns the type of a value as a string:
