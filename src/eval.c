@@ -7953,12 +7953,102 @@ static Value webserver_eval_close(AstExpr *expr) {
     return value_bool(1);
 }
 
+static int webserver_redirect_status(int status) {
+    return status == 301 ||
+        status == 302 ||
+        status == 303 ||
+        status == 307 ||
+        status == 308;
+}
+
+static Value webserver_eval_redirect(AstExpr *expr) {
+    if (expr->as.call.args.count != 2 && expr->as.call.args.count != 3) {
+        webserver_raise("webserver.redirect expects two or three arguments");
+        return value_null();
+    }
+
+    Value request = eval_expr(expr->as.call.args.items[0]);
+    if (error_action_pending()) {
+        value_free(request);
+        return value_null();
+    }
+    if (request.kind != VALUE_RECORD) {
+        value_free(request);
+        webserver_raise("webserver.redirect expects a request record");
+        return value_null();
+    }
+    RecordField *id_field = record_find(&request, "id");
+    int id = 0;
+    if (!id_field || !webserver_integer(*id_field->value, &id) || id <= 0) {
+        value_free(request);
+        webserver_raise("webserver.redirect request id must be a positive integer");
+        return value_null();
+    }
+
+    Value location = eval_expr(expr->as.call.args.items[1]);
+    if (error_action_pending()) {
+        value_free(request);
+        value_free(location);
+        return value_null();
+    }
+    if (location.kind != VALUE_STRING) {
+        value_free(request);
+        value_free(location);
+        webserver_raise("webserver.redirect location must be a string");
+        return value_null();
+    }
+    if (!location.as.string[0] ||
+        strchr(location.as.string, '\r') ||
+        strchr(location.as.string, '\n')) {
+        value_free(request);
+        value_free(location);
+        webserver_raise("webserver.redirect location is invalid");
+        return value_null();
+    }
+
+    int status = 303;
+    if (expr->as.call.args.count == 3) {
+        Value status_value = eval_expr(expr->as.call.args.items[2]);
+        if (error_action_pending()) {
+            value_free(request);
+            value_free(location);
+            value_free(status_value);
+            return value_null();
+        }
+        if (!webserver_integer(status_value, &status) ||
+            !webserver_redirect_status(status)) {
+            value_free(request);
+            value_free(location);
+            value_free(status_value);
+            webserver_raise("webserver.redirect status must be 301, 302, 303, 307, or 308");
+            return value_null();
+        }
+        value_free(status_value);
+    }
+
+    Value headers = value_record(NULL, 0);
+    record_set(&headers, "location", value_string(location.as.string));
+
+    Value response = value_record(NULL, 0);
+    record_set(&response, "id", value_number((double)id));
+    record_set(&response, "status", value_number((double)status));
+    record_set(&response, "headers", headers);
+    record_set(&response, "body", value_string(""));
+
+    value_free(request);
+    value_free(location);
+    return response;
+}
+
 static Value webserver_eval_call(AstExpr *expr) {
     if (strcmp(expr->as.call.name, "listen") == 0) {
         return webserver_eval_listen(expr);
     }
     if (strcmp(expr->as.call.name, "close") == 0) {
         return webserver_eval_close(expr);
+    }
+    if (strcmp(expr->as.call.name, "redirect") == 0) {
+        return webserver_eval_redirect(expr);
     }
     char message[256];
     snprintf(message, sizeof(message), "invalid function call: webserver.%s",

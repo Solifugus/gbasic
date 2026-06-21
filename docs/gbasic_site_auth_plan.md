@@ -103,7 +103,7 @@ needs:
 - password hashing helper,
 - cookie parsing and `Set-Cookie` response emission are available in the
   WebServer request/response records,
-- redirect response helper,
+- redirect response helper is available as `webserver.redirect(...)`,
 - session-id-safe string encoding,
 - time helpers for expiration comparisons,
 - standard form decoding and HTML escaping helpers.

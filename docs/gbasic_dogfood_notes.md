@@ -21,6 +21,8 @@ after the app proves the need.
   primitive for future per-session tokens.
 - WebServer request records now expose parsed cookies and response records can
   emit `Set-Cookie` headers, which is enough to start server-side sessions.
+- `webserver.redirect(req, location[, status])` now removes boilerplate for
+  post/redirect/get flows.
 - Static file serving currently needs explicit routes and typed file
   references.
 - HTML escaping is app-local but should probably become a standard-library

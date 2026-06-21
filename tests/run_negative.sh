@@ -69,6 +69,12 @@ cases=(
     negative_webserver_response_cookies_type
     negative_webserver_response_cookie_value
     negative_webserver_response_cookie_newline
+    negative_webserver_redirect_arity
+    negative_webserver_redirect_request_type
+    negative_webserver_redirect_request_id
+    negative_webserver_redirect_location_type
+    negative_webserver_redirect_location_invalid
+    negative_webserver_redirect_status
     negative_find_type
     negative_function_assignment
     negative_len_assignment

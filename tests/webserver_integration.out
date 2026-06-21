@@ -1,5 +1,11 @@
 200
 GET|/inspect|Ada Lovelace||present|127.0.0.1|true|true
+303
+/redirected
+0
+308
+/moved
+0
 200
 abc123|light|true
 200

@@ -831,6 +831,8 @@ The module provides:
 
 - `webserver.listen(port)`
 - `webserver.close(server)`
+- `webserver.redirect(request, location)`
+- `webserver.redirect(request, location, status)`
 
 `port` must be an integer from 0 through 65535. Phase 1 binds to
 `127.0.0.1`. Port `0` requests an operating-system-assigned ephemeral port,
@@ -879,6 +881,10 @@ append(server.responses, {
     body:encode({saved:true})
 })
 ```
+
+`webserver.redirect(req, location)` returns a normal response record with
+status `303`, a `location` header, and an empty body. The optional status must
+be one of `301`, `302`, `303`, `307`, or `308`.
 
 Response fields:
 

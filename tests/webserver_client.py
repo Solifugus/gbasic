@@ -34,6 +34,16 @@ def main():
     print(status)
     print(body)
 
+    status, headers, body = request(port, "GET", "/redirect-default")
+    print(status)
+    print(headers.get("location", ""))
+    print(len(body))
+
+    status, headers, body = request(port, "GET", "/redirect-permanent")
+    print(status)
+    print(headers.get("location", ""))
+    print(len(body))
+
     status, _, body = request(
         port,
         "GET",

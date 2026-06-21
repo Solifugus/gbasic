@@ -60,6 +60,8 @@ load webserver
 
 server = webserver.listen(port)
 webserver.close(server)
+response = webserver.redirect(request, location)
+response = webserver.redirect(request, location, status)
 ```
 
 `webserver.listen(port)` should:
@@ -70,6 +72,14 @@ webserver.close(server)
 - begin listening before returning
 - raise a runtime error if the address cannot be bound or listening fails
 - return a live server record
+
+`webserver.redirect(request, location[, status])` should:
+
+- read the positive `id` from an ordinary request record,
+- require a non-empty string location without CR/LF,
+- default to HTTP `303`,
+- accept only `301`, `302`, `303`, `307`, and `308`,
+- return an ordinary response record with a `location` header and empty body.
 
 The Phase 1 bind address should be loopback only by default. Public network
 binding needs an explicit design because an accidental public listener is a
@@ -164,6 +174,9 @@ Header names and values must be strings. Cookie values must be strings without
 newlines. Invalid status values, headers, cookies, bodies, missing IDs, unknown
 IDs, duplicate responses, and responses for expired requests should raise a
 runtime error at the append operation.
+
+Redirect responses can be built with `webserver.redirect(req, "/path")`, which
+returns the same ordinary response-record shape as handwritten responses.
 
 The server consumes valid response records from `server.responses` after they
 are appended. The array is an outbound queue, not a permanent response log.

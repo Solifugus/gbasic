@@ -16,75 +16,93 @@ watch(server.requests)
                 id:req.id,
                 body:body
             })
-        else
-            if req.path = "/cookies" then
+            continue
+        end if
+
+        if req.path = "/redirect-default" then
+            append(server.responses, webserver.redirect(req, "/redirected"))
+            continue
+        end if
+
+        if req.path = "/redirect-permanent" then
+            append(server.responses, webserver.redirect(req, "/moved", 308))
+            continue
+        end if
+
+        if req.path = "/cookies" then
+            append(server.responses, {
+                id:req.id,
+                body:req.cookies.session + "|" + req.cookies.theme + "|" + string(is_unknown(req.cookies["missing"]))
+            })
+            continue
+        end if
+
+        if req.path = "/set-cookies" then
+            append(server.responses, {
+                id:req.id,
+                cookies:[
+                    "session=abc123; HttpOnly; SameSite=Lax; Path=/",
+                    "theme=light; Max-Age=3600; Path=/"
+                ],
+                body:"cookies set"
+            })
+            continue
+        end if
+
+        if req.path = "/json" then
+            if is_unknown(req["json"]) then
                 append(server.responses, {
                     id:req.id,
-                    body:req.cookies.session + "|" + req.cookies.theme + "|" + string(is_unknown(req.cookies["missing"]))
+                    status:400,
+                    body:"missing json"
                 })
             else
-                if req.path = "/set-cookies" then
-                    append(server.responses, {
-                        id:req.id,
-                        cookies:[
-                            "session=abc123; HttpOnly; SameSite=Lax; Path=/",
-                            "theme=light; Max-Age=3600; Path=/"
-                        ],
-                        body:"cookies set"
+                headers = {}
+                headers["content-type"] = "application/json"
+                append(server.responses, {
+                    id:req.id,
+                    status:201,
+                    headers:headers,
+                    body:encode({
+                        name:req.json.name,
+                        active:req.json.active
                     })
-                else
-                    if req.path = "/json" then
-                        if is_unknown(req["json"]) then
-                            append(server.responses, {
-                                id:req.id,
-                                status:400,
-                                body:"missing json"
-                            })
-                        else
-                            headers = {}
-                            headers["content-type"] = "application/json"
-                            append(server.responses, {
-                                id:req.id,
-                                status:201,
-                                headers:headers,
-                                body:encode({
-                                    name:req.json.name,
-                                    active:req.json.active
-                                })
-                            })
-                        end if
-                    else
-                        if req.path = "/invalid-json" then
-                            append(server.responses, {
-                                id:req.id,
-                                body:string(is_unknown(req["json"])) + "|" + req.body
-                            })
-                        else
-                            if req.path = "/defaults" then
-                                append(server.responses, {id:req.id})
-                            else
-                                if req.path = "/timeout" then
-                                    ignored = true
-                                else
-                                    if req.path = "/shutdown" then
-                                        append(server.responses, {
-                                            id:req.id,
-                                            body:"bye"
-                                        })
-                                        webserver.close(server)
-                                    else
-                                        append(server.responses, {
-                                            id:req.id,
-                                            status:404,
-                                            body:"not found"
-                                        })
-                                    end if
-                                end if
-                            end if
-                        end if
-                    end if
-                end if
+                })
             end if
+            continue
         end if
+
+        if req.path = "/invalid-json" then
+            append(server.responses, {
+                id:req.id,
+                body:string(is_unknown(req["json"])) + "|" + req.body
+            })
+            continue
+        end if
+
+        if req.path = "/defaults" then
+            append(server.responses, {id:req.id})
+            continue
+        end if
+
+        if req.path = "/timeout" then
+            ignored = true
+            continue
+        end if
+
+        if req.path = "/shutdown" then
+            append(server.responses, {
+                id:req.id,
+                body:"bye"
+            })
+            webserver.close(server)
+            continue
+        end if
+
+        append(server.responses, {
+            id:req.id,
+            status:404,
+            body:"not found"
+        })
     end while
 end watch
