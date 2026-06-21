@@ -13,6 +13,7 @@ def request(port, method, path, body=None, headers=None):
     response = connection.getresponse()
     body = response.read().decode("utf-8")
     headers = {name.lower(): value for name, value in response.getheaders()}
+    headers["set-cookie-values"] = "|".join(response.msg.get_all("Set-Cookie") or [])
     connection.close()
     return response.status, headers, body
 
@@ -158,6 +159,49 @@ def main():
     print("Paged topic 0" in body)
 
     status, _, body = get(port, "/admin")
+    print(status)
+    print("Enter the local moderation token." in body)
+
+    status, _, body = get(port, "/login")
+    print(status)
+    print("temporary local admin token" in body)
+
+    invalid_login_body = urllib.parse.urlencode({"token": "bad-token"})
+    status, _, body = request(
+        port,
+        "POST",
+        "/login",
+        body=invalid_login_body,
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+    )
+    print(status)
+    print("Invalid local admin token." in body)
+
+    login_body = urllib.parse.urlencode({"token": "test-admin-token"})
+    status, headers, body = request(
+        port,
+        "POST",
+        "/login",
+        body=login_body,
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+    )
+    print(status)
+    print(headers.get("location", ""))
+    session_cookie = headers.get("set-cookie-values", "").split(";", 1)[0]
+    print(session_cookie.startswith("gbasic_site_session="))
+    print(len(body))
+
+    status, _, body = request(port, "GET", "/admin", headers={"Cookie": session_cookie})
+    print(status)
+    print("Signed in as local-admin." in body)
+    print("Dogfood topic" in body)
+
+    status, headers, body = request(port, "POST", "/logout", headers={"Cookie": session_cookie})
+    print(status)
+    print(headers.get("location", ""))
+    print("Max-Age=0" in headers.get("set-cookie-values", ""))
+
+    status, _, body = request(port, "GET", "/admin", headers={"Cookie": session_cookie})
     print(status)
     print("Enter the local moderation token." in body)
 

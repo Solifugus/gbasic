@@ -23,6 +23,8 @@ after the app proves the need.
   emit `Set-Cookie` headers, which is enough to start server-side sessions.
 - `webserver.redirect(req, location[, status])` now removes boilerplate for
   post/redirect/get flows.
+- The site can now create and revoke temporary token-backed admin sessions;
+  password hashing and per-session CSRF are still needed before real auth.
 - Static file serving currently needs explicit routes and typed file
   references.
 - HTML escaping is app-local but should probably become a standard-library

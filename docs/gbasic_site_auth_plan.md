@@ -73,8 +73,8 @@ Session cookies should be formatted with:
 - `Path=/`,
 - a bounded max age or expiration.
 
-gBASIC currently needs explicit cookie parse/format helpers before this feels
-like normal application code.
+gBASIC WebServer request and response records now expose explicit cookie
+parsing and `Set-Cookie` emission.
 
 ## Password Requirements
 
@@ -96,6 +96,10 @@ routes verify both:
 The current file-backed CSRF token does not protect separate sessions from one
 another and must remain development-only.
 
+The site now has a temporary local-token login that creates a server-side
+session cookie. It exists to dogfood session plumbing and is not production
+password authentication.
+
 ## Runtime Gaps
 
 Dogfooding the site points to these remaining runtime or standard-library
@@ -107,7 +111,7 @@ needs:
 - cookie parsing and `Set-Cookie` response emission are available in the
   WebServer request/response records,
 - redirect response helper is available as `webserver.redirect(...)`,
-- session-id-safe string encoding,
+- session-id-safe tokens are available through `secure_token(length)`,
 - time helpers for expiration comparisons,
 - standard form decoding and HTML escaping helpers.
 

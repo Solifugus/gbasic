@@ -85,10 +85,14 @@ cp examples/gbasic_site/csrf_token.example.txt examples/gbasic_site/csrf_token.t
 chmod 600 examples/gbasic_site/csrf_token.txt
 ```
 
-Open `/admin?token=<token>` to view moderation tools. Hide actions record
-moderation timestamps and a local moderator label, but not the token itself.
-These token-file approaches are intentionally temporary until gBASIC has a
-better configuration, session, and auth story.
+Open `/login` to exchange the temporary local admin token for a session cookie,
+then open `/admin` to view moderation tools. The older `/admin?token=<token>`
+flow still works for local development while the real password-auth flow is
+being built. Hide actions record moderation timestamps and a local moderator
+label, but not the token itself.
+
+These token-backed session approaches are intentionally temporary until gBASIC
+has password hashing and per-session CSRF.
 
 ## Tests
 
