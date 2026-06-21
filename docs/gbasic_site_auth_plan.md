@@ -57,6 +57,9 @@ create table gbasic_site_sessions (
 );
 ```
 
+The gBASIC site schema now includes these users and sessions tables. The site
+does not yet expose login/logout routes or password-based authentication.
+
 The session id and CSRF token must come from cryptographically secure random
 bytes, not predictable strings.
 

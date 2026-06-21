@@ -27,4 +27,17 @@ print(len(posts))
 print(posts[0].body)
 print(is_nothing(posts[0].moderated_by))
 
+users = pg.query(db, "insert into gbasic_site_users (username, password_hash, password_algorithm, admin) values ($1, $2, $3, $4) returning id, username, admin, disabled", ["admin", "not-a-production-hash", "placeholder", true])
+print(users[0].username)
+print(users[0].admin)
+print(users[0].disabled)
+
+sessions = pg.query(db, "insert into gbasic_site_sessions (id, user_id, csrf_token, expires_at) values ($1, $2, $3, now() + interval '1 hour') returning id, csrf_token, revoked_at", ["session-test", users[0].id, "csrf-test"])
+print(sessions[0].id)
+print(sessions[0].csrf_token)
+print(is_nothing(sessions[0].revoked_at))
+
+joined = pg.query(db, "select u.username from gbasic_site_sessions s join gbasic_site_users u on u.id = s.user_id where s.id = $1", ["session-test"])
+print(joined[0].username)
+
 print(pg.close(db))

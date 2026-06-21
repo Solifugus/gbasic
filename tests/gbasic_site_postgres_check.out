@@ -11,4 +11,11 @@ true
 1
 Reply support is wired into the initial schema.
 true
+admin
+true
+false
+session-test
+csrf-test
+true
+admin
 true

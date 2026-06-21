@@ -141,7 +141,8 @@ Initialize/reset the app tables and seed data:
 ./gbasic examples/gbasic_site/setup.bas
 ```
 
-This creates and resets only `gbasic_site_*` tables in the configured database.
+This creates and resets only `gbasic_site_*` tables in the configured database,
+including the auth/session tables used by the upcoming login flow.
 
 ## Backups
 
