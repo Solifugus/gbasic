@@ -107,6 +107,7 @@ ordinary record:
         draft:"true"
     },
     headers:{},
+    cookies:{},
     body:"{\"message\":\"hello\"}",
     json:{
         message:"hello"
@@ -122,6 +123,8 @@ Fields:
 - `query`: record of percent-decoded query parameter names and string values;
   duplicate names use last-wins behavior in Phase 1
 - `headers`: record with lowercase header names
+- `cookies`: record parsed from the `Cookie` header; duplicate names use
+  last-wins behavior in Phase 1
 - `body`: request body as a string
 - `json`: present only when a non-empty body parses successfully as JSON
 - `remote_ip`: peer IP address as a string
@@ -154,11 +157,13 @@ Fields:
 - `id`: required request identifier
 - `status`: optional numeric HTTP status, default `200`
 - `headers`: optional record, default `{}`
+- `cookies`: optional array of `Set-Cookie` strings, default `[]`
 - `body`: optional string, default `""`
 
-Header names and values must be strings. Invalid status values, headers,
-bodies, missing IDs, unknown IDs, duplicate responses, and responses for
-expired requests should raise a runtime error at the append operation.
+Header names and values must be strings. Cookie values must be strings without
+newlines. Invalid status values, headers, cookies, bodies, missing IDs, unknown
+IDs, duplicate responses, and responses for expired requests should raise a
+runtime error at the append operation.
 
 The server consumes valid response records from `server.responses` after they
 are appended. The array is an outbound queue, not a permanent response log.
@@ -480,7 +485,7 @@ request/response queues. They must not require callback registration.
 
 ### Phase 4: HTTP Features
 
-- cookies as explicit parse/format helpers
+- cookie parsing and `Set-Cookie` response emission
 - form URL encoding
 - multipart processing after binary/file-upload semantics exist
 - static-file helper with traversal protection and range handling

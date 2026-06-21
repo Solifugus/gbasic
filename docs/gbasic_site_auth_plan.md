@@ -101,7 +101,8 @@ needs:
 - cryptographically secure token generation is available through
   `secure_token(length)`, but raw random bytes are not exposed,
 - password hashing helper,
-- cookie parse/format helpers,
+- cookie parsing and `Set-Cookie` response emission are available in the
+  WebServer request/response records,
 - redirect response helper,
 - session-id-safe string encoding,
 - time helpers for expiration comparisons,
@@ -128,6 +129,6 @@ The auth plan is ready to move from design to implementation when:
 - gBASIC can generate secure random tokens through `secure_token(length)`,
 - password hashing has a safe standard helper,
 - WebServer apps can read request cookies,
-- response helpers can set cookies,
+- response records can set cookies,
 - integration tests cover login, logout, CSRF failures, expired sessions, and
   moderation attribution.

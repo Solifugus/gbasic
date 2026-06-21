@@ -1,5 +1,11 @@
 200
 GET|/inspect|Ada Lovelace||present|127.0.0.1|true|true
+200
+abc123|light|true
+200
+2
+session=abc123; HttpOnly; SameSite=Lax; Path=/|theme=light; Max-Age=3600; Path=/
+cookies set
 201
 application/json
 Grace

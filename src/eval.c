@@ -7186,6 +7186,25 @@ static int webserver_validate_response_value(WebServer *server,
             }
         }
     }
+    RecordField *cookies = record_find(&response, "cookies");
+    if (cookies) {
+        if (cookies->value->kind != VALUE_ARRAY) {
+            webserver_raise("webserver response cookies must be an array");
+            return 0;
+        }
+        for (size_t i = 0; i < cookies->value->as.array.count; i++) {
+            Value *cookie = &cookies->value->as.array.items[i];
+            if (cookie->kind != VALUE_STRING) {
+                webserver_raise("webserver response cookie values must be strings");
+                return 0;
+            }
+            if (strchr(cookie->as.string, '\r') ||
+                strchr(cookie->as.string, '\n')) {
+                webserver_raise("webserver response cookie value is invalid");
+                return 0;
+            }
+        }
+    }
     RecordField *body = record_find(&response, "body");
     if (body && body->value->kind != VALUE_STRING) {
         webserver_raise("webserver response body must be a string");
@@ -7294,6 +7313,39 @@ static char *webserver_trim_copy(const char *start, size_t length) {
     return copy;
 }
 
+static Value webserver_cookie_record(Value *headers) {
+    Value record = value_record(NULL, 0);
+    RecordField *cookie_header = headers && headers->kind == VALUE_RECORD ?
+        record_find(headers, "cookie") : NULL;
+    if (!cookie_header || cookie_header->value->kind != VALUE_STRING) {
+        return record;
+    }
+
+    const char *cursor = cookie_header->value->as.string;
+    while (*cursor) {
+        const char *semicolon = strchr(cursor, ';');
+        size_t length = semicolon ? (size_t)(semicolon - cursor) : strlen(cursor);
+        const char *eq = memchr(cursor, '=', length);
+        if (eq) {
+            size_t name_length = (size_t)(eq - cursor);
+            size_t value_length = length - name_length - 1;
+            char *name = webserver_trim_copy(cursor, name_length);
+            char *value = webserver_trim_copy(eq + 1, value_length);
+            if (name[0]) {
+                record_set(&record, name, value_string(value));
+            }
+            free(name);
+            free(value);
+        }
+        if (!semicolon) {
+            break;
+        }
+        cursor = semicolon + 1;
+    }
+
+    return record;
+}
+
 static int webserver_decode_json(const char *body, Value *out) {
     DecodeParser parser = {0};
     parser.text = body;
@@ -7333,6 +7385,7 @@ static Value webserver_make_request(WebServerClient *client,
     record_set(&request, "path", value_string(path));
     record_set(&request, "query", webserver_query_record(query));
     record_set(&request, "headers", headers);
+    record_set(&request, "cookies", webserver_cookie_record(webserver_field(&request, "headers")));
     record_set(&request, "body", value_string(body));
     if (body[0]) {
         Value json;
@@ -7513,6 +7566,7 @@ static void webserver_write_all(int fd, const char *data, size_t length) {
 static void webserver_send(WebServerClient *client,
                            int status,
                            Value *headers,
+                           Value *cookies,
                            const char *body) {
     const char *payload = body ? body : "";
     webserver_set_blocking_mode(client->fd, 1);
@@ -7553,6 +7607,20 @@ static void webserver_send(WebServerClient *client,
         webserver_write_all(client->fd,
                             "Content-Type: text/plain\r\n",
                             strlen("Content-Type: text/plain\r\n"));
+    }
+    if (cookies && cookies->kind == VALUE_ARRAY) {
+        for (size_t i = 0; i < cookies->as.array.count; i++) {
+            Value *cookie = &cookies->as.array.items[i];
+            size_t line_length = strlen(cookie->as.string) +
+                strlen("Set-Cookie: \r\n") + 1;
+            char *line = malloc(line_length);
+            if (!line) {
+                abort();
+            }
+            snprintf(line, line_length, "Set-Cookie: %s\r\n", cookie->as.string);
+            webserver_write_all(client->fd, line, strlen(line));
+            free(line);
+        }
     }
     webserver_write_all(client->fd, "\r\n", 2);
     if (payload[0]) {
@@ -7595,10 +7663,12 @@ static void webserver_process_responses(WebServer *server) {
         }
         RecordField *status = record_find(&response, "status");
         RecordField *headers = record_find(&response, "headers");
+        RecordField *cookies = record_find(&response, "cookies");
         RecordField *body = record_find(&response, "body");
         webserver_send(client,
                        status ? (int)status->value->as.number : 200,
                        headers ? headers->value : NULL,
+                       cookies ? cookies->value : NULL,
                        body ? body->value->as.string : "");
         webserver_client_close(server, client_index);
         webserver_array_remove(responses, 0);
@@ -7609,7 +7679,7 @@ static void webserver_send_error(WebServer *server,
                                  size_t client_index,
                                  int status,
                                  const char *body) {
-    webserver_send(&server->clients[client_index], status, NULL, body);
+    webserver_send(&server->clients[client_index], status, NULL, NULL, body);
     webserver_client_close(server, client_index);
 }
 

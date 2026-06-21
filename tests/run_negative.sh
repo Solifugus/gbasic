@@ -66,6 +66,9 @@ cases=(
     negative_webserver_response_body_type
     negative_webserver_response_headers_type
     negative_webserver_response_header_value
+    negative_webserver_response_cookies_type
+    negative_webserver_response_cookie_value
+    negative_webserver_response_cookie_newline
     negative_find_type
     negative_function_assignment
     negative_len_assignment

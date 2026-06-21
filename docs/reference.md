@@ -856,6 +856,7 @@ Each request record contains:
 - `path`: request path
 - `query`: record of percent-decoded string parameters
 - `headers`: record with lowercase names
+- `cookies`: record parsed from the `Cookie` header
 - `body`: request body string
 - `json`: decoded JSON value, present only when parsing succeeds
 - `remote_ip`: peer IP string
@@ -884,11 +885,13 @@ Response fields:
 - `id`: required positive integer matching a pending request
 - `status`: optional HTTP status, default `200`
 - `headers`: optional record of string values, default `{}`
+- `cookies`: optional array of `Set-Cookie` strings, default `[]`
 - `body`: optional string, default `""`
 
 The server supplies `Content-Length`, closes the connection after the response,
-and defaults the content type to `text/plain`. If no matching response is
-queued within 30 seconds, the client receives HTTP 504.
+emits one `Set-Cookie` header per `cookies` item, and defaults the content type
+to `text/plain`. If no matching response is queued within 30 seconds, the
+client receives HTTP 504.
 
 Shutdown forms:
 
@@ -898,10 +901,10 @@ server.running = false
 ```
 
 WebServer is single-threaded in Phase 1. It supports one request per connection
-with `Content-Length` request bodies. It does not support chunked requests,
-public binding, routing APIs, middleware, static files, templates, cookies,
-sessions, multipart uploads, streaming, WebSockets, TLS, or asynchronous
-application code.
+with `Content-Length` request bodies and explicit cookie parsing/emission. It
+does not support chunked requests, public binding, routing APIs, middleware,
+static files, templates, sessions, multipart uploads, streaming, WebSockets,
+TLS, or asynchronous application code.
 
 ## Core Builtin Functions
 

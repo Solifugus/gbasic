@@ -1,0 +1,1 @@
+runtime error at tests/negative_webserver_response_cookie_value.bas:3:1: webserver response cookie values must be strings

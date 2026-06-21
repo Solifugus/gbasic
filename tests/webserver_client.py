@@ -10,9 +10,12 @@ def request(port, method, path, body=None, headers=None):
     connection.request(method, path, body=body, headers=headers or {})
     response = connection.getresponse()
     payload = response.read().decode("utf-8")
+    response_headers = {name.lower(): value for name, value in response.getheaders()}
+    response_headers["set-cookie-count"] = str(len(response.msg.get_all("Set-Cookie") or []))
+    response_headers["set-cookie-values"] = "|".join(response.msg.get_all("Set-Cookie") or [])
     result = (
         response.status,
-        {name.lower(): value for name, value in response.getheaders()},
+        response_headers,
         payload,
     )
     connection.close()
@@ -29,6 +32,21 @@ def main():
         headers={"X-Test": "present"},
     )
     print(status)
+    print(body)
+
+    status, _, body = request(
+        port,
+        "GET",
+        "/cookies",
+        headers={"Cookie": "session=abc123; theme=light; empty=; bad"},
+    )
+    print(status)
+    print(body)
+
+    status, headers, body = request(port, "GET", "/set-cookies")
+    print(status)
+    print(headers.get("set-cookie-count", ""))
+    print(headers.get("set-cookie-values", ""))
     print(body)
 
     status, headers, body = request(

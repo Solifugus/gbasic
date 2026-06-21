@@ -17,51 +17,69 @@ watch(server.requests)
                 body:body
             })
         else
-            if req.path = "/json" then
-                if is_unknown(req["json"]) then
-                    append(server.responses, {
-                        id:req.id,
-                        status:400,
-                        body:"missing json"
-                    })
-                else
-                    headers = {}
-                    headers["content-type"] = "application/json"
-                    append(server.responses, {
-                        id:req.id,
-                        status:201,
-                        headers:headers,
-                        body:encode({
-                            name:req.json.name,
-                            active:req.json.active
-                        })
-                    })
-                end if
+            if req.path = "/cookies" then
+                append(server.responses, {
+                    id:req.id,
+                    body:req.cookies.session + "|" + req.cookies.theme + "|" + string(is_unknown(req.cookies["missing"]))
+                })
             else
-                if req.path = "/invalid-json" then
+                if req.path = "/set-cookies" then
                     append(server.responses, {
                         id:req.id,
-                        body:string(is_unknown(req["json"])) + "|" + req.body
+                        cookies:[
+                            "session=abc123; HttpOnly; SameSite=Lax; Path=/",
+                            "theme=light; Max-Age=3600; Path=/"
+                        ],
+                        body:"cookies set"
                     })
                 else
-                    if req.path = "/defaults" then
-                        append(server.responses, {id:req.id})
-                    else
-                        if req.path = "/timeout" then
-                            ignored = true
+                    if req.path = "/json" then
+                        if is_unknown(req["json"]) then
+                            append(server.responses, {
+                                id:req.id,
+                                status:400,
+                                body:"missing json"
+                            })
                         else
-                            if req.path = "/shutdown" then
-                                append(server.responses, {
-                                    id:req.id,
-                                    body:"bye"
+                            headers = {}
+                            headers["content-type"] = "application/json"
+                            append(server.responses, {
+                                id:req.id,
+                                status:201,
+                                headers:headers,
+                                body:encode({
+                                    name:req.json.name,
+                                    active:req.json.active
                                 })
-                                webserver.close(server)
+                            })
+                        end if
+                    else
+                        if req.path = "/invalid-json" then
+                            append(server.responses, {
+                                id:req.id,
+                                body:string(is_unknown(req["json"])) + "|" + req.body
+                            })
+                        else
+                            if req.path = "/defaults" then
+                                append(server.responses, {id:req.id})
                             else
-                                append(server.responses, {
-                                    id:req.id,
-                                    status:404,
-                                    body:"not found"
-                                })
+                                if req.path = "/timeout" then
+                                    ignored = true
+                                else
+                                    if req.path = "/shutdown" then
+                                        append(server.responses, {
+                                            id:req.id,
+                                            body:"bye"
+                                        })
+                                        webserver.close(server)
+                                    else
+                                        append(server.responses, {
+                                            id:req.id,
+                                            status:404,
+                                            body:"not found"
+                                        })
+                                    end if
+                                end if
                             end if
                         end if
                     end if

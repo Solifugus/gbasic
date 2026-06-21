@@ -19,6 +19,8 @@ after the app proves the need.
   still a shared development token because the site does not yet have signed
   cookies or session helpers. `secure_token(length)` now provides a runtime
   primitive for future per-session tokens.
+- WebServer request records now expose parsed cookies and response records can
+  emit `Set-Cookie` headers, which is enough to start server-side sessions.
 - Static file serving currently needs explicit routes and typed file
   references.
 - HTML escaping is app-local but should probably become a standard-library
