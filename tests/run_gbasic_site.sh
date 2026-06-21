@@ -45,8 +45,7 @@ if [[ -e "$server_port_file" ]]; then
     had_server_port=1
 fi
 rm -f "$port_file"
-printf '0\n' >"$server_port_file"
-GBASIC_WEBSERVER_TIMEOUT=0.2 ./gbasic examples/gbasic_site/site.bas \
+GBASIC_SITE_PORT=0 GBASIC_WEBSERVER_TIMEOUT=0.2 ./gbasic examples/gbasic_site/site.bas \
     >"$server_stdout" 2>"$server_stderr" &
 server_pid=$!
 

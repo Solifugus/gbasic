@@ -95,9 +95,9 @@ another and must remain development-only.
 
 ## Runtime Gaps
 
-Dogfooding the site points to these runtime or standard-library needs:
+Dogfooding the site points to these remaining runtime or standard-library
+needs:
 
-- `env(name)` for service configuration,
 - cryptographically secure random bytes,
 - password hashing helper,
 - cookie parse/format helpers,
@@ -123,7 +123,7 @@ as spam friction, not authentication.
 
 The auth plan is ready to move from design to implementation when:
 
-- gBASIC can read service configuration without local token files,
+- gBASIC can read service configuration through `env(name)`,
 - gBASIC can generate secure random tokens,
 - password hashing has a safe standard helper,
 - WebServer apps can read request cookies,

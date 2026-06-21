@@ -907,6 +907,19 @@ application code.
 
 gBASIC includes always-available core functions that don't require loading libraries. These maintain strict type checking and provide clear error messages.
 
+### Environment
+
+**`env(name)`** - Reads an operating-system environment variable. `name` must
+be a string. If the variable is set, `env(name)` returns its string value. If
+the variable is not set, it returns `unknown`.
+
+```basic
+port = env("GBASIC_SITE_PORT")
+if is_unknown(port) then
+    port = "8080"
+end if
+```
+
 ### Type Inspection
 
 **`type(value)`** - Returns the type of a value as a string:

@@ -1,0 +1,1 @@
+runtime error at tests/negative_env_type.bas:1:1: env expects a string

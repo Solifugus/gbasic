@@ -31,6 +31,8 @@ cases=(
     negative_multiline_string_line_tracking
     negative_datetime_string_comparison
     negative_unknown_order
+    negative_env_arity
+    negative_env_type
     negative_sqlite_not_loaded
     negative_pg_not_loaded
     negative_pg_connect_type

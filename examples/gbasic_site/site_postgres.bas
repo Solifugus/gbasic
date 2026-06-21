@@ -93,6 +93,22 @@ function is_integer_text(text)
 end function
 
 function configured_port()
+    env_port = env("GBASIC_SITE_PORT")
+    if not is_unknown(env_port) then
+        port_text = trim(env_port)
+        if port_text = "" then
+            return 0
+        end if
+        if not is_integer_text(port_text) then
+            error "GBASIC_SITE_PORT must contain an integer port"
+        end if
+        port = number(port_text)
+        if port < 0 or port > 65535 then
+            error "GBASIC_SITE_PORT port must be between 0 and 65535"
+        end if
+        return port
+    end if
+
     config_file(file)= "examples/gbasic_site/server_port.txt"
     if not exists(config_file) then
         return 0
@@ -176,6 +192,10 @@ function reply_validation_error(author, body_text)
 end function
 
 function admin_token()
+    env_token = env("GBASIC_SITE_ADMIN_TOKEN")
+    if not is_unknown(env_token) then
+        return trim(env_token)
+    end if
     token_file(file)= "examples/gbasic_site/admin_token.txt"
     if not exists(token_file) then
         return ""
@@ -184,6 +204,10 @@ function admin_token()
 end function
 
 function csrf_token()
+    env_token = env("GBASIC_SITE_CSRF_TOKEN")
+    if not is_unknown(env_token) then
+        return trim(env_token)
+    end if
     token_file(file)= "examples/gbasic_site/csrf_token.txt"
     if not exists(token_file) then
         return ""

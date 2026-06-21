@@ -8,14 +8,16 @@ after the app proves the need.
 
 - Page templates are readable with multiline strings, but interpolation such as
   `f"...{expr}..."` would reduce concatenation noise.
-- App configuration wants an `env(name)` helper.
-- The first admin token uses a local file because there is no runtime
-  environment-variable helper yet. That is workable for tests, but awkward for
-  deployment docs and secret handling.
-- The deployment port is also file-backed for now so nginx/systemd can target a
-  stable loopback port without requiring an environment-variable helper.
-- The first CSRF token is also file-backed because the runtime does not yet
-  have random bytes, signed cookies, or session helpers.
+- `env(name)` now covers simple service configuration, but richer typed config
+  patterns may still be useful as apps grow.
+- The first admin token can now come from `GBASIC_SITE_ADMIN_TOKEN`, with the
+  local token file kept as a fallback. Real auth should still use sessions and
+  password hashing rather than a shared token.
+- The deployment port can now come from `GBASIC_SITE_PORT`, with the local
+  `server_port.txt` file kept as a fallback.
+- The first CSRF token can now come from `GBASIC_SITE_CSRF_TOKEN`, but it is
+  still a shared development token because the runtime does not yet have random
+  bytes, signed cookies, or session helpers.
 - Static file serving currently needs explicit routes and typed file
   references.
 - HTML escaping is app-local but should probably become a standard-library

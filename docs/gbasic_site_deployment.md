@@ -32,15 +32,22 @@ CSRF protection, and production-grade auth.
 ## Stable Loopback Port
 
 Local tests use port `0` so the operating system can choose an ephemeral port.
-nginx and systemd need a stable target. For deployment-style runs, create:
+nginx and systemd need a stable target. For deployment-style runs, set:
+
+```sh
+export GBASIC_SITE_PORT=8080
+```
+
+or create a fallback file:
 
 ```sh
 cp examples/gbasic_site/server_port.example.txt examples/gbasic_site/server_port.txt
 ```
 
-The example file uses `8080`, matching the nginx template. The app still binds
-to loopback through the WebServer module. The test runners temporarily move any
-local `server_port.txt` aside and restore it when they finish.
+The example file uses `8080`, matching the nginx template. `GBASIC_SITE_PORT`
+takes precedence when both are present. The app still binds to loopback through
+the WebServer module. Test runners set `GBASIC_SITE_PORT=0` so they continue
+to use ephemeral ports.
 
 ## systemd Sketch
 
@@ -149,9 +156,10 @@ Before publishing on the public-IP server:
 - create a dedicated Unix user for the app,
 - create a dedicated Postgres role and database,
 - run the setup program only against the intended database,
-- create an admin token only if the admin path is still local-only,
-- create `examples/gbasic_site/server_port.txt` with the loopback port used by
-  nginx,
+- set `GBASIC_SITE_ADMIN_TOKEN` and `GBASIC_SITE_CSRF_TOKEN` only if the admin
+  path and write routes are still local-only,
+- set `GBASIC_SITE_PORT` or create `examples/gbasic_site/server_port.txt` with
+  the loopback port used by nginx,
 - run the gBASIC app as a supervised service,
 - bind the app to loopback,
 - configure nginx with TLS,

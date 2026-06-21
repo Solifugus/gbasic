@@ -14,6 +14,7 @@ User=gbasic
 Group=gbasic
 WorkingDirectory=/srv/gbasic
 EnvironmentFile=/etc/gbasic-site/site.env
+Environment=GBASIC_SITE_PORT=8080
 Environment=GBASIC_WEBSERVER_TIMEOUT=0.2
 ExecStart=/srv/gbasic/gbasic /srv/gbasic/examples/gbasic_site/site_postgres.bas
 Restart=on-failure

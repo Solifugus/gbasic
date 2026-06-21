@@ -16,6 +16,9 @@ trap cleanup_example_artifacts EXIT
 make clean
 make
 
+export GBASIC_ENV_TEST_VALUE=configured
+unset GBASIC_ENV_TEST_MISSING
+
 examples=(
     arithmetic_number_modifier_test.bas
     array_append_prepend_test.bas
@@ -76,6 +79,7 @@ examples=(
     comparison_lens_test.bas
     comparison_lens_parser_hardening_test.bas
     dynamic_record_access_test.bas
+    env_builtin_test.bas
     nested_lvalue_test.bas
     nested_array_mutation_test.bas
     parser_hardening_test.bas

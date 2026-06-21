@@ -35,15 +35,20 @@ Open `http://127.0.0.1:<port>/`.
 The server binds to an operating-system-assigned loopback port through
 gBASIC's current WebServer module. Do not expose this app publicly yet.
 
-For deployment-style local runs, copy the example port file to request a stable
-loopback port:
+For deployment-style local runs, set a stable loopback port:
+
+```sh
+export GBASIC_SITE_PORT=8080
+```
+
+You can also use a local fallback file:
 
 ```sh
 cp examples/gbasic_site/server_port.example.txt examples/gbasic_site/server_port.txt
 ```
 
-The test runners temporarily ignore and restore this local file so tests can
-continue using ephemeral ports.
+`GBASIC_SITE_PORT` takes precedence when both are present. The test runners set
+`GBASIC_SITE_PORT=0` so tests continue using ephemeral ports.
 
 After Postgres setup, run the database-backed entry point:
 
@@ -53,14 +58,27 @@ After Postgres setup, run the database-backed entry point:
 
 It also writes the selected port to `examples/gbasic_site/tmp_port.txt`.
 
-The local admin page requires a token file:
+The local admin page requires a token. Prefer an environment variable:
+
+```sh
+export GBASIC_SITE_ADMIN_TOKEN=change-this-local-admin-token
+```
+
+You can also use a local fallback file:
 
 ```sh
 cp examples/gbasic_site/admin_token.example.txt examples/gbasic_site/admin_token.txt
 chmod 600 examples/gbasic_site/admin_token.txt
 ```
 
-State-changing forms also require a local CSRF token file:
+State-changing forms also require a CSRF token. Prefer an environment
+variable:
+
+```sh
+export GBASIC_SITE_CSRF_TOKEN=change-this-local-csrf-token
+```
+
+You can also use a local fallback file:
 
 ```sh
 cp examples/gbasic_site/csrf_token.example.txt examples/gbasic_site/csrf_token.txt

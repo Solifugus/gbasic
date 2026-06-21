@@ -9457,6 +9457,29 @@ static Value eval_call(AstExpr *expr) {
         return eval_user_function(expr, local_function);
     }
 
+    if (strcmp(expr->as.call.name, "env") == 0) {
+        if (expr->as.call.args.count != 1) {
+            runtime_error_raise("env expects one argument", 1003, "invalid function call");
+            return value_null();
+        }
+        Value name = eval_expr(expr->as.call.args.items[0]);
+        if (error_action_pending()) {
+            value_free(name);
+            return value_null();
+        }
+        if (name.kind != VALUE_STRING) {
+            value_free(name);
+            runtime_error_raise("env expects a string", 1003, "invalid function call");
+            return value_null();
+        }
+        const char *value = getenv(name.as.string);
+        value_free(name);
+        if (!value) {
+            return value_unknown();
+        }
+        return value_string(value);
+    }
+
     if (strcmp(expr->as.call.name, "lower") == 0) {
         if (expr->as.call.args.count != 1) {
             runtime_error_raise("lower expects one argument", 1003, "invalid function call");
