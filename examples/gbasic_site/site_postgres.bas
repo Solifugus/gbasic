@@ -266,6 +266,21 @@ function current_session(db, req)
     return {authenticated:true, admin:rows[0].admin, username:rows[0].username, csrf_token:rows[0].csrf_token}
 end function
 
+function admin_csrf_field(session)
+    if session.authenticated and session.admin then
+        return hidden_input("csrf_token", session.csrf_token)
+    end if
+    return csrf_field()
+end function
+
+function admin_csrf_valid(db, req, values)
+    session = current_session(db, req)
+    if session.authenticated and session.admin then
+        return form_value(values, "csrf_token") = session.csrf_token
+    end if
+    return csrf_valid(values)
+end function
+
 function admin_request_authorized(db, req, values)
     session = current_session(db, req)
     if session.authenticated and session.admin then
@@ -436,9 +451,9 @@ function admin_page(db, req)
     for each topic in topics
         body = body + "<article class=\"list-item\"><h2>" + html_escape(topic.title) + "</h2><p>" + html_escape(moderation_summary(topic)) + " in " + html_escape(topic.category_title) + ", started by " + html_escape(topic.author_name) + "</p>"
         if not topic.hidden then
-            body = body + "<form class=\"inline-form\" method=\"post\" action=\"/admin/hide-topic\">" + csrf_field() + admin_token_field(token) + topic_id_field(topic.id) + "<button type=\"submit\">Hide topic</button></form>"
+            body = body + "<form class=\"inline-form\" method=\"post\" action=\"/admin/hide-topic\">" + admin_csrf_field(session) + admin_token_field(token) + topic_id_field(topic.id) + "<button type=\"submit\">Hide topic</button></form>"
         else
-            body = body + "<form class=\"inline-form\" method=\"post\" action=\"/admin/unhide-topic\">" + csrf_field() + admin_token_field(token) + topic_id_field(topic.id) + "<button type=\"submit\">Unhide topic</button></form>"
+            body = body + "<form class=\"inline-form\" method=\"post\" action=\"/admin/unhide-topic\">" + admin_csrf_field(session) + admin_token_field(token) + topic_id_field(topic.id) + "<button type=\"submit\">Unhide topic</button></form>"
         end if
         body = body + "</article>"
     end for
@@ -446,9 +461,9 @@ function admin_page(db, req)
     for each post in posts
         body = body + "<article class=\"list-item\"><h2>Reply #" + string(post.id) + "</h2><p>" + html_escape(moderation_summary(post)) + " on " + html_escape(post.topic_title) + ", by " + html_escape(post.author_name) + "</p><p>" + html_escape(post.body) + "</p>"
         if not post.hidden then
-            body = body + "<form class=\"inline-form\" method=\"post\" action=\"/admin/hide-post\">" + csrf_field() + admin_token_field(token) + post_id_field(post.id) + "<button type=\"submit\">Hide reply</button></form>"
+            body = body + "<form class=\"inline-form\" method=\"post\" action=\"/admin/hide-post\">" + admin_csrf_field(session) + admin_token_field(token) + post_id_field(post.id) + "<button type=\"submit\">Hide reply</button></form>"
         else
-            body = body + "<form class=\"inline-form\" method=\"post\" action=\"/admin/unhide-post\">" + csrf_field() + admin_token_field(token) + post_id_field(post.id) + "<button type=\"submit\">Unhide reply</button></form>"
+            body = body + "<form class=\"inline-form\" method=\"post\" action=\"/admin/unhide-post\">" + admin_csrf_field(session) + admin_token_field(token) + post_id_field(post.id) + "<button type=\"submit\">Unhide reply</button></form>"
         end if
         body = body + "</article>"
     end for
@@ -458,7 +473,7 @@ end function
 
 function hide_topic(db, req)
     form = form_decode(req.body)
-    if not csrf_valid(form) then
+    if not admin_csrf_valid(db, req, form) then
         return csrf_forbidden(req)
     end if
     if not admin_request_authorized(db, req, form) then
@@ -476,7 +491,7 @@ end function
 
 function unhide_topic(db, req)
     form = form_decode(req.body)
-    if not csrf_valid(form) then
+    if not admin_csrf_valid(db, req, form) then
         return csrf_forbidden(req)
     end if
     if not admin_request_authorized(db, req, form) then
@@ -494,7 +509,7 @@ end function
 
 function hide_post(db, req)
     form = form_decode(req.body)
-    if not csrf_valid(form) then
+    if not admin_csrf_valid(db, req, form) then
         return csrf_forbidden(req)
     end if
     if not admin_request_authorized(db, req, form) then
@@ -512,7 +527,7 @@ end function
 
 function unhide_post(db, req)
     form = form_decode(req.body)
-    if not csrf_valid(form) then
+    if not admin_csrf_valid(db, req, form) then
         return csrf_forbidden(req)
     end if
     if not admin_request_authorized(db, req, form) then

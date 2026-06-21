@@ -55,6 +55,16 @@ True
 200
 True
 True
+True
+True
+403
+invalid csrf token
+200
+True
+404
+not found
+200
+True
 303
 /login
 True

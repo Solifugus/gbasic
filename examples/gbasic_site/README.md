@@ -91,8 +91,10 @@ flow still works for local development while the real password-auth flow is
 being built. Hide actions record moderation timestamps and a local moderator
 label, but not the token itself.
 
-These token-backed session approaches are intentionally temporary until gBASIC
-has password hashing and per-session CSRF.
+Session-backed admin forms use the CSRF token stored with the session. Public
+posting forms and the older `/admin?token=<token>` path still use the shared
+development CSRF token. These token-backed approaches are intentionally
+temporary until gBASIC has password hashing.
 
 ## Tests
 

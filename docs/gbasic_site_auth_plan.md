@@ -93,12 +93,13 @@ routes verify both:
 - the session cookie maps to a live session,
 - the submitted CSRF token matches the session.
 
-The current file-backed CSRF token does not protect separate sessions from one
-another and must remain development-only.
+The session-backed admin forms now use the per-session CSRF token stored in
+Postgres. Public posting forms and the legacy local-token admin path still use
+the shared development CSRF token, which must remain development-only.
 
 The site now has a temporary local-token login that creates a server-side
-session cookie. It exists to dogfood session plumbing and is not production
-password authentication.
+session cookie. It exists to dogfood session plumbing and per-session admin
+CSRF, and is not production password authentication.
 
 ## Runtime Gaps
 

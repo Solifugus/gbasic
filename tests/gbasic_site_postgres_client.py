@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import http.client
+import re
 import sys
 import urllib.parse
 
@@ -33,6 +34,11 @@ def post_form(port, path, fields, csrf=True):
         body=body,
         headers={"Content-Type": "application/x-www-form-urlencoded"},
     )
+
+
+def csrf_from(body):
+    match = re.search(r'name="csrf_token" value="([^"]+)"', body)
+    return match.group(1) if match else ""
 
 
 def main():
@@ -195,6 +201,52 @@ def main():
     print(status)
     print("Signed in as local-admin." in body)
     print("Dogfood topic" in body)
+    session_csrf = csrf_from(body)
+    print(session_csrf != "")
+    print(session_csrf != CSRF_TOKEN)
+
+    status, _, body = request(
+        port,
+        "POST",
+        "/admin/hide-topic",
+        body=urllib.parse.urlencode({"topic_id": "1"}),
+        headers={
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Cookie": session_cookie,
+        },
+    )
+    print(status)
+    print(body)
+
+    status, _, body = request(
+        port,
+        "POST",
+        "/admin/hide-topic",
+        body=urllib.parse.urlencode({"csrf_token": session_csrf, "topic_id": "1"}),
+        headers={
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Cookie": session_cookie,
+        },
+    )
+    print(status)
+    print("Topic hidden" in body)
+
+    status, _, body = get(port, "/topic/1")
+    print(status)
+    print(body)
+
+    status, _, body = request(
+        port,
+        "POST",
+        "/admin/unhide-topic",
+        body=urllib.parse.urlencode({"csrf_token": session_csrf, "topic_id": "1"}),
+        headers={
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Cookie": session_cookie,
+        },
+    )
+    print(status)
+    print("Topic restored" in body)
 
     status, headers, body = request(port, "POST", "/logout", headers={"Cookie": session_cookie})
     print(status)

@@ -136,9 +136,9 @@ Captcha can be considered later, but it should not be the only control.
 
 ## Auth, Sessions, and CSRF
 
-The local admin token, token-backed session login, and CSRF token are only
-dogfooding shortcuts. Public deployment needs real authentication before
-write/admin paths are exposed:
+The local admin token, token-backed session login, and shared public-form CSRF
+token are only dogfooding shortcuts. Public deployment needs real
+authentication before write/admin paths are exposed:
 
 - password hashing with a modern password hash,
 - server-side sessions or signed session cookies,
