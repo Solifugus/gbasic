@@ -36,6 +36,10 @@
 #include <curl/curl.h>
 #endif
 
+#if HAVE_LIBXCRYPT
+#include <crypt.h>
+#endif
+
 #define SECURE_TOKEN_MAX_LENGTH 4096
 
 int parse_source(const char *source, AstStmtList *out_program);
@@ -970,6 +974,23 @@ static void lock_clear(void) {
     free(locks);
     locks = NULL;
 }
+
+#if HAVE_LIBXCRYPT
+static int constant_time_string_equal(const char *left, const char *right) {
+    size_t left_len = strlen(left);
+    size_t right_len = strlen(right);
+    size_t max_len = left_len > right_len ? left_len : right_len;
+    unsigned char diff = (unsigned char)(left_len ^ right_len);
+
+    for (size_t i = 0; i < max_len; i++) {
+        unsigned char left_char = i < left_len ? (unsigned char)left[i] : 0;
+        unsigned char right_char = i < right_len ? (unsigned char)right[i] : 0;
+        diff |= (unsigned char)(left_char ^ right_char);
+    }
+
+    return diff == 0;
+}
+#endif
 
 static void lock_cleanup_on_exit(void) {
     lock_clear();
@@ -9640,6 +9661,99 @@ static Value eval_call(AstExpr *expr) {
             return value_unknown();
         }
         return value_string(value);
+    }
+
+    if (strcmp(expr->as.call.name, "password_hash") == 0) {
+        if (expr->as.call.args.count != 1) {
+            runtime_error_raise("password_hash expects one argument", 1003, "invalid function call");
+            return value_null();
+        }
+        Value password = eval_expr(expr->as.call.args.items[0]);
+        if (error_action_pending()) {
+            value_free(password);
+            return value_null();
+        }
+        if (password.kind != VALUE_STRING) {
+            value_free(password);
+            runtime_error_raise("password_hash expects a string", 1003, "invalid function call");
+            return value_null();
+        }
+#if HAVE_LIBXCRYPT
+        char *salt = crypt_gensalt_ra(NULL, 0, NULL, 0);
+        if (!salt) {
+            value_free(password);
+            runtime_error_raise("password_hash could not generate a salt", 1003, "password_hash");
+            return value_null();
+        }
+
+        void *data = NULL;
+        int data_size = 0;
+        char *hash = crypt_ra(password.as.string, salt, &data, &data_size);
+        free(salt);
+        value_free(password);
+        if (!hash) {
+            free(data);
+            runtime_error_raise("password_hash could not hash the password", 1003, "password_hash");
+            return value_null();
+        }
+
+        Value result = value_string(hash);
+        free(data);
+        return result;
+#else
+        value_free(password);
+        runtime_error_raise("Password hashing support is not available in this build",
+                            1003,
+                            "password_hash");
+        return value_null();
+#endif
+    }
+
+    if (strcmp(expr->as.call.name, "password_verify") == 0) {
+        if (expr->as.call.args.count != 2) {
+            runtime_error_raise("password_verify expects two arguments", 1003, "invalid function call");
+            return value_null();
+        }
+        Value password = eval_expr(expr->as.call.args.items[0]);
+        if (error_action_pending()) {
+            value_free(password);
+            return value_null();
+        }
+        Value hash = eval_expr(expr->as.call.args.items[1]);
+        if (error_action_pending()) {
+            value_free(password);
+            value_free(hash);
+            return value_null();
+        }
+        if (password.kind != VALUE_STRING) {
+            value_free(password);
+            value_free(hash);
+            runtime_error_raise("password_verify expects a string password", 1003, "invalid function call");
+            return value_null();
+        }
+        if (hash.kind != VALUE_STRING) {
+            value_free(password);
+            value_free(hash);
+            runtime_error_raise("password_verify expects a string hash", 1003, "invalid function call");
+            return value_null();
+        }
+#if HAVE_LIBXCRYPT
+        void *data = NULL;
+        int data_size = 0;
+        char *computed = crypt_ra(password.as.string, hash.as.string, &data, &data_size);
+        int verified = computed && constant_time_string_equal(computed, hash.as.string);
+        free(data);
+        value_free(password);
+        value_free(hash);
+        return value_bool(verified);
+#else
+        value_free(password);
+        value_free(hash);
+        runtime_error_raise("Password hashing support is not available in this build",
+                            1003,
+                            "password_verify");
+        return value_null();
+#endif
     }
 
     if (strcmp(expr->as.call.name, "secure_token") == 0) {

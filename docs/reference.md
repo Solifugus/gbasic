@@ -941,6 +941,24 @@ session_id = secure_token(43)
 csrf_token = secure_token(43)
 ```
 
+### Password Hashing
+
+**`password_hash(password)`** - Hashes a password string using the platform's
+preferred libxcrypt password-hashing method. The returned string contains the
+algorithm, parameters, salt, and hash, so it can be stored directly in an
+application user table.
+
+**`password_verify(password, hash)`** - Returns `true` when the password string
+matches a stored hash from `password_hash()`, and `false` otherwise. Verification
+uses the algorithm and parameters embedded in the stored hash.
+
+```basic
+stored_hash = password_hash("correct horse battery staple")
+if password_verify("candidate password", stored_hash) then
+    print("ok")
+end if
+```
+
 ### Type Inspection
 
 **`type(value)`** - Returns the type of a value as a string:

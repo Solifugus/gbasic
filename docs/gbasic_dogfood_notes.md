@@ -23,8 +23,9 @@ after the app proves the need.
 - `webserver.redirect(req, location[, status])` now removes boilerplate for
   post/redirect/get flows.
 - The site can now create and revoke temporary token-backed admin sessions, and
-  session-backed admin forms use per-session CSRF. Password hashing is still
-  needed before real auth.
+  session-backed admin forms use per-session CSRF. The runtime now has password
+  hashing, so the remaining auth work is wiring password credentials into the
+  site.
 - Static file serving currently needs explicit routes and typed file
   references.
 - HTML escaping is app-local but should probably become a standard-library

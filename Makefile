@@ -12,6 +12,9 @@ SQLITE3_LIBS := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --li
 LIBCURL_AVAILABLE := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --exists libcurl && printf 1 || printf 0)
 LIBCURL_CFLAGS := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --cflags libcurl 2>/dev/null)
 LIBCURL_LIBS := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --libs libcurl 2>/dev/null)
+LIBXCRYPT_AVAILABLE := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --exists libxcrypt && printf 1 || printf 0)
+LIBXCRYPT_CFLAGS := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --cflags libxcrypt 2>/dev/null)
+LIBXCRYPT_LIBS := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --libs libxcrypt 2>/dev/null)
 
 ifeq ($(GTK_AVAILABLE),1)
 CFLAGS += -DHAVE_GTK=1 $(GTK_CFLAGS)
@@ -40,6 +43,13 @@ CFLAGS += -DHAVE_LIBCURL=1 $(LIBCURL_CFLAGS)
 LDLIBS += $(LIBCURL_LIBS)
 else
 CFLAGS += -DHAVE_LIBCURL=0
+endif
+
+ifeq ($(LIBXCRYPT_AVAILABLE),1)
+CFLAGS += -DHAVE_LIBXCRYPT=1 $(LIBXCRYPT_CFLAGS)
+LDLIBS += $(LIBXCRYPT_LIBS)
+else
+CFLAGS += -DHAVE_LIBXCRYPT=0
 endif
 
 OBJS := src/main.o src/lexer.o src/parser.tab.o src/ast.o src/eval.o src/builtins.o

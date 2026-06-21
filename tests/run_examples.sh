@@ -80,6 +80,7 @@ examples=(
     comparison_lens_parser_hardening_test.bas
     dynamic_record_access_test.bas
     env_builtin_test.bas
+    password_hash_test.bas
     secure_token_test.bas
     nested_lvalue_test.bas
     nested_array_mutation_test.bas

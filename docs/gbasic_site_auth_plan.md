@@ -108,7 +108,8 @@ needs:
 
 - cryptographically secure token generation is available through
   `secure_token(length)`, but raw random bytes are not exposed,
-- password hashing helper,
+- password hashing and verification are available through `password_hash()` and
+  `password_verify()`,
 - cookie parsing and `Set-Cookie` response emission are available in the
   WebServer request/response records,
 - redirect response helper is available as `webserver.redirect(...)`,
@@ -135,7 +136,8 @@ The auth plan is ready to move from design to implementation when:
 
 - gBASIC can read service configuration through `env(name)`,
 - gBASIC can generate secure random tokens through `secure_token(length)`,
-- password hashing has a safe standard helper,
+- password hashing has a safe standard helper through `password_hash()` and
+  `password_verify()`,
 - WebServer apps can read request cookies,
 - response records can set cookies,
 - integration tests cover login, logout, CSRF failures, expired sessions, and

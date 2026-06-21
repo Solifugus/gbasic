@@ -33,6 +33,11 @@ cases=(
     negative_unknown_order
     negative_env_arity
     negative_env_type
+    negative_password_hash_arity
+    negative_password_hash_type
+    negative_password_verify_arity
+    negative_password_verify_password_type
+    negative_password_verify_hash_type
     negative_secure_token_arity
     negative_secure_token_type
     negative_secure_token_fractional
