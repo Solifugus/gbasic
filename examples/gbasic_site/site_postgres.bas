@@ -191,18 +191,6 @@ function reply_validation_error(author, body_text)
     return ""
 end function
 
-function admin_token()
-    env_token = env("GBASIC_SITE_ADMIN_TOKEN")
-    if not is_unknown(env_token) then
-        return trim(env_token)
-    end if
-    token_file(file)= "examples/gbasic_site/admin_token.txt"
-    if not exists(token_file) then
-        return ""
-    end if
-    return trim(read(token_file))
-end function
-
 function csrf_token()
     env_token = env("GBASIC_SITE_CSRF_TOKEN")
     if not is_unknown(env_token) then
@@ -221,6 +209,10 @@ end function
 
 function text_input(label, name, maxlength)
     return "<label>" + html_escape(label) + "<input name=\"" + html_escape(name) + "\" maxlength=\"" + string(maxlength) + "\" required></label>"
+end function
+
+function password_input(label, name, maxlength)
+    return "<label>" + html_escape(label) + "<input type=\"password\" name=\"" + html_escape(name) + "\" maxlength=\"" + string(maxlength) + "\" required></label>"
 end function
 
 function text_area(label, name, maxlength)
@@ -243,14 +235,6 @@ function csrf_forbidden(req)
     return plain_response(req, 403, "invalid csrf token")
 end function
 
-function admin_authorized(values)
-    token = admin_token()
-    if token = "" then
-        return false
-    end if
-    return form_value(values, "token") = token
-end function
-
 function current_session(db, req)
     if is_unknown(req.cookies["gbasic_site_session"]) then
         return {authenticated:false, admin:false, username:""}
@@ -267,26 +251,20 @@ function current_session(db, req)
 end function
 
 function admin_csrf_field(session)
-    if session.authenticated and session.admin then
-        return hidden_input("csrf_token", session.csrf_token)
-    end if
-    return csrf_field()
+    return hidden_input("csrf_token", session.csrf_token)
 end function
 
 function admin_csrf_valid(db, req, values)
     session = current_session(db, req)
-    if session.authenticated and session.admin then
-        return form_value(values, "csrf_token") = session.csrf_token
+    if not (session.authenticated and session.admin) then
+        return false
     end if
-    return csrf_valid(values)
+    return form_value(values, "csrf_token") = session.csrf_token
 end function
 
 function admin_request_authorized(db, req, values)
     session = current_session(db, req)
-    if session.authenticated and session.admin then
-        return true
-    end if
-    return admin_authorized(values)
+    return session.authenticated and session.admin
 end function
 
 function admin_actor(db, req)
@@ -294,22 +272,38 @@ function admin_actor(db, req)
     if session.authenticated and session.admin then
         return session.username
     end if
-    return "local-admin"
+    return ""
 end function
 
 function login_page(req)
-    body = "<h1>Login</h1><p>Use the temporary local admin token while password authentication is being built.</p><form method=\"post\" action=\"/login\">" + text_input("Token", "token", 200) + "<button type=\"submit\">Login</button></form><p><a href=\"/forum\">Back to forum</a></p>"
+    body = "<h1>Login</h1><p>Sign in with an admin username and password.</p><form method=\"post\" action=\"/login\">" + text_input("Username", "username", 80) + password_input("Password", "password", 200) + "<button type=\"submit\">Login</button></form><p><a href=\"/forum\">Back to forum</a></p>"
     return shell_response(req, 200, "Login", body)
+end function
+
+function login_failed(req)
+    body = "<h1>Login</h1><p>Invalid username or password.</p><p><a href=\"/login\">Try again</a></p>"
+    return shell_response(req, 403, "Login", body)
 end function
 
 function login_submit(db, req)
     form = form_decode(req.body)
-    if not admin_authorized(form) then
-        body = "<h1>Login</h1><p>Invalid local admin token.</p><p><a href=\"/login\">Try again</a></p>"
-        return shell_response(req, 403, "Login", body)
+    username = trim(form_value(form, "username"))
+    password = form_value(form, "password")
+    if username = "" or password = "" then
+        return login_failed(req)
     end if
 
-    users = pg.query(db, "insert into gbasic_site_users (username, password_hash, password_algorithm, admin) values ($1, $2, $3, true) on conflict (username) do update set admin = true, disabled = false, updated_at = now() returning id", ["local-admin", "temporary-local-token", "local-token"])
+    users = pg.query(db, "select id, password_hash, admin from gbasic_site_users where username = $1 and disabled = false", [username])
+    if len(users) = 0 then
+        return login_failed(req)
+    end if
+    if not users[0].admin then
+        return login_failed(req)
+    end if
+    if not password_verify(password, users[0].password_hash) then
+        return login_failed(req)
+    end if
+
     session_id = secure_token(43)
     csrf = secure_token(43)
     pg.exec(db, "insert into gbasic_site_sessions (id, user_id, csrf_token, expires_at) values ($1, $2, $3, now() + interval '8 hours')", [session_id, users[0].id, csrf])
@@ -329,10 +323,6 @@ function logout(db, req)
     response = webserver.redirect(req, "/login")
     response.cookies = ["gbasic_site_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0"]
     return response
-end function
-
-function admin_token_field(token)
-    return hidden_input("token", token)
 end function
 
 function topic_id_field(topic_id)
@@ -430,30 +420,22 @@ end function
 
 function admin_page(db, req)
     session = current_session(db, req)
-    token_authorized = admin_authorized(req.query)
-    if not (session.authenticated and session.admin) and not token_authorized then
-        body = "<h1>Admin</h1><p>Enter the local moderation token.</p><form method=\"get\" action=\"/admin\">" + text_input("Token", "token", 200) + "<button type=\"submit\">Open admin</button></form><p><a href=\"/login\">Login with a session</a></p><p><a href=\"/forum\">Back to forum</a></p>"
+    if not (session.authenticated and session.admin) then
+        body = "<h1>Admin</h1><p>Admin sign-in required.</p><p><a href=\"/login\">Login</a></p><p><a href=\"/forum\">Back to forum</a></p>"
         return shell_response(req, 403, "Admin", body)
     end if
 
-    token = ""
-    if token_authorized then
-        token = form_value(req.query, "token")
-    end if
     admin_limit = 50
     topics = pg.query(db, "select t.id, t.title, t.author_name, t.hidden, t.moderated_by, c.title as category_title from gbasic_site_topics t join gbasic_site_categories c on c.id = t.category_id order by t.id desc limit $1", [admin_limit])
     posts = pg.query(db, "select p.id, p.author_name, p.body, p.hidden, p.moderated_by, t.title as topic_title from gbasic_site_posts p join gbasic_site_topics t on t.id = p.topic_id order by p.id desc limit $1", [admin_limit])
 
-    body = "<h1>Admin</h1><p>Local moderation tools for hiding topics and replies. Showing the latest " + string(admin_limit) + " topics and replies.</p><h2>Topics</h2><div class=\"stack\">"
-    if session.authenticated and session.admin then
-        body = "<h1>Admin</h1><p>Signed in as " + html_escape(session.username) + ".</p><form class=\"inline-form\" method=\"post\" action=\"/logout\"><button type=\"submit\">Logout</button></form><p>Local moderation tools for hiding topics and replies. Showing the latest " + string(admin_limit) + " topics and replies.</p><h2>Topics</h2><div class=\"stack\">"
-    end if
+    body = "<h1>Admin</h1><p>Signed in as " + html_escape(session.username) + ".</p><form class=\"inline-form\" method=\"post\" action=\"/logout\"><button type=\"submit\">Logout</button></form><p>Local moderation tools for hiding topics and replies. Showing the latest " + string(admin_limit) + " topics and replies.</p><h2>Topics</h2><div class=\"stack\">"
     for each topic in topics
         body = body + "<article class=\"list-item\"><h2>" + html_escape(topic.title) + "</h2><p>" + html_escape(moderation_summary(topic)) + " in " + html_escape(topic.category_title) + ", started by " + html_escape(topic.author_name) + "</p>"
         if not topic.hidden then
-            body = body + "<form class=\"inline-form\" method=\"post\" action=\"/admin/hide-topic\">" + admin_csrf_field(session) + admin_token_field(token) + topic_id_field(topic.id) + "<button type=\"submit\">Hide topic</button></form>"
+            body = body + "<form class=\"inline-form\" method=\"post\" action=\"/admin/hide-topic\">" + admin_csrf_field(session) + topic_id_field(topic.id) + "<button type=\"submit\">Hide topic</button></form>"
         else
-            body = body + "<form class=\"inline-form\" method=\"post\" action=\"/admin/unhide-topic\">" + admin_csrf_field(session) + admin_token_field(token) + topic_id_field(topic.id) + "<button type=\"submit\">Unhide topic</button></form>"
+            body = body + "<form class=\"inline-form\" method=\"post\" action=\"/admin/unhide-topic\">" + admin_csrf_field(session) + topic_id_field(topic.id) + "<button type=\"submit\">Unhide topic</button></form>"
         end if
         body = body + "</article>"
     end for
@@ -461,9 +443,9 @@ function admin_page(db, req)
     for each post in posts
         body = body + "<article class=\"list-item\"><h2>Reply #" + string(post.id) + "</h2><p>" + html_escape(moderation_summary(post)) + " on " + html_escape(post.topic_title) + ", by " + html_escape(post.author_name) + "</p><p>" + html_escape(post.body) + "</p>"
         if not post.hidden then
-            body = body + "<form class=\"inline-form\" method=\"post\" action=\"/admin/hide-post\">" + admin_csrf_field(session) + admin_token_field(token) + post_id_field(post.id) + "<button type=\"submit\">Hide reply</button></form>"
+            body = body + "<form class=\"inline-form\" method=\"post\" action=\"/admin/hide-post\">" + admin_csrf_field(session) + post_id_field(post.id) + "<button type=\"submit\">Hide reply</button></form>"
         else
-            body = body + "<form class=\"inline-form\" method=\"post\" action=\"/admin/unhide-post\">" + admin_csrf_field(session) + admin_token_field(token) + post_id_field(post.id) + "<button type=\"submit\">Unhide reply</button></form>"
+            body = body + "<form class=\"inline-form\" method=\"post\" action=\"/admin/unhide-post\">" + admin_csrf_field(session) + post_id_field(post.id) + "<button type=\"submit\">Unhide reply</button></form>"
         end if
         body = body + "</article>"
     end for

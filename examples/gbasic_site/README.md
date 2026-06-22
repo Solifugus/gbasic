@@ -58,20 +58,20 @@ After Postgres setup, run the database-backed entry point:
 
 It also writes the selected port to `examples/gbasic_site/tmp_port.txt`.
 
-The local admin page requires a token. Prefer an environment variable:
+The admin page requires a signed-in admin user. Admin credentials are
+provisioned at setup time (see "Postgres Setup" below) by running `setup.bas`
+with `GBASIC_SITE_ADMIN_USER` and `GBASIC_SITE_ADMIN_PASSWORD` set. Passwords
+are stored as salted hashes through `password_hash()`; the plaintext password
+is never written to the database.
 
-```sh
-export GBASIC_SITE_ADMIN_TOKEN=change-this-local-admin-token
-```
+Open `/login`, sign in with the admin username and password to receive a
+server-side session cookie, then open `/admin` to view moderation tools. There
+is no longer a token-based admin path. Hide actions record moderation
+timestamps and attribute the action to the authenticated username.
 
-You can also use a local fallback file:
-
-```sh
-cp examples/gbasic_site/admin_token.example.txt examples/gbasic_site/admin_token.txt
-chmod 600 examples/gbasic_site/admin_token.txt
-```
-
-State-changing forms also require a CSRF token. Prefer an environment
+State-changing forms require a CSRF token. Admin moderation forms use the
+per-session CSRF token stored with the session in Postgres. Anonymous public
+posting forms still use a shared development CSRF token. Prefer an environment
 variable:
 
 ```sh
@@ -85,16 +85,8 @@ cp examples/gbasic_site/csrf_token.example.txt examples/gbasic_site/csrf_token.t
 chmod 600 examples/gbasic_site/csrf_token.txt
 ```
 
-Open `/login` to exchange the temporary local admin token for a session cookie,
-then open `/admin` to view moderation tools. The older `/admin?token=<token>`
-flow still works for local development while the real password-auth flow is
-being built. Hide actions record moderation timestamps and a local moderator
-label, but not the token itself.
-
-Session-backed admin forms use the CSRF token stored with the session. Public
-posting forms and the older `/admin?token=<token>` path still use the shared
-development CSRF token. These token-backed approaches are intentionally
-temporary until gBASIC has password hashing.
+The shared public-form CSRF token remains development-only until anonymous
+posting gets its own anti-abuse story.
 
 ## Tests
 
@@ -141,14 +133,19 @@ DB_NAME=gbasic_site_dev DB_USER=gbasic_site DB_HOST=127.0.0.1 DB_PORT=5432 \
     examples/gbasic_site/scripts/setup_postgres_dev.sh
 ```
 
-Initialize/reset the app tables and seed data:
+Initialize/reset the app tables and seed data. Set the admin credentials in the
+same command to provision (or update) an admin login:
 
 ```sh
-./gbasic examples/gbasic_site/setup.bas
+GBASIC_SITE_ADMIN_USER=admin GBASIC_SITE_ADMIN_PASSWORD=change-this-password \
+    ./gbasic examples/gbasic_site/setup.bas
 ```
 
 This creates and resets only `gbasic_site_*` tables in the configured database,
-including the auth/session tables used by the upcoming login flow.
+including the auth/session tables. When `GBASIC_SITE_ADMIN_USER` and
+`GBASIC_SITE_ADMIN_PASSWORD` are both set, it hashes the password with
+`password_hash()` and upserts an enabled admin user. Without them, setup runs
+normally but provisions no admin account.
 
 ## Backups
 

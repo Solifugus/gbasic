@@ -46,14 +46,21 @@ cleanup() {
 }
 trap cleanup EXIT
 
-if ! ./gbasic examples/gbasic_site/setup.bas >"$setup_stdout" 2>"$setup_stderr"; then
+if ! GBASIC_SITE_ADMIN_USER=site-admin GBASIC_SITE_ADMIN_PASSWORD=test-admin-password \
+    ./gbasic examples/gbasic_site/setup.bas >"$setup_stdout" 2>"$setup_stderr"; then
     cat "$setup_stderr"
     exit 1
 fi
 
-if [[ "$(cat "$setup_stdout")" != "gbasic_site database ready" ]]; then
+if ! grep -qx "gbasic_site database ready" "$setup_stdout"; then
     printf 'FAIL examples/gbasic_site/setup.bas\n'
     printf 'unexpected setup output:\n'
+    cat "$setup_stdout"
+    exit 1
+fi
+
+if ! grep -qx "admin user provisioned: site-admin" "$setup_stdout"; then
+    printf 'FAIL examples/gbasic_site/setup.bas (admin user not provisioned)\n'
     cat "$setup_stdout"
     exit 1
 fi
@@ -75,7 +82,7 @@ if [[ -e "$server_port_file" ]]; then
     had_server_port=1
 fi
 rm -f "$port_file"
-GBASIC_SITE_PORT=0 GBASIC_SITE_ADMIN_TOKEN=test-admin-token GBASIC_SITE_CSRF_TOKEN=test-csrf-token GBASIC_WEBSERVER_TIMEOUT=0.2 ./gbasic examples/gbasic_site/site_postgres.bas \
+GBASIC_SITE_PORT=0 GBASIC_SITE_CSRF_TOKEN=test-csrf-token GBASIC_WEBSERVER_TIMEOUT=0.2 ./gbasic examples/gbasic_site/site_postgres.bas \
     >"$server_stdout" 2>"$server_stderr" &
 server_pid=$!
 

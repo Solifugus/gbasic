@@ -48,8 +48,11 @@ True
 True
 403
 True
+403
+True
 303
 /admin
+True
 True
 0
 200
@@ -59,27 +62,19 @@ True
 True
 403
 invalid csrf token
+403
+invalid csrf token
 200
 True
 404
 not found
 200
 True
-303
-/login
-True
-403
 True
 200
 True
+200
 True
-True
-403
-forbidden
-403
-invalid csrf token
-400
-invalid topic_id
 200
 True
 200
@@ -125,6 +120,13 @@ True
 True
 200
 True
+303
+/login
+True
+403
+True
+403
+invalid csrf token
 404
 not found
 200

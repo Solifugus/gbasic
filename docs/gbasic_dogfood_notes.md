@@ -10,9 +10,10 @@ after the app proves the need.
   `f"...{expr}..."` would reduce concatenation noise.
 - `env(name)` now covers simple service configuration, but richer typed config
   patterns may still be useful as apps grow.
-- The first admin token can now come from `GBASIC_SITE_ADMIN_TOKEN`, with the
-  local token file kept as a fallback. Real auth should still use sessions and
-  password hashing rather than a shared token.
+- Admin login now uses a username and password verified against
+  `gbasic_site_users` with `password_verify()`. Admin accounts are provisioned
+  at setup time from `GBASIC_SITE_ADMIN_USER` / `GBASIC_SITE_ADMIN_PASSWORD`.
+  The temporary shared-token admin path has been removed.
 - The deployment port can now come from `GBASIC_SITE_PORT`, with the local
   `server_port.txt` file kept as a fallback.
 - The first public-form CSRF token can now come from `GBASIC_SITE_CSRF_TOKEN`,
@@ -22,10 +23,10 @@ after the app proves the need.
   emit `Set-Cookie` headers, which is enough to start server-side sessions.
 - `webserver.redirect(req, location[, status])` now removes boilerplate for
   post/redirect/get flows.
-- The site can now create and revoke temporary token-backed admin sessions, and
-  session-backed admin forms use per-session CSRF. The runtime now has password
-  hashing, so the remaining auth work is wiring password credentials into the
-  site.
+- The site now creates and revokes password-backed admin sessions, and
+  session-backed admin forms use per-session CSRF. Remaining auth work is
+  session expiry/rotation coverage and giving anonymous public posting its own
+  anti-abuse story instead of the shared development CSRF token.
 - Static file serving currently needs explicit routes and typed file
   references.
 - HTML escaping is app-local but should probably become a standard-library

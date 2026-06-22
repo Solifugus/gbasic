@@ -57,8 +57,12 @@ create table gbasic_site_sessions (
 );
 ```
 
-The gBASIC site schema now includes these users and sessions tables. The site
-does not yet expose login/logout routes or password-based authentication.
+The gBASIC site schema includes these users and sessions tables. The site now
+exposes username/password login at `/login`, server-side session creation, and
+session revocation at `/logout`. Admin users are provisioned at setup time from
+`GBASIC_SITE_ADMIN_USER` / `GBASIC_SITE_ADMIN_PASSWORD`, with the password
+stored as a salted hash via `password_hash()`. The temporary local-token admin
+path has been removed.
 
 The session id and CSRF token must come from cryptographically secure random
 bytes, not predictable strings.
@@ -93,13 +97,14 @@ routes verify both:
 - the session cookie maps to a live session,
 - the submitted CSRF token matches the session.
 
-The session-backed admin forms now use the per-session CSRF token stored in
-Postgres. Public posting forms and the legacy local-token admin path still use
-the shared development CSRF token, which must remain development-only.
+The session-backed admin forms use the per-session CSRF token stored in
+Postgres. Anonymous public posting forms still use the shared development CSRF
+token, which must remain development-only until anonymous posting gets its own
+anti-abuse story.
 
-The site now has a temporary local-token login that creates a server-side
-session cookie. It exists to dogfood session plumbing and per-session admin
-CSRF, and is not production password authentication.
+Admin login now verifies a username and password against `gbasic_site_users`
+using `password_verify()` and creates a server-side session on success. The
+earlier temporary local-token login has been removed.
 
 ## Runtime Gaps
 

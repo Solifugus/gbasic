@@ -10,32 +10,19 @@ POSTGRES_ADMIN="${POSTGRES_ADMIN:-postgres}"
 read -r -s -p "Password for PostgreSQL role ${DB_USER}: " DB_PASS
 printf '\n'
 
-sql_escape() {
-    printf "%s" "$1" | sed "s/'/''/g"
-}
-
-db_name_sql="$(sql_escape "$DB_NAME")"
-db_user_sql="$(sql_escape "$DB_USER")"
-db_pass_sql="$(sql_escape "$DB_PASS")"
-
 sudo -u "$POSTGRES_ADMIN" psql -v ON_ERROR_STOP=1 \
-    -v db_name="$db_name_sql" \
-    -v db_user="$db_user_sql" \
-    -v db_pass="$db_pass_sql" <<'SQL'
-DO $$
-DECLARE
-    role_name text := :'db_user';
-    role_password text := :'db_pass';
-BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_roles WHERE rolname = role_name
-    ) THEN
-        EXECUTE format('CREATE ROLE %I LOGIN PASSWORD %L', role_name, role_password);
-    ELSE
-        EXECUTE format('ALTER ROLE %I WITH LOGIN PASSWORD %L', role_name, role_password);
-    END IF;
-END
-$$;
+    -v db_name="$DB_NAME" \
+    -v db_user="$DB_USER" \
+    -v db_pass="$DB_PASS" <<'SQL'
+SELECT format('CREATE ROLE %I LOGIN PASSWORD %L', :'db_user', :'db_pass')
+WHERE NOT EXISTS (
+    SELECT 1 FROM pg_roles WHERE rolname = :'db_user'
+)\gexec
+
+SELECT format('ALTER ROLE %I WITH LOGIN PASSWORD %L', :'db_user', :'db_pass')
+WHERE EXISTS (
+    SELECT 1 FROM pg_roles WHERE rolname = :'db_user'
+)\gexec
 
 SELECT format('CREATE DATABASE %I OWNER %I', :'db_name', :'db_user')
 WHERE NOT EXISTS (

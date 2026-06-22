@@ -6,6 +6,8 @@ import sys
 import urllib.parse
 
 CSRF_TOKEN = "test-csrf-token"
+ADMIN_USER = "site-admin"
+ADMIN_PASSWORD = "test-admin-password"
 
 
 def request(port, method, path, body=None, headers=None):
@@ -19,18 +21,36 @@ def request(port, method, path, body=None, headers=None):
     return response.status, headers, body
 
 
-def get(port, path):
-    return request(port, "GET", path)
+def get(port, path, cookie=None):
+    headers = {"Cookie": cookie} if cookie else {}
+    return request(port, "GET", path, headers=headers)
 
 
-def post_form(port, path, fields, csrf=True):
+def post_form(port, path, fields, csrf=True, cookie=None):
     if csrf:
         fields = {**fields, "csrf_token": CSRF_TOKEN}
     body = urllib.parse.urlencode(fields)
+    headers = {"Content-Type": "application/x-www-form-urlencoded"}
+    if cookie:
+        headers["Cookie"] = cookie
+    return request(port, "POST", path, body=body, headers=headers)
+
+
+def admin_post(port, path, fields, cookie, csrf_token):
+    body = urllib.parse.urlencode({**fields, "csrf_token": csrf_token})
+    headers = {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Cookie": cookie,
+    }
+    return request(port, "POST", path, body=body, headers=headers)
+
+
+def login(port, username, password):
+    body = urllib.parse.urlencode({"username": username, "password": password})
     return request(
         port,
         "POST",
-        path,
+        "/login",
         body=body,
         headers={"Content-Type": "application/x-www-form-urlencoded"},
     )
@@ -164,47 +184,43 @@ def main():
     print("Paged topic 24" in body)
     print("Paged topic 0" in body)
 
+    # Admin now requires a signed-in admin session.
     status, _, body = get(port, "/admin")
     print(status)
-    print("Enter the local moderation token." in body)
+    print("Admin sign-in required." in body)
 
     status, _, body = get(port, "/login")
     print(status)
-    print("temporary local admin token" in body)
+    print("admin username and password" in body)
 
-    invalid_login_body = urllib.parse.urlencode({"token": "bad-token"})
-    status, _, body = request(
-        port,
-        "POST",
-        "/login",
-        body=invalid_login_body,
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
-    )
+    # Wrong password is rejected.
+    status, _, body = login(port, ADMIN_USER, "wrong-password")
     print(status)
-    print("Invalid local admin token." in body)
+    print("Invalid username or password." in body)
 
-    login_body = urllib.parse.urlencode({"token": "test-admin-token"})
-    status, headers, body = request(
-        port,
-        "POST",
-        "/login",
-        body=login_body,
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
-    )
+    # Unknown user is rejected the same way.
+    status, _, body = login(port, "nobody", "whatever")
+    print(status)
+    print("Invalid username or password." in body)
+
+    # Valid credentials create a session and redirect to /admin.
+    status, headers, body = login(port, ADMIN_USER, ADMIN_PASSWORD)
     print(status)
     print(headers.get("location", ""))
     session_cookie = headers.get("set-cookie-values", "").split(";", 1)[0]
     print(session_cookie.startswith("gbasic_site_session="))
+    print("HttpOnly" in headers.get("set-cookie-values", ""))
     print(len(body))
 
     status, _, body = request(port, "GET", "/admin", headers={"Cookie": session_cookie})
     print(status)
-    print("Signed in as local-admin." in body)
+    print("Signed in as site-admin." in body)
     print("Dogfood topic" in body)
     session_csrf = csrf_from(body)
     print(session_csrf != "")
     print(session_csrf != CSRF_TOKEN)
 
+    # Moderation without the session CSRF token is rejected.
     status, _, body = request(
         port,
         "POST",
@@ -218,16 +234,13 @@ def main():
     print(status)
     print(body)
 
-    status, _, body = request(
-        port,
-        "POST",
-        "/admin/hide-topic",
-        body=urllib.parse.urlencode({"csrf_token": session_csrf, "topic_id": "1"}),
-        headers={
-            "Content-Type": "application/x-www-form-urlencoded",
-            "Cookie": session_cookie,
-        },
-    )
+    # Moderation without a session cookie is rejected even with the shared token.
+    status, _, body = post_form(port, "/admin/hide-topic", {"topic_id": "1"})
+    print(status)
+    print(body)
+
+    # Hide and restore the seeded topic with the session CSRF token.
+    status, _, body = admin_post(port, "/admin/hide-topic", {"topic_id": "1"}, session_cookie, session_csrf)
     print(status)
     print("Topic hidden" in body)
 
@@ -235,59 +248,21 @@ def main():
     print(status)
     print(body)
 
-    status, _, body = request(
-        port,
-        "POST",
-        "/admin/unhide-topic",
-        body=urllib.parse.urlencode({"csrf_token": session_csrf, "topic_id": "1"}),
-        headers={
-            "Content-Type": "application/x-www-form-urlencoded",
-            "Cookie": session_cookie,
-        },
-    )
+    # Moderation attribution records the authenticated username.
+    status, _, body = get(port, "/admin", session_cookie)
+    print(status)
+    print("hidden by site-admin" in body)
+    print("Unhide topic" in body)
+
+    status, _, body = admin_post(port, "/admin/unhide-topic", {"topic_id": "1"}, session_cookie, session_csrf)
     print(status)
     print("Topic restored" in body)
 
-    status, headers, body = request(port, "POST", "/logout", headers={"Cookie": session_cookie})
+    status, _, body = get(port, "/topic/1")
     print(status)
-    print(headers.get("location", ""))
-    print("Max-Age=0" in headers.get("set-cookie-values", ""))
+    print("This seeded topic proves the Postgres-backed forum tables are ready." in body)
 
-    status, _, body = request(port, "GET", "/admin", headers={"Cookie": session_cookie})
-    print(status)
-    print("Enter the local moderation token." in body)
-
-    status, _, body = get(port, "/admin?token=test-admin-token")
-    print(status)
-    print("Dogfood topic" in body)
-    print("Reply support is wired into the initial schema." in body)
-    print('name="csrf_token"' in body)
-
-    status, _, body = post_form(
-        port,
-        "/admin/hide-topic",
-        {"token": "bad-token", "topic_id": "1"},
-    )
-    print(status)
-    print(body)
-
-    status, _, body = post_form(
-        port,
-        "/admin/hide-topic",
-        {"token": "test-admin-token", "topic_id": "1"},
-        csrf=False,
-    )
-    print(status)
-    print(body)
-
-    status, _, body = post_form(
-        port,
-        "/admin/hide-topic",
-        {"token": "test-admin-token", "topic_id": "abc"},
-    )
-    print(status)
-    print(body)
-
+    # The "Dogfood topic" is topic 2; exercise reply moderation around it.
     status, _, body = get(port, "/topic/2")
     print(status)
     print("Dogfood topic" in body)
@@ -308,11 +283,7 @@ def main():
     print(status)
     print("Reply to a new topic" in body)
 
-    status, _, body = post_form(
-        port,
-        "/admin/hide-topic",
-        {"token": "test-admin-token", "topic_id": "2"},
-    )
+    status, _, body = admin_post(port, "/admin/hide-topic", {"topic_id": "2"}, session_cookie, session_csrf)
     print(status)
     print("Topic hidden" in body)
 
@@ -320,15 +291,11 @@ def main():
     print(status)
     print(body)
 
-    status, _, body = get(port, "/admin?token=test-admin-token")
+    status, _, body = get(port, "/admin", session_cookie)
     print(status)
     print("Unhide topic" in body)
 
-    status, _, body = post_form(
-        port,
-        "/admin/unhide-topic",
-        {"token": "test-admin-token", "topic_id": "2"},
-    )
+    status, _, body = admin_post(port, "/admin/unhide-topic", {"topic_id": "2"}, session_cookie, session_csrf)
     print(status)
     print("Topic restored" in body)
 
@@ -336,6 +303,7 @@ def main():
     print(status)
     print("Dogfood topic" in body)
 
+    # Post a reply on topic 1 (validation and CSRF still apply to public forms).
     status, _, body = get(port, "/topic/1/reply")
     print(status)
     print("<form" in body)
@@ -370,32 +338,30 @@ def main():
     print(status)
     print("Reply from a form" in body)
 
-    status, _, body = post_form(
-        port,
-        "/admin/hide-post",
-        {"token": "test-admin-token", "post_id": "3"},
-    )
+    # Reply moderation through the admin session (post id 3 is the seeded reply).
+    status, _, body = admin_post(port, "/admin/hide-post", {"post_id": "3"}, session_cookie, session_csrf)
     print(status)
     print("Reply hidden" in body)
 
-    status, _, body = get(port, "/admin?token=test-admin-token")
+    status, _, body = get(port, "/admin", session_cookie)
     print(status)
     print("Unhide reply" in body)
 
-    status, _, body = post_form(
+    # Reply moderation without the session CSRF token is rejected.
+    status, _, body = request(
         port,
+        "POST",
         "/admin/hide-post",
-        {"token": "test-admin-token", "post_id": "1"},
-        csrf=False,
+        body=urllib.parse.urlencode({"post_id": "1"}),
+        headers={
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Cookie": session_cookie,
+        },
     )
     print(status)
     print(body)
 
-    status, _, body = post_form(
-        port,
-        "/admin/hide-post",
-        {"token": "test-admin-token", "post_id": "abc"},
-    )
+    status, _, body = admin_post(port, "/admin/hide-post", {"post_id": "abc"}, session_cookie, session_csrf)
     print(status)
     print(body)
 
@@ -403,11 +369,7 @@ def main():
     print(status)
     print("Reply from a form" in body)
 
-    status, _, body = post_form(
-        port,
-        "/admin/unhide-post",
-        {"token": "test-admin-token", "post_id": "3"},
-    )
+    status, _, body = admin_post(port, "/admin/unhide-post", {"post_id": "3"}, session_cookie, session_csrf)
     print(status)
     print("Reply restored" in body)
 
@@ -415,9 +377,24 @@ def main():
     print(status)
     print("Reply from a form" in body)
 
-    status, _, body = get(port, "/admin?token=test-admin-token")
+    status, _, body = get(port, "/admin", session_cookie)
     print(status)
     print("visible" in body)
+
+    # Logging out invalidates the session.
+    status, headers, body = request(port, "POST", "/logout", headers={"Cookie": session_cookie})
+    print(status)
+    print(headers.get("location", ""))
+    print("Max-Age=0" in headers.get("set-cookie-values", ""))
+
+    status, _, body = request(port, "GET", "/admin", headers={"Cookie": session_cookie})
+    print(status)
+    print("Admin sign-in required." in body)
+
+    # A revoked session can no longer moderate.
+    status, _, body = admin_post(port, "/admin/hide-topic", {"topic_id": "1"}, session_cookie, session_csrf)
+    print(status)
+    print(body)
 
     status, _, body = get(port, "/missing")
     print(status)
