@@ -59,13 +59,13 @@ virsh_cmd() {
 
 virt_install_cmd() {
     if virsh -c "$LIBVIRT_URI" list --all >/dev/null 2>&1; then
-        virt-install -c "$LIBVIRT_URI" "$@"
+        virt-install --connect "$LIBVIRT_URI" "$@"
     else
         if ! command -v sudo >/dev/null 2>&1; then
             printf 'Need sudo to access %s, but sudo is not installed.\n' "$LIBVIRT_URI" >&2
             exit 1
         fi
-        sudo virt-install -c "$LIBVIRT_URI" "$@"
+        sudo virt-install --connect "$LIBVIRT_URI" "$@"
     fi
 }
 
@@ -112,14 +112,16 @@ if [[ "$VM_DRY_RUN" != "1" ]] && virsh_cmd dominfo "$VM_NAME" >/dev/null 2>&1; t
     exit 1
 fi
 
-if [[ "$VM_DRY_RUN" != "1" && -e "$disk" ]]; then
-    printf 'Disk already exists: %s\n' "$disk" >&2
-    printf 'Move it aside or set VM_NAME/VM_STORAGE_DIR to a new path.\n' >&2
-    exit 1
-fi
-
 if [[ "$VM_DRY_RUN" == "1" ]]; then
     printf 'Would create qcow2 disk %s size %s\n' "$disk" "$VM_DISK_SIZE"
+elif [[ -e "$disk" ]]; then
+    if qemu-img info "$disk" >/dev/null 2>&1; then
+        printf 'Using existing disk %s\n' "$disk"
+    else
+        printf 'Disk already exists and is not a readable qemu image: %s\n' "$disk" >&2
+        printf 'Move it aside or set VM_NAME/VM_STORAGE_DIR to a new path.\n' >&2
+        exit 1
+    fi
 else
     run_storage qemu-img create -f qcow2 "$disk" "$VM_DISK_SIZE"
 fi
@@ -153,7 +155,7 @@ virt_args=(
 
 if [[ "$VM_DRY_RUN" == "1" ]]; then
     printf 'Would run virt-install with:\n'
-    printf '  virt-install -c %q' "$LIBVIRT_URI"
+    printf '  virt-install --connect %q' "$LIBVIRT_URI"
     printf ' %q' "${virt_args[@]}"
     printf '\n'
     exit 0
