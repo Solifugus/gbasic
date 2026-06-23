@@ -1,3 +1,7 @@
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+
 #include "eval.h"
 #include "builtins.h"
 
@@ -9,6 +13,7 @@
 #include <math.h>
 #include <poll.h>
 #include <signal.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1501,6 +1506,7 @@ static GuiNativeWindow *gui_window_registry_find(const char *handle_id);
 static void gui_window_flush_mutations(GuiNativeWindow *window);
 static void gui_window_refresh_widgets(GuiNativeWindow *window);
 #endif
+static int gui_ensure_gtk_available(void);
 static char *gui_create_native_window(Value *ui,
                                       int width,
                                       int height,
