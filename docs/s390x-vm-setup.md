@@ -82,6 +82,47 @@ If the VM is still running in the installer and does not shut down cleanly:
 VM_FORCE_DESTROY=1 scripts/vm/boot-s390x-from-disk.sh
 ```
 
+### Debian Guest Bootstrap
+
+Inside the installed Debian s390x guest, install the build dependencies. If you
+are logged in as root, omit `sudo`.
+
+```bash
+sudo apt update
+sudo apt install git build-essential bison pkg-config libsqlite3-dev libpq-dev libcurl4-openssl-dev libcrypt-dev
+```
+
+`libcrypt-dev` provides `crypt.h` and `-lcrypt` on Debian. The package may be
+named differently on other distributions.
+
+GUI support is optional. A headless Debian guest builds with `HAVE_GTK=0`
+automatically. Install GTK only if you want to test GUI support:
+
+```bash
+sudo apt install libgtk-3-dev
+```
+
+Clone and test:
+
+```bash
+mkdir -p ~/development
+cd ~/development
+git clone https://github.com/Solifugus/gbasic.git
+cd gbasic
+git checkout site-password-auth
+make
+./tests/run_examples.sh
+./tests/run_negative.sh
+```
+
+This workflow has been validated on a Debian 13 s390x QEMU guest. On a headless
+guest, the build may print unused GUI stub warnings when GTK is unavailable;
+those warnings are not test failures.
+
+Codex is not expected to run inside the s390x guest as a normal supported
+setup. Use Codex on the host, push fixes to GitHub, pull them in the guest, and
+run the build/test commands there.
+
 ## RHEL
 
 The RHEL script requires a local RHEL s390x installer ISO:
