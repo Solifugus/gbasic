@@ -14,7 +14,7 @@ need() {
 }
 
 need virsh
-need virt-xml
+need python3
 
 if ! virsh -c "$LIBVIRT_URI" dominfo "$VM_NAME" >/dev/null 2>&1; then
     printf 'VM not found: %s\n' "$VM_NAME" >&2
@@ -43,12 +43,39 @@ if [[ "$state" == "running" ]]; then
     fi
 fi
 
-virt-xml -c "$LIBVIRT_URI" "$VM_NAME" \
-    --edit \
-    --boot hd \
-    --xml xpath.delete=./os/kernel \
-    --xml xpath.delete=./os/initrd \
-    --xml xpath.delete=./os/cmdline
+xml_file="$(mktemp)"
+trap 'rm -f "$xml_file"' EXIT
+
+virsh -c "$LIBVIRT_URI" dumpxml "$VM_NAME" >"$xml_file"
+
+python3 - "$xml_file" <<'PY'
+import sys
+import xml.etree.ElementTree as ET
+
+path = sys.argv[1]
+tree = ET.parse(path)
+root = tree.getroot()
+os_node = root.find("os")
+if os_node is None:
+    raise SystemExit("domain XML has no <os> node")
+
+for tag in ("kernel", "initrd", "cmdline"):
+    child = os_node.find(tag)
+    if child is not None:
+        os_node.remove(child)
+
+for child in list(os_node.findall("boot")):
+    os_node.remove(child)
+
+boot = ET.Element("boot")
+boot.set("dev", "hd")
+os_node.append(boot)
+
+ET.indent(tree, space="  ")
+tree.write(path, encoding="unicode")
+PY
+
+virsh -c "$LIBVIRT_URI" define "$xml_file" >/dev/null
 
 printf 'VM %s now boots from disk.\n' "$VM_NAME"
 
