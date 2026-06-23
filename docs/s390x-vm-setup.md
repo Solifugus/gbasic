@@ -69,6 +69,19 @@ https://deb.debian.org/debian/dists/trixie/main/installer-s390x/current/images/g
 Set `DEBIAN_SUITE`, `DEBIAN_OSINFO`, or `DEBIAN_INSTALLER_BASE` if Debian moves
 to a newer stable release.
 
+After the installer finishes, switch the VM from installer kernel boot to disk
+boot:
+
+```bash
+scripts/vm/boot-s390x-from-disk.sh
+```
+
+If the VM is still running in the installer and does not shut down cleanly:
+
+```bash
+VM_FORCE_DESTROY=1 scripts/vm/boot-s390x-from-disk.sh
+```
+
 ## RHEL
 
 The RHEL script requires a local RHEL s390x installer ISO:
