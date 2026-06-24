@@ -91,10 +91,21 @@ session = {
 }
 ```
 
-`<expr>` is a full expression, not a literal — that is the whole point. The
-evaluation scope for `<expr>` is an open question (§10): at minimum it sees the
-enclosing program scope; whether it can see the prototype's other fields or the
-`with` overrides is to be decided.
+`<expr>` is a full expression, not a literal — that is the whole point.
+
+**Evaluation scope (decided).** A `reset` expression is evaluated at `new`-time
+against the **stable global/program scope**. It may call builtins and
+top-level/loaded functions (`now()`, `new_id()`, `next_id()`) and read globals.
+It may **not** see local variables of wherever the prototype literal appeared,
+nor the instance's sibling fields, nor the `with` overrides. The reason is
+concrete: gBASIC is a manual-memory tree-walker with no closures, so capturing
+the literal's defining scope would mean storing a possibly-dangling environment
+pointer. The global/program scope outlives every instance and sidesteps that
+hazard while still serving every realistic reset (constants, generators,
+timestamps). The cost is that a sibling-referencing reset such as
+`total (reset price * qty)` does **not** work in v1 — compute that after
+derivation, or pass it via `with`. Sibling/closure-capturing resets are a future
+lift that depends on first-class closures (see §10).
 
 ### exclude drops the property
 
@@ -179,6 +190,36 @@ already a contextual keyword (`with lock` on file references), so reusing it add
 no new reserved word. `new` was chosen over `derive` for intuitiveness; its mild
 "class instantiation" connotation is harmless here because a prototype simply *is*
 a record.
+
+#### What `with { … }` may do (decided)
+
+The `with` block is a record literal applied **on top of** policy-based
+derivation. It may:
+
+- **Override** an inherited field's value — `new account with { owner: "Ada" }`.
+- **Re-annotate** a field's policy — `new account with { tier (link): premium }`.
+  Like any record-literal annotation this is **forward-looking**: it sets the
+  policy for *this instance's own future descendants*, not for the current
+  derivation step.
+- **Add** a field the prototype does not have — gBASIC records are open (a field
+  can be set on any record at any time), so `with` adding a new field is
+  consistent with the rest of the language. An added field defaults to `copy`.
+
+It may **not** remove an inherited field from the instance; v1 has no
+removal-at-derivation mechanism. To keep a field off instances, annotate it
+`(exclude)` on the prototype; to drop one after the fact, use `remove_key`. This
+preserves `exclude`'s single meaning ("do not pass to descendants") and never
+overloads it into "delete from this instance."
+
+Two rules fall out of "derivation never mutates the prototype":
+
+- **A `with` entry binds a fresh cell.** `new account with { bank: "Other" }`
+  gives the new instance its *own* `bank`; it does not write through an inherited
+  `link` to change the prototype. (The inherited policy still applies to the
+  instance's own descendants unless re-annotated.)
+- **`with` overrides win over `reset`.** `new session with { id: 5 }` yields
+  `id = 5`; the field's `reset` does not fire, because `with` is applied after the
+  policy step (§4.2).
 
 ### 3.3 Worked example — leaf policies
 
@@ -267,11 +308,19 @@ for each field F in proto:
       reset(expr):    child gets a NEW cell, value = eval(expr), share = COPY, refcount 1
       link:           child.cell = F.cell;  F.cell->refcount++;  share = LINK
       copy:           child.cell = F.cell;  F.cell->refcount++;  share = COPY   (COW)
-then apply `with { … }` overrides on top (set value and/or re-annotate policy)
+
+then apply `with { … }` on top:
+    for each entry W in with-block:
+      W binds a FRESH cell (value = eval(W), refcount 1) — it never writes
+      through an inherited link; the field's share/policy is W's annotation if
+      given, else the inherited policy. A with entry for a reset field overrides
+      it (the reset does not fire). A with entry naming an unknown field adds it
+      (default copy).
 ```
 
 `link` and `copy` both start by *sharing* the prototype's cell and bumping its
-refcount; they differ only in what a later write does.
+refcount; they differ only in what a later write does. A `with` entry always
+detaches into a fresh cell, so derivation never mutates `proto` (§3.2).
 
 ### 4.3 The write barrier (fork on write)
 
@@ -475,10 +524,11 @@ work, and doing it first de-risks both.
    mechanics (leaf-vs-instance detection: which `VALUE_RECORD`s count as
    re-derivable instances) are an implementation detail for Phase 2, not a
    semantic open question.
-2. **Derivation surface — keyword DECIDED: `new`.** A contextual `new` prefix
-   keyword (not a builtin, not `derive`) performs derivation; see §3.2. Still
-   open: the exact `with { … }` semantics (override-only vs allow new fields; may
-   it `exclude` an inherited field?).
+2. **Derivation surface — DECIDED.** A contextual `new` prefix keyword (not a
+   builtin, not `derive`) performs derivation. `with { … }` may override values,
+   re-annotate policies (forward-looking), and add new fields, but may not remove
+   an inherited field; overrides bind a fresh cell (never mutate the prototype)
+   and win over `reset`. See §3.2.
 3. **Policy persistence across levels.** How an instance retains each field's
    declared policy so it can re-apply it when *it* becomes a prototype. Where is
    the policy stored, and can `with` change it?
@@ -486,9 +536,12 @@ work, and doing it first de-risks both.
    `link` properties; depends on first-class functions (§7).
 5. **Identity vs structural equality.** Does `link` introduce an identity notion?
    Should there be an `is` (same-cell) comparison distinct from `=` (structural)?
-6. **`reset` evaluation scope.** Does `<expr>` see only the enclosing program
-   scope, or also the prototype's other fields and the `with` overrides? May the
-   `: value` be omitted when `(reset expr)` is present?
+6. **`reset` evaluation scope — DECIDED.** `<expr>` evaluates at `new`-time
+   against the stable global/program scope (builtins, top-level/loaded functions,
+   globals); it may not see defining-scope locals, sibling fields, or `with`
+   overrides. Sibling-referencing resets are a future lift gated on closures. See
+   §2 (reset). Still minor/open: whether `: value` may be omitted when
+   `(reset expr)` is present.
 7. **Cross-actor `link` degradation.** Snapshot-copy at send vs diagnosed error
    (§9).
 8. **Introspection.** Can a program read or change a property's policy at runtime
