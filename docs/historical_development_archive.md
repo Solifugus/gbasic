@@ -24,8 +24,9 @@ reference, tutorial, and implementation:
 
 They established the main direction for contextual modifiers, BASIC-style
 errors, libraries, lock safety, arrays, records, dates, money, files, and
-watchers. The surviving current grammar is
-`docs/gBASIC_v0_1_core_design_and_grammar.md`.
+watchers. The current consolidated language design (which superseded the early
+`gBASIC_v0_1_core_design_and_grammar.md` draft and the per-feature plan/progress
+trackers) is `docs/gbasic-design.md`.
 
 ## Core Builtins
 

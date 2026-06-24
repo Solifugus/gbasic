@@ -438,13 +438,21 @@ GUI testing remains manual because it requires a display.
 
 ## Documentation
 
+- [Language design](docs/gbasic-design.md) — consolidated design of the language
+  and core runtime
 - [Tutorial](docs/tutorial.md)
 - [Language and runtime reference](docs/reference.md)
-- [Core design and grammar](docs/gBASIC_v0_1_core_design_and_grammar.md)
+
+Library/module designs (each kept separate):
+
+- [SQLite design](docs/sqlite_design.md)
 - [PostgreSQL design and implementation status](docs/postgres_design.md)
 - [WebClient design](docs/webclient_design.md)
 - [WebServer design](docs/webserver_design.md)
 - [GUI design](docs/gui_design.md)
+
+Other:
+
 - [Completed development history](docs/historical_development_archive.md)
 
 Design documents may discuss unimplemented future work. The historical archive
