@@ -45,7 +45,8 @@ typedef enum {
     AST_EXPR_FIELD,
     AST_EXPR_CALL,
     AST_EXPR_BINARY,
-    AST_EXPR_UNARY
+    AST_EXPR_UNARY,
+    AST_EXPR_NEW
 } AstExprKind;
 
 typedef struct AstExpr AstExpr;
@@ -153,6 +154,10 @@ struct AstExpr {
             char *op;
             AstExpr *expr;
         } unary;
+        struct {
+            AstExpr *proto;   /* prototype to derive from */
+            AstExpr *with;    /* optional override record literal, or NULL */
+        } derive;
     } as;
 };
 
@@ -260,6 +265,7 @@ AstModifierUse ast_modifier_use(char *name, AstExprList args);
 AstModifierSignature ast_modifier_signature(char *name, AstNameList params);
 AstExpr *ast_binary(char *op, AstModifierUse modifier, AstExpr *left, AstExpr *right);
 AstExpr *ast_unary(char *op, AstExpr *expr);
+AstExpr *ast_new(AstExpr *proto, AstExpr *with);
 AstExpr *ast_expr_position(AstExpr *expr, int line, int column);
 
 AstStmt *ast_assign(AstExpr *target, AstModifierUse modifier, AstExpr *value);

@@ -511,7 +511,10 @@ static void analyze_expr(AddUsesContext *ctx, AstExpr *expr) {
         for (size_t i = 0; i < expr->as.array.count; i++) analyze_expr(ctx, expr->as.array.items[i]);
         break;
     case AST_EXPR_RECORD:
-        for (size_t i = 0; i < expr->as.record.count; i++) analyze_expr(ctx, expr->as.record.items[i].value);
+        for (size_t i = 0; i < expr->as.record.count; i++) {
+            analyze_expr(ctx, expr->as.record.items[i].value);
+            analyze_expr(ctx, expr->as.record.items[i].reset_expr);
+        }
         break;
     case AST_EXPR_INDEX:
         analyze_expr(ctx, expr->as.index.array);
@@ -537,6 +540,10 @@ static void analyze_expr(AddUsesContext *ctx, AstExpr *expr) {
         break;
     case AST_EXPR_UNARY:
         analyze_expr(ctx, expr->as.unary.expr);
+        break;
+    case AST_EXPR_NEW:
+        analyze_expr(ctx, expr->as.derive.proto);
+        analyze_expr(ctx, expr->as.derive.with);
         break;
     case AST_EXPR_NUMBER:
     case AST_EXPR_STRING:

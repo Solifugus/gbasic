@@ -314,16 +314,18 @@ typedef struct {
 } RecordField;
 ```
 
-`reset` and `exclude` are **derivation-time** policies — they have no runtime
-representation on the instance. After derivation a `reset` field is just an
-ordinary private (`POLICY_COPY`, refcount 1) field, and an `exclude` field does
-not exist. Only `copy` and `link` survive as runtime sharing modes.
+**Implementation note (as built).** The runtime `RecordField` carries the full
+declared policy (`AstFieldPolicy policy` + a shared `AstExpr *reset_expr`), not
+just a two-state share mode. **Policies persist on derived instances** — this is
+the resolution of the former §10.3 question. A derived `reset` field keeps
+`policy = RESET` (and its `reset_expr`), so when the instance is itself used as a
+prototype the reset re-fires; a derived `link` field keeps `policy = LINK`, so it
+stays linked when re-derived. Only `exclude` does not persist (the field is
+simply absent, and absence cannot be re-excluded). This persistence is exactly
+what makes the recursive §6 semantics work across multiple `new` levels.
 
-The **declared** policy (including `reset`/`exclude` and the reset expression)
-must also be retained somewhere so that an instance can itself be a prototype and
-re-apply policies to a grandchild. The cleanest place is the AST of the original
-literal plus a per-field policy tag carried on the instance; preserving policy
-across multi-level derivation is open question §10.
+`reset_expr` is a pointer into the program AST, which outlives every value, so it
+is shared (never copied or freed by the value layer).
 
 ### 4.2 Derivation algorithm
 
@@ -496,19 +498,35 @@ an unread runtime field. Phase 1 keeps the policy in the AST only; the runtime
 record is unchanged and policy-annotated records behave exactly like plain
 records today.
 
-**Phase 2 — `new` (and `with`) + runtime policy storage.**
-First add the per-field policy to the runtime `RecordField` (default `copy`,
-preserved across `value_copy`; module-built records default to `copy`), reading
-it from `AstRecordField` in the record-literal eval. Then add
-`AST_EXPR_NEW { proto, with }` (surface keyword `new`; the node performs
-derivation) and implement the §4.2 derivation algorithm, setting each field's
-runtime `share` mode and refcounts, with `reset` evaluation and `exclude`
-omission. Derivation recurses into instance-valued fields per the §6 decision
-(recursive); the remaining detail is leaf-vs-instance detection.
+**Phase 2 — `new`, `with`, and runtime policy storage. DONE.**
+- *2a (runtime policy storage):* added `policy`/`reset_expr` to the runtime
+  `RecordField`, read from the AST in the record-literal eval, preserved by
+  `value_copy`/`remove_key`; module records default to `copy`. Behaviorally
+  invisible.
+- *2b (`new` + derivation):* `NEW` is a reserved keyword token (every gBASIC
+  keyword is a token; `new` is unused as an identifier). Added
+  `AST_EXPR_NEW { proto, with }`, the `new <postfix> [with <record-literal>]`
+  grammar (reusing an extracted `record_literal` non-terminal), and the §4.2
+  derivation in `eval.c`: `exclude` drops, `reset` evaluates in global scope,
+  `copy` makes an independent recursive copy (so nested instances re-derive per
+  §6 — verified with distinct nested serials), `link` shares the cell.
 
-**Phase 3 — the write barrier.**
-Implement §4.3 fork-on-write in `record_set`/`assign_lvalue`. After this phase
-`copy`/`link` are fully observable. Add the matrix of tests below.
+  **`link` works through gBASIC's value-copy model** because `value_copy` was
+  made link-aware: a `link` field shares its cell (refcount++) instead of being
+  deep-copied, so the cell keeps one identity across the copies that variable
+  reads/assignments perform, and `record_set`'s in-place write is seen by every
+  alias. A write through any of prototype / instance / sibling is visible to all.
+
+  **`copy` is currently eager** (an independent deep copy at `new` time), which is
+  observably correct. Phase 3 turns it into copy-on-write — a pure optimization,
+  not a behavior change.
+
+**Phase 3 — copy-on-write (optimization).**
+Make `copy` lazy: share the cell at `new` time (like `link`) but add the §4.3
+fork-on-write barrier in `record_set`/`assign_lvalue` so the first write to a
+shared `copy` cell forks. Observable behaviour is unchanged from Phase 2 (copies
+are already independent); this only avoids the eager duplication. Because Phase 2
+is already correct, Phase 3 is optional polish rather than a correctness gate.
 
 **Phase 4 — methods (deferred).**
 Only after first-class functions exist (§7). Out of scope for PBI v1.
@@ -555,19 +573,18 @@ work, and doing it first de-risks both.
 
 ## 10. Open design questions
 
-1. **Nested-instance copy semantics — DECIDED: recursive (§6).** `copy` of an
-   instance-valued property re-derives recursively, all the way down. Remaining
-   mechanics (leaf-vs-instance detection: which `VALUE_RECORD`s count as
-   re-derivable instances) are an implementation detail for Phase 2, not a
-   semantic open question.
-2. **Derivation surface — DECIDED.** A contextual `new` prefix keyword (not a
-   builtin, not `derive`) performs derivation. `with { … }` may override values,
-   re-annotate policies (forward-looking), and add new fields, but may not remove
-   an inherited field; overrides bind a fresh cell (never mutate the prototype)
-   and win over `reset`. See §3.2.
-3. **Policy persistence across levels.** How an instance retains each field's
-   declared policy so it can re-apply it when *it* becomes a prototype. Where is
-   the policy stored, and can `with` change it?
+1. **Nested-instance copy semantics — DONE: recursive (§6).** Implemented:
+   `derive_value` re-derives any `VALUE_RECORD` under a `copy` field (every nested
+   record is treated as re-derivable), and leaves are `value_copy`'d. Verified
+   with distinct nested serials across `new`.
+2. **Derivation surface — DONE.** `new` is a reserved prefix keyword performing
+   derivation; `with { … }` overrides values (fresh cell, wins over `reset`),
+   carries its own policy, and adds unknown fields but cannot remove inherited
+   ones. See §3.2 / §8.
+3. **Policy persistence across levels — DONE.** The instance retains each field's
+   `policy`/`reset_expr` in its runtime `RecordField` (preserved by `value_copy`),
+   so it re-applies on re-derivation; `with` sets the policy of the fields it
+   touches. See §4.1.
 4. **Methods and `self`.** Receiver-binding convention for function-valued
    `link` properties; depends on first-class functions (§7).
 5. **Identity vs structural equality.** Does `link` introduce an identity notion?

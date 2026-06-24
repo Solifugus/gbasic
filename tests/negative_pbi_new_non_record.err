@@ -1,0 +1,1 @@
+runtime error at tests/negative_pbi_new_non_record.bas:2:1: new requires a record prototype

@@ -697,15 +697,25 @@ static Value value_copy(Value value) {
                 abort();
             }
             for (size_t i = 0; i < value.as.record.count; i++) {
-                fields[i].name = copy_string(value.as.record.fields[i].name);
-                fields[i].value = cell_alloc();
-                if (!fields[i].value) {
-                    abort();
-                }
-                *fields[i].value = value_copy(*value.as.record.fields[i].value);
+                RecordField *src = &value.as.record.fields[i];
+                fields[i].name = copy_string(src->name);
                 /* Preserve PBI policy so it travels with copies/assignments. */
-                fields[i].policy = value.as.record.fields[i].policy;
-                fields[i].reset_expr = value.as.record.fields[i].reset_expr;
+                fields[i].policy = src->policy;
+                fields[i].reset_expr = src->reset_expr;
+                if (src->policy == AST_FIELD_POLICY_LINK) {
+                    /* link = shared identity: every copy shares the one cell, so
+                     * a write through any alias is visible to all (write-through
+                     * happens because record_set mutates the cell in place). */
+                    ValueCell *cell = (ValueCell *)src->value;
+                    cell->refcount++;
+                    fields[i].value = src->value;
+                } else {
+                    fields[i].value = cell_alloc();
+                    if (!fields[i].value) {
+                        abort();
+                    }
+                    *fields[i].value = value_copy(*src->value);
+                }
             }
         }
         return value_record(fields, value.as.record.count);
@@ -12150,6 +12160,61 @@ static int values_equal_for_consider(Value subject, Value candidate) {
     return equal;
 }
 
+/* --- PBI derivation (docs/pbi_design.md §4.2) ---------------------------- */
+
+static Value derive_record(Value proto);
+
+/* Derive a value for a `copy` field: a nested record is itself re-derived so
+ * its own policies (notably `reset`) re-fire — the recursive semantics of §6.
+ * Any non-record value is an ordinary independent copy. */
+static Value derive_value(Value v) {
+    if (v.kind == VALUE_RECORD) {
+        return derive_record(v);
+    }
+    return value_copy(v);
+}
+
+/* Build a new instance from a prototype record by applying each field's policy:
+ *   exclude -> dropped; link -> share the cell (write-through identity);
+ *   reset   -> fresh value from the reset expression evaluated in global scope;
+ *   copy    -> independent, recursive copy.
+ * Policies persist on the instance so it can itself serve as a prototype (so a
+ * reset re-fires, and a link stays linked, when the instance is re-derived). */
+static Value derive_record(Value proto) {
+    size_t n = proto.as.record.count;
+    RecordField *fields = n ? calloc(n, sizeof(RecordField)) : NULL;
+    if (n && !fields) {
+        abort();
+    }
+    size_t out = 0;
+    for (size_t i = 0; i < n; i++) {
+        RecordField *src = &proto.as.record.fields[i];
+        if (src->policy == AST_FIELD_POLICY_EXCLUDE) {
+            continue;
+        }
+        fields[out].name = copy_string(src->name);
+        fields[out].policy = src->policy;
+        fields[out].reset_expr = src->reset_expr;
+        if (src->policy == AST_FIELD_POLICY_LINK) {
+            ValueCell *cell = (ValueCell *)src->value;
+            cell->refcount++;
+            fields[out].value = src->value;
+        } else if (src->policy == AST_FIELD_POLICY_RESET) {
+            fields[out].value = cell_alloc();
+            Env *saved = current_env;
+            current_env = &global_env;
+            *fields[out].value =
+                src->reset_expr ? eval_expr(src->reset_expr) : value_null();
+            current_env = saved;
+        } else { /* COPY (the default) */
+            fields[out].value = cell_alloc();
+            *fields[out].value = derive_value(*src->value);
+        }
+        out++;
+    }
+    return value_record(fields, out);
+}
+
 static Value eval_expr(AstExpr *expr) {
     switch (expr->kind) {
     case AST_EXPR_NUMBER:
@@ -12211,6 +12276,56 @@ static Value eval_expr(AstExpr *expr) {
             fields[i].reset_expr = expr->as.record.items[i].reset_expr;
         }
         return value_record(fields, expr->as.record.count);
+    }
+    case AST_EXPR_NEW: {
+        Value proto = eval_expr(expr->as.derive.proto);
+        if (error_action_pending()) {
+            value_free(proto);
+            return value_null();
+        }
+        if (proto.kind != VALUE_RECORD) {
+            value_free(proto);
+            runtime_error_raise("new requires a record prototype", 1003,
+                                "type error");
+            return value_null();
+        }
+        Value instance = derive_record(proto);
+        value_free(proto);
+        if (error_action_pending()) {
+            value_free(instance);
+            return value_null();
+        }
+        if (expr->as.derive.with) {
+            Value overrides = eval_expr(expr->as.derive.with);
+            if (error_action_pending()) {
+                value_free(overrides);
+                value_free(instance);
+                return value_null();
+            }
+            /* Apply the `with { … }` overrides. Each entry binds a fresh cell
+             * (never writes through an inherited link to the prototype) and
+             * carries its own declared policy; an unknown name is added. */
+            for (size_t i = 0; i < overrides.as.record.count; i++) {
+                RecordField *wf = &overrides.as.record.fields[i];
+                RecordField *existing = record_find(&instance, wf->name);
+                if (existing) {
+                    cell_release(existing->value);
+                    existing->value = cell_alloc();
+                    *existing->value = value_copy(*wf->value);
+                    existing->policy = wf->policy;
+                    existing->reset_expr = wf->reset_expr;
+                } else {
+                    record_set(&instance, wf->name, value_copy(*wf->value));
+                    RecordField *added = record_find(&instance, wf->name);
+                    if (added) {
+                        added->policy = wf->policy;
+                        added->reset_expr = wf->reset_expr;
+                    }
+                }
+            }
+            value_free(overrides);
+        }
+        return instance;
     }
     case AST_EXPR_INDEX: {
         Value array = eval_expr(expr->as.index.array);

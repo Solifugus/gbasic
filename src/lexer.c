@@ -231,6 +231,7 @@ static TokenType identifier_type(const char *start, int length) {
     if (keyword_equals(start, length, "goto")) return TOKEN_GOTO;
     if (keyword_equals(start, length, "gosub")) return TOKEN_GOSUB;
     if (keyword_equals(start, length, "with")) return TOKEN_WITH;
+    if (keyword_equals(start, length, "new")) return TOKEN_NEW;
     if (keyword_equals(start, length, "on")) return TOKEN_ON;
     if (keyword_equals(start, length, "resume")) return TOKEN_RESUME;
     if (keyword_equals(start, length, "next")) return TOKEN_NEXT;
@@ -437,6 +438,7 @@ const char *token_type_name(TokenType type) {
     case TOKEN_GOTO: return "GOTO";
     case TOKEN_GOSUB: return "GOSUB";
     case TOKEN_WITH: return "WITH";
+    case TOKEN_NEW: return "NEW";
     case TOKEN_ON: return "ON";
     case TOKEN_RESUME: return "RESUME";
     case TOKEN_NEXT: return "NEXT";

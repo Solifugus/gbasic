@@ -165,6 +165,7 @@ cases=(
     negative_pbi_unknown_policy
     negative_pbi_reset_missing_value
     negative_pbi_value_on_nonreset
+    negative_pbi_new_non_record
 )
 
 for name in "${cases[@]}"; do

@@ -427,7 +427,7 @@ typedef struct {
 
 %token <number> NUMBER
 %token <text> IDENT STRING MOD_CONTENT LENS_CONTENT QUALIFIED_IDENT
-%token IF CONSIDER_IF THEN ELSE CONSIDER_ELSE END END_CONSIDER PRINT TRUE FALSE NOTHING UNKNOWN_VALUE AND OR NOT WITH FOR TO IN EACH WHILE CONSIDER BREAK CONTINUE FUNCTION RETURN GOTO GOSUB WATCH WITHOUT WATCHERS ON RESUME NEXT STOP ERROR_VALUE MODIFIER PROGRAM LIBRARY LOAD USE EXPORT
+%token IF CONSIDER_IF THEN ELSE CONSIDER_ELSE END END_CONSIDER PRINT TRUE FALSE NOTHING UNKNOWN_VALUE AND OR NOT WITH NEW FOR TO IN EACH WHILE CONSIDER BREAK CONTINUE FUNCTION RETURN GOTO GOSUB WATCH WITHOUT WATCHERS ON RESUME NEXT STOP ERROR_VALUE MODIFIER PROGRAM LIBRARY LOAD USE EXPORT
 %token OP_EQ OP_NE OP_GT OP_LT OP_GE OP_LE OP_NGT OP_NLT OP_NGE OP_NLE
 %token PLUS MINUS STAR SLASH LPAREN MOD_LPAREN RPAREN LBRACKET RBRACKET LBRACE RBRACE COMMA COLON NEWLINE
 %precedence IF_WITHOUT_ELSE
@@ -440,7 +440,7 @@ typedef struct {
 %type <stmt_list> program statement_list consider_statement_list consider_else_opt if_block_tail if_inline_tail
 %type <stmt> statement assignment print_statement call_statement with_lock_statement for_each_statement while_statement consider_statement consider_body_statement function_statement modifier_statement program_statement library_statement use_statement return_statement label_statement goto_statement gosub_statement break_statement continue_statement watch_statement without_watchers_statement on_error_statement error_statement if_statement inline_statement
 %type <expr> expression or_expression and_expression comparison_expression
-%type <expr> additive_expression multiplicative_expression unary_expression postfix_expression primary lvalue
+%type <expr> additive_expression multiplicative_expression unary_expression postfix_expression primary lvalue record_literal
 %type <expr_list> argument_list argument_list_opt array_argument_list
 %type <record_field_list> record_field_list
 %type <field_policy> field_policy
@@ -857,6 +857,8 @@ unary_expression
     : postfix_expression { $$ = $1; }
     | NOT unary_expression { $$ = expr_at(ast_unary(copy_const("not"), $2), @1.first_line, @1.first_column); }
     | MINUS unary_expression { $$ = expr_at(ast_unary(copy_const("-"), $2), @1.first_line, @1.first_column); }
+    | NEW postfix_expression { $$ = expr_at(ast_new($2, NULL), @1.first_line, @1.first_column); }
+    | NEW postfix_expression WITH record_literal { $$ = expr_at(ast_new($2, $4), @1.first_line, @1.first_column); }
     ;
 
 postfix_expression
@@ -907,7 +909,11 @@ primary
     | LPAREN expression RPAREN { $$ = $2; }
     | LBRACKET optional_newlines RBRACKET { $$ = expr_at(ast_array(ast_expr_list_empty()), @1.first_line, @1.first_column); }
     | LBRACKET optional_newlines array_argument_list optional_newlines RBRACKET { $$ = expr_at(ast_array($3), @1.first_line, @1.first_column); }
-    | LBRACE optional_newlines RBRACE { $$ = expr_at(ast_record(ast_record_field_list_empty()), @1.first_line, @1.first_column); }
+    | record_literal { $$ = $1; }
+    ;
+
+record_literal
+    : LBRACE optional_newlines RBRACE { $$ = expr_at(ast_record(ast_record_field_list_empty()), @1.first_line, @1.first_column); }
     | LBRACE optional_newlines record_field_list optional_newlines RBRACE { $$ = expr_at(ast_record($3), @1.first_line, @1.first_column); }
     ;
 
@@ -1104,6 +1110,7 @@ static int yylex(void) {
     case TOKEN_OR: return OR;
     case TOKEN_NOT: return NOT;
     case TOKEN_WITH: return WITH;
+    case TOKEN_NEW: return NEW;
     case TOKEN_FOR: return FOR;
     case TOKEN_TO: return TO;
     case TOKEN_IN: return IN;

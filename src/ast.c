@@ -208,6 +208,13 @@ AstExpr *ast_unary(char *op, AstExpr *child) {
     return expr;
 }
 
+AstExpr *ast_new(AstExpr *proto, AstExpr *with) {
+    AstExpr *expr = ast_expr_new(AST_EXPR_NEW);
+    expr->as.derive.proto = proto;
+    expr->as.derive.with = with;
+    return expr;
+}
+
 AstExpr *ast_expr_position(AstExpr *expr, int line, int column) {
     if (!expr) {
         return NULL;
@@ -530,6 +537,17 @@ static void dump_expr(AstExpr *expr, int indent) {
         printf("Unary %s\n", expr->as.unary.op);
         dump_expr(expr->as.unary.expr, indent + 1);
         break;
+    case AST_EXPR_NEW:
+        printf("New\n");
+        dump_indent(indent + 1);
+        printf("Prototype\n");
+        dump_expr(expr->as.derive.proto, indent + 2);
+        if (expr->as.derive.with) {
+            dump_indent(indent + 1);
+            printf("With\n");
+            dump_expr(expr->as.derive.with, indent + 2);
+        }
+        break;
     }
 }
 
@@ -823,6 +841,10 @@ static void free_expr(AstExpr *expr) {
     case AST_EXPR_UNARY:
         free(expr->as.unary.op);
         free_expr(expr->as.unary.expr);
+        break;
+    case AST_EXPR_NEW:
+        free_expr(expr->as.derive.proto);
+        free_expr(expr->as.derive.with);
         break;
     case AST_EXPR_NUMBER:
     case AST_EXPR_BOOL:
