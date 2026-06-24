@@ -1,0 +1,1 @@
+parse error at tests/negative_pbi_reset_missing_value.bas:1:15: reset policy requires a value, e.g. (reset 0)

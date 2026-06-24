@@ -400,6 +400,12 @@ typedef struct {
     char *name;
     AstExprList args;
 } AstIdentSuffix;
+
+/* Parsed PBI per-field policy clause: `( copy | link | exclude | reset <expr> )` */
+typedef struct {
+    AstFieldPolicy policy;
+    AstExpr *reset_expr;
+} FieldPolicySpec;
 }
 
 %union {
@@ -416,6 +422,7 @@ typedef struct {
     AstModifierSignature modifier_signature;
     AstDuration duration;
     AstIdentSuffix ident_suffix;
+    FieldPolicySpec field_policy;
 }
 
 %token <number> NUMBER
@@ -436,6 +443,7 @@ typedef struct {
 %type <expr> additive_expression multiplicative_expression unary_expression postfix_expression primary lvalue
 %type <expr_list> argument_list argument_list_opt array_argument_list
 %type <record_field_list> record_field_list
+%type <field_policy> field_policy
 %type <consider_branch_list> consider_branch_list
 %type <name_list> parameter_list parameter_list_opt watch_target_list
 %type <modifier> modifier comparison_lens
@@ -971,8 +979,51 @@ parameter_list
 record_field_list
     : IDENT OP_EQ expression { $$ = ast_record_field_list_append(ast_record_field_list_empty(), $1, $3); }
     | IDENT COLON expression { $$ = ast_record_field_list_append(ast_record_field_list_empty(), $1, $3); }
+    | IDENT LPAREN field_policy RPAREN COLON expression { $$ = ast_record_field_list_append_policy(ast_record_field_list_empty(), $1, $6, $3.policy, $3.reset_expr); }
     | record_field_list COMMA optional_newlines IDENT OP_EQ expression { $$ = ast_record_field_list_append($1, $4, $6); }
     | record_field_list COMMA optional_newlines IDENT COLON expression { $$ = ast_record_field_list_append($1, $4, $6); }
+    | record_field_list COMMA optional_newlines IDENT LPAREN field_policy RPAREN COLON expression { $$ = ast_record_field_list_append_policy($1, $4, $9, $6.policy, $6.reset_expr); }
+    ;
+
+/* PBI per-field policy clause. Keywords are contextual (matched as IDENT here),
+ * so `copy`/`link`/`reset`/`exclude` remain ordinary identifiers and builtins
+ * everywhere else. Only `reset` takes a value; the `)` lookahead is not in
+ * FIRST(expression), so the two productions do not conflict. */
+field_policy
+    : IDENT {
+        FieldPolicySpec spec;
+        spec.reset_expr = NULL;
+        if (strcmp($1, "copy") == 0) {
+            spec.policy = AST_FIELD_POLICY_COPY;
+        } else if (strcmp($1, "link") == 0) {
+            spec.policy = AST_FIELD_POLICY_LINK;
+        } else if (strcmp($1, "exclude") == 0) {
+            spec.policy = AST_FIELD_POLICY_EXCLUDE;
+        } else if (strcmp($1, "reset") == 0) {
+            free($1);
+            yyerror("reset policy requires a value, e.g. (reset 0)");
+            YYERROR;
+        } else {
+            yyerror("unknown field policy (expected copy, link, reset, or exclude)");
+            free($1);
+            YYERROR;
+        }
+        free($1);
+        $$ = spec;
+      }
+    | IDENT expression {
+        FieldPolicySpec spec;
+        if (strcmp($1, "reset") == 0) {
+            spec.policy = AST_FIELD_POLICY_RESET;
+            spec.reset_expr = $2;
+        } else {
+            free($1);
+            yyerror("only the reset policy takes a value");
+            YYERROR;
+        }
+        free($1);
+        $$ = spec;
+      }
     ;
 
 optional_newlines

@@ -1,0 +1,1 @@
+parse error at tests/negative_pbi_unknown_policy.bas:1:14: unknown field policy (expected copy, link, reset, or exclude)

@@ -51,9 +51,20 @@ typedef enum {
 typedef struct AstExpr AstExpr;
 typedef struct AstStmt AstStmt;
 
+/* PBI per-property derivation policy (docs/pbi_design.md §2). COPY is the
+ * default so an un-annotated field behaves exactly as before. */
+typedef enum {
+    AST_FIELD_POLICY_COPY = 0,
+    AST_FIELD_POLICY_LINK,
+    AST_FIELD_POLICY_RESET,
+    AST_FIELD_POLICY_EXCLUDE
+} AstFieldPolicy;
+
 typedef struct {
     char *name;
     AstExpr *value;
+    AstFieldPolicy policy;   /* declared derivation policy; default COPY */
+    AstExpr *reset_expr;     /* evaluated per-instance; non-NULL only for RESET */
 } AstRecordField;
 
 typedef struct {
@@ -225,6 +236,7 @@ AstExprList ast_expr_list_empty(void);
 AstExprList ast_expr_list_append(AstExprList list, AstExpr *expr);
 AstRecordFieldList ast_record_field_list_empty(void);
 AstRecordFieldList ast_record_field_list_append(AstRecordFieldList list, char *name, AstExpr *value);
+AstRecordFieldList ast_record_field_list_append_policy(AstRecordFieldList list, char *name, AstExpr *value, AstFieldPolicy policy, AstExpr *reset_expr);
 AstConsiderBranchList ast_consider_branch_list_empty(void);
 AstConsiderBranchList ast_consider_branch_list_append(AstConsiderBranchList list, AstExpr *match, AstStmtList body);
 AstNameList ast_name_list_empty(void);

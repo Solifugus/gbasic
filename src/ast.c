@@ -47,9 +47,15 @@ AstRecordFieldList ast_record_field_list_empty(void) {
 }
 
 AstRecordFieldList ast_record_field_list_append(AstRecordFieldList list, char *name, AstExpr *value) {
+    return ast_record_field_list_append_policy(list, name, value, AST_FIELD_POLICY_COPY, NULL);
+}
+
+AstRecordFieldList ast_record_field_list_append_policy(AstRecordFieldList list, char *name, AstExpr *value, AstFieldPolicy policy, AstExpr *reset_expr) {
     list.items = xrealloc(list.items, sizeof(AstRecordField) * (list.count + 1));
     list.items[list.count].name = name;
     list.items[list.count].value = value;
+    list.items[list.count].policy = policy;
+    list.items[list.count].reset_expr = reset_expr;
     list.count++;
     return list;
 }
@@ -451,9 +457,21 @@ static void dump_expr(AstExpr *expr, int indent) {
     case AST_EXPR_RECORD:
         printf("Record\n");
         for (size_t i = 0; i < expr->as.record.count; i++) {
+            AstRecordField *field = &expr->as.record.items[i];
             dump_indent(indent + 1);
-            printf("Field %s\n", expr->as.record.items[i].name);
-            dump_expr(expr->as.record.items[i].value, indent + 2);
+            /* COPY is the default and prints no suffix, so existing AST dumps
+             * for un-annotated records stay byte-for-byte unchanged. */
+            const char *policy_suffix =
+                field->policy == AST_FIELD_POLICY_LINK ? " (link)" :
+                field->policy == AST_FIELD_POLICY_RESET ? " (reset)" :
+                field->policy == AST_FIELD_POLICY_EXCLUDE ? " (exclude)" : "";
+            printf("Field %s%s\n", field->name, policy_suffix);
+            if (field->policy == AST_FIELD_POLICY_RESET && field->reset_expr) {
+                dump_indent(indent + 2);
+                printf("ResetValue\n");
+                dump_expr(field->reset_expr, indent + 3);
+            }
+            dump_expr(field->value, indent + 2);
         }
         break;
     case AST_EXPR_DURATION:
@@ -780,6 +798,7 @@ static void free_expr(AstExpr *expr) {
         for (size_t i = 0; i < expr->as.record.count; i++) {
             free(expr->as.record.items[i].name);
             free_expr(expr->as.record.items[i].value);
+            free_expr(expr->as.record.items[i].reset_expr);
         }
         free(expr->as.record.items);
         break;

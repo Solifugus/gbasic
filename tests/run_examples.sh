@@ -79,6 +79,7 @@ examples=(
     comparison_lens_test.bas
     comparison_lens_parser_hardening_test.bas
     dynamic_record_access_test.bas
+    pbi_policy_parse_test.bas
     env_builtin_test.bas
     password_hash_test.bas
     secure_token_test.bas

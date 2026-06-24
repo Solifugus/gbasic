@@ -120,7 +120,7 @@ itself, or for marker fields that should not propagate.
 ### 3.1 Policy annotations in record literals
 
 A record field may carry a parenthesised policy between the field name and the
-`:`/`=` separator:
+field separator:
 
 ```basic
 account = {
@@ -131,22 +131,50 @@ account = {
 }
 ```
 
-Grammatically this extends the existing record-field rule. Today a field is
-`IDENT ( ':' | '=' ) expression` (`src/parser.y:972-975`); PBI adds an optional
-policy clause:
+Grammatically this extends the existing record-field rule. A plain field is
+`IDENT ( ':' | '=' ) expression`; PBI adds an optional policy clause **on the
+`:` form only** (implemented):
 
 ```
 record_field
-    : IDENT field_sep expression
-    | IDENT '(' policy ')' field_sep expression
+    : IDENT ':' expression
+    | IDENT '=' expression
+    | IDENT '(' field_policy ')' ':' expression   /* policy-annotated, ':' only */
     ;
-policy
-    : COPY
-    | LINK
-    | EXCLUDE
-    | RESET expression
+field_policy                /* keywords are contextual IDENTs, not tokens */
+    : IDENT                 /* copy | link | exclude */
+    | IDENT expression      /* reset <expr> */
     ;
 ```
+
+**Policy annotations use the `:` separator, not `=` — a deliberate, enforced
+constraint.** With `=`, the source `prop (copy)= …` matches the existing
+*assignment-modifier* shape (`lvalue (mod)= value`): the lexer's
+`modifier_lparen_ahead` heuristic fires whenever a `)` is followed by an
+assignment/comparison operator, so `(copy)` would tokenize as `MOD_LPAREN`/
+`MOD_CONTENT` instead of ordinary parens. A `:` after `)` does **not** trigger
+that heuristic, so on the `:` form `(policy)` lexes as plain parens and the
+contextual keywords parse normally. Writing `prop (copy)= 1` therefore produces a
+clean syntax error rather than silently mis-parsing. This needs no lexer change.
+
+**`copy`/`link`/`reset`/`exclude` are contextual keywords, not reserved
+words.** `copy` is already a file builtin, and reserving these globally would
+repeat the §5 builtin-shadowing problem. They are matched as ordinary `IDENT`s
+inside the policy parentheses and validated in the grammar action; everywhere
+else they remain ordinary identifiers and builtins. (Verified: `copy = 1` and
+`{ copy: 10 }` still work, and the `copy(...)` file builtin is unaffected.)
+
+This deliberately does **not** reuse the assignment-modifier lexer mode
+(`modifier_content_mode`, `MOD_LPAREN`/`MOD_CONTENT`). That mode captures
+parenthesis content as *raw text* and resolves it through the modifier namespace,
+which is wrong here for two reasons: `reset <expr>` needs a normally-parsed
+sub-expression (not raw text), and the policy set is closed and context-bound.
+Inside a record literal, after `IDENT`, a `(` was previously a syntax error, so
+the new rule is unambiguous and needs no source-level lookahead heuristic.
+
+Status: **parsing implemented (Phase 1).** Policies are stored in the AST
+(`AstRecordField.policy` / `.reset_expr`) and shown by `--ast`; they are inert at
+runtime until derivation (Phase 2) consumes them.
 
 **`copy`/`link`/`reset`/`exclude` must be contextual keywords, not reserved
 words.** `copy` is already a file builtin (`docs/historical_development_archive.md`),
@@ -446,29 +474,37 @@ just a linked function-valued property.
 Each phase is independently testable. Phase 0 is the large, invasive one; the
 rest are comparatively surgical.
 
-**Phase 0 — refcounted value cells (foundation).**
-Generalise the connection refcount pattern (`src/eval.c:638`) into `ValueCell`.
-Convert `RecordField` from `Value*` to a refcounted cell. Update `value_copy`
-(`628`), `value_free` (`680`), `record_set` (`1113`), `resolve_lvalue_ref`
-(`12474`), `assign_lvalue` (`12555`), and the record-literal eval case
-(`12138`). Observable behaviour must be **unchanged** (everything is `copy`,
-refcount-1, eager-equivalent). This phase is purely a memory-model refactor and
-should be merged green against the full existing suite before any PBI surface
-exists. It is the riskiest change because records are pervasive.
+**Phase 0 — refcounted value cells (foundation). DONE.**
+Generalised the connection refcount pattern into `ValueCell` (the `Value` is the
+cell's first member, so all existing `field->value` derefs are untouched; only
+`cell_alloc`/`cell_release` at the allocation/free sites changed). Observable
+behaviour unchanged (every cell refcount-1, eager-equivalent). Verified green
+against the full suite and Valgrind-clean on record-heavy examples.
 
-**Phase 1 — policy annotations (parse + store).**
-Add a policy field to `AstRecordField` (`include/ast.h:54`). Extend the
-`record_field` grammar (`src/parser.y:972`) with the optional `( policy )` clause
-and contextual keyword handling. Store the per-field policy in the evaluated
-record (`src/eval.c:12138`). No derivation yet; policies are inert metadata.
+**Phase 1 — policy annotations (parse). DONE (AST only).**
+Added `AstFieldPolicy` + `policy`/`reset_expr` to `AstRecordField`
+(`include/ast.h`), a `field_policy` grammar rule and the `:`-only policy-clause
+production with contextual keywords (`src/parser.y`), AST freeing of
+`reset_expr`, and `--ast` rendering (no suffix for `copy`, so existing AST dumps
+are unchanged). Positive example + three negative tests added; full suite green;
+Valgrind-clean.
 
-**Phase 2 — `new` (and `with`).**
-Add `AST_EXPR_NEW { proto, with }` (the surface keyword is `new`; the node
-performs derivation). Implement the §4.2 derivation algorithm,
-setting each field's runtime `share` mode and refcounts. Implement `reset`
-evaluation and `exclude` omission. Derivation recurses into instance-valued
-fields per the §6 decision (recursive); the only detail to resolve here is
-leaf-vs-instance detection.
+Runtime storage was **deliberately deferred to Phase 2** rather than done here:
+storing the policy in the runtime `RecordField` only matters once `new` reads it,
+and bundling that plumbing with the code that exercises it is safer than shipping
+an unread runtime field. Phase 1 keeps the policy in the AST only; the runtime
+record is unchanged and policy-annotated records behave exactly like plain
+records today.
+
+**Phase 2 — `new` (and `with`) + runtime policy storage.**
+First add the per-field policy to the runtime `RecordField` (default `copy`,
+preserved across `value_copy`; module-built records default to `copy`), reading
+it from `AstRecordField` in the record-literal eval. Then add
+`AST_EXPR_NEW { proto, with }` (surface keyword `new`; the node performs
+derivation) and implement the §4.2 derivation algorithm, setting each field's
+runtime `share` mode and refcounts, with `reset` evaluation and `exclude`
+omission. Derivation recurses into instance-valued fields per the §6 decision
+(recursive); the remaining detail is leaf-vs-instance detection.
 
 **Phase 3 — the write barrier.**
 Implement §4.3 fork-on-write in `record_set`/`assign_lvalue`. After this phase

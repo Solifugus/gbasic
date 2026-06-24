@@ -62,7 +62,13 @@ typedef struct {
     AstExprList args;
 } AstIdentSuffix;
 
-#line 66 "src/parser.tab.h"
+/* Parsed PBI per-field policy clause: `( copy | link | exclude | reset <expr> )` */
+typedef struct {
+    AstFieldPolicy policy;
+    AstExpr *reset_expr;
+} FieldPolicySpec;
+
+#line 72 "src/parser.tab.h"
 
 /* Token kinds.  */
 #ifndef YYTOKENTYPE
@@ -156,7 +162,7 @@ typedef struct {
 #if ! defined YYSTYPE && ! defined YYSTYPE_IS_DECLARED
 union YYSTYPE
 {
-#line 405 "src/parser.y"
+#line 411 "src/parser.y"
 
     double number;
     char *text;
@@ -171,8 +177,9 @@ union YYSTYPE
     AstModifierSignature modifier_signature;
     AstDuration duration;
     AstIdentSuffix ident_suffix;
+    FieldPolicySpec field_policy;
 
-#line 176 "src/parser.tab.h"
+#line 183 "src/parser.tab.h"
 
 };
 typedef union YYSTYPE YYSTYPE;
