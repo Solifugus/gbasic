@@ -57,8 +57,10 @@ Acceptance criteria:
 - [x] Build a webserver loop using the existing request/response queue model.
 - [x] Add routing helpers for method/path dispatch inside the app.
 - [x] Add HTML escaping helpers.
-- [ ] Add URL/form decoding helpers if the runtime does not already provide
-      enough behavior.
+- [x] Add URL/form decoding helpers if the runtime does not already provide
+      enough behavior. Done: added `chr`/`code` byte primitives to the runtime
+      and a complete percent-decoder in `site_postgres.bas` that round-trips
+      arbitrary UTF-8 form input.
 - [x] Render Postgres-backed home, docs, and forum placeholder pages.
 - [x] Render fuller docs/about/examples pages.
 - [x] Serve minimal static CSS and JavaScript through gBASIC or a documented

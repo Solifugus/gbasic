@@ -163,6 +163,23 @@ def main():
     print("Dogfood topic" in body)
     print("0 replies. Latest activity:" in body)
 
+    # Non-ASCII form input must round-trip through percent-decoding, Postgres,
+    # and HTML rendering (exercises the chr()-based form decoder).
+    unicode_title = "Café ☕ Straße"
+    status, _, body = post_form(
+        port,
+        "/forum/general/new",
+        {"title": unicode_title, "author_name": "Tester", "body": "Unicode éèê body"},
+    )
+    print(status)
+    print(unicode_title in body)
+    unicode_topic = re.search(r"/topic/(\d+)", body)
+    unicode_topic_id = unicode_topic.group(1) if unicode_topic else ""
+    status, _, body = get(port, f"/topic/{unicode_topic_id}")
+    print(status)
+    print(unicode_title in body)
+    print("Unicode éèê body" in body)
+
     for index in range(25):
         status, _, body = post_form(
             port,
@@ -202,6 +219,16 @@ def main():
     status, _, body = login(port, "nobody", "whatever")
     print(status)
     print("Invalid username or password." in body)
+
+    # An expired session (seeded directly in Postgres) is not accepted.
+    status, _, body = request(
+        port,
+        "GET",
+        "/admin",
+        headers={"Cookie": "gbasic_site_session=expired-session-test"},
+    )
+    print(status)
+    print("Admin sign-in required." in body)
 
     # Valid credentials create a session and redirect to /admin.
     status, headers, body = login(port, ADMIN_USER, ADMIN_PASSWORD)

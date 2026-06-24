@@ -9,27 +9,51 @@ function html_escape(text)
     return replace(escaped, "'", "&#39;")
 end function
 
+function hex_value(ch)
+    b = code(ch)
+    if b >= code("0") and b <= code("9") then
+        return b - code("0")
+    end if
+    if b >= code("A") and b <= code("F") then
+        return b - code("A") + 10
+    end if
+    if b >= code("a") and b <= code("f") then
+        return b - code("a") + 10
+    end if
+    return -1
+end function
+
 function form_decode_text(text)
-    decoded = replace(text, "+", " ")
-    decoded = replace(decoded, "%0A", "\n")
-    decoded = replace(decoded, "%0D", "")
-    decoded = replace(decoded, "%21", "!")
-    decoded = replace(decoded, "%22", "\"")
-    decoded = replace(decoded, "%23", "#")
-    decoded = replace(decoded, "%24", "$")
-    decoded = replace(decoded, "%25", "%")
-    decoded = replace(decoded, "%26", "&")
-    decoded = replace(decoded, "%27", "'")
-    decoded = replace(decoded, "%28", "(")
-    decoded = replace(decoded, "%29", ")")
-    decoded = replace(decoded, "%2C", ",")
-    decoded = replace(decoded, "%2F", "/")
-    decoded = replace(decoded, "%3A", ":")
-    decoded = replace(decoded, "%3B", ";")
-    decoded = replace(decoded, "%3D", "=")
-    decoded = replace(decoded, "%3F", "?")
-    decoded = replace(decoded, "%40", "@")
-    return decoded
+    text = replace(text, "+", " ")
+    parts = split(text, "%")
+    result = parts[0]
+    i = 1
+    while i < count(parts)
+        seg = parts[i]
+        decoded = false
+        if len(seg) >= 2 then
+            hi = hex_value(mid(seg, 0, 1))
+            lo = hex_value(mid(seg, 1, 1))
+            if hi >= 0 and lo >= 0 then
+                byte_value = hi * 16 + lo
+                rest_text = ""
+                if len(seg) > 2 then
+                    rest_text = mid(seg, 2, len(seg) - 2)
+                end if
+                if byte_value = 0 then
+                    result = result + "%" + seg
+                else
+                    result = result + chr(byte_value) + rest_text
+                end if
+                decoded = true
+            end if
+        end if
+        if not decoded then
+            result = result + "%" + seg
+        end if
+        i = i + 1
+    end while
+    return replace(result, chr(13), "")
 end function
 
 function form_decode(body)

@@ -10250,6 +10250,66 @@ static Value eval_call(AstExpr *expr) {
         return result;
     }
 
+    if (strcmp(expr->as.call.name, "chr") == 0) {
+        if (expr->as.call.args.count != 1) {
+            runtime_error_raise("chr expects one argument", 1003, "invalid function call");
+            return value_null();
+        }
+        Value code_val = eval_expr(expr->as.call.args.items[0]);
+        if (error_action_pending()) {
+            value_free(code_val);
+            return value_null();
+        }
+        if (code_val.kind != VALUE_NUMBER) {
+            value_free(code_val);
+            runtime_error_raise("chr: argument must be a number", 1003, "invalid argument type");
+            return value_null();
+        }
+        double code_double = code_val.as.number;
+        value_free(code_val);
+        if (code_double != floor(code_double)) {
+            runtime_error_raise("chr: code must be an integer", 1003, "invalid argument");
+            return value_null();
+        }
+        if (code_double < 0 || code_double > 255) {
+            runtime_error_raise("chr: code must be between 0 and 255", 1003, "invalid argument");
+            return value_null();
+        }
+        if (code_double == 0) {
+            runtime_error_raise("chr: code 0 (null byte) is not representable in a string", 1003, "invalid argument");
+            return value_null();
+        }
+        char byte_str[2];
+        byte_str[0] = (char)(unsigned char)code_double;
+        byte_str[1] = '\0';
+        return value_string(byte_str);
+    }
+
+    if (strcmp(expr->as.call.name, "code") == 0) {
+        if (expr->as.call.args.count != 1) {
+            runtime_error_raise("code expects one argument", 1003, "invalid function call");
+            return value_null();
+        }
+        Value text = eval_expr(expr->as.call.args.items[0]);
+        if (error_action_pending()) {
+            value_free(text);
+            return value_null();
+        }
+        if (text.kind != VALUE_STRING) {
+            value_free(text);
+            runtime_error_raise("code: argument must be a string", 1003, "invalid argument type");
+            return value_null();
+        }
+        if (text.as.string[0] == '\0') {
+            value_free(text);
+            runtime_error_raise("code: string must not be empty", 1003, "invalid argument");
+            return value_null();
+        }
+        double byte_value = (double)(unsigned char)text.as.string[0];
+        value_free(text);
+        return value_number(byte_value);
+    }
+
     if (strcmp(expr->as.call.name, "keys") == 0) {
         if (expr->as.call.args.count != 1) {
             runtime_error_raise("keys expects one argument", 1003, "invalid function call");

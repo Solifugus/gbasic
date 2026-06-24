@@ -92,6 +92,7 @@ examples=(
     quote_test.bas
     string_modifier_pipeline_test.bas
     string_helpers_test.bas
+    chr_code_test.bas
     string_test.bas
     unknown_test.bas
     unknown_nothing_distinction_integration_test.bas

@@ -18,6 +18,8 @@ int gbasic_builtin_function(const char *name) {
         "starts_with",
         "ends_with",
         "repeat",
+        "chr",
+        "code",
         "keys",
         "values",
         "has",

@@ -154,6 +154,14 @@ cases=(
     negative_gui_reserved_id
     negative_gui_invalid_id
     negative_watcher_cycle
+    negative_chr_arity
+    negative_chr_type
+    negative_chr_range
+    negative_chr_null
+    negative_chr_fractional
+    negative_code_arity
+    negative_code_type
+    negative_code_empty
 )
 
 for name in "${cases[@]}"; do

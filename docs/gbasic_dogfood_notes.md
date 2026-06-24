@@ -31,9 +31,24 @@ after the app proves the need.
   references.
 - HTML escaping is app-local but should probably become a standard-library
   helper.
-- App-local form decoding is possible for simple create-topic and create-reply
-  forms, but complete
-  percent-decoding wants a standard helper or a byte-to-character primitive.
+- Complete percent-decoding is now possible. The runtime gained `chr(code)` and
+  `code(text)` byte primitives, and the site decodes arbitrary `%XX` bytes by
+  assembling them with `chr`; because gBASIC strings are byte sequences, this
+  reconstructs multi-byte UTF-8 (verified with `café`, `Straße`, and an emoji).
+  A higher-level `url_decode`/`form_decode` standard-library helper would still
+  remove this boilerplate from every app, but the missing primitive is resolved.
+- LANGUAGE DESIGN: adding `chr`/`code` exposed that builtin names live in a flat
+  global namespace and silently collide with user identifiers. Specifically, a
+  builtin name cannot be used as a modifier-assignment target — `code(uppered)=
+  "abc"` now fails to parse because `code(` binds as a builtin call. User
+  functions can shadow builtins (see `builtin_override_test`), but modified
+  lvalues cannot. Worth deciding on a policy: a documented reserved-word list,
+  letting assignments shadow builtins, or namespacing builtins. Any new builtin
+  is a potential breaking change for existing programs until then.
+- LANGUAGE/RUNTIME: gBASIC strings are NUL-terminated C strings, so `chr(0)`
+  has no representation and raises an error. A binary-safe string (length +
+  bytes) would be needed for true binary data (file bytes, raw protocols,
+  blob columns) and would also let `chr` cover the full 0–255 range.
 - Form validation works in app code, but named validation helpers or a small
   standard pattern would reduce repetitive HTML error handling.
 - Small local HTML helpers improve form readability, but larger pages still

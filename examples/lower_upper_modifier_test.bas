@@ -1,8 +1,8 @@
 name(lowered)= "Joe Jones"
 print(name)
 
-code(uppered)= "abc"
-print(code)
+label(uppered)= "abc"
+print(label)
 
 command(trimmed)= "  LOOK  "
 command(lowered)= command

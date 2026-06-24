@@ -1037,6 +1037,22 @@ repeat("ha", 3)                # "hahaha"
 repeat("x", 0)                 # ""
 ```
 
+**`chr(code)`** - Returns the single byte (as a one-character string) for a
+byte value in the range 1–255. Byte 0 (null) is not representable in a string
+and raises a runtime error. Because gBASIC strings are byte sequences,
+concatenating `chr` results reconstructs multi-byte UTF-8 characters:
+```basic
+chr(110)                       # "n"
+chr(195) + chr(169)            # "é"  (UTF-8 bytes 0xC3 0xA9)
+```
+
+**`code(text)`** - Returns the numeric value (0–255) of the first byte of a
+non-empty string; the inverse of `chr`:
+```basic
+code("n")                      # 110
+code(chr(200))                 # 200
+```
+
 ### Record Helpers
 
 **`keys(record)`** - Returns array of key strings:
@@ -1112,6 +1128,8 @@ Always-available helper functions:
 - `right(value, count)`
 - `mid(value, start, count)`
 - `mid(value, start, count, replacement)`
+- `chr(code)`
+- `code(text)`
 - `trim(text)`
 - `split(text)`
 - `split(text, separator)`

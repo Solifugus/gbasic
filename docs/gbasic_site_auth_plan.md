@@ -119,8 +119,11 @@ needs:
   WebServer request/response records,
 - redirect response helper is available as `webserver.redirect(...)`,
 - session-id-safe tokens are available through `secure_token(length)`,
-- time helpers for expiration comparisons,
-- standard form decoding and HTML escaping helpers.
+- session expiration is enforced in SQL (`expires_at > now()`); dedicated gBASIC
+  time helpers for expiration math are still not exposed,
+- `chr`/`code` byte primitives now make complete percent-decoding possible in
+  app code; standard `form_decode`/`url_decode` and HTML-escaping helpers would
+  still remove per-app boilerplate.
 
 ## Interim Options
 
@@ -147,3 +150,11 @@ The auth plan is ready to move from design to implementation when:
 - response records can set cookies,
 - integration tests cover login, logout, CSRF failures, expired sessions, and
   moderation attribution.
+
+Status: all of the above are now met. `tests/run_gbasic_site_postgres.sh`
+covers invalid and valid login, missing/forbidden CSRF on moderation, an
+expired session (seeded via `tests/gbasic_site_seed_expired_session.bas`),
+logout, post-revocation lockout, and moderation attribution to the
+authenticated username. Remaining hardening is session rotation, dedicated
+time helpers, and an anti-abuse story for anonymous public posting (still on
+the shared development CSRF token).

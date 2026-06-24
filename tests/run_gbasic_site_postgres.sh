@@ -77,6 +77,21 @@ else
     exit "$status"
 fi
 
+seed_stdout="$(mktemp)"
+seed_stderr="$(mktemp)"
+if ! ./gbasic tests/gbasic_site_seed_expired_session.bas >"$seed_stdout" 2>"$seed_stderr"; then
+    cat "$seed_stderr"
+    rm -f "$seed_stdout" "$seed_stderr"
+    exit 1
+fi
+if ! grep -qx "expired session seeded" "$seed_stdout"; then
+    printf 'FAIL tests/gbasic_site_seed_expired_session.bas\n'
+    cat "$seed_stdout"
+    rm -f "$seed_stdout" "$seed_stderr"
+    exit 1
+fi
+rm -f "$seed_stdout" "$seed_stderr"
+
 if [[ -e "$server_port_file" ]]; then
     cp "$server_port_file" "$server_port_backup"
     had_server_port=1
