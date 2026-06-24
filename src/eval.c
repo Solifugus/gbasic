@@ -107,6 +107,8 @@ typedef struct Value Value;
 typedef struct {
     char *name;
     Value *value;
+    AstFieldPolicy policy;   /* PBI derivation policy; default COPY (0) */
+    AstExpr *reset_expr;     /* shared AST pointer; non-NULL only for RESET */
 } RecordField;
 
 struct Value {
@@ -636,7 +638,7 @@ static int error_action_pending(void) {
 }
 
 static Value value_error_object(void) {
-    RecordField *fields = malloc(sizeof(RecordField) * 5);
+    RecordField *fields = calloc(5, sizeof(RecordField));
     if (!fields) {
         abort();
     }
@@ -690,7 +692,7 @@ static Value value_copy(Value value) {
     if (value.kind == VALUE_RECORD) {
         RecordField *fields = NULL;
         if (value.as.record.count > 0) {
-            fields = malloc(sizeof(RecordField) * value.as.record.count);
+            fields = calloc(value.as.record.count, sizeof(RecordField));
             if (!fields) {
                 abort();
             }
@@ -701,6 +703,9 @@ static Value value_copy(Value value) {
                     abort();
                 }
                 *fields[i].value = value_copy(*value.as.record.fields[i].value);
+                /* Preserve PBI policy so it travels with copies/assignments. */
+                fields[i].policy = value.as.record.fields[i].policy;
+                fields[i].reset_expr = value.as.record.fields[i].reset_expr;
             }
         }
         return value_record(fields, value.as.record.count);
@@ -1175,6 +1180,11 @@ static void record_set(Value *record, const char *name, Value value) {
         abort();
     }
     *field->value = value;
+    /* realloc does not zero the new slot; a runtime-added field defaults to
+     * the copy policy. (An existing field keeps its policy; see the early
+     * return above, which only reassigns the value.) */
+    field->policy = AST_FIELD_POLICY_COPY;
+    field->reset_expr = NULL;
     record->as.record.count++;
 }
 
@@ -4557,7 +4567,7 @@ static Value make_dir_entry(const char *folder, const char *name, const char *ty
     memcpy(path + folder_len + (size_t)needs_slash, name, name_len);
     path[folder_len + (size_t)needs_slash + name_len] = '\0';
 
-    RecordField *fields = malloc(sizeof(RecordField) * 3);
+    RecordField *fields = calloc(3, sizeof(RecordField));
     if (!fields) {
         abort();
     }
@@ -6238,6 +6248,9 @@ static Value decode_parse_record(DecodeParser *parser) {
             abort();
         }
         *fields[count].value = value;
+        /* realloc does not zero the new slot; decoded fields default to copy. */
+        fields[count].policy = AST_FIELD_POLICY_COPY;
+        fields[count].reset_expr = NULL;
         count++;
         value_free(key);
 
@@ -10500,7 +10513,7 @@ static Value eval_call(AstExpr *expr) {
         }
 
         if (new_count > 0) {
-            new_fields = malloc(sizeof(RecordField) * new_count);
+            new_fields = calloc(new_count, sizeof(RecordField));
             if (!new_fields) {
                 value_free(record);
                 value_free(key);
@@ -10516,6 +10529,9 @@ static Value eval_call(AstExpr *expr) {
                     strcpy(new_fields[new_index].name, record.as.record.fields[i].name);
                     new_fields[new_index].value = cell_alloc();
                     *new_fields[new_index].value = value_copy(*record.as.record.fields[i].value);
+                    /* Preserve the kept field's PBI policy. */
+                    new_fields[new_index].policy = record.as.record.fields[i].policy;
+                    new_fields[new_index].reset_expr = record.as.record.fields[i].reset_expr;
                     new_index++;
                 }
             }
@@ -12176,7 +12192,7 @@ static Value eval_expr(AstExpr *expr) {
     case AST_EXPR_RECORD: {
         RecordField *fields = NULL;
         if (expr->as.record.count > 0) {
-            fields = malloc(sizeof(RecordField) * expr->as.record.count);
+            fields = calloc(expr->as.record.count, sizeof(RecordField));
             if (!fields) {
                 abort();
             }
@@ -12188,6 +12204,11 @@ static Value eval_expr(AstExpr *expr) {
                 abort();
             }
             *fields[i].value = eval_expr(expr->as.record.items[i].value);
+            /* Carry the declared PBI policy from the literal into the runtime
+             * record so `new` (Phase 2) can derive from it. reset_expr is a
+             * shared AST pointer (the AST outlives all values). */
+            fields[i].policy = expr->as.record.items[i].policy;
+            fields[i].reset_expr = expr->as.record.items[i].reset_expr;
         }
         return value_record(fields, expr->as.record.count);
     }
