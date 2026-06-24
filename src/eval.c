@@ -373,6 +373,61 @@ static char *copy_string(const char *text) {
     return copy;
 }
 
+/* --- Runtime string buffers (Unicode design §3, docs/unicode_design.md) -----
+ *
+ * A runtime string VALUE (VALUE_STRING -> as.string) carries an explicit byte
+ * length so it can be binary-safe (hold interior NUL bytes). The length lives in
+ * a header placed immediately *before* the byte data; `as.string` keeps pointing
+ * at the data, so the ~114 sites that read `value.as.string` as a `char *` are
+ * untouched. This mirrors the PBI ValueCell trick (the bookkeeping rides in front
+ * of the pointer the rest of the code already uses).
+ *
+ * Only `value_string`/`value_string_n` allocate these buffers and only
+ * `value_free` releases them (via `string_free`). The buffer is always
+ * NUL-terminated at [length] for C-string interop; the terminator is not counted
+ * in `length`, and the data may contain interior NULs. NOTE: this is a different
+ * allocation shape from `copy_string` (used for field names, paths, labels, …),
+ * which stays a plain `malloc`/`free` buffer — never mix the two.
+ *
+ * Phase 0 establishes the representation; the length is stored but not yet
+ * consumed (every string built today is valid NUL-terminated text, so
+ * strlen == length and behaviour is unchanged). Phase 1 makes the runtime
+ * length-authoritative. */
+typedef struct {
+    size_t length;
+} StringHeader;
+
+#define STRING_HEADER_SIZE (sizeof(StringHeader))
+
+/* Allocate a runtime string buffer holding `length` bytes copied from `bytes`
+ * (which may itself contain NULs). Returns a pointer to the byte data; recover
+ * the header with string_length / free with string_free. */
+static char *string_new(const char *bytes, size_t length) {
+    char *block = malloc(STRING_HEADER_SIZE + length + 1);
+    if (!block) {
+        abort();
+    }
+    ((StringHeader *)block)->length = length;
+    char *data = block + STRING_HEADER_SIZE;
+    if (length > 0) {
+        memcpy(data, bytes, length);
+    }
+    data[length] = '\0';
+    return data;
+}
+
+/* Authoritative byte length of a runtime string value's data pointer. */
+static size_t string_length(const char *data) {
+    return ((const StringHeader *)(data - STRING_HEADER_SIZE))->length;
+}
+
+/* Release a runtime string buffer created by string_new. */
+static void string_free(char *data) {
+    if (data) {
+        free(data - STRING_HEADER_SIZE);
+    }
+}
+
 void eval_set_source_path(const char *path) {
     free(root_source_path);
     root_source_path = path ? copy_string(path) : NULL;
@@ -397,11 +452,16 @@ static Value value_number(double number) {
     return value;
 }
 
-static Value value_string(const char *string) {
+/* Binary-safe string constructor: copies `length` bytes (interior NULs allowed). */
+static Value value_string_n(const char *bytes, size_t length) {
     Value value = {0};
     value.kind = VALUE_STRING;
-    value.as.string = copy_string(string);
+    value.as.string = string_new(bytes, length);
     return value;
+}
+
+static Value value_string(const char *string) {
+    return value_string_n(string, strlen(string));
 }
 
 static Value value_bool(int boolean) {
@@ -660,7 +720,8 @@ static Value value_error_object(void) {
 
 static Value value_copy(Value value) {
     if (value.kind == VALUE_STRING) {
-        return value_string(value.as.string);
+        /* Length-aware so binary-safe content (interior NULs) survives a copy. */
+        return value_string_n(value.as.string, string_length(value.as.string));
     }
     if (value.kind == VALUE_FILE) {
         return value_file(value.as.file_path);
@@ -721,7 +782,7 @@ static void cell_release(Value *cell_value);
 
 static void value_free(Value value) {
     if (value.kind == VALUE_STRING) {
-        free(value.as.string);
+        string_free(value.as.string);
     } else if (value.kind == VALUE_FILE) {
         free(value.as.file_path);
     } else if (value.kind == VALUE_DIR) {
