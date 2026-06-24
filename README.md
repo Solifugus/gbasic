@@ -166,6 +166,53 @@ Collection mutators such as `append`, `prepend`, `insert`, `remove`,
 `take_first`, `take_last`, `reverse`, `sort`, and `unique` notify watchers
 once, after the stored collection mutation completes.
 
+## Objects (Policy-Based Inheritance)
+
+gBASIC's object model is **prototypal**: any record is a prototype, and `new`
+derives an instance from it.
+
+```basic
+account = {
+    owner: "unnamed",
+    balance: 0
+}
+
+a = new account with { owner: "Ada", balance: 100 }
+print(a.owner)        ' Ada
+print(account.owner)  ' unnamed  — the prototype is untouched
+```
+
+Each property may carry a **policy** in parentheses that controls how it is
+inherited. The policy clause uses `:` (not `=`):
+
+```basic
+bank = {
+    name   (copy):  "unnamed",         ' default — an independent copy
+    branch (link):  "Main Street",     ' shared identity, write-through
+    id     (reset next_id()): 0,       ' fresh value evaluated at each `new`
+    scratch (exclude): "temp"          ' not inherited at all
+}
+```
+
+- **`copy`** (the default) — the instance gets its own independent value. Writing
+  it never affects the prototype or sibling instances. Internally this is
+  copy-on-write: the storage is shared until first written, so `new` is cheap.
+- **`link`** — the instance shares one cell with the prototype. A write through
+  the prototype, the instance, or any sibling is visible to all of them.
+- **`reset <expr>`** — the expression is re-evaluated at each `new` (in the
+  global/program scope), giving every instance a fresh value such as an id or
+  timestamp. The prototype keeps its literal.
+- **`exclude`** — the property stays on the prototype but is omitted from
+  instances (use `has(instance, "name")` to confirm).
+
+A `with { … }` block overrides values, re-annotates policy, and adds new fields;
+its entries win over `reset`. Derivation is **recursive** — a `copy` property
+whose value is itself an instance is re-derived, so nested `reset`s re-fire and
+nested instances stay independent. Policies persist on instances, so an instance
+can itself serve as a prototype.
+
+See [docs/pbi_design.md](docs/pbi_design.md) for the full design and rationale.
+
 ## Values And Modifiers
 
 Modifiers validate or transform values during assignment and comparison:
@@ -442,6 +489,7 @@ GUI testing remains manual because it requires a display.
   and core runtime
 - [Tutorial](docs/tutorial.md)
 - [Language and runtime reference](docs/reference.md)
+- [Policy-Based Inheritance (objects)](docs/pbi_design.md)
 
 Library/module designs (each kept separate):
 

@@ -441,6 +441,56 @@ File and directory references are typed paths, not open handles.
 
 Money created by `USD` is stored as integer cents.
 
+## Objects (Policy-Based Inheritance)
+
+gBASIC objects are prototypal: a record is a prototype, and `new <prototype>`
+derives an instance. An optional `with { … }` block customizes the instance.
+
+```basic
+account = { owner: "unnamed", balance: 0 }
+a = new account with { owner: "Ada", balance: 100 }
+```
+
+`new` evaluates its operand to a record (a runtime error code `1003` is raised
+otherwise) and produces a derived record. The prototype is never mutated by
+derivation.
+
+### Field policies
+
+Each property may declare a policy in parentheses before its `:`. The clause is
+`:`-only; `name (copy)= …` is a syntax error by design (the `)=` form is the
+assignment-modifier syntax). Policy names are contextual — they are ordinary
+identifiers everywhere except this position.
+
+| Policy | Meaning |
+| --- | --- |
+| `copy` (default) | Instance gets an independent value; writes never affect the prototype or siblings. Implemented as copy-on-write — storage is shared until first written. |
+| `link` | Instance shares one storage cell with the prototype; a write through the prototype, instance, or any sibling is visible to all. |
+| `reset <expr>` | `<expr>` is re-evaluated at each `new` in the global/program scope (top-level and loaded functions, builtins, globals — not defining-scope locals or `with` arguments). The prototype keeps its literal value. |
+| `exclude` | Property remains on the prototype but is omitted from instances. Confirm with `has(instance, "name")`. |
+
+```basic
+record_proto = {
+    name    (copy):  "unnamed",
+    shared  (link):  "Main",
+    id      (reset next_id()): 0,
+    scratch (exclude): "temp"
+}
+```
+
+### Derivation rules
+
+- A `with { … }` block may override a value, re-annotate a property's policy
+  (affecting that instance's own descendants), and add new properties. It may not
+  remove an inherited property. Override entries win over `reset`.
+- Derivation is **recursive**: a `copy` property whose value is itself an
+  instance is re-derived, so nested `reset`s re-fire and nested instances stay
+  independent. (Records nested inside arrays are copied, not re-derived.)
+- Policies persist on instances, so an instance can itself serve as a prototype;
+  re-derivation re-applies its policies.
+
+See [pbi_design.md](pbi_design.md) for the full design and rationale.
+
 ## Modifiers
 
 Modifier use:
