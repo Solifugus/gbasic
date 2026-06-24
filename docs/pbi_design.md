@@ -1,0 +1,502 @@
+# Policy-Based Inheritance (PBI) — Design
+
+Status: **proposal / not yet implemented.** This document works through the
+language model, syntax, runtime/memory model, a staged implementation plan
+grounded in the current code, and the open questions. It is the design counterpart
+to the Unicode and multiprocessing threads; where those threads converge with PBI
+is called out explicitly (§9).
+
+PBI is gBASIC's object model. Rather than classes and instances, it is
+**prototypal**: any record can serve as a prototype, and a new instance is
+*derived* from it. What makes it PBI rather than plain prototyping is that each
+property carries a **derivation policy** that decides how that property crosses
+the boundary from prototype to derived instance.
+
+---
+
+## 1. Why PBI (and why this shape)
+
+Real-world modelling needs three things that gBASIC's current deep-copy records
+cannot express:
+
+1. **Shared mutable state** — many instances that genuinely refer to one thing
+   (a shared configuration, a parent aggregate, a connection pool handle), where
+   a write through any instance is seen by all.
+2. **Independent per-instance state** — fields that look shared but logically are
+   not, where a write through one instance must not disturb the others.
+3. **Fresh-per-instance state** — fields that must be reinitialised for every new
+   instance (an id, a creation timestamp, an empty working collection) rather than
+   inherited from the prototype at all.
+
+Today gBASIC offers exactly one behaviour: assignment deep-copies a record
+(`value_copy`, `src/eval.c:628`), so everything is case 2 and only case 2. There
+is no way to share, and no way to reset. PBI makes the choice **per property** and
+makes the default the safe one (independent copy), so existing record code keeps
+its current meaning.
+
+The design is deliberately prototypal because gBASIC already has structural
+records and no class system (`src/eval.c` has `VALUE_RECORD` but no class/`new`
+machinery). A prototype *is* a record; an instance *is* a record. There is no
+second concept to learn.
+
+---
+
+## 2. The four policies
+
+A property is annotated with one of four policies. The policy governs **what
+derivation does** with that property; it does not change how the property behaves
+once the instance exists.
+
+| Policy | At derivation, the derived instance gets… | After derivation |
+|--------|-------------------------------------------|------------------|
+| `copy` *(default)* | a logically independent copy of the prototype's value | writes are private to each instance |
+| `link` | the **same** storage as the prototype | writes through either side are visible to both |
+| `reset <expr>` | a fresh value from evaluating `<expr>` at derivation time | a normal private field thereafter |
+| `exclude` | nothing — the property is not inherited | the instance simply lacks the property |
+
+`copy` is the default so that an un-annotated record literal derives exactly like
+today's deep copy. Choosing `copy` explicitly only documents intent.
+
+### copy is copy-on-write
+
+`copy` does **not** eagerly duplicate. At derivation the prototype and instance
+share one storage cell; the duplication happens lazily on the first write to
+either side ("fork on write"). This keeps `new` cheap regardless of record
+size and is invisible to the program — semantically `copy` is an independent
+copy; mechanically it is shared until someone writes.
+
+The fork is **symmetric**: whoever writes first forks. If the prototype is
+mutated after instances were derived, the prototype forks and the instances keep
+the old shared value; if an instance is mutated, the instance forks and the
+prototype keeps it. Neither side is privileged.
+
+### link is identity, not copy
+
+`link` is the opposite: the cell is shared and **never** forks. A write through
+the prototype or any linked instance is seen by all of them. `link` is how PBI
+expresses identity — "these instances refer to the same thing." It is also the
+mechanism behind shared behaviour (see §7).
+
+### reset is per-instance reinitialisation
+
+`reset <expr>` ignores the prototype's value entirely and evaluates `<expr>`
+afresh **every time** an instance is derived. This is the natural home for ids,
+timestamps, counters, and empty per-instance collections:
+
+```basic
+session = {
+    id      (reset new_id()): 0,
+    started (reset now()):     0,
+    log     (reset []):        []
+}
+```
+
+`<expr>` is a full expression, not a literal — that is the whole point. The
+evaluation scope for `<expr>` is an open question (§10): at minimum it sees the
+enclosing program scope; whether it can see the prototype's other fields or the
+`with` overrides is to be decided.
+
+### exclude drops the property
+
+`exclude` means the property exists on the prototype but is not carried into
+derived instances. Use it for scratch/working fields that belong to the prototype
+itself, or for marker fields that should not propagate.
+
+---
+
+## 3. Syntax
+
+### 3.1 Policy annotations in record literals
+
+A record field may carry a parenthesised policy between the field name and the
+`:`/`=` separator:
+
+```basic
+account = {
+    owner   (copy):        "unnamed",
+    bank    (link):        "First Bank",
+    balance (reset 0):     0,
+    scratch (exclude):     "temp"
+}
+```
+
+Grammatically this extends the existing record-field rule. Today a field is
+`IDENT ( ':' | '=' ) expression` (`src/parser.y:972-975`); PBI adds an optional
+policy clause:
+
+```
+record_field
+    : IDENT field_sep expression
+    | IDENT '(' policy ')' field_sep expression
+    ;
+policy
+    : COPY
+    | LINK
+    | EXCLUDE
+    | RESET expression
+    ;
+```
+
+**`copy`/`link`/`reset`/`exclude` must be contextual keywords, not reserved
+words.** `copy` is already a file builtin (`docs/historical_development_archive.md`),
+and reserving these globally would repeat the §5 builtin-shadowing problem from
+the language design. They are recognised as policy keywords **only** inside the
+policy parentheses of a record field; everywhere else they remain ordinary
+identifiers and builtins.
+
+This deliberately does **not** reuse the assignment-modifier lexer mode
+(`modifier_content_mode`, `MOD_LPAREN`/`MOD_CONTENT`). That mode captures
+parenthesis content as *raw text* and resolves it through the modifier namespace,
+which is wrong here for two reasons: `reset <expr>` needs a normally-parsed
+sub-expression (not raw text), and the policy set is closed and context-bound.
+Inside a record literal, after `IDENT`, a `(` is currently a syntax error, so the
+new rule is unambiguous and needs no source-level lookahead heuristic.
+
+### 3.2 Deriving an instance
+
+A new instance is produced with a `new` prefix expression, optionally with a
+`with { … }` block that overrides and/or extends:
+
+```basic
+a = new account
+b = new account with { owner: "Ada" }
+c = new account with { owner: "Grace", tier (link): premium_tier }
+```
+
+`new proto` *derives* an instance: it applies every field policy of `proto` to
+build it. The surface keyword is `new`; the operation it names is the derivation
+defined in §4.2 (keyword vs concept, exactly like Java's `new` keyword vs the
+concept "instantiation"). There is no class/instance split — `new X` derives from
+the record `X` itself. `with { … }` is itself a record literal — it may set values
+**and** annotate policies, so a derivation can both fill in instance data and
+re-state a property's policy for the instance's own future descendants.
+
+`new` is a **contextual** prefix keyword, consistent with the policy words. It is
+free today — not a lexer token, not a builtin, and not used as an identifier in
+any current program — so introducing `new <expr>` is unambiguous (in value
+position a bare second identifier is currently a syntax error). `with` is likewise
+already a contextual keyword (`with lock` on file references), so reusing it adds
+no new reserved word. `new` was chosen over `derive` for intuitiveness; its mild
+"class instantiation" connotation is harmless here because a prototype simply *is*
+a record.
+
+### 3.3 Worked example — leaf policies
+
+```basic
+account = {
+    owner   (copy):    "unnamed",
+    bank    (link):    "First Bank",
+    balance (reset 0): 0,
+    scratch (exclude): "temp"
+}
+
+a = new account
+b = new account
+
+a.owner = "Grace"        ' copy → forks; a.owner private now
+a.bank  = "Second Bank"  ' link → writes through to the shared cell
+
+print b.owner            ' "unnamed"      (a's fork did not touch b)
+print b.bank             ' "Second Bank"  (linked: a's write is visible)
+print a.balance          ' 0              (reset fired at derivation)
+print has(a, "scratch")  ' false          (excluded from instances)
+print account.scratch    ' "temp"         (still on the prototype itself)
+```
+
+---
+
+## 4. Runtime and memory model
+
+PBI cannot run on the current "every record field is a uniquely-owned `Value*`"
+model. `copy` (COW) and `link` (aliasing) both require **shared, reference-counted
+storage cells** with a fork-on-write barrier. This is the central implementation
+fact: *PBI forces a refcounted value-cell model on records.*
+
+There is already a precedent to generalise. Database connections are
+reference-counted today (`value_copy`/`value_free` increment/decrement a
+`ref_count` for `VALUE_POSTGRES_CONNECTION`/`VALUE_SQLITE_CONNECTION`,
+`src/eval.c:638`). PBI extends that idea from connections to record-field storage.
+
+### 4.1 The cell and the field
+
+Current field (`src/eval.c:107`):
+
+```c
+typedef struct {
+    char *name;
+    Value *value;     /* uniquely owned */
+} RecordField;
+```
+
+Proposed:
+
+```c
+typedef struct {
+    Value value;
+    size_t refcount;
+} ValueCell;
+
+typedef enum { POLICY_COPY, POLICY_LINK } SlotShare;   /* runtime sharing mode */
+
+typedef struct {
+    char  *name;
+    ValueCell *cell;   /* shared, refcounted */
+    SlotShare  share;  /* COPY = fork-on-write, LINK = write-through */
+} RecordField;
+```
+
+`reset` and `exclude` are **derivation-time** policies — they have no runtime
+representation on the instance. After derivation a `reset` field is just an
+ordinary private (`POLICY_COPY`, refcount 1) field, and an `exclude` field does
+not exist. Only `copy` and `link` survive as runtime sharing modes.
+
+The **declared** policy (including `reset`/`exclude` and the reset expression)
+must also be retained somewhere so that an instance can itself be a prototype and
+re-apply policies to a grandchild. The cleanest place is the AST of the original
+literal plus a per-field policy tag carried on the instance; preserving policy
+across multi-level derivation is open question §10.
+
+### 4.2 Derivation algorithm
+
+`new proto` (derivation):
+
+```
+for each field F in proto:
+    switch F.policy:
+      exclude:        skip
+      reset(expr):    child gets a NEW cell, value = eval(expr), share = COPY, refcount 1
+      link:           child.cell = F.cell;  F.cell->refcount++;  share = LINK
+      copy:           child.cell = F.cell;  F.cell->refcount++;  share = COPY   (COW)
+then apply `with { … }` overrides on top (set value and/or re-annotate policy)
+```
+
+`link` and `copy` both start by *sharing* the prototype's cell and bumping its
+refcount; they differ only in what a later write does.
+
+### 4.3 The write barrier (fork on write)
+
+Every mutation of a record field flows through `record_set` (`src/eval.c:1113`)
+and the lvalue path `resolve_lvalue_ref`/`assign_lvalue`
+(`src/eval.c:12474`/`12555`). The barrier lives here:
+
+```
+to write value V into field F:
+    if F.share == LINK:
+        *F.cell.value = V                  # write-through, all aliases see it
+    else if F.share == COPY and F.cell.refcount > 1:
+        new = ValueCell{ value: V, refcount: 1 }   # FORK
+        F.cell.refcount--                  # detach from the shared cell
+        F.cell = new
+    else:                                  # COPY, sole owner
+        *F.cell.value = V
+```
+
+Because the fork triggers for *whichever* side writes and only when the cell is
+still shared (`refcount > 1`), copy semantics are correctly symmetric and lazy.
+
+### 4.4 Reference cycles
+
+`link` can create cycles (instance A links a field to B, B links back to A),
+which pure reference counting leaks. v1 should **document** this rather than ship
+a cycle collector; a later pass can add cycle detection if real programs hit it.
+This is consistent with the rest of the interpreter being deliberately simple.
+
+---
+
+## 5. Backward compatibility
+
+- A record literal with **no** policy annotations derives every field as `copy`.
+  `new plain_record` therefore behaves exactly like today's deep copy, and an
+  ordinary `x = some_record` assignment is unchanged in meaning.
+- The COW model is an internal optimisation; observable copy semantics are
+  identical to the current eager deep copy. Existing golden-file tests must
+  continue to pass byte-for-byte.
+- `new`, and the four policy keywords *in policy position*, are the only new
+  surface. No existing identifier meaning changes (the policy keywords stay
+  contextual — see §3.1).
+
+---
+
+## 6. Worked example — nested instances (the subtle case)
+
+When a property holds **another instance**, "copy" has two possible meanings, and
+the difference is the single most important semantic decision in PBI.
+
+```basic
+engine = {
+    serial (reset new_serial()): 0,
+    rpm    (copy):               0
+}
+
+car = {
+    make  (copy):          "Forda",
+    motor (copy): new engine        ' the property value is itself an instance
+}
+
+c1 = new car
+c2 = new car
+```
+
+- **Recursive derivation (recommended):** deriving `car` re-derives `motor`, so
+  `c1.motor` and `c2.motor` are distinct engines with distinct serials, and each
+  engine's own `copy`/`reset` policies apply. This matches how anyone modelling
+  real objects expects "copy" to behave.
+- **Flat deep-copy:** both cars share one engine value (same serial) until a
+  write forks it. This is simpler to implement but almost never what the program
+  means, and it silently discards the inner `reset`.
+
+**Decided: recursive derivation (Reading A).** `copy` of a property whose value
+is an instance performs a **recursive derivation**, not a flat duplication, and
+`link` of such a property shares the inner instance's identity. This is the only
+reading under which a nested `reset` (or any inner policy) keeps working: under
+flat duplication the inner engine's `serial (reset …)` would be frozen at the
+moment the `car` literal was written and copied verbatim forever, silently
+turning `reset` into a no-op as soon as its object is nested. Recursion is cheap
+because `copy` is copy-on-write — re-deriving a nested instance is mostly
+refcount bumps until something is actually written.
+
+Two mechanics still to pin down during implementation (not blocking the decision):
+the rule for **how deep** recursion goes (every nested instance, all the way
+down — there is no fixed bound; it follows the data), and **leaf vs instance
+detection** (when is a field value "an instance to re-derive" vs "a plain value to
+COW-share"? — i.e. any `VALUE_RECORD` that carries field policies, versus a bare
+record/scalar/array). See §10.1.
+
+---
+
+## 7. Behaviour / methods (follow-on)
+
+PBI subsumes "methods" without a separate concept: a method is a
+**function-valued property marked `link`**, so every instance shares one function
+cell rather than copying code per instance.
+
+```basic
+counter = {
+    n    (reset 0): 0,
+    bump (link):    function(self) self.n = self.n + 1 end function
+}
+```
+
+This is a **follow-on, not part of PBI v1**, because it has a hard prerequisite:
+gBASIC functions are not currently first-class values (there is no
+`VALUE_FUNCTION` in the `ValueKind` enum at `src/eval.c:58`; functions live in
+their own declaration/registry world). Two things must land first:
+
+1. First-class function values (so a function can be stored in a field cell).
+2. A receiver-binding convention — how `instance.bump()` passes the instance as
+   `self`. This is an open question (§10.4).
+
+PBI v1 should ship **data** inheritance only. The `link` policy is designed so
+that methods slot in later with no change to the policy model: shared behaviour is
+just a linked function-valued property.
+
+---
+
+## 8. Staged implementation plan
+
+Each phase is independently testable. Phase 0 is the large, invasive one; the
+rest are comparatively surgical.
+
+**Phase 0 — refcounted value cells (foundation).**
+Generalise the connection refcount pattern (`src/eval.c:638`) into `ValueCell`.
+Convert `RecordField` from `Value*` to a refcounted cell. Update `value_copy`
+(`628`), `value_free` (`680`), `record_set` (`1113`), `resolve_lvalue_ref`
+(`12474`), `assign_lvalue` (`12555`), and the record-literal eval case
+(`12138`). Observable behaviour must be **unchanged** (everything is `copy`,
+refcount-1, eager-equivalent). This phase is purely a memory-model refactor and
+should be merged green against the full existing suite before any PBI surface
+exists. It is the riskiest change because records are pervasive.
+
+**Phase 1 — policy annotations (parse + store).**
+Add a policy field to `AstRecordField` (`include/ast.h:54`). Extend the
+`record_field` grammar (`src/parser.y:972`) with the optional `( policy )` clause
+and contextual keyword handling. Store the per-field policy in the evaluated
+record (`src/eval.c:12138`). No derivation yet; policies are inert metadata.
+
+**Phase 2 — `new` (and `with`).**
+Add `AST_EXPR_NEW { proto, with }` (the surface keyword is `new`; the node
+performs derivation). Implement the §4.2 derivation algorithm,
+setting each field's runtime `share` mode and refcounts. Implement `reset`
+evaluation and `exclude` omission. Derivation recurses into instance-valued
+fields per the §6 decision (recursive); the only detail to resolve here is
+leaf-vs-instance detection.
+
+**Phase 3 — the write barrier.**
+Implement §4.3 fork-on-write in `record_set`/`assign_lvalue`. After this phase
+`copy`/`link` are fully observable. Add the matrix of tests below.
+
+**Phase 4 — methods (deferred).**
+Only after first-class functions exist (§7). Out of scope for PBI v1.
+
+### Test matrix (golden-file, per the project's test conventions)
+
+- copy: write to instance forks; prototype and siblings unaffected.
+- copy: write to prototype forks; existing instances keep old value.
+- link: write through instance visible on prototype and siblings.
+- reset: distinct value per `new`; expression re-evaluated each time.
+- exclude: property absent on instance, present on prototype (`has`).
+- `with`: overrides value; re-annotates policy.
+- nested instance: per §6 chosen semantics (distinct serials under recursion).
+- back-compat: `new` of an un-annotated record equals today's deep copy.
+- negative: policy keyword outside policy position is still an ordinary
+  identifier/builtin; malformed `( … )` policy clause diagnostics.
+
+---
+
+## 9. Convergence with the other two threads
+
+PBI is not isolated; it shares machinery with the Unicode and multiprocessing
+work, and doing it first de-risks both.
+
+- **Memory-safety / value-model.** The refcounted-cell + COW model (§4) is the
+  same machinery a general memory-safety upgrade wants, and the same shape a
+  future immutable/shared **text** type (the Unicode bytes-vs-text split) would
+  use. Phase 0 is therefore a shared foundation, not PBI-only cost.
+
+- **Multiprocessing (actors).** `link` is **intra-isolate only**. Actors do not
+  share memory, so a linked cell cannot span isolates. When an instance crosses
+  an actor/process boundary it is serialised; `link` fields cannot retain shared
+  identity across the boundary and must **degrade to an independent copy
+  (snapshot) at send time** (or be a diagnosed error — §10.7). This is the same
+  principle as "watcher boundaries = concurrency boundaries": shared, reactive
+  state stops where the isolate stops.
+
+- **Watchers.** A `link`-shared cell written through one instance must fire
+  watchers registered via *any* alias of that cell. Integrating the write barrier
+  (§4.3) with watcher notification (`docs/gbasic-design.md` §9) is required, not
+  optional.
+
+---
+
+## 10. Open design questions
+
+1. **Nested-instance copy semantics — DECIDED: recursive (§6).** `copy` of an
+   instance-valued property re-derives recursively, all the way down. Remaining
+   mechanics (leaf-vs-instance detection: which `VALUE_RECORD`s count as
+   re-derivable instances) are an implementation detail for Phase 2, not a
+   semantic open question.
+2. **Derivation surface — keyword DECIDED: `new`.** A contextual `new` prefix
+   keyword (not a builtin, not `derive`) performs derivation; see §3.2. Still
+   open: the exact `with { … }` semantics (override-only vs allow new fields; may
+   it `exclude` an inherited field?).
+3. **Policy persistence across levels.** How an instance retains each field's
+   declared policy so it can re-apply it when *it* becomes a prototype. Where is
+   the policy stored, and can `with` change it?
+4. **Methods and `self`.** Receiver-binding convention for function-valued
+   `link` properties; depends on first-class functions (§7).
+5. **Identity vs structural equality.** Does `link` introduce an identity notion?
+   Should there be an `is` (same-cell) comparison distinct from `=` (structural)?
+6. **`reset` evaluation scope.** Does `<expr>` see only the enclosing program
+   scope, or also the prototype's other fields and the `with` overrides? May the
+   `: value` be omitted when `(reset expr)` is present?
+7. **Cross-actor `link` degradation.** Snapshot-copy at send vs diagnosed error
+   (§9).
+8. **Introspection.** Can a program read or change a property's policy at runtime
+   (e.g. `policy_of(rec, "field")`)? Useful for serialisation and debugging.
+9. **Reference cycles.** Document-and-leak in v1 vs cycle detection (§4.4).
+10. **Arrays.** This document scopes PBI to record fields. Whether array elements
+    can carry policies, or whether arrays are always `copy`, is unspecified.
+
+---
+
+End of PBI design.

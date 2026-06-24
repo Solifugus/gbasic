@@ -91,6 +91,7 @@ GUI verification remains manual.
 
 - `README.md`: project overview and quick start
 - `docs/gbasic-design.md`: consolidated language and core-runtime design
+- `docs/pbi_design.md`: Policy-Based Inheritance object model (proposal, not yet implemented)
 - `docs/reference.md`: implemented language and runtime behavior
 - `docs/tutorial.md`: guided usage
 - `docs/gbasic_dogfood_notes.md`: language/runtime friction found while building examples
