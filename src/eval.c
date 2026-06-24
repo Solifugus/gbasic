@@ -425,6 +425,37 @@ static Value value_record(RecordField *fields, size_t count) {
     return value;
 }
 
+/*
+ * Reference-counted storage cell for a record field's value (PBI Phase 0).
+ *
+ * `value` is the FIRST member, so a `Value *` held in a RecordField points at
+ * `&cell->value`, which is the same address as the cell itself. Every existing
+ * `field->value` dereference therefore keeps working unchanged; only the
+ * allocation and release of a field's storage route through the helpers below.
+ *
+ * In Phase 0 every cell is uniquely owned with refcount 1, so behaviour is
+ * identical to the previous one-Value-per-field allocate/free model.
+ * Later PBI phases share cells (link = write-through, copy = copy-on-write).
+ * See docs/pbi_design.md §4.
+ */
+typedef struct {
+    Value value;
+    size_t refcount;
+} ValueCell;
+
+/* Allocate a fresh field cell (refcount 1), value null-initialised so that
+ * cell_release is always safe even before the real value is stored. Returns a
+ * Value* usable exactly like a plain heap Value pointer. */
+static Value *cell_alloc(void) {
+    ValueCell *cell = malloc(sizeof(ValueCell));
+    if (!cell) {
+        abort();
+    }
+    cell->refcount = 1;
+    cell->value = (Value){0};
+    return &cell->value;
+}
+
 static Value value_datetime(DateTime datetime) {
     Value value = {0};
     value.kind = VALUE_DATETIME;
@@ -612,7 +643,7 @@ static Value value_error_object(void) {
     const char *names[] = {"message", "line", "column", "code", "source"};
     for (size_t i = 0; i < 5; i++) {
         fields[i].name = copy_string(names[i]);
-        fields[i].value = malloc(sizeof(Value));
+        fields[i].value = cell_alloc();
         if (!fields[i].value) {
             abort();
         }
@@ -665,7 +696,7 @@ static Value value_copy(Value value) {
             }
             for (size_t i = 0; i < value.as.record.count; i++) {
                 fields[i].name = copy_string(value.as.record.fields[i].name);
-                fields[i].value = malloc(sizeof(Value));
+                fields[i].value = cell_alloc();
                 if (!fields[i].value) {
                     abort();
                 }
@@ -676,6 +707,8 @@ static Value value_copy(Value value) {
     }
     return value;
 }
+
+static void cell_release(Value *cell_value);
 
 static void value_free(Value value) {
     if (value.kind == VALUE_STRING) {
@@ -692,8 +725,7 @@ static void value_free(Value value) {
     } else if (value.kind == VALUE_RECORD) {
         for (size_t i = 0; i < value.as.record.count; i++) {
             free(value.as.record.fields[i].name);
-            value_free(*value.as.record.fields[i].value);
-            free(value.as.record.fields[i].value);
+            cell_release(value.as.record.fields[i].value);
         }
         free(value.as.record.fields);
     } else if (value.kind == VALUE_POSTGRES_CONNECTION) {
@@ -716,6 +748,18 @@ static void value_free(Value value) {
 #endif
             free(connection);
         }
+    }
+}
+
+/* Drop one reference to a record-field cell, freeing the contained value and
+ * the cell block when the last reference goes away. Mirrors the previous
+ * `value_free(*p); free(p);` pair. The cell is recovered by casting back to its
+ * first member (`value` at offset 0). */
+static void cell_release(Value *cell_value) {
+    ValueCell *cell = (ValueCell *)cell_value;
+    if (--cell->refcount == 0) {
+        value_free(cell->value);
+        free(cell);
     }
 }
 
@@ -1126,7 +1170,7 @@ static void record_set(Value *record, const char *name, Value value) {
     record->as.record.fields = fields;
     field = &record->as.record.fields[record->as.record.count];
     field->name = copy_string(name);
-    field->value = malloc(sizeof(Value));
+    field->value = cell_alloc();
     if (!field->value) {
         abort();
     }
@@ -4519,11 +4563,11 @@ static Value make_dir_entry(const char *folder, const char *name, const char *ty
     }
 
     fields[0].name = copy_string("name");
-    fields[0].value = malloc(sizeof(Value));
+    fields[0].value = cell_alloc();
     fields[1].name = copy_string("path");
-    fields[1].value = malloc(sizeof(Value));
+    fields[1].value = cell_alloc();
     fields[2].name = copy_string("type");
-    fields[2].value = malloc(sizeof(Value));
+    fields[2].value = cell_alloc();
     if (!fields[0].value || !fields[1].value || !fields[2].value) {
         abort();
     }
@@ -6189,7 +6233,7 @@ static Value decode_parse_record(DecodeParser *parser) {
         }
         fields = next;
         fields[count].name = copy_string(key.as.string);
-        fields[count].value = malloc(sizeof(Value));
+        fields[count].value = cell_alloc();
         if (!fields[count].value) {
             abort();
         }
@@ -6213,8 +6257,7 @@ static Value decode_parse_record(DecodeParser *parser) {
 
     for (size_t i = 0; i < count; i++) {
         free(fields[i].name);
-        value_free(*fields[i].value);
-        free(fields[i].value);
+        cell_release(fields[i].value);
     }
     free(fields);
     return value_null();
@@ -8462,7 +8505,7 @@ static Value sqlite_rows_from_statement(sqlite3 *native, sqlite3_stmt *statement
         for (int column = 0; column < columns; column++) {
             int before_error = error_generation;
             fields[column].name = copy_string(sqlite3_column_name(statement, column));
-            fields[column].value = malloc(sizeof(Value));
+            fields[column].value = cell_alloc();
             if (!fields[column].value) {
                 abort();
             }
@@ -8471,8 +8514,7 @@ static Value sqlite_rows_from_statement(sqlite3 *native, sqlite3_stmt *statement
             if (error_generation != before_error) {
                 for (int i = 0; i < completed_fields; i++) {
                     free(fields[i].name);
-                    value_free(*fields[i].value);
-                    free(fields[i].value);
+                    cell_release(fields[i].value);
                 }
                 free(fields);
                 for (size_t i = 0; i < count; i++) {
@@ -8515,9 +8557,9 @@ static Value sqlite_command_result(sqlite3 *native, const char *sql) {
         abort();
     }
     fields[0].name = copy_string("command");
-    fields[0].value = malloc(sizeof(Value));
+    fields[0].value = cell_alloc();
     fields[1].name = copy_string("rows_affected");
-    fields[1].value = malloc(sizeof(Value));
+    fields[1].value = cell_alloc();
     if (!fields[0].value || !fields[1].value) {
         abort();
     }
@@ -9330,7 +9372,7 @@ static Value pg_rows_from_result(PGresult *result) {
         for (int column = 0; column < columns; column++) {
             int before_error = error_generation;
             fields[column].name = copy_string(PQfname(result, column));
-            fields[column].value = malloc(sizeof(Value));
+            fields[column].value = cell_alloc();
             if (!fields[column].value) {
                 abort();
             }
@@ -9339,8 +9381,7 @@ static Value pg_rows_from_result(PGresult *result) {
             if (error_generation != before_error) {
                 for (int i = 0; i < completed_fields; i++) {
                     free(fields[i].name);
-                    value_free(*fields[i].value);
-                    free(fields[i].value);
+                    cell_release(fields[i].value);
                 }
                 free(fields);
                 for (int i = 0; i < completed; i++) {
@@ -9371,9 +9412,9 @@ static Value pg_command_result(PGresult *result) {
         abort();
     }
     fields[0].name = copy_string("command");
-    fields[0].value = malloc(sizeof(Value));
+    fields[0].value = cell_alloc();
     fields[1].name = copy_string("rows_affected");
-    fields[1].value = malloc(sizeof(Value));
+    fields[1].value = cell_alloc();
     if (!fields[0].value || !fields[1].value) {
         abort();
     }
@@ -9387,10 +9428,7 @@ static Value pg_command_result(PGresult *result) {
             for (size_t i = 0; i < 2; i++) {
                 free(fields[i].name);
                 if (fields[i].value) {
-                    if (i == 0) {
-                        value_free(*fields[i].value);
-                    }
-                    free(fields[i].value);
+                    cell_release(fields[i].value);
                 }
             }
             free(fields);
@@ -10476,7 +10514,7 @@ static Value eval_call(AstExpr *expr) {
                 if (strcmp(record.as.record.fields[i].name, key.as.string) != 0) {
                     new_fields[new_index].name = malloc(strlen(record.as.record.fields[i].name) + 1);
                     strcpy(new_fields[new_index].name, record.as.record.fields[i].name);
-                    new_fields[new_index].value = malloc(sizeof(Value));
+                    new_fields[new_index].value = cell_alloc();
                     *new_fields[new_index].value = value_copy(*record.as.record.fields[i].value);
                     new_index++;
                 }
@@ -12145,7 +12183,7 @@ static Value eval_expr(AstExpr *expr) {
         }
         for (size_t i = 0; i < expr->as.record.count; i++) {
             fields[i].name = copy_string(expr->as.record.items[i].name);
-            fields[i].value = malloc(sizeof(Value));
+            fields[i].value = cell_alloc();
             if (!fields[i].value) {
                 abort();
             }
