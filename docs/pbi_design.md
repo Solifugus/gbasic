@@ -517,16 +517,30 @@ records today.
   reads/assignments perform, and `record_set`'s in-place write is seen by every
   alias. A write through any of prototype / instance / sibling is visible to all.
 
-  **`copy` is currently eager** (an independent deep copy at `new` time), which is
-  observably correct. Phase 3 turns it into copy-on-write — a pure optimization,
-  not a behavior change.
+**Phase 3 DONE — copy-on-write.**
+`copy` is now lazy. `value_copy` and `new`-time leaf derivation share the cell
+(refcount++) exactly as `link` does; the difference is a fork-on-write barrier,
+`cell_fork_for_write`, which forks any non-`link` cell still shared (`refcount >
+1`) into a private deep copy before the pending mutation. The barrier sits at the
+two — and only two — choke points through which record-field content is mutated
+in place:
 
-**Phase 3 — copy-on-write (optimization).**
-Make `copy` lazy: share the cell at `new` time (like `link`) but add the §4.3
-fork-on-write barrier in `record_set`/`assign_lvalue` so the first write to a
-shared `copy` cell forks. Observable behaviour is unchanged from Phase 2 (copies
-are already independent); this only avoids the eager duplication. Because Phase 2
-is already correct, Phase 3 is optional polish rather than a correctness gate.
+- `record_set` (the field-assignment sink, incl. index-form `r["f"] = …`):
+  detaches a shared cell before overwriting it. `link` falls through and writes
+  in place (write-through preserved).
+- `resolve_lvalue_ref` (the FIELD and record-INDEX branches): forks before
+  handing a mutable pointer to a caller that mutates content in place — this is
+  what makes `append(r.items, …)` and `r.inner.n = …` fork correctly.
+
+The fork's deep copy is itself copy-on-write, so a deep structure diverges one
+level at a time as each level is first written. **Nested-instance `copy` stays
+eager-recursive** at `new` (re-firing inner `reset`s per §6); only its leaves
+COW-share — which is the "mostly refcount bumps" the §6 note anticipated.
+Observable behaviour is identical to Phase 2; this only removes the eager
+duplication, making `new`/assignment O(fields) instead of O(deep size).
+(commit pending, 2026-06-23.) Test: `examples/pbi_cow_test` exercises all six
+fork paths (scalar, array, nested, index-form, symmetric prototype fork, link
+exemption); suite green at 102/162, Valgrind-clean.
 
 **Phase 4 — methods (deferred).**
 Only after first-class functions exist (§7). Out of scope for PBI v1.

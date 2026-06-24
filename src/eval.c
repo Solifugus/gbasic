@@ -702,20 +702,14 @@ static Value value_copy(Value value) {
                 /* Preserve PBI policy so it travels with copies/assignments. */
                 fields[i].policy = src->policy;
                 fields[i].reset_expr = src->reset_expr;
-                if (src->policy == AST_FIELD_POLICY_LINK) {
-                    /* link = shared identity: every copy shares the one cell, so
-                     * a write through any alias is visible to all (write-through
-                     * happens because record_set mutates the cell in place). */
-                    ValueCell *cell = (ValueCell *)src->value;
-                    cell->refcount++;
-                    fields[i].value = src->value;
-                } else {
-                    fields[i].value = cell_alloc();
-                    if (!fields[i].value) {
-                        abort();
-                    }
-                    *fields[i].value = value_copy(*src->value);
-                }
+                /* Share the cell (refcount++). For `link` this is permanent
+                 * write-through identity; for every other policy it is
+                 * copy-on-write — the field's write barrier (cell_fork_for_write)
+                 * forks the cell on first mutation so the copy stays independent.
+                 * This makes value_copy O(fields) instead of a full deep copy. */
+                ValueCell *cell = (ValueCell *)src->value;
+                cell->refcount++;
+                fields[i].value = src->value;
             }
         }
         return value_record(fields, value.as.record.count);
@@ -775,6 +769,27 @@ static void cell_release(Value *cell_value) {
     if (--cell->refcount == 0) {
         value_free(cell->value);
         free(cell);
+    }
+}
+
+/* Copy-on-write barrier. Before a record-field cell's content is mutated in
+ * place, make sure this field owns the cell privately. A `link` field is shared
+ * identity by design and must never fork — writes are meant to be seen through
+ * every alias. Any other field whose cell is still shared (refcount > 1) forks
+ * into a private copy so the pending write stays local; this is what keeps
+ * `copy` observably independent while `new`/assignment only bump refcounts. The
+ * fork uses value_copy, which is itself copy-on-write, so a deep structure
+ * diverges one level at a time as each level is first written. */
+static void cell_fork_for_write(RecordField *field) {
+    if (field->policy == AST_FIELD_POLICY_LINK) {
+        return;
+    }
+    ValueCell *cell = (ValueCell *)field->value;
+    if (cell->refcount > 1) {
+        Value *fresh = cell_alloc();
+        *fresh = value_copy(cell->value);
+        cell->refcount--;
+        field->value = fresh;
     }
 }
 
@@ -1172,7 +1187,17 @@ static const RecordField *record_find_const(const Value *record, const char *nam
 static void record_set(Value *record, const char *name, Value value) {
     RecordField *field = record_find(record, name);
     if (field) {
-        value_free(*field->value);
+        if (field->policy != AST_FIELD_POLICY_LINK &&
+            ((ValueCell *)field->value)->refcount > 1) {
+            /* The cell is shared (copy-on-write) and is about to be replaced
+             * wholesale: detach into a private cell so the aliases keep the old
+             * value. No need to copy the old content — it is being overwritten.
+             * `link` falls through and writes in place (write-through). */
+            cell_release(field->value);
+            field->value = cell_alloc();
+        } else {
+            value_free(*field->value);
+        }
         *field->value = value;
         return;
     }
@@ -2059,6 +2084,7 @@ static int gui_widget_set_string_field(Value *widget_record, const char *field_n
     if (strcmp(field->value->as.string, next_text) == 0) {
         return 0;
     }
+    cell_fork_for_write(field);
     value_free(*field->value);
     *field->value = value_string(next_text);
     return 1;
@@ -2076,6 +2102,7 @@ static int gui_widget_set_bool_field(Value *widget_record, const char *field_nam
     if (field->value->as.boolean == next_boolean) {
         return 0;
     }
+    cell_fork_for_write(field);
     value_free(*field->value);
     *field->value = value_bool(next_boolean);
     return 1;
@@ -12164,16 +12191,6 @@ static int values_equal_for_consider(Value subject, Value candidate) {
 
 static Value derive_record(Value proto);
 
-/* Derive a value for a `copy` field: a nested record is itself re-derived so
- * its own policies (notably `reset`) re-fire — the recursive semantics of §6.
- * Any non-record value is an ordinary independent copy. */
-static Value derive_value(Value v) {
-    if (v.kind == VALUE_RECORD) {
-        return derive_record(v);
-    }
-    return value_copy(v);
-}
-
 /* Build a new instance from a prototype record by applying each field's policy:
  *   exclude -> dropped; link -> share the cell (write-through identity);
  *   reset   -> fresh value from the reset expression evaluated in global scope;
@@ -12206,9 +12223,19 @@ static Value derive_record(Value proto) {
             *fields[out].value =
                 src->reset_expr ? eval_expr(src->reset_expr) : value_null();
             current_env = saved;
-        } else { /* COPY (the default) */
+        } else if (src->value->kind == VALUE_RECORD) {
+            /* COPY of a nested instance: re-derive recursively so its own
+             * policies (notably `reset`) re-fire at this `new` — the §6
+             * recursive-derivation semantics. The recursion's own leaves
+             * copy-on-write share, so it is mostly refcount bumps. */
             fields[out].value = cell_alloc();
-            *fields[out].value = derive_value(*src->value);
+            *fields[out].value = derive_record(*src->value);
+        } else {
+            /* COPY of a leaf value: copy-on-write share the cell now; the deep
+             * copy is deferred to the first write (cell_fork_for_write). */
+            ValueCell *cell = (ValueCell *)src->value;
+            cell->refcount++;
+            fields[out].value = src->value;
         }
         out++;
     }
@@ -12677,6 +12704,9 @@ static Value *resolve_lvalue_ref(AstExpr *target) {
             runtime_error_raise(message, 1003, "assignment");
             return NULL;
         }
+        /* The caller takes a mutable pointer into this cell, so fork it now if
+         * it is a shared copy-on-write cell (no-op for private or `link`). */
+        cell_fork_for_write(field);
         return field->value;
     }
     case AST_EXPR_INDEX: {
@@ -12708,6 +12738,9 @@ static Value *resolve_lvalue_ref(AstExpr *target) {
                 return NULL;
             }
             value_free(index);
+            /* See the AST_EXPR_FIELD branch: fork a shared copy-on-write cell
+             * before handing out a mutable pointer. */
+            cell_fork_for_write(field);
             return field->value;
         }
         value_free(index);
