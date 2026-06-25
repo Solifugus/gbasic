@@ -52,7 +52,7 @@ else
 CFLAGS += -DHAVE_LIBXCRYPT=0
 endif
 
-OBJS := src/main.o src/lexer.o src/parser.tab.o src/ast.o src/eval.o src/builtins.o
+OBJS := src/main.o src/lexer.o src/parser.tab.o src/ast.o src/eval.o src/builtins.o src/actor.o
 
 .PHONY: all clean
 
@@ -80,6 +80,9 @@ src/eval.o: src/eval.c include/eval.h include/ast.h include/builtins.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
 src/builtins.o: src/builtins.c include/builtins.h
+	$(CC) $(CFLAGS) -c $< -o $@
+
+src/actor.o: src/actor.c include/actor.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
 clean:
