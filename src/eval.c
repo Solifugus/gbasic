@@ -436,6 +436,35 @@ static int string_value_equal(const char *a, const char *b) {
     return la == lb && memcmp(a, b, la) == 0;
 }
 
+/* ASCII-only case folding (docs/unicode_design.md §6). Locale-independent by
+ * design: only A-Z <-> a-z fold, every other byte — including all UTF-8
+ * multibyte sequences — passes through untouched, so non-ASCII is never
+ * mis-folded the way locale-sensitive tolower/toupper could. */
+static char ascii_tolower(unsigned char c) {
+    return (char)((c >= 'A' && c <= 'Z') ? c + ('a' - 'A') : c);
+}
+
+static char ascii_toupper(unsigned char c) {
+    return (char)((c >= 'a' && c <= 'z') ? c - ('a' - 'A') : c);
+}
+
+/* Binary-safe ASCII-caseless equality of two runtime string values. Honors the
+ * full byte length (interior NULs compare), folds ASCII letters, compares all
+ * other bytes exactly. */
+static int string_value_equal_caseless(const char *a, const char *b) {
+    size_t la = string_length(a);
+    size_t lb = string_length(b);
+    if (la != lb) {
+        return 0;
+    }
+    for (size_t i = 0; i < la; i++) {
+        if (ascii_tolower((unsigned char)a[i]) != ascii_tolower((unsigned char)b[i])) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
 /* Binary-safe ordering of two runtime string values (string_new buffers).
  * Lexicographic by unsigned byte; shorter string sorts first on a prefix tie. */
 static int string_value_compare(const char *a, const char *b) {
@@ -2608,7 +2637,7 @@ static void gui_clear_native_windows(void) {
 
 static int string_equal_caseless(const char *left, const char *right) {
     while (*left && *right) {
-        if (tolower((unsigned char)*left) != tolower((unsigned char)*right)) {
+        if (ascii_tolower((unsigned char)*left) != ascii_tolower((unsigned char)*right)) {
             return 0;
         }
         left++;
@@ -5056,11 +5085,16 @@ static Value builtin_lower_value(Value value) {
         runtime_error_raise("lower expects a string", 1003, "invalid function call");
         return value_null();
     }
-    char *text = copy_string(value.as.string);
-    for (char *p = text; *p; p++) {
-        *p = (char)tolower((unsigned char)*p);
+    size_t len = string_length(value.as.string);
+    char *text = malloc(len + 1);
+    if (!text) {
+        abort();
     }
-    Value result = value_string(text);
+    for (size_t i = 0; i < len; i++) {
+        text[i] = ascii_tolower((unsigned char)value.as.string[i]);
+    }
+    text[len] = '\0';
+    Value result = value_string_n(text, len);
     free(text);
     value_free(value);
     return result;
@@ -5072,11 +5106,16 @@ static Value builtin_upper_value(Value value) {
         runtime_error_raise("upper expects a string", 1003, "invalid function call");
         return value_null();
     }
-    char *text = copy_string(value.as.string);
-    for (char *p = text; *p; p++) {
-        *p = (char)toupper((unsigned char)*p);
+    size_t len = string_length(value.as.string);
+    char *text = malloc(len + 1);
+    if (!text) {
+        abort();
     }
-    Value result = value_string(text);
+    for (size_t i = 0; i < len; i++) {
+        text[i] = ascii_toupper((unsigned char)value.as.string[i]);
+    }
+    text[len] = '\0';
+    Value result = value_string_n(text, len);
     free(text);
     value_free(value);
     return result;
@@ -12206,7 +12245,7 @@ static Value eval_comparison(AstExpr *expr, Value left, Value right) {
         modifier_is(expr->as.binary.modifier.name, "caseless") &&
         left.kind == VALUE_STRING &&
         right.kind == VALUE_STRING) {
-        int equal = string_equal_caseless(left.as.string, right.as.string);
+        int equal = string_value_equal_caseless(left.as.string, right.as.string);
         if (strcmp(op, "=") == 0) {
             result = equal;
         } else if (strcmp(op, "!=") == 0) {

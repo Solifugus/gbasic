@@ -1,8 +1,9 @@
 # Unicode and Binary-Safe Strings — Design
 
-Status: **proposal** (2026-06-24). One of the three pre-freeze language threads
-(with PBI — now complete — and multiprocessing). See `docs/pbi_design.md §9` for
-how these threads share machinery.
+Status: **implemented** (Phases 0-3 shipped 2026-06-24). One of the three
+pre-freeze language threads (with PBI — complete — and multiprocessing, the last
+remaining). See `docs/pbi_design.md §9` for how these threads share machinery, and
+§10 below for the per-phase shipping record.
 
 ## 1. Motivation
 
@@ -210,9 +211,24 @@ each phase merged green before the next.
   `_range`/`_zero`; `negative_reverse_type` retargeted to a number (reverse now
   accepts strings, message → "an array or string"). Suite 104/165/sqlite/webserver/
   site/webclient green, Valgrind-clean incl. adventure.
-- **Phase 3 — case and comparison polish.** Pin down ASCII case folding for
-  `caseless`/`upper`/`lower`; document full-Unicode folding, normalization, and
-  grapheme clusters as future work. Tests: caseless ASCII; non-ASCII left intact.
+- **Phase 3 — case and comparison polish. DONE (2026-06-24).** `upper`/`lower`/
+  caseless `=`/`!=` now use explicit **locale-independent** ASCII folding
+  (`ascii_tolower`/`ascii_toupper`): only `A-Z`<->`a-z` fold; every other byte —
+  including all UTF-8 multibyte sequences — passes through untouched, so non-ASCII
+  is never mis-folded the way locale-sensitive `tolower`/`toupper` could be. All
+  three are now **binary-safe** (length-based, interior NULs preserved): `upper`/
+  `lower` rebuilt via `value_string_n`; caseless comparison via
+  `string_value_equal_caseless` (length + ASCII fold, non-ASCII compared exactly);
+  the shared `string_equal_caseless` (keyword/header matching) switched to
+  `ascii_tolower` too (ASCII-only inputs, behavior identical, locale risk removed).
+  Full-Unicode case folding, normalization (NFC/NFD), and grapheme-cluster
+  segmentation remain **future work** (§6, §11.4-5). Test: `examples/unicode_case_test`
+  (ASCII folds; `é`/`É`/`Ω`/`ß` intact; caseless folds ASCII but treats non-ASCII as
+  exact bytes). Suite 105/165/sqlite green, Valgrind-clean.
+
+**Unicode v1 is COMPLETE** (Phases 0-3 shipped). The last pre-freeze thread is
+multiprocessing (actors); serialization is now trivial since strings are
+length+bytes (§9).
 
 ## 11. Open questions
 

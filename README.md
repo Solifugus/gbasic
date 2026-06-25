@@ -240,6 +240,27 @@ middle_name = customer["middle_name"]
 if is_unknown(middle_name) then print("Middle name is unknown")
 ```
 
+## Strings And Unicode
+
+Strings are **binary-safe byte sequences**, UTF-8 by convention, carrying an
+explicit length — so any byte, including NUL via `chr(0)`, is valid content.
+Character operations are **codepoint-aware**; raw bytes are reachable through
+explicit builtins:
+
+```basic
+len("café")                    # 4   codepoints (not bytes)
+byte_count("café")             # 5   UTF-8 bytes
+mid("café", 3, 1)              # "é" never splits a codepoint
+chr(128512)                    # "😀"  (codepoint U+1F600)
+code("é")                      # 233
+from_bytes([72, 105])          # "Hi"  (build from raw bytes 0..255)
+print("\u{1F600}")             # 😀   (\u{...} codepoint escape)
+```
+
+`upper`, `lower`, and the `{caseless}` comparison fold **ASCII only** — non-ASCII
+characters pass through unchanged (`upper("café")` is `"CAFÉ"`). Full Unicode case
+folding, normalization, and grapheme clusters are future work.
+
 ## Files And Paths
 
 File and directory values use assignment modifiers:

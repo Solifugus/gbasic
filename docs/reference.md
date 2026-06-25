@@ -21,6 +21,8 @@ Supported string escapes:
 - `\t` tab
 - `\\` backslash
 - `\"` double quote
+- `\u{...}` Unicode codepoint by hex value, e.g. `\u{1F600}` → `😀` (range
+  `1..0x10FFFF`, excluding surrogates; for a literal NUL use `chr(0)`)
 
 Unknown escapes and unterminated strings are lexer errors and exit nonzero.
 
@@ -440,6 +442,39 @@ Arrays currently work best with numeric aggregate built-ins. Records hold string
 File and directory references are typed paths, not open handles.
 
 Money created by `USD` is stored as integer cents.
+
+### Strings and Unicode
+
+A gBASIC string is a **binary-safe sequence of bytes**, UTF-8 by convention. It
+carries an explicit length, so any byte — including NUL (`chr(0)`) — is valid
+content; strings are not NUL-terminated from the program's point of view.
+
+String operations split into two families:
+
+- **Character-oriented (Unicode codepoints).** `len`, `left`, `right`, `mid`,
+  `reverse`, `find`, `chr`, and `code` count and slice by **codepoint**, never
+  splitting a multibyte character. `len("café")` is `4`. Indexing is 0-based,
+  matching `mid` and arrays. A malformed UTF-8 byte degrades gracefully to one
+  unit (these operations never error on arbitrary bytes).
+- **Byte-oriented (raw).** `byte_count`, `byte_at` (0-based), and `from_bytes`
+  work on raw bytes for binary and protocol work.
+
+```basic
+len("café")                    # 4   codepoints
+byte_count("café")             # 5   UTF-8 bytes
+mid("café", 3, 1)              # "é" never splits a codepoint
+from_bytes([0, 255])           # a two-byte binary string
+```
+
+**Comparison** is by byte sequence (binary-safe, and correct codepoint order for
+valid UTF-8). **Case folding** (`upper`, `lower`, and the `{caseless}` comparison
+modifier) is **ASCII-only**: `A–Z` ↔ `a–z` fold and every other byte, including
+all non-ASCII characters, is left exactly as-is (`upper("café")` is `"CAFÉ"` with
+the `é` unchanged). Full Unicode case folding, normalization, and grapheme
+clusters are future work.
+
+**Literals** are UTF-8 from the source file. The escape `\u{...}` inserts a
+codepoint by hex value (`"\u{1F600}"` is `"😀"`); for a literal NUL use `chr(0)`.
 
 ## Objects (Policy-Based Inheritance)
 
@@ -1087,20 +1122,41 @@ repeat("ha", 3)                # "hahaha"
 repeat("x", 0)                 # ""
 ```
 
-**`chr(code)`** - Returns the single byte (as a one-character string) for a
-byte value in the range 1–255. Byte 0 (null) is not representable in a string
-and raises a runtime error. Because gBASIC strings are byte sequences,
-concatenating `chr` results reconstructs multi-byte UTF-8 characters:
+**`chr(code)`** - Returns the string for a Unicode **codepoint** in the range
+`0 .. 0x10FFFF` (excluding the surrogate range `0xD800..0xDFFF`), UTF-8 encoded.
+`chr(0)` produces a one-byte binary-safe NUL string (gBASIC strings are
+binary-safe — see *Strings and Unicode*):
 ```basic
 chr(110)                       # "n"
-chr(195) + chr(169)            # "é"  (UTF-8 bytes 0xC3 0xA9)
+chr(233)                       # "é"  (one codepoint, 2 UTF-8 bytes)
+chr(128512)                    # "😀" (one codepoint, 4 UTF-8 bytes)
+chr(0)                         # a one-byte NUL string
 ```
 
-**`code(text)`** - Returns the numeric value (0–255) of the first byte of a
+**`code(text)`** - Returns the **codepoint** value of the first character of a
 non-empty string; the inverse of `chr`:
 ```basic
 code("n")                      # 110
-code(chr(200))                 # 200
+code("é")                      # 233
+code(chr(128512))             # 128512
+```
+
+**`byte_count(text)`** - Number of raw bytes in a string (`len` counts
+codepoints):
+```basic
+byte_count("café")             # 5   (len("café") is 4)
+```
+
+**`byte_at(text, index)`** - The byte (0–255) at a 0-based byte index:
+```basic
+byte_at("ABC", 0)              # 65
+```
+
+**`from_bytes(numbers)`** - Builds a binary-safe string from an array of byte
+values `0..255`:
+```basic
+from_bytes([72, 105])          # "Hi"
+from_bytes([0, 255])           # a two-byte binary string
 ```
 
 ### Record Helpers
@@ -1180,6 +1236,10 @@ Always-available helper functions:
 - `mid(value, start, count, replacement)`
 - `chr(code)`
 - `code(text)`
+- `byte_count(text)`
+- `byte_at(text, index)`
+- `from_bytes(numbers)`
+- `reverse(text)`
 - `trim(text)`
 - `split(text)`
 - `split(text, separator)`
