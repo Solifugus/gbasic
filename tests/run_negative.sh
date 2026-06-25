@@ -157,7 +157,7 @@ cases=(
     negative_chr_arity
     negative_chr_type
     negative_chr_range
-    negative_chr_null
+    negative_chr_surrogate
     negative_chr_fractional
     negative_code_arity
     negative_code_type

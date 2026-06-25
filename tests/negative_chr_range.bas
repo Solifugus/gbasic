@@ -1,1 +1,1 @@
-print(chr(256))
+print(chr(1114112))

@@ -1,1 +1,0 @@
-runtime error at tests/negative_chr_null.bas:1:1: chr: code 0 (null byte) is not representable in a string

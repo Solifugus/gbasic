@@ -428,6 +428,90 @@ static void string_free(char *data) {
     }
 }
 
+/* Binary-safe equality of two runtime string values (string_new buffers).
+ * Compares the full authoritative byte length, so interior NULs are honored. */
+static int string_value_equal(const char *a, const char *b) {
+    size_t la = string_length(a);
+    size_t lb = string_length(b);
+    return la == lb && memcmp(a, b, la) == 0;
+}
+
+/* Binary-safe ordering of two runtime string values (string_new buffers).
+ * Lexicographic by unsigned byte; shorter string sorts first on a prefix tie. */
+static int string_value_compare(const char *a, const char *b) {
+    size_t la = string_length(a);
+    size_t lb = string_length(b);
+    size_t min = la < lb ? la : lb;
+    int cmp = min ? memcmp(a, b, min) : 0;
+    if (cmp != 0) {
+        return cmp;
+    }
+    if (la < lb) return -1;
+    if (la > lb) return 1;
+    return 0;
+}
+
+/* Encode a Unicode scalar value as UTF-8 into `out` (up to 4 bytes); returns the
+ * number of bytes written. Caller must pass a valid scalar (0..0x10FFFF, not a
+ * surrogate); validation lives at the call sites that accept user input. */
+static size_t utf8_encode_codepoint(unsigned cp, char out[4]) {
+    if (cp <= 0x7f) {
+        out[0] = (char)cp;
+        return 1;
+    } else if (cp <= 0x7ff) {
+        out[0] = (char)(0xc0u | (cp >> 6));
+        out[1] = (char)(0x80u | (cp & 0x3fu));
+        return 2;
+    } else if (cp <= 0xffff) {
+        out[0] = (char)(0xe0u | (cp >> 12));
+        out[1] = (char)(0x80u | ((cp >> 6) & 0x3fu));
+        out[2] = (char)(0x80u | (cp & 0x3fu));
+        return 3;
+    } else {
+        out[0] = (char)(0xf0u | (cp >> 18));
+        out[1] = (char)(0x80u | ((cp >> 12) & 0x3fu));
+        out[2] = (char)(0x80u | ((cp >> 6) & 0x3fu));
+        out[3] = (char)(0x80u | (cp & 0x3fu));
+        return 4;
+    }
+}
+
+/* Decode the first UTF-8 codepoint of `s` (which holds `len` bytes), storing it
+ * in *cp and returning the number of bytes it occupies. A malformed or truncated
+ * sequence degrades to one byte per the lenient policy (docs/unicode_design.md
+ * §7), so this is total over arbitrary bytes and never reads past `len`. */
+static size_t utf8_decode_first(const char *s, size_t len, unsigned *cp) {
+    if (len == 0) {
+        *cp = 0;
+        return 0;
+    }
+    unsigned char b0 = (unsigned char)s[0];
+    if (b0 < 0x80) {
+        *cp = b0;
+        return 1;
+    }
+    size_t need;
+    unsigned value;
+    if ((b0 & 0xe0u) == 0xc0u) { need = 1; value = b0 & 0x1fu; }
+    else if ((b0 & 0xf0u) == 0xe0u) { need = 2; value = b0 & 0x0fu; }
+    else if ((b0 & 0xf8u) == 0xf0u) { need = 3; value = b0 & 0x07u; }
+    else { *cp = b0; return 1; }              /* stray continuation / 0xF8+ */
+    if (need >= len) {                         /* truncated at end of string */
+        *cp = b0;
+        return 1;
+    }
+    for (size_t i = 1; i <= need; i++) {
+        unsigned char bi = (unsigned char)s[i];
+        if ((bi & 0xc0u) != 0x80u) {           /* not a continuation byte */
+            *cp = b0;
+            return 1;
+        }
+        value = (value << 6) | (bi & 0x3fu);
+    }
+    *cp = value;
+    return need + 1;
+}
+
 void eval_set_source_path(const char *path) {
     free(root_source_path);
     root_source_path = path ? copy_string(path) : NULL;
@@ -941,7 +1025,8 @@ static void value_print(Value value) {
         printf("%g\n", value.as.number);
         break;
     case VALUE_STRING:
-        printf("%s\n", value.as.string);
+        fwrite(value.as.string, 1, string_length(value.as.string), stdout);
+        putchar('\n');
         break;
     case VALUE_BOOL:
         printf("%s\n", value.as.boolean ? "true" : "false");
@@ -1297,7 +1382,7 @@ static int value_storage_equal(const Value *left, const Value *right) {
         /* If NaN enters the runtime through native code, treat it as changed. */
         return left->as.number == right->as.number;
     case VALUE_STRING:
-        return strcmp(left->as.string, right->as.string) == 0;
+        return string_value_equal(left->as.string, right->as.string);
     case VALUE_BOOL:
         return left->as.boolean == right->as.boolean;
     case VALUE_ARRAY:
@@ -4581,7 +4666,7 @@ static Value eval_file_call(AstExpr *expr) {
             return value_null();
         }
 
-        size_t text_size = strlen(text_value.as.string);
+        size_t text_size = string_length(text_value.as.string);
         ok = fseek(file, position, SEEK_SET) == 0;
         if (ok && text_size > 0) {
             ok = fwrite(text_value.as.string, 1, text_size, file) == text_size;
@@ -4639,7 +4724,7 @@ static Value eval_file_call(AstExpr *expr) {
             value_free(text_value);
             return value_bool(0);
         }
-        fputs(text_value.as.string, file);
+        fwrite(text_value.as.string, 1, string_length(text_value.as.string), file);
         int ok = ferror(file) == 0;
         fclose(file);
         value_free(file_value);
@@ -4884,7 +4969,7 @@ static Value builtin_len_value(Value value) {
         return value_number(count);
     }
     if (value.kind == VALUE_STRING) {
-        double count = (double)strlen(value.as.string);
+        double count = (double)string_length(value.as.string);
         value_free(value);
         return value_number(count);
     }
@@ -5480,7 +5565,7 @@ static int unique_values_equal(Value left, Value right) {
     case VALUE_NUMBER:
         return left.as.number == right.as.number;
     case VALUE_STRING:
-        return strcmp(left.as.string, right.as.string) == 0;
+        return string_value_equal(left.as.string, right.as.string);
     case VALUE_BOOL:
         return left.as.boolean == right.as.boolean;
     case VALUE_DATETIME:
@@ -5658,7 +5743,7 @@ static int sort_value_compare(const void *left_ptr, const void *right_ptr) {
         return 0;
     }
     if (left->kind == VALUE_STRING) {
-        return strcmp(left->as.string, right->as.string);
+        return string_value_compare(left->as.string, right->as.string);
     }
     if (left->kind == VALUE_BOOL) {
         return left->as.boolean - right->as.boolean;
@@ -5831,10 +5916,13 @@ static char *sb_take(StringBuilder *builder) {
     return items;
 }
 
-static void encode_string_literal(StringBuilder *builder, const char *text) {
+/* Emit a JSON string literal for `length` bytes (binary-safe: interior NULs and
+ * other control bytes are escaped as \u00XX, so the encoded text never contains a
+ * raw NUL and round-trips through decode). */
+static void encode_string_literal(StringBuilder *builder, const char *text, size_t length) {
     sb_append_char(builder, '"');
-    while (*text) {
-        unsigned char ch = (unsigned char)*text;
+    for (size_t i = 0; i < length; i++) {
+        unsigned char ch = (unsigned char)text[i];
         if (ch == '"') {
             sb_append_text(builder, "\\\"");
         } else if (ch == '\\') {
@@ -5845,10 +5933,13 @@ static void encode_string_literal(StringBuilder *builder, const char *text) {
             sb_append_text(builder, "\\t");
         } else if (ch == '\r') {
             sb_append_text(builder, "\\r");
+        } else if (ch < 0x20) {
+            char escape[8];
+            snprintf(escape, sizeof(escape), "\\u%04x", ch);
+            sb_append_text(builder, escape);
         } else {
             sb_append_char(builder, (char)ch);
         }
-        text++;
     }
     sb_append_char(builder, '"');
 }
@@ -6000,7 +6091,7 @@ static int encode_value_to_builder(StringBuilder *builder, Value value) {
         sb_append_text(builder, number);
         return 1;
     case VALUE_STRING:
-        encode_string_literal(builder, value.as.string);
+        encode_string_literal(builder, value.as.string, string_length(value.as.string));
         return 1;
     case VALUE_BOOL:
         sb_append_text(builder, value.as.boolean ? "true" : "false");
@@ -6023,7 +6114,8 @@ static int encode_value_to_builder(StringBuilder *builder, Value value) {
             if (i > 0) {
                 sb_append_char(builder, ',');
             }
-            encode_string_literal(builder, value.as.record.fields[i].name);
+            encode_string_literal(builder, value.as.record.fields[i].name,
+                                  strlen(value.as.record.fields[i].name));
             sb_append_char(builder, ':');
             if (!encode_value_to_builder(builder, *value.as.record.fields[i].value)) {
                 return 0;
@@ -6094,7 +6186,7 @@ static Value builtin_quote_value(Value value) {
 
     StringBuilder builder;
     sb_init(&builder);
-    encode_string_literal(&builder, text.as.string);
+    encode_string_literal(&builder, text.as.string, string_length(text.as.string));
     char *literal = sb_take(&builder);
     Value result = value_string(literal);
     free(literal);
@@ -6185,8 +6277,9 @@ static Value decode_parse_string(DecodeParser *parser) {
     while (parser->text[parser->pos]) {
         char ch = parser->text[parser->pos++];
         if (ch == '"') {
+            size_t len = builder.length;
             char *text = sb_take(&builder);
-            Value result = value_string(text);
+            Value result = value_string_n(text, len);
             free(text);
             return result;
         }
@@ -10420,18 +10513,18 @@ static Value eval_call(AstExpr *expr) {
             runtime_error_raise("chr: code must be an integer", 1003, "invalid argument");
             return value_null();
         }
-        if (code_double < 0 || code_double > 255) {
-            runtime_error_raise("chr: code must be between 0 and 255", 1003, "invalid argument");
+        if (code_double < 0 || code_double > 0x10FFFF) {
+            runtime_error_raise("chr: codepoint must be between 0 and 0x10FFFF", 1003, "invalid argument");
             return value_null();
         }
-        if (code_double == 0) {
-            runtime_error_raise("chr: code 0 (null byte) is not representable in a string", 1003, "invalid argument");
+        unsigned cp = (unsigned)code_double;
+        if (cp >= 0xD800 && cp <= 0xDFFF) {
+            runtime_error_raise("chr: surrogate codepoints (0xD800..0xDFFF) are not valid", 1003, "invalid argument");
             return value_null();
         }
-        char byte_str[2];
-        byte_str[0] = (char)(unsigned char)code_double;
-        byte_str[1] = '\0';
-        return value_string(byte_str);
+        char utf8[4];
+        size_t n = utf8_encode_codepoint(cp, utf8);
+        return value_string_n(utf8, n);
     }
 
     if (strcmp(expr->as.call.name, "code") == 0) {
@@ -10449,14 +10542,115 @@ static Value eval_call(AstExpr *expr) {
             runtime_error_raise("code: argument must be a string", 1003, "invalid argument type");
             return value_null();
         }
-        if (text.as.string[0] == '\0') {
+        if (string_length(text.as.string) == 0) {
             value_free(text);
             runtime_error_raise("code: string must not be empty", 1003, "invalid argument");
             return value_null();
         }
-        double byte_value = (double)(unsigned char)text.as.string[0];
+        unsigned cp = 0;
+        utf8_decode_first(text.as.string, string_length(text.as.string), &cp);
         value_free(text);
-        return value_number(byte_value);
+        return value_number((double)cp);
+    }
+
+    if (strcmp(expr->as.call.name, "byte_count") == 0) {
+        if (expr->as.call.args.count != 1) {
+            runtime_error_raise("byte_count expects one argument", 1003, "invalid function call");
+            return value_null();
+        }
+        Value text = eval_expr(expr->as.call.args.items[0]);
+        if (error_action_pending()) {
+            value_free(text);
+            return value_null();
+        }
+        if (text.kind != VALUE_STRING) {
+            value_free(text);
+            runtime_error_raise("byte_count: argument must be a string", 1003, "invalid argument type");
+            return value_null();
+        }
+        double count = (double)string_length(text.as.string);
+        value_free(text);
+        return value_number(count);
+    }
+
+    if (strcmp(expr->as.call.name, "byte_at") == 0) {
+        if (expr->as.call.args.count != 2) {
+            runtime_error_raise("byte_at expects a string and an index", 1003, "invalid function call");
+            return value_null();
+        }
+        Value text = eval_expr(expr->as.call.args.items[0]);
+        if (error_action_pending()) {
+            value_free(text);
+            return value_null();
+        }
+        Value index_val = eval_expr(expr->as.call.args.items[1]);
+        if (error_action_pending()) {
+            value_free(text);
+            value_free(index_val);
+            return value_null();
+        }
+        if (text.kind != VALUE_STRING || index_val.kind != VALUE_NUMBER) {
+            value_free(text);
+            value_free(index_val);
+            runtime_error_raise("byte_at: argument must be a string and a number", 1003, "invalid argument type");
+            return value_null();
+        }
+        double index_double = index_val.as.number;
+        value_free(index_val);
+        if (index_double != floor(index_double)) {
+            value_free(text);
+            runtime_error_raise("byte_at: index must be an integer", 1003, "invalid argument");
+            return value_null();
+        }
+        size_t length = string_length(text.as.string);
+        /* 1-based to match the language's existing mid/index convention. */
+        if (index_double < 1 || (size_t)index_double > length) {
+            value_free(text);
+            runtime_error_raise("byte_at: index out of range", 1003, "invalid argument");
+            return value_null();
+        }
+        unsigned char byte = (unsigned char)text.as.string[(size_t)index_double - 1];
+        value_free(text);
+        return value_number((double)byte);
+    }
+
+    if (strcmp(expr->as.call.name, "from_bytes") == 0) {
+        if (expr->as.call.args.count != 1) {
+            runtime_error_raise("from_bytes expects one argument", 1003, "invalid function call");
+            return value_null();
+        }
+        Value array = eval_expr(expr->as.call.args.items[0]);
+        if (error_action_pending()) {
+            value_free(array);
+            return value_null();
+        }
+        if (array.kind != VALUE_ARRAY) {
+            value_free(array);
+            runtime_error_raise("from_bytes: argument must be an array of numbers", 1003, "invalid argument type");
+            return value_null();
+        }
+        size_t count = array.as.array.count;
+        char *bytes = malloc(count + 1);
+        if (!bytes) {
+            abort();
+        }
+        for (size_t i = 0; i < count; i++) {
+            Value item = array.as.array.items[i];
+            if (item.kind != VALUE_NUMBER ||
+                item.as.number != floor(item.as.number) ||
+                item.as.number < 0 || item.as.number > 255) {
+                free(bytes);
+                value_free(array);
+                runtime_error_raise("from_bytes: every element must be a byte value 0..255", 1003, "invalid argument");
+                return value_null();
+            }
+            bytes[i] = (char)(unsigned char)item.as.number;
+        }
+        bytes[count] = '\0';
+        Value result = value_string_n(bytes, count);
+        free(bytes);
+        value_free(array);
+        return result;
     }
 
     if (strcmp(expr->as.call.name, "keys") == 0) {
@@ -11929,7 +12123,7 @@ static Value eval_comparison(AstExpr *expr, Value left, Value right) {
             result = !equal;
         }
     } else if (left.kind == VALUE_STRING && right.kind == VALUE_STRING) {
-        int cmp = strcmp(left.as.string, right.as.string);
+        int cmp = string_value_compare(left.as.string, right.as.string);
         if (strcmp(op, "=") == 0) result = cmp == 0;
         else if (strcmp(op, "!=") == 0) result = cmp != 0;
         else if (strcmp(op, ">") == 0) result = cmp > 0;
@@ -12107,15 +12301,16 @@ static Value eval_binary(AstExpr *expr) {
             current_column = previous_column;
             return value_null();
         }
-        size_t left_len = strlen(left_text.as.string);
-        size_t right_len = strlen(right_text.as.string);
+        size_t left_len = string_length(left_text.as.string);
+        size_t right_len = string_length(right_text.as.string);
         char *combined = malloc(left_len + right_len + 1);
         if (!combined) {
             abort();
         }
         memcpy(combined, left_text.as.string, left_len);
-        memcpy(combined + left_len, right_text.as.string, right_len + 1);
-        Value result = value_string(combined);
+        memcpy(combined + left_len, right_text.as.string, right_len);
+        combined[left_len + right_len] = '\0';
+        Value result = value_string_n(combined, left_len + right_len);
         free(combined);
         value_free(left_text);
         value_free(right_text);

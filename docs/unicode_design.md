@@ -172,11 +172,25 @@ each phase merged green before the next.
   update `value_string`, `value_string_n`, `copy_string`, `value_copy`,
   `value_free`. All existing sites still yield valid NUL-terminated UTF-8 with
   `strlen == length`. Behaviorally invisible; full suite green unchanged.
-- **Phase 1 — binary safety.** Make the core paths length-authoritative rather
-  than `strlen`: output/`print`, string equality (`memcmp`/length), `encode`/
-  `decode`, concatenation. Migrate `chr`/`code` to codepoints (§5); add
-  `byte_at`/`byte_count`/`from_bytes`. End-to-end `chr(0)` and raw bytes now work.
-  New tests: round-trip a string with an interior NUL; `chr(0x1F600)`.
+- **Phase 1 — binary safety. DONE (2026-06-24).** Core paths are now
+  length-authoritative rather than `strlen`: `print`/string output and file
+  `write`/`append`/`overwrite` (`fwrite` over `string_length`), string equality
+  and ordering (`string_value_equal`/`string_value_compare` via `memcmp`+length,
+  applied at every both-operands-runtime comparison: watcher equality, `unique`,
+  sort, the central `eval_comparison`, `consider`), `len` (byte-authoritative;
+  codepoint count comes in Phase 2), concatenation (`value_string_n`), and
+  `encode`/`decode` (`encode_string_literal` takes an explicit length and escapes
+  NUL/control bytes as `\u00XX`; `decode_parse_string` rebuilds via the builder
+  length). `chr`/`code` migrated to codepoints (§5) using `utf8_encode_codepoint`/
+  `utf8_decode_first` — `chr` accepts `0..0x10FFFF` excluding surrogates, `chr(0)`
+  works, `code` returns the first codepoint. Added `byte_count`/`byte_at`
+  (1-based)/`from_bytes`. Tests: `examples/unicode_bytes_test` (interior-NUL
+  round-trip through concat/encode/decode/equality, `chr(128512)`=😀, byte
+  builtins); negatives retargeted (`chr_range`→`0x10FFFF+`, new `chr_surrogate`,
+  removed now-valid `chr_null`); `chr_code_test` updated to codepoint semantics.
+  Suite 103/162/sqlite/webserver/site/webclient green, Valgrind-clean incl.
+  adventure. NOTE: `.bas` lexer has **no `0x` hex literal**; use decimal codepoints
+  (the `\u{…}` escape arrives in Phase 2).
 - **Phase 2 — codepoint-aware character ops.** Make `len`/`mid`/`left`/`right`/
   `reverse`/`find`/`split`/`contains` count and slice by codepoint (§4) with the
   §7 invalid-byte rule. Add the `\u{...}` literal escape. Tests: `len("café")`,
