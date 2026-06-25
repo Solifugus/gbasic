@@ -1,0 +1,1 @@
+print(deserialize(42))

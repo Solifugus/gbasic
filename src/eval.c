@@ -6261,6 +6261,369 @@ static Value builtin_encode_value(Value value) {
     return result;
 }
 
+/* --- Multiprocessing Phase 0: value serialization ----------------------------
+ * (docs/multiprocessing_design.md §5). `serialize(value)` produces a binary-safe
+ * string of bytes; `deserialize(string)` reconstructs the value. The wire format
+ * is a small self-describing, length-prefixed binary encoding. It is the shared
+ * foundation the future actor transport (fork+exec of the same `gbasic`) sends
+ * over a mailbox; because round-trips are always same-binary, native fixed-width
+ * encodings are written directly. Non-sendable kinds (live DB connections) and
+ * over-deep/cyclic structures raise a structured `actor` error. Records lose PBI
+ * policy on the round-trip (a snapshot is plain `copy`), matching §6. */
+
+#define SER_MAGIC0 'g'
+#define SER_MAGIC1 'B'
+#define SER_MAGIC2 'S'
+#define SER_VERSION 1
+#define SER_MAX_DEPTH 256
+
+typedef enum {
+    SER_NULL = 1,
+    SER_UNKNOWN,
+    SER_BOOL,
+    SER_NUMBER,
+    SER_STRING,
+    SER_ARRAY,
+    SER_RECORD,
+    SER_DATETIME,
+    SER_DURATION,
+    SER_MONEY,
+    SER_FILE,
+    SER_DIR
+} SerTag;
+
+typedef struct {
+    char *bytes;
+    size_t length;
+    size_t capacity;
+} SerBuf;
+
+static void serbuf_init(SerBuf *b) {
+    b->capacity = 64;
+    b->length = 0;
+    b->bytes = malloc(b->capacity);
+    if (!b->bytes) {
+        abort();
+    }
+}
+
+static void serbuf_append(SerBuf *b, const void *data, size_t n) {
+    if (b->length + n > b->capacity) {
+        while (b->length + n > b->capacity) {
+            b->capacity *= 2;
+        }
+        char *grown = realloc(b->bytes, b->capacity);
+        if (!grown) {
+            abort();
+        }
+        b->bytes = grown;
+    }
+    memcpy(b->bytes + b->length, data, n);
+    b->length += n;
+}
+
+static void serbuf_u8(SerBuf *b, unsigned char v) {
+    serbuf_append(b, &v, 1);
+}
+
+static void serbuf_u64(SerBuf *b, uint64_t v) {
+    serbuf_append(b, &v, sizeof v);
+}
+
+/* Append `len` length-prefixed bytes (used for strings, paths, field names). */
+static void serbuf_blob(SerBuf *b, const char *data, size_t len) {
+    serbuf_u64(b, (uint64_t)len);
+    serbuf_append(b, data, len);
+}
+
+/* Returns 1 on success; on a non-sendable kind or excessive depth it raises a
+ * structured error and returns 0. */
+static int serialize_value(SerBuf *b, Value v, int depth) {
+    if (depth > SER_MAX_DEPTH) {
+        runtime_error_raise("serialize: value nested too deeply (possible cycle)",
+                            1003, "actor");
+        return 0;
+    }
+    switch (v.kind) {
+    case VALUE_NULL:
+        serbuf_u8(b, SER_NULL);
+        return 1;
+    case VALUE_UNKNOWN:
+        serbuf_u8(b, SER_UNKNOWN);
+        return 1;
+    case VALUE_BOOL:
+        serbuf_u8(b, SER_BOOL);
+        serbuf_u8(b, v.as.boolean ? 1 : 0);
+        return 1;
+    case VALUE_NUMBER:
+        serbuf_u8(b, SER_NUMBER);
+        serbuf_append(b, &v.as.number, sizeof v.as.number);
+        return 1;
+    case VALUE_STRING:
+        serbuf_u8(b, SER_STRING);
+        serbuf_blob(b, v.as.string, string_length(v.as.string));
+        return 1;
+    case VALUE_ARRAY:
+        serbuf_u8(b, SER_ARRAY);
+        serbuf_u64(b, (uint64_t)v.as.array.count);
+        for (size_t i = 0; i < v.as.array.count; i++) {
+            if (!serialize_value(b, v.as.array.items[i], depth + 1)) {
+                return 0;
+            }
+        }
+        return 1;
+    case VALUE_RECORD:
+        serbuf_u8(b, SER_RECORD);
+        serbuf_u64(b, (uint64_t)v.as.record.count);
+        for (size_t i = 0; i < v.as.record.count; i++) {
+            RecordField *f = &v.as.record.fields[i];
+            serbuf_blob(b, f->name, strlen(f->name));
+            if (!serialize_value(b, *f->value, depth + 1)) {
+                return 0;
+            }
+        }
+        return 1;
+    case VALUE_DATETIME:
+        serbuf_u8(b, SER_DATETIME);
+        serbuf_append(b, &v.as.datetime, sizeof v.as.datetime);
+        return 1;
+    case VALUE_DURATION:
+        serbuf_u8(b, SER_DURATION);
+        serbuf_append(b, &v.as.duration, sizeof v.as.duration);
+        return 1;
+    case VALUE_MONEY:
+        serbuf_u8(b, SER_MONEY);
+        serbuf_append(b, &v.as.cents, sizeof v.as.cents);
+        return 1;
+    case VALUE_FILE:
+        serbuf_u8(b, SER_FILE);
+        serbuf_blob(b, v.as.file_path, strlen(v.as.file_path));
+        return 1;
+    case VALUE_DIR:
+        serbuf_u8(b, SER_DIR);
+        serbuf_blob(b, v.as.dir_path, strlen(v.as.dir_path));
+        return 1;
+    case VALUE_POSTGRES_CONNECTION:
+    case VALUE_SQLITE_CONNECTION:
+        runtime_error_raise("serialize: database connections cannot be serialized",
+                            1003, "actor");
+        return 0;
+    }
+    runtime_error_raise("serialize: unsupported value", 1003, "actor");
+    return 0;
+}
+
+static Value builtin_serialize_value(Value value) {
+    SerBuf b;
+    serbuf_init(&b);
+    serbuf_u8(&b, SER_MAGIC0);
+    serbuf_u8(&b, SER_MAGIC1);
+    serbuf_u8(&b, SER_MAGIC2);
+    serbuf_u8(&b, SER_VERSION);
+    if (!serialize_value(&b, value, 0)) {
+        free(b.bytes);
+        value_free(value);
+        return value_null();
+    }
+    Value result = value_string_n(b.bytes, b.length);
+    free(b.bytes);
+    value_free(value);
+    return result;
+}
+
+typedef struct {
+    const char *data;
+    size_t len;
+    size_t pos;
+    int ok;
+} SerReader;
+
+static int serread_bytes(SerReader *r, void *out, size_t n) {
+    if (!r->ok || r->pos + n > r->len) {
+        r->ok = 0;
+        return 0;
+    }
+    memcpy(out, r->data + r->pos, n);
+    r->pos += n;
+    return 1;
+}
+
+static unsigned char serread_u8(SerReader *r) {
+    unsigned char v = 0;
+    serread_bytes(r, &v, 1);
+    return v;
+}
+
+static uint64_t serread_u64(SerReader *r) {
+    uint64_t v = 0;
+    serread_bytes(r, &v, sizeof v);
+    return v;
+}
+
+/* Reconstruct one value. On malformed/truncated input sets `r->ok = 0` and
+ * returns a null placeholder; callers check `r->ok`. */
+static Value deserialize_value(SerReader *r, int depth) {
+    if (!r->ok || depth > SER_MAX_DEPTH) {
+        r->ok = 0;
+        return value_null();
+    }
+    unsigned char tag = serread_u8(r);
+    if (!r->ok) {
+        return value_null();
+    }
+    switch (tag) {
+    case SER_NULL:
+        return value_null();
+    case SER_UNKNOWN:
+        return value_unknown();
+    case SER_BOOL:
+        return value_bool(serread_u8(r) ? 1 : 0);
+    case SER_NUMBER: {
+        double d = 0;
+        serread_bytes(r, &d, sizeof d);
+        return value_number(d);
+    }
+    case SER_STRING:
+    case SER_FILE:
+    case SER_DIR: {
+        uint64_t len = serread_u64(r);
+        if (!r->ok || len > r->len - r->pos) {
+            r->ok = 0;
+            return value_null();
+        }
+        const char *bytes = r->data + r->pos;
+        r->pos += (size_t)len;
+        if (tag == SER_STRING) {
+            return value_string_n(bytes, (size_t)len);
+        }
+        char *path = malloc((size_t)len + 1);
+        if (!path) {
+            abort();
+        }
+        memcpy(path, bytes, (size_t)len);
+        path[len] = '\0';
+        Value v = {0};
+        v.kind = (tag == SER_FILE) ? VALUE_FILE : VALUE_DIR;
+        if (tag == SER_FILE) {
+            v.as.file_path = path;
+        } else {
+            v.as.dir_path = path;
+        }
+        return v;
+    }
+    case SER_ARRAY: {
+        uint64_t count = serread_u64(r);
+        /* Each element is at least one tag byte, so a count larger than the
+         * bytes left is corrupt — guard before allocating. */
+        if (!r->ok || count > r->len - r->pos) {
+            r->ok = 0;
+            return value_null();
+        }
+        Value *items = count ? calloc((size_t)count, sizeof(Value)) : NULL;
+        if (count && !items) {
+            abort();
+        }
+        for (uint64_t i = 0; i < count; i++) {
+            items[i] = deserialize_value(r, depth + 1);
+            if (!r->ok) {
+                for (uint64_t j = 0; j < i; j++) {
+                    value_free(items[j]);
+                }
+                free(items);
+                return value_null();
+            }
+        }
+        return value_array(items, (size_t)count);
+    }
+    case SER_RECORD: {
+        uint64_t count = serread_u64(r);
+        if (!r->ok || count > r->len - r->pos) {
+            r->ok = 0;
+            return value_null();
+        }
+        RecordField *fields = count ? calloc((size_t)count, sizeof(RecordField)) : NULL;
+        if (count && !fields) {
+            abort();
+        }
+        for (uint64_t i = 0; i < count; i++) {
+            uint64_t nlen = serread_u64(r);
+            if (!r->ok || nlen > r->len - r->pos) {
+                r->ok = 0;
+                Value partial = value_record(fields, (size_t)i);
+                value_free(partial);
+                return value_null();
+            }
+            char *name = malloc((size_t)nlen + 1);
+            if (!name) {
+                abort();
+            }
+            memcpy(name, r->data + r->pos, (size_t)nlen);
+            name[nlen] = '\0';
+            r->pos += (size_t)nlen;
+            fields[i].name = name;
+            fields[i].value = cell_alloc();
+            fields[i].policy = AST_FIELD_POLICY_COPY;
+            fields[i].reset_expr = NULL;
+            *fields[i].value = deserialize_value(r, depth + 1);
+            if (!r->ok) {
+                Value partial = value_record(fields, (size_t)i + 1);
+                value_free(partial);
+                return value_null();
+            }
+        }
+        return value_record(fields, (size_t)count);
+    }
+    case SER_DATETIME: {
+        Value v = {0};
+        v.kind = VALUE_DATETIME;
+        serread_bytes(r, &v.as.datetime, sizeof v.as.datetime);
+        return v;
+    }
+    case SER_DURATION: {
+        Value v = {0};
+        v.kind = VALUE_DURATION;
+        serread_bytes(r, &v.as.duration, sizeof v.as.duration);
+        return v;
+    }
+    case SER_MONEY: {
+        Value v = {0};
+        v.kind = VALUE_MONEY;
+        serread_bytes(r, &v.as.cents, sizeof v.as.cents);
+        return v;
+    }
+    default:
+        r->ok = 0;
+        return value_null();
+    }
+}
+
+static Value builtin_deserialize_value(Value value) {
+    if (value.kind != VALUE_STRING) {
+        value_free(value);
+        runtime_error_raise("deserialize: argument must be a string", 1003, "actor");
+        return value_null();
+    }
+    SerReader r = { value.as.string, string_length(value.as.string), 0, 1 };
+    if (r.len < 4 ||
+        serread_u8(&r) != SER_MAGIC0 || serread_u8(&r) != SER_MAGIC1 ||
+        serread_u8(&r) != SER_MAGIC2 || serread_u8(&r) != SER_VERSION) {
+        value_free(value);
+        runtime_error_raise("deserialize: not a valid serialized value", 1003, "actor");
+        return value_null();
+    }
+    Value result = deserialize_value(&r, 0);
+    /* A clean frame consumes exactly its bytes; trailing data is corruption. */
+    if (!r.ok || r.pos != r.len) {
+        value_free(result);
+        value_free(value);
+        runtime_error_raise("deserialize: corrupt or truncated serialized data",
+                            1003, "actor");
+        return value_null();
+    }
+    value_free(value);
+    return result;
+}
+
 static Value builtin_quote_value(Value value) {
     char buffer[128];
     Value text;
@@ -11082,6 +11445,32 @@ static Value eval_call(AstExpr *expr) {
             return value_null();
         }
         return builtin_decode_text(eval_expr(expr->as.call.args.items[0]));
+    }
+
+    if (strcmp(expr->as.call.name, "serialize") == 0) {
+        if (expr->as.call.args.count != 1) {
+            runtime_error_raise("serialize expects one argument", 1003, "actor");
+            return value_null();
+        }
+        Value arg = eval_expr(expr->as.call.args.items[0]);
+        if (error_action_pending()) {
+            value_free(arg);
+            return value_null();
+        }
+        return builtin_serialize_value(arg);
+    }
+
+    if (strcmp(expr->as.call.name, "deserialize") == 0) {
+        if (expr->as.call.args.count != 1) {
+            runtime_error_raise("deserialize expects one argument", 1003, "actor");
+            return value_null();
+        }
+        Value arg = eval_expr(expr->as.call.args.items[0]);
+        if (error_action_pending()) {
+            value_free(arg);
+            return value_null();
+        }
+        return builtin_deserialize_value(arg);
     }
 
     if (strcmp(expr->as.call.name, "quote") == 0) {

@@ -378,12 +378,20 @@ The minimum honest story for v1, richer parts flagged as future:
 
 Each phase merges green before the next; the first is an invisible foundation.
 
-- **Phase 0 — serialization core.** A `serialize(value) → bytes` /
-  `deserialize(bytes) → value` pair (§5), total over sendable types, with a
-  structured error on the non-sendable ones and on cycles (depth cap).
-  Round-trips in a single process; no concurrency yet. Independently useful (deep
-  clone, persistence) and independently testable; may be surfaced as builtins.
-  This is the shared foundation, analogous to PBI Phase 0 and Unicode Phase 0.
+- **Phase 0 — serialization core. DONE (2026-06-25).** `serialize(value)` /
+  `deserialize(string)` builtins (`src/eval.c`, near `builtin_encode_value`): a
+  self-describing, length-prefixed binary format (magic `gBS` + version) carried in
+  a binary-safe string. Total over every sendable kind — number, string (interior
+  NUL preserved), boolean, nothing, unknown, array, record (nested), date/time,
+  duration, money, file/dir reference — with a structured `actor` error on live DB
+  connections and on over-deep structures (`SER_MAX_DEPTH` 256, the cycle guard).
+  `deserialize` validates magic/version, bounds every read, rejects trailing bytes,
+  and frees partially-built structures on malformed input. Records round-trip as
+  plain `copy` (PBI policy dropped — the §6 snapshot degradation, for free).
+  Same-binary round-trip, so native fixed-width encodings are written directly.
+  In-process only; no concurrency. Already useful as deep-clone/persistence. Tests:
+  `examples/serialize_roundtrip_test` + 3 negatives. Suite 106/168/sqlite/webserver/
+  site green, Valgrind-clean incl. the partial-free error path.
 - **Phase 1 — spawn/send/receive over fork+exec processes.** The `channel`
   abstraction (§4.1) with the primary transport; fork + exec a fresh interpreter
   at a named entry (§3); one bounded mailbox; blocking `receive`; `self`; the

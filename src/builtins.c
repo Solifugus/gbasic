@@ -41,6 +41,8 @@ int gbasic_builtin_function(const char *name) {
         "input",
         "encode",
         "decode",
+        "serialize",
+        "deserialize",
         "quote",
         "round",
         "len",

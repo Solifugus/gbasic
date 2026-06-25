@@ -1208,6 +1208,29 @@ count({})                      # 0
 - `encode(value)` - JSON serialization for structured data
 - `decode(text)` - JSON parsing to recreate values
 - `quote(value)` - gBASIC source code literal with escaping
+- `serialize(value)` - exact binary round-trip serialization (see below)
+- `deserialize(bytes)` - reconstruct a value from `serialize` output
+
+**`serialize` / `deserialize` vs `encode` / `decode`.** `encode`/`decode` use
+JSON — human-readable, lossy for gBASIC's typed values (a date or money round-trips
+as a string or number). `serialize` produces an opaque **binary-safe string** that
+`deserialize` turns back into an *exact* copy, preserving type and binary content
+(including interior NUL bytes), across numbers, strings, booleans, `nothing`,
+`unknown`, arrays, records (nested), dates/times, durations, money, and file/
+directory references:
+
+```basic
+deserialize(serialize({when: today(), cost(USD): 9.99}))   # exact copy, types intact
+```
+
+Live database connections cannot be serialized (a structured error is raised), and
+corrupt or truncated input to `deserialize` raises a structured error rather than
+returning a partial value. A record's PBI policies are not preserved — a
+deserialized snapshot is plain `copy` — which is the same degradation a value
+undergoes when sent across a future actor boundary
+(`docs/multiprocessing_design.md`). `serialize` is useful today for deep-copying
+and persisting values; it is the foundation the actor message transport will build
+on.
 
 **Arithmetic behavior:**
 - `+` performs string concatenation when either operand is a string

@@ -1,0 +1,1 @@
+runtime error at tests/negative_deserialize_garbage.bas:1:1: deserialize: not a valid serialized value
