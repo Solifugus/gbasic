@@ -93,6 +93,7 @@ examples=(
     split_join_test.bas
     serialization_test.bas
     serialize_roundtrip_test.bas
+    actor_loopback_test.bas
     quote_test.bas
     string_modifier_pipeline_test.bas
     string_helpers_test.bas

@@ -4,6 +4,7 @@
 
 #include "eval.h"
 #include "builtins.h"
+#include "actor.h"
 
 #include <ctype.h>
 #include <dirent.h>
@@ -52,6 +53,7 @@ void parse_set_source_path(const char *path);
 
 typedef struct PgConnectionValue PgConnectionValue;
 typedef struct SqliteConnectionValue SqliteConnectionValue;
+typedef struct ActorHandle ActorHandle;
 typedef struct WebServer WebServer;
 typedef struct WebServerClient WebServerClient;
 
@@ -69,7 +71,8 @@ typedef enum {
     VALUE_FILE,
     VALUE_DIR,
     VALUE_POSTGRES_CONNECTION,
-    VALUE_SQLITE_CONNECTION
+    VALUE_SQLITE_CONNECTION,
+    VALUE_ACTOR
 } ValueKind;
 
 typedef enum {
@@ -132,6 +135,7 @@ struct Value {
         char *dir_path;
         PgConnectionValue *postgres_connection;
         SqliteConnectionValue *sqlite_connection;
+        ActorHandle *actor;
     } as;
 };
 
@@ -149,6 +153,17 @@ struct SqliteConnectionValue {
 #endif
     size_t ref_count;
     int closed;
+};
+
+/* A handle to some actor's inbound mailbox (docs/multiprocessing_design.md §4).
+ * `write_fd` is the capability — the write end of that mailbox; `id` is the
+ * routable identity used for equality (and, later, cross-isolate handle passing).
+ * Refcounted like the connection values so copies share one fd and the last
+ * release closes it. */
+struct ActorHandle {
+    int write_fd;
+    uint64_t id;
+    size_t ref_count;
 };
 
 typedef struct {
@@ -359,6 +374,8 @@ static const char *value_kind_name(ValueKind kind) {
         return "postgres_connection";
     case VALUE_SQLITE_CONNECTION:
         return "sqlite_connection";
+    case VALUE_ACTOR:
+        return "actor";
     }
     return "value";
 }
@@ -894,6 +911,10 @@ static Value value_copy(Value value) {
         value.as.sqlite_connection->ref_count++;
         return value_sqlite_connection(value.as.sqlite_connection);
     }
+    if (value.kind == VALUE_ACTOR) {
+        value.as.actor->ref_count++;
+        return value;
+    }
     if (value.kind == VALUE_ARRAY) {
         Value *items = NULL;
         if (value.as.array.count > 0) {
@@ -975,6 +996,14 @@ static void value_free(Value value) {
 #endif
             free(connection);
         }
+    } else if (value.kind == VALUE_ACTOR) {
+        ActorHandle *handle = value.as.actor;
+        if (handle && --handle->ref_count == 0) {
+            if (handle->write_fd >= 0) {
+                close(handle->write_fd);
+            }
+            free(handle);
+        }
     }
 }
 
@@ -1046,6 +1075,8 @@ static int value_truthy(Value value) {
                             2002,
                             "sqlite");
         return 0;
+    case VALUE_ACTOR:
+        return 1;
     case VALUE_NULL:
         return 0;
     case VALUE_UNKNOWN:
@@ -1188,6 +1219,9 @@ static void value_print(Value value) {
         break;
     case VALUE_SQLITE_CONNECTION:
         printf("<sqlite_connection>\n");
+        break;
+    case VALUE_ACTOR:
+        printf("<actor>\n");
         break;
     }
 }
@@ -1507,6 +1541,8 @@ static int value_storage_equal(const Value *left, const Value *right) {
         return left->as.postgres_connection == right->as.postgres_connection;
     case VALUE_SQLITE_CONNECTION:
         return left->as.sqlite_connection == right->as.sqlite_connection;
+    case VALUE_ACTOR:
+        return left->as.actor->id == right->as.actor->id;
     }
     return 0;
 }
@@ -5894,6 +5930,8 @@ static const char *builtin_type_name(Value value) {
         return "postgres_connection";
     case VALUE_SQLITE_CONNECTION:
         return "sqlite_connection";
+    case VALUE_ACTOR:
+        return "actor";
     }
     return "value";
 }
@@ -6170,6 +6208,9 @@ static Value builtin_string_value(Value value) {
     case VALUE_SQLITE_CONNECTION:
         value_free(value);
         return value_string("<sqlite_connection>");
+    case VALUE_ACTOR:
+        value_free(value);
+        return value_string("<actor>");
     }
 
     if (!used_builder) {
@@ -6238,6 +6279,7 @@ static int encode_value_to_builder(StringBuilder *builder, Value value) {
     case VALUE_DIR:
     case VALUE_POSTGRES_CONNECTION:
     case VALUE_SQLITE_CONNECTION:
+    case VALUE_ACTOR:
         runtime_error_raise("encode supports numbers, strings, booleans, nothing, unknown, arrays, and records",
                             1003,
                             "serialization");
@@ -6408,12 +6450,24 @@ static int serialize_value(SerBuf *b, Value v, int depth) {
         runtime_error_raise("serialize: database connections cannot be serialized",
                             1003, "actor");
         return 0;
+    case VALUE_ACTOR:
+        /* Handles are a live capability, not data. Cross-isolate handle passing
+         * uses fd transfer at the transport layer (§4.1), not value serialization;
+         * the user-facing serialize() and a message that embeds a handle are
+         * rejected here. */
+        runtime_error_raise("serialize: actor handles cannot be serialized",
+                            1003, "actor");
+        return 0;
     }
     runtime_error_raise("serialize: unsupported value", 1003, "actor");
     return 0;
 }
 
-static Value builtin_serialize_value(Value value) {
+/* Serialize a value into a freshly malloc'd byte frame (magic + version +
+ * value). Returns 1 with the output pointer and length set (caller frees the
+ * buffer), or 0 after raising. Does not consume `value`. Shared by the
+ * serialize() builtin and the actor send() path. */
+static int serialize_to_buffer(Value value, char **out, size_t *out_len) {
     SerBuf b;
     serbuf_init(&b);
     serbuf_u8(&b, SER_MAGIC0);
@@ -6422,11 +6476,22 @@ static Value builtin_serialize_value(Value value) {
     serbuf_u8(&b, SER_VERSION);
     if (!serialize_value(&b, value, 0)) {
         free(b.bytes);
+        return 0;
+    }
+    *out = b.bytes;
+    *out_len = b.length;
+    return 1;
+}
+
+static Value builtin_serialize_value(Value value) {
+    char *bytes = NULL;
+    size_t len = 0;
+    if (!serialize_to_buffer(value, &bytes, &len)) {
         value_free(value);
         return value_null();
     }
-    Value result = value_string_n(b.bytes, b.length);
-    free(b.bytes);
+    Value result = value_string_n(bytes, len);
+    free(bytes);
     value_free(value);
     return result;
 }
@@ -6621,6 +6686,141 @@ static Value builtin_deserialize_value(Value value) {
         return value_null();
     }
     value_free(value);
+    return result;
+}
+
+/* Reconstruct a value from raw frame bytes. Sets *ok and returns the value (null
+ * on failure). Raises nothing — the caller chooses the message. Shared by the
+ * actor receive() path with the deserialize() builtin's format. */
+static Value deserialize_from_buffer(const char *data, size_t len, int *ok) {
+    SerReader r = { data, len, 0, 1 };
+    if (r.len < 4 ||
+        serread_u8(&r) != SER_MAGIC0 || serread_u8(&r) != SER_MAGIC1 ||
+        serread_u8(&r) != SER_MAGIC2 || serread_u8(&r) != SER_VERSION) {
+        *ok = 0;
+        return value_null();
+    }
+    Value result = deserialize_value(&r, 0);
+    if (!r.ok || r.pos != r.len) {
+        value_free(result);
+        *ok = 0;
+        return value_null();
+    }
+    *ok = 1;
+    return result;
+}
+
+/* --- Multiprocessing Phase 1: actor mailboxes -------------------------------
+ * (docs/multiprocessing_design.md §3-§4). Every interpreter is an actor with one
+ * inbound mailbox. self() returns a handle to it; send() serializes a value and
+ * delivers it as one frame to a handle's mailbox; receive() blocks for the next
+ * frame and deserializes it. In this phase only the root actor exists (spawn of
+ * child isolates comes next), so a program round-trips a message to itself over a
+ * real socketpair, exercising the whole value <-> bytes <-> transport path. */
+
+static Mailbox root_mailbox = { -1, -1 };
+static int root_mailbox_ready = 0;
+static uint64_t next_actor_id = 1;
+static ActorHandle *root_actor_handle = NULL;
+
+static int ensure_root_mailbox(void) {
+    if (root_mailbox_ready) {
+        return 1;
+    }
+    if (mailbox_open(&root_mailbox) != 0) {
+        runtime_error_raise("actor: could not create mailbox", 1004, "actor");
+        return 0;
+    }
+    root_actor_handle = malloc(sizeof(ActorHandle));
+    if (!root_actor_handle) {
+        abort();
+    }
+    /* The root permanently owns its mailbox write end; this registry reference
+     * keeps refcount >= 1 so value_free never closes the live mailbox. */
+    root_actor_handle->write_fd = root_mailbox.write_fd;
+    root_actor_handle->id = next_actor_id++;
+    root_actor_handle->ref_count = 1;
+    root_mailbox_ready = 1;
+    return 1;
+}
+
+static Value value_actor(ActorHandle *handle) {
+    Value value = {0};
+    value.kind = VALUE_ACTOR;
+    value.as.actor = handle;
+    return value;
+}
+
+static Value builtin_actor_self(void) {
+    if (!ensure_root_mailbox()) {
+        return value_null();
+    }
+    root_actor_handle->ref_count++;
+    return value_actor(root_actor_handle);
+}
+
+static Value builtin_actor_send(Value handle, Value message) {
+    if (handle.kind != VALUE_ACTOR) {
+        value_free(handle);
+        value_free(message);
+        runtime_error_raise("send: first argument must be an actor handle",
+                            1003, "actor");
+        return value_null();
+    }
+    char *bytes = NULL;
+    size_t len = 0;
+    if (!serialize_to_buffer(message, &bytes, &len)) {
+        /* serialize_value already raised (non-sendable content). */
+        value_free(handle);
+        value_free(message);
+        return value_null();
+    }
+    int rc = channel_send(handle.as.actor->write_fd, bytes, len);
+    free(bytes);
+    value_free(handle);
+    value_free(message);
+    switch (rc) {
+    case ACTOR_CHANNEL_OK:
+        return value_null();
+    case ACTOR_CHANNEL_FULL:
+        runtime_error_raise("send: target mailbox is full", 1004, "actor");
+        return value_null();
+    case ACTOR_CHANNEL_TOOBIG:
+        runtime_error_raise("send: message is too large for one frame",
+                            1004, "actor");
+        return value_null();
+    default:
+        runtime_error_raise("send: target actor is no longer reachable",
+                            1004, "actor");
+        return value_null();
+    }
+}
+
+static Value builtin_actor_receive(void) {
+    if (!ensure_root_mailbox()) {
+        return value_null();
+    }
+    void *bytes = NULL;
+    size_t len = 0;
+    int rc = channel_recv(root_mailbox.read_fd, &bytes, &len);
+    if (rc == ACTOR_RECV_CLOSED) {
+        runtime_error_raise("receive: mailbox closed (no senders remain)",
+                            1004, "actor");
+        return value_null();
+    }
+    if (rc != ACTOR_RECV_OK) {
+        runtime_error_raise("receive: could not read from mailbox", 1004, "actor");
+        return value_null();
+    }
+    int ok = 0;
+    Value result = deserialize_from_buffer(bytes, len, &ok);
+    free(bytes);
+    if (!ok) {
+        value_free(result);
+        runtime_error_raise("receive: received a corrupt message frame",
+                            1004, "actor");
+        return value_null();
+    }
     return result;
 }
 
@@ -11471,6 +11671,38 @@ static Value eval_call(AstExpr *expr) {
             return value_null();
         }
         return builtin_deserialize_value(arg);
+    }
+
+    if (strcmp(expr->as.call.name, "self") == 0) {
+        if (expr->as.call.args.count != 0) {
+            runtime_error_raise("self expects no arguments", 1003, "actor");
+            return value_null();
+        }
+        return builtin_actor_self();
+    }
+
+    if (strcmp(expr->as.call.name, "send") == 0) {
+        if (expr->as.call.args.count != 2) {
+            runtime_error_raise("send expects an actor handle and a message",
+                                1003, "actor");
+            return value_null();
+        }
+        Value handle = eval_expr(expr->as.call.args.items[0]);
+        Value message = eval_expr(expr->as.call.args.items[1]);
+        if (error_action_pending()) {
+            value_free(handle);
+            value_free(message);
+            return value_null();
+        }
+        return builtin_actor_send(handle, message);
+    }
+
+    if (strcmp(expr->as.call.name, "receive") == 0) {
+        if (expr->as.call.args.count != 0) {
+            runtime_error_raise("receive expects no arguments", 1003, "actor");
+            return value_null();
+        }
+        return builtin_actor_receive();
     }
 
     if (strcmp(expr->as.call.name, "quote") == 0) {

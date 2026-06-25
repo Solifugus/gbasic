@@ -76,7 +76,7 @@ src/parser.tab.o: src/parser.tab.c src/parser.tab.h include/ast.h include/lexer.
 src/ast.o: src/ast.c include/ast.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
-src/eval.o: src/eval.c include/eval.h include/ast.h include/builtins.h
+src/eval.o: src/eval.c include/eval.h include/ast.h include/builtins.h include/actor.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
 src/builtins.o: src/builtins.c include/builtins.h
