@@ -1,1 +1,1 @@
-reverse("not array")
+reverse(123)

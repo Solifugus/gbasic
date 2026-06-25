@@ -512,6 +512,50 @@ static size_t utf8_decode_first(const char *s, size_t len, unsigned *cp) {
     return need + 1;
 }
 
+/* Count Unicode codepoints in `len` bytes, with the lenient invalid-UTF-8 rule
+ * (each malformed byte counts as one unit). Total over arbitrary bytes. */
+static size_t string_codepoint_count(const char *s, size_t len) {
+    size_t count = 0;
+    size_t pos = 0;
+    while (pos < len) {
+        unsigned cp;
+        pos += utf8_decode_first(s + pos, len - pos, &cp);
+        count++;
+    }
+    return count;
+}
+
+/* Binary-safe substring search over raw bytes (memmem-style). Returns the byte
+ * offset of the first match, or -1 if absent. An empty needle matches at 0. */
+static long string_find_bytes(const char *hay, size_t hlen,
+                              const char *needle, size_t nlen) {
+    if (nlen == 0) {
+        return 0;
+    }
+    if (nlen > hlen) {
+        return -1;
+    }
+    for (size_t i = 0; i + nlen <= hlen; i++) {
+        if (memcmp(hay + i, needle, nlen) == 0) {
+            return (long)i;
+        }
+    }
+    return -1;
+}
+
+/* Byte offset at which the codepoint at index `cp_index` begins. If `cp_index`
+ * is at or past the codepoint count, returns `len` (one-past-the-end). */
+static size_t string_codepoint_offset(const char *s, size_t len, size_t cp_index) {
+    size_t pos = 0;
+    size_t seen = 0;
+    while (pos < len && seen < cp_index) {
+        unsigned cp;
+        pos += utf8_decode_first(s + pos, len - pos, &cp);
+        seen++;
+    }
+    return pos;
+}
+
 void eval_set_source_path(const char *path) {
     free(root_source_path);
     root_source_path = path ? copy_string(path) : NULL;
@@ -4969,7 +5013,8 @@ static Value builtin_len_value(Value value) {
         return value_number(count);
     }
     if (value.kind == VALUE_STRING) {
-        double count = (double)string_length(value.as.string);
+        double count = (double)string_codepoint_count(value.as.string,
+                                                      string_length(value.as.string));
         value_free(value);
         return value_number(count);
     }
@@ -5521,10 +5566,34 @@ static void reverse_array_items(Value *items, size_t count) {
     }
 }
 
+/* Reverse a string by codepoint: each codepoint's bytes stay in order, but the
+ * codepoints are mirrored, so multibyte characters survive intact (lenient
+ * invalid-UTF-8 bytes reverse as single units). Strings are immutable values, so
+ * this returns a fresh string and never mutates in place. */
+static Value reverse_string_value(const char *s, size_t len) {
+    char *out = malloc(len + 1);
+    if (!out) {
+        abort();
+    }
+    size_t pos = 0;
+    size_t out_end = len;
+    while (pos < len) {
+        unsigned cp;
+        size_t n = utf8_decode_first(s + pos, len - pos, &cp);
+        out_end -= n;
+        memcpy(out + out_end, s + pos, n);
+        pos += n;
+    }
+    out[len] = '\0';
+    Value result = value_string_n(out, len);
+    free(out);
+    return result;
+}
+
 static Value reverse_array_value(Value array) {
     if (array.kind != VALUE_ARRAY) {
         value_free(array);
-        runtime_error_raise("reverse expects an array", 1003, "invalid function call");
+        runtime_error_raise("reverse expects an array or string", 1003, "invalid function call");
         return value_null();
     }
     reverse_array_items(array.as.array.items, array.as.array.count);
@@ -5534,7 +5603,7 @@ static Value reverse_array_value(Value array) {
 static Value reverse_array_ref(Value *array, int *changed) {
     *changed = 0;
     if (!array || array->kind != VALUE_ARRAY) {
-        runtime_error_raise("reverse expects an array", 1003, "invalid function call");
+        runtime_error_raise("reverse expects an array or string", 1003, "invalid function call");
         return value_null();
     }
     for (size_t i = 0; i < array->as.array.count / 2; i++) {
@@ -10603,13 +10672,13 @@ static Value eval_call(AstExpr *expr) {
             return value_null();
         }
         size_t length = string_length(text.as.string);
-        /* 1-based to match the language's existing mid/index convention. */
-        if (index_double < 1 || (size_t)index_double > length) {
+        /* 0-based to match the language's existing mid/index convention. */
+        if (index_double < 0 || (size_t)index_double >= length) {
             value_free(text);
             runtime_error_raise("byte_at: index out of range", 1003, "invalid argument");
             return value_null();
         }
-        unsigned char byte = (unsigned char)text.as.string[(size_t)index_double - 1];
+        unsigned char byte = (unsigned char)text.as.string[(size_t)index_double];
         value_free(text);
         return value_number((double)byte);
     }
@@ -11041,9 +11110,12 @@ static Value eval_call(AstExpr *expr) {
         }
 
         if (value.kind == VALUE_STRING && target.kind == VALUE_STRING) {
-            char *found = strstr(value.as.string, target.as.string);
-            Value result = found
-                ? value_number((double)(found - value.as.string))
+            size_t hlen = string_length(value.as.string);
+            size_t nlen = string_length(target.as.string);
+            long off = string_find_bytes(value.as.string, hlen, target.as.string, nlen);
+            /* Report the match as a codepoint index, not a byte offset. */
+            Value result = off >= 0
+                ? value_number((double)string_codepoint_count(value.as.string, (size_t)off))
                 : value_null();
             value_free(value);
             value_free(target);
@@ -11291,20 +11363,30 @@ static Value eval_call(AstExpr *expr) {
             runtime_error_raise(message, 1003, "invalid function call");
             return value_null();
         }
-        size_t text_len = strlen(text.as.string);
+        size_t byte_len = string_length(text.as.string);
+        size_t cp_len = string_codepoint_count(text.as.string, byte_len);
         int requested = (int)count_value.as.number;
         size_t count = requested < 0 ? 0 : (size_t)requested;
-        if (count > text_len) {
-            count = text_len;
+        if (count > cp_len) {
+            count = cp_len;
         }
-        size_t start = strcmp(name, "right") == 0 ? text_len - count : 0;
-        char *result_text = malloc(count + 1);
+        /* Translate codepoint slice bounds to byte offsets. */
+        size_t byte_start, byte_end;
+        if (strcmp(name, "right") == 0) {
+            byte_start = string_codepoint_offset(text.as.string, byte_len, cp_len - count);
+            byte_end = byte_len;
+        } else {
+            byte_start = 0;
+            byte_end = string_codepoint_offset(text.as.string, byte_len, count);
+        }
+        size_t byte_count = byte_end - byte_start;
+        char *result_text = malloc(byte_count + 1);
         if (!result_text) {
             abort();
         }
-        memcpy(result_text, text.as.string + start, count);
-        result_text[count] = '\0';
-        Value result = value_string(result_text);
+        memcpy(result_text, text.as.string + byte_start, byte_count);
+        result_text[byte_count] = '\0';
+        Value result = value_string_n(result_text, byte_count);
         free(result_text);
         value_free(text);
         value_free(count_value);
@@ -11329,29 +11411,31 @@ static Value eval_call(AstExpr *expr) {
             return value_null();
         }
 
-        size_t text_len = strlen(text.as.string);
+        size_t byte_len = string_length(text.as.string);
+        size_t cp_len = string_codepoint_count(text.as.string, byte_len);
         int raw_start = (int)start_value.as.number;
         int raw_count = (int)count_value.as.number;
         size_t start = raw_start < 0 ? 0 : (size_t)raw_start;
         size_t count = raw_count < 0 ? 0 : (size_t)raw_count;
+        /* Codepoint slice bounds [start, start+count) clamped to the string. */
+        if (start > cp_len) {
+            start = cp_len;
+        }
+        if (count > cp_len - start) {
+            count = cp_len - start;
+        }
+        size_t byte_start = string_codepoint_offset(text.as.string, byte_len, start);
+        size_t byte_end = string_codepoint_offset(text.as.string, byte_len, start + count);
 
         if (expr->as.call.args.count == 3) {
-            if (start >= text_len) {
-                value_free(text);
-                value_free(start_value);
-                value_free(count_value);
-                return value_string("");
-            }
-            if (count > text_len - start) {
-                count = text_len - start;
-            }
-            char *result_text = malloc(count + 1);
+            size_t slice = byte_end - byte_start;
+            char *result_text = malloc(slice + 1);
             if (!result_text) {
                 abort();
             }
-            memcpy(result_text, text.as.string + start, count);
-            result_text[count] = '\0';
-            Value result = value_string(result_text);
+            memcpy(result_text, text.as.string + byte_start, slice);
+            result_text[slice] = '\0';
+            Value result = value_string_n(result_text, slice);
             free(result_text);
             value_free(text);
             value_free(start_value);
@@ -11368,25 +11452,20 @@ static Value eval_call(AstExpr *expr) {
             runtime_error_raise("mid replacement expects a string", 1003, "invalid function call");
             return value_null();
         }
-        if (start > text_len) {
-            start = text_len;
-        }
-        if (count > text_len - start) {
-            count = text_len - start;
-        }
-        size_t replacement_len = strlen(replacement.as.string);
-        size_t result_len = start + replacement_len + (text_len - start - count);
+        size_t replacement_len = string_length(replacement.as.string);
+        size_t tail_len = byte_len - byte_end;
+        size_t result_len = byte_start + replacement_len + tail_len;
         char *result_text = malloc(result_len + 1);
         if (!result_text) {
             abort();
         }
-        memcpy(result_text, text.as.string, start);
-        memcpy(result_text + start, replacement.as.string, replacement_len);
-        memcpy(result_text + start + replacement_len,
-               text.as.string + start + count,
-               text_len - start - count);
+        memcpy(result_text, text.as.string, byte_start);
+        memcpy(result_text + byte_start, replacement.as.string, replacement_len);
+        memcpy(result_text + byte_start + replacement_len,
+               text.as.string + byte_end,
+               tail_len);
         result_text[result_len] = '\0';
-        Value result = value_string(result_text);
+        Value result = value_string_n(result_text, result_len);
         free(result_text);
         value_free(text);
         value_free(start_value);
@@ -11597,6 +11676,11 @@ static Value eval_call(AstExpr *expr) {
             if (!array) {
                 return value_null();
             }
+            /* Strings are immutable values: reverse a copy, never the binding. */
+            if (array->kind == VALUE_STRING) {
+                return reverse_string_value(array->as.string,
+                                            string_length(array->as.string));
+            }
             int changed = 0;
             Value result = reverse_array_ref(array, &changed);
             if (changed && !error_action_pending() && !notify_lvalue_mutation(array_expr)) {
@@ -11609,6 +11693,12 @@ static Value eval_call(AstExpr *expr) {
         if (error_action_pending()) {
             value_free(array);
             return value_null();
+        }
+        if (array.kind == VALUE_STRING) {
+            Value result = reverse_string_value(array.as.string,
+                                                string_length(array.as.string));
+            value_free(array);
+            return result;
         }
         return reverse_array_value(array);
     }

@@ -40,6 +40,36 @@ static char *copy_text(const char *start, int length) {
     return text;
 }
 
+static int hex_digit_value(char ch) {
+    if (ch >= '0' && ch <= '9') return ch - '0';
+    if (ch >= 'a' && ch <= 'f') return ch - 'a' + 10;
+    if (ch >= 'A' && ch <= 'F') return ch - 'A' + 10;
+    return -1;
+}
+
+/* Encode a Unicode scalar value as UTF-8 into out (up to 4 bytes); returns the
+ * byte count. Caller guarantees a valid scalar (0..0x10FFFF, no surrogate). */
+static int utf8_encode_literal(unsigned cp, char out[4]) {
+    if (cp <= 0x7fu) {
+        out[0] = (char)cp;
+        return 1;
+    } else if (cp <= 0x7ffu) {
+        out[0] = (char)(0xc0u | (cp >> 6));
+        out[1] = (char)(0x80u | (cp & 0x3fu));
+        return 2;
+    } else if (cp <= 0xffffu) {
+        out[0] = (char)(0xe0u | (cp >> 12));
+        out[1] = (char)(0x80u | ((cp >> 6) & 0x3fu));
+        out[2] = (char)(0x80u | (cp & 0x3fu));
+        return 3;
+    }
+    out[0] = (char)(0xf0u | (cp >> 18));
+    out[1] = (char)(0x80u | ((cp >> 12) & 0x3fu));
+    out[2] = (char)(0x80u | ((cp >> 6) & 0x3fu));
+    out[3] = (char)(0x80u | (cp & 0x3fu));
+    return 4;
+}
+
 static char *copy_string_literal(const char *start, int length, int line, int column, int *ok) {
     *ok = 1;
     if (length < 2) {
@@ -66,6 +96,45 @@ static char *copy_string_literal(const char *start, int length, int line, int co
                 text[out++] = '\t';
             } else if (start[i] == '"' || start[i] == '\\') {
                 text[out++] = start[i];
+            } else if (start[i] == 'u') {
+                /* \u{HHHH}: decode a Unicode scalar to UTF-8. The lexer already
+                 * guaranteed the { hexdigits } shape, so just read it. */
+                i++; /* the '{' */
+                unsigned cp = 0;
+                int digits = 0;
+                i++; /* first hex digit */
+                while (i < length - 1 && start[i] != '}') {
+                    cp = cp * 16u + (unsigned)hex_digit_value(start[i]);
+                    digits++;
+                    i++;
+                }
+                /* i now points at '}', which the for-loop's i++ will consume. */
+                if (digits > 6 || cp > 0x10FFFFu) {
+                    report_parse_issue("runtime error", line, column,
+                                       "invalid unicode escape: codepoint must be between 0 and 0x10FFFF");
+                    *ok = 0;
+                    free(text);
+                    return NULL;
+                }
+                if (cp >= 0xD800u && cp <= 0xDFFFu) {
+                    report_parse_issue("runtime error", line, column,
+                                       "invalid unicode escape: surrogate codepoints (0xD800..0xDFFF) are not valid");
+                    *ok = 0;
+                    free(text);
+                    return NULL;
+                }
+                if (cp == 0) {
+                    report_parse_issue("runtime error", line, column,
+                                       "invalid unicode escape: \\u{0} is not allowed in a literal; use chr(0)");
+                    *ok = 0;
+                    free(text);
+                    return NULL;
+                }
+                char utf8[4];
+                int n = utf8_encode_literal(cp, utf8);
+                for (int b = 0; b < n; b++) {
+                    text[out++] = utf8[b];
+                }
             } else {
                 char message[64];
                 snprintf(message, sizeof(message), "invalid escape sequence: \\%c", start[i]);

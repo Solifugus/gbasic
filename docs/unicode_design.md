@@ -100,9 +100,8 @@ The single string type exposes two families of operation. The split is by
 - `from_bytes(array_of_numbers)` — build a string from byte values `0..255`
   (binary-safe; values may be 0).
 
-Indexing is **0-based or 1-based per the language's existing convention** —
-match whatever `mid`/array indexing already do; do not introduce a second
-convention here. (Confirm against current `mid` start semantics during Phase 2.)
+Indexing is **0-based**, matching `mid`/array indexing (resolved in Phase 2; see
+§11.1). `byte_at(s, 0)` is the first byte.
 
 ## 5. `chr` / `code` migration
 
@@ -191,19 +190,35 @@ each phase merged green before the next.
   Suite 103/162/sqlite/webserver/site/webclient green, Valgrind-clean incl.
   adventure. NOTE: `.bas` lexer has **no `0x` hex literal**; use decimal codepoints
   (the `\u{…}` escape arrives in Phase 2).
-- **Phase 2 — codepoint-aware character ops.** Make `len`/`mid`/`left`/`right`/
-  `reverse`/`find`/`split`/`contains` count and slice by codepoint (§4) with the
-  §7 invalid-byte rule. Add the `\u{...}` literal escape. Tests: `len("café")`,
-  `mid` on emoji, slicing across multibyte boundaries.
+- **Phase 2 — codepoint-aware character ops. DONE (2026-06-24).** `len`/`mid`/
+  `left`/`right`/`reverse`/`find` now count and slice by codepoint (§4) via
+  `string_codepoint_count`/`string_codepoint_offset` over `utf8_decode_first`,
+  with the §7 lenient invalid-byte rule (one unit per malformed byte). `len("café")`
+  is 4; `mid`/`left`/`right` never split a codepoint; `reverse` mirrors codepoints
+  (new `reverse_string_value`; strings are immutable, so it returns a copy and
+  never mutates the binding); `find` returns a **codepoint** index (binary-safe
+  search via `string_find_bytes`). `contains` is array-only (membership bool — no
+  index, nothing to change) and `split` yields valid substrings byte-wise (no index
+  returned), so neither needed codepoint work. Added the `\u{...}` literal escape:
+  the lexer (`string_token`) consumes `\u{HHHH}`; the parser (`copy_string_literal`,
+  `utf8_encode_literal`) decodes it to UTF-8. `\u{...}` accepts `1..0x10FFFF`
+  excluding surrogates; **`\u{0}` is rejected** (AST string literals are
+  NUL-terminated `char *` — use `chr(0)` for a literal NUL). `byte_at` is **0-based**
+  to match `mid`/array indexing (open question §11.1 resolved: `mid` is 0-based,
+  confirmed by `secure_token_test`; the Phase 1 1-based byte_at was corrected before
+  release). Tests: `examples/unicode_chars_test`; negatives `negative_uesc_surrogate`/
+  `_range`/`_zero`; `negative_reverse_type` retargeted to a number (reverse now
+  accepts strings, message → "an array or string"). Suite 104/165/sqlite/webserver/
+  site/webclient green, Valgrind-clean incl. adventure.
 - **Phase 3 — case and comparison polish.** Pin down ASCII case folding for
   `caseless`/`upper`/`lower`; document full-Unicode folding, normalization, and
   grapheme clusters as future work. Tests: caseless ASCII; non-ASCII left intact.
 
 ## 11. Open questions
 
-1. **Indexing base for `mid`/`byte_at`.** Confirm 0- vs 1-based against the
-   existing `mid` convention before Phase 2; keep it consistent, do not introduce
-   a second base.
+1. **Indexing base for `mid`/`byte_at`. RESOLVED (Phase 2): 0-based.** `mid` is
+   0-based (confirmed by `examples/secure_token_test`: `i = 0` … `mid(token, i, 1)`),
+   and `byte_at` matches it. No second base introduced.
 2. **Should `len` of a non-string keep its current container meaning?** `len`
    today also reports array/record sizes. Codepoint counting applies only to the
    string case; array/record behavior is unchanged. Confirm no overload conflict.

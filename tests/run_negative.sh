@@ -162,6 +162,9 @@ cases=(
     negative_code_arity
     negative_code_type
     negative_code_empty
+    negative_uesc_surrogate
+    negative_uesc_range
+    negative_uesc_zero
     negative_pbi_unknown_policy
     negative_pbi_reset_missing_value
     negative_pbi_value_on_nonreset

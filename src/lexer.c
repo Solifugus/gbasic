@@ -86,7 +86,29 @@ static Token string_token(Lexer *lexer, const char *start, int line, int column)
                 return error_token_message(lexer, start, line, column, "unterminated escape sequence");
             }
             char esc = advance(lexer);
-            if (esc != 'n' && esc != 't' && esc != '\\' && esc != '"') {
+            if (esc == 'u') {
+                /* \u{HHHH} — consume the braces and hex digits; the parser
+                 * validates the value and decodes it to UTF-8. */
+                if (is_at_end(lexer) || peek(lexer) != '{') {
+                    return error_token_message(lexer, start, line, column,
+                                               "invalid escape sequence: \\u must be followed by {");
+                }
+                advance(lexer);
+                int digits = 0;
+                while (!is_at_end(lexer) && isxdigit((unsigned char)peek(lexer))) {
+                    advance(lexer);
+                    digits++;
+                }
+                if (is_at_end(lexer) || peek(lexer) != '}') {
+                    return error_token_message(lexer, start, line, column,
+                                               "invalid unicode escape: expected } after \\u{");
+                }
+                advance(lexer);
+                if (digits == 0) {
+                    return error_token_message(lexer, start, line, column,
+                                               "invalid unicode escape: \\u{} needs hex digits");
+                }
+            } else if (esc != 'n' && esc != 't' && esc != '\\' && esc != '"') {
                 char message[96];
                 snprintf(message, sizeof(message), "invalid escape sequence: \\%c", esc);
                 return error_token_message(lexer, start, line, column, message);

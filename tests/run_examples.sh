@@ -97,6 +97,7 @@ examples=(
     string_helpers_test.bas
     chr_code_test.bas
     unicode_bytes_test.bas
+    unicode_chars_test.bas
     string_test.bas
     unknown_test.bas
     unknown_nothing_distinction_integration_test.bas

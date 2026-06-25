@@ -1,0 +1,1 @@
+runtime error at tests/negative_uesc_range.bas:1:7: invalid unicode escape: codepoint must be between 0 and 0x10FFFF
