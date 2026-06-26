@@ -1,0 +1,1 @@
+runtime error at tests/negative_receive_timeout_type.bas:2:5: receive: the second argument must be a duration timeout

@@ -7116,80 +7116,140 @@ static int message_matches(Value msg, Value tag) {
     return values_equal(value_copy(mtag), value_copy(tag));
 }
 
-static Value builtin_actor_receive(void) {
-    if (!ensure_root_mailbox()) {
-        return value_null();
-    }
-    /* Oldest retained message first, so FIFO order holds across receive forms. */
-    if (retain_head) {
-        RetainedMsg *node = retain_head;
-        retain_head = node->next;
-        if (!retain_head) {
-            retain_tail = NULL;
-        }
-        Value value = node->value;
-        free(node);
-        return value;
-    }
-
-    Value result = value_null();
-    int rc = actor_recv_one(&result);
-    if (rc == ACTOR_RECV_CLOSED) {
-        runtime_error_raise("receive: mailbox closed (no senders remain)",
-                            1004, "actor");
-        return value_null();
-    }
-    if (rc != ACTOR_RECV_OK) {
-        runtime_error_raise("receive: received a corrupt message frame",
-                            1004, "actor");
-        return value_null();
-    }
-    return result;
-}
-
-/* Selective receive: return the next message whose tag matches `tag`, scanning
- * already-retained messages first and then blocking for new ones, leaving every
- * non-match queued in arrival order. */
-static Value builtin_actor_receive_tag(Value tag) {
-    if (!ensure_root_mailbox()) {
-        value_free(tag);
-        return value_null();
-    }
-
-    /* A previously-retained message may already match. */
+/* Detach and return a retained message: the oldest (tag == NULL) or the first
+ * whose tag matches *tag. Returns 1 and sets *out when one is found. */
+static int retain_take(const Value *tag, Value *out) {
     RetainedMsg *prev = NULL;
     for (RetainedMsg *node = retain_head; node; prev = node, node = node->next) {
-        if (message_matches(node->value, tag)) {
-            if (prev) {
-                prev->next = node->next;
-            } else {
-                retain_head = node->next;
-            }
-            if (node == retain_tail) {
-                retain_tail = prev;
-            }
-            Value value = node->value;
-            free(node);
-            value_free(tag);
-            return value;
+        if (tag && !message_matches(node->value, *tag)) {
+            continue;
         }
+        if (prev) {
+            prev->next = node->next;
+        } else {
+            retain_head = node->next;
+        }
+        if (node == retain_tail) {
+            retain_tail = prev;
+        }
+        *out = node->value;
+        free(node);
+        return 1;
+    }
+    return 0;
+}
+
+static long long monotonic_ms(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
+/* Total milliseconds in a duration used as a timeout. Calendar units use nominal
+ * lengths (year = 365 days, month = 30 days); timeouts are normally seconds to
+ * hours, so the approximation is immaterial. */
+static long long duration_to_ms(Duration d) {
+    long long secs = 0;
+    secs += (long long)d.years * 365 * 24 * 3600;
+    secs += (long long)d.months * 30 * 24 * 3600;
+    secs += (long long)d.weeks * 7 * 24 * 3600;
+    secs += (long long)d.days * 24 * 3600;
+    secs += (long long)d.hours * 3600;
+    secs += (long long)d.minutes * 60;
+    secs += d.seconds;
+    return secs * 1000;
+}
+
+/* Wait for the mailbox to become readable. timeout_ms < 0 blocks forever.
+ * Returns 1 (readable), 0 (timed out), or -1 (error). */
+static int mailbox_wait(int timeout_ms) {
+    struct pollfd p;
+    p.fd = root_mailbox.read_fd;
+    p.events = POLLIN;
+    p.revents = 0;
+    for (;;) {
+        int n = poll(&p, 1, timeout_ms);
+        if (n > 0) {
+            return 1;
+        }
+        if (n == 0) {
+            return 0;
+        }
+        if (errno == EINTR) {
+            continue;
+        }
+        return -1;
+    }
+}
+
+/* The single implementation behind every receive form. With `has_tag`, only a
+ * message whose tag matches `tag` is returned and non-matches are retained
+ * (selective receive); otherwise the oldest message is returned (FIFO). With
+ * `has_timeout`, the call returns `nothing` if no qualifying message arrives
+ * within `timeout_ms`. Consumes `tag`. */
+static Value actor_receive_impl(int has_tag, Value tag,
+                                int has_timeout, long long timeout_ms) {
+    if (!ensure_root_mailbox()) {
+        if (has_tag) {
+            value_free(tag);
+        }
+        return value_null();
     }
 
-    /* Otherwise block for new messages, retaining each non-match. */
+    /* A retained message may already satisfy the request. */
+    Value taken;
+    if (retain_take(has_tag ? &tag : NULL, &taken)) {
+        if (has_tag) {
+            value_free(tag);
+        }
+        return taken;
+    }
+
+    long long deadline = has_timeout ? monotonic_ms() + timeout_ms : 0;
     for (;;) {
+        if (has_timeout) {
+            long long remaining = deadline - monotonic_ms();
+            if (remaining < 0) {
+                remaining = 0;
+            }
+            int wait_ms = remaining > INT_MAX ? INT_MAX : (int)remaining;
+            int w = mailbox_wait(wait_ms);
+            if (w == 0) {
+                if (has_tag) {
+                    value_free(tag);
+                }
+                return value_null();   /* timed out -> nothing */
+            }
+            if (w < 0) {
+                if (has_tag) {
+                    value_free(tag);
+                }
+                runtime_error_raise("receive: could not wait on mailbox",
+                                    1004, "actor");
+                return value_null();
+            }
+        }
+
         Value msg = value_null();
         int rc = actor_recv_one(&msg);
         if (rc == ACTOR_RECV_CLOSED) {
-            value_free(tag);
+            if (has_tag) {
+                value_free(tag);
+            }
             runtime_error_raise("receive: mailbox closed (no senders remain)",
                                 1004, "actor");
             return value_null();
         }
         if (rc != ACTOR_RECV_OK) {
-            value_free(tag);
+            if (has_tag) {
+                value_free(tag);
+            }
             runtime_error_raise("receive: received a corrupt message frame",
                                 1004, "actor");
             return value_null();
+        }
+        if (!has_tag) {
+            return msg;
         }
         if (message_matches(msg, tag)) {
             value_free(tag);
@@ -12448,18 +12508,45 @@ static Value eval_call(AstExpr *expr) {
     }
 
     if (strcmp(expr->as.call.name, "receive") == 0) {
-        if (expr->as.call.args.count == 0) {
-            return builtin_actor_receive();
+        size_t rc = expr->as.call.args.count;
+        if (rc == 0) {
+            return actor_receive_impl(0, value_null(), 0, 0);
         }
-        if (expr->as.call.args.count == 1) {
-            Value tag = eval_expr(expr->as.call.args.items[0]);
+        if (rc == 1) {
+            /* One argument is a timeout if it is a duration, else a selector tag. */
+            Value a = eval_expr(expr->as.call.args.items[0]);
             if (error_action_pending()) {
-                value_free(tag);
+                value_free(a);
                 return value_null();
             }
-            return builtin_actor_receive_tag(tag);
+            if (a.kind == VALUE_DURATION) {
+                long long ms = duration_to_ms(a.as.duration);
+                value_free(a);
+                return actor_receive_impl(0, value_null(), 1, ms < 0 ? 0 : ms);
+            }
+            return actor_receive_impl(1, a, 0, 0);
         }
-        runtime_error_raise("receive expects at most one tag argument",
+        if (rc == 2) {
+            /* Selective receive with a timeout: receive(tag, <duration>). */
+            Value tag = eval_expr(expr->as.call.args.items[0]);
+            Value timeout = eval_expr(expr->as.call.args.items[1]);
+            if (error_action_pending()) {
+                value_free(tag);
+                value_free(timeout);
+                return value_null();
+            }
+            if (timeout.kind != VALUE_DURATION) {
+                value_free(tag);
+                value_free(timeout);
+                runtime_error_raise("receive: the second argument must be a duration timeout",
+                                    1003, "actor");
+                return value_null();
+            }
+            long long ms = duration_to_ms(timeout.as.duration);
+            value_free(timeout);
+            return actor_receive_impl(1, tag, 1, ms < 0 ? 0 : ms);
+        }
+        runtime_error_raise("receive expects at most a tag and a timeout",
                             1003, "actor");
         return value_null();
     }

@@ -174,6 +174,7 @@ cases=(
     negative_spawn_unknown
     negative_spawn_arity
     negative_receive_arity
+    negative_receive_timeout_type
     negative_pbi_unknown_policy
     negative_pbi_reset_missing_value
     negative_pbi_value_on_nonreset

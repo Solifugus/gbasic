@@ -1,8 +1,8 @@
 # Multiprocessing (Actors) — Design
 
-Status: **Phases 0-1 implemented (2026-06-25); Phase 2 in progress (runtime handle
-passing + selective receive done; timeout & cleanup-hardening remain)** (design
-revised 2026-06-24). The **last**
+Status: **Phases 0-1 implemented (2026-06-25); Phase 2 nearly complete (runtime
+handle passing, selective receive, receive timeout done; only process-group
+cleanup hardening remains)** (design revised 2026-06-24). The **last**
 of the three pre-freeze language threads; PBI and Unicode (its two prerequisites)
 are complete. This revision closes the open architectural questions from the
 proposal draft so the phased plan in §8 can be executed without re-litigating the
@@ -451,8 +451,18 @@ Each phase merges green before the next; the first is an invisible foundation.
     FIFO is preserved across the two forms. Equality is the same comparison
     `consider` uses. Test: `spawn_selective_receive_test` (single sender, so
     arrival order is fixed and the out-of-order selection is deterministic).
-  - **Still to do:** a duration-typed `receive` timeout, and orphan/process-group
-    cleanup hardening.
+  - **Receive timeout — DONE (2026-06-25).** A `receive` argument that is a
+    **duration** is a deadline: `receive(5 seconds)` returns `nothing` if no
+    message arrives in time, and `receive(tag, 5 seconds)` is a selective receive
+    with the same deadline. (gBASIC calls are positional, so the timeout is a
+    duration-typed argument rather than the design sketch's `within:` keyword; a
+    duration therefore cannot also serve as a selector tag.) Implemented by
+    `poll`-ing the mailbox fd with the remaining time before each blocking read,
+    tracked against a `CLOCK_MONOTONIC` deadline across retained non-matches. A
+    queued message returns immediately regardless of the deadline. Tests:
+    `spawn_receive_timeout_test` (queued → immediate, empty → times out: both
+    outcomes are deterministic, independent of timing margins).
+  - **Still to do:** orphan/process-group cleanup hardening.
 - **Phase 3 — fault model.** Defined crash behavior, the §6 `link` strict
   diagnostic (if adopted), and the decision record for supervision once
   first-class functions eventually land.

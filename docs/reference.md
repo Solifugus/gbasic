@@ -1253,6 +1253,11 @@ memory and communicate only by copying messages. Five primitives carry the model
   is an array), leaving non-matching messages queued in arrival order for later
   receives. A plain `receive()` drains those oldest-first, so FIFO order holds
   across both forms.
+- `receive(<duration>)` — **timeout**: return the next message, or `nothing` if
+  none arrives within the duration (e.g. `receive(5 seconds)`). `receive(tag,
+  <duration>)` combines a selector with a deadline. A queued message returns
+  immediately. (A `nothing` message is indistinguishable from a timeout; wrap
+  messages if you must tell them apart.)
 - `self()` — this actor's own handle, so it can be handed to others.
 
 An actor runs until its body returns. A worker that handles many messages loops

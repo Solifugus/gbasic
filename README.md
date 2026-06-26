@@ -287,8 +287,9 @@ actor and no live database/GUI connection is shared. Messages are snapshots:
 mutating a received value cannot fire the sender's watchers. A message may carry
 **actor handles**, so a running actor can be handed a channel to a third actor
 and topologies form freely. `receive(tag)` does **selective receive** — take the
-next message whose tag matches, leaving the rest queued. Receive timeouts are
-planned (`docs/multiprocessing_design.md`).
+next message whose tag matches, leaving the rest queued — and a duration argument
+(`receive(5 seconds)`) is a **timeout** that returns `nothing` if no message
+arrives in time (`docs/multiprocessing_design.md`).
 
 ## Files And Paths
 

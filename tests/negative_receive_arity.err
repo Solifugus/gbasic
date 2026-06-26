@@ -1,1 +1,1 @@
-runtime error at tests/negative_receive_arity.bas:2:5: receive expects at most one tag argument
+runtime error at tests/negative_receive_arity.bas:2:5: receive expects at most a tag and a timeout
