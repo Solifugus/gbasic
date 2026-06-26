@@ -1248,6 +1248,11 @@ memory and communicate only by copying messages. Five primitives carry the model
   ordering is FIFO.
 - `receive()` — block until a message is in this actor's mailbox; remove and
   return it. Pairs naturally with `consider` for dispatch.
+- `receive(tag)` — **selective receive**: return the next message whose *tag*
+  matches `tag` (the message itself if it is a string, or its first element if it
+  is an array), leaving non-matching messages queued in arrival order for later
+  receives. A plain `receive()` drains those oldest-first, so FIFO order holds
+  across both forms.
 - `self()` — this actor's own handle, so it can be handed to others.
 
 An actor runs until its body returns. A worker that handles many messages loops

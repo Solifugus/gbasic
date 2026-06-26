@@ -1,7 +1,8 @@
 # Multiprocessing (Actors) — Design
 
 Status: **Phases 0-1 implemented (2026-06-25); Phase 2 in progress (runtime handle
-passing done)** (design revised 2026-06-24). The **last**
+passing + selective receive done; timeout & cleanup-hardening remain)** (design
+revised 2026-06-24). The **last**
 of the three pre-freeze language threads; PBI and Unicode (its two prerequisites)
 are complete. This revision closes the open architectural questions from the
 proposal draft so the phased plan in §8 can be executed without re-litigating the
@@ -440,8 +441,18 @@ Each phase merges green before the next; the first is an invisible foundation.
     of `SER_ACTOR`; `serialize()` still rejects handles outright. Test:
     `spawn_handle_passing_test` (a handle forwarded twice through a single-sender
     pipeline, so it is deterministic).
-  - **Still to do:** `consider`-style selective receive, a duration-typed
-    `receive` timeout, and orphan/process-group cleanup hardening.
+  - **Selective receive — DONE (2026-06-25).** `receive(tag)` returns the next
+    message whose **tag** matches `tag` — the message itself if it is a string, or
+    its first element if it is a non-empty array (the tagged-tuple convention) —
+    leaving every non-matching message queued. Implemented as a userspace
+    scan-and-retain buffer layered over the §4.1 channel: messages pulled while
+    waiting for a match are held in arrival order, scanned first on the next
+    `receive(tag)`, and drained oldest-first by a plain `receive()`, so strict
+    FIFO is preserved across the two forms. Equality is the same comparison
+    `consider` uses. Test: `spawn_selective_receive_test` (single sender, so
+    arrival order is fixed and the out-of-order selection is deterministic).
+  - **Still to do:** a duration-typed `receive` timeout, and orphan/process-group
+    cleanup hardening.
 - **Phase 3 — fault model.** Defined crash behavior, the §6 `link` strict
   diagnostic (if adopted), and the decision record for supervision once
   first-class functions eventually land.
@@ -458,10 +469,12 @@ clocks, fixed interleavings, bounded retries) rather than relying on timing.
    each against the builtin registry and the contextual-keyword rules (`new` is
    the precedent); `send`/`receive` in particular must not collide with a future
    module verb.
-2. **Selective receive (Phase 2).** Does `receive` pull strictly FIFO, or can a
-   `consider` pattern skip non-matching messages and leave them queued (Erlang
-   selective receive)? The latter is more expressive but needs a scan-and-retain
-   mailbox layered over the §4.1 channel.
+2. **Selective receive (Phase 2). RESOLVED — implemented (§8).** Both forms
+   coexist: `receive()` is strict FIFO, `receive(tag)` selectively pulls the next
+   message whose tag matches and leaves the rest queued (Erlang-style), via a
+   scan-and-retain buffer over the §4.1 channel. The selector is a tag (string
+   self / array first element), not a full `consider` pattern — a deliberate v1
+   simplification; richer structural patterns can layer on later.
 3. **Naming/registry.** A way to find an actor by name rather than by passing a
    handle (a process-registry builtin)? Useful but not essential for v1.
 4. **Threads later.** Is encapsulating `eval.c`'s globals behind a context ever

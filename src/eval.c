@@ -7015,26 +7015,19 @@ static Value builtin_actor_send(Value handle, Value message) {
     }
 }
 
-static Value builtin_actor_receive(void) {
-    if (!ensure_root_mailbox()) {
-        return value_null();
-    }
+/* Read and deserialize exactly one frame from this actor's mailbox, binding any
+ * SCM_RIGHTS descriptors it carries to the handles in the value. Returns an
+ * ACTOR_RECV_* code; on ACTOR_RECV_OK the value is in *out. Does not raise. */
+static int actor_recv_one(Value *out) {
     void *bytes = NULL;
     size_t len = 0;
     int *fds = NULL;
     size_t nfds = 0;
     int rc = channel_recv_fds(root_mailbox.read_fd, &bytes, &len, &fds, &nfds);
-    if (rc == ACTOR_RECV_CLOSED) {
-        runtime_error_raise("receive: mailbox closed (no senders remain)",
-                            1004, "actor");
-        return value_null();
-    }
     if (rc != ACTOR_RECV_OK) {
-        runtime_error_raise("receive: could not read from mailbox", 1004, "actor");
-        return value_null();
+        return rc;
     }
 
-    /* Bind any received descriptors to the SER_ACTOR references in the frame. */
     int *used = nfds ? calloc(nfds, sizeof(int)) : NULL;
     ActorMsgRecv recv_xfer = { fds, nfds, used };
     active_msg_recv = &recv_xfer;
@@ -7054,11 +7047,156 @@ static Value builtin_actor_receive(void) {
 
     if (!ok) {
         value_free(result);
+        return ACTOR_RECV_ERROR;
+    }
+    *out = result;
+    return ACTOR_RECV_OK;
+}
+
+/* Userspace retain queue for selective receive (§9.2): messages pulled from the
+ * mailbox that did not match a `receive(tag)` are held here, in arrival order,
+ * and offered to later receives. A plain `receive()` always takes the oldest
+ * retained message first, so strict FIFO is preserved across the two forms. */
+typedef struct RetainedMsg {
+    Value value;
+    struct RetainedMsg *next;
+} RetainedMsg;
+
+static RetainedMsg *retain_head = NULL;
+static RetainedMsg *retain_tail = NULL;
+
+static void retain_append(Value value) {
+    RetainedMsg *node = malloc(sizeof(RetainedMsg));
+    if (!node) {
+        abort();
+    }
+    node->value = value;
+    node->next = NULL;
+    if (retain_tail) {
+        retain_tail->next = node;
+    } else {
+        retain_head = node;
+    }
+    retain_tail = node;
+}
+
+static void retain_clear(void) {
+    RetainedMsg *node = retain_head;
+    while (node) {
+        RetainedMsg *next = node->next;
+        value_free(node->value);
+        free(node);
+        node = next;
+    }
+    retain_head = NULL;
+    retain_tail = NULL;
+}
+
+/* A message's selector tag: the message itself if it is a string, or its first
+ * element if it is a non-empty array (the tagged-tuple convention). Other shapes
+ * have no tag and are never selected by `receive(tag)`. Returns 1 and sets *tag
+ * (a borrowed reference into `msg`) when a tag exists. */
+static int message_tag(Value msg, Value *tag) {
+    if (msg.kind == VALUE_STRING) {
+        *tag = msg;
+        return 1;
+    }
+    if (msg.kind == VALUE_ARRAY && msg.as.array.count > 0) {
+        *tag = msg.as.array.items[0];
+        return 1;
+    }
+    return 0;
+}
+
+static int message_matches(Value msg, Value tag) {
+    Value mtag;
+    if (!message_tag(msg, &mtag)) {
+        return 0;
+    }
+    return values_equal(value_copy(mtag), value_copy(tag));
+}
+
+static Value builtin_actor_receive(void) {
+    if (!ensure_root_mailbox()) {
+        return value_null();
+    }
+    /* Oldest retained message first, so FIFO order holds across receive forms. */
+    if (retain_head) {
+        RetainedMsg *node = retain_head;
+        retain_head = node->next;
+        if (!retain_head) {
+            retain_tail = NULL;
+        }
+        Value value = node->value;
+        free(node);
+        return value;
+    }
+
+    Value result = value_null();
+    int rc = actor_recv_one(&result);
+    if (rc == ACTOR_RECV_CLOSED) {
+        runtime_error_raise("receive: mailbox closed (no senders remain)",
+                            1004, "actor");
+        return value_null();
+    }
+    if (rc != ACTOR_RECV_OK) {
         runtime_error_raise("receive: received a corrupt message frame",
                             1004, "actor");
         return value_null();
     }
     return result;
+}
+
+/* Selective receive: return the next message whose tag matches `tag`, scanning
+ * already-retained messages first and then blocking for new ones, leaving every
+ * non-match queued in arrival order. */
+static Value builtin_actor_receive_tag(Value tag) {
+    if (!ensure_root_mailbox()) {
+        value_free(tag);
+        return value_null();
+    }
+
+    /* A previously-retained message may already match. */
+    RetainedMsg *prev = NULL;
+    for (RetainedMsg *node = retain_head; node; prev = node, node = node->next) {
+        if (message_matches(node->value, tag)) {
+            if (prev) {
+                prev->next = node->next;
+            } else {
+                retain_head = node->next;
+            }
+            if (node == retain_tail) {
+                retain_tail = prev;
+            }
+            Value value = node->value;
+            free(node);
+            value_free(tag);
+            return value;
+        }
+    }
+
+    /* Otherwise block for new messages, retaining each non-match. */
+    for (;;) {
+        Value msg = value_null();
+        int rc = actor_recv_one(&msg);
+        if (rc == ACTOR_RECV_CLOSED) {
+            value_free(tag);
+            runtime_error_raise("receive: mailbox closed (no senders remain)",
+                                1004, "actor");
+            return value_null();
+        }
+        if (rc != ACTOR_RECV_OK) {
+            value_free(tag);
+            runtime_error_raise("receive: received a corrupt message frame",
+                                1004, "actor");
+            return value_null();
+        }
+        if (message_matches(msg, tag)) {
+            value_free(tag);
+            return msg;
+        }
+        retain_append(msg);
+    }
 }
 
 /* Find a top-level function definition by name in the loaded program. Both the
@@ -7429,6 +7567,7 @@ int eval_run_actor(AstStmtList program, const char *entry,
     value_free(result);
 
     actor_cleanup_children();
+    retain_clear();
     function_clear();
     modifier_clear();
     env_clear(&global_env);
@@ -12309,11 +12448,20 @@ static Value eval_call(AstExpr *expr) {
     }
 
     if (strcmp(expr->as.call.name, "receive") == 0) {
-        if (expr->as.call.args.count != 0) {
-            runtime_error_raise("receive expects no arguments", 1003, "actor");
-            return value_null();
+        if (expr->as.call.args.count == 0) {
+            return builtin_actor_receive();
         }
-        return builtin_actor_receive();
+        if (expr->as.call.args.count == 1) {
+            Value tag = eval_expr(expr->as.call.args.items[0]);
+            if (error_action_pending()) {
+                value_free(tag);
+                return value_null();
+            }
+            return builtin_actor_receive_tag(tag);
+        }
+        runtime_error_raise("receive expects at most one tag argument",
+                            1003, "actor");
+        return value_null();
     }
 
     if (strcmp(expr->as.call.name, "quote") == 0) {
@@ -14913,6 +15061,7 @@ int eval_program(AstStmtList program) {
     loop_depth = 0;
     consider_depth = 0;
     actor_cleanup_children();
+    retain_clear();
     lock_clear();
     watcher_clear();
     modifier_clear();
