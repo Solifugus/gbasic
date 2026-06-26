@@ -97,6 +97,7 @@ examples=(
     spawn_echo_test.bas
     spawn_fanout_test.bas
     spawn_loop_test.bas
+    spawn_handle_passing_test.bas
     quote_test.bas
     string_modifier_pipeline_test.bas
     string_helpers_test.bas

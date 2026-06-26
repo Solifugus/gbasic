@@ -284,8 +284,9 @@ end program
 
 Each actor is a fresh interpreter (fork+exec), so a crash is isolated to that
 actor and no live database/GUI connection is shared. Messages are snapshots:
-mutating a received value cannot fire the sender's watchers. Runtime handle
-passing to a third actor, selective receive, and receive timeouts are planned
+mutating a received value cannot fire the sender's watchers. A message may carry
+**actor handles**, so a running actor can be handed a channel to a third actor
+and topologies form freely. Selective receive and receive timeouts are planned
 (`docs/multiprocessing_design.md`).
 
 ## Files And Paths

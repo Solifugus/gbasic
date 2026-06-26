@@ -34,6 +34,10 @@ enum {
     ACTOR_RECV_ERROR = -1
 };
 
+/* Most file descriptors a single message may carry as SCM_RIGHTS ancillary data
+ * (one per actor handle embedded in the value). */
+#define ACTOR_MAX_MESSAGE_FDS 32
+
 typedef struct {
     int read_fd;   /* the owner reads its inbox here (blocking) */
     int write_fd;  /* senders write here; this is the capability handed out */
@@ -54,9 +58,22 @@ size_t channel_max_message(int write_fd);
  * write end that way). Returns an ACTOR_CHANNEL_* code. */
 int channel_send(int write_fd, const void *bytes, size_t len);
 
+/* Like channel_send, but also transfers `nfds` file descriptors to the receiver
+ * as SCM_RIGHTS ancillary data (nfds may be 0; capped at ACTOR_MAX_MESSAGE_FDS).
+ * The receiver obtains its own duplicates; the sender's fds are unaffected. */
+int channel_send_fds(int write_fd, const void *bytes, size_t len,
+                     const int *fds, size_t nfds);
+
 /* Receive one frame (blocking) into a freshly malloc'd buffer. On
  * ACTOR_RECV_OK the caller owns *out and must free() it. Returns an
  * ACTOR_RECV_* code. */
 int channel_recv(int read_fd, void **out, size_t *out_len);
+
+/* Like channel_recv, but also collects any SCM_RIGHTS descriptors the sender
+ * attached. On ACTOR_RECV_OK *out_fds (NULL if none) is a freshly malloc'd array
+ * of *out_nfds descriptors the caller owns: it must close each and free the
+ * array. Descriptors beyond ACTOR_MAX_MESSAGE_FDS are closed and dropped. */
+int channel_recv_fds(int read_fd, void **out, size_t *out_len,
+                     int **out_fds, size_t *out_nfds);
 
 #endif /* GBASIC_ACTOR_H */

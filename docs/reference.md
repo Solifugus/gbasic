@@ -1279,6 +1279,11 @@ widgets cannot cross a boundary. Messages are snapshots — mutating a received
 value cannot fire the sender's watchers, and a record's `link` fields arrive as
 independent copies ("watcher boundaries are concurrency boundaries").
 
+A message may itself contain **actor handles** (a value `serialize` rejects on its
+own): sending one to a running actor hands it a channel to a third actor, so
+actors can introduce each other and form arbitrary topologies. Up to 32 handles
+may travel in a single message.
+
 **Arithmetic behavior:**
 - `+` performs string concatenation when either operand is a string
 - `-`, `*`, `/` remain strict numeric arithmetic only

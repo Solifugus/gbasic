@@ -6386,6 +6386,31 @@ static void spawn_xfer_record(SpawnFdXfer *x, int fd) {
     x->fds[x->count++] = fd;
 }
 
+/* --- runtime handle passing (docs/multiprocessing_design.md §4.1, Phase 2) -----
+ * A message sent to a running actor may itself contain actor handles (giving the
+ * receiver a channel to a third actor). Unlike spawn, no fork occurs, so the
+ * handle's write fd travels as SCM_RIGHTS ancillary data on the same frame
+ * (channel_send_fds / channel_recv_fds). While send() serializes the message an
+ * ActorMsgSend collects each handle's write fd and emits SER_ACTOR carrying its
+ * INDEX into that fd array; receive() installs an ActorMsgRecv holding the fds it
+ * received (in the same order) so SER_ACTOR resolves index -> a freshly adopted
+ * fd. serialize()/spawn use their own contexts; with none installed SER_ACTOR is
+ * rejected. */
+typedef struct {
+    int fds[ACTOR_MAX_MESSAGE_FDS]; /* borrowed handle write fds, in walk order */
+    size_t count;
+    int overflow;                   /* more than ACTOR_MAX_MESSAGE_FDS handles */
+} ActorMsgSend;
+
+typedef struct {
+    const int *fds;   /* descriptors received with the frame */
+    size_t count;
+    int *used;        /* which were bound to a handle (others get closed) */
+} ActorMsgRecv;
+
+static ActorMsgSend *active_msg_send = NULL;
+static ActorMsgRecv *active_msg_recv = NULL;
+
 typedef struct {
     char *bytes;
     size_t length;
@@ -6529,6 +6554,22 @@ static int serialize_value(SerBuf *b, Value v, int depth) {
             spawn_xfer_record(x, dup_fd);
             serbuf_u8(b, SER_ACTOR);
             serbuf_u64(b, (uint64_t)dup_fd);
+            return 1;
+        }
+        if (active_msg_send) {
+            /* Runtime handle passing: the fd ships as SCM_RIGHTS; the frame only
+             * records its position in the attached-fd array. */
+            ActorMsgSend *m = active_msg_send;
+            if (m->count >= ACTOR_MAX_MESSAGE_FDS) {
+                m->overflow = 1;
+                runtime_error_raise("send: too many actor handles in one message",
+                                    1004, "actor");
+                return 0;
+            }
+            uint64_t index = (uint64_t)m->count;
+            m->fds[m->count++] = v.as.actor->write_fd;   /* borrowed, not closed */
+            serbuf_u8(b, SER_ACTOR);
+            serbuf_u64(b, index);
             return 1;
         }
         runtime_error_raise("serialize: actor handles cannot be serialized",
@@ -6733,17 +6774,27 @@ static Value deserialize_value(SerReader *r, int depth) {
         return v;
     }
     case SER_ACTOR: {
-        uint64_t fd = serread_u64(r);
+        uint64_t ref = serread_u64(r);
         if (!r->ok) {
             return value_null();
         }
-        /* Only a child reading its spawn frame may adopt an inherited fd; in any
-         * other context an actor tag is corrupt/forged input. */
-        if (!active_spawn_recv) {
-            r->ok = 0;
-            return value_null();
+        /* In a spawn frame the payload is the inherited fd number itself. */
+        if (active_spawn_recv) {
+            return actor_handle_adopt_fd((int)ref);
         }
-        return actor_handle_adopt_fd((int)fd);
+        /* In a runtime message the payload indexes the SCM_RIGHTS fds received
+         * with the frame. */
+        if (active_msg_recv) {
+            if (ref >= active_msg_recv->count) {
+                r->ok = 0;
+                return value_null();
+            }
+            active_msg_recv->used[ref] = 1;
+            return actor_handle_adopt_fd(active_msg_recv->fds[ref]);
+        }
+        /* No fd-transfer context: a forged or corrupt handle tag. */
+        r->ok = 0;
+        return value_null();
     }
     default:
         r->ok = 0;
@@ -6927,18 +6978,26 @@ static Value builtin_actor_send(Value handle, Value message) {
                             1003, "actor");
         return value_null();
     }
+    /* Serialize the message, collecting the write fds of any actor handles it
+     * contains so they ride along as SCM_RIGHTS (runtime handle passing). */
+    ActorMsgSend xfer = {{0}, 0, 0};
+    active_msg_send = &xfer;
     char *bytes = NULL;
     size_t len = 0;
-    if (!serialize_to_buffer(message, &bytes, &len)) {
-        /* serialize_value already raised (non-sendable content). */
+    int serialized = serialize_to_buffer(message, &bytes, &len);
+    active_msg_send = NULL;
+    if (!serialized || xfer.overflow) {
+        /* serialize_value already raised (non-sendable content / too many fds). */
+        free(bytes);
         value_free(handle);
         value_free(message);
         return value_null();
     }
-    int rc = channel_send(handle.as.actor->write_fd, bytes, len);
+    int rc = channel_send_fds(handle.as.actor->write_fd, bytes, len,
+                              xfer.count ? xfer.fds : NULL, xfer.count);
     free(bytes);
     value_free(handle);
-    value_free(message);
+    value_free(message);   /* closes the handles' fds; the receiver has its own */
     switch (rc) {
     case ACTOR_CHANNEL_OK:
         return value_null();
@@ -6962,7 +7021,9 @@ static Value builtin_actor_receive(void) {
     }
     void *bytes = NULL;
     size_t len = 0;
-    int rc = channel_recv(root_mailbox.read_fd, &bytes, &len);
+    int *fds = NULL;
+    size_t nfds = 0;
+    int rc = channel_recv_fds(root_mailbox.read_fd, &bytes, &len, &fds, &nfds);
     if (rc == ACTOR_RECV_CLOSED) {
         runtime_error_raise("receive: mailbox closed (no senders remain)",
                             1004, "actor");
@@ -6972,9 +7033,25 @@ static Value builtin_actor_receive(void) {
         runtime_error_raise("receive: could not read from mailbox", 1004, "actor");
         return value_null();
     }
+
+    /* Bind any received descriptors to the SER_ACTOR references in the frame. */
+    int *used = nfds ? calloc(nfds, sizeof(int)) : NULL;
+    ActorMsgRecv recv_xfer = { fds, nfds, used };
+    active_msg_recv = &recv_xfer;
     int ok = 0;
     Value result = deserialize_from_buffer(bytes, len, &ok);
+    active_msg_recv = NULL;
     free(bytes);
+
+    /* Any descriptor the frame did not claim would otherwise leak. */
+    for (size_t i = 0; i < nfds; i++) {
+        if (!used || !used[i]) {
+            close(fds[i]);
+        }
+    }
+    free(used);
+    free(fds);
+
     if (!ok) {
         value_free(result);
         runtime_error_raise("receive: received a corrupt message frame",

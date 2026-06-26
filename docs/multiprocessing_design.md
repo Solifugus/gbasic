@@ -1,7 +1,7 @@
 # Multiprocessing (Actors) — Design
 
-Status: **Phases 0-1 implemented (2026-06-25); Phases 2-3 future** (design revised
-2026-06-24). The **last**
+Status: **Phases 0-1 implemented (2026-06-25); Phase 2 in progress (runtime handle
+passing done)** (design revised 2026-06-24). The **last**
 of the three pre-freeze language threads; PBI and Unicode (its two prerequisites)
 are complete. This revision closes the open architectural questions from the
 proposal draft so the phased plan in §8 can be executed without re-litigating the
@@ -40,8 +40,10 @@ runtime model.
 
 Phases 0 and 1 (serialization core; `spawn`/`send`/`receive`/`self` over
 fork+exec processes with spawn-time fd inheritance) are implemented and tested
-(§8). Phases 2-3 (runtime handle passing via `SCM_RIGHTS`, selective receive,
-timeouts, and the fault model) remain future work.
+(§8), as is the first piece of Phase 2: runtime handle passing via `SCM_RIGHTS`
+(a handle may be sent inside a message to a running actor). The rest of Phase 2
+(selective receive, receive timeouts, process-group hardening) and Phase 3 (the
+fault model) remain future work.
 
 ## 1. What is already decided (carried in from PBI / Unicode)
 
@@ -425,10 +427,21 @@ Each phase merges green before the next; the first is an invisible foundation.
     negatives for an unknown entry and an arity mismatch. A spawned actor holds a
     write end to its own inbox so `self()` resolves, and therefore ends by
     returning (or on a "stop" message), not by mailbox EOF.
-- **Phase 2 — topologies & ergonomics.** Runtime handle passing via `SCM_RIGHTS`
-  (giving a *third* actor's handle to an already-running actor), `consider`-style
-  selective receive, a duration-typed `receive` timeout, orphan/process-group
-  cleanup hardening. Tests: a ring; a request/reply with timeout.
+- **Phase 2 — topologies & ergonomics.** *In progress.*
+  - **Runtime handle passing via `SCM_RIGHTS` — DONE (2026-06-25).** A message
+    sent to a running actor may itself contain actor handles, giving the receiver
+    a channel to a *third* actor with no fork involved. `send` serializes each
+    embedded handle as a `SER_ACTOR` tag carrying its *index*, and ships the
+    handles' mailbox write fds as `SCM_RIGHTS` ancillary data on the same frame
+    (`channel_send_fds`); `receive` collects those descriptors
+    (`channel_recv_fds`, `MSG_CMSG_CLOEXEC`) and binds index → a freshly adopted
+    fd, closing any the frame did not claim. Capped at `ACTOR_MAX_MESSAGE_FDS`
+    (32) handles per message. The spawn path keeps its own fd-inheritance encoding
+    of `SER_ACTOR`; `serialize()` still rejects handles outright. Test:
+    `spawn_handle_passing_test` (a handle forwarded twice through a single-sender
+    pipeline, so it is deterministic).
+  - **Still to do:** `consider`-style selective receive, a duration-typed
+    `receive` timeout, and orphan/process-group cleanup hardening.
 - **Phase 3 — fault model.** Defined crash behavior, the §6 `link` strict
   diagnostic (if adopted), and the decision record for supervision once
   first-class functions eventually land.
