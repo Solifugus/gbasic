@@ -215,6 +215,15 @@ AstExpr *ast_new(AstExpr *proto, AstExpr *with) {
     return expr;
 }
 
+AstExpr *ast_spawn(char *name, AstExprList args) {
+    /* spawn reuses the call shape: a named entry function plus its arguments. */
+    AstExpr *expr = ast_expr_new(AST_EXPR_SPAWN);
+    expr->as.call.library = NULL;
+    expr->as.call.name = name;
+    expr->as.call.args = args;
+    return expr;
+}
+
 AstExpr *ast_expr_position(AstExpr *expr, int line, int column) {
     if (!expr) {
         return NULL;
@@ -548,6 +557,12 @@ static void dump_expr(AstExpr *expr, int indent) {
             dump_expr(expr->as.derive.with, indent + 2);
         }
         break;
+    case AST_EXPR_SPAWN:
+        printf("Spawn %s\n", expr->as.call.name);
+        for (size_t i = 0; i < expr->as.call.args.count; i++) {
+            dump_expr(expr->as.call.args.items[i], indent + 1);
+        }
+        break;
     }
 }
 
@@ -845,6 +860,13 @@ static void free_expr(AstExpr *expr) {
     case AST_EXPR_NEW:
         free_expr(expr->as.derive.proto);
         free_expr(expr->as.derive.with);
+        break;
+    case AST_EXPR_SPAWN:
+        free(expr->as.call.name);
+        for (size_t i = 0; i < expr->as.call.args.count; i++) {
+            free_expr(expr->as.call.args.items[i]);
+        }
+        free(expr->as.call.args.items);
         break;
     case AST_EXPR_NUMBER:
     case AST_EXPR_BOOL:

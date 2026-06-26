@@ -171,6 +171,8 @@ cases=(
     negative_send_non_actor
     negative_self_args
     negative_send_arity
+    negative_spawn_unknown
+    negative_spawn_arity
     negative_pbi_unknown_policy
     negative_pbi_reset_missing_value
     negative_pbi_value_on_nonreset

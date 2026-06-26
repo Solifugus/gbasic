@@ -21,6 +21,7 @@
 #include <sys/socket.h>
 #include <sys/file.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <time.h>
@@ -4950,32 +4951,17 @@ static Value eval_dir_call(AstExpr *expr) {
     return value_array(items, count);
 }
 
-static Value eval_user_function(AstExpr *expr, FunctionDef *function) {
-    AstStmt *stmt = function->stmt;
-    if (expr->as.call.args.count != stmt->as.function.params.count) {
-        fprintf(stderr, "%s expects %zu arguments\n",
-                expr->as.call.name,
-                stmt->as.function.params.count);
-        return value_null();
-    }
-
-    Value *args = NULL;
-    if (expr->as.call.args.count > 0) {
-        args = malloc(sizeof(Value) * expr->as.call.args.count);
-        if (!args) {
-            abort();
-        }
-    }
-    for (size_t i = 0; i < expr->as.call.args.count; i++) {
-        args[i] = eval_expr(expr->as.call.args.items[i]);
-    }
-
+/* Run a user function body with its parameters bound to the already-evaluated
+ * `args` (count must equal the parameter count). Takes ownership of the `args`
+ * array and the values in it, freeing the array. Shared by ordinary calls
+ * (eval_user_function) and the spawned-actor entry path (eval_run_actor). */
+static Value invoke_function(AstStmt *stmt, Value *args, size_t argc) {
     Env local_env = {0};
     local_env.parent = &global_env;
     Env *previous_env = current_env;
     current_env = &local_env;
 
-    for (size_t i = 0; i < expr->as.call.args.count; i++) {
+    for (size_t i = 0; i < argc; i++) {
         env_set(stmt->as.function.params.items[i], args[i]);
     }
     free(args);
@@ -5050,6 +5036,29 @@ static Value eval_user_function(AstExpr *expr, FunctionDef *function) {
         value_free(result.value);
     }
     return value_null();
+}
+
+static Value eval_user_function(AstExpr *expr, FunctionDef *function) {
+    AstStmt *stmt = function->stmt;
+    if (expr->as.call.args.count != stmt->as.function.params.count) {
+        fprintf(stderr, "%s expects %zu arguments\n",
+                expr->as.call.name,
+                stmt->as.function.params.count);
+        return value_null();
+    }
+
+    Value *args = NULL;
+    if (expr->as.call.args.count > 0) {
+        args = malloc(sizeof(Value) * expr->as.call.args.count);
+        if (!args) {
+            abort();
+        }
+    }
+    for (size_t i = 0; i < expr->as.call.args.count; i++) {
+        args[i] = eval_expr(expr->as.call.args.items[i]);
+    }
+
+    return invoke_function(stmt, args, expr->as.call.args.count);
 }
 
 static void call_label(AstExpr *expr, char *buffer, size_t size) {
@@ -6331,8 +6340,51 @@ typedef enum {
     SER_DURATION,
     SER_MONEY,
     SER_FILE,
-    SER_DIR
+    SER_DIR,
+    SER_ACTOR   /* spawn-args only: an actor handle, realized by an inherited fd */
 } SerTag;
+
+/* --- fd transfer for spawn arguments (docs/multiprocessing_design.md §4.1) ----
+ * Actor handles are a live capability, not plain data, so serialize()/send()
+ * reject them. The one exception is `spawn`'s argument frame: a handle there is
+ * realized by inheriting its mailbox write-end fd across fork+exec. While
+ * serializing a spawn frame the parent installs a SpawnFdXfer; serialize_value
+ * then emits SER_ACTOR carrying the (dup'd, FD_CLOEXEC-cleared) fd number the
+ * child will inherit, and records that fd so the parent can close it after the
+ * fork. The child installs a non-NULL xfer too, so deserialize_value accepts
+ * SER_ACTOR and wraps the inherited fd. Everywhere else the xfer is NULL and
+ * SER_ACTOR is rejected. The interpreter is single-threaded within one process,
+ * so a file-scope context pointer is safe (no nested serialization runs). */
+typedef struct {
+    int *fds;       /* fds the parent dup'd for inheritance (to close post-fork) */
+    size_t count;
+    size_t capacity;
+    int failed;     /* a dup/fcntl failed mid-walk */
+} SpawnFdXfer;
+
+static SpawnFdXfer *active_spawn_xfer = NULL;
+
+/* Non-zero only while a child actor is deserializing its startup-argument frame,
+ * which is the one context where SER_ACTOR (an inherited handle fd) is accepted
+ * on the read side. */
+static int active_spawn_recv = 0;
+
+/* Wrap an already-open, inherited mailbox write fd as an actor handle the child
+ * owns (defined with the rest of the actor machinery below). */
+static Value actor_handle_adopt_fd(int fd);
+
+static void spawn_xfer_record(SpawnFdXfer *x, int fd) {
+    if (x->count == x->capacity) {
+        size_t cap = x->capacity ? x->capacity * 2 : 4;
+        int *next = realloc(x->fds, sizeof(int) * cap);
+        if (!next) {
+            abort();
+        }
+        x->fds = next;
+        x->capacity = cap;
+    }
+    x->fds[x->count++] = fd;
+}
 
 typedef struct {
     char *bytes;
@@ -6451,10 +6503,34 @@ static int serialize_value(SerBuf *b, Value v, int depth) {
                             1003, "actor");
         return 0;
     case VALUE_ACTOR:
-        /* Handles are a live capability, not data. Cross-isolate handle passing
-         * uses fd transfer at the transport layer (§4.1), not value serialization;
-         * the user-facing serialize() and a message that embeds a handle are
-         * rejected here. */
+        /* Handles are a live capability, not data. The user-facing serialize()
+         * and any message that embeds a handle (send()) are rejected — those run
+         * with no xfer installed. Only a spawn-argument frame (active_spawn_xfer
+         * set) may carry a handle, realized by inheriting its mailbox write fd
+         * across fork+exec (§4.1). */
+        if (active_spawn_xfer) {
+            SpawnFdXfer *x = active_spawn_xfer;
+            int dup_fd = fcntl(v.as.actor->write_fd, F_DUPFD_CLOEXEC, 3);
+            int cleared = -1;
+            if (dup_fd >= 0) {
+                /* The child must inherit this fd across exec, so clear CLOEXEC. */
+                int flags = fcntl(dup_fd, F_GETFD, 0);
+                cleared = (flags < 0) ? -1 : fcntl(dup_fd, F_SETFD, flags & ~FD_CLOEXEC);
+            }
+            if (dup_fd < 0 || cleared < 0) {
+                if (dup_fd >= 0) {
+                    close(dup_fd);
+                }
+                x->failed = 1;
+                runtime_error_raise("spawn: could not pass actor handle to child",
+                                    1004, "actor");
+                return 0;
+            }
+            spawn_xfer_record(x, dup_fd);
+            serbuf_u8(b, SER_ACTOR);
+            serbuf_u64(b, (uint64_t)dup_fd);
+            return 1;
+        }
         runtime_error_raise("serialize: actor handles cannot be serialized",
                             1003, "actor");
         return 0;
@@ -6656,6 +6732,19 @@ static Value deserialize_value(SerReader *r, int depth) {
         serread_bytes(r, &v.as.cents, sizeof v.as.cents);
         return v;
     }
+    case SER_ACTOR: {
+        uint64_t fd = serread_u64(r);
+        if (!r->ok) {
+            return value_null();
+        }
+        /* Only a child reading its spawn frame may adopt an inherited fd; in any
+         * other context an actor tag is corrupt/forged input. */
+        if (!active_spawn_recv) {
+            r->ok = 0;
+            return value_null();
+        }
+        return actor_handle_adopt_fd((int)fd);
+    }
     default:
         r->ok = 0;
         return value_null();
@@ -6714,9 +6803,15 @@ static Value deserialize_from_buffer(const char *data, size_t len, int *ok) {
  * (docs/multiprocessing_design.md §3-§4). Every interpreter is an actor with one
  * inbound mailbox. self() returns a handle to it; send() serializes a value and
  * delivers it as one frame to a handle's mailbox; receive() blocks for the next
- * frame and deserializes it. In this phase only the root actor exists (spawn of
- * child isolates comes next), so a program round-trips a message to itself over a
- * real socketpair, exercising the whole value <-> bytes <-> transport path. */
+ * frame and deserializes it.
+ *
+ * Phase 1c adds spawn: `spawn worker(args)` fork+execs a fresh interpreter
+ * (`gbasic --actor worker <program>`) with its own inbound mailbox, returning a
+ * handle the parent sends to. Handles in the spawn arguments — notably the
+ * parent's own self() — are wired by inheriting their mailbox write fds across
+ * exec (§3, §4.1), so a child can message its parent. The root interpreter
+ * creates its mailbox lazily with a fresh socketpair; a spawned child instead
+ * adopts the inbox/self fds the parent set up for it (actor_child_init). */
 
 static Mailbox root_mailbox = { -1, -1 };
 static int root_mailbox_ready = 0;
@@ -6749,6 +6844,71 @@ static Value value_actor(ActorHandle *handle) {
     value.kind = VALUE_ACTOR;
     value.as.actor = handle;
     return value;
+}
+
+/* Wrap an already-open mailbox write fd (inherited across exec, or otherwise
+ * owned) as a fresh actor handle. The handle owns the fd: closing the last
+ * reference closes it. */
+static Value actor_handle_adopt_fd(int fd) {
+    ActorHandle *handle = malloc(sizeof(ActorHandle));
+    if (!handle) {
+        abort();
+    }
+    handle->write_fd = fd;
+    handle->id = next_actor_id++;
+    handle->ref_count = 1;
+    return value_actor(handle);
+}
+
+/* Initialize a spawned child's mailbox from the fds the parent set up: inbox_fd
+ * is the read end of this actor's inbound mailbox; self_fd is a write end to that
+ * same mailbox (a dup the parent passed so self() works in the child). Replaces
+ * the lazy fresh-socketpair path for children. */
+static void actor_child_init(int inbox_fd, int self_fd) {
+    root_mailbox.read_fd = inbox_fd;
+    root_mailbox.write_fd = self_fd;
+    root_actor_handle = malloc(sizeof(ActorHandle));
+    if (!root_actor_handle) {
+        abort();
+    }
+    root_actor_handle->write_fd = self_fd;
+    root_actor_handle->id = next_actor_id++;
+    root_actor_handle->ref_count = 1;
+    root_mailbox_ready = 1;
+}
+
+/* --- spawned-child bookkeeping (orphan cleanup, §7) -------------------------
+ * Every actor this interpreter spawns joins one dedicated process group it owns,
+ * and its pid is tracked so the group can be torn down and reaped on exit. The
+ * group is never the inherited one (which may hold a parent shell pipeline). */
+static pid_t actor_group_pgid = 0;
+static pid_t *actor_child_pids = NULL;
+static size_t actor_child_count = 0;
+
+static void actor_track_child(pid_t pid) {
+    pid_t *next = realloc(actor_child_pids, sizeof(pid_t) * (actor_child_count + 1));
+    if (!next) {
+        abort();
+    }
+    actor_child_pids = next;
+    actor_child_pids[actor_child_count++] = pid;
+}
+
+static void actor_cleanup_children(void) {
+    if (actor_group_pgid > 0) {
+        /* Signal the whole actor group; harmless if members already exited. */
+        kill(-actor_group_pgid, SIGTERM);
+    }
+    for (size_t i = 0; i < actor_child_count; i++) {
+        int status = 0;
+        while (waitpid(actor_child_pids[i], &status, 0) < 0 && errno == EINTR) {
+            /* retry */
+        }
+    }
+    free(actor_child_pids);
+    actor_child_pids = NULL;
+    actor_child_count = 0;
+    actor_group_pgid = 0;
 }
 
 static Value builtin_actor_self(void) {
@@ -6822,6 +6982,380 @@ static Value builtin_actor_receive(void) {
         return value_null();
     }
     return result;
+}
+
+/* Find a top-level function definition by name in the loaded program. Both the
+ * parent (validating a spawn entry, §3) and the child (locating the entry to
+ * run) resolve the entry this way. */
+static AstStmt *find_top_level_function(const char *name) {
+    for (size_t i = 0; i < active_root.count; i++) {
+        AstStmt *stmt = active_root.items[i];
+        if (stmt->kind == AST_STMT_FUNCTION &&
+            strcmp(stmt->as.function.name, name) == 0) {
+            return stmt;
+        }
+    }
+    return NULL;
+}
+
+/* Absolute path to this interpreter, so a spawned child re-execs the same
+ * binary at the same program (§3). Caller frees; NULL on failure. */
+static char *actor_self_exe_path(void) {
+    char buf[PATH_MAX];
+    ssize_t n = readlink("/proc/self/exe", buf, sizeof buf - 1);
+    if (n <= 0) {
+        return NULL;
+    }
+    buf[(size_t)n] = '\0';
+    return copy_string(buf);
+}
+
+/* Clear FD_CLOEXEC on fd so it survives exec into the child. Returns 0 on
+ * success, -1 on failure. */
+static int fd_clear_cloexec(int fd) {
+    int flags = fcntl(fd, F_GETFD, 0);
+    if (flags < 0) {
+        return -1;
+    }
+    return fcntl(fd, F_SETFD, flags & ~FD_CLOEXEC);
+}
+
+/* `spawn worker(args...)` — start a fresh interpreter as a new actor running
+ * `worker`, returning a handle to its inbound mailbox (docs/multiprocessing_design.md
+ * §3-§4). The parent validates the entry, serializes the arguments (inheriting
+ * any handle fds they carry), enqueues them as the child's reserved first frame,
+ * fork+execs `gbasic --actor`, and blocks on a control pipe until the child
+ * reports ready. */
+static Value eval_spawn(AstExpr *expr) {
+    char *entry = expr->as.call.name;
+    size_t argc = expr->as.call.args.count;
+
+    if (!root_source_path || !root_source_path[0]) {
+        runtime_error_raise("spawn requires a program loaded from a file",
+                            1003, "actor");
+        return value_null();
+    }
+
+    AstStmt *fn = find_top_level_function(entry);
+    if (!fn) {
+        char message[256];
+        snprintf(message, sizeof message, "spawn: no function named %s", entry);
+        runtime_error_raise(message, 1003, "actor");
+        return value_null();
+    }
+    if (argc != fn->as.function.params.count) {
+        char message[256];
+        snprintf(message, sizeof message, "spawn: %s expects %zu arguments",
+                 entry, fn->as.function.params.count);
+        runtime_error_raise(message, 1003, "actor");
+        return value_null();
+    }
+
+    char *exe = actor_self_exe_path();
+    if (!exe) {
+        runtime_error_raise("spawn: could not locate the interpreter executable",
+                            1004, "actor");
+        return value_null();
+    }
+
+    /* Evaluate the arguments; abort the spawn if any raised. */
+    Value *items = argc ? malloc(sizeof(Value) * argc) : NULL;
+    if (argc && !items) {
+        abort();
+    }
+    size_t evaluated = 0;
+    int arg_error = 0;
+    for (size_t i = 0; i < argc; i++) {
+        items[i] = eval_expr(expr->as.call.args.items[i]);
+        evaluated++;
+        if (error_action_pending() || runtime_stopped) {
+            arg_error = 1;
+            break;
+        }
+    }
+    if (arg_error) {
+        for (size_t i = 0; i < evaluated; i++) {
+            value_free(items[i]);
+        }
+        free(items);
+        free(exe);
+        return value_null();
+    }
+    Value args_array = value_array(items, argc);
+
+    /* The child's inbound mailbox: the parent keeps the write end as the handle
+     * it sends to; the child inherits the read end as its inbox. */
+    Mailbox child_box;
+    if (mailbox_open(&child_box) != 0) {
+        value_free(args_array);
+        free(exe);
+        runtime_error_raise("spawn: could not create child mailbox", 1004, "actor");
+        return value_null();
+    }
+
+    /* A second write end (CLOEXEC cleared) the child inherits so its own self()
+     * resolves to its inbox. */
+    int child_self_fd = fcntl(child_box.write_fd, F_DUPFD_CLOEXEC, 3);
+    if (child_self_fd < 0 || fd_clear_cloexec(child_self_fd) < 0) {
+        if (child_self_fd >= 0) {
+            close(child_self_fd);
+        }
+        mailbox_close(&child_box);
+        value_free(args_array);
+        free(exe);
+        runtime_error_raise("spawn: could not set up child self handle",
+                            1004, "actor");
+        return value_null();
+    }
+
+    /* Control pipe: the child writes one status byte; the parent blocks on it. */
+    int ctrl[2];
+    if (pipe(ctrl) != 0) {
+        close(child_self_fd);
+        mailbox_close(&child_box);
+        value_free(args_array);
+        free(exe);
+        runtime_error_raise("spawn: could not create control pipe", 1004, "actor");
+        return value_null();
+    }
+    if (fd_clear_cloexec(ctrl[1]) < 0) {
+        close(ctrl[0]);
+        close(ctrl[1]);
+        close(child_self_fd);
+        mailbox_close(&child_box);
+        value_free(args_array);
+        free(exe);
+        runtime_error_raise("spawn: could not prepare control pipe", 1004, "actor");
+        return value_null();
+    }
+
+    /* Serialize the startup arguments, inheriting the write fd of any handle
+     * they contain (active_spawn_xfer). */
+    SpawnFdXfer xfer = {0};
+    active_spawn_xfer = &xfer;
+    char *frame = NULL;
+    size_t frame_len = 0;
+    int serialized = serialize_to_buffer(args_array, &frame, &frame_len);
+    active_spawn_xfer = NULL;
+    value_free(args_array);
+
+    int fatal = 0;
+    if (!serialized || xfer.failed) {
+        fatal = 1;   /* serialize_value already raised */
+    } else if (frame_len > channel_max_message(child_box.write_fd)) {
+        runtime_error_raise("spawn: arguments are too large for one frame",
+                            1004, "actor");
+        fatal = 1;
+    } else {
+        /* Reserved startup frame: enqueued before the handle exists, so it is
+         * always the child's first message (§3). */
+        int sr = channel_send(child_box.write_fd, frame, frame_len);
+        if (sr != ACTOR_CHANNEL_OK) {
+            runtime_error_raise("spawn: could not deliver startup arguments",
+                                1004, "actor");
+            fatal = 1;
+        }
+    }
+    free(frame);
+    if (fatal) {
+        for (size_t i = 0; i < xfer.count; i++) {
+            close(xfer.fds[i]);
+        }
+        free(xfer.fds);
+        close(ctrl[0]);
+        close(ctrl[1]);
+        close(child_self_fd);
+        mailbox_close(&child_box);
+        free(exe);
+        return value_null();
+    }
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        for (size_t i = 0; i < xfer.count; i++) {
+            close(xfer.fds[i]);
+        }
+        free(xfer.fds);
+        close(ctrl[0]);
+        close(ctrl[1]);
+        close(child_self_fd);
+        mailbox_close(&child_box);
+        free(exe);
+        runtime_error_raise("spawn: could not fork", 1004, "actor");
+        return value_null();
+    }
+
+    if (pid == 0) {
+        /* ---- child, between fork and exec ---- */
+        /* Join the dedicated actor process group (0 => become its leader). */
+        setpgid(0, actor_group_pgid);
+
+        /* Keep only the fds the fresh interpreter needs; close everything else so
+         * no libpq/sqlite/gtk/server descriptor leaks across exec (§3). */
+        int keep[3];
+        keep[0] = child_box.read_fd;
+        keep[1] = child_self_fd;
+        keep[2] = ctrl[1];
+        long maxfd = sysconf(_SC_OPEN_MAX);
+        if (maxfd < 0) {
+            maxfd = 1024;
+        }
+        for (int fd = 3; fd < (int)maxfd; fd++) {
+            int keepit = 0;
+            for (size_t k = 0; k < 3; k++) {
+                if (keep[k] == fd) {
+                    keepit = 1;
+                    break;
+                }
+            }
+            for (size_t k = 0; !keepit && k < xfer.count; k++) {
+                if (xfer.fds[k] == fd) {
+                    keepit = 1;
+                }
+            }
+            if (!keepit) {
+                close(fd);
+            }
+        }
+
+        char inbox_s[16];
+        char self_s[16];
+        char ctrl_s[16];
+        snprintf(inbox_s, sizeof inbox_s, "%d", child_box.read_fd);
+        snprintf(self_s, sizeof self_s, "%d", child_self_fd);
+        snprintf(ctrl_s, sizeof ctrl_s, "%d", ctrl[1]);
+        char *child_argv[] = {
+            exe, "--actor", entry, root_source_path,
+            "--actor-inbox", inbox_s,
+            "--actor-self", self_s,
+            "--actor-control", ctrl_s,
+            NULL
+        };
+        execv(exe, child_argv);
+        /* exec failed: report failure to the parent and die. */
+        char b = 'X';
+        ssize_t w = write(ctrl[1], &b, 1);
+        (void)w;
+        _exit(127);
+    }
+
+    /* ---- parent ---- */
+    if (actor_group_pgid == 0) {
+        actor_group_pgid = pid;
+    }
+    setpgid(pid, actor_group_pgid);   /* harmless race with the child's setpgid */
+    actor_track_child(pid);
+
+    /* Every child-only fd now belongs to the child. */
+    close(child_box.read_fd);
+    close(child_self_fd);
+    close(ctrl[1]);
+    for (size_t i = 0; i < xfer.count; i++) {
+        close(xfer.fds[i]);
+    }
+    free(xfer.fds);
+    free(exe);
+
+    /* Block until the child reports ready ('R') or the pipe closes on failure. */
+    char status = 0;
+    ssize_t n;
+    do {
+        n = read(ctrl[0], &status, 1);
+    } while (n < 0 && errno == EINTR);
+    close(ctrl[0]);
+
+    if (n == 1 && status == 'R') {
+        return actor_handle_adopt_fd(child_box.write_fd);
+    }
+
+    close(child_box.write_fd);   /* the child is reaped by actor_cleanup_children */
+    runtime_error_raise("spawn: child actor failed to start", 1004, "actor");
+    return value_null();
+}
+
+/* Entry point for a spawned actor process (`gbasic --actor entry program ...`).
+ * Hoists the program's top-level definitions, adopts the inherited mailbox fds,
+ * signals readiness on the control pipe, reads its reserved startup-argument
+ * frame, and runs the entry function. Returns a process exit status. */
+int eval_run_actor(AstStmtList program, const char *entry,
+                   int inbox_fd, int self_fd, int control_fd) {
+    active_root = program;
+
+    /* Register top-level functions, modifiers, and imports so the entry and its
+     * helpers resolve (the normal top-level walk does not run for an actor). */
+    for (size_t i = 0; i < program.count; i++) {
+        AstStmt *stmt = program.items[i];
+        if (stmt->kind == AST_STMT_FUNCTION) {
+            function_register(stmt);
+        } else if (stmt->kind == AST_STMT_MODIFIER) {
+            modifier_register(stmt);
+        } else if (stmt->kind == AST_STMT_USE) {
+            library_import(stmt->as.use_stmt.name, stmt->as.use_stmt.path);
+        }
+    }
+
+    AstStmt *fn = find_top_level_function(entry);
+    if (!fn) {
+        char b = 'E';
+        ssize_t w = write(control_fd, &b, 1);
+        (void)w;
+        close(control_fd);
+        fprintf(stderr, "actor: no function named %s\n", entry);
+        return 1;
+    }
+
+    actor_child_init(inbox_fd, self_fd);
+
+    /* Ready: the parent's spawn() unblocks and returns the handle. */
+    char ready = 'R';
+    ssize_t w = write(control_fd, &ready, 1);
+    (void)w;
+    close(control_fd);
+
+    /* The reserved first frame carries the serialized startup arguments. */
+    void *bytes = NULL;
+    size_t len = 0;
+    if (channel_recv(inbox_fd, &bytes, &len) != ACTOR_RECV_OK) {
+        fprintf(stderr, "actor: %s could not read startup arguments\n", entry);
+        return 1;
+    }
+    active_spawn_recv = 1;
+    int ok = 0;
+    Value arg_value = deserialize_from_buffer(bytes, len, &ok);
+    active_spawn_recv = 0;
+    free(bytes);
+    if (!ok || arg_value.kind != VALUE_ARRAY) {
+        value_free(arg_value);
+        fprintf(stderr, "actor: %s received corrupt startup arguments\n", entry);
+        return 1;
+    }
+    size_t argc = arg_value.as.array.count;
+    if (argc != fn->as.function.params.count) {
+        value_free(arg_value);
+        fprintf(stderr, "actor: %s startup argument count mismatch\n", entry);
+        return 1;
+    }
+
+    /* Transfer ownership of the elements to invoke_function; free only the array
+     * container so the values are not double-freed. */
+    Value *args = argc ? malloc(sizeof(Value) * argc) : NULL;
+    if (argc && !args) {
+        abort();
+    }
+    for (size_t i = 0; i < argc; i++) {
+        args[i] = arg_value.as.array.items[i];
+    }
+    free(arg_value.as.array.items);
+
+    Value result = invoke_function(fn, args, argc);
+    int exit_status = runtime_stopped ? 1 : 0;
+    value_free(result);
+
+    actor_cleanup_children();
+    function_clear();
+    modifier_clear();
+    env_clear(&global_env);
+    return exit_status;
 }
 
 static Value builtin_quote_value(Value value) {
@@ -13437,6 +13971,8 @@ static Value eval_expr(AstExpr *expr) {
     }
     case AST_EXPR_CALL:
         return eval_call(expr);
+    case AST_EXPR_SPAWN:
+        return eval_spawn(expr);
     case AST_EXPR_BINARY:
         return eval_binary(expr);
     case AST_EXPR_UNARY: {
@@ -14299,6 +14835,7 @@ int eval_program(AstStmtList program) {
     runtime_stopped = 0;
     loop_depth = 0;
     consider_depth = 0;
+    actor_cleanup_children();
     lock_clear();
     watcher_clear();
     modifier_clear();

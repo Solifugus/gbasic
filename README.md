@@ -261,6 +261,33 @@ print("\u{1F600}")             # 😀   (\u{...} codepoint escape)
 characters pass through unchanged (`upper("café")` is `"CAFÉ"`). Full Unicode case
 folding, normalization, and grapheme clusters are future work.
 
+## Actors (Multiprocessing)
+
+Concurrent work runs as **actors**: isolated processes that share no memory and
+communicate only by copying messages. `spawn worker(args…)` starts a function as a
+new actor and returns a handle; `send(handle, value)` posts a message, `receive()`
+blocks for the next one, and `self()` is an actor's own handle. An actor runs
+until its body returns.
+
+```basic
+function squarer(parent, n)
+    send(parent, n * n)
+end function
+
+program main(args)
+    me = self()
+    a = spawn squarer(me, 3)
+    b = spawn squarer(me, 4)
+    print(receive() + receive())   # 25
+end program
+```
+
+Each actor is a fresh interpreter (fork+exec), so a crash is isolated to that
+actor and no live database/GUI connection is shared. Messages are snapshots:
+mutating a received value cannot fire the sender's watchers. Runtime handle
+passing to a third actor, selective receive, and receive timeouts are planned
+(`docs/multiprocessing_design.md`).
+
 ## Files And Paths
 
 File and directory values use assignment modifiers:

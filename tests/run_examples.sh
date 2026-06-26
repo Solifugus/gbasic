@@ -94,6 +94,9 @@ examples=(
     serialization_test.bas
     serialize_roundtrip_test.bas
     actor_loopback_test.bas
+    spawn_echo_test.bas
+    spawn_fanout_test.bas
+    spawn_loop_test.bas
     quote_test.bas
     string_modifier_pipeline_test.bas
     string_helpers_test.bas

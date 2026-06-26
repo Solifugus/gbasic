@@ -1227,10 +1227,57 @@ Live database connections cannot be serialized (a structured error is raised), a
 corrupt or truncated input to `deserialize` raises a structured error rather than
 returning a partial value. A record's PBI policies are not preserved — a
 deserialized snapshot is plain `copy` — which is the same degradation a value
-undergoes when sent across a future actor boundary
-(`docs/multiprocessing_design.md`). `serialize` is useful today for deep-copying
-and persisting values; it is the foundation the actor message transport will build
-on.
+undergoes when sent across an actor boundary (see Actors, below). `serialize` is
+useful for deep-copying and persisting values, and is the foundation the actor
+message transport is built on.
+
+### Actors (Multiprocessing)
+
+gBASIC runs concurrent work as **actors**: isolated processes that share no
+memory and communicate only by copying messages. Five primitives carry the model
+(`docs/multiprocessing_design.md`):
+
+- `spawn worker(args…)` — start a new actor running the named function `worker`
+  and return a **handle** to it. `worker` must be a `function` declared in the
+  program, and the program must be loaded from a file (the child re-execs it). The
+  arguments are copied to the child as its first message; a handle among them —
+  including `self()` — is passed through so the child can message that actor.
+- `send(handle, value)` — copy `value` into the target actor's mailbox as one
+  message. Non-blocking: if the mailbox is full or the value is too large for one
+  frame, a structured `actor` error is raised rather than blocking. Per-sender
+  ordering is FIFO.
+- `receive()` — block until a message is in this actor's mailbox; remove and
+  return it. Pairs naturally with `consider` for dispatch.
+- `self()` — this actor's own handle, so it can be handed to others.
+
+An actor runs until its body returns. A worker that handles many messages loops
+and leaves on a sentinel:
+
+```basic
+function worker(name, parent)
+    while true
+    consider receive()
+    if "ping" then
+        send(parent, "pong from " + name)
+    if "stop" then
+        return
+    end consider
+    end while
+end function
+
+program main(args)
+    me = self()
+    a = spawn worker("a", me)
+    send(a, "ping")
+    print(receive())          # "pong from a"
+    send(a, "stop")
+end program
+```
+
+Anything `serialize` accepts can be sent; live database connections and GUI
+widgets cannot cross a boundary. Messages are snapshots — mutating a received
+value cannot fire the sender's watchers, and a record's `link` fields arrive as
+independent copies ("watcher boundaries are concurrency boundaries").
 
 **Arithmetic behavior:**
 - `+` performs string concatenation when either operand is a string

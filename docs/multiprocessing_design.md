@@ -1,6 +1,7 @@
 # Multiprocessing (Actors) — Design
 
-Status: **accepted — ready for implementation** (revised 2026-06-24). The **last**
+Status: **Phases 0-1 implemented (2026-06-25); Phases 2-3 future** (design revised
+2026-06-24). The **last**
 of the three pre-freeze language threads; PBI and Unicode (its two prerequisites)
 are complete. This revision closes the open architectural questions from the
 proposal draft so the phased plan in §8 can be executed without re-litigating the
@@ -37,7 +38,10 @@ runtime model.
    report ready-or-failure, so `spawn` blocks until the actor is live and returns a
    clean error instead of a half-born actor.
 
-Nothing here is implemented yet.
+Phases 0 and 1 (serialization core; `spawn`/`send`/`receive`/`self` over
+fork+exec processes with spawn-time fd inheritance) are implemented and tested
+(§8). Phases 2-3 (runtime handle passing via `SCM_RIGHTS`, selective receive,
+timeouts, and the fault model) remain future work.
 
 ## 1. What is already decided (carried in from PBI / Unicode)
 
@@ -392,14 +396,35 @@ Each phase merges green before the next; the first is an invisible foundation.
   In-process only; no concurrency. Already useful as deep-clone/persistence. Tests:
   `examples/serialize_roundtrip_test` + 3 negatives. Suite 106/168/sqlite/webserver/
   site green, Valgrind-clean incl. the partial-free error path.
-- **Phase 1 — spawn/send/receive over fork+exec processes.** The `channel`
-  abstraction (§4.1) with the primary transport; fork + exec a fresh interpreter
-  at a named entry (§3); one bounded mailbox; blocking `receive`; `self`; the
-  `VALUE_ACTOR` handle; frames carrying Phase-0 bytes. **Handles passed at spawn
-  time are wired by fd inheritance**, so an actor can talk to its parent and to
-  any actor whose handle it received as an argument — this is what makes the §2
-  example run (no `SCM_RIGHTS` yet). Tests: an echo worker; a fan-out that sums
-  replies.
+- **Phase 1 — spawn/send/receive over fork+exec processes. DONE (2026-06-25).**
+  Built in three green sub-steps:
+  - **1a (`01241df`)** — the `channel` mailbox transport (`src/actor.c` /
+    `include/actor.h`): an `AF_UNIX` `SOCK_SEQPACKET` socket pair with a
+    non-blocking, bounded write end (`ACTOR_CHANNEL_FULL`), a per-frame maximum
+    (`ACTOR_CHANNEL_TOOBIG`, from `SO_SNDBUF` with a 64 KiB floor), and clean EOF.
+  - **1b (`4afe0ad`)** — `self`/`send`/`receive` over a real mailbox in-process:
+    the `VALUE_ACTOR` handle backed by a refcounted `ActorHandle {write_fd,id}`,
+    `send` serializing (Phase 0) and delivering one frame, `receive` blocking and
+    deserializing. A message that embeds a handle is rejected (handles are a live
+    capability, not data).
+  - **1c** — `spawn worker(args)`: a `spawn` prefix keyword (lexer/parser/AST),
+    a `gbasic --actor ENTRY PROGRAM --actor-inbox/-self/-control FD` child mode,
+    and the fork+exec machinery in `eval_spawn`. The parent validates the entry,
+    serializes the arguments, enqueues them as the child's **reserved first
+    frame**, fork+execs a fresh interpreter, and blocks on a **control pipe**
+    until the child reports ready (so `spawn` never returns a half-born actor).
+    **Handles in the spawn arguments are wired by fd inheritance** — the parent's
+    own `self()` and any other actor's handle are realized by inheriting their
+    mailbox write fds across exec (a `SER_ACTOR` frame tag carries the fd; only a
+    spawn frame may contain one). Between fork and exec the child joins a
+    dedicated process group and closes every fd except its mailbox/control/handle
+    fds, so no libpq/SQLite/GTK descriptor leaks into the fresh interpreter (§3).
+    The root reaps and signals that group on exit (§7). Tests:
+    `spawn_echo_test` (request/reply), `spawn_fanout_test` (commutative sum over
+    three children), `spawn_loop_test` (the §2 consider/receive worker), plus
+    negatives for an unknown entry and an arity mismatch. A spawned actor holds a
+    write end to its own inbox so `self()` resolves, and therefore ends by
+    returning (or on a "stop" message), not by mailbox EOF.
 - **Phase 2 — topologies & ergonomics.** Runtime handle passing via `SCM_RIGHTS`
   (giving a *third* actor's handle to an already-running actor), `consider`-style
   selective receive, a duration-typed `receive` timeout, orphan/process-group

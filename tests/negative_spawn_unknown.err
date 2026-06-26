@@ -1,0 +1,1 @@
+runtime error at tests/negative_spawn_unknown.bas:2:5: spawn: no function named nope

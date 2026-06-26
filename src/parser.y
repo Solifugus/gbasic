@@ -496,7 +496,7 @@ typedef struct {
 
 %token <number> NUMBER
 %token <text> IDENT STRING MOD_CONTENT LENS_CONTENT QUALIFIED_IDENT
-%token IF CONSIDER_IF THEN ELSE CONSIDER_ELSE END END_CONSIDER PRINT TRUE FALSE NOTHING UNKNOWN_VALUE AND OR NOT WITH NEW FOR TO IN EACH WHILE CONSIDER BREAK CONTINUE FUNCTION RETURN GOTO GOSUB WATCH WITHOUT WATCHERS ON RESUME NEXT STOP ERROR_VALUE MODIFIER PROGRAM LIBRARY LOAD USE EXPORT
+%token IF CONSIDER_IF THEN ELSE CONSIDER_ELSE END END_CONSIDER PRINT TRUE FALSE NOTHING UNKNOWN_VALUE AND OR NOT WITH NEW SPAWN FOR TO IN EACH WHILE CONSIDER BREAK CONTINUE FUNCTION RETURN GOTO GOSUB WATCH WITHOUT WATCHERS ON RESUME NEXT STOP ERROR_VALUE MODIFIER PROGRAM LIBRARY LOAD USE EXPORT
 %token OP_EQ OP_NE OP_GT OP_LT OP_GE OP_LE OP_NGT OP_NLT OP_NGE OP_NLE
 %token PLUS MINUS STAR SLASH LPAREN MOD_LPAREN RPAREN LBRACKET RBRACKET LBRACE RBRACE COMMA COLON NEWLINE
 %precedence IF_WITHOUT_ELSE
@@ -928,6 +928,7 @@ unary_expression
     | MINUS unary_expression { $$ = expr_at(ast_unary(copy_const("-"), $2), @1.first_line, @1.first_column); }
     | NEW postfix_expression { $$ = expr_at(ast_new($2, NULL), @1.first_line, @1.first_column); }
     | NEW postfix_expression WITH record_literal { $$ = expr_at(ast_new($2, $4), @1.first_line, @1.first_column); }
+    | SPAWN IDENT LPAREN argument_list_opt RPAREN { $$ = expr_at(ast_spawn($2, $4), @1.first_line, @1.first_column); }
     ;
 
 postfix_expression
@@ -1180,6 +1181,7 @@ static int yylex(void) {
     case TOKEN_NOT: return NOT;
     case TOKEN_WITH: return WITH;
     case TOKEN_NEW: return NEW;
+    case TOKEN_SPAWN: return SPAWN;
     case TOKEN_FOR: return FOR;
     case TOKEN_TO: return TO;
     case TOKEN_IN: return IN;

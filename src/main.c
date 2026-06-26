@@ -545,6 +545,13 @@ static void analyze_expr(AddUsesContext *ctx, AstExpr *expr) {
         analyze_expr(ctx, expr->as.derive.proto);
         analyze_expr(ctx, expr->as.derive.with);
         break;
+    case AST_EXPR_SPAWN:
+        /* The entry is always a local function; only its arguments can reference
+         * library-provided helpers, so analyze those (not the entry name). */
+        for (size_t i = 0; i < expr->as.call.args.count; i++) {
+            analyze_expr(ctx, expr->as.call.args.items[i]);
+        }
+        break;
     case AST_EXPR_NUMBER:
     case AST_EXPR_STRING:
     case AST_EXPR_IDENT:
@@ -717,11 +724,57 @@ static int add_loads_mode(const char *path,
     return 0;
 }
 
+/* Run as a spawned actor: gbasic --actor ENTRY PROGRAM
+ *   --actor-inbox FD --actor-self FD --actor-control FD
+ * (set up by the parent's spawn, docs/multiprocessing_design.md §3). */
+static int run_actor_mode(int argc, char **argv) {
+    const char *entry = argv[2];
+    const char *prog_path = argv[3];
+    int inbox_fd = -1;
+    int self_fd = -1;
+    int control_fd = -1;
+
+    for (int i = 4; i + 1 < argc; i += 2) {
+        if (strcmp(argv[i], "--actor-inbox") == 0) {
+            inbox_fd = atoi(argv[i + 1]);
+        } else if (strcmp(argv[i], "--actor-self") == 0) {
+            self_fd = atoi(argv[i + 1]);
+        } else if (strcmp(argv[i], "--actor-control") == 0) {
+            control_fd = atoi(argv[i + 1]);
+        }
+    }
+    if (inbox_fd < 0 || self_fd < 0 || control_fd < 0) {
+        fprintf(stderr, "actor: missing mailbox descriptors\n");
+        return 2;
+    }
+
+    char *source = read_file(prog_path);
+    if (!source) {
+        return 1;
+    }
+    AstStmtList program = ast_stmt_list_empty();
+    parse_set_source_path(prog_path);
+    if (parse_source(source, &program) != 0) {
+        free(source);
+        return 1;
+    }
+    free(source);
+
+    eval_set_source_path(prog_path);
+    int status = eval_run_actor(program, entry, inbox_fd, self_fd, control_fd);
+    ast_free_program(program);
+    return status;
+}
+
 int main(int argc, char **argv) {
     int ast_only = 0;
     int tokens_only = 0;
     const char *add_loads_keyword = NULL;
     const char *path = NULL;
+
+    if (argc >= 4 && strcmp(argv[1], "--actor") == 0) {
+        return run_actor_mode(argc, argv);
+    }
 
     if (argc == 2 && strcmp(argv[1], "--help") == 0) {
         print_help(argv[0]);
