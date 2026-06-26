@@ -18,6 +18,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/prctl.h>
 #include <sys/socket.h>
 #include <sys/file.h>
 #include <sys/stat.h>
@@ -7555,6 +7556,19 @@ static Value eval_spawn(AstExpr *expr) {
 int eval_run_actor(AstStmtList program, const char *entry,
                    int inbox_fd, int self_fd, int control_fd) {
     active_root = program;
+
+    /* Tie this actor's lifetime to its parent's: if the parent dies for any
+     * reason -- normal exit, crash, or kill -- the kernel sends this process
+     * SIGTERM (docs/multiprocessing_design.md §7). This cascades down a multi-level
+     * actor tree and, unlike the parent's own cleanup pass, survives the parent
+     * being killed by an uncatchable signal. The window between fork and this call
+     * is covered by re-checking the parent below. */
+    prctl(PR_SET_PDEATHSIG, SIGTERM);
+    if (getppid() == 1) {
+        /* The spawning parent already exited before PDEATHSIG was armed; the
+         * signal would never come, so leave now rather than orphan-loop. */
+        return 0;
+    }
 
     /* Register top-level functions, modifiers, and imports so the entry and its
      * helpers resolve (the normal top-level walk does not run for an actor). */

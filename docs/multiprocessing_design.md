@@ -1,8 +1,7 @@
 # Multiprocessing (Actors) — Design
 
-Status: **Phases 0-1 implemented (2026-06-25); Phase 2 nearly complete (runtime
-handle passing, selective receive, receive timeout done; only process-group
-cleanup hardening remains)** (design revised 2026-06-24). The **last**
+Status: **Phases 0-2 implemented (2026-06-25); only Phase 3 (fault model /
+supervision) remains** (design revised 2026-06-24). The **last**
 of the three pre-freeze language threads; PBI and Unicode (its two prerequisites)
 are complete. This revision closes the open architectural questions from the
 proposal draft so the phased plan in §8 can be executed without re-litigating the
@@ -39,12 +38,11 @@ runtime model.
    report ready-or-failure, so `spawn` blocks until the actor is live and returns a
    clean error instead of a half-born actor.
 
-Phases 0 and 1 (serialization core; `spawn`/`send`/`receive`/`self` over
-fork+exec processes with spawn-time fd inheritance) are implemented and tested
-(§8), as is the first piece of Phase 2: runtime handle passing via `SCM_RIGHTS`
-(a handle may be sent inside a message to a running actor). The rest of Phase 2
-(selective receive, receive timeouts, process-group hardening) and Phase 3 (the
-fault model) remain future work.
+Phases 0-2 are implemented and tested (§8): the serialization core;
+`spawn`/`send`/`receive`/`self` over fork+exec processes with spawn-time fd
+inheritance; runtime handle passing via `SCM_RIGHTS`; selective receive; a
+duration-typed receive timeout; and `PR_SET_PDEATHSIG` orphan-cleanup hardening.
+Only Phase 3 (the fault model / supervision) remains future work.
 
 ## 1. What is already decided (carried in from PBI / Unicode)
 
@@ -374,12 +372,20 @@ The minimum honest story for v1, richer parts flagged as future:
 - **Supervision / linking** (Erlang-style death notification, restart strategies)
   is **future work**. It depends only on handles being sendable (§4.1), which v1
   provides, so it can be added without rework.
-- **Orphans:** the **root interpreter places every actor it spawns into a
-  dedicated process group** that it owns (via `setpgid` on each child), and on
-  exit terminates *that* group. It must **not** signal its own inherited process
-  group, which may contain a parent shell pipeline or supervisor it did not spawn.
-  Child PIDs are also tracked explicitly as a backstop. Define and test this so a
-  dying `main` never leaks live children and never kills unrelated siblings.
+- **Orphans (implemented):** two mechanisms, together robust to a tree of any
+  depth and to abnormal death.
+  - *Parent-death signal (primary).* Each spawned actor arms
+    `PR_SET_PDEATHSIG(SIGTERM)` at startup, so the kernel terminates it when its
+    parent dies for **any** reason — normal exit, crash, or `kill -9`. This
+    cascades down a multi-level tree without the parent needing to run any code,
+    which is what a process-group sweep alone cannot guarantee (a signal-killed
+    root never runs its cleanup, and a grandchild lives in a different group). A
+    `getppid()` re-check right after arming closes the fork→exec→arm race.
+  - *Process group + reaping (backstop).* The spawning interpreter still places
+    its direct children in a **dedicated** group it owns (never its inherited
+    group, which may hold a parent shell pipeline) and, on normal exit,
+    `SIGTERM`s that group and `waitpid`s the children so they are reaped rather
+    than left as zombies.
 
 ## 8. Phased plan (PBI / Unicode discipline)
 
@@ -462,7 +468,21 @@ Each phase merges green before the next; the first is an invisible foundation.
     queued message returns immediately regardless of the deadline. Tests:
     `spawn_receive_timeout_test` (queued → immediate, empty → times out: both
     outcomes are deterministic, independent of timing margins).
-  - **Still to do:** orphan/process-group cleanup hardening.
+  - **Orphan-cleanup hardening — DONE (2026-06-25).** Phase 1c reaped direct
+    children via a dedicated process group on normal exit, but that missed two
+    cases: a *grandchild* (a spawned actor's own child) sits in a different group,
+    and a root killed by an uncatchable signal never runs its cleanup pass at all.
+    Both are now closed with `PR_SET_PDEATHSIG`: each spawned actor asks the kernel
+    to send it `SIGTERM` when its parent dies, for *any* reason. This cascades down
+    a multi-level tree (root dies → children get SIGTERM → grandchildren get
+    SIGTERM …) and does not depend on the parent getting to run code, so a
+    `kill -9` of the root tears the whole tree down. The fork→exec→arm window is
+    covered by re-checking `getppid()` right after arming. The process group +
+    `waitpid` remain as the direct-child reaping backstop. Verified manually
+    (normal exit and `SIGKILL` both leave no survivors across a three-level tree;
+    process-lifecycle behavior does not fit a stdout golden test, but every
+    `spawn_*` example exercises normal-exit cleanup on each run).
+  - **Phase 2 is complete.**
 - **Phase 3 — fault model.** Defined crash behavior, the §6 `link` strict
   diagnostic (if adopted), and the decision record for supervision once
   first-class functions eventually land.
