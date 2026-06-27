@@ -74,7 +74,8 @@ typedef enum {
     VALUE_DIR,
     VALUE_POSTGRES_CONNECTION,
     VALUE_SQLITE_CONNECTION,
-    VALUE_ACTOR
+    VALUE_ACTOR,
+    VALUE_FUNCTION
 } ValueKind;
 
 typedef enum {
@@ -138,6 +139,14 @@ struct Value {
         PgConnectionValue *postgres_connection;
         SqliteConnectionValue *sqlite_connection;
         ActorHandle *actor;
+        /* A first-class function value: a reference to a registered function by
+         * name (NOT a capturing closure — see docs/first_class_functions_design.md
+         * §2). `library` is the owning library for an imported function, or NULL
+         * for a local/unqualified one. Both strings are owned copies. */
+        struct {
+            char *name;
+            char *library;
+        } function;
     } as;
 };
 
@@ -305,6 +314,7 @@ static unsigned long webserver_next_id = 1;
 static Value webserver_eval_call(AstExpr *expr);
 static int webserver_run_event_loop(void);
 static void webserver_clear(void);
+static FunctionDef *function_resolve(const char *library, const char *name);
 
 #if HAVE_GTK
 typedef struct GuiNativeWindow GuiNativeWindow;
@@ -378,6 +388,8 @@ static const char *value_kind_name(ValueKind kind) {
         return "sqlite_connection";
     case VALUE_ACTOR:
         return "actor";
+    case VALUE_FUNCTION:
+        return "function";
     }
     return "value";
 }
@@ -663,6 +675,30 @@ static Value value_record(RecordField *fields, size_t count) {
     return value;
 }
 
+/* Build a first-class function value referencing a registered function by name
+ * (docs/first_class_functions_design.md §3). `library` may be NULL. */
+static Value value_function(const char *name, const char *library) {
+    Value value = {0};
+    value.kind = VALUE_FUNCTION;
+    value.as.function.name = copy_string(name);
+    value.as.function.library = library ? copy_string(library) : NULL;
+    return value;
+}
+
+/* Two function values are equal iff they reference the same registered function
+ * (same name and same owning library). */
+static int function_value_equal(const Value *left, const Value *right) {
+    if (strcmp(left->as.function.name, right->as.function.name) != 0) {
+        return 0;
+    }
+    const char *ll = left->as.function.library;
+    const char *rl = right->as.function.library;
+    if (ll == NULL && rl == NULL) {
+        return 1;
+    }
+    return ll && rl && strcmp(ll, rl) == 0;
+}
+
 /*
  * Reference-counted storage cell for a record field's value (PBI Phase 0).
  *
@@ -917,6 +953,9 @@ static Value value_copy(Value value) {
         value.as.actor->ref_count++;
         return value;
     }
+    if (value.kind == VALUE_FUNCTION) {
+        return value_function(value.as.function.name, value.as.function.library);
+    }
     if (value.kind == VALUE_ARRAY) {
         Value *items = NULL;
         if (value.as.array.count > 0) {
@@ -1006,6 +1045,9 @@ static void value_free(Value value) {
             }
             free(handle);
         }
+    } else if (value.kind == VALUE_FUNCTION) {
+        free(value.as.function.name);
+        free(value.as.function.library);
     }
 }
 
@@ -1078,6 +1120,8 @@ static int value_truthy(Value value) {
                             "sqlite");
         return 0;
     case VALUE_ACTOR:
+        return 1;
+    case VALUE_FUNCTION:
         return 1;
     case VALUE_NULL:
         return 0;
@@ -1225,6 +1269,9 @@ static void value_print(Value value) {
     case VALUE_ACTOR:
         printf("<actor>\n");
         break;
+    case VALUE_FUNCTION:
+        printf("<function %s>\n", value.as.function.name);
+        break;
     }
 }
 
@@ -1271,6 +1318,13 @@ static Value env_get(const char *name) {
     }
     Symbol *symbol = env_find(name);
     if (!symbol) {
+        /* A bare function name (no parentheses) evaluates to a function value —
+         * a reference to the registered function (first_class_functions_design
+         * §3). Variables shadow this: a variable of the same name is found above. */
+        FunctionDef *function = function_resolve(NULL, name);
+        if (function) {
+            return value_function(function->name, function->library);
+        }
         char message[256];
         snprintf(message, sizeof(message), "undefined variable: %s", name);
         runtime_error_raise(message, 1001, "undefined variable");
@@ -1545,6 +1599,8 @@ static int value_storage_equal(const Value *left, const Value *right) {
         return left->as.sqlite_connection == right->as.sqlite_connection;
     case VALUE_ACTOR:
         return left->as.actor->id == right->as.actor->id;
+    case VALUE_FUNCTION:
+        return function_value_equal(left, right);
     }
     return 0;
 }
@@ -5942,6 +5998,8 @@ static const char *builtin_type_name(Value value) {
         return "sqlite_connection";
     case VALUE_ACTOR:
         return "actor";
+    case VALUE_FUNCTION:
+        return "function";
     }
     return "value";
 }
@@ -6221,6 +6279,10 @@ static Value builtin_string_value(Value value) {
     case VALUE_ACTOR:
         value_free(value);
         return value_string("<actor>");
+    case VALUE_FUNCTION:
+        snprintf(buffer, sizeof(buffer), "<function %s>", value.as.function.name);
+        value_free(value);
+        return value_string(buffer);
     }
 
     if (!used_builder) {
@@ -6290,6 +6352,7 @@ static int encode_value_to_builder(StringBuilder *builder, Value value) {
     case VALUE_POSTGRES_CONNECTION:
     case VALUE_SQLITE_CONNECTION:
     case VALUE_ACTOR:
+    case VALUE_FUNCTION:
         runtime_error_raise("encode supports numbers, strings, booleans, nothing, unknown, arrays, and records",
                             1003,
                             "serialization");
@@ -6591,6 +6654,12 @@ static int serialize_value(SerBuf *b, Value v, int depth) {
             return 1;
         }
         runtime_error_raise("serialize: actor handles cannot be serialized",
+                            1003, "actor");
+        return 0;
+    case VALUE_FUNCTION:
+        /* Function values are not yet serializable; cross-actor function passing
+         * is a later phase (docs/first_class_functions_design.md §10, Phase 4). */
+        runtime_error_raise("serialize: functions cannot be serialized",
                             1003, "actor");
         return 0;
     }
@@ -13757,6 +13826,24 @@ static Value eval_call(AstExpr *expr) {
         return eval_user_function(expr, function);
     }
 
+    /* A variable bound to a function value, called like `f(args)`. Functions and
+     * builtins above take precedence; this is the fallback once nothing else
+     * matched the name (first_class_functions_design.md §3). */
+    Symbol *fn_symbol = env_find(expr->as.call.name);
+    if (fn_symbol && fn_symbol->value.kind == VALUE_FUNCTION) {
+        FunctionDef *target = function_resolve(fn_symbol->value.as.function.library,
+                                               fn_symbol->value.as.function.name);
+        if (!target) {
+            char message[256];
+            snprintf(message, sizeof(message),
+                     "function value references unknown function: %s",
+                     fn_symbol->value.as.function.name);
+            runtime_error_raise(message, 1003, "invalid function call");
+            return value_null();
+        }
+        return eval_user_function(expr, target);
+    }
+
     char message[256];
     snprintf(message, sizeof(message), "invalid function call: %s", expr->as.call.name);
     runtime_error_raise(message, 1003, "invalid function call");
@@ -14103,6 +14190,30 @@ static Value eval_comparison(AstExpr *expr, Value left, Value right) {
         value_free(left);
         value_free(right);
         return value_null();
+    } else if (left.kind == VALUE_FUNCTION && right.kind == VALUE_FUNCTION) {
+        int equal = function_value_equal(&left, &right);
+        if (strcmp(op, "=") == 0) {
+            result = equal;
+        } else if (strcmp(op, "!=") == 0) {
+            result = !equal;
+        } else {
+            runtime_error_raise("functions support only = and !=", 1003, "comparison");
+            value_free(left);
+            value_free(right);
+            return value_null();
+        }
+    } else if (left.kind == VALUE_FUNCTION || right.kind == VALUE_FUNCTION) {
+        /* A function compared against a non-function: equal only under !=. */
+        if (strcmp(op, "=") == 0) {
+            result = 0;
+        } else if (strcmp(op, "!=") == 0) {
+            result = 1;
+        } else {
+            runtime_error_raise("functions support only = and !=", 1003, "comparison");
+            value_free(left);
+            value_free(right);
+            return value_null();
+        }
     } else if (left.kind == VALUE_NULL || right.kind == VALUE_NULL ||
                left.kind == VALUE_UNKNOWN || right.kind == VALUE_UNKNOWN) {
         int equal = left.kind == right.kind &&

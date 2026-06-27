@@ -103,6 +103,7 @@ examples=(
     spawn_monitor_test.bas
     supervisor_test.bas
     send_link_lenient_test.bas
+    first_class_function_test.bas
     quote_test.bas
     string_modifier_pipeline_test.bas
     string_helpers_test.bas

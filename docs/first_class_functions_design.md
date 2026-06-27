@@ -1,10 +1,11 @@
 # First-Class Functions & Methods — Design
 
-Status: **proposal / draft (2026-06-26); not implemented.** This is consciously a
-**fourth pre-freeze language thread**, after PBI, Unicode, and Multiprocessing (all
-complete) — it adds surface, so it moves the freeze deliberately rather than by
-accident. The goal is to let *behavior* travel with data, i.e. real methods on
-objects, built on the smallest enabling primitive: function values.
+Status: **in progress (2026-06-26). Phase 0 (function values) shipped; Phases 1–4
+pending** (see §11). This is consciously a **fourth pre-freeze language thread**, after
+PBI, Unicode, and Multiprocessing (all complete) — it adds surface, so it moves the
+freeze deliberately rather than by accident. The goal is to let *behavior* travel with
+data, i.e. real methods on objects, built on the smallest enabling primitive: function
+values.
 
 This document pins the decisions reached in design discussion so the phased plan in
 §11 can be executed without re-litigating semantics, in the same discipline as
@@ -183,11 +184,19 @@ remain non-serializable).
 
 ## 11. Phased plan (each phase green before the next)
 
-- **Phase 0 — function values (invisible-ish foundation).** Add the `VALUE_FUNCTION`
-  kind (a registered-name reference), bare-name-evaluates-to-value, calling a function
-  value, `type()`/equality/`print` representation. One process, no methods. Round-trip
-  through variables/arrays/records as plain data. Behaviorally useful immediately
-  (pass functions around).
+- **Phase 0 — function values (invisible-ish foundation). DONE (2026-06-26).** Added the
+  `VALUE_FUNCTION` kind (an owned `{name, library}` registered-name reference, never a
+  closure), bare-name-evaluates-to-a-value (`env_get` falls back to `function_resolve`
+  when no variable shadows the name; variables win), calling a function value held in a
+  variable (`f(args)`, resolved in `eval_call`'s tail after user functions and builtins),
+  `type()` → `"function"`, same-reference equality (`=`/`!=` only; ordering and other ops
+  raise; non-function compares unequal), `print`/`string()` show `<function NAME>`, and
+  `quote`/`encode`/`serialize` reject (functions are not yet scalar-encodable or
+  actor-sendable — Phase 4). Round-trips through variables, arrays, and record fields as
+  plain data. Tests: `examples/first_class_function_test.bas`,
+  `tests/negative_function_compare_order.bas`. Valgrind-clean. This settles open questions
+  §12.3 (type `"function"`, same-reference equality; `is_function` not added) and §12.4
+  (`<function NAME>` representation; `quote` rejects).
 - **Phase 1 — methods + `this`.** The §5 disambiguation in the qualified-call path,
   `this` bound at the call site through a record field, the bare-call-has-no-`this`
   error, `this.field` assignment honoring PBI policy. Dispatch demonstrated by two

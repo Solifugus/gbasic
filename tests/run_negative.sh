@@ -82,6 +82,7 @@ cases=(
     negative_webserver_redirect_status
     negative_find_type
     negative_function_assignment
+    negative_function_compare_order
     negative_len_assignment
     negative_foo_assignment
     negative_getname_assignment
