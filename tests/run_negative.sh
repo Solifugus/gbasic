@@ -83,6 +83,8 @@ cases=(
     negative_find_type
     negative_function_assignment
     negative_function_compare_order
+    negative_this_outside_method
+    negative_this_read_only
     negative_len_assignment
     negative_foo_assignment
     negative_getname_assignment

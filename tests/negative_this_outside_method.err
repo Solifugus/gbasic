@@ -1,0 +1,1 @@
+runtime error at tests/negative_this_outside_method.bas:2:5: this is only bound inside a method call

@@ -1,7 +1,7 @@
 # First-Class Functions & Methods — Design
 
-Status: **in progress (2026-06-26). Phase 0 (function values) shipped; Phases 1–4
-pending** (see §11). This is consciously a **fourth pre-freeze language thread**, after
+Status: **in progress (2026-06-26). Phases 0–1 (function values, methods + `this`)
+shipped; Phases 2–4 pending** (see §11). This is consciously a **fourth pre-freeze language thread**, after
 PBI, Unicode, and Multiprocessing (all complete) — it adds surface, so it moves the
 freeze deliberately rather than by accident. The goal is to let *behavior* travel with
 data, i.e. real methods on objects, built on the smallest enabling primitive: function
@@ -197,10 +197,23 @@ remain non-serializable).
   `tests/negative_function_compare_order.bas`. Valgrind-clean. This settles open questions
   §12.3 (type `"function"`, same-reference equality; `is_function` not added) and §12.4
   (`<function NAME>` representation; `quote` rejects).
-- **Phase 1 — methods + `this`.** The §5 disambiguation in the qualified-call path,
-  `this` bound at the call site through a record field, the bare-call-has-no-`this`
-  error, `this.field` assignment honoring PBI policy. Dispatch demonstrated by two
-  records sharing a field name with different function values.
+- **Phase 1 — methods + `this`. DONE (2026-06-26).** The §5 disambiguation lives at the
+  top of `eval_call`'s qualified-call branch (before the hardcoded library checks, so a
+  record variable wins): if `X` is a variable bound to a record whose field `y` holds a
+  function value, it is a method call. The receiver is bound to `this` for the body only,
+  via a `current_this` pointer saved/restored around every `invoke_function` exactly like
+  `current_env` — so a plain call nested inside a method does NOT inherit the method's
+  receiver (referencing `this` there raises "this is only bound inside a method call").
+  `current_this` points at the receiver's *live* storage (`&symbol->value`, stable for the
+  call under gBASIC's frame discipline — function bodies only mutate their own frame), so
+  `this.field = …` goes through the ordinary `resolve_lvalue_ref` path and PBI field
+  policies apply automatically (verified: a `link` field writes through every alias, a
+  `copy` field stays private). `this` is read-only (`this = …` raises "this is read-only").
+  Dispatch demonstrated by two records sharing a field name with different function values.
+  Tests: `examples/method_test.bas`, `tests/negative_this_outside_method.bas`,
+  `tests/negative_this_read_only.bas`. Valgrind-clean. NOTE: the receiver `X` must be a
+  simple variable name (the grammar splits `X.y` on the first dot); a chained receiver like
+  `a.b.method()` is not a method call in v1 — attach to a local first.
 - **Phase 2 — attach sugar.** The dotted `function obj.method()` statement (desugar to
   internal registered function + field store), accepted in statement position;
   confirm forms 1–2 (literal reference, post-hoc assignment) work from Phase 0.

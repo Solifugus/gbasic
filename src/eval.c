@@ -276,6 +276,12 @@ static size_t watcher_queue_count = 0;
 static int watcher_drain_origin_line = 0;
 static int watcher_drain_origin_column = 0;
 static int function_depth = 0;
+/* The receiver (`this`) of the currently executing function, or NULL when the
+ * current function is a plain (non-method) call. Saved/restored around every
+ * invoke_function exactly like current_env, so a plain call nested inside a
+ * method does NOT inherit the method's receiver (first_class_functions_design
+ * §4). Points at live record storage so `this.field = …` writes through. */
+static Value *current_this = NULL;
 static int loop_depth = 0;
 static int consider_depth = 0;
 static int watcher_suppressed = 0;
@@ -1315,6 +1321,16 @@ static void env_set(const char *name, Value value) {
 static Value env_get(const char *name) {
     if (strcmp(name, "error") == 0) {
         return value_bool(current_error.active);
+    }
+    if (strcmp(name, "this") == 0) {
+        /* The receiver, bound at the call site (first_class_functions_design §4).
+         * Outside a method call there is no receiver. */
+        if (!current_this) {
+            runtime_error_raise("this is only bound inside a method call",
+                                1003, "this");
+            return value_null();
+        }
+        return value_copy(*current_this);
     }
     Symbol *symbol = env_find(name);
     if (!symbol) {
@@ -5012,11 +5028,16 @@ static Value eval_dir_call(AstExpr *expr) {
  * `args` (count must equal the parameter count). Takes ownership of the `args`
  * array and the values in it, freeing the array. Shared by ordinary calls
  * (eval_user_function) and the spawned-actor entry path (eval_run_actor). */
-static Value invoke_function(AstStmt *stmt, Value *args, size_t argc) {
+static Value invoke_function(AstStmt *stmt, Value *args, size_t argc, Value *receiver) {
     Env local_env = {0};
     local_env.parent = &global_env;
     Env *previous_env = current_env;
     current_env = &local_env;
+
+    /* Bind `this` for this frame only. A method call passes a live receiver; a
+     * plain call passes NULL, which also hides any outer method's `this`. */
+    Value *previous_this = current_this;
+    current_this = receiver;
 
     for (size_t i = 0; i < argc; i++) {
         env_set(stmt->as.function.params.items[i], args[i]);
@@ -5082,6 +5103,7 @@ static Value invoke_function(AstStmt *stmt, Value *args, size_t argc) {
     free(gosub_stack);
     function_depth--;
     current_env = previous_env;
+    current_this = previous_this;
     env_clear(&local_env);
     if (result.did_return) {
         return result.value;
@@ -5095,7 +5117,11 @@ static Value invoke_function(AstStmt *stmt, Value *args, size_t argc) {
     return value_null();
 }
 
-static Value eval_user_function(AstExpr *expr, FunctionDef *function) {
+/* Evaluate a user-function call. `receiver` is NULL for a plain call and a live
+ * record pointer for a method call (binds `this` inside the body). */
+static Value eval_user_function_with_receiver(AstExpr *expr,
+                                              FunctionDef *function,
+                                              Value *receiver) {
     AstStmt *stmt = function->stmt;
     if (expr->as.call.args.count != stmt->as.function.params.count) {
         fprintf(stderr, "%s expects %zu arguments\n",
@@ -5115,7 +5141,11 @@ static Value eval_user_function(AstExpr *expr, FunctionDef *function) {
         args[i] = eval_expr(expr->as.call.args.items[i]);
     }
 
-    return invoke_function(stmt, args, expr->as.call.args.count);
+    return invoke_function(stmt, args, expr->as.call.args.count, receiver);
+}
+
+static Value eval_user_function(AstExpr *expr, FunctionDef *function) {
+    return eval_user_function_with_receiver(expr, function, NULL);
 }
 
 static void call_label(AstExpr *expr, char *buffer, size_t size) {
@@ -7996,7 +8026,7 @@ int eval_run_actor(AstStmtList program, const char *entry,
     }
     free(arg_value.as.array.items);
 
-    Value result = invoke_function(fn, args, argc);
+    Value result = invoke_function(fn, args, argc, NULL);
     int exit_status = runtime_stopped ? 1 : 0;
     value_free(result);
 
@@ -11645,6 +11675,31 @@ static Value pg_eval_call(AstExpr *expr) {
 
 static Value eval_call(AstExpr *expr) {
     if (expr->as.call.library) {
+        /* §5 disambiguation: X.y(args) where X is a variable bound to a record
+         * whose field y holds a function value is a METHOD call (this = that
+         * record), not a qualified library call. Checked first, so a record
+         * variable wins over a library of the same name. */
+        Symbol *receiver_symbol = env_find(expr->as.call.library);
+        if (receiver_symbol && receiver_symbol->value.kind == VALUE_RECORD) {
+            RecordField *method_field =
+                record_find(&receiver_symbol->value, expr->as.call.name);
+            if (method_field && method_field->value->kind == VALUE_FUNCTION) {
+                FunctionDef *method =
+                    function_resolve(method_field->value->as.function.library,
+                                     method_field->value->as.function.name);
+                if (!method) {
+                    char message[256];
+                    snprintf(message, sizeof(message),
+                             "method value references unknown function: %s",
+                             method_field->value->as.function.name);
+                    runtime_error_raise(message, 1003, "invalid function call");
+                    return value_null();
+                }
+                return eval_user_function_with_receiver(expr, method,
+                                                        &receiver_symbol->value);
+            }
+        }
+
         if (strcmp(expr->as.call.library, "webserver") == 0) {
             if (!webserver_library_loaded) {
                 runtime_error_raise("library not loaded: webserver",
@@ -14995,6 +15050,16 @@ static char *lvalue_watch_path(AstExpr *target) {
 static Value *resolve_lvalue_ref(AstExpr *target) {
     switch (target->kind) {
     case AST_EXPR_IDENT: {
+        if (strcmp(target->as.ident, "this") == 0) {
+            /* `this.field = …` resolves through the live receiver, so the write
+             * reaches the real object and PBI field policies apply. */
+            if (!current_this) {
+                runtime_error_raise("this is only bound inside a method call",
+                                    1003, "this");
+                return NULL;
+            }
+            return current_this;
+        }
         Symbol *symbol = env_find(target->as.ident);
         if (!symbol) {
             char message[256];
@@ -15082,6 +15147,12 @@ typedef enum {
 static LValueAssignResult assign_lvalue(AstExpr *target, Value value) {
     switch (target->kind) {
     case AST_EXPR_IDENT: {
+        if (strcmp(target->as.ident, "this") == 0) {
+            /* `this` is read-only — you mutate through it, never rebind it. */
+            runtime_error_raise("this is read-only", 1003, "this");
+            value_free(value);
+            return LVALUE_ASSIGN_ERROR;
+        }
         Symbol *symbol = env_find_in_frame(current_env, target->as.ident);
         if (symbol && value_storage_equal(&symbol->value, &value)) {
             value_free(value);
