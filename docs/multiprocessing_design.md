@@ -1,7 +1,8 @@
 # Multiprocessing (Actors) — Design
 
-Status: **Phases 0-2 implemented (2026-06-25); only Phase 3 (fault model /
-supervision) remains** (design revised 2026-06-24). The **last**
+Status: **Phases 0-2 implemented (2026-06-25); Phase 3 (fault model /
+supervision) designed below (§7.1, §8), not yet implemented** (design revised
+2026-06-24, Phase 3 added 2026-06-25). The **last**
 of the three pre-freeze language threads; PBI and Unicode (its two prerequisites)
 are complete. This revision closes the open architectural questions from the
 proposal draft so the phased plan in §8 can be executed without re-litigating the
@@ -42,7 +43,10 @@ Phases 0-2 are implemented and tested (§8): the serialization core;
 `spawn`/`send`/`receive`/`self` over fork+exec processes with spawn-time fd
 inheritance; runtime handle passing via `SCM_RIGHTS`; selective receive; a
 duration-typed receive timeout; and `PR_SET_PDEATHSIG` orphan-cleanup hardening.
-Only Phase 3 (the fault model / supervision) remains future work.
+Phase 3 (the fault model / supervision) is **designed** in §7.1 and §8 but not yet
+implemented; it is the only remaining thread item, and the design below shows it
+needs exactly one new primitive (`monitor`) — supervisors fall out as ordinary
+gBASIC programs on top of it.
 
 ## 1. What is already decided (carried in from PBI / Unicode)
 
@@ -370,8 +374,8 @@ The minimum honest story for v1, richer parts flagged as future:
   (process isolation guarantees it cannot corrupt others). v1: the crash is logged
   to stderr and the actor dies; senders are not notified.
 - **Supervision / linking** (Erlang-style death notification, restart strategies)
-  is **future work**. It depends only on handles being sendable (§4.1), which v1
-  provides, so it can be added without rework.
+  is **Phase 3**, designed in §7.1. It depends only on handles being sendable
+  (§4.1), which v1 provides, so it adds one primitive (`monitor`) and no rework.
 - **Orphans (implemented):** two mechanisms, together robust to a tree of any
   depth and to abnormal death.
   - *Parent-death signal (primary).* Each spawned actor arms
@@ -386,6 +390,213 @@ The minimum honest story for v1, richer parts flagged as future:
     group, which may hold a parent shell pipeline) and, on normal exit,
     `SIGTERM`s that group and `waitpid`s the children so they are reaped rather
     than left as zombies.
+
+### 7.1 Phase 3 — death notification and supervision (design)
+
+`PR_SET_PDEATHSIG` (§7) gives the **downward** edge of the fault graph: a parent's
+death cascades to its children. Phase 3 adds the one missing edge, the **upward**
+one — an actor learning that *another* actor it cares about has died, **with a
+reason**, so it can react (restart it, escalate, release resources, log). That
+single capability — death notification — is everything supervision needs.
+Supervision itself is then an ordinary gBASIC **program**, not a runtime feature.
+
+**Why notification, not a `supervisor` construct.** gBASIC has no first-class
+functions (`pbi_design.md §7`), so a supervisor cannot be parameterized by a
+"restart function" passed as a lambda. But a supervisor that *spawns* its children
+already holds everything restart needs: the worker's entry-function **name** and
+its **argument values** — both are plain data it constructed to call `spawn` in the
+first place. So a supervisor is just an actor that loops on `receive()` and
+re-`spawn`s on a death message. Nothing else is required of the language. This is
+the same minimalism as §2 ("five primitives carry the whole model"): Phase 3 adds
+the death message and the rest is library code.
+
+**The primitive: `monitor`.**
+
+- **`monitor(handle)`** — the calling actor asks to be told when the actor behind
+  `handle` dies. **Unidirectional**: the monitor learns; the monitored actor is
+  unaffected and unaware. Returns a small **monitor reference** value so multiple
+  monitors are distinguishable and a later `demonitor(ref)` can cancel one. The
+  caller must already hold `handle` — which it does, because a handle *is* the
+  capability (§4.1).
+- **`demonitor(ref)`** — cancel a monitor so no `down` message will be delivered
+  for it (best-effort: a `down` already enqueued still arrives).
+- **Naming.** `link` is taken (PBI per-field policy, §1.3 / `parser.y`); `watch`
+  is taken (reactive watchers, §1.2 / `TOKEN_WATCH`). `monitor`/`demonitor` collide
+  with neither and are the exact Erlang term for the unidirectional form. Validate
+  against the builtin registry and the contextual-keyword rules like the other
+  primitives (§9.1).
+
+**Delivery: `down` is an ordinary message.** When the monitored actor dies, the
+monitor receives a normal mailbox frame — the tagged tuple
+`["down", handle, reason]` (tag first, so it composes with selective receive,
+`receive("down")`, and with `consider`). No new receive surface: death
+notification rides the §4.1 mailbox like every other message, which is precisely
+why handles and tagged tuples were built the way they were. `reason` is a small
+string:
+
+| reason | meaning |
+| --- | --- |
+| `"normal"` | the body returned / stopped cleanly |
+| `"error"` | unhandled runtime error (the error text may ride as a 4th tuple element) |
+| `"killed"` | died to a signal, including the `PDEATHSIG` cascade |
+| `"noproc"` | already dead when `monitor` was called (delivered immediately) |
+
+**Mechanism — two detection paths, one delivery point.** A handle is the
+write-end fd of the target's mailbox, and every monitor already holds it. Death
+detection therefore comes for free, two ways, by OS parentage:
+
+1. **Parent monitoring its own child — the supervision case.** The spawning
+   interpreter is the child's OS parent, so `SIGCHLD` / `waitpid` reports the death
+   *and its exit status*, yielding an **accurate** reason (exit 0 → `normal`,
+   nonzero → `error`, signalled → `killed`). The spawner already tracks child pids
+   (Phase 1c's `actor_child_pids`); Phase 3 extends that table to map
+   pid → monitored handle id + captured exit status.
+2. **Non-parent monitoring** (A monitors B; neither spawned the other). A cannot
+   `waitpid(B)`, but it holds B's write-end fd, and when B's process dies B's
+   mailbox read-end closes, so A's held fd reports `POLLHUP`/`POLLERR`. A's receive
+   loop already `poll()`s its inbox fd (Phase 2c's timeout path); Phase 3 adds each
+   monitored fd to that poll set. A hangup means "B is gone" — **liveness, but not
+   the exit code** (only B's OS parent has that), so the reason defaults to the
+   coarse `"down"`.
+
+Both paths converge at one point: synthesize `["down", handle, reason]` and enqueue
+it into the local **retained buffer** (Phase 2b), so it is delivered through
+ordinary `receive()` in arrival order, de-duped (one `down` per monitor ref), after
+which the fd is dropped from the poll set. **Implementation note:** a *blocking*
+`receive()` must now `poll()` over `{inbox} ∪ {monitored fds}` (waking on either a
+message or a death), not the inbox alone — the no-timeout path gains the same poll
+the timeout path already uses.
+
+**Honest limitation (document loudly).** A monitor that is **not** the dead actor's
+OS parent gets liveness but a *coarse* reason (`"down"`, never `error`/`killed`).
+Because supervisors **spawn** their workers, a supervisor *is* the OS parent and
+gets accurate reasons — the 95% case is covered. Full cross-tree reason fidelity
+would need a death-reason broadcast (a dying actor telling its monitors *why*),
+which requires the runtime to know an actor's monitor set; that is a later
+refinement, not v1.
+
+**Restart = re-spawn, written in the language.** With `monitor` + `down`, a
+supervisor is an ordinary actor:
+
+```basic
+' ---------------------------------------------------------------------
+'  The worker. An ordinary named function -- gBASIC has no first-class
+'  functions, so an actor body is always a named function, never a
+'  lambda. `boss` is the supervisor's handle, handed in at spawn time
+'  and wired across fork+exec by plain fd inheritance (Phase 1).
+' ---------------------------------------------------------------------
+function worker(id, boss)
+    while true                          ' an actor runs until its body returns
+        consider receive()              ' block for the next message
+            if "ping" then              ' branches align to `consider`
+                send(boss, "pong from " + id)
+            if "boom" then
+                ' An unhandled runtime error ends THIS actor only -- process
+                ' isolation guarantees it cannot corrupt the supervisor or any
+                ' sibling. The interpreter exits non-zero; that non-zero status
+                ' is what becomes reason "error" upstream.
+                error("worker " + id + " exploded")
+            if "stop" then
+                return                  ' clean exit -- becomes reason "normal"
+        end consider
+    end while
+end function
+
+' ---------------------------------------------------------------------
+'  The supervisor. NOT a language construct -- just an actor that loops.
+'  Because it SPAWNS the worker, it holds everything restart needs: the
+'  entry name `worker` and the argument values. Re-running spawn IS the
+'  restart. And because it is the worker's OS parent, its death reasons
+'  are the accurate ones (waitpid path), not the coarse fallback.
+' ---------------------------------------------------------------------
+function supervisor(args)
+    me = self()                         ' this actor's own handle
+
+    ' Start the worker and begin watching it. monitor() registers the
+    ' worker's mailbox write-fd (which the handle already wraps) into our
+    ' local "monitored set". From now on the worker's death arrives in OUR
+    ' mailbox as a normal message. monitor is UNIDIRECTIONAL: the worker is
+    ' never told it is being watched.
+    w   = spawn worker("w1", me)
+    ref = monitor(w)                    ' returns a monitor reference token
+    restarts = 0
+
+    while true
+        ' receive("down") is a SELECTIVE receive (Phase 2): it pulls the next
+        ' message tagged "down" and leaves any other messages queued -- so a
+        ' flood of "pong" replies cannot hide a death from us. The "down" frame
+        ' was synthesized by the runtime, not sent by anyone; it looks like any
+        ' other message, which is the whole point: no new receive surface.
+        '
+        '   Under the hood this blocking call is now a poll() over
+        '   {our inbox fd} U {the worker's monitored fd}. It wakes on EITHER a
+        '   real message OR the worker's mailbox closing (POLLHUP) when its
+        '   process dies. Since we are the worker's parent, the runtime also
+        '   reaped it via waitpid and knows the exit status, so `reason` below
+        '   is accurate rather than the coarse "down".
+        msg    = receive("down")        ' msg is ["down", handle, reason]
+        reason = msg[2]                 ' arrays are 0-indexed: [0] is "down"
+
+        if reason = "normal" then
+            print("worker retired cleanly; supervisor done")
+            return
+        else
+            ' It crashed. Restart up to a bounded number of times -- this bound
+            ' is the "max restart intensity" of real supervisors, expressed as
+            ' plain gBASIC, not a runtime knob.
+            if restarts < 3 then
+                restarts = restarts + 1
+                print("worker died (" + reason + ") -- restart " + restarts)
+                ' Restart == re-spawn the SAME entry with the SAME args. We get
+                ' a brand-new actor (new process, new mailbox), so we must
+                ' monitor the new one -- the old monitor died with the old
+                ' worker. demonitor(ref) is hygiene, not strictly required: a
+                ' dead actor fires "down" exactly once.
+                demonitor(ref)
+                w   = spawn worker("w1", me)
+                ref = monitor(w)
+            else
+                print("too many crashes -- giving up")
+                return
+            end if
+        end if
+    end while
+end function
+```
+
+Restart **strategies** (one-for-one, all-for-one, rest-for-one),
+**max-restart-intensity** (give up after N restarts in T), and **escalation** (a
+supervisor that is itself monitored by a higher one) are all ordinary control flow
+over this one primitive. Recommendation: ship **one canonical supervisor pattern**
+in `stdlib` as a documented example and leave richer strategies to the program,
+rather than baking strategy enums into the runtime.
+
+**Links (bidirectional, propagating) — deferred, deliberately.** Erlang also has
+`link`: bidirectional, where an *abnormal* death propagates an exit signal that
+kills the linked peer unless it "traps exits." Phase 3 v1 **recommends shipping
+`monitor` only** and deferring propagating links, because:
+
+- The **downward** half of link propagation already exists (`PR_SET_PDEATHSIG`:
+  parent death kills the tree, §7).
+- The **upward** half (child death notifying parent) is exactly what `monitor`
+  provides — without the foot-gun of auto-killing the monitor.
+- **"Trap exits"** — the flag that turns a propagated kill back into a message — is
+  the genuinely subtle part of the Erlang model and adds a mode bit to every actor;
+  it earns its complexity only once real programs demand auto-propagation. Monitors
+  cover supervision (the actual goal) without it.
+- The name is contended anyway (`link` = PBI), so propagating links would need a
+  fresh verb (`couple`? `bind`? — TBD) — another reason not to rush it.
+
+If added later, links need **no new transport** — a link is two monitors plus a
+propagation policy — so deferring costs nothing.
+
+**The §6 `link`-strict diagnostic (independent).** Separately, §6 left
+"diagnose sending a live PBI `link` field across a boundary" as Phase 3.
+Recommendation: keep silent degradation the default (§6) and add an **opt-in**
+`send(target, value, strict)` (or a program-level flag) that raises a diagnosed
+error when the value contains a live `link` field, for code that wants the boundary
+made loud. It is small, isolated, and untangled from the death-notification work —
+it can land within Phase 3 or slip to post-freeze without affecting anything else.
 
 ## 8. Phased plan (PBI / Unicode discipline)
 
@@ -483,9 +694,29 @@ Each phase merges green before the next; the first is an invisible foundation.
     process-lifecycle behavior does not fit a stdout golden test, but every
     `spawn_*` example exercises normal-exit cleanup on each run).
   - **Phase 2 is complete.**
-- **Phase 3 — fault model.** Defined crash behavior, the §6 `link` strict
-  diagnostic (if adopted), and the decision record for supervision once
-  first-class functions eventually land.
+- **Phase 3 — fault model / supervision (designed, §7.1; not yet built).** One new
+  primitive; supervisors are then programs, not runtime features. Sub-steps, each
+  green before the next per the discipline above:
+  - **3a — death notification (the substantive piece).** `monitor(handle)` /
+    `demonitor(ref)` builtins; the `["down", handle, reason]` tagged-tuple message
+    delivered through the existing mailbox + retained buffer (§7.1). Two detection
+    paths into one delivery point: the spawner's pid→handle table gains captured
+    `waitpid` exit status (accurate reason for a parent monitoring its child), and
+    blocking `receive()` becomes a `poll()` over `{inbox} ∪ {monitored fds}` so a
+    monitored actor's mailbox-`POLLHUP` synthesizes a coarse-reason `down` for a
+    non-parent monitor. De-dupe one `down` per monitor ref; drop the fd afterward.
+  - **3b — the supervisor pattern + a deterministic test.** A canonical
+    crash-and-restart supervisor in `stdlib` (the §7.1 example), plus a golden test
+    made deterministic by construction: a worker that errors on a specific message,
+    a supervisor that restarts a *fixed* number of times then gives up, printing a
+    fixed transcript — no timing margins (mirrors the Phase 2 determinism rule).
+  - **3c — the §6 `link`-strict diagnostic (optional, independent).** Opt-in
+    `send(…, strict)` / program flag that diagnoses a live PBI `link` field crossing
+    the boundary. Lands within Phase 3 or slips to post-freeze; touches nothing else.
+  - **Deferred to future (documented, not built):** propagating bidirectional links
+    and trap-exit. They are two monitors plus a propagation policy and a fresh verb
+    (`link` is taken by PBI), added without rework if real programs ever demand
+    auto-propagation (§7.1).
 
 **Test determinism.** Phase 1's chosen tests are order-independent by
 construction — a sum is commutative, so scheduling nondeterminism cannot flake
@@ -498,7 +729,8 @@ clocks, fixed interleavings, bounded retries) rather than relying on timing.
 1. **Primitive names.** `spawn`/`send`/`receive`/`self` are placeholders. Confirm
    each against the builtin registry and the contextual-keyword rules (`new` is
    the precedent); `send`/`receive` in particular must not collide with a future
-   module verb.
+   module verb. Phase 3 adds `monitor`/`demonitor` — checked free of the `link`
+   (PBI policy) and `watch` (reactive watcher) collisions (§7.1); confirm likewise.
 2. **Selective receive (Phase 2). RESOLVED — implemented (§8).** Both forms
    coexist: `receive()` is strict FIFO, `receive(tag)` selectively pulls the next
    message whose tag matches and leaves the rest queued (Erlang-style), via a
