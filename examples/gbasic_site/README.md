@@ -69,24 +69,35 @@ server-side session cookie, then open `/admin` to view moderation tools. There
 is no longer a token-based admin path. Hide actions record moderation
 timestamps and attribute the action to the authenticated username.
 
-State-changing forms require a CSRF token. Admin moderation forms use the
-per-session CSRF token stored with the session in Postgres. Anonymous public
-posting forms still use a shared development CSRF token. Prefer an environment
-variable:
+State-changing forms require a CSRF token. There are three independent CSRF
+paths:
+
+- **Admin moderation forms** use the per-session CSRF token stored with the
+  server-side session in Postgres.
+- **Anonymous posting forms, in production**, use a per-visitor cookie-bound
+  double-submit token. When no shared token is configured, each visitor is
+  issued a random token in an `HttpOnly; SameSite=Lax` cookie
+  (`gbasic_site_anon_csrf`), and the form's hidden field must match that cookie
+  on POST. This needs no server-side state and is the default posture.
+- **Anonymous posting forms, in development/tests**, use a single shared token
+  when `GBASIC_SITE_CSRF_TOKEN` (or the fallback file) is set. Setting it
+  switches anonymous forms into shared-token mode, which is convenient for
+  stateless test clients.
 
 ```sh
+# Development shortcut: shared anonymous-form token.
 export GBASIC_SITE_CSRF_TOKEN=change-this-local-csrf-token
 ```
 
-You can also use a local fallback file:
+You can also use a local fallback file instead of the variable:
 
 ```sh
 cp examples/gbasic_site/csrf_token.example.txt examples/gbasic_site/csrf_token.txt
 chmod 600 examples/gbasic_site/csrf_token.txt
 ```
 
-The shared public-form CSRF token remains development-only until anonymous
-posting gets its own full anti-abuse story.
+For public deployment, leave `GBASIC_SITE_CSRF_TOKEN` unset so anonymous forms
+use the cookie-bound token. The shared token is development-only.
 
 ## Anonymous Posting Rate Limit
 

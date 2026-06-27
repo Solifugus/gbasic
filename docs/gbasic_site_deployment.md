@@ -154,18 +154,18 @@ layer on top of the rate limit.
 
 ## Auth, Sessions, and CSRF
 
-The local admin token, token-backed session login, and shared public-form CSRF
-token are only dogfooding shortcuts. Public deployment needs real
-authentication before write/admin paths are exposed:
+Admin auth is now real: password hashing (`password_hash`/`password_verify`),
+server-side sessions in Postgres, `HttpOnly; SameSite=Lax` session cookies,
+per-session CSRF, login session rotation, and logout/revocation. Anonymous
+posting forms use a per-visitor cookie-bound double-submit CSRF token by
+default (the shared `GBASIC_SITE_CSRF_TOKEN` is a dev/test-only shortcut). For
+public deployment:
 
-- password hashing with a modern password hash,
-- server-side sessions or signed session cookies,
-- secure, HttpOnly, SameSite cookies,
-- CSRF tokens on all state-changing form submissions,
-- logout and session rotation,
-- a way to revoke compromised credentials.
+- leave `GBASIC_SITE_CSRF_TOKEN` unset so anonymous forms use the cookie-bound
+  token,
+- keep admin write/moderation paths behind the session login,
+- serve over HTTPS so the `Secure` cookie attribute is meaningful.
 
-The current admin token should never be treated as a production auth system.
 The target auth/session model is tracked in `docs/gbasic_site_auth_plan.md`.
 
 ## First Deployment Checklist
@@ -175,8 +175,8 @@ Before publishing on the public-IP server:
 - create a dedicated Unix user for the app,
 - create a dedicated Postgres role and database,
 - run the setup program only against the intended database,
-- set `GBASIC_SITE_ADMIN_TOKEN` and `GBASIC_SITE_CSRF_TOKEN` only if the admin
-  path and write routes are still local-only,
+- leave `GBASIC_SITE_CSRF_TOKEN` unset in production (anonymous forms then use
+  the per-visitor cookie-bound CSRF token); set it only for local/dev or test,
 - set `GBASIC_SITE_PORT` or create `examples/gbasic_site/server_port.txt` with
   the loopback port used by nginx,
 - run the gBASIC app as a supervised service,

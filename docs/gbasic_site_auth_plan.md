@@ -103,9 +103,14 @@ routes verify both:
 - the submitted CSRF token matches the session.
 
 The session-backed admin forms use the per-session CSRF token stored in
-Postgres. Anonymous public posting forms still use the shared development CSRF
-token, which must remain development-only until anonymous posting gets its own
-anti-abuse story.
+Postgres. Anonymous public posting forms now use a per-visitor cookie-bound
+double-submit token by default: with no shared token configured, each visitor
+receives a random token in an `HttpOnly; SameSite=Lax` cookie
+(`gbasic_site_anon_csrf`), and the submitted form token must match that cookie.
+The legacy shared development token is still honored when
+`GBASIC_SITE_CSRF_TOKEN` (or the fallback file) is set, which puts anonymous
+forms back into shared-token mode for stateless test clients; it must remain
+development-only.
 
 Admin login now verifies a username and password against `gbasic_site_users`
 using `password_verify()` and creates a server-side session on success. The
@@ -171,6 +176,8 @@ revokes any session named by the incoming cookie, so a fixed or stale session
 id cannot survive a login (fixation defense). The `now()` time primitive is now
 exposed for in-app expiration math. Anonymous public posting now has a first
 anti-abuse control — a per-IP rate limit (off by default, enabled via env) with
-its own integration test. The remaining hardening for public anonymous posting
-is moving its forms off the shared development CSRF token and, optionally,
-layering a moderation queue on top of the rate limit.
+its own integration test. Anonymous forms have also moved off the shared
+development CSRF token by default to a per-visitor cookie-bound double-submit
+token (shared-token mode is now an explicit dev/test opt-in), with its own
+integration test. The remaining hardening for public anonymous posting is
+optional: layering a moderation queue on top of the rate limit.

@@ -96,117 +96,90 @@ if [[ -e "$server_port_file" ]]; then
     cp "$server_port_file" "$server_port_backup"
     had_server_port=1
 fi
-rm -f "$port_file"
-GBASIC_SITE_PORT=0 GBASIC_SITE_CSRF_TOKEN=test-csrf-token GBASIC_WEBSERVER_TIMEOUT=0.2 ./gbasic examples/gbasic_site/site_postgres.bas \
-    >"$server_stdout" 2>"$server_stderr" &
-server_pid=$!
+# Run one server case end to end: start the site server with the given extra
+# env (passed as trailing NAME=VALUE assignments or `env` options like
+# `-u NAME`), wait for it to publish its ephemeral port, drive it with a client,
+# wait for the client's /shutdown to stop it, confirm a clean stderr, then diff
+# the client output against a golden file. Any failure prints a labeled message
+# and exits non-zero.
+run_site_case() {
+    local label="$1" client="$2" expected="$3"
+    shift 3
 
-for _ in {1..100}; do
-    if [[ -s "$port_file" ]]; then
-        break
+    rm -f "$port_file"
+    env "$@" GBASIC_SITE_PORT=0 GBASIC_WEBSERVER_TIMEOUT=0.2 \
+        ./gbasic examples/gbasic_site/site_postgres.bas \
+        >"$server_stdout" 2>"$server_stderr" &
+    server_pid=$!
+
+    for _ in {1..100}; do
+        [[ -s "$port_file" ]] && break
+        if ! kill -0 "$server_pid" 2>/dev/null; then
+            printf 'FAIL %s (server exited before publishing its port)\n' "$label"
+            cat "$server_stderr"
+            exit 1
+        fi
+        sleep 0.05
+    done
+
+    if [[ ! -s "$port_file" ]]; then
+        printf 'FAIL %s (server did not publish its port)\n' "$label"
+        exit 1
     fi
-    if ! kill -0 "$server_pid" 2>/dev/null; then
-        printf 'FAIL examples/gbasic_site/site_postgres.bas (server exited before publishing its port)\n'
+
+    port="$(cat "$port_file")"
+    if ! python3 "$client" "$port" >"$client_stdout" 2>"$client_stderr"; then
+        cat "$client_stderr"
+        exit 1
+    fi
+
+    for _ in {1..100}; do
+        if ! kill -0 "$server_pid" 2>/dev/null; then
+            wait "$server_pid"
+            server_pid=""
+            break
+        fi
+        sleep 0.05
+    done
+
+    if [[ -n "$server_pid" ]]; then
+        printf 'FAIL %s (server did not shut down)\n' "$label"
+        exit 1
+    fi
+
+    if [[ -s "$server_stderr" ]]; then
         cat "$server_stderr"
         exit 1
     fi
-    sleep 0.05
-done
 
-if [[ ! -s "$port_file" ]]; then
-    printf 'FAIL examples/gbasic_site/site_postgres.bas (server did not publish its port)\n'
-    exit 1
-fi
-
-port="$(cat "$port_file")"
-if ! python3 tests/gbasic_site_postgres_client.py "$port" >"$client_stdout" 2>"$client_stderr"; then
-    cat "$client_stderr"
-    exit 1
-fi
-
-for _ in {1..100}; do
-    if ! kill -0 "$server_pid" 2>/dev/null; then
-        wait "$server_pid"
-        server_pid=""
-        break
-    fi
-    sleep 0.05
-done
-
-if [[ -n "$server_pid" ]]; then
-    printf 'FAIL examples/gbasic_site/site_postgres.bas (server did not shut down)\n'
-    exit 1
-fi
-
-if [[ -s "$server_stderr" ]]; then
-    cat "$server_stderr"
-    exit 1
-fi
-
-if diff -u tests/gbasic_site_postgres_client.out "$client_stdout"; then
-    printf 'PASS examples/gbasic_site/site_postgres.bas\n'
-else
-    printf 'FAIL examples/gbasic_site/site_postgres.bas (client output mismatch)\n'
-    exit 1
-fi
-
-# --- Per-IP anonymous-posting rate limit ---
-# A second server with a small limit proves the 429 behavior in isolation; the
-# default (env unset) leaves posting unlimited, which is why the suite above is
-# unaffected. The post-events table is empty here because the first server ran
-# with rate limiting disabled and recorded nothing.
-rm -f "$port_file"
-GBASIC_SITE_PORT=0 GBASIC_SITE_CSRF_TOKEN=test-csrf-token GBASIC_WEBSERVER_TIMEOUT=0.2 \
-    GBASIC_SITE_POST_RATE_LIMIT=2 GBASIC_SITE_POST_RATE_WINDOW=60 \
-    ./gbasic examples/gbasic_site/site_postgres.bas \
-    >"$server_stdout" 2>"$server_stderr" &
-server_pid=$!
-
-for _ in {1..100}; do
-    if [[ -s "$port_file" ]]; then
-        break
-    fi
-    if ! kill -0 "$server_pid" 2>/dev/null; then
-        printf 'FAIL examples/gbasic_site rate limit (server exited before publishing its port)\n'
-        cat "$server_stderr"
+    if diff -u "$expected" "$client_stdout"; then
+        printf 'PASS %s\n' "$label"
+    else
+        printf 'FAIL %s (client output mismatch)\n' "$label"
         exit 1
     fi
-    sleep 0.05
-done
+}
 
-if [[ ! -s "$port_file" ]]; then
-    printf 'FAIL examples/gbasic_site rate limit (server did not publish its port)\n'
-    exit 1
-fi
+# Main integration suite (shared development CSRF token mode).
+run_site_case "examples/gbasic_site/site_postgres.bas" \
+    tests/gbasic_site_postgres_client.py \
+    tests/gbasic_site_postgres_client.out \
+    GBASIC_SITE_CSRF_TOKEN=test-csrf-token
 
-port="$(cat "$port_file")"
-if ! python3 tests/gbasic_site_ratelimit_client.py "$port" >"$client_stdout" 2>"$client_stderr"; then
-    cat "$client_stderr"
-    exit 1
-fi
+# Per-IP anonymous-posting rate limit. A small limit proves the 429 behavior in
+# isolation; the default (env unset) leaves posting unlimited, which is why the
+# suite above is unaffected. The post-events table is empty here because the
+# previous server ran with rate limiting disabled and recorded nothing.
+run_site_case "examples/gbasic_site rate limit" \
+    tests/gbasic_site_ratelimit_client.py \
+    tests/gbasic_site_ratelimit_client.out \
+    GBASIC_SITE_CSRF_TOKEN=test-csrf-token \
+    GBASIC_SITE_POST_RATE_LIMIT=2 GBASIC_SITE_POST_RATE_WINDOW=60
 
-for _ in {1..100}; do
-    if ! kill -0 "$server_pid" 2>/dev/null; then
-        wait "$server_pid"
-        server_pid=""
-        break
-    fi
-    sleep 0.05
-done
-
-if [[ -n "$server_pid" ]]; then
-    printf 'FAIL examples/gbasic_site rate limit (server did not shut down)\n'
-    exit 1
-fi
-
-if [[ -s "$server_stderr" ]]; then
-    cat "$server_stderr"
-    exit 1
-fi
-
-if diff -u tests/gbasic_site_ratelimit_client.out "$client_stdout"; then
-    printf 'PASS examples/gbasic_site rate limit\n'
-else
-    printf 'FAIL examples/gbasic_site rate limit (client output mismatch)\n'
-    exit 1
-fi
+# Cookie-bound double-submit CSRF for anonymous posting. With no shared token
+# configured (GBASIC_SITE_CSRF_TOKEN unset), anonymous forms issue a per-visitor
+# token in an HttpOnly cookie and require the submitted token to match it.
+run_site_case "examples/gbasic_site anon csrf" \
+    tests/gbasic_site_csrf_client.py \
+    tests/gbasic_site_csrf_client.out \
+    -u GBASIC_SITE_CSRF_TOKEN

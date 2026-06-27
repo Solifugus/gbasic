@@ -219,7 +219,11 @@ function reply_validation_error(author, body_text)
     return ""
 end function
 
-function csrf_token()
+' The shared development CSRF token, from env or a local file. When set, it puts
+' anonymous forms in "shared token" mode (used by the integration tests and
+' local development). When empty, anonymous forms use the per-visitor
+' cookie-bound double-submit token below, which is the production posture.
+function shared_csrf_token()
     env_token = env("GBASIC_SITE_CSRF_TOKEN")
     if not is_unknown(env_token) then
         return trim(env_token)
@@ -229,6 +233,46 @@ function csrf_token()
         return ""
     end if
     return trim(read(token_file))
+end function
+
+function using_shared_csrf()
+    return shared_csrf_token() != ""
+end function
+
+function anon_csrf_cookie_name()
+    return "gbasic_site_anon_csrf"
+end function
+
+' The anonymous CSRF token already presented by this visitor, if any.
+function anon_csrf_from_cookie(req)
+    raw = req.cookies[anon_csrf_cookie_name()]
+    if is_unknown(raw) then
+        return ""
+    end if
+    return trim(raw)
+end function
+
+' The token to embed in an anonymous form: reuse the visitor's existing cookie
+' token when it looks valid (so multiple tabs/forms agree), otherwise mint a
+' fresh one. secure_token(43) is URL-safe ASCII, so len() counts characters.
+function anon_csrf_token(req)
+    existing = anon_csrf_from_cookie(req)
+    if len(existing) >= 20 then
+        return existing
+    end if
+    return secure_token(43)
+end function
+
+function anon_csrf_cookie_header(token)
+    return anon_csrf_cookie_name() + "=" + token + "; HttpOnly; SameSite=Lax; Path=/; Max-Age=86400"
+end function
+
+' The CSRF token to render in an anonymous form for this request.
+function effective_csrf_token(req)
+    if using_shared_csrf() then
+        return shared_csrf_token()
+    end if
+    return anon_csrf_token(req)
 end function
 
 function hidden_input(name, value)
@@ -247,16 +291,29 @@ function text_area(label, name, maxlength)
     return "<label>" + html_escape(label) + "<textarea name=\"" + html_escape(name) + "\" maxlength=\"" + string(maxlength) + "\" required></textarea></label>"
 end function
 
-function csrf_field()
-    return hidden_input("csrf_token", csrf_token())
+' Render an anonymous form response, attaching the per-visitor CSRF cookie when
+' in cookie-bound mode so the browser presents it on the matching POST. `token`
+' must be the same value embedded in the form's hidden field.
+function form_response(req, status, title, body, token)
+    response = shell_response(req, status, title, body)
+    if not using_shared_csrf() then
+        response.cookies = [anon_csrf_cookie_header(token)]
+    end if
+    return response
 end function
 
-function csrf_valid(values)
-    token = csrf_token()
-    if token = "" then
+function csrf_valid(req, values)
+    submitted = form_value(values, "csrf_token")
+    if using_shared_csrf() then
+        return submitted = shared_csrf_token()
+    end if
+    ' Cookie-bound double-submit: the form token must match the token the
+    ' visitor was issued in their cookie, and that token must be well-formed.
+    cookie_token = anon_csrf_from_cookie(req)
+    if len(cookie_token) < 20 then
         return false
     end if
-    return form_value(values, "csrf_token") = token
+    return submitted = cookie_token
 end function
 
 function csrf_forbidden(req)
@@ -492,8 +549,9 @@ function new_topic_form_page(db, req, slug)
     if len(categories) = 0 then
         return not_found(req)
     end if
-    body = "<h1>Create topic</h1><form method=\"post\" action=\"/forum/" + html_escape(categories[0].slug) + "/new\">" + csrf_field() + text_input("Title", "title", 120) + text_input("Name", "author_name", 80) + text_area("Body", "body", 4000) + "<button type=\"submit\">Post topic</button></form><p><a href=\"/forum/" + html_escape(categories[0].slug) + "\">Back to " + html_escape(categories[0].title) + "</a></p>"
-    return shell_response(req, 200, "Create topic", body)
+    token = effective_csrf_token(req)
+    body = "<h1>Create topic</h1><form method=\"post\" action=\"/forum/" + html_escape(categories[0].slug) + "/new\">" + hidden_input("csrf_token", token) + text_input("Title", "title", 120) + text_input("Name", "author_name", 80) + text_area("Body", "body", 4000) + "<button type=\"submit\">Post topic</button></form><p><a href=\"/forum/" + html_escape(categories[0].slug) + "\">Back to " + html_escape(categories[0].title) + "</a></p>"
+    return form_response(req, 200, "Create topic", body, token)
 end function
 
 function create_topic(db, req, slug)
@@ -502,7 +560,7 @@ function create_topic(db, req, slug)
         return not_found(req)
     end if
     form = form_decode(req.body)
-    if not csrf_valid(form) then
+    if not csrf_valid(req, form) then
         return csrf_forbidden(req)
     end if
     title = trim(form.title)
@@ -674,8 +732,9 @@ function reply_form_page(db, req, topic_id_text)
     if len(topics) = 0 then
         return not_found(req)
     end if
-    body = "<h1>Reply to " + html_escape(topics[0].title) + "</h1><form method=\"post\" action=\"/topic/" + string(topics[0].id) + "/reply\">" + csrf_field() + text_input("Name", "author_name", 80) + text_area("Body", "body", 4000) + "<button type=\"submit\">Post reply</button></form><p><a href=\"/topic/" + string(topics[0].id) + "\">Back to topic</a></p>"
-    return shell_response(req, 200, "Reply", body)
+    token = effective_csrf_token(req)
+    body = "<h1>Reply to " + html_escape(topics[0].title) + "</h1><form method=\"post\" action=\"/topic/" + string(topics[0].id) + "/reply\">" + hidden_input("csrf_token", token) + text_input("Name", "author_name", 80) + text_area("Body", "body", 4000) + "<button type=\"submit\">Post reply</button></form><p><a href=\"/topic/" + string(topics[0].id) + "\">Back to topic</a></p>"
+    return form_response(req, 200, "Reply", body, token)
 end function
 
 function create_reply(db, req, topic_id_text)
@@ -688,7 +747,7 @@ function create_reply(db, req, topic_id_text)
         return not_found(req)
     end if
     form = form_decode(req.body)
-    if not csrf_valid(form) then
+    if not csrf_valid(req, form) then
         return csrf_forbidden(req)
     end if
     author = trim(form.author_name)
