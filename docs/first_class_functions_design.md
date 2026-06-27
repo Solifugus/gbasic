@@ -1,8 +1,8 @@
 # First-Class Functions & Methods — Design
 
-Status: **in progress (2026-06-26). Phases 0–3 (function values; methods + `this`;
-attach sugar; `constructor`) shipped; Phase 4 (actor-sendable functions, optional)
-pending** (see §11). This is consciously a **fourth pre-freeze language thread**, after
+Status: **COMPLETE (2026-06-26). Phases 0–4 all shipped** — function values; methods +
+`this`; attach sugar; `constructor`; actor-sendable functions (see §11). The whole thread
+should now be validated by building (the site + libraries) before the freeze locks it. This is consciously a **fourth pre-freeze language thread**, after
 PBI, Unicode, and Multiprocessing (all complete) — it adds surface, so it moves the
 freeze deliberately rather than by accident. The goal is to let *behavior* travel with
 data, i.e. real methods on objects, built on the smallest enabling primitive: function
@@ -243,9 +243,26 @@ remain non-serializable).
   override it (`new Base with { constructor: … }`). `new` *always* runs the constructor, so
   even a "prototype" built with `new` is constructed. Tests:
   `examples/constructor_test.bas`, `tests/negative_constructor_params.bas`. Valgrind-clean.
-- **Phase 4 — actor-sendable functions (optional, ties to multiprocessing).**
-  `SER_FUNCTION` by name + registry resolution; deterministic naming for internal
-  functions; record-with-method sends across a mailbox.
+- **Phase 4 — actor-sendable functions. DONE (2026-06-26).** A new `SER_FUNCTION` tag
+  (appended to the enum to keep the v1 wire format stable) carries the registered name plus
+  a presence byte and optional library; `serialize_value` emits it (replacing the Phase 0
+  rejection) and `deserialize_value` reads it and resolves through `function_resolve`,
+  failing (corrupt frame) if the name is absent in the receiving program (§10 — same shape
+  as an unknown spawn entry). This lights up `serialize()`/`deserialize()` of functions and
+  records-with-methods *and* `send()`/`receive()` of them across actors, since every actor
+  execs the same program. Two registration gaps had to be closed so names resolve on the
+  receiving side: (1) a child actor runs only its entry function, so dotted-def method
+  bodies (which attach via statements the child never reaches) are now pre-registered by a
+  recursive `register_method_bodies_in(program)` walk — it registers every dotted-def body
+  anywhere in the program (including inside the `program` block and control flow) under its
+  deterministic `obj.field@line:col` name, skipping the field store; (2) **the program-block
+  case never registered top-level declarations at all** — a long-standing limitation where
+  user functions couldn't even be *called* by name inside `program main`. `eval_program` now
+  pre-registers top-level functions/modifiers and runs the recursive method walk when a
+  program block is present, so function values (and ordinary calls) resolve inside
+  `program main`. Tests: `examples/function_serialize_test.bas`,
+  `examples/spawn_function_test.bas`. Valgrind-clean. LIMIT (documented): within one program
+  round-trips; across *different* programs a name may be absent and deserialize fails.
 - **Deferred (documented, not built):** §13.
 
 **Sequencing note.** Phases 0–2 are the high-confidence core and the part justified

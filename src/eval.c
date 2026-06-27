@@ -321,6 +321,8 @@ static Value webserver_eval_call(AstExpr *expr);
 static int webserver_run_event_loop(void);
 static void webserver_clear(void);
 static FunctionDef *function_resolve(const char *library, const char *name);
+static void method_ensure_internal_name(AstStmt *stmt);
+static void register_method_bodies_in(AstStmtList list);
 
 #if HAVE_GTK
 typedef struct GuiNativeWindow GuiNativeWindow;
@@ -6464,7 +6466,8 @@ typedef enum {
     SER_MONEY,
     SER_FILE,
     SER_DIR,
-    SER_ACTOR   /* spawn-args only: an actor handle, realized by an inherited fd */
+    SER_ACTOR,  /* spawn-args only: an actor handle, realized by an inherited fd */
+    SER_FUNCTION /* a function value: registered name (+ optional library), §10 */
 } SerTag;
 
 /* --- fd transfer for spawn arguments (docs/multiprocessing_design.md §4.1) ----
@@ -6716,11 +6719,19 @@ static int serialize_value(SerBuf *b, Value v, int depth) {
                             1003, "actor");
         return 0;
     case VALUE_FUNCTION:
-        /* Function values are not yet serializable; cross-actor function passing
-         * is a later phase (docs/first_class_functions_design.md §10, Phase 4). */
-        runtime_error_raise("serialize: functions cannot be serialized",
-                            1003, "actor");
-        return 0;
+        /* A function value travels as its registered name (+ owning library), not
+         * as code or captured state (§10). The receiver resolves it through its
+         * own registry — within one program (the actor case execs the same
+         * program) it always resolves, like a spawn entry name. */
+        serbuf_u8(b, SER_FUNCTION);
+        serbuf_blob(b, v.as.function.name, strlen(v.as.function.name));
+        if (v.as.function.library) {
+            serbuf_u8(b, 1);
+            serbuf_blob(b, v.as.function.library, strlen(v.as.function.library));
+        } else {
+            serbuf_u8(b, 0);
+        }
+        return 1;
     }
     runtime_error_raise("serialize: unsupported value", 1003, "actor");
     return 0;
@@ -6941,6 +6952,56 @@ static Value deserialize_value(SerReader *r, int depth) {
         /* No fd-transfer context: a forged or corrupt handle tag. */
         r->ok = 0;
         return value_null();
+    }
+    case SER_FUNCTION: {
+        uint64_t nlen = serread_u64(r);
+        if (!r->ok || nlen > r->len - r->pos) {
+            r->ok = 0;
+            return value_null();
+        }
+        char *name = malloc((size_t)nlen + 1);
+        if (!name) {
+            abort();
+        }
+        memcpy(name, r->data + r->pos, (size_t)nlen);
+        name[nlen] = '\0';
+        r->pos += (size_t)nlen;
+
+        char *library = NULL;
+        unsigned char has_library = serread_u8(r);
+        if (r->ok && has_library) {
+            uint64_t llen = serread_u64(r);
+            if (!r->ok || llen > r->len - r->pos) {
+                free(name);
+                r->ok = 0;
+                return value_null();
+            }
+            library = malloc((size_t)llen + 1);
+            if (!library) {
+                abort();
+            }
+            memcpy(library, r->data + r->pos, (size_t)llen);
+            library[llen] = '\0';
+            r->pos += (size_t)llen;
+        }
+        if (!r->ok) {
+            free(name);
+            free(library);
+            return value_null();
+        }
+        /* §10: the name must resolve in the receiving program (same shape as an
+         * unknown spawn entry). Within one program it always does. */
+        FunctionDef *fn = function_resolve(library, name);
+        if (!fn) {
+            free(name);
+            free(library);
+            r->ok = 0;
+            return value_null();
+        }
+        Value v = value_function(name, library);
+        free(name);
+        free(library);
+        return v;
     }
     default:
         r->ok = 0;
@@ -8002,6 +8063,10 @@ int eval_run_actor(AstStmtList program, const char *entry,
             library_import(stmt->as.use_stmt.name, stmt->as.use_stmt.path);
         }
     }
+    /* Methods attach via dotted-def statements the child never executes; register
+     * their bodies (recursively, including inside the program block) so a received
+     * record-with-method resolves (§10). */
+    register_method_bodies_in(program);
 
     AstStmt *fn = find_top_level_function(entry);
     if (!fn) {
@@ -15277,6 +15342,64 @@ static void method_ensure_internal_name(AstStmt *stmt) {
     stmt->as.function.name = copy_string(buffer);
 }
 
+/* Recursively register every dotted-def method body (anywhere in the program,
+ * including inside a `program` block, functions, and control flow) under its
+ * deterministic internal name, without performing the field store. A child actor
+ * runs only its entry function, so it never reaches these attach statements; this
+ * pre-pass makes the bodies resolvable so a record-with-method received over a
+ * mailbox can call them (§10). Idempotent and safe to run alongside the bare
+ * top-level function pre-pass. */
+static void register_method_bodies_in(AstStmtList list) {
+    for (size_t i = 0; i < list.count; i++) {
+        AstStmt *stmt = list.items[i];
+        switch (stmt->kind) {
+        case AST_STMT_FUNCTION:
+            if (stmt->as.function.object) {
+                method_ensure_internal_name(stmt);
+                function_register(stmt);
+            }
+            register_method_bodies_in(stmt->as.function.body);
+            break;
+        case AST_STMT_PROGRAM:
+            register_method_bodies_in(stmt->as.program.body);
+            break;
+        case AST_STMT_LIBRARY:
+            register_method_bodies_in(stmt->as.library.body);
+            break;
+        case AST_STMT_MODIFIER:
+            register_method_bodies_in(stmt->as.modifier.body);
+            break;
+        case AST_STMT_WITH_LOCK:
+            register_method_bodies_in(stmt->as.with_lock.body);
+            break;
+        case AST_STMT_FOR_EACH:
+            register_method_bodies_in(stmt->as.for_each.body);
+            break;
+        case AST_STMT_WATCH:
+            register_method_bodies_in(stmt->as.watch.body);
+            break;
+        case AST_STMT_WITHOUT_WATCHERS:
+            register_method_bodies_in(stmt->as.without_watchers);
+            break;
+        case AST_STMT_IF:
+            register_method_bodies_in(stmt->as.if_stmt.body);
+            register_method_bodies_in(stmt->as.if_stmt.else_body);
+            break;
+        case AST_STMT_WHILE:
+            register_method_bodies_in(stmt->as.while_stmt.body);
+            break;
+        case AST_STMT_CONSIDER:
+            for (size_t j = 0; j < stmt->as.consider.branches.count; j++) {
+                register_method_bodies_in(stmt->as.consider.branches.items[j].body);
+            }
+            register_method_bodies_in(stmt->as.consider.else_body);
+            break;
+        default:
+            break;
+        }
+    }
+}
+
 /* Execute a define-and-attach statement: register the body under its internal
  * name, then store a function value referencing it in obj.field (ordinary field
  * assignment, so obj must be a record and PBI policies apply). Returns 1 on
@@ -15752,6 +15875,27 @@ int eval_program(AstStmtList program) {
             }
             program_block = program.items[i];
         }
+    }
+
+    /* When a program block runs, the top-level statements outside it are not
+     * walked, so their function/modifier declarations would never register. Do
+     * that up front (like the actor child entry does) so the block body can name
+     * top-level functions and resolve function values — including methods, whose
+     * dotted-def bodies register under their deterministic internal name. Without
+     * a program block the normal top-level walk still registers on-reach. */
+    if (program_block) {
+        for (size_t i = 0; i < program.count; i++) {
+            AstStmt *stmt = program.items[i];
+            if (stmt->kind == AST_STMT_FUNCTION && !stmt->as.function.object) {
+                function_register(stmt);
+            } else if (stmt->kind == AST_STMT_MODIFIER) {
+                modifier_register(stmt);
+            }
+        }
+        /* Method bodies (dotted defs) may sit inside the program block; register
+         * them so the parent resolves its own function values and a child can too
+         * (the internal name is deterministic across the program). */
+        register_method_bodies_in(program);
     }
 
     EvalResult result = runtime_stopped

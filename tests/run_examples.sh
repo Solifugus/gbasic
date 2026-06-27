@@ -107,6 +107,8 @@ examples=(
     method_test.bas
     method_attach_test.bas
     constructor_test.bas
+    function_serialize_test.bas
+    spawn_function_test.bas
     quote_test.bas
     string_modifier_pipeline_test.bas
     string_helpers_test.bas
