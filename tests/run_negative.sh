@@ -30,6 +30,7 @@ cases=(
     negative_multiline_unterminated_string
     negative_multiline_string_line_tracking
     negative_datetime_string_comparison
+    negative_now_arity
     negative_unknown_order
     negative_env_arity
     negative_env_type

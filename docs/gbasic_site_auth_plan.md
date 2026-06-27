@@ -119,8 +119,9 @@ needs:
   WebServer request/response records,
 - redirect response helper is available as `webserver.redirect(...)`,
 - session-id-safe tokens are available through `secure_token(length)`,
-- session expiration is enforced in SQL (`expires_at > now()`); dedicated gBASIC
-  time helpers for expiration math are still not exposed,
+- session expiration is enforced in SQL (`expires_at > now()`); gBASIC now also
+  exposes `now()` (current local `datetime`), so expiration/deadline math can be
+  done in app code via datetime + duration arithmetic when SQL is not the store,
 - percent-decoding must rebuild raw bytes with `from_bytes([n])`, not `chr(n)`:
   after Unicode v1 `chr`/`code` are codepoint builtins, so `chr(0xC3)` re-encodes
   as multi-byte UTF-8 and corrupts multi-byte form input. Standard
@@ -162,6 +163,7 @@ incoming cookie's prior session), logout, post-revocation lockout, and
 moderation attribution to the authenticated username. Login already mints a
 fresh session id and per-session CSRF token on every success; it now also
 revokes any session named by the incoming cookie, so a fixed or stale session
-id cannot survive a login (fixation defense). Remaining hardening is dedicated
-time helpers for expiration math and an anti-abuse story for anonymous public
-posting (still on the shared development CSRF token).
+id cannot survive a login (fixation defense). The `now()` time primitive is now
+exposed for in-app expiration math. The main remaining hardening is an
+anti-abuse story for anonymous public posting (still on the shared development
+CSRF token).

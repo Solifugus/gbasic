@@ -12010,6 +12010,33 @@ static Value eval_call(AstExpr *expr) {
 #endif
     }
 
+    if (strcmp(expr->as.call.name, "now") == 0) {
+        if (expr->as.call.args.count != 0) {
+            runtime_error_raise("now expects no arguments", 1003, "invalid function call");
+            return value_null();
+        }
+        time_t raw = time(NULL);
+        if (raw == (time_t)-1) {
+            runtime_error_raise("could not read the current time", 1003, "clock");
+            return value_null();
+        }
+        struct tm local;
+        if (!localtime_r(&raw, &local)) {
+            runtime_error_raise("could not convert the current time", 1003, "clock");
+            return value_null();
+        }
+        DateTime dt = {0};
+        dt.year = local.tm_year + 1900;
+        dt.month = local.tm_mon + 1;
+        dt.day = local.tm_mday;
+        dt.hour = local.tm_hour;
+        dt.minute = local.tm_min;
+        dt.second = local.tm_sec;
+        dt.time_only = 0;
+        dt.precision = PREC_SECOND;
+        return value_datetime(dt);
+    }
+
     if (strcmp(expr->as.call.name, "secure_token") == 0) {
         if (expr->as.call.args.count != 1) {
             runtime_error_raise("secure_token expects one argument", 1003, "invalid function call");

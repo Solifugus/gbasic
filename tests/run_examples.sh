@@ -38,6 +38,7 @@ examples=(
     dates_lib_test.bas
     keyword_stability_test.bas
     duration_test.gb
+    now_test.bas
     file_test.gb
     file_management_test.gb
     directory_management_test.gb

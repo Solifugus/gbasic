@@ -1026,6 +1026,24 @@ session_id = secure_token(43)
 csrf_token = secure_token(43)
 ```
 
+### Current Time
+
+**`now()`** - Returns the current local time as a second-precision `datetime`
+value. It takes no arguments. Because `datetime` values support duration
+arithmetic and exact comparison, `now()` is the primitive for expiration and
+deadline logic; everything else (a date-only "today", relative windows) derives
+from it via durations and the date/time lenses.
+
+```basic
+deadline = now() + 8 hours
+expired = now() > deadline          ' false until the deadline passes
+today(day)= now()                   ' truncate to date precision via the day lens
+```
+
+There is intentionally no `today()` builtin: `today` is too common an
+identifier to reserve, and the date is derivable from `now()` and the `(day)=`
+truncation lens as shown above.
+
 ### Password Hashing
 
 **`password_hash(password)`** - Hashes a password string using the platform's
