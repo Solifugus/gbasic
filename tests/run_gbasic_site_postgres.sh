@@ -149,3 +149,64 @@ else
     printf 'FAIL examples/gbasic_site/site_postgres.bas (client output mismatch)\n'
     exit 1
 fi
+
+# --- Per-IP anonymous-posting rate limit ---
+# A second server with a small limit proves the 429 behavior in isolation; the
+# default (env unset) leaves posting unlimited, which is why the suite above is
+# unaffected. The post-events table is empty here because the first server ran
+# with rate limiting disabled and recorded nothing.
+rm -f "$port_file"
+GBASIC_SITE_PORT=0 GBASIC_SITE_CSRF_TOKEN=test-csrf-token GBASIC_WEBSERVER_TIMEOUT=0.2 \
+    GBASIC_SITE_POST_RATE_LIMIT=2 GBASIC_SITE_POST_RATE_WINDOW=60 \
+    ./gbasic examples/gbasic_site/site_postgres.bas \
+    >"$server_stdout" 2>"$server_stderr" &
+server_pid=$!
+
+for _ in {1..100}; do
+    if [[ -s "$port_file" ]]; then
+        break
+    fi
+    if ! kill -0 "$server_pid" 2>/dev/null; then
+        printf 'FAIL examples/gbasic_site rate limit (server exited before publishing its port)\n'
+        cat "$server_stderr"
+        exit 1
+    fi
+    sleep 0.05
+done
+
+if [[ ! -s "$port_file" ]]; then
+    printf 'FAIL examples/gbasic_site rate limit (server did not publish its port)\n'
+    exit 1
+fi
+
+port="$(cat "$port_file")"
+if ! python3 tests/gbasic_site_ratelimit_client.py "$port" >"$client_stdout" 2>"$client_stderr"; then
+    cat "$client_stderr"
+    exit 1
+fi
+
+for _ in {1..100}; do
+    if ! kill -0 "$server_pid" 2>/dev/null; then
+        wait "$server_pid"
+        server_pid=""
+        break
+    fi
+    sleep 0.05
+done
+
+if [[ -n "$server_pid" ]]; then
+    printf 'FAIL examples/gbasic_site rate limit (server did not shut down)\n'
+    exit 1
+fi
+
+if [[ -s "$server_stderr" ]]; then
+    cat "$server_stderr"
+    exit 1
+fi
+
+if diff -u tests/gbasic_site_ratelimit_client.out "$client_stdout"; then
+    printf 'PASS examples/gbasic_site rate limit\n'
+else
+    printf 'FAIL examples/gbasic_site rate limit (client output mismatch)\n'
+    exit 1
+fi

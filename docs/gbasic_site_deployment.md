@@ -132,7 +132,25 @@ first options include:
 - temporary posting lockouts by IP,
 - hidden-by-default moderation queue.
 
-Captcha can be considered later, but it should not be the only control.
+The app now ships an app-layer per-IP rate limit for anonymous topic and reply
+posting. It is disabled by default; set `GBASIC_SITE_POST_RATE_LIMIT` to the
+maximum accepted posts per window and `GBASIC_SITE_POST_RATE_WINDOW` to the
+window length in seconds (default 60). Accepted posts are recorded in
+`gbasic_site_post_events`; the third post past the limit within the window
+returns `429`. The limit is keyed on the client IP, taken from the last
+`X-Forwarded-For` hop when present (so it works behind a single trusted reverse
+proxy) and the direct socket address otherwise.
+
+For this to be correct behind nginx, the proxy MUST set `X-Forwarded-For` with
+`proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;` and must not
+forward a client-supplied `X-Forwarded-For` it did not append — otherwise the
+last hop can be spoofed. The `gbasic_site_post_events` table grows by one row
+per accepted post; prune it on a schedule (the rate check only reads a bounded
+recent window, so old rows are dead weight).
+
+Captcha can be considered later, but it should not be the only control. A
+hidden-by-default moderation queue remains a reasonable stronger control to
+layer on top of the rate limit.
 
 ## Auth, Sessions, and CSRF
 

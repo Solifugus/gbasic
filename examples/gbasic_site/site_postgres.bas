@@ -263,6 +263,85 @@ function csrf_forbidden(req)
     return plain_response(req, 403, "invalid csrf token")
 end function
 
+' Per-IP anonymous-posting rate limit. Disabled by default (limit 0); set
+' GBASIC_SITE_POST_RATE_LIMIT to the max accepted posts per window and
+' GBASIC_SITE_POST_RATE_WINDOW to the window length in seconds (default 60).
+function post_rate_limit()
+    limit_text = env("GBASIC_SITE_POST_RATE_LIMIT")
+    if is_unknown(limit_text) then
+        return 0
+    end if
+    limit_text(trimmed)= limit_text
+    if limit_text = "" then
+        return 0
+    end if
+    if not is_integer_text(limit_text) then
+        error "GBASIC_SITE_POST_RATE_LIMIT must be a non-negative integer"
+    end if
+    return number(limit_text)
+end function
+
+function post_rate_window()
+    window_text = env("GBASIC_SITE_POST_RATE_WINDOW")
+    if is_unknown(window_text) then
+        return 60
+    end if
+    window_text(trimmed)= window_text
+    if window_text = "" then
+        return 60
+    end if
+    if not is_integer_text(window_text) then
+        error "GBASIC_SITE_POST_RATE_WINDOW must be a non-negative integer number of seconds"
+    end if
+    return number(window_text)
+end function
+
+' The client IP for rate limiting. Behind a single trusted reverse proxy the
+' socket peer is the proxy, so prefer the last X-Forwarded-For hop (the value
+' the proxy itself appended); fall back to the direct socket address.
+function client_ip(req)
+    forwarded = req.headers["x-forwarded-for"]
+    if not is_unknown(forwarded) then
+        forwarded(trimmed)= forwarded
+        if forwarded != "" then
+            hops = split(forwarded, ",")
+            last = hops[count(hops) - 1]
+            last(trimmed)= last
+            if last != "" then
+                return last
+            end if
+        end if
+    end if
+    return req.remote_ip
+end function
+
+' True when this IP has already reached the accepted-post limit for the window.
+function post_rate_limited(db, req)
+    max_posts = post_rate_limit()
+    if max_posts <= 0 then
+        return false
+    end if
+    window = post_rate_window()
+    if window <= 0 then
+        return false
+    end if
+    rows = pg.query(db, "select count(*) as n from gbasic_site_post_events where remote_ip = $1 and created_at >= now() - ($2::int * interval '1 second')", [client_ip(req), window])
+    return number(rows[0].n) >= max_posts
+end function
+
+function record_post_event(db, req, kind)
+    if post_rate_limit() <= 0 then
+        return false
+    end if
+    pg.exec(db, "insert into gbasic_site_post_events (remote_ip, kind) values ($1, $2)", [client_ip(req), kind])
+    return true
+end function
+
+function rate_limited_response(req)
+    body = "<h1>Slow down</h1><p>You are posting too quickly. Please wait a little while and try again.</p><p><a href=\"/forum\">Back to forum</a></p>"
+    return shell_response(req, 429, "Slow down", body)
+end function
+
 function current_session(db, req)
     if is_unknown(req.cookies["gbasic_site_session"]) then
         return {authenticated:false, admin:false, username:""}
@@ -434,7 +513,11 @@ function create_topic(db, req, slug)
         body = "<h1>Create topic</h1><p>" + html_escape(validation_error) + "</p><p><a href=\"/forum/" + html_escape(slug) + "/new\">Try again</a></p>"
         return shell_response(req, 400, "Create topic", body)
     end if
+    if post_rate_limited(db, req) then
+        return rate_limited_response(req)
+    end if
     rows = pg.query(db, "insert into gbasic_site_topics (category_id, title, author_name, body) values ($1, $2, $3, $4) returning id", [categories[0].id, title, author, body_text])
+    record_post_event(db, req, "topic")
     body = "<h1>Topic created</h1><p><a href=\"/topic/" + string(rows[0].id) + "\">View " + html_escape(title) + "</a></p><p><a href=\"/forum/" + html_escape(categories[0].slug) + "\">Back to " + html_escape(categories[0].title) + "</a></p>"
     return shell_response(req, 201, "Topic created", body)
 end function
@@ -615,8 +698,12 @@ function create_reply(db, req, topic_id_text)
         body = "<h1>Reply</h1><p>" + html_escape(validation_error) + "</p><p><a href=\"/topic/" + string(topic_id) + "/reply\">Try again</a></p>"
         return shell_response(req, 400, "Reply", body)
     end if
+    if post_rate_limited(db, req) then
+        return rate_limited_response(req)
+    end if
     pg.exec(db, "insert into gbasic_site_posts (topic_id, author_name, body) values ($1, $2, $3)", [topic_id, author, body_text])
     pg.exec(db, "update gbasic_site_topics set updated_at = now() where id = $1", [topic_id])
+    record_post_event(db, req, "reply")
     body = "<h1>Reply posted</h1><p><a href=\"/topic/" + string(topic_id) + "\">Back to " + html_escape(topics[0].title) + "</a></p>"
     return shell_response(req, 201, "Reply posted", body)
 end function

@@ -29,7 +29,12 @@ The first production-capable model should be deliberately small:
 - moderation actions attributed to an authenticated username.
 
 Forum posting can initially remain anonymous or pseudonymous, but public
-posting should still have spam controls before launch.
+posting should still have spam controls before launch. The first such control
+is now in place: an app-layer per-IP rate limit on anonymous topic/reply
+posting (disabled by default, enabled via `GBASIC_SITE_POST_RATE_LIMIT` /
+`GBASIC_SITE_POST_RATE_WINDOW`; see the deployment doc's Spam Prevention
+section). Anonymous forms still use the shared development CSRF token, so the
+rate limit is spam friction, not authentication.
 
 ## Database Shape
 
@@ -164,6 +169,8 @@ moderation attribution to the authenticated username. Login already mints a
 fresh session id and per-session CSRF token on every success; it now also
 revokes any session named by the incoming cookie, so a fixed or stale session
 id cannot survive a login (fixation defense). The `now()` time primitive is now
-exposed for in-app expiration math. The main remaining hardening is an
-anti-abuse story for anonymous public posting (still on the shared development
-CSRF token).
+exposed for in-app expiration math. Anonymous public posting now has a first
+anti-abuse control — a per-IP rate limit (off by default, enabled via env) with
+its own integration test. The remaining hardening for public anonymous posting
+is moving its forms off the shared development CSRF token and, optionally,
+layering a moderation queue on top of the rate limit.

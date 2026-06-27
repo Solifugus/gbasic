@@ -86,7 +86,23 @@ chmod 600 examples/gbasic_site/csrf_token.txt
 ```
 
 The shared public-form CSRF token remains development-only until anonymous
-posting gets its own anti-abuse story.
+posting gets its own full anti-abuse story.
+
+## Anonymous Posting Rate Limit
+
+Anonymous topic and reply posting can be rate limited per client IP. It is
+disabled by default; enable it with:
+
+```sh
+export GBASIC_SITE_POST_RATE_LIMIT=5    # max accepted posts per window (0 = off)
+export GBASIC_SITE_POST_RATE_WINDOW=60  # window length in seconds (default 60)
+```
+
+Accepted posts are recorded in `gbasic_site_post_events`; once an IP reaches the
+limit within the window, further posts return `429` until the window passes. The
+client IP is taken from the last `X-Forwarded-For` hop when present (for a single
+trusted reverse proxy) and the direct socket address otherwise. This is spam
+friction, not authentication.
 
 ## Tests
 
