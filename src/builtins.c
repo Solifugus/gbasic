@@ -46,6 +46,8 @@ int gbasic_builtin_function(const char *name) {
         "self",
         "send",
         "receive",
+        "monitor",
+        "demonitor",
         "quote",
         "round",
         "len",

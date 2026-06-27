@@ -694,17 +694,25 @@ Each phase merges green before the next; the first is an invisible foundation.
     process-lifecycle behavior does not fit a stdout golden test, but every
     `spawn_*` example exercises normal-exit cleanup on each run).
   - **Phase 2 is complete.**
-- **Phase 3 — fault model / supervision (designed, §7.1; not yet built).** One new
+- **Phase 3 — fault model / supervision (designed, §7.1; 3a built).** One new
   primitive; supervisors are then programs, not runtime features. Sub-steps, each
   green before the next per the discipline above:
-  - **3a — death notification (the substantive piece).** `monitor(handle)` /
+  - **3a — death notification — DONE (2026-06-26).** `monitor(handle)` /
     `demonitor(ref)` builtins; the `["down", handle, reason]` tagged-tuple message
     delivered through the existing mailbox + retained buffer (§7.1). Two detection
-    paths into one delivery point: the spawner's pid→handle table gains captured
-    `waitpid` exit status (accurate reason for a parent monitoring its child), and
-    blocking `receive()` becomes a `poll()` over `{inbox} ∪ {monitored fds}` so a
-    monitored actor's mailbox-`POLLHUP` synthesizes a coarse-reason `down` for a
-    non-parent monitor. De-dupe one `down` per monitor ref; drop the fd afterward.
+    paths into one delivery point: the spawner's child table (`actor_children`)
+    gained the per-child handle id + captured `waitpid` status (accurate reason for
+    a parent monitoring its child), and blocking `receive()` became a `poll()` over
+    `{inbox} ∪ {monitored fds}` (`actor_wait`) so a monitored actor's
+    mailbox-`POLLHUP` synthesizes a coarse-reason `down` for a non-parent monitor.
+    One `down` per monitor ref (the monitor is retired on fire, dropping its fd).
+    A `monitor` ref is a plain number; a `down` for a target already dead at
+    `monitor` time is delivered immediately (reason `noproc`, or accurate if it was
+    our reaped child). The POLLHUP-before-reapable race is closed by a bounded
+    blocking `waitpid` on a child once its mailbox has hung up. Test:
+    `spawn_monitor_test` (clean exit → `normal`, crash → `error`, `demonitor` then
+    timed `receive("down", 1 seconds)` → `nothing`), Valgrind-clean across the
+    parent and its children.
   - **3b — the supervisor pattern + a deterministic test.** A canonical
     crash-and-restart supervisor in `stdlib` (the §7.1 example), plus a golden test
     made deterministic by construction: a worker that errors on a specific message,

@@ -6929,21 +6929,95 @@ static void actor_child_init(int inbox_fd, int self_fd) {
     root_mailbox_ready = 1;
 }
 
-/* --- spawned-child bookkeeping (orphan cleanup, §7) -------------------------
+/* --- spawned-child bookkeeping (orphan cleanup §7; death reasons §7.1) -------
  * Every actor this interpreter spawns joins one dedicated process group it owns,
  * and its pid is tracked so the group can be torn down and reaped on exit. The
- * group is never the inherited one (which may hold a parent shell pipeline). */
+ * group is never the inherited one (which may hold a parent shell pipeline).
+ *
+ * Phase 3 extends each record with the actor handle id the parent holds for that
+ * child and, once reaped, the raw wait status -- so a monitor on a child this
+ * interpreter spawned reports an ACCURATE death reason from the exit code rather
+ * than the coarse mailbox-hangup fallback (§7.1, detection path 1). */
+typedef struct {
+    pid_t pid;
+    uint64_t handle_id;   /* actor handle id for this child (0 until bound) */
+    int reaped;           /* waitpid has collected this child */
+    int status;           /* raw wait status, valid once reaped */
+} ActorChild;
+
 static pid_t actor_group_pgid = 0;
-static pid_t *actor_child_pids = NULL;
+static ActorChild *actor_children = NULL;
 static size_t actor_child_count = 0;
 
-static void actor_track_child(pid_t pid) {
-    pid_t *next = realloc(actor_child_pids, sizeof(pid_t) * (actor_child_count + 1));
+/* Track a freshly forked child; returns its record index so the caller can bind
+ * the handle id once the parent's handle to the child has been created. */
+static size_t actor_track_child(pid_t pid) {
+    ActorChild *next = realloc(actor_children,
+                               sizeof(ActorChild) * (actor_child_count + 1));
     if (!next) {
         abort();
     }
-    actor_child_pids = next;
-    actor_child_pids[actor_child_count++] = pid;
+    actor_children = next;
+    actor_children[actor_child_count].pid = pid;
+    actor_children[actor_child_count].handle_id = 0;
+    actor_children[actor_child_count].reaped = 0;
+    actor_children[actor_child_count].status = 0;
+    return actor_child_count++;
+}
+
+/* Reap any exited children without blocking, capturing each one's wait status so
+ * a later monitor death-notification can report the precise reason. */
+static void actor_reap_children(void) {
+    for (size_t i = 0; i < actor_child_count; i++) {
+        if (actor_children[i].reaped) {
+            continue;
+        }
+        int status = 0;
+        pid_t r;
+        while ((r = waitpid(actor_children[i].pid, &status, WNOHANG)) < 0 &&
+               errno == EINTR) {
+            /* retry */
+        }
+        if (r == actor_children[i].pid) {
+            actor_children[i].reaped = 1;
+            actor_children[i].status = status;
+        }
+    }
+}
+
+/* If `handle_id` names a child this interpreter spawned, ensure it is reaped and
+ * store its raw wait status in *status, returning 1. Callers reach here only once
+ * the child's mailbox has hung up (POLLHUP), which guarantees the child is exiting
+ * -- so a blocking waitpid closes the race where POLLHUP is observed a moment
+ * before the zombie becomes reapable, without risking an indefinite stall. A
+ * target that is not one of our children returns 0 (it gets the coarse reason). */
+static int actor_child_wait_status(uint64_t handle_id, int *status) {
+    if (handle_id == 0) {
+        return 0;
+    }
+    for (size_t i = 0; i < actor_child_count; i++) {
+        if (actor_children[i].handle_id != handle_id) {
+            continue;
+        }
+        if (!actor_children[i].reaped) {
+            int st = 0;
+            pid_t r;
+            while ((r = waitpid(actor_children[i].pid, &st, 0)) < 0 &&
+                   errno == EINTR) {
+                /* retry */
+            }
+            if (r == actor_children[i].pid) {
+                actor_children[i].reaped = 1;
+                actor_children[i].status = st;
+            }
+        }
+        if (actor_children[i].reaped) {
+            *status = actor_children[i].status;
+            return 1;
+        }
+        return 0;
+    }
+    return 0;
 }
 
 static void actor_cleanup_children(void) {
@@ -6952,13 +7026,16 @@ static void actor_cleanup_children(void) {
         kill(-actor_group_pgid, SIGTERM);
     }
     for (size_t i = 0; i < actor_child_count; i++) {
+        if (actor_children[i].reaped) {
+            continue;   /* already collected by actor_reap_children */
+        }
         int status = 0;
-        while (waitpid(actor_child_pids[i], &status, 0) < 0 && errno == EINTR) {
+        while (waitpid(actor_children[i].pid, &status, 0) < 0 && errno == EINTR) {
             /* retry */
         }
     }
-    free(actor_child_pids);
-    actor_child_pids = NULL;
+    free(actor_children);
+    actor_children = NULL;
     actor_child_count = 0;
     actor_group_pgid = 0;
 }
@@ -7161,33 +7238,213 @@ static long long duration_to_ms(Duration d) {
     return secs * 1000;
 }
 
-/* Wait for the mailbox to become readable. timeout_ms < 0 blocks forever.
- * Returns 1 (readable), 0 (timed out), or -1 (error). */
-static int mailbox_wait(int timeout_ms) {
-    struct pollfd p;
-    p.fd = root_mailbox.read_fd;
-    p.events = POLLIN;
-    p.revents = 0;
-    for (;;) {
-        int n = poll(&p, 1, timeout_ms);
-        if (n > 0) {
-            return 1;
+/* --- death notification / monitors (§7.1) ----------------------------------
+ * monitor(handle) registers the caller's interest in another actor's death. The
+ * monitor keeps a copy of the target handle -- which holds the target's mailbox
+ * write end, our detection fd -- and a unique reference the caller can later pass
+ * to demonitor(). When the target process dies its inbox read end closes, so our
+ * held write end reports POLLHUP; we synthesize the ordinary tagged message
+ * ["down", handle, reason] into the retain buffer, where it is delivered through
+ * normal receive() (and matched by receive("down")). A child this interpreter
+ * spawned yields an accurate reason from its captured exit status (path 1); any
+ * other target yields the coarse reason "down" (path 2). One down per reference. */
+typedef struct Monitor {
+    uint64_t ref;       /* reference returned to gBASIC; demonitor() cancels by it */
+    Value target;       /* retained copy of the monitored handle (VALUE_ACTOR) */
+    struct Monitor *next;
+} Monitor;
+
+static Monitor *monitor_head = NULL;
+static uint64_t next_monitor_ref = 1;
+
+static void monitor_clear(void) {
+    Monitor *m = monitor_head;
+    while (m) {
+        Monitor *next = m->next;
+        value_free(m->target);
+        free(m);
+        m = next;
+    }
+    monitor_head = NULL;
+}
+
+/* Map a reaped child's raw wait status to a death reason (§7.1 table). */
+static const char *reason_from_status(int status) {
+    if (WIFEXITED(status)) {
+        return WEXITSTATUS(status) == 0 ? "normal" : "error";
+    }
+    if (WIFSIGNALED(status)) {
+        return "killed";
+    }
+    return "down";
+}
+
+/* Accurate reason if we spawned (and have reaped) the target; else `fallback`. */
+static const char *monitor_reason(uint64_t target_id, const char *fallback) {
+    int status;
+    if (actor_child_wait_status(target_id, &status)) {
+        return reason_from_status(status);
+    }
+    return fallback;
+}
+
+/* Build the death message ["down", handle, reason]; takes ownership of `handle`. */
+static Value make_down_message(Value handle, const char *reason) {
+    Value *items = malloc(sizeof(Value) * 3);
+    if (!items) {
+        abort();
+    }
+    items[0] = value_string("down");
+    items[1] = handle;
+    items[2] = value_string(reason);
+    return value_array(items, 3);
+}
+
+/* Has the target behind this mailbox write fd gone (its read end closed)? */
+static int monitor_fd_hung_up(int write_fd) {
+    struct pollfd p = { write_fd, 0, 0 };
+    int r = poll(&p, 1, 0);
+    return r > 0 && (p.revents & (POLLHUP | POLLERR | POLLNVAL));
+}
+
+/* Reap children, then synthesize a "down" for every monitor whose target has
+ * died, enqueueing it into the retain buffer and retiring that monitor (one down
+ * per reference). Never blocks. */
+static void actor_collect_downs(void) {
+    actor_reap_children();
+    Monitor **pp = &monitor_head;
+    while (*pp) {
+        Monitor *m = *pp;
+        if (monitor_fd_hung_up(m->target.as.actor->write_fd)) {
+            const char *reason = monitor_reason(m->target.as.actor->id, "down");
+            retain_append(make_down_message(value_copy(m->target), reason));
+            *pp = m->next;
+            value_free(m->target);
+            free(m);
+        } else {
+            pp = &m->next;
         }
-        if (n == 0) {
+    }
+}
+
+/* Wait until the inbox is readable, a monitored actor dies, or timeout_ms passes
+ * (negative blocks forever). Returns 1 (inbox), 2 (a monitor signalled), 0
+ * (timeout), or -1 (error). The blocking receive path polls {inbox} U {monitored
+ * fds} so a death wakes a receiver exactly as a message does (§7.1). */
+static int actor_wait(int timeout_ms) {
+    for (;;) {
+        size_t nmon = 0;
+        for (Monitor *m = monitor_head; m; m = m->next) {
+            nmon++;
+        }
+        size_t n = 1 + nmon;
+        struct pollfd *p = malloc(sizeof(struct pollfd) * n);
+        if (!p) {
+            abort();
+        }
+        p[0].fd = root_mailbox.read_fd;
+        p[0].events = POLLIN;
+        p[0].revents = 0;
+        size_t i = 1;
+        for (Monitor *m = monitor_head; m; m = m->next, i++) {
+            p[i].fd = m->target.as.actor->write_fd;
+            p[i].events = 0;   /* POLLHUP/POLLERR are reported regardless */
+            p[i].revents = 0;
+        }
+        int r = poll(p, n, timeout_ms);
+        if (r < 0) {
+            int eintr = (errno == EINTR);
+            free(p);
+            if (eintr) {
+                continue;
+            }
+            return -1;
+        }
+        if (r == 0) {
+            free(p);
             return 0;
         }
-        if (errno == EINTR) {
-            continue;
+        int inbox = p[0].revents != 0;
+        int mon = 0;
+        for (size_t k = 1; k < n; k++) {
+            if (p[k].revents != 0) {
+                mon = 1;
+                break;
+            }
         }
-        return -1;
+        free(p);
+        if (inbox) {
+            return 1;
+        }
+        if (mon) {
+            return 2;
+        }
+        /* spurious wakeup: poll again */
     }
+}
+
+static Value builtin_actor_monitor(Value handle) {
+    if (handle.kind != VALUE_ACTOR) {
+        value_free(handle);
+        runtime_error_raise("monitor: argument must be an actor handle",
+                            1003, "actor");
+        return value_null();
+    }
+    if (!ensure_root_mailbox()) {
+        value_free(handle);
+        return value_null();
+    }
+    Monitor *m = malloc(sizeof(Monitor));
+    if (!m) {
+        abort();
+    }
+    m->ref = next_monitor_ref++;
+    m->target = handle;          /* take ownership of the caller's handle copy */
+    m->next = monitor_head;
+    monitor_head = m;
+    uint64_t ref = m->ref;
+
+    /* If the target is already gone, deliver the death now rather than lose it.
+     * A child we spawned still yields its accurate reason; otherwise "noproc". */
+    actor_reap_children();
+    if (monitor_fd_hung_up(m->target.as.actor->write_fd)) {
+        const char *reason = monitor_reason(m->target.as.actor->id, "noproc");
+        retain_append(make_down_message(value_copy(m->target), reason));
+        monitor_head = m->next;
+        value_free(m->target);
+        free(m);
+    }
+    return value_number((double)ref);
+}
+
+static Value builtin_actor_demonitor(Value ref) {
+    if (ref.kind != VALUE_NUMBER) {
+        value_free(ref);
+        runtime_error_raise("demonitor: argument must be a monitor reference",
+                            1003, "actor");
+        return value_null();
+    }
+    uint64_t id = (uint64_t)ref.as.number;
+    value_free(ref);
+    for (Monitor **pp = &monitor_head; *pp; pp = &(*pp)->next) {
+        if ((*pp)->ref == id) {
+            Monitor *dead = *pp;
+            *pp = dead->next;
+            value_free(dead->target);
+            free(dead);
+            break;
+        }
+    }
+    return value_null();
 }
 
 /* The single implementation behind every receive form. With `has_tag`, only a
  * message whose tag matches `tag` is returned and non-matches are retained
  * (selective receive); otherwise the oldest message is returned (FIFO). With
  * `has_timeout`, the call returns `nothing` if no qualifying message arrives
- * within `timeout_ms`. Consumes `tag`. */
+ * within `timeout_ms`. A monitored actor's death is folded in as a synthesized
+ * ["down", ...] message each pass, so it is delivered like any other (§7.1).
+ * Consumes `tag`. */
 static Value actor_receive_impl(int has_tag, Value tag,
                                 int has_timeout, long long timeout_ms) {
     if (!ensure_root_mailbox()) {
@@ -7197,40 +7454,50 @@ static Value actor_receive_impl(int has_tag, Value tag,
         return value_null();
     }
 
-    /* A retained message may already satisfy the request. */
-    Value taken;
-    if (retain_take(has_tag ? &tag : NULL, &taken)) {
-        if (has_tag) {
-            value_free(tag);
-        }
-        return taken;
-    }
-
     long long deadline = has_timeout ? monotonic_ms() + timeout_ms : 0;
     for (;;) {
+        /* Fold in any deaths first, so a synthesized ["down", ...] is offered to
+         * this receive like a retained message (and matches receive("down")). */
+        actor_collect_downs();
+        Value taken;
+        if (retain_take(has_tag ? &tag : NULL, &taken)) {
+            if (has_tag) {
+                value_free(tag);
+            }
+            return taken;
+        }
+
+        int wait_ms = -1;
         if (has_timeout) {
             long long remaining = deadline - monotonic_ms();
             if (remaining < 0) {
                 remaining = 0;
             }
-            int wait_ms = remaining > INT_MAX ? INT_MAX : (int)remaining;
-            int w = mailbox_wait(wait_ms);
-            if (w == 0) {
-                if (has_tag) {
-                    value_free(tag);
-                }
-                return value_null();   /* timed out -> nothing */
-            }
-            if (w < 0) {
-                if (has_tag) {
-                    value_free(tag);
-                }
-                runtime_error_raise("receive: could not wait on mailbox",
-                                    1004, "actor");
-                return value_null();
-            }
+            wait_ms = remaining > INT_MAX ? INT_MAX : (int)remaining;
         }
 
+        int w = actor_wait(wait_ms);
+        if (w < 0) {
+            if (has_tag) {
+                value_free(tag);
+            }
+            runtime_error_raise("receive: could not wait on mailbox",
+                                1004, "actor");
+            return value_null();
+        }
+        if (w == 0) {
+            /* Only reachable with a deadline: timed out -> nothing. */
+            if (has_tag) {
+                value_free(tag);
+            }
+            return value_null();
+        }
+        if (w == 2) {
+            /* A monitored actor died; loop so actor_collect_downs synthesizes it. */
+            continue;
+        }
+
+        /* w == 1: the inbox is readable. */
         Value msg = value_null();
         int rc = actor_recv_one(&msg);
         if (rc == ACTOR_RECV_CLOSED) {
@@ -7520,7 +7787,7 @@ static Value eval_spawn(AstExpr *expr) {
         actor_group_pgid = pid;
     }
     setpgid(pid, actor_group_pgid);   /* harmless race with the child's setpgid */
-    actor_track_child(pid);
+    size_t child_index = actor_track_child(pid);
 
     /* Every child-only fd now belongs to the child. */
     close(child_box.read_fd);
@@ -7541,7 +7808,11 @@ static Value eval_spawn(AstExpr *expr) {
     close(ctrl[0]);
 
     if (n == 1 && status == 'R') {
-        return actor_handle_adopt_fd(child_box.write_fd);
+        Value handle = actor_handle_adopt_fd(child_box.write_fd);
+        /* Bind this child's record to the handle so a monitor on it can recover
+         * the accurate death reason from the child's exit status (§7.1). */
+        actor_children[child_index].handle_id = handle.as.actor->id;
+        return handle;
     }
 
     close(child_box.write_fd);   /* the child is reaped by actor_cleanup_children */
@@ -7642,6 +7913,7 @@ int eval_run_actor(AstStmtList program, const char *entry,
 
     actor_cleanup_children();
     retain_clear();
+    monitor_clear();
     function_clear();
     modifier_clear();
     env_clear(&global_env);
@@ -12565,6 +12837,33 @@ static Value eval_call(AstExpr *expr) {
         return value_null();
     }
 
+    if (strcmp(expr->as.call.name, "monitor") == 0) {
+        if (expr->as.call.args.count != 1) {
+            runtime_error_raise("monitor expects an actor handle", 1003, "actor");
+            return value_null();
+        }
+        Value handle = eval_expr(expr->as.call.args.items[0]);
+        if (error_action_pending()) {
+            value_free(handle);
+            return value_null();
+        }
+        return builtin_actor_monitor(handle);
+    }
+
+    if (strcmp(expr->as.call.name, "demonitor") == 0) {
+        if (expr->as.call.args.count != 1) {
+            runtime_error_raise("demonitor expects a monitor reference",
+                                1003, "actor");
+            return value_null();
+        }
+        Value ref = eval_expr(expr->as.call.args.items[0]);
+        if (error_action_pending()) {
+            value_free(ref);
+            return value_null();
+        }
+        return builtin_actor_demonitor(ref);
+    }
+
     if (strcmp(expr->as.call.name, "quote") == 0) {
         if (expr->as.call.args.count != 1) {
             runtime_error_raise("quote expects one argument", 1003, "source generation");
@@ -15163,6 +15462,7 @@ int eval_program(AstStmtList program) {
     consider_depth = 0;
     actor_cleanup_children();
     retain_clear();
+    monitor_clear();
     lock_clear();
     watcher_clear();
     modifier_clear();
