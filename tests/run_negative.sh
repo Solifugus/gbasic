@@ -171,6 +171,8 @@ cases=(
     negative_send_non_actor
     negative_self_args
     negative_send_arity
+    negative_send_strict_link
+    negative_send_strict_type
     negative_spawn_unknown
     negative_spawn_arity
     negative_receive_arity

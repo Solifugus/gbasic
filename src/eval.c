@@ -6412,6 +6412,11 @@ typedef struct {
 static ActorMsgSend *active_msg_send = NULL;
 static ActorMsgRecv *active_msg_recv = NULL;
 
+/* Non-zero while serializing a strict send (§6 / Phase 3c): a record field that
+ * still carries a live PBI `link` policy is diagnosed rather than silently
+ * degraded to a copy. Off by default, so plain send() stays total. */
+static int active_serialize_strict = 0;
+
 typedef struct {
     char *bytes;
     size_t length;
@@ -6497,6 +6502,18 @@ static int serialize_value(SerBuf *b, Value v, int depth) {
         serbuf_u64(b, (uint64_t)v.as.record.count);
         for (size_t i = 0; i < v.as.record.count; i++) {
             RecordField *f = &v.as.record.fields[i];
+            if (active_serialize_strict && f->policy == AST_FIELD_POLICY_LINK) {
+                /* §6: crossing the boundary copies everything, so a `link` loses
+                 * its write-through identity. Strict mode reports that rather than
+                 * degrading it silently. */
+                char message[256];
+                snprintf(message, sizeof message,
+                         "send: strict: field '%s' is a live link and loses its "
+                         "shared identity across the actor boundary",
+                         f->name);
+                runtime_error_raise(message, 1003, "actor");
+                return 0;
+            }
             serbuf_blob(b, f->name, strlen(f->name));
             if (!serialize_value(b, *f->value, depth + 1)) {
                 return 0;
@@ -7048,7 +7065,7 @@ static Value builtin_actor_self(void) {
     return value_actor(root_actor_handle);
 }
 
-static Value builtin_actor_send(Value handle, Value message) {
+static Value builtin_actor_send(Value handle, Value message, int strict) {
     if (handle.kind != VALUE_ACTOR) {
         value_free(handle);
         value_free(message);
@@ -7057,12 +7074,15 @@ static Value builtin_actor_send(Value handle, Value message) {
         return value_null();
     }
     /* Serialize the message, collecting the write fds of any actor handles it
-     * contains so they ride along as SCM_RIGHTS (runtime handle passing). */
+     * contains so they ride along as SCM_RIGHTS (runtime handle passing). In
+     * strict mode a live PBI `link` field is diagnosed instead of degrading. */
     ActorMsgSend xfer = {{0}, 0, 0};
     active_msg_send = &xfer;
+    active_serialize_strict = strict;
     char *bytes = NULL;
     size_t len = 0;
     int serialized = serialize_to_buffer(message, &bytes, &len);
+    active_serialize_strict = 0;
     active_msg_send = NULL;
     if (!serialized || xfer.overflow) {
         /* serialize_value already raised (non-sendable content / too many fds). */
@@ -12778,19 +12798,41 @@ static Value eval_call(AstExpr *expr) {
     }
 
     if (strcmp(expr->as.call.name, "send") == 0) {
-        if (expr->as.call.args.count != 2) {
-            runtime_error_raise("send expects an actor handle and a message",
-                                1003, "actor");
+        size_t sc = expr->as.call.args.count;
+        if (sc != 2 && sc != 3) {
+            runtime_error_raise("send expects an actor handle, a message, and an "
+                                "optional strict flag", 1003, "actor");
             return value_null();
         }
         Value handle = eval_expr(expr->as.call.args.items[0]);
         Value message = eval_expr(expr->as.call.args.items[1]);
+        /* Optional third argument: a boolean enabling strict-link diagnosis (§6). */
+        int strict = 0;
+        if (sc == 3) {
+            Value flag = eval_expr(expr->as.call.args.items[2]);
+            if (error_action_pending()) {
+                value_free(handle);
+                value_free(message);
+                value_free(flag);
+                return value_null();
+            }
+            if (flag.kind != VALUE_BOOL) {
+                value_free(handle);
+                value_free(message);
+                value_free(flag);
+                runtime_error_raise("send: the strict flag must be a boolean",
+                                    1003, "actor");
+                return value_null();
+            }
+            strict = flag.as.boolean;
+            value_free(flag);
+        }
         if (error_action_pending()) {
             value_free(handle);
             value_free(message);
             return value_null();
         }
-        return builtin_actor_send(handle, message);
+        return builtin_actor_send(handle, message, strict);
     }
 
     if (strcmp(expr->as.call.name, "receive") == 0) {

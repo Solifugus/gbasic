@@ -1,0 +1,1 @@
+runtime error at tests/negative_send_strict_link.bas:7:1: send: strict: field 'box' is a live link and loses its shared identity across the actor boundary

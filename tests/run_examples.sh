@@ -102,6 +102,7 @@ examples=(
     spawn_receive_timeout_test.bas
     spawn_monitor_test.bas
     supervisor_test.bas
+    send_link_lenient_test.bas
     quote_test.bas
     string_modifier_pipeline_test.bas
     string_helpers_test.bas

@@ -1,12 +1,12 @@
 # Multiprocessing (Actors) — Design
 
-Status: **Phases 0-2 implemented (2026-06-25); Phase 3 (fault model /
-supervision) designed below (§7.1, §8), not yet implemented** (design revised
-2026-06-24, Phase 3 added 2026-06-25). The **last**
-of the three pre-freeze language threads; PBI and Unicode (its two prerequisites)
-are complete. This revision closes the open architectural questions from the
-proposal draft so the phased plan in §8 can be executed without re-litigating the
-runtime model.
+Status: **COMPLETE — Phases 0-3 implemented (Phases 0-2 2026-06-25; Phase 3 fault
+model / supervision 2026-06-26, §7.1 + §8 steps 3a/3b/3c).** Design revised
+2026-06-24, Phase 3 added 2026-06-25, built 2026-06-26. The **last** of the three
+pre-freeze language threads; PBI and Unicode (its two prerequisites) are complete,
+so with this thread all three pre-freeze additions are done. This revision closed
+the open architectural questions from the proposal draft so the phased plan in §8
+could be executed without re-litigating the runtime model.
 
 **Decisions folded into this revision (previously open or under-specified):**
 
@@ -361,9 +361,18 @@ copies everything anyway, and `link` losing identity is the natural consequence 
 "shared reactive state stops at the isolate" — a property the programmer already
 accepts by using actors. This keeps `send` total and simple.
 
-A strict opt-in (a `send(… strict)` modifier or a program-level flag) that
-*diagnoses* sending a live `link` is **Phase 3** work, for code that wants the
-warning. Either way the behavior is documented loudly.
+A strict opt-in that *diagnoses* sending a live `link`, for code that wants the
+warning, is **Phase 3c — DONE (2026-06-26).** Because gBASIC calls are positional,
+the opt-in is an optional third argument to `send`: `send(handle, message, true)`
+raises an `actor` error naming the offending field
+(`send: strict: field 'box' is a live link …`) instead of silently degrading it;
+`send(handle, message)` and `send(handle, message, false)` keep the total, lenient
+default. Implemented by a strict flag threaded into the record case of
+`serialize_value` (it fires on a field whose policy is still
+`AST_FIELD_POLICY_LINK`). Tests: `examples/send_link_lenient_test.bas` (lenient
+degrades, value survives), `tests/negative_send_strict_link.bas` (strict diagnoses),
+`tests/negative_send_strict_type.bas` (the flag must be a boolean). Either way the
+behavior is documented loudly here.
 
 ## 7. Faults and lifecycle
 
@@ -707,9 +716,9 @@ Each phase merges green before the next; the first is an invisible foundation.
     process-lifecycle behavior does not fit a stdout golden test, but every
     `spawn_*` example exercises normal-exit cleanup on each run).
   - **Phase 2 is complete.**
-- **Phase 3 — fault model / supervision (designed, §7.1; 3a+3b built).** One new
-  primitive; supervisors are then programs, not runtime features. Sub-steps, each
-  green before the next per the discipline above:
+- **Phase 3 — fault model / supervision (designed, §7.1; 3a+3b+3c built — COMPLETE).**
+  One new primitive; supervisors are then programs, not runtime features. Sub-steps,
+  each green before the next per the discipline above:
   - **3a — death notification — DONE (2026-06-26).** `monitor(handle)` /
     `demonitor(ref)` builtins; the `["down", handle, reason]` tagged-tuple message
     delivered through the existing mailbox + retained buffer (§7.1). Two detection
@@ -734,9 +743,12 @@ Each phase merges green before the next; the first is an invisible foundation.
     a supervisor (the root actor) that restarts a *fixed* three times then gives up,
     printing a fixed transcript with no timing margins. Valgrind-clean across the
     parent and all four worker generations.
-  - **3c — the §6 `link`-strict diagnostic (optional, independent).** Opt-in
-    `send(…, strict)` / program flag that diagnoses a live PBI `link` field crossing
-    the boundary. Lands within Phase 3 or slips to post-freeze; touches nothing else.
+  - **3c — the §6 `link`-strict diagnostic — DONE (2026-06-26).** Opt-in
+    `send(handle, message, true)` diagnoses a live PBI `link` field crossing the
+    boundary (a strict flag threaded into `serialize_value`'s record case, firing on
+    `AST_FIELD_POLICY_LINK`); the default two-argument `send` stays total. One
+    positive + two negative tests; the `send`-arity diagnostic was reworded for the
+    optional flag. Touches nothing else.
   - **Deferred to future (documented, not built):** propagating bidirectional links
     and trap-exit. They are two monitors plus a propagation policy and a fresh verb
     (`link` is taken by PBI), added without rework if real programs ever demand
