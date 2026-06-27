@@ -105,6 +105,7 @@ examples=(
     send_link_lenient_test.bas
     first_class_function_test.bas
     method_test.bas
+    method_attach_test.bas
     quote_test.bas
     string_modifier_pipeline_test.bas
     string_helpers_test.bas

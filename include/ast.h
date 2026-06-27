@@ -184,9 +184,11 @@ struct AstStmt {
             AstStmtList body;
         } for_each;
         struct {
-            char *name;
+            char *name;          /* bare: the declared name; dotted: internal name (NULL until eval) */
             AstNameList params;
             AstStmtList body;
+            char *object;        /* dotted `function obj.method()`: receiver var name; else NULL */
+            char *field;         /* dotted: the method field name; else NULL */
         } function;
         AstExpr *return_expr;
         char *label;

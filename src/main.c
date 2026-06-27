@@ -282,7 +282,8 @@ static void provider_add(AddUsesContext *ctx, const char *library, const char *p
 static int library_provides_function(AstStmt *library, const char *name) {
     for (size_t i = 0; i < library->as.library.body.count; i++) {
         AstStmt *stmt = library->as.library.body.items[i];
-        if (stmt->kind == AST_STMT_FUNCTION && strcmp(stmt->as.function.name, name) == 0) {
+        if (stmt->kind == AST_STMT_FUNCTION && stmt->as.function.name &&
+            strcmp(stmt->as.function.name, name) == 0) {
             return 1;
         }
     }
@@ -643,7 +644,7 @@ static void analyze_stmt_list(AddUsesContext *ctx, AstStmtList list) {
 static void collect_defs(AddUsesContext *ctx, AstStmtList list) {
     for (size_t i = 0; i < list.count; i++) {
         AstStmt *stmt = list.items[i];
-        if (stmt->kind == AST_STMT_FUNCTION) {
+        if (stmt->kind == AST_STMT_FUNCTION && stmt->as.function.name) {
             string_list_add(&ctx->local_functions, stmt->as.function.name);
         } else if (stmt->kind == AST_STMT_MODIFIER) {
             if (strcmp(stmt->as.modifier.context, "assign") == 0) {

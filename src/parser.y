@@ -711,6 +711,10 @@ function_statement
     : FUNCTION IDENT LPAREN parameter_list_opt RPAREN NEWLINE statement_list END FUNCTION NEWLINE {
         $$ = ast_function($2, $4, $7);
       }
+    | FUNCTION QUALIFIED_IDENT LPAREN parameter_list_opt RPAREN NEWLINE statement_list END FUNCTION NEWLINE {
+        /* Dotted name: define-and-attach sugar. ast_function splits obj.method. */
+        $$ = ast_function($2, $4, $7);
+      }
     ;
 
 modifier_statement

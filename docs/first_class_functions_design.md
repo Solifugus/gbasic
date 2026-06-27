@@ -1,7 +1,7 @@
 # First-Class Functions & Methods — Design
 
-Status: **in progress (2026-06-26). Phases 0–1 (function values, methods + `this`)
-shipped; Phases 2–4 pending** (see §11). This is consciously a **fourth pre-freeze language thread**, after
+Status: **in progress (2026-06-26). Phases 0–2 (function values; methods + `this`;
+attach sugar) shipped; Phases 3–4 pending** (see §11). This is consciously a **fourth pre-freeze language thread**, after
 PBI, Unicode, and Multiprocessing (all complete) — it adds surface, so it moves the
 freeze deliberately rather than by accident. The goal is to let *behavior* travel with
 data, i.e. real methods on objects, built on the smallest enabling primitive: function
@@ -214,9 +214,24 @@ remain non-serializable).
   `tests/negative_this_read_only.bas`. Valgrind-clean. NOTE: the receiver `X` must be a
   simple variable name (the grammar splits `X.y` on the first dot); a chained receiver like
   `a.b.method()` is not a method call in v1 — attach to a local first.
-- **Phase 2 — attach sugar.** The dotted `function obj.method()` statement (desugar to
-  internal registered function + field store), accepted in statement position;
-  confirm forms 1–2 (literal reference, post-hoc assignment) work from Phase 0.
+- **Phase 2 — attach sugar. DONE (2026-06-26).** The dotted `function obj.method()`
+  statement. The lexer already returns `obj.method` as a single `QUALIFIED_IDENT`, so the
+  only grammar change is one extra `function_statement` alternative accepting
+  `QUALIFIED_IDENT`; `ast_function` splits it into `object`/`field` (new AST fields) and
+  leaves the internal `name` NULL. At eval time the `AST_STMT_FUNCTION` case detects a
+  dotted def and runs `eval_method_attach`: it generates a deterministic internal name from
+  source position (`obj.field@line:col`, stable for §10), registers the body under it, and
+  stores `value_function(internal_name)` in `obj.field` via the ordinary lvalue-assignment
+  path (so `obj` must be a record and PBI policies apply; re-attach replaces in place).
+  Dotted defs are NOT hoisted — every bulk/pre-pass registration site that derefs
+  `function.name` now skips them (`!object` guard), since `name` is NULL until the
+  statement executes. Forms 1–2 (literal reference, post-hoc assignment) already worked from
+  Phase 0. Tests: `examples/method_attach_test.bas`,
+  `tests/negative_method_attach_non_record.bas`. Valgrind-clean. NOTE on hoisting: gBASIC
+  registers *all* top-level functions on-reach (no genuine pre-hoist pass — a forward call
+  to a not-yet-reached top-level function already fails today), so the §7 "bare names are
+  hoisted" wording is idealized; in practice a method body can call any function defined
+  before the method is *called*. Phase 2 did not change that existing model.
 - **Phase 3 — `constructor`.** `new` invokes a `constructor` field after derivation,
   `this` = instance, inputs via `with`.
 - **Phase 4 — actor-sendable functions (optional, ties to multiprocessing).**

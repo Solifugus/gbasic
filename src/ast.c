@@ -2,6 +2,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 static void *xmalloc(size_t size) {
     void *ptr = malloc(size);
@@ -276,9 +277,30 @@ AstStmt *ast_for_each(char *name, AstExpr *iterable, AstStmtList body) {
 AstStmt *ast_function(char *name, AstNameList params, AstStmtList body) {
     AstStmt *stmt = xmalloc(sizeof(*stmt));
     stmt->kind = AST_STMT_FUNCTION;
-    stmt->as.function.name = name;
     stmt->as.function.params = params;
     stmt->as.function.body = body;
+    stmt->as.function.object = NULL;
+    stmt->as.function.field = NULL;
+    /* A dotted name (`function obj.method()`) is the define-and-attach sugar: an
+     * executable statement, not a hoisted declaration (first_class_functions_design
+     * §6-7). Split it now; the internal registered name is generated lazily at
+     * eval time from source position (it must be deterministic for §10). */
+    char *dot = strchr(name, '.');
+    if (dot) {
+        size_t object_len = (size_t)(dot - name);
+        char *object = xmalloc(object_len + 1);
+        memcpy(object, name, object_len);
+        object[object_len] = '\0';
+        stmt->as.function.object = object;
+        size_t field_len = strlen(dot + 1);
+        char *field = xmalloc(field_len + 1);
+        memcpy(field, dot + 1, field_len + 1);
+        stmt->as.function.field = field;
+        stmt->as.function.name = NULL;   /* filled in at registration time */
+        free(name);
+    } else {
+        stmt->as.function.name = name;
+    }
     return stmt;
 }
 
@@ -623,7 +645,12 @@ static void dump_stmt(AstStmt *stmt, int indent) {
         }
         break;
     case AST_STMT_FUNCTION:
-        printf("Function %s\n", stmt->as.function.name);
+        if (stmt->as.function.object) {
+            printf("Function %s.%s (attach)\n",
+                   stmt->as.function.object, stmt->as.function.field);
+        } else {
+            printf("Function %s\n", stmt->as.function.name);
+        }
         dump_indent(indent + 1);
         printf("Parameters");
         for (size_t i = 0; i < stmt->as.function.params.count; i++) {
@@ -911,6 +938,8 @@ static void free_stmt(AstStmt *stmt) {
         break;
     case AST_STMT_FUNCTION:
         free(stmt->as.function.name);
+        free(stmt->as.function.object);
+        free(stmt->as.function.field);
         for (size_t i = 0; i < stmt->as.function.params.count; i++) {
             free(stmt->as.function.params.items[i]);
         }

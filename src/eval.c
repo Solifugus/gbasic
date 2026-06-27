@@ -4111,7 +4111,9 @@ static void library_import_from_block(AstStmt *library) {
             if (error_action_pending()) {
                 return;
             }
-        } else if (stmt->kind == AST_STMT_FUNCTION) {
+        } else if (stmt->kind == AST_STMT_FUNCTION && !stmt->as.function.object) {
+            /* Dotted defs are executable attach statements, not hoistable
+             * declarations — they are never library exports. */
             function_register_def(stmt, 1, library->as.library.name);
         } else if (stmt->kind == AST_STMT_MODIFIER && stmt->as.modifier.exported) {
             modifier_register_def(stmt, 1, library->as.library.name);
@@ -7653,6 +7655,7 @@ static AstStmt *find_top_level_function(const char *name) {
     for (size_t i = 0; i < active_root.count; i++) {
         AstStmt *stmt = active_root.items[i];
         if (stmt->kind == AST_STMT_FUNCTION &&
+            !stmt->as.function.object &&
             strcmp(stmt->as.function.name, name) == 0) {
             return stmt;
         }
@@ -7964,7 +7967,7 @@ int eval_run_actor(AstStmtList program, const char *entry,
      * helpers resolve (the normal top-level walk does not run for an actor). */
     for (size_t i = 0; i < program.count; i++) {
         AstStmt *stmt = program.items[i];
-        if (stmt->kind == AST_STMT_FUNCTION) {
+        if (stmt->kind == AST_STMT_FUNCTION && !stmt->as.function.object) {
             function_register(stmt);
         } else if (stmt->kind == AST_STMT_MODIFIER) {
             modifier_register(stmt);
@@ -15224,6 +15227,60 @@ static LValueAssignResult assign_lvalue(AstExpr *target, Value value) {
     }
 }
 
+/* Give a dotted-def function (`function obj.method()`) its internal registered
+ * name. Derived from source position so it is deterministic and stable across the
+ * same program (required for cross-actor resolution, §10), and never typed by the
+ * user. Idempotent: set once, reused on re-execution. */
+static void method_ensure_internal_name(AstStmt *stmt) {
+    if (stmt->as.function.name) {
+        return;
+    }
+    char buffer[320];
+    snprintf(buffer, sizeof(buffer), "%s.%s@%d:%d",
+             stmt->as.function.object,
+             stmt->as.function.field,
+             stmt->line,
+             stmt->column);
+    stmt->as.function.name = copy_string(buffer);
+}
+
+/* Execute a define-and-attach statement: register the body under its internal
+ * name, then store a function value referencing it in obj.field (ordinary field
+ * assignment, so obj must be a record and PBI policies apply). Returns 1 on
+ * success, 0 after raising. */
+static int eval_method_attach(AstStmt *stmt) {
+    method_ensure_internal_name(stmt);
+    function_register(stmt);
+
+    AstExpr object_expr = {0};
+    object_expr.kind = AST_EXPR_IDENT;
+    object_expr.as.ident = stmt->as.function.object;
+    AstExpr field_expr = {0};
+    field_expr.kind = AST_EXPR_FIELD;
+    field_expr.as.field.object = &object_expr;
+    field_expr.as.field.field = stmt->as.function.field;
+
+    Value fn = value_function(stmt->as.function.name, NULL);
+    LValueAssignResult result = assign_lvalue(&field_expr, fn);
+    if (result == LVALUE_ASSIGN_ERROR) {
+        /* assign_lvalue leaves the value to the caller on error (see the
+         * AST_STMT_ASSIGN path). */
+        value_free(fn);
+        return 0;
+    }
+    if (result == LVALUE_ASSIGN_CHANGED) {
+        char *watch_path = lvalue_watch_path(&field_expr);
+        if (watch_path) {
+            int ok = watcher_trigger_change(watch_path);
+            free(watch_path);
+            if (!ok) {
+                return 0;
+            }
+        }
+    }
+    return 1;
+}
+
 static EvalResult eval_stmt(AstStmt *stmt) {
     EvalResult no_result = eval_no_result();
     int previous_line = current_line;
@@ -15376,7 +15433,16 @@ static EvalResult eval_stmt(AstStmt *stmt) {
         break;
     }
     case AST_STMT_FUNCTION:
-        function_register(stmt);
+        if (stmt->as.function.object) {
+            /* Dotted def: an executable attach statement, not a hoisted decl. */
+            if (!eval_method_attach(stmt)) {
+                current_line = previous_line;
+                current_column = previous_column;
+                return eval_error_result();
+            }
+        } else {
+            function_register(stmt);
+        }
         break;
     case AST_STMT_MODIFIER:
         modifier_register(stmt);
