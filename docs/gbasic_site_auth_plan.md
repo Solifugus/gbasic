@@ -121,9 +121,12 @@ needs:
 - session-id-safe tokens are available through `secure_token(length)`,
 - session expiration is enforced in SQL (`expires_at > now()`); dedicated gBASIC
   time helpers for expiration math are still not exposed,
-- `chr`/`code` byte primitives now make complete percent-decoding possible in
-  app code; standard `form_decode`/`url_decode` and HTML-escaping helpers would
-  still remove per-app boilerplate.
+- percent-decoding must rebuild raw bytes with `from_bytes([n])`, not `chr(n)`:
+  after Unicode v1 `chr`/`code` are codepoint builtins, so `chr(0xC3)` re-encodes
+  as multi-byte UTF-8 and corrupts multi-byte form input. Standard
+  `form_decode`/`url_decode` and HTML-escaping helpers would remove this
+  per-app byte-assembly boilerplate (and the easy-to-miss `chr` vs `from_bytes`
+  trap) entirely.
 
 ## Interim Options
 
@@ -154,7 +157,11 @@ The auth plan is ready to move from design to implementation when:
 Status: all of the above are now met. `tests/run_gbasic_site_postgres.sh`
 covers invalid and valid login, missing/forbidden CSRF on moderation, an
 expired session (seeded via `tests/gbasic_site_seed_expired_session.bas`),
-logout, post-revocation lockout, and moderation attribution to the
-authenticated username. Remaining hardening is session rotation, dedicated
-time helpers, and an anti-abuse story for anonymous public posting (still on
-the shared development CSRF token).
+session rotation (a fresh login issues a new session id and revokes the
+incoming cookie's prior session), logout, post-revocation lockout, and
+moderation attribution to the authenticated username. Login already mints a
+fresh session id and per-session CSRF token on every success; it now also
+revokes any session named by the incoming cookie, so a fixed or stale session
+id cannot survive a login (fixation defense). Remaining hardening is dedicated
+time helpers for expiration math and an anti-abuse story for anonymous public
+posting (still on the shared development CSRF token).

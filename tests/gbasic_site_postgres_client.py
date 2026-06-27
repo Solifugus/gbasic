@@ -45,15 +45,12 @@ def admin_post(port, path, fields, cookie, csrf_token):
     return request(port, "POST", path, body=body, headers=headers)
 
 
-def login(port, username, password):
+def login(port, username, password, cookie=None):
     body = urllib.parse.urlencode({"username": username, "password": password})
-    return request(
-        port,
-        "POST",
-        "/login",
-        body=body,
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
-    )
+    headers = {"Content-Type": "application/x-www-form-urlencoded"}
+    if cookie:
+        headers["Cookie"] = cookie
+    return request(port, "POST", "/login", body=body, headers=headers)
 
 
 def csrf_from(body):
@@ -246,6 +243,27 @@ def main():
     session_csrf = csrf_from(body)
     print(session_csrf != "")
     print(session_csrf != CSRF_TOKEN)
+
+    # Logging in again rotates the session: a fresh id is issued and the prior
+    # session cookie is revoked (session-fixation defense).
+    status, headers, body = login(port, ADMIN_USER, ADMIN_PASSWORD, cookie=session_cookie)
+    print(status)
+    rotated_cookie = headers.get("set-cookie-values", "").split(";", 1)[0]
+    print(rotated_cookie.startswith("gbasic_site_session="))
+    print(rotated_cookie != session_cookie)
+
+    # The prior session cookie is now revoked and cannot reach /admin.
+    status, _, body = request(port, "GET", "/admin", headers={"Cookie": session_cookie})
+    print(status)
+    print("Admin sign-in required." in body)
+
+    # Adopt the rotated-in session for the rest of the run.
+    session_cookie = rotated_cookie
+    status, _, body = request(port, "GET", "/admin", headers={"Cookie": session_cookie})
+    print(status)
+    print("Signed in as site-admin." in body)
+    session_csrf = csrf_from(body)
+    print(session_csrf != "")
 
     # Moderation without the session CSRF token is rejected.
     status, _, body = request(

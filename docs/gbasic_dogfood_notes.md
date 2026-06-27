@@ -31,12 +31,17 @@ after the app proves the need.
   references.
 - HTML escaping is app-local but should probably become a standard-library
   helper.
-- Complete percent-decoding is now possible. The runtime gained `chr(code)` and
-  `code(text)` byte primitives, and the site decodes arbitrary `%XX` bytes by
-  assembling them with `chr`; because gBASIC strings are byte sequences, this
-  reconstructs multi-byte UTF-8 (verified with `café`, `Straße`, and an emoji).
-  A higher-level `url_decode`/`form_decode` standard-library helper would still
-  remove this boilerplate from every app, but the missing primitive is resolved.
+- Complete percent-decoding works, but the correct primitive is `from_bytes`,
+  not `chr`. Unicode v1 redefined `chr`/`code` as *codepoint* builtins, so
+  `chr(0xC3)` returns U+00C3 and re-encodes as two UTF-8 bytes — assembling
+  `%XX` escapes with `chr` silently corrupts every multi-byte sequence. The site
+  decodes each escaped byte with `from_bytes([byte_value])` and relies on
+  binary-safe string concatenation to reassemble UTF-8 (verified with `café`,
+  `Straße`, and an emoji). DOGFOOD LESSON: a language change (codepoint `chr`)
+  silently broke a shipped app whose golden test masked it (the runner did not
+  fail on output mismatch); both are now fixed. A higher-level
+  `url_decode`/`form_decode` standard-library helper would remove this
+  byte-assembly boilerplate — and the `chr`-vs-`from_bytes` trap — from every app.
 - LANGUAGE DESIGN: adding `chr`/`code` exposed that builtin names live in a flat
   global namespace and silently collide with user identifiers. Specifically, a
   builtin name cannot be used as a modifier-assignment target — `code(uppered)=

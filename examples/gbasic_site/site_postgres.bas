@@ -43,7 +43,11 @@ function form_decode_text(text)
                 if byte_value = 0 then
                     result = result + "%" + seg
                 else
-                    result = result + chr(byte_value) + rest_text
+                    ' Emit the raw decoded byte. chr() is a codepoint builtin
+                    ' (Unicode v1) and would re-encode bytes >127 as multi-byte
+                    ' UTF-8; from_bytes preserves the exact percent-decoded byte
+                    ' so multi-byte UTF-8 form input reassembles correctly.
+                    result = result + from_bytes([byte_value]) + rest_text
                 end if
                 decoded = true
             end if
@@ -326,6 +330,15 @@ function login_submit(db, req)
     end if
     if not password_verify(password, users[0].password_hash) then
         return login_failed(req)
+    end if
+
+    ' Rotate: invalidate any session referenced by the incoming cookie so a
+    ' fixed or stale session id cannot survive a fresh login (fixation defense).
+    if not is_unknown(req.cookies["gbasic_site_session"]) then
+        prior_id = trim(req.cookies["gbasic_site_session"])
+        if prior_id != "" then
+            pg.exec(db, "update gbasic_site_sessions set revoked_at = now() where id = $1 and revoked_at is null", [prior_id])
+        end if
     end if
 
     session_id = secure_token(43)

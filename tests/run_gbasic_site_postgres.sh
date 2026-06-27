@@ -145,4 +145,7 @@ fi
 
 if diff -u tests/gbasic_site_postgres_client.out "$client_stdout"; then
     printf 'PASS examples/gbasic_site/site_postgres.bas\n'
+else
+    printf 'FAIL examples/gbasic_site/site_postgres.bas (client output mismatch)\n'
+    exit 1
 fi
