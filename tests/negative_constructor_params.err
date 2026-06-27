@@ -1,0 +1,1 @@
+runtime error at tests/negative_constructor_params.bas:5:1: constructor must take no parameters (inputs come through `with`)

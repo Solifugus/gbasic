@@ -1,7 +1,8 @@
 # First-Class Functions & Methods — Design
 
-Status: **in progress (2026-06-26). Phases 0–2 (function values; methods + `this`;
-attach sugar) shipped; Phases 3–4 pending** (see §11). This is consciously a **fourth pre-freeze language thread**, after
+Status: **in progress (2026-06-26). Phases 0–3 (function values; methods + `this`;
+attach sugar; `constructor`) shipped; Phase 4 (actor-sendable functions, optional)
+pending** (see §11). This is consciously a **fourth pre-freeze language thread**, after
 PBI, Unicode, and Multiprocessing (all complete) — it adds surface, so it moves the
 freeze deliberately rather than by accident. The goal is to let *behavior* travel with
 data, i.e. real methods on objects, built on the smallest enabling primitive: function
@@ -232,8 +233,16 @@ remain non-serializable).
   to a not-yet-reached top-level function already fails today), so the §7 "bare names are
   hoisted" wording is idealized; in practice a method body can call any function defined
   before the method is *called*. Phase 2 did not change that existing model.
-- **Phase 3 — `constructor`.** `new` invokes a `constructor` field after derivation,
-  `this` = instance, inputs via `with`.
+- **Phase 3 — `constructor`. DONE (2026-06-26).** After `AST_EXPR_NEW` derives the
+  instance and applies the `with` overrides, `invoke_constructor(&instance)` runs: if the
+  instance has a `constructor` function field it is invoked with `this` = the instance and
+  no argument list (inputs read from `this`, populated by `with`); the return is freed. The
+  constructor must declare zero parameters (else raised). A constructor that raises
+  propagates with no instance (§12.5 resolved: propagate). Composes with PBI — the
+  `constructor` field copies into instances like any field and a derived prototype can
+  override it (`new Base with { constructor: … }`). `new` *always* runs the constructor, so
+  even a "prototype" built with `new` is constructed. Tests:
+  `examples/constructor_test.bas`, `tests/negative_constructor_params.bas`. Valgrind-clean.
 - **Phase 4 — actor-sendable functions (optional, ties to multiprocessing).**
   `SER_FUNCTION` by name + registry resolution; deterministic naming for internal
   functions; record-with-method sends across a mailbox.
@@ -256,8 +265,8 @@ complexity, not speculation.
 3. **Function-value equality and `type`** surface (§3) — confirm `"function"` and
    same-reference equality; decide whether to add `is_function`.
 4. **`print`/`quote` representation** of a function value (§3).
-5. **`constructor` error propagation** — a constructor that raises: does `new` return
-   the half-built instance, `nothing`, or propagate? (Lean: propagate, no instance.)
+5. **`constructor` error propagation** — RESOLVED (Phase 3): a raising constructor
+   propagates and `new` yields no instance (the half-built instance is discarded).
 
 ## 13. Deferred to future (documented, not built)
 

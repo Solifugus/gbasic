@@ -86,6 +86,7 @@ cases=(
     negative_this_outside_method
     negative_this_read_only
     negative_method_attach_non_record
+    negative_constructor_params
     negative_len_assignment
     negative_foo_assignment
     negative_getname_assignment

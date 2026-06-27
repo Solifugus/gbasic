@@ -5150,6 +5150,33 @@ static Value eval_user_function(AstExpr *expr, FunctionDef *function) {
     return eval_user_function_with_receiver(expr, function, NULL);
 }
 
+/* If `instance` carries a `constructor` function field, invoke it with `this` =
+ * the instance (no argument list — inputs arrive via `new … with {…}`, read from
+ * this; first_class_functions_design.md §8). Returns 1 on success or when there
+ * is no constructor; returns 0 if the constructor raised, in which case the
+ * caller discards the half-built instance (§12.5: propagate, no instance). */
+static int invoke_constructor(Value *instance) {
+    RecordField *field = record_find(instance, "constructor");
+    if (!field || field->value->kind != VALUE_FUNCTION) {
+        return 1;
+    }
+    FunctionDef *ctor = function_resolve(field->value->as.function.library,
+                                         field->value->as.function.name);
+    if (!ctor) {
+        runtime_error_raise("constructor references unknown function", 1003,
+                            "constructor");
+        return 0;
+    }
+    if (ctor->stmt->as.function.params.count != 0) {
+        runtime_error_raise("constructor must take no parameters "
+                            "(inputs come through `with`)", 1003, "constructor");
+        return 0;
+    }
+    Value result = invoke_function(ctor->stmt, NULL, 0, instance);
+    value_free(result);
+    return !error_action_pending();
+}
+
 static void call_label(AstExpr *expr, char *buffer, size_t size) {
     if (expr->as.call.library) {
         snprintf(buffer, size, "%s.%s", expr->as.call.library, expr->as.call.name);
@@ -14727,6 +14754,12 @@ static Value eval_expr(AstExpr *expr) {
                 }
             }
             value_free(overrides);
+        }
+        /* §8: after derivation + `with`, a `constructor` field runs with this =
+         * the new instance. A raising constructor propagates with no instance. */
+        if (!invoke_constructor(&instance)) {
+            value_free(instance);
+            return value_null();
         }
         return instance;
     }
