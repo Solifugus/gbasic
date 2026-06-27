@@ -568,8 +568,21 @@ Restart **strategies** (one-for-one, all-for-one, rest-for-one),
 **max-restart-intensity** (give up after N restarts in T), and **escalation** (a
 supervisor that is itself monitored by a higher one) are all ordinary control flow
 over this one primitive. Recommendation: ship **one canonical supervisor pattern**
-in `stdlib` as a documented example and leave richer strategies to the program,
-rather than baking strategy enums into the runtime.
+as a documented worked example and leave richer strategies to the program, rather
+than baking strategy enums into the runtime.
+
+**Why a worked example, not a parameterized `stdlib` library.** A reusable
+`library supervisor` that `spawn`s an arbitrary worker is *not expressible*: `spawn`
+takes a **literal** function name in the grammar (`SPAWN IDENT LPAREN …`,
+`parser.y`), not a runtime string, so a library cannot spawn a worker chosen by its
+caller; and a `program` body cannot call user functions by name either (only
+`spawn`/builtins resolve there). Both are consequences of gBASIC having no
+first-class functions (the same constraint that made supervision a program rather
+than a construct). So the canonical pattern ships as a **copyable example**
+(`examples/supervisor_test.bas`), where the worker entry is named literally at the
+`spawn` site — exactly how a real supervisor program is written. (A future
+`spawn name(args)` with a runtime name would unlock a generic library; out of scope
+for v1, noted in §9.)
 
 **Links (bidirectional, propagating) — deferred, deliberately.** Erlang also has
 `link`: bidirectional, where an *abnormal* death propagates an exit signal that
@@ -694,7 +707,7 @@ Each phase merges green before the next; the first is an invisible foundation.
     process-lifecycle behavior does not fit a stdout golden test, but every
     `spawn_*` example exercises normal-exit cleanup on each run).
   - **Phase 2 is complete.**
-- **Phase 3 — fault model / supervision (designed, §7.1; 3a built).** One new
+- **Phase 3 — fault model / supervision (designed, §7.1; 3a+3b built).** One new
   primitive; supervisors are then programs, not runtime features. Sub-steps, each
   green before the next per the discipline above:
   - **3a — death notification — DONE (2026-06-26).** `monitor(handle)` /
@@ -713,11 +726,14 @@ Each phase merges green before the next; the first is an invisible foundation.
     `spawn_monitor_test` (clean exit → `normal`, crash → `error`, `demonitor` then
     timed `receive("down", 1 seconds)` → `nothing`), Valgrind-clean across the
     parent and its children.
-  - **3b — the supervisor pattern + a deterministic test.** A canonical
-    crash-and-restart supervisor in `stdlib` (the §7.1 example), plus a golden test
-    made deterministic by construction: a worker that errors on a specific message,
-    a supervisor that restarts a *fixed* number of times then gives up, printing a
-    fixed transcript — no timing margins (mirrors the Phase 2 determinism rule).
+  - **3b — the supervisor pattern + a deterministic test — DONE (2026-06-26).**
+    The canonical crash-and-restart supervisor ships as a copyable worked example,
+    `examples/supervisor_test.bas` (not a parameterized `stdlib` library — see §7.1
+    for why `spawn`'s literal-name grammar makes a generic one inexpressible). The
+    golden test is deterministic by construction: a worker that crashes on `"work"`,
+    a supervisor (the root actor) that restarts a *fixed* three times then gives up,
+    printing a fixed transcript with no timing margins. Valgrind-clean across the
+    parent and all four worker generations.
   - **3c — the §6 `link`-strict diagnostic (optional, independent).** Opt-in
     `send(…, strict)` / program flag that diagnoses a live PBI `link` field crossing
     the boundary. Lands within Phase 3 or slips to post-freeze; touches nothing else.
