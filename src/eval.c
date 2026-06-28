@@ -15010,6 +15010,21 @@ static Value apply_assignment_modifier(AstModifierUse modifier, Value value) {
         value_free(value);
         return value_datetime(datetime);
     }
+    if (!modifier.library && strcmp(modifier.name, "datetime") == 0) {
+        /* A datetime is always a full timestamp: parse the date/time parts the
+         * same way `date` does, then force second precision so a date-only
+         * string fills 00:00:00 (distinguishing it from precision-inferring
+         * `date`). Matches the value `now()` produces. */
+        DateTime datetime;
+        if (value.kind != VALUE_STRING || !parse_date_value(value.as.string, &datetime)) {
+            fprintf(stderr, "datetime modifier expects an ISO-like date-time string\n");
+            value_free(value);
+            return value_null();
+        }
+        datetime.precision = PREC_SECOND;
+        value_free(value);
+        return value_datetime(datetime);
+    }
     DateTimePrecision lens = PREC_YEAR;
     if (!modifier.library && datetime_lens_precision(modifier.name, &lens)) {
         int ok = 0;

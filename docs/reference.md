@@ -615,6 +615,12 @@ Built-in/core modifiers include:
 - Assignment: `USD`, `date`, `time`, `datetime`, `year`, `month`, `day`, `hour`, `minute`, `second`, `file`, `dir`, `trimmed`, `lowered`, `uppered`, `split`, `join`, `length`, `number`, `string`
 - Comparison: `caseless`, date/time lens comparisons
 
+`date` infers precision from the string (`"2026-05-15"` is day-precise,
+`"2026-05-15 12:05:03"` is second-precise). `datetime` always yields a full
+second-precision timestamp, filling missing time components with `00:00:00` — the
+same value `now()` produces. The `year`/`month`/`day`/`hour`/`minute`/`second`
+modifiers are truncation lenses usable in both assignment and comparison.
+
 ## Libraries
 
 A file may contain libraries and a program.
@@ -1238,8 +1244,13 @@ as a string or number). `serialize` produces an opaque **binary-safe string** th
 directory references:
 
 ```basic
-deserialize(serialize({when: today(), cost(USD): 9.99}))   # exact copy, types intact
+cost(USD)= 9.99
+deserialize(serialize({when: now(), cost: cost}))   # exact copy, types intact
 ```
+
+(Build typed values before placing them in a record literal: inside a literal the
+`name (…)` prefix is reserved for PBI field policies, so `cost(USD): 9.99` is not a
+money field — see *Objects (Policy-Based Inheritance)*.)
 
 Live database connections cannot be serialized (a structured error is raised), and
 corrupt or truncated input to `deserialize` raises a structured error rather than

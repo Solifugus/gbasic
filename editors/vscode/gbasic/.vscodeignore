@@ -1,0 +1,7 @@
+# Files excluded from the packaged .vsix (keep the listing lean).
+install.sh
+PUBLISHING.md
+.vscodeignore
+.gitignore
+**/*.svg
+**/.DS_Store

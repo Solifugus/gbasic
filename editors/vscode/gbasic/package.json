@@ -5,8 +5,19 @@
   "version": "0.1.0",
   "publisher": "tedderland",
   "license": "MIT",
+  "icon": "icon.png",
   "engines": { "vscode": "^1.60.0" },
   "categories": ["Programming Languages"],
+  "keywords": ["gBASIC", "BASIC", "gb", "bas", "syntax highlighting"],
+  "galleryBanner": { "color": "#0f1117", "theme": "dark" },
+  "homepage": "https://github.com/solifugus/gbasic/tree/master/editors/vscode/gbasic",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/solifugus/gbasic.git",
+    "directory": "editors/vscode/gbasic"
+  },
+  "bugs": { "url": "https://github.com/solifugus/gbasic/issues" },
+  "qna": false,
   "contributes": {
     "languages": [
       {

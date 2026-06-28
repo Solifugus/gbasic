@@ -35,6 +35,7 @@ examples=(
     datetime_exact_comparison_test.bas
     datetime_lens_test.bas
     datetime_lens_operator_test.bas
+    datetime_modifier_test.bas
     dates_lib_test.bas
     keyword_stability_test.bas
     duration_test.gb
