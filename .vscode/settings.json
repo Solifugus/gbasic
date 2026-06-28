@@ -1,0 +1,6 @@
+{
+  "// gBASIC": "Treat .bas as gBASIC inside this workspace only, so it does not collide with other BASIC dialects globally. Requires the gBASIC VS Code extension (editors/vscode/gbasic).",
+  "files.associations": {
+    "*.bas": "gbasic"
+  }
+}

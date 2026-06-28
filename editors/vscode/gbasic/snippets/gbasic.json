@@ -1,0 +1,93 @@
+{
+  "Program": {
+    "prefix": "program",
+    "body": [
+      "program ${1:main}(${2:args})",
+      "\t$0",
+      "end program"
+    ],
+    "description": "program block (entry point)"
+  },
+  "Function": {
+    "prefix": "function",
+    "body": [
+      "function ${1:name}(${2:args})",
+      "\t$0",
+      "\treturn ${3:value}",
+      "end function"
+    ],
+    "description": "function definition"
+  },
+  "Library": {
+    "prefix": "library",
+    "body": [
+      "library ${1:name}",
+      "\t$0",
+      "end library"
+    ],
+    "description": "library module"
+  },
+  "If": {
+    "prefix": "if",
+    "body": [
+      "if ${1:condition} then",
+      "\t$0",
+      "end if"
+    ],
+    "description": "if block"
+  },
+  "If/Else": {
+    "prefix": "ifelse",
+    "body": [
+      "if ${1:condition} then",
+      "\t$2",
+      "else",
+      "\t$0",
+      "end if"
+    ],
+    "description": "if/else block"
+  },
+  "For each": {
+    "prefix": "foreach",
+    "body": [
+      "for each ${1:item} in ${2:collection}",
+      "\t$0",
+      "end for"
+    ],
+    "description": "for-each loop"
+  },
+  "While": {
+    "prefix": "while",
+    "body": [
+      "while ${1:condition}",
+      "\t$0",
+      "end while"
+    ],
+    "description": "while loop"
+  },
+  "On error resume next": {
+    "prefix": "onerror",
+    "body": [
+      "on error resume next",
+      "$0",
+      "on error stop"
+    ],
+    "description": "guard a statement, ignoring errors"
+  },
+  "Read text file": {
+    "prefix": "readfile",
+    "body": [
+      "${1:f}(file)= ${2:\"path\"}",
+      "${3:text} = read(${1:f})"
+    ],
+    "description": "read a whole file into a string"
+  },
+  "Write text file": {
+    "prefix": "writefile",
+    "body": [
+      "${1:f}(file)= ${2:\"path\"}",
+      "write(${1:f}, ${3:text})"
+    ],
+    "description": "write a string to a file (create/overwrite)"
+  }
+}

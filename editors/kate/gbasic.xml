@@ -1,0 +1,219 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE language SYSTEM "language.dtd">
+<!--
+  Kate / KSyntaxHighlighting definition for gBASIC (.bas / .gb).
+  Install: copy to ~/.local/share/org.kde.syntax-highlighting/syntax/
+  See editors/README.md for details.
+-->
+<language name="gBASIC"
+          version="1"
+          kateversion="5.0"
+          section="Sources"
+          extensions="*.bas;*.gb"
+          mimetype="text/x-gbasic"
+          author="gBASIC project"
+          license="MIT"
+          casesensitive="1">
+  <highlighting>
+
+    <!-- Structural / control keywords (from src/lexer.c keyword table) -->
+    <list name="keywords">
+      <item>program</item>
+      <item>library</item>
+      <item>load</item>
+      <item>use</item>
+      <item>export</item>
+      <item>from</item>
+      <item>if</item>
+      <item>then</item>
+      <item>else</item>
+      <item>end</item>
+      <item>for</item>
+      <item>each</item>
+      <item>to</item>
+      <item>step</item>
+      <item>while</item>
+      <item>consider</item>
+      <item>break</item>
+      <item>continue</item>
+      <item>function</item>
+      <item>return</item>
+      <item>print</item>
+      <item>dim</item>
+      <item>as</item>
+      <item>watch</item>
+      <item>without</item>
+      <item>watchers</item>
+      <item>modifier</item>
+      <item>goto</item>
+      <item>gosub</item>
+      <item>with</item>
+      <item>new</item>
+      <item>spawn</item>
+      <item>on</item>
+      <item>resume</item>
+      <item>next</item>
+      <item>stop</item>
+      <item>error</item>
+      <item>in</item>
+      <item>this</item>
+      <item>constructor</item>
+    </list>
+
+    <!-- Boolean / special value literals -->
+    <list name="constants">
+      <item>true</item>
+      <item>false</item>
+      <item>nothing</item>
+      <item>unknown</item>
+    </list>
+
+    <!-- Worded operators -->
+    <list name="operators">
+      <item>and</item>
+      <item>or</item>
+      <item>not</item>
+    </list>
+
+    <!-- Builtin functions (from src/builtins.c, plus read/write) -->
+    <list name="builtins">
+      <item>read</item>
+      <item>write</item>
+      <item>compare</item>
+      <item>env</item>
+      <item>password_hash</item>
+      <item>password_verify</item>
+      <item>secure_token</item>
+      <item>now</item>
+      <item>string</item>
+      <item>number</item>
+      <item>boolean</item>
+      <item>array</item>
+      <item>record</item>
+      <item>replace</item>
+      <item>starts_with</item>
+      <item>ends_with</item>
+      <item>repeat</item>
+      <item>chr</item>
+      <item>code</item>
+      <item>byte_count</item>
+      <item>byte_at</item>
+      <item>from_bytes</item>
+      <item>keys</item>
+      <item>values</item>
+      <item>has</item>
+      <item>remove_key</item>
+      <item>count</item>
+      <item>type</item>
+      <item>is_string</item>
+      <item>is_number</item>
+      <item>is_boolean</item>
+      <item>is_array</item>
+      <item>is_record</item>
+      <item>is_nothing</item>
+      <item>is_unknown</item>
+      <item>lower</item>
+      <item>upper</item>
+      <item>input</item>
+      <item>encode</item>
+      <item>decode</item>
+      <item>serialize</item>
+      <item>deserialize</item>
+      <item>self</item>
+      <item>send</item>
+      <item>receive</item>
+      <item>monitor</item>
+      <item>demonitor</item>
+      <item>quote</item>
+      <item>round</item>
+      <item>len</item>
+      <item>find</item>
+      <item>contains</item>
+      <item>remove_value</item>
+      <item>find_by</item>
+      <item>join_from</item>
+      <item>first</item>
+      <item>rest</item>
+      <item>left</item>
+      <item>right</item>
+      <item>mid</item>
+      <item>trim</item>
+      <item>split</item>
+      <item>join</item>
+      <item>append</item>
+      <item>delete</item>
+      <item>copy</item>
+      <item>move</item>
+      <item>list_files</item>
+      <item>make_dir</item>
+      <item>remove_dir</item>
+      <item>overwrite</item>
+      <item>read_lines</item>
+      <item>join_path</item>
+      <item>file_name</item>
+      <item>directory_name</item>
+      <item>extension</item>
+      <item>prepend</item>
+      <item>insert</item>
+      <item>remove</item>
+      <item>take_first</item>
+      <item>take_last</item>
+      <item>reverse</item>
+      <item>unique</item>
+      <item>sort</item>
+      <item>sum</item>
+      <item>mean</item>
+      <item>median</item>
+      <item>mode</item>
+      <item>min</item>
+      <item>max</item>
+    </list>
+
+    <contexts>
+      <context name="Normal" attribute="Normal Text" lineEndContext="#stay">
+        <DetectChar attribute="Comment" context="Comment" char="'"/>
+        <DetectChar attribute="String" context="String" char="&quot;"/>
+        <keyword attribute="Keyword"  context="#stay" String="keywords"/>
+        <keyword attribute="Constant" context="#stay" String="constants"/>
+        <keyword attribute="Operator" context="#stay" String="operators"/>
+        <keyword attribute="Builtin"  context="#stay" String="builtins"/>
+        <Float attribute="Number" context="#stay"/>
+        <Int   attribute="Number" context="#stay"/>
+        <AnyChar attribute="Symbol" context="#stay" String="+-*/=&lt;&gt;().,:[]{}"/>
+      </context>
+
+      <!-- Strings: double-quoted, may span lines; \n \t \\ \" and \u{...} escapes -->
+      <context name="String" attribute="String" lineEndContext="#stay">
+        <RegExpr attribute="String Char" context="#stay" String="\\u\{[0-9A-Fa-f]+\}"/>
+        <RegExpr attribute="String Char" context="#stay" String="\\[nt\\&quot;]"/>
+        <DetectChar attribute="String" context="#pop" char="&quot;"/>
+      </context>
+
+      <!-- Comments: ' to end of line -->
+      <context name="Comment" attribute="Comment" lineEndContext="#pop">
+        <DetectSpaces/>
+      </context>
+    </contexts>
+
+    <itemDatas>
+      <itemData name="Normal Text" defStyleNum="dsNormal"/>
+      <itemData name="Keyword"     defStyleNum="dsKeyword"     color="#0000ff" selColor="#0000ff" bold="1"/>
+      <itemData name="Constant"    defStyleNum="dsConstant"    color="#228b22" selColor="#228b22"/>
+      <itemData name="Operator"    defStyleNum="dsOperator"/>
+      <itemData name="Builtin"     defStyleNum="dsBuiltIn"/>
+      <itemData name="Number"      defStyleNum="dsDecVal"      color="#228b22" selColor="#228b22"/>
+      <itemData name="String"      defStyleNum="dsString"      color="#228b22" selColor="#228b22"/>
+      <itemData name="String Char" defStyleNum="dsSpecialChar" color="#228b22" selColor="#228b22"/>
+      <itemData name="Comment"     defStyleNum="dsComment"/>
+      <itemData name="Symbol"      defStyleNum="dsOperator"/>
+    </itemDatas>
+
+  </highlighting>
+
+  <general>
+    <comments>
+      <comment name="singleLine" start="'"/>
+    </comments>
+    <keywords casesensitive="1"/>
+  </general>
+</language>

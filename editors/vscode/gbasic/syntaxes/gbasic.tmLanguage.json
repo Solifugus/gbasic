@@ -1,0 +1,102 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "gBASIC",
+  "scopeName": "source.gbasic",
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#strings" },
+    { "include": "#definitions" },
+    { "include": "#constants" },
+    { "include": "#keywords" },
+    { "include": "#operators" },
+    { "include": "#builtins" },
+    { "include": "#numbers" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.line.apostrophe.gbasic",
+          "match": "'.*$"
+        }
+      ]
+    },
+    "strings": {
+      "name": "string.quoted.double.gbasic",
+      "begin": "\"",
+      "end": "\"",
+      "patterns": [
+        {
+          "name": "constant.character.escape.unicode.gbasic",
+          "match": "\\\\u\\{[0-9A-Fa-f]+\\}"
+        },
+        {
+          "name": "constant.character.escape.gbasic",
+          "match": "\\\\[nt\\\\\"]"
+        }
+      ]
+    },
+    "definitions": {
+      "patterns": [
+        {
+          "match": "\\b(function|modifier)\\s+([A-Za-z_]\\w*)",
+          "captures": {
+            "1": { "name": "keyword.control.gbasic" },
+            "2": { "name": "entity.name.function.gbasic" }
+          }
+        },
+        {
+          "match": "\\b(program|library)\\s+([A-Za-z_]\\w*)",
+          "captures": {
+            "1": { "name": "keyword.control.gbasic" },
+            "2": { "name": "entity.name.type.gbasic" }
+          }
+        }
+      ]
+    },
+    "constants": {
+      "patterns": [
+        {
+          "name": "constant.language.gbasic",
+          "match": "\\b(true|false|nothing|unknown)\\b"
+        }
+      ]
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "name": "keyword.control.gbasic",
+          "match": "\\b(program|end|library|load|use|export|from|if|then|else|for|each|to|step|while|consider|break|continue|function|return|print|dim|as|watch|without|watchers|modifier|goto|gosub|with|new|spawn|on|resume|next|stop|error|in|this|constructor)\\b"
+        }
+      ]
+    },
+    "operators": {
+      "patterns": [
+        {
+          "name": "keyword.operator.word.gbasic",
+          "match": "\\b(and|or|not)\\b"
+        },
+        {
+          "name": "keyword.operator.gbasic",
+          "match": "<=|>=|<>|!=|!<|!>|[-+*/=<>]"
+        }
+      ]
+    },
+    "builtins": {
+      "patterns": [
+        {
+          "name": "support.function.builtin.gbasic",
+          "match": "\\b(read|write|compare|env|password_hash|password_verify|secure_token|now|string|number|boolean|array|record|replace|starts_with|ends_with|repeat|chr|code|byte_count|byte_at|from_bytes|keys|values|has|remove_key|count|type|is_string|is_number|is_boolean|is_array|is_record|is_nothing|is_unknown|lower|upper|input|encode|decode|serialize|deserialize|self|send|receive|monitor|demonitor|quote|round|len|find|contains|remove_value|find_by|join_from|first|rest|left|right|mid|trim|split|join|append|delete|copy|move|list_files|make_dir|remove_dir|overwrite|read_lines|join_path|file_name|directory_name|extension|prepend|insert|remove|take_first|take_last|reverse|unique|sort|sum|mean|median|mode|min|max)\\b"
+        }
+      ]
+    },
+    "numbers": {
+      "patterns": [
+        {
+          "name": "constant.numeric.gbasic",
+          "match": "\\b[0-9]+(\\.[0-9]+)?\\b"
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,50 @@
+{
+  "name": "gbasic",
+  "displayName": "gBASIC",
+  "description": "Syntax highlighting for the gBASIC language (.gb / .bas).",
+  "version": "0.1.0",
+  "publisher": "tedderland",
+  "license": "MIT",
+  "engines": { "vscode": "^1.60.0" },
+  "categories": ["Programming Languages"],
+  "contributes": {
+    "languages": [
+      {
+        "id": "gbasic",
+        "aliases": ["gBASIC", "gbasic"],
+        "extensions": [".gb"],
+        "firstLine": "^\\s*(program\\s+[A-Za-z_]\\w*\\s*\\(|library\\s+[A-Za-z_]\\w*\\b|load\\s+\\w+\\s+from\\b|'.*\\bgbasic\\b)",
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "gbasic",
+        "scopeName": "source.gbasic",
+        "path": "./syntaxes/gbasic.tmLanguage.json"
+      }
+    ],
+    "snippets": [
+      {
+        "language": "gbasic",
+        "path": "./snippets/gbasic.json"
+      }
+    ],
+    "problemMatchers": [
+      {
+        "name": "gbasic",
+        "owner": "gbasic",
+        "source": "gbasic",
+        "fileLocation": ["autoDetect", "${workspaceFolder}"],
+        "severity": "error",
+        "pattern": {
+          "regexp": "^(parse error|runtime error) at (.+):(\\d+):(\\d+): (.+)$",
+          "file": 2,
+          "line": 3,
+          "column": 4,
+          "message": 5
+        }
+      }
+    ]
+  }
+}

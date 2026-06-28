@@ -1,0 +1,27 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Run current gBASIC file",
+      "type": "shell",
+      "command": "${workspaceFolder}/gbasic",
+      "args": ["${relativeFile}"],
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": { "GBASIC_PATH": "${workspaceFolder}/stdlib" }
+      },
+      "group": { "kind": "build", "isDefault": true },
+      "presentation": { "reveal": "always", "panel": "shared", "clear": true },
+      "problemMatcher": "$gbasic"
+    },
+    {
+      "label": "make (build the gbasic interpreter)",
+      "type": "shell",
+      "command": "make",
+      "options": { "cwd": "${workspaceFolder}" },
+      "group": "build",
+      "presentation": { "reveal": "always", "panel": "shared" },
+      "problemMatcher": ["$gcc"]
+    }
+  ]
+}
