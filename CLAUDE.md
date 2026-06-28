@@ -20,6 +20,7 @@ make clean && make         # full rebuild
 ./gbasic --ast program.bas      # dump parsed AST
 ./gbasic --add-loads program.bas # print source with suggested `load` lines
 ./gbasic --version
+sudo make install          # install to /usr/local (binary + stdlib); PREFIX overridable
 ```
 
 Build requires a C11 compiler, `make`, and `bison`. Optional native modules are
@@ -31,8 +32,12 @@ adding code that touches an optional library, guard it with the matching
 `#if HAVE_*` block (the existing module code in `src/eval.c` is the pattern).
 
 `GBASIC_PATH=stdlib` tells the interpreter where to resolve `load`ed standard
-libraries (`stdlib/*.bas`); set it when running anything that uses GUI/stdlib
-modules, e.g. `GBASIC_PATH=stdlib ./gbasic examples/gui/demo.bas`.
+libraries (`stdlib/*.bas`); set it when running from the source tree, e.g.
+`GBASIC_PATH=stdlib ./gbasic examples/gui/demo.bas`. After `make install` this is
+unnecessary: the install path (`$(PREFIX)/share/gbasic/stdlib`, default
+`/usr/local/share/gbasic/stdlib`) is compiled in as `GBASIC_DEFAULT_STDLIB` and
+searched as a fallback when `GBASIC_PATH` is unset or doesn't resolve a library.
+`GBASIC_PATH` still wins when set, so it remains the dev override.
 
 ## Architecture
 

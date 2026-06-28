@@ -79,6 +79,21 @@ make clean
 make
 ```
 
+Install it system-wide (so `gbasic` is on your `PATH` and finds its standard
+library with no environment setup):
+
+```sh
+sudo make install              # -> /usr/local/bin/gbasic + /usr/local/share/gbasic/stdlib
+# or install without root into your home directory:
+make install PREFIX=$HOME/.local
+```
+
+After installing you can run `gbasic program.bas` from anywhere, and unqualified
+`load` of a standard library (e.g. `load dates`) resolves automatically. The
+install path is baked in at build time; `GBASIC_PATH` still works and takes
+precedence when you want to point at a different stdlib (e.g. during development:
+`GBASIC_PATH=stdlib ./gbasic program.bas`). Remove with `sudo make uninstall`.
+
 The interpreter still builds when an optional dependency is unavailable.
 Loading or calling the affected feature then produces a clear runtime error.
 The built-in WebServer uses POSIX sockets and has no external HTTP dependency.

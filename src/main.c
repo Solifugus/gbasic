@@ -385,11 +385,8 @@ static void scan_gbasic_path_for_provider(AddUsesContext *ctx,
                                           int is_modifier,
                                           int require_provider_filename) {
     const char *gbasic_path = getenv("GBASIC_PATH");
-    if (!gbasic_path || gbasic_path[0] == '\0') {
-        return;
-    }
     const char *start = gbasic_path;
-    while (*start) {
+    while (start && *start) {
         const char *end = strchr(start, ':');
         size_t len = end ? (size_t)(end - start) : strlen(start);
         if (len > 0) {
@@ -407,6 +404,13 @@ static void scan_gbasic_path_for_provider(AddUsesContext *ctx,
         }
         start = end + 1;
     }
+
+#ifdef GBASIC_DEFAULT_STDLIB
+    /* Fallback so --add-loads suggests stdlib providers without GBASIC_PATH set. */
+    if (GBASIC_DEFAULT_STDLIB[0] != '\0') {
+        scan_dir_for_provider(ctx, GBASIC_DEFAULT_STDLIB, name, context, is_modifier, require_provider_filename);
+    }
+#endif
 }
 
 static void scan_library_dirs_for_provider(AddUsesContext *ctx,

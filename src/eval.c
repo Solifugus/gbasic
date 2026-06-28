@@ -3889,12 +3889,8 @@ static void search_gbasic_path_for_library(const char *name,
                                            LibraryMatch **matches,
                                            size_t *match_count) {
     const char *gbasic_path = getenv("GBASIC_PATH");
-    if (!gbasic_path || gbasic_path[0] == '\0') {
-        return;
-    }
-
     const char *start = gbasic_path;
-    while (*start) {
+    while (start && *start) {
         const char *end = strchr(start, ':');
         size_t len = end ? (size_t)(end - start) : strlen(start);
         if (len > 0) {
@@ -3915,6 +3911,13 @@ static void search_gbasic_path_for_library(const char *name,
         }
         start = end + 1;
     }
+
+#ifdef GBASIC_DEFAULT_STDLIB
+    /* Fallback so an installed gbasic finds its stdlib without GBASIC_PATH set. */
+    if (GBASIC_DEFAULT_STDLIB[0] != '\0') {
+        search_directory_for_library(GBASIC_DEFAULT_STDLIB, name, 1, exact_filename, matches, match_count);
+    }
+#endif
 }
 
 static void library_import_from_block(AstStmt *library);

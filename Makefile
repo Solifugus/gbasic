@@ -1,5 +1,14 @@
 CC := cc
 CFLAGS := -std=c11 -Wall -Wextra -Wpedantic -Iinclude -g
+
+# Install layout. Override PREFIX to install elsewhere, e.g. `make install PREFIX=$HOME/.local`.
+PREFIX ?= /usr/local
+BINDIR := $(PREFIX)/bin
+DATADIR := $(PREFIX)/share/gbasic
+STDLIBDIR := $(DATADIR)/stdlib
+# Baked-in fallback the loader searches when GBASIC_PATH does not resolve a library,
+# so an installed `gbasic` finds its stdlib without any environment setup.
+CFLAGS += -DGBASIC_DEFAULT_STDLIB='"$(STDLIBDIR)"'
 GTK_AVAILABLE := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --exists gtk+-3.0 && printf 1 || printf 0)
 GTK_CFLAGS := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --cflags gtk+-3.0 2>/dev/null)
 GTK_LIBS := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --libs gtk+-3.0 2>/dev/null)
@@ -54,7 +63,7 @@ endif
 
 OBJS := src/main.o src/lexer.o src/parser.tab.o src/ast.o src/eval.o src/builtins.o src/actor.o
 
-.PHONY: all clean
+.PHONY: all clean install uninstall
 
 all: gbasic
 
@@ -84,6 +93,18 @@ src/builtins.o: src/builtins.c include/builtins.h
 
 src/actor.o: src/actor.c include/actor.h
 	$(CC) $(CFLAGS) -c $< -o $@
+
+install: gbasic
+	install -d $(DESTDIR)$(BINDIR)
+	install -m 0755 gbasic $(DESTDIR)$(BINDIR)/gbasic
+	install -d $(DESTDIR)$(STDLIBDIR)
+	install -m 0644 stdlib/*.bas $(DESTDIR)$(STDLIBDIR)/
+	@echo "Installed gbasic to $(DESTDIR)$(BINDIR) and stdlib to $(DESTDIR)$(STDLIBDIR)"
+
+uninstall:
+	rm -f $(DESTDIR)$(BINDIR)/gbasic
+	rm -rf $(DESTDIR)$(DATADIR)
+	@echo "Removed gbasic from $(DESTDIR)$(BINDIR) and $(DESTDIR)$(DATADIR)"
 
 clean:
 	rm -f gbasic $(OBJS) src/parser.tab.c src/parser.tab.h
