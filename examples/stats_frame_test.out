@@ -1,0 +1,30 @@
+shape [4,3]
+columns name,age,city
+dtypes {"name":"string","age":"number","city":"string"}
+head2 {"name":["Ada","Grace"],"age":[36,45],"city":["NYC","LA"]}
+row0 {"name":"Ada","age":36,"city":"NYC"}
+roundtrip true
+select {"name":["Ada","Grace","Alan","Ada"],"age":[36,45,17,36]}
+drop {"name":["Ada","Grace","Alan","Ada"],"age":[36,45,17,36]}
+rename name,years,city
+filter {"name":["Ada","Grace","Ada"],"age":[36,45,36],"city":["NYC","LA","NYC"]}
+with_col [30,40,10,30]
+intact false
+fill [1,0,3]
+dropna {"a":[1],"b":["x"]}
+coerce [1,2,unknown]
+dedupe [3,3]
+sorted [17,36,36,45]
+summarize {"city":["NYC","LA"],"n":[3,1],"max_age":[36,45]}
+join {"id":[2,3,3],"name":["Bob","Cy","Cy"],"score":[88,90,91]}
+csv_dtypes {"name":"string","age":"number","zip":"string","score":"number"}
+csv_age [36,45,unknown]
+csv_zip ["07030","10001","90210"]
+csv_score [9.5,unknown,7]
+csv_roundtrip true
+--- show ---
+name   age  score
+-----  ---  -----
+Ada    36   9.5  
+Grace  45        
+Alan        7    

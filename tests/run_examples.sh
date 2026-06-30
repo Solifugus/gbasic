@@ -33,6 +33,7 @@ examples=(
     matrix_test.bas
     stats_ols_test.bas
     stats_resample_test.bas
+    stats_frame_test.bas
     type_builtin_test.bas
     string_concat_test.bas
     parse_test.gb

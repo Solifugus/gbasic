@@ -8,9 +8,10 @@ suite — the **normal**, **Student's t**, **chi-squared**, **F**, **binomial**,
 and **Poisson** distributions over shared incomplete-gamma/incomplete-beta
 engines (plus the `lgamma` primitive they need), the **`stdlib/matrix.bas`**
 toolkit, **`ols`** linear regression, a **seedable RNG** (`seed`/`random`/
-`random_int`), and **resampling** (`shuffle`/`sample`/`resample`/`bootstrap`) —
-have shipped (see §8 Phase 1). The rest — the `frame` layer and Phases 2–4 —
-remains proposal. This sketches the data representation and the
+`random_int`), **resampling** (`shuffle`/`sample`/`resample`/`bootstrap`), and
+the **`stdlib/frame.bas`** structural data-frame layer — have shipped, so
+**Phase 1 is complete** (see §8 Phase 1). The rest — Phases 2–4 — remains
+proposal. This sketches the data representation and the
 statistical-operation surface for a gBASIC statistics library. The guiding
 constraint is **simplicity**: make statistical work as easy as possible *without
 sacrificing functionality*, building on the values gBASIC already has. Any change
@@ -317,8 +318,19 @@ computed reference values (R/numpy/scipy) into `.out` fixtures.
     statistic, b)` (b size-n resamples → the list of statistic values).
     `statistic` must be a user-defined function value (builtins aren't yet
     first-class — wrap them). Verified in `examples/stats_resample_test.bas`.
-  - `stdlib/frame.bas`: the §4 structural layer (IO, clean/reshape, group/
-    summarize, conversions, inspection). **(next)**
+  - **DONE — `stdlib/frame.bas`**: the §4 structural layer, all in gBASIC over
+    plain records-of-lists (no new value kind). Inspect (`shape`/`columns`/
+    `dtypes`/`head`/`show`), conversions (`to_rows`/`from_rows`), select/reshape
+    (`select`/`drop`/`rename`/`filter`/`with_column`/`coerce`), clean
+    (`fill_missing`/`drop_missing`/`dedupe`/`sort_by`), group (`summarize`,
+    split-apply-combine with user-function aggregators), `join` (inner, on a key
+    column, collisions suffixed `_right`), and CSV IO (`read_csv` with per-column
+    type inference — empty → `unknown`, ID-like/precision-risk columns kept as
+    strings; `write_csv`). Every transform returns a new frame (PBI COW).
+    Verified in `examples/stats_frame_test.bas`. Known limits: `read_csv` is
+    simple comma-splitting (no quoted fields / embedded commas yet); `filter`/
+    `with_column`/`summarize` take user-function values (builtins aren't yet
+    first-class). **Phase 1 is now complete.**
 - **Dependencies:** first-class functions ✓, `unknown` ✓, list builtins ✓, RNG,
   `matrix.bas`.
 - **Key risks (numerical):** stable variance (Welford / two-pass); a chosen
