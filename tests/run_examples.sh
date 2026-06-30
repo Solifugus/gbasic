@@ -29,6 +29,7 @@ examples=(
     array_unique_test.bas
     stats_test.bas
     stats_normal_test.bas
+    stats_dist_test.bas
     type_builtin_test.bas
     string_concat_test.bas
     parse_test.gb

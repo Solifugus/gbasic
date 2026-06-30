@@ -3,10 +3,12 @@
 Status: **design proposal; Phase 1 numeric foundation in progress.** The
 elementary math builtins (now incl. `erf`/`erfc`), the dispersion/shape
 reductions, the order statistics / paired measures (`quantile`/`percentile`/`iqr`/
-`range`/`correlation`/`covariance`), and the first `stdlib/stats.bas` composition
-(the **normal distribution**) have shipped (see §8 Phase 1). The rest — the
-remaining distributions, regression, the `frame` layer, and Phases 2–4 — remains
-proposal. This sketches the data representation and the
+`range`/`correlation`/`covariance`), and the `stdlib/stats.bas` distribution
+suite — the **normal**, **Student's t**, **chi-squared**, **F**, **binomial**,
+and **Poisson** distributions over shared incomplete-gamma/incomplete-beta
+engines (plus the `lgamma` primitive they need) — have shipped (see §8 Phase 1).
+The rest — regression (`ols`), resampling, the `frame` layer, and Phases 2–4 —
+remains proposal. This sketches the data representation and the
 statistical-operation surface for a gBASIC statistics library. The guiding
 constraint is **simplicity**: make statistical work as easy as possible *without
 sacrificing functionality*, building on the values gBASIC already has. Any change
@@ -271,10 +273,23 @@ computed reference values (R/numpy/scipy) into `.out` fixtures.
     one Halley step against the erf-based CDF (near machine precision on (0,1)).
     Out-of-domain inputs (σ ≤ 0, p ∉ (0,1)) return `unknown`, never a bogus
     number. Verified against scipy in `examples/stats_normal_test.bas`.
-  - Remaining distributions (t, χ², F, binomial, Poisson), each with `pdf`,
-    `cdf`, `quantile` (inverse CDF), and `sample`. These underpin every test.
-    **(next)** — t/χ²/F need incomplete-beta / incomplete-gamma, so the next
-    primitive to weigh is `lgamma` (libm) for those CDFs.
+  - **DONE — `lgamma` scalar builtin** (libm, same elementary-math family):
+    the one new C primitive the remaining distribution CDFs need. Poles at
+    non-positive integers raise rather than return a bogus number.
+  - **DONE — incomplete-gamma / incomplete-beta engines** in `stdlib/stats.bas`,
+    written in gBASIC over `lgamma` (the "compositions in gBASIC" rule):
+    regularized lower incomplete gamma `_gammp` (series + continued-fraction by
+    region, Numerical Recipes' gser/gcf) and regularized incomplete beta
+    `_betai` (Lentz continued fraction). These are the shared CDF engines.
+  - **DONE — t, χ², F, binomial, Poisson distributions** in `stdlib/stats.bas`,
+    each with `pdf`/`pmf`, `cdf`, and `quantile`. Continuous CDFs go through
+    `_betai` (t, F) or `_gammp` (χ²); discrete CDFs use the same engines via the
+    incomplete-beta / incomplete-gamma identities (binomial = `_betai`,
+    Poisson = `_gammp`). Quantiles are bisection on the monotone CDF (continuous)
+    or smallest-`k` search (discrete). Out-of-domain inputs return `unknown`.
+    Verified against scipy in `examples/stats_dist_test.bas`. `sample` (random
+    draws) is deferred until the seedable RNG lands.
+  - Remaining: `sample`/resampling (`shuffle`, `bootstrap`) — pending the RNG.
   - `ols(y, xs)` — linear regression: coefficients, residuals, R², standard
     errors, p-values. The single most reusable inferential tool.
   - Resampling: `sample`, `shuffle`, `bootstrap`.

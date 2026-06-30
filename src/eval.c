@@ -13209,6 +13209,7 @@ static Value eval_call(AstExpr *expr) {
         strcmp(expr->as.call.name, "ceil") == 0 ||
         strcmp(expr->as.call.name, "erf") == 0 ||
         strcmp(expr->as.call.name, "erfc") == 0 ||
+        strcmp(expr->as.call.name, "lgamma") == 0 ||
         strcmp(expr->as.call.name, "sign") == 0) {
         const char *fn = expr->as.call.name;
         if (expr->as.call.args.count != 1) {
@@ -13258,6 +13259,13 @@ static Value eval_call(AstExpr *expr) {
             r = erf(x);
         } else if (strcmp(fn, "erfc") == 0) {
             r = erfc(x);
+        } else if (strcmp(fn, "lgamma") == 0) {
+            /* log |Gamma(x)|; poles at non-positive integers. */
+            if (x <= 0.0 && x == floor(x)) {
+                runtime_error_raise("lgamma of a non-positive integer", 1003, "invalid function call");
+                return value_null();
+            }
+            r = lgamma(x);
         } else {
             r = (double)((x > 0.0) - (x < 0.0));
         }

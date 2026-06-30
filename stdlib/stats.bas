@@ -119,4 +119,469 @@ library stats
         end if
         return (x - mu) / sigma
     end function
+
+    ' --- Special functions: the engines the t / chi-squared / F / Poisson CDFs
+    ' compose from. The only new C primitive they need is lgamma (log Gamma);
+    ' everything else is gBASIC, following the "compositions in gBASIC" rule.
+
+    function _pi()
+        return 3.141592653589793
+    end function
+
+    ' Regularized lower incomplete gamma P(a, x) by its series expansion;
+    ' valid (and fast) for x < a + 1. Numerical Recipes' gser.
+    function _gser(a, x)
+        if x <= 0 then
+            return 0
+        end if
+        eps = pow(10, -14)
+        ap = a
+        sum = 1 / a
+        del = sum
+        n = 1
+        while n <= 300
+            ap = ap + 1
+            del = del * x / ap
+            sum = sum + del
+            if abs(del) < abs(sum) * eps then
+                break
+            end if
+            n = n + 1
+        end while
+        return sum * exp(-x + a * log(x) - lgamma(a))
+    end function
+
+    ' Regularized upper incomplete gamma Q(a, x) by its continued fraction;
+    ' valid (and fast) for x >= a + 1. Numerical Recipes' gcf (Lentz).
+    function _gcf(a, x)
+        eps = pow(10, -14)
+        tiny = pow(10, -30)
+        b = x + 1 - a
+        c = 1 / tiny
+        d = 1 / b
+        h = d
+        i = 1
+        while i <= 300
+            an = -i * (i - a)
+            b = b + 2
+            d = an * d + b
+            if abs(d) < tiny then
+                d = tiny
+            end if
+            c = b + an / c
+            if abs(c) < tiny then
+                c = tiny
+            end if
+            d = 1 / d
+            del = d * c
+            h = h * del
+            if abs(del - 1) < eps then
+                break
+            end if
+            i = i + 1
+        end while
+        return exp(-x + a * log(x) - lgamma(a)) * h
+    end function
+
+    ' Regularized lower incomplete gamma P(a, x): the chi-squared / Poisson
+    ' engine. Picks series or continued fraction by region.
+    function _gammp(a, x)
+        if a <= 0 then
+            return unknown
+        end if
+        if x < 0 then
+            return unknown
+        end if
+        if x < a + 1 then
+            return _gser(a, x)
+        end if
+        return 1 - _gcf(a, x)
+    end function
+
+    ' Continued fraction for the incomplete beta function (Lentz).
+    ' Numerical Recipes' betacf.
+    function _betacf(a, b, x)
+        eps = pow(10, -14)
+        tiny = pow(10, -30)
+        qab = a + b
+        qap = a + 1
+        qam = a - 1
+        c = 1
+        d = 1 - qab * x / qap
+        if abs(d) < tiny then
+            d = tiny
+        end if
+        d = 1 / d
+        h = d
+        m = 1
+        while m <= 300
+            m2 = 2 * m
+            aa = m * (b - m) * x / ((qam + m2) * (a + m2))
+            d = 1 + aa * d
+            if abs(d) < tiny then
+                d = tiny
+            end if
+            c = 1 + aa / c
+            if abs(c) < tiny then
+                c = tiny
+            end if
+            d = 1 / d
+            h = h * d * c
+            aa = -(a + m) * (qab + m) * x / ((a + m2) * (qap + m2))
+            d = 1 + aa * d
+            if abs(d) < tiny then
+                d = tiny
+            end if
+            c = 1 + aa / c
+            if abs(c) < tiny then
+                c = tiny
+            end if
+            d = 1 / d
+            del = d * c
+            h = h * del
+            if abs(del - 1) < eps then
+                break
+            end if
+            m = m + 1
+        end while
+        return h
+    end function
+
+    ' Regularized incomplete beta I_x(a, b): the t / F / binomial engine.
+    function _betai(a, b, x)
+        if x < 0 then
+            return unknown
+        end if
+        if x > 1 then
+            return unknown
+        end if
+        if x = 0 then
+            return 0
+        end if
+        if x = 1 then
+            return 1
+        end if
+        bt = exp(lgamma(a + b) - lgamma(a) - lgamma(b) + a * log(x) + b * log(1 - x))
+        if x < (a + 1) / (a + b + 2) then
+            return bt * _betacf(a, b, x) / a
+        end if
+        return 1 - bt * _betacf(b, a, 1 - x) / b
+    end function
+
+    ' --- Student's t distribution (df degrees of freedom) ---
+
+    function t_pdf(x, df)
+        if df <= 0 then
+            return unknown
+        end if
+        lc = lgamma((df + 1) / 2) - lgamma(df / 2)
+        return exp(lc) / sqrt(df * _pi()) * pow(1 + x * x / df, -(df + 1) / 2)
+    end function
+
+    function t_cdf(x, df)
+        if df <= 0 then
+            return unknown
+        end if
+        ib = 0.5 * _betai(df / 2, 0.5, df / (df + x * x))
+        if x > 0 then
+            return 1 - ib
+        end if
+        return ib
+    end function
+
+    function t_quantile(p, df)
+        if df <= 0 then
+            return unknown
+        end if
+        if p <= 0 then
+            return unknown
+        end if
+        if p >= 1 then
+            return unknown
+        end if
+        tol = pow(10, -10)
+        lo = -1000000
+        hi = 1000000
+        i = 0
+        while i < 200
+            mid = (lo + hi) / 2
+            if t_cdf(mid, df) < p then
+                lo = mid
+            else
+                hi = mid
+            end if
+            if hi - lo < tol then
+                break
+            end if
+            i = i + 1
+        end while
+        return (lo + hi) / 2
+    end function
+
+    ' --- Chi-squared distribution (k degrees of freedom) ---
+
+    function chi2_pdf(x, k)
+        if k <= 0 then
+            return unknown
+        end if
+        if x < 0 then
+            return 0
+        end if
+        if x = 0 then
+            if k = 2 then
+                return 0.5
+            end if
+            if k > 2 then
+                return 0
+            end if
+            return unknown
+        end if
+        return exp((k / 2 - 1) * log(x) - x / 2 - (k / 2) * log(2) - lgamma(k / 2))
+    end function
+
+    function chi2_cdf(x, k)
+        if k <= 0 then
+            return unknown
+        end if
+        if x <= 0 then
+            return 0
+        end if
+        return _gammp(k / 2, x / 2)
+    end function
+
+    function chi2_quantile(p, k)
+        if k <= 0 then
+            return unknown
+        end if
+        if p <= 0 then
+            return unknown
+        end if
+        if p >= 1 then
+            return unknown
+        end if
+        tol = pow(10, -10)
+        lo = 0
+        hi = 1000000
+        i = 0
+        while i < 300
+            mid = (lo + hi) / 2
+            if chi2_cdf(mid, k) < p then
+                lo = mid
+            else
+                hi = mid
+            end if
+            if hi - lo < tol then
+                break
+            end if
+            i = i + 1
+        end while
+        return (lo + hi) / 2
+    end function
+
+    ' --- F distribution (d1 numerator, d2 denominator degrees of freedom) ---
+
+    function f_pdf(x, d1, d2)
+        if d1 <= 0 then
+            return unknown
+        end if
+        if d2 <= 0 then
+            return unknown
+        end if
+        if x < 0 then
+            return 0
+        end if
+        if x = 0 then
+            if d1 = 2 then
+                return 1
+            end if
+            if d1 > 2 then
+                return 0
+            end if
+            return unknown
+        end if
+        lb = lgamma((d1 + d2) / 2) - lgamma(d1 / 2) - lgamma(d2 / 2)
+        return exp(lb + (d1 / 2) * log(d1 / d2) + (d1 / 2 - 1) * log(x) - ((d1 + d2) / 2) * log(1 + d1 * x / d2))
+    end function
+
+    function f_cdf(x, d1, d2)
+        if d1 <= 0 then
+            return unknown
+        end if
+        if d2 <= 0 then
+            return unknown
+        end if
+        if x <= 0 then
+            return 0
+        end if
+        return _betai(d1 / 2, d2 / 2, d1 * x / (d1 * x + d2))
+    end function
+
+    function f_quantile(p, d1, d2)
+        if d1 <= 0 then
+            return unknown
+        end if
+        if d2 <= 0 then
+            return unknown
+        end if
+        if p <= 0 then
+            return unknown
+        end if
+        if p >= 1 then
+            return unknown
+        end if
+        tol = pow(10, -10)
+        lo = 0
+        hi = 1000000
+        i = 0
+        while i < 300
+            mid = (lo + hi) / 2
+            if f_cdf(mid, d1, d2) < p then
+                lo = mid
+            else
+                hi = mid
+            end if
+            if hi - lo < tol then
+                break
+            end if
+            i = i + 1
+        end while
+        return (lo + hi) / 2
+    end function
+
+    ' --- Binomial distribution (n trials, success probability p) ---
+
+    function binom_pmf(k, n, p)
+        if p < 0 then
+            return unknown
+        end if
+        if p > 1 then
+            return unknown
+        end if
+        if n < 0 then
+            return unknown
+        end if
+        if k < 0 then
+            return 0
+        end if
+        if k > n then
+            return 0
+        end if
+        if p = 0 then
+            if k = 0 then
+                return 1
+            end if
+            return 0
+        end if
+        if p = 1 then
+            if k = n then
+                return 1
+            end if
+            return 0
+        end if
+        lc = lgamma(n + 1) - lgamma(k + 1) - lgamma(n - k + 1)
+        return exp(lc + k * log(p) + (n - k) * log(1 - p))
+    end function
+
+    ' P(X <= k) via the regularized incomplete beta identity
+    ' I_{1-p}(n-k, k+1) (exact, and far cheaper than summing pmf for large n).
+    function binom_cdf(k, n, p)
+        if p < 0 then
+            return unknown
+        end if
+        if p > 1 then
+            return unknown
+        end if
+        if n < 0 then
+            return unknown
+        end if
+        kk = floor(k)
+        if kk < 0 then
+            return 0
+        end if
+        if kk >= n then
+            return 1
+        end if
+        return _betai(n - kk, kk + 1, 1 - p)
+    end function
+
+    function binom_quantile(p, n, prob)
+        if prob < 0 then
+            return unknown
+        end if
+        if prob > 1 then
+            return unknown
+        end if
+        if n < 0 then
+            return unknown
+        end if
+        if p <= 0 then
+            return unknown
+        end if
+        if p >= 1 then
+            return unknown
+        end if
+        k = 0
+        while k <= n
+            if binom_cdf(k, n, prob) >= p then
+                return k
+            end if
+            k = k + 1
+        end while
+        return n
+    end function
+
+    ' --- Poisson distribution (rate lambda) ---
+
+    function pois_pmf(k, lambda)
+        if lambda < 0 then
+            return unknown
+        end if
+        if k < 0 then
+            return 0
+        end if
+        kk = floor(k)
+        if lambda = 0 then
+            if kk = 0 then
+                return 1
+            end if
+            return 0
+        end if
+        return exp(kk * log(lambda) - lambda - lgamma(kk + 1))
+    end function
+
+    ' P(X <= k) = Q(k+1, lambda) = 1 - P(k+1, lambda) (regularized incomplete
+    ' gamma); the same gamma engine the chi-squared CDF uses.
+    function pois_cdf(k, lambda)
+        if lambda < 0 then
+            return unknown
+        end if
+        kk = floor(k)
+        if kk < 0 then
+            return 0
+        end if
+        if lambda = 0 then
+            return 1
+        end if
+        return 1 - _gammp(kk + 1, lambda)
+    end function
+
+    function pois_quantile(p, lambda)
+        if lambda < 0 then
+            return unknown
+        end if
+        if p <= 0 then
+            return unknown
+        end if
+        if p >= 1 then
+            return unknown
+        end if
+        k = 0
+        while k < 10000000
+            if pois_cdf(k, lambda) >= p then
+                return k
+            end if
+            k = k + 1
+        end while
+        return unknown
+    end function
 end library

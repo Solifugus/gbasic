@@ -113,6 +113,7 @@ int gbasic_builtin_function(const char *name) {
         "ceil",
         "erf",
         "erfc",
+        "lgamma",
         "sign",
         "pow"
     };
