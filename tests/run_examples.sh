@@ -34,6 +34,7 @@ examples=(
     stats_ols_test.bas
     stats_resample_test.bas
     stats_inference_test.bas
+    stats_cluster_test.bas
     stats_frame_test.bas
     type_builtin_test.bas
     string_concat_test.bas

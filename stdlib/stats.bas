@@ -1660,4 +1660,726 @@ library stats
         end while
         return { coefficients: beta, std_errors: ses, z_values: zvals, p_values: pvals, fitted: fitted, log_likelihood: loglik, iterations: iter, converged: converged, n: n }
     end function
+
+    ' ======================================================================
+    ' Phase 3 — Multivariate / unsupervised (statistics_design.md §8 Phase 3).
+    ' Segmentation (kmeans, hierarchical), dimensionality reduction (pca over a
+    ' pure-gBASIC Jacobi eigensolver), and anomaly detection (zscore_outliers,
+    ' iqr_outliers). Data here is a *list of points* — each point a list of
+    ' feature values (row-major), matching the frame.bas to_rows shape. PCA
+    ' holds the §6 "earn it" line: the symmetric eigensolver stays in gBASIC
+    ' until profiling proves it must move to C. Verified against scipy /
+    ' scikit-learn. Each returns a record, or `unknown` on malformed input.
+    ' ======================================================================
+
+    ' --- Anomaly detection (1-D) ---
+
+    ' Standard-score outliers: flag values whose |z| exceeds `threshold`
+    ' (a common choice is 3). Uses the population stdev (ddof=0), matching
+    ' scipy.stats.zscore's default. Returns the flagged indices/values, the
+    ' full score vector, and the mean/stdev used.
+    function zscore_outliers(xs, threshold)
+        n = len(xs)
+        if n < 2 then
+            return unknown
+        end if
+        if threshold <= 0 then
+            return unknown
+        end if
+        m = mean(xs)
+        sd = pstdev(xs)
+        indices = []
+        values = []
+        scores = []
+        i = 0
+        while i < n
+            z = 0
+            if sd > 0 then
+                z = (xs[i] - m) / sd
+            end if
+            append(scores, z)
+            if abs(z) > threshold then
+                append(indices, i)
+                append(values, xs[i])
+            end if
+            i = i + 1
+        end while
+        return { indices: indices, values: values, scores: scores, mean: m, stdev: sd, threshold: threshold }
+    end function
+
+    ' Tukey-fence outliers: flag values outside [Q1 - k*IQR, Q3 + k*IQR].
+    ' k = 1.5 is the classic "outlier" fence, 3.0 the "far out" fence. The
+    ' quartiles use the same linear-interpolation `quantile` as numpy.
+    function iqr_outliers(xs, k)
+        n = len(xs)
+        if n < 2 then
+            return unknown
+        end if
+        if k < 0 then
+            return unknown
+        end if
+        q1 = quantile(xs, 0.25)
+        q3 = quantile(xs, 0.75)
+        spread = q3 - q1
+        lo = q1 - k * spread
+        hi = q3 + k * spread
+        indices = []
+        values = []
+        i = 0
+        while i < n
+            if xs[i] < lo or xs[i] > hi then
+                append(indices, i)
+                append(values, xs[i])
+            end if
+            i = i + 1
+        end while
+        return { indices: indices, values: values, lower: lo, upper: hi, q1: q1, q3: q3, iqr: spread, k: k }
+    end function
+
+    ' --- Shared geometry helpers ---
+
+    ' Squared Euclidean distance between two equal-length points.
+    function _dist2(a, b)
+        s = 0
+        i = 0
+        m = len(a)
+        while i < m
+            d = a[i] - b[i]
+            s = s + d * d
+            i = i + 1
+        end while
+        return s
+    end function
+
+    ' Euclidean distance.
+    function _euclid(a, b)
+        return sqrt(_dist2(a, b))
+    end function
+
+    ' Element-by-element copy of a point (defensive — gBASIC lists copy on
+    ' assignment, but centroid rows are mutated in place during Lloyd steps).
+    function _copy_point(pt)
+        r = []
+        i = 0
+        while i < len(pt)
+            append(r, pt[i])
+            i = i + 1
+        end while
+        return r
+    end function
+
+    ' Concatenate two lists into a new list.
+    function _concat(a, b)
+        r = []
+        i = 0
+        while i < len(a)
+            append(r, a[i])
+            i = i + 1
+        end while
+        i = 0
+        while i < len(b)
+            append(r, b[i])
+            i = i + 1
+        end while
+        return r
+    end function
+
+    ' --- k-means (Lloyd's algorithm, k-means++ seeding) ---
+    ' `data` is a list of points; `k` the cluster count; `max_iter` the
+    ' assignment-recompute cap. Seeding draws from the RNG, so call seed()
+    ' first for reproducible runs. Returns the per-point `labels`, the final
+    ' `centroids`, the `inertia` (sum of squared point-to-centroid distances),
+    ' the iteration count, and whether assignments converged. `unknown` if
+    ' k is out of range.
+    function kmeans(data, k, max_iter)
+        n = len(data)
+        if n = 0 then
+            return unknown
+        end if
+        if k < 1 then
+            return unknown
+        end if
+        if k > n then
+            return unknown
+        end if
+        p = len(data[0])
+
+        ' k-means++ seeding: first centre uniform, each next chosen with
+        ' probability proportional to squared distance from the nearest centre.
+        centroids = []
+        append(centroids, _copy_point(data[random_int(0, n - 1)]))
+        c = 1
+        while c < k
+            d2 = []
+            total = 0
+            i = 0
+            while i < n
+                best = _dist2(data[i], centroids[0])
+                j = 1
+                while j < c
+                    dd = _dist2(data[i], centroids[j])
+                    if dd < best then
+                        best = dd
+                    end if
+                    j = j + 1
+                end while
+                append(d2, best)
+                total = total + best
+                i = i + 1
+            end while
+            chosen = n - 1
+            if total <= 0 then
+                chosen = random_int(0, n - 1)
+            else
+                target = random() * total
+                cum = 0
+                i = 0
+                picked = false
+                while i < n and picked = false
+                    cum = cum + d2[i]
+                    if cum >= target then
+                        chosen = i
+                        picked = true
+                    end if
+                    i = i + 1
+                end while
+            end if
+            append(centroids, _copy_point(data[chosen]))
+            c = c + 1
+        end while
+
+        ' Lloyd iterations: assign, then recompute means.
+        labels = []
+        i = 0
+        while i < n
+            append(labels, 0)
+            i = i + 1
+        end while
+        iter = 0
+        converged = false
+        while iter < max_iter and converged = false
+            changed = false
+            i = 0
+            while i < n
+                best = _dist2(data[i], centroids[0])
+                bestj = 0
+                j = 1
+                while j < k
+                    dd = _dist2(data[i], centroids[j])
+                    if dd < best then
+                        best = dd
+                        bestj = j
+                    end if
+                    j = j + 1
+                end while
+                if labels[i] != bestj then
+                    changed = true
+                end if
+                labels[i] = bestj
+                i = i + 1
+            end while
+            ' accumulate per-cluster sums and counts
+            sums = []
+            counts = []
+            j = 0
+            while j < k
+                row = []
+                d = 0
+                while d < p
+                    append(row, 0)
+                    d = d + 1
+                end while
+                append(sums, row)
+                append(counts, 0)
+                j = j + 1
+            end while
+            i = 0
+            while i < n
+                lbl = labels[i]
+                counts[lbl] = counts[lbl] + 1
+                d = 0
+                while d < p
+                    sums[lbl][d] = sums[lbl][d] + data[i][d]
+                    d = d + 1
+                end while
+                i = i + 1
+            end while
+            j = 0
+            while j < k
+                if counts[j] > 0 then
+                    d = 0
+                    while d < p
+                        centroids[j][d] = sums[j][d] / counts[j]
+                        d = d + 1
+                    end while
+                end if
+                j = j + 1
+            end while
+            iter = iter + 1
+            if changed = false then
+                converged = true
+            end if
+        end while
+
+        inertia = 0
+        i = 0
+        while i < n
+            inertia = inertia + _dist2(data[i], centroids[labels[i]])
+            i = i + 1
+        end while
+        return { labels: labels, centroids: centroids, inertia: inertia, iterations: iter, converged: converged, k: k }
+    end function
+
+    ' --- Agglomerative hierarchical clustering ---
+    ' Distance between two clusters under `method`: "single" (nearest pair),
+    ' "complete" (farthest pair), or "average" (UPGMA, mean of all cross
+    ' pairs). `pd` is the precomputed point distance matrix.
+    function _link_dist(ca, cb, pd, method)
+        first = true
+        acc = 0
+        cnt = 0
+        i = 0
+        while i < len(ca)
+            j = 0
+            while j < len(cb)
+                d = pd[ca[i]][cb[j]]
+                if method = "single" then
+                    if first then
+                        acc = d
+                        first = false
+                    else
+                        if d < acc then
+                            acc = d
+                        end if
+                    end if
+                else
+                    if method = "complete" then
+                        if first then
+                            acc = d
+                            first = false
+                        else
+                            if d > acc then
+                                acc = d
+                            end if
+                        end if
+                    else
+                        acc = acc + d
+                        cnt = cnt + 1
+                    end if
+                end if
+                j = j + 1
+            end while
+            i = i + 1
+        end while
+        if method = "average" then
+            if cnt > 0 then
+                return acc / cnt
+            end if
+            return 0
+        end if
+        return acc
+    end function
+
+    ' Build the merge tree. Returns `merges`, a list of [id1, id2, distance,
+    ' size] rows in the scipy linkage Z format: leaves are 0..n-1, and the
+    ' m-th merge creates cluster id n+m. Within a row the smaller id comes
+    ' first. Feed the result to cut_tree() to get flat cluster labels.
+    function hierarchical(data, method)
+        n = len(data)
+        if n < 1 then
+            return unknown
+        end if
+        if method != "single" and method != "complete" and method != "average" then
+            return unknown
+        end if
+        ' precompute the point distance matrix
+        pd = []
+        i = 0
+        while i < n
+            row = []
+            j = 0
+            while j < n
+                append(row, _euclid(data[i], data[j]))
+                j = j + 1
+            end while
+            append(pd, row)
+            i = i + 1
+        end while
+        ' active clusters: members[t] is a list of original point indices,
+        ' ids[t] the cluster's linkage id.
+        members = []
+        ids = []
+        i = 0
+        while i < n
+            append(members, [i])
+            append(ids, i)
+            i = i + 1
+        end while
+        merges = []
+        next_id = n
+        while len(members) > 1
+            bi = 0
+            bj = 1
+            bd = _link_dist(members[0], members[1], pd, method)
+            a = 0
+            while a < len(members)
+                b = a + 1
+                while b < len(members)
+                    dd = _link_dist(members[a], members[b], pd, method)
+                    if dd < bd then
+                        bd = dd
+                        bi = a
+                        bj = b
+                    end if
+                    b = b + 1
+                end while
+                a = a + 1
+            end while
+            id1 = ids[bi]
+            id2 = ids[bj]
+            lo = id1
+            hi = id2
+            if id2 < id1 then
+                lo = id2
+                hi = id1
+            end if
+            sz = len(members[bi]) + len(members[bj])
+            append(merges, [lo, hi, bd, sz])
+            merged = _concat(members[bi], members[bj])
+            newmembers = []
+            newids = []
+            t = 0
+            while t < len(members)
+                if t != bi and t != bj then
+                    append(newmembers, members[t])
+                    append(newids, ids[t])
+                end if
+                t = t + 1
+            end while
+            append(newmembers, merged)
+            append(newids, next_id)
+            members = newmembers
+            ids = newids
+            next_id = next_id + 1
+        end while
+        return { merges: merges, n: n, method: method }
+    end function
+
+    ' Cut a hierarchical model into `k` flat clusters by replaying its first
+    ' n-k merges, then numbering the surviving clusters 0..k-1 in id order.
+    function cut_tree(model, k)
+        n = model.n
+        merges = model.merges
+        if k < 1 then
+            return unknown
+        end if
+        if k > n then
+            return unknown
+        end if
+        total_ids = 2 * n - 1
+        members = []
+        i = 0
+        while i < total_ids
+            append(members, [])
+            i = i + 1
+        end while
+        i = 0
+        while i < n
+            members[i] = [i]
+            i = i + 1
+        end while
+        nmerge = n - k
+        m = 0
+        while m < nmerge
+            row = merges[m]
+            a = row[0]
+            b = row[1]
+            members[n + m] = _concat(members[a], members[b])
+            members[a] = []
+            members[b] = []
+            m = m + 1
+        end while
+        labels = []
+        i = 0
+        while i < n
+            append(labels, 0)
+            i = i + 1
+        end while
+        lbl = 0
+        id = 0
+        while id < total_ids
+            if len(members[id]) > 0 then
+                t = 0
+                while t < len(members[id])
+                    labels[members[id][t]] = lbl
+                    t = t + 1
+                end while
+                lbl = lbl + 1
+            end if
+            id = id + 1
+        end while
+        return labels
+    end function
+
+    ' --- Symmetric eigensolver (cyclic Jacobi rotations) ---
+    ' Diagonalises a real symmetric matrix `a` (list of rows). Returns
+    ' { values, vectors } where values[i] is an eigenvalue and vectors[i] its
+    ' unit eigenvector. Trig-free rotation (Numerical Recipes form: only
+    ' sqrt), so it needs no trig builtins. This is the PCA workhorse and the
+    ' §6 candidate to be reimplemented in C should profiling demand it.
+    function _jacobi_eigen(a)
+        n = len(a)
+        s = []
+        i = 0
+        while i < n
+            row = []
+            j = 0
+            while j < n
+                append(row, a[i][j])
+                j = j + 1
+            end while
+            append(s, row)
+            i = i + 1
+        end while
+        v = mat_identity(n)
+        sweep = 0
+        converged = false
+        while sweep < 100 and converged = false
+            off = 0
+            p = 0
+            while p < n - 1
+                q = p + 1
+                while q < n
+                    off = off + abs(s[p][q])
+                    q = q + 1
+                end while
+                p = p + 1
+            end while
+            if off < 0.00000000000001 then
+                converged = true
+            else
+                p = 0
+                while p < n - 1
+                    q = p + 1
+                    while q < n
+                        apq = s[p][q]
+                        if abs(apq) > 0 then
+                            app = s[p][p]
+                            aqq = s[q][q]
+                            theta = (aqq - app) / (2 * apq)
+                            t = 0
+                            if theta >= 0 then
+                                t = 1 / (theta + sqrt(theta * theta + 1))
+                            else
+                                t = 0 - 1 / (0 - theta + sqrt(theta * theta + 1))
+                            end if
+                            cs = 1 / sqrt(t * t + 1)
+                            sn = t * cs
+                            ' right rotation: update columns p, q for every row
+                            r = 0
+                            while r < n
+                                srp = s[r][p]
+                                srq = s[r][q]
+                                s[r][p] = cs * srp - sn * srq
+                                s[r][q] = sn * srp + cs * srq
+                                r = r + 1
+                            end while
+                            ' left rotation: update rows p, q for every column
+                            r = 0
+                            while r < n
+                                spr = s[p][r]
+                                sqr = s[q][r]
+                                s[p][r] = cs * spr - sn * sqr
+                                s[q][r] = sn * spr + cs * sqr
+                                r = r + 1
+                            end while
+                            ' accumulate eigenvectors
+                            r = 0
+                            while r < n
+                                vrp = v[r][p]
+                                vrq = v[r][q]
+                                v[r][p] = cs * vrp - sn * vrq
+                                v[r][q] = sn * vrp + cs * vrq
+                                r = r + 1
+                            end while
+                        end if
+                        q = q + 1
+                    end while
+                    p = p + 1
+                end while
+            end if
+            sweep = sweep + 1
+        end while
+        values = []
+        i = 0
+        while i < n
+            append(values, s[i][i])
+            i = i + 1
+        end while
+        vectors = []
+        i = 0
+        while i < n
+            col = []
+            r = 0
+            while r < n
+                append(col, v[r][i])
+                r = r + 1
+            end while
+            append(vectors, col)
+            i = i + 1
+        end while
+        return { values: values, vectors: vectors }
+    end function
+
+    ' --- Principal component analysis ---
+    ' `data` is a list of points; `ncomp` the number of components to keep.
+    ' Centres the data, forms the sample covariance (ddof=1, matching
+    ' scikit-learn's explained_variance_), eigendecomposes it, and returns the
+    ' top `ncomp` `components` (each a unit loading vector), their
+    ' `explained_variance` (eigenvalues) and `explained_variance_ratio`, the
+    ' projected `scores`, and the feature `mean`. Each component is sign-fixed
+    ' so its largest-magnitude loading is positive (deterministic across runs
+    ' and architectures). `unknown` if ncomp is out of range.
+    function pca(data, ncomp)
+        n = len(data)
+        if n < 2 then
+            return unknown
+        end if
+        p = len(data[0])
+        if ncomp < 1 then
+            return unknown
+        end if
+        if ncomp > p then
+            return unknown
+        end if
+        means = []
+        j = 0
+        while j < p
+            sj = 0
+            i = 0
+            while i < n
+                sj = sj + data[i][j]
+                i = i + 1
+            end while
+            append(means, sj / n)
+            j = j + 1
+        end while
+        centered = []
+        i = 0
+        while i < n
+            row = []
+            j = 0
+            while j < p
+                append(row, data[i][j] - means[j])
+                j = j + 1
+            end while
+            append(centered, row)
+            i = i + 1
+        end while
+        cov = []
+        a = 0
+        while a < p
+            row = []
+            b = 0
+            while b < p
+                sab = 0
+                i = 0
+                while i < n
+                    sab = sab + centered[i][a] * centered[i][b]
+                    i = i + 1
+                end while
+                append(row, sab / (n - 1))
+                b = b + 1
+            end while
+            append(cov, row)
+            a = a + 1
+        end while
+        eig = _jacobi_eigen(cov)
+        vals = eig.values
+        vecs = eig.vectors
+        ' order indices by descending eigenvalue
+        order = []
+        i = 0
+        while i < p
+            append(order, i)
+            i = i + 1
+        end while
+        a = 0
+        while a < p
+            bmax = a
+            b = a + 1
+            while b < p
+                if vals[order[b]] > vals[order[bmax]] then
+                    bmax = b
+                end if
+                b = b + 1
+            end while
+            tmp = order[a]
+            order[a] = order[bmax]
+            order[bmax] = tmp
+            a = a + 1
+        end while
+        totvar = 0
+        j = 0
+        while j < p
+            totvar = totvar + vals[j]
+            j = j + 1
+        end while
+        components = []
+        explained = []
+        ratio = []
+        c = 0
+        while c < ncomp
+            idx = order[c]
+            vec = vecs[idx]
+            ' sign convention: largest-magnitude loading positive
+            bigabs = 0
+            bigval = 0
+            j = 0
+            while j < p
+                if abs(vec[j]) > bigabs then
+                    bigabs = abs(vec[j])
+                    bigval = vec[j]
+                end if
+                j = j + 1
+            end while
+            sgn = 1
+            if bigval < 0 then
+                sgn = 0 - 1
+            end if
+            comp = []
+            j = 0
+            while j < p
+                append(comp, sgn * vec[j])
+                j = j + 1
+            end while
+            append(components, comp)
+            append(explained, vals[idx])
+            if totvar > 0 then
+                append(ratio, vals[idx] / totvar)
+            else
+                append(ratio, 0)
+            end if
+            c = c + 1
+        end while
+        scores = []
+        i = 0
+        while i < n
+            row = []
+            c = 0
+            while c < ncomp
+                sc = 0
+                j = 0
+                while j < p
+                    sc = sc + centered[i][j] * components[c][j]
+                    j = j + 1
+                end while
+                append(row, sc)
+                c = c + 1
+            end while
+            append(scores, row)
+            i = i + 1
+        end while
+        return { components: components, explained_variance: explained, explained_variance_ratio: ratio, scores: scores, mean: means, n: n }
+    end function
 end library

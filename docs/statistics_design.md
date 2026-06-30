@@ -13,7 +13,11 @@ the **`stdlib/frame.bas`** structural data-frame layer — have shipped, so
 **Phase 1 is complete** (see §8 Phase 1). **Phase 2 (inferential statistics —
 t-tests, ANOVA, chi-squared, nonparametric rank tests, confidence intervals,
 effect sizes, multiple-comparison corrections, and logistic/Poisson GLM via
-IRLS) is also complete** (see §8 Phase 2). The rest — Phases 3–4 — remains
+IRLS) is also complete** (see §8 Phase 2). **Phase 3 (multivariate / unsupervised
+— k-means, agglomerative hierarchical clustering, PCA over a pure-gBASIC Jacobi
+eigensolver, and z-score / IQR anomaly detection) is also complete** (see §8
+Phase 3); notably the PCA eigensolver stayed in gBASIC — the §6 "earn it" bar for
+a C builtin was not crossed. The rest — Phase 4 — remains
 proposal. This sketches the data representation and the
 statistical-operation surface for a gBASIC statistics library. The guiding
 constraint is **simplicity**: make statistical work as easy as possible *without
@@ -380,15 +384,38 @@ computed reference values (R/numpy/scipy) into `.out` fixtures.
   handling all landed as planned. Out-of-domain inputs return `unknown` (no new
   C builtins were needed — Phase 2 is pure gBASIC composition).
 
-### Phase 3 — Multivariate / unsupervised
+### Phase 3 — Multivariate / unsupervised — **DONE (2026-06-30)**
 - **Goal:** segmentation, dimensionality reduction, outliers.
-- **Deliverables:** `kmeans` (k-means++ seeding), `hierarchical` (agglomerative),
-  `pca`, anomaly detection `zscore_outliers` / `iqr_outliers`, then `dbscan` /
-  `isolation_forest` (stretch).
-- **Dependencies:** `matrix.bas`, distance functions, **eigen-decomposition** for
-  PCA — the first place C builtins are likely *earned* (a Jacobi eigensolver in
-  gBASIC may be too slow).
-- **Key risks:** eigen/SVD accuracy; k-means convergence cap + seeding.
+- **Shipped** (all in `stdlib/stats.bas`, pure gBASIC — **no new C builtins**):
+  - `kmeans(data, k, max_iter)` — Lloyd's algorithm with **k-means++** seeding
+    (RNG-driven, so `seed()` for reproducibility); returns `labels`, `centroids`,
+    `inertia`, `iterations`, `converged`. Finds the global optimum on
+    well-separated data (verified inertia against the true-partition value).
+  - `hierarchical(data, method)` — agglomerative clustering, `method` ∈
+    `single`/`complete`/`average` (UPGMA); returns `merges` in scipy **linkage Z**
+    format (`[id1, id2, dist, size]`, leaves `0..n-1`, merge `m` → id `n+m`,
+    smaller id first). Companion `cut_tree(model, k)` cuts the dendrogram to `k`
+    flat clusters. Merge rows match `scipy.cluster.hierarchy.linkage` exactly when
+    merge distances are distinct (ties are where scipy's chain order would diverge
+    — the test data is chosen tie-free).
+  - `pca(data, ncomp)` — centre → sample covariance (ddof=1, matching sklearn's
+    `explained_variance_`) → **`_jacobi_eigen`** (cyclic Jacobi, trig-free
+    Numerical-Recipes rotation, sqrt only) → top `ncomp` `components`,
+    `explained_variance`, `explained_variance_ratio`, projected `scores`, `mean`.
+    Each component is **sign-fixed** (largest-magnitude loading positive) for
+    cross-run / cross-arch determinism.
+  - `zscore_outliers(xs, threshold)` — population-stdev z-scores (matches
+    `scipy.stats.zscore` ddof=0); `iqr_outliers(xs, k)` — Tukey fences over the
+    numpy-linear-interp `quantile`.
+  - Shared helpers: `_dist2`/`_euclid`/`_copy_point`/`_concat`/`_link_dist`.
+  - Each entry point returns a record or `unknown` on malformed input.
+- **Verified** against scipy / numpy in `examples/stats_cluster_test.bas`
+  (133 positive / 189 negative suites green).
+- **Earn-it outcome:** the Jacobi eigensolver — the §6 candidate for the first
+  *earned* C builtin — proved fast and accurate enough in pure gBASIC at these
+  sizes, so the C line was **not** crossed. Revisit only if PCA on large feature
+  counts shows up in a profile.
+- **Deferred (stretch):** `dbscan`, `isolation_forest`, Ward linkage.
 
 ### Phase 4 — Time series
 - **Goal:** temporal methods (finance + business forecasting).
