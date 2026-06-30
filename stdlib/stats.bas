@@ -9,6 +9,9 @@
 ' Out-of-domain inputs return `unknown` (the native NA), never a bogus number:
 ' a non-positive standard deviation, or a quantile probability outside (0,1).
 library stats
+    ' OLS regression composes over the shared matrix toolkit (same stdlib dir).
+    load matrix from "matrix.bas"
+
     ' sqrt(2) and sqrt(2*pi) as constants — gBASIC has no scientific-notation
     ' literals, so the digits are written out in full.
     function _sqrt2()
@@ -583,5 +586,129 @@ library stats
             k = k + 1
         end while
         return unknown
+    end function
+
+    ' --- Ordinary least squares regression ---
+    '
+    ' y is a list of n responses; xs is the predictors either as a list of
+    ' columns (each a list of n values) or, for simple regression, a single
+    ' flat list of n values. An intercept is fitted automatically, so
+    ' coefficients[0] is the intercept and coefficients[j] the slope for the
+    ' (j-1)th predictor column. Returns a record:
+    '   coefficients, fitted, residuals, r_squared, adj_r_squared,
+    '   std_errors, t_values, p_values, n, df
+    ' or `unknown` if the inputs are malformed, under-determined, or the design
+    ' matrix is rank-deficient. Two-sided p-values use the t distribution on
+    ' df = n - (predictors + 1).
+    function ols(y, xs)
+        n = len(y)
+        if n = 0 then
+            return unknown
+        end if
+
+        ' Normalize predictors to a list of columns.
+        cols = xs
+        if len(xs) > 0 then
+            if not is_array(xs[0]) then
+                cols = [xs]
+            end if
+        end if
+        k = len(cols)
+
+        ' Every predictor column must match the response length.
+        c = 0
+        while c < k
+            if len(cols[c]) != n then
+                return unknown
+            end if
+            c = c + 1
+        end while
+
+        ' Need more observations than parameters for a residual df.
+        p = k + 1
+        if n <= p then
+            return unknown
+        end if
+
+        ' Design matrix: leading intercept column of ones, then the predictors.
+        bigx = []
+        i = 0
+        while i < n
+            row = []
+            append(row, 1)
+            c = 0
+            while c < k
+                append(row, cols[c][i])
+                c = c + 1
+            end while
+            append(bigx, row)
+            i = i + 1
+        end while
+
+        ' Normal equations: beta = (X'X)^-1 X'y.
+        xt = mat_transpose(bigx)
+        xtxinv = mat_inverse(mat_mul(xt, bigx))
+        if is_unknown(xtxinv) then
+            return unknown
+        end if
+        beta = mat_vec(xtxinv, mat_vec(xt, y))
+
+        ' Fitted values, residuals, and residual sum of squares.
+        fitted = mat_vec(bigx, beta)
+        residuals = []
+        rss = 0
+        i = 0
+        while i < n
+            e = y[i] - fitted[i]
+            append(residuals, e)
+            rss = rss + e * e
+            i = i + 1
+        end while
+
+        ' Total sum of squares about the mean.
+        ybar = mean(y)
+        tss = 0
+        i = 0
+        while i < n
+            d = y[i] - ybar
+            tss = tss + d * d
+            i = i + 1
+        end while
+
+        r2 = unknown
+        if tss > 0 then
+            r2 = 1 - rss / tss
+        end if
+        dof = n - p
+        adj = unknown
+        if not is_unknown(r2) then
+            adj = 1 - (1 - r2) * (n - 1) / dof
+        end if
+
+        ' Coefficient covariance is sigma^2 (X'X)^-1; SEs are its diagonal.
+        sigma2 = rss / dof
+        ses = []
+        tvals = []
+        pvals = []
+        j = 0
+        while j < p
+            v = sigma2 * xtxinv[j][j]
+            se = unknown
+            tv = unknown
+            pv = unknown
+            if v >= 0 then
+                se = sqrt(v)
+                if se > 0 then
+                    tv = beta[j] / se
+                    pv = 2 * (1 - t_cdf(abs(tv), dof))
+                end if
+            end if
+            append(ses, se)
+            append(tvals, tv)
+            append(pvals, pv)
+            j = j + 1
+        end while
+
+        return { coefficients: beta, fitted: fitted, residuals: residuals, r_squared: r2, adj_r_squared: adj, std_errors: ses, t_values: tvals, p_values: pvals, n: n, df: dof }
     end function
 end library

@@ -6,9 +6,10 @@ reductions, the order statistics / paired measures (`quantile`/`percentile`/`iqr
 `range`/`correlation`/`covariance`), and the `stdlib/stats.bas` distribution
 suite — the **normal**, **Student's t**, **chi-squared**, **F**, **binomial**,
 and **Poisson** distributions over shared incomplete-gamma/incomplete-beta
-engines (plus the `lgamma` primitive they need) — have shipped (see §8 Phase 1).
-The rest — regression (`ols`), resampling, the `frame` layer, and Phases 2–4 —
-remains proposal. This sketches the data representation and the
+engines (plus the `lgamma` primitive they need), the **`stdlib/matrix.bas`**
+toolkit, and **`ols`** linear regression — have shipped (see §8 Phase 1). The
+rest — resampling, the `frame` layer, and Phases 2–4 — remains proposal. This
+sketches the data representation and the
 statistical-operation surface for a gBASIC statistics library. The guiding
 constraint is **simplicity**: make statistical work as easy as possible *without
 sacrificing functionality*, building on the values gBASIC already has. Any change
@@ -290,8 +291,20 @@ computed reference values (R/numpy/scipy) into `.out` fixtures.
     Verified against scipy in `examples/stats_dist_test.bas`. `sample` (random
     draws) is deferred until the seedable RNG lands.
   - Remaining: `sample`/resampling (`shuffle`, `bootstrap`) — pending the RNG.
-  - `ols(y, xs)` — linear regression: coefficients, residuals, R², standard
-    errors, p-values. The single most reusable inferential tool.
+  - **DONE — `stdlib/matrix.bas`** — the shared vector/matrix toolkit
+    (transpose, multiply, matrix×vector, identity, Gauss–Jordan inverse with
+    partial pivoting, dot). A matrix is a list of rows, indices 0-based;
+    shape mismatch / singular / non-square return `unknown`. Written in gBASIC
+    (the component most likely to *earn* C builtins later). Verified against
+    numpy in `examples/matrix_test.bas`.
+  - **DONE — `ols(y, xs)`** in `stdlib/stats.bas` — linear regression via the
+    normal equations over `matrix.bas`. `xs` is a list of predictor columns (or
+    a flat list for simple regression); an intercept is fitted automatically.
+    Returns coefficients, fitted, residuals, `r_squared`, `adj_r_squared`,
+    `std_errors`, `t_values`, `p_values` (two-sided, via `t_cdf` on df = n−p),
+    `n`, `df`; `unknown` on malformed / under-determined / rank-deficient input.
+    Verified against numpy/scipy in `examples/stats_ols_test.bas`. (Normal
+    equations as noted below; QR hardening deferred.)
   - Resampling: `sample`, `shuffle`, `bootstrap`.
   - `stdlib/frame.bas`: the §4 structural layer (IO, clean/reshape, group/
     summarize, conversions, inspection).
