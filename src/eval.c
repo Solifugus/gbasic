@@ -3890,6 +3890,7 @@ static void search_gbasic_path_for_library(const char *name,
                                            size_t *match_count) {
     const char *gbasic_path = getenv("GBASIC_PATH");
     const char *start = gbasic_path;
+    size_t before_path = *match_count;
     while (start && *start) {
         const char *end = strchr(start, ':');
         size_t len = end ? (size_t)(end - start) : strlen(start);
@@ -3913,8 +3914,10 @@ static void search_gbasic_path_for_library(const char *name,
     }
 
 #ifdef GBASIC_DEFAULT_STDLIB
-    /* Fallback so an installed gbasic finds its stdlib without GBASIC_PATH set. */
-    if (GBASIC_DEFAULT_STDLIB[0] != '\0') {
+    /* Fallback so an installed gbasic finds its stdlib without GBASIC_PATH set.
+     * Only consulted when GBASIC_PATH did not already resolve the library, so a
+     * GBASIC_PATH copy is never shadowed by (or warns against) the installed one. */
+    if (*match_count == before_path && GBASIC_DEFAULT_STDLIB[0] != '\0') {
         search_directory_for_library(GBASIC_DEFAULT_STDLIB, name, 1, exact_filename, matches, match_count);
     }
 #endif
