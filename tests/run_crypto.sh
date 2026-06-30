@@ -14,23 +14,33 @@ stdout_file="$(mktemp)"
 stderr_file="$(mktemp)"
 trap 'rm -f "$stdout_file" "$stderr_file"' EXIT
 
-if ./gbasic examples/crypto_test.bas >"$stdout_file" 2>"$stderr_file"; then
-    if diff -u examples/crypto_test.out "$stdout_file"; then
-        printf 'PASS examples/crypto_test.bas\n'
+positive_cases=(
+    crypto_test
+    crypto_cipher_test
+)
+
+for name in "${positive_cases[@]}"; do
+    : >"$stdout_file"
+    : >"$stderr_file"
+    if ./gbasic "examples/$name.bas" >"$stdout_file" 2>"$stderr_file"; then
+        if diff -u "examples/$name.out" "$stdout_file"; then
+            printf 'PASS examples/%s.bas\n' "$name"
+        else
+            exit 1
+        fi
     else
-        exit 1
+        status=$?
+        cat "$stderr_file"
+        exit "$status"
     fi
-else
-    status=$?
-    cat "$stderr_file"
-    exit "$status"
-fi
+done
 
 negative_cases=(
     negative_crypto_sha256_arity
     negative_crypto_base64_type
     negative_crypto_random_bytes_range
     negative_crypto_bytes_equal_arity
+    negative_crypto_aes_arity
 )
 
 for name in "${negative_cases[@]}"; do

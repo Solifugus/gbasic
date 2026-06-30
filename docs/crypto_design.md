@@ -1,9 +1,10 @@
 # gBASIC cryptography library — design
 
 **Status:** in progress (2026-06-30). Phase 1 (encoding + random + constant-time
-compare) and Phase 2 (hashing + HMAC) are the foundation; Phase 3 builds the
-web-token helpers in gBASIC over them; Phase 4 adds authenticated symmetric
-encryption (AES-GCM) and Ed25519 signatures.
+compare), Phase 2 (hashing + HMAC), and Phase 4 (AES-GCM + Ed25519) are
+**complete** — all C builtins, verified against Python `hashlib`/`hmac`/
+`cryptography` and known vectors. Phase 3 (the gBASIC web-token helper layer over
+them) is the remaining piece.
 
 ## 1. Guiding decision — why this one breaks the "compositions in gBASIC" rule
 
@@ -85,7 +86,7 @@ Composed over Phases 1–2. Includes a tiny JSON encoder/decoder for flat record
   value or `unknown`. Uses `bytes_equal` for the signature check.
 - `csrf_token(secret, session)` / `csrf_check(token, secret, session)`.
 
-## 6. Phase 4 — symmetric + asymmetric (libcrypto)
+## 6. Phase 4 — symmetric + asymmetric (libcrypto) — **DONE (2026-06-30)**
 
 - **AES-GCM** authenticated encryption (low-level, explicit nonce):
   - `aes_gcm_encrypt(key, nonce, plaintext, aad)` → `ciphertext || tag`

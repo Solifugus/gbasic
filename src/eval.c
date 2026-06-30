@@ -12100,6 +12100,33 @@ static int crypto_two_strings(AstExpr *expr, const char *fname, Value *a, Value 
     return 1;
 }
 
+/* Evaluate exactly n string arguments into out[0..n-1] (caller frees each). */
+static int crypto_n_strings(AstExpr *expr, const char *fname, int n, Value *out) {
+    char m[128];
+    if ((int)expr->as.call.args.count != n) {
+        snprintf(m, sizeof(m), "%s expects %d arguments", fname, n);
+        runtime_error_raise(m, 1003, "invalid function call");
+        return 0;
+    }
+    for (int i = 0; i < n; i++) {
+        Value v = eval_expr(expr->as.call.args.items[i]);
+        if (error_action_pending()) {
+            value_free(v);
+            for (int j = 0; j < i; j++) value_free(out[j]);
+            return 0;
+        }
+        if (v.kind != VALUE_STRING) {
+            value_free(v);
+            for (int j = 0; j < i; j++) value_free(out[j]);
+            snprintf(m, sizeof(m), "%s expects strings", fname);
+            runtime_error_raise(m, 1003, "invalid argument type");
+            return 0;
+        }
+        out[i] = v;
+    }
+    return 1;
+}
+
 #if HAVE_LIBCRYPTO
 static Value crypto_digest(const EVP_MD *md, const unsigned char *in, size_t n) {
     unsigned char out[EVP_MAX_MD_SIZE];
@@ -12118,6 +12145,149 @@ static Value crypto_hmac(const EVP_MD *md, const unsigned char *key, size_t kn,
         return value_unknown();
     }
     return value_string_n((char *)out, outlen);
+}
+
+/* AES-GCM. key 16/24/32 bytes selects AES-128/192/256; nonce 12 bytes; 16-byte
+ * tag. encrypt returns malloc'd ciphertext||tag; decrypt verifies the tag and
+ * returns malloc'd plaintext, or NULL (bad params / auth failure). */
+static const EVP_CIPHER *crypto_aes_gcm_cipher(size_t keylen) {
+    if (keylen == 16) return EVP_aes_128_gcm();
+    if (keylen == 24) return EVP_aes_192_gcm();
+    if (keylen == 32) return EVP_aes_256_gcm();
+    return NULL;
+}
+
+static unsigned char *crypto_aes_gcm_encrypt(const unsigned char *key, size_t keylen,
+                                             const unsigned char *nonce, size_t noncelen,
+                                             const unsigned char *pt, size_t ptlen,
+                                             const unsigned char *aad, size_t aadlen,
+                                             size_t *out_len) {
+    const EVP_CIPHER *cipher = crypto_aes_gcm_cipher(keylen);
+    if (!cipher || noncelen != 12) return NULL;
+    EVP_CIPHER_CTX *ctx = EVP_CIPHER_CTX_new();
+    if (!ctx) return NULL;
+    unsigned char *out = malloc(ptlen + 16);
+    if (!out) {
+        EVP_CIPHER_CTX_free(ctx);
+        abort();
+    }
+    int ok = 1, len = 0;
+    size_t o = 0;
+    if (EVP_EncryptInit_ex(ctx, cipher, NULL, key, nonce) != 1) ok = 0;
+    if (ok && aadlen > 0 && EVP_EncryptUpdate(ctx, NULL, &len, aad, (int)aadlen) != 1) ok = 0;
+    if (ok && EVP_EncryptUpdate(ctx, out, &len, pt, (int)ptlen) != 1) ok = 0;
+    if (ok) o = (size_t)len;
+    if (ok && EVP_EncryptFinal_ex(ctx, out + o, &len) != 1) ok = 0;
+    if (ok) o += (size_t)len;
+    if (ok && EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_GET_TAG, 16, out + o) != 1) ok = 0;
+    if (ok) o += 16;
+    EVP_CIPHER_CTX_free(ctx);
+    if (!ok) {
+        free(out);
+        return NULL;
+    }
+    *out_len = o;
+    return out;
+}
+
+static unsigned char *crypto_aes_gcm_decrypt(const unsigned char *key, size_t keylen,
+                                             const unsigned char *nonce, size_t noncelen,
+                                             const unsigned char *blob, size_t bloblen,
+                                             const unsigned char *aad, size_t aadlen,
+                                             size_t *out_len) {
+    const EVP_CIPHER *cipher = crypto_aes_gcm_cipher(keylen);
+    if (!cipher || noncelen != 12 || bloblen < 16) return NULL;
+    size_t ctlen = bloblen - 16;
+    unsigned char tag[16];
+    memcpy(tag, blob + ctlen, 16);
+    EVP_CIPHER_CTX *ctx = EVP_CIPHER_CTX_new();
+    if (!ctx) return NULL;
+    unsigned char *out = malloc(ctlen + 1);
+    if (!out) {
+        EVP_CIPHER_CTX_free(ctx);
+        abort();
+    }
+    int ok = 1, len = 0;
+    size_t o = 0;
+    if (EVP_DecryptInit_ex(ctx, cipher, NULL, key, nonce) != 1) ok = 0;
+    if (ok && aadlen > 0 && EVP_DecryptUpdate(ctx, NULL, &len, aad, (int)aadlen) != 1) ok = 0;
+    if (ok && EVP_DecryptUpdate(ctx, out, &len, blob, (int)ctlen) != 1) ok = 0;
+    if (ok) o = (size_t)len;
+    if (ok && EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_TAG, 16, tag) != 1) ok = 0;
+    int fin = ok ? EVP_DecryptFinal_ex(ctx, out + o, &len) : 0;
+    EVP_CIPHER_CTX_free(ctx);
+    if (!ok || fin != 1) {
+        free(out);
+        return NULL;
+    }
+    o += (size_t)len;
+    *out_len = o;
+    return out;
+}
+
+/* Ed25519: private key is the 32-byte raw seed, public 32 bytes, signature 64. */
+static int crypto_ed25519_keypair(unsigned char *pub32, unsigned char *priv32) {
+    EVP_PKEY *pkey = NULL;
+    EVP_PKEY_CTX *pctx = EVP_PKEY_CTX_new_id(EVP_PKEY_ED25519, NULL);
+    if (!pctx) return 0;
+    int ok = 1;
+    if (EVP_PKEY_keygen_init(pctx) != 1) ok = 0;
+    if (ok && EVP_PKEY_keygen(pctx, &pkey) != 1) ok = 0;
+    size_t publ = 32, privl = 32;
+    if (ok && EVP_PKEY_get_raw_public_key(pkey, pub32, &publ) != 1) ok = 0;
+    if (ok && EVP_PKEY_get_raw_private_key(pkey, priv32, &privl) != 1) ok = 0;
+    if (ok && (publ != 32 || privl != 32)) ok = 0;
+    EVP_PKEY_free(pkey);
+    EVP_PKEY_CTX_free(pctx);
+    return ok;
+}
+
+static unsigned char *crypto_ed25519_sign(const unsigned char *priv, size_t privlen,
+                                          const unsigned char *msg, size_t msglen,
+                                          size_t *out_len) {
+    if (privlen != 32) return NULL;
+    EVP_PKEY *pkey = EVP_PKEY_new_raw_private_key(EVP_PKEY_ED25519, NULL, priv, 32);
+    if (!pkey) return NULL;
+    EVP_MD_CTX *mctx = EVP_MD_CTX_new();
+    unsigned char *sig = malloc(64);
+    if (!mctx || !sig) {
+        free(sig);
+        EVP_MD_CTX_free(mctx);
+        EVP_PKEY_free(pkey);
+        abort();
+    }
+    int ok = 1;
+    size_t siglen = 64;
+    if (EVP_DigestSignInit(mctx, NULL, NULL, NULL, pkey) != 1) ok = 0;
+    if (ok && EVP_DigestSign(mctx, sig, &siglen, msg, msglen) != 1) ok = 0;
+    EVP_MD_CTX_free(mctx);
+    EVP_PKEY_free(pkey);
+    if (!ok || siglen != 64) {
+        free(sig);
+        return NULL;
+    }
+    *out_len = siglen;
+    return sig;
+}
+
+static int crypto_ed25519_verify(const unsigned char *pub, size_t publen,
+                                 const unsigned char *msg, size_t msglen,
+                                 const unsigned char *sig, size_t siglen) {
+    if (publen != 32 || siglen != 64) return 0;
+    EVP_PKEY *pkey = EVP_PKEY_new_raw_public_key(EVP_PKEY_ED25519, NULL, pub, 32);
+    if (!pkey) return 0;
+    EVP_MD_CTX *mctx = EVP_MD_CTX_new();
+    if (!mctx) {
+        EVP_PKEY_free(pkey);
+        return 0;
+    }
+    int rc = 0;
+    if (EVP_DigestVerifyInit(mctx, NULL, NULL, NULL, pkey) == 1) {
+        rc = EVP_DigestVerify(mctx, sig, siglen, msg, msglen) == 1 ? 1 : 0;
+    }
+    EVP_MD_CTX_free(mctx);
+    EVP_PKEY_free(pkey);
+    return rc;
 }
 #endif
 
@@ -12615,6 +12785,120 @@ static Value eval_call(AstExpr *expr) {
         value_free(key);
         value_free(msg);
         runtime_error_raise("HMAC requires OpenSSL (libcrypto); rebuild with it installed",
+                            1003, "unsupported");
+        return value_null();
+#endif
+    }
+
+    /* ----- Cryptography: AES-GCM + Ed25519 (libcrypto) ----- */
+    if (strcmp(expr->as.call.name, "aes_gcm_encrypt") == 0 ||
+        strcmp(expr->as.call.name, "aes_gcm_decrypt") == 0) {
+        int encrypt = strcmp(expr->as.call.name, "aes_gcm_encrypt") == 0;
+        Value a[4];
+        if (!crypto_n_strings(expr, expr->as.call.name, 4, a)) return value_null();
+#if HAVE_LIBCRYPTO
+        const unsigned char *key = (const unsigned char *)a[0].as.string;
+        const unsigned char *nonce = (const unsigned char *)a[1].as.string;
+        const unsigned char *data = (const unsigned char *)a[2].as.string;
+        const unsigned char *aad = (const unsigned char *)a[3].as.string;
+        size_t out_len = 0;
+        unsigned char *out;
+        if (encrypt) {
+            out = crypto_aes_gcm_encrypt(key, string_length(a[0].as.string),
+                                         nonce, string_length(a[1].as.string),
+                                         data, string_length(a[2].as.string),
+                                         aad, string_length(a[3].as.string), &out_len);
+        } else {
+            out = crypto_aes_gcm_decrypt(key, string_length(a[0].as.string),
+                                         nonce, string_length(a[1].as.string),
+                                         data, string_length(a[2].as.string),
+                                         aad, string_length(a[3].as.string), &out_len);
+        }
+        for (int i = 0; i < 4; i++) value_free(a[i]);
+        if (!out) {
+            return value_unknown();
+        }
+        Value r = value_string_n((char *)out, out_len);
+        free(out);
+        return r;
+#else
+        for (int i = 0; i < 4; i++) value_free(a[i]);
+        runtime_error_raise("AES-GCM requires OpenSSL (libcrypto); rebuild with it installed",
+                            1003, "unsupported");
+        return value_null();
+#endif
+    }
+    if (strcmp(expr->as.call.name, "ed25519_keypair") == 0) {
+        if (expr->as.call.args.count != 0) {
+            runtime_error_raise("ed25519_keypair expects no arguments", 1003, "invalid function call");
+            return value_null();
+        }
+#if HAVE_LIBCRYPTO
+        unsigned char pub[32], priv[32];
+        if (!crypto_ed25519_keypair(pub, priv)) {
+            return value_unknown();
+        }
+        RecordField *fields = calloc(2, sizeof(RecordField));
+        if (!fields) {
+            abort();
+        }
+        const char *names[] = {"public", "private"};
+        for (size_t i = 0; i < 2; i++) {
+            fields[i].name = copy_string(names[i]);
+            fields[i].value = cell_alloc();
+            if (!fields[i].value) {
+                abort();
+            }
+        }
+        *fields[0].value = value_string_n((char *)pub, 32);
+        *fields[1].value = value_string_n((char *)priv, 32);
+        return value_record(fields, 2);
+#else
+        runtime_error_raise("Ed25519 requires OpenSSL (libcrypto); rebuild with it installed",
+                            1003, "unsupported");
+        return value_null();
+#endif
+    }
+    if (strcmp(expr->as.call.name, "ed25519_sign") == 0) {
+        Value a[2];
+        if (!crypto_n_strings(expr, "ed25519_sign", 2, a)) return value_null();
+#if HAVE_LIBCRYPTO
+        size_t out_len = 0;
+        unsigned char *sig = crypto_ed25519_sign((const unsigned char *)a[0].as.string,
+                                                 string_length(a[0].as.string),
+                                                 (const unsigned char *)a[1].as.string,
+                                                 string_length(a[1].as.string), &out_len);
+        value_free(a[0]);
+        value_free(a[1]);
+        if (!sig) {
+            return value_unknown();
+        }
+        Value r = value_string_n((char *)sig, out_len);
+        free(sig);
+        return r;
+#else
+        value_free(a[0]);
+        value_free(a[1]);
+        runtime_error_raise("Ed25519 requires OpenSSL (libcrypto); rebuild with it installed",
+                            1003, "unsupported");
+        return value_null();
+#endif
+    }
+    if (strcmp(expr->as.call.name, "ed25519_verify") == 0) {
+        Value a[3];
+        if (!crypto_n_strings(expr, "ed25519_verify", 3, a)) return value_null();
+#if HAVE_LIBCRYPTO
+        int ok = crypto_ed25519_verify((const unsigned char *)a[0].as.string,
+                                       string_length(a[0].as.string),
+                                       (const unsigned char *)a[1].as.string,
+                                       string_length(a[1].as.string),
+                                       (const unsigned char *)a[2].as.string,
+                                       string_length(a[2].as.string));
+        for (int i = 0; i < 3; i++) value_free(a[i]);
+        return value_bool(ok);
+#else
+        for (int i = 0; i < 3; i++) value_free(a[i]);
+        runtime_error_raise("Ed25519 requires OpenSSL (libcrypto); rebuild with it installed",
                             1003, "unsupported");
         return value_null();
 #endif
