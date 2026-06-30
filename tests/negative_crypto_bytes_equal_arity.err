@@ -1,0 +1,1 @@
+runtime error at tests/negative_crypto_bytes_equal_arity.bas:1:1: bytes_equal expects two arguments

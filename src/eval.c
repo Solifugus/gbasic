@@ -48,6 +48,13 @@
 #include <crypt.h>
 #endif
 
+#if HAVE_LIBCRYPTO
+#include <openssl/evp.h>
+#include <openssl/hmac.h>
+#include <openssl/rand.h>
+#include <openssl/err.h>
+#endif
+
 #define SECURE_TOKEN_MAX_LENGTH 4096
 
 /* Seedable general-purpose PRNG (statistics_design.md §8 shared infrastructure):
@@ -11875,6 +11882,245 @@ static Value pg_eval_call(AstExpr *expr) {
 }
 #endif
 
+/* ===== Cryptography (docs/crypto_design.md) ===============================
+ * Phase 1 (base64/hex encoding, random_bytes, constant-time bytes_equal) is
+ * plain C and always available. Phases 2/4 (hashing, HMAC, AES-GCM, Ed25519)
+ * bind OpenSSL libcrypto behind HAVE_LIBCRYPTO and raise a clean runtime error
+ * when it is absent. All inputs/outputs are binary-safe gBASIC strings: read an
+ * argument as `arg.as.string` with `string_length(arg.as.string)` bytes; build
+ * a result with `value_string_n(buf, len)`. Decoders return NULL on malformed
+ * input and the dispatch turns that into `unknown`. */
+
+static const char CRYPTO_B64_STD[] =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+static const char CRYPTO_B64_URL[] =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+
+static Value crypto_base64_encode(const unsigned char *in, size_t n, int url, int pad) {
+    const char *alpha = url ? CRYPTO_B64_URL : CRYPTO_B64_STD;
+    size_t out_cap = ((n + 2) / 3) * 4 + 1;
+    char *out = malloc(out_cap);
+    if (!out) {
+        abort();
+    }
+    size_t o = 0;
+    size_t i = 0;
+    while (i + 3 <= n) {
+        unsigned v = ((unsigned)in[i] << 16) | ((unsigned)in[i + 1] << 8) | in[i + 2];
+        out[o++] = alpha[(v >> 18) & 63];
+        out[o++] = alpha[(v >> 12) & 63];
+        out[o++] = alpha[(v >> 6) & 63];
+        out[o++] = alpha[v & 63];
+        i += 3;
+    }
+    size_t rem = n - i;
+    if (rem == 1) {
+        unsigned v = (unsigned)in[i] << 16;
+        out[o++] = alpha[(v >> 18) & 63];
+        out[o++] = alpha[(v >> 12) & 63];
+        if (pad) {
+            out[o++] = '=';
+            out[o++] = '=';
+        }
+    } else if (rem == 2) {
+        unsigned v = ((unsigned)in[i] << 16) | ((unsigned)in[i + 1] << 8);
+        out[o++] = alpha[(v >> 18) & 63];
+        out[o++] = alpha[(v >> 12) & 63];
+        out[o++] = alpha[(v >> 6) & 63];
+        if (pad) {
+            out[o++] = '=';
+        }
+    }
+    Value result = value_string_n(out, o);
+    free(out);
+    return result;
+}
+
+static int crypto_b64_val(unsigned char c) {
+    if (c >= 'A' && c <= 'Z') return (int)(c - 'A');
+    if (c >= 'a' && c <= 'z') return (int)(c - 'a') + 26;
+    if (c >= '0' && c <= '9') return (int)(c - '0') + 52;
+    if (c == '+' || c == '-') return 62;
+    if (c == '/' || c == '_') return 63;
+    return -1;
+}
+
+/* Decodes std or url base64 (padding optional). Returns malloc'd bytes and sets
+ * *out_len; returns NULL on any invalid character or truncated quad. */
+static unsigned char *crypto_base64_decode(const unsigned char *in, size_t n, size_t *out_len) {
+    unsigned char *out = malloc(n / 4 * 3 + 4);
+    if (!out) {
+        abort();
+    }
+    size_t o = 0;
+    int quad[4];
+    int qn = 0;
+    for (size_t i = 0; i < n; i++) {
+        unsigned char c = in[i];
+        if (c == '=') {
+            break;
+        }
+        int v = crypto_b64_val(c);
+        if (v < 0) {
+            free(out);
+            return NULL;
+        }
+        quad[qn++] = v;
+        if (qn == 4) {
+            out[o++] = (unsigned char)((quad[0] << 2) | (quad[1] >> 4));
+            out[o++] = (unsigned char)(((quad[1] & 15) << 4) | (quad[2] >> 2));
+            out[o++] = (unsigned char)(((quad[2] & 3) << 6) | quad[3]);
+            qn = 0;
+        }
+    }
+    if (qn == 1) {
+        free(out);
+        return NULL;
+    }
+    if (qn == 2) {
+        out[o++] = (unsigned char)((quad[0] << 2) | (quad[1] >> 4));
+    } else if (qn == 3) {
+        out[o++] = (unsigned char)((quad[0] << 2) | (quad[1] >> 4));
+        out[o++] = (unsigned char)(((quad[1] & 15) << 4) | (quad[2] >> 2));
+    }
+    *out_len = o;
+    return out;
+}
+
+static Value crypto_hex_encode(const unsigned char *in, size_t n) {
+    static const char hexd[] = "0123456789abcdef";
+    char *out = malloc(n * 2 + 1);
+    if (!out) {
+        abort();
+    }
+    for (size_t i = 0; i < n; i++) {
+        out[i * 2] = hexd[in[i] >> 4];
+        out[i * 2 + 1] = hexd[in[i] & 15];
+    }
+    Value result = value_string_n(out, n * 2);
+    free(out);
+    return result;
+}
+
+static int crypto_hex_val(unsigned char c) {
+    if (c >= '0' && c <= '9') return (int)(c - '0');
+    if (c >= 'a' && c <= 'f') return (int)(c - 'a') + 10;
+    if (c >= 'A' && c <= 'F') return (int)(c - 'A') + 10;
+    return -1;
+}
+
+/* Returns malloc'd bytes and sets *out_len; NULL on odd length or non-hex. */
+static unsigned char *crypto_hex_decode(const unsigned char *in, size_t n, size_t *out_len) {
+    if (n % 2 != 0) {
+        return NULL;
+    }
+    unsigned char *out = malloc(n / 2 + 1);
+    if (!out) {
+        abort();
+    }
+    for (size_t i = 0; i < n; i += 2) {
+        int hi = crypto_hex_val(in[i]);
+        int lo = crypto_hex_val(in[i + 1]);
+        if (hi < 0 || lo < 0) {
+            free(out);
+            return NULL;
+        }
+        out[i / 2] = (unsigned char)((hi << 4) | lo);
+    }
+    *out_len = n / 2;
+    return out;
+}
+
+/* Constant-time byte comparison: always scans max(la,lb) so timing does not leak
+ * the match position; unequal lengths still compare false. */
+static int crypto_bytes_equal(const unsigned char *a, size_t la,
+                              const unsigned char *b, size_t lb) {
+    size_t m = la > lb ? la : lb;
+    unsigned char diff = (unsigned char)(la ^ lb);
+    for (size_t i = 0; i < m; i++) {
+        unsigned char av = i < la ? a[i] : 0;
+        unsigned char bv = i < lb ? b[i] : 0;
+        diff |= (unsigned char)(av ^ bv);
+    }
+    return diff == 0;
+}
+
+/* Evaluate a call's single string argument into *out (caller value_free's it).
+ * Raises and returns 0 on wrong arity or non-string. */
+static int crypto_one_string(AstExpr *expr, const char *fname, Value *out) {
+    char m[128];
+    if (expr->as.call.args.count != 1) {
+        snprintf(m, sizeof(m), "%s expects one argument", fname);
+        runtime_error_raise(m, 1003, "invalid function call");
+        return 0;
+    }
+    Value s = eval_expr(expr->as.call.args.items[0]);
+    if (error_action_pending()) {
+        value_free(s);
+        return 0;
+    }
+    if (s.kind != VALUE_STRING) {
+        value_free(s);
+        snprintf(m, sizeof(m), "%s expects a string", fname);
+        runtime_error_raise(m, 1003, "invalid argument type");
+        return 0;
+    }
+    *out = s;
+    return 1;
+}
+
+/* Evaluate a call's two string arguments into *a and *b (caller frees both). */
+static int crypto_two_strings(AstExpr *expr, const char *fname, Value *a, Value *b) {
+    char m[128];
+    if (expr->as.call.args.count != 2) {
+        snprintf(m, sizeof(m), "%s expects two arguments", fname);
+        runtime_error_raise(m, 1003, "invalid function call");
+        return 0;
+    }
+    Value av = eval_expr(expr->as.call.args.items[0]);
+    if (error_action_pending()) {
+        value_free(av);
+        return 0;
+    }
+    Value bv = eval_expr(expr->as.call.args.items[1]);
+    if (error_action_pending()) {
+        value_free(av);
+        value_free(bv);
+        return 0;
+    }
+    if (av.kind != VALUE_STRING || bv.kind != VALUE_STRING) {
+        value_free(av);
+        value_free(bv);
+        snprintf(m, sizeof(m), "%s expects strings", fname);
+        runtime_error_raise(m, 1003, "invalid argument type");
+        return 0;
+    }
+    *a = av;
+    *b = bv;
+    return 1;
+}
+
+#if HAVE_LIBCRYPTO
+static Value crypto_digest(const EVP_MD *md, const unsigned char *in, size_t n) {
+    unsigned char out[EVP_MAX_MD_SIZE];
+    unsigned int outlen = 0;
+    if (EVP_Digest(in, n, out, &outlen, md, NULL) != 1) {
+        return value_unknown();
+    }
+    return value_string_n((char *)out, outlen);
+}
+
+static Value crypto_hmac(const EVP_MD *md, const unsigned char *key, size_t kn,
+                         const unsigned char *msg, size_t mn) {
+    unsigned char out[EVP_MAX_MD_SIZE];
+    unsigned int outlen = 0;
+    if (HMAC(md, key, (int)kn, msg, mn, out, &outlen) == NULL) {
+        return value_unknown();
+    }
+    return value_string_n((char *)out, outlen);
+}
+#endif
+
 static Value eval_call(AstExpr *expr) {
     if (expr->as.call.library) {
         /* §5 disambiguation: X.y(args) where X is a variable bound to a record
@@ -12214,6 +12460,164 @@ static Value eval_call(AstExpr *expr) {
         Value result = value_string(token);
         free(token);
         return result;
+    }
+
+    /* ----- Cryptography: encoding (always available) ----- */
+    if (strcmp(expr->as.call.name, "base64_encode") == 0) {
+        Value s;
+        if (!crypto_one_string(expr, "base64_encode", &s)) return value_null();
+        Value r = crypto_base64_encode((const unsigned char *)s.as.string, string_length(s.as.string), 0, 1);
+        value_free(s);
+        return r;
+    }
+    if (strcmp(expr->as.call.name, "base64url_encode") == 0) {
+        Value s;
+        if (!crypto_one_string(expr, "base64url_encode", &s)) return value_null();
+        Value r = crypto_base64_encode((const unsigned char *)s.as.string, string_length(s.as.string), 1, 0);
+        value_free(s);
+        return r;
+    }
+    if (strcmp(expr->as.call.name, "base64_decode") == 0 ||
+        strcmp(expr->as.call.name, "base64url_decode") == 0) {
+        Value s;
+        if (!crypto_one_string(expr, expr->as.call.name, &s)) return value_null();
+        size_t out_len = 0;
+        unsigned char *dec = crypto_base64_decode((const unsigned char *)s.as.string,
+                                                  string_length(s.as.string), &out_len);
+        value_free(s);
+        if (!dec) {
+            return value_unknown();
+        }
+        Value r = value_string_n((char *)dec, out_len);
+        free(dec);
+        return r;
+    }
+    if (strcmp(expr->as.call.name, "hex_encode") == 0) {
+        Value s;
+        if (!crypto_one_string(expr, "hex_encode", &s)) return value_null();
+        Value r = crypto_hex_encode((const unsigned char *)s.as.string, string_length(s.as.string));
+        value_free(s);
+        return r;
+    }
+    if (strcmp(expr->as.call.name, "hex_decode") == 0) {
+        Value s;
+        if (!crypto_one_string(expr, "hex_decode", &s)) return value_null();
+        size_t out_len = 0;
+        unsigned char *dec = crypto_hex_decode((const unsigned char *)s.as.string,
+                                               string_length(s.as.string), &out_len);
+        value_free(s);
+        if (!dec) {
+            return value_unknown();
+        }
+        Value r = value_string_n((char *)dec, out_len);
+        free(dec);
+        return r;
+    }
+    if (strcmp(expr->as.call.name, "bytes_equal") == 0) {
+        Value a, b;
+        if (!crypto_two_strings(expr, "bytes_equal", &a, &b)) return value_null();
+        int eq = crypto_bytes_equal((const unsigned char *)a.as.string, string_length(a.as.string),
+                                    (const unsigned char *)b.as.string, string_length(b.as.string));
+        value_free(a);
+        value_free(b);
+        return value_bool(eq);
+    }
+    if (strcmp(expr->as.call.name, "random_bytes") == 0) {
+        if (expr->as.call.args.count != 1) {
+            runtime_error_raise("random_bytes expects one argument", 1003, "invalid function call");
+            return value_null();
+        }
+        Value nv = eval_expr(expr->as.call.args.items[0]);
+        if (error_action_pending()) {
+            value_free(nv);
+            return value_null();
+        }
+        if (nv.kind != VALUE_NUMBER) {
+            value_free(nv);
+            runtime_error_raise("random_bytes expects a number", 1003, "invalid argument type");
+            return value_null();
+        }
+        double nd = nv.as.number;
+        value_free(nv);
+        if (!isfinite(nd) || nd != floor(nd)) {
+            runtime_error_raise("random_bytes length must be an integer", 1003, "invalid argument");
+            return value_null();
+        }
+        if (nd < 1 || nd > SECURE_TOKEN_MAX_LENGTH) {
+            runtime_error_raise("random_bytes length must be between 1 and 4096", 1003, "invalid argument");
+            return value_null();
+        }
+        size_t n = (size_t)nd;
+        unsigned char *buf = malloc(n);
+        if (!buf) {
+            abort();
+        }
+        int fd = open("/dev/urandom", O_RDONLY);
+        if (fd < 0) {
+            free(buf);
+            runtime_error_raise("random_bytes could not read secure random bytes", 1003, "random");
+            return value_null();
+        }
+        size_t off = 0;
+        while (off < n) {
+            ssize_t c = read(fd, buf + off, n - off);
+            if (c < 0 && errno == EINTR) {
+                continue;
+            }
+            if (c <= 0) {
+                close(fd);
+                free(buf);
+                runtime_error_raise("random_bytes could not read secure random bytes", 1003, "random");
+                return value_null();
+            }
+            off += (size_t)c;
+        }
+        close(fd);
+        Value r = value_string_n((char *)buf, n);
+        free(buf);
+        return r;
+    }
+
+    /* ----- Cryptography: hashing + HMAC (libcrypto) ----- */
+    if (strcmp(expr->as.call.name, "sha256") == 0 ||
+        strcmp(expr->as.call.name, "sha512") == 0 ||
+        strcmp(expr->as.call.name, "sha1") == 0 ||
+        strcmp(expr->as.call.name, "md5") == 0) {
+        Value s;
+        if (!crypto_one_string(expr, expr->as.call.name, &s)) return value_null();
+#if HAVE_LIBCRYPTO
+        const EVP_MD *md = EVP_sha256();
+        if (strcmp(expr->as.call.name, "sha512") == 0) md = EVP_sha512();
+        else if (strcmp(expr->as.call.name, "sha1") == 0) md = EVP_sha1();
+        else if (strcmp(expr->as.call.name, "md5") == 0) md = EVP_md5();
+        Value r = crypto_digest(md, (const unsigned char *)s.as.string, string_length(s.as.string));
+        value_free(s);
+        return r;
+#else
+        value_free(s);
+        runtime_error_raise("hashing requires OpenSSL (libcrypto); rebuild with it installed",
+                            1003, "unsupported");
+        return value_null();
+#endif
+    }
+    if (strcmp(expr->as.call.name, "hmac_sha256") == 0 ||
+        strcmp(expr->as.call.name, "hmac_sha512") == 0) {
+        Value key, msg;
+        if (!crypto_two_strings(expr, expr->as.call.name, &key, &msg)) return value_null();
+#if HAVE_LIBCRYPTO
+        const EVP_MD *md = strcmp(expr->as.call.name, "hmac_sha512") == 0 ? EVP_sha512() : EVP_sha256();
+        Value r = crypto_hmac(md, (const unsigned char *)key.as.string, string_length(key.as.string),
+                              (const unsigned char *)msg.as.string, string_length(msg.as.string));
+        value_free(key);
+        value_free(msg);
+        return r;
+#else
+        value_free(key);
+        value_free(msg);
+        runtime_error_raise("HMAC requires OpenSSL (libcrypto); rebuild with it installed",
+                            1003, "unsupported");
+        return value_null();
+#endif
     }
 
     if (strcmp(expr->as.call.name, "lower") == 0) {

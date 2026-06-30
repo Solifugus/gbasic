@@ -25,6 +25,10 @@ LIBXCRYPT_AVAILABLE := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-conf
 LIBXCRYPT_CFLAGS := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --cflags libxcrypt 2>/dev/null)
 LIBXCRYPT_LIBS := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --libs libxcrypt 2>/dev/null)
 
+LIBCRYPTO_AVAILABLE := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --exists libcrypto && printf 1 || printf 0)
+LIBCRYPTO_CFLAGS := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --cflags libcrypto 2>/dev/null)
+LIBCRYPTO_LIBS := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --libs libcrypto 2>/dev/null)
+
 ifeq ($(GTK_AVAILABLE),1)
 CFLAGS += -DHAVE_GTK=1 $(GTK_CFLAGS)
 LDLIBS += $(GTK_LIBS) -lm
@@ -59,6 +63,13 @@ CFLAGS += -DHAVE_LIBXCRYPT=1 $(LIBXCRYPT_CFLAGS)
 LDLIBS += $(LIBXCRYPT_LIBS)
 else
 CFLAGS += -DHAVE_LIBXCRYPT=0
+endif
+
+ifeq ($(LIBCRYPTO_AVAILABLE),1)
+CFLAGS += -DHAVE_LIBCRYPTO=1 $(LIBCRYPTO_CFLAGS)
+LDLIBS += $(LIBCRYPTO_LIBS)
+else
+CFLAGS += -DHAVE_LIBCRYPTO=0
 endif
 
 OBJS := src/main.o src/lexer.o src/parser.tab.o src/ast.o src/eval.o src/builtins.o src/actor.o

@@ -1,0 +1,1 @@
+runtime error at tests/negative_crypto_base64_type.bas:1:1: base64_encode expects a string
