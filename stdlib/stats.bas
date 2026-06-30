@@ -2382,4 +2382,368 @@ library stats
         end while
         return { components: components, explained_variance: explained, explained_variance_ratio: ratio, scores: scores, mean: means, n: n }
     end function
+
+    ' ===================================================================
+    ' Phase 4 — time series (statistics_design.md §8 Phase 4).
+    '
+    ' Temporal methods composed in pure gBASIC: moving averages, the
+    ' autocorrelation / partial-autocorrelation functions, and the
+    ' exponential-smoothing family (simple, Holt's linear trend, additive
+    ' Holt-Winters). A series is a flat list of numbers in time order.
+    ' Values verified against pandas / statsmodels; the smoothing recursions
+    ' follow the standard Hyndman state-space form (parameters are supplied,
+    ' not optimized — the MLE optimizer for ARIMA/GARCH is a later phase).
+    ' ===================================================================
+
+    ' Mean of count elements of xs starting at lo. Helper for seasonal init.
+    function _range_mean(xs, lo, count)
+        s = 0
+        i = 0
+        while i < count
+            s = s + xs[lo + i]
+            i = i + 1
+        end while
+        return s / count
+    end function
+
+    ' Simple moving average over a trailing window. Returns a list the same
+    ' length as xs; the first window-1 positions are `unknown` (no full
+    ' window yet), matching pandas Series.rolling(window).mean().
+    function sma(xs, window)
+        n = len(xs)
+        if window < 1 then
+            return unknown
+        end if
+        if window > n then
+            return unknown
+        end if
+        out = []
+        i = 0
+        while i < n
+            if i < window - 1 then
+                append(out, unknown)
+            else
+                s = 0
+                j = 0
+                while j < window
+                    s = s + xs[i - j]
+                    j = j + 1
+                end while
+                append(out, s / window)
+            end if
+            i = i + 1
+        end while
+        return out
+    end function
+
+    ' Exponentially weighted moving average, recursive form (adjust=False):
+    ' s[0] = x[0]; s[t] = alpha*x[t] + (1-alpha)*s[t-1]. Matches pandas
+    ' Series.ewm(alpha=alpha, adjust=False).mean(). alpha in (0,1].
+    function ewma(xs, alpha)
+        n = len(xs)
+        if n < 1 then
+            return unknown
+        end if
+        if alpha <= 0 then
+            return unknown
+        end if
+        if alpha > 1 then
+            return unknown
+        end if
+        out = [xs[0]]
+        s = xs[0]
+        t = 1
+        while t < n
+            s = alpha * xs[t] + (1 - alpha) * s
+            append(out, s)
+            t = t + 1
+        end while
+        return out
+    end function
+
+    ' d-th order differencing: each pass replaces the series with its
+    ' consecutive differences, so the result has len(xs)-d elements.
+    ' d = 0 returns a copy. Useful for de-trending before acf/pacf.
+    function diff(xs, d)
+        if d < 0 then
+            return unknown
+        end if
+        cur = []
+        i = 0
+        while i < len(xs)
+            append(cur, xs[i])
+            i = i + 1
+        end while
+        pass = 0
+        while pass < d
+            if len(cur) < 2 then
+                return []
+            end if
+            nxt = []
+            i = 1
+            while i < len(cur)
+                append(nxt, cur[i] - cur[i - 1])
+                i = i + 1
+            end while
+            cur = nxt
+            pass = pass + 1
+        end while
+        return cur
+    end function
+
+    ' Autocorrelation function for lags 0..nlags (so nlags+1 values, the
+    ' first always 1). Biased estimator (divides by n), demeaned by the full
+    ' series mean — matches statsmodels.tsa.stattools.acf(adjusted=False).
+    function acf(xs, nlags)
+        n = len(xs)
+        if n < 2 then
+            return unknown
+        end if
+        if nlags < 0 then
+            return unknown
+        end if
+        if nlags >= n then
+            return unknown
+        end if
+        xbar = mean(xs)
+        c0 = 0
+        i = 0
+        while i < n
+            d = xs[i] - xbar
+            c0 = c0 + d * d
+            i = i + 1
+        end while
+        if c0 = 0 then
+            return unknown
+        end if
+        out = [1]
+        k = 1
+        while k <= nlags
+            ck = 0
+            t = 0
+            while t < n - k
+                ck = ck + (xs[t] - xbar) * (xs[t + k] - xbar)
+                t = t + 1
+            end while
+            append(out, ck / c0)
+            k = k + 1
+        end while
+        return out
+    end function
+
+    ' Partial autocorrelation for lags 0..nlags via the Durbin-Levinson
+    ' recursion over the biased acf (Yule-Walker). Matches statsmodels
+    ' pacf(method="ywm"). pacf[0] = 1.
+    function pacf(xs, nlags)
+        r = acf(xs, nlags)
+        if is_unknown(r) then
+            return unknown
+        end if
+        out = [1]
+        phi = []
+        k = 1
+        while k <= nlags
+            if k = 1 then
+                pkk = r[1]
+                phi = [pkk]
+            else
+                num = r[k]
+                j = 1
+                while j <= k - 1
+                    num = num - phi[j - 1] * r[k - j]
+                    j = j + 1
+                end while
+                den = 1
+                j = 1
+                while j <= k - 1
+                    den = den - phi[j - 1] * r[j]
+                    j = j + 1
+                end while
+                if den = 0 then
+                    return unknown
+                end if
+                pkk = num / den
+                newphi = []
+                j = 1
+                while j <= k - 1
+                    append(newphi, phi[j - 1] - pkk * phi[k - 1 - j])
+                    j = j + 1
+                end while
+                append(newphi, pkk)
+                phi = newphi
+            end if
+            append(out, pkk)
+            k = k + 1
+        end while
+        return out
+    end function
+
+    ' Simple exponential smoothing (no trend, no seasonality).
+    ' level[0] = x[0]; level[t] = alpha*x[t] + (1-alpha)*level[t-1].
+    ' The one-step-ahead fitted value at t is level[t-1] (so fitted[0] is
+    ' unknown). `forecast` is flat at the last level over horizon h. alpha in
+    ' (0,1]. Equivalent to ewma for the level path.
+    function ses(xs, alpha, h)
+        n = len(xs)
+        if n < 1 then
+            return unknown
+        end if
+        if alpha <= 0 then
+            return unknown
+        end if
+        if alpha > 1 then
+            return unknown
+        end if
+        if h < 0 then
+            return unknown
+        end if
+        level = [xs[0]]
+        fitted = [unknown]
+        sse = 0
+        t = 1
+        while t < n
+            f = level[t - 1]
+            append(fitted, f)
+            e = xs[t] - f
+            sse = sse + e * e
+            append(level, alpha * xs[t] + (1 - alpha) * level[t - 1])
+            t = t + 1
+        end while
+        last = level[n - 1]
+        forecast = []
+        i = 0
+        while i < h
+            append(forecast, last)
+            i = i + 1
+        end while
+        return { level: level, fitted: fitted, forecast: forecast, sse: sse, alpha: alpha }
+    end function
+
+    ' Holt's linear-trend (double exponential) smoothing, additive trend.
+    ' level[0] = x[0]; trend[0] = x[1]-x[0];
+    ' level[t] = alpha*x[t] + (1-alpha)*(level[t-1]+trend[t-1]);
+    ' trend[t] = beta*(level[t]-level[t-1]) + (1-beta)*trend[t-1].
+    ' One-step fitted[t] = level[t-1]+trend[t-1]; forecast h steps ahead is
+    ' level_last + k*trend_last. Needs at least two observations.
+    function holt(xs, alpha, beta, h)
+        n = len(xs)
+        if n < 2 then
+            return unknown
+        end if
+        if alpha <= 0 then
+            return unknown
+        end if
+        if alpha > 1 then
+            return unknown
+        end if
+        if beta < 0 then
+            return unknown
+        end if
+        if beta > 1 then
+            return unknown
+        end if
+        if h < 0 then
+            return unknown
+        end if
+        level = [xs[0]]
+        trend = [xs[1] - xs[0]]
+        fitted = [unknown]
+        sse = 0
+        t = 1
+        while t < n
+            pl = level[t - 1]
+            pb = trend[t - 1]
+            f = pl + pb
+            append(fitted, f)
+            e = xs[t] - f
+            sse = sse + e * e
+            nl = alpha * xs[t] + (1 - alpha) * (pl + pb)
+            nb = beta * (nl - pl) + (1 - beta) * pb
+            append(level, nl)
+            append(trend, nb)
+            t = t + 1
+        end while
+        ll = level[n - 1]
+        lb = trend[n - 1]
+        forecast = []
+        k = 1
+        while k <= h
+            append(forecast, ll + k * lb)
+            k = k + 1
+        end while
+        return { level: level, trend: trend, fitted: fitted, forecast: forecast, sse: sse }
+    end function
+
+    ' Additive Holt-Winters (triple exponential): level + linear trend +
+    ' additive seasonality of the given period. Seasonal init from the first
+    ' cycle, trend init from the difference of the first two cycle means, so
+    ' the series needs at least two full periods. Recursion starts at t=period;
+    ' forecast k steps ahead = level_last + k*trend_last + season[n-period +
+    ' ((k-1) mod period)].
+    function holt_winters(xs, alpha, beta, gamma, period, h)
+        n = len(xs)
+        if period < 1 then
+            return unknown
+        end if
+        if n < 2 * period then
+            return unknown
+        end if
+        if alpha <= 0 then
+            return unknown
+        end if
+        if alpha > 1 then
+            return unknown
+        end if
+        if beta < 0 then
+            return unknown
+        end if
+        if beta > 1 then
+            return unknown
+        end if
+        if gamma < 0 then
+            return unknown
+        end if
+        if gamma > 1 then
+            return unknown
+        end if
+        if h < 0 then
+            return unknown
+        end if
+        l0 = _range_mean(xs, 0, period)
+        b0 = (_range_mean(xs, period, period) - l0) / period
+        season = []
+        i = 0
+        while i < period
+            append(season, xs[i] - l0)
+            i = i + 1
+        end while
+        levelL = l0
+        trendB = b0
+        fitted = []
+        i = 0
+        while i < period
+            append(fitted, unknown)
+            i = i + 1
+        end while
+        t = period
+        while t < n
+            sp = season[t - period]
+            pl = levelL
+            pb = trendB
+            append(fitted, pl + pb + sp)
+            levelL = alpha * (xs[t] - sp) + (1 - alpha) * (pl + pb)
+            trendB = beta * (levelL - pl) + (1 - beta) * pb
+            append(season, gamma * (xs[t] - levelL) + (1 - gamma) * sp)
+            t = t + 1
+        end while
+        forecast = []
+        k = 1
+        while k <= h
+            kk = k - 1
+            mm = kk - period * floor(kk / period)
+            append(forecast, levelL + k * trendB + season[n - period + mm])
+            k = k + 1
+        end while
+        return { level: levelL, trend: trendB, season: season, fitted: fitted, forecast: forecast, period: period }
+    end function
 end library

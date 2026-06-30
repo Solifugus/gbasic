@@ -17,8 +17,11 @@ IRLS) is also complete** (see §8 Phase 2). **Phase 3 (multivariate / unsupervis
 — k-means, agglomerative hierarchical clustering, PCA over a pure-gBASIC Jacobi
 eigensolver, and z-score / IQR anomaly detection) is also complete** (see §8
 Phase 3); notably the PCA eigensolver stayed in gBASIC — the §6 "earn it" bar for
-a C builtin was not crossed. The rest — Phase 4 — remains
-proposal. This sketches the data representation and the
+a C builtin was not crossed. **Phase 4 (time series — moving averages SMA/EWMA,
+differencing, acf/pacf, and the exponential-smoothing family: simple, Holt's
+linear trend, additive Holt-Winters) is also complete** (see §8 Phase 4),
+likewise pure gBASIC; only the ARIMA/GARCH stretch (which needs a shared MLE
+optimizer) remains proposal. This sketches the data representation and the
 statistical-operation surface for a gBASIC statistics library. The guiding
 constraint is **simplicity**: make statistical work as easy as possible *without
 sacrificing functionality*, building on the values gBASIC already has. Any change
@@ -417,15 +420,32 @@ computed reference values (R/numpy/scipy) into `.out` fixtures.
   counts shows up in a profile.
 - **Deferred (stretch):** `dbscan`, `isolation_forest`, Ward linkage.
 
-### Phase 4 — Time series
+### Phase 4 — Time series — **DONE (2026-06-30)**
 - **Goal:** temporal methods (finance + business forecasting).
-- **Deliverables:** moving averages (SMA/EWMA), `acf`/`pacf`, exponential smoothing
-  / Holt–Winters, `arima` (stretch), `garch` (later).
-- **Dependencies:** Phase 1, regression, and an **optimizer (MLE)** for ARIMA/GARCH
-  — a shared `optimize` primitive worth factoring out. Date/time first-class values
-  help indexing.
-- **Key risks:** MLE convergence; exact ARIMA/GARCH parity is hard — test components,
-  not end-to-end equality.
+- **Shipped** (all in `stdlib/stats.bas`, pure gBASIC — **no new C builtins**):
+  - **Moving averages:** `sma(xs, window)` (trailing window, first `window-1`
+    positions `unknown`, matching `pandas.rolling`), `ewma(xs, alpha)` (recursive
+    `adjust=False` form, matching `pandas.ewm`).
+  - **`diff(xs, d)`** — d-th order differencing for de-trending.
+  - **`acf(xs, nlags)`** — biased autocorrelation (divides by n, full-series
+    demean), matching `statsmodels acf(adjusted=False)`; lags `0..nlags`, lag 0 = 1.
+  - **`pacf(xs, nlags)`** — partial autocorrelation via Durbin-Levinson over the
+    biased acf (Yule-Walker), matching `statsmodels pacf(method="ywm")`.
+  - **Exponential smoothing (Hyndman state-space recursions, parameters supplied
+    not optimized):** `ses(xs, alpha, h)` (simple), `holt(xs, alpha, beta, h)`
+    (additive linear trend), `holt_winters(xs, alpha, beta, gamma, period, h)`
+    (additive triple — seasonal init from first cycle, trend init from the first
+    two cycle means, recursion from `t=period`). Each returns level/trend/(season)/
+    `fitted`/`forecast`/`sse`, or `unknown` on bad domain.
+  - Shared helper: `_range_mean(xs, lo, count)` for seasonal/trend init.
+- **Verified** against pandas / statsmodels in `examples/stats_timeseries_test.bas`
+  (134 positive / 189 negative suites green). Smoothing recursions cross-checked
+  against an independent Python reimplementation of the same state-space form
+  (per the "test components, not end-to-end" rule — fixed parameters, no MLE).
+- **Deferred (stretch):** `arima`, `garch` — both need a shared **MLE optimizer**
+  (`optimize` primitive worth factoring out); date/time first-class values would
+  help time indexing. MLE convergence and exact ARIMA/GARCH parity remain the
+  open risks when that work is taken up.
 
 ---
 
