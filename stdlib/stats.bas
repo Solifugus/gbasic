@@ -797,4 +797,867 @@ library stats
         end while
         return result
     end function
+
+    ' ======================================================================
+    ' Phase 2 — Inferential statistics (statistics_design.md §8 Phase 2).
+    ' Hypothesis tests, ANOVA, chi-squared, nonparametric rank tests,
+    ' confidence intervals, effect sizes, multiple-comparison corrections,
+    ' and GLM (logistic / Poisson) by iteratively reweighted least squares.
+    ' All compositions in gBASIC over the Phase 1 foundation (distributions,
+    ' ols, matrix toolkit). Every test returns a record (statistic, df,
+    ' p_value, …) or `unknown` on malformed input — the same contract as ols.
+    ' ======================================================================
+
+    ' --- Confidence interval for a mean (Student's t) ---
+    ' Returns the sample mean, the (lower, upper) bounds at the given
+    ' confidence level (e.g. 0.95), the standard error, margin, and df.
+    function confidence_interval(xs, level)
+        n = len(xs)
+        if n < 2 then
+            return unknown
+        end if
+        if level <= 0 then
+            return unknown
+        end if
+        if level >= 1 then
+            return unknown
+        end if
+        xbar = mean(xs)
+        se = stdev(xs) / sqrt(n)
+        tcrit = t_quantile(1 - (1 - level) / 2, n - 1)
+        margin = tcrit * se
+        return { mean: xbar, lower: xbar - margin, upper: xbar + margin, se: se, margin: margin, df: n - 1, level: level }
+    end function
+
+    ' --- One-sample t-test: is mean(xs) different from mu0? ---
+    function t_test_1sample(xs, mu0)
+        n = len(xs)
+        if n < 2 then
+            return unknown
+        end if
+        xbar = mean(xs)
+        se = stdev(xs) / sqrt(n)
+        if se <= 0 then
+            return unknown
+        end if
+        tstat = (xbar - mu0) / se
+        dof = n - 1
+        pv = 2 * (1 - t_cdf(abs(tstat), dof))
+        return { statistic: tstat, df: dof, p_value: pv, mean: xbar, se: se, n: n }
+    end function
+
+    ' --- Two-sample t-test, pooled variance (assumes equal variances) ---
+    function t_test_2sample(xs, ys)
+        n1 = len(xs)
+        n2 = len(ys)
+        if n1 < 2 then
+            return unknown
+        end if
+        if n2 < 2 then
+            return unknown
+        end if
+        m1 = mean(xs)
+        m2 = mean(ys)
+        v1 = variance(xs)
+        v2 = variance(ys)
+        dof = n1 + n2 - 2
+        sp2 = ((n1 - 1) * v1 + (n2 - 1) * v2) / dof
+        se = sqrt(sp2 * (1 / n1 + 1 / n2))
+        if se <= 0 then
+            return unknown
+        end if
+        tstat = (m1 - m2) / se
+        pv = 2 * (1 - t_cdf(abs(tstat), dof))
+        return { statistic: tstat, df: dof, p_value: pv, mean1: m1, mean2: m2, se: se, n1: n1, n2: n2 }
+    end function
+
+    ' --- Welch's two-sample t-test (does NOT assume equal variances) ---
+    ' df by the Welch-Satterthwaite approximation.
+    function t_test_welch(xs, ys)
+        n1 = len(xs)
+        n2 = len(ys)
+        if n1 < 2 then
+            return unknown
+        end if
+        if n2 < 2 then
+            return unknown
+        end if
+        m1 = mean(xs)
+        m2 = mean(ys)
+        v1 = variance(xs)
+        v2 = variance(ys)
+        a = v1 / n1
+        b = v2 / n2
+        se = sqrt(a + b)
+        if se <= 0 then
+            return unknown
+        end if
+        tstat = (m1 - m2) / se
+        dof = (a + b) * (a + b) / (a * a / (n1 - 1) + b * b / (n2 - 1))
+        pv = 2 * (1 - t_cdf(abs(tstat), dof))
+        return { statistic: tstat, df: dof, p_value: pv, mean1: m1, mean2: m2, se: se, n1: n1, n2: n2 }
+    end function
+
+    ' --- Paired t-test: a one-sample t-test on the paired differences ---
+    function t_test_paired(xs, ys)
+        n = len(xs)
+        if n != len(ys) then
+            return unknown
+        end if
+        if n < 2 then
+            return unknown
+        end if
+        diffs = []
+        i = 0
+        while i < n
+            append(diffs, xs[i] - ys[i])
+            i = i + 1
+        end while
+        res = t_test_1sample(diffs, 0)
+        if is_unknown(res) then
+            return unknown
+        end if
+        return { statistic: res.statistic, df: res.df, p_value: res.p_value, mean_diff: res.mean, se: res.se, n: n }
+    end function
+
+    ' --- Cohen's d effect size (pooled standard deviation) ---
+    function cohens_d(xs, ys)
+        n1 = len(xs)
+        n2 = len(ys)
+        if n1 < 2 then
+            return unknown
+        end if
+        if n2 < 2 then
+            return unknown
+        end if
+        sp = sqrt(((n1 - 1) * variance(xs) + (n2 - 1) * variance(ys)) / (n1 + n2 - 2))
+        if sp <= 0 then
+            return unknown
+        end if
+        return (mean(xs) - mean(ys)) / sp
+    end function
+
+    ' --- One-way ANOVA. `groups` is a list of lists (one per group). ---
+    function anova_oneway(groups)
+        k = len(groups)
+        if k < 2 then
+            return unknown
+        end if
+        ntot = 0
+        grand = 0
+        g = 0
+        while g < k
+            ng = len(groups[g])
+            if ng < 1 then
+                return unknown
+            end if
+            j = 0
+            while j < ng
+                grand = grand + groups[g][j]
+                j = j + 1
+            end while
+            ntot = ntot + ng
+            g = g + 1
+        end while
+        if ntot <= k then
+            return unknown
+        end if
+        grand = grand / ntot
+        ssb = 0
+        ssw = 0
+        g = 0
+        while g < k
+            ng = len(groups[g])
+            gm = mean(groups[g])
+            ssb = ssb + ng * (gm - grand) * (gm - grand)
+            j = 0
+            while j < ng
+                d = groups[g][j] - gm
+                ssw = ssw + d * d
+                j = j + 1
+            end while
+            g = g + 1
+        end while
+        dfb = k - 1
+        dfw = ntot - k
+        msb = ssb / dfb
+        msw = ssw / dfw
+        if msw <= 0 then
+            return unknown
+        end if
+        fstat = msb / msw
+        pv = 1 - f_cdf(fstat, dfb, dfw)
+        return { statistic: fstat, df_between: dfb, df_within: dfw, p_value: pv, ss_between: ssb, ss_within: ssw, ms_between: msb, ms_within: msw }
+    end function
+
+    ' --- Chi-squared goodness of fit. observed/expected are equal-length
+    ' count lists. df = k - 1. ---
+    function chi_square_gof(observed, expected)
+        k = len(observed)
+        if k < 2 then
+            return unknown
+        end if
+        if len(expected) != k then
+            return unknown
+        end if
+        stat = 0
+        i = 0
+        while i < k
+            e = expected[i]
+            if e <= 0 then
+                return unknown
+            end if
+            d = observed[i] - e
+            stat = stat + d * d / e
+            i = i + 1
+        end while
+        dof = k - 1
+        pv = 1 - chi2_cdf(stat, dof)
+        return { statistic: stat, df: dof, p_value: pv }
+    end function
+
+    ' --- Chi-squared test of independence. `table` is a contingency table
+    ' (list of rows, each a list of cell counts). Pearson's statistic with
+    ' expected = row_total * col_total / grand_total; df = (r-1)(c-1). The
+    ' record carries the expected-count table too. ---
+    function chi_square_independence(table)
+        r = len(table)
+        if r < 2 then
+            return unknown
+        end if
+        c = len(table[0])
+        if c < 2 then
+            return unknown
+        end if
+        rowsum = []
+        colsum = []
+        j = 0
+        while j < c
+            append(colsum, 0)
+            j = j + 1
+        end while
+        grand = 0
+        i = 0
+        while i < r
+            if len(table[i]) != c then
+                return unknown
+            end if
+            rs = 0
+            j = 0
+            while j < c
+                rs = rs + table[i][j]
+                colsum[j] = colsum[j] + table[i][j]
+                j = j + 1
+            end while
+            append(rowsum, rs)
+            grand = grand + rs
+            i = i + 1
+        end while
+        if grand <= 0 then
+            return unknown
+        end if
+        stat = 0
+        expected = []
+        i = 0
+        while i < r
+            erow = []
+            j = 0
+            while j < c
+                e = rowsum[i] * colsum[j] / grand
+                append(erow, e)
+                if e <= 0 then
+                    return unknown
+                end if
+                d = table[i][j] - e
+                stat = stat + d * d / e
+                j = j + 1
+            end while
+            append(expected, erow)
+            i = i + 1
+        end while
+        dof = (r - 1) * (c - 1)
+        pv = 1 - chi2_cdf(stat, dof)
+        return { statistic: stat, df: dof, p_value: pv, expected: expected }
+    end function
+
+    ' --- Rank utilities for the nonparametric tests ---
+
+    ' Fractional ranks (1-based) with ties assigned their average rank.
+    ' Returned aligned to the input order. Insertion sort on an index array
+    ' (fine for the modest n the rank tests target).
+    function _rank(xs)
+        n = len(xs)
+        idx = []
+        i = 0
+        while i < n
+            append(idx, i)
+            i = i + 1
+        end while
+        i = 1
+        while i < n
+            key = idx[i]
+            j = i - 1
+            while j >= 0 and xs[idx[j]] > xs[key]
+                idx[j + 1] = idx[j]
+                j = j - 1
+            end while
+            idx[j + 1] = key
+            i = i + 1
+        end while
+        ranks = []
+        i = 0
+        while i < n
+            append(ranks, 0)
+            i = i + 1
+        end while
+        i = 0
+        while i < n
+            j = i
+            while j + 1 < n and xs[idx[j + 1]] = xs[idx[i]]
+                j = j + 1
+            end while
+            avg = ((i + 1) + (j + 1)) / 2
+            p = i
+            while p <= j
+                ranks[idx[p]] = avg
+                p = p + 1
+            end while
+            i = j + 1
+        end while
+        return ranks
+    end function
+
+    ' Tie term sum(t^3 - t) over tied groups of a value list (the standard
+    ' correction factor for rank-test variances).
+    function _tie_term(xs)
+        s = sort(xs)
+        n = len(s)
+        total = 0
+        i = 0
+        while i < n
+            j = i
+            while j + 1 < n and s[j + 1] = s[i]
+                j = j + 1
+            end while
+            t = j - i + 1
+            total = total + (t * t * t - t)
+            i = j + 1
+        end while
+        return total
+    end function
+
+    ' --- Mann-Whitney U test (two independent samples), normal approximation
+    ' with tie correction (no continuity correction). U is reported for the
+    ' FIRST sample. Matches scipy.stats.mannwhitneyu(use_continuity=False,
+    ' method='asymptotic'). ---
+    function mann_whitney(xs, ys)
+        n1 = len(xs)
+        n2 = len(ys)
+        if n1 < 1 then
+            return unknown
+        end if
+        if n2 < 1 then
+            return unknown
+        end if
+        combined = []
+        i = 0
+        while i < n1
+            append(combined, xs[i])
+            i = i + 1
+        end while
+        i = 0
+        while i < n2
+            append(combined, ys[i])
+            i = i + 1
+        end while
+        ranks = _rank(combined)
+        r1 = 0
+        i = 0
+        while i < n1
+            r1 = r1 + ranks[i]
+            i = i + 1
+        end while
+        u1 = r1 - n1 * (n1 + 1) / 2
+        u2 = n1 * n2 - u1
+        nn = n1 + n2
+        mu = n1 * n2 / 2
+        tie = _tie_term(combined)
+        sigma = sqrt((n1 * n2 / 12) * ((nn + 1) - tie / (nn * (nn - 1))))
+        zstat = unknown
+        pv = unknown
+        if sigma > 0 then
+            zstat = (u1 - mu) / sigma
+            pv = 2 * (1 - _norm_cdf_std(abs(zstat)))
+        end if
+        return { u: u1, u1: u1, u2: u2, z: zstat, p_value: pv, n1: n1, n2: n2 }
+    end function
+
+    ' --- Wilcoxon signed-rank test (paired samples), normal approximation
+    ' with tie correction, no continuity correction (zero differences
+    ' dropped, the 'wilcox' convention). statistic is min(W+, W-). Matches
+    ' scipy.stats.wilcoxon(correction=False, mode='approx'). ---
+    function wilcoxon(xs, ys)
+        n = len(xs)
+        if n != len(ys) then
+            return unknown
+        end if
+        absd = []
+        sgn = []
+        i = 0
+        while i < n
+            d = xs[i] - ys[i]
+            if d != 0 then
+                append(absd, abs(d))
+                if d > 0 then
+                    append(sgn, 1)
+                else
+                    append(sgn, -1)
+                end if
+            end if
+            i = i + 1
+        end while
+        m = len(absd)
+        if m < 1 then
+            return unknown
+        end if
+        ranks = _rank(absd)
+        wplus = 0
+        wminus = 0
+        i = 0
+        while i < m
+            if sgn[i] > 0 then
+                wplus = wplus + ranks[i]
+            else
+                wminus = wminus + ranks[i]
+            end if
+            i = i + 1
+        end while
+        wstat = wplus
+        if wminus < wplus then
+            wstat = wminus
+        end if
+        mu = m * (m + 1) / 4
+        tie = _tie_term(absd)
+        sigma = sqrt(m * (m + 1) * (2 * m + 1) / 24 - tie / 48)
+        zstat = unknown
+        pv = unknown
+        if sigma > 0 then
+            zstat = (wplus - mu) / sigma
+            pv = 2 * (1 - _norm_cdf_std(abs(zstat)))
+        end if
+        return { statistic: wstat, w_plus: wplus, w_minus: wminus, z: zstat, p_value: pv, n: m }
+    end function
+
+    ' --- Kruskal-Wallis H test (k independent groups), tie-corrected,
+    ' chi-squared approximation on k-1 df. Matches scipy.stats.kruskal. ---
+    function kruskal_wallis(groups)
+        k = len(groups)
+        if k < 2 then
+            return unknown
+        end if
+        combined = []
+        sizes = []
+        g = 0
+        while g < k
+            ng = len(groups[g])
+            if ng < 1 then
+                return unknown
+            end if
+            append(sizes, ng)
+            j = 0
+            while j < ng
+                append(combined, groups[g][j])
+                j = j + 1
+            end while
+            g = g + 1
+        end while
+        nn = len(combined)
+        ranks = _rank(combined)
+        ssum = 0
+        pos = 0
+        g = 0
+        while g < k
+            ng = sizes[g]
+            rsum = 0
+            j = 0
+            while j < ng
+                rsum = rsum + ranks[pos]
+                pos = pos + 1
+                j = j + 1
+            end while
+            ssum = ssum + rsum * rsum / ng
+            g = g + 1
+        end while
+        h = 12 / (nn * (nn + 1)) * ssum - 3 * (nn + 1)
+        tie = _tie_term(combined)
+        correction = 1 - tie / (nn * nn * nn - nn)
+        if correction <= 0 then
+            return unknown
+        end if
+        h = h / correction
+        dof = k - 1
+        pv = 1 - chi2_cdf(h, dof)
+        return { statistic: h, df: dof, p_value: pv }
+    end function
+
+    ' --- Multiple-comparison corrections. Both take a list of raw p-values
+    ' and return a list of adjusted p-values, aligned to the input order. ---
+
+    ' Bonferroni: p_adj = min(p * m, 1).
+    function bonferroni(pvals)
+        m = len(pvals)
+        out = []
+        i = 0
+        while i < m
+            v = pvals[i] * m
+            if v > 1 then
+                v = 1
+            end if
+            append(out, v)
+            i = i + 1
+        end while
+        return out
+    end function
+
+    ' Benjamini-Hochberg (FDR). Step-up: sort ascending, scale by m/rank,
+    ' enforce monotonicity from the largest down, clamp to 1. Matches
+    ' statsmodels multipletests(method='fdr_bh'). ---
+    function benjamini_hochberg(pvals)
+        m = len(pvals)
+        if m = 0 then
+            return []
+        end if
+        ' order indices by p ascending (insertion sort)
+        idx = []
+        i = 0
+        while i < m
+            append(idx, i)
+            i = i + 1
+        end while
+        i = 1
+        while i < m
+            key = idx[i]
+            j = i - 1
+            while j >= 0 and pvals[idx[j]] > pvals[key]
+                idx[j + 1] = idx[j]
+                j = j - 1
+            end while
+            idx[j + 1] = key
+            i = i + 1
+        end while
+        ' adjusted values in sorted order, then enforce monotone non-increasing
+        ' running minimum from the top rank downward
+        adj = []
+        i = 0
+        while i < m
+            append(adj, 0)
+            i = i + 1
+        end while
+        prev = 1
+        rank = m
+        while rank >= 1
+            raw = pvals[idx[rank - 1]] * m / rank
+            if raw > prev then
+                raw = prev
+            end if
+            if raw > 1 then
+                raw = 1
+            end if
+            adj[rank - 1] = raw
+            prev = raw
+            rank = rank - 1
+        end while
+        ' scatter back to original order
+        out = []
+        i = 0
+        while i < m
+            append(out, 0)
+            i = i + 1
+        end while
+        i = 0
+        while i < m
+            out[idx[i]] = adj[i]
+            i = i + 1
+        end while
+        return out
+    end function
+
+    ' --- GLM via iteratively reweighted least squares (IRLS) ---
+    '
+    ' Shared weighted-least-squares step: given the design matrix bigx, a
+    ' per-observation weight list w, and a working response z, return the
+    ' solution (X'WX)^-1 X'Wz together with the (X'WX)^-1 covariance basis,
+    ' or `unknown` if the weighted normal matrix is singular.
+    function _wls_step(bigx, w, z)
+        n = len(bigx)
+        wx = []
+        wz = []
+        i = 0
+        while i < n
+            row = []
+            p = len(bigx[i])
+            c = 0
+            while c < p
+                append(row, w[i] * bigx[i][c])
+                c = c + 1
+            end while
+            append(wx, row)
+            append(wz, w[i] * z[i])
+            i = i + 1
+        end while
+        xt = mat_transpose(bigx)
+        inv = mat_inverse(mat_mul(xt, wx))
+        if is_unknown(inv) then
+            return unknown
+        end if
+        beta = mat_vec(inv, mat_vec(xt, wz))
+        return { beta: beta, cov: inv }
+    end function
+
+    ' Build the design matrix (leading intercept column of ones, then the
+    ' predictor columns) shared by both GLMs. `cols` is a list of columns.
+    function _design(cols, n)
+        k = len(cols)
+        bigx = []
+        i = 0
+        while i < n
+            row = []
+            append(row, 1)
+            c = 0
+            while c < k
+                append(row, cols[c][i])
+                c = c + 1
+            end while
+            append(bigx, row)
+            i = i + 1
+        end while
+        return bigx
+    end function
+
+    ' Normalize predictors to a list-of-columns (a flat list becomes a single
+    ' column), validating equal lengths; `unknown` if malformed.
+    function _norm_cols(xs, n)
+        cols = xs
+        if len(xs) > 0 then
+            if not is_array(xs[0]) then
+                cols = [xs]
+            end if
+        end if
+        k = len(cols)
+        c = 0
+        while c < k
+            if len(cols[c]) != n then
+                return unknown
+            end if
+            c = c + 1
+        end while
+        return cols
+    end function
+
+    ' Logistic regression (binary y in {0,1}) by IRLS, logit link. Returns
+    ' coefficients (intercept first), std_errors, z_values, two-sided
+    ' p_values (normal), fitted probabilities, log_likelihood, iterations,
+    ' converged, n; `unknown` on malformed / singular input. Matches
+    ' statsmodels GLM(family=Binomial).
+    function logistic_regression(y, xs)
+        n = len(y)
+        if n = 0 then
+            return unknown
+        end if
+        cols = _norm_cols(xs, n)
+        if is_unknown(cols) then
+            return unknown
+        end if
+        p = len(cols) + 1
+        if n <= p then
+            return unknown
+        end if
+        bigx = _design(cols, n)
+        beta = []
+        j = 0
+        while j < p
+            append(beta, 0)
+            j = j + 1
+        end while
+        converged = false
+        cov = unknown
+        iter = 0
+        while iter < 100
+            w = []
+            zw = []
+            i = 0
+            while i < n
+                eta = 0
+                j = 0
+                while j < p
+                    eta = eta + bigx[i][j] * beta[j]
+                    j = j + 1
+                end while
+                mu = 1 / (1 + exp(0 - eta))
+                wi = mu * (1 - mu)
+                if wi < 0.0000000001 then
+                    wi = 0.0000000001
+                end if
+                append(w, wi)
+                append(zw, eta + (y[i] - mu) / wi)
+                i = i + 1
+            end while
+            fit = _wls_step(bigx, w, zw)
+            if is_unknown(fit) then
+                return unknown
+            end if
+            nb = fit.beta
+            cov = fit.cov
+            delta = 0
+            j = 0
+            while j < p
+                d = abs(nb[j] - beta[j])
+                if d > delta then
+                    delta = d
+                end if
+                j = j + 1
+            end while
+            beta = nb
+            iter = iter + 1
+            if delta < 0.0000000001 then
+                converged = true
+                break
+            end if
+        end while
+        fitted = []
+        loglik = 0
+        i = 0
+        while i < n
+            eta = 0
+            j = 0
+            while j < p
+                eta = eta + bigx[i][j] * beta[j]
+                j = j + 1
+            end while
+            mu = 1 / (1 + exp(0 - eta))
+            append(fitted, mu)
+            mc = mu
+            if mc < 0.0000000001 then
+                mc = 0.0000000001
+            end if
+            if mc > 0.9999999999 then
+                mc = 0.9999999999
+            end if
+            loglik = loglik + y[i] * log(mc) + (1 - y[i]) * log(1 - mc)
+            i = i + 1
+        end while
+        return _glm_result(beta, cov, fitted, loglik, iter, converged, n, p)
+    end function
+
+    ' Poisson regression (count y >= 0) by IRLS, log link. Same result shape
+    ' as logistic_regression. Matches statsmodels GLM(family=Poisson).
+    function poisson_regression(y, xs)
+        n = len(y)
+        if n = 0 then
+            return unknown
+        end if
+        cols = _norm_cols(xs, n)
+        if is_unknown(cols) then
+            return unknown
+        end if
+        p = len(cols) + 1
+        if n <= p then
+            return unknown
+        end if
+        bigx = _design(cols, n)
+        beta = []
+        j = 0
+        while j < p
+            append(beta, 0)
+            j = j + 1
+        end while
+        converged = false
+        cov = unknown
+        iter = 0
+        while iter < 100
+            w = []
+            zw = []
+            i = 0
+            while i < n
+                eta = 0
+                j = 0
+                while j < p
+                    eta = eta + bigx[i][j] * beta[j]
+                    j = j + 1
+                end while
+                mu = exp(eta)
+                wi = mu
+                if wi < 0.0000000001 then
+                    wi = 0.0000000001
+                end if
+                append(w, wi)
+                append(zw, eta + (y[i] - mu) / wi)
+                i = i + 1
+            end while
+            fit = _wls_step(bigx, w, zw)
+            if is_unknown(fit) then
+                return unknown
+            end if
+            nb = fit.beta
+            cov = fit.cov
+            delta = 0
+            j = 0
+            while j < p
+                d = abs(nb[j] - beta[j])
+                if d > delta then
+                    delta = d
+                end if
+                j = j + 1
+            end while
+            beta = nb
+            iter = iter + 1
+            if delta < 0.0000000001 then
+                converged = true
+                break
+            end if
+        end while
+        fitted = []
+        loglik = 0
+        i = 0
+        while i < n
+            eta = 0
+            j = 0
+            while j < p
+                eta = eta + bigx[i][j] * beta[j]
+                j = j + 1
+            end while
+            mu = exp(eta)
+            append(fitted, mu)
+            loglik = loglik + y[i] * log(mu) - mu - lgamma(y[i] + 1)
+            i = i + 1
+        end while
+        return _glm_result(beta, cov, fitted, loglik, iter, converged, n, p)
+    end function
+
+    ' Shared GLM result assembler: turn coefficients + covariance into the
+    ' standard-error / z / p-value table and the result record.
+    function _glm_result(beta, cov, fitted, loglik, iter, converged, n, p)
+        ses = []
+        zvals = []
+        pvals = []
+        j = 0
+        while j < p
+            v = cov[j][j]
+            se = unknown
+            zv = unknown
+            pv = unknown
+            if v >= 0 then
+                se = sqrt(v)
+                if se > 0 then
+                    zv = beta[j] / se
+                    pv = 2 * (1 - _norm_cdf_std(abs(zv)))
+                end if
+            end if
+            append(ses, se)
+            append(zvals, zv)
+            append(pvals, pv)
+            j = j + 1
+        end while
+        return { coefficients: beta, std_errors: ses, z_values: zvals, p_values: pvals, fitted: fitted, log_likelihood: loglik, iterations: iter, converged: converged, n: n }
+    end function
 end library

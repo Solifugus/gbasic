@@ -1,0 +1,26 @@
+t1 stat 2.74061 df 7 p 0.028893
+t2 stat 3.02018 df 10 p 0.012892
+welch stat 3.02018 df 8.66435 p 0.015108
+paired stat 3.30055 df 4 p 0.029918
+cohend 1.7437
+ci mean 5.525 lo 5.07203 hi 5.97797
+anova F 1.85714 dfb 2 dfw 15 p 0.190276
+gof stat 2.9 df 4 p 0.574697
+indep stat 0.271575 df 2 p 0.873028 e00 10.4348
+mw U 32.5 p 0.020022
+wil stat 0 p 0.042168
+kw H 3.09813 df 2 p 0.212446
+bonf 0.05 0.2 0.15 0.025 1
+bh 0.025 0.05 0.05 0.025 0.2
+logit coef -5.8246 1.29544
+logit se 3.9861 0.845092
+logit z -1.46123 1.53289
+logit p 0.143953 0.125302
+logit ll -2.5069 conv true
+pois coef 0.150945 0.200038
+pois se 0.449682 0.059825
+pois z 0.335671 3.34374
+pois p 0.737119 0.000827
+pois ll -16.3378 conv true
+guard_anova unknown
+guard_t unknown

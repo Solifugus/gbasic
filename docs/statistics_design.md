@@ -10,7 +10,10 @@ engines (plus the `lgamma` primitive they need), the **`stdlib/matrix.bas`**
 toolkit, **`ols`** linear regression, a **seedable RNG** (`seed`/`random`/
 `random_int`), **resampling** (`shuffle`/`sample`/`resample`/`bootstrap`), and
 the **`stdlib/frame.bas`** structural data-frame layer — have shipped, so
-**Phase 1 is complete** (see §8 Phase 1). The rest — Phases 2–4 — remains
+**Phase 1 is complete** (see §8 Phase 1). **Phase 2 (inferential statistics —
+t-tests, ANOVA, chi-squared, nonparametric rank tests, confidence intervals,
+effect sizes, multiple-comparison corrections, and logistic/Poisson GLM via
+IRLS) is also complete** (see §8 Phase 2). The rest — Phases 3–4 — remains
 proposal. This sketches the data representation and the
 statistical-operation surface for a gBASIC statistics library. The guiding
 constraint is **simplicity**: make statistical work as easy as possible *without
@@ -338,15 +341,44 @@ computed reference values (R/numpy/scipy) into `.out` fixtures.
   incomplete-gamma for t/F/χ² CDFs with Newton/bisection inverses; OLS via normal
   equations is simplest but ill-conditioning-prone (note QR as later hardening).
 
-### Phase 2 — Inferential (science core)
+### Phase 2 — Inferential (science core) — **COMPLETE**
 - **Goal:** hypothesis testing + GLM, mostly compositions of Phase 1.
-- **Deliverables:** `t_test` (one-sample / two-sample equal + Welch / paired),
-  `anova` (one-way first), `chi_square` (independence + goodness-of-fit),
-  nonparametric (`mann_whitney`, `wilcoxon`, `kruskal_wallis`),
-  `confidence_interval`, GLM (`logistic_regression`, `poisson_regression` via
-  IRLS), `cohens_d`, multiple-comparison (`bonferroni`, `benjamini_hochberg`).
-- **Dependencies:** Phase 1 distributions, `ols`, rank utilities.
-- **Key risks:** Welch–Satterthwaite df; IRLS convergence; tie handling in rank tests.
+- **Deliverables (all DONE, in `stdlib/stats.bas`):**
+  - **DONE — t-tests:** `t_test_1sample(xs, mu0)`, `t_test_2sample(xs, ys)`
+    (pooled / equal-variance), `t_test_welch(xs, ys)` (Welch–Satterthwaite df),
+    `t_test_paired(xs, ys)` (one-sample t on the paired differences). Each
+    returns `{statistic, df, p_value, …}` with a two-sided p via `t_cdf`.
+  - **DONE — `confidence_interval(xs, level)`** — Student-t interval for a mean
+    (`mean`/`lower`/`upper`/`se`/`margin`/`df`).
+  - **DONE — `cohens_d(xs, ys)`** — pooled-SD effect size.
+  - **DONE — `anova_oneway(groups)`** — one-way ANOVA over a list of groups;
+    returns F, between/within df + SS + MS, and p via `f_cdf`.
+  - **DONE — chi-squared:** `chi_square_gof(observed, expected)` (goodness of
+    fit, df = k−1) and `chi_square_independence(table)` (contingency table,
+    df = (r−1)(c−1), returns the expected-count table); p via `chi2_cdf`.
+  - **DONE — nonparametric (rank-based):** shared `_rank` (average ties) and
+    `_tie_term` helpers, then `mann_whitney(xs, ys)` (U for the first sample,
+    tie-corrected normal approx), `wilcoxon(xs, ys)` (signed-rank, zeros
+    dropped, statistic = min(W+, W−)), `kruskal_wallis(groups)` (tie-corrected
+    H, χ² approx). All without continuity correction (matched to scipy's
+    `use_continuity=False` / `correction=False` asymptotic modes).
+  - **DONE — multiple-comparison corrections:** `bonferroni(pvals)` and
+    `benjamini_hochberg(pvals)` (step-up FDR with monotone enforcement),
+    both returning adjusted p-values aligned to input order.
+  - **DONE — GLM via IRLS:** `logistic_regression(y, xs)` (logit link) and
+    `poisson_regression(y, xs)` (log link), sharing `_wls_step` (weighted
+    normal equations over `matrix.bas`), `_design`, `_norm_cols`, and
+    `_glm_result`. Each returns coefficients (intercept first), std_errors,
+    z_values, two-sided p_values (normal), fitted, log_likelihood, iterations,
+    converged, n; `unknown` on malformed / singular input.
+- **Verification:** every value checked against `scipy.stats` (t-tests, ANOVA,
+  chi-squared, Mann–Whitney/Wilcoxon/Kruskal–Wallis) and `statsmodels`
+  (BH FDR, GLM logistic + Poisson) in `examples/stats_inference_test.bas`.
+- **Dependencies:** Phase 1 distributions, `ols`, rank utilities — all present.
+- **Notes:** Welch–Satterthwaite df, IRLS convergence (max-Δβ < 1e-10, 100-iter
+  cap, weights floored at 1e-10 against separation), and average-rank tie
+  handling all landed as planned. Out-of-domain inputs return `unknown` (no new
+  C builtins were needed — Phase 2 is pure gBASIC composition).
 
 ### Phase 3 — Multivariate / unsupervised
 - **Goal:** segmentation, dimensionality reduction, outliers.
