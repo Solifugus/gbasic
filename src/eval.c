@@ -4143,6 +4143,22 @@ static int number_compare(const void *left, const void *right) {
     return (a > b) - (a < b);
 }
 
+/* Linear-interpolation quantile (type 7, the R/NumPy default) on an
+ * ascending-sorted array. q in [0,1] (statistics_design.md §8). */
+static double quantile_sorted(const double *sorted, size_t count, double q) {
+    if (count == 1) {
+        return sorted[0];
+    }
+    double h = (double)(count - 1) * q;
+    double lo = floor(h);
+    size_t i = (size_t)lo;
+    if (i + 1 >= count) {
+        return sorted[count - 1];
+    }
+    double frac = h - lo;
+    return sorted[i] + frac * (sorted[i + 1] - sorted[i]);
+}
+
 static int array_is_numeric(Value array) {
     if (array.kind != VALUE_ARRAY) {
         return 0;
@@ -13182,6 +13198,202 @@ static Value eval_call(AstExpr *expr) {
         return value_number((double)rounded / scale);
     }
 
+    /* Elementary scalar math (statistics_design.md §8 — the numeric foundation
+     * the statistics library builds on). One-argument functions over a number. */
+    if (strcmp(expr->as.call.name, "sqrt") == 0 ||
+        strcmp(expr->as.call.name, "abs") == 0 ||
+        strcmp(expr->as.call.name, "exp") == 0 ||
+        strcmp(expr->as.call.name, "log") == 0 ||
+        strcmp(expr->as.call.name, "log10") == 0 ||
+        strcmp(expr->as.call.name, "floor") == 0 ||
+        strcmp(expr->as.call.name, "ceil") == 0 ||
+        strcmp(expr->as.call.name, "erf") == 0 ||
+        strcmp(expr->as.call.name, "erfc") == 0 ||
+        strcmp(expr->as.call.name, "sign") == 0) {
+        const char *fn = expr->as.call.name;
+        if (expr->as.call.args.count != 1) {
+            char message[256];
+            snprintf(message, sizeof(message), "%s expects one argument", fn);
+            runtime_error_raise(message, 1003, "invalid function call");
+            return value_null();
+        }
+        Value v = eval_expr(expr->as.call.args.items[0]);
+        if (v.kind != VALUE_NUMBER) {
+            char message[256];
+            snprintf(message, sizeof(message), "%s expects a number", fn);
+            runtime_error_raise(message, 1003, "invalid function call");
+            value_free(v);
+            return value_null();
+        }
+        double x = v.as.number;
+        value_free(v);
+        double r;
+        if (strcmp(fn, "sqrt") == 0) {
+            if (x < 0.0) {
+                runtime_error_raise("sqrt of a negative number", 1003, "invalid function call");
+                return value_null();
+            }
+            r = sqrt(x);
+        } else if (strcmp(fn, "abs") == 0) {
+            r = fabs(x);
+        } else if (strcmp(fn, "exp") == 0) {
+            r = exp(x);
+        } else if (strcmp(fn, "log") == 0) {
+            if (x <= 0.0) {
+                runtime_error_raise("log of a non-positive number", 1003, "invalid function call");
+                return value_null();
+            }
+            r = log(x);
+        } else if (strcmp(fn, "log10") == 0) {
+            if (x <= 0.0) {
+                runtime_error_raise("log10 of a non-positive number", 1003, "invalid function call");
+                return value_null();
+            }
+            r = log10(x);
+        } else if (strcmp(fn, "floor") == 0) {
+            r = floor(x);
+        } else if (strcmp(fn, "ceil") == 0) {
+            r = ceil(x);
+        } else if (strcmp(fn, "erf") == 0) {
+            r = erf(x);
+        } else if (strcmp(fn, "erfc") == 0) {
+            r = erfc(x);
+        } else {
+            r = (double)((x > 0.0) - (x < 0.0));
+        }
+        return value_number(r);
+    }
+
+    /* pow(base, exponent) — two-argument scalar math. */
+    if (strcmp(expr->as.call.name, "pow") == 0) {
+        if (expr->as.call.args.count != 2) {
+            runtime_error_raise("pow expects two arguments", 1003, "invalid function call");
+            return value_null();
+        }
+        Value base = eval_expr(expr->as.call.args.items[0]);
+        Value ex = eval_expr(expr->as.call.args.items[1]);
+        if (base.kind != VALUE_NUMBER || ex.kind != VALUE_NUMBER) {
+            runtime_error_raise("pow expects two numbers", 1003, "invalid function call");
+            value_free(base);
+            value_free(ex);
+            return value_null();
+        }
+        double r = pow(base.as.number, ex.as.number);
+        value_free(base);
+        value_free(ex);
+        return value_number(r);
+    }
+
+    /* quantile(xs, q) / percentile(xs, p) — a numeric array plus a cut point,
+     * linear interpolation (statistics_design.md §8). quantile takes q in
+     * [0,1]; percentile takes p in [0,100]. */
+    if (strcmp(expr->as.call.name, "quantile") == 0 ||
+        strcmp(expr->as.call.name, "percentile") == 0) {
+        const char *fn = expr->as.call.name;
+        if (expr->as.call.args.count != 2) {
+            char message[256];
+            snprintf(message, sizeof(message), "%s expects two arguments", fn);
+            runtime_error_raise(message, 1003, "invalid function call");
+            return value_null();
+        }
+        Value data = eval_expr(expr->as.call.args.items[0]);
+        Value cut = eval_expr(expr->as.call.args.items[1]);
+        if (!array_is_numeric(data) || data.as.array.count == 0 ||
+            cut.kind != VALUE_NUMBER) {
+            char message[256];
+            snprintf(message, sizeof(message),
+                     "%s expects a non-empty numeric array and a number", fn);
+            runtime_error_raise(message, 1003, "invalid function call");
+            value_free(data);
+            value_free(cut);
+            return value_null();
+        }
+        double q = cut.as.number;
+        if (strcmp(fn, "percentile") == 0) {
+            q /= 100.0;
+        }
+        if (q < 0.0 || q > 1.0) {
+            char message[256];
+            snprintf(message, sizeof(message), "%s cut point is out of range", fn);
+            runtime_error_raise(message, 1003, "invalid function call");
+            value_free(data);
+            value_free(cut);
+            return value_null();
+        }
+        size_t n = data.as.array.count;
+        double *sorted = malloc(sizeof(double) * n);
+        if (!sorted) {
+            abort();
+        }
+        for (size_t i = 0; i < n; i++) {
+            sorted[i] = data.as.array.items[i].as.number;
+        }
+        qsort(sorted, n, sizeof(double), number_compare);
+        double r = quantile_sorted(sorted, n, q);
+        free(sorted);
+        value_free(data);
+        value_free(cut);
+        return value_number(r);
+    }
+
+    /* correlation(xs, ys) / covariance(xs, ys) — paired numeric arrays of equal
+     * length. covariance is the sample form (divide by n-1); correlation is
+     * Pearson's r (statistics_design.md §8). */
+    if (strcmp(expr->as.call.name, "correlation") == 0 ||
+        strcmp(expr->as.call.name, "covariance") == 0) {
+        const char *fn = expr->as.call.name;
+        if (expr->as.call.args.count != 2) {
+            char message[256];
+            snprintf(message, sizeof(message), "%s expects two arguments", fn);
+            runtime_error_raise(message, 1003, "invalid function call");
+            return value_null();
+        }
+        Value xs = eval_expr(expr->as.call.args.items[0]);
+        Value ys = eval_expr(expr->as.call.args.items[1]);
+        if (!array_is_numeric(xs) || !array_is_numeric(ys) ||
+            xs.as.array.count != ys.as.array.count || xs.as.array.count < 2) {
+            char message[256];
+            snprintf(message, sizeof(message),
+                     "%s expects two numeric arrays of equal length (>= 2)", fn);
+            runtime_error_raise(message, 1003, "invalid function call");
+            value_free(xs);
+            value_free(ys);
+            return value_null();
+        }
+        size_t n = xs.as.array.count;
+        double mx = 0.0, my = 0.0;
+        for (size_t i = 0; i < n; i++) {
+            mx += xs.as.array.items[i].as.number;
+            my += ys.as.array.items[i].as.number;
+        }
+        mx /= (double)n;
+        my /= (double)n;
+        double sxy = 0.0, sxx = 0.0, syy = 0.0;
+        for (size_t i = 0; i < n; i++) {
+            double dx = xs.as.array.items[i].as.number - mx;
+            double dy = ys.as.array.items[i].as.number - my;
+            sxy += dx * dy;
+            sxx += dx * dx;
+            syy += dy * dy;
+        }
+        double r;
+        if (strcmp(fn, "covariance") == 0) {
+            r = sxy / (double)(n - 1);
+        } else {
+            if (sxx == 0.0 || syy == 0.0) {
+                runtime_error_raise("correlation is undefined for zero-variance data",
+                                    1003, "invalid function call");
+                value_free(xs);
+                value_free(ys);
+                return value_null();
+            }
+            r = sxy / (sqrt(sxx) * sqrt(syy));
+        }
+        value_free(xs);
+        value_free(ys);
+        return value_number(r);
+    }
+
     if (strcmp(expr->as.call.name, "compare") == 0) {
         if (expr->as.call.args.count != 3) {
             runtime_error_raise("compare expects three arguments", 1003, "invalid function call");
@@ -13989,6 +14201,83 @@ static Value eval_call(AstExpr *expr) {
                 result = arg.as.array.items[i].as.number;
             }
         }
+    } else if (strcmp(name, "variance") == 0 || strcmp(name, "stdev") == 0 ||
+               strcmp(name, "pvariance") == 0 || strcmp(name, "pstdev") == 0 ||
+               strcmp(name, "skewness") == 0 || strcmp(name, "kurtosis") == 0) {
+        /* Central moments about the mean (statistics_design.md §8). variance/
+         * stdev are sample estimators (divide by n-1); pvariance/pstdev are the
+         * population forms (divide by n). skewness/kurtosis are moment-based
+         * (population) with excess kurtosis, matching scipy defaults. */
+        int sample = (strcmp(name, "variance") == 0 || strcmp(name, "stdev") == 0);
+        if (sample && count < 2) {
+            char message[256];
+            snprintf(message, sizeof(message), "%s expects at least two values", name);
+            runtime_error_raise(message, 1003, "invalid function call");
+            value_free(arg);
+            return value_null();
+        }
+        double mean_v = 0.0;
+        for (size_t i = 0; i < count; i++) {
+            mean_v += arg.as.array.items[i].as.number;
+        }
+        mean_v /= (double)count;
+        double m2 = 0.0, m3 = 0.0, m4 = 0.0;
+        for (size_t i = 0; i < count; i++) {
+            double d = arg.as.array.items[i].as.number - mean_v;
+            double d2 = d * d;
+            m2 += d2;
+            m3 += d2 * d;
+            m4 += d2 * d2;
+        }
+        if (strcmp(name, "variance") == 0) {
+            result = m2 / (double)(count - 1);
+        } else if (strcmp(name, "stdev") == 0) {
+            result = sqrt(m2 / (double)(count - 1));
+        } else if (strcmp(name, "pvariance") == 0) {
+            result = m2 / (double)count;
+        } else if (strcmp(name, "pstdev") == 0) {
+            result = sqrt(m2 / (double)count);
+        } else {
+            double var_p = m2 / (double)count;
+            if (var_p == 0.0) {
+                char message[256];
+                snprintf(message, sizeof(message),
+                         "%s is undefined for zero-variance data", name);
+                runtime_error_raise(message, 1003, "invalid function call");
+                value_free(arg);
+                return value_null();
+            }
+            if (strcmp(name, "skewness") == 0) {
+                result = (m3 / (double)count) / pow(var_p, 1.5);
+            } else {
+                result = (m4 / (double)count) / (var_p * var_p) - 3.0;
+            }
+        }
+    } else if (strcmp(name, "range") == 0) {
+        double lo = arg.as.array.items[0].as.number;
+        double hi = lo;
+        for (size_t i = 1; i < count; i++) {
+            double v = arg.as.array.items[i].as.number;
+            if (v < lo) {
+                lo = v;
+            }
+            if (v > hi) {
+                hi = v;
+            }
+        }
+        result = hi - lo;
+    } else if (strcmp(name, "iqr") == 0) {
+        double *sorted = malloc(sizeof(double) * count);
+        if (!sorted) {
+            abort();
+        }
+        for (size_t i = 0; i < count; i++) {
+            sorted[i] = arg.as.array.items[i].as.number;
+        }
+        qsort(sorted, count, sizeof(double), number_compare);
+        result = quantile_sorted(sorted, count, 0.75) -
+                 quantile_sorted(sorted, count, 0.25);
+        free(sorted);
     } else {
         char message[256];
         snprintf(message, sizeof(message), "unknown function: %s", name);

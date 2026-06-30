@@ -91,7 +91,30 @@ int gbasic_builtin_function(const char *name) {
         "median",
         "mode",
         "min",
-        "max"
+        "max",
+        "variance",
+        "stdev",
+        "pvariance",
+        "pstdev",
+        "skewness",
+        "kurtosis",
+        "range",
+        "iqr",
+        "quantile",
+        "percentile",
+        "correlation",
+        "covariance",
+        "sqrt",
+        "abs",
+        "exp",
+        "log",
+        "log10",
+        "floor",
+        "ceil",
+        "erf",
+        "erfc",
+        "sign",
+        "pow"
     };
 
     for (size_t i = 0; i < sizeof(builtins) / sizeof(builtins[0]); i++) {
