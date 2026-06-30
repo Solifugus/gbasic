@@ -50,6 +50,91 @@
 
 #define SECURE_TOKEN_MAX_LENGTH 4096
 
+/* Seedable general-purpose PRNG (statistics_design.md §8 shared infrastructure):
+ * reproducibility for resampling, Monte Carlo, and golden tests. xoshiro256**
+ * over SplitMix64 seeding — pure fixed-width integer math, so the byte stream is
+ * identical across architectures (x86 / s390x / riscv64), which the exact-match
+ * golden tests depend on. Distinct from secure_token, which is a CSPRNG and must
+ * stay non-reproducible. */
+static uint64_t gbasic_rng_state[4];
+static int gbasic_rng_seeded = 0;
+
+static uint64_t gbasic_rng_rotl(uint64_t x, int k) {
+    return (x << k) | (x >> (64 - k));
+}
+
+static void gbasic_rng_seed(uint64_t seed) {
+    /* SplitMix64 expands the 64-bit seed into the 256-bit xoshiro state. */
+    uint64_t z = seed;
+    for (int i = 0; i < 4; i++) {
+        z += 0x9E3779B97F4A7C15ULL;
+        uint64_t x = z;
+        x = (x ^ (x >> 30)) * 0xBF58476D1CE4E5B9ULL;
+        x = (x ^ (x >> 27)) * 0x94D049BB133111EBULL;
+        x = x ^ (x >> 31);
+        gbasic_rng_state[i] = x;
+    }
+    /* xoshiro requires a non-zero state. */
+    if ((gbasic_rng_state[0] | gbasic_rng_state[1] |
+         gbasic_rng_state[2] | gbasic_rng_state[3]) == 0) {
+        gbasic_rng_state[0] = 0x9E3779B97F4A7C15ULL;
+    }
+    gbasic_rng_seeded = 1;
+}
+
+static void gbasic_rng_autoseed(void) {
+    /* No explicit seed yet: draw a nondeterministic one so unseeded programs
+     * still vary run to run. Tests call seed() for reproducibility. */
+    uint64_t s = 0;
+    int fd = open("/dev/urandom", O_RDONLY);
+    int got = 0;
+    if (fd >= 0) {
+        if (read(fd, &s, sizeof(s)) == (ssize_t)sizeof(s)) {
+            got = 1;
+        }
+        close(fd);
+    }
+    if (!got) {
+        s = (uint64_t)time(NULL) ^ ((uint64_t)getpid() << 32);
+    }
+    gbasic_rng_seed(s);
+}
+
+static uint64_t gbasic_rng_next(void) {
+    if (!gbasic_rng_seeded) {
+        gbasic_rng_autoseed();
+    }
+    uint64_t *s = gbasic_rng_state;
+    uint64_t result = gbasic_rng_rotl(s[1] * 5, 7) * 9;
+    uint64_t t = s[1] << 17;
+    s[2] ^= s[0];
+    s[3] ^= s[1];
+    s[1] ^= s[2];
+    s[0] ^= s[3];
+    s[2] ^= t;
+    s[3] = gbasic_rng_rotl(s[3], 45);
+    return result;
+}
+
+/* Uniform double in [0, 1) from the top 53 bits (full mantissa precision). */
+static double gbasic_rng_double(void) {
+    return (double)(gbasic_rng_next() >> 11) * (1.0 / 9007199254740992.0);
+}
+
+/* Uniform integer in [0, bound) without modulo bias (rejection sampling). */
+static uint64_t gbasic_rng_below(uint64_t bound) {
+    if (bound == 0) {
+        return 0;
+    }
+    uint64_t threshold = (uint64_t)(-bound) % bound; /* 2^64 mod bound */
+    for (;;) {
+        uint64_t r = gbasic_rng_next();
+        if (r >= threshold) {
+            return r % bound;
+        }
+    }
+}
+
 int parse_source(const char *source, AstStmtList *out_program);
 void parse_set_source_path(const char *path);
 
@@ -13292,6 +13377,68 @@ static Value eval_call(AstExpr *expr) {
         double r = pow(base.as.number, ex.as.number);
         value_free(base);
         value_free(ex);
+        return value_number(r);
+    }
+
+    /* seed(n) — set the PRNG seed for reproducible draws; returns the seed. */
+    if (strcmp(expr->as.call.name, "seed") == 0) {
+        if (expr->as.call.args.count != 1) {
+            runtime_error_raise("seed expects one argument", 1003, "invalid function call");
+            return value_null();
+        }
+        Value v = eval_expr(expr->as.call.args.items[0]);
+        if (v.kind != VALUE_NUMBER) {
+            runtime_error_raise("seed expects a number", 1003, "invalid function call");
+            value_free(v);
+            return value_null();
+        }
+        double n = v.as.number;
+        value_free(v);
+        /* Reinterpret the double's bits so any seed (incl. fractional) maps to a
+         * stable 64-bit value; the same number always yields the same stream. */
+        uint64_t bits;
+        memcpy(&bits, &n, sizeof(bits));
+        gbasic_rng_seed(bits);
+        return value_number(n);
+    }
+
+    /* random() — uniform double in [0, 1). */
+    if (strcmp(expr->as.call.name, "random") == 0) {
+        if (expr->as.call.args.count != 0) {
+            runtime_error_raise("random expects no arguments", 1003, "invalid function call");
+            return value_null();
+        }
+        return value_number(gbasic_rng_double());
+    }
+
+    /* random_int(lo, hi) — uniform integer in [lo, hi], both ends inclusive. */
+    if (strcmp(expr->as.call.name, "random_int") == 0) {
+        if (expr->as.call.args.count != 2) {
+            runtime_error_raise("random_int expects two arguments", 1003, "invalid function call");
+            return value_null();
+        }
+        Value lo = eval_expr(expr->as.call.args.items[0]);
+        Value hi = eval_expr(expr->as.call.args.items[1]);
+        if (lo.kind != VALUE_NUMBER || hi.kind != VALUE_NUMBER) {
+            runtime_error_raise("random_int expects two numbers", 1003, "invalid function call");
+            value_free(lo);
+            value_free(hi);
+            return value_null();
+        }
+        double lod = lo.as.number;
+        double hid = hi.as.number;
+        value_free(lo);
+        value_free(hi);
+        if (lod != floor(lod) || hid != floor(hid)) {
+            runtime_error_raise("random_int bounds must be whole numbers", 1003, "invalid function call");
+            return value_null();
+        }
+        if (hid < lod) {
+            runtime_error_raise("random_int upper bound is below the lower bound", 1003, "invalid function call");
+            return value_null();
+        }
+        uint64_t span = (uint64_t)(hid - lod) + 1;
+        double r = lod + (double)gbasic_rng_below(span);
         return value_number(r);
     }
 

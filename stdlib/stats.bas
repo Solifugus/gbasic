@@ -711,4 +711,90 @@ library stats
 
         return { coefficients: beta, fitted: fitted, residuals: residuals, r_squared: r2, adj_r_squared: adj, std_errors: ses, t_values: tvals, p_values: pvals, n: n, df: dof }
     end function
+
+    ' --- Resampling ---
+    '
+    ' These draw from the seedable PRNG (the seed()/random()/random_int()
+    ' builtins). Call seed(n) first for reproducible results; tests rely on it.
+
+    ' Fisher-Yates shuffle. Returns a new list; the input is left untouched
+    ' (gBASIC lists are copy-on-write, so the local copy forks on first write).
+    function shuffle(xs)
+        result = xs
+        n = len(result)
+        i = n - 1
+        while i > 0
+            j = random_int(0, i)
+            tmp = result[i]
+            result[i] = result[j]
+            result[j] = tmp
+            i = i - 1
+        end while
+        return result
+    end function
+
+    ' k items drawn WITHOUT replacement (0 <= k <= n); unknown otherwise.
+    ' A partial Fisher-Yates over a copy of the data.
+    function sample(xs, k)
+        n = len(xs)
+        if k < 0 then
+            return unknown
+        end if
+        if k > n then
+            return unknown
+        end if
+        pool = xs
+        result = []
+        i = 0
+        while i < k
+            j = random_int(i, n - 1)
+            tmp = pool[i]
+            pool[i] = pool[j]
+            pool[j] = tmp
+            append(result, pool[i])
+            i = i + 1
+        end while
+        return result
+    end function
+
+    ' k items drawn WITH replacement (the bootstrap building block).
+    function resample(xs, k)
+        n = len(xs)
+        if n = 0 then
+            return unknown
+        end if
+        if k < 0 then
+            return unknown
+        end if
+        result = []
+        i = 0
+        while i < k
+            append(result, xs[random_int(0, n - 1)])
+            i = i + 1
+        end while
+        return result
+    end function
+
+    ' Bootstrap: draw `b` resamples of size n with replacement, apply the
+    ' `statistic` function to each, and return the list of b statistic values
+    ' (feed that to mean/stdev/quantile for the estimate and its error/CI).
+    ' `statistic` is a function value taking a list and returning a number. It
+    ' must be a user-defined function (builtins like `mean` are not yet
+    ' first-class values, so wrap them: `function avg(xs) return mean(xs) end`).
+    function bootstrap(xs, statistic, b)
+        n = len(xs)
+        if n = 0 then
+            return unknown
+        end if
+        if b < 0 then
+            return unknown
+        end if
+        result = []
+        i = 0
+        while i < b
+            append(result, statistic(resample(xs, n)))
+            i = i + 1
+        end while
+        return result
+    end function
 end library

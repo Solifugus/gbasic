@@ -187,6 +187,12 @@ cases=(
     negative_pbi_reset_missing_value
     negative_pbi_value_on_nonreset
     negative_pbi_new_non_record
+    negative_seed_arity
+    negative_seed_type
+    negative_random_arity
+    negative_random_int_arity
+    negative_random_int_order
+    negative_random_int_fractional
 )
 
 for name in "${cases[@]}"; do

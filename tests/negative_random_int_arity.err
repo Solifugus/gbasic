@@ -1,0 +1,1 @@
+runtime error at tests/negative_random_int_arity.bas:1:1: random_int expects two arguments

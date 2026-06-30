@@ -7,9 +7,10 @@ reductions, the order statistics / paired measures (`quantile`/`percentile`/`iqr
 suite — the **normal**, **Student's t**, **chi-squared**, **F**, **binomial**,
 and **Poisson** distributions over shared incomplete-gamma/incomplete-beta
 engines (plus the `lgamma` primitive they need), the **`stdlib/matrix.bas`**
-toolkit, and **`ols`** linear regression — have shipped (see §8 Phase 1). The
-rest — resampling, the `frame` layer, and Phases 2–4 — remains proposal. This
-sketches the data representation and the
+toolkit, **`ols`** linear regression, a **seedable RNG** (`seed`/`random`/
+`random_int`), and **resampling** (`shuffle`/`sample`/`resample`/`bootstrap`) —
+have shipped (see §8 Phase 1). The rest — the `frame` layer and Phases 2–4 —
+remains proposal. This sketches the data representation and the
 statistical-operation surface for a gBASIC statistics library. The guiding
 constraint is **simplicity**: make statistical work as easy as possible *without
 sacrificing functionality*, building on the values gBASIC already has. Any change
@@ -234,8 +235,13 @@ computed reference values (R/numpy/scipy) into `.out` fixtures.
 - **`stdlib/matrix.bas` — vector/matrix toolkit.** Covariance and OLS need it in
   Phase 1; eigen/SVD make it heavy by Phase 3. This is the most likely component
   to *earn* C builtins (the §3 scaling cliff) — defer until profiling demands it.
-- **Seedable RNG.** Reproducibility is non-negotiable for tests, resampling, and
-  Monte Carlo. Confirm/expose a seedable generator early; golden tests depend on it.
+- **Seedable RNG. DONE.** `seed(n)` / `random()` / `random_int(lo, hi)` C
+  builtins — xoshiro256** seeded via SplitMix64, pure fixed-width integer math
+  so the stream is byte-identical across x86 / s390x / riscv64 (the exact-match
+  golden tests rely on this). Unseeded programs auto-seed from `/dev/urandom`;
+  tests call `seed()` for reproducibility. Kept distinct from `secure_token`,
+  which stays a non-reproducible CSPRNG. Verified in
+  `examples/stats_resample_test.bas`.
 - **Cross-architecture float determinism.** Golden tests are exact string matches,
   and gBASIC now runs on x86, s390x, and riscv64. Floating-point results can differ
   in the last bits across architectures, so **stats output for fixtures must be
@@ -305,9 +311,14 @@ computed reference values (R/numpy/scipy) into `.out` fixtures.
     `n`, `df`; `unknown` on malformed / under-determined / rank-deficient input.
     Verified against numpy/scipy in `examples/stats_ols_test.bas`. (Normal
     equations as noted below; QR hardening deferred.)
-  - Resampling: `sample`, `shuffle`, `bootstrap`.
+  - **DONE — resampling** in `stdlib/stats.bas` over the seedable RNG:
+    `shuffle` (Fisher–Yates, non-mutating), `sample(xs, k)` (without
+    replacement), `resample(xs, k)` (with replacement), and `bootstrap(xs,
+    statistic, b)` (b size-n resamples → the list of statistic values).
+    `statistic` must be a user-defined function value (builtins aren't yet
+    first-class — wrap them). Verified in `examples/stats_resample_test.bas`.
   - `stdlib/frame.bas`: the §4 structural layer (IO, clean/reshape, group/
-    summarize, conversions, inspection).
+    summarize, conversions, inspection). **(next)**
 - **Dependencies:** first-class functions ✓, `unknown` ✓, list builtins ✓, RNG,
   `matrix.bas`.
 - **Key risks (numerical):** stable variance (Welford / two-pass); a chosen

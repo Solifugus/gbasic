@@ -115,7 +115,10 @@ int gbasic_builtin_function(const char *name) {
         "erfc",
         "lgamma",
         "sign",
-        "pow"
+        "pow",
+        "seed",
+        "random",
+        "random_int"
     };
 
     for (size_t i = 0; i < sizeof(builtins) / sizeof(builtins[0]); i++) {
