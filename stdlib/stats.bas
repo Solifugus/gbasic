@@ -1658,7 +1658,553 @@ library stats
             append(pvals, pv)
             j = j + 1
         end while
-        return { coefficients: beta, std_errors: ses, z_values: zvals, p_values: pvals, fitted: fitted, log_likelihood: loglik, iterations: iter, converged: converged, n: n }
+        aic = 2 * p - 2 * loglik
+        bic = log(n) * p - 2 * loglik
+        return { coefficients: beta, std_errors: ses, z_values: zvals, p_values: pvals, fitted: fitted, log_likelihood: loglik, aic: aic, bic: bic, iterations: iter, converged: converged, n: n, df_resid: n - p }
+    end function
+
+    ' Probit regression (binary y in {0,1}) by IRLS with the normal-CDF link.
+    ' Same result shape as logistic_regression. Matches statsmodels Probit /
+    ' GLM(family=Binomial, link=probit).
+    function probit_regression(y, xs)
+        n = len(y)
+        if n = 0 then
+            return unknown
+        end if
+        cols = _norm_cols(xs, n)
+        if is_unknown(cols) then
+            return unknown
+        end if
+        p = len(cols) + 1
+        if n <= p then
+            return unknown
+        end if
+        bigx = _design(cols, n)
+        beta = []
+        j = 0
+        while j < p
+            append(beta, 0)
+            j = j + 1
+        end while
+        converged = false
+        cov = unknown
+        iter = 0
+        while iter < 100
+            w = []
+            zw = []
+            i = 0
+            while i < n
+                eta = 0
+                j = 0
+                while j < p
+                    eta = eta + bigx[i][j] * beta[j]
+                    j = j + 1
+                end while
+                mu = _norm_cdf_std(eta)
+                if mu < 0.000000000001 then
+                    mu = 0.000000000001
+                end if
+                if mu > 0.999999999999 then
+                    mu = 0.999999999999
+                end if
+                dens = exp(0 - eta * eta / 2) / _sqrt2pi()
+                if dens < 0.0000000001 then
+                    dens = 0.0000000001
+                end if
+                wi = dens * dens / (mu * (1 - mu))
+                append(w, wi)
+                append(zw, eta + (y[i] - mu) / dens)
+                i = i + 1
+            end while
+            fit = _wls_step(bigx, w, zw)
+            if is_unknown(fit) then
+                return unknown
+            end if
+            nb = fit.beta
+            cov = fit.cov
+            delta = 0
+            j = 0
+            while j < p
+                d = abs(nb[j] - beta[j])
+                if d > delta then
+                    delta = d
+                end if
+                j = j + 1
+            end while
+            beta = nb
+            iter = iter + 1
+            if delta < 0.0000000001 then
+                converged = true
+                break
+            end if
+        end while
+        fitted = []
+        loglik = 0
+        i = 0
+        while i < n
+            eta = 0
+            j = 0
+            while j < p
+                eta = eta + bigx[i][j] * beta[j]
+                j = j + 1
+            end while
+            mu = _norm_cdf_std(eta)
+            append(fitted, mu)
+            mc = mu
+            if mc < 0.000000000001 then
+                mc = 0.000000000001
+            end if
+            if mc > 0.999999999999 then
+                mc = 0.999999999999
+            end if
+            loglik = loglik + y[i] * log(mc) + (1 - y[i]) * log(1 - mc)
+            i = i + 1
+        end while
+        return _glm_result(beta, cov, fitted, loglik, iter, converged, n, p)
+    end function
+
+    ' Numerical parameter covariance for an MLE: the inverse of the observed
+    ' information (central-difference Hessian of the negative-log-likelihood
+    ' objective at `params`). Shared by the optimizer-based GLM families
+    ' (negative binomial, ordinal, multinomial). Returns unknown if singular.
+    function _mle_cov(objective, params, ctx)
+        m = len(params)
+        hh = []
+        i = 0
+        while i < m
+            append(hh, 0.0001 * (abs(params[i]) + 1))
+            i = i + 1
+        end while
+        hess = []
+        i = 0
+        while i < m
+            row = []
+            j = 0
+            while j < m
+                append(row, 0)
+                j = j + 1
+            end while
+            append(hess, row)
+            i = i + 1
+        end while
+        i = 0
+        while i < m
+            j = i
+            while j < m
+                pp = params
+                pp[i] = pp[i] + hh[i]
+                pp[j] = pp[j] + hh[j]
+                fpp = objective(pp, ctx)
+                pm = params
+                pm[i] = pm[i] + hh[i]
+                pm[j] = pm[j] - hh[j]
+                fpm = objective(pm, ctx)
+                mp = params
+                mp[i] = mp[i] - hh[i]
+                mp[j] = mp[j] + hh[j]
+                fmp = objective(mp, ctx)
+                mn = params
+                mn[i] = mn[i] - hh[i]
+                mn[j] = mn[j] - hh[j]
+                fmn = objective(mn, ctx)
+                val = (fpp - fpm - fmp + fmn) / (4 * hh[i] * hh[j])
+                hess[i][j] = val
+                hess[j][i] = val
+                j = j + 1
+            end while
+            i = i + 1
+        end while
+        return mat_inverse(hess)
+    end function
+
+    ' Negative NB2 log-likelihood. ctx = {y, bigx, p}; params = [beta..., ln_alpha].
+    function _nb_negll(params, ctx)
+        y = ctx.y
+        bigx = ctx.bigx
+        p = ctx.p
+        n = len(y)
+        alpha = exp(params[p])
+        r = 1 / alpha
+        ll = 0
+        i = 0
+        while i < n
+            eta = 0
+            j = 0
+            while j < p
+                eta = eta + bigx[i][j] * params[j]
+                j = j + 1
+            end while
+            if eta > 30 then
+                return pow(10, 12)
+            end if
+            mu = exp(eta)
+            ll = ll + lgamma(y[i] + r) - lgamma(r) - lgamma(y[i] + 1) + r * log(r / (r + mu)) + y[i] * log(mu / (r + mu))
+            i = i + 1
+        end while
+        return 0 - ll
+    end function
+
+    ' Negative binomial (NB2) regression for overdispersed counts, log link,
+    ' with the dispersion `alpha` estimated jointly by maximum likelihood (via
+    ' optimize, started from the Poisson fit). Returns {coefficients,
+    ' std_errors, z_values, p_values, alpha, log_likelihood, aic, bic, n,
+    ' converged} or unknown. Matches statsmodels NegativeBinomial (NB2).
+    function negbinom_regression(y, xs)
+        n = len(y)
+        if n = 0 then
+            return unknown
+        end if
+        cols = _norm_cols(xs, n)
+        if is_unknown(cols) then
+            return unknown
+        end if
+        p = len(cols) + 1
+        if n <= p + 1 then
+            return unknown
+        end if
+        bigx = _design(cols, n)
+        init = []
+        pois = poisson_regression(y, xs)
+        if is_unknown(pois) then
+            j = 0
+            while j < p
+                append(init, 0)
+                j = j + 1
+            end while
+        else
+            j = 0
+            while j < p
+                append(init, pois.coefficients[j])
+                j = j + 1
+            end while
+        end if
+        append(init, log(0.5))
+        ctx = { y: y, bigx: bigx, p: p }
+        res = optimize(_nb_negll, init, { max_iter: 8000, tol: pow(10, -10) }, ctx)
+        if is_unknown(res) then
+            return unknown
+        end if
+        prm = res.params
+        loglik = 0 - res.value
+        cov = _mle_cov(_nb_negll, prm, ctx)
+        beta = []
+        ses = []
+        zvals = []
+        pvals = []
+        j = 0
+        while j < p
+            append(beta, prm[j])
+            se = unknown
+            zv = unknown
+            pv = unknown
+            if not is_unknown(cov) then
+                v = cov[j][j]
+                if v >= 0 then
+                    se = sqrt(v)
+                    if se > 0 then
+                        zv = prm[j] / se
+                        pv = 2 * (1 - _norm_cdf_std(abs(zv)))
+                    end if
+                end if
+            end if
+            append(ses, se)
+            append(zvals, zv)
+            append(pvals, pv)
+            j = j + 1
+        end while
+        kpar = p + 1
+        aic = 2 * kpar - 2 * loglik
+        bic = log(n) * kpar - 2 * loglik
+        return { coefficients: beta, std_errors: ses, z_values: zvals, p_values: pvals, alpha: exp(prm[p]), log_likelihood: loglik, aic: aic, bic: bic, n: n, converged: res.converged }
+    end function
+
+    ' Negative log-likelihood of the proportional-odds ordinal logit model.
+    ' ctx = {y, bigx, p, kcat}; bigx is the n×p predictor matrix (no intercept).
+    ' params = [slopes (p), cut_0, delta_1..delta_{K-2}] where cut_m = cut_{m-1}
+    ' + exp(delta_m) keeps the cutpoints strictly increasing.
+    function _ord_negll(params, ctx)
+        y = ctx.y
+        bigx = ctx.bigx
+        p = ctx.p
+        kcat = ctx.kcat
+        n = len(y)
+        nc = kcat - 1
+        cuts = []
+        append(cuts, params[p])
+        m = 1
+        while m < nc
+            append(cuts, cuts[m - 1] + exp(params[p + m]))
+            m = m + 1
+        end while
+        ll = 0
+        i = 0
+        while i < n
+            eta = 0
+            j = 0
+            while j < p
+                eta = eta + bigx[i][j] * params[j]
+                j = j + 1
+            end while
+            yc = y[i]
+            if yc = 0 then
+                pr = 1 / (1 + exp(0 - (cuts[0] - eta)))
+            else
+                if yc = nc then
+                    pr = 1 - 1 / (1 + exp(0 - (cuts[nc - 1] - eta)))
+                else
+                    pr = 1 / (1 + exp(0 - (cuts[yc] - eta))) - 1 / (1 + exp(0 - (cuts[yc - 1] - eta)))
+                end if
+            end if
+            if pr < 0.000000000001 then
+                pr = 0.000000000001
+            end if
+            ll = ll + log(pr)
+            i = i + 1
+        end while
+        return 0 - ll
+    end function
+
+    ' Ordinal logistic regression (proportional-odds model) for an ordered
+    ' categorical outcome y in {0, 1, ..., K-1}. Estimated by maximum likelihood
+    ' via optimize. Returns {coefficients (slopes), std_errors, z_values,
+    ' p_values, cutpoints, log_likelihood, aic, bic, n, converged} or unknown.
+    ' Matches statsmodels OrderedModel(distr='logit').
+    function ordinal_regression(y, xs)
+        n = len(y)
+        if n = 0 then
+            return unknown
+        end if
+        cols = _norm_cols(xs, n)
+        if is_unknown(cols) then
+            return unknown
+        end if
+        p = len(cols)
+        if p < 1 then
+            return unknown
+        end if
+        kcat = max(y) + 1
+        if kcat < 2 then
+            return unknown
+        end if
+        nc = kcat - 1
+        bigx = []
+        i = 0
+        while i < n
+            row = []
+            c = 0
+            while c < p
+                append(row, cols[c][i])
+                c = c + 1
+            end while
+            append(bigx, row)
+            i = i + 1
+        end while
+        ' initialize slopes at 0 and cutpoints from empirical cumulative logits
+        counts = []
+        k = 0
+        while k < kcat
+            append(counts, 0)
+            k = k + 1
+        end while
+        i = 0
+        while i < n
+            counts[y[i]] = counts[y[i]] + 1
+            i = i + 1
+        end while
+        cum = 0
+        rawcuts = []
+        k = 0
+        while k < nc
+            cum = cum + counts[k]
+            pcum = cum / n
+            if pcum < 0.01 then
+                pcum = 0.01
+            end if
+            if pcum > 0.99 then
+                pcum = 0.99
+            end if
+            append(rawcuts, log(pcum / (1 - pcum)))
+            k = k + 1
+        end while
+        init = []
+        j = 0
+        while j < p
+            append(init, 0)
+            j = j + 1
+        end while
+        append(init, rawcuts[0])
+        m = 1
+        while m < nc
+            append(init, log(rawcuts[m] - rawcuts[m - 1]))
+            m = m + 1
+        end while
+        ctx = { y: y, bigx: bigx, p: p, kcat: kcat }
+        res = optimize(_ord_negll, init, { max_iter: 10000, tol: pow(10, -10) }, ctx)
+        if is_unknown(res) then
+            return unknown
+        end if
+        prm = res.params
+        loglik = 0 - res.value
+        cov = _mle_cov(_ord_negll, prm, ctx)
+        beta = []
+        ses = []
+        zvals = []
+        pvals = []
+        j = 0
+        while j < p
+            append(beta, prm[j])
+            se = unknown
+            zv = unknown
+            pv = unknown
+            if not is_unknown(cov) then
+                v = cov[j][j]
+                if v >= 0 then
+                    se = sqrt(v)
+                    if se > 0 then
+                        zv = prm[j] / se
+                        pv = 2 * (1 - _norm_cdf_std(abs(zv)))
+                    end if
+                end if
+            end if
+            append(ses, se)
+            append(zvals, zv)
+            append(pvals, pv)
+            j = j + 1
+        end while
+        cuts = []
+        append(cuts, prm[p])
+        m = 1
+        while m < nc
+            append(cuts, cuts[m - 1] + exp(prm[p + m]))
+            m = m + 1
+        end while
+        kpar = p + nc
+        aic = 2 * kpar - 2 * loglik
+        bic = log(n) * kpar - 2 * loglik
+        return { coefficients: beta, std_errors: ses, z_values: zvals, p_values: pvals, cutpoints: cuts, log_likelihood: loglik, aic: aic, bic: bic, n: n, converged: res.converged }
+    end function
+
+    ' Negative log-likelihood of the baseline-category multinomial logit
+    ' (reference category 0). ctx = {y, bigx, p, kcat}; bigx is n×p with an
+    ' intercept column; params is the flattened (K-1)×p coefficient block
+    ' (category c > 0 occupies params[(c-1)*p .. (c-1)*p + p - 1]).
+    function _mnl_negll(params, ctx)
+        y = ctx.y
+        bigx = ctx.bigx
+        p = ctx.p
+        kcat = ctx.kcat
+        n = len(y)
+        ll = 0
+        i = 0
+        while i < n
+            denom = 1
+            etas = []
+            c = 1
+            while c < kcat
+                eta = 0
+                j = 0
+                while j < p
+                    eta = eta + bigx[i][j] * params[(c - 1) * p + j]
+                    j = j + 1
+                end while
+                if eta > 30 then
+                    return pow(10, 12)
+                end if
+                append(etas, eta)
+                denom = denom + exp(eta)
+                c = c + 1
+            end while
+            num = 0
+            if y[i] > 0 then
+                num = etas[y[i] - 1]
+            end if
+            ll = ll + num - log(denom)
+            i = i + 1
+        end while
+        return 0 - ll
+    end function
+
+    ' Multinomial (baseline-category) logistic regression for a nominal outcome
+    ' y in {0, 1, ..., K-1} with 0 as the reference. Estimated by maximum
+    ' likelihood via optimize. Returns {coefficients, std_errors, z_values,
+    ' p_values, log_likelihood, aic, bic, n, converged}, where coefficients and
+    ' the error/z/p tables are each a list of K-1 blocks (one per non-reference
+    ' category, each a length-p list: intercept then predictors). Matches
+    ' statsmodels MNLogit.
+    function multinomial_regression(y, xs)
+        n = len(y)
+        if n = 0 then
+            return unknown
+        end if
+        cols = _norm_cols(xs, n)
+        if is_unknown(cols) then
+            return unknown
+        end if
+        p = len(cols) + 1
+        kcat = max(y) + 1
+        if kcat < 3 then
+            return unknown
+        end if
+        if n <= (kcat - 1) * p then
+            return unknown
+        end if
+        bigx = _design(cols, n)
+        m = (kcat - 1) * p
+        init = []
+        i = 0
+        while i < m
+            append(init, 0)
+            i = i + 1
+        end while
+        ctx = { y: y, bigx: bigx, p: p, kcat: kcat }
+        res = optimize(_mnl_negll, init, { max_iter: 20000, tol: pow(10, -10) }, ctx)
+        if is_unknown(res) then
+            return unknown
+        end if
+        prm = res.params
+        loglik = 0 - res.value
+        cov = _mle_cov(_mnl_negll, prm, ctx)
+        coefs = []
+        allse = []
+        allz = []
+        allp = []
+        c = 0
+        while c < kcat - 1
+            brow = []
+            srow = []
+            zrow = []
+            prow = []
+            j = 0
+            while j < p
+                idx = c * p + j
+                append(brow, prm[idx])
+                se = unknown
+                zv = unknown
+                pv = unknown
+                if not is_unknown(cov) then
+                    v = cov[idx][idx]
+                    if v >= 0 then
+                        se = sqrt(v)
+                        if se > 0 then
+                            zv = prm[idx] / se
+                            pv = 2 * (1 - _norm_cdf_std(abs(zv)))
+                        end if
+                    end if
+                end if
+                append(srow, se)
+                append(zrow, zv)
+                append(prow, pv)
+                j = j + 1
+            end while
+            append(coefs, brow)
+            append(allse, srow)
+            append(allz, zrow)
+            append(allp, prow)
+            c = c + 1
+        end while
+        aic = 2 * m - 2 * loglik
+        bic = log(n) * m - 2 * loglik
+        return { coefficients: coefs, std_errors: allse, z_values: allz, p_values: allp, log_likelihood: loglik, aic: aic, bic: bic, n: n, converged: res.converged }
     end function
 
     ' ======================================================================

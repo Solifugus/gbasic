@@ -212,6 +212,28 @@ note:** the `arch` package was pip-installed into a venv to serve as the
 gold-standard reference, and a from-scratch Python likelihood was matched to it
 before porting. **Earn-it:** none — pure gBASIC.
 
+## Follow-on — GLM family expansion  *(social / communication science)* — **DONE (2026-07-01)**
+
+The existing GLM core (OLS with full inference, logistic, Poisson) already
+carried SE/z/p tables; this adds the families that survey-heavy fields
+(communication, health, PR, new media) lean on. Shipped in `stdlib/stats.bas`,
+verified against statsmodels in `examples/stats_glm_test.bas`. `_glm_result` now
+also reports `aic`/`bic`/`df_resid`.
+
+| Function | Returns | Verify vs |
+|---|---|---|
+| `probit_regression(y, xs)` | GLM result (SE/z/p, aic/bic) — IRLS, normal-CDF link | `statsmodels` GLM(Binomial, probit) (exact) |
+| `negbinom_regression(y, xs)` | `{coefficients, std_errors, z_values, p_values, alpha, llf, aic, bic, …}` — NB2, dispersion by joint MLE | `statsmodels` NegativeBinomial (exact) |
+| `ordinal_regression(y, xs)` | proportional-odds logit `{coefficients (slopes), std_errors, …, cutpoints, …}` | `statsmodels` OrderedModel(logit) (exact) |
+| `multinomial_regression(y, xs)` | baseline-category logit; coefficients/errors as K-1 blocks | `statsmodels` MNLogit (exact) |
+
+The MLE-based families (NB, ordinal, multinomial) are fit with `optimize` and
+share a numerical-Hessian covariance helper `_mle_cov` (central-difference
+observed information → inverse), which reproduces statsmodels standard errors to
+~4 decimals. Ordinal cutpoints are kept increasing via an exp-increment
+parameterization; the multinomial baseline is category 0. **Earn-it:** none —
+pure gBASIC over `matrix.bas` and the optimizer.
+
 ## Cross-cutting — power analysis  *(slotted with Phase 7)* — **DONE (2026-07-01)**
 
 Shipped in `stdlib/stats.bas`, verified against `scipy.stats.nct`/`ncf` and
