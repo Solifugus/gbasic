@@ -26,7 +26,7 @@ sudo make install          # install to /usr/local (binary + stdlib); PREFIX ove
 Build requires a C11 compiler, `make`, and `bison`. Optional native modules are
 detected at build time via `pkg-config` and gated behind `HAVE_*` macros in the
 `Makefile` (`HAVE_GTK`, `HAVE_LIBPQ`, `HAVE_SQLITE3`, `HAVE_LIBCURL`,
-`HAVE_LIBXCRYPT`). The interpreter always builds; a missing dependency turns the
+`HAVE_LIBXCRYPT`, `HAVE_LIBCRYPTO`). The interpreter always builds; a missing dependency turns the
 affected feature into a clean runtime error rather than a build failure. When
 adding code that touches an optional library, guard it with the matching
 `#if HAVE_*` block (the existing module code in `src/eval.c` is the pattern).
