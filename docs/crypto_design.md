@@ -1,10 +1,12 @@
 # gBASIC cryptography library — design
 
-**Status:** in progress (2026-06-30). Phase 1 (encoding + random + constant-time
-compare), Phase 2 (hashing + HMAC), and Phase 4 (AES-GCM + Ed25519) are
-**complete** — all C builtins, verified against Python `hashlib`/`hmac`/
-`cryptography` and known vectors. Phase 3 (the gBASIC web-token helper layer over
-them) is the remaining piece.
+**Status:** COMPLETE (2026-06-30). All four phases shipped. Phases 1/2/4 are C
+builtins (encoding/random/compare always available; hashing/HMAC/AES-GCM/Ed25519
+behind `HAVE_LIBCRYPTO`), verified against Python `hashlib`/`hmac`/`cryptography`
+and known vectors. Phase 3 is `stdlib/crypto.bas` — hex digests, signed cookies,
+CSRF, flat-JSON, JWT/HS256 (byte-for-byte identical to PyJWT), and nonce-managing
+AES-GCM `encrypt`/`decrypt`. Suite: `tests/run_crypto.sh` (skips without
+libcrypto).
 
 ## 1. Guiding decision — why this one breaks the "compositions in gBASIC" rule
 
@@ -74,7 +76,7 @@ C-side mechanics: read a string argument as `arg.as.string` (a `char *`) with
 Implemented via the OpenSSL `EVP` digest / `HMAC` interfaces. Raw output composes
 with Phase 1 encoders (`hex_encode(sha256(x))` is the familiar hex digest).
 
-## 5. Phase 3 — web-token helpers (`stdlib/crypto.bas`, pure gBASIC)
+## 5. Phase 3 — web-token helpers (`stdlib/crypto.bas`, pure gBASIC) — **DONE (2026-06-30)**
 
 Composed over Phases 1–2. Includes a tiny JSON encoder/decoder for flat records
 (string/number/bool values) so JWT needs no new C dependency.

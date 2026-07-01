@@ -17,6 +17,7 @@ trap 'rm -f "$stdout_file" "$stderr_file"' EXIT
 positive_cases=(
     crypto_test
     crypto_cipher_test
+    crypto_compose_test
 )
 
 for name in "${positive_cases[@]}"; do

@@ -1,0 +1,20 @@
+sha256_hex b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9
+cookie dXNlcj00Mg.KtbohuFpwClaJuxGdFCX1tBPE7K3Vecnbb6YAruTJJE
+cookie_rt user=42
+cookie_badsecret unknown
+cookie_tamper unknown
+cookie_malformed unknown
+csrf 7LKjJ0QkNDcHb5YPQdx4vOAPwfFUyF8uhCGHWtEjKK4
+csrf_ok true
+csrf_badsession false
+json {"sub":"1234567890","name":"John Doe","admin":true,"age":30}
+json_rt 1234567890 | John Doe | true | 30
+json_bad unknown
+jwt eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiYWRtaW4iOnRydWV9.WJv8NgRmcqKX5Ds8ROF7YLPFHJNxM3Gy8XJfW3C5quM
+jwt_rt 1234567890 | John Doe | true
+jwt_badsecret unknown
+jwt_malformed unknown
+enc_len 51
+dec the launch code is 0000
+dec_wrongkey unknown
+dec_short unknown
