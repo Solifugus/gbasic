@@ -122,18 +122,24 @@ just nominal). ICC returns all six Shrout & Fleiss coefficients.
 **Earn-it:** none — pure gBASIC. The one non-obvious dependency was value
 enumeration; done with the `sort`/`contains` builtins plus a linear `_index_in`.
 
-## Phase 9 — Proportions & the business lens  *(advertising / marketing / comms)*
+## Phase 9 — Proportions & the business lens  *(advertising / marketing / comms)* — **DONE (2026-07-01)**
+
+Shipped in `stdlib/stats.bas`, verified in `examples/stats_proportions_test.bas`.
+The proportion z-tests match statsmodels exactly; the conveniences are
+deterministic compositions. Signatures as implemented:
 
 | Function | Returns | Verify vs |
 |---|---|---|
-| `prop_test_1(successes, n, p0)` | `{z, p_value, ci_low, ci_high}` | `statsmodels` `proportions_ztest` |
-| `prop_test_2(s1, n1, s2, n2)` | `{z, p_value, diff, ci_low, ci_high}` | `statsmodels` `proportions_ztest` |
-| `ab_test(control, variant)` | `{lift, p_value, ci, significant}` (A/B convenience) | manual over `prop_test_2` |
-| `rfm(transactions)` | per-customer recency/frequency/monetary + segment | manual |
-| `cohort_retention(events)` / `funnel(steps)` | cohort matrix / step conversion + drop-off | manual |
+| `prop_test_1(x, n, p0)` | `{z, p_value, phat, ci_low, ci_high}` (null-SE statistic, Wald CI) | `statsmodels` `proportions_ztest` (exact) |
+| `prop_test_2(s1, n1, s2, n2)` | `{z, p_value, diff, ci_low, ci_high}` (pooled statistic, unpooled Wald CI) | `statsmodels` `proportions_ztest` (exact) |
+| `ab_test(control, variant)` | `{lift, diff, p_value, ci_low, ci_high, significant}`; args are records `{successes, n}` | over `prop_test_2` |
+| `rfm(transactions)` | per-customer `{customer, recency, frequency, monetary, r_score, f_score, m_score, rfm}`; tx = `{customer, day, amount}`, tertile 1..3 scoring (recency inverted) | manual |
+| `funnel(steps)` | per-stage `{stage, count, conversion, cumulative, dropoff}` | manual |
+| `cohort_retention(events)` | per-cohort `{cohort, size, retention}`; events = `{customer, cohort, period}`, distinct-customer counts | manual |
 
-**Earn-it:** none. This is the `stats.business` lens from the original design's §9,
-now spec'd. Pure gBASIC over Phase 1 + Phase 5.
+**Earn-it:** none — pure gBASIC over the standard normal + base builtins. Note
+`step` is a reserved token, so the funnel field is `stage`. `sort` mutates its
+argument in place, so `rfm` sorts *copies* to keep per-customer alignment.
 
 ## Phase 10 (keystone) — the optimizer  *(unlocks the most)*
 

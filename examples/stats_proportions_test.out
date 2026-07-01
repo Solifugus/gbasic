@@ -1,0 +1,16 @@
+prop1 z 2.35702 p 0.018422 ci 0.100513 0.199487
+prop2 z 2.19089 p 0.02846 diff 0.15 ci 0.01743 0.28257
+ab lift 0.25 diff 0.03 p 0.04964 sig true
+funnel 0 count 1000 conv 1 cum 1 drop 0
+funnel 1 count 600 conv 0.6 cum 0.6 drop 0.4
+funnel 2 count 350 conv 0.583333 cum 0.35 drop 0.416667
+funnel 3 count 200 conv 0.571429 cum 0.2 drop 0.428571
+rfm c1 r 1 f 3 m 100 score 221
+rfm c2 r 8 f 1 m 200 score 112
+rfm c3 r 0 f 2 m 100 score 311
+rfm c4 r 0 f 3 m 700 score 323
+cohort 0 size 3 ret 1 0.666667 0.333333
+cohort 1 size 2 ret 1 0.5 0
+guard_prop1 unknown
+guard_funnel unknown
+guard_rfm unknown

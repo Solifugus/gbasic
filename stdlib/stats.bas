@@ -4282,4 +4282,261 @@ library stats
         end if
         return { alpha: 1 - dobs / dexp }
     end function
+
+    ' --- Proportions & the business lens (docs/statistics_scientist_plan.md
+    ' §9) --- Pure gBASIC over the standard normal. The proportion z-tests are
+    ' verified against statsmodels.stats.proportion.proportions_ztest; the
+    ' business conveniences (ab_test/rfm/funnel/cohort_retention) are
+    ' deterministic compositions over them and the base builtins.
+
+    ' One-sample proportion z-test. x successes in n trials against null p0.
+    ' Test statistic uses the null SE (matching statsmodels prop_var=p0); the
+    ' CI is the Wald normal interval on the observed proportion.
+    ' Returns {z, p_value, phat, ci_low, ci_high} or unknown.
+    function prop_test_1(x, n, p0)
+        if n < 1 then
+            return unknown
+        end if
+        if p0 <= 0 then
+            return unknown
+        end if
+        if p0 >= 1 then
+            return unknown
+        end if
+        phat = x / n
+        z = (phat - p0) / sqrt(p0 * (1 - p0) / n)
+        pv = 2 * (1 - _norm_cdf_std(abs(z)))
+        zc = _inv_norm_std(0.975)
+        se = sqrt(phat * (1 - phat) / n)
+        return { z: z, p_value: pv, phat: phat, ci_low: phat - zc * se, ci_high: phat + zc * se }
+    end function
+
+    ' Two-sample proportion z-test (pooled SE for the statistic, unpooled Wald
+    ' SE for the CI of the difference p1 - p2). Returns {z, p_value, diff,
+    ' ci_low, ci_high} or unknown.
+    function prop_test_2(s1, n1, s2, n2)
+        if n1 < 1 then
+            return unknown
+        end if
+        if n2 < 1 then
+            return unknown
+        end if
+        p1 = s1 / n1
+        p2 = s2 / n2
+        diff = p1 - p2
+        pp = (s1 + s2) / (n1 + n2)
+        denom = pp * (1 - pp) * (1 / n1 + 1 / n2)
+        if denom <= 0 then
+            return unknown
+        end if
+        z = diff / sqrt(denom)
+        pv = 2 * (1 - _norm_cdf_std(abs(z)))
+        zc = _inv_norm_std(0.975)
+        se = sqrt(p1 * (1 - p1) / n1 + p2 * (1 - p2) / n2)
+        return { z: z, p_value: pv, diff: diff, ci_low: diff - zc * se, ci_high: diff + zc * se }
+    end function
+
+    ' A/B test convenience. control and variant are records {successes, n}.
+    ' Reports the variant-minus-control absolute difference, the relative lift
+    ' over control, the two-sample z-test p-value and 95% CI, and whether it is
+    ' significant at 0.05. Returns unknown on bad input.
+    function ab_test(control, variant)
+        r = prop_test_2(variant.successes, variant.n, control.successes, control.n)
+        if is_unknown(r) then
+            return unknown
+        end if
+        pc = control.successes / control.n
+        if pc <= 0 then
+            return unknown
+        end if
+        pv = variant.successes / variant.n
+        sig = false
+        if r.p_value < 0.05 then
+            sig = true
+        end if
+        return { lift: (pv - pc) / pc, diff: r.diff, p_value: r.p_value, ci_low: r.ci_low, ci_high: r.ci_high, significant: sig }
+    end function
+
+    ' Score helper for rfm: 1 if v <= lo, 2 if v <= hi, else 3.
+    function _rfm_score(v, lo, hi)
+        if v <= lo then
+            return 1
+        end if
+        if v <= hi then
+            return 2
+        end if
+        return 3
+    end function
+
+    ' RFM analysis. transactions is a list of records {customer, day, amount}
+    ' (day is an integer index; larger = more recent). Per customer: recency =
+    ' most-recent day counted back from the latest day seen, frequency = number
+    ' of transactions, monetary = total amount. Each dimension is scored 1..3
+    ' by tertiles across customers (recency inverted so recent = high), and
+    ' combined into rfm = r*100 + f*10 + m. Returns a list of records ordered
+    ' by customer, or unknown if empty.
+    function rfm(transactions)
+        nt = len(transactions)
+        if nt < 1 then
+            return unknown
+        end if
+        custs = []
+        days = []
+        i = 0
+        while i < nt
+            c = transactions[i].customer
+            if not contains(custs, c) then
+                append(custs, c)
+            end if
+            append(days, transactions[i].day)
+            i = i + 1
+        end while
+        custs = sort(custs)
+        now = max(days)
+        recs = []
+        freqs = []
+        mons = []
+        ci = 0
+        while ci < len(custs)
+            cust = custs[ci]
+            lastday = 0 - 1000000000
+            fq = 0
+            mo = 0
+            i = 0
+            while i < nt
+                if transactions[i].customer = cust then
+                    fq = fq + 1
+                    mo = mo + transactions[i].amount
+                    if transactions[i].day > lastday then
+                        lastday = transactions[i].day
+                    end if
+                end if
+                i = i + 1
+            end while
+            append(recs, now - lastday)
+            append(freqs, fq)
+            append(mons, mo)
+            ci = ci + 1
+        end while
+        rsorted = recs
+        rsorted = sort(rsorted)
+        fsorted = freqs
+        fsorted = sort(fsorted)
+        msorted = mons
+        msorted = sort(msorted)
+        r33 = quantile(rsorted, 1 / 3)
+        r67 = quantile(rsorted, 2 / 3)
+        f33 = quantile(fsorted, 1 / 3)
+        f67 = quantile(fsorted, 2 / 3)
+        m33 = quantile(msorted, 1 / 3)
+        m67 = quantile(msorted, 2 / 3)
+        out = []
+        ci = 0
+        while ci < len(custs)
+            rs = 4 - _rfm_score(recs[ci], r33, r67)
+            fs = _rfm_score(freqs[ci], f33, f67)
+            ms = _rfm_score(mons[ci], m33, m67)
+            append(out, { customer: custs[ci], recency: recs[ci], frequency: freqs[ci], monetary: mons[ci], r_score: rs, f_score: fs, m_score: ms, rfm: rs * 100 + fs * 10 + ms })
+            ci = ci + 1
+        end while
+        return out
+    end function
+
+    ' Conversion funnel. steps is a list of counts at each stage. Returns a
+    ' list of records {stage, count, conversion (from previous step),
+    ' cumulative (from the first step), dropoff (from previous step)}.
+    function funnel(steps)
+        ns = len(steps)
+        if ns < 1 then
+            return unknown
+        end if
+        first = steps[0]
+        out = []
+        i = 0
+        while i < ns
+            prev = steps[i]
+            if i > 0 then
+                prev = steps[i - 1]
+            end if
+            conv = 1
+            drop = 0
+            if i > 0 then
+                if prev > 0 then
+                    conv = steps[i] / prev
+                    drop = (prev - steps[i]) / prev
+                else
+                    conv = 0
+                end if
+            end if
+            cum = 0
+            if first > 0 then
+                cum = steps[i] / first
+            end if
+            append(out, { stage: i, count: steps[i], conversion: conv, cumulative: cum, dropoff: drop })
+            i = i + 1
+        end while
+        return out
+    end function
+
+    ' Distinct-customer count over events matching cohort co and period p.
+    function _cohort_active(events, co, p)
+        seen = []
+        i = 0
+        while i < len(events)
+            if events[i].cohort = co then
+                if events[i].period = p then
+                    if not contains(seen, events[i].customer) then
+                        append(seen, events[i].customer)
+                    end if
+                end if
+            end if
+            i = i + 1
+        end while
+        return len(seen)
+    end function
+
+    ' Cohort retention. events is a list of records {customer, cohort, period}
+    ' (period 0 = acquisition). For each cohort, size = distinct customers at
+    ' period 0 and retention[p] = distinct-active / size across the sorted
+    ' periods present. Returns a list of {cohort, size, retention} or unknown.
+    function cohort_retention(events)
+        ne = len(events)
+        if ne < 1 then
+            return unknown
+        end if
+        cohorts = []
+        periods = []
+        i = 0
+        while i < ne
+            if not contains(cohorts, events[i].cohort) then
+                append(cohorts, events[i].cohort)
+            end if
+            if not contains(periods, events[i].period) then
+                append(periods, events[i].period)
+            end if
+            i = i + 1
+        end while
+        cohorts = sort(cohorts)
+        periods = sort(periods)
+        out = []
+        ci = 0
+        while ci < len(cohorts)
+            co = cohorts[ci]
+            size = _cohort_active(events, co, 0)
+            ret = []
+            pi = 0
+            while pi < len(periods)
+                active = _cohort_active(events, co, periods[pi])
+                if size > 0 then
+                    append(ret, active / size)
+                else
+                    append(ret, 0)
+                end if
+                pi = pi + 1
+            end while
+            append(out, { cohort: co, size: size, retention: ret })
+            ci = ci + 1
+        end while
+        return out
+    end function
 end library
