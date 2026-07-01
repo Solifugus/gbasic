@@ -39,6 +39,7 @@ examples=(
     stats_correlation_test.bas
     stats_distribution_test.bas
     stats_expdesign_test.bas
+    stats_power_test.bas
     epoch_test.bas
     bitwise_test.bas
     hex_literal_test.bas

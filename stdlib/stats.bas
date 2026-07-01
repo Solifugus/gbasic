@@ -3788,4 +3788,158 @@ library stats
         end while
         return out
     end function
+
+    ' --- Power analysis (docs/statistics_scientist_plan.md, cross-cutting) ---
+    ' Needs the noncentral t and noncentral F distributions. Both are built in
+    ' pure gBASIC over the existing incomplete-beta engine (_betai) and the
+    ' standard normal (_norm_cdf_std): no new C primitive. Verified against
+    ' scipy.stats.nct / scipy.stats.ncf and statsmodels.stats.power to ~1e-10.
+
+    ' Noncentral t CDF P(T <= x) with df degrees of freedom and noncentrality
+    ' ncp. Lenth (1989) AS 243 series. Returns unknown for df <= 0.
+    function nct_cdf(x, df, ncp)
+        if df <= 0 then
+            return unknown
+        end if
+        if x < 0 then
+            return 1 - nct_cdf(0 - x, df, 0 - ncp)
+        end if
+        xx = x * x / (x * x + df)
+        if xx <= 0 then
+            return _norm_cdf_std(0 - ncp)
+        end if
+        lambda = ncp * ncp
+        p = 0.5 * exp(-0.5 * lambda)
+        q = (2 / _sqrt2pi()) * p * ncp
+        s = 0.5 - p
+        a = 0.5
+        b = 0.5 * df
+        rxb = pow(1 - xx, b)
+        albeta = lgamma(a) + lgamma(b) - lgamma(a + b)
+        xodd = _betai(a, b, xx)
+        godd = 2 * rxb * exp(a * log(xx) - albeta)
+        xeven = 1 - rxb
+        geven = b * xx * rxb
+        tnc = p * xodd + q * xeven
+        it = 1
+        errbd = 1
+        while it <= 1000 and errbd > pow(10, -12)
+            a = a + 1
+            xodd = xodd - godd
+            xeven = xeven - geven
+            godd = godd * xx * (a + b - 1) / a
+            geven = geven * xx * (a + b - 0.5) / (a + 0.5)
+            p = p * lambda / (2 * it)
+            q = q * lambda / (2 * it + 1)
+            s = s - p
+            tnc = tnc + p * xodd + q * xeven
+            errbd = 2 * s * (xodd - godd)
+            it = it + 1
+        end while
+        tnc = tnc + _norm_cdf_std(0 - ncp)
+        if tnc < 0 then
+            return 0
+        end if
+        if tnc > 1 then
+            return 1
+        end if
+        return tnc
+    end function
+
+    ' Noncentral F CDF P(F <= x) with df1, df2 and noncentrality ncp, as a
+    ' Poisson-weighted mixture of central incomplete-beta terms. df1/df2 > 0.
+    function ncf_cdf(x, df1, df2, ncp)
+        if df1 <= 0 then
+            return unknown
+        end if
+        if df2 <= 0 then
+            return unknown
+        end if
+        if x <= 0 then
+            return 0
+        end if
+        xx = df1 * x / (df1 * x + df2)
+        half = ncp / 2
+        w = exp(0 - half)
+        cum = 0
+        s = 0
+        j = 0
+        while j <= 2000
+            ib = _betai(df1 / 2 + j, df2 / 2, xx)
+            s = s + w * ib
+            cum = cum + w
+            if j > half and 1 - cum < pow(10, -12) then
+                break
+            end if
+            w = w * half / (j + 1)
+            j = j + 1
+        end while
+        return s
+    end function
+
+    ' Power of a two-sample (independent, equal n per group) t-test.
+    ' effect_size = Cohen's d, n = per-group sample size, sided = 1 or 2.
+    function power_ttest(effect_size, n, alpha, sided)
+        if n < 2 then
+            return unknown
+        end if
+        df = 2 * n - 2
+        nc = effect_size * sqrt(n / 2)
+        if sided = 2 then
+            crit = t_quantile(1 - alpha / 2, df)
+            return 1 - nct_cdf(crit, df, nc) + nct_cdf(0 - crit, df, nc)
+        end if
+        crit = t_quantile(1 - alpha, df)
+        return 1 - nct_cdf(crit, df, nc)
+    end function
+
+    ' Power of a one-sample / paired t-test. effect_size = Cohen's d,
+    ' n = number of observations (or pairs), sided = 1 or 2.
+    function power_ttest_paired(effect_size, n, alpha, sided)
+        if n < 2 then
+            return unknown
+        end if
+        df = n - 1
+        nc = effect_size * sqrt(n)
+        if sided = 2 then
+            crit = t_quantile(1 - alpha / 2, df)
+            return 1 - nct_cdf(crit, df, nc) + nct_cdf(0 - crit, df, nc)
+        end if
+        crit = t_quantile(1 - alpha, df)
+        return 1 - nct_cdf(crit, df, nc)
+    end function
+
+    ' Power of a one-way ANOVA. k = number of groups, n = per-group sample
+    ' size, effect_size = Cohen's f. Total N = k*n, df1 = k-1, df2 = N-k,
+    ' noncentrality = f^2 * N.
+    function power_anova(k, n, effect_size, alpha)
+        if k < 2 then
+            return unknown
+        end if
+        if n < 2 then
+            return unknown
+        end if
+        nt = k * n
+        df1 = k - 1
+        df2 = nt - k
+        nc = effect_size * effect_size * nt
+        crit = f_quantile(1 - alpha, df1, df2)
+        return 1 - ncf_cdf(crit, df1, df2, nc)
+    end function
+
+    ' Smallest per-group sample size for a two-sample t-test to reach the
+    ' target power. Searches upward; returns unknown if none up to n=100000.
+    function sample_size_ttest(effect_size, power, alpha, sided)
+        if effect_size <= 0 then
+            return unknown
+        end if
+        n = 2
+        while n <= 100000
+            if power_ttest(effect_size, n, alpha, sided) >= power then
+                return n
+            end if
+            n = n + 1
+        end while
+        return unknown
+    end function
 end library

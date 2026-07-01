@@ -75,7 +75,7 @@ exists (uniform/expon/lognormal/weibull) and bisection over the CDF otherwise
 
 **Earn-it:** none — reuses existing special-function engines.
 
-## Phase 7 — Experimental-design tests  *(psychology & experimental science)* — **DONE (2026-07-01, power analysis pending)**
+## Phase 7 — Experimental-design tests  *(psychology & experimental science)* — **DONE (2026-07-01, incl. power analysis)**
 
 Shipped in `stdlib/stats.bas`, verified against statsmodels/scipy in
 `examples/stats_expdesign_test.bas`. Signatures as implemented:
@@ -100,8 +100,7 @@ any practical p-value reporting need; `reject` decisions and CIs are exact to
 display precision. This is the slowest test in the suite (~3 s) because Tukey runs
 one `_qtukey` plus one `_ptukey` per pair.
 
-**Still pending for this phase:** power analysis (see Cross-cutting below) — needs
-noncentral t/F, not yet implemented.
+**Power analysis — DONE (2026-07-01).** See Cross-cutting below.
 
 ## Phase 8 — Reliability & agreement  *(psychometrics & communications)*
 
@@ -151,12 +150,24 @@ Phase 4, and **richer GLM families** — all at once.
 **Earn-it:** evaluate after Nelder–Mead lands. Only if a real workload shows it too
 slow would a C optimizer be considered.
 
-## Cross-cutting — power analysis  *(small; slot with Phase 7)*
+## Cross-cutting — power analysis  *(slotted with Phase 7)* — **DONE (2026-07-01)**
 
-`power_ttest`, `power_anova`, and `sample_size_ttest` — required by reviewers in
-psychology and the sciences. These need **noncentral t / F** distributions (new
-special functions, moderate difficulty via series). Verify vs
-`statsmodels.stats.power`. Can ship approximate first, exact later.
+Shipped in `stdlib/stats.bas`, verified against `scipy.stats.nct`/`ncf` and
+`statsmodels.stats.power` to ~1e-10 in `examples/stats_power_test.bas`.
+
+| Function | Returns | Verify vs |
+|---|---|---|
+| `nct_cdf(x, df, ncp)` | noncentral t CDF (Lenth 1989 AS 243 series) | `scipy.stats.nct.cdf` |
+| `ncf_cdf(x, df1, df2, ncp)` | noncentral F CDF (Poisson mixture of `_betai`) | `scipy.stats.ncf.cdf` |
+| `power_ttest(d, n, alpha, sided)` | two-sample (indep, equal per-group `n`) t-test power | `statsmodels` `TTestIndPower` |
+| `power_ttest_paired(d, n, alpha, sided)` | one-sample / paired t-test power | `statsmodels` `TTestPower` |
+| `power_anova(k, n, f, alpha)` | one-way ANOVA power (Cohen's `f`, per-group `n`) | `statsmodels` `FTestAnovaPower` |
+| `sample_size_ttest(d, power, alpha, sided)` | smallest per-group `n` for two-sample power (upward search) | `statsmodels` `solve_power` |
+
+**Earn-it — resolved in pure gBASIC.** Both noncentral distributions were built
+over the existing `_betai` incomplete-beta engine and `_norm_cdf_std`, so the §6
+C bar stayed uncrossed. The **exact** series (not the recommended approximation)
+was cheap enough to ship directly. `sided` is 1 or 2 (one/two-tailed).
 
 ---
 
