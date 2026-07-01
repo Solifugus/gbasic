@@ -3363,4 +3363,429 @@ library stats
         end while
         return k
     end function
+
+    ' ------------------------------------------------------------------
+    ' Phase 7 — experimental-design tests (statistics_scientist_plan.md §7):
+    ' two-way ANOVA, repeated-measures ANOVA, Friedman, Tukey HSD. All pure
+    ' gBASIC. The one research piece is the studentized-range distribution
+    ' (_ptukey / _qtukey) needed for Tukey HSD p-values and CIs — computed by
+    ' nested Simpson quadrature of the classic range-CDF integral, verified to
+    ' 6 decimals against scipy.stats.studentized_range.
+    ' ------------------------------------------------------------------
+
+    ' Inner integral: G(w) = P(range of k iid N(0,1) <= w)
+    '   = k * integral phi(z) * (Phi(z) - Phi(z-w))^(k-1) dz  over z.
+    ' Composite Simpson over z in [-7.5, 7.5], 160 panels.
+    function _range_cdf(w, k)
+        if w <= 0 then
+            return 0
+        end if
+        nz = 160
+        zb = 7.5
+        h = (2 * zb) / nz
+        km1 = k - 1
+        sp = _sqrt2pi()
+        z = 0 - zb
+        d = _norm_cdf_std(z) - _norm_cdf_std(z - w)
+        total = (exp(0 - z * z / 2) / sp) * pow(d, km1)
+        z = zb
+        d = _norm_cdf_std(z) - _norm_cdf_std(z - w)
+        total = total + (exp(0 - z * z / 2) / sp) * pow(d, km1)
+        coef = 4
+        i = 1
+        while i < nz
+            z = (0 - zb) + i * h
+            d = _norm_cdf_std(z) - _norm_cdf_std(z - w)
+            term = (exp(0 - z * z / 2) / sp) * pow(d, km1)
+            total = total + coef * term
+            coef = 6 - coef
+            i = i + 1
+        end while
+        return k * total * h / 3
+    end function
+
+    ' Studentized-range CDF P(Q <= q; k groups, v error df)
+    '   = integral f_v(s) * G(q*s) ds, where v*s^2 ~ chi-squared_v.
+    ' Composite Simpson over s in [0, smax], 80 panels (s=0 term is 0).
+    function _ptukey(q, k, v)
+        if q <= 0 then
+            return 0
+        end if
+        if v <= 0 then
+            return unknown
+        end if
+        c = v / 2
+        lc = c * log(v) - (c - 1) * log(2) - lgamma(c)
+        smax = sqrt(chi2_quantile(0.999999, v) / v)
+        ns = 80
+        h = smax / ns
+        sv = smax
+        total = exp(lc + (v - 1) * log(sv) - v * sv * sv / 2) * _range_cdf(q * sv, k)
+        coef = 4
+        i = 1
+        while i < ns
+            sv = i * h
+            f = exp(lc + (v - 1) * log(sv) - v * sv * sv / 2)
+            total = total + coef * f * _range_cdf(q * sv, k)
+            coef = 6 - coef
+            i = i + 1
+        end while
+        return total * h / 3
+    end function
+
+    ' Studentized-range quantile (inverse of _ptukey) by bisection.
+    function _qtukey(p, k, v)
+        if p <= 0 then
+            return unknown
+        end if
+        if p >= 1 then
+            return unknown
+        end if
+        lo = 0
+        hi = 100
+        i = 0
+        while i < 60
+            mid = (lo + hi) / 2
+            if _ptukey(mid, k, v) < p then
+                lo = mid
+            else
+                hi = mid
+            end if
+            if hi - lo < 0.0001 then
+                break
+            end if
+            i = i + 1
+        end while
+        return (lo + hi) / 2
+    end function
+
+    ' Two-way ANOVA, balanced design (Type I = II = III when balanced).
+    ' cells[i][j] is the list of replicate observations for factor-A level i,
+    ' factor-B level j; every cell must hold the same number (n >= 2) of values.
+    ' Returns per-factor and interaction {ss, df, ms, statistic, p_value} plus
+    ' the error line, or unknown on malformed / unbalanced input.
+    function anova_twoway(cells)
+        a = len(cells)
+        if a < 2 then
+            return unknown
+        end if
+        b = len(cells[0])
+        if b < 2 then
+            return unknown
+        end if
+        n = len(cells[0][0])
+        if n < 2 then
+            return unknown
+        end if
+        grand = 0
+        ntot = 0
+        i = 0
+        while i < a
+            if len(cells[i]) != b then
+                return unknown
+            end if
+            j = 0
+            while j < b
+                if len(cells[i][j]) != n then
+                    return unknown
+                end if
+                r = 0
+                while r < n
+                    grand = grand + cells[i][j][r]
+                    ntot = ntot + 1
+                    r = r + 1
+                end while
+                j = j + 1
+            end while
+            i = i + 1
+        end while
+        grand = grand / ntot
+        ' A-marginal means
+        amean = []
+        i = 0
+        while i < a
+            s = 0
+            j = 0
+            while j < b
+                r = 0
+                while r < n
+                    s = s + cells[i][j][r]
+                    r = r + 1
+                end while
+                j = j + 1
+            end while
+            append(amean, s / (b * n))
+            i = i + 1
+        end while
+        ' B-marginal means
+        bmean = []
+        j = 0
+        while j < b
+            s = 0
+            i = 0
+            while i < a
+                r = 0
+                while r < n
+                    s = s + cells[i][j][r]
+                    r = r + 1
+                end while
+                i = i + 1
+            end while
+            append(bmean, s / (a * n))
+            j = j + 1
+        end while
+        ssa = 0
+        i = 0
+        while i < a
+            ssa = ssa + (amean[i] - grand) * (amean[i] - grand)
+            i = i + 1
+        end while
+        ssa = b * n * ssa
+        ssb = 0
+        j = 0
+        while j < b
+            ssb = ssb + (bmean[j] - grand) * (bmean[j] - grand)
+            j = j + 1
+        end while
+        ssb = a * n * ssb
+        ssab = 0
+        sse = 0
+        i = 0
+        while i < a
+            j = 0
+            while j < b
+                cm = 0
+                r = 0
+                while r < n
+                    cm = cm + cells[i][j][r]
+                    r = r + 1
+                end while
+                cm = cm / n
+                inter = cm - amean[i] - bmean[j] + grand
+                ssab = ssab + inter * inter
+                r = 0
+                while r < n
+                    d = cells[i][j][r] - cm
+                    sse = sse + d * d
+                    r = r + 1
+                end while
+                j = j + 1
+            end while
+            i = i + 1
+        end while
+        ssab = n * ssab
+        dfa = a - 1
+        dfb = b - 1
+        dfab = (a - 1) * (b - 1)
+        dfe = a * b * (n - 1)
+        if dfe < 1 then
+            return unknown
+        end if
+        mse = sse / dfe
+        if mse <= 0 then
+            return unknown
+        end if
+        msa = ssa / dfa
+        msb = ssb / dfb
+        msab = ssab / dfab
+        fa = msa / mse
+        fb = msb / mse
+        fab = msab / mse
+        ra = { ss: ssa, df: dfa, ms: msa, statistic: fa, p_value: 1 - f_cdf(fa, dfa, dfe) }
+        rb = { ss: ssb, df: dfb, ms: msb, statistic: fb, p_value: 1 - f_cdf(fb, dfb, dfe) }
+        rab = { ss: ssab, df: dfab, ms: msab, statistic: fab, p_value: 1 - f_cdf(fab, dfab, dfe) }
+        re = { ss: sse, df: dfe, ms: mse }
+        return { a: ra, b: rb, interaction: rab, residual: re }
+    end function
+
+    ' One-way repeated-measures ANOVA. data[s][c] is subject s's value under
+    ' condition c (all subjects measured under all k conditions). Returns
+    ' {statistic, df1, df2, p_value, partial_eta2} or unknown.
+    function anova_repeated(data)
+        n = len(data)
+        if n < 2 then
+            return unknown
+        end if
+        k = len(data[0])
+        if k < 2 then
+            return unknown
+        end if
+        grand = 0
+        s = 0
+        while s < n
+            if len(data[s]) != k then
+                return unknown
+            end if
+            c = 0
+            while c < k
+                grand = grand + data[s][c]
+                c = c + 1
+            end while
+            s = s + 1
+        end while
+        grand = grand / (n * k)
+        ' condition means
+        sscond = 0
+        c = 0
+        while c < k
+            cm = 0
+            s = 0
+            while s < n
+                cm = cm + data[s][c]
+                s = s + 1
+            end while
+            cm = cm / n
+            sscond = sscond + (cm - grand) * (cm - grand)
+            c = c + 1
+        end while
+        sscond = n * sscond
+        ' subject means
+        sssubj = 0
+        s = 0
+        while s < n
+            sm = 0
+            c = 0
+            while c < k
+                sm = sm + data[s][c]
+                c = c + 1
+            end while
+            sm = sm / k
+            sssubj = sssubj + (sm - grand) * (sm - grand)
+            s = s + 1
+        end while
+        sssubj = k * sssubj
+        sstot = 0
+        s = 0
+        while s < n
+            c = 0
+            while c < k
+                d = data[s][c] - grand
+                sstot = sstot + d * d
+                c = c + 1
+            end while
+            s = s + 1
+        end while
+        sserr = sstot - sscond - sssubj
+        df1 = k - 1
+        df2 = (n - 1) * (k - 1)
+        if sserr <= 0 then
+            return unknown
+        end if
+        mscond = sscond / df1
+        mserr = sserr / df2
+        fstat = mscond / mserr
+        peta = sscond / (sscond + sserr)
+        return { statistic: fstat, df1: df1, df2: df2, p_value: 1 - f_cdf(fstat, df1, df2), partial_eta2: peta }
+    end function
+
+    ' Friedman test (nonparametric repeated measures). data[s][c] as in
+    ' anova_repeated. Ties handled with the standard correction, matching
+    ' scipy.stats.friedmanchisquare. Returns {statistic, df, p_value}.
+    function friedman(data)
+        n = len(data)
+        if n < 2 then
+            return unknown
+        end if
+        k = len(data[0])
+        if k < 2 then
+            return unknown
+        end if
+        colsum = []
+        c = 0
+        while c < k
+            append(colsum, 0)
+            c = c + 1
+        end while
+        ties = 0
+        s = 0
+        while s < n
+            if len(data[s]) != k then
+                return unknown
+            end if
+            ranks = _rank(data[s])
+            c = 0
+            while c < k
+                colsum[c] = colsum[c] + ranks[c]
+                c = c + 1
+            end while
+            ties = ties + _tie_term(data[s])
+            s = s + 1
+        end while
+        ssbn = 0
+        c = 0
+        while c < k
+            ssbn = ssbn + colsum[c] * colsum[c]
+            c = c + 1
+        end while
+        corr = 1 - ties / (k * (k * k - 1) * n)
+        stat = (12 / (k * n * (k + 1)) * ssbn - 3 * n * (k + 1)) / corr
+        df = k - 1
+        return { statistic: stat, df: df, p_value: 1 - chi2_cdf(stat, df) }
+    end function
+
+    ' Tukey HSD all-pairs comparison (alpha = 0.05). groups is a list of
+    ' groups (each a list of numbers); unequal sizes use the Tukey-Kramer SE.
+    ' Returns a list of {group1, group2, mean_diff, p_adj, ci_low, ci_high,
+    ' reject}, one per unordered pair, or unknown on malformed input.
+    function tukey_hsd(groups)
+        k = len(groups)
+        if k < 2 then
+            return unknown
+        end if
+        means = []
+        ns = []
+        ntot = 0
+        i = 0
+        while i < k
+            ng = len(groups[i])
+            if ng < 2 then
+                return unknown
+            end if
+            append(means, mean(groups[i]))
+            append(ns, ng)
+            ntot = ntot + ng
+            i = i + 1
+        end while
+        dfw = ntot - k
+        if dfw < 1 then
+            return unknown
+        end if
+        ssw = 0
+        i = 0
+        while i < k
+            gm = means[i]
+            j = 0
+            while j < ns[i]
+                d = groups[i][j] - gm
+                ssw = ssw + d * d
+                j = j + 1
+            end while
+            i = i + 1
+        end while
+        mse = ssw / dfw
+        if mse <= 0 then
+            return unknown
+        end if
+        qcrit = _qtukey(0.95, k, dfw)
+        out = []
+        i = 0
+        while i < k
+            j = i + 1
+            while j < k
+                md = means[i] - means[j]
+                se = sqrt(mse / 2 * (1 / ns[i] + 1 / ns[j]))
+                q = abs(md) / se
+                padj = 1 - _ptukey(q, k, dfw)
+                hw = qcrit * se
+                rej = false
+                if padj < 0.05 then
+                    rej = true
+                end if
+                append(out, { group1: i, group2: j, mean_diff: md, p_adj: padj, ci_low: md - hw, ci_high: md + hw, reject: rej })
+                j = j + 1
+            end while
+            i = i + 1
+        end while
+        return out
+    end function
 end library

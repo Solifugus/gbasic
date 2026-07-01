@@ -75,21 +75,33 @@ exists (uniform/expon/lognormal/weibull) and bisection over the CDF otherwise
 
 **Earn-it:** none — reuses existing special-function engines.
 
-## Phase 7 — Experimental-design tests  *(psychology & experimental science)*
+## Phase 7 — Experimental-design tests  *(psychology & experimental science)* — **DONE (2026-07-01, power analysis pending)**
+
+Shipped in `stdlib/stats.bas`, verified against statsmodels/scipy in
+`examples/stats_expdesign_test.bas`. Signatures as implemented:
 
 | Function | Returns | Verify vs |
 |---|---|---|
-| `anova_twoway(data, a_levels, b_levels)` | per-factor + interaction `{ss, df, ms, f, p}`, balanced designs first (Type II) | `statsmodels` ols + `anova_lm` |
-| `anova_repeated(subjects_x_conditions)` | `{f, df1, df2, p, partial_eta2}` | pingouin `rm_anova` (manual) |
-| `friedman(data)` | `{statistic, df, p_value}` (nonparametric RM) | `scipy.stats.friedmanchisquare` |
-| `tukey_hsd(groups)` | list of `{pair, mean_diff, ci_low, ci_high, p_adj, reject}` | `statsmodels` `pairwise_tukeyhsd` |
+| `anova_twoway(cells)` | balanced A×B design; `{a, b, interaction, residual}`, each factor line `{ss, df, ms, statistic, p_value}` (Type I = II = III when balanced) | `statsmodels` ols + `anova_lm(typ=2)` |
+| `anova_repeated(data)` | subjects×conditions matrix → `{statistic, df1, df2, p_value, partial_eta2}` | manual (matches pingouin `rm_anova`) |
+| `friedman(data)` | subjects×conditions → `{statistic, df, p_value}`, tie-corrected | `scipy.stats.friedmanchisquare` |
+| `tukey_hsd(groups)` | list of `{group1, group2, mean_diff, ci_low, ci_high, p_adj, reject}` (alpha 0.05, Tukey-Kramer SE) | `statsmodels` `pairwise_tukeyhsd` |
 
-**Earn-it — the one hard spot:** Tukey HSD needs the **studentized-range
-distribution** (`ptukey`/`qtukey`), which has no closed form. Options, in order of
-preference: (a) numerical integration of the range CDF in pure gBASIC (feasible,
-moderate work); (b) ship mean-differences + confidence intervals now and add exact
-`p_adj` when (a) lands; (c) a C helper only if (a) proves too slow/inaccurate.
-**Recommend (a), fall back to (b).** Everything else in this phase is pure gBASIC.
+**Note on shapes:** `anova_twoway` takes a nested `cells[i][j]` = replicate list
+(levels are derived, so the proposed `a_levels`/`b_levels` args were dropped as
+redundant).
+
+**Earn-it — resolved in pure gBASIC.** The studentized-range distribution
+(`_ptukey`/`_qtukey`) that Tukey HSD needs was implemented by **nested composite
+Simpson quadrature** of the classic range-CDF integral (inner: 160 z-panels over
+[-7.5, 7.5]; outer: 80 s-panels), no C helper. Agreement with
+`scipy.stats.studentized_range` is ~1e-6 absolute (the Simpson floor) — far beyond
+any practical p-value reporting need; `reject` decisions and CIs are exact to
+display precision. This is the slowest test in the suite (~3 s) because Tukey runs
+one `_qtukey` plus one `_ptukey` per pair.
+
+**Still pending for this phase:** power analysis (see Cross-cutting below) — needs
+noncentral t/F, not yet implemented.
 
 ## Phase 8 — Reliability & agreement  *(psychometrics & communications)*
 
