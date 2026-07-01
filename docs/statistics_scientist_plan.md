@@ -1,9 +1,13 @@
 # Statistics library — "usable by working scientists" plan
 
-**Status:** proposal (2026-06-30). Extends the completed `stats.bas` (Phases 1–4,
-see `docs/statistics_design.md`) with the shortlist that moves it from a strong
+**Status:** COMPLETE (2026-07-01). Extended the completed `stats.bas` (Phases
+1–4, see `docs/statistics_design.md`) with this shortlist — Phases 5–10 plus the
+power-analysis cross-cut are all shipped — moving it from a strong
 *classical-inference core* to a *primary tool* for behavioral, social,
-communications, and natural-science researchers.
+communications, and natural-science researchers. Every phase stayed pure gBASIC:
+the §6 C earn-it bar was never crossed. Data-science / predictive ML remains a
+separate future track (out of scope). Follow-ons now unblocked by the Phase 10
+optimizer: ARIMA/GARCH and richer GLM families.
 
 **Explicitly out of scope:** predictive machine learning (train/test split,
 cross-validation, classification metrics, tree ensembles, SVM/kNN). That is a
@@ -141,26 +145,28 @@ deterministic compositions. Signatures as implemented:
 `step` is a reserved token, so the funnel field is `stage`. `sort` mutates its
 argument in place, so `rfm` sorts *copies* to keep per-customer alignment.
 
-## Phase 10 (keystone) — the optimizer  *(unlocks the most)*
+## Phase 10 (keystone) — the optimizer  *(unlocks the most)* — **DONE (2026-07-01)**
 
-A single general optimizer is the highest-leverage foundational piece: it unlocks
-**nonlinear curve fitting** (physical science), the **ARIMA/GARCH** deferred in
-Phase 4, and **richer GLM families** — all at once.
+Shipped in `stdlib/stats.bas`, verified against `scipy.optimize` in
+`examples/stats_optimize_test.bas`. Signatures as implemented:
 
-- `optimize(objective, initial_params, options)` → `{params, value, iterations,
-  converged}`. **Recommended method: Nelder–Mead simplex** — derivative-free, so it
-  needs only function evaluations (no Jacobian), which means it can be written in
-  **pure gBASIC** using first-class functions (the objective is passed as a
-  function value — already supported). This likely keeps the earn-it bar uncrossed
-  yet again.
-- `curve_fit(f, xs, ys, initial)` → `{params, residuals, r_squared, ...}`
-  (nonlinear least squares via `optimize`). Verify vs `scipy.optimize.curve_fit`
-  on functions with known fits (exponential decay, logistic growth).
-- Follow-ons enabled (own phases later): `arima`, `garch`, GLM families beyond
-  logistic/Poisson.
+- `optimize(objective, initial, opts, ctx)` → `{params, value, iterations,
+  converged}`. **Nelder–Mead simplex**, derivative-free, pure gBASIC. The
+  objective is a function value called as `objective(params, ctx)`; `ctx` is
+  arbitrary user data forwarded to every call (this replaces closures, which
+  gBASIC function values do not provide). `opts` is a record with optional
+  `max_iter` / `tol`, or `unknown` for defaults (`max_iter = 400·n`,
+  `tol = 1e-12`). Verified: Rosenbrock from (−1.2, 1) converges to (1, 1).
+- `curve_fit(f, xs, ys, initial)` → `{params, residuals, sse, r_squared,
+  iterations, converged}`. Nonlinear least squares: builds an SSE objective
+  (`_curve_sse`, ctx = `{f, xs, ys}`) and minimizes via `optimize`. Model `f`
+  is a function value `f(x, params)`. Verified vs `scipy.optimize.curve_fit`:
+  exponential decay recovers (2.5, 0.4, 0.5) and logistic growth (10, 1, 5),
+  both r² = 1 on noiseless data. Runs in ~0.1 s.
 
-**Earn-it:** evaluate after Nelder–Mead lands. Only if a real workload shows it too
-slow would a C optimizer be considered.
+**Earn-it — resolved in pure gBASIC.** Nelder–Mead is fast enough at these
+sizes; the C bar stayed uncrossed. This unblocks the ARIMA/GARCH deferred in
+Phase 4 and richer GLM families (their own future phases).
 
 ## Cross-cutting — power analysis  *(slotted with Phase 7)* — **DONE (2026-07-01)**
 

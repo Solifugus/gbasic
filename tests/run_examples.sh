@@ -42,6 +42,7 @@ examples=(
     stats_power_test.bas
     stats_reliability_test.bas
     stats_proportions_test.bas
+    stats_optimize_test.bas
     epoch_test.bas
     bitwise_test.bas
     hex_literal_test.bas

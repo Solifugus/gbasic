@@ -1,0 +1,5 @@
+rosen p 1 1 conv true
+expfit p 2.5 0.4 0.5 r2 1
+logfit p 10 1 5 r2 1
+guard_opt unknown
+guard_fit unknown

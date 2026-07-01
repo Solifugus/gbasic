@@ -4539,4 +4539,229 @@ library stats
         end while
         return out
     end function
+
+    ' --- Optimizer keystone (docs/statistics_scientist_plan.md §10) ---
+    ' Derivative-free Nelder-Mead simplex in pure gBASIC, using function
+    ' values (the objective is passed as a value). No new C primitive.
+    ' curve_fit rides on it for nonlinear least squares. Verified against
+    ' scipy.optimize (Rosenbrock -> (1,1); exponential/logistic fits recover
+    ' their true parameters).
+
+    ' Centroid of every simplex vertex except index `skip` (n = dimension;
+    ' the simplex has n+1 vertices, so the centroid averages n of them).
+    function _nm_centroid(simplex, skip, n)
+        c = []
+        d = 0
+        while d < n
+            append(c, 0)
+            d = d + 1
+        end while
+        np1 = len(simplex)
+        i = 0
+        while i < np1
+            if i != skip then
+                d = 0
+                while d < n
+                    c[d] = c[d] + simplex[i][d]
+                    d = d + 1
+                end while
+            end if
+            i = i + 1
+        end while
+        d = 0
+        while d < n
+            c[d] = c[d] / n
+            d = d + 1
+        end while
+        return c
+    end function
+
+    ' Minimize objective(params, ctx) with Nelder-Mead. initial is the starting
+    ' parameter list; opts is a record (optional fields max_iter, tol) or
+    ' unknown; ctx is arbitrary user data forwarded to every objective call (or
+    ' unknown). Returns {params, value, iterations, converged} or unknown.
+    function optimize(objective, initial, opts, ctx)
+        n = len(initial)
+        if n < 1 then
+            return unknown
+        end if
+        maxiter = 400 * n
+        tol = pow(10, -12)
+        astep = 0.05
+        if not is_unknown(opts) then
+            ok = keys(opts)
+            if contains(ok, "max_iter") then
+                maxiter = opts.max_iter
+            end if
+            if contains(ok, "tol") then
+                tol = opts.tol
+            end if
+        end if
+        simplex = []
+        fvals = []
+        v = initial
+        append(simplex, v)
+        append(fvals, objective(v, ctx))
+        i = 0
+        while i < n
+            v = initial
+            if v[i] != 0 then
+                v[i] = v[i] * (1 + astep)
+            else
+                v[i] = astep
+            end if
+            append(simplex, v)
+            append(fvals, objective(v, ctx))
+            i = i + 1
+        end while
+        np1 = n + 1
+        iter = 0
+        converged = false
+        while iter < maxiter
+            lo = 0
+            hi = 0
+            j = 1
+            while j < np1
+                if fvals[j] < fvals[lo] then
+                    lo = j
+                end if
+                if fvals[j] > fvals[hi] then
+                    hi = j
+                end if
+                j = j + 1
+            end while
+            hi2 = lo
+            j = 0
+            while j < np1
+                if j != hi then
+                    if fvals[j] > fvals[hi2] then
+                        hi2 = j
+                    end if
+                end if
+                j = j + 1
+            end while
+            if abs(fvals[hi] - fvals[lo]) <= tol * (abs(fvals[lo]) + tol) then
+                converged = true
+                break
+            end if
+            cen = _nm_centroid(simplex, hi, n)
+            xr = []
+            d = 0
+            while d < n
+                append(xr, cen[d] + (cen[d] - simplex[hi][d]))
+                d = d + 1
+            end while
+            fr = objective(xr, ctx)
+            if fr < fvals[lo] then
+                xe = []
+                d = 0
+                while d < n
+                    append(xe, cen[d] + 2 * (xr[d] - cen[d]))
+                    d = d + 1
+                end while
+                fe = objective(xe, ctx)
+                if fe < fr then
+                    simplex[hi] = xe
+                    fvals[hi] = fe
+                else
+                    simplex[hi] = xr
+                    fvals[hi] = fr
+                end if
+            else
+                if fr < fvals[hi2] then
+                    simplex[hi] = xr
+                    fvals[hi] = fr
+                else
+                    xc = []
+                    d = 0
+                    while d < n
+                        append(xc, cen[d] + 0.5 * (simplex[hi][d] - cen[d]))
+                        d = d + 1
+                    end while
+                    fc = objective(xc, ctx)
+                    if fc < fvals[hi] then
+                        simplex[hi] = xc
+                        fvals[hi] = fc
+                    else
+                        i = 0
+                        while i < np1
+                            if i != lo then
+                                d = 0
+                                while d < n
+                                    simplex[i][d] = simplex[lo][d] + 0.5 * (simplex[i][d] - simplex[lo][d])
+                                    d = d + 1
+                                end while
+                                fvals[i] = objective(simplex[i], ctx)
+                            end if
+                            i = i + 1
+                        end while
+                    end if
+                end if
+            end if
+            iter = iter + 1
+        end while
+        lo = 0
+        j = 1
+        while j < np1
+            if fvals[j] < fvals[lo] then
+                lo = j
+            end if
+            j = j + 1
+        end while
+        return { params: simplex[lo], value: fvals[lo], iterations: iter, converged: converged }
+    end function
+
+    ' Sum of squared residuals objective for curve_fit; ctx = {f, xs, ys}.
+    function _curve_sse(params, ctx)
+        f = ctx.f
+        xs = ctx.xs
+        ys = ctx.ys
+        total = 0
+        i = 0
+        while i < len(xs)
+            d = ys[i] - f(xs[i], params)
+            total = total + d * d
+            i = i + 1
+        end while
+        return total
+    end function
+
+    ' Nonlinear least-squares fit. f is a model function value f(x, params);
+    ' xs/ys are the data; initial is the starting parameter list. Minimizes the
+    ' SSE via optimize. Returns {params, residuals, sse, r_squared, iterations,
+    ' converged} or unknown.
+    function curve_fit(f, xs, ys, initial)
+        n = len(xs)
+        if n < 1 then
+            return unknown
+        end if
+        if len(ys) != n then
+            return unknown
+        end if
+        ctx = { f: f, xs: xs, ys: ys }
+        res = optimize(_curve_sse, initial, unknown, ctx)
+        if is_unknown(res) then
+            return unknown
+        end if
+        params = res.params
+        ybar = mean(ys)
+        sse = 0
+        sst = 0
+        resid = []
+        i = 0
+        while i < n
+            pred = f(xs[i], params)
+            d = ys[i] - pred
+            append(resid, d)
+            sse = sse + d * d
+            e = ys[i] - ybar
+            sst = sst + e * e
+            i = i + 1
+        end while
+        r2 = 1
+        if sst > 0 then
+            r2 = 1 - sse / sst
+        end if
+        return { params: params, residuals: resid, sse: sse, r_squared: r2, iterations: res.iterations, converged: res.converged }
+    end function
 end library
