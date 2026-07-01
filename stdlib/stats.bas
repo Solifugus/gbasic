@@ -2746,4 +2746,217 @@ library stats
         end while
         return { level: levelL, trend: trendB, season: season, fitted: fitted, forecast: forecast, period: period }
     end function
+
+    ' ===================================================================
+    ' Phase 5 — correlation family & effect sizes
+    ' (docs/statistics_scientist_plan.md). Thin compositions over the Pearson
+    ' `correlation` builtin, the `_rank` helper, and the existing distribution
+    ' CDFs. Verified against scipy.stats; tie-free data is used where a test's
+    ' tie handling would otherwise diverge from the asymptotic reference.
+    ' ===================================================================
+
+    ' Total tied-pair count: sum over tie groups of t*(t-1)/2. Used for the
+    ' tau-b denominator.
+    function _tie_pairs(xs)
+        r = _rank(xs)
+        ' ranks are equal within a tie group; count via sorted rank multiplicities
+        sorted = sort(r)
+        total = 0
+        i = 0
+        n = len(sorted)
+        while i < n
+            j = i
+            while j < n and sorted[j] = sorted[i]
+                j = j + 1
+            end while
+            g = j - i
+            total = total + g * (g - 1) / 2
+            i = j
+        end while
+        return total
+    end function
+
+    ' Two-sided p from a correlation coefficient via the t approximation,
+    ' df degrees of freedom.
+    function _corr_p(r, df)
+        denom = 1 - r * r
+        if denom <= 0 then
+            return 0
+        end if
+        t = r * sqrt(df / denom)
+        return 2 * t_cdf(0 - abs(t), df)
+    end function
+
+    ' Spearman rank correlation (Pearson on average ranks); t-approx p, df=n-2.
+    function spearman(x, y)
+        n = len(x)
+        if n != len(y) then
+            return unknown
+        end if
+        if n < 3 then
+            return unknown
+        end if
+        rho = correlation(_rank(x), _rank(y))
+        if is_unknown(rho) then
+            return unknown
+        end if
+        return { rho: rho, p_value: _corr_p(rho, n - 2), n: n }
+    end function
+
+    ' Kendall's tau-b (tie-corrected), asymptotic normal p (no continuity
+    ' correction, no-tie variance) — matches scipy.stats.kendalltau(method=
+    ' "asymptotic") on tie-free data.
+    function kendall_tau(x, y)
+        n = len(x)
+        if n != len(y) then
+            return unknown
+        end if
+        if n < 2 then
+            return unknown
+        end if
+        cc = 0
+        dd = 0
+        i = 0
+        while i < n
+            j = i + 1
+            while j < n
+                prod = (x[j] - x[i]) * (y[j] - y[i])
+                if prod > 0 then
+                    cc = cc + 1
+                else
+                    if prod < 0 then
+                        dd = dd + 1
+                    end if
+                end if
+                j = j + 1
+            end while
+            i = i + 1
+        end while
+        n0 = n * (n - 1) / 2
+        denom = sqrt((n0 - _tie_pairs(x)) * (n0 - _tie_pairs(y)))
+        if denom <= 0 then
+            return unknown
+        end if
+        tau = (cc - dd) / denom
+        z = (cc - dd) / sqrt(n * (n - 1) * (2 * n + 5) / 18)
+        return { tau: tau, p_value: 2 * _norm_cdf_std(0 - abs(z)), n: n }
+    end function
+
+    ' Partial correlation of x and y controlling for z; t-approx p, df=n-3.
+    function partial_correlation(x, y, z)
+        n = len(x)
+        if n != len(y) or n != len(z) then
+            return unknown
+        end if
+        if n < 4 then
+            return unknown
+        end if
+        rxy = correlation(x, y)
+        rxz = correlation(x, z)
+        ryz = correlation(y, z)
+        denom = sqrt((1 - rxz * rxz) * (1 - ryz * ryz))
+        if denom <= 0 then
+            return unknown
+        end if
+        r = (rxy - rxz * ryz) / denom
+        return { r: r, p_value: _corr_p(r, n - 3), n: n }
+    end function
+
+    ' Point-biserial correlation between a binary (0/1) variable and a continuous
+    ' one (Pearson correlation); t-approx p, df=n-2.
+    function point_biserial(binary, x)
+        n = len(binary)
+        if n != len(x) then
+            return unknown
+        end if
+        if n < 3 then
+            return unknown
+        end if
+        r = correlation(binary, x)
+        if is_unknown(r) then
+            return unknown
+        end if
+        return { r: r, p_value: _corr_p(r, n - 2) }
+    end function
+
+    ' Cramér's V (uncorrected) from a contingency table.
+    function cramers_v(table)
+        res = chi_square_independence(table)
+        if is_unknown(res) then
+            return unknown
+        end if
+        rows = len(table)
+        cols = len(table[0])
+        total = 0
+        i = 0
+        while i < rows
+            j = 0
+            while j < cols
+                total = total + table[i][j]
+                j = j + 1
+            end while
+            i = i + 1
+        end while
+        k = min([rows, cols]) - 1
+        if total <= 0 or k < 1 then
+            return unknown
+        end if
+        return { v: sqrt(res.statistic / (total * k)), chi2: res.statistic, dof: res.df }
+    end function
+
+    ' Hedges' g: bias-corrected standardized mean difference (pooled SD).
+    function hedges_g(a, b)
+        n1 = len(a)
+        n2 = len(b)
+        if n1 < 2 or n2 < 2 then
+            return unknown
+        end if
+        sp = sqrt(((n1 - 1) * variance(a) + (n2 - 1) * variance(b)) / (n1 + n2 - 2))
+        if sp <= 0 then
+            return unknown
+        end if
+        d = (mean(a) - mean(b)) / sp
+        jj = 1 - 3 / (4 * (n1 + n2) - 9)
+        return { g: d * jj, d: d }
+    end function
+
+    ' Sample odds ratio for a 2x2 table [[a,b],[c,d]] with a Woolf log-normal
+    ' 95% confidence interval.
+    function odds_ratio(table)
+        if len(table) != 2 or len(table[0]) != 2 or len(table[1]) != 2 then
+            return unknown
+        end if
+        a = table[0][0]
+        b = table[0][1]
+        c = table[1][0]
+        d = table[1][1]
+        if a <= 0 or b <= 0 or c <= 0 or d <= 0 then
+            return unknown
+        end if
+        orr = (a * d) / (b * c)
+        se = sqrt(1 / a + 1 / b + 1 / c + 1 / d)
+        z = 1.959963984540054
+        lo = exp(log(orr) - z * se)
+        hi = exp(log(orr) + z * se)
+        return { odds_ratio: orr, ci_low: lo, ci_high: hi, log_or_se: se }
+    end function
+
+    ' Eta-squared and omega-squared effect sizes for a one-way design.
+    function eta_squared(groups)
+        res = anova_oneway(groups)
+        if is_unknown(res) then
+            return unknown
+        end if
+        ssb = res.ss_between
+        ssw = res.ss_within
+        msw = res.ms_within
+        sst = ssb + ssw
+        if sst <= 0 then
+            return unknown
+        end if
+        k = len(groups)
+        eta = ssb / sst
+        omega = (ssb - (k - 1) * msw) / (sst + msw)
+        return { eta_squared: eta, omega_squared: omega }
+    end function
 end library
