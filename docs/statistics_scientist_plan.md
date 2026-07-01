@@ -181,7 +181,8 @@ verified in `examples/stats_arima_test.bas` (AR/CSS) and
 | `arma_fit(xs, p, q)` | `{const (=mean), phi, theta, sigma2, llf, aic, bic}` — **exact Gaussian MLE via Kalman filter** | `statsmodels` `ARIMA(order=(p,0,q), trend='c')` (exact) |
 | `arma_css_fit(xs, p, q)` | `{const, phi, theta, sse, …}` — fast CSS via `optimize` | best-effort (approximate) |
 | `arima_fit(xs, p, d, q)` | `{p, d, q, const, phi, theta, sigma2, aic, bic}` — differences then AR-OLS (q=0) or exact ARMA MLE | exact vs statsmodels |
-| `arima_forecast(model, xs, h)` | integrated forecast (q=0, d∈{0,1}) | exact |
+| `arma_forecast(model, xs, h)` | stationary ARMA forecast via the Kalman terminal state | `statsmodels` `ARIMA.forecast` (exact) |
+| `arima_forecast(model, xs, h)` | integrated forecast, **any q**, d∈{0,1} | `statsmodels` `ARIMA.forecast` (exact) |
 
 **Status.** `arma_fit` is exact maximum likelihood: a Kalman filter over the
 Harvey ARMA state space (stationary initialization by solving the discrete
@@ -189,9 +190,11 @@ Lyapunov equation `vec(P) = (I − T⊗T)⁻¹ vec(RR')` via `matrix.bas`), with
 concentrated out and the mean/phi/theta optimized by Nelder–Mead. Matches
 `statsmodels` ARIMA to display precision on σ²/log-likelihood/AIC/BIC and to ~4
 decimals on the parameters (the surface is flat near the optimum). `arma_css_fit`
-is retained as a fast approximate alternative. **Deferred:** MA-model forecasting
-(needs the filter's terminal state). **Earn-it:** none — pure gBASIC over
-`matrix.bas` and the optimizer.
+is retained as a fast approximate alternative. MA-model forecasting is supported
+via `arma_forecast`/`arima_forecast` (the Kalman filter's terminal predicted
+state is propagated by the transition matrix), matching `statsmodels
+ARIMA.forecast` exactly. **Earn-it:** none — pure gBASIC over `matrix.bas` and
+the optimizer.
 
 ## Follow-on (optimizer-enabled) — GARCH(1,1) volatility — **DONE (2026-07-01)**
 

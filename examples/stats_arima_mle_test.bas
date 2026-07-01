@@ -19,9 +19,16 @@ program demo(args)
     print("arma11 sigma2 " + string(round(m.sigma2, 4)) + " llf " + string(round(m.llf, 3)))
     print("arma11 aic " + string(round(m.aic, 3)) + " bic " + string(round(m.bic, 3)))
 
+    ' MA-model forecast via the Kalman terminal state. statsmodels forecast:
+    ' 6.2223, 5.6571, 5.3035.
+    fc = arma_forecast(m, y, 3)
+    print("arma11 fc " + string(round(fc[0], 4)) + " " + string(round(fc[1], 4)) + " " + string(round(fc[2], 4)))
+
     ' arima_fit routes q>0 through the exact MLE (here d=0, so identical).
     ai = arima_fit(y, 1, 0, 1)
     print("arima101 const " + string(round(ai.const, 3)) + " phi " + string(round(ai.phi[0], 3)) + " theta " + string(round(ai.theta[0], 3)))
+    afc = arima_forecast(ai, y, 3)
+    print("arima101 fc " + string(round(afc[0], 4)) + " " + string(round(afc[1], 4)) + " " + string(round(afc[2], 4)))
 
     ' domain guard returns unknown
     print("guard " + string(arma_fit([1, 2, 3], 1, 1)))

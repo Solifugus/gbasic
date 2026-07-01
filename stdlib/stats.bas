@@ -5157,7 +5157,9 @@ library stats
         end while
         sigma2 = ssum / n
         llf = -0.5 * (n * log(2 * _pi()) + n * log(sigma2) + n + ldet)
-        return { llf: llf, sigma2: sigma2 }
+        ' a is now the one-step-ahead predicted state a_{n|n-1}, the seed for
+        ' forecasting; tmat/r let the caller propagate it forward.
+        return { llf: llf, sigma2: sigma2, astate: a, tmat: tmat, r: r }
     end function
 
     ' Negative-log-likelihood objective for arma_fit (optimize minimizes).
@@ -5235,23 +5237,80 @@ library stats
         return { p: p, d: d, q: q, const: m.const, phi: m.phi, theta: m.theta, sigma2: m.sigma2, aic: m.aic, bic: m.bic }
     end function
 
-    ' Forecast h steps from an arima_fit model. Supported for q = 0 (AR-
-    ' integrated) with d in {0, 1}: the first differences are forecast by the
-    ' AR recursion and integrated from the last observed level. Returns a list
-    ' of h values, or unknown for the unsupported MA / d>1 cases.
-    function arima_forecast(model, xs, h)
-        if len(model.theta) > 0 then
+    ' Forecast h steps from a stationary ARMA model (record with .const = mean,
+    ' .phi and .theta lists). Runs the Kalman filter over xs to the terminal
+    ' predicted state, then propagates it forward with the transition matrix
+    ' (future innovations have zero expectation). Matches statsmodels
+    ' ARIMA.forecast. Returns a list of h values, or unknown.
+    function arma_forecast(model, xs, h)
+        p = len(model.phi)
+        q = len(model.theta)
+        params = []
+        append(params, model.const)
+        i = 0
+        while i < p
+            append(params, model.phi[i])
+            i = i + 1
+        end while
+        i = 0
+        while i < q
+            append(params, model.theta[i])
+            i = i + 1
+        end while
+        ctx = { y: xs, p: p, q: q }
+        res = _arma_ll(params, ctx)
+        if is_unknown(res) then
             return unknown
         end if
-        arm = { const: model.const, phi: model.phi }
+        a = res.astate
+        tmat = res.tmat
+        r = res.r
+        mu = model.const
+        out = []
+        s = 0
+        while s < h
+            append(out, mu + a[0])
+            na = []
+            i = 0
+            while i < r
+                acc = 0
+                j = 0
+                while j < r
+                    acc = acc + tmat[i][j] * a[j]
+                    j = j + 1
+                end while
+                append(na, acc)
+                i = i + 1
+            end while
+            a = na
+            s = s + 1
+        end while
+        return out
+    end function
+
+    ' Forecast h steps from an arima_fit model, for d in {0, 1} and any q. The
+    ' stationary series is forecast by the AR recursion (q = 0) or the ARMA
+    ' state-space (q > 0); for d = 1 the differenced-series forecasts are
+    ' integrated from the last observed level. Returns a list of h values, or
+    ' unknown for the unsupported d > 1 case.
+    function arima_forecast(model, xs, h)
         if model.d = 0 then
+            if len(model.theta) > 0 then
+                return arma_forecast(model, xs, h)
+            end if
+            arm = { const: model.const, phi: model.phi }
             return ar_forecast(arm, xs, h)
         end if
         if model.d != 1 then
             return unknown
         end if
         dser = diff(xs, 1)
-        dfc = ar_forecast(arm, dser, h)
+        if len(model.theta) > 0 then
+            dfc = arma_forecast(model, dser, h)
+        else
+            arm = { const: model.const, phi: model.phi }
+            dfc = ar_forecast(arm, dser, h)
+        end if
         if is_unknown(dfc) then
             return unknown
         end if
