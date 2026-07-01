@@ -53,10 +53,15 @@ denominator), `_corr_p` (t-approx two-sided p). Kendall uses the asymptotic norm
 
 **Earn-it:** none — all pure gBASIC.
 
-## Phase 6 — Distribution expansion  *(broad natural-science value)*
+## Phase 6 — Distribution expansion  *(broad natural-science value)* — **DONE (2026-07-01)**
 
 Each is `*_pdf` + `*_cdf` + `*_quantile`, built on the incomplete gamma/beta
-engines already present. Matches the existing distribution style.
+engines already present. Matches the existing distribution style. Shipped in
+`stdlib/stats.bas`, verified against scipy in
+`examples/stats_distribution_test.bas`. Parameterizations match scipy (see the
+header comment in the source). Continuous quantiles are closed-form where one
+exists (uniform/expon/lognormal/weibull) and bisection over the CDF otherwise
+(gamma/beta); the discrete negbinom quantile searches upward like `binom_quantile`.
 
 | Family | Built on | Verify vs |
 |---|---|---|

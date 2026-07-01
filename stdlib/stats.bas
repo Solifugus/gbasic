@@ -2959,4 +2959,408 @@ library stats
         omega = (ssb - (k - 1) * msw) / (sst + msw)
         return { eta_squared: eta, omega_squared: omega }
     end function
+
+    ' ------------------------------------------------------------------
+    ' Phase 6 — distribution expansion (statistics_scientist_plan.md §6).
+    ' Each family provides *_pdf / *_cdf / *_quantile, built on the same
+    ' incomplete-gamma (_gammp) / incomplete-beta (_betai) / standard-normal
+    ' engines the Phase 1 distributions use. Parameterizations match scipy:
+    '   uniform(a, b)      -> bounds a < b            (scipy loc=a, scale=b-a)
+    '   expon(rate)        -> rate = 1/scale
+    '   gamma(shape, rate) -> shape=a, rate=1/scale
+    '   beta(a, b)         -> support [0, 1]
+    '   lognormal(mu, sigma) -> log-space mean/sd     (scipy s=sigma, scale=exp(mu))
+    '   weibull(shape, scale) -> scipy weibull_min c=shape, scale=scale
+    '   negbinom(r, p)     -> failures before r-th success (scipy nbinom n=r, p=p)
+    ' ------------------------------------------------------------------
+
+    ' --- Uniform distribution on [a, b] ---
+
+    function uniform_pdf(x, a, b)
+        if b <= a then
+            return unknown
+        end if
+        if x < a then
+            return 0
+        end if
+        if x > b then
+            return 0
+        end if
+        return 1 / (b - a)
+    end function
+
+    function uniform_cdf(x, a, b)
+        if b <= a then
+            return unknown
+        end if
+        if x < a then
+            return 0
+        end if
+        if x > b then
+            return 1
+        end if
+        return (x - a) / (b - a)
+    end function
+
+    function uniform_quantile(p, a, b)
+        if b <= a then
+            return unknown
+        end if
+        if p < 0 then
+            return unknown
+        end if
+        if p > 1 then
+            return unknown
+        end if
+        return a + p * (b - a)
+    end function
+
+    ' --- Exponential distribution (rate lambda) ---
+
+    function expon_pdf(x, rate)
+        if rate <= 0 then
+            return unknown
+        end if
+        if x < 0 then
+            return 0
+        end if
+        return rate * exp(0 - rate * x)
+    end function
+
+    function expon_cdf(x, rate)
+        if rate <= 0 then
+            return unknown
+        end if
+        if x < 0 then
+            return 0
+        end if
+        return 1 - exp(0 - rate * x)
+    end function
+
+    function expon_quantile(p, rate)
+        if rate <= 0 then
+            return unknown
+        end if
+        if p < 0 then
+            return unknown
+        end if
+        if p >= 1 then
+            return unknown
+        end if
+        return (0 - log(1 - p)) / rate
+    end function
+
+    ' --- Gamma distribution (shape k, rate beta) ---
+
+    function gamma_pdf(x, shape, rate)
+        if shape <= 0 then
+            return unknown
+        end if
+        if rate <= 0 then
+            return unknown
+        end if
+        if x < 0 then
+            return 0
+        end if
+        if x = 0 then
+            if shape < 1 then
+                return unknown
+            end if
+            if shape = 1 then
+                return rate
+            end if
+            return 0
+        end if
+        return exp(shape * log(rate) + (shape - 1) * log(x) - rate * x - lgamma(shape))
+    end function
+
+    function gamma_cdf(x, shape, rate)
+        if shape <= 0 then
+            return unknown
+        end if
+        if rate <= 0 then
+            return unknown
+        end if
+        if x <= 0 then
+            return 0
+        end if
+        return _gammp(shape, rate * x)
+    end function
+
+    function gamma_quantile(p, shape, rate)
+        if shape <= 0 then
+            return unknown
+        end if
+        if rate <= 0 then
+            return unknown
+        end if
+        if p <= 0 then
+            return unknown
+        end if
+        if p >= 1 then
+            return unknown
+        end if
+        tol = pow(10, -10)
+        hi = 1 / rate
+        while gamma_cdf(hi, shape, rate) < p
+            hi = hi * 2
+        end while
+        lo = 0
+        i = 0
+        while i < 300
+            mid = (lo + hi) / 2
+            if gamma_cdf(mid, shape, rate) < p then
+                lo = mid
+            else
+                hi = mid
+            end if
+            if hi - lo < tol then
+                break
+            end if
+            i = i + 1
+        end while
+        return (lo + hi) / 2
+    end function
+
+    ' --- Beta distribution (shape a, shape b) on [0, 1] ---
+
+    function beta_pdf(x, a, b)
+        if a <= 0 then
+            return unknown
+        end if
+        if b <= 0 then
+            return unknown
+        end if
+        if x < 0 then
+            return 0
+        end if
+        if x > 1 then
+            return 0
+        end if
+        if x = 0 then
+            if a < 1 then
+                return unknown
+            end if
+            if a = 1 then
+                return exp(lgamma(a + b) - lgamma(a) - lgamma(b) + (b - 1) * log(1))
+            end if
+            return 0
+        end if
+        if x = 1 then
+            if b < 1 then
+                return unknown
+            end if
+            if b = 1 then
+                return exp(lgamma(a + b) - lgamma(a) - lgamma(b))
+            end if
+            return 0
+        end if
+        return exp(lgamma(a + b) - lgamma(a) - lgamma(b) + (a - 1) * log(x) + (b - 1) * log(1 - x))
+    end function
+
+    function beta_cdf(x, a, b)
+        if a <= 0 then
+            return unknown
+        end if
+        if b <= 0 then
+            return unknown
+        end if
+        if x <= 0 then
+            return 0
+        end if
+        if x >= 1 then
+            return 1
+        end if
+        return _betai(a, b, x)
+    end function
+
+    function beta_quantile(p, a, b)
+        if a <= 0 then
+            return unknown
+        end if
+        if b <= 0 then
+            return unknown
+        end if
+        if p <= 0 then
+            return unknown
+        end if
+        if p >= 1 then
+            return unknown
+        end if
+        tol = pow(10, -12)
+        lo = 0
+        hi = 1
+        i = 0
+        while i < 300
+            mid = (lo + hi) / 2
+            if beta_cdf(mid, a, b) < p then
+                lo = mid
+            else
+                hi = mid
+            end if
+            if hi - lo < tol then
+                break
+            end if
+            i = i + 1
+        end while
+        return (lo + hi) / 2
+    end function
+
+    ' --- Log-normal distribution (log-space mu, sigma) ---
+
+    function lognormal_pdf(x, mu, sigma)
+        if sigma <= 0 then
+            return unknown
+        end if
+        if x <= 0 then
+            return 0
+        end if
+        z = (log(x) - mu) / sigma
+        return exp(0 - z * z / 2) / (x * sigma * _sqrt2pi())
+    end function
+
+    function lognormal_cdf(x, mu, sigma)
+        if sigma <= 0 then
+            return unknown
+        end if
+        if x <= 0 then
+            return 0
+        end if
+        return _norm_cdf_std((log(x) - mu) / sigma)
+    end function
+
+    function lognormal_quantile(p, mu, sigma)
+        if sigma <= 0 then
+            return unknown
+        end if
+        if p <= 0 then
+            return unknown
+        end if
+        if p >= 1 then
+            return unknown
+        end if
+        z = _inv_norm_std(p)
+        if is_unknown(z) then
+            return unknown
+        end if
+        return exp(mu + sigma * z)
+    end function
+
+    ' --- Weibull distribution (shape k, scale lambda) ---
+
+    function weibull_pdf(x, shape, scale)
+        if shape <= 0 then
+            return unknown
+        end if
+        if scale <= 0 then
+            return unknown
+        end if
+        if x < 0 then
+            return 0
+        end if
+        if x = 0 then
+            if shape < 1 then
+                return unknown
+            end if
+            if shape = 1 then
+                return 1 / scale
+            end if
+            return 0
+        end if
+        z = x / scale
+        return (shape / scale) * pow(z, shape - 1) * exp(0 - pow(z, shape))
+    end function
+
+    function weibull_cdf(x, shape, scale)
+        if shape <= 0 then
+            return unknown
+        end if
+        if scale <= 0 then
+            return unknown
+        end if
+        if x < 0 then
+            return 0
+        end if
+        return 1 - exp(0 - pow(x / scale, shape))
+    end function
+
+    function weibull_quantile(p, shape, scale)
+        if shape <= 0 then
+            return unknown
+        end if
+        if scale <= 0 then
+            return unknown
+        end if
+        if p < 0 then
+            return unknown
+        end if
+        if p >= 1 then
+            return unknown
+        end if
+        return scale * pow(0 - log(1 - p), 1 / shape)
+    end function
+
+    ' --- Negative binomial (r successes, success prob p; counts failures) ---
+
+    function negbinom_pmf(k, r, p)
+        if r <= 0 then
+            return unknown
+        end if
+        if p <= 0 then
+            return unknown
+        end if
+        if p > 1 then
+            return unknown
+        end if
+        if k < 0 then
+            return 0
+        end if
+        kk = floor(k)
+        return exp(lgamma(kk + r) - lgamma(r) - lgamma(kk + 1) + r * log(p) + kk * log(1 - p))
+    end function
+
+    ' P(X <= k) = I_p(r, k+1) (regularized incomplete beta), the same identity
+    ' the binomial CDF uses.
+    function negbinom_cdf(k, r, p)
+        if r <= 0 then
+            return unknown
+        end if
+        if p <= 0 then
+            return unknown
+        end if
+        if p > 1 then
+            return unknown
+        end if
+        kk = floor(k)
+        if kk < 0 then
+            return 0
+        end if
+        return _betai(r, kk + 1, p)
+    end function
+
+    function negbinom_quantile(prob, r, p)
+        if r <= 0 then
+            return unknown
+        end if
+        if p <= 0 then
+            return unknown
+        end if
+        if p > 1 then
+            return unknown
+        end if
+        if prob <= 0 then
+            return unknown
+        end if
+        if prob >= 1 then
+            return unknown
+        end if
+        k = 0
+        while k < 1000000
+            if negbinom_cdf(k, r, p) >= prob then
+                return k
+            end if
+            k = k + 1
+        end while
+        return k
+    end function
 end library
