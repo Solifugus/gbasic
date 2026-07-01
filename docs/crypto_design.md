@@ -85,11 +85,9 @@ Composed over Phases 1–2. Includes a tiny JSON encoder/decoder for flat record
 - `jwt_encode(payload, secret)` / `jwt_verify(token, secret)` — HS256. verify
   returns the payload record or `unknown` (bad signature / structure / expired).
   The `exp` claim (Unix seconds) is enforced against the `epoch()` builtin when
-  present. **Caveat:** `json_encode` renders numbers through gBASIC's `%g`
-  (~6 significant figures), so a precise `exp` written into a token loses
-  sub-~hour resolution; round values survive exactly. Fine for most claims;
-  exact-second interop with other JWT systems would need integer-preserving
-  number formatting (a separate language concern).
+  present. Integer claims serialize exactly: gBASIC's number formatting renders
+  integer-valued doubles in full (no `%g` exponent), so `exp` and other integer
+  claims are byte-exact for interop with other JWT systems.
 - `sign_cookie(value, secret)` → `value.sig`; `verify_cookie(signed, secret)` →
   value or `unknown`. Uses `bytes_equal` for the signature check.
 - `csrf_token(secret, session)` / `csrf_check(token, secret, session)`.

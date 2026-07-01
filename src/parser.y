@@ -1150,8 +1150,16 @@ static int yylex(void) {
         yylval.text = copy_text(token.start, token.length);
         return QUALIFIED_IDENT;
     case TOKEN_NUMBER:
-        yylval.number = strtod(token.start, NULL);
+    {
+        /* Convert exactly the token's bytes (handles decimal and 0x hex), so a
+         * following character can never extend what strtod reads. */
+        char numbuf[64];
+        size_t nlen = token.length < sizeof(numbuf) - 1 ? token.length : sizeof(numbuf) - 1;
+        memcpy(numbuf, token.start, nlen);
+        numbuf[nlen] = '\0';
+        yylval.number = strtod(numbuf, NULL);
         return NUMBER;
+    }
     case TOKEN_STRING:
     {
         int ok = 0;

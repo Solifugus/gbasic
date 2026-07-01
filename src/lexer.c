@@ -192,6 +192,19 @@ void lexer_begin_lens_content(Lexer *lexer) {
 }
 
 static Token number_token(Lexer *lexer, const char *start, int line, int column) {
+    /* Hexadecimal integer literal: 0x / 0X followed by hex digits (e.g. 0xFF).
+     * Only when the leading digit is 0 and at least one hex digit follows the x,
+     * so a bare "0" before an identifier is unaffected. strtod parses the
+     * "0x..." lexeme to an exact integer value. */
+    if (start[0] == '0' && (peek(lexer) == 'x' || peek(lexer) == 'X') &&
+        isxdigit((unsigned char)peek_next(lexer))) {
+        advance(lexer); /* consume x */
+        while (isxdigit((unsigned char)peek(lexer))) {
+            advance(lexer);
+        }
+        return make_token(lexer, TOKEN_NUMBER, start, line, column);
+    }
+
     while (isdigit((unsigned char)peek(lexer))) {
         advance(lexer);
     }

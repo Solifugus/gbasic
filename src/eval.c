@@ -837,6 +837,19 @@ static Value value_datetime(DateTime datetime) {
     return value;
 }
 
+/* User-facing number formatting. Integer-valued doubles that are exactly
+ * representable (|v| < 2^53) print in full with no exponent — so epoch seconds,
+ * 32-bit bitwise results, and large ids read correctly — while everything else
+ * keeps the compact %g form. Distinct from the %.17g used for serialize/decode
+ * round-trips, which must stay full-precision. */
+static void format_number(char *buf, size_t bufsize, double v) {
+    if (isfinite(v) && v == floor(v) && fabs(v) < 9007199254740992.0) {
+        snprintf(buf, bufsize, "%.0f", v);
+    } else {
+        snprintf(buf, bufsize, "%g", v);
+    }
+}
+
 /* Convert a datetime to Unix epoch seconds. Datetimes are local wall-clock
  * (now() uses localtime), so mktime() interprets the fields as local time and
  * yields the same instant epoch() reports. Missing calendar parts (year/month/
@@ -1298,9 +1311,12 @@ static void value_print(Value value) {
     case VALUE_UNKNOWN:
         printf("unknown\n");
         break;
-    case VALUE_NUMBER:
-        printf("%g\n", value.as.number);
+    case VALUE_NUMBER: {
+        char nb[32];
+        format_number(nb, sizeof(nb), value.as.number);
+        printf("%s\n", nb);
         break;
+    }
     case VALUE_STRING:
         fwrite(value.as.string, 1, string_length(value.as.string), stdout);
         putchar('\n');
@@ -1315,7 +1331,9 @@ static void value_print(Value value) {
                 printf(", ");
             }
             if (value.as.array.items[i].kind == VALUE_NUMBER) {
-                printf("%g", value.as.array.items[i].as.number);
+                char nb[32];
+                format_number(nb, sizeof(nb), value.as.array.items[i].as.number);
+                printf("%s", nb);
             } else {
                 printf("?");
             }
@@ -6371,7 +6389,7 @@ static Value builtin_string_value(Value value) {
     case VALUE_STRING:
         return value;
     case VALUE_NUMBER:
-        snprintf(buffer, sizeof(buffer), "%g", value.as.number);
+        format_number(buffer, sizeof(buffer), value.as.number);
         value_free(value);
         return value_string(buffer);
     case VALUE_BOOL:
@@ -8283,7 +8301,7 @@ static Value builtin_quote_value(Value value) {
         text = value;
         break;
     case VALUE_NUMBER:
-        snprintf(buffer, sizeof(buffer), "%g", value.as.number);
+        format_number(buffer, sizeof(buffer), value.as.number);
         value_free(value);
         text = value_string(buffer);
         break;
