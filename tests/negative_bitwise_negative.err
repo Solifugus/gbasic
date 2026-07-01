@@ -1,0 +1,1 @@
+runtime error at tests/negative_bitwise_negative.bas:1:1: bnot: operand must be an integer in [0, 2^32)

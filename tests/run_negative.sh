@@ -152,6 +152,11 @@ cases=(
     negative_uppered_modifier_type
     negative_number_modifier_invalid
     negative_number_time_only
+    negative_bitwise_noninteger
+    negative_bitwise_range
+    negative_bitwise_negative
+    negative_bitwise_shift_count
+    negative_bitwise_arity
     negative_decode_malformed
     negative_quote_record
     negative_gui_duplicate_id

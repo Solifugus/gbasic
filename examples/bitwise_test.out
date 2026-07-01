@@ -1,0 +1,17 @@
+and 8
+or 14
+xor 6
+shl 256
+shr 16
+rot0 123
+not0 true
+not_ff true
+involution true
+shl_wrap true
+rotl_msb true
+rotr_lsb true
+mask_ident true
+pack true
+unpack 18 52 86 120
+edge_max true
+shr31 1

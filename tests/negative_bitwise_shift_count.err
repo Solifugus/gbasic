@@ -1,0 +1,1 @@
+runtime error at tests/negative_bitwise_shift_count.bas:1:1: shl: shift/rotate count must be an integer in [0, 31]

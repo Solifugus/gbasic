@@ -12154,6 +12154,53 @@ static int crypto_n_strings(AstExpr *expr, const char *fname, int n, Value *out)
     return 1;
 }
 
+/* Bitwise ops (docs/bitwise_design.md): 32-bit unsigned model — the only integer
+ * width exact in a double. Operands must be integers in [0, 2^32); shift/rotate
+ * counts integers in [0, 31]; anything else raises (no silent truncation). */
+#define BITWISE_MODULUS 4294967296.0 /* 2^32 */
+
+static int bitwise_operand(double d, uint32_t *out) {
+    if (!isfinite(d) || d != floor(d) || d < 0 || d >= BITWISE_MODULUS) {
+        return 0;
+    }
+    *out = (uint32_t)d;
+    return 1;
+}
+
+static int bitwise_count(double d, unsigned *out) {
+    if (!isfinite(d) || d != floor(d) || d < 0 || d > 31) {
+        return 0;
+    }
+    *out = (unsigned)d;
+    return 1;
+}
+
+/* Evaluate exactly n numeric arguments into out[0..n-1]. */
+static int bitwise_eval_args(AstExpr *expr, const char *fname, int n, double *out) {
+    char m[128];
+    if ((int)expr->as.call.args.count != n) {
+        snprintf(m, sizeof(m), "%s expects %d argument%s", fname, n, n == 1 ? "" : "s");
+        runtime_error_raise(m, 1003, "invalid function call");
+        return 0;
+    }
+    for (int i = 0; i < n; i++) {
+        Value v = eval_expr(expr->as.call.args.items[i]);
+        if (error_action_pending()) {
+            value_free(v);
+            return 0;
+        }
+        if (v.kind != VALUE_NUMBER) {
+            value_free(v);
+            snprintf(m, sizeof(m), "%s expects numbers", fname);
+            runtime_error_raise(m, 1003, "invalid argument type");
+            return 0;
+        }
+        out[i] = v.as.number;
+        value_free(v);
+    }
+    return 1;
+}
+
 #if HAVE_LIBCRYPTO
 static Value crypto_digest(const EVP_MD *md, const unsigned char *in, size_t n) {
     unsigned char out[EVP_MAX_MD_SIZE];
@@ -12709,6 +12756,67 @@ static Value eval_call(AstExpr *expr) {
         Value result = value_string(token);
         free(token);
         return result;
+    }
+
+    /* ----- Bitwise (32-bit unsigned) ----- */
+    if (strcmp(expr->as.call.name, "band") == 0 ||
+        strcmp(expr->as.call.name, "bor") == 0 ||
+        strcmp(expr->as.call.name, "bxor") == 0) {
+        const char *name = expr->as.call.name;
+        double a[2];
+        if (!bitwise_eval_args(expr, name, 2, a)) return value_null();
+        uint32_t x, y;
+        if (!bitwise_operand(a[0], &x) || !bitwise_operand(a[1], &y)) {
+            char m[128];
+            snprintf(m, sizeof(m), "%s: operands must be integers in [0, 2^32)", name);
+            runtime_error_raise(m, 1003, "invalid argument");
+            return value_null();
+        }
+        uint32_t r = name[1] == 'a' ? (x & y) : (name[1] == 'o' ? (x | y) : (x ^ y));
+        return value_number((double)r);
+    }
+    if (strcmp(expr->as.call.name, "bnot") == 0) {
+        double a[1];
+        if (!bitwise_eval_args(expr, "bnot", 1, a)) return value_null();
+        uint32_t x;
+        if (!bitwise_operand(a[0], &x)) {
+            runtime_error_raise("bnot: operand must be an integer in [0, 2^32)", 1003, "invalid argument");
+            return value_null();
+        }
+        return value_number((double)(uint32_t)(~x));
+    }
+    if (strcmp(expr->as.call.name, "shl") == 0 ||
+        strcmp(expr->as.call.name, "shr") == 0 ||
+        strcmp(expr->as.call.name, "rotl") == 0 ||
+        strcmp(expr->as.call.name, "rotr") == 0) {
+        const char *name = expr->as.call.name;
+        double a[2];
+        if (!bitwise_eval_args(expr, name, 2, a)) return value_null();
+        uint32_t x;
+        unsigned n;
+        if (!bitwise_operand(a[0], &x)) {
+            char m[128];
+            snprintf(m, sizeof(m), "%s: value must be an integer in [0, 2^32)", name);
+            runtime_error_raise(m, 1003, "invalid argument");
+            return value_null();
+        }
+        if (!bitwise_count(a[1], &n)) {
+            char m[128];
+            snprintf(m, sizeof(m), "%s: shift/rotate count must be an integer in [0, 31]", name);
+            runtime_error_raise(m, 1003, "invalid argument");
+            return value_null();
+        }
+        uint32_t r;
+        if (strcmp(name, "shl") == 0) {
+            r = (uint32_t)(x << n);
+        } else if (strcmp(name, "shr") == 0) {
+            r = x >> n;
+        } else if (strcmp(name, "rotl") == 0) {
+            r = n == 0 ? x : (uint32_t)((x << n) | (x >> (32 - n)));
+        } else {
+            r = n == 0 ? x : (uint32_t)((x >> n) | (x << (32 - n)));
+        }
+        return value_number((double)r);
     }
 
     /* ----- Cryptography: encoding (always available) ----- */
