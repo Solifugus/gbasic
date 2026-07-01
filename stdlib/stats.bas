@@ -4930,10 +4930,292 @@ library stats
         return { const: pr[0], phi: phi, theta: theta, sse: res.value, iterations: res.iterations, converged: res.converged }
     end function
 
+    ' Solve the discrete Lyapunov equation P = T P T' + RRt for the stationary
+    ' initial state covariance, via vec(P) = (I - T⊗T)^-1 vec(RRt) (row-major
+    ' vec, matching numpy). Returns the r×r P0 or unknown if singular.
+    function _arma_lyap(tmat, rrt, r)
+        r2 = r * r
+        m = []
+        rhs = []
+        a = 0
+        while a < r2
+            row = []
+            b = 0
+            while b < r2
+                append(row, 0)
+                b = b + 1
+            end while
+            append(m, row)
+            append(rhs, 0)
+            a = a + 1
+        end while
+        i = 0
+        while i < r
+            k = 0
+            while k < r
+                mm = i * r + k
+                rhs[mm] = rrt[i][k]
+                j = 0
+                while j < r
+                    l = 0
+                    while l < r
+                        nn = j * r + l
+                        val = tmat[i][j] * tmat[k][l]
+                        if mm = nn then
+                            m[mm][nn] = 1 - val
+                        else
+                            m[mm][nn] = 0 - val
+                        end if
+                        l = l + 1
+                    end while
+                    j = j + 1
+                end while
+                k = k + 1
+            end while
+            i = i + 1
+        end while
+        minv = mat_inverse(m)
+        if is_unknown(minv) then
+            return unknown
+        end if
+        x = mat_vec(minv, rhs)
+        p0 = []
+        i = 0
+        while i < r
+            row = []
+            k = 0
+            while k < r
+                append(row, x[i * r + k])
+                k = k + 1
+            end while
+            append(p0, row)
+            i = i + 1
+        end while
+        return p0
+    end function
+
+    ' Exact Gaussian log-likelihood of ARMA(p, q) via the Kalman filter over the
+    ' Harvey state-space form, with sigma2 concentrated out. ctx = {y, p, q};
+    ' params = [mu, phi_1..phi_p, theta_1..theta_q] (mu = process mean). Returns
+    ' {llf, sigma2} or unknown (non-stationary / degenerate parameters).
+    function _arma_ll(params, ctx)
+        y = ctx.y
+        p = ctx.p
+        q = ctx.q
+        mu = params[0]
+        r = p
+        if q + 1 > r then
+            r = q + 1
+        end if
+        tmat = []
+        i = 0
+        while i < r
+            row = []
+            j = 0
+            while j < r
+                append(row, 0)
+                j = j + 1
+            end while
+            append(tmat, row)
+            i = i + 1
+        end while
+        i = 0
+        while i < r
+            if i < p then
+                tmat[i][0] = params[1 + i]
+            end if
+            i = i + 1
+        end while
+        i = 0
+        while i < r - 1
+            tmat[i][i + 1] = 1
+            i = i + 1
+        end while
+        rvec = []
+        i = 0
+        while i < r
+            append(rvec, 0)
+            i = i + 1
+        end while
+        rvec[0] = 1
+        i = 0
+        while i < q
+            rvec[1 + i] = params[1 + p + i]
+            i = i + 1
+        end while
+        rrt = []
+        i = 0
+        while i < r
+            row = []
+            j = 0
+            while j < r
+                append(row, rvec[i] * rvec[j])
+                j = j + 1
+            end while
+            append(rrt, row)
+            i = i + 1
+        end while
+        bigp = _arma_lyap(tmat, rrt, r)
+        if is_unknown(bigp) then
+            return unknown
+        end if
+        a = []
+        i = 0
+        while i < r
+            append(a, 0)
+            i = i + 1
+        end while
+        n = len(y)
+        ssum = 0
+        ldet = 0
+        t = 0
+        while t < n
+            v = (y[t] - mu) - a[0]
+            f = bigp[0][0]
+            if f <= 0 then
+                return unknown
+            end if
+            ssum = ssum + v * v / f
+            ldet = ldet + log(f)
+            kvec = []
+            i = 0
+            while i < r
+                append(kvec, bigp[i][0] / f)
+                i = i + 1
+            end while
+            i = 0
+            while i < r
+                a[i] = a[i] + kvec[i] * v
+                i = i + 1
+            end while
+            p0 = []
+            j = 0
+            while j < r
+                append(p0, bigp[0][j])
+                j = j + 1
+            end while
+            i = 0
+            while i < r
+                j = 0
+                while j < r
+                    bigp[i][j] = bigp[i][j] - kvec[i] * p0[j]
+                    j = j + 1
+                end while
+                i = i + 1
+            end while
+            na = []
+            i = 0
+            while i < r
+                s = 0
+                j = 0
+                while j < r
+                    s = s + tmat[i][j] * a[j]
+                    j = j + 1
+                end while
+                append(na, s)
+                i = i + 1
+            end while
+            a = na
+            tp = []
+            i = 0
+            while i < r
+                row = []
+                j = 0
+                while j < r
+                    s = 0
+                    kk = 0
+                    while kk < r
+                        s = s + tmat[i][kk] * bigp[kk][j]
+                        kk = kk + 1
+                    end while
+                    append(row, s)
+                    j = j + 1
+                end while
+                append(tp, row)
+                i = i + 1
+            end while
+            newp = []
+            i = 0
+            while i < r
+                row = []
+                j = 0
+                while j < r
+                    s = 0
+                    kk = 0
+                    while kk < r
+                        s = s + tp[i][kk] * tmat[j][kk]
+                        kk = kk + 1
+                    end while
+                    append(row, s + rrt[i][j])
+                    j = j + 1
+                end while
+                append(newp, row)
+                i = i + 1
+            end while
+            bigp = newp
+            t = t + 1
+        end while
+        sigma2 = ssum / n
+        llf = -0.5 * (n * log(2 * _pi()) + n * log(sigma2) + n + ldet)
+        return { llf: llf, sigma2: sigma2 }
+    end function
+
+    ' Negative-log-likelihood objective for arma_fit (optimize minimizes).
+    function _arma_negll(params, ctx)
+        res = _arma_ll(params, ctx)
+        if is_unknown(res) then
+            return pow(10, 12)
+        end if
+        return 0 - res.llf
+    end function
+
+    ' Fit ARMA(p, q) by EXACT Gaussian maximum likelihood (Kalman filter) via
+    ' `optimize`. Returns {const (= process mean), phi, theta, sigma2, llf, aic,
+    ' bic} or unknown. Matches statsmodels ARIMA(order=(p,0,q), trend='c').
+    function arma_fit(xs, p, q)
+        n = len(xs)
+        if n < p + q + 3 then
+            return unknown
+        end if
+        ctx = { y: xs, p: p, q: q }
+        init = []
+        append(init, mean(xs))
+        i = 0
+        while i < p + q
+            append(init, 0.1)
+            i = i + 1
+        end while
+        res = optimize(_arma_negll, init, { max_iter: 4000, tol: pow(10, -11) }, ctx)
+        if is_unknown(res) then
+            return unknown
+        end if
+        pr = res.params
+        ll = _arma_ll(pr, ctx)
+        if is_unknown(ll) then
+            return unknown
+        end if
+        phi = []
+        i = 0
+        while i < p
+            append(phi, pr[1 + i])
+            i = i + 1
+        end while
+        theta = []
+        i = 0
+        while i < q
+            append(theta, pr[1 + p + i])
+            i = i + 1
+        end while
+        kpar = p + q + 2
+        aic = -2 * ll.llf + 2 * kpar
+        bic = -2 * ll.llf + log(n) * kpar
+        return { const: pr[0], phi: phi, theta: theta, sigma2: ll.sigma2, llf: ll.llf, aic: aic, bic: bic }
+    end function
+
     ' Fit an ARIMA(p, d, q) model: difference d times, then fit AR(p) by OLS
-    ' when q = 0 (exact) or ARMA(p, q) by CSS otherwise. Returns a record with
-    ' {p, d, q, const, phi, theta, ...}; the AR/differencing path also carries
-    ' sigma2/aic/bic. Returns unknown on bad input.
+    ' when q = 0 (exact) or ARMA(p, q) by exact Kalman MLE otherwise. Returns a
+    ' record {p, d, q, const, phi, theta, sigma2, aic, bic, ...}. Returns
+    ' unknown on bad input.
     function arima_fit(xs, p, d, q)
         series = xs
         if d > 0 then
@@ -4946,11 +5228,11 @@ library stats
             end if
             return { p: p, d: d, q: q, const: m.const, phi: m.phi, theta: [], sigma2: m.sigma2, aic: m.aic, bic: m.bic }
         end if
-        m = arma_css_fit(series, p, q)
+        m = arma_fit(series, p, q)
         if is_unknown(m) then
             return unknown
         end if
-        return { p: p, d: d, q: q, const: m.const, phi: m.phi, theta: m.theta, sse: m.sse }
+        return { p: p, d: d, q: q, const: m.const, phi: m.phi, theta: m.theta, sigma2: m.sigma2, aic: m.aic, bic: m.bic }
     end function
 
     ' Forecast h steps from an arima_fit model. Supported for q = 0 (AR-

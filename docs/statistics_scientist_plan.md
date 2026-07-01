@@ -168,25 +168,30 @@ Shipped in `stdlib/stats.bas`, verified against `scipy.optimize` in
 sizes; the C bar stayed uncrossed. This unblocks the ARIMA/GARCH deferred in
 Phase 4 and richer GLM families (their own future phases).
 
-## Follow-on (optimizer-enabled) — ARIMA-family time series — **PARTIAL (2026-07-01)**
+## Follow-on (optimizer-enabled) — ARIMA-family time series — **DONE (2026-07-01)**
 
 First follow-on the Phase 10 optimizer unblocks. Shipped in `stdlib/stats.bas`,
-verified in `examples/stats_arima_test.bas`.
+verified in `examples/stats_arima_test.bas` (AR/CSS) and
+`examples/stats_arima_mle_test.bas` (exact MLE).
 
 | Function | Returns | Verify vs |
 |---|---|---|
 | `ar_fit(xs, p)` | `{const, phi, sigma2, aic, bic, llf, n}` — OLS conditional MLE | `statsmodels` `AutoReg(trend='c')` (exact: coef, AIC/BIC/llf) |
 | `ar_forecast(model, xs, h)` | recursive h-step forecast list | `AutoReg.forecast` (exact) |
-| `arima_fit(xs, p, d, q)` | `{p, d, q, const, phi, theta, …}` — differences then AR-OLS (q=0) or ARMA-CSS | AR/differencing exact vs statsmodels |
+| `arma_fit(xs, p, q)` | `{const (=mean), phi, theta, sigma2, llf, aic, bic}` — **exact Gaussian MLE via Kalman filter** | `statsmodels` `ARIMA(order=(p,0,q), trend='c')` (exact) |
+| `arma_css_fit(xs, p, q)` | `{const, phi, theta, sse, …}` — fast CSS via `optimize` | best-effort (approximate) |
+| `arima_fit(xs, p, d, q)` | `{p, d, q, const, phi, theta, sigma2, aic, bic}` — differences then AR-OLS (q=0) or exact ARMA MLE | exact vs statsmodels |
 | `arima_forecast(model, xs, h)` | integrated forecast (q=0, d∈{0,1}) | exact |
-| `arma_css_fit(xs, p, q)` | `{const, phi, theta, sse, …}` — CSS via `optimize` | **best-effort**, not statsmodels' exact state-space MLE |
 
-**Status.** The AR and differencing paths are exact conditional MLE and match
-`statsmodels` to machine precision. Moving-average estimation via CSS is
-functional but only well-identified on long series (short series give a flat,
-near-non-invertible SSE ridge). **Deferred:** exact ARMA/ARIMA MLE (needs a
-Kalman filter) and GARCH. **Earn-it:** none — pure gBASIC over `matrix.bas` and
-the optimizer.
+**Status.** `arma_fit` is exact maximum likelihood: a Kalman filter over the
+Harvey ARMA state space (stationary initialization by solving the discrete
+Lyapunov equation `vec(P) = (I − T⊗T)⁻¹ vec(RR')` via `matrix.bas`), with `sigma2`
+concentrated out and the mean/phi/theta optimized by Nelder–Mead. Matches
+`statsmodels` ARIMA to display precision on σ²/log-likelihood/AIC/BIC and to ~4
+decimals on the parameters (the surface is flat near the optimum). `arma_css_fit`
+is retained as a fast approximate alternative. **Deferred:** MA-model forecasting
+(needs the filter's terminal state) and GARCH. **Earn-it:** none — pure gBASIC
+over `matrix.bas` and the optimizer.
 
 ## Cross-cutting — power analysis  *(slotted with Phase 7)* — **DONE (2026-07-01)**
 

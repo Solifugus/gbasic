@@ -1,0 +1,5 @@
+arma11 const 4.712 phi 0.626 theta 0.421
+arma11 sigma2 1.0598 llf -145.378
+arma11 aic 298.755 bic 309.176
+arima101 const 4.712 phi 0.626 theta 0.421
+guard unknown
