@@ -102,19 +102,25 @@ one `_qtukey` plus one `_ptukey` per pair.
 
 **Power analysis — DONE (2026-07-01).** See Cross-cutting below.
 
-## Phase 8 — Reliability & agreement  *(psychometrics & communications)*
+## Phase 8 — Reliability & agreement  *(psychometrics & communications)* — **DONE (2026-07-01)**
 
-Depends on variance components from Phase 7's repeated-measures machinery.
+Shipped in `stdlib/stats.bas`, verified in `examples/stats_reliability_test.bas`.
+All pure gBASIC (variance-ratio and coincidence-matrix compositions). Signatures
+as implemented:
 
 | Function | Returns | Verify vs |
 |---|---|---|
-| `cronbach_alpha(items)` | `{alpha, n_items, n_subjects}` | pingouin `cronbach_alpha` (manual) |
-| `cohens_kappa(r1, r2)` | `{kappa, po, pe}` (two-rater agreement) | `sklearn.metrics.cohen_kappa_score` (manual) |
-| `icc(ratings)` | `{icc1, icc2, icc3, ...}` intraclass correlation | pingouin `intraclass_corr` (manual) |
-| `krippendorff_alpha(data, level)` | `{alpha}` (nominal first; ordinal/interval later) | published worked examples |
+| `cronbach_alpha(data)` | `{alpha, n_items, n_subjects}` (rows = subjects, cols = items; ddof=1) | direct formula |
+| `cohens_kappa(r1, r2)` | `{kappa, po, pe}` (two-rater agreement) | `statsmodels` `cohens_kappa` |
+| `icc(data)` | `{icc1, icc2, icc3, icc1k, icc2k, icc3k}` (rows = subjects, cols = raters) | published Shrout & Fleiss (1979) |
+| `krippendorff_alpha(data, level)` | `{alpha}`; `level` = "nominal" / "interval" / "ordinal" | standard worked example (nominal 0.743, interval 0.849) |
 
-**Earn-it:** none — pure gBASIC (Cronbach/κ/ICC are variance-ratio compositions).
-Krippendorff is the most involved; nominal level first, others as a follow-up.
+**Note on shapes:** `krippendorff_alpha` takes rows = observers, cols = units,
+with `unknown` marking a missing rating. All three metric levels shipped (not
+just nominal). ICC returns all six Shrout & Fleiss coefficients.
+
+**Earn-it:** none — pure gBASIC. The one non-obvious dependency was value
+enumeration; done with the `sort`/`contains` builtins plus a linear `_index_in`.
 
 ## Phase 9 — Proportions & the business lens  *(advertising / marketing / comms)*
 

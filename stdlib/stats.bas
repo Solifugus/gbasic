@@ -3942,4 +3942,344 @@ library stats
         end while
         return unknown
     end function
+
+    ' --- Reliability & agreement (docs/statistics_scientist_plan.md §8) ---
+    ' All pure gBASIC variance-ratio / coincidence compositions; no new C
+    ' primitive. Verified: cohens_kappa vs statsmodels; icc vs published
+    ' Shrout & Fleiss (1979) values; krippendorff_alpha vs the standard
+    ' worked example (nominal 0.743, interval 0.849).
+
+    ' Cronbach's alpha. data = list of subjects, each a list of item scores
+    ' (rows = subjects, columns = items). Sample variances (ddof=1), matching
+    ' pingouin. Returns {alpha, n_items, n_subjects} or unknown.
+    function cronbach_alpha(data)
+        n = len(data)
+        if n < 2 then
+            return unknown
+        end if
+        k = len(data[0])
+        if k < 2 then
+            return unknown
+        end if
+        itemvar = 0
+        j = 0
+        while j < k
+            col = []
+            i = 0
+            while i < n
+                append(col, data[i][j])
+                i = i + 1
+            end while
+            itemvar = itemvar + variance(col)
+            j = j + 1
+        end while
+        totals = []
+        i = 0
+        while i < n
+            s = 0
+            j = 0
+            while j < k
+                s = s + data[i][j]
+                j = j + 1
+            end while
+            append(totals, s)
+            i = i + 1
+        end while
+        tv = variance(totals)
+        if tv <= 0 then
+            return unknown
+        end if
+        alpha = (k / (k - 1)) * (1 - itemvar / tv)
+        return { alpha: alpha, n_items: k, n_subjects: n }
+    end function
+
+    ' Cohen's kappa for two raters. r1, r2 = equal-length lists of category
+    ' labels (numbers). Returns {kappa, po, pe} or unknown.
+    function cohens_kappa(r1, r2)
+        n = len(r1)
+        if n < 1 then
+            return unknown
+        end if
+        if len(r2) != n then
+            return unknown
+        end if
+        cats = []
+        i = 0
+        while i < n
+            if not contains(cats, r1[i]) then
+                append(cats, r1[i])
+            end if
+            if not contains(cats, r2[i]) then
+                append(cats, r2[i])
+            end if
+            i = i + 1
+        end while
+        agree = 0
+        i = 0
+        while i < n
+            if r1[i] = r2[i] then
+                agree = agree + 1
+            end if
+            i = i + 1
+        end while
+        po = agree / n
+        pe = 0
+        c = 0
+        while c < len(cats)
+            cat = cats[c]
+            c1 = 0
+            c2 = 0
+            i = 0
+            while i < n
+                if r1[i] = cat then
+                    c1 = c1 + 1
+                end if
+                if r2[i] = cat then
+                    c2 = c2 + 1
+                end if
+                i = i + 1
+            end while
+            pe = pe + (c1 / n) * (c2 / n)
+            c = c + 1
+        end while
+        if pe >= 1 then
+            return unknown
+        end if
+        return { kappa: (po - pe) / (1 - pe), po: po, pe: pe }
+    end function
+
+    ' Intraclass correlation. data = list of subjects, each a list of the
+    ' same raters' scores (rows = subjects, columns = raters). Returns the six
+    ' Shrout & Fleiss (1979) coefficients {icc1, icc2, icc3, icc1k, icc2k,
+    ' icc3k} (1/2/3 = one-way / two-way random / two-way mixed; *k = the
+    ' average-of-k-raters forms) or unknown.
+    function icc(data)
+        n = len(data)
+        if n < 2 then
+            return unknown
+        end if
+        k = len(data[0])
+        if k < 2 then
+            return unknown
+        end if
+        grand = 0
+        i = 0
+        while i < n
+            j = 0
+            while j < k
+                grand = grand + data[i][j]
+                j = j + 1
+            end while
+            i = i + 1
+        end while
+        grand = grand / (n * k)
+        ssr = 0
+        i = 0
+        while i < n
+            rm = 0
+            j = 0
+            while j < k
+                rm = rm + data[i][j]
+                j = j + 1
+            end while
+            rm = rm / k
+            d = rm - grand
+            ssr = ssr + d * d
+            i = i + 1
+        end while
+        ssr = k * ssr
+        ssc = 0
+        j = 0
+        while j < k
+            cm = 0
+            i = 0
+            while i < n
+                cm = cm + data[i][j]
+                i = i + 1
+            end while
+            cm = cm / n
+            d = cm - grand
+            ssc = ssc + d * d
+            j = j + 1
+        end while
+        ssc = n * ssc
+        sst = 0
+        i = 0
+        while i < n
+            j = 0
+            while j < k
+                d = data[i][j] - grand
+                sst = sst + d * d
+                j = j + 1
+            end while
+            i = i + 1
+        end while
+        sse = sst - ssr - ssc
+        msr = ssr / (n - 1)
+        msc = ssc / (k - 1)
+        mse = sse / ((n - 1) * (k - 1))
+        msw = (ssc + sse) / (n * (k - 1))
+        icc1 = (msr - msw) / (msr + (k - 1) * msw)
+        icc2 = (msr - mse) / (msr + (k - 1) * mse + k * (msc - mse) / n)
+        icc3 = (msr - mse) / (msr + (k - 1) * mse)
+        icc1k = (msr - msw) / msr
+        icc2k = (msr - mse) / (msr + (msc - mse) / n)
+        icc3k = (msr - mse) / msr
+        return { icc1: icc1, icc2: icc2, icc3: icc3, icc1k: icc1k, icc2k: icc2k, icc3k: icc3k }
+    end function
+
+    ' Linear scan for the position of v in lst (helper for krippendorff).
+    function _index_in(lst, v)
+        i = 0
+        while i < len(lst)
+            if lst[i] = v then
+                return i
+            end if
+            i = i + 1
+        end while
+        return -1
+    end function
+
+    ' Squared-difference metric between value indices a and b for
+    ' krippendorff_alpha; vals is the sorted value list, nc the coincidence
+    ' row sums (needed by the ordinal metric).
+    function _kripp_delta2(vals, nc, a, b, level)
+        if level = "nominal" then
+            if a = b then
+                return 0
+            end if
+            return 1
+        end if
+        if level = "interval" then
+            d = vals[a] - vals[b]
+            return d * d
+        end if
+        if level = "ordinal" then
+            lo = a
+            hi = b
+            if b < a then
+                lo = b
+                hi = a
+            end if
+            s = 0
+            g = lo
+            while g <= hi
+                s = s + nc[g]
+                g = g + 1
+            end while
+            s = s - (nc[a] + nc[b]) / 2
+            return s * s
+        end if
+        return unknown
+    end function
+
+    ' Krippendorff's alpha. data = list of observers, each a list of ratings
+    ' over the same units (rows = observers, columns = units); use unknown for
+    ' a missing rating. level = "nominal", "interval", or "ordinal". Returns
+    ' {alpha} or unknown.
+    function krippendorff_alpha(data, level)
+        nobs = len(data)
+        if nobs < 1 then
+            return unknown
+        end if
+        nunits = len(data[0])
+        if nunits < 1 then
+            return unknown
+        end if
+        vals = []
+        r = 0
+        while r < nobs
+            c = 0
+            while c < nunits
+                v = data[r][c]
+                if not is_unknown(v) then
+                    if not contains(vals, v) then
+                        append(vals, v)
+                    end if
+                end if
+                c = c + 1
+            end while
+            r = r + 1
+        end while
+        vals = sort(vals)
+        vv = len(vals)
+        if vv < 2 then
+            return unknown
+        end if
+        o = []
+        a = 0
+        while a < vv
+            row = []
+            b = 0
+            while b < vv
+                append(row, 0)
+                b = b + 1
+            end while
+            append(o, row)
+            a = a + 1
+        end while
+        c = 0
+        while c < nunits
+            present = []
+            r = 0
+            while r < nobs
+                v = data[r][c]
+                if not is_unknown(v) then
+                    append(present, v)
+                end if
+                r = r + 1
+            end while
+            mu = len(present)
+            if mu >= 2 then
+                i = 0
+                while i < mu
+                    j = 0
+                    while j < mu
+                        if i != j then
+                            ai = _index_in(vals, present[i])
+                            bj = _index_in(vals, present[j])
+                            o[ai][bj] = o[ai][bj] + 1 / (mu - 1)
+                        end if
+                        j = j + 1
+                    end while
+                    i = i + 1
+                end while
+            end if
+            c = c + 1
+        end while
+        nc = []
+        a = 0
+        while a < vv
+            s = 0
+            b = 0
+            while b < vv
+                s = s + o[a][b]
+                b = b + 1
+            end while
+            append(nc, s)
+            a = a + 1
+        end while
+        ntot = sum(nc)
+        if ntot <= 1 then
+            return unknown
+        end if
+        dobs = 0
+        dexp = 0
+        a = 0
+        while a < vv
+            b = 0
+            while b < vv
+                d2 = _kripp_delta2(vals, nc, a, b, level)
+                dobs = dobs + o[a][b] * d2
+                dexp = dexp + nc[a] * nc[b] * d2
+                b = b + 1
+            end while
+            a = a + 1
+        end while
+        dexp = dexp / (ntot - 1)
+        if dexp <= 0 then
+            return unknown
+        end if
+        return { alpha: 1 - dobs / dexp }
+    end function
 end library
