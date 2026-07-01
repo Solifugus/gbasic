@@ -1,0 +1,1 @@
+runtime error at tests/negative_number_time_only.bas:2:1: number conversion failed: a time-only value has no epoch

@@ -338,9 +338,10 @@ library crypto
 
     ' ---- JWT (HS256) -------------------------------------------------------
     ' jwt_encode signs a flat payload record; jwt_verify checks the signature
-    ' (constant time) and returns the decoded payload record, or `unknown`.
-    ' Claim validation (e.g. `exp`) is the caller's responsibility: inspect the
-    ' returned payload. The header is fixed: {"alg":"HS256","typ":"JWT"}.
+    ' (constant time), enforces the `exp` claim (Unix seconds) against epoch()
+    ' when present, and returns the decoded payload record, or `unknown` on a bad
+    ' signature / malformed token / expired token. The header is fixed:
+    ' {"alg":"HS256","typ":"JWT"}.
 
     function jwt_encode(payload, secret)
         header = "{\"alg\":\"HS256\",\"typ\":\"JWT\"}"
@@ -367,7 +368,19 @@ library crypto
         if is_unknown(body) then
             return unknown
         end if
-        return json_decode(body)
+        payload = json_decode(body)
+        if is_unknown(payload) then
+            return unknown
+        end if
+        ' Enforce the exp claim (Unix seconds) when present.
+        if has(payload, "exp") then
+            if is_number(payload["exp"]) then
+                if payload["exp"] < epoch() then
+                    return unknown
+                end if
+            end if
+        end if
+        return payload
     end function
 
 end library

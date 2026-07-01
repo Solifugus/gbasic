@@ -37,6 +37,13 @@ program demo(args)
     print("jwt_badsecret " + string(jwt_verify(tok, "nope")))
     print("jwt_malformed " + string(jwt_verify("a.b", secret)))
 
+    ' exp enforcement (round epoch values survive %g formatting exactly):
+    ' 4000000000 = year 2096 (valid), 1000000000 = year 2001 (expired)
+    live = jwt_encode({ sub: "u1", exp: 4000000000 }, secret)
+    print("jwt_exp_live " + jwt_verify(live, secret).sub)
+    dead = jwt_encode({ sub: "u1", exp: 1000000000 }, secret)
+    print("jwt_exp_expired " + string(jwt_verify(dead, secret)))
+
     ' --- symmetric encrypt/decrypt (random nonce packed in the blob) ---
     key = hex_decode("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f")
     msg = "the launch code is 0000"

@@ -837,6 +837,33 @@ static Value value_datetime(DateTime datetime) {
     return value;
 }
 
+/* Convert a datetime to Unix epoch seconds. Datetimes are local wall-clock
+ * (now() uses localtime), so mktime() interprets the fields as local time and
+ * yields the same instant epoch() reports. Missing calendar parts (year/month/
+ * day-only precisions) default to the start of the period; a time-only value has
+ * no date and cannot be placed on the timeline (*ok = 0). */
+static double datetime_to_epoch(DateTime dt, int *ok) {
+    if (dt.time_only) {
+        *ok = 0;
+        return 0;
+    }
+    struct tm tm = {0};
+    tm.tm_year = dt.year - 1900;
+    tm.tm_mon = (dt.month >= 1 ? dt.month : 1) - 1;
+    tm.tm_mday = dt.day >= 1 ? dt.day : 1;
+    tm.tm_hour = dt.hour;
+    tm.tm_min = dt.minute;
+    tm.tm_sec = dt.second;
+    tm.tm_isdst = -1;
+    time_t t = mktime(&tm);
+    if (t == (time_t)-1) {
+        *ok = 0;
+        return 0;
+    }
+    *ok = 1;
+    return (double)t;
+}
+
 static Value value_duration(Duration duration) {
     Value value = {0};
     value.kind = VALUE_DURATION;
@@ -12560,6 +12587,58 @@ static Value eval_call(AstExpr *expr) {
         return value_datetime(dt);
     }
 
+    if (strcmp(expr->as.call.name, "epoch") == 0) {
+        if (expr->as.call.args.count != 0) {
+            runtime_error_raise("epoch expects no arguments", 1003, "invalid function call");
+            return value_null();
+        }
+        time_t raw = time(NULL);
+        if (raw == (time_t)-1) {
+            runtime_error_raise("could not read the current time", 1003, "clock");
+            return value_null();
+        }
+        return value_number((double)raw);
+    }
+
+    if (strcmp(expr->as.call.name, "from_epoch") == 0) {
+        if (expr->as.call.args.count != 1) {
+            runtime_error_raise("from_epoch expects one argument", 1003, "invalid function call");
+            return value_null();
+        }
+        Value sv = eval_expr(expr->as.call.args.items[0]);
+        if (error_action_pending()) {
+            value_free(sv);
+            return value_null();
+        }
+        if (sv.kind != VALUE_NUMBER) {
+            value_free(sv);
+            runtime_error_raise("from_epoch expects a number", 1003, "invalid argument type");
+            return value_null();
+        }
+        double sd = sv.as.number;
+        value_free(sv);
+        if (!isfinite(sd) || sd != floor(sd)) {
+            runtime_error_raise("from_epoch expects an integer number of seconds", 1003, "invalid argument");
+            return value_null();
+        }
+        time_t raw = (time_t)sd;
+        struct tm local;
+        if (!localtime_r(&raw, &local)) {
+            runtime_error_raise("could not convert the given epoch time", 1003, "clock");
+            return value_null();
+        }
+        DateTime dt = {0};
+        dt.year = local.tm_year + 1900;
+        dt.month = local.tm_mon + 1;
+        dt.day = local.tm_mday;
+        dt.hour = local.tm_hour;
+        dt.minute = local.tm_min;
+        dt.second = local.tm_sec;
+        dt.time_only = 0;
+        dt.precision = PREC_SECOND;
+        return value_datetime(dt);
+    }
+
     if (strcmp(expr->as.call.name, "secure_token") == 0) {
         if (expr->as.call.args.count != 1) {
             runtime_error_raise("secure_token expects one argument", 1003, "invalid function call");
@@ -12951,6 +13030,17 @@ static Value eval_call(AstExpr *expr) {
             }
             value_free(value);
             return value_number(result);
+        }
+        if (value.kind == VALUE_DATETIME) {
+            int ok = 0;
+            double e = datetime_to_epoch(value.as.datetime, &ok);
+            value_free(value);
+            if (!ok) {
+                runtime_error_raise("number conversion failed: a time-only value has no epoch",
+                                    1003, "invalid conversion");
+                return value_null();
+            }
+            return value_number(e);
         }
         value_free(value);
         runtime_error_raise("number conversion failed: unsupported type", 1003, "invalid conversion");

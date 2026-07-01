@@ -1,0 +1,6 @@
+epoch_int true
+now_matches true
+rt_fixed true
+rt_now true
+plus_hour 3600
+day_seconds 86400

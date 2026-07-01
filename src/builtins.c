@@ -9,6 +9,8 @@ int gbasic_builtin_function(const char *name) {
         "password_hash",
         "password_verify",
         "secure_token",
+        "epoch",
+        "from_epoch",
         "base64_encode",
         "base64_decode",
         "base64url_encode",

@@ -14,6 +14,8 @@ jwt eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6Ikp
 jwt_rt 1234567890 | John Doe | true
 jwt_badsecret unknown
 jwt_malformed unknown
+jwt_exp_live u1
+jwt_exp_expired unknown
 enc_len 51
 dec the launch code is 0000
 dec_wrongkey unknown

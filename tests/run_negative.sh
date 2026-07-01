@@ -151,6 +151,7 @@ cases=(
     negative_lowered_modifier_type
     negative_uppered_modifier_type
     negative_number_modifier_invalid
+    negative_number_time_only
     negative_decode_malformed
     negative_quote_record
     negative_gui_duplicate_id
