@@ -4764,4 +4764,223 @@ library stats
         end if
         return { params: params, residuals: resid, sse: sse, r_squared: r2, iterations: res.iterations, converged: res.converged }
     end function
+
+    ' --- ARIMA-family time-series modeling (unblocked by the optimizer;
+    ' docs/statistics_scientist_plan.md §10 follow-on) --- The autoregressive
+    ' and differencing pieces are exact conditional MLE and match statsmodels
+    ' AutoReg to machine precision; the moving-average piece uses conditional
+    ' least squares (CSS) via `optimize` (statsmodels' exact state-space MLE
+    ' would need a Kalman filter — a future increment). All pure gBASIC.
+
+    ' Fit an AR(p) model with intercept by OLS (= conditional MLE), reusing
+    ' matrix.bas. Returns {const, phi (list of p), sigma2, aic, bic, llf, n}
+    ' where n is the effective sample size (len(xs) - p). Matches statsmodels
+    ' AutoReg(trend='c'). Returns unknown on bad input.
+    function ar_fit(xs, p)
+        n = len(xs)
+        if p < 1 then
+            return unknown
+        end if
+        if n < p + 2 then
+            return unknown
+        end if
+        bigx = []
+        y = []
+        t = p
+        while t < n
+            row = [1]
+            j = 0
+            while j < p
+                append(row, xs[t - 1 - j])
+                j = j + 1
+            end while
+            append(bigx, row)
+            append(y, xs[t])
+            t = t + 1
+        end while
+        xt = mat_transpose(bigx)
+        xtxinv = mat_inverse(mat_mul(xt, bigx))
+        beta = mat_vec(xtxinv, mat_vec(xt, y))
+        ne = len(y)
+        fitted = mat_vec(bigx, beta)
+        sse = 0
+        i = 0
+        while i < ne
+            r = y[i] - fitted[i]
+            sse = sse + r * r
+            i = i + 1
+        end while
+        sigma2 = sse / ne
+        llf = -0.5 * ne * (log(2 * _pi()) + log(sigma2) + 1)
+        kparams = p + 2
+        aic = -2 * llf + 2 * kparams
+        bic = -2 * llf + log(ne) * kparams
+        phi = []
+        i = 1
+        while i <= p
+            append(phi, beta[i])
+            i = i + 1
+        end while
+        return { const: beta[0], phi: phi, sigma2: sigma2, aic: aic, bic: bic, llf: llf, n: ne }
+    end function
+
+    ' Recursive h-step forecast from an AR model (any record with .const and a
+    ' .phi list), seeded by the tail of xs. Returns a list of h values.
+    function ar_forecast(model, xs, h)
+        p = len(model.phi)
+        n = len(xs)
+        if n < p then
+            return unknown
+        end if
+        hist = []
+        i = 0
+        while i < n
+            append(hist, xs[i])
+            i = i + 1
+        end while
+        out = []
+        s = 0
+        while s < h
+            pred = model.const
+            j = 0
+            while j < p
+                pred = pred + model.phi[j] * hist[len(hist) - 1 - j]
+                j = j + 1
+            end while
+            append(out, pred)
+            append(hist, pred)
+            s = s + 1
+        end while
+        return out
+    end function
+
+    ' Conditional-sum-of-squares objective for arma_css_fit. ctx = {xs, p, q};
+    ' params = [const, phi_1..phi_p, theta_1..theta_q].
+    function _arma_css_obj(params, ctx)
+        xs = ctx.xs
+        p = ctx.p
+        q = ctx.q
+        n = len(xs)
+        e = []
+        i = 0
+        while i < n
+            append(e, 0)
+            i = i + 1
+        end while
+        start = p
+        if q > start then
+            start = q
+        end if
+        sse = 0
+        t = start
+        while t < n
+            pred = params[0]
+            j = 0
+            while j < p
+                pred = pred + params[1 + j] * xs[t - 1 - j]
+                j = j + 1
+            end while
+            j = 0
+            while j < q
+                pred = pred + params[1 + p + j] * e[t - 1 - j]
+                j = j + 1
+            end while
+            e[t] = xs[t] - pred
+            sse = sse + e[t] * e[t]
+            t = t + 1
+        end while
+        return sse
+    end function
+
+    ' Fit ARMA(p, q) by conditional least squares via `optimize`. Returns
+    ' {const, phi (list), theta (list), sse, iterations, converged} or unknown.
+    ' NOTE: CSS is best-effort and, unlike ar_fit, does not match statsmodels'
+    ' exact state-space MLE; moving-average terms need a long series to be well
+    ' identified.
+    function arma_css_fit(xs, p, q)
+        n = len(xs)
+        if n < p + q + 2 then
+            return unknown
+        end if
+        ctx = { xs: xs, p: p, q: q }
+        init = []
+        append(init, mean(xs) * 0.4)
+        i = 0
+        while i < p + q
+            append(init, 0.3)
+            i = i + 1
+        end while
+        res = optimize(_arma_css_obj, init, { max_iter: 20000, tol: pow(10, -12) }, ctx)
+        if is_unknown(res) then
+            return unknown
+        end if
+        pr = res.params
+        phi = []
+        i = 0
+        while i < p
+            append(phi, pr[1 + i])
+            i = i + 1
+        end while
+        theta = []
+        i = 0
+        while i < q
+            append(theta, pr[1 + p + i])
+            i = i + 1
+        end while
+        return { const: pr[0], phi: phi, theta: theta, sse: res.value, iterations: res.iterations, converged: res.converged }
+    end function
+
+    ' Fit an ARIMA(p, d, q) model: difference d times, then fit AR(p) by OLS
+    ' when q = 0 (exact) or ARMA(p, q) by CSS otherwise. Returns a record with
+    ' {p, d, q, const, phi, theta, ...}; the AR/differencing path also carries
+    ' sigma2/aic/bic. Returns unknown on bad input.
+    function arima_fit(xs, p, d, q)
+        series = xs
+        if d > 0 then
+            series = diff(xs, d)
+        end if
+        if q = 0 then
+            m = ar_fit(series, p)
+            if is_unknown(m) then
+                return unknown
+            end if
+            return { p: p, d: d, q: q, const: m.const, phi: m.phi, theta: [], sigma2: m.sigma2, aic: m.aic, bic: m.bic }
+        end if
+        m = arma_css_fit(series, p, q)
+        if is_unknown(m) then
+            return unknown
+        end if
+        return { p: p, d: d, q: q, const: m.const, phi: m.phi, theta: m.theta, sse: m.sse }
+    end function
+
+    ' Forecast h steps from an arima_fit model. Supported for q = 0 (AR-
+    ' integrated) with d in {0, 1}: the first differences are forecast by the
+    ' AR recursion and integrated from the last observed level. Returns a list
+    ' of h values, or unknown for the unsupported MA / d>1 cases.
+    function arima_forecast(model, xs, h)
+        if len(model.theta) > 0 then
+            return unknown
+        end if
+        arm = { const: model.const, phi: model.phi }
+        if model.d = 0 then
+            return ar_forecast(arm, xs, h)
+        end if
+        if model.d != 1 then
+            return unknown
+        end if
+        dser = diff(xs, 1)
+        dfc = ar_forecast(arm, dser, h)
+        if is_unknown(dfc) then
+            return unknown
+        end if
+        out = []
+        last = xs[len(xs) - 1]
+        i = 0
+        while i < h
+            last = last + dfc[i]
+            append(out, last)
+            i = i + 1
+        end while
+        return out
+    end function
 end library

@@ -1,0 +1,10 @@
+ar1 const 3.63052 phi 0.563863 sigma2 0.18493 n 39
+ar1 aic 50.8539 bic 55.8446
+ar2 const 5.91585 phi 1.13111 -0.836678
+ar2 aic -11.8861 bic -5.33575
+ar2 fc 9.0936 8.78394 8.24301 7.89024
+arima110 const 0.013166 phi 0.582245
+arima110 fc 9.27374 9.52449 9.68365
+css const 2.92462 phi 0.643536 theta 1.78336 sse 1.21775
+guard_ar unknown
+guard_fit unknown

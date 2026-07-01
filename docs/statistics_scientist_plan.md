@@ -168,6 +168,26 @@ Shipped in `stdlib/stats.bas`, verified against `scipy.optimize` in
 sizes; the C bar stayed uncrossed. This unblocks the ARIMA/GARCH deferred in
 Phase 4 and richer GLM families (their own future phases).
 
+## Follow-on (optimizer-enabled) — ARIMA-family time series — **PARTIAL (2026-07-01)**
+
+First follow-on the Phase 10 optimizer unblocks. Shipped in `stdlib/stats.bas`,
+verified in `examples/stats_arima_test.bas`.
+
+| Function | Returns | Verify vs |
+|---|---|---|
+| `ar_fit(xs, p)` | `{const, phi, sigma2, aic, bic, llf, n}` — OLS conditional MLE | `statsmodels` `AutoReg(trend='c')` (exact: coef, AIC/BIC/llf) |
+| `ar_forecast(model, xs, h)` | recursive h-step forecast list | `AutoReg.forecast` (exact) |
+| `arima_fit(xs, p, d, q)` | `{p, d, q, const, phi, theta, …}` — differences then AR-OLS (q=0) or ARMA-CSS | AR/differencing exact vs statsmodels |
+| `arima_forecast(model, xs, h)` | integrated forecast (q=0, d∈{0,1}) | exact |
+| `arma_css_fit(xs, p, q)` | `{const, phi, theta, sse, …}` — CSS via `optimize` | **best-effort**, not statsmodels' exact state-space MLE |
+
+**Status.** The AR and differencing paths are exact conditional MLE and match
+`statsmodels` to machine precision. Moving-average estimation via CSS is
+functional but only well-identified on long series (short series give a flat,
+near-non-invertible SSE ridge). **Deferred:** exact ARMA/ARIMA MLE (needs a
+Kalman filter) and GARCH. **Earn-it:** none — pure gBASIC over `matrix.bas` and
+the optimizer.
+
 ## Cross-cutting — power analysis  *(slotted with Phase 7)* — **DONE (2026-07-01)**
 
 Shipped in `stdlib/stats.bas`, verified against `scipy.stats.nct`/`ncf` and
