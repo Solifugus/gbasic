@@ -190,8 +190,24 @@ concentrated out and the mean/phi/theta optimized by Nelder–Mead. Matches
 `statsmodels` ARIMA to display precision on σ²/log-likelihood/AIC/BIC and to ~4
 decimals on the parameters (the surface is flat near the optimum). `arma_css_fit`
 is retained as a fast approximate alternative. **Deferred:** MA-model forecasting
-(needs the filter's terminal state) and GARCH. **Earn-it:** none — pure gBASIC
-over `matrix.bas` and the optimizer.
+(needs the filter's terminal state). **Earn-it:** none — pure gBASIC over
+`matrix.bas` and the optimizer.
+
+## Follow-on (optimizer-enabled) — GARCH(1,1) volatility — **DONE (2026-07-01)**
+
+Shipped in `stdlib/stats.bas`, verified in `examples/stats_garch_test.bas`.
+
+| Function | Returns | Verify vs |
+|---|---|---|
+| `garch_fit(r)` | `{mu, omega, alpha, beta, persistence, llf, aic, bic}` — constant-mean GARCH(1,1) Gaussian MLE via `optimize` | the **`arch`** package (Sheppard) — ~3 decimals |
+
+Replicates `arch`'s exponentially-weighted variance backcast (0.94-decay over the
+first min(75, n) squared residuals) so the likelihood matches; parameters and llf
+agree to ~3 decimals (a ~1e-3 backcast gap remains, negligible for inference).
+Admissibility (ω>0, α,β≥0, α+β<1) is enforced by likelihood penalty. **Validation
+note:** the `arch` package was pip-installed into a venv to serve as the
+gold-standard reference, and a from-scratch Python likelihood was matched to it
+before porting. **Earn-it:** none — pure gBASIC.
 
 ## Cross-cutting — power analysis  *(slotted with Phase 7)* — **DONE (2026-07-01)**
 

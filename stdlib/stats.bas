@@ -5265,4 +5265,96 @@ library stats
         end while
         return out
     end function
+
+    ' --- GARCH(1,1) volatility model (optimizer follow-on) --- Gaussian MLE of
+    ' a constant-mean GARCH(1,1) via `optimize`. Matches the `arch` package
+    ' (Sheppard) to ~3 decimals, including its exponentially-weighted backcast
+    ' initialization of the conditional variance. Pure gBASIC.
+
+    ' arch-style variance backcast: normalized 0.94^i weighting of the first
+    ' min(75, n) squared residuals.
+    function _garch_backcast(resid)
+        n = len(resid)
+        tau = 75
+        if n < tau then
+            tau = n
+        end if
+        wsum = 0
+        acc = 0
+        i = 0
+        while i < tau
+            w = pow(0.94, i)
+            wsum = wsum + w
+            acc = acc + w * resid[i] * resid[i]
+            i = i + 1
+        end while
+        return acc / wsum
+    end function
+
+    ' Negative Gaussian log-likelihood of a constant-mean GARCH(1,1).
+    ' ctx = {r}; params = [mu, omega, alpha, beta]. Non-admissible parameters
+    ' (omega<=0, alpha<0, beta<0, alpha+beta>=1) return a large penalty.
+    function _garch_negll(params, ctx)
+        r = ctx.r
+        mu = params[0]
+        omega = params[1]
+        alpha = params[2]
+        beta = params[3]
+        if omega <= 0 then
+            return pow(10, 12)
+        end if
+        if alpha < 0 then
+            return pow(10, 12)
+        end if
+        if beta < 0 then
+            return pow(10, 12)
+        end if
+        if alpha + beta >= 1 then
+            return pow(10, 12)
+        end if
+        n = len(r)
+        resid = []
+        i = 0
+        while i < n
+            append(resid, r[i] - mu)
+            i = i + 1
+        end while
+        bc = _garch_backcast(resid)
+        h = omega + alpha * bc + beta * bc
+        ll = 0
+        t = 0
+        while t < n
+            if t > 0 then
+                h = omega + alpha * resid[t - 1] * resid[t - 1] + beta * h
+            end if
+            if h <= 0 then
+                return pow(10, 12)
+            end if
+            ll = ll - 0.5 * (log(2 * _pi()) + log(h) + resid[t] * resid[t] / h)
+            t = t + 1
+        end while
+        return 0 - ll
+    end function
+
+    ' Fit a constant-mean GARCH(1,1) by Gaussian MLE. r is a return series.
+    ' Returns {mu, omega, alpha, beta, persistence (alpha+beta), llf, aic, bic}
+    ' or unknown. Matches the `arch` package to ~3 decimals.
+    function garch_fit(r)
+        n = len(r)
+        if n < 8 then
+            return unknown
+        end if
+        ctx = { r: r }
+        init = [mean(r), 0.1, 0.1, 0.8]
+        res = optimize(_garch_negll, init, { max_iter: 8000, tol: pow(10, -10) }, ctx)
+        if is_unknown(res) then
+            return unknown
+        end if
+        pr = res.params
+        llf = 0 - res.value
+        kpar = 4
+        aic = -2 * llf + 2 * kpar
+        bic = -2 * llf + log(n) * kpar
+        return { mu: pr[0], omega: pr[1], alpha: pr[2], beta: pr[3], persistence: pr[2] + pr[3], llf: llf, aic: aic, bic: bic }
+    end function
 end library

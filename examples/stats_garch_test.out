@@ -1,0 +1,3 @@
+garch mu 0.484 omega 0.092 alpha 0.074 beta 0.873
+garch persist 0.947 llf -508.9
+guard unknown
