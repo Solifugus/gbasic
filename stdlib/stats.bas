@@ -709,7 +709,21 @@ library stats
             j = j + 1
         end while
 
-        return { coefficients: beta, fitted: fitted, residuals: residuals, r_squared: r2, adj_r_squared: adj, std_errors: ses, t_values: tvals, p_values: pvals, n: n, df: dof }
+        ' Full coefficient covariance sigma^2 (X'X)^-1 (for simple slopes etc.).
+        cov = []
+        a = 0
+        while a < p
+            row = []
+            b = 0
+            while b < p
+                append(row, sigma2 * xtxinv[a][b])
+                b = b + 1
+            end while
+            append(cov, row)
+            a = a + 1
+        end while
+
+        return { coefficients: beta, fitted: fitted, residuals: residuals, r_squared: r2, adj_r_squared: adj, std_errors: ses, t_values: tvals, p_values: pvals, cov: cov, n: n, df: dof }
     end function
 
     ' --- Resampling ---
@@ -2076,6 +2090,156 @@ library stats
             r = r + 1
         end while
         return { effects: effects, std_errors: ses, z_values: zvals, p_values: pvals }
+    end function
+
+    ' Moderation via simple slopes. Fits Y = b0 + bX·x + bW·w + bXW·(x·w) and
+    ' reports the conditional effect of x (slope = bX + bXW·w) at each value in
+    ' wvals, with its standard error, t, and p from the coefficient covariance:
+    ' Var = Var(bX) + w^2 Var(bXW) + 2w Cov(bX, bXW). Returns {interaction_coef,
+    ' interaction_p, slopes: [{w, slope, se, t, p_value}...]} or unknown. Feed
+    ' e.g. [mean(w)-stdev(w), mean(w), mean(w)+stdev(w)] for the ±1 SD probe.
+    function simple_slopes(y, x, w, wvals)
+        n = len(y)
+        if n = 0 then
+            return unknown
+        end if
+        xw = interaction(x, w)
+        m = ols(y, [x, w, xw])
+        if is_unknown(m) then
+            return unknown
+        end if
+        cov = m.cov
+        bx = m.coefficients[1]
+        bxw = m.coefficients[3]
+        df = m.df
+        out = []
+        i = 0
+        while i < len(wvals)
+            wv = wvals[i]
+            slope = bx + bxw * wv
+            var = cov[1][1] + wv * wv * cov[3][3] + 2 * wv * cov[1][3]
+            se = unknown
+            tv = unknown
+            pv = unknown
+            if var >= 0 then
+                se = sqrt(var)
+                if se > 0 then
+                    tv = slope / se
+                    pv = 2 * (1 - t_cdf(abs(tv), df))
+                end if
+            end if
+            append(out, { w: wv, slope: slope, se: se, t: tv, p_value: pv })
+            i = i + 1
+        end while
+        return { interaction_coef: bxw, interaction_p: m.p_values[3], slopes: out }
+    end function
+
+    ' Simple mediation (X -> M -> Y). Estimates the a path (M on X), the b and
+    ' direct c' paths (Y on X and M), and the total c path (Y on X), all by OLS,
+    ' then the indirect effect a·b with a nonparametric (percentile) bootstrap
+    ' confidence interval over nboot resamples — the Preacher & Hayes approach.
+    ' Call seed() beforehand for a reproducible CI. Returns {a, b, c_total,
+    ' c_direct, indirect, prop_mediated, boot_low, boot_high, nboot} or unknown.
+    function mediation(y, x, m, nboot)
+        n = len(y)
+        if n < 3 then
+            return unknown
+        end if
+        if len(x) != n then
+            return unknown
+        end if
+        if len(m) != n then
+            return unknown
+        end if
+        full = _med_effects(y, x, m, n)
+        a = full.a
+        b = full.b
+        cd = full.cprime
+        ct = full.c
+        indirect = a * b
+        prop = unknown
+        if ct != 0 then
+            prop = indirect / ct
+        end if
+        boots = []
+        bi = 0
+        while bi < nboot
+            rx = []
+            rm = []
+            ry = []
+            i = 0
+            while i < n
+                idx = random_int(0, n - 1)
+                append(rx, x[idx])
+                append(rm, m[idx])
+                append(ry, y[idx])
+                i = i + 1
+            end while
+            eff = _med_effects(ry, rx, rm, n)
+            if not is_unknown(eff) then
+                append(boots, eff.a * eff.b)
+            end if
+            bi = bi + 1
+        end while
+        boots = sort(boots)
+        nb = len(boots)
+        blo = unknown
+        bhi = unknown
+        if nb > 0 then
+            lo_idx = floor(0.025 * (nb - 1))
+            hi_idx = floor(0.975 * (nb - 1))
+            blo = boots[lo_idx]
+            bhi = boots[hi_idx]
+        end if
+        return { a: a, b: b, c_total: ct, c_direct: cd, indirect: indirect, prop_mediated: prop, boot_low: blo, boot_high: bhi, nboot: nboot }
+    end function
+
+    ' Closed-form OLS paths for one mediation (re)sample: a = slope of M on X,
+    ' b = partial slope of M in Y~X+M, cprime = partial slope of X there, c =
+    ' total slope of Y on X. Returns {a, b, cprime, c} or unknown if degenerate.
+    function _med_effects(y, x, m, n)
+        sx = 0
+        sm = 0
+        sy = 0
+        i = 0
+        while i < n
+            sx = sx + x[i]
+            sm = sm + m[i]
+            sy = sy + y[i]
+            i = i + 1
+        end while
+        mx = sx / n
+        mm = sm / n
+        my = sy / n
+        sxx = 0
+        smm = 0
+        sxm = 0
+        sxy = 0
+        smy = 0
+        i = 0
+        while i < n
+            dx = x[i] - mx
+            dm = m[i] - mm
+            dy = y[i] - my
+            sxx = sxx + dx * dx
+            smm = smm + dm * dm
+            sxm = sxm + dx * dm
+            sxy = sxy + dx * dy
+            smy = smy + dm * dy
+            i = i + 1
+        end while
+        denom = sxx * smm - sxm * sxm
+        if sxx = 0 then
+            return unknown
+        end if
+        if denom = 0 then
+            return unknown
+        end if
+        a = sxm / sxx
+        bm = (sxx * smy - sxm * sxy) / denom
+        bx = (smm * sxy - sxm * smy) / denom
+        c = sxy / sxx
+        return { a: a, b: bm, cprime: bx, c: c }
     end function
 
     ' Probit regression (binary y in {0,1}) by IRLS with the normal-CDF link.

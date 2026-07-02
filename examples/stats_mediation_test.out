@@ -1,0 +1,9 @@
+med a 0.59448 b 0.40943
+med cdir 0.37606 ctot 0.61946
+med indirect 0.2434 prop 0.39292
+med ci 0.1385 0.3532
+mod intr 0.38934 p 0.00174
+mod lo w 0.479 slope 0.44344 se 0.09791
+mod mid slope 0.66333 se 0.06357
+mod hi slope 0.88321 se 0.08757
+guard_med unknown
