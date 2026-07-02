@@ -1,0 +1,14 @@
+describe mean 28.7 sd 5.417 median 27.5
+ttest t -5.715 p 0.0001 d -2.858
+anova F 24 p 0.00025 eta2 0.842
+spearman rho 0.929 p 0.0009
+ols b0 0.965 bx 1.138 r2 0.952
+ols HC3 se_x 0.1074
+logit OR_x 1.8 AME_x 0.1343 prsq 0.045
+ordinal b 2.8 prsq 0.385
+cronbach 0.938
+krippendorff 0.622
+abtest lift 0.333 p 0.0287 sig true
+mediation indirect 0.671 direct 0.302
+moderation intr_p 0.3628 slope_hi 1.16
+power2 0.478 n_needed 64
