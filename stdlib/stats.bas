@@ -6551,4 +6551,631 @@ library stats
         bic = -2 * llf + log(n) * kpar
         return { mu: pr[0], omega: pr[1], alpha: pr[2], beta: pr[3], persistence: pr[2] + pr[3], llf: llf, aic: aic, bic: bic }
     end function
+
+    ' ================================================================
+    ' Econometric diagnostics & finance metrics
+    '
+    ' The tests below are the gate-keepers of applied time-series work:
+    ' before an ARIMA/GARCH model is trusted, the series is checked for a
+    ' unit root (adf_test), the residuals for leftover autocorrelation
+    ' (ljung_box, durbin_watson) and for conditional heteroskedasticity
+    ' (arch_lm, breusch_pagan), and inference is made robust to serial
+    ' correlation (newey_west). All statistics match statsmodels.
+    ' ================================================================
+
+    ' Plain OLS over a prebuilt design matrix (rows already include any
+    ' intercept/trend columns). Returns the pieces the diagnostics need:
+    ' beta, (X'X)^-1, residuals, rss. unknown if singular or under-determined.
+    function _ols_design(bigx, y)
+        n = len(bigx)
+        if n = 0 then
+            return unknown
+        end if
+        k = len(bigx[0])
+        if n <= k then
+            return unknown
+        end if
+        xt = mat_transpose(bigx)
+        xtxinv = mat_inverse(mat_mul(xt, bigx))
+        if is_unknown(xtxinv) then
+            return unknown
+        end if
+        beta = mat_vec(xtxinv, mat_vec(xt, y))
+        fitted = mat_vec(bigx, beta)
+        resid = []
+        rss = 0
+        i = 0
+        while i < n
+            e = y[i] - fitted[i]
+            append(resid, e)
+            rss = rss + e * e
+            i = i + 1
+        end while
+        return { beta: beta, xtxinv: xtxinv, resid: resid, fitted: fitted, rss: rss, n: n, k: k }
+    end function
+
+    ' Durbin-Watson statistic for a residual series: sum of squared first
+    ' differences over the residual sum of squares. ~2 means no first-order
+    ' autocorrelation; <2 positive, >2 negative. Matches
+    ' statsmodels.stats.stattools.durbin_watson.
+    function durbin_watson(resid)
+        n = len(resid)
+        if n < 2 then
+            return unknown
+        end if
+        num = 0
+        den = resid[0] * resid[0]
+        i = 1
+        while i < n
+            d = resid[i] - resid[i - 1]
+            num = num + d * d
+            den = den + resid[i] * resid[i]
+            i = i + 1
+        end while
+        if den = 0 then
+            return unknown
+        end if
+        return num / den
+    end function
+
+    ' Ljung-Box portmanteau test for autocorrelation up to `lags`:
+    ' Q = n(n+2) sum_{k=1..h} r_k^2 / (n-k), r_k the biased acf. Q ~ chi2(h)
+    ' under the no-autocorrelation null. Matches
+    ' statsmodels.stats.diagnostic.acorr_ljungbox (default settings).
+    function ljung_box(xs, lags)
+        n = len(xs)
+        if lags < 1 then
+            return unknown
+        end if
+        if lags >= n then
+            return unknown
+        end if
+        r = acf(xs, lags)
+        if is_unknown(r) then
+            return unknown
+        end if
+        q = 0
+        k = 1
+        while k <= lags
+            q = q + r[k] * r[k] / (n - k)
+            k = k + 1
+        end while
+        q = n * (n + 2) * q
+        return { statistic: q, df: lags, p_value: 1 - chi2_cdf(q, lags) }
+    end function
+
+    ' Engle's ARCH-LM test for conditional heteroskedasticity: regress the
+    ' squared residuals on `lags` of their own past (plus a constant); the
+    ' LM statistic n*R^2 ~ chi2(lags). Run this on model residuals before
+    ' reaching for garch_fit. Matches statsmodels het_arch (LM form).
+    function arch_lm(resid, lags)
+        n = len(resid)
+        if lags < 1 then
+            return unknown
+        end if
+        if n <= 2 * lags + 1 then
+            return unknown
+        end if
+        e2 = []
+        i = 0
+        while i < n
+            append(e2, resid[i] * resid[i])
+            i = i + 1
+        end while
+        nobs = n - lags
+        dep = []
+        bigx = []
+        r = 0
+        while r < nobs
+            t = lags + r
+            append(dep, e2[t])
+            row = [1]
+            j = 1
+            while j <= lags
+                append(row, e2[t - j])
+                j = j + 1
+            end while
+            append(bigx, row)
+            r = r + 1
+        end while
+        fit = _ols_design(bigx, dep)
+        if is_unknown(fit) then
+            return unknown
+        end if
+        dbar = mean(dep)
+        tss = 0
+        i = 0
+        while i < nobs
+            d = dep[i] - dbar
+            tss = tss + d * d
+            i = i + 1
+        end while
+        if tss = 0 then
+            return unknown
+        end if
+        r2 = 1 - fit.rss / tss
+        lm = nobs * r2
+        return { statistic: lm, df: lags, p_value: 1 - chi2_cdf(lm, lags) }
+    end function
+
+    ' Breusch-Pagan test (Koenker studentized form) for heteroskedasticity:
+    ' regress squared residuals on the model's predictors; LM = n*R^2 ~
+    ' chi2(#predictors). `xs` is the same predictor list passed to ols.
+    ' Matches statsmodels het_breuschpagan (the n*R^2 LM statistic).
+    function breusch_pagan(resid, xs)
+        n = len(resid)
+        cols = _norm_cols(xs, n)
+        if is_unknown(cols) then
+            return unknown
+        end if
+        e2 = []
+        i = 0
+        while i < n
+            append(e2, resid[i] * resid[i])
+            i = i + 1
+        end while
+        bigx = _design(cols, n)
+        fit = _ols_design(bigx, e2)
+        if is_unknown(fit) then
+            return unknown
+        end if
+        ebar = mean(e2)
+        tss = 0
+        i = 0
+        while i < n
+            d = e2[i] - ebar
+            tss = tss + d * d
+            i = i + 1
+        end while
+        if tss = 0 then
+            return unknown
+        end if
+        df = len(cols)
+        lm = n * (1 - fit.rss / tss)
+        return { statistic: lm, df: df, p_value: 1 - chi2_cdf(lm, df) }
+    end function
+
+    ' MacKinnon (1994) approximate p-value for an ADF t-statistic; trend is
+    ' "n" (none), "c" (constant), or "ct" (constant + trend). Ported from
+    ' statsmodels' mackinnonp coefficient tables (N=1).
+    function _mackinnonp(stat, trend)
+        maxs = 0
+        mins = 0
+        star = 0
+        small = []
+        large = []
+        if trend = "n" then
+            maxs = pow(10, 30)
+            mins = -19.04
+            star = -1.04
+            small = [0.6344, 1.2378, 0.032496]
+            large = [0.4797, 0.93557, -0.06999, 0.033066]
+        end if
+        if trend = "c" then
+            maxs = 2.74
+            mins = -18.83
+            star = -1.61
+            small = [2.1659, 1.4412, 0.038269]
+            large = [1.7339, 0.93202, -0.12745, -0.010368]
+        end if
+        if trend = "ct" then
+            maxs = 0.7
+            mins = -16.18
+            star = -2.89
+            small = [3.2512, 1.6047, 0.049588]
+            large = [2.5261, 0.61654, -0.37956, -0.060285]
+        end if
+        if len(small) = 0 then
+            return unknown
+        end if
+        if stat > maxs then
+            return 1
+        end if
+        if stat < mins then
+            return 0
+        end if
+        coef = large
+        if stat <= star then
+            coef = small
+        end if
+        val = 0
+        xp = 1
+        p = 0
+        while p < len(coef)
+            val = val + coef[p] * xp
+            xp = xp * stat
+            p = p + 1
+        end while
+        return _norm_cdf_std(val)
+    end function
+
+    ' MacKinnon (2010) critical value for the ADF test at level index idx
+    ' (0=1%, 1=5%, 2=10%) given the regression trend and sample size nobs.
+    ' crit = b0 + b1/T + b2/T^2 + b3/T^3.
+    function _mackinnoncrit(trend, nobs, idx)
+        rows = []
+        if trend = "n" then
+            rows = [[-2.56574, -2.2358, -3.627, 0], [-1.941, -0.2686, -3.365, 31.223], [-1.61682, 0.2656, -2.714, 25.364]]
+        end if
+        if trend = "c" then
+            rows = [[-3.43035, -6.5393, -16.786, -79.433], [-2.86154, -2.8903, -4.234, -40.04], [-2.56677, -1.5384, -2.809, 0]]
+        end if
+        if trend = "ct" then
+            rows = [[-3.95877, -9.0531, -28.428, -134.155], [-3.41049, -4.3904, -9.036, -45.374], [-3.12705, -2.5856, -3.925, -22.38]]
+        end if
+        if len(rows) = 0 then
+            return unknown
+        end if
+        b = rows[idx]
+        t = nobs
+        return b[0] + b[1] / t + b[2] / (t * t) + b[3] / (t * t * t)
+    end function
+
+    ' Augmented Dickey-Fuller unit-root test. Regresses the first difference
+    ' on the lagged level (the gamma coefficient tested), `lags` lagged
+    ' differences, and the trend terms selected by `trend` ("n"/"c"/"ct").
+    ' A statistic below the critical value (small p) rejects the unit-root
+    ' null -> the series is stationary. Statistic, p-value and critical
+    ' values match statsmodels.tsa.stattools.adfuller(autolag=None).
+    function adf_test(xs, lags, trend)
+        n = len(xs)
+        if lags < 0 then
+            return unknown
+        end if
+        dy = diff(xs, 1)
+        m = len(dy)
+        nobs = m - lags
+        if nobs < 3 then
+            return unknown
+        end if
+        dep = []
+        bigx = []
+        r = 0
+        while r < nobs
+            t = lags + r
+            row = [xs[lags + r]]
+            append(dep, dy[t])
+            j = 1
+            while j <= lags
+                append(row, dy[t - j])
+                j = j + 1
+            end while
+            if trend = "c" then
+                append(row, 1)
+            end if
+            if trend = "ct" then
+                append(row, 1)
+                append(row, r + 1)
+            end if
+            append(bigx, row)
+            r = r + 1
+        end while
+        fit = _ols_design(bigx, dep)
+        if is_unknown(fit) then
+            return unknown
+        end if
+        dof = nobs - fit.k
+        if dof <= 0 then
+            return unknown
+        end if
+        sigma2 = fit.rss / dof
+        v = sigma2 * fit.xtxinv[0][0]
+        if v <= 0 then
+            return unknown
+        end if
+        tstat = fit.beta[0] / sqrt(v)
+        return { statistic: tstat, p_value: _mackinnonp(tstat, trend), lags: lags, nobs: nobs, trend: trend, crit_1: _mackinnoncrit(trend, nobs, 0), crit_5: _mackinnoncrit(trend, nobs, 1), crit_10: _mackinnoncrit(trend, nobs, 2) }
+    end function
+
+    ' OLS with Newey-West HAC standard errors (heteroskedasticity- and
+    ' autocorrelation-consistent). Bartlett kernel, weights 1 - l/(L+1) for
+    ' lag l up to maxlags. Use when regressing on time-series data where
+    ' residuals may be serially correlated. cov, SEs and z-tests match
+    ' statsmodels OLS(...).fit(cov_type="HAC", maxlags=L, use_correction=False).
+    function newey_west(y, xs, maxlags)
+        n = len(y)
+        cols = _norm_cols(xs, n)
+        if is_unknown(cols) then
+            return unknown
+        end if
+        p = len(cols) + 1
+        if n <= p then
+            return unknown
+        end if
+        bigx = _design(cols, n)
+        fit = _ols_design(bigx, y)
+        if is_unknown(fit) then
+            return unknown
+        end if
+        e = fit.resid
+        meat = []
+        a = 0
+        while a < p
+            row = []
+            b = 0
+            while b < p
+                append(row, 0)
+                b = b + 1
+            end while
+            append(meat, row)
+            a = a + 1
+        end while
+        ' Gamma_0
+        i = 0
+        while i < n
+            a = 0
+            while a < p
+                b = 0
+                while b < p
+                    meat[a][b] = meat[a][b] + bigx[i][a] * bigx[i][b] * e[i] * e[i]
+                    b = b + 1
+                end while
+                a = a + 1
+            end while
+            i = i + 1
+        end while
+        ' Weighted lagged autocovariances Gamma_l + Gamma_l'
+        l = 1
+        while l <= maxlags
+            w = 1 - l / (maxlags + 1)
+            t = l
+            while t < n
+                a = 0
+                while a < p
+                    b = 0
+                    while b < p
+                        meat[a][b] = meat[a][b] + w * (bigx[t][a] * bigx[t - l][b] + bigx[t - l][a] * bigx[t][b]) * e[t] * e[t - l]
+                        b = b + 1
+                    end while
+                    a = a + 1
+                end while
+                t = t + 1
+            end while
+            l = l + 1
+        end while
+        xtxinv = fit.xtxinv
+        cov = mat_mul(mat_mul(xtxinv, meat), xtxinv)
+        beta = fit.beta
+        ses = []
+        zvals = []
+        pvals = []
+        j = 0
+        while j < p
+            vv = cov[j][j]
+            se = unknown
+            zv = unknown
+            pv = unknown
+            if vv >= 0 then
+                se = sqrt(vv)
+                if se > 0 then
+                    zv = beta[j] / se
+                    pv = 2 * (1 - _norm_cdf_std(abs(zv)))
+                end if
+            end if
+            append(ses, se)
+            append(zvals, zv)
+            append(pvals, pv)
+            j = j + 1
+        end while
+        return { coefficients: beta, std_errors: ses, z_values: zvals, p_values: pvals, cov: cov, cov_type: "HAC", maxlags: maxlags, fitted: fit.fitted, residuals: e, n: n, df: n - p }
+    end function
+
+    ' --- Finance return metrics ---
+
+    ' Simple (arithmetic) returns from a price series: r_t = P_t/P_{t-1} - 1.
+    ' Returns a list of length n-1; unknown on a zero price or too few points.
+    function simple_returns(prices)
+        n = len(prices)
+        if n < 2 then
+            return unknown
+        end if
+        out = []
+        i = 1
+        while i < n
+            if prices[i - 1] = 0 then
+                return unknown
+            end if
+            append(out, prices[i] / prices[i - 1] - 1)
+            i = i + 1
+        end while
+        return out
+    end function
+
+    ' Log (continuously compounded) returns: r_t = ln(P_t/P_{t-1}).
+    function log_returns(prices)
+        n = len(prices)
+        if n < 2 then
+            return unknown
+        end if
+        out = []
+        i = 1
+        while i < n
+            if prices[i - 1] <= 0 then
+                return unknown
+            end if
+            if prices[i] <= 0 then
+                return unknown
+            end if
+            append(out, log(prices[i] / prices[i - 1]))
+            i = i + 1
+        end while
+        return out
+    end function
+
+    ' Total compounded return from a series of simple returns:
+    ' prod(1 + r) - 1.
+    function cumulative_return(rets)
+        n = len(rets)
+        if n < 1 then
+            return unknown
+        end if
+        acc = 1
+        i = 0
+        while i < n
+            acc = acc * (1 + rets[i])
+            i = i + 1
+        end while
+        return acc - 1
+    end function
+
+    ' Annualized Sharpe ratio: mean excess return over its (sample) standard
+    ' deviation, scaled by sqrt(periods) (e.g. 252 daily, 12 monthly). `rf`
+    ' is the per-period risk-free rate.
+    function sharpe_ratio(rets, rf, periods)
+        n = len(rets)
+        if n < 2 then
+            return unknown
+        end if
+        ex = []
+        i = 0
+        while i < n
+            append(ex, rets[i] - rf)
+            i = i + 1
+        end while
+        sd = stdev(ex)
+        if sd <= 0 then
+            return unknown
+        end if
+        return mean(ex) / sd * sqrt(periods)
+    end function
+
+    ' Annualized Sortino ratio: like Sharpe but the denominator is downside
+    ' deviation, sqrt(mean(min(0, excess)^2)) over all n periods (target =
+    ' rf). Penalizes only harmful volatility.
+    function sortino_ratio(rets, rf, periods)
+        n = len(rets)
+        if n < 2 then
+            return unknown
+        end if
+        tot = 0
+        dsum = 0
+        i = 0
+        while i < n
+            ex = rets[i] - rf
+            tot = tot + ex
+            if ex < 0 then
+                dsum = dsum + ex * ex
+            end if
+            i = i + 1
+        end while
+        dd = sqrt(dsum / n)
+        if dd <= 0 then
+            return unknown
+        end if
+        return (tot / n) / dd * sqrt(periods)
+    end function
+
+    ' Maximum drawdown of a price (or cumulative-value) series: the largest
+    ' peak-to-trough fractional decline, returned as a NEGATIVE number, with
+    ' the indices of the peak and trough that produced it.
+    function max_drawdown(prices)
+        n = len(prices)
+        if n < 1 then
+            return unknown
+        end if
+        peak = prices[0]
+        peaki = 0
+        maxdd = 0
+        ddpeak = 0
+        ddtrough = 0
+        i = 0
+        while i < n
+            if prices[i] > peak then
+                peak = prices[i]
+                peaki = i
+            end if
+            if peak != 0 then
+                dd = (prices[i] - peak) / peak
+                if dd < maxdd then
+                    maxdd = dd
+                    ddpeak = peaki
+                    ddtrough = i
+                end if
+            end if
+            i = i + 1
+        end while
+        return { max_drawdown: maxdd, peak: ddpeak, trough: ddtrough }
+    end function
+
+    ' Value at Risk at tail probability alpha (e.g. 0.05 for 95% VaR),
+    ' returned as a POSITIVE loss magnitude. method "historical" uses the
+    ' empirical quantile; "normal" uses a Gaussian fit (mean + z*sd).
+    function value_at_risk(rets, alpha, method)
+        n = len(rets)
+        if n < 2 then
+            return unknown
+        end if
+        if alpha <= 0 then
+            return unknown
+        end if
+        if alpha >= 1 then
+            return unknown
+        end if
+        if method = "normal" then
+            z = _inv_norm_std(alpha)
+            return 0 - (mean(rets) + z * stdev(rets))
+        end if
+        s = rets
+        s = sort(s)
+        return 0 - quantile(s, alpha)
+    end function
+
+    ' Conditional VaR / Expected Shortfall at tail probability alpha: the
+    ' average of all returns at or below the empirical alpha-quantile,
+    ' returned as a POSITIVE loss magnitude.
+    function cvar(rets, alpha)
+        n = len(rets)
+        if n < 2 then
+            return unknown
+        end if
+        if alpha <= 0 then
+            return unknown
+        end if
+        if alpha >= 1 then
+            return unknown
+        end if
+        s = rets
+        s = sort(s)
+        thr = quantile(s, alpha)
+        tot = 0
+        cnt = 0
+        i = 0
+        while i < n
+            if s[i] <= thr then
+                tot = tot + s[i]
+                cnt = cnt + 1
+            end if
+            i = i + 1
+        end while
+        if cnt = 0 then
+            return unknown
+        end if
+        return 0 - tot / cnt
+    end function
+
+    ' CAPM market-model regression of excess asset returns on excess market
+    ' returns: alpha (Jensen's alpha), beta (systematic risk), their SEs /
+    ' t / p, and R^2. `rf` is the per-period risk-free rate.
+    function capm(asset, market, rf)
+        n = len(asset)
+        if n != len(market) then
+            return unknown
+        end if
+        if n < 3 then
+            return unknown
+        end if
+        ea = []
+        em = []
+        i = 0
+        while i < n
+            append(ea, asset[i] - rf)
+            append(em, market[i] - rf)
+            i = i + 1
+        end while
+        fit = ols(ea, [em])
+        if is_unknown(fit) then
+            return unknown
+        end if
+        return { alpha: fit.coefficients[0], beta: fit.coefficients[1], alpha_se: fit.std_errors[0], beta_se: fit.std_errors[1], alpha_t: fit.t_values[0], beta_t: fit.t_values[1], alpha_p: fit.p_values[0], beta_p: fit.p_values[1], r_squared: fit.r_squared, n: n }
+    end function
 end library

@@ -50,7 +50,9 @@ examples=(
     stats_glm_factors_test.bas
     stats_robust_se_test.bas
     stats_mediation_test.bas
+    stats_econ_test.bas
     cookbook_social_test.bas
+    cookbook_econ_test.bas
     epoch_test.bas
     bitwise_test.bas
     hex_literal_test.bas

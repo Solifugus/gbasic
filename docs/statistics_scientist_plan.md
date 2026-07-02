@@ -309,3 +309,46 @@ was cheap enough to ship directly. `sided` is 1 or 2 (one/two-tailed).
   first? (Recommend approximation first, exact later.)
 - **Optimizer method:** confirm Nelder–Mead (derivative-free, pure gBASIC) as the
   default. (Recommend yes.)
+
+---
+
+## Field cookbooks (task-first guides)
+
+Beyond the reference function list, the library ships **cookbooks**: task-first
+recipe guides organized by *method profile* (research design + data structure +
+inferential goal), not by academic subject. Five clusters were identified:
+(1) social & behavioral, (2) biomedical / epidemiology, (3) econometrics /
+finance, (4) physical / engineering, (5) ecology / field biology.
+
+Each cookbook is a Markdown doc plus a **runnable, suite-tested** companion
+(`examples/cookbook_*_test.bas`) so every snippet is known-good, and a printable
+PDF rendered via pandoc → styled HTML → headless-Chrome print.
+
+- **Social & behavioral** — `docs/cookbook_social_behavioral.md` (+ `.pdf`),
+  `examples/cookbook_social_test.bas`. DONE.
+- **Econometrics & finance** — `docs/cookbook_econometrics_finance.md` (+ `.pdf`),
+  `examples/cookbook_econ_test.bas`. DONE.
+
+## Econometric diagnostics & finance metrics — DONE
+
+Built to make the econometrics/finance cookbook credible (the gate-keepers of
+applied time-series work). All pure gBASIC; §6 C bar uncrossed. Verified to match
+statsmodels / scipy exactly (`examples/stats_econ_test.bas`).
+
+| Function | Returns | Verify vs |
+|---|---|---|
+| `adf_test(x, lags, trend)` | Augmented Dickey-Fuller unit-root: stat, MacKinnon p, crit values | `statsmodels.tsa.stattools.adfuller(autolag=None)` |
+| `ljung_box(x, lags)` | portmanteau autocorrelation Q, p | `acorr_ljungbox` |
+| `durbin_watson(resid)` | DW statistic | `stats.stattools.durbin_watson` |
+| `arch_lm(resid, lags)` | Engle ARCH-LM test | `het_arch` |
+| `breusch_pagan(resid, xs)` | heteroskedasticity LM (Koenker n·R²), p | `het_breuschpagan` |
+| `newey_west(y, xs, maxlags)` | OLS with HAC (Bartlett) SEs | `OLS.fit(cov_type="HAC", use_correction=False)` |
+| `simple_returns` / `log_returns` / `cumulative_return` | return series / compounded total | numpy |
+| `sharpe_ratio` / `sortino_ratio` | annualized risk-adjusted return | closed form |
+| `max_drawdown(prices)` | worst peak-to-trough decline (+ indices) | numpy |
+| `value_at_risk(r, alpha, method)` | VaR ("historical"/"normal") | numpy / scipy |
+| `cvar(r, alpha)` | expected shortfall | numpy |
+| `capm(asset, market, rf)` | market-model α, β, R² (+ SE/t/p) | `statsmodels` OLS |
+
+MacKinnon (1994 p-value, 2010 critical-value) coefficient tables ported directly
+from statsmodels' `adfvalues` for N=1.

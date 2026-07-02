@@ -1,0 +1,15 @@
+adf_c stat 0.6113 p 0.9879 crit5 -2.998
+adf_ct stat -5.5483 p 2e-05
+ljung_box Q 48.248 p 0
+durbin_watson 3.4796
+arch_lm stat 8.1326 p 0.0171
+breusch_pagan stat 0.1594 p 0.6897
+newey_west b1 1.1839 se1 0.0252
+cumret 0.15
+sharpe 6.76
+sortino 15.776
+maxdd -0.0364 trough 8
+var_hist 0.0277
+var_norm 0.0378
+cvar 0.0217
+capm alpha -0.00016 beta 1.6243 r2 0.9869

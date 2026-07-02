@@ -1,0 +1,11 @@
+returns simple1 0.02 log1 0.0198 cum 0.15
+perf sharpe 6.76 sortino 15.776
+risk maxdd -0.0364 var95 0.0277 cvar 0.0217
+capm alpha -0.00016 beta 1.624 r2 0.987
+ols b1 1.1839 se 0.0594 | HAC se 0.0252
+het breusch_pagan p 0.6897
+adf level p 0.988 -> diff p 0
+acf lag1 -0.817 pacf lag1 -0.817
+arima phi1 -0.821 aic 1.73 fcast1 14.47
+arch_lm p 0.0009 garch persistence 0.181
+resid ljung_box p 0.089 dw 1.454
