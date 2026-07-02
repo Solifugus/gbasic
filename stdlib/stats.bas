@@ -1784,6 +1784,66 @@ library stats
         return out
     end function
 
+    ' Treatment (dummy) coding of a categorical predictor. labels is a list of
+    ' category values (numbers or strings). Levels are sorted; the first is the
+    ' reference and is dropped, giving K-1 indicator columns (matching
+    ' statsmodels / patsy C(x, Treatment)). Returns {columns (list of K-1
+    ' columns), levels, reference}, ready to splice into a regression's
+    ' predictor list. Returns unknown for fewer than two levels.
+    function dummy_code(labels)
+        n = len(labels)
+        if n = 0 then
+            return unknown
+        end if
+        levels = []
+        i = 0
+        while i < n
+            if not contains(levels, labels[i]) then
+                append(levels, labels[i])
+            end if
+            i = i + 1
+        end while
+        levels = sort(levels)
+        k = len(levels)
+        if k < 2 then
+            return unknown
+        end if
+        cols = []
+        m = 1
+        while m < k
+            col = []
+            i = 0
+            while i < n
+                v = 0
+                if labels[i] = levels[m] then
+                    v = 1
+                end if
+                append(col, v)
+                i = i + 1
+            end while
+            append(cols, col)
+            m = m + 1
+        end while
+        return { columns: cols, levels: levels, reference: levels[0] }
+    end function
+
+    ' Elementwise product of two equal-length predictor columns, for building an
+    ' interaction term. Returns the product column or unknown on a length
+    ' mismatch.
+    function interaction(a, b)
+        n = len(a)
+        if len(b) != n then
+            return unknown
+        end if
+        out = []
+        i = 0
+        while i < n
+            append(out, a[i] * b[i])
+            i = i + 1
+        end while
+        return out
+    end function
+
     ' Probit regression (binary y in {0,1}) by IRLS with the normal-CDF link.
     ' Same result shape as logistic_regression. Matches statsmodels Probit /
     ' GLM(family=Binomial, link=probit).

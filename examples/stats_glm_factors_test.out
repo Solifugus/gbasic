@@ -1,0 +1,7 @@
+levels A B C ref A
+main b 2.0056 x1 1.5084 B 0.9308 C -1.3874
+main r2 0.9504
+intr b 2.0218 x1 1.4178 B 0.932 C -1.4093
+intr x1B 0.1858 x1C 0.0304 r2 0.9525
+guard_dummy unknown
+guard_intr unknown

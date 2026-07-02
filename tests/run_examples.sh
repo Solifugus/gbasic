@@ -47,6 +47,7 @@ examples=(
     stats_arima_mle_test.bas
     stats_garch_test.bas
     stats_glm_test.bas
+    stats_glm_factors_test.bas
     epoch_test.bas
     bitwise_test.bas
     hex_literal_test.bas

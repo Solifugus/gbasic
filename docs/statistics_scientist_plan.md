@@ -242,6 +242,14 @@ ordinal/multinomial result. Null log-likelihoods are the closed-form intercept-
 only models (Bernoulli / Poisson / marginal-frequency), matching statsmodels
 `prsquared` exactly; CI/OR verified against statsmodels `conf_int`.
 
+**Categorical predictors (2026-07-01).** `dummy_code(labels)` treatment-codes a
+factor (levels sorted, first = reference dropped, K-1 indicator columns) matching
+statsmodels/patsy `C(x)`; `interaction(a, b)` is the elementwise product for
+interaction terms. Both return plain columns spliceable into any regression's
+predictor list. Verified in `examples/stats_glm_factors_test.bas`: OLS over the
+dummy columns reproduces `y ~ x1 + C(g)` and adding `interaction` columns
+reproduces `y ~ x1 * C(g)`, exactly.
+
 ## Cross-cutting — power analysis  *(slotted with Phase 7)* — **DONE (2026-07-01)**
 
 Shipped in `stdlib/stats.bas`, verified against `scipy.stats.nct`/`ncf` and
