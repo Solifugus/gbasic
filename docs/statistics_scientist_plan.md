@@ -250,6 +250,12 @@ predictor list. Verified in `examples/stats_glm_factors_test.bas`: OLS over the
 dummy columns reproduces `y ~ x1 + C(g)` and adding `interaction` columns
 reproduces `y ~ x1 * C(g)`, exactly.
 
+**Robust standard errors (2026-07-01).** `ols_robust(y, xs, hc)` fits OLS with a
+heteroskedasticity-consistent sandwich covariance — `hc` in `HC0`/`HC1`/`HC2`/
+`HC3`. z/p use the normal distribution, matching statsmodels
+`OLS.fit(cov_type='HC*')` exactly (verified all four variants in
+`examples/stats_robust_se_test.bas`).
+
 ## Cross-cutting — power analysis  *(slotted with Phase 7)* — **DONE (2026-07-01)**
 
 Shipped in `stdlib/stats.bas`, verified against `scipy.stats.nct`/`ncf` and

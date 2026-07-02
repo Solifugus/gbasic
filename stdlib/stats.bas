@@ -1844,6 +1844,121 @@ library stats
         return out
     end function
 
+    ' OLS with heteroskedasticity-consistent (robust sandwich) standard errors.
+    ' hc selects the variant: "HC0" (White), "HC1" (n/(n-p) correction, Stata
+    ' default), "HC2" (leverage-adjusted), or "HC3" (small-sample, recommended).
+    ' cov = (X'X)^-1 [Σ ω_i x_i x_i'] (X'X)^-1 with ω_i = e_i^2 scaled per
+    ' variant; z / p-values use the normal distribution (matching statsmodels
+    ' cov_type='HC*'). Returns {coefficients, std_errors, z_values, p_values,
+    ' cov_type, fitted, residuals, n, df} or unknown.
+    function ols_robust(y, xs, hc)
+        n = len(y)
+        if n = 0 then
+            return unknown
+        end if
+        cols = _norm_cols(xs, n)
+        if is_unknown(cols) then
+            return unknown
+        end if
+        p = len(cols) + 1
+        if n <= p then
+            return unknown
+        end if
+        bigx = _design(cols, n)
+        xt = mat_transpose(bigx)
+        xtxinv = mat_inverse(mat_mul(xt, bigx))
+        if is_unknown(xtxinv) then
+            return unknown
+        end if
+        beta = mat_vec(xtxinv, mat_vec(xt, y))
+        fitted = mat_vec(bigx, beta)
+        e = []
+        i = 0
+        while i < n
+            append(e, y[i] - fitted[i])
+            i = i + 1
+        end while
+        omega = []
+        i = 0
+        while i < n
+            ei2 = e[i] * e[i]
+            om = ei2
+            if hc = "HC1" then
+                om = ei2 * n / (n - p)
+            end if
+            if hc = "HC2" then
+                v = mat_vec(xtxinv, bigx[i])
+                hi = 0
+                a = 0
+                while a < p
+                    hi = hi + bigx[i][a] * v[a]
+                    a = a + 1
+                end while
+                om = ei2 / (1 - hi)
+            end if
+            if hc = "HC3" then
+                v = mat_vec(xtxinv, bigx[i])
+                hi = 0
+                a = 0
+                while a < p
+                    hi = hi + bigx[i][a] * v[a]
+                    a = a + 1
+                end while
+                om = ei2 / ((1 - hi) * (1 - hi))
+            end if
+            append(omega, om)
+            i = i + 1
+        end while
+        meat = []
+        a = 0
+        while a < p
+            row = []
+            b = 0
+            while b < p
+                append(row, 0)
+                b = b + 1
+            end while
+            append(meat, row)
+            a = a + 1
+        end while
+        i = 0
+        while i < n
+            a = 0
+            while a < p
+                b = 0
+                while b < p
+                    meat[a][b] = meat[a][b] + omega[i] * bigx[i][a] * bigx[i][b]
+                    b = b + 1
+                end while
+                a = a + 1
+            end while
+            i = i + 1
+        end while
+        cov = mat_mul(mat_mul(xtxinv, meat), xtxinv)
+        ses = []
+        zvals = []
+        pvals = []
+        j = 0
+        while j < p
+            v = cov[j][j]
+            se = unknown
+            zv = unknown
+            pv = unknown
+            if v >= 0 then
+                se = sqrt(v)
+                if se > 0 then
+                    zv = beta[j] / se
+                    pv = 2 * (1 - _norm_cdf_std(abs(zv)))
+                end if
+            end if
+            append(ses, se)
+            append(zvals, zv)
+            append(pvals, pv)
+            j = j + 1
+        end while
+        return { coefficients: beta, std_errors: ses, z_values: zvals, p_values: pvals, cov_type: hc, fitted: fitted, residuals: e, n: n, df: n - p }
+    end function
+
     ' Probit regression (binary y in {0,1}) by IRLS with the normal-CDF link.
     ' Same result shape as logistic_regression. Matches statsmodels Probit /
     ' GLM(family=Binomial, link=probit).
