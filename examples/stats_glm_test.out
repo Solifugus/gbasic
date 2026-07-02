@@ -1,9 +1,11 @@
 logit prsq 0.21697
 logit or1 4.6674 ci 2.0482 10.6362
 logit ci1 0.717 2.3643
+logit ame 0.25775 -0.00957 se 0.0462 0.08834
 probit b 0.5418 0.8966 -0.0523
 probit se 0.3685 0.2257 0.3101
 probit ll -40.0556 aic 86.1113
+probit ame 0.25399 -0.01481 se 0.04335 0.08779
 negbin b 0.1837 0.7962 -0.5248
 negbin se 0.2587 0.1534 0.2282
 negbin alpha 0.242 ll -95.7091 aic 199.418

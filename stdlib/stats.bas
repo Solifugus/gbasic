@@ -1546,7 +1546,7 @@ library stats
             loglik = loglik + y[i] * log(mc) + (1 - y[i]) * log(1 - mc)
             i = i + 1
         end while
-        return _glm_result(beta, cov, fitted, loglik, iter, converged, n, p, _bern_null_ll(y))
+        return _glm_result(beta, cov, fitted, loglik, iter, converged, n, p, _bern_null_ll(y), "logit")
     end function
 
     ' Poisson regression (count y >= 0) by IRLS, log link. Same result shape
@@ -1631,7 +1631,7 @@ library stats
             loglik = loglik + y[i] * log(mu) - mu - lgamma(y[i] + 1)
             i = i + 1
         end while
-        return _glm_result(beta, cov, fitted, loglik, iter, converged, n, p, _pois_null_ll(y))
+        return _glm_result(beta, cov, fitted, loglik, iter, converged, n, p, _pois_null_ll(y), "log")
     end function
 
     ' Intercept-only (null) log-likelihood for a Bernoulli outcome — used for
@@ -1691,7 +1691,7 @@ library stats
     ' Shared GLM result assembler: turn coefficients + covariance into the
     ' standard-error / z / p-value table and the result record. null_ll is the
     ' intercept-only log-likelihood (for McFadden's pseudo-R^2).
-    function _glm_result(beta, cov, fitted, loglik, iter, converged, n, p, null_ll)
+    function _glm_result(beta, cov, fitted, loglik, iter, converged, n, p, null_ll, link)
         ses = []
         zvals = []
         pvals = []
@@ -1719,7 +1719,7 @@ library stats
         if null_ll != 0 then
             pseudo = 1 - loglik / null_ll
         end if
-        return { coefficients: beta, std_errors: ses, z_values: zvals, p_values: pvals, fitted: fitted, log_likelihood: loglik, null_log_likelihood: null_ll, pseudo_r2: pseudo, aic: aic, bic: bic, iterations: iter, converged: converged, n: n, df_resid: n - p }
+        return { coefficients: beta, std_errors: ses, z_values: zvals, p_values: pvals, fitted: fitted, log_likelihood: loglik, null_log_likelihood: null_ll, pseudo_r2: pseudo, aic: aic, bic: bic, iterations: iter, converged: converged, n: n, df_resid: n - p, cov: cov, link: link }
     end function
 
     ' Wald confidence intervals for a fitted model's coefficients (flat
@@ -1959,6 +1959,125 @@ library stats
         return { coefficients: beta, std_errors: ses, z_values: zvals, p_values: pvals, cov_type: hc, fitted: fitted, residuals: e, n: n, df: n - p }
     end function
 
+    ' Average marginal effects (per slope) for a beta vector over design bigx
+    ' (with intercept). AME_j = beta_j · mean_i f'(eta_i), where f' is the
+    ' logistic-variance p(1-p) for the logit link or the normal pdf for probit.
+    ' Returns a length-(p-1) list (intercept excluded).
+    function _ame_vec(beta, bigx, link)
+        n = len(bigx)
+        p = len(beta)
+        s = 0
+        i = 0
+        while i < n
+            eta = 0
+            j = 0
+            while j < p
+                eta = eta + bigx[i][j] * beta[j]
+                j = j + 1
+            end while
+            if link = "probit" then
+                d = exp(0 - eta * eta / 2) / _sqrt2pi()
+            else
+                pmu = 1 / (1 + exp(0 - eta))
+                d = pmu * (1 - pmu)
+            end if
+            s = s + d
+            i = i + 1
+        end while
+        factor = s / n
+        out = []
+        j = 1
+        while j < p
+            append(out, beta[j] * factor)
+            j = j + 1
+        end while
+        return out
+    end function
+
+    ' Average marginal effects for a fitted logistic or probit model. `model` is
+    ' the result of logistic_regression / probit_regression (carrying its coef
+    ' covariance and link); `xs` is the same predictor set used to fit it.
+    ' Returns {effects, std_errors, z_values, p_values} — one entry per predictor
+    ' (the intercept is excluded) — with delta-method standard errors. Matches
+    ' statsmodels get_margeff(at='overall'). Returns unknown on bad input.
+    function marginal_effects(model, xs)
+        ks = keys(model)
+        if not contains(ks, "link") then
+            return unknown
+        end if
+        if not contains(ks, "cov") then
+            return unknown
+        end if
+        link = model.link
+        if link != "logit" then
+            if link != "probit" then
+                return unknown
+            end if
+        end if
+        beta = model.coefficients
+        cov = model.cov
+        p = len(beta)
+        n = model.n
+        cols = _norm_cols(xs, n)
+        if is_unknown(cols) then
+            return unknown
+        end if
+        bigx = _design(cols, n)
+        effects = _ame_vec(beta, bigx, link)
+        q = p - 1
+        gmat = []
+        r = 0
+        while r < q
+            row = []
+            c = 0
+            while c < p
+                append(row, 0)
+                c = c + 1
+            end while
+            append(gmat, row)
+            r = r + 1
+        end while
+        c = 0
+        while c < p
+            h = 0.00001 * (abs(beta[c]) + 1)
+            bp = beta
+            bp[c] = bp[c] + h
+            bm = beta
+            bm[c] = bm[c] - h
+            ap = _ame_vec(bp, bigx, link)
+            am = _ame_vec(bm, bigx, link)
+            r = 0
+            while r < q
+                gmat[r][c] = (ap[r] - am[r]) / (2 * h)
+                r = r + 1
+            end while
+            c = c + 1
+        end while
+        covame = mat_mul(mat_mul(gmat, cov), mat_transpose(gmat))
+        ses = []
+        zvals = []
+        pvals = []
+        r = 0
+        while r < q
+            v = covame[r][r]
+            se = unknown
+            zv = unknown
+            pv = unknown
+            if v >= 0 then
+                se = sqrt(v)
+                if se > 0 then
+                    zv = effects[r] / se
+                    pv = 2 * (1 - _norm_cdf_std(abs(zv)))
+                end if
+            end if
+            append(ses, se)
+            append(zvals, zv)
+            append(pvals, pv)
+            r = r + 1
+        end while
+        return { effects: effects, std_errors: ses, z_values: zvals, p_values: pvals }
+    end function
+
     ' Probit regression (binary y in {0,1}) by IRLS with the normal-CDF link.
     ' Same result shape as logistic_regression. Matches statsmodels Probit /
     ' GLM(family=Binomial, link=probit).
@@ -2056,7 +2175,7 @@ library stats
             loglik = loglik + y[i] * log(mc) + (1 - y[i]) * log(1 - mc)
             i = i + 1
         end while
-        return _glm_result(beta, cov, fitted, loglik, iter, converged, n, p, _bern_null_ll(y))
+        return _glm_result(beta, cov, fitted, loglik, iter, converged, n, p, _bern_null_ll(y), "probit")
     end function
 
     ' Numerical parameter covariance for an MLE: the inverse of the observed

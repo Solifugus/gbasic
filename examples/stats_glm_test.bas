@@ -21,6 +21,10 @@ program demo(args)
     print("logit or1 " + string(round(orr[1].odds_ratio, 4)) + " ci " + string(round(orr[1].ci_low, 4)) + " " + string(round(orr[1].ci_high, 4)))
     ci = conf_int(lg, 0.95)
     print("logit ci1 " + string(round(ci[1].low, 4)) + " " + string(round(ci[1].high, 4)))
+    ' Average marginal effects. statsmodels margeff(overall): logit
+    ' AME 0.25775 -0.00957, SE 0.0462 0.08834.
+    me = marginal_effects(lg, [x1, x2])
+    print("logit ame " + string(round(me.effects[0], 5)) + " " + string(round(me.effects[1], 5)) + " se " + string(round(me.std_errors[0], 5)) + " " + string(round(me.std_errors[1], 5)))
 
     ' Probit. statsmodels GLM(probit): beta 0.5418 0.8966 -0.0523,
     ' se 0.3685 0.2257 0.3101, llf -40.0556, aic 86.1113.
@@ -28,6 +32,11 @@ program demo(args)
     print("probit b " + string(round(pb.coefficients[0], 4)) + " " + string(round(pb.coefficients[1], 4)) + " " + string(round(pb.coefficients[2], 4)))
     print("probit se " + string(round(pb.std_errors[0], 4)) + " " + string(round(pb.std_errors[1], 4)) + " " + string(round(pb.std_errors[2], 4)))
     print("probit ll " + string(round(pb.log_likelihood, 4)) + " aic " + string(round(pb.aic, 4)))
+    ' Probit AME. Effects match statsmodels (0.25399 -0.01481); the SEs use the
+    ' expected-information covariance (like GLM), so they differ slightly from
+    ' sm.Probit's observed-Hessian margeff SEs, as the coefficient SEs do.
+    pme = marginal_effects(pb, [x1, x2])
+    print("probit ame " + string(round(pme.effects[0], 5)) + " " + string(round(pme.effects[1], 5)) + " se " + string(round(pme.std_errors[0], 5)) + " " + string(round(pme.std_errors[1], 5)))
 
     ' Negative binomial (NB2). statsmodels: beta 0.1837 0.7963 -0.5248,
     ' se 0.2587 0.1534 0.2282, alpha 0.242, llf -95.7091, aic 199.4183.

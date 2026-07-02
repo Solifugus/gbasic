@@ -256,6 +256,15 @@ heteroskedasticity-consistent sandwich covariance — `hc` in `HC0`/`HC1`/`HC2`/
 `OLS.fit(cov_type='HC*')` exactly (verified all four variants in
 `examples/stats_robust_se_test.bas`).
 
+**Marginal effects (2026-07-01).** `marginal_effects(model, xs)` gives average
+marginal effects (AME, `at='overall'`) for a fitted logistic or probit model —
+`AME_j = beta_j · mean_i f'(eta_i)` — with delta-method SEs (numerical Jacobian ×
+the coefficient covariance, now carried on the fit as `cov`/`link`). Logit AME
+(effects and SEs) matches statsmodels `get_margeff` exactly; probit effects match
+exactly while the SEs use the expected-information covariance (differing slightly
+from `sm.Probit`'s observed-Hessian SEs, as the coefficient SEs do). Verified in
+`examples/stats_glm_test.bas`.
+
 ## Cross-cutting — power analysis  *(slotted with Phase 7)* — **DONE (2026-07-01)**
 
 Shipped in `stdlib/stats.bas`, verified against `scipy.stats.nct`/`ncf` and
