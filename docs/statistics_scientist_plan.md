@@ -234,6 +234,14 @@ observed information → inverse), which reproduces statsmodels standard errors 
 parameterization; the multinomial baseline is category 0. **Earn-it:** none —
 pure gBASIC over `matrix.bas` and the optimizer.
 
+**Reporting helpers (2026-07-01).** For write-ups: `conf_int(model, level)` (Wald
+CIs — t for OLS, z otherwise), `odds_ratios(model, level)` (exp-coef + CI: odds
+ratios for logistic, incidence-rate ratios for Poisson/NB), and McFadden
+`pseudo_r2` (+ `null_log_likelihood`) now on every logistic/probit/Poisson/
+ordinal/multinomial result. Null log-likelihoods are the closed-form intercept-
+only models (Bernoulli / Poisson / marginal-frequency), matching statsmodels
+`prsquared` exactly; CI/OR verified against statsmodels `conf_int`.
+
 ## Cross-cutting — power analysis  *(slotted with Phase 7)* — **DONE (2026-07-01)**
 
 Shipped in `stdlib/stats.bas`, verified against `scipy.stats.nct`/`ncf` and

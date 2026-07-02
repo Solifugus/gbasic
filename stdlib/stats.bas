@@ -1546,7 +1546,7 @@ library stats
             loglik = loglik + y[i] * log(mc) + (1 - y[i]) * log(1 - mc)
             i = i + 1
         end while
-        return _glm_result(beta, cov, fitted, loglik, iter, converged, n, p)
+        return _glm_result(beta, cov, fitted, loglik, iter, converged, n, p, _bern_null_ll(y))
     end function
 
     ' Poisson regression (count y >= 0) by IRLS, log link. Same result shape
@@ -1631,12 +1631,67 @@ library stats
             loglik = loglik + y[i] * log(mu) - mu - lgamma(y[i] + 1)
             i = i + 1
         end while
-        return _glm_result(beta, cov, fitted, loglik, iter, converged, n, p)
+        return _glm_result(beta, cov, fitted, loglik, iter, converged, n, p, _pois_null_ll(y))
+    end function
+
+    ' Intercept-only (null) log-likelihood for a Bernoulli outcome — used for
+    ' McFadden's pseudo-R^2 in logistic / probit.
+    function _bern_null_ll(y)
+        n = len(y)
+        s = sum(y)
+        pbar = s / n
+        if pbar <= 0 then
+            return 0
+        end if
+        if pbar >= 1 then
+            return 0
+        end if
+        return s * log(pbar) + (n - s) * log(1 - pbar)
+    end function
+
+    ' Intercept-only (null) log-likelihood for a Poisson count outcome.
+    function _pois_null_ll(y)
+        n = len(y)
+        m = mean(y)
+        s = 0
+        i = 0
+        while i < n
+            s = s + y[i] * log(m) - m - lgamma(y[i] + 1)
+            i = i + 1
+        end while
+        return s
+    end function
+
+    ' Intercept-only (null) log-likelihood for a K-category outcome (the
+    ' marginal-frequency model) — used by ordinal / multinomial pseudo-R^2.
+    function _cat_null_ll(y, k)
+        n = len(y)
+        counts = []
+        c = 0
+        while c < k
+            append(counts, 0)
+            c = c + 1
+        end while
+        i = 0
+        while i < n
+            counts[y[i]] = counts[y[i]] + 1
+            i = i + 1
+        end while
+        s = 0
+        c = 0
+        while c < k
+            if counts[c] > 0 then
+                s = s + counts[c] * log(counts[c] / n)
+            end if
+            c = c + 1
+        end while
+        return s
     end function
 
     ' Shared GLM result assembler: turn coefficients + covariance into the
-    ' standard-error / z / p-value table and the result record.
-    function _glm_result(beta, cov, fitted, loglik, iter, converged, n, p)
+    ' standard-error / z / p-value table and the result record. null_ll is the
+    ' intercept-only log-likelihood (for McFadden's pseudo-R^2).
+    function _glm_result(beta, cov, fitted, loglik, iter, converged, n, p, null_ll)
         ses = []
         zvals = []
         pvals = []
@@ -1660,7 +1715,73 @@ library stats
         end while
         aic = 2 * p - 2 * loglik
         bic = log(n) * p - 2 * loglik
-        return { coefficients: beta, std_errors: ses, z_values: zvals, p_values: pvals, fitted: fitted, log_likelihood: loglik, aic: aic, bic: bic, iterations: iter, converged: converged, n: n, df_resid: n - p }
+        pseudo = unknown
+        if null_ll != 0 then
+            pseudo = 1 - loglik / null_ll
+        end if
+        return { coefficients: beta, std_errors: ses, z_values: zvals, p_values: pvals, fitted: fitted, log_likelihood: loglik, null_log_likelihood: null_ll, pseudo_r2: pseudo, aic: aic, bic: bic, iterations: iter, converged: converged, n: n, df_resid: n - p }
+    end function
+
+    ' Wald confidence intervals for a fitted model's coefficients (flat
+    ' coefficient list). Uses the t-distribution for OLS (models carrying
+    ' t_values + df) and the normal otherwise. level is e.g. 0.95. Returns a
+    ' list of {low, high}, or unknown (including for multinomial's nested
+    ' coefficients).
+    function conf_int(model, level)
+        ks = keys(model)
+        if not contains(ks, "coefficients") then
+            return unknown
+        end if
+        coefs = model.coefficients
+        if len(coefs) > 0 then
+            if is_array(coefs[0]) then
+                return unknown
+            end if
+        end if
+        ses = model.std_errors
+        a = 1 - level
+        crit = _inv_norm_std(1 - a / 2)
+        if contains(ks, "t_values") then
+            crit = t_quantile(1 - a / 2, model.df)
+        end if
+        out = []
+        j = 0
+        while j < len(coefs)
+            se = ses[j]
+            lo = unknown
+            hi = unknown
+            if not is_unknown(se) then
+                lo = coefs[j] - crit * se
+                hi = coefs[j] + crit * se
+            end if
+            append(out, { low: lo, high: hi })
+            j = j + 1
+        end while
+        return out
+    end function
+
+    ' Exponentiated coefficients with confidence intervals: odds ratios for
+    ' logistic, incidence-rate ratios for Poisson / negative binomial. Returns
+    ' a list of {odds_ratio, ci_low, ci_high}, or unknown.
+    function odds_ratios(model, level)
+        ci = conf_int(model, level)
+        if is_unknown(ci) then
+            return unknown
+        end if
+        coefs = model.coefficients
+        out = []
+        j = 0
+        while j < len(coefs)
+            lo = unknown
+            hi = unknown
+            if not is_unknown(ci[j].low) then
+                lo = exp(ci[j].low)
+                hi = exp(ci[j].high)
+            end if
+            append(out, { odds_ratio: exp(coefs[j]), ci_low: lo, ci_high: hi })
+            j = j + 1
+        end while
+        return out
     end function
 
     ' Probit regression (binary y in {0,1}) by IRLS with the normal-CDF link.
@@ -1760,7 +1881,7 @@ library stats
             loglik = loglik + y[i] * log(mc) + (1 - y[i]) * log(1 - mc)
             i = i + 1
         end while
-        return _glm_result(beta, cov, fitted, loglik, iter, converged, n, p)
+        return _glm_result(beta, cov, fitted, loglik, iter, converged, n, p, _bern_null_ll(y))
     end function
 
     ' Numerical parameter covariance for an MLE: the inverse of the observed
@@ -2081,7 +2202,12 @@ library stats
         kpar = p + nc
         aic = 2 * kpar - 2 * loglik
         bic = log(n) * kpar - 2 * loglik
-        return { coefficients: beta, std_errors: ses, z_values: zvals, p_values: pvals, cutpoints: cuts, log_likelihood: loglik, aic: aic, bic: bic, n: n, converged: res.converged }
+        nullll = _cat_null_ll(y, kcat)
+        pseudo = unknown
+        if nullll != 0 then
+            pseudo = 1 - loglik / nullll
+        end if
+        return { coefficients: beta, std_errors: ses, z_values: zvals, p_values: pvals, cutpoints: cuts, log_likelihood: loglik, null_log_likelihood: nullll, pseudo_r2: pseudo, aic: aic, bic: bic, n: n, converged: res.converged }
     end function
 
     ' Negative log-likelihood of the baseline-category multinomial logit
@@ -2204,7 +2330,12 @@ library stats
         end while
         aic = 2 * m - 2 * loglik
         bic = log(n) * m - 2 * loglik
-        return { coefficients: coefs, std_errors: allse, z_values: allz, p_values: allp, log_likelihood: loglik, aic: aic, bic: bic, n: n, converged: res.converged }
+        nullll = _cat_null_ll(y, kcat)
+        pseudo = unknown
+        if nullll != 0 then
+            pseudo = 1 - loglik / nullll
+        end if
+        return { coefficients: coefs, std_errors: allse, z_values: allz, p_values: allp, log_likelihood: loglik, null_log_likelihood: nullll, pseudo_r2: pseudo, aic: aic, bic: bic, n: n, converged: res.converged }
     end function
 
     ' ======================================================================

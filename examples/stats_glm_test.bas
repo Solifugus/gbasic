@@ -13,6 +13,15 @@ program demo(args)
     yo = [1, 0, 2, 0, 1, 1, 0, 0, 0, 0, 0, 2, 0, 2, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 2, 0, 0, 2, 0, 0, 0, 2, 0, 0, 1, 0, 2, 0, 1, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0]
     ym = [2, 2, 1, 2, 2, 0, 2, 0, 2, 2, 0, 1, 0, 1, 2, 2, 0, 1, 2, 1, 2, 2, 1, 2, 1, 2, 2, 0, 1, 0, 1, 2, 2, 2, 2, 0, 0, 1, 1, 1, 2, 0, 0, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2, 1, 2, 1, 2, 2, 2, 2, 2, 1, 1, 1, 0, 0, 1, 0, 2, 1, 1, 1, 0, 0, 0, 2, 0, 1, 2, 1]
 
+    ' Reporting helpers on a logistic fit. statsmodels Logit: pseudo-R2 0.21697;
+    ' x1 odds ratio 4.6674 (95% CI 2.0482-10.6362), coef CI 0.717-2.3643.
+    lg = logistic_regression(yb, [x1, x2])
+    print("logit prsq " + string(round(lg.pseudo_r2, 5)))
+    orr = odds_ratios(lg, 0.95)
+    print("logit or1 " + string(round(orr[1].odds_ratio, 4)) + " ci " + string(round(orr[1].ci_low, 4)) + " " + string(round(orr[1].ci_high, 4)))
+    ci = conf_int(lg, 0.95)
+    print("logit ci1 " + string(round(ci[1].low, 4)) + " " + string(round(ci[1].high, 4)))
+
     ' Probit. statsmodels GLM(probit): beta 0.5418 0.8966 -0.0523,
     ' se 0.3685 0.2257 0.3101, llf -40.0556, aic 86.1113.
     pb = probit_regression(yb, [x1, x2])
@@ -34,6 +43,7 @@ program demo(args)
     print("ordinal b " + string(round(orl.coefficients[0], 4)) + " " + string(round(orl.coefficients[1], 4)))
     print("ordinal se " + string(round(orl.std_errors[0], 4)) + " " + string(round(orl.std_errors[1], 4)))
     print("ordinal cuts " + string(round(orl.cutpoints[0], 4)) + " " + string(round(orl.cutpoints[1], 4)) + " ll " + string(round(orl.log_likelihood, 4)))
+    print("ordinal prsq " + string(round(orl.pseudo_r2, 5)))
 
     ' Multinomial logistic (baseline category 0). statsmodels MNLogit:
     ' cat1 [1.0929 0.4915 -1.3096], cat2 [-0.3007 -0.5946 0.5669],
@@ -43,6 +53,7 @@ program demo(args)
     print("mnl cat2 " + string(round(mn.coefficients[1][0], 4)) + " " + string(round(mn.coefficients[1][1], 4)) + " " + string(round(mn.coefficients[1][2], 4)))
     print("mnl se1 " + string(round(mn.std_errors[0][0], 4)) + " " + string(round(mn.std_errors[0][1], 4)) + " " + string(round(mn.std_errors[0][2], 4)))
     print("mnl ll " + string(round(mn.log_likelihood, 4)) + " aic " + string(round(mn.aic, 4)))
+    print("mnl prsq " + string(round(mn.pseudo_r2, 5)))
 
     ' domain guards return unknown
     print("guard_ord " + string(ordinal_regression([0, 1], [])))
