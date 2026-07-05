@@ -1,0 +1,25 @@
+== synthetic red-flag dossier (default 90-day cluster window) ==
+nt_filing | 2024-02-15 | acc=0000000000-24-000001 | period=2023-12-31 | late filing: NT 10-K
+amendment | 2024-06-01 | acc=0000000000-24-000010 | period=2022-12-31 | amended financials: 10-K/A
+auditor_change | 2024-03-10 | acc=0000000000-24-000005 | period= | 8-K 4.01 auditor change
+non_reliance | 2024-04-20 | acc=0000000000-24-000007 | period= | 8-K 4.02 non-reliance on prior financials
+officer_exodus | 2024-06-15 | acc=0000000000-24-000013 | period= | 5.02 officer change clustered (3 within 90d)
+officer_exodus | 2024-05-20 | acc=0000000000-24-000012 | period= | 5.02 officer change clustered (3 within 90d)
+officer_exodus | 2024-05-01 | acc=0000000000-24-000011 | period= | 5.02 officer change clustered (3 within 90d)
+rising_accruals | 2023-12-31 | acc=- | period=2023-12-31 | accrual ratio 0.027 -> 0.156
+mscore_flag | 2023-12-31 | acc=- | period=2023-12-31 | M-Score -0.38 > -1.78
+positive_ni_negative_fcf | 2023-12-31 | acc=- | period=2023-12-31 | positive net income, negative free cash flow
+rows: 10
+== 10-day window ==
+officer_exodus rows: 0
+== real filer (AAPL) over real submissions ==
+submissions rows scanned: 1000
+total flag rows: 10
+  nt_filing: 0
+  amendment: 0
+  auditor_change: 0
+  non_reliance: 0
+  officer_exodus: 7
+  rising_accruals: 1
+  mscore_flag: 2
+  positive_ni_negative_fcf: 0

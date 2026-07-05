@@ -1,0 +1,13 @@
+== idempotency ==
+ingest-once  processed=3 rows=3
+ingest-again processed=0 rows=3
+twice == once ? true
+== resumability (cap=1 interruptions) ==
+cap#1: processed=1 rows=1
+cap#2: processed=1 rows=2
+finish: processed=1 rows=3
+no duplication (rows == once) ? true
+== universe ==
+0000019617 | JPMORGAN CHASE & CO | 2026-03-31
+0000320193 | Apple Inc. | 2026-03-28
+0001334036 | CROCS, INC. | 2026-03-31

@@ -1,0 +1,28 @@
+================================================================
+  FORENSIC DOSSIER — AAPL  (Apple Inc.)
+  CIK 0000320193
+================================================================
+
+-- fundamentals (fiscal year) ----------------------------------
+  end          FCF       gross    oper     net      net debt
+  2022-09-24  111.44B   43.3%  30.3%  25.3%  86.44B
+  2023-09-30  99.58B   44.1%  29.8%  25.3%  75.14B
+  2024-09-28  108.81B   46.2%  31.5%  24%  66.72B
+  2025-09-27  98.77B   46.9%  32%  26.9%  54.74B
+
+-- forensic scorecard (latest fiscal year) ---------------------
+  Piotroski F-Score   8 / 9        (fundamental health, higher better)
+  Beneish M-Score     -2.29         (manipulation; flag=false, threshold -1.78)
+  Altman Z"           2.31         (distress; zone=grey)
+  Sloan accrual ratio 0.001        (earnings quality; lower/negative better)
+  Dilution net        77.85B      (buybacks minus stock-based comp)
+
+-- red flags (composite; signals, not verdicts) ----------------
+  officer_exodus x7
+  rising_accruals x1
+  mscore_flag x2
+  total: 10 flag rows
+
+  note: forensic scores are published models over reported facts;
+  Beneish/Altman were built on industrials and are known to
+  false-positive on large growth+buyback firms. Read as evidence.

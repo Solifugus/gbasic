@@ -1,0 +1,19 @@
+== real fixture ==
+nrows=2
+codes=M,F
+acquired=A,D
+owner=Newstead Jennifer
+officer_title=SVP, GC and Secretary
+is_officer=true is_director=false
+row0 M/A: shares=30104 price=unknown value=unknown post_shares=57784 date=2026-06-15 filed=2026-06-17
+row1 F/D: shares=16238 price=296.42 post_shares=41546 date=2026-06-15
+row1 value == shares*price ? true
+row0 price is_unknown ? true
+open_market_buys(real) nrows=0
+== synthetic P ==
+owner=Buyer Jane is_director=true is_officer=false
+code=P acquired=A shares=1000 price=150.5 value=150500
+== concat + screen ==
+concat nrows=3
+buys nrows=1
+buy owner=Buyer Jane code=P value=150500 date=2026-05-10

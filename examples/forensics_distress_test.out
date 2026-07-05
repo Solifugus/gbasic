@@ -1,0 +1,10 @@
+altman Z" AAPL 2025-09-27
+  x1_wc=-0.0492 x2_re=-0.0397 x3_ebit=0.3704 x4_bookeq=0.2583
+  zscore=2.3078 zone=grey
+  ingredients 2025-09-27: ca=147957000000 cl=165631000000 ta=359241000000
+    re=-14264000000 ebit=133050000000 book_equity=73733000000 total_liabilities=285508000000
+altman classic Z AAPL 2025-09-27 (synthetic close=250)
+  x4_mkt=12.9359 x5_sales=1.1584 zscore=10.0276 zone=safe
+dilution AAPL 2025-09-27 prior=2024-09-28
+  shares=14773260000 prior_shares=15116786000 shares_change=-343526000
+  sbc=12863000000 buybacks=90711000000 net=77848000000

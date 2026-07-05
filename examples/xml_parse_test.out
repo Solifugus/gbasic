@@ -1,0 +1,11 @@
+root order id=A1 qty=3
+items 2
+item0 Widget
+item1 Gadget
+ns local=root qname=a:root uri=urn:example:x
+leaf local=leaf qname=a:leaf
+entity [5 < 10 & 3 > 1  raw <b> ]
+ws_default 2
+ws_keep 5
+plain_ns_nothing true
+plain_children 0

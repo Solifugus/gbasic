@@ -1,0 +1,1 @@
+runtime error at tests/negative_xml_subtree_non_element.bas:9:5: xml.subtree requires the cursor on a start element

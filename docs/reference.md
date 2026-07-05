@@ -1020,6 +1020,23 @@ if is_unknown(port) then
 end if
 ```
 
+### Timing
+
+**`sleep(seconds)`** - Blocks the current program for at least `seconds`, then
+returns `seconds`. `seconds` must be a non-negative number; fractional values
+are honored to sub-second resolution (e.g. `sleep(0.25)` pauses a quarter
+second). `sleep(0)` returns immediately. The pause resumes across signal
+interruptions, so the full requested interval always elapses — the property
+polling loops such as a filing monitor rely on.
+
+```basic
+poll_interval = 60          ' seconds between checks
+while watching
+    check_for_new_filings()
+    sleep(poll_interval)
+end while
+```
+
 ### Secure Tokens
 
 **`secure_token(length)`** - Returns a cryptographically random URL-safe token

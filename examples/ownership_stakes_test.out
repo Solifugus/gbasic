@@ -1,0 +1,16 @@
+== real 13G field-check (Novus / Trinity Biotech) ==
+form=13G filer=Novus Diagnostics Ltd. percent=5.99 amended=false
+issuer_name=TRINITY BIOTECH PLC issuer_cik=0000888721 cusip=896438306
+event_date=12/23/2025 filed=2026-03-06
+== real 13D field-check (Perceptive / Trinity Biotech) ==
+form=13D filer=Perceptive Advisors LLC percent=9.9 amended=true
+issuer_name=Trinity Biotech plc issuer_cik=0000888721 cusip=896438504
+event_date=04/30/2026 filed=2026-05-04
+== events frame (same subject, two holders) ==
+rows=2 forms=13G,13D
+filers=Novus Diagnostics Ltd. | Perceptive Advisors LLC
+percents=5.99 | 9.9
+== synthetic flip (same filer) ==
+2026-01-15 13G 6.5% Rivendell Capital LP
+2026-04-02 13D 8.2% Rivendell Capital LP
+flip visible: 13G->13D ? true

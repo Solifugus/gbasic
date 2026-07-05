@@ -1,0 +1,13 @@
+encode <order id="A1"><item>Widget</item><item>Gadget</item></order>
+escaped <n note="a &quot;b&quot; &amp; c">5 &lt; 10 &amp; 3 &gt; 1</n>
+handbuilt <x n="5" s="a&lt;b&amp;c">hello &amp; &lt;world&gt;</x>
+rt_attrs_nested true
+rt_prefix_ns true
+rt_default_ns true
+rt_empty true
+rt_entities true
+--- pretty ---
+<order id="A1">
+  <item>Widget</item>
+  <item>Gadget</item>
+</order>

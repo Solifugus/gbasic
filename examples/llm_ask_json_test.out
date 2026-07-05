@@ -1,0 +1,5 @@
+clean:  verdict=buy score=9
+fenced: verdict=sell score=2
+retry:  ok=true (parsed on the corrective retry)
+garbage: is_unknown=true
+list:   count=3 first=10

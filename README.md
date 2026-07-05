@@ -22,10 +22,14 @@ Implemented language features include:
 - `break` and `continue`
 - arrays, records, nested assignment, and dynamic record access
 - functions, programs, libraries, `load`, labels, `goto`, and `gosub`
+- first-class function values (references) that can be stored, passed, and called
+- shared-nothing actors (multiprocessing) over `spawn`/`send`/`receive`
 - assignment and comparison modifiers
 - watchers, locks, and runtime error handling
 - distinct `nothing` and `unknown` values
 - date/time, duration, money, file, and directory values
+- binary-safe, Unicode-aware strings and codepoint operations
+- bitwise builtins (`band`/`bor`/`bxor`/`bnot`/`shl`/`shr`/`rotl`/`rotr`)
 - JSON-like serialization with `encode` and `decode`
 
 Implemented runtime and module features include:
@@ -37,7 +41,21 @@ Implemented runtime and module features include:
 - synchronous HTTP and HTTPS requests through the optional libcurl-backed
   `webclient` module
 - a built-in loopback HTTP server using live request and response queues
+- an XML module (optional libxml2-backed) for tree parsing, navigation,
+  encoding, lenient HTML, and constant-memory streaming
+- a cryptography library (optional libcrypto-backed): hashing, HMAC, AES-GCM,
+  Ed25519, JWT/HS256, and signed cookies
 - an optional GTK 3 GUI proof of concept through Stage 6A
+
+The standard library also ships two large pure-gBASIC toolkits:
+
+- a **statistics** library — descriptive and inferential statistics,
+  regression and the GLM suite, mediation/moderation, time-series and
+  econometric diagnostics, and finance metrics
+- an **EDGAR securities-analysis suite** — SEC data acquisition, fundamentals,
+  the forensic scorecard (accruals, Beneish, Piotroski, Altman, dilution,
+  composite flags), ownership and insider analysis, MD&A extraction with an
+  LLM analyst panel, a whole-market screener, and a watcher monitor
 
 The repository also contains two larger language exercises:
 
@@ -551,26 +569,57 @@ GUI testing remains manual because it requires a display.
 
 ## Documentation
 
+### Start here
+
+- [Tutorial](docs/tutorial.md) — learn the language by writing programs
+- [Language and runtime reference](docs/reference.md) — syntax, semantics, and
+  builtins
 - [Language design](docs/gbasic-design.md) — consolidated design of the language
   and core runtime
-- [Tutorial](docs/tutorial.md)
-- [Language and runtime reference](docs/reference.md)
-- [Policy-Based Inheritance (objects)](docs/pbi_design.md)
 
-Library/module designs (each kept separate):
+### Language features
+
+- [Policy-Based Inheritance (objects)](docs/pbi_design.md)
+- [First-class functions](docs/first_class_functions_design.md)
+- [Strings and Unicode](docs/unicode_design.md)
+- [Multiprocessing (actors)](docs/multiprocessing_design.md)
+- [Bitwise operations](docs/bitwise_design.md)
+- [Cryptography library](docs/crypto_design.md)
+
+### Modules
 
 - [SQLite design](docs/sqlite_design.md)
 - [PostgreSQL design and implementation status](docs/postgres_design.md)
 - [WebClient design](docs/webclient_design.md)
 - [WebServer design](docs/webserver_design.md)
 - [GUI design](docs/gui_design.md)
+- [XML module design](docs/xml_design.md)
 
-Other:
+### Statistics library
 
+- [Statistics design](docs/statistics_design.md)
+- [Cookbook: social & behavioral sciences](docs/cookbook_social_behavioral.md)
+- [Cookbook: econometrics & finance](docs/cookbook_econometrics_finance.md)
+
+### EDGAR securities-analysis suite
+
+- [Tutorial & cookbook](docs/edgar_tutorial.md) — build a forensic dossier, plus
+  copy-pasteable recipes per library
+- [Reference](docs/edgar_reference.md) — every public function and its return
+  shape
+- [Design](docs/edgar_design.md) — domain primer, model rationale, and
+  applicability caveats
+
+### Status & history
+
+- [Development progress ledger](docs/PROGRESS.md) — per-work-package evidence
+- [Project state](docs/project_state.md)
 - [Completed development history](docs/historical_development_archive.md)
 
-Design documents may discuss unimplemented future work. The historical archive
-summarizes completed phases without keeping each temporary tracker active.
+Design documents may discuss unimplemented future work. Check the
+implementation-status documents (and the progress ledger) before relying on a
+design proposal as an available feature; the historical archive summarizes
+completed phases without keeping each temporary tracker active.
 
 ## Project Limitations
 

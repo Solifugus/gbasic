@@ -1,0 +1,13 @@
+== events(subs) — submissions-side only, no companyfacts ==
+nt_filing | 2024-02-15 | acc=0000000000-24-000001 | late filing: NT 10-K
+amendment | 2024-06-01 | acc=0000000000-24-000010 | amended financials: 10-K/A
+auditor_change | 2024-03-10 | acc=0000000000-24-000005 | 8-K 4.01 auditor change
+non_reliance | 2024-04-20 | acc=0000000000-24-000007 | 8-K 4.02 non-reliance on prior financials
+officer_exodus | 2024-06-15 | acc=0000000000-24-000013 | 5.02 officer change clustered (3 within 90d)
+officer_exodus | 2024-05-20 | acc=0000000000-24-000012 | 5.02 officer change clustered (3 within 90d)
+officer_exodus | 2024-05-01 | acc=0000000000-24-000011 | 5.02 officer change clustered (3 within 90d)
+rows: 7
+== events_window(subs, 10) ==
+rows: 4 (cluster dissolved)
+== monitor: classify one incoming 8-K (the fire alarm) ==
+kind: non_reliance | detail: 8-K 4.02 non-reliance on prior financials

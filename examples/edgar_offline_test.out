@@ -1,0 +1,10 @@
+aapl 0000320193
+jpm 0000019617
+crox 0001334036
+bogus_unknown true
+cols form,filed,accession,period,primary_document,items
+rows_positive true
+accession_is_string true
+transport_after_fetches 2
+transport_after_cachehit 2
+cachehit_no_transport true

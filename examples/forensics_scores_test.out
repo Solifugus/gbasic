@@ -1,0 +1,13 @@
+accruals AAPL 2025-09-27 prior=2024-09-28
+  net_income=112010000000 operating_cash_flow=111482000000 avg_total_assets=362110500000
+  accrual_ratio=0.001458
+piotroski AAPL 2025-09-27 prior=2024-09-28
+  f_roa=1 f_cfo=1 f_droa=1 f_accrual=0
+  f_dlever=1 f_dliquid=1 f_shares=1
+  f_dmargin=1 f_dturn=1
+  f_score=8
+  ingredients cur 2025-09-27: ni=112010000000 cfo=111482000000 ta=359241000000 ltd=78328000000
+    ca=147957000000 cl=165631000000 shares=14773260000 gp=195201000000 rev=416161000000
+  ingredients prior 2024-09-28: ni=93736000000 cfo=118254000000 ta=364980000000 ltd=85750000000
+    ca=152987000000 cl=176392000000 shares=15116786000 gp=180683000000 rev=391035000000
+piotroski JPM 2025-12-31: f_cfo=0 f_dmargin=unknown f_dturn=0 f_score=unknown

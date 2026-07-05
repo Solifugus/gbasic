@@ -1,0 +1,14 @@
+== conviction ==
+Alice value=10000 prior_stake=4000 conviction=2.5
+Bob value=10000 prior_stake=0 conviction=unknown
+Alice value=20000 prior_stake=6000 conviction=3.33333
+Alice value=1500 prior_stake=1000 conviction=1.5
+Dave value=unknown prior_stake=500 conviction=unknown
+alice0 conviction == 10000/4000 ? true
+bob zero-prior conviction is_unknown ? true
+dave unknown-value conviction is_unknown ? true
+== cluster (window=7) ==
+num_clusters=3
+cluster 2026-05-01..2026-05-03 owners=2 buys=2 value=20000
+cluster 2026-05-20..2026-05-21 owners=1 buys=2 value=21500
+cluster 2026-06-15..2026-06-15 owners=1 buys=1 value=unknown

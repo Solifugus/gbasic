@@ -1,0 +1,7 @@
+== EDGAR monitor: synthetic filing stream ==
+[CRITICAL] non_reliance 2024-04-20 acc=0000000000-24-000007 :: 8-K 4.02 non-reliance on prior financials
+[CRITICAL] nt_filing 2024-05-10 acc=0000000000-24-000001 :: late filing: NT 10-K
+[WARNING]  officer_exodus 2024-05-01 acc=0000000000-24-000011 :: 5.02 officer change clustered (2 within 90d)
+[WARNING]  officer_exodus 2024-05-20 acc=0000000000-24-000012 :: 5.02 officer change clustered (2 within 90d)
+== totals ==
+critical: 2 warning: 2

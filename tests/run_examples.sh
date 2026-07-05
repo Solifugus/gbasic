@@ -8,7 +8,15 @@ cleanup_example_artifacts() {
         examples/tmp_error_lock_test.txt \
         examples/tmp_file_test.txt \
         examples/tmp_lock_cleanup_test.txt \
-        examples/tmp_lock_test.txt
+        examples/tmp_lock_test.txt \
+        examples/tmp_edgar_test.db \
+        examples/tmp_edgar_facts.db \
+        examples/tmp_edgar_demo.db \
+        examples/tmp_screener_a.db \
+        examples/tmp_screener_b.db \
+        examples/tmp_screener_scores.db \
+        examples/tmp_scorecard_cache.db \
+        examples/tmp_xml_reader.xml
 }
 
 trap cleanup_example_artifacts EXIT
@@ -115,6 +123,37 @@ examples=(
     pbi_derive_test.bas
     pbi_cow_test.bas
     env_builtin_test.bas
+    sleep_test.bas
+    edgar_offline_test.bas
+    edgar_facts_poll_test.bas
+    fundamentals_series_test.bas
+    fundamentals_derived_test.bas
+    edgar/fundamentals_demo.bas
+    forensics_scores_test.bas
+    forensics_distress_test.bas
+    forensics_beneish_test.bas
+    forensics_flags_test.bas
+    forensics_events_test.bas
+    edgar/monitor_harness_test.bas
+    edgar/scorecard.bas
+    xml_parse_test.bas
+    xml_form4_test.bas
+    xml_encode_test.bas
+    xml_reader_test.bas
+    xml_window_13f_test.bas
+    xml_parse_html_test.bas
+    insiders_form4_test.bas
+    insiders_cluster_test.bas
+    ownership_13f_test.bas
+    ownership_stakes_test.bas
+    llm_adapter_test.bas
+    llm_retry_test.bas
+    llm_ask_json_test.bas
+    mdna_sections_test.bas
+    mdna_prepass_test.bas
+    mdna_panel_test.bas
+    screener_ingest_test.bas
+    screener_score_test.bas
     password_hash_test.bas
     secure_token_test.bas
     nested_lvalue_test.bas

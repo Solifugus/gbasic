@@ -1,0 +1,6 @@
+root=html
+sentinel1=found
+sentinel2=found
+sentinel3=found
+soup_root=html
+soup_text=TitlePara onebolditalic

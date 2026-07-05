@@ -1,0 +1,1 @@
+runtime error at tests/negative_ownership_stake_unstructured.bas:222:13: ownership.stake: not a structured 13D/13G filing (no headerData/submissionType; pre-2025 text filings are out of scope)

@@ -1,0 +1,1 @@
+runtime error at tests/negative_xml_reader_depth.bas:7:9: xml: Excessive depth in document: 256, use XML_PARSE_HUGE option (line 1, column 774)

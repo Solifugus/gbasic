@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Synthetic stand-in for a PRE-2025 (non-structured) Schedule 13D/G document:
+     valid XML, but NOT the mandated <edgarSubmission> primary_doc.xml shape, so it
+     has no headerData/submissionType. WP-OWN-4 requires ownership.stake to RAISE on
+     such input (pre-2025 text filings are out of scope) rather than silently return
+     an empty record. See tests/negative_ownership_stake_unstructured.bas. -->
+<document>
+  <type>SC 13D</type>
+  <text>Item 1. Security and Issuer. This statement relates to the common stock
+  of Example Corp. The pre-2025 free-form text body carries no structured cover
+  page and cannot be field-extracted.</text>
+</document>

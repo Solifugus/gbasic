@@ -29,6 +29,10 @@ LIBCRYPTO_AVAILABLE := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-conf
 LIBCRYPTO_CFLAGS := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --cflags libcrypto 2>/dev/null)
 LIBCRYPTO_LIBS := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --libs libcrypto 2>/dev/null)
 
+LIBXML2_AVAILABLE := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --exists libxml-2.0 && printf 1 || printf 0)
+LIBXML2_CFLAGS := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --cflags libxml-2.0 2>/dev/null)
+LIBXML2_LIBS := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --libs libxml-2.0 2>/dev/null)
+
 ifeq ($(GTK_AVAILABLE),1)
 CFLAGS += -DHAVE_GTK=1 $(GTK_CFLAGS)
 LDLIBS += $(GTK_LIBS) -lm
@@ -72,6 +76,13 @@ else
 CFLAGS += -DHAVE_LIBCRYPTO=0
 endif
 
+ifeq ($(LIBXML2_AVAILABLE),1)
+CFLAGS += -DHAVE_LIBXML2=1 $(LIBXML2_CFLAGS)
+LDLIBS += $(LIBXML2_LIBS)
+else
+CFLAGS += -DHAVE_LIBXML2=0
+endif
+
 OBJS := src/main.o src/lexer.o src/parser.tab.o src/ast.o src/eval.o src/builtins.o src/actor.o
 
 .PHONY: all clean install uninstall
@@ -96,7 +107,7 @@ src/parser.tab.o: src/parser.tab.c src/parser.tab.h include/ast.h include/lexer.
 src/ast.o: src/ast.c include/ast.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
-src/eval.o: src/eval.c include/eval.h include/ast.h include/builtins.h include/actor.h
+src/eval.o: src/eval.c src/modules/xml.c include/eval.h include/ast.h include/builtins.h include/actor.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
 src/builtins.o: src/builtins.c include/builtins.h

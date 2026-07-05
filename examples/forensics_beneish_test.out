@@ -1,0 +1,12 @@
+== Boeing FY2023 (published reference) ==
+period 2022-12-31 -> 2023-12-31
+DSRI=0.901 GMI=0.534 AQI=1.004 SGI=1.168
+DEPI=1.063 SGAI=1.057 LVGI=1.008 TATA=-0.06
+MSCORE=-2.95 flag(manipulator)=false
+== WallStreetMojo composite cross-check ==
+MSCORE=-2.53
+== unknown propagation (no PP&E) ==
+DSRI known? true (PPE-free index still computes)
+AQI unknown? true DEPI unknown? true
+MSCORE unknown? true flag unknown? true
+mscore(one unknown index) unknown? true

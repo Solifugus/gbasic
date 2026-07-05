@@ -1,0 +1,14 @@
+doc_type=4
+symbol=AAPL
+owner_cik=0001780525
+owner_name=Newstead Jennifer
+nonderiv_txn_count=2
+  txn0 security=Common Stock code=M shares=30104 price=[]
+  txn1 security=Common Stock code=F shares=16238 price=[296.42]
+wildcard_symbol=0000320193
+attr_id=42 attr_kind=sale
+attr_missing_unknown=true
+attr_default=none
+find_miss_unknown=true
+find_all_miss_empty=0
+text_of_unknown=[]

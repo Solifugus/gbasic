@@ -98,3 +98,9 @@ native dependency is missing. GUI testing is manual (needs a display).
   phases.
 - The `use`/`--add-uses` syntax is legacy and retained only for compatibility;
   prefer `load`/`--add-loads`.
+
+## EDGAR suite work
+Governed by docs/edgar_suite_development_plan.md. One WP per session,
+assigned by Matthew. Follow its §1 session protocol exactly: read only
+the WP's Read list, stop at the WP boundary, record verbatim evidence in
+docs/PROGRESS.md. Never mark anything `verified`. No network in tests.

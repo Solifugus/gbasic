@@ -1,0 +1,14 @@
+element catalog depth=0 line=9
+element book id=b1 depth=1 line=9
+element title depth=2 line=9
+text [XML] depth=3 line=9
+end title depth=2 line=9
+end book depth=1 line=9
+element book id=b2 depth=1 line=9
+element title depth=2 line=9
+text [Streaming] depth=3 line=9
+end title depth=2 line=9
+end book depth=1 line=9
+end catalog depth=0 line=9
+total_events=12
+double_close_ok=true

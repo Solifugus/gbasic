@@ -1,0 +1,1 @@
+runtime error at tests/negative_xml_parse_type.bas:3:5: xml.parse expects a string

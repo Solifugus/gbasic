@@ -1,0 +1,12 @@
+== panel verdict frame ==
+rows=4
+bull: ok=true candor=80 evasions=0 read=Brand momentum looks genuine
+bear: ok=true candor=35 evasions=2 read=Downplays tariff and margin pressure
+forensic: ok=true candor=50 evasions=1 read=Numbers and narrative mostly agree
+muddled: ok=false candor=unknown
+== disagreement (candor variance, unknowns skipped) ==
+variance=350
+== referee ==
+ok=true verdict=lean negative candor=45
+rationale=Forensic flags unaddressed; bear case credible
+dissent=candor spread 35 to 80

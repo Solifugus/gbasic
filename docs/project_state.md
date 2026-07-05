@@ -1,6 +1,6 @@
 # gBASIC Project State
 
-Last updated: 2026-06-07
+Last updated: 2026-07-05
 
 This file is the compact source of truth for current implementation status.
 Detailed language behavior belongs in `docs/reference.md`; completed
@@ -22,10 +22,15 @@ development phases are summarized in `docs/historical_development_archive.md`.
 - array iteration with `for each` and compatible `for ... in`
 - arrays, records, dynamic record access, and nested lvalue assignment
 - functions, programs, libraries, `load`, labels, `goto`, and `gosub`
+- first-class function values (references) that can be stored, passed, and called
+- Policy-Based Inheritance object model (`new`, `constructor`, methods via `this`)
+- shared-nothing actors over `spawn`/`send`/`receive` with monitor/link
 - assignment and comparison modifiers
 - watchers, locks, and runtime error handling
 - distinct `nothing` and `unknown` values
 - date/time, duration, money, file, and directory values
+- binary-safe, Unicode-aware strings, codepoint operations, and byte builtins
+- bitwise builtins (`band`/`bor`/`bxor`/`bnot`/`shl`/`shr`/`rotl`/`rotr`)
 - JSON-like `encode` and `decode`
 
 ## Implemented Runtime Areas
@@ -40,14 +45,31 @@ development phases are summarized in `docs/historical_development_archive.md`.
 - optional synchronous PostgreSQL module backed by libpq
 - optional synchronous WebClient module backed by libcurl
 - built-in loopback WebServer using watcher-driven request/response queues
+- optional XML module backed by libxml2 (tree parse, navigation, encode,
+  lenient HTML, constant-memory streaming reader)
+- optional cryptography builtins backed by libcrypto (hashing, HMAC, AES-GCM,
+  Ed25519) plus a `crypto` stdlib library (JWT/HS256, signed cookies, CSRF)
 - optional GTK 3 GUI proof of concept through Stage 6A
+
+## Standard-Library Toolkits (pure gBASIC)
+
+- **statistics** — descriptive/inferential statistics, regression and the GLM
+  suite, mediation/moderation, time-series and econometric diagnostics, and
+  finance metrics; verified against reference implementations.
+- **EDGAR securities-analysis suite** — `edgar` (acquisition), `fundamentals`,
+  `forensics` (accruals/Beneish/Piotroski/Altman/dilution/flags/events),
+  `insiders` and `ownership` (Form 4 / 13F / 13D-G), `mdna` (MD&A + LLM panel),
+  `llm` (chat client), and `screener` (whole-market scoring). See
+  `docs/edgar_tutorial.md` and `docs/edgar_reference.md`.
 
 ## Optional Dependencies
 
 - GTK 3 enables the GUI implementation.
 - sqlite3 enables `load sqlite`.
 - libpq enables `load pg`.
-- libcurl enables `load webclient`.
+- libcurl enables `load webclient` (and the EDGAR/LLM network paths).
+- libxml2 enables `load xml`.
+- libcrypto enables the cryptographic builtins.
 - WebServer uses POSIX sockets and has no external HTTP dependency.
 
 The interpreter builds without optional dependencies and reports unavailable
@@ -89,16 +111,25 @@ GUI verification remains manual.
 
 ## Current Documents
 
-- `README.md`: project overview and quick start
+- `README.md`: project overview, quick start, and the documentation index
 - `docs/gbasic-design.md`: consolidated language and core-runtime design
-- `docs/pbi_design.md`: Policy-Based Inheritance object model (proposal, not yet implemented)
 - `docs/reference.md`: implemented language and runtime behavior
 - `docs/tutorial.md`: guided usage
-- `docs/gbasic_dogfood_notes.md`: language/runtime friction found while building examples
-- `docs/gbasic_site_plan.md`, `docs/gbasic_site_auth_plan.md`, `docs/gbasic_site_deployment.md`: Postgres-backed sample site
+- `docs/pbi_design.md`: Policy-Based Inheritance object model (implemented)
+- `docs/first_class_functions_design.md`: function values (implemented)
+- `docs/unicode_design.md`: string/Unicode model (implemented)
+- `docs/multiprocessing_design.md`: actors (implemented)
+- `docs/bitwise_design.md`: bitwise builtins (implemented)
+- `docs/crypto_design.md`: cryptography builtins + library (implemented)
 - `docs/sqlite_design.md`: SQLite API and future phases
 - `docs/postgres_design.md`: PostgreSQL API and future phases
 - `docs/webclient_design.md`: WebClient API and future phases
 - `docs/webserver_design.md`: WebServer API and future phases
+- `docs/xml_design.md`: XML module (implemented)
 - `docs/gui_design.md`: GUI model and remaining work
+- `docs/statistics_design.md` + `docs/cookbook_*.md`: statistics library and cookbooks
+- `docs/edgar_tutorial.md`, `docs/edgar_reference.md`, `docs/edgar_design.md`: EDGAR suite
+- `docs/PROGRESS.md`: per-work-package build ledger with evidence
+- `docs/gbasic_dogfood_notes.md`: language/runtime friction found while building examples
+- `docs/gbasic_site_plan.md`, `docs/gbasic_site_auth_plan.md`, `docs/gbasic_site_deployment.md`: Postgres-backed sample site
 - `docs/historical_development_archive.md`: completed phase history

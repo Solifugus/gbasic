@@ -1,0 +1,8 @@
+entity CROCS, INC.
+has_facts true
+subs_positive true
+new_count 5
+newest_matches true
+excludes_seen true
+unknown_all_new true
+newest_none_new true

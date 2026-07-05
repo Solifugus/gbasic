@@ -1,0 +1,1 @@
+runtime error at tests/negative_xml_find_path_type.bas:4:5: xml.find path must be a string

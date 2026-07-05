@@ -1,0 +1,20 @@
+== incremental scoring (cap=1 interruptions) ==
+step1=1 step2=1 finish=1 rescore=0
+== scored universe ==
+0000000001 | HEALTHY CO (screener fixture) | F=9 M=-2.7 flag=false accr=-0.067 fcf=200
+0000000002 | MANIPULATOR CO (screener fixture) | F=7 M=-0.38 flag=true accr=0.156 fcf=-60
+0000000003 | WEAK CO (screener fixture) | F=2 M=-2.62 flag=false accr=-0.049 fcf=-90
+== screen: quality (F>=7, no M-flag, FCF>0) ==
+HIT 0000000001 | HEALTHY CO (screener fixture)
+hits: 1 of 3
+== unknown concept report (3 filers) ==
+operating_income : 3/3 (1)
+interest_expense : 3/3 (1)
+cash : 3/3 (1)
+total_liabilities : 3/3 (1)
+long_term_debt_current : 3/3 (1)
+retained_earnings : 2/3 (0.67)
+book_equity : 3/3 (1)
+share_based_comp : 3/3 (1)
+stock_repurchased : 3/3 (1)
+dividends_paid : 3/3 (1)

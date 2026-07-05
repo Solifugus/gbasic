@@ -1,0 +1,230 @@
+<?xml version="1.0" encoding="UTF-8"?><edgarSubmission xmlns="http://www.sec.gov/edgar/schedule13D" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <schemaVersion>X0202</schemaVersion>
+<headerData>
+    <submissionType>SCHEDULE 13D/A</submissionType>
+    <previousAccessionNumber>0001193125-24-030515</previousAccessionNumber>
+    <filerInfo>
+      <filer>
+        <filerCredentials>
+          <cik>0001224962</cik>
+          <ccc>XXXXXXXX</ccc>
+        </filerCredentials>
+      </filer>
+      <liveTestFlag>LIVE</liveTestFlag>
+
+
+
+    </filerInfo>
+  </headerData>
+  <formData>
+    <coverPageHeader>
+      <amendmentNo>8</amendmentNo>
+      <securitiesClassTitle>Class A Ordinary Shares, $0.0001 par value per share</securitiesClassTitle>
+      <dateOfEvent>04/30/2026</dateOfEvent>
+      <previouslyFiledFlag>false</previouslyFiledFlag>
+      <issuerInfo>
+        <issuerCIK>0000888721</issuerCIK>
+        <issuerCusips>
+          <issuerCusipNumber>896438504</issuerCusipNumber>
+        </issuerCusips>
+        <issuerName>Trinity Biotech plc</issuerName>
+        <address>
+          <street1 xmlns="http://www.sec.gov/edgar/common">IDA Business Park</street1>
+          <city xmlns="http://www.sec.gov/edgar/common">Bray, Co. Wicklow</city>
+          <stateOrCountry xmlns="http://www.sec.gov/edgar/common">L2</stateOrCountry>
+          <zipCode xmlns="http://www.sec.gov/edgar/common">A98 H5C8</zipCode>
+        </address>
+      </issuerInfo>
+      <authorizedPersons>
+        <notificationInfo>
+          <personName>Alexander Rakitin</personName>
+          <personPhoneNum>(646) 205-5340</personPhoneNum>
+          <personAddress>
+            <street1 xmlns="http://www.sec.gov/edgar/common">Perceptive Advisors LLC</street1>
+            <street2 xmlns="http://www.sec.gov/edgar/common">51 Astor Place, 10th Floor</street2>
+            <city xmlns="http://www.sec.gov/edgar/common">New York</city>
+            <stateOrCountry xmlns="http://www.sec.gov/edgar/common">NY</stateOrCountry>
+            <zipCode xmlns="http://www.sec.gov/edgar/common">10003</zipCode>
+          </personAddress>
+        </notificationInfo>
+      </authorizedPersons>
+    </coverPageHeader>
+    <reportingPersons>
+      <reportingPersonInfo>
+        <reportingPersonCIK>0001224962</reportingPersonCIK>
+        <reportingPersonNoCIK>N</reportingPersonNoCIK>
+        <reportingPersonName>Perceptive Advisors LLC</reportingPersonName>
+        <memberOfGroup>b</memberOfGroup>
+        <fundType>AF</fundType>
+        <legalProceedings>Y</legalProceedings>
+        <citizenshipOrOrganization>DE</citizenshipOrOrganization>
+        <soleVotingPower>0</soleVotingPower>
+        <sharedVotingPower>3424019957</sharedVotingPower>
+        <soleDispositivePower>0</soleDispositivePower>
+        <sharedDispositivePower>3424019957</sharedDispositivePower>
+        <aggregateAmountOwned>3424019957</aggregateAmountOwned>
+        <isAggregateExcludeShares>N</isAggregateExcludeShares>
+        <percentOfClass>9.9</percentOfClass>
+        <typeOfReportingPerson>IA</typeOfReportingPerson>
+        <commentContent>The securities reported on this page consist of securities held directly by Perceptive Credit Holdings II, LP ("Credit Fund II") and Perceptive Credit Holdings III, LP ("Credit Fund III" and, together with Credit Fund II, the "Funds"). The number of Ordinary Shares reported herein consists of (i) 65,000,000 Ordinary Shares issuable upon the exercise of warrants held by the Funds; (ii) 2,865,046,434 Ordinary Shares represented by 143,252,322 American Depositary Shares ("ADSs") issuable upon conversion of the Convertible Note (as defined in Item 4 of the Schedule 13D) held by Credit Fund III; (iii) 197,589,409 Ordinary Shares represented by 9,879,470 ADSs issuable upon conversion of the Milestone Payment Obligation (as defined in Item 4) granted by the Issuer to Credit Fund II; and (iv) 296,384,114 Ordinary Shares represented by 14,819,206 ADSs issuable upon conversion of the Contingent Payment Obligation (as defined in Item 4) granted by the Issuer to Credit Fund II. The number of ADSs issuable upon conversion of each of the Convertible Note, the Milestone Payment Obligation and the Contingent Payment Obligation reflect a conversion price equal to the Floor Price (as defined in Item 6) of $0.5061. The terms of each of the warrants, the Convertible Note and the Conversion Rights Agreement (as defined in Item 4) restrict the exercise of the warrants and the conversion of the Convertible Note, Milestone Payment Obligation and Contingent Payment Obligation, as applicable, into ADSs to the extent that, upon such exercise or conversion, the number of Ordinary Shares, including the Ordinary Shares underlying ADSs, then beneficially owned by the holder and its Attribution Parties (as defined in the Convertible Note and the Conversion Rights Agreement) would exceed the Beneficial Ownership Cap (as defined in Item 6). Accordingly, notwithstanding the number of Ordinary Shares reported, the Reporting Person disclaims beneficial ownership of any Ordinary Shares, including those underlying ADSs, issuable upon exercise of the warrants, conversion of the Milestone Payment Obligation, conversion of the Contingent Payment Obligation and conversion of the Convertible Note to the extent that upon such exercise or conversion the number of Ordinary Shares beneficially owned by all Reporting Persons hereunder, in the aggregate, would exceed the Beneficial Ownership Cap.</commentContent>
+      </reportingPersonInfo>
+      <reportingPersonInfo>
+        <reportingPersonCIK>0001877081</reportingPersonCIK>
+        <reportingPersonNoCIK>N</reportingPersonNoCIK>
+        <reportingPersonName>Perceptive Credit Advisors LLC</reportingPersonName>
+        <memberOfGroup>b</memberOfGroup>
+        <fundType>AF</fundType>
+        <legalProceedings>Y</legalProceedings>
+        <citizenshipOrOrganization>DE</citizenshipOrOrganization>
+        <soleVotingPower>0</soleVotingPower>
+        <sharedVotingPower>3424019957</sharedVotingPower>
+        <soleDispositivePower>0</soleDispositivePower>
+        <sharedDispositivePower>3424019957</sharedDispositivePower>
+        <aggregateAmountOwned>3424019957</aggregateAmountOwned>
+        <isAggregateExcludeShares>N</isAggregateExcludeShares>
+        <percentOfClass>9.9</percentOfClass>
+        <typeOfReportingPerson>IA</typeOfReportingPerson>
+        <commentContent>The securities reported on this page consist of securities held directly by Perceptive Credit Holdings II, LP ("Credit Fund II") and Perceptive Credit Holdings III, LP ("Credit Fund III" and, together with Credit Fund II, the "Funds").  The number of Ordinary Shares reported herein consists of (i) 65,000,000 Ordinary Shares issuable upon the exercise of warrants held by the Funds; (ii) 2,865,046,434 Ordinary Shares represented by 143,252,322 American Depositary Shares ("ADSs") issuable upon conversion of the Convertible Note (as defined in Item 4 of the Schedule 13D) held by Credit Fund III; (iii) 197,589,409 Ordinary Shares represented by 9,879,470 ADSs issuable upon conversion of the Milestone Payment Obligation (as defined in Item 4) granted by the Issuer to Credit Fund II; and (iv) 296,384,114 Ordinary Shares represented by 14,819,206 ADSs issuable upon conversion of the Contingent Payment Obligation (as defined in Item 4) granted by the Issuer to Credit Fund II.  The number of ADSs issuable upon conversion of each of the Convertible Note, the Milestone Payment Obligation and the Contingent Payment Obligation reflect a conversion price equal to the Floor Price (as defined in Item 6) of $0.5061.  The terms of each of the warrants, the Convertible Note and the Conversion Rights Agreement (as defined in Item 4) restrict the exercise of the warrants and the conversion of the Convertible Note, Milestone Payment Obligation and Contingent Payment Obligation, as applicable, into ADSs to the extent that, upon such exercise or conversion, the number of Ordinary Shares, including the Ordinary Shares underlying ADSs, then beneficially owned by the holder and its Attribution Parties (as defined in the Convertible Note and the Conversion Rights Agreement) would exceed the Beneficial Ownership Cap (as defined in Item 6). Accordingly, notwithstanding the number of Ordinary Shares reported, the Reporting Person disclaims beneficial ownership of any Ordinary Shares, including those underlying ADSs, issuable upon exercise of the warrants, conversion of the Milestone Payment Obligation, conversion of the Contingent Payment Obligation and conversion of the Convertible Note to the extent that upon such exercise or conversion the number of Ordinary Shares beneficially owned by all Reporting Persons hereunder, in the aggregate, would exceed the Beneficial Ownership Cap.</commentContent>
+      </reportingPersonInfo>
+      <reportingPersonInfo>
+        <reportingPersonCIK>0001164426</reportingPersonCIK>
+        <reportingPersonNoCIK>N</reportingPersonNoCIK>
+        <reportingPersonName>Joseph Edelman</reportingPersonName>
+        <memberOfGroup>b</memberOfGroup>
+        <fundType>AF</fundType>
+        <legalProceedings>Y</legalProceedings>
+        <citizenshipOrOrganization>X1</citizenshipOrOrganization>
+        <soleVotingPower>0</soleVotingPower>
+        <sharedVotingPower>3424019957</sharedVotingPower>
+        <soleDispositivePower>0</soleDispositivePower>
+        <sharedDispositivePower>3424019957</sharedDispositivePower>
+        <aggregateAmountOwned>3424019957</aggregateAmountOwned>
+        <isAggregateExcludeShares>N</isAggregateExcludeShares>
+        <percentOfClass>9.9</percentOfClass>
+        <typeOfReportingPerson>IN</typeOfReportingPerson>
+        <commentContent>The securities reported on this page consist of securities held directly by Perceptive Credit Holdings II, LP ("Credit Fund II") and Perceptive Credit Holdings III, LP ("Credit Fund III" and, together with Credit Fund II, the "Funds"). The number of Ordinary Shares reported herein consists of (i) 65,000,000 Ordinary Shares issuable upon the exercise of warrants held by the Funds; (ii) 2,865,046,434 Ordinary Shares represented by 143,252,322 American Depositary Shares ("ADSs") issuable upon conversion of the Convertible Note (as defined in Item 4 of the Schedule 13D) held by Credit Fund III; (iii) 197,589,409 Ordinary Shares represented by 9,879,470 ADSs issuable upon conversion of the Milestone Payment Obligation (as defined in Item 4) granted by the Issuer to Credit Fund II; and (iv) 296,384,114 Ordinary Shares represented by 14,819,206 ADSs issuable upon conversion of the Contingent Payment Obligation (as defined in Item 4) granted by the Issuer to Credit Fund II. The number of ADSs issuable upon conversion of each of the Convertible Note, the Milestone Payment Obligation and the Contingent Payment Obligation reflect a conversion price equal to the Floor Price (as defined in Item 6) of $0.5061. The terms of each of the warrants, the Convertible Note and the Conversion Rights Agreement (as defined in Item 4) restrict the exercise of the warrants and the conversion of the Convertible Note, Milestone Payment Obligation and Contingent Payment Obligation, as applicable, into ADSs to the extent that, upon such exercise or conversion, the number of Ordinary Shares, including the Ordinary Shares underlying ADSs, then beneficially owned by the holder and its Attribution Parties (as defined in the Convertible Note and the Conversion Rights Agreement) would exceed the Beneficial Ownership Cap (as defined in Item 6). Accordingly, notwithstanding the number of Ordinary Shares reported, the Reporting Person disclaims beneficial ownership of any Ordinary Shares, including those underlying ADSs, issuable upon exercise of the warrants, conversion of the Milestone Payment Obligation, conversion of the Contingent Payment Obligation and conversion of the Convertible Note to the extent that upon such exercise or conversion the number of Ordinary Shares beneficially owned by all Reporting Persons hereunder, in the aggregate, would exceed the Beneficial Ownership Cap.</commentContent>
+      </reportingPersonInfo>
+      <reportingPersonInfo>
+        <reportingPersonNoCIK>Y</reportingPersonNoCIK>
+        <reportingPersonName>Perceptive Credit Holdings II, L.P.</reportingPersonName>
+        <memberOfGroup>b</memberOfGroup>
+        <fundType>WC</fundType>
+        <legalProceedings>Y</legalProceedings>
+        <citizenshipOrOrganization>DE</citizenshipOrOrganization>
+        <soleVotingPower>0</soleVotingPower>
+        <sharedVotingPower>503973523</sharedVotingPower>
+        <soleDispositivePower>0</soleDispositivePower>
+        <sharedDispositivePower>503973523</sharedDispositivePower>
+        <aggregateAmountOwned>503973523</aggregateAmountOwned>
+        <isAggregateExcludeShares>N</isAggregateExcludeShares>
+        <percentOfClass>9.9</percentOfClass>
+        <typeOfReportingPerson>PN</typeOfReportingPerson>
+        <commentContent>The number of Ordinary Shares reported herein consists of (i) 10,000,000 Ordinary Shares issuable upon the exercise of warrants held by Perceptive Credit Holdings II, LP ("Credit Fund II"), (ii) 197,589,409 Ordinary Shares represented by 9,879,470 American Depositary Shares ("ADSs") issuable upon conversion of the Milestone Payment Obligation (as defined in Item 4 of the Schedule 13D) granted by the Issuer to Credit Fund II and (iii) 296,384,114  Ordinary Shares represented by 14,819,206 ADSs issuable upon conversion of the Contingent Payment Obligation (as defined in Item 4) granted by the Issuer to Credit Fund II. The number of ADSs issuable upon conversion of each of the Milestone Payment Obligation and the Contingent Payment Obligation reflect a conversion price equal to the Floor Price (as defined in Item 6) of $0.5061.  The terms of each of the warrants and the Conversion Rights Agreement (as defined in Item 4) restrict the exercise of the warrants and the conversion of the Milestone Payment Obligation and Contingent Payment Obligation, as applicable, into ADSs to the extent that, upon such exercise or conversion, the number of Ordinary Shares, including the Ordinary Shares underlying ADSs, then beneficially owned by the holder and its Attribution Parties (as defined in the Conversion Rights Agreement) would exceed the Beneficial Ownership Cap (as defined in Item 6). Accordingly, notwithstanding the number of Ordinary Shares reported, the Reporting Person disclaims beneficial ownership of any Ordinary Shares, including those underlying ADSs, issuable upon exercise of the warrants, conversion of the Milestone Payment Obligation and conversion of the Contingent Payment Obligation to the extent that upon such exercise or conversion the number of Ordinary Shares beneficially owned by all Reporting Persons hereunder, in the aggregate, would exceed the Beneficial Ownership Cap.</commentContent>
+      </reportingPersonInfo>
+      <reportingPersonInfo>
+        <reportingPersonCIK>0001877078</reportingPersonCIK>
+        <reportingPersonNoCIK>N</reportingPersonNoCIK>
+        <reportingPersonName>Perceptive Credit Holdings III, L.P.</reportingPersonName>
+        <memberOfGroup>b</memberOfGroup>
+        <fundType>WC</fundType>
+        <legalProceedings>Y</legalProceedings>
+        <citizenshipOrOrganization>DE</citizenshipOrOrganization>
+        <soleVotingPower>0</soleVotingPower>
+        <sharedVotingPower>2920046434</sharedVotingPower>
+        <soleDispositivePower>0</soleDispositivePower>
+        <sharedDispositivePower>2920046434</sharedDispositivePower>
+        <aggregateAmountOwned>2920046434</aggregateAmountOwned>
+        <isAggregateExcludeShares>N</isAggregateExcludeShares>
+        <percentOfClass>9.9</percentOfClass>
+        <typeOfReportingPerson>PN</typeOfReportingPerson>
+        <commentContent>The number of Ordinary Shares reported herein consist of (i) 55,000,000 Ordinary Shares issuable upon the exercise of warrants held by Perceptive Credit Holdings III, LP ("Credit Fund III") and (ii) 2,865,046,434 Ordinary Shares represented by 143,252,322 American Depositary Shares ("ADSs") issuable upon conversion of the Convertible Note (as defined in Item 4 of the Schedule 13D) held by Credit Fund III. The number of ADSs issuable upon conversion of the Convertible Note reflects a conversion price equal to the Floor Price (as defined in Item 6) of $0.5061. The terms of each of the warrants and the Convertible Note restrict the exercise of the warrants and the conversion of the Convertible Note, as applicable, into ADSs to the extent that, upon such exercise or conversion, the number of Ordinary Shares, including the Ordinary Shares underlying ADSs, then beneficially owned by the holder and its Attribution Parties (as defined in the Convertible Note) would exceed the Beneficial Ownership Cap (as defined in Item 6). Accordingly, notwithstanding the number of Ordinary Shares reported, the Reporting Person disclaims beneficial ownership of any Ordinary Shares, including those underlying ADSs, issuable upon exercise of the warrants and conversion of the Convertible Note to the extent that upon such exercise or conversion the number of Ordinary Shares beneficially owned by all Reporting Persons hereunder, in the aggregate, would exceed the Beneficial Ownership Cap.</commentContent>
+      </reportingPersonInfo>
+    </reportingPersons>
+    <items1To7>
+      <item1>
+        <securityTitle>Class A Ordinary Shares, $0.0001 par value per share</securityTitle>
+        <issuerName>Trinity Biotech plc</issuerName>
+        <issuerPrincipalAddress>
+          <street1 xmlns="http://www.sec.gov/edgar/common">IDA Business Park</street1>
+          <city xmlns="http://www.sec.gov/edgar/common">Bray, Co. Wicklow</city>
+          <stateOrCountry xmlns="http://www.sec.gov/edgar/common">L2</stateOrCountry>
+          <zipCode xmlns="http://www.sec.gov/edgar/common">A98 H5C8</zipCode>
+        </issuerPrincipalAddress>
+        <commentText>This Amendment No. 8 (this "Amendment No. 8") to Schedule 13D amends the Schedule 13D filed by Perceptive Advisors LLC ("Perceptive Advisors" or "Perceptive"), Perceptive Credit Advisors LLC ("Perceptive Credit Advisors"), Joseph Edelman ("Mr. Edelman"), Perceptive Credit Holdings II, L.P. ("Credit Fund II") and Perceptive Credit Holdings III, L.P. ("Credit Fund III", and together with Perceptive Advisors, Perceptive Credit Advisors, Mr. Edelman and Credit Fund II, each of the foregoing, a "Reporting Person," and collectively, the "Reporting Persons"), as amended by Amendment Nos. 1, 2, 3, 4, 5, 6 and 7 thereto, with respect to the securities of Trinity Biotech plc (such Schedule 13D, as amended, the "Schedule 13D").</commentText>
+      </item1>
+      <item4>
+        <transactionPurpose>Item 4 of the Schedule 13D is hereby amended to add the following:
+
+On April 30, 2026, Credit Fund III, the Issuer and the other Issuer Credit Agreement Parties entered into that certain Limited Waiver and Third Amendment to the Sixth Amended and Restated Credit Agreement (the "Third Amendment"), which, among other things, provided for (i) a limited waiver by Credit Fund III of the Borrower's non-compliance with certain financial covenants contained in the Credit Agreement and (ii) an additional $2.5 million term loan borrowing.
+
+In connection with the Third Amendment, the Convertible Note was amended and restated (the "Amended and Restated Note") to increase the aggregate amount of indebtedness thereunder that is convertible into ADSs of the Issuer from US$60,000,000 to US$72,500,000 (as so amended, the "Conversion Cap"), and to reduce the minimum price at which indebtedness under the Convertible Note is convertible into ADSs from $1.03 per ADS to $0.5061 per ADS (as so amended, the "Floor Price").
+
+On April 30, 2026, Credit Fund II, the Issuer and TRIB B entered into Amendment No. 1 to Conversion Rights Agreement (the "CRA Amendment"), pursuant to which the Conversion Rights Agreement was amended to reflect the above-described increase of the Conversion Cap and reduction of the Floor Price.
+
+The foregoing descriptions of the Third Amendment, the Amended and Restated Note and the CRA Amendment are not complete and, in each case, are qualified in their entirety by reference to the full text thereof. Copies of the Third Amendment, the Amended and Restated Note and the CRA Amendment are incorporated by reference as Exhibits 11, 12 and 13, hereof, respectively.</transactionPurpose>
+      </item4>
+      <item5>
+        <percentageOfClassSecurities>Items 5(a)-(b) of the Schedule 13D is amended and supplemented as follows:
+
+The information set forth in the cover pages to this Amendment No. 8 to the Schedule 13D is incorporated by reference. The percentage set forth in row 13 is based on 374,206,640 Ordinary Shares outstanding, as reported in the Issuer's Annual Report on Form 20-F filed with the Securities and Exchange Commission on April 30, 2026, and assumes the exercise of all Warrants and the conversion of the Convertible Note, the Milestone Payment Obligation and the Contingent Payment Obligation to the extent permitted by the Beneficial Ownership Cap.</percentageOfClassSecurities>
+        <numberOfShares>The Information set forth in Item 5(a) is incorporated herein by reference.  </numberOfShares>
+      </item5>
+      <item6>
+        <contractDescription>Item 6 of the Schedule 13D is amended and supplemented as follows:
+
+The information included in Item 4 above is incorporated by reference into this Item 6.</contractDescription>
+      </item6>
+      <item7>
+        <filedExhibits>Item 7 of the Schedule 13D is amended and supplemented as follows:
+
+Exhibit 11  Limited Waiver and Third Amendment to Credit Agreement, dated as of April 30, 2026, by and among Trinity Biotech PLC, Trinity Biotech, Inc., Fitzgerald Industries International, Inc., Clark Laboratories, Inc. (D/B/A Trinity Biotech (USA)), Biopool U.S., Inc. (D/B/A Trinity Biotech Distribution), Primus Corporation, Mardx Diagnostics, Inc. and Immco Diagnostics, Inc. as borrowers, Trinity Biotech PLC and Certain of its Subsidiaries as Guarantors and Perceptive Credit Holdings III, LP, as Administrative Agent (incorporated by reference Exhibit 4.18.4 to the Company's report on Annual Report on Form 20-F filed with the Securities and Exchange Commission on April 30, 2026).
+
+Exhibit 12  Amended and Restated Senior Convertible Note, dated as of April 30, 2026, by and among Trinity Biotech PLC, Trinity Biotech, Inc., Fitzgerald Industries International, Inc., Clark Laboratories, Inc. (D/B/A Trinity Biotech (USA)), Biopool U.S., Inc. (D/B/A Trinity Biotech Distribution), Primus Corporation, Mardx Diagnostics, Inc. and Immco Diagnostics, Inc. and Perceptive Credit Holdings III, LP (incorporated by reference Exhibit 4.19 to the Company's report on Annual Report on Form 20-F filed with the Securities and Exchange Commission on April 30, 2026).
+
+Exhibit 13  Amendment No. 1 to Conversion Rights Agreement, dated as of April 30, 2026, by and among Trinity Biotech PLC, TRIB Biosensors Inc. and Perceptive Credit Holdings II, LP (incorporated by reference Exhibit 4.20.2 to the Company's report on Annual Report on Form 20-F filed with the Securities and Exchange Commission on April 30, 2026).</filedExhibits>
+      </item7>
+    </items1To7>
+    <signatureInfo>
+      <signaturePerson>
+        <signatureReportingPerson>Perceptive Advisors LLC</signatureReportingPerson>
+        <signatureDetails>
+          <signature>/s/ Joseph Edelman</signature>
+          <title>Joseph Edelman, Managing Member</title>
+          <date>05/04/2026</date>
+        </signatureDetails>
+      </signaturePerson>
+      <signaturePerson>
+        <signatureReportingPerson>Perceptive Credit Advisors LLC</signatureReportingPerson>
+        <signatureDetails>
+          <signature>/s/ Joseph Edelman</signature>
+          <title>Joseph Edelman, Managing Member</title>
+          <date>05/04/2026</date>
+        </signatureDetails>
+      </signaturePerson>
+      <signaturePerson>
+        <signatureReportingPerson>Joseph Edelman</signatureReportingPerson>
+        <signatureDetails>
+          <signature>/s/ Joseph Edelman</signature>
+          <title>Joseph Edelman</title>
+          <date>05/04/2026</date>
+        </signatureDetails>
+      </signaturePerson>
+      <signaturePerson>
+        <signatureReportingPerson>Perceptive Credit Holdings II, L.P.</signatureReportingPerson>
+        <signatureDetails>
+          <signature>/s/ Joseph Edelman</signature>
+          <title>Joseph Edelman, Managing Member</title>
+          <date>05/04/2026</date>
+        </signatureDetails>
+      </signaturePerson>
+      <signaturePerson>
+        <signatureReportingPerson>Perceptive Credit Holdings III, L.P.</signatureReportingPerson>
+        <signatureDetails>
+          <signature>/s/ Joseph Edelman</signature>
+          <title>Joseph Edelman, Managing Member</title>
+          <date>05/04/2026</date>
+        </signatureDetails>
+      </signaturePerson>
+    </signatureInfo>
+  </formData>
+</edgarSubmission>

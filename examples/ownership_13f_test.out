@@ -1,0 +1,17 @@
+== report field-check ==
+q1 count=19 total_value=165332436
+q1 row0: Accenture Plc | G1151C101 | 5230890 | 26380
+q2 count=17 total_value=180807891
+q2 row0: Accenture Plc | G1151C101 | 3272150 | 26295
+== normalization ==
+2019-filed value0 == 2026 value0 * 1000 ? true
+== real delta q1->q2 ==
+counts new=0 exited=2 changed=16 unchanged=1
+exited: Exxon Mobil | 30231G102 | prior_shares=1205 delta_shares=-1205
+exited: Millrose Properties Inc. | 601137102 | prior_shares=27975 delta_shares=-27975
+changed Accenture: prior_shares=26380 shares=26295 delta_shares=-85 delta_value=-1958740
+== synthetic delta ==
+AAA changed prior_sh=100 sh=150 dsh=50 dval=500
+CCC unchanged prior_sh=300 sh=300 dsh=0 dval=0
+DDD new prior_sh=0 sh=400 dsh=400 dval=4000
+BBB exited prior_sh=200 sh=0 dsh=-200 dval=-2000

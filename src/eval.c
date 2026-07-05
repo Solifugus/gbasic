@@ -55,6 +55,10 @@
 #include <openssl/err.h>
 #endif
 
+#if HAVE_LIBXML2
+#include <libxml/xmlreader.h>
+#endif
+
 #define SECURE_TOKEN_MAX_LENGTH 4096
 
 /* Seedable general-purpose PRNG (statistics_design.md §8 shared infrastructure):
@@ -147,6 +151,7 @@ void parse_set_source_path(const char *path);
 
 typedef struct PgConnectionValue PgConnectionValue;
 typedef struct SqliteConnectionValue SqliteConnectionValue;
+typedef struct XmlReaderValue XmlReaderValue;
 typedef struct ActorHandle ActorHandle;
 typedef struct WebServer WebServer;
 typedef struct WebServerClient WebServerClient;
@@ -166,6 +171,7 @@ typedef enum {
     VALUE_DIR,
     VALUE_POSTGRES_CONNECTION,
     VALUE_SQLITE_CONNECTION,
+    VALUE_XML_READER,
     VALUE_ACTOR,
     VALUE_FUNCTION
 } ValueKind;
@@ -230,6 +236,7 @@ struct Value {
         char *dir_path;
         PgConnectionValue *postgres_connection;
         SqliteConnectionValue *sqlite_connection;
+        XmlReaderValue *xml_reader;
         ActorHandle *actor;
         /* A first-class function value: a reference to a registered function by
          * name (NOT a capturing closure — see docs/first_class_functions_design.md
@@ -253,6 +260,18 @@ struct PgConnectionValue {
 struct SqliteConnectionValue {
 #if HAVE_SQLITE3
     sqlite3 *connection;
+#endif
+    size_t ref_count;
+    int closed;
+};
+
+/* An opaque streaming XML reader handle (xml_design.md §4). Refcounted like the
+ * connection values so copies share one xmlTextReader and the last release frees
+ * it — the reader also closes on scope cleanup. `closed` marks an explicit
+ * xml.close so use-after-close is a structured error, not a crash. */
+struct XmlReaderValue {
+#if HAVE_LIBXML2
+    xmlTextReaderPtr reader;
 #endif
     size_t ref_count;
     int closed;
@@ -405,6 +424,7 @@ static int sqlite_library_loaded = 0;
 static int webclient_library_loaded = 0;
 static int webclient_curl_initialized = 0;
 static int webserver_library_loaded = 0;
+static int xml_library_loaded = 0;
 static WebServer *webservers = NULL;
 static size_t webserver_count = 0;
 static unsigned long webserver_next_id = 1;
@@ -486,6 +506,8 @@ static const char *value_kind_name(ValueKind kind) {
         return "postgres_connection";
     case VALUE_SQLITE_CONNECTION:
         return "sqlite_connection";
+    case VALUE_XML_READER:
+        return "xml_reader";
     case VALUE_ACTOR:
         return "actor";
     case VALUE_FUNCTION:
@@ -919,6 +941,30 @@ static Value value_sqlite_connection(SqliteConnectionValue *connection) {
     return value;
 }
 
+static Value value_xml_reader(XmlReaderValue *reader) {
+    Value value = {0};
+    value.kind = VALUE_XML_READER;
+    value.as.xml_reader = reader;
+    return value;
+}
+
+/* Refcount release: last owner frees the underlying xmlTextReader. Defined here
+ * (not in modules/xml.c) so value_free can call it even in a HAVE_LIBXML2=0
+ * build, where no reader is ever created and this is dead code. */
+static void xml_reader_release(XmlReaderValue *reader) {
+    if (!reader) {
+        return;
+    }
+    if (--reader->ref_count == 0) {
+#if HAVE_LIBXML2
+        if (!reader->closed && reader->reader) {
+            xmlFreeTextReader(reader->reader);
+        }
+#endif
+        free(reader);
+    }
+}
+
 static EvalResult eval_no_result(void) {
     EvalResult result = {0};
     result.value = value_null();
@@ -1089,6 +1135,10 @@ static Value value_copy(Value value) {
         value.as.sqlite_connection->ref_count++;
         return value_sqlite_connection(value.as.sqlite_connection);
     }
+    if (value.kind == VALUE_XML_READER) {
+        value.as.xml_reader->ref_count++;
+        return value_xml_reader(value.as.xml_reader);
+    }
     if (value.kind == VALUE_ACTOR) {
         value.as.actor->ref_count++;
         return value;
@@ -1177,6 +1227,8 @@ static void value_free(Value value) {
 #endif
             free(connection);
         }
+    } else if (value.kind == VALUE_XML_READER) {
+        xml_reader_release(value.as.xml_reader);
     } else if (value.kind == VALUE_ACTOR) {
         ActorHandle *handle = value.as.actor;
         if (handle && --handle->ref_count == 0) {
@@ -1253,6 +1305,11 @@ static int value_truthy(Value value) {
         runtime_error_raise("postgres connection cannot be used as a condition",
                             2001,
                             "postgres");
+        return 0;
+    case VALUE_XML_READER:
+        runtime_error_raise("xml reader cannot be used as a condition",
+                            5001,
+                            "xml");
         return 0;
     case VALUE_SQLITE_CONNECTION:
         runtime_error_raise("sqlite connection cannot be used as a condition",
@@ -1410,6 +1467,9 @@ static void value_print(Value value) {
         break;
     case VALUE_SQLITE_CONNECTION:
         printf("<sqlite_connection>\n");
+        break;
+    case VALUE_XML_READER:
+        printf("<xml_reader>\n");
         break;
     case VALUE_ACTOR:
         printf("<actor>\n");
@@ -1752,6 +1812,8 @@ static int value_storage_equal(const Value *left, const Value *right) {
         return left->as.postgres_connection == right->as.postgres_connection;
     case VALUE_SQLITE_CONNECTION:
         return left->as.sqlite_connection == right->as.sqlite_connection;
+    case VALUE_XML_READER:
+        return left->as.xml_reader == right->as.xml_reader;
     case VALUE_ACTOR:
         return left->as.actor->id == right->as.actor->id;
     case VALUE_FUNCTION:
@@ -4114,6 +4176,17 @@ static void library_import(const char *name, const char *path) {
         return;
     }
 
+    if (!path && strcmp(name, "xml") == 0) {
+#if HAVE_LIBXML2
+        xml_library_loaded = 1;
+#else
+        runtime_error_raise("XML support is not available in this build",
+                            5001,
+                            "xml");
+#endif
+        return;
+    }
+
     if (path) {
         const char *base = current_import_path ? current_import_path : root_source_path;
         resolved = resolve_use_path(base, path);
@@ -6216,6 +6289,8 @@ static const char *builtin_type_name(Value value) {
         return "postgres_connection";
     case VALUE_SQLITE_CONNECTION:
         return "sqlite_connection";
+    case VALUE_XML_READER:
+        return "xml_reader";
     case VALUE_ACTOR:
         return "actor";
     case VALUE_FUNCTION:
@@ -6496,6 +6571,9 @@ static Value builtin_string_value(Value value) {
     case VALUE_SQLITE_CONNECTION:
         value_free(value);
         return value_string("<sqlite_connection>");
+    case VALUE_XML_READER:
+        value_free(value);
+        return value_string("<xml_reader>");
     case VALUE_ACTOR:
         value_free(value);
         return value_string("<actor>");
@@ -6571,6 +6649,7 @@ static int encode_value_to_builder(StringBuilder *builder, Value value) {
     case VALUE_DIR:
     case VALUE_POSTGRES_CONNECTION:
     case VALUE_SQLITE_CONNECTION:
+    case VALUE_XML_READER:
     case VALUE_ACTOR:
     case VALUE_FUNCTION:
         runtime_error_raise("encode supports numbers, strings, booleans, nothing, unknown, arrays, and records",
@@ -6826,6 +6905,7 @@ static int serialize_value(SerBuf *b, Value v, int depth) {
         return 1;
     case VALUE_POSTGRES_CONNECTION:
     case VALUE_SQLITE_CONNECTION:
+    case VALUE_XML_READER:
         runtime_error_raise("serialize: database connections cannot be serialized",
                             1003, "actor");
         return 0;
@@ -11927,6 +12007,10 @@ static Value pg_eval_call(AstExpr *expr) {
 }
 #endif
 
+/* XML module (xml_design.md, WP-XML-1). Translation-unit include so it can use
+ * the static Value API above; guarded internally by HAVE_LIBXML2. */
+#include "modules/xml.c"
+
 /* ===== Cryptography (docs/crypto_design.md) ===============================
  * Phase 1 (base64/hex encoding, random_bytes, constant-time bytes_equal) is
  * plain C and always available. Phases 2/4 (hashing, HMAC, AES-GCM, Ed25519)
@@ -12452,6 +12536,21 @@ static Value eval_call(AstExpr *expr) {
 #endif
         }
 
+        if (strcmp(expr->as.call.library, "xml") == 0) {
+            if (!xml_library_loaded) {
+                runtime_error_raise("library not loaded: xml", 5001, "xml");
+                return value_null();
+            }
+#if HAVE_LIBXML2
+            return xml_eval_call(expr);
+#else
+            runtime_error_raise("XML support is not available in this build",
+                                5001,
+                                "xml");
+            return value_null();
+#endif
+        }
+
         if (strcmp(expr->as.call.library, "sqlite") == 0) {
             if (!sqlite_library_loaded) {
                 runtime_error_raise("library not loaded: sqlite", 2002, "sqlite");
@@ -12530,6 +12629,45 @@ static Value eval_call(AstExpr *expr) {
             return value_unknown();
         }
         return value_string(value);
+    }
+
+    if (strcmp(expr->as.call.name, "sleep") == 0) {
+        if (expr->as.call.args.count != 1) {
+            runtime_error_raise("sleep expects one argument", 1003, "invalid function call");
+            return value_null();
+        }
+        Value seconds = eval_expr(expr->as.call.args.items[0]);
+        if (error_action_pending()) {
+            value_free(seconds);
+            return value_null();
+        }
+        if (seconds.kind != VALUE_NUMBER) {
+            value_free(seconds);
+            runtime_error_raise("sleep expects a number", 1003, "invalid function call");
+            return value_null();
+        }
+        double secs = seconds.as.number;
+        value_free(seconds);
+        if (isnan(secs) || secs < 0.0) {
+            runtime_error_raise("sleep expects a non-negative number", 1003, "invalid function call");
+            return value_null();
+        }
+        /* Fractional seconds via nanosleep. Resume across signal interruption so
+         * the full requested interval always elapses — the monitor loop
+         * (edgar_design.md §7) depends on the elapsed >= requested guarantee. */
+        struct timespec req;
+        req.tv_sec = (time_t)secs;
+        req.tv_nsec = (long)((secs - (double)req.tv_sec) * 1e9);
+        if (req.tv_nsec < 0) {
+            req.tv_nsec = 0;
+        } else if (req.tv_nsec > 999999999L) {
+            req.tv_nsec = 999999999L;
+        }
+        struct timespec rem;
+        while (nanosleep(&req, &rem) == -1 && errno == EINTR) {
+            req = rem;
+        }
+        return value_number(secs);
     }
 
     if (strcmp(expr->as.call.name, "password_hash") == 0) {

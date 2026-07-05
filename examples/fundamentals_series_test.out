@@ -1,0 +1,13 @@
+revenue AAPL rows=64 fy_end=2025-09-27 fy_val=416161000000
+revenue JPM rows=53 fy_end=2025-12-31 fy_val=182447000000
+revenue CROX rows=88 fy_end=2025-12-31 fy_val=4040647000
+net_income AAPL rows=168 fy_end=2025-09-27 fy_val=112010000000
+net_income JPM rows=114 fy_end=2025-12-31 fy_val=57048000000
+net_income CROX rows=146 fy_end=2025-12-31 fy_val=-81198000
+total_assets AAPL rows=122 fy_end=2025-09-27 fy_val=359241000000
+total_assets JPM rows=120 fy_end=2025-12-31 fy_val=4424900000000
+total_assets CROX rows=106 fy_end=2025-12-31 fy_val=4174750000
+dedup rows_deduped=168 rows_as_filed=334
+dedup fy2007_val=3495000000 accn=0001193125-10-012091
+jpm operating_income unknown=true
+unmapped concept unknown=true

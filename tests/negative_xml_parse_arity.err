@@ -1,0 +1,1 @@
+runtime error at tests/negative_xml_parse_arity.bas:3:5: xml.parse expects one or two arguments

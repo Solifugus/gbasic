@@ -3,6 +3,12 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
+# edgar negative tests create a throwaway sqlite cache before raising; clean it.
+cleanup_negative_artifacts() {
+    rm -f examples/tmp_edgar_neg_identity.db examples/tmp_edgar_neg_miss.db examples/tmp_edgar_neg_doc.db examples/tmp_xml_uac.xml examples/tmp_xml_deep.xml examples/tmp_xml_sub.xml
+}
+trap cleanup_negative_artifacts EXIT
+
 cases=(
     negative_append_type
     negative_insert_type
@@ -34,6 +40,34 @@ cases=(
     negative_unknown_order
     negative_env_arity
     negative_env_type
+    negative_sleep_arity
+    negative_sleep_type
+    negative_sleep_negative
+    negative_edgar_unset_identify
+    negative_edgar_offline_miss
+    negative_edgar_document_miss
+    negative_xml_not_loaded
+    negative_xml_malformed
+    negative_xml_parse_arity
+    negative_xml_parse_type
+    negative_xml_parse_html_arity
+    negative_xml_parse_html_type
+    negative_xml_find_arity
+    negative_xml_find_path_type
+    negative_xml_attr_arity
+    negative_xml_encode_arity
+    negative_xml_encode_malformed
+    negative_xml_read_type
+    negative_xml_read_closed
+    negative_xml_reader_missing
+    negative_xml_reader_depth
+    negative_xml_subtree_non_element
+    negative_xml_subtree_closed
+    negative_xml_skip_to_type
+    negative_xml_skip_to_closed
+    negative_ownership_stake_unstructured
+    negative_llm_retry_exhausted
+    negative_llm_offline_miss
     negative_password_hash_arity
     negative_password_hash_type
     negative_password_verify_arity

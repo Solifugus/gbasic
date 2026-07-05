@@ -1,0 +1,1 @@
+runtime error at tests/negative_xml_attr_arity.bas:4:5: xml.attr expects two or three arguments

@@ -1,0 +1,9 @@
+{
+  "id": "chatcmpl-9z3",
+  "object": "chat.completion",
+  "model": "gpt-4o",
+  "choices": [
+    {"index": 0, "message": {"role": "assistant", "content": "Revenue rose but gross margin compressed."}, "finish_reason": "stop"}
+  ],
+  "usage": {"prompt_tokens": 31, "completion_tokens": 9, "total_tokens": 40}
+}

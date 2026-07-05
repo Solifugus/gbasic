@@ -1,0 +1,1 @@
+runtime error at tests/negative_xml_skip_to_closed.bas:7:5: xml.skip_to on a closed reader

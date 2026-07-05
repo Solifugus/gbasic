@@ -1,0 +1,6 @@
+fcf AAPL 2025-09-27: ocf=111482000000 capex=12715000000 fcf=98767000000
+margins AAPL 2025-09-27: gross=0.4691 op=0.3197 net=0.2692
+debt AAPL 2025-09-27: total=90678000000 noncurrent=78328000000 net=54744000000
+ratios AAPL 2025-09-27: coverage=unknown current_ratio=0.8933 nd_ebitda=0.3782 fcf_conv=0.8818
+fcf JPM 2025-12-31: unknown
+margins JPM 2025-12-31: gross=unknown op=unknown net=0.3127

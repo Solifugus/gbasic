@@ -1,0 +1,14 @@
+== request built (anthropic) ==
+{"model":"claude-sonnet-4-6","max_tokens":1024,"temperature":0,"system":"You are a forensic analyst.","messages":[{"role":"user","content":"Summarize the accruals."}]}
+== request built (openai) ==
+{"model":"gpt-4o","temperature":0,"max_tokens":1024,"messages":[{"role":"system","content":"You are a forensic analyst."},{"role":"user","content":"Summarize the accruals."}]}
+== response parsed (anthropic) ==
+text=Receivables grew faster than sales; watch the accrual.
+usage in=42 out=17
+stop=end_turn model=claude-sonnet-4-6
+== response parsed (openai) ==
+text=Revenue rose but gross margin compressed.
+usage in=31 out=9
+stop=stop model=gpt-4o
+== ask (90% case -> string) ==
+Receivables grew faster than sales; watch the accrual.

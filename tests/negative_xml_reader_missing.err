@@ -1,0 +1,1 @@
+runtime error at tests/negative_xml_reader_missing.bas:3:5: xml.reader: could not open 'examples/fixtures/edgar/does_not_exist.xml' as XML
