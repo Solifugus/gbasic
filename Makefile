@@ -85,7 +85,7 @@ endif
 
 # libgbasic is every object except the CLI entry point (src/main.o). The CLI is
 # its first consumer; the archive is the seam a future embedder links against.
-LIB_OBJS := src/lexer.o src/parser.tab.o src/ast.o src/eval.o src/builtins.o src/actor.o
+LIB_OBJS := src/lexer.o src/parser.tab.o src/ast.o src/eval.o src/builtins.o src/actor.o src/diagnostics.o src/frontend.o
 OBJS := src/main.o $(LIB_OBJS)
 
 .PHONY: all clean install uninstall
@@ -117,6 +117,12 @@ src/eval.o: src/eval.c src/modules/xml.c include/eval.h include/ast.h include/bu
 	$(CC) $(CFLAGS) -c $< -o $@
 
 src/builtins.o: src/builtins.c include/builtins.h
+	$(CC) $(CFLAGS) -c $< -o $@
+
+src/diagnostics.o: src/diagnostics.c include/diagnostics.h
+	$(CC) $(CFLAGS) -c $< -o $@
+
+src/frontend.o: src/frontend.c include/gbasic.h include/diagnostics.h include/ast.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
 src/actor.o: src/actor.c include/actor.h

@@ -114,6 +114,13 @@ in observable behavior. ✋ STOP.
 
 ## Deferred — NOT started this track (do not begin without a new go-ahead)
 
+### Parser error recovery (multiple diagnostics per buffer)
+The current parser aborts at the first error, so one parse yields at most one
+diagnostic. Real multi-error reporting (recover and keep going) is required for a
+good LSP experience — a language server wants every error in a buffer, not just
+the first. Becomes its own phase later. Until then, the Phase 1 diagnostics test
+collects three errors by parsing three one-error buffers into a single sink.
+
 ### Phase 3 — Interpreter context struct
 Collect eval.c's ~60 file-scope mutables into a `gb_interp` context, in dependency
 clusters (env/functions/modifiers; error state; import/use state; module resource
