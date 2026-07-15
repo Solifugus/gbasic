@@ -133,10 +133,10 @@ void gb_diag_format(FILE *out, const gb_diag *diag) {
     }
 }
 
-void gb_report(gb_diag_code code, int subcode, const char *path,
-               gb_span span, const char *message) {
-    if (g_active_sink) {
-        gb_diagnostics_add(g_active_sink, GB_SEVERITY_ERROR, code, subcode,
+void gb_report_to(gb_diagnostics *sink, gb_diag_code code, int subcode,
+                  const char *path, gb_span span, const char *message) {
+    if (sink) {
+        gb_diagnostics_add(sink, GB_SEVERITY_ERROR, code, subcode,
                            path, span, message);
         return;
     }
@@ -150,4 +150,9 @@ void gb_report(gb_diag_code code, int subcode, const char *path,
     d.span = span;
     d.message = (char *)message;
     gb_diag_format(stderr, &d);
+}
+
+void gb_report(gb_diag_code code, int subcode, const char *path,
+               gb_span span, const char *message) {
+    gb_report_to(g_active_sink, code, subcode, path, span, message);
 }

@@ -3,28 +3,24 @@
 #include "builtins.h"
 #include "diagnostics.h"
 #include "lexer.h"
+#include "parse_ctx.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-static Lexer *active_lexer;
-static int lexer_error_reported;
-static const char *active_parse_path;
-
-AstStmtList parsed_program;
-
-/* Report a diagnostic with an explicit span. Routes through gb_report, which
- * pushes to the active sink or (no sink) prints in the legacy stderr format. */
-static void report_diag(gb_diag_code code, int line, int column,
+/* Report a diagnostic with an explicit span. Routes through gb_report_to, which
+ * pushes to the per-parse sink (ctx->diags) or, when that is NULL, prints in the
+ * legacy stderr format. */
+static void report_diag(gb_parse_ctx *ctx, gb_diag_code code, int line, int column,
                         int end_line, int end_column, const char *message) {
     gb_span span = { line, column, end_line, end_column };
-    gb_report(code, 0, active_parse_path, span, message);
+    gb_report_to(ctx->diags, code, 0, ctx->active_parse_path, span, message);
 }
 
 /* Same, computing the end position by walking `len` bytes of the lexeme exactly
  * as the lexer's advance() does (byte-based columns, '\n' resets to column 1). */
-static void report_diag_lexeme(gb_diag_code code, int line, int column,
+static void report_diag_lexeme(gb_parse_ctx *ctx, gb_diag_code code, int line, int column,
                                const char *text, int len, const char *message) {
     int end_line = line;
     int end_column = column;
@@ -36,7 +32,7 @@ static void report_diag_lexeme(gb_diag_code code, int line, int column,
             end_column++;
         }
     }
-    report_diag(code, line, column, end_line, end_column, message);
+    report_diag(ctx, code, line, column, end_line, end_column, message);
 }
 
 static char *copy_text(const char *start, int length) {
@@ -79,7 +75,7 @@ static int utf8_encode_literal(unsigned cp, char out[4]) {
     return 4;
 }
 
-static char *copy_string_literal(const char *start, int length, int line, int column, int *ok) {
+static char *copy_string_literal(gb_parse_ctx *ctx, const char *start, int length, int line, int column, int *ok) {
     *ok = 1;
     if (length < 2) {
         return copy_text("", 0);
@@ -93,7 +89,7 @@ static char *copy_string_literal(const char *start, int length, int line, int co
     for (int i = 1; i < length - 1; i++) {
         if (start[i] == '\\') {
             if (i + 1 >= length - 1) {
-                report_diag_lexeme(GB_DIAG_STRING_LITERAL, line, column, start, length, "unterminated escape sequence");
+                report_diag_lexeme(ctx, GB_DIAG_STRING_LITERAL, line, column, start, length, "unterminated escape sequence");
                 *ok = 0;
                 free(text);
                 return NULL;
@@ -119,21 +115,21 @@ static char *copy_string_literal(const char *start, int length, int line, int co
                 }
                 /* i now points at '}', which the for-loop's i++ will consume. */
                 if (digits > 6 || cp > 0x10FFFFu) {
-                    report_diag_lexeme(GB_DIAG_STRING_LITERAL, line, column, start, length,
+                    report_diag_lexeme(ctx, GB_DIAG_STRING_LITERAL, line, column, start, length,
                                        "invalid unicode escape: codepoint must be between 0 and 0x10FFFF");
                     *ok = 0;
                     free(text);
                     return NULL;
                 }
                 if (cp >= 0xD800u && cp <= 0xDFFFu) {
-                    report_diag_lexeme(GB_DIAG_STRING_LITERAL, line, column, start, length,
+                    report_diag_lexeme(ctx, GB_DIAG_STRING_LITERAL, line, column, start, length,
                                        "invalid unicode escape: surrogate codepoints (0xD800..0xDFFF) are not valid");
                     *ok = 0;
                     free(text);
                     return NULL;
                 }
                 if (cp == 0) {
-                    report_diag_lexeme(GB_DIAG_STRING_LITERAL, line, column, start, length,
+                    report_diag_lexeme(ctx, GB_DIAG_STRING_LITERAL, line, column, start, length,
                                        "invalid unicode escape: \\u{0} is not allowed in a literal; use chr(0)");
                     *ok = 0;
                     free(text);
@@ -147,7 +143,7 @@ static char *copy_string_literal(const char *start, int length, int line, int co
             } else {
                 char message[64];
                 snprintf(message, sizeof(message), "invalid escape sequence: \\%c", start[i]);
-                report_diag_lexeme(GB_DIAG_STRING_LITERAL, line, column, start, length, message);
+                report_diag_lexeme(ctx, GB_DIAG_STRING_LITERAL, line, column, start, length, message);
                 *ok = 0;
                 free(text);
                 return NULL;
@@ -215,8 +211,8 @@ static int keyword_at(const char *p, const char *keyword) {
     return !is_ident_char(*p);
 }
 
-static int source_declares_function(const char *name) {
-    const char *p = active_lexer->source;
+static int source_declares_function(gb_parse_ctx *ctx, const char *name) {
+    const char *p = ctx->active_lexer->source;
     size_t name_len = strlen(name);
     int in_string = 0;
     int in_comment = 0;
@@ -250,7 +246,7 @@ static int source_declares_function(const char *name) {
             p++;
             continue;
         }
-        if ((p == active_lexer->source || !is_ident_char(p[-1])) &&
+        if ((p == ctx->active_lexer->source || !is_ident_char(p[-1])) &&
             keyword_at(p, "function")) {
             p += strlen("function");
             while (*p == ' ' || *p == '\t' || *p == '\r') {
@@ -374,7 +370,7 @@ static AstDuration duration_add_unit(AstDuration duration, double amount, char *
     return duration;
 }
 
-static int modifier_lparen_ahead(const char *start) {
+static int modifier_lparen_ahead(gb_parse_ctx *ctx, const char *start) {
     const char *p = start + 1;
     int saw_term = 0;
 
@@ -435,12 +431,12 @@ static int modifier_lparen_ahead(const char *start) {
     }
 
     const char *name_end = start;
-    while (name_end > active_lexer->source &&
+    while (name_end > ctx->active_lexer->source &&
            (name_end[-1] == ' ' || name_end[-1] == '\t' || name_end[-1] == '\r')) {
         name_end--;
     }
     const char *name_start = name_end;
-    while (name_start > active_lexer->source &&
+    while (name_start > ctx->active_lexer->source &&
            ((name_start[-1] >= 'A' && name_start[-1] <= 'Z') ||
             (name_start[-1] >= 'a' && name_start[-1] <= 'z') ||
             (name_start[-1] >= '0' && name_start[-1] <= '9') ||
@@ -449,7 +445,7 @@ static int modifier_lparen_ahead(const char *start) {
     }
     if (name_start < name_end) {
         char *name = copy_text(name_start, (int)(name_end - name_start));
-        int is_function = gbasic_builtin_function(name) || source_declares_function(name);
+        int is_function = gbasic_builtin_function(name) || source_declares_function(ctx, name);
         free(name);
         if (is_function) {
             return 0;
@@ -459,12 +455,11 @@ static int modifier_lparen_ahead(const char *start) {
     return 1;
 }
 
-static int yylex(void);
-static void yyerror(const char *message);
 %}
 
 %code requires {
 #include "ast.h"
+#include "parse_ctx.h"
 
 typedef enum {
     IDENT_SUFFIX_NONE,
@@ -513,7 +508,19 @@ typedef struct {
 %precedence NO_DOT
 %left DOT
 %define parse.error verbose
+%define api.pure full
+%param {gb_parse_ctx *ctx}
 %locations
+
+/* Emitted after YYSTYPE/YYLTYPE are defined (so the pure-parser signatures are
+ * legal here) and before yyparse — where the grammar actions that call
+ * report_syntax_error live. */
+%code {
+static int yylex(YYSTYPE *lvalp, YYLTYPE *llocp, gb_parse_ctx *ctx);
+static void yyerror(YYLTYPE *llocp, gb_parse_ctx *ctx, const char *message);
+static void report_syntax_error(gb_parse_ctx *ctx, int line, int column,
+                                int end_line, int end_column, const char *message);
+}
 
 %type <stmt_list> program statement_list consider_statement_list consider_else_opt if_block_tail if_inline_tail
 %type <stmt> statement assignment print_statement call_statement with_lock_statement for_each_statement while_statement consider_statement consider_body_statement function_statement modifier_statement program_statement library_statement use_statement return_statement label_statement goto_statement gosub_statement break_statement continue_statement watch_statement without_watchers_statement on_error_statement error_statement if_statement inline_statement
@@ -533,7 +540,7 @@ typedef struct {
 %%
 
 program
-    : statement_list { parsed_program = $1; $$ = $1; }
+    : statement_list { ctx->parsed_program = $1; $$ = $1; }
     ;
 
 statement_list
@@ -572,7 +579,9 @@ assignment
     : lvalue OP_EQ expression { $$ = ast_assign($1, ast_modifier_none(), $3); }
     | lvalue modifier OP_EQ expression {
         if (!is_modifier_target_expr($1)) {
-            yyerror("modifier target must be a variable, field, or index");
+            report_syntax_error(ctx, ctx->la_line, ctx->la_column,
+                                ctx->la_end_line, ctx->la_end_column,
+                                "modifier target must be a variable, field, or index");
             YYERROR;
         }
         $$ = ast_assign($1, $2, $4);
@@ -596,7 +605,7 @@ modifier
     ;
 
 comparison_lens
-    : LBRACE { lexer_begin_lens_content(active_lexer); } LENS_CONTENT RBRACE {
+    : LBRACE { lexer_begin_lens_content(ctx->active_lexer); } LENS_CONTENT RBRACE {
         $$ = parse_modifier_use($3);
       }
     ;
@@ -640,7 +649,9 @@ call_statement
 with_lock_statement
     : WITH IDENT LPAREN expression RPAREN NEWLINE statement_list END WITH NEWLINE {
         if (strcmp($2, "lock") != 0) {
-            yyerror("expected lock in with lock block");
+            report_syntax_error(ctx, ctx->la_line, ctx->la_column,
+                                ctx->la_end_line, ctx->la_end_column,
+                                "expected lock in with lock block");
             free($2);
             YYERROR;
         }
@@ -754,7 +765,9 @@ use_statement
     | LOAD STRING { $$ = ast_use($2, NULL); }
     | USE IDENT IDENT STRING {
         if (strcmp($3, "from") != 0) {
-            yyerror("expected from in use statement");
+            report_syntax_error(ctx, ctx->la_line, ctx->la_column,
+                                ctx->la_end_line, ctx->la_end_column,
+                                "expected from in use statement");
             free($2);
             free($3);
             free($4);
@@ -765,7 +778,9 @@ use_statement
       }
     | LOAD IDENT IDENT STRING {
         if (strcmp($3, "from") != 0) {
-            yyerror("expected from in load statement");
+            report_syntax_error(ctx, ctx->la_line, ctx->la_column,
+                                ctx->la_end_line, ctx->la_end_column,
+                                "expected from in load statement");
             free($2);
             free($3);
             free($4);
@@ -916,7 +931,9 @@ comparison_expression
       }
     | additive_expression modifier comparison_operator additive_expression {
         if (!is_modifier_target_expr($1)) {
-            yyerror("modifier target must be a variable, field, or index");
+            report_syntax_error(ctx, ctx->la_line, ctx->la_column,
+                                ctx->la_end_line, ctx->la_end_column,
+                                "modifier target must be a variable, field, or index");
             YYERROR;
         }
         $$ = expr_at(ast_binary($3, $2, $1, $4), @3.first_line, @3.first_column);
@@ -1090,10 +1107,14 @@ field_policy
             spec.policy = AST_FIELD_POLICY_EXCLUDE;
         } else if (strcmp($1, "reset") == 0) {
             free($1);
-            yyerror("reset policy requires a value, e.g. (reset 0)");
+            report_syntax_error(ctx, ctx->la_line, ctx->la_column,
+                                ctx->la_end_line, ctx->la_end_column,
+                                "reset policy requires a value, e.g. (reset 0)");
             YYERROR;
         } else {
-            yyerror("unknown field policy (expected copy, link, reset, or exclude)");
+            report_syntax_error(ctx, ctx->la_line, ctx->la_column,
+                                ctx->la_end_line, ctx->la_end_column,
+                                "unknown field policy (expected copy, link, reset, or exclude)");
             free($1);
             YYERROR;
         }
@@ -1107,7 +1128,9 @@ field_policy
             spec.reset_expr = $2;
         } else {
             free($1);
-            yyerror("only the reset policy takes a value");
+            report_syntax_error(ctx, ctx->la_line, ctx->la_column,
+                                ctx->la_end_line, ctx->la_end_column,
+                                "only the reset policy takes a value");
             YYERROR;
         }
         free($1);
@@ -1122,41 +1145,100 @@ optional_newlines
 
 %%
 
-int parse_source(const char *source, AstStmtList *out_program) {
+/* Reentrant parse core: all mutable parser state lives in a stack-allocated
+ * gb_parse_ctx, so concurrent parses in one process share nothing. `path` labels
+ * diagnostic locations (may be NULL) and `diags` is the sink (NULL => immediate
+ * stderr via gb_report_to). This is the entry point gb_parse (frontend.c) uses. */
+int parse_source_reentrant(const char *source, const char *path,
+                           gb_diagnostics *diags, AstStmtList *out_program) {
+    gb_parse_ctx ctx;
+    ctx.active_lexer = NULL;
+    ctx.lexer_error_reported = 0;
+    ctx.active_parse_path = path;
+    ctx.parsed_program = ast_stmt_list_empty();
+    ctx.diags = diags;
+    ctx.la_line = 0;
+    ctx.la_column = 0;
+    ctx.la_end_line = 0;
+    ctx.la_end_column = 0;
+
     Lexer lexer;
     lexer_init(&lexer, source);
-    active_lexer = &lexer;
-    lexer_error_reported = 0;
-    parsed_program = ast_stmt_list_empty();
+    ctx.active_lexer = &lexer;
 
-    int result = yyparse();
-    active_lexer = NULL;
+    int result = yyparse(&ctx);
     if (result != 0) {
         return result;
     }
 
-    *out_program = parsed_program;
+    *out_program = ctx.parsed_program;
     return 0;
 }
 
-void parse_set_source_path(const char *path) {
-    active_parse_path = path;
+/* Legacy global-backed shims for the single-threaded CLI paths that still use
+ * parse_set_source_path + parse_source: --add-loads (main.c), actor mode
+ * (main.c), and eval.c's import loader. The sink comes from the process-global
+ * active sink (main.c sets it around eval, so import parse errors are collected
+ * and drained); the path from parse_set_source_path. gb_parse bypasses both. */
+static const char *legacy_parse_path = NULL;
+
+int parse_source(const char *source, AstStmtList *out_program) {
+    return parse_source_reentrant(source, legacy_parse_path,
+                                  gb_get_active_sink(), out_program);
 }
 
-static int yylex(void) {
-    Token token = lexer_next(active_lexer);
-    yylloc.first_line = token.line;
-    yylloc.first_column = token.column;
-    yylloc.last_line = token.line;
-    yylloc.last_column = token.column + token.length;
+void parse_set_source_path(const char *path) {
+    legacy_parse_path = path;
+}
+
+/* Mirror of the former global yyerror location logic, sourced from the per-parse
+ * ctx. Both Bison's syntax-error yyerror and the grammar's action-level error
+ * reports funnel through here so their output stays byte-identical to the
+ * pre-Phase-2 global reporter. */
+static void report_syntax_error(gb_parse_ctx *ctx, int line, int column,
+                                int end_line, int end_column, const char *message) {
+    if (ctx->lexer_error_reported) {
+        return;
+    }
+    if (line <= 0 && ctx->active_lexer) {
+        line = ctx->active_lexer->line;
+        column = ctx->active_lexer->column;
+    }
+    if (line <= 0) {
+        line = 1;
+    }
+    if (column <= 0) {
+        column = 1;
+    }
+    /* End of the offending token; fall back to the start if it looks unset or
+     * inverted. */
+    if (end_line < line || (end_line == line && end_column < column)) {
+        end_line = line;
+        end_column = column;
+    }
+    report_diag(ctx, GB_DIAG_PARSE_ERROR, line, column, end_line, end_column, message);
+}
+
+static int yylex(YYSTYPE *lvalp, YYLTYPE *llocp, gb_parse_ctx *ctx) {
+    Token token = lexer_next(ctx->active_lexer);
+    llocp->first_line = token.line;
+    llocp->first_column = token.column;
+    llocp->last_line = token.line;
+    llocp->last_column = token.column + token.length;
+    /* Record the lookahead location so action-level error reporting reproduces
+     * exactly what the former global yyerror read from the global yylloc. */
+    ctx->la_line = token.line;
+    ctx->la_column = token.column;
+    ctx->la_end_line = token.line;
+    ctx->la_end_column = token.column + token.length;
 
     switch (token.type) {
     case TOKEN_EOF: return 0;
     case TOKEN_IDENT:
-        yylval.text = copy_text(token.start, token.length);
+        lvalp->text = copy_text(token.start, token.length);
         return IDENT;
     case TOKEN_QUALIFIED_IDENT:
-        yylval.text = copy_text(token.start, token.length);
+        lvalp->text = copy_text(token.start, token.length);
         return QUALIFIED_IDENT;
     case TOKEN_NUMBER:
     {
@@ -1166,24 +1248,24 @@ static int yylex(void) {
         size_t nlen = token.length < sizeof(numbuf) - 1 ? token.length : sizeof(numbuf) - 1;
         memcpy(numbuf, token.start, nlen);
         numbuf[nlen] = '\0';
-        yylval.number = strtod(numbuf, NULL);
+        lvalp->number = strtod(numbuf, NULL);
         return NUMBER;
     }
     case TOKEN_STRING:
     {
         int ok = 0;
-        yylval.text = copy_string_literal(token.start, token.length, token.line, token.column, &ok);
+        lvalp->text = copy_string_literal(ctx, token.start, token.length, token.line, token.column, &ok);
         if (!ok) {
-            lexer_error_reported = 1;
+            ctx->lexer_error_reported = 1;
             return 0;
         }
         return STRING;
     }
     case TOKEN_MOD_CONTENT:
-        yylval.text = copy_text(token.start, token.length);
+        lvalp->text = copy_text(token.start, token.length);
         return MOD_CONTENT;
     case TOKEN_LENS_CONTENT:
-        yylval.text = copy_text(token.start, token.length);
+        lvalp->text = copy_text(token.start, token.length);
         return LENS_CONTENT;
     case TOKEN_IF: return IF;
     case TOKEN_CONSIDER_IF: return CONSIDER_IF;
@@ -1244,8 +1326,8 @@ static int yylex(void) {
     case TOKEN_STAR: return STAR;
     case TOKEN_SLASH: return SLASH;
     case TOKEN_LPAREN:
-        if (modifier_lparen_ahead(token.start)) {
-            lexer_begin_modifier_content(active_lexer);
+        if (modifier_lparen_ahead(ctx, token.start)) {
+            lexer_begin_modifier_content(ctx->active_lexer);
             return MOD_LPAREN;
         }
         return LPAREN;
@@ -1259,14 +1341,14 @@ static int yylex(void) {
     case TOKEN_COLON: return COLON;
     case TOKEN_NEWLINE: return NEWLINE;
     case TOKEN_ERROR:
-        if (active_lexer->error_message[0]) {
-            report_diag_lexeme(GB_DIAG_LEX_DETAIL, token.line, token.column,
-                               token.start, token.length, active_lexer->error_message);
+        if (ctx->active_lexer->error_message[0]) {
+            report_diag_lexeme(ctx, GB_DIAG_LEX_DETAIL, token.line, token.column,
+                               token.start, token.length, ctx->active_lexer->error_message);
         } else {
-            report_diag_lexeme(GB_DIAG_LEX_ERROR, token.line, token.column,
+            report_diag_lexeme(ctx, GB_DIAG_LEX_ERROR, token.line, token.column,
                                token.start, token.length, "unexpected token");
         }
-        lexer_error_reported = 1;
+        ctx->lexer_error_reported = 1;
         return 0;
     default:
         fprintf(stderr, "unexpected token %s at %d:%d\n",
@@ -1275,29 +1357,10 @@ static int yylex(void) {
     }
 }
 
-static void yyerror(const char *message) {
-    if (lexer_error_reported) {
-        return;
-    }
-    int line = yylloc.first_line;
-    int column = yylloc.first_column;
-    if (line <= 0 && active_lexer) {
-        line = active_lexer->line;
-        column = active_lexer->column;
-    }
-    if (line <= 0) {
-        line = 1;
-    }
-    if (column <= 0) {
-        column = 1;
-    }
-    /* End of the offending token: yylex set yylloc.last_* to first + token length.
-     * Fall back to the start if the location looks unset or inverted. */
-    int end_line = yylloc.last_line;
-    int end_column = yylloc.last_column;
-    if (end_line < line || (end_line == line && end_column < column)) {
-        end_line = line;
-        end_column = column;
-    }
-    report_diag(GB_DIAG_PARSE_ERROR, line, column, end_line, end_column, message);
+/* Bison's syntax-error entry point. In the pure parser llocp points at the
+ * offending lookahead token's location (what the former global yyerror read from
+ * the global yylloc); report_syntax_error applies the shared fallback logic. */
+static void yyerror(YYLTYPE *llocp, gb_parse_ctx *ctx, const char *message) {
+    report_syntax_error(ctx, llocp->first_line, llocp->first_column,
+                        llocp->last_line, llocp->last_column, message);
 }

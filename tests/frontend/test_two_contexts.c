@@ -1,13 +1,11 @@
-/* Phase 2 reentrancy smoke test — XFAIL until the parser is reentrant.
+/* Phase 2 reentrancy smoke test — must PASS now that the parser is reentrant.
  *
- * Two threads each parse a valid buffer many times through gb_parse. With the
- * current global Bison parser (shared yylval/yylloc/yychar/parser stack plus the
- * file-scope active_lexer/parsed_program), concurrent parses race: expect
- * corrupted results or a crash. Once Phase 2 threads a per-parse context, every
- * call must return 0 with the correct statement count and no crash.
- *
- * Marked XFAIL: run_frontend.sh runs it for information but never lets its
- * result fail the suite until Phase 2 removes the marker. */
+ * Two threads each parse a valid buffer many times through gb_parse. Before
+ * Phase 2 the global Bison parser (shared yylval/yylloc/yychar/parser stack plus
+ * the file-scope active_lexer/parsed_program) made concurrent parses race and
+ * corrupt or crash. Phase 2 threads a stack-allocated gb_parse_ctx through
+ * yyparse/yylex/yyerror (api.pure full + %param), so every call must return 0
+ * with the correct statement count and no crash. */
 #include "gbasic.h"
 
 #include <pthread.h>

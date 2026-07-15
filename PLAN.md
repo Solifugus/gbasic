@@ -98,21 +98,39 @@ context. Lexer and AST need no change (already global-free).
 
 ### Implementation
 
-- [ ] Introduce `gb_parse_ctx` holding `active_lexer`, `lexer_error_reported`,
+- [x] Introduce `gb_parse_ctx` holding `active_lexer`, `lexer_error_reported`,
       `active_parse_path`, `parsed_program`, and the diagnostics sink.
-- [ ] Convert grammar to pure parser: `%define api.pure full` + `%param
-      {gb_parse_ctx *ctx}`; thread `ctx` through `yylex`/`yyerror`.
-- [ ] Rewrite the four globals as `ctx->` fields; `source_declares_function` and
-      `modifier_lparen_ahead` read `ctx->active_lexer->source`.
-- [ ] Confirm `gbasic_builtin_function` (name lookup) stays global-safe.
-- [ ] `parse_source` becomes a thin wrapper that stack-allocates a `gb_parse_ctx`.
-- [ ] Full core + module suite byte-exact green.
-- [ ] Diagnostics test (a) still passes.
-- [ ] **Two-contexts test (b) flips to PASS**; un-mark its xfail.
-- [ ] Show diff, stop for review.
+      Placed in a new guarded `include/parse_ctx.h`, included from both the
+      grammar's `%code requires` (so the header's `yyparse(gb_parse_ctx*)`
+      prototype sees it) and the prologue (so parser helpers see it). Also holds
+      `la_*` (last-lexed token location) so action-level error reports reproduce
+      the exact location the former global `yyerror` read from global `yylloc`.
+- [x] Convert grammar to pure parser: `%define api.pure full` + `%param
+      {gb_parse_ctx *ctx}`; thread `ctx` through `yylex`/`yyerror`. Generated
+      parser is now `YYPURE 2`; `yylval`/`yylloc` are locals inside `yyparse`.
+- [x] Rewrite the four globals as `ctx->` fields; `source_declares_function` and
+      `modifier_lparen_ahead` read `ctx->active_lexer->source`. Diagnostic
+      routing goes to `ctx->diags` via a new `gb_report_to(sink, ...)` primitive
+      (`gb_report` == `gb_report_to(<global sink>, ...)`), so parser diagnostics
+      never touch the process-global sink.
+- [x] Confirm `gbasic_builtin_function` (name lookup) stays global-safe.
+      Verified: a `static const` table lookup with no mutable state.
+- [x] `parse_source` becomes a thin wrapper that stack-allocates a `gb_parse_ctx`.
+      The reentrant core is `parse_source_reentrant(source, path, diags, out)`
+      (used by `gb_parse`); `parse_source` + `parse_set_source_path` remain as
+      global-backed shims for the single-threaded CLI/eval import paths.
+- [x] Full core + module suite byte-exact green. Zero rebaselines: examples,
+      negative (incl. the 4 action-level-`yyerror` location tests), core, bag,
+      sqlite, webclient, webserver, gbasic_site, crypto, xml-bigfile — all 0 FAIL.
+- [x] Diagnostics test (a) still passes.
+- [x] **Two-contexts test (b) flips to PASS**; un-marked its xfail (500 iters ×
+      2 threads, 0 bad parses).
+- [x] NOTE: the survey held exactly — `src/lexer.c` and `src/ast.c` needed
+      **zero** changes (not even signature threading).
+- [x] Show diff, stop for review.
 
 **Boundary:** entire front end reentrant + structured diagnostics; CLI unchanged
-in observable behavior. ✋ STOP.
+in observable behavior. ✋ STOP. — **DONE.**
 
 ---
 

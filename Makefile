@@ -98,7 +98,7 @@ libgbasic.a: $(LIB_OBJS)
 gbasic: src/main.o libgbasic.a
 	$(CC) $(CFLAGS) -o $@ src/main.o libgbasic.a $(LDLIBS)
 
-src/parser.tab.c src/parser.tab.h: src/parser.y include/ast.h include/lexer.h
+src/parser.tab.c src/parser.tab.h: src/parser.y include/ast.h include/lexer.h include/diagnostics.h include/parse_ctx.h
 	bison -d -o src/parser.tab.c src/parser.y
 
 src/main.o: src/main.c include/ast.h include/eval.h include/lexer.h include/builtins.h include/gbasic.h include/diagnostics.h
@@ -107,7 +107,7 @@ src/main.o: src/main.c include/ast.h include/eval.h include/lexer.h include/buil
 src/lexer.o: src/lexer.c include/lexer.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
-src/parser.tab.o: src/parser.tab.c src/parser.tab.h include/ast.h include/lexer.h include/diagnostics.h
+src/parser.tab.o: src/parser.tab.c src/parser.tab.h include/ast.h include/lexer.h include/diagnostics.h include/parse_ctx.h
 	$(CC) $(CFLAGS) -c src/parser.tab.c -o $@
 
 src/ast.o: src/ast.c include/ast.h

@@ -3,12 +3,10 @@
 #
 #   test_diagnostics_sink   sink API unit test             -> must PASS
 #   test_parse_diagnostics  3 errors -> 3 diagnostics       -> must PASS (Phase 1)
-#   test_two_contexts       concurrent parse (reentrancy)   -> XFAIL until Phase 2
+#   test_two_contexts       concurrent parse (reentrancy)   -> must PASS (Phase 2)
 #
 # Skips cleanly when no C compiler is available. Exit status is nonzero only if a
-# test that is supposed to pass does not; expected-fail / xfail tests are
-# reported for information and never fail the suite until their phase removes the
-# marker.
+# test that is supposed to pass does not.
 set -u
 
 cd "$(dirname "$0")/.."
@@ -74,11 +72,12 @@ else
     status=1
 fi
 
-echo "=== test_two_contexts (XFAIL until Phase 2) ==="
+echo "=== test_two_contexts (must PASS) ==="
 if build_and_run test_two_contexts "-pthread"; then
-    echo "XPASS test_two_contexts  (parser already tolerated concurrency this run)"
+    echo "OK   test_two_contexts"
 else
-    echo "XFAIL test_two_contexts  (expected until Phase 2 makes the parser reentrant)"
+    echo "FAIL test_two_contexts  <-- parser reentrancy regression"
+    status=1
 fi
 
 echo "=== run_frontend status=$status ==="

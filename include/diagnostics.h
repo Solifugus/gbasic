@@ -122,6 +122,13 @@ gb_diagnostics *gb_get_active_sink(void);
 void            gb_report(gb_diag_code code, int subcode, const char *path,
                           gb_span span, const char *message);
 
+/* Same as gb_report, but to an explicit sink instead of the process-global one
+ * (NULL sink => immediate stderr, byte-identical to gb_report's fallback). The
+ * reentrant parser passes its per-parse ctx->diags here so concurrent parses do
+ * not share the global sink. gb_report(...) == gb_report_to(<global sink>, ...). */
+void            gb_report_to(gb_diagnostics *sink, gb_diag_code code, int subcode,
+                             const char *path, gb_span span, const char *message);
+
 /* Emit one diagnostic to `out` as "<kind> at <path>:<line>:<col>: <msg>\n"
  * (path segment omitted when path is NULL/empty), using span.start_* — the exact
  * legacy CLI format. */

@@ -45,9 +45,10 @@
 extern int yydebug;
 #endif
 /* "%code requires" blocks.  */
-#line 466 "src/parser.y"
+#line 460 "src/parser.y"
 
 #include "ast.h"
+#include "parse_ctx.h"
 
 typedef enum {
     IDENT_SUFFIX_NONE,
@@ -68,7 +69,7 @@ typedef struct {
     AstExpr *reset_expr;
 } FieldPolicySpec;
 
-#line 72 "src/parser.tab.h"
+#line 73 "src/parser.tab.h"
 
 /* Token kinds.  */
 #ifndef YYTOKENTYPE
@@ -164,7 +165,7 @@ typedef struct {
 #if ! defined YYSTYPE && ! defined YYSTYPE_IS_DECLARED
 union YYSTYPE
 {
-#line 489 "src/parser.y"
+#line 484 "src/parser.y"
 
     double number;
     char *text;
@@ -181,7 +182,7 @@ union YYSTYPE
     AstIdentSuffix ident_suffix;
     FieldPolicySpec field_policy;
 
-#line 185 "src/parser.tab.h"
+#line 186 "src/parser.tab.h"
 
 };
 typedef union YYSTYPE YYSTYPE;
@@ -204,10 +205,9 @@ struct YYLTYPE
 #endif
 
 
-extern YYSTYPE yylval;
-extern YYLTYPE yylloc;
 
-int yyparse (void);
+
+int yyparse (gb_parse_ctx *ctx);
 
 
 #endif /* !YY_YY_SRC_PARSER_TAB_H_INCLUDED  */
