@@ -1,6 +1,7 @@
 %{
 #include "ast.h"
 #include "builtins.h"
+#include "diagnostics.h"
 #include "lexer.h"
 
 #include <stdio.h>
@@ -13,21 +14,29 @@ static const char *active_parse_path;
 
 AstStmtList parsed_program;
 
-static void report_parse_issue(const char *kind, int line, int column, const char *message) {
-    if (active_parse_path && active_parse_path[0]) {
-        fprintf(stderr, "%s at %s:%d:%d: %s\n",
-                kind,
-                active_parse_path,
-                line,
-                column,
-                message);
-    } else {
-        fprintf(stderr, "%s at %d:%d: %s\n",
-                kind,
-                line,
-                column,
-                message);
+/* Report a diagnostic with an explicit span. Routes through gb_report, which
+ * pushes to the active sink or (no sink) prints in the legacy stderr format. */
+static void report_diag(gb_diag_code code, int line, int column,
+                        int end_line, int end_column, const char *message) {
+    gb_span span = { line, column, end_line, end_column };
+    gb_report(code, 0, active_parse_path, span, message);
+}
+
+/* Same, computing the end position by walking `len` bytes of the lexeme exactly
+ * as the lexer's advance() does (byte-based columns, '\n' resets to column 1). */
+static void report_diag_lexeme(gb_diag_code code, int line, int column,
+                               const char *text, int len, const char *message) {
+    int end_line = line;
+    int end_column = column;
+    for (int i = 0; i < len; i++) {
+        if (text[i] == '\n') {
+            end_line++;
+            end_column = 1;
+        } else {
+            end_column++;
+        }
     }
+    report_diag(code, line, column, end_line, end_column, message);
 }
 
 static char *copy_text(const char *start, int length) {
@@ -84,7 +93,7 @@ static char *copy_string_literal(const char *start, int length, int line, int co
     for (int i = 1; i < length - 1; i++) {
         if (start[i] == '\\') {
             if (i + 1 >= length - 1) {
-                report_parse_issue("runtime error", line, column, "unterminated escape sequence");
+                report_diag_lexeme(GB_DIAG_STRING_LITERAL, line, column, start, length, "unterminated escape sequence");
                 *ok = 0;
                 free(text);
                 return NULL;
@@ -110,21 +119,21 @@ static char *copy_string_literal(const char *start, int length, int line, int co
                 }
                 /* i now points at '}', which the for-loop's i++ will consume. */
                 if (digits > 6 || cp > 0x10FFFFu) {
-                    report_parse_issue("runtime error", line, column,
+                    report_diag_lexeme(GB_DIAG_STRING_LITERAL, line, column, start, length,
                                        "invalid unicode escape: codepoint must be between 0 and 0x10FFFF");
                     *ok = 0;
                     free(text);
                     return NULL;
                 }
                 if (cp >= 0xD800u && cp <= 0xDFFFu) {
-                    report_parse_issue("runtime error", line, column,
+                    report_diag_lexeme(GB_DIAG_STRING_LITERAL, line, column, start, length,
                                        "invalid unicode escape: surrogate codepoints (0xD800..0xDFFF) are not valid");
                     *ok = 0;
                     free(text);
                     return NULL;
                 }
                 if (cp == 0) {
-                    report_parse_issue("runtime error", line, column,
+                    report_diag_lexeme(GB_DIAG_STRING_LITERAL, line, column, start, length,
                                        "invalid unicode escape: \\u{0} is not allowed in a literal; use chr(0)");
                     *ok = 0;
                     free(text);
@@ -138,7 +147,7 @@ static char *copy_string_literal(const char *start, int length, int line, int co
             } else {
                 char message[64];
                 snprintf(message, sizeof(message), "invalid escape sequence: \\%c", start[i]);
-                report_parse_issue("runtime error", line, column, message);
+                report_diag_lexeme(GB_DIAG_STRING_LITERAL, line, column, start, length, message);
                 *ok = 0;
                 free(text);
                 return NULL;
@@ -1251,9 +1260,11 @@ static int yylex(void) {
     case TOKEN_NEWLINE: return NEWLINE;
     case TOKEN_ERROR:
         if (active_lexer->error_message[0]) {
-            report_parse_issue("runtime error", token.line, token.column, active_lexer->error_message);
+            report_diag_lexeme(GB_DIAG_LEX_DETAIL, token.line, token.column,
+                               token.start, token.length, active_lexer->error_message);
         } else {
-            report_parse_issue("lexer error", token.line, token.column, "unexpected token");
+            report_diag_lexeme(GB_DIAG_LEX_ERROR, token.line, token.column,
+                               token.start, token.length, "unexpected token");
         }
         lexer_error_reported = 1;
         return 0;
@@ -1280,5 +1291,13 @@ static void yyerror(const char *message) {
     if (column <= 0) {
         column = 1;
     }
-    report_parse_issue("parse error", line, column, message);
+    /* End of the offending token: yylex set yylloc.last_* to first + token length.
+     * Fall back to the start if the location looks unset or inverted. */
+    int end_line = yylloc.last_line;
+    int end_column = yylloc.last_column;
+    if (end_line < line || (end_line == line && end_column < column)) {
+        end_line = line;
+        end_column = column;
+    }
+    report_diag(GB_DIAG_PARSE_ERROR, line, column, end_line, end_column, message);
 }

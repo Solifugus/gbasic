@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Front-end library tests: exercise libgbasic.a directly (structure, not stderr).
 #
-#   test_diagnostics_sink   sink API unit test        -> must PASS now
-#   test_parse_diagnostics  3 errors -> 3 diagnostics  -> EXPECTED-FAIL until Phase 1
-#   test_two_contexts       concurrent parse (reentrancy) -> XFAIL until Phase 2
+#   test_diagnostics_sink   sink API unit test             -> must PASS
+#   test_parse_diagnostics  3 errors -> 3 diagnostics       -> must PASS (Phase 1)
+#   test_two_contexts       concurrent parse (reentrancy)   -> XFAIL until Phase 2
 #
 # Skips cleanly when no C compiler is available. Exit status is nonzero only if a
 # test that is supposed to pass does not; expected-fail / xfail tests are
@@ -66,11 +66,12 @@ else
     status=1
 fi
 
-echo "=== test_parse_diagnostics (EXPECTED-FAIL until Phase 1) ==="
+echo "=== test_parse_diagnostics (must PASS) ==="
 if build_and_run test_parse_diagnostics; then
-    echo "UPASS test_parse_diagnostics  (unexpected: sink already populated?)"
+    echo "OK   test_parse_diagnostics"
 else
-    echo "XFAIL test_parse_diagnostics  (expected until Phase 1 wires the sink)"
+    echo "FAIL test_parse_diagnostics  <-- Phase 1 sink wiring regression"
+    status=1
 fi
 
 echo "=== test_two_contexts (XFAIL until Phase 2) ==="

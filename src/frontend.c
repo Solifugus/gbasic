@@ -8,9 +8,13 @@ extern void parse_set_source_path(const char *path);
 
 int gb_parse(const char *source, const char *path,
              AstStmtList *out_program, gb_diagnostics *diags) {
-    /* Pre-Phase-1: the sink is intentionally left empty. The legacy parser still
-     * reports to stderr; wiring it into `diags` is the next step. */
-    (void)diags;
+    /* Install the sink for the duration of the parse: the parser's reporters push
+     * structured diagnostics into it instead of stderr. Save/restore the previous
+     * sink so nested/sequential parses compose cleanly. */
+    gb_diagnostics *prev = gb_get_active_sink();
+    gb_set_active_sink(diags);
     parse_set_source_path(path);
-    return parse_source(source, out_program);
+    int rc = parse_source(source, out_program);
+    gb_set_active_sink(prev);
+    return rc;
 }

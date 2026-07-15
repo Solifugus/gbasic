@@ -5,6 +5,7 @@
 #include "eval.h"
 #include "builtins.h"
 #include "actor.h"
+#include "diagnostics.h"
 
 #include <ctype.h>
 #include <dirent.h>
@@ -1060,19 +1061,15 @@ static void runtime_error_raise(const char *message, int code, const char *sourc
     }
 
     if (error_mode == ERROR_MODE_STOP) {
-        const char *path = runtime_error_path();
-        if (path) {
-            fprintf(stderr, "runtime error at %s:%d:%d: %s\n",
-                    path,
-                    current_error.line,
-                    current_error.column,
-                    current_error.message);
-        } else {
-            fprintf(stderr, "runtime error at %d:%d: %s\n",
-                    current_error.line,
-                    current_error.column,
-                    current_error.message);
-        }
+        /* Route through the diagnostic sink: pushed when the CLI has installed a
+         * sink (drained after eval), or emitted immediately in the legacy format
+         * when none is set (e.g. actor mode). A STOP-mode error is terminal, so
+         * either way it remains the last line on stderr — byte-exact. `code`
+         * rides along as the language-level subcode. */
+        gb_span span = { current_error.line, current_error.column,
+                         current_error.line, current_error.column };
+        gb_report(GB_DIAG_RUNTIME_ERROR, code, runtime_error_path(), span,
+                  current_error.message);
         runtime_stopped = 1;
     }
 }

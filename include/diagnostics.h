@@ -2,6 +2,7 @@
 #define GBASIC_DIAGNOSTICS_H
 
 #include <stddef.h>
+#include <stdio.h>
 
 /* Structured diagnostics for the gBASIC front end (PLAN.md Phase 1).
  *
@@ -103,5 +104,28 @@ const gb_diag *gb_diagnostics_at(const gb_diagnostics *diags, size_t index);
 
 const char    *gb_diag_code_str(gb_diag_code code);
 const char    *gb_severity_str(gb_severity severity);
+
+/* ---- Reporting (Phase 1 wiring) ---------------------------------------------
+ *
+ * Producers (lexer/parser via parser.y, evaluator via eval.c) call gb_report.
+ * If an "active sink" is set, the diagnostic is appended to it (deferred, to be
+ * drained by the consumer); if not, it is emitted immediately to stderr in the
+ * legacy one-line format. The active sink is a single process-global for now —
+ * Phase 2/3 move it into per-parse / per-interpreter context. Both the deferred
+ * drain and the immediate fallback go through gb_diag_format, so their bytes are
+ * identical. gb_diag_kind_str maps a machine code to the human "kind" word the
+ * CLI prints ("lexer error" / "parse error" / "runtime error"). */
+
+void            gb_set_active_sink(gb_diagnostics *sink);
+gb_diagnostics *gb_get_active_sink(void);
+
+void            gb_report(gb_diag_code code, int subcode, const char *path,
+                          gb_span span, const char *message);
+
+/* Emit one diagnostic to `out` as "<kind> at <path>:<line>:<col>: <msg>\n"
+ * (path segment omitted when path is NULL/empty), using span.start_* — the exact
+ * legacy CLI format. */
+void            gb_diag_format(FILE *out, const gb_diag *diag);
+const char     *gb_diag_kind_str(gb_diag_code code);
 
 #endif

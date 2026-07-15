@@ -1,6 +1,7 @@
 #include "ast.h"
 #include "builtins.h"
 #include "eval.h"
+#include "gbasic.h"
 #include "lexer.h"
 
 #include <dirent.h>
@@ -771,6 +772,15 @@ static int run_actor_mode(int argc, char **argv) {
     return status;
 }
 
+/* Print every collected diagnostic to stderr in the legacy one-line format. The
+ * shared gb_diag_format guarantees these bytes match what the no-sink fallback
+ * would have emitted immediately. */
+static void drain_diagnostics(gb_diagnostics *diags) {
+    for (size_t i = 0; i < gb_diagnostics_count(diags); i++) {
+        gb_diag_format(stderr, gb_diagnostics_at(diags, i));
+    }
+}
+
 int main(int argc, char **argv) {
     int ast_only = 0;
     int tokens_only = 0;
@@ -818,9 +828,13 @@ int main(int argc, char **argv) {
         return 0;
     }
 
+    gb_diagnostics diags;
+    gb_diagnostics_init(&diags);
+
     AstStmtList program = ast_stmt_list_empty();
-    parse_set_source_path(path);
-    if (parse_source(source, &program) != 0) {
+    if (gb_parse(source, path, &program, &diags) != 0) {
+        drain_diagnostics(&diags);
+        gb_diagnostics_free(&diags);
         free(source);
         return 1;
     }
@@ -832,9 +846,16 @@ int main(int argc, char **argv) {
         exit_status = add_loads_mode(path, source, program, add_loads_keyword);
     } else {
         eval_set_source_path(path);
+        /* Install the sink so a STOP-mode runtime error is collected rather than
+         * printed mid-run, then drained below in the exact legacy format. The
+         * error is terminal, so it stays the last line on stderr. */
+        gb_set_active_sink(&diags);
         exit_status = eval_program(program);
+        gb_set_active_sink(NULL);
+        drain_diagnostics(&diags);
     }
 
+    gb_diagnostics_free(&diags);
     ast_free_program(program);
     free(source);
     return exit_status;

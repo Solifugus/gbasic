@@ -93,3 +93,61 @@ const char *gb_severity_str(gb_severity severity) {
     }
     return "error";
 }
+
+/* ---- Reporting --------------------------------------------------------------
+ * A single process-global active sink. NULL means "emit immediately to stderr".
+ * Not reentrant by design yet — Phase 2/3 relocate it into a context. */
+static gb_diagnostics *g_active_sink = NULL;
+
+void gb_set_active_sink(gb_diagnostics *sink) {
+    g_active_sink = sink;
+}
+
+gb_diagnostics *gb_get_active_sink(void) {
+    return g_active_sink;
+}
+
+/* Human "kind" word the CLI prints. Kept here (not baked into the code enum) so
+ * the machine code stays stable while presentation can evolve. Preserves the
+ * legacy quirk that a message-bearing lexer error prints as "runtime error". */
+const char *gb_diag_kind_str(gb_diag_code code) {
+    switch (code) {
+    case GB_DIAG_LEX_ERROR:      return "lexer error";
+    case GB_DIAG_PARSE_ERROR:    return "parse error";
+    case GB_DIAG_LEX_DETAIL:
+    case GB_DIAG_STRING_LITERAL:
+    case GB_DIAG_RUNTIME_ERROR:  return "runtime error";
+    case GB_DIAG_NONE:           break;
+    }
+    return "error";
+}
+
+void gb_diag_format(FILE *out, const gb_diag *diag) {
+    const char *kind = gb_diag_kind_str(diag->code);
+    if (diag->path && diag->path[0]) {
+        fprintf(out, "%s at %s:%d:%d: %s\n", kind, diag->path,
+                diag->span.start_line, diag->span.start_column, diag->message);
+    } else {
+        fprintf(out, "%s at %d:%d: %s\n", kind,
+                diag->span.start_line, diag->span.start_column, diag->message);
+    }
+}
+
+void gb_report(gb_diag_code code, int subcode, const char *path,
+               gb_span span, const char *message) {
+    if (g_active_sink) {
+        gb_diagnostics_add(g_active_sink, GB_SEVERITY_ERROR, code, subcode,
+                           path, span, message);
+        return;
+    }
+    /* No sink: format immediately, exactly as the legacy reporters did. The temp
+     * record borrows path/message — gb_diag_format only reads them. */
+    gb_diag d;
+    d.severity = GB_SEVERITY_ERROR;
+    d.code = code;
+    d.subcode = subcode;
+    d.path = (char *)path;
+    d.span = span;
+    d.message = (char *)message;
+    gb_diag_format(stderr, &d);
+}
