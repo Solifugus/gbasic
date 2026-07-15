@@ -31,16 +31,16 @@ Survey that motivated this plan: see the conversation report. Key facts it rests
 Prove the object boundary before touching any source. `libgbasic` = every object
 except `main.o`; relink `gbasic` against it.
 
-- [ ] Add `LIB_OBJS` (lexer, parser.tab, ast, eval, builtins, actor) and a
+- [x] Add `LIB_OBJS` (lexer, parser.tab, ast, eval, builtins, actor) and a
       `libgbasic.a` archive target to the Makefile.
-- [ ] Relink `gbasic` from `main.o` + `libgbasic.a` (+ existing `LDLIBS`).
-- [ ] `libgbasic.a` added to the `clean` target.
-- [ ] `.gitignore` covers `libgbasic.a` / `src/*.o` as appropriate.
-- [ ] `make clean && make` builds `gbasic` and `libgbasic.a` with no source edits.
-- [ ] Core suite green: `./tests/run_examples.sh`, `./tests/run_negative.sh`,
+- [x] Relink `gbasic` from `main.o` + `libgbasic.a` (+ existing `LDLIBS`).
+- [x] `libgbasic.a` added to the `clean` target.
+- [x] `.gitignore` covers `libgbasic.a` / `src/*.o` as appropriate.
+- [x] `make clean && make` builds `gbasic` and `libgbasic.a` with no source edits.
+- [x] Core suite green: `./tests/run_examples.sh`, `./tests/run_negative.sh`,
       `bash tests/run_bag_smoke.sh`.
-- [ ] Module suites skip-or-pass (not fail): sqlite / webclient / webserver / site.
-- [ ] Show diff, stop for review.
+- [x] Module suites skip-or-pass (not fail): sqlite / webclient / webserver / site.
+- [x] Show diff, stop for review.
 
 **Boundary:** no `.c`/`.h` source changed. Only Makefile / .gitignore. ✋ STOP.
 
@@ -54,33 +54,37 @@ golden tests do not move.
 
 ### Tests first (must be written FAILING before any Phase 1 impl code)
 
-- [ ] (a) **Diagnostics test**: parse a buffer containing 3 known errors; assert
+- [x] (a) **Diagnostics test**: parse a buffer containing 3 known errors; assert
       exactly 3 structured diagnostics returned, each with exact `line`/`column`
       and message. Drive via a tiny C harness linked against `libgbasic.a`
       (`tests/frontend/`), not the CLI, so it reads structure not stderr text.
-- [ ] (b) **Two-contexts-in-one-process smoke test**: create/parse in two
+- [x] (b) **Two-contexts-in-one-process smoke test**: create/parse in two
       independent contexts in one process. Marked **expected-fail** (xfail) until
       Phase 2 makes the parser reentrant; the runner must report xfail as a
       non-failure and would flag an unexpected *pass*.
-- [ ] Add both to a new `tests/run_frontend.sh` (skips cleanly if no cc), wired
+- [x] Add both to a new `tests/run_frontend.sh` (skips cleanly if no cc), wired
       into the session's test invocation. Confirm (a) fails and (b) xfails now.
 
 ### Implementation
 
-- [ ] Define `gb_diag` (severity, code, path, line, column, message) and
+- [x] Define `gb_diag` (severity, code, path, line, column, message) and
       `gb_diagnostics` (append-only list) in a new `include/diagnostics.h`.
-- [ ] Add a diagnostics sink; provide `gb_diag_count` / `gb_diag_at` accessors.
-- [ ] Route `report_parse_issue` (`parser.y`) into the sink instead of `stderr`.
-- [ ] Route `runtime_error_raise` STOP-mode reporting (`eval.c`) into the sink;
+- [x] Add a diagnostics sink; provide `gb_diag_count` / `gb_diag_at` accessors.
+- [x] Route `report_parse_issue` (`parser.y`) into the sink instead of `stderr`.
+- [x] Route `runtime_error_raise` STOP-mode reporting (`eval.c`) into the sink;
       feed from the existing `RuntimeError current_error`.
-- [ ] Feed the lexer's deferred `TOKEN_ERROR` + `error_message` into the sink.
-- [ ] CLI (`main.c`) drains the sink and prints in the **exact** prior stderr
+- [x] Feed the lexer's deferred `TOKEN_ERROR` + `error_message` into the sink.
+- [x] CLI (`main.c`) drains the sink and prints in the **exact** prior stderr
       format (`"<kind> at <path>:<line>:<col>: <msg>"`, `"warning: …"`, etc.).
-- [ ] Sweep ad-hoc `eval.c` `fprintf(stderr, …)` sites into the sink where they
+- [x] Sweep ad-hoc `eval.c` `fprintf(stderr, …)` sites into the sink where they
       map cleanly; leave the rest for Phase 3 (note them).
-- [ ] Full core + module suite byte-exact green (no stderr drift).
-- [ ] Diagnostics test (a) now **passes**; two-contexts test (b) still xfails.
-- [ ] Show diff, stop for review.
+      NOTE: only the centralized `runtime_error_raise` STOP path was routed. The
+      ~20 truly ad-hoc `eval.c` `fprintf(stderr, …)` sites were ALL deferred to
+      Phase 3 — none mapped cleanly enough to route without byte-exact risk this
+      phase. They still print immediately, unchanged.
+- [x] Full core + module suite byte-exact green (no stderr drift).
+- [x] Diagnostics test (a) now **passes**; two-contexts test (b) still xfails.
+- [x] Show diff, stop for review.
 
 **Boundary:** diagnostics structured and CLI-format-preserving; parser still
 non-reentrant. ✋ STOP.
