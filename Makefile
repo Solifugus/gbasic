@@ -83,14 +83,20 @@ else
 CFLAGS += -DHAVE_LIBXML2=0
 endif
 
-OBJS := src/main.o src/lexer.o src/parser.tab.o src/ast.o src/eval.o src/builtins.o src/actor.o
+# libgbasic is every object except the CLI entry point (src/main.o). The CLI is
+# its first consumer; the archive is the seam a future embedder links against.
+LIB_OBJS := src/lexer.o src/parser.tab.o src/ast.o src/eval.o src/builtins.o src/actor.o
+OBJS := src/main.o $(LIB_OBJS)
 
 .PHONY: all clean install uninstall
 
-all: gbasic
+all: libgbasic.a gbasic
 
-gbasic: $(OBJS)
-	$(CC) $(CFLAGS) -o $@ $(OBJS) $(LDLIBS)
+libgbasic.a: $(LIB_OBJS)
+	$(AR) rcs $@ $(LIB_OBJS)
+
+gbasic: src/main.o libgbasic.a
+	$(CC) $(CFLAGS) -o $@ src/main.o libgbasic.a $(LDLIBS)
 
 src/parser.tab.c src/parser.tab.h: src/parser.y include/ast.h include/lexer.h
 	bison -d -o src/parser.tab.c src/parser.y
@@ -129,4 +135,4 @@ uninstall:
 	@echo "Removed gbasic from $(DESTDIR)$(BINDIR) and $(DESTDIR)$(DATADIR)"
 
 clean:
-	rm -f gbasic $(OBJS) src/parser.tab.c src/parser.tab.h
+	rm -f gbasic libgbasic.a $(OBJS) src/parser.tab.c src/parser.tab.h

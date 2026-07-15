@@ -1,5 +1,7 @@
 *.o
+*.a
 /gbasic
+/libgbasic.a
 parser.tab.c
 parser.tab.h
 src/parser.tab.c
