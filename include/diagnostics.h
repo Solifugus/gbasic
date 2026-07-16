@@ -135,4 +135,14 @@ void            gb_report_to(gb_diagnostics *sink, gb_diag_code code, int subcod
 void            gb_diag_format(FILE *out, const gb_diag *diag);
 const char     *gb_diag_kind_str(gb_diag_code code);
 
+/* Emit one diagnostic as a single compact JSON object followed by '\n' — the
+ * `gbasic --json-diagnostics` format. Positions are gBASIC-native: 1-based BYTE
+ * line/column (see gb_span). Hand-rolled (no cJSON), so the main `gbasic` binary
+ * gains no JSON dependency. Schema (stable field order):
+ *   {"severity","code","subcode","path","start":{"line","column"},
+ *    "end":{"line","column"},"message"}
+ * `path` is JSON null when unknown; message/path strings are JSON-escaped with
+ * multi-byte UTF-8 passed through as raw bytes. */
+void            gb_diag_write_json(FILE *out, const gb_diag *diag);
+
 #endif

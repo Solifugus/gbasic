@@ -1,6 +1,7 @@
 *.o
 *.a
 /gbasic
+/gbasic-lsp
 /libgbasic.a
 parser.tab.c
 parser.tab.h

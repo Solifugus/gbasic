@@ -1,0 +1,1 @@
+{"severity":"error","code":"GB_DIAG_PARSE_ERROR","subcode":0,"path":"tests/json_diagnostics_test.bas","start":{"line":1,"column":5},"end":{"line":1,"column":6},"message":"syntax error, unexpected RPAREN"}

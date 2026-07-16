@@ -133,6 +133,53 @@ void gb_diag_format(FILE *out, const gb_diag *diag) {
     }
 }
 
+/* Write `s` as a JSON string literal (with quotes). Control characters below
+ * 0x20 become \uXXXX or their short escapes; valid multi-byte UTF-8 passes
+ * through unchanged (raw bytes are legal inside a JSON string). */
+static void json_escape(FILE *out, const char *s) {
+    fputc('"', out);
+    for (const unsigned char *p = (const unsigned char *)s; *p; p++) {
+        unsigned char c = *p;
+        switch (c) {
+        case '"':  fputs("\\\"", out); break;
+        case '\\': fputs("\\\\", out); break;
+        case '\n': fputs("\\n", out);  break;
+        case '\r': fputs("\\r", out);  break;
+        case '\t': fputs("\\t", out);  break;
+        case '\b': fputs("\\b", out);  break;
+        case '\f': fputs("\\f", out);  break;
+        default:
+            if (c < 0x20) {
+                fprintf(out, "\\u%04x", c);
+            } else {
+                fputc(c, out);
+            }
+        }
+    }
+    fputc('"', out);
+}
+
+void gb_diag_write_json(FILE *out, const gb_diag *diag) {
+    fputs("{\"severity\":", out);
+    json_escape(out, gb_severity_str(diag->severity));
+    fputs(",\"code\":", out);
+    json_escape(out, gb_diag_code_str(diag->code));
+    fprintf(out, ",\"subcode\":%d", diag->subcode);
+    fputs(",\"path\":", out);
+    if (diag->path) {
+        json_escape(out, diag->path);
+    } else {
+        fputs("null", out);
+    }
+    fprintf(out, ",\"start\":{\"line\":%d,\"column\":%d}",
+            diag->span.start_line, diag->span.start_column);
+    fprintf(out, ",\"end\":{\"line\":%d,\"column\":%d}",
+            diag->span.end_line, diag->span.end_column);
+    fputs(",\"message\":", out);
+    json_escape(out, diag->message ? diag->message : "");
+    fputs("}\n", out);
+}
+
 void gb_report_to(gb_diagnostics *sink, gb_diag_code code, int subcode,
                   const char *path, gb_span span, const char *message) {
     if (sink) {

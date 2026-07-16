@@ -88,6 +88,13 @@ endif
 LIB_OBJS := src/lexer.o src/parser.tab.o src/ast.o src/eval.o src/builtins.o src/actor.o src/diagnostics.o src/frontend.o
 OBJS := src/main.o $(LIB_OBJS)
 
+# gbasic-lsp: the Language Server, first external consumer of libgbasic. Kept out
+# of the default `all` target so a plain `make` stays lean; build it with
+# `make gbasic-lsp`. It links the vendored cJSON (third_party/cjson) plus the
+# archive. cJSON is built with relaxed warnings since it is third-party code.
+LSP_CFLAGS := $(CFLAGS) -Isrc/lsp -Ithird_party/cjson
+LSP_OBJS := src/lsp/main.o src/lsp/rpc.o src/lsp/handlers.o src/lsp/lsp_position.o third_party/cjson/cJSON.o
+
 .PHONY: all clean install uninstall
 
 all: libgbasic.a gbasic
@@ -97,6 +104,24 @@ libgbasic.a: $(LIB_OBJS)
 
 gbasic: src/main.o libgbasic.a
 	$(CC) $(CFLAGS) -o $@ src/main.o libgbasic.a $(LDLIBS)
+
+gbasic-lsp: $(LSP_OBJS) libgbasic.a
+	$(CC) $(LSP_CFLAGS) -o $@ $(LSP_OBJS) libgbasic.a $(LDLIBS)
+
+src/lsp/main.o: src/lsp/main.c src/lsp/rpc.h src/lsp/handlers.h third_party/cjson/cJSON.h
+	$(CC) $(LSP_CFLAGS) -c $< -o $@
+
+src/lsp/rpc.o: src/lsp/rpc.c src/lsp/rpc.h third_party/cjson/cJSON.h
+	$(CC) $(LSP_CFLAGS) -c $< -o $@
+
+src/lsp/handlers.o: src/lsp/handlers.c src/lsp/handlers.h src/lsp/rpc.h src/lsp/lsp_position.h include/gbasic.h include/diagnostics.h include/ast.h third_party/cjson/cJSON.h
+	$(CC) $(LSP_CFLAGS) -c $< -o $@
+
+src/lsp/lsp_position.o: src/lsp/lsp_position.c src/lsp/lsp_position.h
+	$(CC) $(LSP_CFLAGS) -c $< -o $@
+
+third_party/cjson/cJSON.o: third_party/cjson/cJSON.c third_party/cjson/cJSON.h
+	$(CC) -std=c11 -O2 -Ithird_party/cjson -c $< -o $@
 
 src/parser.tab.c src/parser.tab.h: src/parser.y include/ast.h include/lexer.h include/diagnostics.h include/parse_ctx.h
 	bison -d -o src/parser.tab.c src/parser.y
@@ -142,3 +167,4 @@ uninstall:
 
 clean:
 	rm -f gbasic libgbasic.a $(OBJS) src/parser.tab.c src/parser.tab.h
+	rm -f gbasic-lsp $(LSP_OBJS)

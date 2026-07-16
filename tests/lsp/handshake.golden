@@ -1,0 +1,13 @@
+Content-Length: 101
+
+{"jsonrpc":"2.0","id":1,"result":{"capabilities":{"textDocumentSync":1,"positionEncoding":"utf-16"}}}Content-Length: 272
+
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"uri":"file:///a.bas","diagnostics":[{"range":{"start":{"line":0,"character":8},"end":{"line":0,"character":9}},"severity":1,"code":"GB_DIAG_LEX_ERROR","source":"gbasic","message":"unexpected token"}]}}Content-Length: 110
+
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"uri":"file:///b.bas","diagnostics":[]}}Content-Length: 289
+
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"uri":"file:///b.bas","diagnostics":[{"range":{"start":{"line":0,"character":4},"end":{"line":0,"character":5}},"severity":1,"code":"GB_DIAG_PARSE_ERROR","source":"gbasic","message":"syntax error, unexpected RPAREN"}]}}Content-Length: 110
+
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"uri":"file:///b.bas","diagnostics":[]}}Content-Length: 38
+
+{"jsonrpc":"2.0","id":2,"result":null}

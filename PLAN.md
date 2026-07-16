@@ -134,7 +134,88 @@ in observable behavior. ✋ STOP. — **DONE.**
 
 ---
 
+## Phase L — LSP server + JSON diagnostics + token inventory
+
+First external consumer of `libgbasic.a`: a Language Server. Proves the reentrant
+front end + structured diagnostics carry a real tool. Plus two CLI-side extras.
+Builds on Phases 0–2; does NOT depend on the deferred Phase 3/4.
+
+### Gate 1 — design proposal (NO code) ✋ propose, then STOP for review
+- [x] Propose `gbasic-lsp` file/module structure, JSON strategy, and test plan.
+- [x] Propose the JSON dependency choice (vendored single-file vs hand-rolled),
+      with rationale, BEFORE implementing. **Approved: vendor cJSON (MIT, single
+      .c/.h) for the server; hand-rolled JSON-line emitter for the CLI flag so the
+      main `gbasic` binary gains no dependency.**
+- [x] Test plan includes: (a) a scripted harness that pipes framed LSP messages
+      into `gbasic-lsp` and asserts on published diagnostics (golden-style),
+      runnable from the suite; (b) an explicit multi-byte + astral UTF-8 transcode
+      unit test.
+- [x] STOP for review before any code. (Approved: cJSON + separate `make
+      gbasic-lsp` target + layout/test plan as proposed.)
+
+### Deliverable 1 — `gbasic-lsp` (new binary, C, links `libgbasic.a`)
+- [x] JSON-RPC 2.0 over stdio with `Content-Length` framing (binary-safe reads).
+      `src/lsp/rpc.c`.
+- [x] Lifecycle: `initialize` / `initialized` / `shutdown` / `exit`.
+- [x] Sync: `textDocument/didOpen`, `didChange`, `didClose` — Full sync only
+      (`TextDocumentSyncKind.Full`).
+- [x] Push `textDocument/publishDiagnostics` after every open/change; clear
+      (empty array) on close.
+- [x] Per-document sink: `gb_parse` the buffer, map `gb_diag` spans → LSP ranges.
+      Reality noted, not hidden: the parser aborts at the first error today, so
+      v1 publishes 0 or 1 diagnostic per document until the deferred error-recovery
+      phase lands.
+- [x] Position encoding: advertise `utf-8` via LSP 3.17 `positionEncoding` when
+      the client offers it (our byte columns == UTF-8 code units); otherwise
+      transcode byte columns → UTF-16 code units using the source line's bytes.
+      Convert 1-based (line,col) → 0-based (line,character) in both cases.
+      `src/lsp/lsp_position.c` (standalone, dep-free).
+- [x] Unit-test the transcode with multi-byte AND astral (surrogate-pair) UTF-8.
+      `tests/lsp/test_position.c` (10 cases, green). Harness golden also bakes in
+      an end-to-end UTF-16 transcode (é → character 8, not byte 9).
+- [x] Single-threaded v1 (the parser is reentrant; threading is deferred).
+- [x] cJSON v1.7.18 vendored (MIT) under `third_party/cjson/` with LICENSE +
+      provenance README; built with relaxed warnings; only the LSP binary links it.
+- [x] Framed golden harness `tests/lsp/run_lsp.sh` drives a full session
+      (initialize → sync → shutdown/exit) and byte-compares stdout.
+
+### Deliverable 2 — CLI flag `--json-diagnostics`
+- [x] `gbasic --json-diagnostics` emits collected diagnostics as JSON lines to
+      stderr instead of the legacy format. Hand-rolled emitter
+      (`gb_diag_write_json` in `src/diagnostics.c`, no cJSON in the main binary).
+      Covers parse, lexer, and runtime diagnostics.
+- [x] Default behavior (no flag) stays byte-exact legacy format. Test:
+      `tests/run_json_diagnostics.sh` (asserts both the JSON output and that the
+      default path is unchanged).
+
+### Deliverable 3 — `docs/TOKENS.md`
+- [x] Inventory of lexer token kinds, keywords, and literal forms; the source of
+      truth for external syntax highlighters. Derived from `include/lexer.h`
+      (`TokenType`) + `src/lexer.c` (`identifier_type`/`number_token`/
+      `string_token`/operator switch), cross-checked with `gbasic --tokens`.
+      Documents the reserved-but-unused keywords (`dim`/`as`/`step`), the
+      column-sensitive `consider` variants, and the context-sensitive spans.
+
+### Rules
+- [x] No new system dependencies. cJSON vendored single-file, MIT, license header
+      intact.
+- [x] Golden suite stayed byte-exact throughout: examples, negative, frontend,
+      bag, sqlite, xml-bigfile — all 0 FAIL/mismatch. New Phase L runners green.
+- [x] Stopped at the phase boundary (full phase completed, not the handshake
+      fallback).
+
+**Boundary:** a working diagnostics-only LSP + `--json-diagnostics` + TOKENS.md,
+all golden-green. ✋ STOP. — **DONE.**
+
+---
+
 ## Deferred — NOT started this track (do not begin without a new go-ahead)
+
+### LSP v2 (deferred)
+Hover, completion, signature help, go-to-definition, document symbols, incremental
+sync (`TextDocumentSyncKind.Incremental`), workspace features, and multi-threaded
+request handling. v1 is diagnostics-on-sync only. Real multi-diagnostic publishing
+depends on the parser error-recovery item below.
 
 ### Parser error recovery (multiple diagnostics per buffer)
 The current parser aborts at the first error, so one parse yields at most one

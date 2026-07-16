@@ -20,6 +20,7 @@ static void print_help(const char *argv0) {
     printf("  %s --ast FILE\n", argv0);
     printf("  %s --add-loads FILE\n", argv0);
     printf("  %s --add-uses FILE\n", argv0);
+    printf("  %s --json-diagnostics FILE\n", argv0);
     printf("\n");
     printf("flags:\n");
     printf("  --help          show this help\n");
@@ -28,6 +29,7 @@ static void print_help(const char *argv0) {
     printf("  --ast FILE      parse and print AST\n");
     printf("  --add-loads FILE analyze unresolved calls/modifiers and print source with load statements\n");
     printf("  --add-uses FILE  compatibility alias; emits use statements\n");
+    printf("  --json-diagnostics FILE  run FILE, emitting diagnostics as JSON lines to stderr\n");
 }
 
 static void print_tokens(const char *source) {
@@ -772,18 +774,25 @@ static int run_actor_mode(int argc, char **argv) {
     return status;
 }
 
-/* Print every collected diagnostic to stderr in the legacy one-line format. The
+/* Print every collected diagnostic to stderr. In the default (legacy) format the
  * shared gb_diag_format guarantees these bytes match what the no-sink fallback
- * would have emitted immediately. */
-static void drain_diagnostics(gb_diagnostics *diags) {
+ * would have emitted immediately; with `as_json` set (--json-diagnostics) each is
+ * emitted as one JSON line instead. */
+static void drain_diagnostics(gb_diagnostics *diags, int as_json) {
     for (size_t i = 0; i < gb_diagnostics_count(diags); i++) {
-        gb_diag_format(stderr, gb_diagnostics_at(diags, i));
+        const gb_diag *d = gb_diagnostics_at(diags, i);
+        if (as_json) {
+            gb_diag_write_json(stderr, d);
+        } else {
+            gb_diag_format(stderr, d);
+        }
     }
 }
 
 int main(int argc, char **argv) {
     int ast_only = 0;
     int tokens_only = 0;
+    int json_diagnostics = 0;
     const char *add_loads_keyword = NULL;
     const char *path = NULL;
 
@@ -811,8 +820,11 @@ int main(int argc, char **argv) {
     } else if (argc == 3 && strcmp(argv[1], "--add-uses") == 0) {
         add_loads_keyword = "use";
         path = argv[2];
+    } else if (argc == 3 && strcmp(argv[1], "--json-diagnostics") == 0) {
+        json_diagnostics = 1;
+        path = argv[2];
     } else {
-        fprintf(stderr, "usage: %s [--ast|--tokens|--add-loads|--add-uses] FILE\n", argv[0]);
+        fprintf(stderr, "usage: %s [--ast|--tokens|--add-loads|--add-uses|--json-diagnostics] FILE\n", argv[0]);
         fprintf(stderr, "try '%s --help'\n", argv[0]);
         return 2;
     }
@@ -833,7 +845,7 @@ int main(int argc, char **argv) {
 
     AstStmtList program = ast_stmt_list_empty();
     if (gb_parse(source, path, &program, &diags) != 0) {
-        drain_diagnostics(&diags);
+        drain_diagnostics(&diags, json_diagnostics);
         gb_diagnostics_free(&diags);
         free(source);
         return 1;
@@ -852,7 +864,7 @@ int main(int argc, char **argv) {
         gb_set_active_sink(&diags);
         exit_status = eval_program(program);
         gb_set_active_sink(NULL);
-        drain_diagnostics(&diags);
+        drain_diagnostics(&diags, json_diagnostics);
     }
 
     gb_diagnostics_free(&diags);
