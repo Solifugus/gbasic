@@ -95,9 +95,14 @@ OBJS := src/main.o $(LIB_OBJS)
 LSP_CFLAGS := $(CFLAGS) -Isrc/lsp -Ithird_party/cjson
 LSP_OBJS := src/lsp/main.o src/lsp/rpc.o src/lsp/handlers.o src/lsp/lsp_position.o third_party/cjson/cJSON.o
 
-.PHONY: all clean install uninstall
+.PHONY: all dev clean install uninstall
 
 all: libgbasic.a gbasic
+
+# Build every binary in the tree, including the ones kept out of `all` (the LSP
+# server). This is the routine developer/CI entry point: it guarantees gbasic-lsp
+# still compiles so it cannot silently rot while default builds stay lean.
+dev: all gbasic-lsp
 
 libgbasic.a: $(LIB_OBJS)
 	$(AR) rcs $@ $(LIB_OBJS)

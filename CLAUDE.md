@@ -79,8 +79,15 @@ expected stdout. Output is compared verbatim (string equality), so update the
 ./tests/run_webserver.sh
 ./tests/run_gbasic_site.sh
 bash tests/run_bag_smoke.sh
+./tests/run_json_diagnostics.sh  # --json-diagnostics golden (also asserts default byte-exact)
+./tests/lsp/run_lsp.sh      # gbasic-lsp: position-transcode unit + framed JSON-RPC handshake golden
 GBASIC_POSTGRES_TEST=1 PGDATABASE=my_test_db ./tests/run_postgres.sh   # opt-in
 ```
+
+`gbasic-lsp` is deliberately kept out of the default `all` target, so a routine
+test pass must build it explicitly or it will silently rot. Use `make dev`
+(builds every binary: `gbasic`, `libgbasic.a`, and `gbasic-lsp`) as the developer/
+CI entry point; `tests/lsp/run_lsp.sh` also runs `make gbasic-lsp` itself.
 
 `run_examples.sh` runs a hardcoded list of cases (it does not auto-discover), so
 when adding an example test, add its filename to that list as well as creating
