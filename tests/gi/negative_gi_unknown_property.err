@@ -1,0 +1,1 @@
+runtime error at tests/gi/negative_gi_unknown_property.bas:4:1: gi.get: unknown property: no-such-property

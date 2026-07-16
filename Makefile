@@ -33,6 +33,13 @@ LIBXML2_AVAILABLE := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config
 LIBXML2_CFLAGS := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --cflags libxml-2.0 2>/dev/null)
 LIBXML2_LIBS := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --libs libxml-2.0 2>/dev/null)
 
+# GObject-Introspection bridge (gi.* module). Targets the modern GLib-merged
+# libgirepository (girepository-2.0, gi_repository_* API, GLib >= 2.80); the
+# legacy 1.x gobject-introspection-1.0 API is intentionally NOT supported.
+GIR_AVAILABLE := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --exists girepository-2.0 && printf 1 || printf 0)
+GIR_CFLAGS := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --cflags girepository-2.0 2>/dev/null)
+GIR_LIBS := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --libs girepository-2.0 2>/dev/null)
+
 ifeq ($(GTK_AVAILABLE),1)
 CFLAGS += -DHAVE_GTK=1 $(GTK_CFLAGS)
 LDLIBS += $(GTK_LIBS) -lm
@@ -81,6 +88,13 @@ CFLAGS += -DHAVE_LIBXML2=1 $(LIBXML2_CFLAGS)
 LDLIBS += $(LIBXML2_LIBS)
 else
 CFLAGS += -DHAVE_LIBXML2=0
+endif
+
+ifeq ($(GIR_AVAILABLE),1)
+CFLAGS += -DHAVE_GIR=1 $(GIR_CFLAGS)
+LDLIBS += $(GIR_LIBS)
+else
+CFLAGS += -DHAVE_GIR=0
 endif
 
 # libgbasic is every object except the CLI entry point (src/main.o). The CLI is

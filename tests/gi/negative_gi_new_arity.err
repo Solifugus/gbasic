@@ -1,0 +1,1 @@
+runtime error at tests/gi/negative_gi_new_arity.bas:3:1: gi.new expects one argument

@@ -60,6 +60,12 @@
 #include <libxml/xmlreader.h>
 #endif
 
+#if HAVE_GIR
+/* GObject-Introspection bridge (gi.* module). girepository.h pulls in
+ * glib-object.h (GObject, GValue, signals). Modern girepository-2.0 API only. */
+#include <girepository/girepository.h>
+#endif
+
 #define SECURE_TOKEN_MAX_LENGTH 4096
 
 /* Seedable general-purpose PRNG (statistics_design.md §8 shared infrastructure):
@@ -153,6 +159,7 @@ void parse_set_source_path(const char *path);
 typedef struct PgConnectionValue PgConnectionValue;
 typedef struct SqliteConnectionValue SqliteConnectionValue;
 typedef struct XmlReaderValue XmlReaderValue;
+typedef struct GObjectValue GObjectValue;
 typedef struct ActorHandle ActorHandle;
 typedef struct WebServer WebServer;
 typedef struct WebServerClient WebServerClient;
@@ -173,6 +180,7 @@ typedef enum {
     VALUE_POSTGRES_CONNECTION,
     VALUE_SQLITE_CONNECTION,
     VALUE_XML_READER,
+    VALUE_GOBJECT,
     VALUE_ACTOR,
     VALUE_FUNCTION
 } ValueKind;
@@ -238,6 +246,7 @@ struct Value {
         PgConnectionValue *postgres_connection;
         SqliteConnectionValue *sqlite_connection;
         XmlReaderValue *xml_reader;
+        GObjectValue *gobject;
         ActorHandle *actor;
         /* A first-class function value: a reference to a registered function by
          * name (NOT a capturing closure — see docs/first_class_functions_design.md
@@ -273,6 +282,20 @@ struct SqliteConnectionValue {
 struct XmlReaderValue {
 #if HAVE_LIBXML2
     xmlTextReaderPtr reader;
+#endif
+    size_t ref_count;
+    int closed;
+};
+
+/* An opaque GObject handle for the gi.* GObject-Introspection bridge. Exactly one
+ * wrapper exists per underlying GObject (canonicalized via g_object_set_qdata), and
+ * that wrapper owns exactly ONE strong reference to the object. `ref_count` is the
+ * number of live gBASIC Values pointing at this wrapper (bumped by value_copy,
+ * dropped by value_free); when it reaches 0 we drop the qdata link and g_object_unref
+ * the object. `closed` guards against a double-unref after an explicit dispose. */
+struct GObjectValue {
+#if HAVE_GIR
+    GObject *obj;
 #endif
     size_t ref_count;
     int closed;
@@ -426,6 +449,10 @@ static int webclient_library_loaded = 0;
 static int webclient_curl_initialized = 0;
 static int webserver_library_loaded = 0;
 static int xml_library_loaded = 0;
+static int gi_library_loaded = 0;
+#if HAVE_GIR
+static int gi_gtk4_active = 0;   /* a Gtk-4.x namespace has been required via gi */
+#endif
 static WebServer *webservers = NULL;
 static size_t webserver_count = 0;
 static unsigned long webserver_next_id = 1;
@@ -509,6 +536,8 @@ static const char *value_kind_name(ValueKind kind) {
         return "sqlite_connection";
     case VALUE_XML_READER:
         return "xml_reader";
+    case VALUE_GOBJECT:
+        return "gobject";
     case VALUE_ACTOR:
         return "actor";
     case VALUE_FUNCTION:
@@ -966,6 +995,46 @@ static void xml_reader_release(XmlReaderValue *reader) {
     }
 }
 
+static Value value_gobject(GObjectValue *handle) {
+    Value value = {0};
+    value.kind = VALUE_GOBJECT;
+    value.as.gobject = handle;
+    return value;
+}
+
+#if HAVE_GIR
+/* Quark under which each GObject stores a back-pointer to its one canonical
+ * wrapper (qdata canonicalization). Looked up lazily so no work happens unless the
+ * bridge is actually used. */
+static GQuark gi_wrapper_quark(void) {
+    static GQuark quark = 0;
+    if (quark == 0) {
+        quark = g_quark_from_static_string("gbasic-gobject-wrapper");
+    }
+    return quark;
+}
+#endif
+
+/* Refcount release: last live Value drops the qdata link and the single strong
+ * object reference the wrapper owns. Defined unconditionally so value_free links in
+ * a HAVE_GIR=0 build, where no wrapper is ever created and this is dead code. */
+static void gobject_release(GObjectValue *handle) {
+    if (!handle) {
+        return;
+    }
+    if (--handle->ref_count == 0) {
+#if HAVE_GIR
+        if (!handle->closed && handle->obj) {
+            /* Sever the canonical link before unref so a later wrapping of the same
+             * address can never resurrect this freed wrapper. */
+            g_object_set_qdata(handle->obj, gi_wrapper_quark(), NULL);
+            g_object_unref(handle->obj);
+        }
+#endif
+        free(handle);
+    }
+}
+
 static EvalResult eval_no_result(void) {
     EvalResult result = {0};
     result.value = value_null();
@@ -1136,6 +1205,10 @@ static Value value_copy(Value value) {
         value.as.xml_reader->ref_count++;
         return value_xml_reader(value.as.xml_reader);
     }
+    if (value.kind == VALUE_GOBJECT) {
+        value.as.gobject->ref_count++;
+        return value_gobject(value.as.gobject);
+    }
     if (value.kind == VALUE_ACTOR) {
         value.as.actor->ref_count++;
         return value;
@@ -1226,6 +1299,8 @@ static void value_free(Value value) {
         }
     } else if (value.kind == VALUE_XML_READER) {
         xml_reader_release(value.as.xml_reader);
+    } else if (value.kind == VALUE_GOBJECT) {
+        gobject_release(value.as.gobject);
     } else if (value.kind == VALUE_ACTOR) {
         ActorHandle *handle = value.as.actor;
         if (handle && --handle->ref_count == 0) {
@@ -1313,6 +1388,8 @@ static int value_truthy(Value value) {
                             2002,
                             "sqlite");
         return 0;
+    case VALUE_GOBJECT:
+        return 1;
     case VALUE_ACTOR:
         return 1;
     case VALUE_FUNCTION:
@@ -1467,6 +1544,9 @@ static void value_print(Value value) {
         break;
     case VALUE_XML_READER:
         printf("<xml_reader>\n");
+        break;
+    case VALUE_GOBJECT:
+        printf("<gobject>\n");
         break;
     case VALUE_ACTOR:
         printf("<actor>\n");
@@ -1811,6 +1891,8 @@ static int value_storage_equal(const Value *left, const Value *right) {
         return left->as.sqlite_connection == right->as.sqlite_connection;
     case VALUE_XML_READER:
         return left->as.xml_reader == right->as.xml_reader;
+    case VALUE_GOBJECT:
+        return left->as.gobject == right->as.gobject;
     case VALUE_ACTOR:
         return left->as.actor->id == right->as.actor->id;
     case VALUE_FUNCTION:
@@ -4184,6 +4266,18 @@ static void library_import(const char *name, const char *path) {
         return;
     }
 
+    if (!path && strcmp(name, "gi") == 0) {
+#if HAVE_GIR
+        gi_library_loaded = 1;
+#else
+        runtime_error_raise("gobject-introspection support is unavailable; "
+                            "install libgirepository-2.0-dev (GLib >= 2.80) and rebuild",
+                            6001,
+                            "gi");
+#endif
+        return;
+    }
+
     if (path) {
         const char *base = current_import_path ? current_import_path : root_source_path;
         resolved = resolve_use_path(base, path);
@@ -4317,6 +4411,15 @@ static void library_import(const char *name, const char *path) {
 
 static void library_import_from_block(AstStmt *library) {
     if (strcmp(library->as.library.name, "gui") == 0) {
+#if HAVE_GIR
+        /* A single process cannot host both GTK 3 (this gui module) and GTK 4
+         * (loaded via gi.require). Refuse the second toolkit rather than crash. */
+        if (gi_gtk4_active) {
+            runtime_error_raise("GTK 3 (gui module) and GTK 4 (gi) cannot be used in the same process",
+                                6001, "gi");
+            return;
+        }
+#endif
         gui_library_loaded = 1;
     }
     for (size_t i = 0; i < library->as.library.body.count; i++) {
@@ -6288,6 +6391,8 @@ static const char *builtin_type_name(Value value) {
         return "sqlite_connection";
     case VALUE_XML_READER:
         return "xml_reader";
+    case VALUE_GOBJECT:
+        return "gobject";
     case VALUE_ACTOR:
         return "actor";
     case VALUE_FUNCTION:
@@ -6571,6 +6676,9 @@ static Value builtin_string_value(Value value) {
     case VALUE_XML_READER:
         value_free(value);
         return value_string("<xml_reader>");
+    case VALUE_GOBJECT:
+        value_free(value);
+        return value_string("<gobject>");
     case VALUE_ACTOR:
         value_free(value);
         return value_string("<actor>");
@@ -6647,6 +6755,7 @@ static int encode_value_to_builder(StringBuilder *builder, Value value) {
     case VALUE_POSTGRES_CONNECTION:
     case VALUE_SQLITE_CONNECTION:
     case VALUE_XML_READER:
+    case VALUE_GOBJECT:
     case VALUE_ACTOR:
     case VALUE_FUNCTION:
         runtime_error_raise("encode supports numbers, strings, booleans, nothing, unknown, arrays, and records",
@@ -6904,6 +7013,10 @@ static int serialize_value(SerBuf *b, Value v, int depth) {
     case VALUE_SQLITE_CONNECTION:
     case VALUE_XML_READER:
         runtime_error_raise("serialize: database connections cannot be serialized",
+                            1003, "actor");
+        return 0;
+    case VALUE_GOBJECT:
+        runtime_error_raise("serialize: gobjects cannot be serialized",
                             1003, "actor");
         return 0;
     case VALUE_ACTOR:
@@ -12464,6 +12577,806 @@ static int crypto_ed25519_verify(const unsigned char *pub, size_t publen,
 }
 #endif
 
+#if HAVE_GIR
+/* ---------------------------------------------------------------------------
+ * gi.* — GObject-Introspection bridge (docs: PLAN.md "Phase GI"). Raw generic
+ * FFI over libgirepository-2.0: create objects by type name, get/set properties,
+ * call methods, and connect gBASIC functions to signals. Idiomatic property/
+ * method syntax is deferred; everything here rides the eval_call dispatch path.
+ * ------------------------------------------------------------------------- */
+
+static GMainLoop *gi_main_loop = NULL;
+
+static GIRepository *gi_repo(void) {
+    static GIRepository *repo = NULL;
+    if (!repo) {
+        repo = gi_repository_dup_default();
+    }
+    return repo;
+}
+
+static Value gi_raise(const char *message) {
+    runtime_error_raise(message, 6001, "gi");
+    return value_null();
+}
+
+static Value gi_raisef(const char *fmt, const char *a) {
+    char message[512];
+    snprintf(message, sizeof(message), fmt, a);
+    runtime_error_raise(message, 6001, "gi");
+    return value_null();
+}
+
+/* Ensure `obj` is owned (floating refs sunk) and return a new gBASIC Value that
+ * references its ONE canonical wrapper. `have_ref` means the caller holds a
+ * reference that should be consumed here (transfer-full / freshly constructed);
+ * otherwise we take our own (transfer-none). Canonicalized via qdata so the same
+ * GObject always maps to the same wrapper — identity and refcounts stay correct. */
+static Value gi_canonical_wrap(GObject *obj, gboolean have_ref) {
+    if (!obj) {
+        return value_null();
+    }
+    GObjectValue *existing = g_object_get_qdata(obj, gi_wrapper_quark());
+    if (existing) {
+        /* The canonical wrapper already owns a hard ref; release any incoming
+         * ownership so we do not leak (a wrapped object is never floating). */
+        if (have_ref) {
+            g_object_unref(obj);
+        }
+        existing->ref_count++;
+        return value_gobject(existing);
+    }
+    if (!have_ref) {
+        g_object_ref(obj);
+    }
+    if (g_object_is_floating(obj)) {
+        g_object_ref_sink(obj);   /* floating(1) -> owned(1), no count change */
+    }
+    GObjectValue *handle = calloc(1, sizeof(*handle));
+    if (!handle) {
+        abort();
+    }
+    handle->obj = obj;
+    handle->ref_count = 1;
+    handle->closed = 0;
+    g_object_set_qdata(obj, gi_wrapper_quark(), handle);
+    return value_gobject(handle);
+}
+
+/* GValue -> gBASIC Value. Returns 1 on success; 0 (no raise) if the GType is not
+ * one v1 supports — the caller raises with context. */
+static int gi_value_from_gvalue(const GValue *gv, Value *out) {
+    GType fund = G_TYPE_FUNDAMENTAL(G_VALUE_TYPE(gv));
+    switch (fund) {
+    case G_TYPE_BOOLEAN: *out = value_bool(g_value_get_boolean(gv)); return 1;
+    case G_TYPE_CHAR:    *out = value_number(g_value_get_schar(gv)); return 1;
+    case G_TYPE_UCHAR:   *out = value_number(g_value_get_uchar(gv)); return 1;
+    case G_TYPE_INT:     *out = value_number(g_value_get_int(gv)); return 1;
+    case G_TYPE_UINT:    *out = value_number(g_value_get_uint(gv)); return 1;
+    case G_TYPE_LONG:    *out = value_number((double)g_value_get_long(gv)); return 1;
+    case G_TYPE_ULONG:   *out = value_number((double)g_value_get_ulong(gv)); return 1;
+    case G_TYPE_INT64:   *out = value_number((double)g_value_get_int64(gv)); return 1;
+    case G_TYPE_UINT64:  *out = value_number((double)g_value_get_uint64(gv)); return 1;
+    case G_TYPE_FLOAT:   *out = value_number(g_value_get_float(gv)); return 1;
+    case G_TYPE_DOUBLE:  *out = value_number(g_value_get_double(gv)); return 1;
+    case G_TYPE_ENUM:    *out = value_number(g_value_get_enum(gv)); return 1;
+    case G_TYPE_FLAGS:   *out = value_number(g_value_get_flags(gv)); return 1;
+    case G_TYPE_STRING: {
+        const char *s = g_value_get_string(gv);
+        *out = s ? value_string(s) : value_null();
+        return 1;
+    }
+    case G_TYPE_OBJECT: {
+        GObject *o = g_value_get_object(gv);   /* borrowed: transfer-none */
+        *out = gi_canonical_wrap(o, FALSE);
+        return 1;
+    }
+    case G_TYPE_NONE: *out = value_null(); return 1;
+    default: return 0;
+    }
+}
+
+/* gBASIC Value -> GValue initialised to `target`. Returns 1 on success; on failure
+ * the GValue is left uninitialised and the caller raises. */
+static int gi_value_to_gvalue(Value v, GType target, GValue *out) {
+    GType fund = G_TYPE_FUNDAMENTAL(target);
+    memset(out, 0, sizeof(*out));
+    g_value_init(out, target);
+    switch (fund) {
+    case G_TYPE_BOOLEAN:
+        g_value_set_boolean(out, v.kind == VALUE_BOOL ? v.as.boolean
+                                                      : value_number_or_zero(v) != 0.0);
+        return 1;
+    case G_TYPE_CHAR:   g_value_set_schar(out, (gint8)value_number_or_zero(v)); return 1;
+    case G_TYPE_UCHAR:  g_value_set_uchar(out, (guchar)value_number_or_zero(v)); return 1;
+    case G_TYPE_INT:    g_value_set_int(out, (gint)value_number_or_zero(v)); return 1;
+    case G_TYPE_UINT:   g_value_set_uint(out, (guint)value_number_or_zero(v)); return 1;
+    case G_TYPE_LONG:   g_value_set_long(out, (glong)value_number_or_zero(v)); return 1;
+    case G_TYPE_ULONG:  g_value_set_ulong(out, (gulong)value_number_or_zero(v)); return 1;
+    case G_TYPE_INT64:  g_value_set_int64(out, (gint64)value_number_or_zero(v)); return 1;
+    case G_TYPE_UINT64: g_value_set_uint64(out, (guint64)value_number_or_zero(v)); return 1;
+    case G_TYPE_FLOAT:  g_value_set_float(out, (gfloat)value_number_or_zero(v)); return 1;
+    case G_TYPE_DOUBLE: g_value_set_double(out, value_number_or_zero(v)); return 1;
+    case G_TYPE_ENUM:   g_value_set_enum(out, (gint)value_number_or_zero(v)); return 1;
+    case G_TYPE_FLAGS:  g_value_set_flags(out, (guint)value_number_or_zero(v)); return 1;
+    case G_TYPE_STRING:
+        if (v.kind == VALUE_STRING) { g_value_set_string(out, v.as.string); return 1; }
+        if (v.kind == VALUE_NULL)   { g_value_set_string(out, NULL); return 1; }
+        g_value_unset(out); return 0;
+    case G_TYPE_OBJECT:
+        if (v.kind == VALUE_GOBJECT) { g_value_set_object(out, v.as.gobject->obj); return 1; }
+        if (v.kind == VALUE_NULL)    { g_value_set_object(out, NULL); return 1; }
+        g_value_unset(out); return 0;
+    default:
+        g_value_unset(out); return 0;
+    }
+}
+
+/* Split "Ns.Rest" at the first dot. Returns 0 if there is no dot. */
+static int gi_split_first(const char *qualified, char *ns, size_t ns_size,
+                          const char **rest) {
+    const char *dot = strchr(qualified, '.');
+    if (!dot || dot == qualified) {
+        return 0;
+    }
+    size_t n = (size_t)(dot - qualified);
+    if (n >= ns_size) {
+        n = ns_size - 1;
+    }
+    memcpy(ns, qualified, n);
+    ns[n] = '\0';
+    *rest = dot + 1;
+    return 1;
+}
+
+/* Resolve "Namespace.TypeName" to a GType, or G_TYPE_INVALID if unknown. */
+static GType gi_lookup_gtype(const char *qualified) {
+    char ns[128];
+    const char *name = NULL;
+    if (!gi_split_first(qualified, ns, sizeof(ns), &name)) {
+        return G_TYPE_INVALID;
+    }
+    GIBaseInfo *info = gi_repository_find_by_name(gi_repo(), ns, name);
+    if (!info) {
+        return G_TYPE_INVALID;
+    }
+    GType t = G_TYPE_INVALID;
+    if (GI_IS_REGISTERED_TYPE_INFO(info)) {
+        t = gi_registered_type_info_get_g_type((GIRegisteredTypeInfo *)info);
+    }
+    gi_base_info_unref(info);
+    return t;
+}
+
+/* Marshal one native return/argument GIArgument (by type tag) into a gBASIC Value.
+ * `transfer` governs ownership of strings/objects handed back to us. */
+static int gi_value_from_giarg(GITypeInfo *ti, GITransfer transfer,
+                               GIArgument *arg, Value *out) {
+    switch (gi_type_info_get_tag(ti)) {
+    case GI_TYPE_TAG_VOID:    *out = value_null(); return 1;
+    case GI_TYPE_TAG_BOOLEAN: *out = value_bool(arg->v_boolean); return 1;
+    case GI_TYPE_TAG_INT8:    *out = value_number(arg->v_int8); return 1;
+    case GI_TYPE_TAG_UINT8:   *out = value_number(arg->v_uint8); return 1;
+    case GI_TYPE_TAG_INT16:   *out = value_number(arg->v_int16); return 1;
+    case GI_TYPE_TAG_UINT16:  *out = value_number(arg->v_uint16); return 1;
+    case GI_TYPE_TAG_INT32:   *out = value_number(arg->v_int32); return 1;
+    case GI_TYPE_TAG_UINT32:  *out = value_number(arg->v_uint32); return 1;
+    case GI_TYPE_TAG_INT64:   *out = value_number((double)arg->v_int64); return 1;
+    case GI_TYPE_TAG_UINT64:  *out = value_number((double)arg->v_uint64); return 1;
+    case GI_TYPE_TAG_FLOAT:   *out = value_number(arg->v_float); return 1;
+    case GI_TYPE_TAG_DOUBLE:  *out = value_number(arg->v_double); return 1;
+    case GI_TYPE_TAG_GTYPE:   *out = value_number((double)arg->v_size); return 1;
+    case GI_TYPE_TAG_UTF8:
+    case GI_TYPE_TAG_FILENAME:
+        *out = arg->v_string ? value_string(arg->v_string) : value_null();
+        if (transfer == GI_TRANSFER_EVERYTHING && arg->v_string) {
+            g_free(arg->v_string);
+        }
+        return 1;
+    case GI_TYPE_TAG_INTERFACE: {
+        GIBaseInfo *iface = gi_type_info_get_interface(ti);
+        int ok = 0;
+        if (iface) {
+            if (GI_IS_OBJECT_INFO(iface) || GI_IS_INTERFACE_INFO(iface)) {
+                *out = gi_canonical_wrap((GObject *)arg->v_pointer,
+                                         transfer == GI_TRANSFER_EVERYTHING);
+                ok = 1;
+            } else if (GI_IS_ENUM_INFO(iface)) {
+                *out = value_number(arg->v_int32);
+                ok = 1;
+            }
+            gi_base_info_unref(iface);
+        }
+        return ok;
+    }
+    default:
+        return 0;
+    }
+}
+
+/* gBASIC Value -> one native IN GIArgument (by type tag). Strings are borrowed for
+ * the duration of the call (no copy), so the source Value must outlive the invoke. */
+static int gi_giarg_from_value(GITypeInfo *ti, Value v, GIArgument *arg) {
+    memset(arg, 0, sizeof(*arg));
+    switch (gi_type_info_get_tag(ti)) {
+    case GI_TYPE_TAG_BOOLEAN:
+        arg->v_boolean = (v.kind == VALUE_BOOL ? v.as.boolean : value_number_or_zero(v) != 0.0);
+        return 1;
+    case GI_TYPE_TAG_INT8:   arg->v_int8 = (gint8)value_number_or_zero(v); return 1;
+    case GI_TYPE_TAG_UINT8:  arg->v_uint8 = (guint8)value_number_or_zero(v); return 1;
+    case GI_TYPE_TAG_INT16:  arg->v_int16 = (gint16)value_number_or_zero(v); return 1;
+    case GI_TYPE_TAG_UINT16: arg->v_uint16 = (guint16)value_number_or_zero(v); return 1;
+    case GI_TYPE_TAG_INT32:  arg->v_int32 = (gint32)value_number_or_zero(v); return 1;
+    case GI_TYPE_TAG_UINT32: arg->v_uint32 = (guint32)value_number_or_zero(v); return 1;
+    case GI_TYPE_TAG_INT64:  arg->v_int64 = (gint64)value_number_or_zero(v); return 1;
+    case GI_TYPE_TAG_UINT64: arg->v_uint64 = (guint64)value_number_or_zero(v); return 1;
+    case GI_TYPE_TAG_FLOAT:  arg->v_float = (gfloat)value_number_or_zero(v); return 1;
+    case GI_TYPE_TAG_DOUBLE: arg->v_double = value_number_or_zero(v); return 1;
+    case GI_TYPE_TAG_UTF8:
+    case GI_TYPE_TAG_FILENAME:
+        if (v.kind == VALUE_STRING) { arg->v_string = v.as.string; return 1; }
+        if (v.kind == VALUE_NULL)   { arg->v_string = NULL; return 1; }
+        return 0;
+    case GI_TYPE_TAG_INTERFACE: {
+        GIBaseInfo *iface = gi_type_info_get_interface(ti);
+        int ok = 0;
+        if (iface) {
+            if (GI_IS_OBJECT_INFO(iface) || GI_IS_INTERFACE_INFO(iface)) {
+                if (v.kind == VALUE_GOBJECT) { arg->v_pointer = v.as.gobject->obj; ok = 1; }
+                else if (v.kind == VALUE_NULL) { arg->v_pointer = NULL; ok = 1; }
+            } else if (GI_IS_ENUM_INFO(iface)) {
+                arg->v_int32 = (gint32)value_number_or_zero(v);
+                ok = 1;
+            }
+            gi_base_info_unref(iface);
+        }
+        return ok;
+    }
+    default:
+        return 0;
+    }
+}
+
+/* Pull the live GObject out of a gBASIC value, raising on a non-object or a
+ * disposed handle. */
+static int gi_object_arg(Value v, const char *ctx, GObject **out) {
+    if (v.kind != VALUE_GOBJECT) {
+        gi_raisef("%s expects a gobject", ctx);
+        return 0;
+    }
+    if (v.as.gobject->closed || !v.as.gobject->obj) {
+        gi_raisef("%s: gobject has been disposed", ctx);
+        return 0;
+    }
+    *out = v.as.gobject->obj;
+    return 1;
+}
+
+/* --- signal dispatch ---------------------------------------------------- */
+
+typedef struct {
+    char *name;      /* gBASIC function name */
+    char *library;   /* owning library, or NULL */
+} GiClosureData;
+
+static void gi_closure_finalize(gpointer data, GClosure *closure) {
+    (void)closure;
+    GiClosureData *d = data;
+    if (!d) {
+        return;
+    }
+    free(d->name);
+    free(d->library);
+    free(d);
+}
+
+/* The one generic marshaller for every connected signal. Converts the GValue
+ * parameter array into gBASIC values, re-enters the interpreter to run the user's
+ * function, and — crucially — snapshots/restores the global error/line/stop state
+ * so a raising handler cannot corrupt the outer program. An unhandled handler
+ * error is surfaced (it stays in the diagnostics sink) and quits the main loop. */
+static void gi_signal_marshal(GClosure *closure, GValue *return_gvalue,
+                              guint n_param_values, const GValue *param_values,
+                              gpointer invocation_hint, gpointer marshal_data) {
+    (void)return_gvalue;
+    (void)invocation_hint;
+    (void)marshal_data;
+    GiClosureData *d = closure->data;
+    FunctionDef *def = function_resolve(d->library, d->name);
+    if (!def || !def->stmt) {
+        return;   /* handler function disappeared; nothing to call */
+    }
+
+    size_t want = def->stmt->as.function.params.count;
+    Value *args = want ? malloc(sizeof(Value) * want) : NULL;
+    if (want && !args) {
+        abort();
+    }
+    for (size_t i = 0; i < want; i++) {
+        if (i < n_param_values) {
+            if (!gi_value_from_gvalue(&param_values[i], &args[i])) {
+                args[i] = value_null();
+            }
+        } else {
+            args[i] = value_null();
+        }
+    }
+
+    int saved_stopped = runtime_stopped;
+    ErrorMode saved_mode = error_mode;
+    int saved_line = current_line;
+    int saved_column = current_column;
+    int before_gen = error_generation;
+
+    Value result = invoke_function(def->stmt, args, want, NULL);
+    value_free(result);
+
+    if (runtime_stopped || error_generation != before_gen) {
+        /* The handler raised. In STOP mode the raise already pushed a diagnostic to
+         * the sink (surfaced at program end); here we contain it: restore the outer
+         * error/stop state so the program that pumped the loop continues cleanly,
+         * and end any running main loop. */
+        runtime_stopped = saved_stopped;
+        error_mode = saved_mode;
+        error_clear_state();
+        if (gi_main_loop) {
+            g_main_loop_quit(gi_main_loop);
+        }
+    }
+    current_line = saved_line;
+    current_column = saved_column;
+}
+
+/* --- individual builtins ------------------------------------------------ */
+
+static Value gi_do_require(AstExpr *expr) {
+    size_t argc = expr->as.call.args.count;
+    if (argc < 1 || argc > 2) {
+        return gi_raise("gi.require expects a namespace and optional version");
+    }
+    Value ns = eval_expr(expr->as.call.args.items[0]);
+    if (error_action_pending()) { value_free(ns); return value_null(); }
+    Value ver = argc == 2 ? eval_expr(expr->as.call.args.items[1]) : value_null();
+    if (error_action_pending()) { value_free(ns); value_free(ver); return value_null(); }
+    if (ns.kind != VALUE_STRING || (argc == 2 && ver.kind != VALUE_STRING)) {
+        value_free(ns); value_free(ver);
+        return gi_raise("gi.require expects string arguments");
+    }
+
+    /* GTK3 (gui module) and GTK4 (loaded here) must not share a process. */
+    const char *version = argc == 2 ? ver.as.string : NULL;
+    if (strcmp(ns.as.string, "Gtk") == 0 && version && version[0] == '4' && gui_library_loaded) {
+        value_free(ns); value_free(ver);
+        return gi_raise("GTK 3 (gui module) and GTK 4 (gi) cannot be used in the same process");
+    }
+
+    GError *error = NULL;
+    GITypelib *typelib = gi_repository_require(gi_repo(), ns.as.string, version,
+                                               0, &error);
+    if (!typelib) {
+        char detail[256];
+        snprintf(detail, sizeof(detail), "%s-%s",
+                 ns.as.string, version ? version : "(any)");
+        if (error) {
+            g_error_free(error);
+        }
+        value_free(ns); value_free(ver);
+        return gi_raisef("gi.require: could not load namespace %s", detail);
+    }
+    if (strcmp(ns.as.string, "Gtk") == 0 && version && version[0] == '4') {
+        gi_gtk4_active = 1;
+    }
+    value_free(ns); value_free(ver);
+    return value_null();
+}
+
+static Value gi_do_new(AstExpr *expr) {
+    if (expr->as.call.args.count != 1) {
+        return gi_raise("gi.new expects one argument");
+    }
+    Value type_name = eval_expr(expr->as.call.args.items[0]);
+    if (error_action_pending()) { value_free(type_name); return value_null(); }
+    if (type_name.kind != VALUE_STRING) {
+        value_free(type_name);
+        return gi_raise("gi.new expects a type name string");
+    }
+    GType gtype = gi_lookup_gtype(type_name.as.string);
+    if (gtype == G_TYPE_INVALID) {
+        Value r = gi_raisef("gi.new: unknown type: %s", type_name.as.string);
+        value_free(type_name);
+        return r;
+    }
+    if (!G_TYPE_IS_OBJECT(gtype)) {
+        Value r = gi_raisef("gi.new: not an instantiable object type: %s", type_name.as.string);
+        value_free(type_name);
+        return r;
+    }
+    value_free(type_name);
+    GObject *obj = g_object_new(gtype, NULL);
+    if (!obj) {
+        return gi_raise("gi.new: object construction failed");
+    }
+    return gi_canonical_wrap(obj, TRUE);   /* adopt the fresh (possibly floating) ref */
+}
+
+static Value gi_do_get(AstExpr *expr) {
+    if (expr->as.call.args.count != 2) {
+        return gi_raise("gi.get expects an object and a property name");
+    }
+    Value ov = eval_expr(expr->as.call.args.items[0]);
+    if (error_action_pending()) { value_free(ov); return value_null(); }
+    Value pv = eval_expr(expr->as.call.args.items[1]);
+    if (error_action_pending()) { value_free(ov); value_free(pv); return value_null(); }
+    GObject *obj = NULL;
+    if (!gi_object_arg(ov, "gi.get", &obj)) { value_free(ov); value_free(pv); return value_null(); }
+    if (pv.kind != VALUE_STRING) {
+        value_free(ov); value_free(pv);
+        return gi_raise("gi.get expects a property name string");
+    }
+    GParamSpec *ps = g_object_class_find_property(G_OBJECT_GET_CLASS(obj), pv.as.string);
+    if (!ps) {
+        Value r = gi_raisef("gi.get: unknown property: %s", pv.as.string);
+        value_free(ov); value_free(pv);
+        return r;
+    }
+    GValue gv = G_VALUE_INIT;
+    g_value_init(&gv, G_PARAM_SPEC_VALUE_TYPE(ps));
+    g_object_get_property(obj, pv.as.string, &gv);
+    Value out;
+    int ok = gi_value_from_gvalue(&gv, &out);
+    g_value_unset(&gv);
+    if (!ok) {
+        Value r = gi_raisef("gi.get: unsupported property type for: %s", pv.as.string);
+        value_free(ov); value_free(pv);
+        return r;
+    }
+    value_free(ov); value_free(pv);
+    return out;
+}
+
+static Value gi_do_set(AstExpr *expr) {
+    if (expr->as.call.args.count != 3) {
+        return gi_raise("gi.set expects an object, a property name, and a value");
+    }
+    Value ov = eval_expr(expr->as.call.args.items[0]);
+    if (error_action_pending()) { value_free(ov); return value_null(); }
+    Value pv = eval_expr(expr->as.call.args.items[1]);
+    if (error_action_pending()) { value_free(ov); value_free(pv); return value_null(); }
+    Value val = eval_expr(expr->as.call.args.items[2]);
+    if (error_action_pending()) { value_free(ov); value_free(pv); value_free(val); return value_null(); }
+    GObject *obj = NULL;
+    if (!gi_object_arg(ov, "gi.set", &obj)) { value_free(ov); value_free(pv); value_free(val); return value_null(); }
+    if (pv.kind != VALUE_STRING) {
+        value_free(ov); value_free(pv); value_free(val);
+        return gi_raise("gi.set expects a property name string");
+    }
+    GParamSpec *ps = g_object_class_find_property(G_OBJECT_GET_CLASS(obj), pv.as.string);
+    if (!ps) {
+        Value r = gi_raisef("gi.set: unknown property: %s", pv.as.string);
+        value_free(ov); value_free(pv); value_free(val);
+        return r;
+    }
+    GValue gv;
+    if (!gi_value_to_gvalue(val, G_PARAM_SPEC_VALUE_TYPE(ps), &gv)) {
+        Value r = gi_raisef("gi.set: value not convertible for property: %s", pv.as.string);
+        value_free(ov); value_free(pv); value_free(val);
+        return r;
+    }
+    g_object_set_property(obj, pv.as.string, &gv);
+    g_value_unset(&gv);
+    value_free(ov); value_free(pv); value_free(val);
+    return value_null();
+}
+
+static Value gi_do_call(AstExpr *expr) {
+    size_t argc = expr->as.call.args.count;
+    if (argc < 2) {
+        return gi_raise("gi.call expects an object and a method name");
+    }
+    Value ov = eval_expr(expr->as.call.args.items[0]);
+    if (error_action_pending()) { value_free(ov); return value_null(); }
+    Value mv = eval_expr(expr->as.call.args.items[1]);
+    if (error_action_pending()) { value_free(ov); value_free(mv); return value_null(); }
+    GObject *obj = NULL;
+    if (!gi_object_arg(ov, "gi.call", &obj)) { value_free(ov); value_free(mv); return value_null(); }
+    if (mv.kind != VALUE_STRING) {
+        value_free(ov); value_free(mv);
+        return gi_raise("gi.call expects a method name string");
+    }
+
+    GIBaseInfo *base = gi_repository_find_by_gtype(gi_repo(), G_OBJECT_TYPE(obj));
+    if (!base || !GI_IS_OBJECT_INFO(base)) {
+        if (base) gi_base_info_unref(base);
+        Value r = gi_raisef("gi.call: type is not introspectable: %s", G_OBJECT_TYPE_NAME(obj));
+        value_free(ov); value_free(mv);
+        return r;
+    }
+    GIFunctionInfo *finfo = gi_object_info_find_method_using_interfaces(
+        (GIObjectInfo *)base, mv.as.string, NULL);
+    gi_base_info_unref(base);
+    if (!finfo) {
+        Value r = gi_raisef("gi.call: unknown method: %s", mv.as.string);
+        value_free(ov); value_free(mv);
+        return r;
+    }
+
+    GICallableInfo *cinfo = (GICallableInfo *)finfo;
+    gboolean is_method = (gi_function_info_get_flags(finfo) & GI_FUNCTION_IS_METHOD) != 0;
+    unsigned int ndecl = gi_callable_info_get_n_args(cinfo);
+    size_t provided = argc - 2;
+    if (provided != ndecl) {
+        char detail[160];
+        snprintf(detail, sizeof(detail), "%s expects %u argument(s)", mv.as.string, ndecl);
+        gi_base_info_unref(finfo);
+        Value r = gi_raisef("gi.call: %s", detail);
+        value_free(ov); value_free(mv);
+        return r;
+    }
+
+    /* Evaluate the method arguments (kept live until after invoke; strings are
+     * borrowed by GIArgument). */
+    Value *argvals = provided ? calloc(provided, sizeof(Value)) : NULL;
+    GIArgument *in_args = calloc(ndecl + 1, sizeof(GIArgument));
+    if ((provided && !argvals) || !in_args) {
+        abort();
+    }
+    size_t n_in = 0;
+    int failed = 0;
+    if (is_method) {
+        in_args[n_in++].v_pointer = obj;
+    }
+    for (unsigned int i = 0; i < ndecl && !failed; i++) {
+        argvals[i] = eval_expr(expr->as.call.args.items[2 + i]);
+        if (error_action_pending()) { failed = 1; break; }
+        GIArgInfo *ai = gi_callable_info_get_arg(cinfo, i);
+        if (gi_arg_info_get_direction(ai) != GI_DIRECTION_IN) {
+            gi_base_info_unref(ai);
+            gi_raisef("gi.call: %s has an unsupported out/inout argument", mv.as.string);
+            failed = 1;
+            break;
+        }
+        GITypeInfo *ti = gi_arg_info_get_type_info(ai);
+        int ok = gi_giarg_from_value(ti, argvals[i], &in_args[n_in]);
+        gi_base_info_unref(ti);
+        gi_base_info_unref(ai);
+        if (!ok) {
+            gi_raisef("gi.call: unsupported argument type for method: %s", mv.as.string);
+            failed = 1;
+            break;
+        }
+        n_in++;
+    }
+
+    Value out = value_null();
+    if (!failed) {
+        GIArgument retval;
+        memset(&retval, 0, sizeof(retval));
+        GError *ierr = NULL;
+        if (!gi_function_info_invoke(finfo, in_args, n_in, NULL, 0, &retval, &ierr)) {
+            char detail[256];
+            snprintf(detail, sizeof(detail), "%s: %s", mv.as.string,
+                     ierr && ierr->message ? ierr->message : "call failed");
+            if (ierr) g_error_free(ierr);
+            gi_raisef("gi.call: %s", detail);
+        } else {
+            GITypeInfo *rti = gi_callable_info_get_return_type(cinfo);
+            GITransfer rtransfer = gi_callable_info_get_caller_owns(cinfo);
+            if (!gi_value_from_giarg(rti, rtransfer, &retval, &out)) {
+                out = value_null();   /* unsupported return type -> nothing */
+            }
+            gi_base_info_unref(rti);
+        }
+    }
+
+    for (size_t i = 0; i < provided; i++) {
+        value_free(argvals[i]);
+    }
+    free(argvals);
+    free(in_args);
+    gi_base_info_unref(finfo);
+    value_free(ov); value_free(mv);
+    return out;
+}
+
+static Value gi_do_connect(AstExpr *expr) {
+    if (expr->as.call.args.count != 3) {
+        return gi_raise("gi.connect expects an object, a signal name, and a function");
+    }
+    Value ov = eval_expr(expr->as.call.args.items[0]);
+    if (error_action_pending()) { value_free(ov); return value_null(); }
+    Value sv = eval_expr(expr->as.call.args.items[1]);
+    if (error_action_pending()) { value_free(ov); value_free(sv); return value_null(); }
+    Value fv = eval_expr(expr->as.call.args.items[2]);
+    if (error_action_pending()) { value_free(ov); value_free(sv); value_free(fv); return value_null(); }
+    GObject *obj = NULL;
+    if (!gi_object_arg(ov, "gi.connect", &obj)) { value_free(ov); value_free(sv); value_free(fv); return value_null(); }
+    if (sv.kind != VALUE_STRING) {
+        value_free(ov); value_free(sv); value_free(fv);
+        return gi_raise("gi.connect expects a signal name string");
+    }
+    if (fv.kind != VALUE_FUNCTION) {
+        value_free(ov); value_free(sv); value_free(fv);
+        return gi_raise("gi.connect expects a function as the handler");
+    }
+
+    GiClosureData *data = calloc(1, sizeof(*data));
+    if (!data) {
+        abort();
+    }
+    data->name = copy_string(fv.as.function.name);
+    data->library = fv.as.function.library ? copy_string(fv.as.function.library) : NULL;
+
+    GClosure *closure = g_closure_new_simple(sizeof(GClosure), data);
+    g_closure_set_marshal(closure, gi_signal_marshal);
+    g_closure_add_finalize_notifier(closure, data, gi_closure_finalize);
+
+    gulong id = g_signal_connect_closure(obj, sv.as.string, closure, FALSE);
+    value_free(ov); value_free(sv); value_free(fv);
+    if (id == 0) {
+        return gi_raise("gi.connect: no such signal on this object");
+    }
+    return value_number((double)id);
+}
+
+static Value gi_do_disconnect(AstExpr *expr) {
+    if (expr->as.call.args.count != 2) {
+        return gi_raise("gi.disconnect expects an object and a handler id");
+    }
+    Value ov = eval_expr(expr->as.call.args.items[0]);
+    if (error_action_pending()) { value_free(ov); return value_null(); }
+    Value idv = eval_expr(expr->as.call.args.items[1]);
+    if (error_action_pending()) { value_free(ov); value_free(idv); return value_null(); }
+    GObject *obj = NULL;
+    if (!gi_object_arg(ov, "gi.disconnect", &obj)) { value_free(ov); value_free(idv); return value_null(); }
+    if (idv.kind != VALUE_NUMBER) {
+        value_free(ov); value_free(idv);
+        return gi_raise("gi.disconnect expects a numeric handler id");
+    }
+    gulong id = (gulong)idv.as.number;
+    if (id != 0 && g_signal_handler_is_connected(obj, id)) {
+        g_signal_handler_disconnect(obj, id);
+    }
+    value_free(ov); value_free(idv);
+    return value_null();
+}
+
+static Value gi_do_enum(AstExpr *expr) {
+    if (expr->as.call.args.count != 1) {
+        return gi_raise("gi.enum expects one argument");
+    }
+    Value qv = eval_expr(expr->as.call.args.items[0]);
+    if (error_action_pending()) { value_free(qv); return value_null(); }
+    if (qv.kind != VALUE_STRING) {
+        value_free(qv);
+        return gi_raise("gi.enum expects a qualified enum member string");
+    }
+    /* "Ns.EnumName.MEMBER" -> ns / enum name / member */
+    const char *q = qv.as.string;
+    const char *first = strchr(q, '.');
+    const char *last = strrchr(q, '.');
+    if (!first || first == last) {
+        Value r = gi_raisef("gi.enum: expected Namespace.Enum.MEMBER, got: %s", q);
+        value_free(qv);
+        return r;
+    }
+    char ns[128];
+    char ename[128];
+    size_t nsn = (size_t)(first - q);
+    size_t enn = (size_t)(last - (first + 1));
+    if (nsn >= sizeof(ns)) nsn = sizeof(ns) - 1;
+    if (enn >= sizeof(ename)) enn = sizeof(ename) - 1;
+    memcpy(ns, q, nsn); ns[nsn] = '\0';
+    memcpy(ename, first + 1, enn); ename[enn] = '\0';
+    const char *member = last + 1;
+
+    GIBaseInfo *info = gi_repository_find_by_name(gi_repo(), ns, ename);
+    if (!info || !GI_IS_ENUM_INFO(info)) {
+        if (info) gi_base_info_unref(info);
+        Value r = gi_raisef("gi.enum: unknown enum: %s", q);
+        value_free(qv);
+        return r;
+    }
+    char *want = g_ascii_strup(member, -1);
+    int found = 0;
+    int64_t result = 0;
+    unsigned int n = gi_enum_info_get_n_values((GIEnumInfo *)info);
+    for (unsigned int i = 0; i < n && !found; i++) {
+        GIValueInfo *vi = gi_enum_info_get_value((GIEnumInfo *)info, i);
+        const char *vname = gi_base_info_get_name((GIBaseInfo *)vi);
+        char *up = g_ascii_strup(vname, -1);
+        if (strcmp(up, want) == 0) {
+            result = gi_value_info_get_value(vi);
+            found = 1;
+        }
+        g_free(up);
+        gi_base_info_unref(vi);
+    }
+    g_free(want);
+    gi_base_info_unref(info);
+    value_free(qv);
+    if (!found) {
+        return gi_raisef("gi.enum: unknown member: %s", q);
+    }
+    return value_number((double)result);
+}
+
+static Value gi_do_is_a(AstExpr *expr) {
+    if (expr->as.call.args.count != 2) {
+        return gi_raise("gi.is_a expects an object and a type name");
+    }
+    Value ov = eval_expr(expr->as.call.args.items[0]);
+    if (error_action_pending()) { value_free(ov); return value_null(); }
+    Value tv = eval_expr(expr->as.call.args.items[1]);
+    if (error_action_pending()) { value_free(ov); value_free(tv); return value_null(); }
+    GObject *obj = NULL;
+    if (!gi_object_arg(ov, "gi.is_a", &obj)) { value_free(ov); value_free(tv); return value_null(); }
+    if (tv.kind != VALUE_STRING) {
+        value_free(ov); value_free(tv);
+        return gi_raise("gi.is_a expects a type name string");
+    }
+    GType target = gi_lookup_gtype(tv.as.string);
+    if (target == G_TYPE_INVALID) {
+        Value r = gi_raisef("gi.is_a: unknown type: %s", tv.as.string);
+        value_free(ov); value_free(tv);
+        return r;
+    }
+    int yes = g_type_is_a(G_OBJECT_TYPE(obj), target);
+    value_free(ov); value_free(tv);
+    return value_bool(yes);
+}
+
+static Value gi_do_type_name(AstExpr *expr) {
+    if (expr->as.call.args.count != 1) {
+        return gi_raise("gi.type_name expects one argument");
+    }
+    Value ov = eval_expr(expr->as.call.args.items[0]);
+    if (error_action_pending()) { value_free(ov); return value_null(); }
+    GObject *obj = NULL;
+    if (!gi_object_arg(ov, "gi.type_name", &obj)) { value_free(ov); return value_null(); }
+    Value r = value_string(G_OBJECT_TYPE_NAME(obj));
+    value_free(ov);
+    return r;
+}
+
+static Value gi_do_main(AstExpr *expr) {
+    if (expr->as.call.args.count != 0) {
+        return gi_raise("gi.main expects no arguments");
+    }
+    if (!gi_main_loop) {
+        gi_main_loop = g_main_loop_new(NULL, FALSE);
+    }
+    g_main_loop_run(gi_main_loop);
+    return value_null();
+}
+
+static Value gi_do_quit(AstExpr *expr) {
+    if (expr->as.call.args.count != 0) {
+        return gi_raise("gi.quit expects no arguments");
+    }
+    if (gi_main_loop) {
+        g_main_loop_quit(gi_main_loop);
+    }
+    return value_null();
+}
+
+static Value gi_eval_call(AstExpr *expr) {
+    const char *name = expr->as.call.name;
+    if (strcmp(name, "require") == 0)     return gi_do_require(expr);
+    if (strcmp(name, "new") == 0)         return gi_do_new(expr);
+    if (strcmp(name, "get") == 0)         return gi_do_get(expr);
+    if (strcmp(name, "set") == 0)         return gi_do_set(expr);
+    if (strcmp(name, "call") == 0)        return gi_do_call(expr);
+    if (strcmp(name, "connect") == 0)     return gi_do_connect(expr);
+    if (strcmp(name, "disconnect") == 0)  return gi_do_disconnect(expr);
+    if (strcmp(name, "enum") == 0)        return gi_do_enum(expr);
+    if (strcmp(name, "is_a") == 0)        return gi_do_is_a(expr);
+    if (strcmp(name, "type_name") == 0)   return gi_do_type_name(expr);
+    if (strcmp(name, "main") == 0)        return gi_do_main(expr);
+    if (strcmp(name, "quit") == 0)        return gi_do_quit(expr);
+    return gi_raisef("invalid function call: gi.%s", name);
+}
+#endif /* HAVE_GIR */
+
 static Value eval_call(AstExpr *expr) {
     if (expr->as.call.library) {
         /* §5 disambiguation: X.y(args) where X is a variable bound to a record
@@ -12576,6 +13489,22 @@ static Value eval_call(AstExpr *expr) {
             if (strcmp(expr->as.call.name, "run") == 0) {
                 return gui_eval_run_call(expr);
             }
+        }
+
+        if (strcmp(expr->as.call.library, "gi") == 0) {
+            if (!gi_library_loaded) {
+                runtime_error_raise("library not loaded: gi", 6001, "gi");
+                return value_null();
+            }
+#if HAVE_GIR
+            return gi_eval_call(expr);
+#else
+            runtime_error_raise("gobject-introspection support is unavailable; "
+                                "install libgirepository-2.0-dev (GLib >= 2.80) and rebuild",
+                                6001,
+                                "gi");
+            return value_null();
+#endif
         }
 
         FunctionDef *function = function_resolve(expr->as.call.library, expr->as.call.name);
@@ -15880,6 +16809,35 @@ static Value eval_comparison(AstExpr *expr, Value left, Value right) {
             value_free(right);
             return value_null();
         }
+    } else if (left.kind == VALUE_GOBJECT && right.kind == VALUE_GOBJECT) {
+        /* Identity by canonical wrapper: qdata canonicalization guarantees one
+         * wrapper per underlying GObject, so wrapper-pointer equality is object
+         * identity. (Wrapper-pointer form also compiles when HAVE_GIR=0, where no
+         * such value can ever exist.) */
+        int equal = left.as.gobject == right.as.gobject;
+        if (strcmp(op, "=") == 0) {
+            result = equal;
+        } else if (strcmp(op, "!=") == 0) {
+            result = !equal;
+        } else {
+            runtime_error_raise("gobjects support only = and !=", 1003, "comparison");
+            value_free(left);
+            value_free(right);
+            return value_null();
+        }
+    } else if (left.kind == VALUE_GOBJECT || right.kind == VALUE_GOBJECT) {
+        /* A gobject compared against a non-gobject: unequal, matching the function
+         * value rule. */
+        if (strcmp(op, "=") == 0) {
+            result = 0;
+        } else if (strcmp(op, "!=") == 0) {
+            result = 1;
+        } else {
+            runtime_error_raise("gobjects support only = and !=", 1003, "comparison");
+            value_free(left);
+            value_free(right);
+            return value_null();
+        }
     } else if (left.kind == VALUE_NULL || right.kind == VALUE_NULL ||
                left.kind == VALUE_UNKNOWN || right.kind == VALUE_UNKNOWN) {
         int equal = left.kind == right.kind &&
@@ -17473,6 +18431,7 @@ int eval_program(AstStmtList program) {
     pg_library_loaded = 0;
     webclient_library_loaded = 0;
     webserver_library_loaded = 0;
+    gi_library_loaded = 0;
     webserver_clear();
     if (webclient_curl_initialized) {
 #if HAVE_LIBCURL

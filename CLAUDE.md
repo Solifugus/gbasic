@@ -81,6 +81,7 @@ expected stdout. Output is compared verbatim (string equality), so update the
 bash tests/run_bag_smoke.sh
 ./tests/run_json_diagnostics.sh  # --json-diagnostics golden (also asserts default byte-exact)
 ./tests/lsp/run_lsp.sh      # gbasic-lsp: position-transcode unit + framed JSON-RPC handshake golden
+./tests/run_gi.sh           # gi.* GObject-Introspection bridge (headless Gio types); skips if libgirepository-2.0 absent
 GBASIC_POSTGRES_TEST=1 PGDATABASE=my_test_db ./tests/run_postgres.sh   # opt-in
 ```
 

@@ -1,0 +1,1 @@
+runtime error at tests/gi/negative_gi_require_unknown.bas:2:1: gi.require: could not load namespace NoSuchNamespace-9.9

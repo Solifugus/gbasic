@@ -209,7 +209,176 @@ all golden-green. ✋ STOP. — **DONE.**
 
 ---
 
+## Phase GI — GObject-Introspection bridge (independent track)
+
+> NOTE: This is a **separate track** from the libgbasic extraction above. It adds a
+> new optional module; it does not touch the extraction phases. The existing GTK3
+> `gui` module is **not** modified, replaced, or refactored — it remains its own
+> module. Approved design lives in the conversation report (survey + design).
+
+Goal: a generic GObject FFI exposed as a `gi.*` builtin library, driven by the
+typelib at runtime via **libgirepository-2.0** (modern `gi_repository_*` API,
+GLib ≥ 2.80). GTK4 is the first *target* toolkit but nothing GTK is linked — the
+bridge links only `girepository-2.0`/`gobject-2.0`/`glib-2.0` and `dlopen`s the
+toolkit through its typelib. v1 is the **raw bridge only**: `gi.get`/`set`/`call`/
+`connect`. Idiomatic `.property`/`.method()` sugar is deferred (see Deferred).
+
+Design invariants (apply to every step):
+- Everything behind `#if HAVE_GIR`; **zero-impact when compiled out**; the golden
+  suite stays **byte-exact** throughout.
+- Reuse the existing refcounted-native-handle pattern (`SqliteConnectionValue`
+  shape) and the `eval_call` `strcmp` module-dispatch path. **No** lexer / grammar
+  / AST / lvalue changes in v1.
+- Single process, single thread; GObjects are not actor-serializable.
+
+### Gate 0 — build wiring + early confirmation ✅ DONE
+- [x] Makefile: `girepository-2.0` pkg-config detection → `HAVE_GIR` (0/1),
+      mirroring the other optional deps. No legacy 1.x fallback.
+- [x] `#if HAVE_GIR #include <girepository/girepository.h>` in `eval.c`.
+- [x] Confirm a rebuild flips `HAVE_GIR=1`, links `girepository-2.0`, and the full
+      golden suite is byte-exact with the module **compiled in but unused**
+      (examples, negative, sqlite, bag, lsp, json-diagnostics — all exit 0).
+- [x] Install requirement recorded: `libgirepository-2.0-dev` (2.88.0-1); Gio /
+      GObject / GLib typelibs already present via `gir1.2-glib-2.0`.
+
+### Tests first (write FAILING before implementation; headless / no display)
+- [x] `tests/gi/` fixtures exercising **non-GUI Gio/GObject types** so CI never
+      needs a display:
+  - [x] **Signal dispatch** — `Gio.Cancellable`: `gi.connect(c,"cancelled",fn)`,
+        emit via `gi.call(c,"cancel")` (fires synchronously, no main loop needed),
+        assert the gBASIC handler ran AND the emitter arg maps back to the same
+        wrapper (qdata identity). NOTE: switched from the planned
+        `Gio.SimpleAction`/`activate` because SimpleAction's construct-only `name`
+        is awkward under a bare `gi.new`; Cancellable constructs clean and its
+        method is a direct (non-interface) emit.
+  - [x] **Property roundtrip** — `gi.set`/`gi.get` `application-id` on
+        `Gio.Application`, plus `gi.type_name` / `gi.is_a`.
+  - [x] **Return-value transfer** — NOTE: implemented with `Gio.Cancellable`
+        (`c2 = c` shares one wrapper/one object ref; mutate via one handle, observe
+        via the other; neither frees prematurely) rather than the planned
+        `Gio.ListStore`, whose construct-only `item-type` cannot be set through a
+        bare `gi.new`. Same coverage intent: value_copy refcount + no premature
+        free. (`gi_enum_test` additionally covers enum/flags resolution.)
+  - [x] **Handler-raises regression** — a signal handler raises; the outer program
+        continues with **clean error/line/stop state** (exit 0, stdout intact) while
+        the handler error is surfaced on stderr via the sink — verifies the
+        marshaller's snapshot/restore.
+  - [x] **Negative suite** (`.err`): not-loaded, unknown namespace, unknown type,
+        unknown property, unknown method, arity → clean structured runtime errors
+        (domain `"gi"`).
+- [x] `tests/run_gi.sh` — **skips cleanly when `HAVE_GIR=0`** (mirrors
+      `run_sqlite.sh`).
+- [~] GTK **widget** tests are **manual** (need a backend); all CI-critical coverage
+      is on Gio/GObject types. Golden suite stays display-free. The **coexistence
+      guard** is implemented but not golden-tested here: this box has neither GTK3
+      (HAVE_GTK=0) nor the Gtk-4.0 typelib, so it cannot be exercised in CI (manual).
+
+### Implementation
+- [x] `VALUE_GOBJECT` kind + `GObjectValue { GObject *obj; size_t ref_count;
+      int closed; }`; `value_copy` (refcount++) / `value_free` (refcount-- →
+      `g_object_unref`). Enum constant exists unconditionally; the `obj` field and
+      all construction/bodies are under `HAVE_GIR`. Added `VALUE_GOBJECT` cases to
+      the value-kind switches (type name, truthy, print, string, identity, encode,
+      serialize→"gobjects cannot be serialized") and `=`/`!=` identity comparison.
+- [x] **qdata canonicalization**: one wrapper per `GObject*` via
+      `g_object_get_qdata`/`set_qdata` (quark `gbasic-gobject-wrapper`); the qdata
+      link is severed before the final `g_object_unref`. Identity verified by the
+      signal test (`source = c` → "same object").
+- [x] Ownership: `gi.new` → adopt the fresh ref and `g_object_ref_sink` (sinks
+      floating refs once); getter/method object returns honor the typelib
+      **transfer** annotation (transfer-none → `g_object_ref`; transfer-full → adopt).
+- [x] GValue ⇄ Value conversion (v1 types): bool, char/int/uint/…/int64/double →
+      number, UTF-8 string, enum/flags → number, object → `VALUE_GOBJECT`,
+      void/NULL → null. Unsupported types raise a clear per-call error — never
+      silently mis-convert.
+- [x] `gi.*` builtins via `eval_call` dispatch: `require(ns[,ver])`, `new(type)`,
+      `get(obj,prop)`, `set(obj,prop,v)`, `call(obj,method,args…)` (via
+      `gi_function_info_invoke`, walks parents+interfaces with
+      `find_method_using_interfaces`, in-params only; out/inout → clean error),
+      `connect(obj,sig,fn)` / `disconnect(obj,id)`, `enum("Ns.Enum.MEMBER")`,
+      `is_a`, `type_name`, `main()` / `quit()`.
+- [x] Signals via a generic `GClosure` marshaller (`g_signal_connect_closure`):
+      GValue args → Values, **snapshot** `runtime_stopped`/`error_mode`/`current_line`/
+      `column`/`error_generation`, `invoke_function`, **restore** on a raise;
+      an unhandled handler error stays in the diagnostics sink (surfaced) and quits
+      the main loop.
+- [x] Main loop is a toolkit-agnostic `GMainLoop` owned by the gBASIC program
+      (`gi.main()` blocks, `gi.quit()` ends). Not `gtk_main`.
+- [x] **Coexistence guard**: `gi.require` of `Gtk` 4 while the GTK3 `gui` module is
+      loaded raises a structured error (domain `"gi"`); the reverse (loading `gui`
+      after Gtk 4) is guarded by a `gi_gtk4_active` flag checked in the `gui` load
+      path. No build switch in v1. (Not CI-tested here — see tests note.)
+- [x] Absent-`HAVE_GIR` stubs raise (at both `load gi` and any `gi.*` call):
+      `"gobject-introspection support is unavailable; install libgirepository-2.0-dev
+      (GLib >= 2.80) and rebuild"` (domain `"gi"`), mirroring the GTK message.
+      Verified by a forced `HAVE_GIR=0` build.
+
+### Rules
+- [x] Golden suite byte-exact throughout; module zero-impact when compiled out
+      (verified under both `HAVE_GIR=1` and a forced `HAVE_GIR=0` build).
+- [x] `make dev` (all binaries) green; `run_gi.sh` green (skips when absent).
+- [ ] Show diff, stop at the phase boundary. ✋ STOP.
+
+### Manual verification — coexistence guard (out of CI)
+Not golden-tested because this dev box has neither GTK3 (`HAVE_GTK=0`) nor the
+Gtk-4.0 typelib. To exercise it by hand (human or agent) once both toolkits are
+present:
+
+1. **Install both toolkits** (Ubuntu): `sudo apt-get install libgtk-3-dev
+   gir1.2-gtk-4.0 libgtk-4-1`. The GTK3 *dev* package makes `HAVE_GTK=1` so the
+   `gui` module compiles in; the Gtk-4.0 *typelib* lets `gi.require("Gtk","4.0")`
+   resolve. Then `make clean && make`. Confirm with `make -n | grep -o 'HAVE_GTK=1'`.
+
+2. **Direction A — gi loads GTK4 after the gui module (GTK3) is active:**
+   ```
+   load gui
+   load gi
+   gi.require("Gtk", "4.0")
+   ```
+   Run with `GBASIC_PATH=stdlib ./gbasic <file>` (gui resolves from stdlib).
+   Expected on stderr, nonzero exit:
+   `runtime error at <file>:3:1: GTK 3 (gui module) and GTK 4 (gi) cannot be used in the same process`
+
+3. **Direction B — the gui module (GTK3) loads after gi has taken GTK4:**
+   ```
+   load gi
+   gi.require("Gtk", "4.0")
+   load gui
+   ```
+   Expected: the same message, raised at the `load gui` line (`:3:1`), nonzero exit.
+
+Both directions share the guard string (domain `"gi"`). If either prints the
+message and exits nonzero, the guard is intact.
+
+---
+
 ## Deferred — NOT started this track (do not begin without a new go-ahead)
+
+### Dynamic property get/set hook + native `.property` / `.method()` syntax
+Prerequisite for **idiomatic GI sugar**. Today member access (`obj.field`) is
+hardcoded to `VALUE_RECORD` in eval (`AST_EXPR_FIELD` read path;
+`resolve_lvalue_ref`/`assign_lvalue` write path), and method-call receivers are
+limited to single-identifier record variables — there is no per-kind get/set
+dispatch hook. Routing a native object's `.property` get/set and `.method()` calls
+to C hooks requires: a getter branch in `AST_EXPR_FIELD`, a **setter callback**
+branch in `assign_lvalue` (note `resolve_lvalue_ref` returns a `Value*` slot and
+cannot express a setter), and `eval_call`/grammar work for chained/native-receiver
+methods. Once landed, the ergonomic `gi` layer (e.g. `win.title = "x"`,
+`win.present()`) can be written partly in gBASIC over the raw `gi.*` bridge.
+
+### gi.new construct-time properties — REQUIRED for real GTK4 use
+`gi.new(type)` currently calls `g_object_new(type, NULL)` — no construct-time
+properties. This is a hard blocker for real GTK4 programs, not a nicety: many core
+widgets have **construct-only** properties that can only be set at construction and
+never via `gi.set` afterward (e.g. `Gtk.ApplicationWindow.application`,
+`Gio.ListStore.item-type`, `Gio.SimpleAction.name`). Discovered concretely during
+Phase GI's tests-first: the planned `Gio.SimpleAction`/`Gio.ListStore` fixtures
+could not be constructed through the bare `gi.new`, forcing the switch to
+`Gio.Cancellable`. Proposed shape: accept trailing `(name, value)` pairs —
+`gi.new("Gtk.ApplicationWindow", "application", app)` — marshalled into a
+`g_object_new_with_properties` call using each property's `GParamSpec` value type
+(reuse `gi_value_to_gvalue`). Small, self-contained, and unblocks the idiomatic
+GTK4 layer.
 
 ### LSP v2 (deferred)
 Hover, completion, signature help, go-to-definition, document symbols, incremental
