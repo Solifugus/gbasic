@@ -1,0 +1,1 @@
+runtime error at tests/gi/negative_gi_new_unknown_prop.bas:3:1: gi.new: unknown property: nope

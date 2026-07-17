@@ -313,6 +313,60 @@ Design invariants (apply to every step):
       (GLib >= 2.80) and rebuild"` (domain `"gi"`), mirroring the GTK message.
       Verified by a forced `HAVE_GIR=0` build.
 
+### Follow-up — construct-time properties + namespace functions ✅ DONE
+The two deferred items that blocked real GTK4 applications (below), landed
+tests-first as a single follow-up. Golden suite byte-exact throughout; the one
+authorized rebaseline is `negative_gi_new_arity.err` (message change, `gi.new` is
+now variadic). valgrind clean (0 leaks / 0 errors) on the new + error paths.
+- [x] **`gi.new` construct-time properties** — `gi.new(type [, name, value]...)`
+      over `g_object_new_with_properties`. Each value is converted by the
+      property's `GParamSpec` type (looked up on a `g_type_class_ref`'d class
+      BEFORE construction) via the existing `gi_value_to_gvalue`; unknown property
+      / unconvertible value / non-string name / unpaired arg raises **before any
+      object is created**. Ref-sink + qdata-canonicalize exactly as the bare form.
+      On an early raise mid-pair, already-converted GValues are `g_value_unset` and
+      the class ref released — no leak (valgrind-verified, incl. `nready > 0`).
+      Closes the Phase-GI detour: `gi_construct_props_test` builds
+      `Gio.SimpleAction` with its construct-only `name`; `gi_construct_object_prop_test`
+      passes a GObject value (`Gio.BufferedInputStream` `base-stream`) and reads the
+      same canonical wrapper back (the `application`-property conversion, headless).
+- [x] **`gi.invoke("Ns.function", args…)`** — namespace-level free functions
+      (no receiver), resolved via `gi_repository_find_by_name` → `GIFunctionInfo`;
+      methods are rejected (`use gi.call`). Arg/return marshalling reuses a factored
+      `gi_invoke_callable` shared with `gi.call` (`gi.call`'s observable behavior is
+      unchanged — same error strings, guarded by the existing tests). Covered by
+      `gi_invoke_test` (`GLib.markup_escape_text`: borrowed UTF8 in, int64 in,
+      transfer-full UTF8 return).
+- [x] **Null passthrough for pointer/array params** (shared `gi_giarg_from_value`,
+      benefits both `gi.call` and `gi.invoke`): tags ARRAY/GLIST/GSLIST/GHASH/ERROR
+      accept `nothing` → NULL; any non-null container still raises (marshalling
+      deferred). Enables the canonical `gi.call(app, "run", 0, nothing)`.
+- [x] **`run_gi.sh` hardened**: exports `G_DEBUG=fatal-criticals` so any GLib
+      critical (e.g. a `G_IS_OBJECT` lifetime assertion) aborts and fails the suite.
+- [x] **Construct-time floating-ownership fix** (found via the display acceptance
+      run — the first GTK4 window vanished immediately). A construct property can
+      make an EXTERNAL owner adopt (sink) a widget's floating ref DURING
+      construction: `gi.new("Gtk.ApplicationWindow", "application", app)` adds the
+      window to the GtkApplication, which sinks it, so the object returns
+      NON-floating with its single ref owned by the app (hence
+      `gtk_application_window_new` is `transfer none`). `gi.new` was adopting that
+      ref as the wrapper's own, so the handler-local `win` wrapper's scope-exit
+      unref destroyed the app's window. Fix: in `gi_do_new`, when a freshly built
+      `G_TYPE_INITIALLY_UNOWNED` object comes back non-floating, take our OWN
+      `g_object_ref` instead of co-owning the external owner's ref. Diagnosed
+      empirically (C probe: window refcount went 1→destroyed; fix → 1→2→survives,
+      matching PyGObject's grefcount 2). Verified on a live display: the window now
+      survives `activate` and `run()` blocks. Headless regression
+      `gi_handler_survives_scope_test` models the accounting with
+      `Gio.Application`+`activate`+`SimpleAction` (external owner strong-refs a
+      handler-created object; it survives handler scope). valgrind clean.
+- [x] **Example promoted to the canonical idiom**: `examples/gi/gtk4_hello.bas` now
+      uses `Gtk.Application` (via `gi.new(..., "application-id", ...)`), `connect
+      "activate"`, a real `Gtk.ApplicationWindow` built with construct-time
+      `"application"`, and `gi.call(app, "run", 0, nothing)` — replacing all three
+      v1 workarounds. **Verified on a live display**: launches, the window survives
+      `activate`, the loop runs, no GLib criticals under `G_DEBUG=fatal-criticals`.
+
 ### Rules
 - [x] Golden suite byte-exact throughout; module zero-impact when compiled out
       (verified under both `HAVE_GIR=1` and a forced `HAVE_GIR=0` build).
@@ -366,19 +420,11 @@ cannot express a setter), and `eval_call`/grammar work for chained/native-receiv
 methods. Once landed, the ergonomic `gi` layer (e.g. `win.title = "x"`,
 `win.present()`) can be written partly in gBASIC over the raw `gi.*` bridge.
 
-### gi.new construct-time properties — REQUIRED for real GTK4 use
-`gi.new(type)` currently calls `g_object_new(type, NULL)` — no construct-time
-properties. This is a hard blocker for real GTK4 programs, not a nicety: many core
-widgets have **construct-only** properties that can only be set at construction and
-never via `gi.set` afterward (e.g. `Gtk.ApplicationWindow.application`,
-`Gio.ListStore.item-type`, `Gio.SimpleAction.name`). Discovered concretely during
-Phase GI's tests-first: the planned `Gio.SimpleAction`/`Gio.ListStore` fixtures
-could not be constructed through the bare `gi.new`, forcing the switch to
-`Gio.Cancellable`. Proposed shape: accept trailing `(name, value)` pairs —
-`gi.new("Gtk.ApplicationWindow", "application", app)` — marshalled into a
-`g_object_new_with_properties` call using each property's `GParamSpec` value type
-(reuse `gi_value_to_gvalue`). Small, self-contained, and unblocks the idiomatic
-GTK4 layer.
+### gi.new construct-time properties — ✅ DONE (Phase GI follow-up)
+Shipped as the trailing `(name, value)` pairs form
+(`gi.new("Gtk.ApplicationWindow", "application", app)`) over
+`g_object_new_with_properties`. Namespace-level free functions shipped alongside
+as `gi.invoke("Ns.function", args…)`. See **Phase GI → Follow-up** above.
 
 ### LSP v2 (deferred)
 Hover, completion, signature help, go-to-definition, document symbols, incremental

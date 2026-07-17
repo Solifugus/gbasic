@@ -12849,6 +12849,16 @@ static int gi_giarg_from_value(GITypeInfo *ti, Value v, GIArgument *arg) {
         }
         return ok;
     }
+    case GI_TYPE_TAG_ARRAY:
+    case GI_TYPE_TAG_GLIST:
+    case GI_TYPE_TAG_GSLIST:
+    case GI_TYPE_TAG_GHASH:
+    case GI_TYPE_TAG_ERROR:
+        /* Null passthrough only: `nothing` marshals to a NULL pointer (the
+         * canonical g_application_run(app, 0, NULL) argv case). Marshalling an
+         * actual container value stays deferred. */
+        if (v.kind == VALUE_NULL) { arg->v_pointer = NULL; return 1; }
+        return 0;
     default:
         return 0;
     }
@@ -12988,8 +12998,15 @@ static Value gi_do_require(AstExpr *expr) {
 }
 
 static Value gi_do_new(AstExpr *expr) {
-    if (expr->as.call.args.count != 1) {
-        return gi_raise("gi.new expects one argument");
+    /* gi.new(typeName [, propName, propValue]...) — trailing name/value pairs are
+     * construct-time properties (the only way to set construct-only props such as
+     * Gtk.ApplicationWindow.application or Gio.SimpleAction.name). */
+    size_t argc = expr->as.call.args.count;
+    if (argc == 0) {
+        return gi_raise("gi.new expects a type name");
+    }
+    if (argc % 2 == 0) {
+        return gi_raise("gi.new: each property name needs a value");
     }
     Value type_name = eval_expr(expr->as.call.args.items[0]);
     if (error_action_pending()) { value_free(type_name); return value_null(); }
@@ -13008,12 +13025,82 @@ static Value gi_do_new(AstExpr *expr) {
         value_free(type_name);
         return r;
     }
-    value_free(type_name);
-    GObject *obj = g_object_new(gtype, NULL);
-    if (!obj) {
-        return gi_raise("gi.new: object construction failed");
+
+    /* Convert each (name, value) pair to a GValue keyed by the property's own
+     * GParamSpec type, looked up on the class BEFORE construction. On any early
+     * raise we unset every GValue already converted and release the class ref, so
+     * the error path leaks nothing. `nready` bounds exactly the ready GValues. */
+    size_t npairs = (argc - 1) / 2;
+    GObjectClass *klass = g_type_class_ref(gtype);
+    const char **names = npairs ? calloc(npairs, sizeof(char *)) : NULL;
+    GValue *gvals = npairs ? calloc(npairs, sizeof(GValue)) : NULL;
+    Value *name_vals = npairs ? calloc(npairs, sizeof(Value)) : NULL;  /* keep name strings alive */
+    if (npairs && (!names || !gvals || !name_vals)) {
+        abort();
     }
-    return gi_canonical_wrap(obj, TRUE);   /* adopt the fresh (possibly floating) ref */
+    size_t nready = 0;
+    int failed = 0;
+    for (size_t i = 0; i < npairs && !failed; i++) {
+        Value nm = eval_expr(expr->as.call.args.items[1 + i * 2]);
+        if (error_action_pending()) { value_free(nm); failed = 1; break; }
+        if (nm.kind != VALUE_STRING) {
+            value_free(nm);
+            gi_raise("gi.new: property name must be a string");
+            failed = 1; break;
+        }
+        Value vv = eval_expr(expr->as.call.args.items[2 + i * 2]);
+        if (error_action_pending()) { value_free(nm); value_free(vv); failed = 1; break; }
+        GParamSpec *ps = g_object_class_find_property(klass, nm.as.string);
+        if (!ps) {
+            gi_raisef("gi.new: unknown property: %s", nm.as.string);
+            value_free(nm); value_free(vv);
+            failed = 1; break;
+        }
+        if (!gi_value_to_gvalue(vv, G_PARAM_SPEC_VALUE_TYPE(ps), &gvals[nready])) {
+            gi_raisef("gi.new: value not convertible for property: %s", nm.as.string);
+            value_free(nm); value_free(vv);
+            failed = 1; break;
+        }
+        value_free(vv);                 /* the GValue holds its own copy/ref now */
+        name_vals[nready] = nm;          /* names[] borrows this string until construction */
+        names[nready] = nm.as.string;
+        nready++;
+    }
+
+    Value out;
+    if (failed) {
+        out = value_null();             /* the raise already fired above */
+    } else {
+        GObject *obj = g_object_new_with_properties(gtype, (guint)nready, names, gvals);
+        if (!obj) {
+            out = gi_raise("gi.new: object construction failed");
+        } else {
+            /* Normally a freshly built GInitiallyUnowned (widget) comes back
+             * floating and gi_canonical_wrap sinks it — the wrapper becomes its
+             * owner. But a construct property can make an EXTERNAL owner adopt
+             * (sink) the floating ref during construction: e.g. a construct-time
+             * "application" adds the window to the GtkApplication, which sinks it,
+             * so the object returns NON-floating with its single ref owned by the
+             * application (this is why gtk_application_window_new is transfer-none).
+             * Adopting that ref as the wrapper's own would make releasing the
+             * wrapper at scope exit destroy the application's window. Take our own
+             * independent ref instead, so both owners are accounted. */
+            if (!g_object_is_floating(obj) &&
+                G_TYPE_CHECK_INSTANCE_TYPE(obj, G_TYPE_INITIALLY_UNOWNED)) {
+                g_object_ref(obj);
+            }
+            out = gi_canonical_wrap(obj, TRUE);   /* adopt the fresh (possibly floating) ref */
+        }
+    }
+
+    for (size_t i = 0; i < nready; i++) {
+        g_value_unset(&gvals[i]);
+        value_free(name_vals[i]);
+    }
+    free(names); free(gvals); free(name_vals);
+    g_type_class_unref(klass);
+    value_free(type_name);
+    return out;
 }
 
 static Value gi_do_get(AstExpr *expr) {
@@ -13085,6 +13172,93 @@ static Value gi_do_set(AstExpr *expr) {
     return value_null();
 }
 
+/* Marshal and invoke a resolved GIFunctionInfo. `receiver` is the instance for a
+ * method (prepended iff the callable is flagged a method) or NULL for a free
+ * function. Arguments are read from `expr` starting at `first_arg`; `ctx` prefixes
+ * error messages ("gi.call" / "gi.invoke") and `disp_name` names the callable. The
+ * caller retains ownership of `finfo`, `receiver`, and its wrapper values (argument
+ * strings are borrowed by GIArgument for the duration of the invoke). */
+static Value gi_invoke_callable(GIFunctionInfo *finfo, GObject *receiver,
+                                AstExpr *expr, size_t first_arg,
+                                const char *ctx, const char *disp_name) {
+    GICallableInfo *cinfo = (GICallableInfo *)finfo;
+    gboolean is_method = (gi_function_info_get_flags(finfo) & GI_FUNCTION_IS_METHOD) != 0;
+    unsigned int ndecl = gi_callable_info_get_n_args(cinfo);
+    size_t provided = expr->as.call.args.count - first_arg;
+    if (provided != ndecl) {
+        char detail[192];
+        snprintf(detail, sizeof(detail), "%s: %s expects %u argument(s)", ctx, disp_name, ndecl);
+        runtime_error_raise(detail, 6001, "gi");
+        return value_null();
+    }
+
+    /* Evaluate the arguments (kept live until after invoke; strings are borrowed
+     * by GIArgument). */
+    Value *argvals = provided ? calloc(provided, sizeof(Value)) : NULL;
+    GIArgument *in_args = calloc(ndecl + 1, sizeof(GIArgument));
+    if ((provided && !argvals) || !in_args) {
+        abort();
+    }
+    size_t n_in = 0;
+    int failed = 0;
+    if (receiver && is_method) {
+        in_args[n_in++].v_pointer = receiver;
+    }
+    for (unsigned int i = 0; i < ndecl && !failed; i++) {
+        argvals[i] = eval_expr(expr->as.call.args.items[first_arg + i]);
+        if (error_action_pending()) { failed = 1; break; }
+        GIArgInfo *ai = gi_callable_info_get_arg(cinfo, i);
+        if (gi_arg_info_get_direction(ai) != GI_DIRECTION_IN) {
+            char detail[192];
+            snprintf(detail, sizeof(detail), "%s: %s has an unsupported out/inout argument", ctx, disp_name);
+            gi_base_info_unref(ai);
+            runtime_error_raise(detail, 6001, "gi");
+            failed = 1;
+            break;
+        }
+        GITypeInfo *ti = gi_arg_info_get_type_info(ai);
+        int ok = gi_giarg_from_value(ti, argvals[i], &in_args[n_in]);
+        gi_base_info_unref(ti);
+        gi_base_info_unref(ai);
+        if (!ok) {
+            char detail[192];
+            snprintf(detail, sizeof(detail), "%s: unsupported argument type for method: %s", ctx, disp_name);
+            runtime_error_raise(detail, 6001, "gi");
+            failed = 1;
+            break;
+        }
+        n_in++;
+    }
+
+    Value out = value_null();
+    if (!failed) {
+        GIArgument retval;
+        memset(&retval, 0, sizeof(retval));
+        GError *ierr = NULL;
+        if (!gi_function_info_invoke(finfo, in_args, n_in, NULL, 0, &retval, &ierr)) {
+            char detail[256];
+            snprintf(detail, sizeof(detail), "%s: %s: %s", ctx, disp_name,
+                     ierr && ierr->message ? ierr->message : "call failed");
+            if (ierr) g_error_free(ierr);
+            runtime_error_raise(detail, 6001, "gi");
+        } else {
+            GITypeInfo *rti = gi_callable_info_get_return_type(cinfo);
+            GITransfer rtransfer = gi_callable_info_get_caller_owns(cinfo);
+            if (!gi_value_from_giarg(rti, rtransfer, &retval, &out)) {
+                out = value_null();   /* unsupported return type -> nothing */
+            }
+            gi_base_info_unref(rti);
+        }
+    }
+
+    for (size_t i = 0; i < provided; i++) {
+        value_free(argvals[i]);
+    }
+    free(argvals);
+    free(in_args);
+    return out;
+}
+
 static Value gi_do_call(AstExpr *expr) {
     size_t argc = expr->as.call.args.count;
     if (argc < 2) {
@@ -13135,81 +13309,49 @@ static Value gi_do_call(AstExpr *expr) {
         return r;
     }
 
-    GICallableInfo *cinfo = (GICallableInfo *)finfo;
-    gboolean is_method = (gi_function_info_get_flags(finfo) & GI_FUNCTION_IS_METHOD) != 0;
-    unsigned int ndecl = gi_callable_info_get_n_args(cinfo);
-    size_t provided = argc - 2;
-    if (provided != ndecl) {
-        char detail[160];
-        snprintf(detail, sizeof(detail), "%s expects %u argument(s)", mv.as.string, ndecl);
-        gi_base_info_unref(finfo);
-        Value r = gi_raisef("gi.call: %s", detail);
-        value_free(ov); value_free(mv);
-        return r;
-    }
-
-    /* Evaluate the method arguments (kept live until after invoke; strings are
-     * borrowed by GIArgument). */
-    Value *argvals = provided ? calloc(provided, sizeof(Value)) : NULL;
-    GIArgument *in_args = calloc(ndecl + 1, sizeof(GIArgument));
-    if ((provided && !argvals) || !in_args) {
-        abort();
-    }
-    size_t n_in = 0;
-    int failed = 0;
-    if (is_method) {
-        in_args[n_in++].v_pointer = obj;
-    }
-    for (unsigned int i = 0; i < ndecl && !failed; i++) {
-        argvals[i] = eval_expr(expr->as.call.args.items[2 + i]);
-        if (error_action_pending()) { failed = 1; break; }
-        GIArgInfo *ai = gi_callable_info_get_arg(cinfo, i);
-        if (gi_arg_info_get_direction(ai) != GI_DIRECTION_IN) {
-            gi_base_info_unref(ai);
-            gi_raisef("gi.call: %s has an unsupported out/inout argument", mv.as.string);
-            failed = 1;
-            break;
-        }
-        GITypeInfo *ti = gi_arg_info_get_type_info(ai);
-        int ok = gi_giarg_from_value(ti, argvals[i], &in_args[n_in]);
-        gi_base_info_unref(ti);
-        gi_base_info_unref(ai);
-        if (!ok) {
-            gi_raisef("gi.call: unsupported argument type for method: %s", mv.as.string);
-            failed = 1;
-            break;
-        }
-        n_in++;
-    }
-
-    Value out = value_null();
-    if (!failed) {
-        GIArgument retval;
-        memset(&retval, 0, sizeof(retval));
-        GError *ierr = NULL;
-        if (!gi_function_info_invoke(finfo, in_args, n_in, NULL, 0, &retval, &ierr)) {
-            char detail[256];
-            snprintf(detail, sizeof(detail), "%s: %s", mv.as.string,
-                     ierr && ierr->message ? ierr->message : "call failed");
-            if (ierr) g_error_free(ierr);
-            gi_raisef("gi.call: %s", detail);
-        } else {
-            GITypeInfo *rti = gi_callable_info_get_return_type(cinfo);
-            GITransfer rtransfer = gi_callable_info_get_caller_owns(cinfo);
-            if (!gi_value_from_giarg(rti, rtransfer, &retval, &out)) {
-                out = value_null();   /* unsupported return type -> nothing */
-            }
-            gi_base_info_unref(rti);
-        }
-    }
-
-    for (size_t i = 0; i < provided; i++) {
-        value_free(argvals[i]);
-    }
-    free(argvals);
-    free(in_args);
+    Value out = gi_invoke_callable(finfo, obj, expr, 2, "gi.call", mv.as.string);
     gi_base_info_unref(finfo);
     value_free(ov); value_free(mv);
+    return out;
+}
+
+/* gi.invoke("Namespace.function", args...) — call a namespace-level free function
+ * that has no receiver (e.g. Gtk.init, GLib.markup_escape_text). Methods (which
+ * need an instance) are rejected; use gi.call for those. */
+static Value gi_do_invoke(AstExpr *expr) {
+    size_t argc = expr->as.call.args.count;
+    if (argc < 1) {
+        return gi_raise("gi.invoke expects a qualified function name");
+    }
+    Value qv = eval_expr(expr->as.call.args.items[0]);
+    if (error_action_pending()) { value_free(qv); return value_null(); }
+    if (qv.kind != VALUE_STRING) {
+        value_free(qv);
+        return gi_raise("gi.invoke expects a qualified function name string");
+    }
+    char ns[128];
+    const char *fn = NULL;
+    if (!gi_split_first(qv.as.string, ns, sizeof(ns), &fn)) {
+        Value r = gi_raisef("gi.invoke: expected Namespace.function, got: %s", qv.as.string);
+        value_free(qv);
+        return r;
+    }
+    GIBaseInfo *info = gi_repository_find_by_name(gi_repo(), ns, fn);
+    if (!info || !GI_IS_FUNCTION_INFO(info)) {
+        if (info) gi_base_info_unref(info);
+        Value r = gi_raisef("gi.invoke: unknown function: %s", qv.as.string);
+        value_free(qv);
+        return r;
+    }
+    if (gi_function_info_get_flags((GIFunctionInfo *)info) & GI_FUNCTION_IS_METHOD) {
+        gi_base_info_unref(info);
+        Value r = gi_raisef("gi.invoke: %s is a method; use gi.call", qv.as.string);
+        value_free(qv);
+        return r;
+    }
+    Value out = gi_invoke_callable((GIFunctionInfo *)info, NULL, expr, 1, "gi.invoke", fn);
+    gi_base_info_unref(info);
+    value_free(qv);
     return out;
 }
 
@@ -13401,6 +13543,7 @@ static Value gi_eval_call(AstExpr *expr) {
     if (strcmp(name, "get") == 0)         return gi_do_get(expr);
     if (strcmp(name, "set") == 0)         return gi_do_set(expr);
     if (strcmp(name, "call") == 0)        return gi_do_call(expr);
+    if (strcmp(name, "invoke") == 0)      return gi_do_invoke(expr);
     if (strcmp(name, "connect") == 0)     return gi_do_connect(expr);
     if (strcmp(name, "disconnect") == 0)  return gi_do_disconnect(expr);
     if (strcmp(name, "enum") == 0)        return gi_do_enum(expr);

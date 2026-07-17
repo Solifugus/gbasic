@@ -4,10 +4,10 @@ Programs written against the raw `gi.*` GObject-Introspection bridge (see
 PLAN.md "Phase GI"). These are **manual** demos — like `examples/gui/`, they are
 not in the golden suite.
 
-## `gtk4_hello.bas` — first GTK4 program on gi.*
+## `gtk4_hello.bas` — GTK4 in the canonical idiom on gi.*
 
-A window, a label + a button, a `clicked` signal, and the main loop, done purely
-through `gi.new` / `gi.set` / `gi.call` / `gi.connect` / `gi.enum` / `gi.main`.
+A window, a label + a button, a `clicked` signal, and the application's own main
+loop, done through `gi.new` / `gi.set` / `gi.call` / `gi.connect` / `gi.enum`.
 
 Requires a GTK4 runtime, its typelib, and a display:
 
@@ -16,27 +16,28 @@ sudo apt-get install gir1.2-gtk-4.0 libgtk-4-1      # Debian/Ubuntu
 ./gbasic examples/gi/gtk4_hello.bas
 ```
 
-**Status: runs.** Verified on GTK4 4.22 with a display — opens the window and
-enters the event loop with no GTK criticals. (Finding a bug on the way: `gi.call`
-now walks parent classes, so inherited methods like `Gio.Application.register`
-resolve; regression: `tests/gi/gi_inherited_method_test.bas`.)
+This is the **manual acceptance test** for the two follow-up bridge items. It uses
+the real `GtkApplication` idiom, not the earlier v1 workarounds:
 
-It leans on three v1-bridge workarounds (all tracked as deferred items in
-PLAN.md):
+- **Construct-time properties.** The window is a genuine `Gtk.ApplicationWindow`
+  built with its construct-only `application` property —
+  `gi.new("Gtk.ApplicationWindow", "application", app)` — set at construction, the
+  only place GTK allows it. (Earlier drafts fell back to a plain `Gtk.Window` +
+  `add_window`.)
+- **The application drives its own loop.** `gi.call(app, "run", 0, nothing)`:
+  `run` emits `startup` (which runs `gtk_init` for us) and then `activate`, and
+  blocks until the last window closes. The `argv` array is passed as `nothing`,
+  which the bridge marshals to a NULL pointer (argc `0`). No separate
+  `register()` / `gi.main()` dance, and no explicit `gi.quit` — closing the last
+  window quits `run` on its own.
 
-1. **`gtk_init` has no direct call path** (no namespace-function support yet), so
-   GTK is initialised by `gi.call(app, "register", null)` — registering a
-   `Gtk.Application` drives GApplication's `startup`, whose GtkApplication handler
-   calls `gtk_init()`.
-2. **`gi.new` can't set construct-only properties yet**, so we use a plain
-   `Gtk.Window` + `gi.call(app, "add_window", win)` instead of
-   `Gtk.ApplicationWindow` (whose `application` is construct-only).
-3. **`GApplication.run` needs an `argv` array** the bridge can't marshal, so the
-   program drives its own loop with `gi.main()` / `gi.quit()`.
+The window is created inside the `activate` handler, per the `GApplication`
+contract. The `clicked` handler mutates its own `source` button, so it needs no
+cross-scope widget reference.
 
-If a real run shows `register` does not initialise GTK, the fix is the deferred
-"namespace/global function calls" bridge item (to call `Gtk.init` directly) or
-`GApplication.run` argv marshalling — noted in PLAN.md.
+For a namespace-level free function with no receiver (e.g. `Gtk.init`,
+`GLib.markup_escape_text`), use `gi.invoke("Namespace.function", args...)` — see
+`tests/gi/gi_invoke_test.bas`.
 
 ## `calculator.bas` — a working GTK4 calculator
 

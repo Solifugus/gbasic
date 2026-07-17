@@ -1,0 +1,1 @@
+runtime error at tests/gi/negative_gi_new_unpaired.bas:3:1: gi.new: each property name needs a value
