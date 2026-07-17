@@ -1013,6 +1013,18 @@ static GQuark gi_wrapper_quark(void) {
     }
     return quark;
 }
+
+/* Weak-ref callback: fires when the underlying GObject is finalized out from under
+ * us — which GTK does to widgets when their toplevel is destroyed, even though we
+ * hold a strong ref through it. Once this runs, `obj` is a dangling pointer, so we
+ * null it and mark the wrapper closed; gobject_release then skips the (now illegal)
+ * qdata/unref calls instead of crashing on freed memory. */
+static void gi_wrapper_weak_notify(gpointer data, GObject *where_the_object_was) {
+    (void)where_the_object_was;
+    GObjectValue *handle = data;
+    handle->obj = NULL;
+    handle->closed = 1;
+}
 #endif
 
 /* Refcount release: last live Value drops the qdata link and the single strong
@@ -1025,8 +1037,10 @@ static void gobject_release(GObjectValue *handle) {
     if (--handle->ref_count == 0) {
 #if HAVE_GIR
         if (!handle->closed && handle->obj) {
-            /* Sever the canonical link before unref so a later wrapping of the same
-             * address can never resurrect this freed wrapper. */
+            /* Remove our weak-ref before the strong unref so the notify above never
+             * fires on a handle we are about to free, then sever the canonical link
+             * so a later wrapping of the same address can't resurrect this wrapper. */
+            g_object_weak_unref(handle->obj, gi_wrapper_weak_notify, handle);
             g_object_set_qdata(handle->obj, gi_wrapper_quark(), NULL);
             g_object_unref(handle->obj);
         }
@@ -12640,6 +12654,9 @@ static Value gi_canonical_wrap(GObject *obj, gboolean have_ref) {
     handle->ref_count = 1;
     handle->closed = 0;
     g_object_set_qdata(obj, gi_wrapper_quark(), handle);
+    /* Learn if the toolkit finalizes this object out-of-band (e.g. a widget when
+     * its window is destroyed) so a later release can't touch a dangling pointer. */
+    g_object_weak_ref(obj, gi_wrapper_weak_notify, handle);
     return value_gobject(handle);
 }
 
@@ -13091,8 +13108,26 @@ static Value gi_do_call(AstExpr *expr) {
         value_free(ov); value_free(mv);
         return r;
     }
-    GIFunctionInfo *finfo = gi_object_info_find_method_using_interfaces(
-        (GIObjectInfo *)base, mv.as.string, NULL);
+    /* Walk the class hierarchy: find_method_using_interfaces searches a class's own
+     * methods and the interfaces it implements, but NOT its ancestors, so an
+     * inherited method (e.g. Gio.Application.register on a Gtk.Application) is only
+     * found by climbing parents. Each level still searches that level's interfaces. */
+    GIFunctionInfo *finfo = NULL;
+    GIObjectInfo *cur = (GIObjectInfo *)base;
+    int cur_owned = 0;   /* `base` is released separately below; parents are owned */
+    while (cur) {
+        finfo = gi_object_info_find_method_using_interfaces(cur, mv.as.string, NULL);
+        GIObjectInfo *parent = gi_object_info_get_parent(cur);
+        if (cur_owned) {
+            gi_base_info_unref(cur);
+        }
+        if (finfo) {
+            if (parent) gi_base_info_unref(parent);
+            break;
+        }
+        cur = parent;
+        cur_owned = 1;
+    }
     gi_base_info_unref(base);
     if (!finfo) {
         Value r = gi_raisef("gi.call: unknown method: %s", mv.as.string);

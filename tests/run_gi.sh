@@ -22,6 +22,7 @@ positive_cases=(
     gi_property_test
     gi_enum_test
     gi_transfer_test
+    gi_inherited_method_test
     gi_handler_error_test
 )
 
