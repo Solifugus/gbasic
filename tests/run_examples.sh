@@ -66,9 +66,12 @@ examples=(
     hex_literal_test.bas
     stats_frame_test.bas
     type_builtin_test.bas
+    conversion_builtin_test.bas
+    count_builtin_test.bas
     string_concat_test.bas
     parse_test.gb
     record_test.gb
+    record_helpers_test.bas
     datetime_test.gb
     datetime_exact_comparison_test.bas
     datetime_lens_test.bas
