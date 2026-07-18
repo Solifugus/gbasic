@@ -773,6 +773,16 @@ void eval_set_source_path(const char *path) {
     root_source_path = path ? copy_string(path) : NULL;
 }
 
+/* Command-line arguments after the script path, bound to a `program` block's
+ * declared parameter. Borrowed from argv; not owned/freed here. */
+static char *const *program_args = NULL;
+static size_t program_arg_count = 0;
+
+void eval_set_program_args(char *const *items, size_t count) {
+    program_args = items;
+    program_arg_count = count;
+}
+
 static Value value_null(void) {
     Value value = {0};
     value.kind = VALUE_NULL;
@@ -18563,6 +18573,25 @@ int eval_program(AstStmtList program) {
          * them so the parent resolves its own function values and a child can too
          * (the internal name is deterministic across the program). */
         register_method_bodies_in(program);
+
+        /* Bind the program block's declared parameter (conventionally `args`) to
+         * the command-line arguments after the script path: a 0-based array of
+         * strings, empty when none were passed. current_env is the global frame
+         * here (no frame is pushed for a program block), so the block body reads
+         * it as an ordinary variable. */
+        if (program_block->as.program.args.count > 0) {
+            Value *items = program_arg_count
+                ? malloc(sizeof(Value) * program_arg_count)
+                : NULL;
+            if (program_arg_count && !items) {
+                abort();
+            }
+            for (size_t i = 0; i < program_arg_count; i++) {
+                items[i] = value_string(program_args[i]);
+            }
+            env_set(program_block->as.program.args.items[0],
+                    value_array(items, program_arg_count));
+        }
     }
 
     EvalResult result = runtime_stopped

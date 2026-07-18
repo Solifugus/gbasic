@@ -198,6 +198,7 @@ examples=(
     builtin_test.bas
     builtin_override_test.bas
     program_test.bas
+    args_test.bas
     library_test.bas
     load_test.bas
     load_from_test.bas
@@ -245,6 +246,27 @@ for example in "${examples[@]}"; do
         exit "$status"
     fi
 done
+
+# Program arguments after the script path (multi-arg case; the zero-arg case runs
+# in the loop above via args_test.bas). Invoked explicitly so trailing args reach
+# the program.
+args_multi_stdout="$(mktemp)"
+if ./gbasic examples/args_test.bas alpha beta gamma >"$args_multi_stdout" 2>/dev/null; then
+    if [[ "$(cat "$args_multi_stdout")" == "$(cat examples/args_multi_test.out)" ]]; then
+        printf 'PASS %s\n' "examples/args_test.bas alpha beta gamma"
+    else
+        printf 'FAIL %s\n' "examples/args_test.bas alpha beta gamma"
+        diff -u examples/args_multi_test.out "$args_multi_stdout" || true
+        rm -f "$args_multi_stdout"
+        exit 1
+    fi
+else
+    status=$?
+    printf 'FAIL %s\n' "examples/args_test.bas alpha beta gamma"
+    rm -f "$args_multi_stdout"
+    exit "$status"
+fi
+rm -f "$args_multi_stdout"
 
 help_file="$(mktemp)"
 if ./gbasic --help >"$help_file"; then

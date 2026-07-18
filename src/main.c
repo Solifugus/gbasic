@@ -795,6 +795,8 @@ int main(int argc, char **argv) {
     int json_diagnostics = 0;
     const char *add_loads_keyword = NULL;
     const char *path = NULL;
+    char *const *program_args = NULL;
+    size_t program_arg_count = 0;
 
     if (argc >= 4 && strcmp(argv[1], "--actor") == 0) {
         return run_actor_mode(argc, argv);
@@ -806,8 +808,6 @@ int main(int argc, char **argv) {
     } else if (argc == 2 && strcmp(argv[1], "--version") == 0) {
         printf("gBASIC 0.1.0-dev\n");
         return 0;
-    } else if (argc == 2) {
-        path = argv[1];
     } else if (argc == 3 && strcmp(argv[1], "--ast") == 0) {
         ast_only = 1;
         path = argv[2];
@@ -823,8 +823,15 @@ int main(int argc, char **argv) {
     } else if (argc == 3 && strcmp(argv[1], "--json-diagnostics") == 0) {
         json_diagnostics = 1;
         path = argv[2];
+    } else if (argc >= 2 && argv[1][0] != '-') {
+        /* Run mode: FILE followed by zero or more program arguments. The args
+         * after the script path bind to a `program NAME(param)` block's
+         * parameter (see eval_set_program_args). */
+        path = argv[1];
+        program_args = &argv[2];
+        program_arg_count = (size_t)(argc - 2);
     } else {
-        fprintf(stderr, "usage: %s [--ast|--tokens|--add-loads|--add-uses|--json-diagnostics] FILE\n", argv[0]);
+        fprintf(stderr, "usage: %s [--ast|--tokens|--add-loads|--add-uses|--json-diagnostics] FILE [args...]\n", argv[0]);
         fprintf(stderr, "try '%s --help'\n", argv[0]);
         return 2;
     }
@@ -858,6 +865,7 @@ int main(int argc, char **argv) {
         exit_status = add_loads_mode(path, source, program, add_loads_keyword);
     } else {
         eval_set_source_path(path);
+        eval_set_program_args(program_args, program_arg_count);
         /* Install the sink so a STOP-mode runtime error is collected rather than
          * printed mid-run, then drained below in the exact legacy format. The
          * error is terminal, so it stays the last line on stderr. */
