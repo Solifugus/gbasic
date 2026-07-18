@@ -1,3 +1,1 @@
-remove_key: second argument must be a string
-Action: invalid argument type
-Error code: 1003
+runtime error at tests/negative_remove_key_key_type.bas:1:1: remove_key: second argument must be a string

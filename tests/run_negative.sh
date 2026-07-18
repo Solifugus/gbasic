@@ -233,6 +233,32 @@ cases=(
     negative_random_int_arity
     negative_random_int_order
     negative_random_int_fractional
+    # Rebaselined + wired in D0.5 (previously orphaned with the retired 3-line
+    # "Error code: N" format; re-captured to the current single-line format).
+    negative_count_nothing
+    negative_count_unknown
+    negative_count_number
+    negative_count_boolean_true
+    negative_count_boolean_false
+    negative_count_arity_zero
+    negative_count_arity_two
+    negative_repeat_type
+    negative_repeat_negative
+    negative_repeat_fractional
+    negative_replace_type
+    negative_replace_empty_search
+    negative_starts_with_type
+    negative_ends_with_type
+    negative_has_key_type
+    negative_has_record_type
+    negative_keys_type
+    negative_values_type
+    negative_remove_key_record_type
+    negative_remove_key_key_type
+    negative_number_conversion
+    negative_boolean_conversion
+    negative_array_conversion
+    negative_record_conversion
 )
 
 for name in "${cases[@]}"; do

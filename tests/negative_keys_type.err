@@ -1,3 +1,1 @@
-keys: argument must be a record
-Action: invalid argument type
-Error code: 1003
+runtime error at tests/negative_keys_type.bas:1:1: keys: argument must be a record

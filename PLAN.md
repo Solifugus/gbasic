@@ -406,6 +406,95 @@ message and exits nonzero, the guard is intact.
 
 ---
 
+## Pre-Studio audit + documentation system (multi-phase effort)
+
+Governance: **one phase per session, stop at each boundary for review.** Golden
+suite byte-exact throughout; any behavioral fix that would change a golden STOPS
+for approval before it is made. Single source of truth: nothing duplicated
+between `docs/` (human) and `docs/ai/` (agent layer).
+
+### Phase D0 — Audit (read-only, no changes) ✅ ACCEPTED
+Report only; make no code/test changes. Deliverables:
+1. Classify every runnable source (`examples/`, `tests/` fixtures, `gi` examples)
+   as **current / stale / broken / untested** (runs in no wired suite) against the
+   current `gbasic`.
+2. Coverage gaps: language features and builtin libraries with no example and/or
+   no wired test — listed by module.
+3. Surprise harvest: every behavior that contradicts QBasic/VB/common-BASIC
+   intuition, every quirk noted in PLAN.md or code comments, every undocumented
+   behavior determined by experiment — each with a minimal snippet showing actual
+   behavior. Feeds the D3 unlearning file.
+Output: written report + proposed fix list. If the fix list is large, propose
+splitting the fixes into their own phase rather than folding them into D1.
+
+D0 fix list accepted and split into two fix phases before D1:
+
+### Phase D0.5 — Fixture hygiene (Group A, no behavior changes) ✅ DONE (pending review)
+Purely additive/mechanical; no interpreter behavior changed; goldens stay
+byte-exact.
+1. Rebaselined the 24 orphaned negative fixtures that carried the retired 3-line
+   `Error code: N` format to the current single-line `runtime error at …` format,
+   and wired all 24 into `tests/run_negative.sh` (247 PASS / 0 FAIL). Old codes
+   (all `1003`) harvested first to `docs/ai/_scratch/D3_error_codes_harvest.md`
+   (D3 ERRORS.md seed). NB: the 15 crypto/sqlite fixtures that looked orphaned are
+   already wired in the gated `run_crypto.sh`/`run_sqlite.sh` — left as-is.
+2. Deleted dead orphans: `examples/lexer_test.gb` (stale v0.1 grammar),
+   `examples/error_fatal_test.gb` (1-line scratch probe), `examples/libs/math.bas`
+   (redundant with the inline `library math` in `load_test.bas`; loaded by nothing).
+3. Moved deliberate playgrounds/probes to `examples/scratch/` (excluded from all
+   suites, README added): `webclient_playground.bas` + the three `exploratory_*`
+   probes. No runner globs `tests/`/`examples/`, so scratch never auto-runs.
+
+### Phase D0.6 — Reviewed behavior changes (Group B) — PLANNED (next phase)
+Behavior changes with deliberately reviewed golden updates; **separate commit per
+item**. Stops at boundary.
+- **B4** `program main(args)`: bind `args` to the array of strings after the
+  script path; CLI accepts trailing args. Fix `examples/llm/smoke_ask.bas` as the
+  fixture. Additive.
+- **B5** Top-level `goto`/`gosub`: promote the current stdout warning to a hard
+  structured error; fix `README` accordingly.
+- **B6** GUI/`gi` examples: wire a parse-only headless smoke into the suite; add
+  READMEs marking them manual display tests. No display virtualization.
+
+### Phase D1 — Infrastructure (small, mechanical)
+1. `DOGFOOD.md` at repo root — append-only friction log; entry template
+   (`## <date> — [human|CC|Codex] — while: <context>` / Type / Severity / What /
+   Workaround). Seed with the D0 quirks as first entries.
+2. `docs/ai/START-HERE.md` — manifest: reading order and purpose (unlearning file
+   first, then cookbook, error catalog, pointer to the shared human reference).
+   Placeholder files for the three, filled in D3.
+3. `AGENTS.md` (Codex entry point) + update `CLAUDE.md` so both carry IDENTICAL
+   house rules: (a) before writing gBASIC code, read `docs/ai/START-HERE.md` and
+   follow it; (b) if you work around a gBASIC limitation/surprise, append a
+   `DOGFOOD.md` entry before continuing; (c) evidence standards: tests-first,
+   byte-exact goldens, measure don't assume, report what you could not verify.
+   Keep both entry files thin — build, test, rules, pointers; no duplicated
+   language content.
+
+### Phase D2 — Human documentation sweep
+Survey `docs/` for accuracy against current behavior; fix stale content; ensure
+the shared language reference covers every construct and builtin library at
+reference (not tutorial) depth. Propose structure before rewriting anything large.
+
+### Phase D3 — AI documentation layer (content)
+1. `docs/ai/UNLEARN.md` — "gBASIC is not QBasic/VB": every D0 surprise, bluntly
+   stated, each with a minimal correct-behavior snippet; include negative
+   knowledge (features other BASICs have that gBASIC lacks + the gBASIC
+   alternative).
+2. `docs/ai/ERRORS.md` — diagnostic-code / runtime-error-domain catalog
+   (code → meaning → typical cause → fix), generated from source where possible;
+   state how derived and how to regenerate. Seed from
+   `docs/ai/_scratch/D3_error_codes_harvest.md`. **Explicit task (D0 surprise
+   S13):** read the `eval.c` error path and pin down the exact `on error resume
+   next` resume semantics — black-box tests showed local-resume in one case and
+   whole-statement abandonment in another; the true model must come from source,
+   not experiment. Correct the `gbasic_error_handling_gotcha` memory once pinned.
+3. `docs/ai/COOKBOOK.md` — one blessed idiom per major construct and module; every
+   snippet is a runnable file under `examples/`/`tests/` that the cookbook
+   references (never inline untested code).
+4. Executable-docs gate: a runner that executes every doc code sample in the test
+   suite so docs cannot rot. Add to CLAUDE.md's test list and `make dev`.
+
 ## Deferred — NOT started this track (do not begin without a new go-ahead)
 
 ### Dynamic property get/set hook + native `.property` / `.method()` syntax
