@@ -483,10 +483,25 @@ or golden changes.
    Keep both entry files thin — build, test, rules, pointers; no duplicated
    language content.
 
-### Phase D2 — Human documentation sweep
+### Phase D2 — Human documentation sweep — ✅ DONE (pending review)
 Survey `docs/` for accuracy against current behavior; fix stale content; ensure
 the shared language reference covers every construct and builtin library at
 reference (not tutorial) depth. Propose structure before rewriting anything large.
+
+Done (TOC approved before writing; reference voice; each step its own commit):
+- Baseline: adopted the three pre-existing doc edits (CLAUDE.md, README.md,
+  reference.md) after review.
+- Accuracy: documented `args` binding (B4) + `gbasic FILE [args...]`; noted
+  top-level `goto`/`gosub` is a runtime error (B5).
+- Front matter (reference-not-tutorial + START-HERE pointer) and a one-sentence
+  diagnostic-position spec (1-based byte columns, inclusive/exclusive spans, →
+  include/diagnostics.h + docs/ai/ERRORS.md).
+- New sections: XML, GTK 3 GUI (concise, status-honest, steers to gi),
+  Cryptography, First-Class Functions; Actors promoted to a top-level section.
+- Regrouped the Core Builtins catch-all into named families (builtin set verified
+  byte-identical); added a catalog-only Standard Library section (one line +
+  pointer per stdlib toolkit, no API duplication).
+Single source of truth held throughout; full battery green (15/15).
 
 ### Phase D3 — AI documentation layer (content)
 1. `docs/ai/UNLEARN.md` — "gBASIC is not QBasic/VB": every D0 surprise, bluntly
