@@ -1731,6 +1731,40 @@ Directory functions:
 
 Directory entries are records with `name`, `path`, and `type`.
 
+## Standard Library
+
+Beyond the native modules and core builtins, gBASIC ships a set of **pure-gBASIC**
+toolkits under `stdlib/*.bas`, loaded by name (`load stats`) with `GBASIC_PATH`
+pointing at the library directory (or resolved from the install path after
+`make install`). This is a catalog; each toolkit's full API lives in its own
+document, which is the single source of truth for it — the entries below only say
+what each is and where to read it.
+
+General-purpose:
+
+- `dates` — calendar/date-arithmetic helpers over the built-in date/time values.
+- `matrix` — minimal vector/matrix primitives (`docs/statistics_design.md` §8).
+- `frame` — a structural data-frame layer (`docs/statistics_design.md` §4).
+- `stats` — higher-level statistical compositions built on `matrix`/`frame`
+  (`docs/statistics_design.md`; worked walk-throughs in
+  `docs/cookbook_social_behavioral.md` and `docs/cookbook_econometrics_finance.md`).
+- `crypto` — ergonomic cryptography compositions over the crypto builtins
+  (see [Cryptography](#cryptography) and `docs/crypto_design.md`).
+- `llm` — a chat-completion client (`docs/llm_design.md`).
+- `gui` — the declarative layer for the experimental GTK 3 `gui` module
+  (`docs/gui_design.md`).
+
+EDGAR / SEC-filings suite (governed by `docs/edgar_design.md`, with
+`docs/edgar_reference.md` and `docs/edgar_tutorial.md`):
+
+- `edgar` — EDGAR acquisition core.
+- `fundamentals` — 10-K/10-Q numerics over EDGAR companyfacts.
+- `forensics` — accounting-honesty metrics (Beneish and related).
+- `insiders` — Form 4 insider transactions over the `xml` module.
+- `ownership` — 13F holdings and quarter-over-quarter deltas.
+- `screener` — the whole-market bulk tier.
+- `mdna` — MD&A / risk-factor extraction from 10-K/10-Q HTML.
+
 ## Living Examples
 
 - `examples/adventure/adventure.bas` is a small text adventure using current input, print, modifiers, arrays, functions, `if`/`else`, `while`, and `break`.
