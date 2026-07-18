@@ -176,6 +176,9 @@ goto label
 gosub label
 ```
 
+`goto` and `gosub` are supported only inside functions; using either at the top
+level is a runtime error.
+
 Watchers:
 
 ```basic
@@ -236,6 +239,11 @@ program demo(args)
     print("hello")
 end program
 ```
+
+A program block is the entry point. Its first declared parameter — `args` by
+convention — binds to the command-line arguments after the script path, as a
+0-based array of strings, empty when none are passed. A file with no program
+block runs its top-level statements directly, with no argument binding.
 
 Library block:
 
@@ -1591,11 +1599,14 @@ Directory entries are records with:
 
 ## CLI Flags
 
-Run a program:
+Run a program, optionally passing it arguments:
 
 ```sh
-gbasic FILE
+gbasic FILE [args...]
 ```
+
+Any arguments after `FILE` bind to the program block's first parameter as a
+0-based string array.
 
 Show help:
 
