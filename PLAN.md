@@ -460,7 +460,15 @@ Behavior changes with deliberately reviewed golden updates; one commit per item.
   `examples/gi` file via `--ast`; wired into CLAUDE.md test list; both READMEs
   mark them manual display tests. No display virtualization. Commit `c1bf1c1`.
 
-### Phase D1 — Infrastructure (small, mechanical)
+### Phase D1 — Infrastructure (small, mechanical) — ✅ DONE (pending review)
+Created: `/DOGFOOD.md` (append-only friction log with the agreed template, seeded
+with the D0 surprise harvest — status reflects current truth: B4/B5 resolved,
+modulo + resume-next open); `docs/ai/START-HERE.md` manifest + placeholder
+`UNLEARN.md`/`ERRORS.md`/`COOKBOOK.md` (filled in D3, ERRORS seeded from the
+existing `_scratch` harvest); `AGENTS.md` (Codex entry) + a CLAUDE.md `## House
+rules` section carrying byte-identical rules. Both entry files stay thin. No code
+or golden changes.
+
 1. `DOGFOOD.md` at repo root — append-only friction log; entry template
    (`## <date> — [human|CC|Codex] — while: <context>` / Type / Severity / What /
    Workaround). Seed with the D0 quirks as first entries.

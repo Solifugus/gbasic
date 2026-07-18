@@ -108,6 +108,20 @@ native dependency is missing. GUI testing is manual (needs a display).
 - The `use`/`--add-uses` syntax is legacy and retained only for compatibility;
   prefer `load`/`--add-loads`.
 
+## House rules
+
+Identical to `AGENTS.md` — the two entry files carry the same rules:
+
+- **Before writing gBASIC code**, read `docs/ai/START-HERE.md` and follow it
+  (`UNLEARN.md` first). gBASIC diverges from QBasic/VB intuition in ways that fail
+  silently.
+- **When you work around a gBASIC limitation or surprise**, append an entry to
+  `/DOGFOOD.md` using its template *before continuing*.
+- **Evidence standards:** tests-first where feasible; keep goldens byte-exact (a
+  behavioral change that moves a golden is a deliberate, listed rebaseline);
+  measure, don't assume; report what you could not verify. Never mark anything
+  "verified".
+
 ## EDGAR suite work
 Governed by docs/edgar_suite_development_plan.md. One WP per session,
 assigned by Matthew. Follow its §1 session protocol exactly: read only
