@@ -2,6 +2,8 @@
 
 This reference describes the implemented v0.1 language surface. gBASIC is experimental; behavior may change before a stable release.
 
+This is a reference, not a tutorial: it states what each construct and module does, not how to learn the language. For a guided introduction see `docs/tutorial.md`; for runnable programs see `examples/`. AI agents writing gBASIC should start at `docs/ai/START-HERE.md`, which distills the surprises and idioms this document records in full.
+
 ## Lexical Rules
 
 Source files are plain text.
@@ -731,6 +733,8 @@ end if
 ```
 
 Errors propagate out of functions. `with lock` unlocks on error, and `without watchers` restores watcher behavior after its block.
+
+Diagnostic positions — `error.line`/`error.column` and the `line:column` in error text — are 1-based and counted in **bytes** (not Unicode codepoints or UTF-16 units): a multi-byte UTF-8 character advances the column by its byte count, a tab counts as one column, only `\n` starts a new line, and spans are inclusive-start/exclusive-end (the authoritative definition lives in `include/diagnostics.h`). For the diagnostic-code and error-domain catalog, see `docs/ai/ERRORS.md`.
 
 ## SQLite Module
 
