@@ -19,6 +19,7 @@ make clean && make         # full rebuild
 ./gbasic --tokens program.bas   # dump lexer tokens
 ./gbasic --ast program.bas      # dump parsed AST
 ./gbasic --add-loads program.bas # print source with suggested `load` lines
+./gbasic --json-diagnostics program.bas # emit parse/runtime diagnostics as JSON on stderr
 ./gbasic --version
 sudo make install          # install to /usr/local (binary + stdlib); PREFIX overridable
 ```
@@ -26,7 +27,7 @@ sudo make install          # install to /usr/local (binary + stdlib); PREFIX ove
 Build requires a C11 compiler, `make`, and `bison`. Optional native modules are
 detected at build time via `pkg-config` and gated behind `HAVE_*` macros in the
 `Makefile` (`HAVE_GTK`, `HAVE_LIBPQ`, `HAVE_SQLITE3`, `HAVE_LIBCURL`,
-`HAVE_LIBXCRYPT`, `HAVE_LIBCRYPTO`). The interpreter always builds; a missing dependency turns the
+`HAVE_LIBXCRYPT`, `HAVE_LIBCRYPTO`, `HAVE_LIBXML2`, `HAVE_GIR`). The interpreter always builds; a missing dependency turns the
 affected feature into a clean runtime error rather than a build failure. When
 adding code that touches an optional library, guard it with the matching
 `#if HAVE_*` block (the existing module code in `src/eval.c` is the pattern).
@@ -52,13 +53,14 @@ sits:
   AST. Regenerated automatically by `make` when `parser.y` changes.
 - `src/ast.c` (`include/ast.h`) — AST node definitions and constructors.
   `AstStmtKind`/`AstExprKind` enumerate every node type.
-- `src/eval.c` — **the entire runtime, ~13k lines.** This is the file you will
+- `src/eval.c` — **the entire runtime, ~18k lines.** This is the file you will
   most often edit. It contains the `Value` model, environment/scope handling,
   watchers, locks, error handling, the date/time/money/file value types, AND the
   full implementation of every optional module — `sqlite`, `pg` (PostgreSQL),
-  `webclient`, `webserver`, and the GTK `gui` — each inside `#if HAVE_*` guards.
-  Module dispatch (`sqlite.query`, `pg.exec`, etc.) is resolved here, not in
-  separate files.
+  `webclient`, `webserver`, `xml` (libxml2), the GTK 3 `gui`, the `gi`
+  GObject-Introspection bridge (GTK 4), and the libcrypto crypto builtins — each
+  inside `#if HAVE_*` guards. Module dispatch (`sqlite.query`, `pg.exec`,
+  `gi.new`, etc.) is resolved here, not in separate files.
 - `src/builtins.c` (`include/builtins.h`) — **only a name registry.** A flat list
   of builtin function names so the parser/evaluator can recognize them. The
   actual implementations live in `src/eval.c`. To add a builtin: register the

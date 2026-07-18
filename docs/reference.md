@@ -1003,6 +1003,91 @@ does not support chunked requests, public binding, routing APIs, middleware,
 static files, templates, sessions, multipart uploads, streaming, WebSockets,
 TLS, or asynchronous application code.
 
+## GObject-Introspection (GUI) Module
+
+The `gi` module is a generic bridge to any GObject-based library — GTK 4, GLib,
+Gio, and so on — driven at runtime by the library's GObject-Introspection
+typelib. It is the path to native graphical applications; GTK 4 is the first
+target toolkit, but nothing GTK is linked directly. It is available when gBASIC
+is built with libgirepository-2.0 (GLib >= 2.80); otherwise `load gi` raises a
+clean runtime error (`error.source = "gi"`), the same way the other optional
+modules degrade.
+
+```basic
+load gi
+gi.require("Gio", "2.0")
+gi.require("Gtk", "4.0")
+
+function on_click(source)
+    gi.set(source, "label", "Clicked!")
+end function
+
+function on_activate(app)
+    win = gi.new("Gtk.ApplicationWindow", "application", app)
+    gi.set(win, "title", "Hello from gBASIC")
+    button = gi.new("Gtk.Button")
+    gi.set(button, "label", "Click me")
+    gi.connect(button, "clicked", on_click)
+    gi.call(win, "set_child", button)
+    gi.call(win, "present")
+end function
+
+app = gi.new("Gtk.Application", "application-id", "org.example.Hello")
+gi.connect(app, "activate", on_activate)
+gi.call(app, "run", 0, nothing)
+```
+
+Native objects are opaque `gobject` values. Each underlying GObject maps to
+exactly one wrapper, so identity is stable: `a = b` is true when they wrap the
+same object. A wrapper's reference is released during interpreter cleanup;
+freshly constructed objects have their floating reference sunk, and objects an
+external owner already adopted at construction (for example a window whose
+construct-time `application` adds it to the `Gtk.Application`) are ref-counted so
+the program does not destroy them out from under the toolkit.
+
+The module provides:
+
+- `gi.require(namespace[, version])` — load a typelib namespace (for example
+  `gi.require("Gtk", "4.0")`) so its types resolve. Must precede any use of the
+  namespace.
+- `gi.new(type_name[, prop, value, ...])` — construct an object by qualified
+  type name (`"Gtk.Button"`). Trailing name/value pairs set construct-time
+  properties, including construct-only ones such as
+  `gi.new("Gtk.ApplicationWindow", "application", app)`.
+- `gi.get(object, property)` / `gi.set(object, property, value)` — read and
+  write a GObject property.
+- `gi.call(object, method[, args...])` — call an instance method, resolved by
+  walking the class hierarchy and implemented interfaces. Array/list parameters
+  accept `nothing` for a NULL pointer (for example `gi.call(app, "run", 0, nothing)`).
+- `gi.invoke("Namespace.function"[, args...])` — call a namespace-level free
+  function that has no receiver, such as `gi.invoke("Gtk.init")` or
+  `gi.invoke("GLib.markup_escape_text", "<a>", -1)`.
+- `gi.connect(object, signal, function)` — connect a gBASIC function to a
+  signal; returns a numeric handler id. The handler is called with the signal's
+  arguments (the emitter, then any signal parameters).
+- `gi.disconnect(object, handler_id)` — disconnect a previously connected
+  handler.
+- `gi.enum("Namespace.Enum.MEMBER")` — resolve an enum or flags member to its
+  numeric value, for example `gi.enum("Gtk.Orientation.VERTICAL")`.
+- `gi.is_a(object, type_name)` — true when the object is, or derives from, the
+  named type.
+- `gi.type_name(object)` — the object's GType name as a string.
+- `gi.main()` / `gi.quit()` — run and stop a toolkit-agnostic GLib main loop
+  owned by the program; an alternative to driving `GApplication.run` yourself.
+
+Value mapping covers booleans, numbers (every integer and floating GValue type,
+plus enums and flags as numbers), UTF-8 strings, objects (`gobject`), and
+`nothing`/NULL. Unsupported types raise rather than silently mis-convert.
+Container marshalling (arrays, lists, hashes) is not implemented beyond passing
+`nothing` for a NULL pointer, and `out`/`inout` method parameters are not
+supported. A signal handler that raises does not corrupt the outer program: the
+error is surfaced, any running `gi.main()` loop ends, and the program's
+error/line state is restored.
+
+The GTK 3 `gui` module and the GTK 4 `gi` bridge cannot be used in the same
+process; loading one after the other has taken the opposite GTK version raises a
+structured error. Errors from the module use `error.source = "gi"`.
+
 ## Core Builtin Functions
 
 gBASIC includes always-available core functions that don't require loading libraries. These maintain strict type checking and provide clear error messages.
@@ -1066,6 +1151,17 @@ today(day)= now()                   ' truncate to date precision via the day len
 There is intentionally no `today()` builtin: `today` is too common an
 identifier to reserve, and the date is derivable from `now()` and the `(day)=`
 truncation lens as shown above.
+
+**`epoch(datetime)`** converts a `datetime` to a number of seconds since the
+Unix epoch, and **`from_epoch(number)`** converts such a number back to a
+`datetime`. These bridge to systems that speak epoch seconds (for example JWT
+`exp` claims). `number(datetime)` is equivalent to `epoch(datetime)`.
+
+```basic
+issued = now()
+exp = epoch(issued + 1 hour)     ' seconds since 1970 for the token deadline
+when = from_epoch(exp)           ' back to a datetime
+```
 
 ### Password Hashing
 
@@ -1280,8 +1376,8 @@ message transport is built on.
 ### Actors (Multiprocessing)
 
 gBASIC runs concurrent work as **actors**: isolated processes that share no
-memory and communicate only by copying messages. Five primitives carry the model
-(`docs/multiprocessing_design.md`):
+memory and communicate only by copying messages. A small set of primitives
+carries the model (`docs/multiprocessing_design.md`):
 
 - `spawn worker(args…)` — start a new actor running the named function `worker`
   and return a **handle** to it. `worker` must be a `function` declared in the
@@ -1305,6 +1401,10 @@ memory and communicate only by copying messages. Five primitives carry the model
   immediately. (A `nothing` message is indistinguishable from a timeout; wrap
   messages if you must tell them apart.)
 - `self()` — this actor's own handle, so it can be handed to others.
+- `monitor(handle)` / `demonitor(handle)` — register (or cancel) death
+  notification for another actor. When a monitored actor exits, the monitor
+  receives a `["down", handle, reason]` message. This is the basis for the
+  copyable supervisor pattern.
 
 An actor runs until its body returns. A worker that handles many messages loops
 and leaves on a sentinel:
@@ -1392,6 +1492,14 @@ Array helper functions:
 - `reverse(array)`
 - `unique(array)`
 - `sort(array)`
+
+Bitwise functions operate on 32-bit unsigned integers and raise on non-integer
+or out-of-range input:
+
+- `band(a, b)` / `bor(a, b)` / `bxor(a, b)` — bitwise AND / OR / XOR
+- `bnot(a)` — bitwise NOT (32-bit complement)
+- `shl(value, count)` / `shr(value, count)` — logical left / right shift
+- `rotl(value, count)` / `rotr(value, count)` — 32-bit rotate left / right
 
 `contains(array, value)` returns true when the array contains a matching value. `remove_value(array, value)` removes the first matching value and returns the resulting array; when the first argument is an assignable path, that array is updated in place. `find_by(records, field_name, value)` returns the first matching record index or `nothing`. `join_from(array, start_index, separator)` joins string elements from `start_index` to the end and returns `""` when the start is out of range. `first(array)` returns the first element or `nothing`; `rest(array)` returns a new array without the first element.
 
@@ -1521,3 +1629,14 @@ gbasic --add-loads FILE
 
 `--add-loads` prints modified source to stdout. It does not overwrite the input file.
 Compatibility note: `--add-uses` remains an alias that emits `use` statements.
+
+Emit diagnostics as JSON:
+
+```sh
+gbasic --json-diagnostics FILE
+```
+
+`--json-diagnostics` runs the program but reports parse and runtime diagnostics
+as JSON on stderr (the model the language server consumes); normal program
+output on stdout is unchanged. A separate `gbasic-lsp` binary (built by
+`make dev`) serves the same diagnostics over LSP on document sync.

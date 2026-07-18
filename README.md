@@ -47,6 +47,8 @@ Implemented runtime and module features include:
 - a cryptography library (optional libcrypto-backed): hashing, HMAC, AES-GCM,
   Ed25519, JWT/HS256, and signed cookies
 - an optional GTK 3 GUI proof of concept through Stage 6A
+- a generic GObject-Introspection bridge (the optional libgirepository-backed
+  `gi` module) for native GObject libraries, with GTK 4 as the first target
 
 The standard library also ships two large pure-gBASIC toolkits:
 
@@ -75,9 +77,14 @@ Optional dependencies are detected through `pkg-config`:
 
 | Dependency | Enables |
 | --- | --- |
-| GTK 3 | GUI proof of concept |
+| sqlite3 | `load sqlite` |
 | libpq | `load pg` |
 | libcurl | `load webclient` |
+| libxml2 | `load xml` |
+| libcrypto (OpenSSL) | cryptography builtins / `load crypto` |
+| libxcrypt | `password_hash` / `password_verify` |
+| GTK 3 | `load gui` (GUI proof of concept) |
+| libgirepository-2.0 (GLib ≥ 2.80) | `load gi` (GObject-Introspection bridge, e.g. GTK 4) |
 
 Build the interpreter:
 
@@ -124,12 +131,19 @@ The built-in WebServer uses POSIX sockets and has no external HTTP dependency.
 ./gbasic --tokens program.bas
 ./gbasic --ast program.bas
 ./gbasic --add-loads program.bas
+./gbasic --json-diagnostics program.bas
 ./gbasic --version
 ```
 
 `--add-loads` analyzes unresolved calls and modifiers, then prints source with
 suggested `load` statements. The older `use` syntax and `--add-uses` option
-remain temporarily supported for compatibility.
+remain temporarily supported for compatibility. `--json-diagnostics` emits
+parse/runtime diagnostics as JSON on stderr (the same model the language server
+uses) while leaving normal program output untouched.
+
+A separate diagnostics language server, `gbasic-lsp`, is built by `make dev`
+(it is kept out of the default `make` target). It speaks LSP over stdio and
+publishes diagnostics on document sync.
 
 ## Language Example
 
@@ -323,7 +337,10 @@ mutating a received value cannot fire the sender's watchers. A message may carry
 and topologies form freely. `receive(tag)` does **selective receive** — take the
 next message whose tag matches, leaving the rest queued — and a duration argument
 (`receive(5 seconds)`) is a **timeout** that returns `nothing` if no message
-arrives in time (`docs/multiprocessing_design.md`).
+arrives in time. `monitor(handle)` / `demonitor(handle)` register for death
+notification: when the monitored actor exits, the monitor receives a
+`["down", handle, reason]` message, which is the basis for the copyable
+supervisor pattern (`docs/multiprocessing_design.md`).
 
 ## Files And Paths
 
@@ -516,8 +533,13 @@ chunked request bodies, or WebSockets.
 
 ## GUI
 
-When GTK 3 development files are available, the build enables the current GUI
-proof of concept. It supports record-defined windows, addressable widgets,
+gBASIC has two independent GUI paths. They target different GTK major versions
+and **cannot be used in the same process** (a runtime guard enforces this).
+
+### `gui` — GTK 3 proof of concept
+
+When GTK 3 development files are available, the build enables the declarative
+`gui` module. It supports record-defined windows, addressable widgets,
 GUI-originated watcher updates, and watcher-driven refresh of existing
 widgets. GUI event batching is local to the GUI event loop; once a
 GUI-originated mutation is applied to gBASIC storage, ordinary watcher behavior
@@ -533,6 +555,24 @@ GBASIC_PATH=stdlib ./gbasic examples/gui/calculator.bas
 
 See [examples/gui/README.md](examples/gui/README.md) for the implemented scope
 and manual verification steps.
+
+### `gi` — GObject-Introspection bridge (GTK 4 and beyond)
+
+When libgirepository-2.0 (GLib ≥ 2.80) is available, the build enables the `gi`
+module: a generic, imperative bridge to any GObject-based library through its
+introspection typelib. It is not GTK-specific — it drives GTK 4, GLib, Gio, and
+others — with `gi.new`/`gi.get`/`gi.set`/`gi.call`/`gi.invoke`/`gi.connect`
+mapping onto GObject construction, properties, methods, free functions, and
+signals. Native objects are opaque `gobject` values with stable identity.
+
+```sh
+sudo apt-get install gir1.2-gtk-4.0 libgtk-4-1     # Debian/Ubuntu runtime + typelib
+./gbasic examples/gi/gtk4_hello.bas
+./gbasic examples/gi/calculator.bas
+```
+
+See the [GObject-Introspection (GUI) Module](docs/reference.md#gobject-introspection-gui-module)
+reference and [examples/gi/README.md](examples/gi/README.md).
 
 ## Tests
 
