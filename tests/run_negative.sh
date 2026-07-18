@@ -143,6 +143,8 @@ cases=(
     negative_while_missing_end
     negative_break_outside_loop
     negative_continue_outside_loop
+    negative_goto_top_level
+    negative_gosub_top_level
     negative_for_each_number
     negative_for_each_record
     negative_file_delete_type

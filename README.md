@@ -21,7 +21,8 @@ Implemented language features include:
 - array iteration with `for each item in items` and `for item in items`
 - `break` and `continue`
 - arrays, records, nested assignment, and dynamic record access
-- functions, programs, libraries, `load`, labels, `goto`, and `gosub`
+- functions, programs, libraries, `load`, and labels with `goto`/`gosub`
+  (supported inside functions; using them at the top level is a runtime error)
 - first-class function values (references) that can be stored, passed, and called
 - shared-nothing actors (multiprocessing) over `spawn`/`send`/`receive`
 - assignment and comparison modifiers

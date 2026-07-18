@@ -18360,15 +18360,21 @@ static EvalResult eval_stmt(AstStmt *stmt) {
         break;
     case AST_STMT_GOTO: {
         if (function_depth == 0) {
-            fprintf(stderr, "goto is only supported inside functions for now\n");
-            break;
+            runtime_error_raise("goto is not supported at top level; supported inside functions",
+                                1003, "invalid control flow");
+            current_line = previous_line;
+            current_column = previous_column;
+            return eval_error_result();
         }
         return eval_goto(stmt->as.goto_label);
     }
     case AST_STMT_GOSUB: {
         if (function_depth == 0) {
-            fprintf(stderr, "gosub is only supported inside functions for now\n");
-            break;
+            runtime_error_raise("gosub is not supported at top level; supported inside functions",
+                                1003, "invalid control flow");
+            current_line = previous_line;
+            current_column = previous_column;
+            return eval_error_result();
         }
         return eval_gosub(stmt->as.gosub_label);
     }

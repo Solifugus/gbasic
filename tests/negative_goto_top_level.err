@@ -1,0 +1,1 @@
+runtime error at tests/negative_goto_top_level.bas:1:1: goto is not supported at top level; supported inside functions
