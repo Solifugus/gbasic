@@ -1603,63 +1603,37 @@ undergoes when sent across an actor boundary (see Actors, below). `serialize` is
 useful for deep-copying and persisting values, and is the foundation the actor
 message transport is built on.
 
-### Other Built-Ins
+### Strings and Text
 
-Always-available helper functions:
+- `lower(text)` / `upper(text)` — ASCII case folding (see the string type for the Unicode caveat).
+- `left(value, count)` / `right(value, count)` — leading / trailing characters.
+- `mid(value, start, count)` — a substring; `start` is **0-based**.
+- `mid(value, start, count, replacement)` — substring replacement.
+- `reverse(text)` — reverse a string.
+- `trim(text)` — strip surrounding whitespace.
+- `split(text)` / `split(text, separator)` — split into an array.
+- `join(array)` / `join(array, separator)` — join string elements.
+- `join_from(array, start_index, separator)` — join from `start_index` to the end; returns `""` when the start is out of range.
+- `chr(code)` / `code(text)` — codepoint ↔ character.
+- `byte_count(text)` / `byte_at(text, index)` / `from_bytes(numbers)` — byte-level access to a string's UTF-8 bytes.
+- `find(value, target)` — index of a substring in a string, or of an element in an array; `-1` / `nothing` when absent.
 
-- `compare(a, operator, b)`
-- `lower(text)`
-- `upper(text)`
-- `round(number, places)`
-- `input(prompt)`
-- `encode(value)`
-- `decode(text)`
-- `quote(value)`
-- `find(value, target)`
-- `contains(array, value)`
-- `remove_value(array, value)`
-- `find_by(records, field_name, value)`
-- `left(value, count)`
-- `right(value, count)`
-- `mid(value, start, count)`
-- `mid(value, start, count, replacement)`
-- `chr(code)`
-- `code(text)`
-- `byte_count(text)`
-- `byte_at(text, index)`
-- `from_bytes(numbers)`
-- `reverse(text)`
-- `trim(text)`
-- `split(text)`
-- `split(text, separator)`
-- `join(array)`
-- `join(array, separator)`
-- `join_from(array, start_index, separator)`
-- `first(array)`
-- `rest(array)`
+### Arrays
 
-Array helper functions:
+Access and search:
 
-- `append(array, value)`
-- `prepend(array, value)`
-- `insert(array, index, value)`
-- `remove(array, index)`
-- `remove_value(array, value)`
-- `take_first(array)`
-- `take_last(array)`
-- `reverse(array)`
-- `unique(array)`
-- `sort(array)`
+- `contains(array, value)` — true when a matching element is present.
+- `remove_value(array, value)` — remove the first matching value and return the resulting array; when the first argument is an assignable path, the array is updated in place.
+- `find_by(records, field_name, value)` — the first matching record index, or `nothing`.
+- `first(array)` — the first element, or `nothing`.
+- `rest(array)` — a new array without the first element.
 
-Bitwise functions operate on 32-bit unsigned integers and raise on non-integer
-or out-of-range input:
+Mutation:
 
-- `band(a, b)` / `bor(a, b)` / `bxor(a, b)` — bitwise AND / OR / XOR
-- `bnot(a)` — bitwise NOT (32-bit complement)
-- `shl(value, count)` / `shr(value, count)` — logical left / right shift
-- `rotl(value, count)` / `rotr(value, count)` — 32-bit rotate left / right
-
-`contains(array, value)` returns true when the array contains a matching value. `remove_value(array, value)` removes the first matching value and returns the resulting array; when the first argument is an assignable path, that array is updated in place. `find_by(records, field_name, value)` returns the first matching record index or `nothing`. `join_from(array, start_index, separator)` joins string elements from `start_index` to the end and returns `""` when the start is out of range. `first(array)` returns the first element or `nothing`; `rest(array)` returns a new array without the first element.
+- `append(array, value)` / `prepend(array, value)`
+- `insert(array, index, value)` / `remove(array, index)`
+- `take_first(array)` / `take_last(array)`
+- `reverse(array)` / `unique(array)` / `sort(array)`
 
 When `append`, `prepend`, `insert`, `remove`, `remove_value`, `take_first`,
 `take_last`, `reverse`, `sort`, or `unique` mutates a stored array through an
@@ -1671,15 +1645,37 @@ mutation. Mutators that leave the stored array unchanged, such as no-match
 `sort()` and `unique()` support scalar arrays. Date/time values use exact
 date/time equality and ordering, not same-day or same-month comparison.
 
-Input and arithmetic rules:
+Aggregates:
 
-- `input(...)` returns a string
-- use `(number)` when you want numeric input
-- `-`, `*`, and `/` require numbers
-- `+` does numeric addition when neither operand is a string
-- if either operand is a string, `+` converts both operands with canonical string conversion and concatenates them
+- `len(value)` — length of an array or string.
+- `sum(array)` / `mean(array)` / `median(array)` / `mode(array)` — numeric aggregates.
+- `min(array)` / `max(array)` — extremes.
 
-Canonical string conversion:
+### Bitwise
+
+Bitwise functions operate on 32-bit unsigned integers and raise on non-integer
+or out-of-range input:
+
+- `band(a, b)` / `bor(a, b)` / `bxor(a, b)` — bitwise AND / OR / XOR.
+- `bnot(a)` — bitwise NOT (32-bit complement).
+- `shl(value, count)` / `shr(value, count)` — logical left / right shift.
+- `rotl(value, count)` / `rotr(value, count)` — 32-bit rotate left / right.
+
+### Numbers and Comparison
+
+- `round(number, places)` — round to a number of decimal places.
+- `compare(a, operator, b)` — compare two values using an operator named as a
+  string (the general form behind the comparison operators and modifiers).
+
+### Input
+
+- `input(prompt)` — read a line; always returns a **string**. Wrap it with
+  `(number)` when you want numeric input. Arithmetic operand rules are in
+  [Expressions](#expressions).
+
+### Serialization and Display
+
+`string(value)` and the `(string)` modifier use the same canonical conversion:
 
 ```basic
 text = string(project)
@@ -1687,60 +1683,53 @@ label(string)= count
 line = "You were born in " + birth_year + "."
 ```
 
-`string(value)` and the `(string)` modifier use the same canonical conversion. Numbers print as normal numbers, strings stay unquoted, booleans become `true` or `false`, `nothing` becomes `nothing`, `unknown` becomes `unknown`, and arrays and records use the same textual shape as `encode(value)`.
+Numbers print as normal numbers, strings stay unquoted, booleans become `true`
+or `false`, `nothing` becomes `nothing`, `unknown` becomes `unknown`, and arrays
+and records use the same textual shape as `encode(value)`.
 
-Serialization helpers:
+`encode`/`decode` are serialization meant to round-trip through `decode`:
 
 ```basic
 text = encode(project)
 loaded = decode(text)
 ```
 
-`encode` supports numbers, strings, booleans, `nothing`, `unknown`, arrays, and records. Strings escape quotes, backslashes, tabs, carriage returns, and newlines. Records are encoded as JSON-like objects with quoted field names. `decode` reads the same format back into gBASIC values, accepts JSON `null` as `nothing`, supports standard JSON string escapes, and raises a runtime error for malformed text.
+`encode` supports numbers, strings, booleans, `nothing`, `unknown`, arrays, and
+records. Strings escape quotes, backslashes, tabs, carriage returns, and
+newlines. Records are encoded as JSON-like objects with quoted field names.
+`decode` reads the same format back into gBASIC values, accepts JSON `null` as
+`nothing`, supports standard JSON string escapes, and raises a runtime error for
+malformed text. `string(value)` may look the same as `encode(value)` for arrays
+and records, but `string` is canonical display text while `encode` is
+serialization.
 
-`string(value)` may look the same as `encode(value)` for arrays and records, but the concepts differ: `string(value)` is canonical display text, while `encode(value)` is serialization meant for `decode(...)`.
-
-Source generation helper:
+`quote(value)` returns a complete gBASIC string literal, surrounding double
+quotes included:
 
 ```basic
 line = "description = " + quote(description)
 ```
 
-`quote(value)` returns a complete gBASIC string literal, including surrounding double quotes. String contents escape `"`, `\`, tab, carriage return, and newline; newlines are emitted as `\n` instead of literal line breaks. Scalar non-string values use the same scalar conversion as `string(value)`, so `quote(42)` returns `"42"` and `quote(nothing)` returns `"nothing"`. Arrays, records, files, directories, and other non-scalar values raise a runtime error. Because the output is also a decode-compatible string value, `decode(quote(text))` round-trips strings.
+String contents escape `"`, `\`, tab, carriage return, and newline (newlines as
+`\n`, not literal breaks). Scalar non-string values use the same conversion as
+`string(value)`, so `quote(42)` is `"42"` and `quote(nothing)` is `"nothing"`.
+Arrays, records, files, directories, and other non-scalar values raise. Because
+the output is decode-compatible, `decode(quote(text))` round-trips strings.
 
-Array aggregate functions:
+### Files and Directories
 
-- `len(value)`
-- `sum(array)`
-- `mean(array)`
-- `median(array)`
-- `mode(array)`
-- `min(array)`
-- `max(array)`
+File functions (see also the file/directory value types):
 
-File functions:
-
-- `exists(f)`
-- `read(f)`
-- `write(f, text)`
-- `append(f, text)`
-- `bytes(f)`
-- `lines(f)`
-- `chars(f)`
-- `lock(f)`
-- `unlock(f)`
+- `exists(f)` — whether the path exists.
+- `read(f)` / `write(f, text)` / `append(f, text)` — whole-file text I/O.
+- `bytes(f)` / `lines(f)` / `chars(f)` — read as bytes, lines, or characters.
+- `lock(f)` / `unlock(f)` — advisory locks (see `with lock`).
 
 Directory functions:
 
-- `list(folder)`
-- `files(folder)`
-- `folders(folder)`
+- `list(folder)` / `files(folder)` / `folders(folder)` — directory entries.
 
-Directory entries are records with:
-
-- `name`
-- `path`
-- `type`
+Directory entries are records with `name`, `path`, and `type`.
 
 ## Living Examples
 
