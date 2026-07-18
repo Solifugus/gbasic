@@ -303,7 +303,9 @@ String concatenation uses `+`:
 full = first + " " + last
 ```
 
-No f-string syntax is implemented.
+`+` concatenates when either operand is a string; `-`, `*`, and `/` are strict
+numeric arithmetic. There is no implicit numeric/string coercion — conversions
+are explicit (`string(...)`, `number(...)`). No f-string syntax is implemented.
 
 Comparisons:
 
@@ -485,6 +487,51 @@ clusters are future work.
 
 **Literals** are UTF-8 from the source file. The escape `\u{...}` inserts a
 codepoint by hex value (`"\u{1F600}"` is `"😀"`); for a literal NUL use `chr(0)`.
+
+## First-Class Functions
+
+A bare function name evaluates to a **function value** — a reference to the named
+function, not a closure over its defining scope:
+
+```basic
+function double(n)
+    return n * 2
+end function
+
+d = double        ' a function value
+print type(d)     ' function
+print d(21)       ' 42
+```
+
+Function values can be stored in variables, records, and arrays, passed as
+arguments, returned, and called. Equality is same-reference (`d = double` is
+`true`); a function value is truthy; `string(d)` gives a debug representation.
+Function values are actor-sendable, so a spawned actor can receive one and call it.
+
+A function value held in a **record field is a method**. Reaching it through the
+record binds the receiver to `this` at the call site; dispatch follows whichever
+function value the field holds:
+
+```basic
+function deposit(amount)
+    this.balance = this.balance + amount   ' writes through, honoring PBI policies
+    return this.balance
+end function
+
+account = { name: "checking", balance: 0, deposit: deposit }
+print account.deposit(100)   ' 100
+```
+
+The dotted-def statement `function account.deposit(amount)` is sugar that defines
+a function and attaches it to the record variable `account` in one step.
+
+A field named `constructor` is auto-invoked by `new … with { … }` after
+derivation, with `this` bound to the new instance; its inputs arrive through the
+`with` block and are read from `this`, and its return value is ignored (see
+[Objects](#objects-policy-based-inheritance)).
+
+There are no closures, bound methods, or inline lambdas; a method reads its
+receiver only through `this`, bound per call.
 
 ## Objects (Policy-Based Inheritance)
 
@@ -686,6 +733,73 @@ Qualified modifier calls:
 ```basic
 name {text.caseless}= "joe"
 ```
+
+## Actors and Multiprocessing
+
+gBASIC runs concurrent work as **actors**: isolated processes that share no
+memory and communicate only by copying messages. A small set of primitives
+carries the model (`docs/multiprocessing_design.md`):
+
+- `spawn worker(args…)` — start a new actor running the named function `worker`
+  and return a **handle** to it. `worker` must be a `function` declared in the
+  program, and the program must be loaded from a file (the child re-execs it). The
+  arguments are copied to the child as its first message; a handle among them —
+  including `self()` — is passed through so the child can message that actor.
+- `send(handle, value)` — copy `value` into the target actor's mailbox as one
+  message. Non-blocking: if the mailbox is full or the value is too large for one
+  frame, a structured `actor` error is raised rather than blocking. Per-sender
+  ordering is FIFO.
+- `receive()` — block until a message is in this actor's mailbox; remove and
+  return it. Pairs naturally with `consider` for dispatch.
+- `receive(tag)` — **selective receive**: return the next message whose *tag*
+  matches `tag` (the message itself if it is a string, or its first element if it
+  is an array), leaving non-matching messages queued in arrival order for later
+  receives. A plain `receive()` drains those oldest-first, so FIFO order holds
+  across both forms.
+- `receive(<duration>)` — **timeout**: return the next message, or `nothing` if
+  none arrives within the duration (e.g. `receive(5 seconds)`). `receive(tag,
+  <duration>)` combines a selector with a deadline. A queued message returns
+  immediately. (A `nothing` message is indistinguishable from a timeout; wrap
+  messages if you must tell them apart.)
+- `self()` — this actor's own handle, so it can be handed to others.
+- `monitor(handle)` / `demonitor(handle)` — register (or cancel) death
+  notification for another actor. When a monitored actor exits, the monitor
+  receives a `["down", handle, reason]` message. This is the basis for the
+  copyable supervisor pattern.
+
+An actor runs until its body returns. A worker that handles many messages loops
+and leaves on a sentinel:
+
+```basic
+function worker(name, parent)
+    while true
+    consider receive()
+    if "ping" then
+        send(parent, "pong from " + name)
+    if "stop" then
+        return
+    end consider
+    end while
+end function
+
+program main(args)
+    me = self()
+    a = spawn worker("a", me)
+    send(a, "ping")
+    print(receive())          # "pong from a"
+    send(a, "stop")
+end program
+```
+
+Anything `serialize` accepts can be sent; live database connections and GUI
+widgets cannot cross a boundary. Messages are snapshots — mutating a received
+value cannot fire the sender's watchers, and a record's `link` fields arrive as
+independent copies ("watcher boundaries are concurrency boundaries").
+
+A message may itself contain **actor handles** (a value `serialize` rejects on its
+own): sending one to a running actor hands it a channel to a third actor, so
+actors can introduce each other and form arbitrary topologies. Up to 32 handles
+may travel in a single message.
 
 ## Errors
 
@@ -1488,78 +1602,6 @@ deserialized snapshot is plain `copy` — which is the same degradation a value
 undergoes when sent across an actor boundary (see Actors, below). `serialize` is
 useful for deep-copying and persisting values, and is the foundation the actor
 message transport is built on.
-
-### Actors (Multiprocessing)
-
-gBASIC runs concurrent work as **actors**: isolated processes that share no
-memory and communicate only by copying messages. A small set of primitives
-carries the model (`docs/multiprocessing_design.md`):
-
-- `spawn worker(args…)` — start a new actor running the named function `worker`
-  and return a **handle** to it. `worker` must be a `function` declared in the
-  program, and the program must be loaded from a file (the child re-execs it). The
-  arguments are copied to the child as its first message; a handle among them —
-  including `self()` — is passed through so the child can message that actor.
-- `send(handle, value)` — copy `value` into the target actor's mailbox as one
-  message. Non-blocking: if the mailbox is full or the value is too large for one
-  frame, a structured `actor` error is raised rather than blocking. Per-sender
-  ordering is FIFO.
-- `receive()` — block until a message is in this actor's mailbox; remove and
-  return it. Pairs naturally with `consider` for dispatch.
-- `receive(tag)` — **selective receive**: return the next message whose *tag*
-  matches `tag` (the message itself if it is a string, or its first element if it
-  is an array), leaving non-matching messages queued in arrival order for later
-  receives. A plain `receive()` drains those oldest-first, so FIFO order holds
-  across both forms.
-- `receive(<duration>)` — **timeout**: return the next message, or `nothing` if
-  none arrives within the duration (e.g. `receive(5 seconds)`). `receive(tag,
-  <duration>)` combines a selector with a deadline. A queued message returns
-  immediately. (A `nothing` message is indistinguishable from a timeout; wrap
-  messages if you must tell them apart.)
-- `self()` — this actor's own handle, so it can be handed to others.
-- `monitor(handle)` / `demonitor(handle)` — register (or cancel) death
-  notification for another actor. When a monitored actor exits, the monitor
-  receives a `["down", handle, reason]` message. This is the basis for the
-  copyable supervisor pattern.
-
-An actor runs until its body returns. A worker that handles many messages loops
-and leaves on a sentinel:
-
-```basic
-function worker(name, parent)
-    while true
-    consider receive()
-    if "ping" then
-        send(parent, "pong from " + name)
-    if "stop" then
-        return
-    end consider
-    end while
-end function
-
-program main(args)
-    me = self()
-    a = spawn worker("a", me)
-    send(a, "ping")
-    print(receive())          # "pong from a"
-    send(a, "stop")
-end program
-```
-
-Anything `serialize` accepts can be sent; live database connections and GUI
-widgets cannot cross a boundary. Messages are snapshots — mutating a received
-value cannot fire the sender's watchers, and a record's `link` fields arrive as
-independent copies ("watcher boundaries are concurrency boundaries").
-
-A message may itself contain **actor handles** (a value `serialize` rejects on its
-own): sending one to a running actor hands it a channel to a third actor, so
-actors can introduce each other and form arbitrary topologies. Up to 32 handles
-may travel in a single message.
-
-**Arithmetic behavior:**
-- `+` performs string concatenation when either operand is a string
-- `-`, `*`, `/` remain strict numeric arithmetic only
-- All conversion functions are explicit and strict
 
 ### Other Built-Ins
 
