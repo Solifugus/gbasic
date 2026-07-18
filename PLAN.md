@@ -445,16 +445,20 @@ byte-exact.
    suites, README added): `webclient_playground.bas` + the three `exploratory_*`
    probes. No runner globs `tests/`/`examples/`, so scratch never auto-runs.
 
-### Phase D0.6 — Reviewed behavior changes (Group B) — PLANNED (next phase)
-Behavior changes with deliberately reviewed golden updates; **separate commit per
-item**. Stops at boundary.
-- **B4** `program main(args)`: bind `args` to the array of strings after the
-  script path; CLI accepts trailing args. Fix `examples/llm/smoke_ask.bas` as the
-  fixture. Additive.
-- **B5** Top-level `goto`/`gosub`: promote the current stdout warning to a hard
-  structured error; fix `README` accordingly.
-- **B6** GUI/`gi` examples: wire a parse-only headless smoke into the suite; add
-  READMEs marking them manual display tests. No display virtualization.
+### Phase D0.6 — Reviewed behavior changes (Group B) — ✅ DONE (pending review)
+Behavior changes with deliberately reviewed golden updates; one commit per item.
+- **B4** ✅ `program NAME(args)` binds its first parameter to the command-line
+  args after the script path (0-based string array, empty when none); CLI accepts
+  trailing args in run mode. `smoke_ask.bas` fixed by the feature (no edit);
+  `args_test.bas` (+ zero/multi-arg goldens) wired. Additive — full battery stayed
+  green. Commit `06eca7b`.
+- **B5** ✅ Top-level `goto`/`gosub` now raise a structured runtime error (1003,
+  "invalid control flow") instead of a stderr warning-and-continue; README
+  overpromise fixed. Golden rebaselines: NONE (no golden exercised it); two new
+  negatives added. Commit `fbe62b5`.
+- **B6** ✅ `tests/run_gui_parse.sh` parses (not runs) every `examples/gui` +
+  `examples/gi` file via `--ast`; wired into CLAUDE.md test list; both READMEs
+  mark them manual display tests. No display virtualization. Commit `c1bf1c1`.
 
 ### Phase D1 — Infrastructure (small, mechanical)
 1. `DOGFOOD.md` at repo root — append-only friction log; entry template
