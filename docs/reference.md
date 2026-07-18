@@ -1015,6 +1015,67 @@ does not support chunked requests, public binding, routing APIs, middleware,
 static files, templates, sessions, multipart uploads, streaming, WebSockets,
 TLS, or asynchronous application code.
 
+## XML Module
+
+XML support is available when gBASIC is built with libxml2. It parses XML (and,
+leniently, HTML) into an in-memory node tree and navigates it by path:
+
+```basic
+load xml
+
+doc = xml.parse("<order id='A1'><item>Widget</item><item>Gadget</item></order>")
+print(xml.attr(doc, "id"))              # A1
+print(xml.text(xml.find(doc, "item")))  # Widget
+```
+
+Parsing:
+
+- `xml.parse(text[, keep_whitespace])` — parse an XML string; pass `true` to keep
+  inter-element whitespace text nodes (default drops them).
+- `xml.parse_file(path)` — parse from a file path.
+- `xml.parse_html(text)` — lenient HTML parse for real-world markup.
+
+Navigation (a *path* is a `/`-separated chain of child element names):
+
+- `xml.find(node, path)` — the first matching descendant, or `unknown`.
+- `xml.find_all(node, path)` — an array of all matches (empty when none).
+- `xml.attr(node, name[, default])` — an attribute value as a string; returns
+  `default` (or `unknown`) when the attribute is absent.
+- `xml.text(node)` — the node's text content.
+- `xml.encode(node[, pretty])` — serialize a node back to an XML string; pass
+  `true` to pretty-print.
+
+Streaming reader, for documents too large to hold as a tree — it walks the file
+forward without materializing the whole document:
+
+- `xml.reader(path)` — open a streaming reader over a file.
+- `xml.read(reader)` — advance to and return the next element, or `unknown` at end.
+- `xml.skip_to(reader, name)` — advance until an element named `name`.
+- `xml.subtree(reader)` — materialize the reader's current element as a node tree.
+- `xml.close(reader)` — release the reader.
+
+Parse failures and misuse (bad argument types, a closed reader, a non-element
+subtree) raise structured errors. See `docs/xml_design.md` and the `examples/xml_*`
+programs for the full surface and worked SEC-filing examples.
+
+## GUI (GTK 3) Module — experimental
+
+`gui` is an **experimental proof of concept** (Stage 6A), enabled only when
+gBASIC is built with GTK 3 development files. It renders a record-defined window
+tree, exposes widgets as addressable fields, and routes GTK-originated changes
+back through ordinary watchers:
+
+```basic
+GBASIC_PATH=stdlib ./gbasic examples/gui/demo.bas
+```
+
+Because it is a POC on GTK 3 and its surface is likely to evolve, it is
+documented by its design notes rather than pinned here: see
+`docs/gui_design.md` and `examples/gui/README.md` for the implemented scope and
+manual verification steps. For new GUI work prefer the `gi` bridge below, which
+is the conventional route and targets current GTK (4). The two cannot be used in
+the same process (see the note in the `gi` section).
+
 ## GObject-Introspection (GUI) Module
 
 The `gi` module is a generic bridge to any GObject-based library — GTK 4, GLib,
@@ -1099,6 +1160,49 @@ error/line state is restored.
 The GTK 3 `gui` module and the GTK 4 `gi` bridge cannot be used in the same
 process; loading one after the other has taken the opposite GTK version raises a
 structured error. Errors from the module use `error.source = "gi"`.
+
+## Cryptography
+
+When gBASIC is built with libcrypto (OpenSSL), a family of cryptographic builtins
+is always available — no `load` is required. They operate on strings; hash, HMAC,
+AEAD, and random outputs are **binary strings** (raw bytes), which you render with
+`hex_encode`/`base64_encode` when you need text. `secure_token`, `password_hash`,
+and `password_verify` are documented under [Core Builtin Functions](#core-builtin-functions).
+
+Encoding:
+
+- `base64_encode(s)` / `base64_decode(s)` — standard Base64.
+- `base64url_encode(s)` / `base64url_decode(s)` — URL-safe Base64 (no padding).
+- `hex_encode(s)` / `hex_decode(s)` — lowercase hexadecimal.
+
+Random and comparison:
+
+- `random_bytes(n)` — `n` cryptographically random bytes.
+- `bytes_equal(a, b)` — constant-time string comparison (use for secrets/MACs).
+
+Hashing and HMAC:
+
+- `sha256(s)`, `sha512(s)`, `sha1(s)` — message digests.
+- `hmac_sha256(key, message)`, `hmac_sha512(key, message)` — keyed MACs.
+
+Authenticated encryption and signatures:
+
+- `aes_gcm_encrypt(key, nonce, plaintext, aad)` — AES-GCM; returns ciphertext with
+  its authentication tag. `key` is 16 or 32 bytes; `nonce` is 12 bytes.
+- `aes_gcm_decrypt(key, nonce, blob, aad)` — verifies and decrypts; a wrong key,
+  nonce, `aad`, or tampered blob raises rather than returning garbage.
+- `ed25519_keypair()` — a record `{ private, public }`.
+- `ed25519_sign(private, message)` — a signature.
+- `ed25519_verify(public, message, signature)` — `true` / `false`.
+
+Bad argument types, wrong key/nonce sizes, and failed authentication raise
+structured errors — these builtins pre-validate rather than degrade.
+
+A higher-level pure-gBASIC layer ships as `load crypto` (`stdlib/crypto.bas`),
+built on the above: `sha256_hex`/`sha512_hex`, `random_hex`/`random_token`,
+`sign_cookie`/`verify_cookie`, `csrf_token`/`csrf_check`, `encrypt`/`decrypt`,
+a flat `json_encode`/`json_decode`, and `jwt_encode`/`jwt_verify` (HS256). See
+`docs/crypto_design.md`.
 
 ## Core Builtin Functions
 
