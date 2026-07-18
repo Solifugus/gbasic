@@ -2,6 +2,12 @@
 
 These demos exercise the current GTK proof of concept through Stage 6A.
 
+These are **manual display tests**: they need a GTK 3 runtime and a live display,
+so they are not in the golden suite. An automated **parse-only** smoke,
+`tests/run_gui_parse.sh` (PLAN.md Phase D0.6, B6), runs `gbasic --ast` over every
+file here — parse, don't run — to catch silent syntax rot without a display.
+Actually launching them is manual; see [Manual Test Steps](#manual-test-steps).
+
 Current implemented scope:
 
 - static rendering from the current record tree at `gui.run(win)` time

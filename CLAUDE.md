@@ -82,6 +82,7 @@ bash tests/run_bag_smoke.sh
 ./tests/run_json_diagnostics.sh  # --json-diagnostics golden (also asserts default byte-exact)
 ./tests/lsp/run_lsp.sh      # gbasic-lsp: position-transcode unit + framed JSON-RPC handshake golden
 ./tests/run_gi.sh           # gi.* GObject-Introspection bridge (headless Gio types); skips if libgirepository-2.0 absent
+./tests/run_gui_parse.sh    # parse-only headless smoke for examples/gui + examples/gi (parse, don't run; no display needed)
 GBASIC_POSTGRES_TEST=1 PGDATABASE=my_test_db ./tests/run_postgres.sh   # opt-in
 ```
 

@@ -1,8 +1,14 @@
 # gi.* examples (GObject-Introspection bridge)
 
 Programs written against the raw `gi.*` GObject-Introspection bridge (see
-PLAN.md "Phase GI"). These are **manual** demos — like `examples/gui/`, they are
-not in the golden suite.
+PLAN.md "Phase GI"). These are **manual display tests** — like `examples/gui/`,
+they can only be *run* on a live display with a GTK 4 runtime installed, so they
+are not in the golden suite.
+
+They are guarded against silent syntax rot by an automated **parse-only** smoke,
+`tests/run_gui_parse.sh` (PLAN.md Phase D0.6, B6): it runs `gbasic --ast` over
+every file here — parse, don't run — with no display or toolkit needed. Actually
+launching them is manual; follow the run commands below.
 
 ## `gtk4_hello.bas` — GTK4 in the canonical idiom on gi.*
 
