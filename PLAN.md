@@ -503,6 +503,20 @@ Done (TOC approved before writing; reference voice; each step its own commit):
   pointer per stdlib toolkit, no API duplication).
 Single source of truth held throughout; full battery green (15/15).
 
+### Phase D3 — AI documentation layer (content) — ✅ DONE (pending review)
+Filled `docs/ai/UNLEARN.md` (every surprise verified against the binary,
+current-truth: argv/goto noted as fixed, the rest blunt with measured snippets),
+`docs/ai/ERRORS.md` (two-layer model — `gb_diag_code` kind vs runtime
+`error.code`/`error.source`, generated-from-source with regeneration greps; the
+`on error resume next` model **pinned from `eval.c` and proven by**
+`examples/on_error_resume_next_test.bas`), and `docs/ai/COOKBOOK.md` (one idiom
+per construct/module, every entry pointing at a wired file, no inline code).
+Added the executable-docs gate `tests/run_docs_gate.sh` (every cookbook reference
+must exist and be suite-wired; self-tested to fail on missing/unwired), wired into
+CLAUDE.md's test list and `make dev`. Corrected the `gbasic_error_handling_gotcha`
+memory with the pinned semantics. Non-blockers found go to DOGFOOD.md; see the
+Language-friction backlog below. Full battery green (16/16).
+
 ### Phase D3 — AI documentation layer (content)
 1. `docs/ai/UNLEARN.md` — "gBASIC is not QBasic/VB": every D0 surprise, bluntly
    stated, each with a minimal correct-behavior snippet; include negative
@@ -521,6 +535,14 @@ Single source of truth held throughout; full battery green (15/15).
    references (never inline untested code).
 4. Executable-docs gate: a runner that executes every doc code sample in the test
    suite so docs cannot rot. Add to CLAUDE.md's test list and `make dev`.
+
+## Language-friction backlog (non-blockers, from the D0–D3 sweep)
+
+Recorded in `/DOGFOOD.md`; none block gbasic-studio. Pick up under a fresh
+go-ahead: (1) no modulo operator/builtin — `a - floor(a/b)*b` is the workaround;
+(2) `dim x` prints a parse-ish error to stderr yet exits 0 (exit-code
+inconsistency); (3) the `on error resume next` model is powerful but surprising —
+documented in `docs/ai/ERRORS.md`, not changed.
 
 ## Deferred — NOT started this track (do not begin without a new go-ahead)
 

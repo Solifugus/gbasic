@@ -115,8 +115,10 @@ all: libgbasic.a gbasic
 
 # Build every binary in the tree, including the ones kept out of `all` (the LSP
 # server). This is the routine developer/CI entry point: it guarantees gbasic-lsp
-# still compiles so it cannot silently rot while default builds stay lean.
+# still compiles so it cannot silently rot while default builds stay lean. It also
+# runs the executable-docs gate so docs/ai/COOKBOOK.md references cannot rot.
 dev: all gbasic-lsp
+	@bash tests/run_docs_gate.sh
 
 libgbasic.a: $(LIB_OBJS)
 	$(AR) rcs $@ $(LIB_OBJS)

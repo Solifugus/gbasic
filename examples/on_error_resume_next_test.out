@@ -1,0 +1,4 @@
+1: resumed; error=true source=invalid conversion
+2: n still 5
+3a: callee resumed past its own raise
+3b: r still initial

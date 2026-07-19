@@ -110,6 +110,7 @@ examples=(
     while_break_continue_test.bas
     for_each_test.bas
     error_test.gb
+    on_error_resume_next_test.bas
     modifier_test.gb
     modifier_library_regression_test.bas
     modifier_string_helpers_test.bas

@@ -100,3 +100,26 @@ D0.6, the rest remain open or are by-design.
 - **Workaround:** Iterate large arrays with `for each x in arr` (0.15s for the
   same 12k loop); stream/count in place instead of accumulating with `append`
   when you don't need to keep the list.
+
+## 2026-07-18 — CC — while: D3 UNLEARN verification
+- **Type:** bug
+- **Severity:** low
+- **What:** `dim x` (dim is unsupported) prints `unexpected token DIM at 1:1` to
+  **stderr**, produces empty stdout, and **exits 0** — an error message with a
+  success exit code. Most parse errors exit nonzero; this path is inconsistent.
+- **Workaround:** Don't use `dim` (there is no such statement — assign to create
+  variables; see `docs/ai/UNLEARN.md`). Non-blocker for gbasic-studio, but the
+  exit-code inconsistency is worth fixing; noted in PLAN.md deferred.
+
+## 2026-07-18 — CC — while: D3 ERRORS.md (S13 follow-up)
+- **Type:** language-surprise
+- **Severity:** high
+- **What:** Status update to the S13 entry above. The `on error resume next`
+  semantics are now **pinned from source** (`error_generation` counter in
+  `src/eval.c`) and proven by fixture. Precise model: a raise resumes at the next
+  statement in the *same* statement list at every frame, but the raising
+  statement's value is abandoned and that abandonment propagates through call
+  boundaries — so a callee cannot catch-and-return a fallback, and `error.clear()`
+  does not rescue the caller (it clears state, not the generation counter).
+- **Workaround:** Unchanged — PRE-VALIDATE. Full model + proof in
+  `docs/ai/ERRORS.md` and `examples/on_error_resume_next_test.bas`.

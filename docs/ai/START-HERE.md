@@ -28,8 +28,9 @@ surprise you, the one right idiom, and how to read an error.
   `/DOGFOOD.md` (root) using its template *before continuing*. The friction log is
   how these files stay honest and how the language earns its next fixes.
 
-## Status
+## Keeping it honest
 
-`UNLEARN.md`, `ERRORS.md`, and `COOKBOOK.md` are **placeholders** in Phase D1 and
-are filled with content in Phase D3 (see `PLAN.md`). Until then, the authoritative
-surprise list is `/DOGFOOD.md`'s D0 seed and the human reference above.
+`/DOGFOOD.md` (repo root) is the append-only friction log — the raw stream these
+files distill. When you hit a new surprise or workaround, add a DOGFOOD entry.
+`COOKBOOK.md`'s file references are enforced by `tests/run_docs_gate.sh` (also run
+by `make dev`): every idiom must point at a real, suite-wired file.
