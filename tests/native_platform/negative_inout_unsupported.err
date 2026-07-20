@@ -1,0 +1,1 @@
+runtime error at tests/native_platform/negative_inout_unsupported.bas:9:1: gi.invoke: base64_decode_inplace has an unsupported inout argument type

@@ -1,0 +1,1 @@
+runtime error at tests/native_platform/negative_boxed_bad_value.bas:4:1: gi.struct_set: field 'red' expects a number

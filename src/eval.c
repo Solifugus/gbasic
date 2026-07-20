@@ -160,6 +160,7 @@ typedef struct PgConnectionValue PgConnectionValue;
 typedef struct SqliteConnectionValue SqliteConnectionValue;
 typedef struct XmlReaderValue XmlReaderValue;
 typedef struct GObjectValue GObjectValue;
+typedef struct GBoxedValue GBoxedValue;
 typedef struct ActorHandle ActorHandle;
 typedef struct WebServer WebServer;
 typedef struct WebServerClient WebServerClient;
@@ -182,7 +183,8 @@ typedef enum {
     VALUE_XML_READER,
     VALUE_GOBJECT,
     VALUE_ACTOR,
-    VALUE_FUNCTION
+    VALUE_FUNCTION,
+    VALUE_GBOXED
 } ValueKind;
 
 typedef enum {
@@ -247,6 +249,7 @@ struct Value {
         SqliteConnectionValue *sqlite_connection;
         XmlReaderValue *xml_reader;
         GObjectValue *gobject;
+        GBoxedValue *gboxed;
         ActorHandle *actor;
         /* A first-class function value: a reference to a registered function by
          * name (NOT a capturing closure — see docs/first_class_functions_design.md
@@ -299,6 +302,32 @@ struct GObjectValue {
 #endif
     size_t ref_count;
     int closed;
+};
+
+/* An owned GI boxed/struct value for the gi.* bridge (NAP-1, docs/
+ * gbasic_native_app_platform_plan.md). A boxed value is a REFERENCE-semantic
+ * refcounted handle, exactly like GObjectValue and the connection wrappers — NOT a
+ * value-semantic deep copy. This is required by gBASIC's calling convention: reading
+ * a variable copies the value (env_get -> value_copy), so a boxed value must share
+ * its underlying box across copies for `gi.struct_set` to mutate in place and be
+ * visible through the caller's variable (mirroring how `gi.set` mutates a shared
+ * gobject). `ref_count` is the number of live gBASIC Values pointing at this handle
+ * (bumped by value_copy, dropped by value_free); the handle owns exactly ONE boxed
+ * instance and, when the last reference goes away, frees it with the registered
+ * `g_boxed_free` (when `owned`). `type`/`box` are guarded like GObjectValue.obj so a
+ * HAVE_GIR=0 build still compiles the (unreachable) lifecycle branches.
+ *
+ * NOTE (plan deviation): the plan sketched `{GType,gpointer,int owned}` with
+ * `value_copy -> g_boxed_copy` (value semantics). That would make struct_set mutate a
+ * throwaway read-copy and lose the write under gBASIC's copy-on-read reads, so this
+ * uses refcounted reference semantics instead. See the phase report. */
+struct GBoxedValue {
+#if HAVE_GIR
+    GType type;
+    gpointer box;
+#endif
+    size_t ref_count;
+    int owned;
 };
 
 /* A handle to some actor's inbound mailbox (docs/multiprocessing_design.md §4).
@@ -538,6 +567,8 @@ static const char *value_kind_name(ValueKind kind) {
         return "xml_reader";
     case VALUE_GOBJECT:
         return "gobject";
+    case VALUE_GBOXED:
+        return "gboxed";
     case VALUE_ACTOR:
         return "actor";
     case VALUE_FUNCTION:
@@ -1012,6 +1043,31 @@ static Value value_gobject(GObjectValue *handle) {
     return value;
 }
 
+static Value value_gboxed(GBoxedValue *handle) {
+    Value value = {0};
+    value.kind = VALUE_GBOXED;
+    value.as.gboxed = handle;
+    return value;
+}
+
+/* Refcount release for a boxed handle: the last live Value frees the single owned
+ * boxed instance with its registered free function and then the handle block.
+ * Defined unconditionally so value_free links in a HAVE_GIR=0 build, where no boxed
+ * value is ever created and the g_boxed_free branch is dead code. */
+static void gboxed_release(GBoxedValue *handle) {
+    if (!handle) {
+        return;
+    }
+    if (--handle->ref_count == 0) {
+#if HAVE_GIR
+        if (handle->owned && handle->box) {
+            g_boxed_free(handle->type, handle->box);
+        }
+#endif
+        free(handle);
+    }
+}
+
 #if HAVE_GIR
 /* Quark under which each GObject stores a back-pointer to its one canonical
  * wrapper (qdata canonicalization). Looked up lazily so no work happens unless the
@@ -1233,6 +1289,11 @@ static Value value_copy(Value value) {
         value.as.gobject->ref_count++;
         return value_gobject(value.as.gobject);
     }
+    if (value.kind == VALUE_GBOXED) {
+        /* Reference semantics: share the one owned box (see struct GBoxedValue). */
+        value.as.gboxed->ref_count++;
+        return value_gboxed(value.as.gboxed);
+    }
     if (value.kind == VALUE_ACTOR) {
         value.as.actor->ref_count++;
         return value;
@@ -1325,6 +1386,8 @@ static void value_free(Value value) {
         xml_reader_release(value.as.xml_reader);
     } else if (value.kind == VALUE_GOBJECT) {
         gobject_release(value.as.gobject);
+    } else if (value.kind == VALUE_GBOXED) {
+        gboxed_release(value.as.gboxed);
     } else if (value.kind == VALUE_ACTOR) {
         ActorHandle *handle = value.as.actor;
         if (handle && --handle->ref_count == 0) {
@@ -1413,6 +1476,8 @@ static int value_truthy(Value value) {
                             "sqlite");
         return 0;
     case VALUE_GOBJECT:
+        return 1;
+    case VALUE_GBOXED:
         return 1;
     case VALUE_ACTOR:
         return 1;
@@ -1571,6 +1636,9 @@ static void value_print(Value value) {
         break;
     case VALUE_GOBJECT:
         printf("<gobject>\n");
+        break;
+    case VALUE_GBOXED:
+        printf("<gboxed>\n");
         break;
     case VALUE_ACTOR:
         printf("<actor>\n");
@@ -1917,6 +1985,13 @@ static int value_storage_equal(const Value *left, const Value *right) {
         return left->as.xml_reader == right->as.xml_reader;
     case VALUE_GOBJECT:
         return left->as.gobject == right->as.gobject;
+    case VALUE_GBOXED:
+        /* Identity by handle: aliases (value_copy) share one handle and compare
+         * equal; two independently constructed boxed values never do. Generic
+         * semantic (field-by-field) equality is impossible across arbitrary boxed
+         * types (GBoxed has no equality vfunc), so this is deliberately conservative
+         * — a distinct box, even with identical contents, is treated as changed. */
+        return left->as.gboxed == right->as.gboxed;
     case VALUE_ACTOR:
         return left->as.actor->id == right->as.actor->id;
     case VALUE_FUNCTION:
@@ -6417,6 +6492,8 @@ static const char *builtin_type_name(Value value) {
         return "xml_reader";
     case VALUE_GOBJECT:
         return "gobject";
+    case VALUE_GBOXED:
+        return "gboxed";
     case VALUE_ACTOR:
         return "actor";
     case VALUE_FUNCTION:
@@ -6703,6 +6780,9 @@ static Value builtin_string_value(Value value) {
     case VALUE_GOBJECT:
         value_free(value);
         return value_string("<gobject>");
+    case VALUE_GBOXED:
+        value_free(value);
+        return value_string("<gboxed>");
     case VALUE_ACTOR:
         value_free(value);
         return value_string("<actor>");
@@ -6780,6 +6860,7 @@ static int encode_value_to_builder(StringBuilder *builder, Value value) {
     case VALUE_SQLITE_CONNECTION:
     case VALUE_XML_READER:
     case VALUE_GOBJECT:
+    case VALUE_GBOXED:
     case VALUE_ACTOR:
     case VALUE_FUNCTION:
         runtime_error_raise("encode supports numbers, strings, booleans, nothing, unknown, arrays, and records",
@@ -7041,6 +7122,10 @@ static int serialize_value(SerBuf *b, Value v, int depth) {
         return 0;
     case VALUE_GOBJECT:
         runtime_error_raise("serialize: gobjects cannot be serialized",
+                            1003, "actor");
+        return 0;
+    case VALUE_GBOXED:
+        runtime_error_raise("serialize: boxed values cannot be serialized",
                             1003, "actor");
         return 0;
     case VALUE_ACTOR:
@@ -12670,6 +12755,26 @@ static Value gi_canonical_wrap(GObject *obj, gboolean have_ref) {
     return value_gobject(handle);
 }
 
+/* Wrap a boxed instance of GType `type` as a new gBASIC boxed handle (ref_count 1).
+ * `take` transfers ownership of `box` (transfer-full); otherwise the box is
+ * g_boxed_copy'd so the handle always owns exactly one instance — the single-owned
+ * invariant that makes g_boxed_free at last release correct. A NULL box yields
+ * `nothing`. The handle is a reference-semantic value (see struct GBoxedValue). */
+static Value gi_boxed_wrap(GType type, gpointer box, gboolean take) {
+    if (!box) {
+        return value_null();
+    }
+    GBoxedValue *handle = malloc(sizeof(*handle));
+    if (!handle) {
+        abort();
+    }
+    handle->type = type;
+    handle->box = take ? box : g_boxed_copy(type, box);
+    handle->ref_count = 1;
+    handle->owned = 1;
+    return value_gboxed(handle);
+}
+
 /* GValue -> gBASIC Value. Returns 1 on success; 0 (no raise) if the GType is not
  * one v1 supports — the caller raises with context. */
 static int gi_value_from_gvalue(const GValue *gv, Value *out) {
@@ -12696,6 +12801,11 @@ static int gi_value_from_gvalue(const GValue *gv, Value *out) {
     case G_TYPE_OBJECT: {
         GObject *o = g_value_get_object(gv);   /* borrowed: transfer-none */
         *out = gi_canonical_wrap(o, FALSE);
+        return 1;
+    }
+    case G_TYPE_BOXED: {
+        gpointer b = g_value_get_boxed(gv);    /* borrowed: the GValue owns it */
+        *out = gi_boxed_wrap(G_VALUE_TYPE(gv), b, FALSE);  /* copy; we don't own it */
         return 1;
     }
     case G_TYPE_NONE: *out = value_null(); return 1;
@@ -12733,6 +12843,14 @@ static int gi_value_to_gvalue(Value v, GType target, GValue *out) {
     case G_TYPE_OBJECT:
         if (v.kind == VALUE_GOBJECT) { g_value_set_object(out, v.as.gobject->obj); return 1; }
         if (v.kind == VALUE_NULL)    { g_value_set_object(out, NULL); return 1; }
+        g_value_unset(out); return 0;
+    case G_TYPE_BOXED:
+        /* g_value_set_boxed stores its own copy, so our handle keeps ownership. */
+        if (v.kind == VALUE_GBOXED && v.as.gboxed->box &&
+            g_type_is_a(v.as.gboxed->type, target)) {
+            g_value_set_boxed(out, v.as.gboxed->box); return 1;
+        }
+        if (v.kind == VALUE_NULL) { g_value_set_boxed(out, NULL); return 1; }
         g_value_unset(out); return 0;
     default:
         g_value_unset(out); return 0;
@@ -12811,6 +12929,19 @@ static int gi_value_from_giarg(GITypeInfo *ti, GITransfer transfer,
             } else if (GI_IS_ENUM_INFO(iface)) {
                 *out = value_number(arg->v_int32);
                 ok = 1;
+            } else if (GI_IS_STRUCT_INFO(iface)) {
+                /* A boxed struct crossing back to gBASIC. Non-boxed (plain C) structs
+                 * have no registered copy/free and stay unsupported (ok = 0). */
+                GType gt = gi_registered_type_info_get_g_type(
+                    (GIRegisteredTypeInfo *)iface);
+                if (!arg->v_pointer) {
+                    *out = value_null();
+                    ok = 1;
+                } else if (G_TYPE_IS_BOXED(gt)) {
+                    *out = gi_boxed_wrap(gt, arg->v_pointer,
+                                         transfer == GI_TRANSFER_EVERYTHING);
+                    ok = 1;
+                }
             }
             gi_base_info_unref(iface);
         }
@@ -12854,6 +12985,11 @@ static int gi_giarg_from_value(GITypeInfo *ti, Value v, GIArgument *arg) {
             } else if (GI_IS_ENUM_INFO(iface)) {
                 arg->v_int32 = (gint32)value_number_or_zero(v);
                 ok = 1;
+            } else if (GI_IS_STRUCT_INFO(iface)) {
+                /* Boxed struct passed into a call: the box is borrowed for the call's
+                 * duration (the source Value outlives the invoke), like objects. */
+                if (v.kind == VALUE_GBOXED) { arg->v_pointer = v.as.gboxed->box; ok = 1; }
+                else if (v.kind == VALUE_NULL) { arg->v_pointer = NULL; ok = 1; }
             }
             gi_base_info_unref(iface);
         }
@@ -13188,56 +13324,217 @@ static Value gi_do_set(AstExpr *expr) {
  * error messages ("gi.call" / "gi.invoke") and `disp_name` names the callable. The
  * caller retains ownership of `finfo`, `receiver`, and its wrapper values (argument
  * strings are borrowed by GIArgument for the duration of the invoke). */
+/* NAP-2: classify an OUT parameter's type. Returns 1 if the out value can be
+ * produced (no raise), 0 otherwise. When the arg is a caller-allocates boxed struct
+ * (the caller must provide the buffer, e.g. GtkTextIter), is_calloc_struct is set
+ * and struct_gt / struct_size describe it; opaque boxed (size 0) cannot be
+ * caller-allocated and is rejected. Every other classification uses a plain
+ * GIArgument storage cell that gi_value_from_giarg reads back. */
+static int gi_out_type_supported(GITypeInfo *ti, gboolean caller_allocates,
+                                 int *is_calloc_struct, GType *struct_gt,
+                                 gsize *struct_size) {
+    *is_calloc_struct = 0;
+    *struct_gt = G_TYPE_INVALID;
+    *struct_size = 0;
+    switch (gi_type_info_get_tag(ti)) {
+    case GI_TYPE_TAG_BOOLEAN:
+    case GI_TYPE_TAG_INT8:   case GI_TYPE_TAG_UINT8:
+    case GI_TYPE_TAG_INT16:  case GI_TYPE_TAG_UINT16:
+    case GI_TYPE_TAG_INT32:  case GI_TYPE_TAG_UINT32:
+    case GI_TYPE_TAG_INT64:  case GI_TYPE_TAG_UINT64:
+    case GI_TYPE_TAG_FLOAT:  case GI_TYPE_TAG_DOUBLE:
+    case GI_TYPE_TAG_GTYPE:
+    case GI_TYPE_TAG_UTF8:   case GI_TYPE_TAG_FILENAME:
+        return 1;
+    case GI_TYPE_TAG_INTERFACE: {
+        GIBaseInfo *iface = gi_type_info_get_interface(ti);
+        int ok = 0;
+        if (iface) {
+            if (GI_IS_OBJECT_INFO(iface) || GI_IS_INTERFACE_INFO(iface) ||
+                GI_IS_ENUM_INFO(iface)) {
+                ok = 1;
+            } else if (GI_IS_STRUCT_INFO(iface)) {
+                GType gt = gi_registered_type_info_get_g_type(
+                    (GIRegisteredTypeInfo *)iface);
+                if (G_TYPE_IS_BOXED(gt)) {
+                    ok = 1;
+                    if (caller_allocates) {
+                        gsize sz = gi_struct_info_get_size((GIStructInfo *)iface);
+                        if (sz == 0) {
+                            ok = 0;   /* opaque boxed: cannot caller-allocate */
+                        } else {
+                            *is_calloc_struct = 1;
+                            *struct_gt = gt;
+                            *struct_size = sz;
+                        }
+                    }
+                }
+            }
+            gi_base_info_unref(iface);
+        }
+        return ok;
+    }
+    default:
+        return 0;
+    }
+}
+
+/* NAP-2: INOUT is supported only for by-value scalar/enum types. Pointer-shaped
+ * INOUT (strings, objects, boxed, containers) has ambiguous ownership of the
+ * replaced input and no safe deterministic fixture, so it is refused rather than
+ * guessed at. */
+static int gi_inout_scalar_tag(GITypeInfo *ti) {
+    switch (gi_type_info_get_tag(ti)) {
+    case GI_TYPE_TAG_BOOLEAN:
+    case GI_TYPE_TAG_INT8:   case GI_TYPE_TAG_UINT8:
+    case GI_TYPE_TAG_INT16:  case GI_TYPE_TAG_UINT16:
+    case GI_TYPE_TAG_INT32:  case GI_TYPE_TAG_UINT32:
+    case GI_TYPE_TAG_INT64:  case GI_TYPE_TAG_UINT64:
+    case GI_TYPE_TAG_FLOAT:  case GI_TYPE_TAG_DOUBLE:
+    case GI_TYPE_TAG_GTYPE:
+        return 1;
+    case GI_TYPE_TAG_INTERFACE: {
+        GIBaseInfo *iface = gi_type_info_get_interface(ti);
+        int ok = iface && GI_IS_ENUM_INFO(iface);
+        if (iface) gi_base_info_unref(iface);
+        return ok;
+    }
+    default:
+        return 0;
+    }
+}
+
+/* NAP-2: read one collected OUT/INOUT value (declared index i) into *out.
+ * A caller-allocates boxed struct is wrapped as a COPY of the filled buffer (the
+ * raw buffer is freed by the caller's single cleanup path); everything else is read
+ * from its GIArgument storage cell honoring the arg's ownership transfer (which is
+ * how transfer-full string outs get freed after copying). */
+static void gi_collect_out(unsigned int i, GITypeInfo **tinfos, GIArgInfo **ainfos,
+                           GIArgument *out_store, gpointer *out_buf, GType *out_gt,
+                           Value *out) {
+    if (out_buf[i]) {
+        *out = gi_boxed_wrap(out_gt[i], out_buf[i], FALSE);
+    } else {
+        GITransfer xfer = gi_arg_info_get_ownership_transfer(ainfos[i]);
+        if (!gi_value_from_giarg(tinfos[i], xfer, &out_store[i], out)) {
+            *out = value_null();
+        }
+    }
+}
+
+/* Invoke an introspected callable, marshalling IN args in and OUT/INOUT args back
+ * out (NAP-2). Calling convention for the result:
+ *   - no out-params            -> the return value (nothing for void)   [unchanged]
+ *   - exactly one out + void   -> that single out value, unwrapped
+ *   - otherwise (>=1 out with a real return, or >=2 outs) -> a record whose keys are
+ *     each out-param's introspected name, plus `result` for a non-void return.
+ * OUT params are results, so the caller supplies only IN and INOUT args; the arity
+ * check counts those. A GError failure is raised (message preserved) and yields no
+ * out record. */
 static Value gi_invoke_callable(GIFunctionInfo *finfo, GObject *receiver,
                                 AstExpr *expr, size_t first_arg,
                                 const char *ctx, const char *disp_name) {
     GICallableInfo *cinfo = (GICallableInfo *)finfo;
     gboolean is_method = (gi_function_info_get_flags(finfo) & GI_FUNCTION_IS_METHOD) != 0;
     unsigned int ndecl = gi_callable_info_get_n_args(cinfo);
+
+    /* Load every declared arg's info once; both the setup pass and the read-back
+     * pass use it, and it is released in a single cleanup block. */
+    GIArgInfo **ainfos = ndecl ? calloc(ndecl, sizeof(*ainfos)) : NULL;
+    GITypeInfo **tinfos = ndecl ? calloc(ndecl, sizeof(*tinfos)) : NULL;
+    if (ndecl && (!ainfos || !tinfos)) {
+        abort();
+    }
+    unsigned int n_user_decl = 0;   /* IN + INOUT: the caller-supplied args */
+    for (unsigned int i = 0; i < ndecl; i++) {
+        ainfos[i] = gi_callable_info_get_arg(cinfo, i);
+        tinfos[i] = gi_arg_info_get_type_info(ainfos[i]);
+        GIDirection d = gi_arg_info_get_direction(ainfos[i]);
+        if (d == GI_DIRECTION_IN || d == GI_DIRECTION_INOUT) {
+            n_user_decl++;
+        }
+    }
+
     size_t provided = expr->as.call.args.count - first_arg;
-    if (provided != ndecl) {
+    if (provided != n_user_decl) {
         char detail[192];
-        snprintf(detail, sizeof(detail), "%s: %s expects %u argument(s)", ctx, disp_name, ndecl);
+        snprintf(detail, sizeof(detail), "%s: %s expects %u argument(s)", ctx, disp_name, n_user_decl);
+        for (unsigned int i = 0; i < ndecl; i++) {
+            gi_base_info_unref(tinfos[i]);
+            gi_base_info_unref(ainfos[i]);
+        }
+        free(ainfos); free(tinfos);
         runtime_error_raise(detail, 6001, "gi");
         return value_null();
     }
 
-    /* Evaluate the arguments (kept live until after invoke; strings are borrowed
-     * by GIArgument). */
+    /* Evaluated IN/INOUT arg Values (kept live until after invoke; strings are
+     * borrowed by their GIArgument). */
     Value *argvals = provided ? calloc(provided, sizeof(Value)) : NULL;
     GIArgument *in_args = calloc(ndecl + 1, sizeof(GIArgument));
-    if ((provided && !argvals) || !in_args) {
+    GIArgument *out_args = ndecl ? calloc(ndecl, sizeof(GIArgument)) : NULL;
+    GIArgument *out_store = ndecl ? calloc(ndecl, sizeof(GIArgument)) : NULL;  /* per-decl storage cell */
+    gpointer *out_buf = ndecl ? calloc(ndecl, sizeof(gpointer)) : NULL;        /* caller-alloc struct bufs, by decl index */
+    GType *out_gt = ndecl ? calloc(ndecl, sizeof(GType)) : NULL;
+    unsigned int *out_slot = ndecl ? calloc(ndecl, sizeof(unsigned int)) : NULL; /* out order -> decl index */
+    if ((provided && !argvals) || !in_args ||
+        (ndecl && (!out_args || !out_store || !out_buf || !out_gt || !out_slot))) {
         abort();
     }
-    size_t n_in = 0;
+
+    size_t n_in = 0, n_out = 0, user = 0;
     int failed = 0;
     if (receiver && is_method) {
         in_args[n_in++].v_pointer = receiver;
     }
     for (unsigned int i = 0; i < ndecl && !failed; i++) {
-        argvals[i] = eval_expr(expr->as.call.args.items[first_arg + i]);
-        if (error_action_pending()) { failed = 1; break; }
-        GIArgInfo *ai = gi_callable_info_get_arg(cinfo, i);
-        if (gi_arg_info_get_direction(ai) != GI_DIRECTION_IN) {
-            char detail[192];
-            snprintf(detail, sizeof(detail), "%s: %s has an unsupported out/inout argument", ctx, disp_name);
-            gi_base_info_unref(ai);
-            runtime_error_raise(detail, 6001, "gi");
-            failed = 1;
-            break;
+        GIDirection dir = gi_arg_info_get_direction(ainfos[i]);
+        GITypeInfo *ti = tinfos[i];
+
+        if (dir == GI_DIRECTION_IN || dir == GI_DIRECTION_INOUT) {
+            argvals[user] = eval_expr(expr->as.call.args.items[first_arg + user]);
+            if (error_action_pending()) { user++; failed = 1; break; }
+            Value v = argvals[user];
+            user++;
+            if (dir == GI_DIRECTION_IN) {
+                if (!gi_giarg_from_value(ti, v, &in_args[n_in])) {
+                    char detail[192];
+                    snprintf(detail, sizeof(detail), "%s: unsupported argument type for method: %s", ctx, disp_name);
+                    runtime_error_raise(detail, 6001, "gi");
+                    failed = 1; break;
+                }
+                n_in++;
+            } else {   /* INOUT: storage holds the input; pass its address both ways */
+                if (!gi_inout_scalar_tag(ti) ||
+                    !gi_giarg_from_value(ti, v, &out_store[i])) {
+                    char detail[192];
+                    snprintf(detail, sizeof(detail), "%s: %s has an unsupported inout argument type", ctx, disp_name);
+                    runtime_error_raise(detail, 6001, "gi");
+                    failed = 1; break;
+                }
+                in_args[n_in++].v_pointer = &out_store[i];
+                out_args[n_out].v_pointer = &out_store[i];
+                out_slot[n_out] = i; n_out++;
+            }
+        } else {   /* GI_DIRECTION_OUT */
+            int is_calloc_struct = 0; GType sgt = G_TYPE_INVALID; gsize ssz = 0;
+            if (!gi_out_type_supported(ti, gi_arg_info_is_caller_allocates(ainfos[i]),
+                                       &is_calloc_struct, &sgt, &ssz)) {
+                char detail[192];
+                snprintf(detail, sizeof(detail), "%s: %s has an unsupported out argument type", ctx, disp_name);
+                runtime_error_raise(detail, 6001, "gi");
+                failed = 1; break;
+            }
+            if (is_calloc_struct) {
+                out_buf[i] = g_malloc0(ssz);
+                out_gt[i] = sgt;
+                out_args[n_out].v_pointer = out_buf[i];   /* function fills the buffer in place */
+            } else {
+                memset(&out_store[i], 0, sizeof(GIArgument));
+                out_args[n_out].v_pointer = &out_store[i]; /* function writes through this pointer */
+            }
+            out_slot[n_out] = i; n_out++;
         }
-        GITypeInfo *ti = gi_arg_info_get_type_info(ai);
-        int ok = gi_giarg_from_value(ti, argvals[i], &in_args[n_in]);
-        gi_base_info_unref(ti);
-        gi_base_info_unref(ai);
-        if (!ok) {
-            char detail[192];
-            snprintf(detail, sizeof(detail), "%s: unsupported argument type for method: %s", ctx, disp_name);
-            runtime_error_raise(detail, 6001, "gi");
-            failed = 1;
-            break;
-        }
-        n_in++;
     }
 
     Value out = value_null();
@@ -13245,7 +13542,7 @@ static Value gi_invoke_callable(GIFunctionInfo *finfo, GObject *receiver,
         GIArgument retval;
         memset(&retval, 0, sizeof(retval));
         GError *ierr = NULL;
-        if (!gi_function_info_invoke(finfo, in_args, n_in, NULL, 0, &retval, &ierr)) {
+        if (!gi_function_info_invoke(finfo, in_args, n_in, out_args, n_out, &retval, &ierr)) {
             char detail[256];
             snprintf(detail, sizeof(detail), "%s: %s: %s", ctx, disp_name,
                      ierr && ierr->message ? ierr->message : "call failed");
@@ -13254,18 +13551,48 @@ static Value gi_invoke_callable(GIFunctionInfo *finfo, GObject *receiver,
         } else {
             GITypeInfo *rti = gi_callable_info_get_return_type(cinfo);
             GITransfer rtransfer = gi_callable_info_get_caller_owns(cinfo);
-            if (!gi_value_from_giarg(rti, rtransfer, &retval, &out)) {
-                out = value_null();   /* unsupported return type -> nothing */
+            int has_ret = gi_type_info_get_tag(rti) != GI_TYPE_TAG_VOID;
+            Value rv = value_null();
+            if (has_ret && !gi_value_from_giarg(rti, rtransfer, &retval, &rv)) {
+                rv = value_null();   /* unsupported return type -> nothing */
             }
             gi_base_info_unref(rti);
+
+            if (n_out == 0) {
+                out = rv;             /* unchanged: return value (nothing for void) */
+            } else if (n_out == 1 && !has_ret) {
+                gi_collect_out(out_slot[0], tinfos, ainfos, out_store, out_buf, out_gt, &out);
+            } else {
+                Value rec = value_record(NULL, 0);
+                if (has_ret) {
+                    record_set(&rec, "result", rv);
+                }
+                for (size_t op = 0; op < n_out; op++) {
+                    unsigned int di = out_slot[op];
+                    Value ov;
+                    gi_collect_out(di, tinfos, ainfos, out_store, out_buf, out_gt, &ov);
+                    record_set(&rec, gi_base_info_get_name((GIBaseInfo *)ainfos[di]), ov);
+                }
+                out = rec;
+            }
         }
     }
 
-    for (size_t i = 0; i < provided; i++) {
-        value_free(argvals[i]);
+    for (size_t k = 0; k < provided; k++) {
+        value_free(argvals[k]);
     }
-    free(argvals);
-    free(in_args);
+    if (out_buf) {
+        for (unsigned int i = 0; i < ndecl; i++) {
+            if (out_buf[i]) g_free(out_buf[i]);
+        }
+    }
+    for (unsigned int i = 0; i < ndecl; i++) {
+        gi_base_info_unref(tinfos[i]);
+        gi_base_info_unref(ainfos[i]);
+    }
+    free(ainfos); free(tinfos);
+    free(argvals); free(in_args); free(out_args);
+    free(out_store); free(out_buf); free(out_gt); free(out_slot);
     return out;
 }
 
@@ -13546,12 +13873,217 @@ static Value gi_do_quit(AstExpr *expr) {
     return value_null();
 }
 
+/* Resolve the GIFieldInfo named `name` on the boxed struct GType `type`. On success
+ * returns 1 with *out_info (the owning struct info) and *out_field set; the caller
+ * must gi_base_info_unref both. Returns 0 if `type` has no introspected struct info
+ * or no such field. */
+static int gi_struct_field(GType type, const char *name,
+                           GIBaseInfo **out_info, GIFieldInfo **out_field) {
+    GIBaseInfo *info = gi_repository_find_by_gtype(gi_repo(), type);
+    if (!info || !GI_IS_STRUCT_INFO(info)) {
+        if (info) gi_base_info_unref(info);
+        return 0;
+    }
+    GIFieldInfo *field = gi_struct_info_find_field((GIStructInfo *)info, name);
+    if (!field) {
+        gi_base_info_unref(info);
+        return 0;
+    }
+    *out_info = info;
+    *out_field = field;
+    return 1;
+}
+
+/* Strict value/field-type compatibility check for a struct field set, so a wrong
+ * kind is a clean error rather than a silent coercion (value_number_or_zero would
+ * otherwise turn a string/record into 0). Only constrains the scalar/string tags;
+ * other tags defer to the marshaller. On mismatch sets *why and returns 0. */
+static int gi_value_fits_type(GITypeInfo *ti, Value v, const char **why) {
+    switch (gi_type_info_get_tag(ti)) {
+    case GI_TYPE_TAG_BOOLEAN:
+        if (v.kind == VALUE_BOOL || v.kind == VALUE_NUMBER) return 1;
+        *why = "expects a boolean or number";
+        return 0;
+    case GI_TYPE_TAG_INT8:  case GI_TYPE_TAG_UINT8:
+    case GI_TYPE_TAG_INT16: case GI_TYPE_TAG_UINT16:
+    case GI_TYPE_TAG_INT32: case GI_TYPE_TAG_UINT32:
+    case GI_TYPE_TAG_INT64: case GI_TYPE_TAG_UINT64:
+    case GI_TYPE_TAG_FLOAT: case GI_TYPE_TAG_DOUBLE:
+        if (v.kind == VALUE_NUMBER || v.kind == VALUE_BOOL) return 1;
+        *why = "expects a number";
+        return 0;
+    case GI_TYPE_TAG_UTF8: case GI_TYPE_TAG_FILENAME:
+        if (v.kind == VALUE_STRING || v.kind == VALUE_NULL) return 1;
+        *why = "expects a string";
+        return 0;
+    default:
+        return 1;
+    }
+}
+
+static Value gi_do_new_struct(AstExpr *expr) {
+    if (expr->as.call.args.count != 1) {
+        return gi_raise("gi.new_struct expects a qualified struct type name");
+    }
+    Value tv = eval_expr(expr->as.call.args.items[0]);
+    if (error_action_pending()) { value_free(tv); return value_null(); }
+    if (tv.kind != VALUE_STRING) {
+        value_free(tv);
+        return gi_raise("gi.new_struct expects a type name string");
+    }
+    char ns[128];
+    const char *sname = NULL;
+    if (!gi_split_first(tv.as.string, ns, sizeof(ns), &sname)) {
+        Value r = gi_raisef("gi.new_struct: expected Namespace.Struct, got: %s", tv.as.string);
+        value_free(tv);
+        return r;
+    }
+    GIBaseInfo *info = gi_repository_find_by_name(gi_repo(), ns, sname);
+    if (!info) {
+        Value r = gi_raisef("gi.new_struct: unknown type: %s", tv.as.string);
+        value_free(tv);
+        return r;
+    }
+    if (!GI_IS_STRUCT_INFO(info)) {
+        gi_base_info_unref(info);
+        Value r = gi_raisef("gi.new_struct: %s is not a struct", tv.as.string);
+        value_free(tv);
+        return r;
+    }
+    GType gtype = gi_registered_type_info_get_g_type((GIRegisteredTypeInfo *)info);
+    size_t size = gi_struct_info_get_size((GIStructInfo *)info);
+    gboolean foreign = gi_struct_info_is_foreign((GIStructInfo *)info);
+    gi_base_info_unref(info);
+    if (!G_TYPE_IS_BOXED(gtype) || foreign || size == 0) {
+        Value r = gi_raisef("gi.new_struct: %s is not a constructible boxed struct",
+                            tv.as.string);
+        value_free(tv);
+        return r;
+    }
+    /* Produce an owned instance via the type's registered copy of a zeroed buffer, so
+     * the result is paired with g_boxed_free. Suits POD-style boxed structs (the
+     * NAP-1 target); opaque/foreign boxed report size 0 above and are refused. */
+    void *tmp = g_malloc0(size);
+    void *box = g_boxed_copy(gtype, tmp);
+    g_free(tmp);
+    value_free(tv);
+    return gi_boxed_wrap(gtype, box, TRUE);
+}
+
+static Value gi_do_struct_get(AstExpr *expr) {
+    if (expr->as.call.args.count != 2) {
+        return gi_raise("gi.struct_get expects a struct value and a field name");
+    }
+    Value sv = eval_expr(expr->as.call.args.items[0]);
+    if (error_action_pending()) { value_free(sv); return value_null(); }
+    Value fv = eval_expr(expr->as.call.args.items[1]);
+    if (error_action_pending()) { value_free(sv); value_free(fv); return value_null(); }
+    if (sv.kind != VALUE_GBOXED || !sv.as.gboxed->box) {
+        value_free(sv); value_free(fv);
+        return gi_raise("gi.struct_get expects a struct/boxed value");
+    }
+    if (fv.kind != VALUE_STRING) {
+        value_free(sv); value_free(fv);
+        return gi_raise("gi.struct_get expects a field name string");
+    }
+    GIBaseInfo *info = NULL;
+    GIFieldInfo *field = NULL;
+    if (!gi_struct_field(sv.as.gboxed->type, fv.as.string, &info, &field)) {
+        Value r = gi_raisef("gi.struct_get: unknown field: %s", fv.as.string);
+        value_free(sv); value_free(fv);
+        return r;
+    }
+    Value out = value_null();
+    const char *fail = NULL;
+    if (!(gi_field_info_get_flags(field) & GI_FIELD_IS_READABLE)) {
+        fail = "is not readable";
+    } else {
+        GIArgument arg;
+        memset(&arg, 0, sizeof(arg));
+        if (!gi_field_info_get_field(field, sv.as.gboxed->box, &arg)) {
+            fail = "has an unsupported field type";
+        } else {
+            GITypeInfo *ti = gi_field_info_get_type_info(field);
+            if (!gi_value_from_giarg(ti, GI_TRANSFER_NOTHING, &arg, &out)) {
+                fail = "has an unsupported field type";
+            }
+            gi_base_info_unref(ti);
+        }
+    }
+    gi_base_info_unref(field);
+    gi_base_info_unref(info);
+    if (fail) {
+        char msg[256];
+        snprintf(msg, sizeof(msg), "gi.struct_get: field '%s' %s", fv.as.string, fail);
+        value_free(sv); value_free(fv); value_free(out);
+        return gi_raise(msg);
+    }
+    value_free(sv); value_free(fv);
+    return out;
+}
+
+static Value gi_do_struct_set(AstExpr *expr) {
+    if (expr->as.call.args.count != 3) {
+        return gi_raise("gi.struct_set expects a struct value, a field name, and a value");
+    }
+    Value sv = eval_expr(expr->as.call.args.items[0]);
+    if (error_action_pending()) { value_free(sv); return value_null(); }
+    Value fv = eval_expr(expr->as.call.args.items[1]);
+    if (error_action_pending()) { value_free(sv); value_free(fv); return value_null(); }
+    Value nv = eval_expr(expr->as.call.args.items[2]);
+    if (error_action_pending()) { value_free(sv); value_free(fv); value_free(nv); return value_null(); }
+    if (sv.kind != VALUE_GBOXED || !sv.as.gboxed->box) {
+        value_free(sv); value_free(fv); value_free(nv);
+        return gi_raise("gi.struct_set expects a struct/boxed value");
+    }
+    if (fv.kind != VALUE_STRING) {
+        value_free(sv); value_free(fv); value_free(nv);
+        return gi_raise("gi.struct_set expects a field name string");
+    }
+    GIBaseInfo *info = NULL;
+    GIFieldInfo *field = NULL;
+    if (!gi_struct_field(sv.as.gboxed->type, fv.as.string, &info, &field)) {
+        Value r = gi_raisef("gi.struct_set: unknown field: %s", fv.as.string);
+        value_free(sv); value_free(fv); value_free(nv);
+        return r;
+    }
+    const char *fail = NULL;
+    if (!(gi_field_info_get_flags(field) & GI_FIELD_IS_WRITABLE)) {
+        fail = "is not writable";
+    } else {
+        GITypeInfo *ti = gi_field_info_get_type_info(field);
+        const char *why = "has an unsupported field type";
+        GIArgument arg;
+        if (!gi_value_fits_type(ti, nv, &why)) {
+            fail = why;
+        } else if (!gi_giarg_from_value(ti, nv, &arg)) {
+            fail = "has an unsupported field type";
+        } else if (!gi_field_info_set_field(field, sv.as.gboxed->box, &arg)) {
+            fail = "has an unsupported field type";
+        }
+        gi_base_info_unref(ti);
+    }
+    gi_base_info_unref(field);
+    gi_base_info_unref(info);
+    if (fail) {
+        char msg[256];
+        snprintf(msg, sizeof(msg), "gi.struct_set: field '%s' %s", fv.as.string, fail);
+        value_free(sv); value_free(fv); value_free(nv);
+        return gi_raise(msg);
+    }
+    value_free(sv); value_free(fv); value_free(nv);
+    return value_null();
+}
+
 static Value gi_eval_call(AstExpr *expr) {
     const char *name = expr->as.call.name;
     if (strcmp(name, "require") == 0)     return gi_do_require(expr);
     if (strcmp(name, "new") == 0)         return gi_do_new(expr);
+    if (strcmp(name, "new_struct") == 0)  return gi_do_new_struct(expr);
     if (strcmp(name, "get") == 0)         return gi_do_get(expr);
     if (strcmp(name, "set") == 0)         return gi_do_set(expr);
+    if (strcmp(name, "struct_get") == 0)  return gi_do_struct_get(expr);
+    if (strcmp(name, "struct_set") == 0)  return gi_do_struct_set(expr);
     if (strcmp(name, "call") == 0)        return gi_do_call(expr);
     if (strcmp(name, "invoke") == 0)      return gi_do_invoke(expr);
     if (strcmp(name, "connect") == 0)     return gi_do_connect(expr);
@@ -17022,6 +17554,34 @@ static Value eval_comparison(AstExpr *expr, Value left, Value right) {
             result = 1;
         } else {
             runtime_error_raise("gobjects support only = and !=", 1003, "comparison");
+            value_free(left);
+            value_free(right);
+            return value_null();
+        }
+    } else if (left.kind == VALUE_GBOXED && right.kind == VALUE_GBOXED) {
+        /* Identity by handle (see value_storage_equal): aliases share one handle and
+         * compare equal; independently constructed boxed values do not. No generic
+         * semantic equality across arbitrary boxed types is possible. */
+        int equal = left.as.gboxed == right.as.gboxed;
+        if (strcmp(op, "=") == 0) {
+            result = equal;
+        } else if (strcmp(op, "!=") == 0) {
+            result = !equal;
+        } else {
+            runtime_error_raise("boxed values support only = and !=", 1003, "comparison");
+            value_free(left);
+            value_free(right);
+            return value_null();
+        }
+    } else if (left.kind == VALUE_GBOXED || right.kind == VALUE_GBOXED) {
+        /* A boxed value compared against a non-boxed: unequal, matching the gobject
+         * rule. */
+        if (strcmp(op, "=") == 0) {
+            result = 0;
+        } else if (strcmp(op, "!=") == 0) {
+            result = 1;
+        } else {
+            runtime_error_raise("boxed values support only = and !=", 1003, "comparison");
             value_free(left);
             value_free(right);
             return value_null();

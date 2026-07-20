@@ -123,3 +123,17 @@ D0.6, the rest remain open or are by-design.
   does not rescue the caller (it clears state, not the generation counter).
 - **Workaround:** Unchanged — PRE-VALIDATE. Full model + proof in
   `docs/ai/ERRORS.md` and `examples/on_error_resume_next_test.bas`.
+
+## 2026-07-19 — CC — while: NAP-2 (GI out/inout args) struct-out test design
+- **Type:** language-surprise
+- **Severity:** low
+- **What:** GI out-parameters get packaged into a return record keyed by each
+  out-param's *introspected name*. When a name collides with a gBASIC reserved word
+  the key becomes unreachable: `Gtk.TextBuffer.get_bounds` has out args literally
+  named `start` and `end`, and `end` is a keyword, so `r.end` fails to parse
+  (`unexpected ... near END`). More generally any C API with a param named `end`,
+  `to`, `step`, etc. produces a record field you cannot dot-access.
+- **Workaround:** Used the single-out `get_start_iter`/`get_end_iter` methods instead
+  (each returns its one out value directly, no record), sidestepping the reserved key.
+  Durable fix would be bracket/string-key record access (e.g. `r["end"]`) or key
+  sanitization; noted in the NAP-2 plan deviations. Not blocking NAP-2.

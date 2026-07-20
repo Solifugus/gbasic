@@ -1,0 +1,1 @@
+runtime error at tests/native_platform/negative_boxed_unsupported_field.bas:4:1: gi.struct_get: field 'glyphs' has an unsupported field type

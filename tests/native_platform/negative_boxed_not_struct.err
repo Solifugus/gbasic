@@ -1,0 +1,1 @@
+runtime error at tests/native_platform/negative_boxed_not_struct.bas:3:1: gi.new_struct: Gtk.Window is not a struct

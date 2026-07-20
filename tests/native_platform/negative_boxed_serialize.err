@@ -1,0 +1,1 @@
+runtime error at tests/native_platform/negative_boxed_serialize.bas:4:1: serialize: boxed values cannot be serialized

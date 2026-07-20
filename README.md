@@ -574,6 +574,18 @@ sudo apt-get install gir1.2-gtk-4.0 libgtk-4-1     # Debian/Ubuntu runtime + typ
 See the [GObject-Introspection (GUI) Module](docs/reference.md#gobject-introspection-gui-module)
 reference and [examples/gi/README.md](examples/gi/README.md).
 
+The **Native Application Platform** work (making gBASIC able to build sophisticated
+native GTK 4 applications through `gi`; see
+[docs/gbasic_native_app_platform_plan.md](docs/gbasic_native_app_platform_plan.md))
+drives GTK 4 and GtkSourceView 5 entirely through this bridge — neither is linked.
+Its only extra runtime requirement over the base `gi` module is that their
+introspection typelibs resolve:
+
+```sh
+# Debian/Ubuntu runtime typelibs (no build/link change; loaded via gi)
+sudo apt-get install gir1.2-gtk-4.0 libgtk-4-1 gir1.2-gtksource-5 libgtksourceview-5-0
+```
+
 ## Tests
 
 Build and run the baseline suites:
@@ -593,6 +605,14 @@ Run module and application integration tests:
 ./tests/run_gbasic_site.sh
 GBASIC_SITE_POSTGRES_TEST=1 ./tests/run_gbasic_site_postgres.sh
 bash tests/run_bag_smoke.sh
+```
+
+The `gi` bridge and Native Application Platform suites are headless (display-free)
+and skip cleanly when their introspection typelibs are unavailable:
+
+```sh
+./tests/run_gi.sh                # gi.* bridge; skips if libgirepository-2.0 absent
+./tests/run_native_platform.sh   # native GTK4/GtkSource platform; skips if typelibs absent
 ```
 
 The SQLite runner skips when sqlite3 development files are unavailable.

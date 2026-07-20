@@ -1,0 +1,1 @@
+runtime error at tests/native_platform/negative_out_unsupported.bas:8:1: gi.invoke: shell_parse_argv has an unsupported out argument type
