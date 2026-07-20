@@ -1,0 +1,1 @@
+runtime error at tests/native_platform/negative_loop_source_unknown.bas:6:1: gi.source_remove: no such source

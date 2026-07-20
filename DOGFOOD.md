@@ -137,3 +137,21 @@ D0.6, the rest remain open or are by-design.
   (each returns its one out value directly, no record), sidestepping the reserved key.
   Durable fix would be bracket/string-key record access (e.g. `r["end"]`) or key
   sanitization; noted in the NAP-2 plan deviations. Not blocking NAP-2.
+
+## 2026-07-20 — CC — while: NAP-3 (WI-4 event loop) writing actor+mainloop tests
+- **Type:** language-surprise
+- **Severity:** medium
+- **What:** Carrying counter state across event-loop handler calls hit several scope
+  rules at once: (1) a function cannot rebind a top-level scalar (`ticks = ticks + 1`
+  inside a function creates a local; the global stays unchanged), though it CAN mutate
+  a shared reference type — `rec.field = ...` on a top-level record persists. (2) When
+  a `program main` block is present, top-level statements do NOT run at all (only the
+  program block executes), so `s = {}` at file scope is dead code and handlers see
+  `undefined variable`. (3) Assignments INSIDE `program main` do land in the global
+  scope, so top-level handler functions can see them. (4) `load gi` must be inside
+  `program main` too — a top-level `load` doesn't carry into the program block.
+- **Workaround:** For actor tests (which need `program main`), initialise the shared
+  handler-state record and `load gi`/`gi.require` INSIDE `program main`; mutate record
+  fields (not scalars) from handlers. Also `sleep` is a function call `sleep(0.1)`, not
+  a statement `sleep 0.1`. All by-design given shared-nothing scoping; noted so the next
+  person writing loop/actor code doesn't rediscover it.

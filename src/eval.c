@@ -62,8 +62,11 @@
 
 #if HAVE_GIR
 /* GObject-Introspection bridge (gi.* module). girepository.h pulls in
- * glib-object.h (GObject, GValue, signals). Modern girepository-2.0 API only. */
+ * glib-object.h (GObject, GValue, signals). Modern girepository-2.0 API only.
+ * glib-unix.h provides g_unix_fd_add for wiring raw fds (notably the actor inbox)
+ * into the GLib main loop (NAP-3 WI-4). */
 #include <girepository/girepository.h>
+#include <glib-unix.h>
 #endif
 
 #define SECURE_TOKEN_MAX_LENGTH 4096
@@ -13051,7 +13054,6 @@ static void gi_closure_finalize(gpointer data, GClosure *closure) {
 static void gi_signal_marshal(GClosure *closure, GValue *return_gvalue,
                               guint n_param_values, const GValue *param_values,
                               gpointer invocation_hint, gpointer marshal_data) {
-    (void)return_gvalue;
     (void)invocation_hint;
     (void)marshal_data;
     GiClosureData *d = closure->data;
@@ -13082,20 +13084,33 @@ static void gi_signal_marshal(GClosure *closure, GValue *return_gvalue,
     int before_gen = error_generation;
 
     Value result = invoke_function(def->stmt, args, want, NULL);
-    value_free(result);
 
     if (runtime_stopped || error_generation != before_gen) {
         /* The handler raised. In STOP mode the raise already pushed a diagnostic to
          * the sink (surfaced at program end); here we contain it: restore the outer
          * error/stop state so the program that pumped the loop continues cleanly,
-         * and end any running main loop. */
+         * and end any running main loop. The return_gvalue is left at its default. */
         runtime_stopped = saved_stopped;
         error_mode = saved_mode;
         error_clear_state();
         if (gi_main_loop) {
             g_main_loop_quit(gi_main_loop);
         }
+    } else if (return_gvalue && G_VALUE_TYPE(return_gvalue) != G_TYPE_INVALID) {
+        /* WI-3: this signal collects a return value from its handler (e.g. a
+         * "close-request" veto returning a boolean). Convert the handler's return
+         * Value into return_gvalue; on a type mismatch leave the accumulator's
+         * default rather than forcing a wrong value. gi_value_to_gvalue re-inits
+         * the GValue, so unset the pre-initialised one first. */
+        GType want_type = G_VALUE_TYPE(return_gvalue);
+        GValue converted = G_VALUE_INIT;
+        if (gi_value_to_gvalue(result, want_type, &converted)) {
+            g_value_unset(return_gvalue);
+            memcpy(return_gvalue, &converted, sizeof(GValue));
+        }
     }
+    value_free(result);
+
     current_line = saved_line;
     current_column = saved_column;
 }
@@ -13873,6 +13888,213 @@ static Value gi_do_quit(AstExpr *expr) {
     return value_null();
 }
 
+/* --- WI-4: GLib event sources (timeout/idle/fd/mailbox) ------------------
+ * Each source re-enters a gBASIC handler through the same GiClosureData +
+ * function_resolve pattern as signals. The handler's return governs the source
+ * lifetime: `false` (or a raise) removes it; anything else keeps it. The closure
+ * data is owned by the source and freed via gi_closure_data_free when it is
+ * removed. */
+
+static GiClosureData *gi_closure_data_new(Value fn) {
+    GiClosureData *d = calloc(1, sizeof(*d));
+    if (!d) {
+        abort();
+    }
+    d->name = copy_string(fn.as.function.name);
+    d->library = fn.as.function.library ? copy_string(fn.as.function.library) : NULL;
+    return d;
+}
+
+static void gi_closure_data_free(gpointer data) {
+    GiClosureData *d = data;
+    if (!d) {
+        return;
+    }
+    free(d->name);
+    free(d->library);
+    free(d);
+}
+
+/* Re-enter a gBASIC source handler with args[0..nargs) bound to its declared
+ * params (extras -> nothing). Contains any raise (restore outer error/stop state,
+ * quit the loop) and returns whether the source should stay: a handler that raises
+ * or returns `false` is removed (G_SOURCE_REMOVE); otherwise G_SOURCE_CONTINUE. */
+static gboolean gi_source_dispatch(GiClosureData *d, Value *args, size_t nargs) {
+    FunctionDef *def = function_resolve(d->library, d->name);
+    if (!def || !def->stmt) {
+        return G_SOURCE_REMOVE;   /* handler disappeared: drop the source */
+    }
+    size_t want = def->stmt->as.function.params.count;
+    Value *pv = want ? malloc(sizeof(Value) * want) : NULL;
+    if (want && !pv) {
+        abort();
+    }
+    for (size_t i = 0; i < want; i++) {
+        pv[i] = (i < nargs) ? value_copy(args[i]) : value_null();
+    }
+
+    int saved_stopped = runtime_stopped;
+    ErrorMode saved_mode = error_mode;
+    int saved_line = current_line;
+    int saved_column = current_column;
+    int before_gen = error_generation;
+
+    Value result = invoke_function(def->stmt, pv, want, NULL);
+    gboolean keep = G_SOURCE_CONTINUE;
+    if (runtime_stopped || error_generation != before_gen) {
+        runtime_stopped = saved_stopped;
+        error_mode = saved_mode;
+        error_clear_state();
+        if (gi_main_loop) {
+            g_main_loop_quit(gi_main_loop);
+        }
+        keep = G_SOURCE_REMOVE;   /* a raising handler removes its own source */
+    } else if (result.kind == VALUE_BOOL && !result.as.boolean) {
+        keep = G_SOURCE_REMOVE;   /* explicit false stops the source */
+    }
+    value_free(result);
+    current_line = saved_line;
+    current_column = saved_column;
+    return keep;
+}
+
+static gboolean gi_timeout_cb(gpointer data) {
+    return gi_source_dispatch((GiClosureData *)data, NULL, 0);
+}
+
+static gboolean gi_fd_cb(gint fd, GIOCondition condition, gpointer data) {
+    (void)fd;
+    (void)condition;
+    return gi_source_dispatch((GiClosureData *)data, NULL, 0);
+}
+
+static gboolean gi_mailbox_cb(gint fd, GIOCondition condition, gpointer data) {
+    (void)fd;
+    (void)condition;
+    /* One readable event on the SOCK_SEQPACKET inbox == exactly one whole frame, so
+     * a single actor_recv_one drains it without blocking mid-frame. A closed/broken
+     * peer (no more frames) removes the watch. */
+    Value frame = value_null();
+    if (actor_recv_one(&frame) != ACTOR_RECV_OK) {
+        return G_SOURCE_REMOVE;
+    }
+    gboolean keep = gi_source_dispatch((GiClosureData *)data, &frame, 1);
+    value_free(frame);
+    return keep;
+}
+
+static Value gi_do_timeout(AstExpr *expr) {
+    if (expr->as.call.args.count != 2) {
+        return gi_raise("gi.timeout expects an interval in milliseconds and a function");
+    }
+    Value mv = eval_expr(expr->as.call.args.items[0]);
+    if (error_action_pending()) { value_free(mv); return value_null(); }
+    Value fv = eval_expr(expr->as.call.args.items[1]);
+    if (error_action_pending()) { value_free(mv); value_free(fv); return value_null(); }
+    if (mv.kind != VALUE_NUMBER) {
+        value_free(mv); value_free(fv);
+        return gi_raise("gi.timeout expects a number of milliseconds");
+    }
+    if (fv.kind != VALUE_FUNCTION) {
+        value_free(mv); value_free(fv);
+        return gi_raise("gi.timeout expects a function");
+    }
+    if (mv.as.number < 0) {
+        value_free(mv); value_free(fv);
+        return gi_raise("gi.timeout expects a non-negative interval");
+    }
+    GiClosureData *d = gi_closure_data_new(fv);
+    guint id = g_timeout_add_full(G_PRIORITY_DEFAULT, (guint)mv.as.number,
+                                  gi_timeout_cb, d, gi_closure_data_free);
+    value_free(mv); value_free(fv);
+    return value_number((double)id);
+}
+
+static Value gi_do_idle(AstExpr *expr) {
+    if (expr->as.call.args.count != 1) {
+        return gi_raise("gi.idle expects a function");
+    }
+    Value fv = eval_expr(expr->as.call.args.items[0]);
+    if (error_action_pending()) { value_free(fv); return value_null(); }
+    if (fv.kind != VALUE_FUNCTION) {
+        value_free(fv);
+        return gi_raise("gi.idle expects a function");
+    }
+    GiClosureData *d = gi_closure_data_new(fv);
+    guint id = g_idle_add_full(G_PRIORITY_DEFAULT_IDLE, gi_timeout_cb, d, gi_closure_data_free);
+    value_free(fv);
+    return value_number((double)id);
+}
+
+static Value gi_do_source_remove(AstExpr *expr) {
+    if (expr->as.call.args.count != 1) {
+        return gi_raise("gi.source_remove expects a source id");
+    }
+    Value idv = eval_expr(expr->as.call.args.items[0]);
+    if (error_action_pending()) { value_free(idv); return value_null(); }
+    if (idv.kind != VALUE_NUMBER) {
+        value_free(idv);
+        return gi_raise("gi.source_remove expects a numeric source id");
+    }
+    guint id = (guint)idv.as.number;
+    value_free(idv);
+    /* Validate before g_source_remove: removing an unknown id emits a fatal GLib
+     * critical under fatal-criticals, so surface it as a clean gBASIC error. */
+    if (id == 0 || !g_main_context_find_source_by_id(NULL, id)) {
+        return gi_raise("gi.source_remove: no such source");
+    }
+    g_source_remove(id);
+    return value_null();
+}
+
+static Value gi_do_watch_fd(AstExpr *expr) {
+    if (expr->as.call.args.count != 2) {
+        return gi_raise("gi.watch_fd expects a file descriptor and a function");
+    }
+    Value fdv = eval_expr(expr->as.call.args.items[0]);
+    if (error_action_pending()) { value_free(fdv); return value_null(); }
+    Value fv = eval_expr(expr->as.call.args.items[1]);
+    if (error_action_pending()) { value_free(fdv); value_free(fv); return value_null(); }
+    if (fdv.kind != VALUE_NUMBER) {
+        value_free(fdv); value_free(fv);
+        return gi_raise("gi.watch_fd expects a numeric file descriptor");
+    }
+    if (fv.kind != VALUE_FUNCTION) {
+        value_free(fdv); value_free(fv);
+        return gi_raise("gi.watch_fd expects a function");
+    }
+    if (fdv.as.number < 0) {
+        value_free(fdv); value_free(fv);
+        return gi_raise("gi.watch_fd expects a non-negative file descriptor");
+    }
+    GiClosureData *d = gi_closure_data_new(fv);
+    guint id = g_unix_fd_add_full(G_PRIORITY_DEFAULT, (int)fdv.as.number, G_IO_IN,
+                                  gi_fd_cb, d, gi_closure_data_free);
+    value_free(fdv); value_free(fv);
+    return value_number((double)id);
+}
+
+static Value gi_do_watch_mailbox(AstExpr *expr) {
+    if (expr->as.call.args.count != 1) {
+        return gi_raise("gi.watch_mailbox expects a function");
+    }
+    Value fv = eval_expr(expr->as.call.args.items[0]);
+    if (error_action_pending()) { value_free(fv); return value_null(); }
+    if (fv.kind != VALUE_FUNCTION) {
+        value_free(fv);
+        return gi_raise("gi.watch_mailbox expects a function");
+    }
+    if (!ensure_root_mailbox()) {   /* raises on failure */
+        value_free(fv);
+        return value_null();
+    }
+    GiClosureData *d = gi_closure_data_new(fv);
+    guint id = g_unix_fd_add_full(G_PRIORITY_DEFAULT, root_mailbox.read_fd, G_IO_IN,
+                                  gi_mailbox_cb, d, gi_closure_data_free);
+    value_free(fv);
+    return value_number((double)id);
+}
+
 /* Resolve the GIFieldInfo named `name` on the boxed struct GType `type`. On success
  * returns 1 with *out_info (the owning struct info) and *out_field set; the caller
  * must gi_base_info_unref both. Returns 0 if `type` has no introspected struct info
@@ -14093,6 +14315,11 @@ static Value gi_eval_call(AstExpr *expr) {
     if (strcmp(name, "type_name") == 0)   return gi_do_type_name(expr);
     if (strcmp(name, "main") == 0)        return gi_do_main(expr);
     if (strcmp(name, "quit") == 0)        return gi_do_quit(expr);
+    if (strcmp(name, "timeout") == 0)     return gi_do_timeout(expr);
+    if (strcmp(name, "idle") == 0)        return gi_do_idle(expr);
+    if (strcmp(name, "source_remove") == 0) return gi_do_source_remove(expr);
+    if (strcmp(name, "watch_fd") == 0)    return gi_do_watch_fd(expr);
+    if (strcmp(name, "watch_mailbox") == 0) return gi_do_watch_mailbox(expr);
     return gi_raisef("invalid function call: gi.%s", name);
 }
 #endif /* HAVE_GIR */

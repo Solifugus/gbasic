@@ -52,6 +52,11 @@ positive_cases=(
     out_scalar
     out_multi
     out_struct
+    loop_timeout
+    loop_idle
+    loop_source_remove
+    loop_mailbox
+    loop_responsive
 )
 
 for name in "${positive_cases[@]}"; do
@@ -60,7 +65,9 @@ for name in "${positive_cases[@]}"; do
     : >"$stdout_file"
     : >"$stderr_file"
 
-    if ./gbasic "$source" >"$stdout_file" 2>"$stderr_file"; then
+    # timeout guards the WI-4 main-loop cases: they quit themselves, but a future
+    # regression that never quits must fail the suite rather than hang it forever.
+    if timeout 60 ./gbasic "$source" >"$stdout_file" 2>"$stderr_file"; then
         if diff -u "$expected" "$stdout_file"; then
             printf 'PASS %s\n' "$source"
         else
@@ -87,6 +94,8 @@ negative_cases=(
     negative_out_gerror
     negative_out_arity
     negative_inout_unsupported
+    negative_loop_badfn
+    negative_loop_source_unknown
 )
 
 for name in "${negative_cases[@]}"; do
@@ -95,7 +104,7 @@ for name in "${negative_cases[@]}"; do
     : >"$stdout_file"
     : >"$stderr_file"
 
-    if ./gbasic "$source" >"$stdout_file" 2>"$stderr_file"; then
+    if timeout 60 ./gbasic "$source" >"$stdout_file" 2>"$stderr_file"; then
         printf 'FAIL %s\n' "$source"
         printf 'expected nonzero exit\n'
         exit 1

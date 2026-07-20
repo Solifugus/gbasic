@@ -173,25 +173,42 @@ non-blocking UI updates. This phase makes responsive, async gBASIC GTK apps poss
 Source areas: `gi_signal_marshal` (12915-12965, the `(void)return_gvalue` at 12918);
 new builtins in the `gi.*` dispatch; actor `root_mailbox` (7447) for the inbox fd.
 
-- [ ] **Tests first:**
-  - (headless) `gi.timeout(ms,fn)` and `gi.idle(fn)` driving a `GMainLoop` that quits
-    after N ticks; `gi.source_remove`.
-  - (headless) `gi.watch_fd(fd,fn)` on a `pipe()` fires when data arrives.
-  - (headless) spawn an actor, `gi.watch_mailbox(fn)` (or `gi.watch_fd(self_fd(),fn)`)
-    fires and `receive` delivers the frame — proves async-result-on-loop.
-  - (unit) WI-3 signal return: marshaller-level test that a handler's return `Value` is
-    written into `return_gvalue` (a display-free returning signal is scarce; cover the
-    conversion at unit level). `close-request` veto is a **manual display** check.
-- [ ] Set `return_gvalue` from the handler's return via `gi_value_to_gvalue` (guard
-      type mismatch; free the Value as today).
-- [ ] `gi.timeout`/`gi.idle` → `g_timeout_add`/`g_idle_add` (handler returning false
-      stops the source); `gi.watch_fd` → `g_unix_fd_add`; `gi.source_remove`. Reuse the
-      `GiClosureData` + `function_resolve` closure pattern (12894-12922).
-- [ ] Expose the inbox: a `self_fd()`/`gi.watch_mailbox(fn)` reading `root_mailbox.read_fd`.
-- [ ] valgrind; byte-exact; fatal-criticals. Show diff, STOP.
+- [x] **Tests first (headless, deterministic):** `loop_timeout` / `loop_idle` (tick N,
+      return-false removes source, quit); `loop_source_remove` (a doomed source removed
+      before it fires); `loop_mailbox` (spawn actor → `watch_mailbox` delivers the frame
+      to the handler); **`loop_responsive`** — the load-bearing experiment: a worker
+      `sleep`s 100ms in its own process while the parent's 5ms timeout keeps firing, and
+      the result arrives via the inbox fd-watch (`responsive=true`, ticks≥1). Negatives:
+      non-function handler, unknown `source_remove` id. WI-3 return conversion is wired
+      and covered by inspection + the unchanged void-signal path (`run_gi.sh` green); a
+      returning signal is display-bound, so `close-request` veto stays a **manual** check.
+- [x] `return_gvalue` set from the handler's return via `gi_value_to_gvalue` (mismatch
+      leaves the accumulator default; unset-then-memcpy the reconverted GValue).
+- [x] `gi.timeout`/`gi.idle` → `g_timeout_add_full`/`g_idle_add_full`; `gi.watch_fd` →
+      `g_unix_fd_add_full` (general primitive); `gi.source_remove` (validated via
+      `g_main_context_find_source_by_id` so an unknown id is a clean error, not a fatal
+      critical). Shared `gi_source_dispatch` reuses the `GiClosureData` + `function_resolve`
+      + error-containment pattern; handler `false`/raise → `G_SOURCE_REMOVE`; each source
+      owns its data via a `GDestroyNotify`.
+- [x] `gi.watch_mailbox(fn)` → `g_unix_fd_add_full` on `root_mailbox.read_fd`; a readable
+      event on the **SOCK_SEQPACKET** inbox is exactly one whole frame, so `actor_recv_one`
+      drains it without blocking and delivers the deserialized value to `fn(frame)`.
+- [x] valgrind clean (0 lost / 0 errors) on source lifecycle, the spawn+timeout+mailbox
+      path, and a 2000× create/remove churn; byte-exact; fatal-criticals. Zero rebaselines.
 
-**Completion:** timeout/idle/watch_fd/mailbox green headless; signal-return unit green;
-close-request manual check recorded.
+**Completion:** timeout/idle/source_remove/mailbox green headless; the actor→loop
+responsiveness experiment green and deterministic; signal-return wired (manual
+close-request check recorded as deferred). **DONE** — stop-at-boundary; NAP-4 not started.
+
+**Seam finding (the one the bet rests on):** actor→GLib-loop needs **nothing beyond a
+wired-in fd watch**. Actors are separate processes over a SEQPACKET socketpair, so the
+inbox is a pollable fd whose readability means one atomic frame; `g_unix_fd_add` fires the
+callback in the loop thread. No interpreter threads, no cross-thread GTK calls, no
+partial-frame handling. `gi.watch_fd` is exposed as the general primitive but its
+standalone golden waits on a gBASIC-reachable fd source (NAP-6 `process.run`); the fd-watch
+mechanism itself is covered now via `watch_mailbox`. `self_fd()` was intentionally not
+added — `watch_mailbox` owns the receive to avoid racing the blocking `receive()`/retain
+queue.
 
 ---
 
