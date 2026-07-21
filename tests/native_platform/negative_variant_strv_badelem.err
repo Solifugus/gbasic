@@ -1,0 +1,1 @@
+runtime error at tests/native_platform/negative_variant_strv_badelem.bas:5:1: gi.variant_strv expects an array of strings

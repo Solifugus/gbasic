@@ -1064,7 +1064,13 @@ static void gboxed_release(GBoxedValue *handle) {
     if (--handle->ref_count == 0) {
 #if HAVE_GIR
         if (handle->owned && handle->box) {
-            g_boxed_free(handle->type, handle->box);
+            /* GVariant rides the same handle as boxed values but is a fundamental
+             * (non-boxed) type, so it frees with g_variant_unref, not g_boxed_free. */
+            if (handle->type == G_TYPE_VARIANT) {
+                g_variant_unref(handle->box);
+            } else {
+                g_boxed_free(handle->type, handle->box);
+            }
         }
 #endif
         free(handle);
@@ -6496,6 +6502,13 @@ static const char *builtin_type_name(Value value) {
     case VALUE_GOBJECT:
         return "gobject";
     case VALUE_GBOXED:
+#if HAVE_GIR
+        /* GVariant reuses the boxed handle but is its own value category; report it
+         * distinctly so type() preserves the GVariant type information. */
+        if (value.as.gboxed && value.as.gboxed->type == G_TYPE_VARIANT) {
+            return "gvariant";
+        }
+#endif
         return "gboxed";
     case VALUE_ACTOR:
         return "actor";
@@ -12772,7 +12785,40 @@ static Value gi_boxed_wrap(GType type, gpointer box, gboolean take) {
         abort();
     }
     handle->type = type;
-    handle->box = take ? box : g_boxed_copy(type, box);
+    /* Own exactly one instance: adopt the caller's (transfer-full) or take our own
+     * ref/copy (transfer-none). GVariant uses g_variant_ref; other boxed types
+     * g_boxed_copy. */
+    if (take) {
+        handle->box = box;
+    } else if (type == G_TYPE_VARIANT) {
+        handle->box = g_variant_ref(box);
+    } else {
+        handle->box = g_boxed_copy(type, box);
+    }
+    handle->ref_count = 1;
+    handle->owned = 1;
+    return value_gboxed(handle);
+}
+
+/* Wrap a GVariant as a gBASIC handle owning exactly one full (non-floating) ref.
+ * A floating value is sunk (g_variant_ref_sink converts the float to our owned ref);
+ * an already-full value is adopted when `take` (transfer-full) or ref'd when not
+ * (transfer-none/borrowed). GVariant reuses the boxed handle (see gboxed_release). */
+static Value gi_variant_wrap(GVariant *v, gboolean take) {
+    if (!v) {
+        return value_null();
+    }
+    if (g_variant_is_floating(v)) {
+        g_variant_ref_sink(v);   /* floating -> one owned ref (no extra ref added) */
+    } else if (!take) {
+        g_variant_ref(v);        /* borrowed: take our own ref */
+    }                            /* else: adopt the caller's transfer-full ref */
+    GBoxedValue *handle = malloc(sizeof(*handle));
+    if (!handle) {
+        abort();
+    }
+    handle->type = G_TYPE_VARIANT;
+    handle->box = v;
     handle->ref_count = 1;
     handle->owned = 1;
     return value_gboxed(handle);
@@ -12896,6 +12942,13 @@ static GType gi_lookup_gtype(const char *qualified) {
     return t;
 }
 
+/* NAP-4: forward decl for the mutually-recursive array/list output converters
+ * (an element is marshalled by re-entering gi_value_from_giarg). */
+static int gi_array_out_to_value(GITypeInfo *ti, GITransfer transfer,
+                                 gpointer native, Value *out);
+static int gi_list_out_to_value(GITypeInfo *ti, GITransfer transfer, int is_slist,
+                                 gpointer native, Value *out);
+
 /* Marshal one native return/argument GIArgument (by type tag) into a gBASIC Value.
  * `transfer` governs ownership of strings/objects handed back to us. */
 static int gi_value_from_giarg(GITypeInfo *ti, GITransfer transfer,
@@ -12933,12 +12986,18 @@ static int gi_value_from_giarg(GITypeInfo *ti, GITransfer transfer,
                 *out = value_number(arg->v_int32);
                 ok = 1;
             } else if (GI_IS_STRUCT_INFO(iface)) {
-                /* A boxed struct crossing back to gBASIC. Non-boxed (plain C) structs
-                 * have no registered copy/free and stay unsupported (ok = 0). */
+                /* A boxed struct (or GVariant) crossing back to gBASIC. GVariant is a
+                 * fundamental type (its iface is still a struct-info) so it is checked
+                 * first; non-boxed plain C structs have no registered copy/free and stay
+                 * unsupported (ok = 0). */
                 GType gt = gi_registered_type_info_get_g_type(
                     (GIRegisteredTypeInfo *)iface);
                 if (!arg->v_pointer) {
                     *out = value_null();
+                    ok = 1;
+                } else if (gt == G_TYPE_VARIANT) {
+                    *out = gi_variant_wrap((GVariant *)arg->v_pointer,
+                                           transfer == GI_TRANSFER_EVERYTHING);
                     ok = 1;
                 } else if (G_TYPE_IS_BOXED(gt)) {
                     *out = gi_boxed_wrap(gt, arg->v_pointer,
@@ -12950,6 +13009,12 @@ static int gi_value_from_giarg(GITypeInfo *ti, GITransfer transfer,
         }
         return ok;
     }
+    case GI_TYPE_TAG_ARRAY:
+        return gi_array_out_to_value(ti, transfer, arg->v_pointer, out);
+    case GI_TYPE_TAG_GLIST:
+        return gi_list_out_to_value(ti, transfer, 0, arg->v_pointer, out);
+    case GI_TYPE_TAG_GSLIST:
+        return gi_list_out_to_value(ti, transfer, 1, arg->v_pointer, out);
     default:
         return 0;
     }
@@ -13011,6 +13076,174 @@ static int gi_giarg_from_value(GITypeInfo *ti, Value v, GIArgument *arg) {
     default:
         return 0;
     }
+}
+
+/* NAP-4: convert one native collection element (a pointer or inline scalar sitting in
+ * `slot`) to a gBASIC Value by re-entering gi_value_from_giarg with the element type
+ * and the per-element transfer. Centralises the element rule so array and list output
+ * share it. Returns 1 on success. */
+static int gi_collection_elem_to_value(GITypeInfo *el, GITransfer el_xfer,
+                                       gpointer slot, Value *out) {
+    GIArgument ea;
+    memset(&ea, 0, sizeof(ea));
+    ea.v_pointer = slot;
+    return gi_value_from_giarg(el, el_xfer, &ea, out);
+}
+
+/* Per-element transfer implied by a container transfer: a transfer-full container owns
+ * its elements too (free them); a transfer-container/none container does not. */
+static GITransfer gi_element_transfer(GITransfer container) {
+    return container == GI_TRANSFER_EVERYTHING ? GI_TRANSFER_EVERYTHING
+                                               : GI_TRANSFER_NOTHING;
+}
+
+/* Native zero-terminated C array of pointer elements -> gBASIC array. v1 supports the
+ * zero-terminated C-array form only (length-indexed arrays need a sibling length arg
+ * this converter cannot see; GArray/GPtrArray/GByteArray are deferred). Ownership: the
+ * recursive element conversion frees each element when the container is transfer-full;
+ * the container itself is g_free'd for full/container transfer. Partial-failure safe:
+ * on an unsupported element everything already built is freed and it reports failure. */
+static int gi_array_out_to_value(GITypeInfo *ti, GITransfer transfer,
+                                 gpointer native, Value *out) {
+    if (!native) { *out = value_null(); return 1; }
+    if (gi_type_info_get_array_type(ti) != GI_ARRAY_TYPE_C ||
+        !gi_type_info_is_zero_terminated(ti)) {
+        return 0;   /* length-indexed / GArray / byte-array: deferred */
+    }
+    GITypeInfo *el = gi_type_info_get_param_type(ti, 0);
+    if (!el) {
+        return 0;
+    }
+    GITransfer el_xfer = gi_element_transfer(transfer);
+    gpointer *cells = (gpointer *)native;
+    size_t n = 0;
+    while (cells[n]) {
+        n++;
+    }
+    Value *items = n ? malloc(sizeof(Value) * n) : NULL;
+    if (n && !items) {
+        abort();
+    }
+    size_t i = 0;
+    int ok = 1;
+    for (; i < n; i++) {
+        if (!gi_collection_elem_to_value(el, el_xfer, cells[i], &items[i])) {
+            ok = 0;
+            break;
+        }
+    }
+    gi_base_info_unref(el);
+    if (!ok) {
+        for (size_t k = 0; k < i; k++) {
+            value_free(items[k]);
+        }
+        free(items);
+        return 0;   /* unsupported element type: leave the native array to the caller */
+    }
+    *out = value_array(items, n);
+    if (transfer == GI_TRANSFER_EVERYTHING || transfer == GI_TRANSFER_CONTAINER) {
+        g_free(native);   /* elements already freed by the recursive conversion (full) */
+    }
+    return 1;
+}
+
+/* Native GList/GSList of pointer elements -> gBASIC array (same element + transfer
+ * rules as arrays). The list container is freed for full/container transfer. */
+static int gi_list_out_to_value(GITypeInfo *ti, GITransfer transfer, int is_slist,
+                                gpointer native, Value *out) {
+    if (!native) { *out = value_null(); return 1; }
+    GITypeInfo *el = gi_type_info_get_param_type(ti, 0);
+    if (!el) {
+        return 0;
+    }
+    GITransfer el_xfer = gi_element_transfer(transfer);
+    size_t n = is_slist ? g_slist_length((GSList *)native) : g_list_length((GList *)native);
+    Value *items = n ? malloc(sizeof(Value) * n) : NULL;
+    if (n && !items) {
+        abort();
+    }
+    size_t i = 0;
+    int ok = 1;
+    gpointer node = native;
+    for (; i < n && node; i++) {
+        gpointer data = is_slist ? ((GSList *)node)->data : ((GList *)node)->data;
+        if (!gi_collection_elem_to_value(el, el_xfer, data, &items[i])) {
+            ok = 0;
+            break;
+        }
+        node = is_slist ? (gpointer)((GSList *)node)->next : (gpointer)((GList *)node)->next;
+    }
+    gi_base_info_unref(el);
+    if (!ok) {
+        for (size_t k = 0; k < i; k++) {
+            value_free(items[k]);
+        }
+        free(items);
+        return 0;
+    }
+    *out = value_array(items, n);
+    if (transfer == GI_TRANSFER_EVERYTHING || transfer == GI_TRANSFER_CONTAINER) {
+        if (is_slist) {
+            g_slist_free((GSList *)native);
+        } else {
+            g_list_free((GList *)native);
+        }
+    }
+    return 1;
+}
+
+/* NAP-4: build a native NULL-terminated C string array from a gBASIC array for a
+ * GStrv-style IN arg. Elements are BORROWED from the gBASIC array (its Values outlive
+ * the invoke), so only the container is returned in *out_container to g_free after the
+ * call. v1: zero-terminated C arrays of utf8 with transfer-none. On a mismatch it frees
+ * the partial container, sets *why, and returns 0. `nothing` yields a NULL array. */
+static int gi_array_in_build(GITypeInfo *ti, GITransfer transfer, Value v,
+                             void **out_container, const char **why) {
+    *out_container = NULL;
+    if (v.kind == VALUE_NULL) {
+        return 1;   /* NULL array */
+    }
+    if (v.kind != VALUE_ARRAY) {
+        *why = "expects an array";
+        return 0;
+    }
+    if (gi_type_info_get_array_type(ti) != GI_ARRAY_TYPE_C ||
+        !gi_type_info_is_zero_terminated(ti)) {
+        *why = "has an unsupported array argument form";
+        return 0;
+    }
+    if (transfer == GI_TRANSFER_EVERYTHING) {
+        *why = "has an unsupported transfer-full array argument";
+        return 0;   /* callee would own+free borrowed elements: deferred */
+    }
+    GITypeInfo *el = gi_type_info_get_param_type(ti, 0);
+    if (!el) {
+        *why = "has an unsupported array element";
+        return 0;
+    }
+    GITypeTag el_tag = gi_type_info_get_tag(el);
+    gi_base_info_unref(el);
+    if (el_tag != GI_TYPE_TAG_UTF8 && el_tag != GI_TYPE_TAG_FILENAME) {
+        *why = "has an unsupported array element type";
+        return 0;
+    }
+    size_t n = v.as.array.count;
+    char **arr = g_new0(char *, n + 1);
+    for (size_t i = 0; i < n; i++) {
+        Value e = v.as.array.items[i];
+        if (e.kind == VALUE_STRING) {
+            arr[i] = e.as.string;   /* borrowed for the call's duration */
+        } else if (e.kind == VALUE_NULL) {
+            arr[i] = NULL;
+        } else {
+            g_free(arr);            /* container only; nothing else was allocated */
+            *why = "array element expects a string";
+            return 0;
+        }
+    }
+    arr[n] = NULL;
+    *out_container = arr;
+    return 1;
 }
 
 /* Pull the live GObject out of a gBASIC value, raising on a non-object or a
@@ -13492,8 +13725,9 @@ static Value gi_invoke_callable(GIFunctionInfo *finfo, GObject *receiver,
     gpointer *out_buf = ndecl ? calloc(ndecl, sizeof(gpointer)) : NULL;        /* caller-alloc struct bufs, by decl index */
     GType *out_gt = ndecl ? calloc(ndecl, sizeof(GType)) : NULL;
     unsigned int *out_slot = ndecl ? calloc(ndecl, sizeof(unsigned int)) : NULL; /* out order -> decl index */
+    gpointer *in_containers = ndecl ? calloc(ndecl, sizeof(gpointer)) : NULL;    /* native array IN containers, freed post-invoke */
     if ((provided && !argvals) || !in_args ||
-        (ndecl && (!out_args || !out_store || !out_buf || !out_gt || !out_slot))) {
+        (ndecl && (!out_args || !out_store || !out_buf || !out_gt || !out_slot || !in_containers))) {
         abort();
     }
 
@@ -13512,13 +13746,28 @@ static Value gi_invoke_callable(GIFunctionInfo *finfo, GObject *receiver,
             Value v = argvals[user];
             user++;
             if (dir == GI_DIRECTION_IN) {
-                if (!gi_giarg_from_value(ti, v, &in_args[n_in])) {
+                if (gi_type_info_get_tag(ti) == GI_TYPE_TAG_ARRAY) {
+                    /* Array IN: build a native container (borrowed elements) tracked in
+                     * in_containers[] and g_free'd after the invoke. */
+                    void *container = NULL;
+                    const char *why = "has an unsupported array argument";
+                    if (!gi_array_in_build(ti, gi_arg_info_get_ownership_transfer(ainfos[i]),
+                                           v, &container, &why)) {
+                        char detail[224];
+                        snprintf(detail, sizeof(detail), "%s: %s %s", ctx, disp_name, why);
+                        runtime_error_raise(detail, 6001, "gi");
+                        failed = 1; break;
+                    }
+                    in_containers[i] = container;
+                    in_args[n_in++].v_pointer = container;
+                } else if (!gi_giarg_from_value(ti, v, &in_args[n_in])) {
                     char detail[192];
                     snprintf(detail, sizeof(detail), "%s: unsupported argument type for method: %s", ctx, disp_name);
                     runtime_error_raise(detail, 6001, "gi");
                     failed = 1; break;
+                } else {
+                    n_in++;
                 }
-                n_in++;
             } else {   /* INOUT: storage holds the input; pass its address both ways */
                 if (!gi_inout_scalar_tag(ti) ||
                     !gi_giarg_from_value(ti, v, &out_store[i])) {
@@ -13601,13 +13850,18 @@ static Value gi_invoke_callable(GIFunctionInfo *finfo, GObject *receiver,
             if (out_buf[i]) g_free(out_buf[i]);
         }
     }
+    if (in_containers) {
+        for (unsigned int i = 0; i < ndecl; i++) {
+            if (in_containers[i]) g_free(in_containers[i]);   /* container only; elements borrowed */
+        }
+    }
     for (unsigned int i = 0; i < ndecl; i++) {
         gi_base_info_unref(tinfos[i]);
         gi_base_info_unref(ainfos[i]);
     }
     free(ainfos); free(tinfos);
     free(argvals); free(in_args); free(out_args);
-    free(out_store); free(out_buf); free(out_gt); free(out_slot);
+    free(out_store); free(out_buf); free(out_gt); free(out_slot); free(in_containers);
     return out;
 }
 
@@ -14095,6 +14349,226 @@ static Value gi_do_watch_mailbox(AstExpr *expr) {
     return value_number((double)id);
 }
 
+/* --- WI-6: GVariant builtins ---------------------------------------------
+ * A GVariant is carried by the reference-semantic boxed handle (see gi_variant_wrap
+ * / gboxed_release). These builtins construct variants (each g_variant_new_* is
+ * floating and gets sunk on wrap), read them back into gBASIC values, and print /
+ * report their type. */
+
+/* Pull the live GVariant out of a gBASIC value, raising on a non-variant handle. */
+static int gi_variant_arg(Value v, const char *ctx, GVariant **out) {
+    if (v.kind != VALUE_GBOXED || v.as.gboxed->type != G_TYPE_VARIANT ||
+        !v.as.gboxed->box) {
+        gi_raisef("%s expects a variant", ctx);
+        return 0;
+    }
+    *out = (GVariant *)v.as.gboxed->box;
+    return 1;
+}
+
+/* Recursively convert a GVariant to a gBASIC Value: scalars -> number/bool/string,
+ * tuple/array -> array, dictionary a{s*} -> record (string keys), maybe -> value or
+ * nothing, boxed variant -> its content. On an unrepresentable type sets *why and
+ * returns 0, freeing anything already built. */
+static int gi_variant_to_value(GVariant *v, Value *out, const char **why) {
+    const GVariantType *t = g_variant_get_type(v);
+    if (g_variant_type_equal(t, G_VARIANT_TYPE_BOOLEAN)) { *out = value_bool(g_variant_get_boolean(v)); return 1; }
+    if (g_variant_type_equal(t, G_VARIANT_TYPE_BYTE))    { *out = value_number(g_variant_get_byte(v)); return 1; }
+    if (g_variant_type_equal(t, G_VARIANT_TYPE_INT16))   { *out = value_number(g_variant_get_int16(v)); return 1; }
+    if (g_variant_type_equal(t, G_VARIANT_TYPE_UINT16))  { *out = value_number(g_variant_get_uint16(v)); return 1; }
+    if (g_variant_type_equal(t, G_VARIANT_TYPE_INT32))   { *out = value_number(g_variant_get_int32(v)); return 1; }
+    if (g_variant_type_equal(t, G_VARIANT_TYPE_UINT32))  { *out = value_number(g_variant_get_uint32(v)); return 1; }
+    if (g_variant_type_equal(t, G_VARIANT_TYPE_INT64))   { *out = value_number((double)g_variant_get_int64(v)); return 1; }
+    if (g_variant_type_equal(t, G_VARIANT_TYPE_UINT64))  { *out = value_number((double)g_variant_get_uint64(v)); return 1; }
+    if (g_variant_type_equal(t, G_VARIANT_TYPE_HANDLE))  { *out = value_number(g_variant_get_handle(v)); return 1; }
+    if (g_variant_type_equal(t, G_VARIANT_TYPE_DOUBLE))  { *out = value_number(g_variant_get_double(v)); return 1; }
+    if (g_variant_type_equal(t, G_VARIANT_TYPE_STRING) ||
+        g_variant_type_equal(t, G_VARIANT_TYPE_OBJECT_PATH) ||
+        g_variant_type_equal(t, G_VARIANT_TYPE_SIGNATURE)) {
+        *out = value_string(g_variant_get_string(v, NULL)); return 1;
+    }
+    if (g_variant_type_is_maybe(t)) {
+        GVariant *child = g_variant_get_maybe(v);
+        if (!child) { *out = value_null(); return 1; }
+        int ok = gi_variant_to_value(child, out, why);
+        g_variant_unref(child);
+        return ok;
+    }
+    if (g_variant_type_is_variant(t)) {
+        GVariant *inner = g_variant_get_variant(v);
+        int ok = gi_variant_to_value(inner, out, why);
+        g_variant_unref(inner);
+        return ok;
+    }
+    if (g_variant_type_is_array(t) && g_variant_type_is_dict_entry(g_variant_type_element(t))) {
+        const GVariantType *key = g_variant_type_key(g_variant_type_element(t));
+        if (!g_variant_type_equal(key, G_VARIANT_TYPE_STRING)) {
+            *why = "gi.variant_get: dictionary keys must be strings to become a record";
+            return 0;
+        }
+        Value rec = value_record(NULL, 0);
+        size_t n = g_variant_n_children(v);
+        for (size_t i = 0; i < n; i++) {
+            GVariant *entry = g_variant_get_child_value(v, i);
+            GVariant *k = g_variant_get_child_value(entry, 0);
+            GVariant *val = g_variant_get_child_value(entry, 1);
+            Value vv;
+            int ok = gi_variant_to_value(val, &vv, why);
+            if (ok) {
+                record_set(&rec, g_variant_get_string(k, NULL), vv);
+            }
+            g_variant_unref(k); g_variant_unref(val); g_variant_unref(entry);
+            if (!ok) { value_free(rec); return 0; }
+        }
+        *out = rec;
+        return 1;
+    }
+    if (g_variant_type_is_tuple(t) || g_variant_type_is_array(t)) {
+        size_t n = g_variant_n_children(v);
+        Value *items = n ? malloc(sizeof(Value) * n) : NULL;
+        if (n && !items) abort();
+        for (size_t i = 0; i < n; i++) {
+            GVariant *c = g_variant_get_child_value(v, i);
+            int ok = gi_variant_to_value(c, &items[i], why);
+            g_variant_unref(c);
+            if (!ok) {
+                for (size_t k = 0; k < i; k++) value_free(items[k]);
+                free(items);
+                return 0;
+            }
+        }
+        *out = value_array(items, n);
+        return 1;
+    }
+    *why = "gi.variant_get: unsupported variant type";
+    return 0;
+}
+
+static Value gi_do_variant_bool(AstExpr *expr) {
+    if (expr->as.call.args.count != 1) return gi_raise("gi.variant_bool expects one argument");
+    Value a = eval_expr(expr->as.call.args.items[0]);
+    if (error_action_pending()) { value_free(a); return value_null(); }
+    gboolean b = (a.kind == VALUE_BOOL) ? a.as.boolean : (value_number_or_zero(a) != 0.0);
+    value_free(a);
+    return gi_variant_wrap(g_variant_new_boolean(b), TRUE);
+}
+
+static Value gi_do_variant_number(AstExpr *expr, const char *ctx, int kind) {
+    if (expr->as.call.args.count != 1) return gi_raisef("%s expects one number", ctx);
+    Value a = eval_expr(expr->as.call.args.items[0]);
+    if (error_action_pending()) { value_free(a); return value_null(); }
+    if (a.kind != VALUE_NUMBER) { value_free(a); return gi_raisef("%s expects a number", ctx); }
+    double n = a.as.number;
+    value_free(a);
+    GVariant *v = NULL;
+    switch (kind) {
+    case 0: v = g_variant_new_int32((gint32)n); break;
+    case 1: v = g_variant_new_int64((gint64)n); break;
+    case 2: v = g_variant_new_double(n); break;
+    }
+    return gi_variant_wrap(v, TRUE);
+}
+
+static Value gi_do_variant_string(AstExpr *expr) {
+    if (expr->as.call.args.count != 1) return gi_raise("gi.variant_string expects one string");
+    Value a = eval_expr(expr->as.call.args.items[0]);
+    if (error_action_pending()) { value_free(a); return value_null(); }
+    if (a.kind != VALUE_STRING) { value_free(a); return gi_raise("gi.variant_string expects a string"); }
+    GVariant *v = g_variant_new_string(a.as.string);
+    value_free(a);
+    return gi_variant_wrap(v, TRUE);
+}
+
+static Value gi_do_variant_strv(AstExpr *expr) {
+    if (expr->as.call.args.count != 1) return gi_raise("gi.variant_strv expects one array");
+    Value a = eval_expr(expr->as.call.args.items[0]);
+    if (error_action_pending()) { value_free(a); return value_null(); }
+    if (a.kind != VALUE_ARRAY) { value_free(a); return gi_raise("gi.variant_strv expects an array"); }
+    size_t n = a.as.array.count;
+    const char **strv = g_new0(const char *, n + 1);
+    for (size_t i = 0; i < n; i++) {
+        if (a.as.array.items[i].kind != VALUE_STRING) {
+            g_free(strv); value_free(a);
+            return gi_raise("gi.variant_strv expects an array of strings");
+        }
+        strv[i] = a.as.array.items[i].as.string;   /* g_variant_new_strv copies */
+    }
+    GVariant *v = g_variant_new_strv(strv, (gssize)n);
+    g_free(strv);
+    value_free(a);
+    return gi_variant_wrap(v, TRUE);
+}
+
+static Value gi_do_variant_parse(AstExpr *expr) {
+    if (expr->as.call.args.count != 2) return gi_raise("gi.variant_parse expects a type string and text");
+    Value tv = eval_expr(expr->as.call.args.items[0]);
+    if (error_action_pending()) { value_free(tv); return value_null(); }
+    Value txv = eval_expr(expr->as.call.args.items[1]);
+    if (error_action_pending()) { value_free(tv); value_free(txv); return value_null(); }
+    if (tv.kind != VALUE_STRING || txv.kind != VALUE_STRING) {
+        value_free(tv); value_free(txv);
+        return gi_raise("gi.variant_parse expects a type string and text string");
+    }
+    const GVariantType *type = NULL;
+    if (tv.as.string[0] != '\0') {
+        if (!g_variant_type_string_is_valid(tv.as.string)) {
+            value_free(tv); value_free(txv);
+            return gi_raise("gi.variant_parse: invalid variant type string");
+        }
+        type = G_VARIANT_TYPE(tv.as.string);
+    }
+    GError *err = NULL;
+    GVariant *v = g_variant_parse(type, txv.as.string, NULL, NULL, &err);
+    if (!v) {
+        char msg[256];
+        snprintf(msg, sizeof(msg), "gi.variant_parse: %s",
+                 err && err->message ? err->message : "parse failed");
+        if (err) g_error_free(err);
+        value_free(tv); value_free(txv);
+        return gi_raise(msg);
+    }
+    value_free(tv); value_free(txv);
+    return gi_variant_wrap(v, TRUE);
+}
+
+static Value gi_do_variant_get(AstExpr *expr) {
+    if (expr->as.call.args.count != 1) return gi_raise("gi.variant_get expects a variant");
+    Value a = eval_expr(expr->as.call.args.items[0]);
+    if (error_action_pending()) { value_free(a); return value_null(); }
+    GVariant *v = NULL;
+    if (!gi_variant_arg(a, "gi.variant_get", &v)) { value_free(a); return value_null(); }
+    Value out;
+    const char *why = "gi.variant_get: unsupported variant type";
+    int ok = gi_variant_to_value(v, &out, &why);
+    value_free(a);
+    if (!ok) return gi_raise(why);
+    return out;
+}
+
+static Value gi_do_variant_print(AstExpr *expr) {
+    if (expr->as.call.args.count != 1) return gi_raise("gi.variant_print expects a variant");
+    Value a = eval_expr(expr->as.call.args.items[0]);
+    if (error_action_pending()) { value_free(a); return value_null(); }
+    GVariant *v = NULL;
+    if (!gi_variant_arg(a, "gi.variant_print", &v)) { value_free(a); return value_null(); }
+    char *text = g_variant_print(v, FALSE);
+    Value out = value_string(text ? text : "");
+    g_free(text);
+    value_free(a);
+    return out;
+}
+
+static Value gi_do_variant_type(AstExpr *expr) {
+    if (expr->as.call.args.count != 1) return gi_raise("gi.variant_type expects a variant");
+    Value a = eval_expr(expr->as.call.args.items[0]);
+    if (error_action_pending()) { value_free(a); return value_null(); }
+    GVariant *v = NULL;
+    if (!gi_variant_arg(a, "gi.variant_type", &v)) { value_free(a); return value_null(); }
+    Value out = value_string(g_variant_get_type_string(v));
+    value_free(a);
+    return out;
+}
+
 /* Resolve the GIFieldInfo named `name` on the boxed struct GType `type`. On success
  * returns 1 with *out_info (the owning struct info) and *out_field set; the caller
  * must gi_base_info_unref both. Returns 0 if `type` has no introspected struct info
@@ -14320,6 +14794,16 @@ static Value gi_eval_call(AstExpr *expr) {
     if (strcmp(name, "source_remove") == 0) return gi_do_source_remove(expr);
     if (strcmp(name, "watch_fd") == 0)    return gi_do_watch_fd(expr);
     if (strcmp(name, "watch_mailbox") == 0) return gi_do_watch_mailbox(expr);
+    if (strcmp(name, "variant_bool") == 0)   return gi_do_variant_bool(expr);
+    if (strcmp(name, "variant_int32") == 0)  return gi_do_variant_number(expr, "gi.variant_int32", 0);
+    if (strcmp(name, "variant_int64") == 0)  return gi_do_variant_number(expr, "gi.variant_int64", 1);
+    if (strcmp(name, "variant_double") == 0) return gi_do_variant_number(expr, "gi.variant_double", 2);
+    if (strcmp(name, "variant_string") == 0) return gi_do_variant_string(expr);
+    if (strcmp(name, "variant_strv") == 0)   return gi_do_variant_strv(expr);
+    if (strcmp(name, "variant_parse") == 0)  return gi_do_variant_parse(expr);
+    if (strcmp(name, "variant_get") == 0)    return gi_do_variant_get(expr);
+    if (strcmp(name, "variant_print") == 0)  return gi_do_variant_print(expr);
+    if (strcmp(name, "variant_type") == 0)   return gi_do_variant_type(expr);
     return gi_raisef("invalid function call: gi.%s", name);
 }
 #endif /* HAVE_GIR */

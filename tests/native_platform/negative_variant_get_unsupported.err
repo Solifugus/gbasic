@@ -1,0 +1,1 @@
+runtime error at tests/native_platform/negative_variant_get_unsupported.bas:7:1: gi.variant_get: dictionary keys must be strings to become a record

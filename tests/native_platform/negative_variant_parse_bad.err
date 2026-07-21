@@ -1,0 +1,1 @@
+runtime error at tests/native_platform/negative_variant_parse_bad.bas:5:1: gi.variant_parse: 0-4:unknown keyword

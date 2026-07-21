@@ -57,6 +57,11 @@ positive_cases=(
     loop_source_remove
     loop_mailbox
     loop_responsive
+    variant_scalars
+    variant_strv
+    variant_parse
+    array_out
+    array_in
 )
 
 for name in "${positive_cases[@]}"; do
@@ -96,6 +101,11 @@ negative_cases=(
     negative_inout_unsupported
     negative_loop_badfn
     negative_loop_source_unknown
+    negative_variant_strv_badelem
+    negative_array_heterogeneous
+    negative_array_not_array
+    negative_variant_parse_bad
+    negative_variant_get_unsupported
 )
 
 for name in "${negative_cases[@]}"; do

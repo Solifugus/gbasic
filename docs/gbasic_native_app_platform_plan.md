@@ -220,16 +220,48 @@ Source areas: the marshallers (NAP-1 sites) for container tags
 (`GI_TYPE_TAG_ARRAY`/`GLIST`/`GSLIST`, currently NULL-only at 12862-12871); new
 `gi.variant_*` builtins.
 
-- [ ] **Tests first (headless):** build `gi.variant_string/bool/int` and read back;
-      `gi.variant_parse(type,text)`; marshal a `char**`/`GStrv` out (e.g.
-      `GLib.strsplit`) → gBASIC string array; pass a string array into a function taking
-      `GStrv`; a `GList`/array of GObject out → object array.
-- [ ] `GVariant` via `g_variant_new`/`parse`/`get_*`, marshalled as a boxed (NAP-1).
-- [ ] Array/`GStrv`/`GList`(object|utf8) both directions, driven by the element
-      `GITypeInfo` (`gi_type_info_get_param_type`); honor transfer.
-- [ ] valgrind; byte-exact; fatal-criticals. Show diff, STOP.
+- [x] **Tests first (headless, deterministic):** `variant_scalars` (bool/int/double/
+      string construct → `variant_get` → `variant_type`/`variant_print`); `variant_strv`
+      (`as` → gBASIC array); `variant_parse` (tuple `(is)` → array, dict `a{ss}` → record);
+      `array_out` (`GLib.strsplit` GStrv → array); `array_in` (`["x","y","z"]` → `GLib.strjoinv`
+      → `"x-y-z"`). Negatives: non-string strv element, heterogeneous input array, non-array
+      arg, bad `variant_parse` text, dict with non-string keys → `variant_get` error.
+- [x] `GVariant` reuses the NAP-1 **boxed handle** (justified — a GVariant is a foreign
+      refcounted value of the same shape). `G_TYPE_VARIANT` is a *fundamental* (non-boxed)
+      type, so `gboxed_release`/`gi_boxed_wrap` gained GVariant branches (`g_variant_unref`/
+      `g_variant_ref`) and a `gi_variant_wrap` that sinks floating refs; `type()` reports
+      `"gvariant"`. Builtins: `gi.variant_bool/int32/int64/double/string/strv/parse/get/
+      print/type`. `gi.variant_get` recurses (scalars, tuple/array→array, `a{s*}`→record,
+      maybe→value/nothing, boxed variant→content).
+- [x] Arrays via the element `GITypeInfo` (`gi_type_info_get_param_type`), honoring
+      transfer: **zero-terminated C arrays** both directions — OUTPUT in `gi_value_from_giarg`
+      (self-contained, transfer-aware, partial-failure safe) via `gi_array_out_to_value`;
+      INPUT via `gi_array_in_build` in `gi_invoke_callable` (borrowed elements, container
+      tracked in `in_containers[]` and freed post-invoke). GVariant crosses GI as
+      `INTERFACE`→`G_TYPE_VARIANT` in both marshallers. GList/GSList output → array
+      (`gi_list_out_to_value`, shares the element path).
+- [x] valgrind clean (0 lost / 0 errors) over 300× churn: variant construct/get/parse/
+      strv/print, array in/out, GList output, and error paths. Byte-exact; fatal-criticals.
 
-**Completion:** variant + strv + object-list roundtrips green.
+**Completion:** variant scalars/strv/parse + array in/out roundtrips green. **DONE** —
+stop-at-boundary; NAP-5 not started.
+
+**Deviations/notes:** (1) GVariant is NOT its own Value kind — it rides `VALUE_GBOXED`
+with a GVariant-aware ref/free, avoiding a redundant runtime kind (the requirement's
+preferred path). (2) One *related* NAP-1 test was retargeted, not rebaselined:
+`negative_boxed_unsupported_field` used an array field (`Pango.GlyphString.glyphs`),
+which NAP-4 legitimately made readable (a NULL array field now reads as `nothing`); it
+now uses `Pango.Item.analysis`, an embedded-struct field that is genuinely still
+unsupported. (3) **DEFERRED** (documented, no deterministic headless fixture or out of
+the plan's coherent subset): length-indexed C arrays (need cross-arg length
+coordination), `GArray`/`GPtrArray`/`GByteArray`, `GHashTable`, transfer-full array
+input, GVariant as a GObject property (GValue path), and a GList golden
+(`content_types_get_registered` is environment-dependent — the list marshaller is
+covered by the valgrind churn + the shared element path, not a golden). (4) Variant
+crossing a real GI call boundary (`INTERFACE`→variant, both directions) is wired and
+mirrors the tested boxed path, but has no deterministic display-free fixture (variant
+args/returns appear on GVariant *methods*, which need boxed-receiver dispatch — NAP-5);
+the variant lifecycle itself is thoroughly tested via the builtins.
 
 > **Bridge core complete.** After NAP-4, windows/panes/tabs/menus/lists/editor-iters/
 > events/async are all reachable from gBASIC. Remaining critical-path work is ergonomics
