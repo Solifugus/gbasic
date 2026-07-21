@@ -13497,6 +13497,60 @@ static Value gi_do_new(AstExpr *expr) {
     return out;
 }
 
+/* Raise a two-substitution gi error ("<ctx>: <msg>: <prop>"). Centralizes the
+ * message shape shared by gi.get/gi.set and the NAP-5 `.property` sugar. */
+static Value gi_prop_raise(const char *ctx, const char *msg, const char *prop) {
+    char message[512];
+    snprintf(message, sizeof(message), "%s: %s: %s", ctx, msg, prop);
+    return gi_raise(message);
+}
+
+/* Read a GObject property into a gBASIC Value. `obj` is already validated live.
+ * Honors G_PARAM_READABLE metadata and raises a clean error (never a GLib
+ * critical) on unknown/unreadable/unsupported. Shared by gi.get and `x = obj.prop`. */
+static Value gi_object_prop_get(GObject *obj, const char *prop, const char *ctx) {
+    GParamSpec *ps = g_object_class_find_property(G_OBJECT_GET_CLASS(obj), prop);
+    if (!ps) {
+        return gi_prop_raise(ctx, "unknown property", prop);
+    }
+    if (!(ps->flags & G_PARAM_READABLE)) {
+        return gi_prop_raise(ctx, "property is not readable", prop);
+    }
+    GValue gv = G_VALUE_INIT;
+    g_value_init(&gv, G_PARAM_SPEC_VALUE_TYPE(ps));
+    g_object_get_property(obj, prop, &gv);
+    Value out;
+    int ok = gi_value_from_gvalue(&gv, &out);
+    g_value_unset(&gv);
+    if (!ok) {
+        return gi_prop_raise(ctx, "unsupported property type for", prop);
+    }
+    return out;
+}
+
+/* Write a gBASIC Value into a GObject property. `obj` is already validated live;
+ * `val` is borrowed (caller frees). Honors G_PARAM_WRITABLE metadata so a
+ * read-only property raises a clean gBASIC error instead of a fatal GLib critical.
+ * Shared by gi.set and `obj.prop = v`. */
+static Value gi_object_prop_set(GObject *obj, const char *prop, Value val,
+                                const char *ctx) {
+    GParamSpec *ps = g_object_class_find_property(G_OBJECT_GET_CLASS(obj), prop);
+    if (!ps) {
+        return gi_prop_raise(ctx, "unknown property", prop);
+    }
+    if (!(ps->flags & G_PARAM_WRITABLE) ||
+        (ps->flags & G_PARAM_CONSTRUCT_ONLY)) {
+        return gi_prop_raise(ctx, "property is not writable", prop);
+    }
+    GValue gv;
+    if (!gi_value_to_gvalue(val, G_PARAM_SPEC_VALUE_TYPE(ps), &gv)) {
+        return gi_prop_raise(ctx, "value not convertible for property", prop);
+    }
+    g_object_set_property(obj, prop, &gv);
+    g_value_unset(&gv);
+    return value_null();
+}
+
 static Value gi_do_get(AstExpr *expr) {
     if (expr->as.call.args.count != 2) {
         return gi_raise("gi.get expects an object and a property name");
@@ -13511,23 +13565,7 @@ static Value gi_do_get(AstExpr *expr) {
         value_free(ov); value_free(pv);
         return gi_raise("gi.get expects a property name string");
     }
-    GParamSpec *ps = g_object_class_find_property(G_OBJECT_GET_CLASS(obj), pv.as.string);
-    if (!ps) {
-        Value r = gi_raisef("gi.get: unknown property: %s", pv.as.string);
-        value_free(ov); value_free(pv);
-        return r;
-    }
-    GValue gv = G_VALUE_INIT;
-    g_value_init(&gv, G_PARAM_SPEC_VALUE_TYPE(ps));
-    g_object_get_property(obj, pv.as.string, &gv);
-    Value out;
-    int ok = gi_value_from_gvalue(&gv, &out);
-    g_value_unset(&gv);
-    if (!ok) {
-        Value r = gi_raisef("gi.get: unsupported property type for: %s", pv.as.string);
-        value_free(ov); value_free(pv);
-        return r;
-    }
+    Value out = gi_object_prop_get(obj, pv.as.string, "gi.get");
     value_free(ov); value_free(pv);
     return out;
 }
@@ -13548,22 +13586,9 @@ static Value gi_do_set(AstExpr *expr) {
         value_free(ov); value_free(pv); value_free(val);
         return gi_raise("gi.set expects a property name string");
     }
-    GParamSpec *ps = g_object_class_find_property(G_OBJECT_GET_CLASS(obj), pv.as.string);
-    if (!ps) {
-        Value r = gi_raisef("gi.set: unknown property: %s", pv.as.string);
-        value_free(ov); value_free(pv); value_free(val);
-        return r;
-    }
-    GValue gv;
-    if (!gi_value_to_gvalue(val, G_PARAM_SPEC_VALUE_TYPE(ps), &gv)) {
-        Value r = gi_raisef("gi.set: value not convertible for property: %s", pv.as.string);
-        value_free(ov); value_free(pv); value_free(val);
-        return r;
-    }
-    g_object_set_property(obj, pv.as.string, &gv);
-    g_value_unset(&gv);
+    Value out = gi_object_prop_set(obj, pv.as.string, val, "gi.set");
     value_free(ov); value_free(pv); value_free(val);
-    return value_null();
+    return out;
 }
 
 /* Marshal and invoke a resolved GIFunctionInfo. `receiver` is the instance for a
@@ -13679,7 +13704,7 @@ static void gi_collect_out(unsigned int i, GITypeInfo **tinfos, GIArgInfo **ainf
  * OUT params are results, so the caller supplies only IN and INOUT args; the arity
  * check counts those. A GError failure is raised (message preserved) and yields no
  * out record. */
-static Value gi_invoke_callable(GIFunctionInfo *finfo, GObject *receiver,
+static Value gi_invoke_callable(GIFunctionInfo *finfo, gpointer receiver,
                                 AstExpr *expr, size_t first_arg,
                                 const char *ctx, const char *disp_name) {
     GICallableInfo *cinfo = (GICallableInfo *)finfo;
@@ -13865,6 +13890,86 @@ static Value gi_invoke_callable(GIFunctionInfo *finfo, GObject *receiver,
     return out;
 }
 
+/* Resolve and invoke a method named `method` on a native receiver, reading its
+ * arguments from `expr` starting at `first_arg`. `recv` may be a VALUE_GOBJECT
+ * (methods resolved by walking the class + its interfaces + ancestors) or a
+ * VALUE_GBOXED including GVariant (methods resolved via the struct info; the
+ * instance pointer is the boxed value itself). Everything routes through the
+ * single gi_invoke_callable marshaller, so NAP-2 out/inout/GError and NAP-4
+ * array/variant semantics apply uniformly. `recv` and its wrappers are borrowed.
+ * Shared by gi.call and the NAP-5 `receiver.method(args)` sugar. */
+static Value gi_invoke_method_on(Value recv, const char *method,
+                                 AstExpr *expr, size_t first_arg,
+                                 const char *ctx) {
+    char detail[256];
+    if (recv.kind == VALUE_GOBJECT) {
+        if (recv.as.gobject->closed || !recv.as.gobject->obj) {
+            snprintf(detail, sizeof(detail), "%s: gobject has been disposed", ctx);
+            return gi_raise(detail);
+        }
+        GObject *obj = recv.as.gobject->obj;
+        GIBaseInfo *base = gi_repository_find_by_gtype(gi_repo(), G_OBJECT_TYPE(obj));
+        if (!base || !GI_IS_OBJECT_INFO(base)) {
+            if (base) gi_base_info_unref(base);
+            snprintf(detail, sizeof(detail), "%s: type is not introspectable: %s",
+                     ctx, G_OBJECT_TYPE_NAME(obj));
+            return gi_raise(detail);
+        }
+        /* Walk the class hierarchy: find_method_using_interfaces searches a class's
+         * own methods and the interfaces it implements, but NOT its ancestors, so an
+         * inherited method (e.g. Gio.Application.register on a Gtk.Application) is only
+         * found by climbing parents. Each level still searches that level's interfaces. */
+        GIFunctionInfo *finfo = NULL;
+        GIObjectInfo *cur = (GIObjectInfo *)base;
+        int cur_owned = 0;   /* `base` is released separately below; parents are owned */
+        while (cur) {
+            finfo = gi_object_info_find_method_using_interfaces(cur, method, NULL);
+            GIObjectInfo *parent = gi_object_info_get_parent(cur);
+            if (cur_owned) {
+                gi_base_info_unref(cur);
+            }
+            if (finfo) {
+                if (parent) gi_base_info_unref(parent);
+                break;
+            }
+            cur = parent;
+            cur_owned = 1;
+        }
+        gi_base_info_unref(base);
+        if (!finfo) {
+            snprintf(detail, sizeof(detail), "%s: unknown method: %s", ctx, method);
+            return gi_raise(detail);
+        }
+        Value out = gi_invoke_callable(finfo, obj, expr, first_arg, ctx, method);
+        gi_base_info_unref(finfo);
+        return out;
+    }
+    if (recv.kind == VALUE_GBOXED) {
+        if (!recv.as.gboxed->box) {
+            snprintf(detail, sizeof(detail), "%s: boxed value is empty", ctx);
+            return gi_raise(detail);
+        }
+        GIBaseInfo *base = gi_repository_find_by_gtype(gi_repo(), recv.as.gboxed->type);
+        if (!base || !GI_IS_STRUCT_INFO(base)) {
+            if (base) gi_base_info_unref(base);
+            snprintf(detail, sizeof(detail), "%s: type is not introspectable: %s",
+                     ctx, g_type_name(recv.as.gboxed->type));
+            return gi_raise(detail);
+        }
+        GIFunctionInfo *finfo = gi_struct_info_find_method((GIStructInfo *)base, method);
+        gi_base_info_unref(base);
+        if (!finfo) {
+            snprintf(detail, sizeof(detail), "%s: unknown method: %s", ctx, method);
+            return gi_raise(detail);
+        }
+        Value out = gi_invoke_callable(finfo, recv.as.gboxed->box, expr, first_arg, ctx, method);
+        gi_base_info_unref(finfo);
+        return out;
+    }
+    snprintf(detail, sizeof(detail), "%s expects a gobject or boxed value", ctx);
+    return gi_raise(detail);
+}
+
 static Value gi_do_call(AstExpr *expr) {
     size_t argc = expr->as.call.args.count;
     if (argc < 2) {
@@ -13874,49 +13979,11 @@ static Value gi_do_call(AstExpr *expr) {
     if (error_action_pending()) { value_free(ov); return value_null(); }
     Value mv = eval_expr(expr->as.call.args.items[1]);
     if (error_action_pending()) { value_free(ov); value_free(mv); return value_null(); }
-    GObject *obj = NULL;
-    if (!gi_object_arg(ov, "gi.call", &obj)) { value_free(ov); value_free(mv); return value_null(); }
     if (mv.kind != VALUE_STRING) {
         value_free(ov); value_free(mv);
         return gi_raise("gi.call expects a method name string");
     }
-
-    GIBaseInfo *base = gi_repository_find_by_gtype(gi_repo(), G_OBJECT_TYPE(obj));
-    if (!base || !GI_IS_OBJECT_INFO(base)) {
-        if (base) gi_base_info_unref(base);
-        Value r = gi_raisef("gi.call: type is not introspectable: %s", G_OBJECT_TYPE_NAME(obj));
-        value_free(ov); value_free(mv);
-        return r;
-    }
-    /* Walk the class hierarchy: find_method_using_interfaces searches a class's own
-     * methods and the interfaces it implements, but NOT its ancestors, so an
-     * inherited method (e.g. Gio.Application.register on a Gtk.Application) is only
-     * found by climbing parents. Each level still searches that level's interfaces. */
-    GIFunctionInfo *finfo = NULL;
-    GIObjectInfo *cur = (GIObjectInfo *)base;
-    int cur_owned = 0;   /* `base` is released separately below; parents are owned */
-    while (cur) {
-        finfo = gi_object_info_find_method_using_interfaces(cur, mv.as.string, NULL);
-        GIObjectInfo *parent = gi_object_info_get_parent(cur);
-        if (cur_owned) {
-            gi_base_info_unref(cur);
-        }
-        if (finfo) {
-            if (parent) gi_base_info_unref(parent);
-            break;
-        }
-        cur = parent;
-        cur_owned = 1;
-    }
-    gi_base_info_unref(base);
-    if (!finfo) {
-        Value r = gi_raisef("gi.call: unknown method: %s", mv.as.string);
-        value_free(ov); value_free(mv);
-        return r;
-    }
-
-    Value out = gi_invoke_callable(finfo, obj, expr, 2, "gi.call", mv.as.string);
-    gi_base_info_unref(finfo);
+    Value out = gi_invoke_method_on(ov, mv.as.string, expr, 2, "gi.call");
     value_free(ov); value_free(mv);
     return out;
 }
@@ -14833,6 +14900,26 @@ static Value eval_call(AstExpr *expr) {
                 return eval_user_function_with_receiver(expr, method,
                                                         &receiver_symbol->value);
             }
+        }
+
+        /* NAP-5: X.method(args) where X is a variable bound to a native value
+         * (a GObject, or a boxed value / GVariant whose type is introspectable)
+         * is a method call on that receiver, routed through the shared gi invoke
+         * machinery. Checked after the record-method case so records win, and
+         * before the library-name checks so a native-object variable wins over a
+         * library of the same name (mirroring the record precedent). */
+        if (receiver_symbol &&
+            (receiver_symbol->value.kind == VALUE_GOBJECT ||
+             receiver_symbol->value.kind == VALUE_GBOXED)) {
+#if HAVE_GIR
+            return gi_invoke_method_on(receiver_symbol->value,
+                                       expr->as.call.name, expr, 0, "method call");
+#else
+            runtime_error_raise("gobject-introspection support is unavailable; "
+                                "install libgirepository-2.0-dev (GLib >= 2.80) and rebuild",
+                                6001, "gi");
+            return value_null();
+#endif
         }
 
         if (strcmp(expr->as.call.library, "webserver") == 0) {
@@ -18813,6 +18900,21 @@ static Value eval_expr(AstExpr *expr) {
             value_free(object);
             return value_null();
         }
+#if HAVE_GIR
+        /* NAP-5: `obj.name` on a live GObject reads that GObject property (routes
+         * through the same path as gi.get, honoring readable metadata). Records
+         * are handled below exactly as before. */
+        if (object.kind == VALUE_GOBJECT) {
+            GObject *gobj = NULL;
+            if (!gi_object_arg(object, "property read", &gobj)) {
+                value_free(object);
+                return value_null();
+            }
+            Value result = gi_object_prop_get(gobj, expr->as.field.field, "property read");
+            value_free(object);
+            return result;
+        }
+#endif
         if (object.kind != VALUE_RECORD) {
             runtime_error_raise("field access expects a record", 1003, "field access");
             value_free(object);
@@ -19215,6 +19317,23 @@ static LValueAssignResult assign_lvalue(AstExpr *target, Value value) {
         if (!object) {
             return LVALUE_ASSIGN_ERROR;
         }
+#if HAVE_GIR
+        /* NAP-5: `obj.name = v` on a live GObject writes that GObject property
+         * (routes through the same path as gi.set, honoring writable metadata so a
+         * read-only property raises cleanly rather than firing a GLib critical).
+         * resolve_lvalue_ref returns a slot, which cannot express a property setter,
+         * so the write is performed here directly. Records fall through unchanged. */
+        if (object->kind == VALUE_GOBJECT) {
+            GObject *gobj = NULL;
+            if (!gi_object_arg(*object, "property assignment", &gobj)) {
+                value_free(value);
+                return LVALUE_ASSIGN_ERROR;
+            }
+            gi_object_prop_set(gobj, target->as.field.field, value, "property assignment");
+            value_free(value);
+            return error_action_pending() ? LVALUE_ASSIGN_ERROR : LVALUE_ASSIGN_CHANGED;
+        }
+#endif
         if (object->kind != VALUE_RECORD) {
             runtime_error_raise("field assignment target expects a record", 1003, "assignment");
             return LVALUE_ASSIGN_ERROR;

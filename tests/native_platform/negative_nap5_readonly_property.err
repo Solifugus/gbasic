@@ -1,0 +1,1 @@
+runtime error at tests/native_platform/negative_nap5_readonly_property.bas:6:1: property assignment: property is not writable: is_registered

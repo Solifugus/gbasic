@@ -1,0 +1,1 @@
+runtime error at tests/native_platform/negative_nap5_unknown_property.bas:5:1: property read: unknown property: no_such_property

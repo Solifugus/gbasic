@@ -1,0 +1,1 @@
+runtime error at tests/native_platform/negative_nap5_wrong_type.bas:7:1: property assignment: value not convertible for property: application_id

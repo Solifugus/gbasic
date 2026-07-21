@@ -155,3 +155,17 @@ D0.6, the rest remain open or are by-design.
   fields (not scalars) from handlers. Also `sleep` is a function call `sleep(0.1)`, not
   a statement `sleep 0.1`. All by-design given shared-nothing scoping; noted so the next
   person writing loop/actor code doesn't rediscover it.
+
+## 2026-07-20 — CC — while: NAP-5 (LE-1 .property/.method sugar) writing a record-method regression test
+- **Type:** language-surprise
+- **Severity:** low
+- **What:** Declaring the receiver explicitly in a method — `function greet(this)` —
+  is wrong: gBASIC binds `this` IMPLICITLY at the call site, so `this` must NOT be a
+  declared parameter (`function greet()` + `this.name`, per `examples/constructor_test.bas`).
+  Writing `greet(this)` makes the function arity 1, and `person.hello()` then fails the
+  arity check. Worse, the arity failure ("hello expects 1 arguments") printed to STDOUT
+  and execution CONTINUED (exit 0) rather than raising — an invalid method call is
+  silently non-fatal at top level.
+- **Workaround:** Never declare `this`; use it implicitly. (Coming from Python/JS `self`/
+  explicit-receiver habits, this is an easy trap.) The non-fatal-arity-error-to-stdout
+  behavior is pre-existing and unrelated to NAP-5; left as-is, noted here.

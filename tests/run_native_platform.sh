@@ -62,6 +62,11 @@ positive_cases=(
     variant_parse
     array_out
     array_in
+    nap5_prop
+    nap5_method
+    nap5_chain
+    nap5_variant_method
+    nap5_record_unchanged
 )
 
 for name in "${positive_cases[@]}"; do
@@ -106,6 +111,10 @@ negative_cases=(
     negative_array_not_array
     negative_variant_parse_bad
     negative_variant_get_unsupported
+    negative_nap5_unknown_property
+    negative_nap5_readonly_property
+    negative_nap5_unknown_method
+    negative_nap5_wrong_type
 )
 
 for name in "${negative_cases[@]}"; do

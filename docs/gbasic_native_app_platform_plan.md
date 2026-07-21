@@ -280,15 +280,50 @@ Source areas (per `PLAN.md:547-559` deferred spec): `AST_EXPR_FIELD` read path,
 branch — `resolve_lvalue_ref` returns a slot and cannot express a setter),
 `eval_call`/grammar for native-receiver + chained methods.
 
-- [ ] **Tests first:** `x = obj.prop` / `obj.prop = v` / `obj.method(args)` over a
+- [x] **Tests first:** `x = obj.prop` / `obj.prop = v` / `obj.method(args)` over a
       `VALUE_GOBJECT`; chained `a.b().c`; **byte-exact regression** that `VALUE_RECORD`
       field read/write and record-method behavior is unchanged (the primary risk).
-- [ ] Getter branch in `AST_EXPR_FIELD` for non-record kinds → `gi` get; setter-callback
+- [x] Getter branch in `AST_EXPR_FIELD` for non-record kinds → `gi` get; setter-callback
       branch in `assign_lvalue` → `gi` set; method-call receiver extension for gobject
       (and boxed) receivers → `gi.call`. Records untouched.
-- [ ] Full battery byte-exact (records/methods identical); valgrind. Show diff, STOP.
+- [x] Full battery byte-exact (records/methods identical); valgrind. Show diff, STOP.
 
 **Completion:** gobject property/method sugar green; **zero** record-path rebaselines.
+
+**DONE (2026-07-20).** Implemented with **zero grammar / AST changes** — every target
+form (`obj.field`, `obj.method(args)`, `a.b().c`, `app.active_window.title`) already
+parses; NAP-5 is pure runtime dispatch keyed on the receiver `Value` kind, so the
+"smallest parser change" is *none*. Dispatch: property read added to `eval_expr`
+`AST_EXPR_FIELD` for `VALUE_GOBJECT` (records unchanged, checked as before); property
+write added to `assign_lvalue` `AST_EXPR_FIELD` as a direct setter (the slot-returning
+`resolve_lvalue_ref` can't express a setter, so the write is done in-place there);
+method calls added to `eval_call` after the record-method case (records win) and before
+the library-name checks (a native-object variable wins over a same-named library,
+mirroring the record precedent). All three route through shared helpers
+(`gi_object_prop_get` / `gi_object_prop_set` / `gi_invoke_method_on`) so `gi.get` /
+`gi.set` / `gi.call` and the sugar share one code path (no duplicated invoke logic);
+`gi_invoke_callable`'s receiver was generalized `GObject*`→`gpointer` so boxed/GVariant
+receivers work. **Name mapping is verbatim** — `g_object_class_find_property`
+canonicalizes `_`↔`-` (empirically confirmed), so `app.application_id` reaches property
+`"application-id"` with no transform; GI method names (underscored) pass through as-is.
+Added readable/writable metadata pre-checks in the property helpers so a read-only
+write raises a clean gBASIC error instead of a fatal GLib critical (also hardens
+`gi.set`). **Boxed/GVariant receiver proof:** `variant.get_type_string()` /
+`.get_boolean()` / `.get_int32()` dispatch through struct-info method resolution — the
+evidence the phase unlocks more than GObjects (closes the NAP-4 deferral).
+Tests: native_platform +5 positive (`nap5_prop/method/chain/variant_method/
+record_unchanged`) +4 negative (unknown-property / read-only / unknown-method /
+wrong-type — each a *distinct* error). Regression byte-exact, **zero** rebaselines:
+gi 20, negative 249, examples 191, gui_parse 7, docs_gate green, bag_smoke ok, lsp ok,
+`make dev` clean. Valgrind: 0 definitely/indirectly/possibly lost, 0 errors over a
+300× churn of every path incl. recovered error paths, and over the record path.
+Deviations: (1) `gi.call` additively generalized to accept boxed receivers (previously
+gobject-only; its old non-object error string — asserted by no golden — changed from
+"expects a gobject" to "expects a gobject or boxed value"). (2) Boxed struct **field**
+read/write via dot is NOT included (only GObject *properties* and boxed *methods*);
+boxed structs keep `gi.struct_get`/`gi.struct_set`. (3) Chained method *receivers* stay
+single-identifier (grammar unchanged); `a.b().c` works as method-then-property-read;
+`a.b().c = x` remains an invalid lvalue (existing error).
 
 ---
 

@@ -1,0 +1,1 @@
+runtime error at tests/native_platform/negative_nap5_unknown_method.bas:5:1: method call: unknown method: no_such_method
