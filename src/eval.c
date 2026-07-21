@@ -19325,13 +19325,21 @@ static LValueAssignResult assign_lvalue(AstExpr *target, Value value) {
          * so the write is performed here directly. Records fall through unchanged. */
         if (object->kind == VALUE_GOBJECT) {
             GObject *gobj = NULL;
+            /* Ownership contract (see the AST_STMT_ASSIGN caller and the record
+             * path below): on LVALUE_ASSIGN_ERROR the caller frees `value`, so we
+             * must NOT free it here — doing both double-frees a heap RHS (e.g. a
+             * gobject assigned to a wrong-typed or read-only property). We free
+             * `value` only on the success (CHANGED) path, where the caller does not.
+             * gi_object_prop_set borrows `value` and never frees it. */
             if (!gi_object_arg(*object, "property assignment", &gobj)) {
-                value_free(value);
                 return LVALUE_ASSIGN_ERROR;
             }
             gi_object_prop_set(gobj, target->as.field.field, value, "property assignment");
+            if (error_action_pending()) {
+                return LVALUE_ASSIGN_ERROR;
+            }
             value_free(value);
-            return error_action_pending() ? LVALUE_ASSIGN_ERROR : LVALUE_ASSIGN_CHANGED;
+            return LVALUE_ASSIGN_CHANGED;
         }
 #endif
         if (object->kind != VALUE_RECORD) {
