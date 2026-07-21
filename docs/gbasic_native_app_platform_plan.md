@@ -336,16 +336,50 @@ Source areas: new unconditional builtins (`src/builtins.c` registry + `src/eval.
 impl); reuse the fork+exec plumbing (generalize the `execv` at 8360 to an arbitrary
 path + argv + captured pipes).
 
-- [ ] **Tests first (headless):** `process.run({command:"/bin/echo",args:["hi"]})` →
+- [x] **Tests first (headless):** `process.run({command:"/bin/echo",args:["hi"]})` →
       `{exit_code:0, stdout:"hi\n", stderr:""}`; a nonzero-exit command; a missing
       command → clean runtime error; verify **no shell interpolation** (args with
       spaces/metachars pass literally); a `timeout` kills a long child.
-- [ ] Implement `process.run` (structured argv → `execv`, capture stdout/stderr via
+- [x] Implement `process.run` (structured argv → `execv`, capture stdout/stderr via
       pipes, exit status, optional cwd/env/stdin/timeout). Define — but do **not** yet
       implement — the `process.start`→handle async form as the documented next step.
-- [ ] valgrind; byte-exact. Show diff, STOP.
+- [x] valgrind; byte-exact. Show diff, STOP.
 
 **Completion:** run/exit/missing/no-shell/timeout tests green.
+
+**DONE (2026-07-20).** `process.run(options)` — a self-contained, shell-injection-safe
+synchronous runner in `src/eval.c` (`process_do_run`), dispatched via an unconditional
+`library=="process"` branch in `eval_call` (no `load`; not in the bare-name
+`builtins.c` registry — module-qualified like `gi.*`/`sqlite.*`). Deliberately **not**
+coupled to the actor spawn plumbing (mailbox/serialization-specific); shares only the
+POSIX idiom. **API:** options record `{command (req string), args (string[]), cwd
+(string), timeout (seconds)}` → result record `{exit_code, stdout, stderr, success,
+signal, timed_out}`. **Execution:** `execvp` (PATH lookup when no `/`), **no shell**
+(argv literal), env inherited, `cwd` via `chdir` in child, `timeout` SIGKILLs the
+child's process group. Nonzero exit is a **normal result** (no raise); launch failure
+(missing exe / bad cwd / pipe / fork) **raises** (`error.source="process"`),
+distinguished from a real exit 127 by a **CLOEXEC exec-error pipe** (child writes
+`errno` before `_exit`; successful exec auto-closes → parent reads EOF). Signaled
+child → `exit_code=-1`, `signal` set. stdout/stderr **binary-safe** (`value_string_n`,
+never `strlen`); interior NULs preserved. **Deadlock-free** dual capture: `poll()`
+over both pipes with 50 ms ticks (timeout enforcement), drain to EOF, then `waitpid`.
+Deferred (documented next steps, not built): `process.start`→handle async form,
+streaming stdin/stdout, env override, kill/cancel. Tests: native_platform +8 positive
+(basic/PATH, separate-streams+nonzero, argv-fidelity, ~70 KB dual-stream no-deadlock,
+binary+NUL, cwd, timeout-kill, 100× churn) +5 negative (missing-exe, non-record,
+no-command, command-type, arg-type). Regression byte-exact, **zero** rebaselines
+(native 54, gi 20, negative 249, examples 191, gui_parse 7, docs_gate, bag, lsp, `make
+dev` clean). Valgrind `--track-fds=yes --child-silent-after-fork=yes` over 1000+ spawns
+incl. recovered launch-failure + timeout-kill: **0 lost, 0 fd leaks** (only the 3
+inherited std fds at exit), 0 errors. Public API in `docs/reference.md` → Process
+Module. Bug caught by the cwd test and fixed pre-commit: a use-after-free reading the
+command string after `value_free(opts)` on the launch-failure path.
+Test gating (resolved pre-commit): `process.run` is GI-independent, but the NAP-6
+cases were initially added to `tests/run_native_platform.sh`, which SKIPs the whole
+suite when GI typelibs are absent — falsely gating `process.run` coverage behind GI
+availability. Fixed by moving the NAP-6 cases into a dedicated GI-independent runner
+`tests/run_process.sh` (no typelib gate, never skips) and registering it in CLAUDE.md;
+`run_native_platform.sh` keeps only the GI-dependent cases.
 
 ---
 

@@ -1,0 +1,8 @@
+0
+arg[0]=<hello world>
+arg[1]=<$HOME>
+arg[2]=<; rm -rf />
+arg[3]=<a*b>
+arg[4]=<quote"here>
+arg[5]=<back`tick`>
+

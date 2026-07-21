@@ -14875,6 +14875,359 @@ static Value gi_eval_call(AstExpr *expr) {
 }
 #endif /* HAVE_GIR */
 
+/* ===================== process.run (NAP-6) ==============================
+ * A general, shell-injection-safe synchronous process runner. Structured argv is
+ * passed directly to execvp (no shell), stdout/stderr are captured binary-safely
+ * via pipes drained with poll() (deadlock-free), and the result is a plain gBASIC
+ * record. Self-contained POSIX code — deliberately NOT coupled to the actor spawn
+ * plumbing, whose fd/mailbox/serialization contract is actor-specific. */
+
+typedef struct {
+    char *data;
+    size_t len;
+    size_t cap;
+} ProcBuf;
+
+static void procbuf_append(ProcBuf *b, const char *src, size_t n) {
+    if (n == 0) {
+        return;
+    }
+    if (b->len + n + 1 > b->cap) {
+        size_t nc = b->cap ? b->cap * 2 : 8192;
+        while (nc < b->len + n + 1) {
+            nc *= 2;
+        }
+        char *p = realloc(b->data, nc);
+        if (!p) {
+            abort();
+        }
+        b->data = p;
+        b->cap = nc;
+    }
+    memcpy(b->data + b->len, src, n);
+    b->len += n;
+}
+
+static Value process_raise(const char *message) {
+    runtime_error_raise(message, 1005, "process");
+    return value_null();
+}
+
+/* Reject a NUL byte in a string destined for argv/exec (a C string can't carry it,
+ * and silently truncating would be a correctness hole). Returns 1 if clean. */
+static int process_str_no_nul(const Value *v) {
+    return memchr(v->as.string, '\0', string_length(v->as.string)) == NULL;
+}
+
+/* Build the returned record with a fixed field order:
+ * exit_code, stdout, stderr, success, signal, timed_out. */
+static Value process_make_result(int exit_code, ProcBuf *out, ProcBuf *err,
+                                 int success, int signal_num, int timed_out) {
+    RecordField *fields = calloc(6, sizeof(RecordField));
+    if (!fields) {
+        abort();
+    }
+    const char *names[] = {"exit_code", "stdout", "stderr",
+                           "success", "signal", "timed_out"};
+    for (size_t i = 0; i < 6; i++) {
+        fields[i].name = copy_string(names[i]);
+        fields[i].value = cell_alloc();
+        if (!fields[i].value) {
+            abort();
+        }
+    }
+    *fields[0].value = value_number(exit_code);
+    *fields[1].value = value_string_n(out->data ? out->data : "", out->len);
+    *fields[2].value = value_string_n(err->data ? err->data : "", err->len);
+    *fields[3].value = value_bool(success);
+    *fields[4].value = value_number(signal_num);
+    *fields[5].value = value_bool(timed_out);
+    return value_record(fields, 6);
+}
+
+/* Drain child_out/child_err into out/err until both hit EOF, using poll() so a
+ * full pipe on one stream never blocks reading the other (deadlock-free). If
+ * deadline_ms >= 0 and it passes with the child still producing, SIGKILL the child
+ * process group and keep draining to EOF; *timed_out is set. Returns 0 on success,
+ * -1 on an unrecoverable read/poll error. The fds are closed here. */
+static int process_drain(int out_fd, int err_fd, ProcBuf *out, ProcBuf *err,
+                         pid_t child_pgid, long timeout_ms, int *timed_out) {
+    struct pollfd pfds[2];
+    int open_out = 1, open_err = 1;
+    char buf[65536];
+    long elapsed_ms = 0;
+    const long tick_ms = 50;
+    int rc = 0;
+
+    while (open_out || open_err) {
+        nfds_t n = 0;
+        int slot_out = -1, slot_err = -1;
+        if (open_out) { slot_out = n; pfds[n].fd = out_fd; pfds[n].events = POLLIN; n++; }
+        if (open_err) { slot_err = n; pfds[n].fd = err_fd; pfds[n].events = POLLIN; n++; }
+
+        int pr = poll(pfds, n, (timeout_ms >= 0) ? (int)tick_ms : -1);
+        if (pr < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            rc = -1;
+            break;
+        }
+        if (pr == 0) {
+            /* poll tick expired: only meaningful when a timeout is armed. */
+            if (timeout_ms >= 0) {
+                elapsed_ms += tick_ms;
+                if (!*timed_out && elapsed_ms >= timeout_ms) {
+                    *timed_out = 1;
+                    kill(-child_pgid, SIGKILL);
+                    /* keep looping to drain whatever is buffered, then EOF */
+                }
+            }
+            continue;
+        }
+        if (slot_out >= 0 && (pfds[slot_out].revents & (POLLIN | POLLHUP | POLLERR))) {
+            ssize_t r = read(out_fd, buf, sizeof(buf));
+            if (r > 0) {
+                procbuf_append(out, buf, (size_t)r);
+            } else if (r == 0) {
+                close(out_fd);
+                open_out = 0;
+            } else if (errno != EINTR && errno != EAGAIN) {
+                rc = -1;
+                break;
+            }
+        }
+        if (slot_err >= 0 && (pfds[slot_err].revents & (POLLIN | POLLHUP | POLLERR))) {
+            ssize_t r = read(err_fd, buf, sizeof(buf));
+            if (r > 0) {
+                procbuf_append(err, buf, (size_t)r);
+            } else if (r == 0) {
+                close(err_fd);
+                open_err = 0;
+            } else if (errno != EINTR && errno != EAGAIN) {
+                rc = -1;
+                break;
+            }
+        }
+    }
+    if (open_out) close(out_fd);
+    if (open_err) close(err_fd);
+    return rc;
+}
+
+static Value process_do_run(AstExpr *expr) {
+    if (expr->as.call.args.count != 1) {
+        return process_raise("process.run expects a single options record");
+    }
+    Value opts = eval_expr(expr->as.call.args.items[0]);
+    if (error_action_pending()) { value_free(opts); return value_null(); }
+    if (opts.kind != VALUE_RECORD) {
+        value_free(opts);
+        return process_raise("process.run expects an options record");
+    }
+
+    /* --- command (required string, no interior NUL) --- */
+    RecordField *cmd_f = record_find(&opts, "command");
+    if (!cmd_f || cmd_f->value->kind != VALUE_STRING) {
+        value_free(opts);
+        return process_raise("process.run: options.command must be a string");
+    }
+    if (!process_str_no_nul(cmd_f->value)) {
+        value_free(opts);
+        return process_raise("process.run: options.command contains a NUL byte");
+    }
+
+    /* --- args (optional array of strings, no interior NUL) --- */
+    size_t nargs = 0;
+    Value *arg_items = NULL;
+    RecordField *args_f = record_find(&opts, "args");
+    if (args_f) {
+        if (args_f->value->kind != VALUE_ARRAY) {
+            value_free(opts);
+            return process_raise("process.run: options.args must be an array");
+        }
+        arg_items = args_f->value->as.array.items;
+        nargs = args_f->value->as.array.count;
+        for (size_t i = 0; i < nargs; i++) {
+            if (arg_items[i].kind != VALUE_STRING) {
+                value_free(opts);
+                return process_raise("process.run: every args element must be a string");
+            }
+            if (!process_str_no_nul(&arg_items[i])) {
+                value_free(opts);
+                return process_raise("process.run: an args element contains a NUL byte");
+            }
+        }
+    }
+
+    /* --- cwd (optional string) --- */
+    const char *cwd = NULL;
+    RecordField *cwd_f = record_find(&opts, "cwd");
+    if (cwd_f) {
+        if (cwd_f->value->kind != VALUE_STRING || !process_str_no_nul(cwd_f->value)) {
+            value_free(opts);
+            return process_raise("process.run: options.cwd must be a string without NUL");
+        }
+        cwd = cwd_f->value->as.string;
+    }
+
+    /* --- timeout (optional number, seconds; <=0 means none) --- */
+    long timeout_ms = -1;
+    RecordField *to_f = record_find(&opts, "timeout");
+    if (to_f) {
+        if (to_f->value->kind != VALUE_NUMBER) {
+            value_free(opts);
+            return process_raise("process.run: options.timeout must be a number");
+        }
+        double secs = to_f->value->as.number;
+        if (secs > 0) {
+            timeout_ms = (long)(secs * 1000.0);
+            if (timeout_ms < 1) timeout_ms = 1;
+        }
+    }
+
+    /* argv borrows the record's NUL-terminated string buffers (valid until opts is
+     * freed, which is after the child has been fully launched and drained). */
+    char **argv = calloc(nargs + 2, sizeof(char *));
+    if (!argv) {
+        abort();
+    }
+    argv[0] = cmd_f->value->as.string;
+    for (size_t i = 0; i < nargs; i++) {
+        argv[i + 1] = arg_items[i].as.string;
+    }
+    argv[nargs + 1] = NULL;
+
+    int out_pipe[2] = {-1, -1}, err_pipe[2] = {-1, -1}, exec_pipe[2] = {-1, -1};
+    if (pipe(out_pipe) != 0 || pipe(err_pipe) != 0 || pipe(exec_pipe) != 0) {
+        for (int i = 0; i < 2; i++) {
+            if (out_pipe[i] >= 0) close(out_pipe[i]);
+            if (err_pipe[i] >= 0) close(err_pipe[i]);
+            if (exec_pipe[i] >= 0) close(exec_pipe[i]);
+        }
+        free(argv);
+        value_free(opts);
+        return process_raise("process.run: could not create pipes");
+    }
+    /* The exec-error pipe is close-on-exec: a successful execvp closes its write end
+     * automatically (parent reads EOF => exec succeeded), while a failed exec writes
+     * errno through it first. This is what distinguishes "could not launch" from a
+     * child that ran and exited 127. */
+    fcntl(exec_pipe[1], F_SETFD, fcntl(exec_pipe[1], F_GETFD) | FD_CLOEXEC);
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        close(out_pipe[0]); close(out_pipe[1]);
+        close(err_pipe[0]); close(err_pipe[1]);
+        close(exec_pipe[0]); close(exec_pipe[1]);
+        free(argv);
+        value_free(opts);
+        return process_raise("process.run: could not fork");
+    }
+
+    if (pid == 0) {
+        /* ---- child ---- */
+        setpgid(0, 0);   /* own process group, so a timeout can kill the whole tree */
+        if (dup2(out_pipe[1], STDOUT_FILENO) < 0 || dup2(err_pipe[1], STDERR_FILENO) < 0) {
+            int e = errno;
+            ssize_t w = write(exec_pipe[1], &e, sizeof(e)); (void)w;
+            _exit(127);
+        }
+        close(out_pipe[0]); close(out_pipe[1]);
+        close(err_pipe[0]); close(err_pipe[1]);
+        close(exec_pipe[0]);
+        if (cwd && chdir(cwd) != 0) {
+            int e = errno;
+            ssize_t w = write(exec_pipe[1], &e, sizeof(e)); (void)w;
+            _exit(127);
+        }
+        execvp(argv[0], argv);
+        int e = errno;   /* only reached if exec failed */
+        ssize_t w = write(exec_pipe[1], &e, sizeof(e)); (void)w;
+        _exit(127);
+    }
+
+    /* ---- parent ---- */
+    setpgid(pid, pid);   /* race-free group setup (mirrors child) */
+    close(out_pipe[1]);
+    close(err_pipe[1]);
+    close(exec_pipe[1]);
+    free(argv);
+
+    /* Read the exec-error pipe first: it resolves at exec time (before the child
+     * program produces output), so this blocks only briefly. */
+    int child_errno = 0;
+    {
+        char eb[sizeof(int)];
+        size_t got = 0;
+        while (got < sizeof(eb)) {
+            ssize_t r = read(exec_pipe[0], eb + got, sizeof(eb) - got);
+            if (r > 0) { got += (size_t)r; continue; }
+            if (r == 0) break;                 /* EOF => exec succeeded */
+            if (errno == EINTR) continue;
+            break;
+        }
+        close(exec_pipe[0]);
+        if (got == sizeof(eb)) {
+            memcpy(&child_errno, eb, sizeof(int));
+        }
+    }
+
+    if (child_errno != 0) {
+        /* Launch failed. Reap the (already-exited) child, then raise — never a
+         * normal result, so callers can tell this apart from a real nonzero exit.
+         * Build the message BEFORE freeing opts: cmd_f points into that record. */
+        close(out_pipe[0]);
+        close(err_pipe[0]);
+        int st;
+        while (waitpid(pid, &st, 0) < 0 && errno == EINTR) { }
+        char msg[320];
+        snprintf(msg, sizeof(msg), "process.run: could not execute '%s': %s",
+                 cmd_f->value->as.string, strerror(child_errno));
+        value_free(opts);
+        return process_raise(msg);
+    }
+
+    ProcBuf out = {0}, err = {0};
+    int timed_out = 0;
+    int drain_rc = process_drain(out_pipe[0], err_pipe[0], &out, &err,
+                                 pid, timeout_ms, &timed_out);
+
+    int status = 0;
+    while (waitpid(pid, &status, 0) < 0 && errno == EINTR) { }
+    value_free(opts);
+
+    if (drain_rc != 0) {
+        free(out.data);
+        free(err.data);
+        return process_raise("process.run: error reading child output");
+    }
+
+    int exit_code = -1, signal_num = 0, success = 0;
+    if (WIFEXITED(status)) {
+        exit_code = WEXITSTATUS(status);
+        success = (exit_code == 0) && !timed_out;
+    } else if (WIFSIGNALED(status)) {
+        signal_num = WTERMSIG(status);
+        exit_code = -1;
+        success = 0;
+    }
+    Value result = process_make_result(exit_code, &out, &err,
+                                       success, signal_num, timed_out);
+    free(out.data);
+    free(err.data);
+    return result;
+}
+
+static Value process_eval_call(AstExpr *expr) {
+    if (strcmp(expr->as.call.name, "run") == 0) {
+        return process_do_run(expr);
+    }
+    char msg[160];
+    snprintf(msg, sizeof(msg), "unknown process function: process.%s", expr->as.call.name);
+    return process_raise(msg);
+}
+
 static Value eval_call(AstExpr *expr) {
     if (expr->as.call.library) {
         /* §5 disambiguation: X.y(args) where X is a variable bound to a record
@@ -14920,6 +15273,13 @@ static Value eval_call(AstExpr *expr) {
                                 6001, "gi");
             return value_null();
 #endif
+        }
+
+        /* NAP-6: process.* is an unconditional built-in module (no `load`), like a
+         * core library namespace. A `process` variable bound to a record/native
+         * value is handled above, so this only fires for the module itself. */
+        if (strcmp(expr->as.call.library, "process") == 0) {
+            return process_eval_call(expr);
         }
 
         if (strcmp(expr->as.call.library, "webserver") == 0) {

@@ -1,0 +1,1 @@
+runtime error at tests/native_platform/negative_nap6_not_record.bas:2:1: process.run expects an options record

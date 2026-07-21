@@ -1318,6 +1318,56 @@ built on the above: `sha256_hex`/`sha512_hex`, `random_hex`/`random_token`,
 a flat `json_encode`/`json_decode`, and `jwt_encode`/`jwt_verify` (HS256). See
 `docs/crypto_design.md`.
 
+## Process Module
+
+`process.run` runs an external program synchronously and returns its result. It is
+an **unconditional builtin** — no `load` is required. Arguments are passed directly
+to the executable (via `execvp`); **no shell is invoked**, so spaces, quotes, `$`,
+`;`, `*`, and backticks in arguments reach the child literally and are never
+expanded or split.
+
+```basic
+r = process.run({ command: "git", args: ["status", "--porcelain"] })
+print r.exit_code    ' 0
+print r.stdout       ' captured standard output
+print r.stderr       ' captured standard error
+```
+
+Options record:
+
+- `command` (string, **required**) — the program to run. Looked up on `PATH` when it
+  contains no `/`, otherwise run as a literal (relative or absolute) path.
+- `args` (array of strings, optional) — the arguments after `command`. Default none.
+- `cwd` (string, optional) — a directory to switch into before running the child.
+- `timeout` (number, optional) — seconds; when the child outlives it, its whole
+  process group is killed. Absent or `<= 0` means no limit.
+
+Result record:
+
+- `exit_code` (number) — the child's exit status when it exited normally; `-1` if it
+  was terminated by a signal or killed by `timeout`.
+- `stdout`, `stderr` (strings) — captured output, **binary-safe** (arbitrary bytes,
+  including interior NULs, are preserved; use `byte_count`/`byte_at` for raw bytes).
+- `success` (boolean) — `true` only when the child exited normally with code `0` and
+  was not timed out.
+- `signal` (number) — the terminating signal number, or `0` if none.
+- `timed_out` (boolean) — `true` when the child was killed for exceeding `timeout`.
+
+Semantics:
+
+- **Nonzero exit is a normal result** — a child that runs and exits non-zero returns
+  a record with that `exit_code`; it does **not** raise. This is what a caller
+  driving `git`, a compiler, or a test runner needs.
+- **Launch failure raises** — a missing/inaccessible executable, a `cwd` that cannot
+  be entered, or an internal pipe/fork failure raises a runtime error
+  (`error.source = "process"`), distinct from a child that ran and exited `127`.
+- **Environment** is inherited from the interpreter (no per-call environment override
+  in this version).
+- **Blocking** — `process.run` waits for the child to finish and captures its output
+  fully into memory (no streaming; large output uses proportional memory). To keep a
+  GUI responsive, run it inside a spawned actor and deliver the result to the main
+  loop via `gi.watch_mailbox` (the actor + event-loop pattern).
+
 ## Core Builtin Functions
 
 gBASIC includes always-available core functions that don't require loading libraries. These maintain strict type checking and provide clear error messages.

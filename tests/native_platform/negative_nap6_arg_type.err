@@ -1,0 +1,1 @@
+runtime error at tests/native_platform/negative_nap6_arg_type.bas:2:1: process.run: every args element must be a string
