@@ -392,21 +392,55 @@ Source areas: new `stdlib/gtk.bas` (idiomatic constructors/helpers over `gi` + L
 sugar), `stdlib/sourceeditor.bas`, and a `gbasic.lang` GtkSourceView syntax file
 shipped alongside the stdlib (install path documented like other stdlib assets).
 
-- [ ] **Tests first:** parse-only CI coverage (wire the library + a demo into
+- [x] **Tests first:** parse-only CI coverage (wire the library + a demo into
       `run_gui_parse.sh`-style parsing); `gbasic.lang` validated by
       `GtkSourceLanguageManager` load in a headless-ish check where possible; a
       **manual display checklist** (open, type, undo, highlight a range, place a gutter
       mark, insert an inline child-anchor widget, scroll to a location).
-- [ ] `stdlib/gtk.bas`: `gtk.app`, `gtk.window`, `gtk.box`, `gtk.paned`, `gtk.stack`,
+- [x] `stdlib/gtk.bas`: `gtk.app`, `gtk.window`, `gtk.box`, `gtk.paned`, `gtk.stack`,
       `gtk.scrolled`, `gtk.listbox`, `gtk.button`, `gtk.notebook`, enum/event helpers.
-- [ ] `stdlib/sourceeditor.bas`: `SourceEditor.new`, `.text/.set_text`, `.cursor/.set_cursor`,
+- [x] `stdlib/sourceeditor.bas`: `SourceEditor.new`, `.text/.set_text`, `.cursor/.set_cursor`,
       `.scroll_to(line)`, `.highlight(ranges)`, `.mark(line,category)`,
       `.add_inline(line,widget)` (child anchor), `.on_change(fn)`, `.set_language("gbasic")`.
-- [ ] `gbasic.lang` (keywords/strings/comments/numbers per `docs/TOKENS.md`).
-- [ ] Core suite byte-exact; parse tests green; manual checklist recorded. Show diff, STOP.
+- [x] `gbasic.lang` (keywords/strings/comments/numbers per `docs/TOKENS.md`).
+- [x] Core suite byte-exact; parse tests green; manual checklist recorded. Show diff, STOP.
 
 **Completion:** editor library + `gbasic.lang` load and drive GtkSourceView on a display;
 CI parse coverage green.
+
+**DONE (2026-07-21).** Reusable, **no native code** — every needed GtkSource API is
+reachable through the NAP-1..6 bridge (confirmed by probing: `GtkSource.Buffer`,
+`LanguageManager`/`Language`, `View`, `ScrolledWindow`, caller-alloc `GtkTextIter`
+out-params, `GtkSourceMark`, `GtkTextTag`, `GtkTextChildAnchor` all resolve). Added
+`stdlib/gtk.bas` (thin GTK4 constructors over `gi`, each returning the raw GObject),
+`stdlib/sourceeditor.bas` (editor = a gBASIC record + this-bound methods holding a
+`GtkSourceBuffer`; the `GtkSourceView` widget is created **lazily** so text/language/
+cursor/mark/highlight are headless and only view/scroll/add_inline need a display),
+and `stdlib/gtksourceview/gbasic.lang` (grounded in `docs/TOKENS.md`). Discovery: the
+library adds the stdlib `gtksourceview/` dir (from `GBASIC_PATH` + the install default)
+to a `GtkSourceLanguageManager` search path — no hard-coded checkout path; Makefile
+`install` now ships the `.lang`. Naming: `create()` not `new()` and `gtk.connect` not
+`gtk.on` (`new`/`on` are reserved keywords). **Architectural findings:** (1)
+GtkSourceView works **entirely through generic GI** — no wrapper needed. (2)
+`GtkTextChildAnchor` inline widgets work (proven on a display: anchored a `gtk.button`
+in the editor, view stayed editable). (3) The buffer's highlight engine calls back into
+the `LanguageManager` that produced its language, so the editor **keeps its manager
+alive** (`ed._lm`) or GtkSourceView criticals — fixed. Tests: `tests/run_native_editor.sh`
+(GtkSource-gated skip + `GBASIC_PATH=stdlib`): headless golden (language discovery, text,
+set_language w/o critical, cursor, mark, highlight) always; display-gated `display_smoke`
+(view/scroll/inline-widget) when a display exists (ran green here). `examples/native_editor/`
+demo wired into `run_gui_parse.sh` (parse-only) + a manual checklist in its README.
+Regression byte-exact, zero rebaselines. No new C code (valgrind not manufactured; the gi
+bridge paths were already covered under NAP-1..5).
+Deviations/discovered: (a) `SourceEditor.new`→`create()`, `gtk.on`→`gtk.connect`
+(reserved words). (b) **`this.method()` does not dispatch** — method-call resolution
+binds the receiver by variable name and `this` is `current_this`, not an env symbol; a
+plain helper can't mutate the caller's record either, so view-ensuring is inlined in the
+three view methods. Worth a future language fix (SHOULD FIX) but no blocker and no C
+change. (c) `call(...) = x` at expression position collides with the `(…)=` modifier
+lexer mode — bind the call result to a variable first. (d) type **static methods** via
+`gi.invoke` (3-part names like `GtkSource.LanguageManager.get_default`) aren't resolved;
+`gi.new` + instance methods is the workaround (DEFERRED).
 
 ---
 

@@ -179,6 +179,8 @@ install: gbasic
 	install -m 0755 gbasic $(DESTDIR)$(BINDIR)/gbasic
 	install -d $(DESTDIR)$(STDLIBDIR)
 	install -m 0644 stdlib/*.bas $(DESTDIR)$(STDLIBDIR)/
+	install -d $(DESTDIR)$(STDLIBDIR)/gtksourceview
+	install -m 0644 stdlib/gtksourceview/gbasic.lang $(DESTDIR)$(STDLIBDIR)/gtksourceview/
 	@echo "Installed gbasic to $(DESTDIR)$(BINDIR) and stdlib to $(DESTDIR)$(STDLIBDIR)"
 
 uninstall:

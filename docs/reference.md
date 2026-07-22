@@ -1275,6 +1275,81 @@ The GTK 3 `gui` module and the GTK 4 `gi` bridge cannot be used in the same
 process; loading one after the other has taken the opposite GTK version raises a
 structured error. Errors from the module use `error.source = "gi"`.
 
+## GTK 4 helpers and SourceEditor
+
+Two **pure-gBASIC** stdlib libraries make native GTK 4 code readable over the raw
+`gi` bridge. They add no native code and hide no GTK semantics — every wrapper
+returns the underlying GObject, so you drop to `gi` (`obj.method(...)`,
+`obj.prop = ...`, `gi.connect`) for anything not wrapped. Load them with
+`GBASIC_PATH` pointing at the dev tree's `stdlib` (or the installed path):
+
+```sh
+GBASIC_PATH=stdlib ./gbasic examples/native_editor/editor_demo.bas
+```
+
+Both require the GTK 4 / GtkSource 5 introspection typelibs at runtime
+(`gir1.2-gtk-4.0`, `gir1.2-gtksource-5`), loaded through `gi` (not linked).
+
+### `gtk` (`load gtk`)
+
+Thin GTK 4 constructors, each returning the GTK GObject:
+
+- `gtk.init()` — initialize GTK (needed before building widgets; needs a display).
+- `gtk.application(app_id)` / `gtk.application_window(app)` / `gtk.window()`.
+- `gtk.box(orientation, spacing)` / `gtk.paned(orientation)` — `orientation` is
+  `"h"`/`"horizontal"` or `"v"`/`"vertical"`.
+- `gtk.scrolled(child)` / `gtk.stack()` / `gtk.notebook()` / `gtk.listbox()`.
+- `gtk.button(label)` / `gtk.label(text)`.
+- `gtk.connect(widget, signal, handler)` — alias for `gi.connect` (named
+  `connect`, not `on`, because `on` is a reserved keyword).
+- `gtk.enum("Gtk.Orientation.VERTICAL")` — resolve an enum/flags member to its int.
+
+This is a thin convenience layer, **not** a new widget framework and not the
+declarative reconciler planned for a later phase.
+
+### `sourceeditor` (`load sourceeditor`)
+
+A reusable source/text editor over GtkSourceView 5. General-purpose — nothing is
+named after or specific to any application. An editor is a plain gBASIC record
+holding its `GtkSourceBuffer` plus methods; the `GtkSourceView` **widget** is
+created lazily on first `view()`/`scroll_to()`/`add_inline()`, so the text,
+language, cursor, mark, and highlight operations work **headlessly** (a buffer is
+not a widget) and only the view-dependent operations need an initialized GTK and a
+display.
+
+- `sourceeditor.create()` — a new editor (buffer only until a view is needed).
+- `sourceeditor.language(id)` / `sourceeditor.language_manager()` — resolve a
+  `GtkSourceLanguage` / a search-path'd `GtkSourceLanguageManager` (headless).
+- editor methods (call on the returned record):
+  - `.get_text()` / `.set_text(s)`
+  - `.set_language(id)` — assign a language (e.g. `"gbasic"`); raises if unknown.
+  - `.cursor()` → `{line, column}` (0-based) / `.set_cursor(line, column)`
+  - `.mark(line, category)` → a `GtkSourceMark` (the category string's meaning is
+    the caller's — bookmark, diagnostic, breakpoint, …; not fixed by the library).
+  - `.highlight(start_line, end_line, color)` → a `GtkTextTag` (whole-line
+    background highlight) / `.unhighlight(tag)`.
+  - `.on_change(fn)` — call `fn` on every buffer edit.
+  - `.view()` — the `GtkSourceView` widget (created on first use; needs a display).
+  - `.scroll_to(line)` / `.add_inline(line, widget)` — scroll to a line; anchor a
+    generic GTK widget at a source line via `GtkTextChildAnchor` (needs a display).
+
+### `gbasic.lang` (syntax definition)
+
+gBASIC syntax highlighting is a GtkSourceView language definition shipped at
+`stdlib/gtksourceview/gbasic.lang` (grounded in `docs/TOKENS.md`: comments,
+strings with escapes, decimal/hex numbers, the case-insensitive keyword set,
+`true`/`false` and `nothing`/`unknown` literals, declarations). `sourceeditor`
+locates it by adding the stdlib's `gtksourceview/` directory to a
+`GtkSourceLanguageManager` search path at runtime — derived from `GBASIC_PATH`
+(dev tree) plus the documented install location
+(`/usr/local/share/gbasic/stdlib/gtksourceview` by default). After `make install`
+the `.lang` installs alongside the rest of the stdlib.
+
+**SourceEditor vs. gBASIC Studio:** `sourceeditor` is a reusable, general editor
+component. It is deliberately free of Studio concepts (projects, execution
+boundaries, branches, inspector); a future gBASIC Studio would *use* this library,
+not the other way around.
+
 ## Cryptography
 
 When gBASIC is built with libcrypto (OpenSSL), a family of cryptographic builtins
@@ -1803,6 +1878,9 @@ General-purpose:
 - `llm` — a chat-completion client (`docs/llm_design.md`).
 - `gui` — the declarative layer for the experimental GTK 3 `gui` module
   (`docs/gui_design.md`).
+- `gtk` — thin ergonomic GTK 4 constructors over the `gi` bridge (see
+  [GTK 4 helpers and SourceEditor](#gtk-4-helpers-and-sourceeditor)).
+- `sourceeditor` — a reusable GtkSourceView 5 source/text editor (same section).
 
 EDGAR / SEC-filings suite (governed by `docs/edgar_design.md`, with
 `docs/edgar_reference.md` and `docs/edgar_tutorial.md`):

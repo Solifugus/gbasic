@@ -1,0 +1,13 @@
+gBASIC
+gbasic
+true
+print("hi")
+for i in [1, 2, 3]
+  print(i)
+end for
+
+language-set
+cursor 2:4
+diagnostic
+GtkTextTag
+done

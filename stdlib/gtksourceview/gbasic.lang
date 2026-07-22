@@ -1,0 +1,138 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  GtkSourceView 5 syntax definition for gBASIC.
+
+  Grounded in docs/TOKENS.md (the hand-verified lexer inventory), NOT in design
+  documents: keywords are the case-insensitive set recognized by
+  identifier_type(); comments are ' to end-of-line (no block comments); strings
+  are double-quoted with the escapes \n \t \\ \" \u{...}; numbers are decimal or
+  0x-hex. Reserved-but-unparsed words (dim/as/step) are still coloured as
+  keywords per TOKENS.md guidance.
+
+  Ships with the gBASIC stdlib; the sourceeditor library adds this directory to a
+  GtkSourceLanguageManager search path at runtime (see stdlib/sourceeditor.bas).
+-->
+<language id="gbasic" name="gBASIC" version="2.0" _section="Source">
+  <metadata>
+    <property name="mimetypes">text/x-gbasic</property>
+    <property name="globs">*.bas;*.gb</property>
+    <property name="line-comment-start">'</property>
+  </metadata>
+
+  <styles>
+    <style id="comment"      name="Comment"           map-to="def:comment"/>
+    <style id="string"       name="String"            map-to="def:string"/>
+    <style id="escape"       name="Escaped Character"  map-to="def:special-char"/>
+    <style id="keyword"      name="Keyword"            map-to="def:keyword"/>
+    <style id="declaration"  name="Declaration"        map-to="def:keyword"/>
+    <style id="boolean"      name="Boolean"            map-to="def:boolean"/>
+    <style id="constant"     name="Constant"           map-to="def:special-constant"/>
+    <style id="decimal"      name="Decimal"            map-to="def:decimal"/>
+    <style id="hexadecimal"  name="Hexadecimal"        map-to="def:base-n-integer"/>
+  </styles>
+
+  <definitions>
+
+    <!-- A comment runs from a single quote to end of line. gBASIC has no block
+         comments. -->
+    <context id="comment" style-ref="comment" end-at-line-end="true"
+             class="comment" class-disabled="no-spell-check">
+      <start>'</start>
+    </context>
+
+    <!-- Double-quoted string; may not span a newline. -->
+    <context id="string" style-ref="string" end-at-line-end="true"
+             class="string" class-disabled="no-spell-check">
+      <start>"</start>
+      <end>"</end>
+      <include>
+        <context id="escape" style-ref="escape">
+          <match>\\(["\\nt]|u\{[0-9A-Fa-f]{1,6}\})</match>
+        </context>
+      </include>
+    </context>
+
+    <context id="hexadecimal" style-ref="hexadecimal">
+      <match>\b0[xX][0-9A-Fa-f]+\b</match>
+    </context>
+
+    <context id="decimal" style-ref="decimal">
+      <match>\b[0-9]+(\.[0-9]+)?\b</match>
+    </context>
+
+    <!-- true/false are the boolean literals; nothing/unknown are the nullish
+         literals (distinct style). -->
+    <context id="boolean" style-ref="boolean">
+      <keyword>true</keyword>
+      <keyword>false</keyword>
+    </context>
+
+    <context id="constant" style-ref="constant">
+      <keyword>nothing</keyword>
+      <keyword>unknown</keyword>
+    </context>
+
+    <!-- Declaration/structure keywords. -->
+    <context id="declarations" style-ref="declaration">
+      <keyword>program</keyword>
+      <keyword>library</keyword>
+      <keyword>function</keyword>
+      <keyword>modifier</keyword>
+      <keyword>load</keyword>
+      <keyword>use</keyword>
+      <keyword>export</keyword>
+    </context>
+
+    <!-- Control-flow and remaining keywords (case-insensitive). -->
+    <context id="keywords" style-ref="keyword">
+      <keyword>if</keyword>
+      <keyword>then</keyword>
+      <keyword>else</keyword>
+      <keyword>end</keyword>
+      <keyword>for</keyword>
+      <keyword>to</keyword>
+      <keyword>while</keyword>
+      <keyword>consider</keyword>
+      <keyword>break</keyword>
+      <keyword>continue</keyword>
+      <keyword>return</keyword>
+      <keyword>print</keyword>
+      <keyword>watch</keyword>
+      <keyword>without</keyword>
+      <keyword>watchers</keyword>
+      <keyword>goto</keyword>
+      <keyword>gosub</keyword>
+      <keyword>with</keyword>
+      <keyword>new</keyword>
+      <keyword>spawn</keyword>
+      <keyword>on</keyword>
+      <keyword>resume</keyword>
+      <keyword>next</keyword>
+      <keyword>stop</keyword>
+      <keyword>error</keyword>
+      <keyword>and</keyword>
+      <keyword>or</keyword>
+      <keyword>not</keyword>
+      <keyword>in</keyword>
+      <keyword>each</keyword>
+      <!-- reserved but not yet parsed (TOKENS.md) -->
+      <keyword>dim</keyword>
+      <keyword>as</keyword>
+      <keyword>step</keyword>
+    </context>
+
+    <context id="gbasic" class="no-spell-check">
+      <include>
+        <context ref="comment"/>
+        <context ref="string"/>
+        <context ref="hexadecimal"/>
+        <context ref="decimal"/>
+        <context ref="boolean"/>
+        <context ref="constant"/>
+        <context ref="declarations"/>
+        <context ref="keywords"/>
+      </include>
+    </context>
+
+  </definitions>
+</language>
