@@ -40,6 +40,14 @@ GIR_AVAILABLE := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --e
 GIR_CFLAGS := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --cflags girepository-2.0 2>/dev/null)
 GIR_LIBS := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --libs girepository-2.0 2>/dev/null)
 
+# GIO (NAP-12 row-model adapter). `GListModel` is a GIO interface, and
+# girepository-2.0 links only gobject/glib — so the DataGrid's native
+# adapter needs gio-2.0 explicitly. Independent of GTK: the adapter
+# implements a GIO interface and is never linked against GTK itself.
+GIO_AVAILABLE := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --exists gio-2.0 && printf 1 || printf 0)
+GIO_CFLAGS := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --cflags gio-2.0 2>/dev/null)
+GIO_LIBS := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --libs gio-2.0 2>/dev/null)
+
 ifeq ($(GTK_AVAILABLE),1)
 CFLAGS += -DHAVE_GTK=1 $(GTK_CFLAGS)
 LDLIBS += $(GTK_LIBS) -lm
@@ -95,6 +103,13 @@ CFLAGS += -DHAVE_GIR=1 $(GIR_CFLAGS)
 LDLIBS += $(GIR_LIBS)
 else
 CFLAGS += -DHAVE_GIR=0
+endif
+
+ifeq ($(GIO_AVAILABLE),1)
+CFLAGS += -DHAVE_GIO=1 $(GIO_CFLAGS)
+LDLIBS += $(GIO_LIBS)
+else
+CFLAGS += -DHAVE_GIO=0
 endif
 
 # libgbasic is every object except the CLI entry point (src/main.o). The CLI is
@@ -159,7 +174,7 @@ src/parser.tab.o: src/parser.tab.c src/parser.tab.h include/ast.h include/lexer.
 src/ast.o: src/ast.c include/ast.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
-src/eval.o: src/eval.c src/modules/xml.c include/eval.h include/ast.h include/builtins.h include/actor.h include/diagnostics.h
+src/eval.o: src/eval.c src/modules/xml.c src/modules/rowmodel.c include/eval.h include/ast.h include/builtins.h include/actor.h include/diagnostics.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
 src/builtins.o: src/builtins.c include/builtins.h

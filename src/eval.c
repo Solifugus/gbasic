@@ -15021,6 +15021,11 @@ static Value gi_eval_call(AstExpr *expr) {
 }
 #endif /* HAVE_GIR */
 
+/* NAP-12: the DataGrid's native row-model adapter. Included here (after the gi
+ * bridge) because it reuses gi_canonical_wrap/gi_object_arg to hand its GTypes
+ * back as ordinary gBASIC gobject values. Self-guarded on HAVE_GIR && HAVE_GIO. */
+#include "modules/rowmodel.c"
+
 /* ===================== process.run (NAP-6) ==============================
  * A general, shell-injection-safe synchronous process runner. Structured argv is
  * passed directly to execvp (no shell), stdout/stderr are captured binary-safely
@@ -15858,6 +15863,22 @@ static Value eval_call(AstExpr *expr) {
          * above, so this only fires for the module itself. */
         if (strcmp(expr->as.call.library, "reflect") == 0) {
             return reflect_eval_call(expr);
+        }
+
+        /* NAP-12: rowmodel.* is the native GListModel adapter behind the general
+         * DataGrid (stdlib/datagrid.bas). Unconditional like process/reflect, but
+         * it needs both the gi bridge and GIO — GListModel is a GIO interface and
+         * girepository-2.0 links only gobject/glib. */
+        if (strcmp(expr->as.call.library, "rowmodel") == 0) {
+#if HAVE_GIR && HAVE_GIO
+            return rowmodel_eval_call(expr);
+#else
+            runtime_error_raise("row-model support is unavailable; install "
+                                "libgirepository-2.0-dev (GLib >= 2.80) and "
+                                "libglib2.0-dev (gio-2.0) and rebuild",
+                                6101, "rowmodel");
+            return value_null();
+#endif
         }
 
         if (strcmp(expr->as.call.library, "webserver") == 0) {
