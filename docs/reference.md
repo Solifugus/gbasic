@@ -1443,6 +1443,78 @@ Semantics:
   GUI responsive, run it inside a spawned actor and deliver the result to the main
   loop via `gi.watch_mailbox` (the actor + event-loop pattern).
 
+## Reflection Module
+
+`reflect.*` is a general runtime reflection facility — an **unconditional builtin**
+(no `load`) for debuggers, IDE variable inspectors, AI/Agent tools, serializers, and
+testing tools. It exposes small **composable** primitives so a consumer can explore a
+value **lazily**, rather than one recursive dump that would copy a huge or deeply
+nested graph. **Reflectable is broader than serializable**: a live GObject is
+reflectable (its kind and type) but not serializable.
+
+Environment:
+
+- `reflect.variables()` → a sorted string array of the **current scope's own**
+  variable names (globals at top level; a function's own locals inside a function).
+- `reflect.get(name)` → the value of a named variable (a copy); raises if unknown.
+
+Value description (each takes one value):
+
+- `reflect.kind(v)` → the value kind: `"number"`, `"string"`, `"boolean"`,
+  `"nothing"`, `"unknown"`, `"array"`, `"record"`, `"function"`, `"gobject"`,
+  `"gboxed"`, `"gvariant"`, `"datetime"`, `"duration"`, `"money"`, `"file"`,
+  `"directory"`, `"actor"`, database-connection kinds, …
+- `reflect.type(v)` → a refined type: a **GType name** for a live gobject/boxed value
+  (e.g. `"GtkButton"`, `"GVariant"`), otherwise the kind. Never a raw pointer.
+- `reflect.category(v)` → `"scalar"`, `"container"`, `"function"`, or `"foreign"`.
+- `reflect.serializable(v)` → boolean; **true** iff the value (recursively, for
+  arrays/records) can be `serialize`d. Foreign/live handles (gobject, gboxed, actor,
+  DB connections) are `false`.
+- `reflect.count(v)` → element count (array), field count (record), or byte length
+  (string). Raises otherwise.
+- `reflect.inspect(v)` → a **shallow** descriptor record
+  `{ kind, type, category, serializable, count }`. Deliberately non-recursive — deep
+  traversal is caller-driven via the traversal primitives, so inspection never
+  auto-copies a large graph and never loops.
+
+Traversal (composable, lazy — each returns a copy of one child):
+
+- `reflect.fields(v)` → array of a record's field names (declaration order).
+- `reflect.field(v, name)` → the value of a record field; raises if unknown.
+- `reflect.element(v, index)` → the value of an array element; raises out of range.
+
+Scope and semantics:
+
+- **Environment scope**: v1 reflects the current evaluator's scope only. Enumerating
+  **paused call frames**, other interpreters, or the full enclosing chain is deferred
+  to a future interpreter-context refactor. Because builtins run in the caller's
+  environment, `reflect.variables()` inside a function does see that function's own
+  locals.
+- **Ordering**: `variables()` is **sorted by name** (stable/deterministic);
+  `fields()` follows the record's declaration order (matching `keys()`).
+- **Records**: reflection sees a record's **own materialized fields**. PBI derivation
+  copies inherited fields into the instance at construction, so derived fields appear
+  as own fields; per-field derivation *policy* metadata is not exposed in v1.
+- **Foreign values** are identified safely (kind + GType name) without dereferencing
+  internals or exposing pointers, and report `serializable = false`.
+- **Cycles**: gBASIC's value/copy semantics prevent records/arrays from forming true
+  cycles, and `inspect` is shallow, so reflection cannot loop; the recursive
+  `serializable` predicate is additionally depth-guarded.
+- **Identity**: a stable cross-read identity token (for cycle-detection or
+  change-tracking caches) is **not** provided in v1 — under copy semantics a value read
+  from a variable is a fresh copy, so no stable record/array identity exists to expose.
+- **Errors** are explicit and recoverable (`error.source = "reflect"`): unknown
+  variable, `count`/`fields`/`field`/`element` on the wrong kind, index out of range,
+  unknown field, or an unknown `reflect.*` function.
+- **Security**: the runtime API permits inspection of any in-scope value; controlling
+  *who* may reflect (e.g. an Agent/MCP permission layer) is a higher-level concern, not
+  part of this module.
+
+**Reflectable vs. serializable**: reflection describes a value's shape and identity of
+kind without requiring it to be encodable; `serialize` encodes a value's data. A
+gobject is `reflect.inspect`-able as `kind=gobject, type=GtkButton, serializable=false`
+without exposing its internals.
+
 ## Core Builtin Functions
 
 gBASIC includes always-available core functions that don't require loading libraries. These maintain strict type checking and provide clear error messages.

@@ -1,0 +1,10 @@
+gobject
+GApplication
+foreign
+false
+gvariant
+GVariant
+foreign
+false
+false
+gobject GApplication foreign false

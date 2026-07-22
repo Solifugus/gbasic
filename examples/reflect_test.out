@@ -1,0 +1,42 @@
+== variables ==
+arr
+flag
+none
+num
+rec
+str
+unk
+== scalars ==
+number scalar ser=true
+string count=2
+boolean
+nothing
+unknown
+== get ==
+42
+record
+== record ==
+count=3
+alpha
+beta
+gamma
+beta.count=1
+2
+== array ==
+count=3
+10
+30
+array count=2
+false
+== inspect ==
+record record container ser=true count=3
+string scalar count=2
+== serializable ==
+true
+true
+== cycle ==
+record
+true
+== recover ==
+true
+continued

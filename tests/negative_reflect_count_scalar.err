@@ -1,0 +1,1 @@
+runtime error at tests/negative_reflect_count_scalar.bas:1:1: reflect.count expects an array, record, or string

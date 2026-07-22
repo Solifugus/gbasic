@@ -15228,6 +15228,337 @@ static Value process_eval_call(AstExpr *expr) {
     return process_raise(msg);
 }
 
+/* ===================== reflect (NAP-9) ==================================
+ * A general runtime reflection facility: enumerate the current scope's variables
+ * and describe/traverse any Value WITHOUT serializing it. Small composable
+ * primitives (kind/type/category/serializable/count/fields/field/element/inspect)
+ * so a debugger, IDE inspector, Agent tool, or serializer can explore LAZILY
+ * rather than forcing a full recursive dump of a huge or nested value graph. It
+ * reflects the current evaluator's global-state Env; paused-frame and
+ * cross-interpreter enumeration are deferred to the future interpreter-context
+ * refactor. Reflectable is broader than serializable: a live gobject is
+ * reflectable (kind/type) but not serializable. Unconditional (no `load`). */
+
+static Value reflect_raise(const char *message) {
+    runtime_error_raise(message, 1006, "reflect");
+    return value_null();
+}
+
+/* 4-way classification used by reflect.category and reflect.inspect. */
+static const char *reflect_category(Value v) {
+    switch (v.kind) {
+    case VALUE_ARRAY:
+    case VALUE_RECORD:
+        return "container";
+    case VALUE_FUNCTION:
+        return "function";
+    case VALUE_GOBJECT:
+    case VALUE_GBOXED:
+    case VALUE_ACTOR:
+    case VALUE_POSTGRES_CONNECTION:
+    case VALUE_SQLITE_CONNECTION:
+    case VALUE_XML_READER:
+        return "foreign";
+    default:
+        return "scalar";
+    }
+}
+
+/* Refined type: a live GType name for a gobject/boxed value, else the kind. Never
+ * exposes a raw pointer. */
+static void reflect_type_string(Value v, char *buf, size_t n) {
+#if HAVE_GIR
+    if (v.kind == VALUE_GOBJECT && v.as.gobject && v.as.gobject->obj &&
+        !v.as.gobject->closed) {
+        snprintf(buf, n, "%s", G_OBJECT_TYPE_NAME(v.as.gobject->obj));
+        return;
+    }
+    if (v.kind == VALUE_GBOXED && v.as.gboxed) {
+        snprintf(buf, n, "%s", g_type_name(v.as.gboxed->type));
+        return;
+    }
+#endif
+    snprintf(buf, n, "%s", builtin_type_name(v));
+}
+
+/* Side-effect-free serializability predicate mirroring serialize_value's
+ * accept/reject rules (non-strict mode): scalars + function serialize; arrays and
+ * records serialize iff every element/field does; foreign/live handles do not.
+ * Depth-guarded so it can never loop (gBASIC values are acyclic under copy
+ * semantics, but the guard is cheap insurance). */
+static int reflect_serializable(Value v, int depth) {
+    if (depth > 256) {
+        return 0;
+    }
+    switch (v.kind) {
+    case VALUE_NULL: case VALUE_UNKNOWN: case VALUE_BOOL: case VALUE_NUMBER:
+    case VALUE_STRING: case VALUE_DATETIME: case VALUE_DURATION: case VALUE_MONEY:
+    case VALUE_FILE: case VALUE_DIR: case VALUE_FUNCTION:
+        return 1;
+    case VALUE_ARRAY:
+        for (size_t i = 0; i < v.as.array.count; i++) {
+            if (!reflect_serializable(v.as.array.items[i], depth + 1)) {
+                return 0;
+            }
+        }
+        return 1;
+    case VALUE_RECORD:
+        for (size_t i = 0; i < v.as.record.count; i++) {
+            if (!reflect_serializable(*v.as.record.fields[i].value, depth + 1)) {
+                return 0;
+            }
+        }
+        return 1;
+    default:   /* gobject, gboxed, actor, db connections, xml reader */
+        return 0;
+    }
+}
+
+static int reflect_name_cmp(const void *a, const void *b) {
+    const char *const *sa = a;
+    const char *const *sb = b;
+    return strcmp(*sa, *sb);
+}
+
+/* reflect.variables() — the current scope's own variable names, sorted (stable,
+ * deterministic). v1 reflects current_env's own frame (globals at top level; a
+ * function's own locals inside a function); enclosing/parent frames and paused
+ * frames are deferred to the interpreter-context refactor. Copies nothing but the
+ * name strings. */
+static Value reflect_do_variables(void) {
+    size_t n = current_env->count;
+    Value *items = n ? calloc(n, sizeof(Value)) : NULL;
+    const char **names = n ? calloc(n, sizeof(char *)) : NULL;
+    if (n && (!items || !names)) {
+        abort();
+    }
+    for (size_t i = 0; i < n; i++) {
+        names[i] = current_env->items[i].name;
+    }
+    qsort(names, n, sizeof(char *), reflect_name_cmp);
+    for (size_t i = 0; i < n; i++) {
+        items[i] = value_string(names[i]);
+    }
+    free(names);
+    return value_array(items, n);
+}
+
+/* Evaluate a single value argument; returns 0 (with a raise) on arity/eval error.
+ * On success *out owns a value the caller must free. */
+static int reflect_one_arg(AstExpr *expr, const char *ctx, Value *out) {
+    *out = value_null();
+    if (expr->as.call.args.count != 1) {
+        char m[128];
+        snprintf(m, sizeof(m), "%s expects one argument", ctx);
+        reflect_raise(m);
+        return 0;
+    }
+    *out = eval_expr(expr->as.call.args.items[0]);
+    if (error_action_pending()) {
+        value_free(*out);
+        *out = value_null();
+        return 0;
+    }
+    return 1;
+}
+
+static Value reflect_do_get(AstExpr *expr) {
+    if (expr->as.call.args.count != 1) {
+        return reflect_raise("reflect.get expects a variable name");
+    }
+    Value nv = eval_expr(expr->as.call.args.items[0]);
+    if (error_action_pending()) { value_free(nv); return value_null(); }
+    if (nv.kind != VALUE_STRING) {
+        value_free(nv);
+        return reflect_raise("reflect.get expects a string variable name");
+    }
+    Symbol *sym = env_find(nv.as.string);
+    if (!sym) {
+        char m[256];
+        snprintf(m, sizeof(m), "reflect.get: unknown variable: %s", nv.as.string);
+        value_free(nv);
+        return reflect_raise(m);
+    }
+    Value out = value_copy(sym->value);
+    value_free(nv);
+    return out;
+}
+
+static Value reflect_do_count(Value v) {
+    double c = 0;
+    if (v.kind == VALUE_ARRAY) {
+        c = (double)v.as.array.count;
+    } else if (v.kind == VALUE_RECORD) {
+        c = (double)v.as.record.count;
+    } else if (v.kind == VALUE_STRING) {
+        c = (double)string_length(v.as.string);
+    } else {
+        value_free(v);
+        return reflect_raise("reflect.count expects an array, record, or string");
+    }
+    value_free(v);
+    return value_number(c);
+}
+
+static Value reflect_do_fields(Value v) {
+    if (v.kind != VALUE_RECORD) {
+        value_free(v);
+        return reflect_raise("reflect.fields expects a record");
+    }
+    size_t n = v.as.record.count;
+    Value *items = n ? calloc(n, sizeof(Value)) : NULL;
+    if (n && !items) {
+        abort();
+    }
+    for (size_t i = 0; i < n; i++) {
+        items[i] = value_string(v.as.record.fields[i].name);
+    }
+    value_free(v);
+    return value_array(items, n);
+}
+
+static Value reflect_do_field(AstExpr *expr) {
+    if (expr->as.call.args.count != 2) {
+        return reflect_raise("reflect.field expects a record and a field name");
+    }
+    Value rv = eval_expr(expr->as.call.args.items[0]);
+    if (error_action_pending()) { value_free(rv); return value_null(); }
+    Value nv = eval_expr(expr->as.call.args.items[1]);
+    if (error_action_pending()) { value_free(rv); value_free(nv); return value_null(); }
+    if (rv.kind != VALUE_RECORD || nv.kind != VALUE_STRING) {
+        value_free(rv); value_free(nv);
+        return reflect_raise("reflect.field expects a record and a field-name string");
+    }
+    RecordField *f = record_find(&rv, nv.as.string);
+    if (!f) {
+        char m[256];
+        snprintf(m, sizeof(m), "reflect.field: unknown field: %s", nv.as.string);
+        value_free(rv); value_free(nv);
+        return reflect_raise(m);
+    }
+    Value out = value_copy(*f->value);
+    value_free(rv); value_free(nv);
+    return out;
+}
+
+static Value reflect_do_element(AstExpr *expr) {
+    if (expr->as.call.args.count != 2) {
+        return reflect_raise("reflect.element expects an array and an index");
+    }
+    Value av = eval_expr(expr->as.call.args.items[0]);
+    if (error_action_pending()) { value_free(av); return value_null(); }
+    Value iv = eval_expr(expr->as.call.args.items[1]);
+    if (error_action_pending()) { value_free(av); value_free(iv); return value_null(); }
+    if (av.kind != VALUE_ARRAY || iv.kind != VALUE_NUMBER) {
+        value_free(av); value_free(iv);
+        return reflect_raise("reflect.element expects an array and a numeric index");
+    }
+    int idx = (int)iv.as.number;
+    if (idx < 0 || (size_t)idx >= av.as.array.count) {
+        value_free(av); value_free(iv);
+        return reflect_raise("reflect.element: index out of range");
+    }
+    Value out = value_copy(av.as.array.items[idx]);
+    value_free(av); value_free(iv);
+    return out;
+}
+
+/* reflect.inspect(v) — a SHALLOW descriptor record (kind/type/category/
+ * serializable/count). Deliberately non-recursive: deep traversal is caller-
+ * driven via fields()/field()/element(), so a huge or nested (or would-be cyclic)
+ * value is never auto-copied and inspection can never loop. */
+static Value reflect_do_inspect(Value v) {
+    char typebuf[128];
+    reflect_type_string(v, typebuf, sizeof(typebuf));
+    double count = 0;
+    if (v.kind == VALUE_ARRAY) {
+        count = (double)v.as.array.count;
+    } else if (v.kind == VALUE_RECORD) {
+        count = (double)v.as.record.count;
+    } else if (v.kind == VALUE_STRING) {
+        count = (double)string_length(v.as.string);
+    }
+    RecordField *fields = calloc(5, sizeof(RecordField));
+    if (!fields) {
+        abort();
+    }
+    const char *names[] = {"kind", "type", "category", "serializable", "count"};
+    for (size_t i = 0; i < 5; i++) {
+        fields[i].name = copy_string(names[i]);
+        fields[i].value = cell_alloc();
+        if (!fields[i].value) {
+            abort();
+        }
+    }
+    *fields[0].value = value_string(builtin_type_name(v));
+    *fields[1].value = value_string(typebuf);
+    *fields[2].value = value_string(reflect_category(v));
+    *fields[3].value = value_bool(reflect_serializable(v, 0));
+    *fields[4].value = value_number(count);
+    value_free(v);
+    return value_record(fields, 5);
+}
+
+static Value reflect_eval_call(AstExpr *expr) {
+    const char *name = expr->as.call.name;
+    if (strcmp(name, "variables") == 0) {
+        if (expr->as.call.args.count != 0) {
+            return reflect_raise("reflect.variables expects no arguments");
+        }
+        return reflect_do_variables();
+    }
+    if (strcmp(name, "get") == 0) {
+        return reflect_do_get(expr);
+    }
+    if (strcmp(name, "kind") == 0) {
+        Value v; if (!reflect_one_arg(expr, "reflect.kind", &v)) return value_null();
+        Value r = value_string(builtin_type_name(v));
+        value_free(v);
+        return r;
+    }
+    if (strcmp(name, "type") == 0) {
+        Value v; if (!reflect_one_arg(expr, "reflect.type", &v)) return value_null();
+        char buf[128];
+        reflect_type_string(v, buf, sizeof(buf));
+        Value r = value_string(buf);
+        value_free(v);
+        return r;
+    }
+    if (strcmp(name, "category") == 0) {
+        Value v; if (!reflect_one_arg(expr, "reflect.category", &v)) return value_null();
+        Value r = value_string(reflect_category(v));
+        value_free(v);
+        return r;
+    }
+    if (strcmp(name, "serializable") == 0) {
+        Value v; if (!reflect_one_arg(expr, "reflect.serializable", &v)) return value_null();
+        Value r = value_bool(reflect_serializable(v, 0));
+        value_free(v);
+        return r;
+    }
+    if (strcmp(name, "count") == 0) {
+        Value v; if (!reflect_one_arg(expr, "reflect.count", &v)) return value_null();
+        return reflect_do_count(v);
+    }
+    if (strcmp(name, "fields") == 0) {
+        Value v; if (!reflect_one_arg(expr, "reflect.fields", &v)) return value_null();
+        return reflect_do_fields(v);
+    }
+    if (strcmp(name, "field") == 0) {
+        return reflect_do_field(expr);
+    }
+    if (strcmp(name, "element") == 0) {
+        return reflect_do_element(expr);
+    }
+    if (strcmp(name, "inspect") == 0) {
+        Value v; if (!reflect_one_arg(expr, "reflect.inspect", &v)) return value_null();
+        return reflect_do_inspect(v);
+    }
+    char msg[160];
+    snprintf(msg, sizeof(msg), "unknown reflect function: reflect.%s", name);
+    return reflect_raise(msg);
+}
+
 static Value eval_call(AstExpr *expr) {
     if (expr->as.call.library) {
         /* Resolve the receiver of X.method(args). Normally X is a variable bound
@@ -15294,6 +15625,13 @@ static Value eval_call(AstExpr *expr) {
          * value is handled above, so this only fires for the module itself. */
         if (strcmp(expr->as.call.library, "process") == 0) {
             return process_eval_call(expr);
+        }
+
+        /* NAP-9: reflect.* is an unconditional runtime reflection module (no
+         * `load`). A `reflect` variable bound to a record/native value is handled
+         * above, so this only fires for the module itself. */
+        if (strcmp(expr->as.call.library, "reflect") == 0) {
+            return reflect_eval_call(expr);
         }
 
         if (strcmp(expr->as.call.library, "webserver") == 0) {

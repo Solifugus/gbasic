@@ -491,11 +491,41 @@ on a live display (`:0`) with a clean self-quit; checklist in the demo README.
 
 ## Post-proof phases (independent; do not start before the spike is accepted)
 
-### NAP-9 — General reflection facility · B(rt)
+### NAP-9 — General reflection facility · B(rt) — DONE (2026-07-21)
 `reflect.variables()` / `reflect.get(name)` / `reflect.inspect(value,depth)` over the
 current `Env` (359-363). Tests: enumerate locals in a scope; recurse a nested record
 (reusing existing `keys`/`values`). Cross-interpreter/paused-frame enumeration is
 explicitly deferred to the interpreter-context refactor (PLAN Phase 3).
+
+**DONE.** An unconditional `reflect.*` runtime module (no `load`; dispatched in
+`eval_call` like `process.*`), **new C in `src/eval.c` only**. Composable, lazy
+primitives instead of one recursive dump: `variables()` (current scope's own names,
+sorted), `get(name)`, `kind(v)`, `type(v)` (GType name for gobject/boxed, else kind),
+`category(v)` (scalar/container/function/foreign), `serializable(v)` (side-effect-free
+recursive predicate mirroring `serialize_value`'s accept/reject — foreign handles
+false), `count(v)` (array/record/string), `fields(v)`, `field(v,name)`,
+`element(v,i)`, and `inspect(v)` → shallow `{kind,type,category,serializable,count}`.
+**Reflectable ⊋ serializable** (a live gobject reflects but won't serialize). Scope:
+reflects current_env's own frame only (globals at top level; a function's own locals
+inside it — builtins run in the caller's env); paused frames / enclosing chain /
+cross-interpreter deferred to the interpreter-context refactor. `inspect` is
+deliberately non-recursive (deep traversal is caller-driven), so it never auto-copies a
+huge graph or loops; copy semantics prevent true record/array cycles; the recursive
+predicate is depth-guarded. Stable cross-read identity is NOT provided (copy semantics →
+no stable record/array identity); documented, and recursion is cycle-safe without it.
+No raw pointers exposed. Tests: `examples/reflect_test.bas` (variables/scalars/record/
+array/nested/inspect/serializable/cycle/error-recovery), 5 negatives in `run_negative`
+(unknown var, count-on-scalar, unknown field, index OOR, unknown fn), and
+`tests/gi/reflect_foreign_test.bas` (gobject + GVariant: kind/GType/foreign/
+serializable=false). Byte-exact regression, zero rebaselines (examples 193, negative
+254, gi 21, native_platform 41, native_editor 2, native_workbench 4, process 13,
+gui_parse 9, docs/bag/lsp ok, make dev clean). Valgrind 0 lost / 0 errors over a 300×
+churn covering every primitive incl. foreign values. Reference doc → Reflection Module.
+Changed-value readiness: `variables()` + `serializable()` + shallow-equality-capable
+descriptors are the building blocks a later before/after execution-state comparison can
+use; what remains missing is stable value identity/versioning and paused-frame access
+(both need the interpreter-context refactor). Chained receiver (`a.b.method()`) NOT
+touched — reflection didn't need it.
 
 ### NAP-10 — Filesystem builtins · B(rt)
 `file_mtime`/`file_size` (from `stat`, exposed), `replace(temp,dest)` (real

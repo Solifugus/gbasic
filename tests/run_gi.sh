@@ -24,6 +24,7 @@ trap 'rm -f "$stdout_file" "$stderr_file"' EXIT
 positive_cases=(
     gi_signal_test
     gi_property_test
+    reflect_foreign_test
     gi_enum_test
     gi_transfer_test
     gi_inherited_method_test

@@ -68,6 +68,11 @@ cases=(
     negative_ownership_stake_unstructured
     negative_llm_retry_exhausted
     negative_llm_offline_miss
+    negative_reflect_unknown_var
+    negative_reflect_count_scalar
+    negative_reflect_unknown_field
+    negative_reflect_element_oor
+    negative_reflect_bad_function
     negative_password_hash_arity
     negative_password_hash_type
     negative_password_verify_arity

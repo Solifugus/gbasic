@@ -1,0 +1,1 @@
+runtime error at tests/negative_reflect_bad_function.bas:1:1: unknown reflect function: reflect.bogus

@@ -182,6 +182,7 @@ examples=(
     method_test.bas
     method_attach_test.bas
     this_method_test.bas
+    reflect_test.bas
     constructor_test.bas
     function_serialize_test.bas
     spawn_function_test.bas
