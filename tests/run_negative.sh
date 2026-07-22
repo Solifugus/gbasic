@@ -73,6 +73,9 @@ cases=(
     negative_reflect_unknown_field
     negative_reflect_element_oor
     negative_reflect_bad_function
+    negative_chained_lvalue
+    negative_chained_not_callable
+    negative_chained_method_missing
     negative_password_hash_arity
     negative_password_hash_type
     negative_password_verify_arity

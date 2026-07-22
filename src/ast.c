@@ -164,12 +164,22 @@ AstExpr *ast_call(char *name, AstExprList args) {
     expr->as.call.library = NULL;
     expr->as.call.name = name;
     expr->as.call.args = args;
+    expr->as.call.receiver = NULL;
     return expr;
 }
 
 AstExpr *ast_qualified_call(char *library, char *name, AstExprList args) {
     AstExpr *expr = ast_call(name, args);
     expr->as.call.library = library;
+    return expr;
+}
+
+/* A method call whose receiver is an arbitrary expression (a.b.method(),
+ * make().method()). library stays NULL; the evaluator evaluates `receiver` once
+ * and dispatches by runtime kind. */
+AstExpr *ast_method_call(AstExpr *receiver, char *name, AstExprList args) {
+    AstExpr *expr = ast_call(name, args);
+    expr->as.call.receiver = receiver;
     return expr;
 }
 
@@ -536,7 +546,10 @@ static void dump_expr(AstExpr *expr, int indent) {
         dump_expr(expr->as.field.object, indent + 1);
         break;
     case AST_EXPR_CALL:
-        if (expr->as.call.library) {
+        if (expr->as.call.receiver) {
+            printf("MethodCall .%s\n", expr->as.call.name);
+            dump_expr(expr->as.call.receiver, indent + 1);
+        } else if (expr->as.call.library) {
             printf("Call %s.%s\n", expr->as.call.library, expr->as.call.name);
         } else {
             printf("Call %s\n", expr->as.call.name);
@@ -875,6 +888,7 @@ static void free_expr(AstExpr *expr) {
     case AST_EXPR_CALL:
         free(expr->as.call.library);
         free(expr->as.call.name);
+        free_expr(expr->as.call.receiver);
         for (size_t i = 0; i < expr->as.call.args.count; i++) {
             free_expr(expr->as.call.args.items[i]);
         }

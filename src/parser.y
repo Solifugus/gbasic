@@ -465,7 +465,8 @@ typedef enum {
     IDENT_SUFFIX_NONE,
     IDENT_SUFFIX_CALL,
     IDENT_SUFFIX_FIELD,
-    IDENT_SUFFIX_QUALIFIED_CALL
+    IDENT_SUFFIX_QUALIFIED_CALL,
+    IDENT_SUFFIX_METHOD          /* var.field.method(args): a chained method call */
 } AstIdentSuffixKind;
 
 typedef struct {
@@ -633,6 +634,20 @@ call_statement
         char *name = NULL;
         split_qualified_ident($1, &library, &name);
         $$ = ast_expr_stmt(ast_qualified_call(library, name, $3));
+      }
+    | lvalue DOT IDENT LPAREN argument_list_opt RPAREN {
+        /* Bare chained-method-call statement with an lvalue receiver ending in a
+         * plain IDENT method (e.g. a[0].show()). */
+        $$ = ast_expr_stmt(expr_at(ast_method_call($1, $3, $5), @2.first_line, @2.first_column));
+      }
+    | lvalue DOT QUALIFIED_IDENT LPAREN argument_list_opt RPAREN {
+        /* Bare chained-method-call statement where the lexer folded the trailing
+         * `field.method(` into one QUALIFIED_IDENT (e.g. holder.widget.present()). */
+        char *field = NULL;
+        char *method = NULL;
+        split_qualified_ident($3, &field, &method);
+        AstExpr *recv = expr_at(ast_field($1, field), @2.first_line, @2.first_column);
+        $$ = ast_expr_stmt(expr_at(ast_method_call(recv, method, $5), @2.first_line, @2.first_column));
       }
     | ERROR_VALUE DOT IDENT LPAREN argument_list_opt RPAREN {
         size_t length = strlen("error.") + strlen($3);
@@ -965,6 +980,22 @@ postfix_expression
     : primary { $$ = $1; }
     | postfix_expression LBRACKET expression RBRACKET { $$ = expr_at(ast_index($1, $3), @2.first_line, @2.first_column); }
     | postfix_expression DOT IDENT { $$ = expr_at(ast_field($1, $3), @2.first_line, @2.first_column); }
+    | postfix_expression DOT IDENT LPAREN argument_list_opt RPAREN {
+        /* Method call on an expression receiver where the method name is a bare
+         * IDENT (the receiver ends in ) or ], e.g. make().show(), a[0].show()). */
+        $$ = expr_at(ast_method_call($1, $3, $5), @2.first_line, @2.first_column);
+      }
+    | postfix_expression DOT QUALIFIED_IDENT LPAREN argument_list_opt RPAREN {
+        /* Method call on an expression receiver where the lexer folded the final
+         * `field.method(` into one QUALIFIED_IDENT (e.g. a.b.method(): the
+         * `b.method` is a QUALIFIED_IDENT following `a DOT`). Split it: the field
+         * extends the receiver, the tail is the method name. */
+        char *field = NULL;
+        char *method = NULL;
+        split_qualified_ident($3, &field, &method);
+        AstExpr *recv = expr_at(ast_field($1, field), @2.first_line, @2.first_column);
+        $$ = expr_at(ast_method_call(recv, method, $5), @2.first_line, @2.first_column);
+      }
     ;
 
 comparison_operator
@@ -991,6 +1022,12 @@ primary
             $$ = expr_at(ast_field(expr_at(ast_ident($1), @1.first_line, @1.first_column), $2.name), @2.first_line, @2.first_column);
         } else if ($2.kind == IDENT_SUFFIX_QUALIFIED_CALL) {
             $$ = expr_at(ast_qualified_call($1, $2.name, $2.args), @2.first_line, @2.first_column);
+        } else if ($2.kind == IDENT_SUFFIX_METHOD) {
+            char *field = NULL;
+            char *method = NULL;
+            split_qualified_ident($2.name, &field, &method);
+            AstExpr *recv = expr_at(ast_field(expr_at(ast_ident($1), @1.first_line, @1.first_column), field), @2.first_line, @2.first_column);
+            $$ = expr_at(ast_method_call(recv, method, $2.args), @2.first_line, @2.first_column);
         } else {
             $$ = expr_at(ast_ident($1), @1.first_line, @1.first_column);
         }
@@ -1031,6 +1068,15 @@ ident_suffix
     | DOT IDENT ident_dot_suffix {
         $$ = $3;
         $$.name = $2;
+      }
+    | DOT QUALIFIED_IDENT LPAREN argument_list_opt RPAREN {
+        /* var.field.method(args): the lexer folds the trailing `field.method(` into
+         * one QUALIFIED_IDENT, so after `var DOT` we see it directly. This is the
+         * first-dot case that the postfix `DOT QUALIFIED_IDENT` rule cannot reach
+         * (the variable_name/ident_suffix path claims the first dot). */
+        $$.kind = IDENT_SUFFIX_METHOD;
+        $$.name = $2;
+        $$.args = $4;
       }
     ;
 

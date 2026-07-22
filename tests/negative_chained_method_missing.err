@@ -1,0 +1,1 @@
+runtime error at tests/negative_chained_method_missing.bas:2:1: unknown method: nope

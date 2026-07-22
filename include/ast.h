@@ -141,9 +141,12 @@ struct AstExpr {
             char *field;
         } field;
         struct {
-            char *library;
-            char *name;
+            char *library;    /* library/receiver-variable name, or NULL */
+            char *name;       /* function / method name */
             AstExprList args;
+            AstExpr *receiver; /* NULL for a plain/qualified call; set for a
+                                * method call whose receiver is an arbitrary
+                                * expression (a.b.method(), make().method()) */
         } call;
         struct {
             char *op;
@@ -263,6 +266,7 @@ AstExpr *ast_index(AstExpr *array, AstExpr *index);
 AstExpr *ast_field(AstExpr *object, char *field);
 AstExpr *ast_call(char *name, AstExprList args);
 AstExpr *ast_qualified_call(char *library, char *name, AstExprList args);
+AstExpr *ast_method_call(AstExpr *receiver, char *name, AstExprList args);
 AstModifierUse ast_modifier_none(void);
 AstModifierUse ast_modifier_use(char *name, AstExprList args);
 AstModifierSignature ast_modifier_signature(char *name, AstNameList params);

@@ -54,7 +54,8 @@ typedef enum {
     IDENT_SUFFIX_NONE,
     IDENT_SUFFIX_CALL,
     IDENT_SUFFIX_FIELD,
-    IDENT_SUFFIX_QUALIFIED_CALL
+    IDENT_SUFFIX_QUALIFIED_CALL,
+    IDENT_SUFFIX_METHOD          /* var.field.method(args): a chained method call */
 } AstIdentSuffixKind;
 
 typedef struct {
@@ -69,7 +70,7 @@ typedef struct {
     AstExpr *reset_expr;
 } FieldPolicySpec;
 
-#line 73 "src/parser.tab.h"
+#line 74 "src/parser.tab.h"
 
 /* Token kinds.  */
 #ifndef YYTOKENTYPE
@@ -165,7 +166,7 @@ typedef struct {
 #if ! defined YYSTYPE && ! defined YYSTYPE_IS_DECLARED
 union YYSTYPE
 {
-#line 484 "src/parser.y"
+#line 485 "src/parser.y"
 
     double number;
     char *text;
@@ -182,7 +183,7 @@ union YYSTYPE
     AstIdentSuffix ident_suffix;
     FieldPolicySpec field_policy;
 
-#line 186 "src/parser.tab.h"
+#line 187 "src/parser.tab.h"
 
 };
 typedef union YYSTYPE YYSTYPE;

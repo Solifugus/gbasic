@@ -169,3 +169,21 @@ D0.6, the rest remain open or are by-design.
 - **Workaround:** Never declare `this`; use it implicitly. (Coming from Python/JS `self`/
   explicit-receiver habits, this is an easy trap.) The non-fatal-arity-error-to-stdout
   behavior is pre-existing and unrelated to NAP-5; left as-is, noted here.
+
+## 2026-07-21 — CC — while: pre-NAP-10 standalone fix — chained method receivers
+- **Type:** language-surprise
+- **Severity:** medium
+- **What:** A method call whose receiver was itself a field/index/call expression did
+  not parse: `a.b.method()`, `s.field.method()`, `a[0].widget.present()`,
+  `make().method()`. Only a single-identifier (or `this`) receiver dispatched, so real
+  UI/data code had to bind the receiver to a local first (`w = s.button; w.set_label(...)`).
+  Hit repeatedly in NAP-7, NAP-8, and NAP-9.
+- **Workaround:** RESOLVED (pre-NAP-10). Generalized the grammar: a new `AST_EXPR_CALL`
+  `receiver` field + `ast_method_call`; postfix / ident_suffix / call_statement productions
+  for `receiver DOT (IDENT|QUALIFIED_IDENT) LPAREN args RPAREN` (the lexer folds a trailing
+  `field.method(` into one QUALIFIED_IDENT, so both token shapes are handled). Eval evaluates
+  the receiver ONCE (an lvalue receiver as a live cell so record `this` mutation persists; a
+  call-result as a temporary) and routes through the SAME dispatch (eval_user_function_with_receiver
+  / gi_invoke_method_on). `a.b().c = x` stays invalid (never an lvalue). One narrow remaining
+  limitation: a method call on a call-result receiver as a BARE statement (`make().show()` with
+  the result discarded) doesn't parse — works in expression position; documented in reference.md.

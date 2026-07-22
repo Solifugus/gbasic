@@ -15559,7 +15559,87 @@ static Value reflect_eval_call(AstExpr *expr) {
     return reflect_raise(msg);
 }
 
+/* A method call whose receiver is an arbitrary expression: a.b.method(),
+ * a[0].widget.present(), make().show(). The receiver is evaluated exactly ONCE
+ * and dispatched by runtime kind through the SAME invocation machinery as the
+ * single-identifier forms (eval_user_function_with_receiver for record methods,
+ * gi_invoke_method_on for gobject/boxed). An lvalue receiver (ident/field/index)
+ * is resolved to its LIVE cell so a record method mutates through it exactly like
+ * obj.method(); a non-lvalue receiver (a call result) is evaluated to a temporary.
+ * This never produces an lvalue, so `a.b().c = x` stays invalid via assign_lvalue. */
+static Value eval_method_call(AstExpr *expr) {
+    AstExpr *recv = expr->as.call.receiver;
+    const char *method = expr->as.call.name;
+    Value *ref = NULL;
+    Value temp = value_null();
+    int have_temp = 0;
+
+    if (recv->kind == AST_EXPR_IDENT || recv->kind == AST_EXPR_FIELD ||
+        recv->kind == AST_EXPR_INDEX) {
+        ref = resolve_lvalue_ref(recv);   /* evaluates index subexprs once; raises on error */
+        if (!ref) {
+            return value_null();
+        }
+    } else {
+        temp = eval_expr(recv);
+        if (error_action_pending()) {
+            value_free(temp);
+            return value_null();
+        }
+        ref = &temp;
+        have_temp = 1;
+    }
+
+    if (ref->kind == VALUE_RECORD) {
+        RecordField *mf = record_find(ref, method);
+        if (mf && mf->value->kind == VALUE_FUNCTION) {
+            FunctionDef *m = function_resolve(mf->value->as.function.library,
+                                              mf->value->as.function.name);
+            if (!m) {
+                char message[256];
+                snprintf(message, sizeof(message),
+                         "method value references unknown function: %s",
+                         mf->value->as.function.name);
+                runtime_error_raise(message, 1003, "invalid function call");
+                if (have_temp) value_free(temp);
+                return value_null();
+            }
+            Value out = eval_user_function_with_receiver(expr, m, ref);
+            if (have_temp) value_free(temp);
+            return out;
+        }
+        char message[256];
+        snprintf(message, sizeof(message), "unknown method: %s", method);
+        runtime_error_raise(message, 1003, "invalid function call");
+        if (have_temp) value_free(temp);
+        return value_null();
+    }
+    if (ref->kind == VALUE_GOBJECT || ref->kind == VALUE_GBOXED) {
+#if HAVE_GIR
+        Value out = gi_invoke_method_on(*ref, method, expr, 0, "method call");
+        if (have_temp) value_free(temp);
+        return out;
+#else
+        runtime_error_raise("gobject-introspection support is unavailable; "
+                            "install libgirepository-2.0-dev (GLib >= 2.80) and rebuild",
+                            6001, "gi");
+        if (have_temp) value_free(temp);
+        return value_null();
+#endif
+    }
+
+    char message[256];
+    snprintf(message, sizeof(message),
+             "value of kind '%s' is not method-callable", value_kind_name(ref->kind));
+    runtime_error_raise(message, 1003, "invalid function call");
+    if (have_temp) value_free(temp);
+    return value_null();
+}
+
 static Value eval_call(AstExpr *expr) {
+    if (expr->as.call.receiver) {
+        return eval_method_call(expr);
+    }
     if (expr->as.call.library) {
         /* Resolve the receiver of X.method(args). Normally X is a variable bound
          * to a record or native value; the special name `this` resolves to the

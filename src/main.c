@@ -533,6 +533,12 @@ static void analyze_expr(AddUsesContext *ctx, AstExpr *expr) {
         break;
     case AST_EXPR_CALL:
         for (size_t i = 0; i < expr->as.call.args.count; i++) analyze_expr(ctx, expr->as.call.args.items[i]);
+        if (expr->as.call.receiver) {
+            /* A method call on an expression receiver — the name is a method, not a
+             * bare library function, so it never triggers a `load` suggestion. */
+            analyze_expr(ctx, expr->as.call.receiver);
+            break;
+        }
         if (!expr->as.call.library &&
             !builtin_function(expr->as.call.name) &&
             !string_list_contains(&ctx->local_functions, expr->as.call.name)) {

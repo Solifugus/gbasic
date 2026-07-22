@@ -25,6 +25,7 @@ positive_cases=(
     gi_signal_test
     gi_property_test
     reflect_foreign_test
+    chained_gobject_method_test
     gi_enum_test
     gi_transfer_test
     gi_inherited_method_test

@@ -525,6 +525,26 @@ print account.deposit(100)   ' 100
 The dotted-def statement `function account.deposit(amount)` is sugar that defines
 a function and attaches it to the record variable `account` in one step.
 
+The **receiver of a method call may be any expression**, not only a single
+variable — a field access, an index, or another call:
+
+```basic
+outer.inner.method()        ' field-access receiver
+widgets[0].present()        ' index receiver
+make_widget().show()        ' call-result receiver (in expression position)
+this.helper()               ' the current receiver
+```
+
+The receiver is evaluated **once**, then dispatched by runtime kind (a record
+method binds `this`; a GObject/boxed value routes through `gi`). An lvalue receiver
+(a variable/field/index chain) binds `this` to the live cell, so a record method's
+`this.x = …` writes through exactly as for `obj.method()`; a call-result receiver
+binds `this` to the temporary. Chained method calls never form an lvalue, so
+`a.b().c = x` remains invalid. (One narrow limitation: a method call on a
+call-result receiver as a *bare statement* — `make_widget().show()` with the result
+discarded — does not parse; use it in expression position, or bind the result to a
+variable first.)
+
 A field named `constructor` is auto-invoked by `new … with { … }` after
 derivation, with `this` bound to the new instance; its inputs arrive through the
 `with` block and are read from `this`, and its return value is ignored (see
