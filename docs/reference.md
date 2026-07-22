@@ -1365,6 +1365,67 @@ locates it by adding the stdlib's `gtksourceview/` directory to a
 (`/usr/local/share/gbasic/stdlib/gtksourceview` by default). After `make install`
 the `.lang` installs alongside the rest of the stdlib.
 
+### `gtkui` — declarative widget-tree reconciler (`load gtkui`)
+
+A **pure-gBASIC** dynamic reconciler over the `gi` bridge (needs `load gi`; GTK 4
+must be initialized before widgets are built). You describe a UI as a tree of
+records; `gtkui` builds the real GTK 4 widget tree and, on each `update`, mutates
+the *existing* widgets in place — changing only the properties that changed,
+inserting/removing/reordering children, and replacing a widget only when its type
+or identity changes. This is the dynamic tree mutation the old GTK 3 `gui` module
+never had. It is **not** a closed widget system: every node maps to a real GTK
+object you can reach and mix with hand-built widgets.
+
+**Node schema** (a record; every field optional except one of `type`/`widget`):
+
+- `type` — GI type name (`"Gtk.Button"`); built generically with `gi.new`, so any
+  introspected widget works with no new code.
+- `widget` — an already-created GObject: the **native escape hatch**. `gtkui`
+  parents it and (optionally) connects its signals, but does not manage its props
+  or children — use it to embed a manual `GtkGrid`, a `sourceeditor` view, or any
+  other component the reconciler did not build.
+- `key` — stable identity string within a sibling list.
+- `props` — record of property → value (`gi.set`; enums as ints via `gi.enum`).
+- `signals` — record of signal-name → handler function.
+- `children` — array of child nodes.
+
+**API:**
+
+- `gtkui.mount(parent, desc)` → a handle; builds `desc` and attaches its root to
+  the existing `parent` container.
+- `gtkui.update(handle, desc)` → **a new handle**; reconciles and returns the
+  updated handle (records are copy-on-write, so reassign: `h = gtkui.update(h, d)`).
+- `gtkui.unmount(handle)` — detach the root and disconnect every handler.
+- `gtkui.root(handle)` → the root GTK widget (raw, for interop).
+- `gtkui.lookup(handle, key)` → the GTK widget for a keyed node, or `nothing`.
+
+**Identity.** When *every* child in a sibling list carries a `key`, children are
+matched by key — enabling insert, remove, and **reorder** with the same widget
+instances preserved (and their cursor/scroll/selection/focus state with them).
+Otherwise matching is positional by index. Text/labels are never used as identity.
+
+**Reconciliation.** A node whose `type` (or native identity) is unchanged reuses
+its widget; only changed properties are re-applied (unchanged ones are left alone,
+so widget state is preserved). A property dropped from the description is **not**
+reverted — set it explicitly to change it. A type/identity change under a slot
+replaces the widget (old detached and destroyed, new created and inserted).
+
+**Signals.** Each reconcile disconnects the handlers it previously connected (by
+recorded id) and connects exactly those in the new description — so there is
+always exactly one connection per declared signal, always the current handler,
+never a duplicate across repeated `update`s.
+
+**Container adapters** (extensible kind table): `Gtk.Box` (ordered multi-child:
+append/remove/reorder), single-child containers (`Gtk.Window`,
+`Gtk.ApplicationWindow`, `Gtk.ScrolledWindow`, `Gtk.Frame`: `set_child`), and
+`Gtk.Paned` (two keyed slots, `"start"`/`"end"`). Other widget types are leaves
+(no children). New container kinds are added by extending the table, not the core.
+
+**Limitations (v1):** the widget subset above (other containers are one table
+entry away); mixed keyed/unkeyed sibling lists fall back to positional matching;
+dropped properties are not auto-reverted. See `examples/native_ui/dynamic_list.bas`
+for a worked demo.
+
 **SourceEditor vs. gBASIC Studio:** `sourceeditor` is a reusable, general editor
 component. It is deliberately free of Studio concepts (projects, execution
 boundaries, branches, inspector); a future gBASIC Studio would *use* this library,
@@ -2010,6 +2071,8 @@ General-purpose:
 - `gtk` — thin ergonomic GTK 4 constructors over the `gi` bridge (see
   [GTK 4 helpers and SourceEditor](#gtk-4-helpers-and-sourceeditor)).
 - `sourceeditor` — a reusable GtkSourceView 5 source/text editor (same section).
+- `gtkui` — a dynamic declarative widget-tree reconciler over `gi` (state → record
+  tree → in-place GTK 4 mutation; see [gtkui](#gtkui--declarative-widget-tree-reconciler-load-gtkui)).
 
 EDGAR / SEC-filings suite (governed by `docs/edgar_design.md`, with
 `docs/edgar_reference.md` and `docs/edgar_tutorial.md`):

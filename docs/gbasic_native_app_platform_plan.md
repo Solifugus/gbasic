@@ -555,10 +555,36 @@ sides-intact gated on a distinct `/dev/shm`, opt-in `NAP_FS_STRESS=1` concurrent
 reader/writer atomicity stress), and 10 negatives in `run_negative` (arity/type/missing
 for all three, plus size-on-directory). Reference doc → Files and Directories.
 
-### NAP-11 — Declarative widget-tree / reconciler library · B
+### NAP-11 — Declarative widget-tree / reconciler library · B — DONE (2026-07-22)
 Pure-gBASIC retained-mode UI: record-tree → widgets, diff+apply on change (the dynamic
 mutation the old `gui` module lacked, done correctly over `gi`). Depends on NAP-5.
 Tests: parse-only + manual mutation checklist.
+
+**DONE.** New `stdlib/gtkui.bas` — a dynamic reconciler, **no C**, entirely gBASIC over
+`gi`. Kept separate from the thin `gtk.bas` (which stays independently useful). Node =
+plain record `{type|widget, key, props, signals, children}`; API `mount(parent,desc)` /
+`update(handle,desc)`→new handle (functional handle; records are copy-on-write, GTK
+widgets are the reference-semantic state) / `unmount` / `root` / `lookup(key)`. Generic
+`gi.new(type)` construction (any introspected widget is a node with no new code); native
+escape hatch via `widget:` (embed a hand-built widget / SourceEditor view). Identity:
+key when the whole sibling list is keyed (insert/remove/**reorder** preserve instances),
+else positional. Reconcile: prop-diff (only changed props re-set; unchanged preserved),
+child insert/remove/reorder (Box), single-child `set_child`, Paned two-slot, type/identity
+change ⇒ replace. Signals: disconnect-recorded-ids + reconnect-declared each pass ⇒ exactly
+one connection per signal, never duplicated. Container-kind table is the extension point.
+Two GTK4 realities handled: unparent-before-reparent (single parent) and tracking the
+reconciler's own well-typed refs (since `get_child()` returns base-typed wrappers). Tests:
+`tests/gtkui/headless.bas` (diff/classification logic; no display) + `tests/gtkui/smoke.bas`
+(display, `G_DEBUG=fatal-criticals`: mount/prop-reuse/insert/remove/reorder/replace/3-level
+nest/native-embed/single-fire-signal/unmount) via `tests/run_gtkui.sh` (headless always;
+smoke gated on GTK4 typelib + display); demo `examples/native_ui/dynamic_list.bas`
+(parse-gated in run_gui_parse). Regression green, zero unrelated rebaselines. Valgrind over
+200 mount/update/unmount cycles: no reconciler-attributable leak (the lone definitely-lost
+block is a one-time fontconfig cache alloc; no gbasic/gtkui frame in any leak or error).
+Reference doc → gtkui section. **Answer to the architectural question: yes — a useful
+dynamic declarative GTK layer builds entirely in gBASIC over `gi`, no new C.**
+Two dogfood findings logged (signal-bookkeeping needs return-not-mutate under COW; scalar
+global writes in a handler don't persist — keep state in a record).
 
 ### NAP-12 — General `DataGrid` component · C (the one justified native component)
 A single fixed C `GListModel` GType adapting a gBASIC array/cursor to

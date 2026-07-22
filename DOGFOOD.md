@@ -203,3 +203,29 @@ D0.6, the rest remain open or are by-design.
   postfix-in-expression case is left OPEN as a separate ergonomics gap, out of scope for
   NAP-10. Note the NAP-10 builtins themselves accept both a file reference and a plain path
   string for their arguments, so string paths also sidestep this.
+
+## 2026-07-22 — CC — while: NAP-11 (gtkui reconciler) — signal bookkeeping lost across updates
+- **Type:** language-surprise
+- **Severity:** medium
+- **What:** A helper that mutated a nested record field of its argument (`rnode.sigs[s] = id`)
+  had no effect on the caller's record: records are copy-on-write value types, so the helper
+  mutated its own copy. The reconciler's per-widget signal-id map was therefore never recorded
+  in the persisted tree, so later `update`s disconnected stale/empty ids and signal connections
+  accumulated — a button fired its handler 3× after two reconciles instead of once.
+- **Workaround:** RESOLVED in the library design (not a runtime change). Helpers that update
+  rnode state must RETURN the new value and let the owner assign it into a field of a record it
+  itself returns up the call chain (`old.sigs = gtkui._reconcile_signals(old.widget, old.sigs, v)`),
+  never mutate a parameter's nested field in place. General rule: with COW records, "mutate through
+  a helper" silently no-ops; thread state via return values.
+
+## 2026-07-22 — CC — while: NAP-11 (gtkui reconciler) — scalar global writes in a handler don't persist
+- **Type:** language-surprise
+- **Severity:** medium
+- **What:** Inside a `gi.connect`ed handler, `counter = counter + 1` on a global scalar does not
+  update the global — the assignment binds a new function-local `counter`, so every invocation
+  reads the original value and the global never changes. A `record.field = ...` write on a global
+  record, by contrast, DOES persist (the existing global record is resolved and its field mutated).
+- **Workaround:** Keep all mutable application state in a single global RECORD and mutate its
+  fields (`state.count = state.count + 1`, `state.items = append(...)`, `state.handle = update(...)`),
+  as `examples/native_ui/dynamic_list.bas` does. Bare scalar globals are effectively read-only from
+  inside a handler. (gBASIC has no closures, so a record is also how a handler shares state anyway.)

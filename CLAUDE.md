@@ -89,7 +89,8 @@ bash tests/run_bag_smoke.sh
 ./tests/run_nap_fs.sh       # NAP-10 filesystem metadata + atomic_replace; GI-independent; xdev case gated on a distinct /dev/shm, opt-in NAP_FS_STRESS=1 concurrency stress (structural coverage also in examples/nap_fs_test.gb + run_negative)
 ./tests/run_native_editor.sh # NAP-7 SourceEditor/gtk.bas/gbasic.lang (GBASIC_PATH=stdlib); headless tier always, display smoke when a display exists; skips if GtkSource typelib absent
 ./tests/run_native_workbench.sh # NAP-8 platform spike (examples/native_workbench); inspect/process always, async gated on libgirepository, full-UI smoke gated on GTK4/GtkSource typelibs + a display
-./tests/run_gui_parse.sh    # parse-only headless smoke for examples/gui + examples/gi + examples/native_editor + examples/native_workbench (parse, don't run; no display needed)
+./tests/run_gtkui.sh        # NAP-11 gtkui reconciler (stdlib/gtkui.bas): headless diff-logic tier always; display smoke (mount/update/insert/remove/reorder/replace/nested/native-embed/signal/unmount) under G_DEBUG=fatal-criticals, gated on GTK4 typelib + a display
+./tests/run_gui_parse.sh    # parse-only headless smoke for examples/gui + examples/gi + examples/native_editor + examples/native_workbench + examples/native_ui (parse, don't run; no display needed)
 ./tests/run_docs_gate.sh    # executable-docs gate: every docs/ai/COOKBOOK.md file reference exists and is wired into a suite
 GBASIC_POSTGRES_TEST=1 PGDATABASE=my_test_db ./tests/run_postgres.sh   # opt-in
 ```

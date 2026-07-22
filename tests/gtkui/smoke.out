@@ -1,0 +1,23 @@
+root type: GtkBox
+greet: hello
+go: Go
+win child is the box: true
+greet text updated: hi there
+greet reused (name persists): greet-instance
+greet identity equal: true
+mid inserted: middle
+greet still reused: greet-instance
+order after reorder: n-go,n-greet,n-mid
+greet identity after reorder: true
+mid removed: true
+go replaced type: GtkLabel
+go new label: now-a-label
+deep label: deep-value
+sw is scrolled: true
+inner is box: true
+native embedded name: native-entry
+native is same object: true
+native is an entry: true
+activating once (expect a single bump):
+bump
+unmounted
