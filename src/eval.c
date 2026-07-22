@@ -15230,14 +15230,28 @@ static Value process_eval_call(AstExpr *expr) {
 
 static Value eval_call(AstExpr *expr) {
     if (expr->as.call.library) {
-        /* §5 disambiguation: X.y(args) where X is a variable bound to a record
-         * whose field y holds a function value is a METHOD call (this = that
-         * record), not a qualified library call. Checked first, so a record
-         * variable wins over a library of the same name. */
-        Symbol *receiver_symbol = env_find(expr->as.call.library);
-        if (receiver_symbol && receiver_symbol->value.kind == VALUE_RECORD) {
+        /* Resolve the receiver of X.method(args). Normally X is a variable bound
+         * to a record or native value; the special name `this` resolves to the
+         * live method receiver (current_this) so a method can call a SIBLING method
+         * on its own object (`this.other()`). Method-call resolution otherwise binds
+         * the receiver by variable name, and `this` is not an environment symbol. */
+        Value *receiver_value = NULL;
+        if (strcmp(expr->as.call.library, "this") == 0) {
+            receiver_value = current_this;   /* NULL outside a method → falls through */
+        } else {
+            Symbol *receiver_symbol = env_find(expr->as.call.library);
+            if (receiver_symbol) {
+                receiver_value = &receiver_symbol->value;
+            }
+        }
+
+        /* §5 disambiguation: X.y(args) where X is bound to a record whose field y
+         * holds a function value is a METHOD call (this = that record), not a
+         * qualified library call. Checked first, so a record variable wins over a
+         * library of the same name. */
+        if (receiver_value && receiver_value->kind == VALUE_RECORD) {
             RecordField *method_field =
-                record_find(&receiver_symbol->value, expr->as.call.name);
+                record_find(receiver_value, expr->as.call.name);
             if (method_field && method_field->value->kind == VALUE_FUNCTION) {
                 FunctionDef *method =
                     function_resolve(method_field->value->as.function.library,
@@ -15251,21 +15265,21 @@ static Value eval_call(AstExpr *expr) {
                     return value_null();
                 }
                 return eval_user_function_with_receiver(expr, method,
-                                                        &receiver_symbol->value);
+                                                        receiver_value);
             }
         }
 
-        /* NAP-5: X.method(args) where X is a variable bound to a native value
-         * (a GObject, or a boxed value / GVariant whose type is introspectable)
-         * is a method call on that receiver, routed through the shared gi invoke
-         * machinery. Checked after the record-method case so records win, and
-         * before the library-name checks so a native-object variable wins over a
-         * library of the same name (mirroring the record precedent). */
-        if (receiver_symbol &&
-            (receiver_symbol->value.kind == VALUE_GOBJECT ||
-             receiver_symbol->value.kind == VALUE_GBOXED)) {
+        /* NAP-5: X.method(args) where X is bound to a native value (a GObject, or a
+         * boxed value / GVariant whose type is introspectable) is a method call on
+         * that receiver, routed through the shared gi invoke machinery. Checked
+         * after the record-method case so records win, and before the library-name
+         * checks so a native-object variable wins over a library of the same name
+         * (mirroring the record precedent). */
+        if (receiver_value &&
+            (receiver_value->kind == VALUE_GOBJECT ||
+             receiver_value->kind == VALUE_GBOXED)) {
 #if HAVE_GIR
-            return gi_invoke_method_on(receiver_symbol->value,
+            return gi_invoke_method_on(*receiver_value,
                                        expr->as.call.name, expr, 0, "method call");
 #else
             runtime_error_raise("gobject-introspection support is unavailable; "
