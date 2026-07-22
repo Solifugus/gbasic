@@ -1,0 +1,1 @@
+runtime error at tests/negative_atomic_replace_arity.bas:2:1: atomic_replace expects source and destination arguments

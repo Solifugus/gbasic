@@ -1,0 +1,79 @@
+' NAP-10 filesystem metadata + atomic replacement.
+' file_size (stat-based byte count), file_mtime (second-resolution datetime),
+' atomic_replace (strict rename(2), same-filesystem). Deterministic: creates
+' and removes its own fixtures, asserts structural facts only. Exact-timestamp,
+' mtime-change, cross-device and failure-safety coverage lives in
+' tests/run_nap_fs.sh (needs shell setup those cases require).
+
+folder = "examples/nap_fs_fixture"
+
+empty(file)= folder + "/empty.txt"
+known(file)= folder + "/known.txt"
+binary(file)= folder + "/binary.bin"
+large(file)= folder + "/large.txt"
+dest(file)= folder + "/dest.txt"
+temp(file)= folder + "/temp.txt"
+newdest(file)= folder + "/newdest.txt"
+spaced(file)= folder + "/name with spaces.txt"
+uni(file)= folder + "/greek_pi_π.txt"
+uni_temp(file)= folder + "/greek_pi_π.tmp"
+
+if exists(empty) then delete(empty)
+if exists(known) then delete(known)
+if exists(binary) then delete(binary)
+if exists(large) then delete(large)
+if exists(dest) then delete(dest)
+if exists(temp) then delete(temp)
+if exists(newdest) then delete(newdest)
+if exists(spaced) then delete(spaced)
+if exists(uni) then delete(uni)
+if exists(uni_temp) then delete(uni_temp)
+
+' --- file_size: byte count, not string length ---
+write(empty, "")
+print file_size(empty)                    ' 0 (zero-byte file)
+write(known, "hello")
+print file_size(known)                     ' 5 (known byte count)
+write(binary, "a" + chr(0) + "b" + chr(0) + "c")
+print file_size(binary)                    ' 5 (embedded NULs count)
+write(large, repeat("0123456789", 1000))
+print file_size(large)                     ' 10000 (large file, no truncation)
+
+' --- file_mtime: a second-resolution datetime, never in the future ---
+print type(file_mtime(known))              ' datetime
+print file_mtime(known) <= now()           ' true
+
+' --- atomic_replace: overwrite an existing destination ---
+write(dest, "OLD")
+write(temp, "NEW-CONTENT")
+print atomic_replace(temp, dest)           ' true
+print read(dest)                           ' NEW-CONTENT
+print exists(temp)                          ' false (source consumed)
+print exists(dest)                          ' true
+
+' --- atomic_replace: destination does not yet exist ---
+write(temp, "FRESH")
+print atomic_replace(temp, newdest)        ' true
+print read(newdest)                        ' FRESH
+print exists(temp)                          ' false
+
+' --- paths with spaces and non-ASCII bytes ---
+write(spaced, "spaces work")
+print file_size(spaced)                    ' 11
+write(uni, "π")
+print file_size(uni)                       ' 2 (UTF-8 bytes, not 1 char)
+write(uni_temp, "replaced")
+print atomic_replace(uni_temp, uni)        ' true
+print read(uni)                            ' replaced
+
+' --- clean up so the fixture stays empty and the run repeats ---
+if exists(empty) then delete(empty)
+if exists(known) then delete(known)
+if exists(binary) then delete(binary)
+if exists(large) then delete(large)
+if exists(dest) then delete(dest)
+if exists(temp) then delete(temp)
+if exists(newdest) then delete(newdest)
+if exists(spaced) then delete(spaced)
+if exists(uni) then delete(uni)
+if exists(uni_temp) then delete(uni_temp)

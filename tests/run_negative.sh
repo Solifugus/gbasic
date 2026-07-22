@@ -155,6 +155,16 @@ cases=(
     negative_gosub_top_level
     negative_for_each_number
     negative_for_each_record
+    negative_file_size_arity
+    negative_file_size_type
+    negative_file_size_directory
+    negative_file_size_missing
+    negative_file_mtime_arity
+    negative_file_mtime_type
+    negative_file_mtime_missing
+    negative_atomic_replace_arity
+    negative_atomic_replace_type
+    negative_atomic_replace_missing
     negative_file_delete_type
     negative_file_copy_type
     negative_file_move_type

@@ -187,3 +187,19 @@ D0.6, the rest remain open or are by-design.
   / gi_invoke_method_on). `a.b().c = x` stays invalid (never an lvalue). One narrow remaining
   limitation: a method call on a call-result receiver as a BARE statement (`make().show()` with
   the result discarded) doesn't parse — works in expression position; documented in reference.md.
+
+## 2026-07-21 — CC — while: NAP-10 (filesystem builtins) — writing the atomicity stress test
+- **Type:** language-surprise
+- **Severity:** low
+- **What:** The `file` modifier does not work as an inline postfix in expression/argument
+  position. `atomic_replace("/tmp/x".file, dst)` and `write("/tmp/x".file, "data")` raise
+  `field access expects a record` — `"literal".file` is parsed as a field access on the
+  string, not as the file-value modifier. In a concurrent test this was silent-until-run:
+  the writer errored on its first line, never created its `done.flag` sentinel, and the
+  reader loop hung until killed.
+- **Workaround:** Use the modifier-ASSIGNMENT form to make a file value, then pass the
+  variable: `sa(file)= "/tmp/x"` then `write(sa, ...)` / `atomic_replace(sa, dst)`. (This
+  is the same form every existing file example uses — e.g. `source(file)= path`.) The `.file`
+  postfix-in-expression case is left OPEN as a separate ergonomics gap, out of scope for
+  NAP-10. Note the NAP-10 builtins themselves accept both a file reference and a plain path
+  string for their arguments, so string paths also sidestep this.

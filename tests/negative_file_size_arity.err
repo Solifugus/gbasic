@@ -1,0 +1,1 @@
+runtime error at tests/negative_file_size_arity.bas:2:1: file_size expects one file argument

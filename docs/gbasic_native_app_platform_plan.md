@@ -527,10 +527,33 @@ use; what remains missing is stable value identity/versioning and paused-frame a
 (both need the interpreter-context refactor). Chained receiver (`a.b.method()`) NOT
 touched — reflection didn't need it.
 
-### NAP-10 — Filesystem builtins · B(rt)
+### NAP-10 — Filesystem builtins · B(rt) — DONE (2026-07-21)
 `file_mtime`/`file_size` (from `stat`, exposed), `replace(temp,dest)` (real
 `rename(2)`, crash-safe), optionally `watch_file` (inotify). Tests: mtime/size of a
 fixture; atomic replace; (optional) inotify event.
+
+**DONE.** Three new file builtins in `eval_file_call` (`src/eval.c`), registered in
+`src/builtins.c` and the file-call dispatch list. **`file_size(f)`** → byte count
+from `stat` (regular files only; directory rejected; `off_t`→double exact to 2⁵³).
+**`file_mtime(f)`** → local `datetime` at **second resolution** (DateTime has no
+sub-second field, so `st_mtim.tv_nsec` is intentionally dropped — no fabricated
+precision; mirrors `from_epoch`); directories allowed. **`atomic_replace(temp,dest)`**
+→ strict `rename(2)`, NOT copy+delete: atomic same-filesystem replace, EXDEV fails
+cleanly (no silent degrade), failure leaves both sides intact. The plan's literal
+name `replace` collides with the existing **string** builtin `replace(text,search,sub)`,
+so the atomic primitive is named `atomic_replace` (the instruction's own conceptual
+signature; general, not Studio-specific). `move` is **unchanged** and stays distinct
+(it *does* fall back to copy+delete across filesystems). Optional inotify `watch_file`
+**deferred** — a general filesystem-watch API is left as future work rather than
+broadening this phase into a watcher subsystem. Errors carry `errno` context (via
+`strerror`) and name the same-filesystem requirement on EXDEV; atomicity-vs-durability
+distinction documented (atomic visibility only; no fsync). Tests: `examples/nap_fs_test.gb`
+(size incl. zero-byte/embedded-NUL/10 KB, mtime-is-datetime + `<= now()`, atomic replace
+overwrite + create + space/Unicode paths), `tests/run_nap_fs.sh` (exact stamped mtime
+via `touch -d`+`TZ=UTC`, observed mtime change, failure-safety dest-intact, EXDEV both-
+sides-intact gated on a distinct `/dev/shm`, opt-in `NAP_FS_STRESS=1` concurrent
+reader/writer atomicity stress), and 10 negatives in `run_negative` (arity/type/missing
+for all three, plus size-on-directory). Reference doc → Files and Directories.
 
 ### NAP-11 — Declarative widget-tree / reconciler library · B
 Pure-gBASIC retained-mode UI: record-tree → widgets, diff+apply on change (the dynamic

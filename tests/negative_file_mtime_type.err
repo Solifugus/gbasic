@@ -1,0 +1,1 @@
+runtime error at tests/negative_file_mtime_type.bas:1:1: file_mtime expects a file reference

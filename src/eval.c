@@ -5032,6 +5032,152 @@ static Value eval_file_call(AstExpr *expr) {
         return value_bool(1);
     }
 
+    if (strcmp(name, "file_size") == 0 || strcmp(name, "file_mtime") == 0) {
+        if (expr->as.call.args.count != 1) {
+            char message[256];
+            snprintf(message, sizeof(message), "%s expects one file argument", name);
+            runtime_error_raise(message, 1004, "file operation");
+            return value_null();
+        }
+        Value file_value = eval_expr(expr->as.call.args.items[0]);
+        if (error_action_pending()) {
+            value_free(file_value);
+            return value_null();
+        }
+        if (file_value.kind != VALUE_FILE) {
+            char message[256];
+            snprintf(message, sizeof(message), "%s expects a file reference", name);
+            runtime_error_raise(message, 1004, "file operation");
+            value_free(file_value);
+            return value_null();
+        }
+
+        /* One stat() serves both: no read of file contents, so size is exact and
+         * cheap even for huge files, and mtime carries no locale/string coercion. */
+        struct stat st;
+        if (stat(file_value.as.file_path, &st) != 0) {
+            char message[512];
+            snprintf(message,
+                     sizeof(message),
+                     "%s could not read file metadata: %s (%s)",
+                     name,
+                     file_value.as.file_path,
+                     strerror(errno));
+            runtime_error_raise(message, 1004, "file operation");
+            value_free(file_value);
+            return value_null();
+        }
+
+        if (strcmp(name, "file_size") == 0) {
+            /* Size is the regular-file byte length. A directory has no meaningful
+             * content size, so reject it rather than return the platform's dirent
+             * bookkeeping bytes. off_t -> double is exact up to 2^53 bytes (8 PiB),
+             * far beyond any real file, so no practical truncation. */
+            if (S_ISDIR(st.st_mode)) {
+                char message[512];
+                snprintf(message,
+                         sizeof(message),
+                         "file_size: not a regular file: %s",
+                         file_value.as.file_path);
+                runtime_error_raise(message, 1004, "file operation");
+                value_free(file_value);
+                return value_null();
+            }
+            double size = (double)st.st_size;
+            value_free(file_value);
+            return value_number(size);
+        }
+
+        /* file_mtime: st_mtime is whole seconds since the epoch. gBASIC's DateTime
+         * has second precision, so any sub-second st_mtim.tv_nsec is intentionally
+         * dropped (we do not fabricate precision the value model can't hold). Local
+         * time, mirroring from_epoch(). Works for any stat-able path, directories
+         * included (a directory's mtime is a meaningful change signal). */
+        time_t raw = st.st_mtime;
+        struct tm local;
+        if (!localtime_r(&raw, &local)) {
+            runtime_error_raise("file_mtime could not convert the file time",
+                                1004,
+                                "file operation");
+            value_free(file_value);
+            return value_null();
+        }
+        value_free(file_value);
+        DateTime dt = {0};
+        dt.year = local.tm_year + 1900;
+        dt.month = local.tm_mon + 1;
+        dt.day = local.tm_mday;
+        dt.hour = local.tm_hour;
+        dt.minute = local.tm_min;
+        dt.second = local.tm_sec;
+        dt.time_only = 0;
+        dt.precision = PREC_SECOND;
+        return value_datetime(dt);
+    }
+
+    if (strcmp(name, "atomic_replace") == 0) {
+        if (expr->as.call.args.count != 2) {
+            runtime_error_raise("atomic_replace expects source and destination arguments",
+                                1004,
+                                "file operation");
+            return value_null();
+        }
+        Value source = eval_expr(expr->as.call.args.items[0]);
+        Value target = eval_expr(expr->as.call.args.items[1]);
+        if (error_action_pending()) {
+            value_free(source);
+            value_free(target);
+            return value_null();
+        }
+        const char *source_path = file_target_path(source);
+        const char *target_path = file_target_path(target);
+        if (!source_path || !target_path) {
+            runtime_error_raise(
+                "atomic_replace expects file references or path strings for source and destination",
+                1004,
+                "file operation");
+            value_free(source);
+            value_free(target);
+            return value_null();
+        }
+
+        /* Strict rename(2): a single atomic filesystem operation, NOT copy+delete.
+         * On the same filesystem it atomically replaces an existing destination, so
+         * a reader sees either the whole old file or the whole new one. Unlike
+         * move(), it does NOT fall back to copy+delete across filesystems: a
+         * cross-device attempt fails with EXDEV rather than silently degrading to a
+         * non-atomic sequence. On any failure rename() leaves both source and
+         * destination untouched, so a failed replace never destroys the original
+         * destination. (Atomic visibility only — durability across a crash would
+         * additionally require fsync of the file and its directory; out of scope.) */
+        if (rename(source_path, target_path) == 0) {
+            value_free(source);
+            value_free(target);
+            return value_bool(1);
+        }
+        int err = errno;
+        char message[1024];
+        if (err == EXDEV) {
+            snprintf(message,
+                     sizeof(message),
+                     "atomic_replace requires source and destination on the same filesystem: %s -> %s (%s)",
+                     source_path,
+                     target_path,
+                     strerror(err));
+        } else {
+            snprintf(message,
+                     sizeof(message),
+                     "could not atomically replace file: %s -> %s (%s)",
+                     source_path,
+                     target_path,
+                     strerror(err));
+        }
+        runtime_error_raise(message, 1004, "file operation");
+        value_free(source);
+        value_free(target);
+        return value_null();
+    }
+
     if (strcmp(name, "copy") == 0 || strcmp(name, "move") == 0) {
         if (expr->as.call.args.count != 2) {
             char message[256];
@@ -18543,6 +18689,9 @@ static Value eval_call(AstExpr *expr) {
         strcmp(expr->as.call.name, "list_files") == 0 ||
         strcmp(expr->as.call.name, "make_dir") == 0 ||
         strcmp(expr->as.call.name, "remove_dir") == 0 ||
+        strcmp(expr->as.call.name, "file_size") == 0 ||
+        strcmp(expr->as.call.name, "file_mtime") == 0 ||
+        strcmp(expr->as.call.name, "atomic_replace") == 0 ||
         strcmp(expr->as.call.name, "overwrite") == 0 ||
         strcmp(expr->as.call.name, "lock") == 0 ||
         strcmp(expr->as.call.name, "unlock") == 0 ||

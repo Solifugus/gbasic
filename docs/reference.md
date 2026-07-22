@@ -1942,6 +1942,43 @@ File functions (see also the file/directory value types):
 - `bytes(f)` / `lines(f)` / `chars(f)` — read as bytes, lines, or characters.
 - `lock(f)` / `unlock(f)` — advisory locks (see `with lock`).
 
+File metadata and atomic replacement:
+
+- `file_size(f)` — the file's size in bytes as a number, from `stat`
+  (metadata only, not a read). This is the binary byte count, so it counts
+  embedded NULs and is unaffected by text length; a zero-byte file returns `0`.
+  Numbers hold integers exactly up to 2⁵³ (8 PiB), well beyond any real file, so
+  there is no practical truncation. Requires a file reference. A directory has
+  no content size and raises; a missing path raises with the OS reason.
+- `file_mtime(f)` — the file's last-modification time as a `datetime`, from
+  `stat`, in local time. **Second resolution:** gBASIC's `datetime` has no
+  sub-second field, so any nanosecond part of the filesystem timestamp is
+  dropped rather than fabricated. Requires a file reference; works for
+  directories too (a directory's mtime is a real change signal). A missing path
+  raises with the OS reason. There is no locale/string coercion — the value is a
+  `datetime`, comparable and lens-able like any other.
+- `atomic_replace(temp, dest)` — atomically move `temp` onto `dest` with a
+  single `rename(2)`. On one filesystem this replaces an existing `dest`
+  atomically: a concurrent reader that re-opens `dest` sees either the whole old
+  file or the whole new file, never a partial write. It is **not** copy+delete.
+  Both arguments may be file references or path strings.
+  - **Same-filesystem requirement.** Unlike `move`, it does *not* fall back to
+    copy+delete across filesystems: a cross-device attempt fails cleanly (the
+    error names the same-filesystem requirement) rather than silently degrading
+    to a non-atomic sequence.
+  - **Failure safety.** On any failure `rename(2)` leaves *both* `temp` and
+    `dest` untouched, so a failed replace never destroys the original `dest`.
+  - **Atomicity vs. durability.** This guarantees atomic *visibility*, not
+    crash *durability*: surviving a power loss would additionally require
+    `fsync` of the file and its containing directory, which this primitive does
+    not perform.
+  - **Relationship to `move`.** `move(src, dest)` is unchanged: it still renames
+    on the same filesystem and *does* fall back to copy+delete across
+    filesystems (so it can cross devices, non-atomically). Use `atomic_replace`
+    for the safe-write pattern (write a temp, then atomically swap it in) where
+    an all-or-nothing replacement matters; use `move` when you want a best-effort
+    relocation that may cross filesystems.
+
 Directory functions:
 
 - `list(folder)` / `files(folder)` / `folders(folder)` — directory entries.

@@ -1,0 +1,1 @@
+runtime error at tests/negative_file_size_missing.bas:2:1: file_size could not read file metadata: tests/nap-fs-does-not-exist.txt (No such file or directory)
