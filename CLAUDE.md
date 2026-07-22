@@ -87,7 +87,8 @@ bash tests/run_bag_smoke.sh
 ./tests/run_native_platform.sh # Native Application Platform (headless; GTK4/GtkSource via gi); skips if those typelibs absent
 ./tests/run_process.sh      # process.run general process API (NAP-6); GI-independent, never skips
 ./tests/run_native_editor.sh # NAP-7 SourceEditor/gtk.bas/gbasic.lang (GBASIC_PATH=stdlib); headless tier always, display smoke when a display exists; skips if GtkSource typelib absent
-./tests/run_gui_parse.sh    # parse-only headless smoke for examples/gui + examples/gi + examples/native_editor (parse, don't run; no display needed)
+./tests/run_native_workbench.sh # NAP-8 platform spike (examples/native_workbench); inspect/process always, async gated on libgirepository, full-UI smoke gated on GTK4/GtkSource typelibs + a display
+./tests/run_gui_parse.sh    # parse-only headless smoke for examples/gui + examples/gi + examples/native_editor + examples/native_workbench (parse, don't run; no display needed)
 ./tests/run_docs_gate.sh    # executable-docs gate: every docs/ai/COOKBOOK.md file reference exists and is wired into a suite
 GBASIC_POSTGRES_TEST=1 PGDATABASE=my_test_db ./tests/run_postgres.sh   # opt-in
 ```

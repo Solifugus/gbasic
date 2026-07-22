@@ -1,0 +1,10 @@
+window-created
+editor-highlighted
+inline-widget-anchored
+table-rows=20
+inspector-lines=8
+process-exit=0
+async-responsive=true
+async-result=sum(1..100)=5050
+shutdown-clean
+app-exited

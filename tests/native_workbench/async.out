@@ -1,0 +1,2 @@
+async-responsive=true
+async-result=sum(1..100)=5050

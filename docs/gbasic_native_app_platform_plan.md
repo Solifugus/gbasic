@@ -449,20 +449,43 @@ lexer mode — bind the call result to a variable first. (d) type **static metho
 A general demo app (`examples/native_platform/` — **no Studio naming**) exercising the
 whole platform. This is the milestone that proves the thesis.
 
-- [ ] **Tests:** the spike **parses in CI** (wired into `run_gui_parse.sh`); a **manual
+- [x] **Tests:** the spike **parses in CI** (wired into `run_gui_parse.sh`); a **manual
       display acceptance checklist** covering the 11 capabilities from the coverage
       survey §10 (app+window; GtkSourceView editor with gBASIC highlighting; `GtkPaned`
       panes; `GtkStack`/notebook + scrolling list; dynamic add/remove; expandable
       structured value via `keys`/`values`; a modest table; async actor work via
       `gi.watch_mailbox` without UI freeze; `process.run` capturing output; programmatic
       highlight/`grab_focus`; one inline child-anchor widget at a source location).
-- [ ] No GLib criticals under `G_DEBUG=fatal-criticals`; valgrind clean on the C paths
+- [x] No GLib criticals under `G_DEBUG=fatal-criticals`; valgrind clean on the C paths
       it exercises.
-- [ ] Record the acceptance run. Show diff, **STOP — proof point reached.**
+- [x] Record the acceptance run. Show diff, **STOP — proof point reached.**
 
 **Completion:** spike parses in CI and passes the manual acceptance checklist using
 **general capabilities only** — no native component beyond the bridge extensions, no
 hard FFI.
+
+**DONE (2026-07-21) — PROOF POINT REACHED.** `examples/native_workbench/workbench.bas`:
+one integrated GTK4 app written primarily in gBASIC on the generalized platform, **zero
+native code**. Demonstrated together: GTK4 lifecycle+window; reusable gtk.bas/sourceeditor;
+GtkSourceView editor with gBASIC highlighting + source mark + range highlight + an inline
+`GtkTextChildAnchor` button; resizable `GtkPaned`; `GtkNotebook` tabs; scrollable
+`GtkListBox` nav; a generic recursive value inspector (nested record→indented text); a
+modest `Gtk.Grid` (20×3); background work via `spawn`ed actor → `gi.watch_mailbox` →
+GLib-loop delivery running *inside* `GtkApplication.run()`, with a `gi.timeout` ticker
+proving responsiveness; `process.run`; and programmatic `grab_focus`. **Async proof**:
+worker sleeps 100ms in a separate process while the 50ms timeout ticks; result arrives on
+the loop thread (no interpreter threads, no cross-thread GTK) → `async-responsive=true`.
+Headless-testable by design (arg-dispatched modes): `inspect`/`process`/`async` run without
+a display; `smoke` builds the full UI, auto-drives it, and self-quits with a deterministic
+transcript. Runner `tests/run_native_workbench.sh` (inspect/process always; async gated on
+libgirepository; smoke gated on GTK4/GtkSource typelibs + a display) — all 4 tiers green
+here, no GLib criticals under fatal-criticals (only benign GtkPaned/scrolled slider
+layout WARNINGs on stderr; stdout asserted byte-exact). Spike parses in CI (run_gui_parse).
+Prerequisite landed first: a focused eval fix (`this.method()` now dispatches to
+current_this — commit before the spike) so methods can call sibling methods; regression
+byte-exact, zero rebaselines. **No new C in the spike itself.** Manual display acceptance:
+window/panes/tabs/editor/inline-widget/table/inspector/async/process/focus all verified
+on a live display (`:0`) with a clean self-quit; checklist in the demo README.
 
 ---
 
