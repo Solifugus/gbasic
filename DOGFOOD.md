@@ -251,3 +251,35 @@ D0.6, the rest remain open or are by-design.
   `watcher_mutator_notification_test`, passes unmodified). Until this fix the
   documented workaround for hot loops was `for each` (evaluates the container
   once) rather than indexed `while`; that workaround is no longer necessary.
+
+## 2026-07-23 — CC — while: NAP-12 DataGrid — factory bind won't start without a program-scope grid reference
+- **Type:** bug
+- **Severity:** medium
+- **What:** Building a GtkColumnView datagrid entirely through stdlib/datagrid.bas
+  (which stores each column's GtkSignalListItemFactory in the program-global
+  `_DATAGRID` registry), then presenting the window and pumping the loop, realizes
+  rows (the native model's `get_item` fires, ~207 for a 1e6-row grid) but the factory
+  "bind" signal NEVER fires, so cells stay blank. The `setup` signal on the same
+  factory DOES fire. It is not retention (the factory gobject survives COW churn) and
+  not the handler being a library function (setup proves that works). The fix that
+  reliably makes bind fire is a **program-scope** read of the registry factory path
+  (`keep = _DATAGRID.grids[0].columns[0].factory`, even discarded) — the SAME read
+  performed *inside* a library function does not help. So it is scope-specific and
+  smells like a gi/COW object-lifetime-or-timing interaction, not yet isolated.
+- **Workaround:** Hold the grid/its widgets from program scope before showing (real
+  apps do this; `examples/native_ui/datagrid_demo.bas` and the display smoke reference
+  the factories). Data access (`datagrid.cell`), the native model, and all non-display
+  behavior are unaffected — the deterministic tests do not depend on rendering. Should
+  be root-caused before Studio (which renders grids). Logged as a NAP-12 finding.
+
+## 2026-07-23 — CC — while: NAP-12 tests — `call(args) = value` misparses as a modifier clause
+- **Type:** language-surprise
+- **Severity:** low
+- **What:** An equality comparison whose left side is a function/method call with
+  parentheses, e.g. `string(datagrid.row_count(g) = 100)` or `if reflect.kind(x) =
+  "record"`, is a parse error ("unexpected MOD_LPAREN, expecting LPAREN"): the lexer's
+  context-sensitive `(...)=` modifier tokenization fires on the `) = ` and treats it as
+  a modifier definition. A bare-variable left side (`n = 100`) is fine.
+- **Workaround:** Bind the call result to a variable first, then compare the variable:
+  `n = datagrid.row_count(g)` then `string(n = 100)`. Applies anywhere `call(...) =`
+  appears in an expression, not just inside `string(...)`.

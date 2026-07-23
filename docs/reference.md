@@ -1431,6 +1431,86 @@ component. It is deliberately free of Studio concepts (projects, execution
 boundaries, branches, inspector); a future gBASIC Studio would *use* this library,
 not the other way around.
 
+### `datagrid` — virtualized data grid (`load datagrid`)
+
+A general, reusable table for large tabular datasets. It displays 10⁴–10⁶+ rows
+in a `GtkColumnView` **without building one widget per row or per cell**: GTK
+realizes cell widgets only for the rows on screen (plus recycling slack), so a
+million-row grid costs a few hundred widgets, not a million. It is a general
+component (ledgers, admin tables, database browsers, ETL monitors, scientific
+data), not tied to any application.
+
+**Why a native piece exists.** GTK4 virtualizes only when fed a `GListModel`,
+which is a GObject *interface* — implementing it from gBASIC would require runtime
+interface subclassing, which the platform avoids. So one small fixed C GType
+(`rowmodel.*`, the `GbRowModel` adapter) supplies the row **count** and lazy
+index-carrying row **proxies** to GTK, and nothing else. It holds NO row data and
+never calls back into the interpreter. Everything above it — columns, factories,
+formatting, selection, refresh — is gBASIC over `gi`. The only gBASIC re-entry is
+the `GtkSignalListItemFactory` "bind" signal, on the GTK main-loop / interpreter
+thread through the normal, error-contained `gi.connect` path. **Main-thread rule:**
+like all of `gi`, a grid is built and updated only on the interpreter's thread.
+
+**Setup (one line, at program scope):**
+
+```basic
+load datagrid
+_DATAGRID = datagrid.new_registry()
+```
+
+The factory bind handler, which GTK calls with only `(factory, item)` and which
+gBASIC (no closures) cannot give a captured grid, finds its grid through the
+program-global registry `_DATAGRID`. It must be created at program scope.
+
+**Source modes:**
+
+- **Array-backed** — `datagrid.create(rows)` where `rows` is an array of records,
+  of arrays, or of scalars. COW arrays make row access O(1), so the array is
+  never copied into native storage. `create` takes a **COW snapshot**: it shares
+  the backing store until either side mutates. Later mutation of your variable
+  does *not* change the grid, and the grid never touches your variable; call
+  `datagrid.set_rows` to show new data. A deliberate, predictable rule.
+- **Virtual/generated** — `datagrid.create_virtual(count_fn, cell_fn)`. Nothing is
+  materialized: `count_fn()` returns the logical row count and `cell_fn(row, col)`
+  computes a cell on demand. This is the path for database cursors, generated
+  data, or datasets too large to hold in memory, and scales to 10⁶+ logical rows.
+
+**API:**
+
+- `datagrid.new_registry()` → registry (assign to `_DATAGRID`).
+- `datagrid.create(rows)` / `datagrid.create_virtual(count_fn, cell_fn)` → handle.
+- `datagrid.add_column(handle, spec)` → handle. `spec`: `title`, `field` (record
+  field) or `index` (element index; omit both for a scalar source), `resizable`
+  (default true), `format` (optional `(value)->string`).
+- `datagrid.widget(handle)` → the `GtkColumnView` (embed / customize directly).
+- `datagrid.selection(handle)` → the `GtkSingleSelection`; `datagrid.selected(handle)`
+  → selected logical row index, or −1 (GTK single-selection autoselects row 0 by
+  default).
+- `datagrid.cell(handle, row, col)` → the exact string a cell displays (the same
+  path bind uses); reads grid values without a rendered window.
+- `datagrid.row_count(handle)`; `datagrid.set_rows(handle, rows)` (array source);
+  `datagrid.refresh(handle)`; `datagrid.set_count(handle, n)` (virtual source).
+
+**Updates** go through the model's `items-changed`, so `GtkColumnView` re-binds
+visible rows rather than rebuilding widgets.
+
+**Sorting/filtering** are not built in for v1: sort/filter your source (or wrap
+the model in `GtkSortListModel`/`GtkFilterListModel` via `gi` on
+`datagrid.widget`) and `datagrid.refresh`. Kept out of v1 so they don't complicate
+the virtualization core.
+
+**Errors** in an array-backed lookup (out-of-range row, missing field) render as
+empty text rather than raising. A virtual `cell_fn` that raises is contained by
+the `gi` signal machinery (it does not crash GTK or unwind through C), so keep
+`cell_fn` total where possible.
+
+**Limitation (current gi build):** when the *only* references to a grid's
+factories live inside the library registry, on-screen binding can fail to start;
+holding the grid/widget from program scope (as real apps do) makes rendering
+reliable. Data access (`datagrid.cell`), the model, and all non-display behavior
+are unaffected. See `docs/gbasic_native_app_platform_plan.md` (NAP-12) and DOGFOOD.
+Worked demo: `examples/native_ui/datagrid_demo.bas`.
+
 ## Cryptography
 
 When gBASIC is built with libcrypto (OpenSSL), a family of cryptographic builtins

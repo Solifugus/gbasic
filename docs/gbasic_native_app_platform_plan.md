@@ -586,13 +586,65 @@ dynamic declarative GTK layer builds entirely in gBASIC over `gi`, no new C.**
 Two dogfood findings logged (signal-bookkeeping needs return-not-mutate under COW; scalar
 global writes in a handler don't persist — keep state in a record).
 
-### NAP-12 — General `DataGrid` component · C (the one justified native component)
+### NAP-12 — General `DataGrid` component · C (the one justified native component) — DONE (2026-07-23)
 A single fixed C `GListModel` GType adapting a gBASIC array/cursor to
 `GtkColumnView`/`GtkListView` (virtualized, lazy, no widget-per-cell), plus a general
 gBASIC `DataGrid` API. **General component, not Studio's.** Tests: headless model
 unit test (item count / `get_item` on a large backing array); manual display grid with
 10⁵+ rows, sort/filter/select. Justified because a `GListModel` implementation is
 otherwise hard-FFI (WI-9).
+
+**DONE.** The native surface is exactly two fixed GTypes in `src/modules/rowmodel.c`
+(no more): `GbRowModel` implements `GListModel` over a plain row **count** (holds no
+data), and `GbRow` is a 2-field proxy carrying `{index, grid-id}`. The model vfuncs
+NEVER re-enter the interpreter — GTK calls `get_n_items`/`get_item` from inside its
+own layout machinery, so `get_item` just allocates a proxy; the actual cell lookup
+happens later in a `GtkSignalListItemFactory` "bind" handler on the established,
+error-contained `gi.connect` path. The model therefore retains no gBASIC Value or
+function reference — nothing to free at shutdown, no interpreter/GTK lifetime coupling,
+and the backing data stays in gBASIC, never duplicated. Builtins:
+`rowmodel.new/set_count/count/get_item/items_changed/row_index/row_grid/is_row` plus
+`item_requests`/`reset_requests` (get_item instrumentation). Build adds a `HAVE_GIO`
+gate — `GListModel` is a GIO interface and `girepository-2.0` links only gobject/glib,
+so `gio-2.0` is now detected and linked; absent it, `rowmodel.*` degrades to a clean
+runtime error.
+
+The high-level grid is **pure gBASIC** in `stdlib/datagrid.bas` over `gi` +
+`rowmodel`: `create` (array-backed COW snapshot), `create_virtual` (count/cell
+callbacks), `add_column` ({title, field|index, resizable, format}), `widget`,
+`selection`/`selected`, `cell`, `row_count`, `set_rows`, `refresh`, `set_count`. Both
+source modes are first-class; array-backed uses the new COW arrays for O(1) row access
+(never copied into native storage). Cell factories stay in gBASIC (setup/bind signals).
+Single selection; updates via `items-changed`; sort/filter delegated to the source in
+v1.
+
+**Virtualization proven.** Headless (no display): 300 direct `get_item` calls on a
+1,000,000-row model touch exactly 300 rows, `count` unchanged, nothing materialized. On
+a real `GtkColumnView` (500×350) over a 1e6-row source: ~207 model `get_item` requests
+and ~410–615 factory binds — orders of magnitude below the million, i.e. only the
+visible set. `datagrid.cell` verifies displayed-value correctness for array-of-records,
+array-of-arrays, scalar, formatter, out-of-range→empty, and deep virtual row 900000,
+all deterministically. Tests: `tests/datagrid/{model_headless,logic,display_smoke}.bas`
+via `tests/run_datagrid.sh` (headless always; logic+smoke gated on GTK4 typelib +
+display, under `G_DEBUG=fatal-criticals`); demo `examples/native_ui/datagrid_demo.bas`
+(parse-gated). Regression green, zero unrelated rebaselines. Valgrind: no per-grid /
+per-refresh growth over create/refresh cycles and 300 native-model churns — the lone
+definite block is the one-time GTK/fontconfig init (constant at 5 vs 40 cycles, no
+gbasic/rowmodel/datagrid frame).
+
+**Architectural finding: the "one justified native component" thesis HELD.** Exactly one
+bounded C adapter (two GTypes, ~450 lines) was needed; the entire DataGrid — data
+sources, columns, formatting, selection, updates — is gBASIC over `gi`. No runtime
+subclassing, no callback-marshalling framework.
+
+**Newly discovered issue (SHOULD FIX BEFORE STUDIO, does not block the component):** in
+the current `gi` build, when the only references to a grid's factories live inside the
+library-managed program-global registry, on-screen binding may not start (get_item
+fires, bind does not); a program-scope reference to the grid/factories makes rendering
+reliable (real apps that hold their widgets do this naturally, and the demo/test do).
+Reproduces down to a single script-scope read of the registry factory path. Root cause
+is a subtle gi/COW object-lifetime-or-timing interaction, not yet isolated; data access
+and the model are unaffected. Logged in DOGFOOD.
 
 ### NAP-13 — `llm.bas` tool/function-calling · B
 Add a `tools` parameter + `tool_use`/`tool_result` handling to the anthropic + openai

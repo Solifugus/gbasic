@@ -1,0 +1,17 @@
+recs row_count: 2
+recs cell(0,0): Alice
+recs cell(0,1): 100
+recs cell(1,0): Bob
+recs oob cell(5,0): []
+arr cell(1,0): Bob
+arr cell(1,1): 200
+scalar cell(2,0): 30
+formatted cell(1,0): $200
+virtual row_count: 1000000
+virtual cell(900000,0): 900000
+virtual cell(900000,1): row-900000
+snapshot (source mutation ignored): orig
+after set_rows count: 2
+after set_rows cell: replaced
+default selected: 0
+virtual after set_count: 500000

@@ -142,6 +142,7 @@ struct _GbRowModel {
     GObject parent_instance;
     guint n_items;
     guint grid_id;
+    guint64 n_requests;   /* get_item calls served — virtualization instrumentation */
 };
 
 static void gb_row_model_list_model_init(GListModelInterface *iface);
@@ -164,6 +165,7 @@ static guint gb_row_model_get_n_items(GListModel *list) {
  * GTK calls it only for rows it is actually realizing. */
 static gpointer gb_row_model_get_item(GListModel *list, guint position) {
     GbRowModel *self = GB_ROW_MODEL(list);
+    self->n_requests++;   /* count every realization request (visible-set proof) */
     if (position >= self->n_items) {
         return NULL;   /* GListModel contract: out of range yields NULL */
     }
@@ -181,6 +183,7 @@ static void gb_row_model_class_init(GbRowModelClass *klass) { (void)klass; }
 static void gb_row_model_init(GbRowModel *self) {
     self->n_items = 0;
     self->grid_id = 0;
+    self->n_requests = 0;
 }
 
 /* ---------------------------------------------------------------------------
@@ -335,6 +338,41 @@ static Value rowmodel_do_get_item(AstExpr *expr) {
     return gi_canonical_wrap(row, TRUE);   /* transfer-full from get_item */
 }
 
+/* rowmodel.item_requests(model) -> number of get_item calls served since the
+ * model was created or last reset. GtkColumnView calls get_item once per row it
+ * realizes (the row proxy is shared across that row's columns), so this is a
+ * direct, native measure of how many rows GTK actually touched — the
+ * virtualization proof, independent of any gBASIC-side counter. */
+static Value rowmodel_do_item_requests(AstExpr *expr) {
+    Value args[1];
+    if (!rowmodel_eval_args(expr, 1, args, "rowmodel.item_requests")) {
+        return value_null();
+    }
+    GbRowModel *model = NULL;
+    if (!rowmodel_model_arg(args[0], "rowmodel.item_requests", &model)) {
+        value_free(args[0]);
+        return value_null();
+    }
+    value_free(args[0]);
+    return value_number((double)model->n_requests);
+}
+
+/* rowmodel.reset_requests(model) — zero the get_item request counter. */
+static Value rowmodel_do_reset_requests(AstExpr *expr) {
+    Value args[1];
+    if (!rowmodel_eval_args(expr, 1, args, "rowmodel.reset_requests")) {
+        return value_null();
+    }
+    GbRowModel *model = NULL;
+    if (!rowmodel_model_arg(args[0], "rowmodel.reset_requests", &model)) {
+        value_free(args[0]);
+        return value_null();
+    }
+    value_free(args[0]);
+    model->n_requests = 0;
+    return value_null();
+}
+
 /* rowmodel.items_changed(model, position, removed, added) — fine-grained
  * notification for callers that know exactly what moved, so GTK can splice
  * instead of reloading. The count is adjusted to match. */
@@ -425,6 +463,8 @@ static Value rowmodel_eval_call(AstExpr *expr) {
     if (strcmp(name, "set_count") == 0)      return rowmodel_do_set_count(expr);
     if (strcmp(name, "count") == 0)          return rowmodel_do_count(expr);
     if (strcmp(name, "get_item") == 0)       return rowmodel_do_get_item(expr);
+    if (strcmp(name, "item_requests") == 0)  return rowmodel_do_item_requests(expr);
+    if (strcmp(name, "reset_requests") == 0) return rowmodel_do_reset_requests(expr);
     if (strcmp(name, "items_changed") == 0)  return rowmodel_do_items_changed(expr);
     if (strcmp(name, "row_index") == 0)      return rowmodel_do_row_index(expr);
     if (strcmp(name, "row_grid") == 0)       return rowmodel_do_row_grid(expr);

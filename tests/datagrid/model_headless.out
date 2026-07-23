@@ -1,0 +1,10 @@
+count: 1000000
+deep is_row: true
+deep index: 900000
+deep grid: 42
+oob is nothing: true
+requests after 300 gets: 300
+count still 1,000,000: true
+index sum: 134550000
+after splice count: 1000020
+after set_count: 5

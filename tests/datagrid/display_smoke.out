@@ -1,0 +1,7 @@
+row_count: 1000000
+requests bounded (not proportional to 1e6): true
+cell(0,1): row-0
+cell(900000,1): row-900000
+selected: 0
+after set_count: 250000
+DONE
