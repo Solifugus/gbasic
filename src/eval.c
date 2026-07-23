@@ -222,6 +222,20 @@ typedef struct {
 
 typedef struct Value Value;
 
+/* Reference-counted copy-on-write backing store for arrays (docs/
+ * array_cow_design.md). A VALUE_ARRAY holds a pointer to one of these rather
+ * than owning its own items/count directly, so copying an array Value is an
+ * O(1) refcount bump and reads never deep-copy. Mutation detaches a shared
+ * store into a private one (array_ensure_unique) before writing, preserving
+ * gBASIC's value semantics. `capacity` is the allocated slot count (>= count)
+ * and enables amortized-O(1) append; it is never user-visible or serialized. */
+typedef struct ArrayStorage {
+    size_t ref_count;
+    size_t count;
+    size_t capacity;
+    Value *items;
+} ArrayStorage;
+
 typedef struct {
     char *name;
     Value *value;
@@ -236,8 +250,7 @@ struct Value {
         char *string;
         int boolean;
         struct {
-            Value *items;
-            size_t count;
+            ArrayStorage *store;
         } array;
         struct {
             RecordField *fields;
@@ -855,11 +868,48 @@ static Value value_bool(int boolean) {
     return value;
 }
 
+/* Wrap an existing items buffer in a fresh, uniquely-owned backing store
+ * (ref_count 1). Takes ownership of `items` (which must hold `count` live
+ * Values and have room for `capacity`); `capacity` is clamped up to `count`. A
+ * NULL items buffer with count 0 is the canonical empty array. */
+static ArrayStorage *array_storage_new(Value *items, size_t count, size_t capacity) {
+    ArrayStorage *store = malloc(sizeof(ArrayStorage));
+    if (!store) {
+        abort();
+    }
+    store->ref_count = 1;
+    store->count = count;
+    store->capacity = capacity < count ? count : capacity;
+    store->items = items;
+    return store;
+}
+
+static void array_storage_release(ArrayStorage *store);
+
+/* Ensure the store can hold at least `need` slots, growing by doubling (min 4)
+ * so a run of appends is amortized O(1). The store must be uniquely owned
+ * (callers detach first). Aborts on allocation failure, matching the rest of
+ * the runtime. `need` is guarded against the doubling wrapping around. */
+static void array_storage_reserve(ArrayStorage *store, size_t need) {
+    if (need <= store->capacity) {
+        return;
+    }
+    size_t newcap = store->capacity ? store->capacity * 2 : 4;
+    if (newcap < need) {
+        newcap = need;
+    }
+    Value *items = realloc(store->items, sizeof(Value) * newcap);
+    if (!items) {
+        abort();
+    }
+    store->items = items;
+    store->capacity = newcap;
+}
+
 static Value value_array(Value *items, size_t count) {
     Value value = {0};
     value.kind = VALUE_ARRAY;
-    value.as.array.items = items;
-    value.as.array.count = count;
+    value.as.array.store = array_storage_new(items, count, count);
     return value;
 }
 
@@ -1311,17 +1361,10 @@ static Value value_copy(Value value) {
         return value_function(value.as.function.name, value.as.function.library);
     }
     if (value.kind == VALUE_ARRAY) {
-        Value *items = NULL;
-        if (value.as.array.count > 0) {
-            items = malloc(sizeof(Value) * value.as.array.count);
-            if (!items) {
-                abort();
-            }
-            for (size_t i = 0; i < value.as.array.count; i++) {
-                items[i] = value_copy(value.as.array.items[i]);
-            }
-        }
-        return value_array(items, value.as.array.count);
+        /* Copy-on-write: share the one backing store and bump its refcount
+         * (O(1)). Mutation later detaches via array_ensure_unique. */
+        value.as.array.store->ref_count++;
+        return value;
     }
     if (value.kind == VALUE_RECORD) {
         RecordField *fields = NULL;
@@ -1361,10 +1404,7 @@ static void value_free(Value value) {
     } else if (value.kind == VALUE_DIR) {
         free(value.as.dir_path);
     } else if (value.kind == VALUE_ARRAY) {
-        for (size_t i = 0; i < value.as.array.count; i++) {
-            value_free(value.as.array.items[i]);
-        }
-        free(value.as.array.items);
+        array_storage_release(value.as.array.store);
     } else if (value.kind == VALUE_RECORD) {
         for (size_t i = 0; i < value.as.record.count; i++) {
             free(value.as.record.fields[i].name);
@@ -1411,6 +1451,52 @@ static void value_free(Value value) {
     }
 }
 
+/* Drop one reference to an array backing store. At the last reference, free
+ * every contained element and the items buffer, then the store block. */
+static void array_storage_release(ArrayStorage *store) {
+    if (!store) {
+        return;
+    }
+    if (--store->ref_count == 0) {
+        for (size_t i = 0; i < store->count; i++) {
+            value_free(store->items[i]);
+        }
+        free(store->items);
+        free(store);
+    }
+}
+
+/* Copy-on-write detach barrier. Every array mutation routes through this before
+ * touching the store. If the array's store is uniquely owned it is a no-op and
+ * the caller mutates in place (O(1)); if it is shared, a private deep copy is
+ * made (each element via value_copy, which correctly shares nested COW stores /
+ * refcounts foreign handles), the old reference is dropped, and the Value is
+ * repointed at the private store (O(N), paid once). After this returns the
+ * array's store->ref_count is guaranteed to be 1. Capacity is trimmed to count
+ * on detach; append grows it again as needed. */
+static void array_ensure_unique(Value *array) {
+    if (!array || array->kind != VALUE_ARRAY) {
+        return;
+    }
+    ArrayStorage *store = array->as.array.store;
+    if (store->ref_count == 1) {
+        return;
+    }
+    Value *items = NULL;
+    if (store->count > 0) {
+        items = malloc(sizeof(Value) * store->count);
+        if (!items) {
+            abort();
+        }
+        for (size_t i = 0; i < store->count; i++) {
+            items[i] = value_copy(store->items[i]);
+        }
+    }
+    ArrayStorage *fresh = array_storage_new(items, store->count, store->count);
+    store->ref_count--;
+    array->as.array.store = fresh;
+}
+
 /* Drop one reference to a record-field cell, freeing the contained value and
  * the cell block when the last reference goes away. Mirrors the previous
  * `value_free(*p); free(p);` pair. The cell is recovered by casting back to its
@@ -1453,7 +1539,7 @@ static int value_truthy(Value value) {
     case VALUE_STRING:
         return value.as.string[0] != '\0';
     case VALUE_ARRAY:
-        return value.as.array.count > 0;
+        return value.as.array.store->count > 0;
     case VALUE_RECORD:
         return value.as.record.count > 0;
     case VALUE_DATETIME:
@@ -1555,13 +1641,13 @@ static void value_print(Value value) {
         break;
     case VALUE_ARRAY:
         printf("[");
-        for (size_t i = 0; i < value.as.array.count; i++) {
+        for (size_t i = 0; i < value.as.array.store->count; i++) {
             if (i > 0) {
                 printf(", ");
             }
-            if (value.as.array.items[i].kind == VALUE_NUMBER) {
+            if (value.as.array.store->items[i].kind == VALUE_NUMBER) {
                 char nb[32];
-                format_number(nb, sizeof(nb), value.as.array.items[i].as.number);
+                format_number(nb, sizeof(nb), value.as.array.store->items[i].as.number);
                 printf("%s", nb);
             } else {
                 printf("?");
@@ -1942,11 +2028,17 @@ static int value_storage_equal(const Value *left, const Value *right) {
     case VALUE_BOOL:
         return left->as.boolean == right->as.boolean;
     case VALUE_ARRAY:
-        if (left->as.array.count != right->as.array.count) {
+        /* Copy-on-write identity fast path: two arrays sharing one backing store
+         * are necessarily equal, so an unchanged reassignment (b = a while they
+         * still alias) is O(1). Semantically identical to the element compare. */
+        if (left->as.array.store == right->as.array.store) {
+            return 1;
+        }
+        if (left->as.array.store->count != right->as.array.store->count) {
             return 0;
         }
-        for (size_t i = 0; i < left->as.array.count; i++) {
-            if (!value_storage_equal(&left->as.array.items[i], &right->as.array.items[i])) {
+        for (size_t i = 0; i < left->as.array.store->count; i++) {
+            if (!value_storage_equal(&left->as.array.store->items[i], &right->as.array.store->items[i])) {
                 return 0;
             }
         }
@@ -2268,8 +2360,8 @@ static int gui_validate_widget_tree(Value *widget, GuiIdSet *ids) {
             runtime_error_raise("gui container field 'contains' must be an array", 1003, "gui");
             return 0;
         }
-        for (size_t i = 0; i < contains->value->as.array.count; i++) {
-            if (!gui_validate_widget_tree(&contains->value->as.array.items[i], ids)) {
+        for (size_t i = 0; i < contains->value->as.array.store->count; i++) {
+            if (!gui_validate_widget_tree(&contains->value->as.array.store->items[i], ids)) {
                 return 0;
             }
         }
@@ -2357,7 +2449,7 @@ static int gui_build_widget_lookup(Value *lookup, Value *widget, const size_t *p
     if (!contains || contains->value->kind != VALUE_ARRAY) {
         return 1;
     }
-    for (size_t i = 0; i < contains->value->as.array.count; i++) {
+    for (size_t i = 0; i < contains->value->as.array.store->count; i++) {
         size_t child_path[256];
         if (depth >= sizeof(child_path) / sizeof(child_path[0])) {
             runtime_error_raise("gui widget tree nesting too deep", 1003, "gui");
@@ -2368,7 +2460,7 @@ static int gui_build_widget_lookup(Value *lookup, Value *widget, const size_t *p
         }
         child_path[depth] = i;
         if (!gui_build_widget_lookup(lookup,
-                                     &contains->value->as.array.items[i],
+                                     &contains->value->as.array.store->items[i],
                                      child_path,
                                      depth + 1)) {
             return 0;
@@ -2426,8 +2518,8 @@ static Value *gui_window_lookup_widget_ref(Value *window, const char *id) {
     }
 
     Value *current = root_field->value;
-    for (size_t i = 0; i < path_field->value->as.array.count; i++) {
-        Value step = path_field->value->as.array.items[i];
+    for (size_t i = 0; i < path_field->value->as.array.store->count; i++) {
+        Value step = path_field->value->as.array.store->items[i];
         if (!value_is_integer_number(step)) {
             runtime_error_raise("gui window id lookup path is malformed", 1003, "gui");
             return NULL;
@@ -2442,11 +2534,11 @@ static Value *gui_window_lookup_widget_ref(Value *window, const char *id) {
             return NULL;
         }
         int index = (int)step.as.number;
-        if (index < 0 || (size_t)index >= contains->value->as.array.count) {
+        if (index < 0 || (size_t)index >= contains->value->as.array.store->count) {
             runtime_error_raise("gui window id lookup path is out of range", 1003, "gui");
             return NULL;
         }
-        current = &contains->value->as.array.items[index];
+        current = &contains->value->as.array.store->items[index];
     }
     return current;
 }
@@ -4584,8 +4676,8 @@ static int array_is_numeric(Value array) {
     if (array.kind != VALUE_ARRAY) {
         return 0;
     }
-    for (size_t i = 0; i < array.as.array.count; i++) {
-        if (array.as.array.items[i].kind != VALUE_NUMBER) {
+    for (size_t i = 0; i < array.as.array.store->count; i++) {
+        if (array.as.array.store->items[i].kind != VALUE_NUMBER) {
             return 0;
         }
     }
@@ -5786,7 +5878,7 @@ static int values_equal(Value left, Value right) {
 
 static Value builtin_len_value(Value value) {
     if (value.kind == VALUE_ARRAY) {
-        double count = (double)value.as.array.count;
+        double count = (double)value.as.array.store->count;
         value_free(value);
         return value_number(count);
     }
@@ -5970,14 +6062,14 @@ static Value builtin_join_value(Value array, Value separator) {
 
     size_t sep_len = strlen(separator.as.string);
     size_t total = 0;
-    for (size_t i = 0; i < array.as.array.count; i++) {
-        if (array.as.array.items[i].kind != VALUE_STRING) {
+    for (size_t i = 0; i < array.as.array.store->count; i++) {
+        if (array.as.array.store->items[i].kind != VALUE_STRING) {
             value_free(array);
             value_free(separator);
             runtime_error_raise("join array elements must be strings", 1003, "invalid function call");
             return value_null();
         }
-        total += strlen(array.as.array.items[i].as.string);
+        total += strlen(array.as.array.store->items[i].as.string);
         if (i > 0) {
             total += sep_len;
         }
@@ -5988,13 +6080,13 @@ static Value builtin_join_value(Value array, Value separator) {
         abort();
     }
     size_t offset = 0;
-    for (size_t i = 0; i < array.as.array.count; i++) {
+    for (size_t i = 0; i < array.as.array.store->count; i++) {
         if (i > 0) {
             memcpy(joined + offset, separator.as.string, sep_len);
             offset += sep_len;
         }
-        size_t part_len = strlen(array.as.array.items[i].as.string);
-        memcpy(joined + offset, array.as.array.items[i].as.string, part_len);
+        size_t part_len = strlen(array.as.array.store->items[i].as.string);
+        memcpy(joined + offset, array.as.array.store->items[i].as.string, part_len);
         offset += part_len;
     }
     joined[offset] = '\0';
@@ -6015,24 +6107,16 @@ static Value append_to_array_value(Value array, Value item, int prepend) {
         return value_null();
     }
 
-    Value *items = malloc(sizeof(Value) * (array.as.array.count + 1));
-    if (!items) {
-        abort();
-    }
+    array_ensure_unique(&array);
+    ArrayStorage *s = array.as.array.store;
+    array_storage_reserve(s, s->count + 1);
     if (prepend) {
-        items[0] = item;
-        for (size_t i = 0; i < array.as.array.count; i++) {
-            items[i + 1] = array.as.array.items[i];
-        }
+        memmove(s->items + 1, s->items, sizeof(Value) * s->count);
+        s->items[0] = item;
     } else {
-        for (size_t i = 0; i < array.as.array.count; i++) {
-            items[i] = array.as.array.items[i];
-        }
-        items[array.as.array.count] = item;
+        s->items[s->count] = item;
     }
-    free(array.as.array.items);
-    array.as.array.items = items;
-    array.as.array.count++;
+    s->count++;
     return array;
 }
 
@@ -6045,21 +6129,16 @@ static Value append_to_array_ref(Value *array, Value item, int prepend) {
         return value_null();
     }
 
-    Value *items = realloc(array->as.array.items,
-                           sizeof(Value) * (array->as.array.count + 1));
-    if (!items) {
-        abort();
-    }
-    array->as.array.items = items;
+    array_ensure_unique(array);
+    ArrayStorage *s = array->as.array.store;
+    array_storage_reserve(s, s->count + 1);
     if (prepend) {
-        memmove(array->as.array.items + 1,
-                array->as.array.items,
-                sizeof(Value) * array->as.array.count);
-        array->as.array.items[0] = item;
+        memmove(s->items + 1, s->items, sizeof(Value) * s->count);
+        s->items[0] = item;
     } else {
-        array->as.array.items[array->as.array.count] = item;
+        s->items[s->count] = item;
     }
-    array->as.array.count++;
+    s->count++;
     return value_copy(*array);
 }
 
@@ -6091,27 +6170,20 @@ static Value insert_into_array_value(Value array, int index, Value item) {
         runtime_error_raise("insert expects an array", 1003, "invalid function call");
         return value_null();
     }
-    if (index < 0 || (size_t)index > array.as.array.count) {
+    if (index < 0 || (size_t)index > array.as.array.store->count) {
         value_free(array);
         value_free(item);
         runtime_error_raise("insert index out of range", 1003, "invalid function call");
         return value_null();
     }
 
-    Value *items = malloc(sizeof(Value) * (array.as.array.count + 1));
-    if (!items) {
-        abort();
-    }
-    for (size_t i = 0; i < (size_t)index; i++) {
-        items[i] = array.as.array.items[i];
-    }
-    items[index] = item;
-    for (size_t i = (size_t)index; i < array.as.array.count; i++) {
-        items[i + 1] = array.as.array.items[i];
-    }
-    free(array.as.array.items);
-    array.as.array.items = items;
-    array.as.array.count++;
+    array_ensure_unique(&array);
+    ArrayStorage *s = array.as.array.store;
+    array_storage_reserve(s, s->count + 1);
+    memmove(s->items + index + 1, s->items + index,
+            sizeof(Value) * (s->count - (size_t)index));
+    s->items[index] = item;
+    s->count++;
     return array;
 }
 
@@ -6121,23 +6193,19 @@ static Value insert_into_array_ref(Value *array, int index, Value item) {
         runtime_error_raise("insert expects an array", 1003, "invalid function call");
         return value_null();
     }
-    if (index < 0 || (size_t)index > array->as.array.count) {
+    if (index < 0 || (size_t)index > array->as.array.store->count) {
         value_free(item);
         runtime_error_raise("insert index out of range", 1003, "invalid function call");
         return value_null();
     }
 
-    Value *items = realloc(array->as.array.items,
-                           sizeof(Value) * (array->as.array.count + 1));
-    if (!items) {
-        abort();
-    }
-    array->as.array.items = items;
-    memmove(array->as.array.items + index + 1,
-            array->as.array.items + index,
-            sizeof(Value) * (array->as.array.count - (size_t)index));
-    array->as.array.items[index] = item;
-    array->as.array.count++;
+    array_ensure_unique(array);
+    ArrayStorage *s = array->as.array.store;
+    array_storage_reserve(s, s->count + 1);
+    memmove(s->items + index + 1, s->items + index,
+            sizeof(Value) * (s->count - (size_t)index));
+    s->items[index] = item;
+    s->count++;
     return value_copy(*array);
 }
 
@@ -6147,26 +6215,18 @@ static Value remove_from_array_value(Value array, int index) {
         runtime_error_raise("remove expects an array", 1003, "invalid function call");
         return value_null();
     }
-    if (index < 0 || (size_t)index >= array.as.array.count) {
+    if (index < 0 || (size_t)index >= array.as.array.store->count) {
         value_free(array);
         runtime_error_raise("remove index out of range", 1003, "invalid function call");
         return value_null();
     }
 
-    value_free(array.as.array.items[index]);
-    for (size_t i = (size_t)index + 1; i < array.as.array.count; i++) {
-        array.as.array.items[i - 1] = array.as.array.items[i];
-    }
-    array.as.array.count--;
-    if (array.as.array.count == 0) {
-        free(array.as.array.items);
-        array.as.array.items = NULL;
-        return array;
-    }
-    Value *items = realloc(array.as.array.items, sizeof(Value) * array.as.array.count);
-    if (items) {
-        array.as.array.items = items;
-    }
+    array_ensure_unique(&array);
+    ArrayStorage *s = array.as.array.store;
+    value_free(s->items[index]);
+    memmove(s->items + index, s->items + index + 1,
+            sizeof(Value) * (s->count - (size_t)index - 1));
+    s->count--;
     return array;
 }
 
@@ -6175,26 +6235,17 @@ static Value remove_from_array_ref(Value *array, int index) {
         runtime_error_raise("remove expects an array", 1003, "invalid function call");
         return value_null();
     }
-    if (index < 0 || (size_t)index >= array->as.array.count) {
+    if (index < 0 || (size_t)index >= array->as.array.store->count) {
         runtime_error_raise("remove index out of range", 1003, "invalid function call");
         return value_null();
     }
 
-    value_free(array->as.array.items[index]);
-    for (size_t i = (size_t)index + 1; i < array->as.array.count; i++) {
-        array->as.array.items[i - 1] = array->as.array.items[i];
-    }
-    array->as.array.count--;
-    if (array->as.array.count == 0) {
-        free(array->as.array.items);
-        array->as.array.items = NULL;
-    } else {
-        Value *items = realloc(array->as.array.items,
-                               sizeof(Value) * array->as.array.count);
-        if (items) {
-            array->as.array.items = items;
-        }
-    }
+    array_ensure_unique(array);
+    ArrayStorage *s = array->as.array.store;
+    value_free(s->items[index]);
+    memmove(s->items + index, s->items + index + 1,
+            sizeof(Value) * (s->count - (size_t)index - 1));
+    s->count--;
     return value_copy(*array);
 }
 
@@ -6202,8 +6253,8 @@ static int array_find_index(Value array, Value target, size_t *out_index) {
     if (array.kind != VALUE_ARRAY) {
         return 0;
     }
-    for (size_t i = 0; i < array.as.array.count; i++) {
-        if (values_equal(value_copy(array.as.array.items[i]), value_copy(target))) {
+    for (size_t i = 0; i < array.as.array.store->count; i++) {
+        if (values_equal(value_copy(array.as.array.store->items[i]), value_copy(target))) {
             *out_index = i;
             return 1;
         }
@@ -6262,18 +6313,18 @@ static Value array_rest_value(Value array) {
         runtime_error_raise("rest expects an array", 1003, "invalid function call");
         return value_null();
     }
-    if (array.as.array.count <= 1) {
+    if (array.as.array.store->count <= 1) {
         value_free(array);
         return value_array(NULL, 0);
     }
 
-    size_t count = array.as.array.count - 1;
+    size_t count = array.as.array.store->count - 1;
     Value *items = malloc(sizeof(Value) * count);
     if (!items) {
         abort();
     }
     for (size_t i = 0; i < count; i++) {
-        items[i] = value_copy(array.as.array.items[i + 1]);
+        items[i] = value_copy(array.as.array.store->items[i + 1]);
     }
     value_free(array);
     return value_array(items, count);
@@ -6287,7 +6338,7 @@ static Value take_from_array_value(Value array, int take_last) {
                             "invalid function call");
         return value_null();
     }
-    if (array.as.array.count == 0) {
+    if (array.as.array.store->count == 0) {
         value_free(array);
         runtime_error_raise(take_last ? "take_last expects a non-empty array" : "take_first expects a non-empty array",
                             1003,
@@ -6295,21 +6346,14 @@ static Value take_from_array_value(Value array, int take_last) {
         return value_null();
     }
 
-    size_t index = take_last ? array.as.array.count - 1 : 0;
-    Value result = array.as.array.items[index];
-    for (size_t i = index + 1; i < array.as.array.count; i++) {
-        array.as.array.items[i - 1] = array.as.array.items[i];
-    }
-    array.as.array.count--;
-    if (array.as.array.count == 0) {
-        free(array.as.array.items);
-    } else {
-        Value *items = realloc(array.as.array.items, sizeof(Value) * array.as.array.count);
-        if (items) {
-            array.as.array.items = items;
-        }
-        value_free(array);
-    }
+    array_ensure_unique(&array);
+    ArrayStorage *s = array.as.array.store;
+    size_t index = take_last ? s->count - 1 : 0;
+    Value result = s->items[index];
+    memmove(s->items + index, s->items + index + 1,
+            sizeof(Value) * (s->count - index - 1));
+    s->count--;
+    value_free(array);   /* release the now-shorter (unique) store */
     return result;
 }
 
@@ -6320,29 +6364,20 @@ static Value take_from_array_ref(Value *array, int take_last) {
                             "invalid function call");
         return value_null();
     }
-    if (array->as.array.count == 0) {
+    if (array->as.array.store->count == 0) {
         runtime_error_raise(take_last ? "take_last expects a non-empty array" : "take_first expects a non-empty array",
                             1003,
                             "invalid function call");
         return value_null();
     }
 
-    size_t index = take_last ? array->as.array.count - 1 : 0;
-    Value result = array->as.array.items[index];
-    for (size_t i = index + 1; i < array->as.array.count; i++) {
-        array->as.array.items[i - 1] = array->as.array.items[i];
-    }
-    array->as.array.count--;
-    if (array->as.array.count == 0) {
-        free(array->as.array.items);
-        array->as.array.items = NULL;
-    } else {
-        Value *items = realloc(array->as.array.items,
-                               sizeof(Value) * array->as.array.count);
-        if (items) {
-            array->as.array.items = items;
-        }
-    }
+    array_ensure_unique(array);
+    ArrayStorage *s = array->as.array.store;
+    size_t index = take_last ? s->count - 1 : 0;
+    Value result = s->items[index];
+    memmove(s->items + index, s->items + index + 1,
+            sizeof(Value) * (s->count - index - 1));
+    s->count--;
     return result;
 }
 
@@ -6384,7 +6419,8 @@ static Value reverse_array_value(Value array) {
         runtime_error_raise("reverse expects an array or string", 1003, "invalid function call");
         return value_null();
     }
-    reverse_array_items(array.as.array.items, array.as.array.count);
+    array_ensure_unique(&array);
+    reverse_array_items(array.as.array.store->items, array.as.array.store->count);
     return array;
 }
 
@@ -6394,14 +6430,15 @@ static Value reverse_array_ref(Value *array, int *changed) {
         runtime_error_raise("reverse expects an array or string", 1003, "invalid function call");
         return value_null();
     }
-    for (size_t i = 0; i < array->as.array.count / 2; i++) {
-        if (!value_storage_equal(&array->as.array.items[i],
-                                 &array->as.array.items[array->as.array.count - i - 1])) {
+    for (size_t i = 0; i < array->as.array.store->count / 2; i++) {
+        if (!value_storage_equal(&array->as.array.store->items[i],
+                                 &array->as.array.store->items[array->as.array.store->count - i - 1])) {
             *changed = 1;
             break;
         }
     }
-    reverse_array_items(array->as.array.items, array->as.array.count);
+    array_ensure_unique(array);
+    reverse_array_items(array->as.array.store->items, array->as.array.store->count);
     return value_copy(*array);
 }
 
@@ -6440,8 +6477,8 @@ static int array_all_unique_comparable(Value array) {
         runtime_error_raise("unique expects an array", 1003, "invalid function call");
         return 0;
     }
-    for (size_t i = 0; i < array.as.array.count; i++) {
-        if (!value_unique_comparable(array.as.array.items[i])) {
+    for (size_t i = 0; i < array.as.array.store->count; i++) {
+        if (!value_unique_comparable(array.as.array.store->items[i])) {
             runtime_error_raise("unique supports only scalar array values",
                                 1003,
                                 "invalid function call");
@@ -6457,34 +6494,26 @@ static Value unique_array_value(Value array) {
         return value_null();
     }
 
+    array_ensure_unique(&array);
     size_t write = 0;
-    for (size_t i = 0; i < array.as.array.count; i++) {
+    for (size_t i = 0; i < array.as.array.store->count; i++) {
         int duplicate = 0;
         for (size_t j = 0; j < write; j++) {
-            if (unique_values_equal(array.as.array.items[i], array.as.array.items[j])) {
+            if (unique_values_equal(array.as.array.store->items[i], array.as.array.store->items[j])) {
                 duplicate = 1;
                 break;
             }
         }
         if (duplicate) {
-            value_free(array.as.array.items[i]);
+            value_free(array.as.array.store->items[i]);
         } else {
             if (write != i) {
-                array.as.array.items[write] = array.as.array.items[i];
+                array.as.array.store->items[write] = array.as.array.store->items[i];
             }
             write++;
         }
     }
-    array.as.array.count = write;
-    if (write == 0) {
-        free(array.as.array.items);
-        array.as.array.items = NULL;
-    } else {
-        Value *items = realloc(array.as.array.items, sizeof(Value) * write);
-        if (items) {
-            array.as.array.items = items;
-        }
-    }
+    array.as.array.store->count = write;
     return array;
 }
 
@@ -6498,36 +6527,28 @@ static Value unique_array_ref(Value *array, int *changed) {
         return value_null();
     }
 
+    array_ensure_unique(array);
     size_t write = 0;
-    for (size_t i = 0; i < array->as.array.count; i++) {
+    for (size_t i = 0; i < array->as.array.store->count; i++) {
         int duplicate = 0;
         for (size_t j = 0; j < write; j++) {
-            if (unique_values_equal(array->as.array.items[i],
-                                    array->as.array.items[j])) {
+            if (unique_values_equal(array->as.array.store->items[i],
+                                    array->as.array.store->items[j])) {
                 duplicate = 1;
                 break;
             }
         }
         if (duplicate) {
             *changed = 1;
-            value_free(array->as.array.items[i]);
+            value_free(array->as.array.store->items[i]);
         } else {
             if (write != i) {
-                array->as.array.items[write] = array->as.array.items[i];
+                array->as.array.store->items[write] = array->as.array.store->items[i];
             }
             write++;
         }
     }
-    array->as.array.count = write;
-    if (write == 0) {
-        free(array->as.array.items);
-        array->as.array.items = NULL;
-    } else {
-        Value *items = realloc(array->as.array.items, sizeof(Value) * write);
-        if (items) {
-            array->as.array.items = items;
-        }
-    }
+    array->as.array.store->count = write;
     return value_copy(*array);
 }
 
@@ -6558,8 +6579,8 @@ static int array_all_sort_comparable(Value array) {
 
     ValueKind ordinary_kind = VALUE_NULL;
     int have_ordinary_kind = 0;
-    for (size_t i = 0; i < array.as.array.count; i++) {
-        Value item = array.as.array.items[i];
+    for (size_t i = 0; i < array.as.array.store->count; i++) {
+        Value item = array.as.array.store->items[i];
         if (!value_sort_comparable(item)) {
             runtime_error_raise("sort supports only scalar array values",
                                 1003,
@@ -6669,8 +6690,9 @@ static Value sort_array_value(Value array) {
         value_free(array);
         return value_null();
     }
-    if (array.as.array.count > 1) {
-        qsort(array.as.array.items, array.as.array.count, sizeof(Value), sort_value_compare);
+    array_ensure_unique(&array);
+    if (array.as.array.store->count > 1) {
+        qsort(array.as.array.store->items, array.as.array.store->count, sizeof(Value), sort_value_compare);
     }
     return array;
 }
@@ -6684,15 +6706,27 @@ static Value sort_array_ref(Value *array, int *changed) {
     if (!array_all_sort_comparable(*array)) {
         return value_null();
     }
-    Value before = value_copy(*array);
-    if (array->as.array.count > 1) {
-        qsort(array->as.array.items,
-              array->as.array.count,
-              sizeof(Value),
-              sort_value_compare);
+    array_ensure_unique(array);
+    ArrayStorage *s = array->as.array.store;
+    if (s->count > 1) {
+        /* Shallow snapshot of the item structs (not value_copy, which now shares
+         * the store and would defeat the comparison) so a genuine reorder can be
+         * detected for watcher notification. The snapshot borrows the elements;
+         * free only the array of struct copies, never the elements. */
+        Value *snapshot = malloc(sizeof(Value) * s->count);
+        if (!snapshot) {
+            abort();
+        }
+        memcpy(snapshot, s->items, sizeof(Value) * s->count);
+        qsort(s->items, s->count, sizeof(Value), sort_value_compare);
+        for (size_t i = 0; i < s->count; i++) {
+            if (!value_storage_equal(&snapshot[i], &s->items[i])) {
+                *changed = 1;
+                break;
+            }
+        }
+        free(snapshot);
     }
-    *changed = !value_storage_equal(&before, array);
-    value_free(before);
     return value_copy(*array);
 }
 
@@ -6988,11 +7022,11 @@ static int encode_value_to_builder(StringBuilder *builder, Value value) {
         return 1;
     case VALUE_ARRAY:
         sb_append_char(builder, '[');
-        for (size_t i = 0; i < value.as.array.count; i++) {
+        for (size_t i = 0; i < value.as.array.store->count; i++) {
             if (i > 0) {
                 sb_append_char(builder, ',');
             }
-            if (!encode_value_to_builder(builder, value.as.array.items[i])) {
+            if (!encode_value_to_builder(builder, value.as.array.store->items[i])) {
                 return 0;
             }
         }
@@ -7226,9 +7260,9 @@ static int serialize_value(SerBuf *b, Value v, int depth) {
         return 1;
     case VALUE_ARRAY:
         serbuf_u8(b, SER_ARRAY);
-        serbuf_u64(b, (uint64_t)v.as.array.count);
-        for (size_t i = 0; i < v.as.array.count; i++) {
-            if (!serialize_value(b, v.as.array.items[i], depth + 1)) {
+        serbuf_u64(b, (uint64_t)v.as.array.store->count);
+        for (size_t i = 0; i < v.as.array.store->count; i++) {
+            if (!serialize_value(b, v.as.array.store->items[i], depth + 1)) {
                 return 0;
             }
         }
@@ -8008,8 +8042,8 @@ static int message_tag(Value msg, Value *tag) {
         *tag = msg;
         return 1;
     }
-    if (msg.kind == VALUE_ARRAY && msg.as.array.count > 0) {
-        *tag = msg.as.array.items[0];
+    if (msg.kind == VALUE_ARRAY && msg.as.array.store->count > 0) {
+        *tag = msg.as.array.store->items[0];
         return 1;
     }
     return 0;
@@ -8723,7 +8757,7 @@ int eval_run_actor(AstStmtList program, const char *entry,
         fprintf(stderr, "actor: %s received corrupt startup arguments\n", entry);
         return 1;
     }
-    size_t argc = arg_value.as.array.count;
+    size_t argc = arg_value.as.array.store->count;
     if (argc != fn->as.function.params.count) {
         value_free(arg_value);
         fprintf(stderr, "actor: %s startup argument count mismatch\n", entry);
@@ -8737,9 +8771,9 @@ int eval_run_actor(AstStmtList program, const char *entry,
         abort();
     }
     for (size_t i = 0; i < argc; i++) {
-        args[i] = arg_value.as.array.items[i];
+        args[i] = arg_value.as.array.store->items[i];
     }
-    free(arg_value.as.array.items);
+    free(arg_value.as.array.store->items);
 
     Value result = invoke_function(fn, args, argc, NULL);
     int exit_status = runtime_stopped ? 1 : 0;
@@ -10067,8 +10101,8 @@ static int webserver_validate_response_value(WebServer *server,
             webserver_raise("webserver response cookies must be an array");
             return 0;
         }
-        for (size_t i = 0; i < cookies->value->as.array.count; i++) {
-            Value *cookie = &cookies->value->as.array.items[i];
+        for (size_t i = 0; i < cookies->value->as.array.store->count; i++) {
+            Value *cookie = &cookies->value->as.array.store->items[i];
             if (cookie->kind != VALUE_STRING) {
                 webserver_raise("webserver response cookie values must be strings");
                 return 0;
@@ -10107,21 +10141,12 @@ static int webserver_validate_response_append(AstExpr *target, Value item) {
 }
 
 static void webserver_array_remove(Value *array, size_t index) {
-    value_free(array->as.array.items[index]);
-    for (size_t i = index + 1; i < array->as.array.count; i++) {
-        array->as.array.items[i - 1] = array->as.array.items[i];
-    }
-    array->as.array.count--;
-    if (array->as.array.count == 0) {
-        free(array->as.array.items);
-        array->as.array.items = NULL;
-    } else {
-        Value *items = realloc(array->as.array.items,
-                               sizeof(Value) * array->as.array.count);
-        if (items) {
-            array->as.array.items = items;
-        }
-    }
+    array_ensure_unique(array);
+    ArrayStorage *s = array->as.array.store;
+    value_free(s->items[index]);
+    memmove(s->items + index, s->items + index + 1,
+            sizeof(Value) * (s->count - index - 1));
+    s->count--;
 }
 
 static char *webserver_percent_decode(const char *text, size_t length) {
@@ -10484,8 +10509,8 @@ static void webserver_send(WebServerClient *client,
                             strlen("Content-Type: text/plain\r\n"));
     }
     if (cookies && cookies->kind == VALUE_ARRAY) {
-        for (size_t i = 0; i < cookies->as.array.count; i++) {
-            Value *cookie = &cookies->as.array.items[i];
+        for (size_t i = 0; i < cookies->as.array.store->count; i++) {
+            Value *cookie = &cookies->as.array.store->items[i];
             size_t line_length = strlen(cookie->as.string) +
                 strlen("Set-Cookie: \r\n") + 1;
             char *line = malloc(line_length);
@@ -10521,8 +10546,8 @@ static void webserver_process_responses(WebServer *server) {
     if (!responses || responses->kind != VALUE_ARRAY) {
         return;
     }
-    while (responses->as.array.count > 0) {
-        Value response = responses->as.array.items[0];
+    while (responses->as.array.store->count > 0) {
+        Value response = responses->as.array.store->items[0];
         if (!webserver_validate_response_value(server, response, 1)) {
             return;
         }
@@ -11190,11 +11215,11 @@ static int sqlite_prepare_statement(SqliteConnectionValue *connection,
             sqlite_raise_message("SQLite query parameters must be an array");
             return 0;
         }
-        if (params_value->as.array.count > INT_MAX) {
+        if (params_value->as.array.store->count > INT_MAX) {
             sqlite_raise_message("too many SQLite query parameters");
             return 0;
         }
-        out->count = (int)params_value->as.array.count;
+        out->count = (int)params_value->as.array.store->count;
     } else {
         out->count = 0;
     }
@@ -11215,7 +11240,7 @@ static int sqlite_prepare_statement(SqliteConnectionValue *connection,
     for (int i = 0; i < out->count; i++) {
         if (!sqlite_bind_value(out->statement,
                                i + 1,
-                               params_value->as.array.items[i],
+                               params_value->as.array.store->items[i],
                                &out->values[i])) {
             return 0;
         }
@@ -11842,11 +11867,11 @@ static int pg_json_append_value(StringBuilder *builder, Value value) {
         return 1;
     case VALUE_ARRAY:
         sb_append_char(builder, '[');
-        for (size_t i = 0; i < value.as.array.count; i++) {
+        for (size_t i = 0; i < value.as.array.store->count; i++) {
             if (i > 0) {
                 sb_append_char(builder, ',');
             }
-            if (!pg_json_append_value(builder, value.as.array.items[i])) {
+            if (!pg_json_append_value(builder, value.as.array.store->items[i])) {
                 return 0;
             }
         }
@@ -11963,19 +11988,19 @@ static int pg_parameter_list_build(Value value, PgParameterList *out) {
         pg_raise_message("PostgreSQL query parameters must be an array");
         return 0;
     }
-    if (value.as.array.count > INT_MAX) {
+    if (value.as.array.store->count > INT_MAX) {
         pg_raise_message("too many PostgreSQL query parameters");
         return 0;
     }
 
-    out->count = (int)value.as.array.count;
-    out->values = calloc(value.as.array.count, sizeof(char *));
-    out->pointers = calloc(value.as.array.count, sizeof(char *));
-    if (value.as.array.count > 0 && (!out->values || !out->pointers)) {
+    out->count = (int)value.as.array.store->count;
+    out->values = calloc(value.as.array.store->count, sizeof(char *));
+    out->pointers = calloc(value.as.array.store->count, sizeof(char *));
+    if (value.as.array.store->count > 0 && (!out->values || !out->pointers)) {
         abort();
     }
-    for (size_t i = 0; i < value.as.array.count; i++) {
-        Value item = value.as.array.items[i];
+    for (size_t i = 0; i < value.as.array.store->count; i++) {
+        Value item = value.as.array.store->items[i];
         if (item.kind == VALUE_NULL) {
             out->pointers[i] = NULL;
             continue;
@@ -13373,10 +13398,10 @@ static int gi_array_in_build(GITypeInfo *ti, GITransfer transfer, Value v,
         *why = "has an unsupported array element type";
         return 0;
     }
-    size_t n = v.as.array.count;
+    size_t n = v.as.array.store->count;
     char **arr = g_new0(char *, n + 1);
     for (size_t i = 0; i < n; i++) {
-        Value e = v.as.array.items[i];
+        Value e = v.as.array.store->items[i];
         if (e.kind == VALUE_STRING) {
             arr[i] = e.as.string;   /* borrowed for the call's duration */
         } else if (e.kind == VALUE_NULL) {
@@ -14697,14 +14722,14 @@ static Value gi_do_variant_strv(AstExpr *expr) {
     Value a = eval_expr(expr->as.call.args.items[0]);
     if (error_action_pending()) { value_free(a); return value_null(); }
     if (a.kind != VALUE_ARRAY) { value_free(a); return gi_raise("gi.variant_strv expects an array"); }
-    size_t n = a.as.array.count;
+    size_t n = a.as.array.store->count;
     const char **strv = g_new0(const char *, n + 1);
     for (size_t i = 0; i < n; i++) {
-        if (a.as.array.items[i].kind != VALUE_STRING) {
+        if (a.as.array.store->items[i].kind != VALUE_STRING) {
             g_free(strv); value_free(a);
             return gi_raise("gi.variant_strv expects an array of strings");
         }
-        strv[i] = a.as.array.items[i].as.string;   /* g_variant_new_strv copies */
+        strv[i] = a.as.array.store->items[i].as.string;   /* g_variant_new_strv copies */
     }
     GVariant *v = g_variant_new_strv(strv, (gssize)n);
     g_free(strv);
@@ -15197,8 +15222,8 @@ static Value process_do_run(AstExpr *expr) {
             value_free(opts);
             return process_raise("process.run: options.args must be an array");
         }
-        arg_items = args_f->value->as.array.items;
-        nargs = args_f->value->as.array.count;
+        arg_items = args_f->value->as.array.store->items;
+        nargs = args_f->value->as.array.store->count;
         for (size_t i = 0; i < nargs; i++) {
             if (arg_items[i].kind != VALUE_STRING) {
                 value_free(opts);
@@ -15447,8 +15472,8 @@ static int reflect_serializable(Value v, int depth) {
     case VALUE_FILE: case VALUE_DIR: case VALUE_FUNCTION:
         return 1;
     case VALUE_ARRAY:
-        for (size_t i = 0; i < v.as.array.count; i++) {
-            if (!reflect_serializable(v.as.array.items[i], depth + 1)) {
+        for (size_t i = 0; i < v.as.array.store->count; i++) {
+            if (!reflect_serializable(v.as.array.store->items[i], depth + 1)) {
                 return 0;
             }
         }
@@ -15538,7 +15563,7 @@ static Value reflect_do_get(AstExpr *expr) {
 static Value reflect_do_count(Value v) {
     double c = 0;
     if (v.kind == VALUE_ARRAY) {
-        c = (double)v.as.array.count;
+        c = (double)v.as.array.store->count;
     } else if (v.kind == VALUE_RECORD) {
         c = (double)v.as.record.count;
     } else if (v.kind == VALUE_STRING) {
@@ -15605,11 +15630,11 @@ static Value reflect_do_element(AstExpr *expr) {
         return reflect_raise("reflect.element expects an array and a numeric index");
     }
     int idx = (int)iv.as.number;
-    if (idx < 0 || (size_t)idx >= av.as.array.count) {
+    if (idx < 0 || (size_t)idx >= av.as.array.store->count) {
         value_free(av); value_free(iv);
         return reflect_raise("reflect.element: index out of range");
     }
-    Value out = value_copy(av.as.array.items[idx]);
+    Value out = value_copy(av.as.array.store->items[idx]);
     value_free(av); value_free(iv);
     return out;
 }
@@ -15623,7 +15648,7 @@ static Value reflect_do_inspect(Value v) {
     reflect_type_string(v, typebuf, sizeof(typebuf));
     double count = 0;
     if (v.kind == VALUE_ARRAY) {
-        count = (double)v.as.array.count;
+        count = (double)v.as.array.store->count;
     } else if (v.kind == VALUE_RECORD) {
         count = (double)v.as.record.count;
     } else if (v.kind == VALUE_STRING) {
@@ -17214,13 +17239,13 @@ static Value eval_call(AstExpr *expr) {
             runtime_error_raise("from_bytes: argument must be an array of numbers", 1003, "invalid argument type");
             return value_null();
         }
-        size_t count = array.as.array.count;
+        size_t count = array.as.array.store->count;
         char *bytes = malloc(count + 1);
         if (!bytes) {
             abort();
         }
         for (size_t i = 0; i < count; i++) {
-            Value item = array.as.array.items[i];
+            Value item = array.as.array.store->items[i];
             if (item.kind != VALUE_NUMBER ||
                 item.as.number != floor(item.as.number) ||
                 item.as.number < 0 || item.as.number > 255) {
@@ -17435,7 +17460,7 @@ static Value eval_call(AstExpr *expr) {
         if (value.kind == VALUE_STRING) {
             result = (int)strlen(value.as.string);
         } else if (value.kind == VALUE_ARRAY) {
-            result = (int)value.as.array.count;
+            result = (int)value.as.array.store->count;
         } else if (value.kind == VALUE_RECORD) {
             result = (int)value.as.record.count;
         } else {
@@ -17901,7 +17926,7 @@ static Value eval_call(AstExpr *expr) {
         }
         Value data = eval_expr(expr->as.call.args.items[0]);
         Value cut = eval_expr(expr->as.call.args.items[1]);
-        if (!array_is_numeric(data) || data.as.array.count == 0 ||
+        if (!array_is_numeric(data) || data.as.array.store->count == 0 ||
             cut.kind != VALUE_NUMBER) {
             char message[256];
             snprintf(message, sizeof(message),
@@ -17923,13 +17948,13 @@ static Value eval_call(AstExpr *expr) {
             value_free(cut);
             return value_null();
         }
-        size_t n = data.as.array.count;
+        size_t n = data.as.array.store->count;
         double *sorted = malloc(sizeof(double) * n);
         if (!sorted) {
             abort();
         }
         for (size_t i = 0; i < n; i++) {
-            sorted[i] = data.as.array.items[i].as.number;
+            sorted[i] = data.as.array.store->items[i].as.number;
         }
         qsort(sorted, n, sizeof(double), number_compare);
         double r = quantile_sorted(sorted, n, q);
@@ -17954,7 +17979,7 @@ static Value eval_call(AstExpr *expr) {
         Value xs = eval_expr(expr->as.call.args.items[0]);
         Value ys = eval_expr(expr->as.call.args.items[1]);
         if (!array_is_numeric(xs) || !array_is_numeric(ys) ||
-            xs.as.array.count != ys.as.array.count || xs.as.array.count < 2) {
+            xs.as.array.store->count != ys.as.array.store->count || xs.as.array.store->count < 2) {
             char message[256];
             snprintf(message, sizeof(message),
                      "%s expects two numeric arrays of equal length (>= 2)", fn);
@@ -17963,18 +17988,18 @@ static Value eval_call(AstExpr *expr) {
             value_free(ys);
             return value_null();
         }
-        size_t n = xs.as.array.count;
+        size_t n = xs.as.array.store->count;
         double mx = 0.0, my = 0.0;
         for (size_t i = 0; i < n; i++) {
-            mx += xs.as.array.items[i].as.number;
-            my += ys.as.array.items[i].as.number;
+            mx += xs.as.array.store->items[i].as.number;
+            my += ys.as.array.store->items[i].as.number;
         }
         mx /= (double)n;
         my /= (double)n;
         double sxy = 0.0, sxx = 0.0, syy = 0.0;
         for (size_t i = 0; i < n; i++) {
-            double dx = xs.as.array.items[i].as.number - mx;
-            double dy = ys.as.array.items[i].as.number - my;
+            double dx = xs.as.array.store->items[i].as.number - mx;
+            double dy = ys.as.array.store->items[i].as.number - my;
             sxy += dx * dy;
             sxx += dx * dx;
             syy += dy * dy;
@@ -18048,8 +18073,8 @@ static Value eval_call(AstExpr *expr) {
         }
 
         if (value.kind == VALUE_ARRAY) {
-            for (size_t i = 0; i < value.as.array.count; i++) {
-                if (values_equal(value_copy(value.as.array.items[i]), value_copy(target))) {
+            for (size_t i = 0; i < value.as.array.store->count; i++) {
+                if (values_equal(value_copy(value.as.array.store->items[i]), value_copy(target))) {
                     value_free(value);
                     value_free(target);
                     return value_number((double)i);
@@ -18164,8 +18189,8 @@ static Value eval_call(AstExpr *expr) {
             return value_null();
         }
 
-        for (size_t i = 0; i < records.as.array.count; i++) {
-            Value *item = &records.as.array.items[i];
+        for (size_t i = 0; i < records.as.array.store->count; i++) {
+            Value *item = &records.as.array.store->items[i];
             if (item->kind != VALUE_RECORD) {
                 continue;
             }
@@ -18219,19 +18244,19 @@ static Value eval_call(AstExpr *expr) {
             value_free(separator);
             return value_null();
         }
-        if (start_index < 0 || (size_t)start_index >= array.as.array.count) {
+        if (start_index < 0 || (size_t)start_index >= array.as.array.store->count) {
             value_free(array);
             value_free(separator);
             return value_string("");
         }
 
-        size_t count = array.as.array.count - (size_t)start_index;
+        size_t count = array.as.array.store->count - (size_t)start_index;
         Value *items = malloc(sizeof(Value) * count);
         if (!items) {
             abort();
         }
         for (size_t i = 0; i < count; i++) {
-            items[i] = value_copy(array.as.array.items[(size_t)start_index + i]);
+            items[i] = value_copy(array.as.array.store->items[(size_t)start_index + i]);
         }
         value_free(array);
         return builtin_join_value(value_array(items, count), separator);
@@ -18252,11 +18277,11 @@ static Value eval_call(AstExpr *expr) {
             runtime_error_raise("first expects an array", 1003, "invalid function call");
             return value_null();
         }
-        if (array.as.array.count == 0) {
+        if (array.as.array.store->count == 0) {
             value_free(array);
             return value_null();
         }
-        Value result = value_copy(array.as.array.items[0]);
+        Value result = value_copy(array.as.array.store->items[0]);
         value_free(array);
         return result;
     }
@@ -18745,7 +18770,7 @@ static Value eval_call(AstExpr *expr) {
             return value_null();
         }
 
-    size_t count = arg.as.array.count;
+    size_t count = arg.as.array.store->count;
     double result = 0.0;
 
     if (strcmp(name, "len") == 0) {
@@ -18758,23 +18783,23 @@ static Value eval_call(AstExpr *expr) {
         return value_null();
     } else if (strcmp(name, "sum") == 0 || strcmp(name, "mean") == 0) {
         for (size_t i = 0; i < count; i++) {
-            result += arg.as.array.items[i].as.number;
+            result += arg.as.array.store->items[i].as.number;
         }
         if (strcmp(name, "mean") == 0) {
             result /= (double)count;
         }
     } else if (strcmp(name, "min") == 0) {
-        result = arg.as.array.items[0].as.number;
+        result = arg.as.array.store->items[0].as.number;
         for (size_t i = 1; i < count; i++) {
-            if (arg.as.array.items[i].as.number < result) {
-                result = arg.as.array.items[i].as.number;
+            if (arg.as.array.store->items[i].as.number < result) {
+                result = arg.as.array.store->items[i].as.number;
             }
         }
     } else if (strcmp(name, "max") == 0) {
-        result = arg.as.array.items[0].as.number;
+        result = arg.as.array.store->items[0].as.number;
         for (size_t i = 1; i < count; i++) {
-            if (arg.as.array.items[i].as.number > result) {
-                result = arg.as.array.items[i].as.number;
+            if (arg.as.array.store->items[i].as.number > result) {
+                result = arg.as.array.store->items[i].as.number;
             }
         }
     } else if (strcmp(name, "median") == 0) {
@@ -18783,7 +18808,7 @@ static Value eval_call(AstExpr *expr) {
             abort();
         }
         for (size_t i = 0; i < count; i++) {
-            sorted[i] = arg.as.array.items[i].as.number;
+            sorted[i] = arg.as.array.store->items[i].as.number;
         }
         qsort(sorted, count, sizeof(double), number_compare);
         if (count % 2 == 1) {
@@ -18793,18 +18818,18 @@ static Value eval_call(AstExpr *expr) {
         }
         free(sorted);
     } else if (strcmp(name, "mode") == 0) {
-        result = arg.as.array.items[0].as.number;
+        result = arg.as.array.store->items[0].as.number;
         size_t best_count = 0;
         for (size_t i = 0; i < count; i++) {
             size_t current_count = 0;
             for (size_t j = 0; j < count; j++) {
-                if (arg.as.array.items[i].as.number == arg.as.array.items[j].as.number) {
+                if (arg.as.array.store->items[i].as.number == arg.as.array.store->items[j].as.number) {
                     current_count++;
                 }
             }
             if (current_count > best_count) {
                 best_count = current_count;
-                result = arg.as.array.items[i].as.number;
+                result = arg.as.array.store->items[i].as.number;
             }
         }
     } else if (strcmp(name, "variance") == 0 || strcmp(name, "stdev") == 0 ||
@@ -18824,12 +18849,12 @@ static Value eval_call(AstExpr *expr) {
         }
         double mean_v = 0.0;
         for (size_t i = 0; i < count; i++) {
-            mean_v += arg.as.array.items[i].as.number;
+            mean_v += arg.as.array.store->items[i].as.number;
         }
         mean_v /= (double)count;
         double m2 = 0.0, m3 = 0.0, m4 = 0.0;
         for (size_t i = 0; i < count; i++) {
-            double d = arg.as.array.items[i].as.number - mean_v;
+            double d = arg.as.array.store->items[i].as.number - mean_v;
             double d2 = d * d;
             m2 += d2;
             m3 += d2 * d;
@@ -18860,10 +18885,10 @@ static Value eval_call(AstExpr *expr) {
             }
         }
     } else if (strcmp(name, "range") == 0) {
-        double lo = arg.as.array.items[0].as.number;
+        double lo = arg.as.array.store->items[0].as.number;
         double hi = lo;
         for (size_t i = 1; i < count; i++) {
-            double v = arg.as.array.items[i].as.number;
+            double v = arg.as.array.store->items[i].as.number;
             if (v < lo) {
                 lo = v;
             }
@@ -18878,7 +18903,7 @@ static Value eval_call(AstExpr *expr) {
             abort();
         }
         for (size_t i = 0; i < count; i++) {
-            sorted[i] = arg.as.array.items[i].as.number;
+            sorted[i] = arg.as.array.store->items[i].as.number;
         }
         qsort(sorted, count, sizeof(double), number_compare);
         result = quantile_sorted(sorted, count, 0.75) -
@@ -19820,13 +19845,13 @@ static Value eval_expr(AstExpr *expr) {
         }
         if (array.kind == VALUE_ARRAY && index.kind == VALUE_NUMBER) {
             int position = (int)index.as.number;
-            if (position < 0 || (size_t)position >= array.as.array.count) {
+            if (position < 0 || (size_t)position >= array.as.array.store->count) {
                 fprintf(stderr, "array index out of range\n");
                 value_free(array);
                 value_free(index);
                 return value_null();
             }
-            Value result = value_copy(array.as.array.items[position]);
+            Value result = value_copy(array.as.array.store->items[position]);
             value_free(array);
             value_free(index);
             return result;
@@ -20220,11 +20245,16 @@ static Value *resolve_lvalue_ref(AstExpr *target) {
         if (container->kind == VALUE_ARRAY && index.kind == VALUE_NUMBER) {
             int position = (int)index.as.number;
             value_free(index);
-            if (position < 0 || (size_t)position >= container->as.array.count) {
+            if (position < 0 || (size_t)position >= container->as.array.store->count) {
                 runtime_error_raise("array index out of range", 1003, "assignment");
                 return NULL;
             }
-            return &container->as.array.items[position];
+            /* About to hand out a mutable pointer into this array's storage, so
+             * detach it from any shared copy-on-write store first. This is where
+             * nested mutation (b[i][j] = x, b[i].field = x) isolates each shared
+             * array container along the path — the recursion detaches every level. */
+            array_ensure_unique(container);
+            return &container->as.array.store->items[position];
         }
         if (container->kind == VALUE_RECORD && index.kind == VALUE_STRING) {
             RecordField *field = record_find(container, index.as.string);
@@ -20329,16 +20359,19 @@ static LValueAssignResult assign_lvalue(AstExpr *target, Value value) {
         if (container->kind == VALUE_ARRAY && index.kind == VALUE_NUMBER) {
             int position = (int)index.as.number;
             value_free(index);
-            if (position < 0 || (size_t)position >= container->as.array.count) {
+            if (position < 0 || (size_t)position >= container->as.array.store->count) {
                 runtime_error_raise("array index out of range", 1003, "assignment");
                 return LVALUE_ASSIGN_ERROR;
             }
-            if (value_storage_equal(&container->as.array.items[position], &value)) {
+            if (value_storage_equal(&container->as.array.store->items[position], &value)) {
                 value_free(value);
                 return LVALUE_ASSIGN_UNCHANGED;
             }
-            value_free(container->as.array.items[position]);
-            container->as.array.items[position] = value;
+            /* A real element write: detach from any shared store first so the
+             * copy-on-write aliasing guarantee holds (b = a; b[i] = x). */
+            array_ensure_unique(container);
+            value_free(container->as.array.store->items[position]);
+            container->as.array.store->items[position] = value;
             return LVALUE_ASSIGN_CHANGED;
         }
         if (container->kind == VALUE_RECORD && index.kind == VALUE_STRING) {
@@ -20602,8 +20635,8 @@ static EvalResult eval_stmt(AstStmt *stmt) {
             return eval_error_result();
         }
         loop_depth++;
-        for (size_t i = 0; i < iterable.as.array.count; i++) {
-            env_set(stmt->as.for_each.name, value_copy(iterable.as.array.items[i]));
+        for (size_t i = 0; i < iterable.as.array.store->count; i++) {
+            env_set(stmt->as.for_each.name, value_copy(iterable.as.array.store->items[i]));
             EvalResult result = eval_stmt_list(stmt->as.for_each.body);
             if (result.did_break) {
                 value_free(result.value);

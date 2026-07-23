@@ -327,8 +327,8 @@ static Value *xml_first_child_named(Value *elem, const char *step) {
     if (!ch) {
         return NULL;
     }
-    for (size_t i = 0; i < ch->as.array.count; i++) {
-        Value *c = &ch->as.array.items[i];
+    for (size_t i = 0; i < ch->as.array.store->count; i++) {
+        Value *c = &ch->as.array.store->items[i];
         if (!xml_is_element(c)) {
             continue;
         }
@@ -411,8 +411,8 @@ static Value xml_do_find_all(Value *node, const char *path) {
     }
     Value *items = NULL;
     size_t count = 0, cap = 0;
-    for (size_t i = 0; i < ch->as.array.count; i++) {
-        Value *c = &ch->as.array.items[i];
+    for (size_t i = 0; i < ch->as.array.store->count; i++) {
+        Value *c = &ch->as.array.store->items[i];
         if (!xml_is_element(c)) {
             continue;
         }
@@ -447,8 +447,8 @@ static void xml_gather_text(Value *node, char **buf, size_t *len, size_t *cap) {
     if (xml_is_element(node)) {
         Value *ch = xml_children_of(node);
         if (ch) {
-            for (size_t i = 0; i < ch->as.array.count; i++) {
-                xml_gather_text(&ch->as.array.items[i], buf, len, cap);
+            for (size_t i = 0; i < ch->as.array.store->count; i++) {
+                xml_gather_text(&ch->as.array.store->items[i], buf, len, cap);
             }
         }
     }
@@ -571,7 +571,7 @@ static int xml_write_element(char **b, size_t *n, size_t *c, Value *elem, int de
     }
 
     Value *children = cf->value;
-    size_t ccount = children->as.array.count;
+    size_t ccount = children->as.array.store->count;
     if (ccount == 0) {
         xml_str_append(b, n, c, "/>");
         return 1;
@@ -579,7 +579,7 @@ static int xml_write_element(char **b, size_t *n, size_t *c, Value *elem, int de
 
     int has_elem = 0;
     for (size_t i = 0; i < ccount; i++) {
-        if (xml_is_element(&children->as.array.items[i])) {
+        if (xml_is_element(&children->as.array.store->items[i])) {
             has_elem = 1;
             break;
         }
@@ -588,7 +588,7 @@ static int xml_write_element(char **b, size_t *n, size_t *c, Value *elem, int de
 
     if (pretty && has_elem) {
         for (size_t i = 0; i < ccount; i++) {
-            Value *ch = &children->as.array.items[i];
+            Value *ch = &children->as.array.store->items[i];
             if (xml_is_element(ch)) {
                 xml_str_append(b, n, c, "\n");
                 xml_indent(b, n, c, depth + 1);
@@ -605,7 +605,7 @@ static int xml_write_element(char **b, size_t *n, size_t *c, Value *elem, int de
         xml_indent(b, n, c, depth);
     } else {
         for (size_t i = 0; i < ccount; i++) {
-            Value *ch = &children->as.array.items[i];
+            Value *ch = &children->as.array.store->items[i];
             if (xml_is_element(ch)) {
                 if (!xml_write_element(b, n, c, ch, depth + 1, pretty)) {
                     return 0;

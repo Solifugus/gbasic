@@ -229,3 +229,25 @@ D0.6, the rest remain open or are by-design.
   fields (`state.count = state.count + 1`, `state.items = append(...)`, `state.handle = update(...)`),
   as `examples/native_ui/dynamic_list.bas` does. Bare scalar globals are effectively read-only from
   inside a handler. (gBASIC has no closures, so a record is also how a handler shares state anyway.)
+
+## 2026-07-23 — CC — while: NAP-12 DataGrid perf profiling — array reads/appends were O(n)/O(n²) (FIXED)
+- **Type:** perf
+- **Severity:** high
+- **What:** Arrays stored elements in a bare `{items,count}` with no sharing, so
+  `value_copy` deep-copied the whole array. Every rvalue read went through
+  `env_get -> value_copy`, making `b = a`, `a[i]`, and passing an array to a
+  function all O(n); a `while` loop indexing an array was O(n²). Separately,
+  `append` mutated in place but returned a full deep copy, so `a = append(a, x)`
+  in a loop was O(n²) — and the far more common bare `append(a, x)` statement
+  (669 of ~690 call sites) paid that copy for a discarded value. Measured: 200
+  reads of a 128k array ≈ 1.1s; building a 25k record array ≈ 88s. This surfaced
+  while profiling an array-backed DataGrid but is a language-wide issue
+  (analytics/ETL/finance/function calls/Studio), not DataGrid-specific.
+- **Workaround:** RESOLVED at the runtime level, not worked around. Arrays now use
+  a reference-counted copy-on-write backing store (`docs/array_cow_design.md`):
+  copy/assign/arg-pass/read are O(1), append is amortized O(1), a build loop is
+  O(n), and mutation of a shared array detaches once (O(n)). Observable value
+  semantics are unchanged and byte-exact (the full golden suite, including
+  `watcher_mutator_notification_test`, passes unmodified). Until this fix the
+  documented workaround for hot loops was `for each` (evaluates the container
+  once) rather than indexed `while`; that workaround is no longer necessary.

@@ -1,0 +1,20 @@
+assign: a=1,2,3 b=99,2,3
+aliases: x=10,20,30 y=10,200,30 z=10,20,30
+unique: u=1,2,3
+nested: n1[0][0]=1 n2[0][0]=77
+nested deep: n1[1][1]=4 n2[1][1]=4
+arr-of-rec: r1[0].v=1 r2[0].v=55
+rec-arr: rec1.rows[0]=1 rec2.rows[0]=88
+arg read: first=1 c[0]=1
+arg mutate: d[0]=1 returned=42
+return: made[0]=9 fresh[0]=0
+append bare: e=1,2,3 f=1,2
+append assign: g=1,2,3 h=1,2 gg=1,2,3
+grow count=10 grow[9]=81 grow[0]=0
+insert: iv=1,2,3,4 ivc=1,2,4
+remove: rm=1,3,4 rmc=1,2,3,4
+sort: sv=1,2,3 svc=3,1,2
+reverse: rv=3,2,1 rvc=1,2,3
+iter: sum=306 it[0].v=1
+equal: distinct=true aliased=true
+ser: count=3 nested=3 rec=4

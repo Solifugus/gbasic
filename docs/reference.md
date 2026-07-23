@@ -1929,6 +1929,39 @@ Aggregates:
 - `sum(array)` / `mean(array)` / `median(array)` / `mode(array)` — numeric aggregates.
 - `min(array)` / `max(array)` — extremes.
 
+#### Array value semantics
+
+Arrays are **value types**. Assigning one array to another, passing an array to
+a function, returning one, or storing one in a record all produce an independent
+array — mutating one never affects any other:
+
+```basic
+a = [1, 2, 3]
+b = a
+b[0] = 99          ' a is still [1, 2, 3]; b is [99, 2, 3]
+```
+
+This holds all the way down: nested arrays, arrays of records, and arrays inside
+records are each independent after a copy (`b[i][j] = x`, `b[i].field = x`, and
+`r2.rows[i] = x` never disturb the original).
+
+Internally arrays use **copy-on-write** so these guarantees are cheap: a copy
+shares one reference-counted backing store until the first mutation, which then
+detaches a private copy. This is purely an implementation optimization — it
+changes performance, never observable behavior. Practical consequences:
+
+- assignment, argument passing, and returning an array are O(1);
+- reading an element (`a[i]`) is O(1);
+- writing an element (`a[i] = x`) is O(1) for an unmodified array, and O(n) the
+  first time you write to an array that is still sharing storage with a copy;
+- building an array with a loop of `append` is O(n) overall (amortized O(1) per
+  append), not O(n²).
+
+`append`/`prepend`/`insert`/`remove`/etc. still mutate a stored array in place
+when given an assignable path (and notify watchers, as above); the value they
+return is the resulting array. Taking a copy first (`b = a`) and then appending
+to `a` leaves `b` unchanged, as value semantics require.
+
 ### Bitwise
 
 Bitwise functions operate on 32-bit unsigned integers and raise on non-integer
