@@ -71,6 +71,9 @@ cases=(
     negative_llm_tool_loop_limit
     negative_llm_tool_duplicate
     negative_llm_tool_not_callable
+    negative_json_strict_unknown
+    negative_json_strict_nonfinite
+    negative_json_strict_live
     negative_reflect_unknown_var
     negative_reflect_count_scalar
     negative_reflect_unknown_field

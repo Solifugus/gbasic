@@ -1,0 +1,38 @@
+null
+true
+false
+0
+42
+-17
+1.5
+""
+"plain"
+"quote \" backslash \\ slash /"
+"tab\there\nnewline"
+"ctrl:\u0001\u001f"
+"unicode: café 😀"
+[]
+{}
+[1,2,3]
+["a",true,null]
+{"a":1,"b":"two","c":false}
+null
+[null]
+{"v":null}
+{"a":[{"b":null}]}
+{"name":"test","optional":null,"items":[1,2,3],"nested":{"enabled":true,"note":"café"}}
+encodable {a:1}      : true
+encodable nested ok  : true
+encodable unknown    : false
+encodable {a:unknown}: false
+encodable [unknown]  : false
+encodable nan        : false
+encodable inf        : false
+encodable date       : false
+encodable function   : false
+encodable nothing    : true
+encode nothing : nothing
+encode unknown : unknown
+encode record  : {"a":nothing,"b":unknown}
+decode dialect : nothing
+string array   : [1,unknown,nothing]

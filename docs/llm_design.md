@@ -261,20 +261,27 @@ sequentially.
 | max tool rounds exceeded | raises |
 | tool that RAISES | aborts the program — not containable (see above) |
 
-### Known limitation — the JSON dialect
+### JSON on the wire — RESOLVED
 
-`encode` writes gBASIC's own spellings for the empty values (`nothing` /
-`unknown`) rather than `null`. That round-trips inside gBASIC (`decode` accepts
-both) but is **not standard JSON**, so any payload built with `encode` can be
-rejected by a real provider. The tool path defends itself: `_json_safe` drops
-empty fields from replayed provider messages (this is what makes the openai
-assistant turn, which carries `"content": null`, valid on the wire), and an empty
-tool result is emitted as `null`. Nested empties inside a returned record still
-encode in the dialect — they travel safely, escaped inside a JSON string, but the
-model reads `nothing` where it expects `null`, so tools should omit empty fields.
-A general fix belongs in `encode` (a strict-JSON mode) and is deliberately NOT
-made here: the dialect is existing, tested behavior and changing it is a
-language-level decision, not a library phase's call.
+The whole wire path now uses **`json_encode`** (strict RFC 8259), never `encode`
+(gBASIC's dialect, which spells the empty values `nothing`/`unknown` and is not
+valid JSON — see "Three serializers, three jobs" in `docs/reference.md`).
+
+`nothing` therefore serializes as `null` on its own, so the openai assistant
+tool-call turn carries `"content": null` exactly as the provider sent it, rather
+than having the field dropped to dodge the dialect. The earlier `_json_safe`
+workaround is gone. What remains is `_drop_unknown`, whose narrower job is to
+remove `unknown` — gBASIC's NA, the one value strict JSON genuinely cannot
+express, and which reaches the message path only from `_field` on a key the
+provider omitted, so dropping the field is the faithful reading. Tool results are
+gated by `json_encodable` and fall back to `null`.
+
+This is PREFLIGHT, not catch: `json_encode` raises, and `on error resume next`
+unwinds past a library frame, so a raise here could not be contained.
+
+Every request body the tool path emits is parsed by an independent JSON parser in
+`tests/run_json_strict.sh` — gBASIC's own `decode` accepts the dialect and so
+cannot prove standards compliance.
 
 ### Async / cancellation
 

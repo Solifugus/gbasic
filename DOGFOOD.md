@@ -340,3 +340,33 @@ D0.6, the rest remain open or are by-design.
   current semantics on purpose, so it needs its own decision rather than riding along
   in a library phase. Flagged SHOULD FIX BEFORE STUDIO: any gBASIC program that
   POSTs `encode` output to a third-party API is exposed to this, not just `llm.bas`.
+
+## 2026-07-24 — CC — while: strict-JSON investigation (follow-up to the NAP-13 finding)
+- **Type:** bug
+- **Severity:** medium
+- **What:** RESOLUTION of the "encode emits a gBASIC JSON dialect" entry above, and the
+  architectural lesson behind it. **Internal round-trip serialization and standards-
+  compliant interchange serialization are different concerns and must not share one
+  ambiguous contract.** gBASIC had three serializers with overlapping jobs and no
+  stated boundary: `serialize`/`deserialize` (exact binary round-trip),
+  `encode`/`decode` (documented as "JSON serialization" but actually a JSON-*like*
+  dialect), and — because `encode` could not be trusted on the wire — two independent
+  ad-hoc sanitizers grown in libraries: `crypto.json_encode` (a flat, one-level
+  standard-JSON encoder) and `llm._json_safe`. Whenever a library has to write its own
+  JSON encoder to talk to the outside world, the core contract is the thing that is
+  wrong. The investigation also found `encode` prints non-finite numbers as bare
+  `nan`/`inf` — output gBASIC's OWN `decode` rejects, so for those values it is not a
+  self-consistent dialect at all but a plain round-trip bug.
+- **Workaround:** RESOLVED by adding a separate strict path rather than redefining the
+  existing one: `json_encode(value)` (RFC 8259) and `json_encodable(value)` (a
+  side-effect-free preflight, needed because a raising serializer cannot be caught
+  from a library frame). `nothing` → `null`; `unknown`, NaN/infinity, and all typed and
+  live values are REFUSED rather than coerced into an invented token. `encode`/`decode`
+  and `string` are byte-for-byte unchanged — the dialect is long-standing, pinned by
+  `examples/serialization_test.bas`, and useful for gBASIC-to-gBASIC round-trips.
+  `llm.bas` now builds every request body with `json_encode`, so `_json_safe` is gone
+  (replaced by the much narrower `_drop_unknown`). Standards compliance is proved by an
+  INDEPENDENT parser in `tests/run_json_strict.sh`, never by gBASIC's own permissive
+  `decode`. **Clears the SHOULD FIX BEFORE STUDIO flag from the NAP-13 entry.**
+  Still open (DEFERRED, documented in docs/reference.md): `encode`'s bare `nan`/`inf`,
+  and `crypto.json_encode` remaining a separate flat encoder.

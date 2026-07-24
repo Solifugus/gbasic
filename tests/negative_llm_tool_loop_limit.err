@@ -1,1 +1,1 @@
-runtime error at tests/negative_llm_tool_loop_limit.bas:1178:17: llm: tool loop exceeded 2 rounds
+runtime error at tests/negative_llm_tool_loop_limit.bas:1175:17: llm: tool loop exceeded 2 rounds

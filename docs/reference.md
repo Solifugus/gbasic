@@ -993,14 +993,18 @@ with a required string `url` and these optional fields:
 - `timeout`: positive number of seconds
 
 Records and arrays are not automatically converted to JSON request bodies.
-Call `encode(value)` explicitly:
+Call `json_encode(value)` explicitly:
 
 ```basic
 response = webclient.post(
     "https://api.example.com/events",
-    encode({name:"launch", active:true})
+    json_encode({name:"launch", active:true})
 )
 ```
+
+Use `json_encode`, **not** `encode`, for anything leaving gBASIC: `encode` emits a
+gBASIC dialect (`nothing`/`unknown` instead of `null`) that other JSON parsers
+reject. See "Three serializers, three jobs".
 
 Use `webclient.request` for custom headers:
 
@@ -1958,15 +1962,70 @@ count({})                      # 0
 
 **Conversion function differences:**
 - `string(value)` - canonical string conversion for any value
-- `encode(value)` - JSON serialization for structured data
-- `decode(text)` - JSON parsing to recreate values
+- `encode(value)` - gBASIC's **JSON-like dialect** for structured data (see below)
+- `decode(text)` - parses JSON *and* the dialect back into values
+- `json_encode(value)` - **standards-compliant JSON (RFC 8259)** for external
+  interchange: HTTP APIs, LLM providers, anything outside gBASIC
+- `json_encodable(value)` - preflight predicate: would `json_encode` succeed?
 - `quote(value)` - gBASIC source code literal with escaping
 - `serialize(value)` - exact binary round-trip serialization (see below)
 - `deserialize(bytes)` - reconstruct a value from `serialize` output
 
-**`serialize` / `deserialize` vs `encode` / `decode`.** `encode`/`decode` use
-JSON — human-readable, lossy for gBASIC's typed values (a date or money round-trips
-as a string or number). `serialize` produces an opaque **binary-safe string** that
+### Three serializers, three jobs
+
+| Want | Use | Notes |
+| --- | --- | --- |
+| Send data to a non-gBASIC consumer | `json_encode` | Strict RFC 8259; refuses what JSON can't express |
+| Human-readable gBASIC round-trip | `encode` / `decode` | Dialect: `nothing`/`unknown` survive |
+| Exact typed/binary round-trip | `serialize` / `deserialize` | Dates, money, files, binary content |
+
+**`encode` is a dialect, not standard JSON.** It writes gBASIC's spellings for the
+empty values — `nothing` and `unknown` rather than `null` — so a value survives a
+gBASIC round-trip (`decode` accepts both). No other JSON parser does, so **never
+put `encode` output on the wire**; use `json_encode`. (`encode` also prints
+non-finite numbers as bare `nan`/`inf`, which not even `decode` accepts — see
+DOGFOOD.) Both behaviors are long-standing and deliberately left unchanged.
+
+**`json_encode(value)` — strict JSON.** Type mapping:
+
+| gBASIC | JSON |
+| --- | --- |
+| `nothing` | `null` |
+| boolean | `true` / `false` |
+| number (finite) | number |
+| string | string (control chars escaped `\u00XX`, UTF-8 preserved) |
+| array | array |
+| record | object |
+| `unknown` | **refused** |
+| NaN / ±infinity | **refused** |
+| dates, money, durations, files, functions, live handles | **refused** |
+
+Refusals RAISE rather than coerce: silently turning a value into something it is
+not is worse than a clear failure. `nothing` and `unknown` are deliberately NOT
+merged — `null` means "no value", while `unknown` is gBASIC's NA, "value not
+known", which JSON cannot express. Omit the field or convert it explicitly.
+
+Because a raise cannot be caught from a library frame (see `docs/ai/ERRORS.md`),
+preflight with **`json_encodable(value)`** — a side-effect-free predicate with the
+same rules — rather than trying to recover afterwards:
+
+```basic
+if json_encodable(payload) then
+    body = json_encode(payload)
+end if
+```
+
+`json_encodable` is distinct from `reflect.serializable`, which mirrors the binary
+`serialize` and accepts dates, money and functions that have no JSON form.
+
+Cycles cannot occur: gBASIC values are acyclic under copy semantics (`r.self = r`
+stores a snapshot, not a reference), so strict encoding needs no cycle detection.
+A depth guard is kept as cheap insurance.
+
+**`serialize` / `deserialize` vs `encode` / `decode`.** `encode`/`decode` use the
+JSON-like dialect above — human-readable, and it refuses gBASIC's typed values
+outright (a date or money raises, it does not degrade to a string or number).
+`serialize` produces an opaque **binary-safe string** that
 `deserialize` turns back into an *exact* copy, preserving type and binary content
 (including interior NUL bytes), across numbers, strings, booleans, `nothing`,
 `unknown`, arrays, records (nested), dates/times, durations, money, and file/

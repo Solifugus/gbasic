@@ -1,0 +1,1 @@
+runtime error at tests/negative_json_strict_live.bas:4:5: json_encode supports numbers, strings, booleans, nothing, arrays, and records; live and typed values (dates, money, durations, files, functions, handles) have no JSON representation

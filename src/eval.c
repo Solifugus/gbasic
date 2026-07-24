@@ -6852,7 +6852,7 @@ static void encode_string_literal(StringBuilder *builder, const char *text, size
     sb_append_char(builder, '"');
 }
 
-static int encode_value_to_builder(StringBuilder *builder, Value value);
+static int encode_value_to_builder(StringBuilder *builder, Value value, int strict_json);
 
 static Value builtin_string_value(Value value) {
     char buffer[128];
@@ -6883,7 +6883,7 @@ static Value builtin_string_value(Value value) {
     case VALUE_RECORD:
         sb_init(&builder);
         used_builder = 1;
-        if (!encode_value_to_builder(&builder, value)) {
+        if (!encode_value_to_builder(&builder, value, 0)) {
             free(builder.items);
             value_free(value);
             return value_null();
@@ -7001,16 +7001,33 @@ static Value builtin_string_value(Value value) {
     return result;
 }
 
-static int encode_value_to_builder(StringBuilder *builder, Value value) {
+/* Shared traversal for `string`/`encode` (strict_json = 0, gBASIC's historical
+ * JSON-ish dialect) and `json_encode` (strict_json = 1, RFC 8259). The dialect
+ * spells the empty values `nothing`/`unknown` and prints non-finite numbers as
+ * bare nan/inf, none of which are legal JSON; strict mode maps `nothing` to null
+ * and REFUSES everything it cannot represent faithfully rather than inventing a
+ * token. Traversal, escaping and depth are shared so the two can never drift. */
+static int encode_value_to_builder(StringBuilder *builder, Value value, int strict_json) {
     char number[64];
     switch (value.kind) {
     case VALUE_NULL:
-        sb_append_text(builder, "nothing");
+        sb_append_text(builder, strict_json ? "null" : "nothing");
         return 1;
     case VALUE_UNKNOWN:
+        if (strict_json) {
+            runtime_error_raise("json_encode: `unknown` has no JSON representation; "
+                                "omit the field or replace it with nothing (null)",
+                                1003, "serialization");
+            return 0;
+        }
         sb_append_text(builder, "unknown");
         return 1;
     case VALUE_NUMBER:
+        if (strict_json && !isfinite(value.as.number)) {
+            runtime_error_raise("json_encode: NaN and infinity have no JSON "
+                                "representation", 1003, "serialization");
+            return 0;
+        }
         snprintf(number, sizeof(number), "%.17g", value.as.number);
         sb_append_text(builder, number);
         return 1;
@@ -7026,7 +7043,7 @@ static int encode_value_to_builder(StringBuilder *builder, Value value) {
             if (i > 0) {
                 sb_append_char(builder, ',');
             }
-            if (!encode_value_to_builder(builder, value.as.array.store->items[i])) {
+            if (!encode_value_to_builder(builder, value.as.array.store->items[i], strict_json)) {
                 return 0;
             }
         }
@@ -7041,7 +7058,7 @@ static int encode_value_to_builder(StringBuilder *builder, Value value) {
             encode_string_literal(builder, value.as.record.fields[i].name,
                                   strlen(value.as.record.fields[i].name));
             sb_append_char(builder, ':');
-            if (!encode_value_to_builder(builder, *value.as.record.fields[i].value)) {
+            if (!encode_value_to_builder(builder, *value.as.record.fields[i].value, strict_json)) {
                 return 0;
             }
         }
@@ -7059,6 +7076,14 @@ static int encode_value_to_builder(StringBuilder *builder, Value value) {
     case VALUE_GBOXED:
     case VALUE_ACTOR:
     case VALUE_FUNCTION:
+        if (strict_json) {
+            runtime_error_raise("json_encode supports numbers, strings, booleans, "
+                                "nothing, arrays, and records; live and typed values "
+                                "(dates, money, durations, files, functions, handles) "
+                                "have no JSON representation",
+                                1003, "serialization");
+            return 0;
+        }
         runtime_error_raise("encode supports numbers, strings, booleans, nothing, unknown, arrays, and records",
                             1003,
                             "serialization");
@@ -7067,10 +7092,62 @@ static int encode_value_to_builder(StringBuilder *builder, Value value) {
     return 0;
 }
 
+/* Side-effect-free predicate for json_encode: true iff strict serialization would
+ * succeed. Callers need this because a raising serializer cannot be caught from a
+ * library — `on error resume next` unwinds past the callee (see docs/ai/ERRORS.md) —
+ * so the only safe pattern is preflight-then-encode. Kept separate from
+ * reflect.serializable, which mirrors the BINARY `serialize` and accepts dates,
+ * money and functions that have no JSON form. Depth-guarded like its sibling;
+ * gBASIC values are acyclic under copy semantics. */
+static int json_encodable_value(Value v, int depth) {
+    if (depth > 256) {
+        return 0;
+    }
+    switch (v.kind) {
+    case VALUE_NULL: case VALUE_BOOL: case VALUE_STRING:
+        return 1;
+    case VALUE_NUMBER:
+        return isfinite(v.as.number) ? 1 : 0;
+    case VALUE_ARRAY:
+        for (size_t i = 0; i < v.as.array.store->count; i++) {
+            if (!json_encodable_value(v.as.array.store->items[i], depth + 1)) {
+                return 0;
+            }
+        }
+        return 1;
+    case VALUE_RECORD:
+        for (size_t i = 0; i < v.as.record.count; i++) {
+            if (!json_encodable_value(*v.as.record.fields[i].value, depth + 1)) {
+                return 0;
+            }
+        }
+        return 1;
+    default:   /* unknown, dates, money, durations, files, functions, live handles */
+        return 0;
+    }
+}
+
+/* json_encode(value) -> RFC 8259 JSON text. Refuses anything it cannot represent
+ * faithfully instead of emitting a non-JSON token. */
+static Value builtin_json_encode_value(Value value) {
+    StringBuilder builder;
+    sb_init(&builder);
+    if (!encode_value_to_builder(&builder, value, 1)) {
+        free(builder.items);
+        value_free(value);
+        return value_null();
+    }
+    char *text = sb_take(&builder);
+    Value result = value_string(text);
+    free(text);
+    value_free(value);
+    return result;
+}
+
 static Value builtin_encode_value(Value value) {
     StringBuilder builder;
     sb_init(&builder);
-    if (!encode_value_to_builder(&builder, value)) {
+    if (!encode_value_to_builder(&builder, value, 0)) {
         free(builder.items);
         value_free(value);
         return value_null();
@@ -17576,6 +17653,34 @@ static Value eval_call(AstExpr *expr) {
             return value_null();
         }
         return builtin_encode_value(eval_expr(expr->as.call.args.items[0]));
+    }
+
+    if (strcmp(expr->as.call.name, "json_encode") == 0) {
+        if (expr->as.call.args.count != 1) {
+            runtime_error_raise("json_encode expects one argument", 1003, "serialization");
+            return value_null();
+        }
+        Value arg = eval_expr(expr->as.call.args.items[0]);
+        if (error_action_pending()) {
+            value_free(arg);
+            return value_null();
+        }
+        return builtin_json_encode_value(arg);
+    }
+
+    if (strcmp(expr->as.call.name, "json_encodable") == 0) {
+        if (expr->as.call.args.count != 1) {
+            runtime_error_raise("json_encodable expects one argument", 1003, "serialization");
+            return value_null();
+        }
+        Value arg = eval_expr(expr->as.call.args.items[0]);
+        if (error_action_pending()) {
+            value_free(arg);
+            return value_null();
+        }
+        int ok = json_encodable_value(arg, 0);
+        value_free(arg);
+        return value_bool(ok);
     }
 
     if (strcmp(expr->as.call.name, "decode") == 0) {

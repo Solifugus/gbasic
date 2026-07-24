@@ -186,7 +186,7 @@ library llm
             if is_array(m.tools) then
                 b.tools = _tools_wire(m, m.tools)
             end if
-            return encode(b)
+            return json_encode(b)
         end if
         ' openai: system is the first message
         msgs = []
@@ -204,7 +204,7 @@ library llm
         if is_array(m.tools) then
             b.tools = _tools_wire(m, m.tools)
         end if
-        return encode(b)
+        return json_encode(b)
     end function
 
     ' --- adapters: wire -> response record (§3) ------------------------------
@@ -977,43 +977,40 @@ library llm
     ' through verbatim (text results shouldn't gain JSON quotes); everything else
     ' is JSON-encoded.
     '
-    ' NOTE: gBASIC's `encode` writes its own dialect for the empty values —
-    ' `nothing` and `unknown` rather than `null` — which round-trips inside gBASIC
-    ' but is not standard JSON. An empty result is therefore mapped to `null`
-    ' explicitly here. Nested empties inside a returned record/array still encode
-    ' in the dialect; they travel safely (the whole result is escaped into a JSON
-    ' string) but the model reads `nothing` where it expects `null`, so tools are
-    ' better off omitting empty fields. See _json_safe for the message path, where
-    ' the dialect WOULD corrupt the request body.
+    ' The whole wire path uses `json_encode` (strict RFC 8259), never `encode`
+    ' (gBASIC's dialect, which spells the empty values `nothing`/`unknown` and is
+    ' not valid JSON). `nothing` therefore serializes as `null` on its own, so no
+    ' sanitizing is needed for it — see _drop_unknown for the one value JSON
+    ' genuinely cannot express.
     function _result_content(v)
         if is_string(v) then
             return v
         end if
-        if is_unknown(v) or is_nothing(v) then
+        ok = json_encodable(v)
+        if not ok then
             return "null"
         end if
-        return encode(v)
+        return json_encode(v)
     end function
 
-    ' Recursively drop record fields whose value is `nothing`/`unknown`, so a
-    ' replayed provider message never encodes a gBASIC-dialect empty into the
-    ' request body. This matters for the openai adapter, whose assistant tool-call
-    ' turn carries "content": null — encoded verbatim that becomes `"content":nothing`,
-    ' which the provider rejects as malformed JSON. Omitting the field is valid for
-    ' an assistant message that carries tool_calls.
-    function _json_safe(v)
+    ' Remove `unknown` — gBASIC's NA — from a value bound for the wire. It is the
+    ' ONE thing strict JSON cannot represent (json_encode refuses it, correctly:
+    ' `nothing`/null means "no value", NA means "value not known"). It reaches here
+    ' only from _field on a key the provider omitted, so dropping the field is the
+    ' faithful reading. `nothing` is deliberately left alone — it encodes as null,
+    ' which is exactly what the openai assistant tool-call turn carries.
+    '
+    ' PREFLIGHT, not catch: json_encode RAISES, and `on error resume next` unwinds
+    ' past a library frame, so a raise here could not be contained (docs/ai/ERRORS.md).
+    function _drop_unknown(v)
         k = reflect.kind(v)
         if k = "record" then
             out = {}
             for each key in keys(v)
                 e = v[key]
                 ek = reflect.kind(e)
-                drop = false
-                if ek = "nothing" or ek = "unknown" then
-                    drop = true
-                end if
-                if not drop then
-                    out[key] = _json_safe(e)
+                if ek != "unknown" then
+                    out[key] = _drop_unknown(e)
                 end if
             end for
             return out
@@ -1021,7 +1018,7 @@ library llm
         if k = "array" then
             out = []
             for each e in v
-                append(out, _json_safe(e))
+                append(out, _drop_unknown(e))
             end for
             return out
         end if
@@ -1100,10 +1097,10 @@ library llm
         if m.format = "anthropic" then
             msg = {}
             msg["role"] = "assistant"
-            msg["content"] = _json_safe(_field(d, "content"))
+            msg["content"] = _drop_unknown(_field(d, "content"))
             return msg
         end if
-        return _json_safe(_field(_at(_field(d, "choices"), 0), "message"))
+        return _drop_unknown(_field(_at(_field(d, "choices"), 0), "message"))
     end function
 
     ' Provider-shaped tool-result messages for one assistant turn.
