@@ -1,0 +1,42 @@
+== tool definitions -> request payload (anthropic) ==
+{"model":"claude-sonnet-4-6","max_tokens":1024,"temperature":0,"system":"sys","messages":[{"role":"user","content":"Who is customer 42?"}],"tools":[{"name":"get_customer","description":"Retrieve a customer record","input_schema":{"type":"object","properties":{"id":{"type":"integer"}},"required":["id"]}},{"name":"get_balance","description":"Retrieve a balance","input_schema":{"type":"object","properties":{"id":{"type":"integer"}},"required":["id"]}},{"name":"explode","description":"Always fails","input_schema":{"type":"object","properties":{"id":{"type":"integer"}},"required":["id"]}},{"name":"unserializable","description":"Returns a live value","input_schema":{"type":"object","properties":{"id":{"type":"integer"}},"required":["id"]}}]}
+== tool definitions -> request payload (openai) ==
+{"model":"gpt-4o","temperature":0,"max_tokens":1024,"messages":[{"role":"system","content":"sys"},{"role":"user","content":"Who is customer 42?"}],"tools":[{"type":"function","function":{"name":"get_customer","description":"Retrieve a customer record","parameters":{"type":"object","properties":{"id":{"type":"integer"}},"required":["id"]}}},{"type":"function","function":{"name":"get_balance","description":"Retrieve a balance","parameters":{"type":"object","properties":{"id":{"type":"integer"}},"required":["id"]}}},{"type":"function","function":{"name":"explode","description":"Always fails","parameters":{"type":"object","properties":{"id":{"type":"integer"}},"required":["id"]}}},{"type":"function","function":{"name":"unserializable","description":"Returns a live value","parameters":{"type":"object","properties":{"id":{"type":"integer"}},"required":["id"]}}}]}
+== provider response -> normalized calls (anthropic) ==
+  id=toolu_1 name=get_customer args={"id":42}
+== provider response -> normalized calls (openai) ==
+  id=call_1 name=get_customer args={"id":42}
+== tool results -> continuation payload (anthropic) ==
+{"model":"claude-sonnet-4-6","max_tokens":1024,"temperature":0,"system":"sys","messages":[{"role":"user","content":"Who is customer 42?"},{"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"get_customer","input":{"id":42}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"{\"id\":42,\"name\":\"Ada Lovelace\"}"}]}],"tools":[{"name":"get_customer","description":"Retrieve a customer record","input_schema":{"type":"object","properties":{"id":{"type":"integer"}},"required":["id"]}},{"name":"get_balance","description":"Retrieve a balance","input_schema":{"type":"object","properties":{"id":{"type":"integer"}},"required":["id"]}},{"name":"explode","description":"Always fails","input_schema":{"type":"object","properties":{"id":{"type":"integer"}},"required":["id"]}},{"name":"unserializable","description":"Returns a live value","input_schema":{"type":"object","properties":{"id":{"type":"integer"}},"required":["id"]}}]}
+== tool results -> continuation payload (openai) ==
+{"model":"gpt-4o","temperature":0,"max_tokens":1024,"messages":[{"role":"system","content":"sys"},{"role":"user","content":"Who is customer 42?"},{"role":"assistant","tool_calls":[{"id":"call_1","type":"function","function":{"name":"get_customer","arguments":"{\"id\":42}"}}]},{"role":"tool","tool_call_id":"call_1","content":"{\"id\":42,\"name\":\"Ada Lovelace\"}"}],"tools":[{"type":"function","function":{"name":"get_customer","description":"Retrieve a customer record","parameters":{"type":"object","properties":{"id":{"type":"integer"}},"required":["id"]}}},{"type":"function","function":{"name":"get_balance","description":"Retrieve a balance","parameters":{"type":"object","properties":{"id":{"type":"integer"}},"required":["id"]}}},{"type":"function","function":{"name":"explode","description":"Always fails","parameters":{"type":"object","properties":{"id":{"type":"integer"}},"required":["id"]}}},{"type":"function","function":{"name":"unserializable","description":"Returns a live value","parameters":{"type":"object","properties":{"id":{"type":"integer"}},"required":["id"]}}}]}
+== run_tools: single call then final answer (anthropic) ==
+text=Customer 42 is Ada Lovelace. rounds=1
+== run_tools: single call then final answer (openai) ==
+text=Customer 42 is Ada Lovelace. rounds=1
+== multiple tool calls in one assistant turn (anthropic) ==
+  id=toolu_a name=get_customer is_error=false content={"id":1,"name":"Ada Lovelace"}
+  id=toolu_b name=get_balance is_error=false content={"id":2,"balance":1200}
+== multiple tool calls in one assistant turn (openai) ==
+  id=call_a name=get_customer is_error=false content={"id":1,"name":"Ada Lovelace"}
+  id=call_b name=get_balance is_error=false content={"id":2,"balance":1200}
+== run_tools: two rounds then final (anthropic) ==
+text=Customer 42 is Ada Lovelace. rounds=2
+transcript turns=5
+== no tool calls: plain answer, zero rounds ==
+text=Customer 42 is Ada Lovelace. rounds=0
+tool_calls=0
+== unknown tool ==
+  id=toolu_x name=drop_tables is_error=true content=unknown tool 'drop_tables'
+== malformed tool arguments (openai: bad JSON string) ==
+  id=call_bad name=get_customer is_error=true content=malformed tool arguments (not valid JSON)
+== missing required field ==
+  id=toolu_m name=get_customer is_error=true content=invalid arguments: missing required field 'id'
+== wrong argument type ==
+  id=toolu_w name=get_customer is_error=true content=invalid arguments: field 'id' should be integer
+== tool reports failure by returning { error: ... } ==
+  id=toolu_e name=explode is_error=true content=no such customer
+== unserializable tool result ==
+  id=toolu_u name=unserializable is_error=true content=tool result is not serializable
+== registry is the only authority: text naming a tool is not dispatched ==
+tool_calls=0 text=I would call get_customer({id: 42}) now.

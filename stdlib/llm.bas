@@ -43,7 +43,9 @@ library llm
             retries: 3,
             offline_dir: unknown,
             transport: unknown,
-            sleep_fn: unknown
+            sleep_fn: unknown,
+            tools: unknown,
+            max_tool_rounds: 8
         }
     end function
 
@@ -75,6 +77,40 @@ library llm
 
     function with_sleep(m, fn)
         m.sleep_fn = fn
+        return m
+    end function
+
+    ' Attach the tool registry (an array of llm.tool definitions). The registry is
+    ' the ONLY authority over what the model may invoke — a tool call naming
+    ' anything not in this list is refused, never dispatched dynamically. Raises on
+    ' a malformed registry or duplicate tool name (a program bug, caught at
+    ' configuration time rather than mid-conversation).
+    function with_tools(m, tools)
+        if not is_array(tools) then
+            error "llm: with_tools expects an array of llm.tool definitions"
+        end if
+        seen = {}
+        for each t in tools
+            _check_tool(t)
+            dup = has(seen, t.name)
+            if dup then
+                error "llm: duplicate tool name '" + t.name + "'"
+            end if
+            seen[t.name] = true
+        end for
+        m.tools = tools
+        return m
+    end function
+
+    ' Cap on tool-executing rounds in the automatic loop (llm.run_tools).
+    function with_max_tool_rounds(m, n)
+        if not is_number(n) then
+            error "llm: with_max_tool_rounds expects a number"
+        end if
+        if n < 1 then
+            error "llm: with_max_tool_rounds expects at least 1"
+        end if
+        m.max_tool_rounds = n
         return m
     end function
 
@@ -147,6 +183,9 @@ library llm
                 b.system = system
             end if
             b.messages = messages
+            if is_array(m.tools) then
+                b.tools = _tools_wire(m, m.tools)
+            end if
             return encode(b)
         end if
         ' openai: system is the first message
@@ -162,6 +201,9 @@ library llm
         b.temperature = m.temperature
         b.max_tokens = m.max_tokens
         b.messages = msgs
+        if is_array(m.tools) then
+            b.tools = _tools_wire(m, m.tools)
+        end if
         return encode(b)
     end function
 
@@ -199,6 +241,7 @@ library llm
             out.usage = { input: _field(u, "prompt_tokens"), output: _field(u, "completion_tokens") }
             out.stop_reason = _field(ch0, "finish_reason")
         end if
+        out.tool_calls = _extract_tool_calls(m, d)
         return out
     end function
 
@@ -641,5 +684,502 @@ library llm
         ]
         r2 = chat(m, system, messages)
         return _parse_or_unknown(r2.text)
+    end function
+
+    ' =======================================================================
+    ' TOOL / FUNCTION CALLING (NAP-13)
+    ' =======================================================================
+    '
+    ' A tool is a gBASIC function the model may ask you to run. The library
+    ' normalizes both wire formats to ONE internal shape, so programs never see
+    ' provider field names:
+    '
+    '   tool definition : { name, description, schema, fn }
+    '   tool call       : { id, name, arguments, error }
+    '   tool result     : { id, name, content, is_error }
+    '
+    ' SECURITY. The registry passed to with_tools is the sole authority over what
+    ' is callable. A tool call is dispatched only if its name matches a registered
+    ' definition; an unknown name yields a controlled error result. Model-supplied
+    ' arguments are parsed as JSON into records and passed as VALUES — they are
+    ' never evaluated as gBASIC source, and no dynamic name lookup is performed.
+    '
+    ' CALLABLE SIGNATURE. A tool function takes exactly ONE argument: a record of
+    ' the decoded arguments, e.g. `function get_customer(args)` reading `args.id`.
+    ' One stable rule, no positional translation.
+    '
+    ' TOOLS MUST BE TOTAL — they must RETURN, never `error`. gBASIC's
+    ' `on error resume next` unwinds to the top program frame, so a library cannot
+    ' catch a raise from a function it calls: a raising tool aborts the program and
+    ' the loop cannot contain it. To report failure, RETURN a failure record built
+    ' with `llm.tool_error("no such customer")` (a constructor because `error` is a
+    ' reserved word, so `{ error: ... }` will not parse). That becomes a
+    ' controlled is_error tool result the model can react to. Everything the
+    ' library can check itself (arguments, required fields, result serializability)
+    ' is PRE-VALIDATED before the call, matching the _json_valid-before-decode rule
+    ' used by ask_json.
+
+    ' ---- tool definitions --------------------------------------------------
+
+    function _valid_tool_name(name)
+        n = len(name)
+        if n = 0 or n > 64 then
+            return false
+        end if
+        i = 0
+        while i < n
+            c = mid(name, i, 1)
+            ok = false
+            if c >= "a" and c <= "z" then ok = true
+            if c >= "A" and c <= "Z" then ok = true
+            if c >= "0" and c <= "9" then ok = true
+            if c = "_" or c = "-" then ok = true
+            if not ok then
+                return false
+            end if
+            i = i + 1
+        end while
+        return true
+    end function
+
+    ' Raise unless `t` is a well-formed tool definition (a program bug — surfaced
+    ' at configuration time, not mid-conversation).
+    function _check_tool(t)
+        if not is_record(t) then
+            error "llm: tool definition must be a record (use llm.tool)"
+        end if
+        nameok = false
+        if is_string(t.name) then
+            nameok = _valid_tool_name(t.name)
+        end if
+        if not nameok then
+            error "llm: tool name must be 1-64 chars of letters, digits, '_' or '-'"
+        end if
+        if not is_string(t.description) then
+            error "llm: tool '" + t.name + "' needs a string description"
+        end if
+        if not is_record(t.schema) then
+            error "llm: tool '" + t.name + "' needs a record parameter schema"
+        end if
+        k = reflect.kind(t.fn)
+        if k != "function" then
+            error "llm: tool '" + t.name + "' needs a callable function value"
+        end if
+        return true
+    end function
+
+    ' How a tool reports failure: `return llm.tool_error("no such customer")`.
+    ' A constructor is provided because `error` is a reserved word in gBASIC, so
+    ' the natural literal `{ error: "..." }` will not parse — the key has to be set
+    ' dynamically, which this hides.
+    function tool_error(message)
+        r = {}
+        r["error"] = message
+        return r
+    end function
+
+    ' Build a tool definition. `schema` is a JSON-Schema-subset record, e.g.
+    '   { type: "object", properties: { id: { type: "number" } }, required: ["id"] }
+    function tool(name, description, schema, fn)
+        t = { name: name, description: description, schema: schema, fn: fn }
+        _check_tool(t)
+        return t
+    end function
+
+    ' ---- adapters: tools -> wire ------------------------------------------
+
+    function _tools_wire(m, tools)
+        out = []
+        for each t in tools
+            if m.format = "anthropic" then
+                w = {}
+                w["name"] = t.name
+                w["description"] = t.description
+                w["input_schema"] = t.schema
+                append(out, w)
+            else
+                f = {}
+                f["name"] = t.name
+                f["description"] = t.description
+                f["parameters"] = t.schema
+                w = {}
+                w["type"] = "function"
+                w["function"] = f
+                append(out, w)
+            end if
+        end for
+        return out
+    end function
+
+    ' ---- adapters: wire -> normalized tool calls ---------------------------
+
+    ' A provider argument payload -> a record, or a normalized error string.
+    ' OpenAI sends arguments as a JSON *string*; Anthropic sends an object.
+    function _call_args(raw)
+        if is_record(raw) then
+            return { ok: true, value: raw }
+        end if
+        if is_string(raw) then
+            s = trim(raw)
+            if s = "" then
+                return { ok: true, value: {} }
+            end if
+            if not _json_valid(s) then
+                return { ok: false, message: "malformed tool arguments (not valid JSON)" }
+            end if
+            v = decode(s)
+            if not is_record(v) then
+                return { ok: false, message: "tool arguments must be a JSON object" }
+            end if
+            return { ok: true, value: v }
+        end if
+        if is_unknown(raw) or is_nothing(raw) then
+            return { ok: true, value: {} }
+        end if
+        return { ok: false, message: "tool arguments must be a JSON object" }
+    end function
+
+    function _norm_call(id, name, raw_args)
+        p = _call_args(raw_args)
+        c = {}
+        c["id"] = id
+        c["name"] = name
+        if p.ok then
+            c["arguments"] = p.value
+            c["error"] = unknown
+        else
+            c["arguments"] = {}
+            c["error"] = p.message
+        end if
+        return c
+    end function
+
+    ' Normalized tool calls from a provider response body. Order and ids are
+    ' preserved exactly as the provider sent them.
+    function _extract_tool_calls(m, d)
+        calls = []
+        if m.format = "anthropic" then
+            content = _field(d, "content")
+            if is_array(content) then
+                for each block in content
+                    bt = _field(block, "type")
+                    if bt = "tool_use" then
+                        append(calls, _norm_call(_field(block, "id"), _field(block, "name"), _field(block, "input")))
+                    end if
+                end for
+            end if
+            return calls
+        end if
+        ch0 = _at(_field(d, "choices"), 0)
+        tcs = _field(_field(ch0, "message"), "tool_calls")
+        if is_array(tcs) then
+            for each tc in tcs
+                fn = _field(tc, "function")
+                append(calls, _norm_call(_field(tc, "id"), _field(fn, "name"), _field(fn, "arguments")))
+            end for
+        end if
+        return calls
+    end function
+
+    ' Public: the normalized tool calls carried by a chat() response (possibly []).
+    function tool_calls(response)
+        tc = _field(response, "tool_calls")
+        if is_array(tc) then
+            return tc
+        end if
+        return []
+    end function
+
+    ' ---- argument validation (JSON-Schema subset) --------------------------
+
+    ' Supported: object/properties/required, and property types string, number,
+    ' integer, boolean, array, object. Anything else is accepted unchecked — this
+    ' is a practical guard against obviously wrong model output, NOT a complete
+    ' JSON Schema validator (the provider does its own validation too).
+    function _type_ok(v, want)
+        k = reflect.kind(v)
+        if want = "string" then return k = "string"
+        if want = "boolean" then return k = "boolean"
+        if want = "array" then return k = "array"
+        if want = "object" then return k = "record"
+        if want = "number" then return k = "number"
+        if want = "integer" then
+            if k != "number" then
+                return false
+            end if
+            r = v - floor(v)
+            return r = 0
+        end if
+        return true
+    end function
+
+    ' "" when the arguments satisfy the schema, else a human-readable reason.
+    function _validate_args(schema, args)
+        req = _field(schema, "required")
+        if is_array(req) then
+            for each rname in req
+                if is_string(rname) then
+                    present = has(args, rname)
+                    if not present then
+                        return "missing required field '" + rname + "'"
+                    end if
+                end if
+            end for
+        end if
+        props = _field(schema, "properties")
+        if is_record(props) then
+            for each pname in keys(props)
+                present = has(args, pname)
+                if present then
+                    want = _field(_field(props, pname), "type")
+                    if is_string(want) then
+                        good = _type_ok(args[pname], want)
+                        if not good then
+                            return "field '" + pname + "' should be " + want
+                        end if
+                    end if
+                end if
+            end for
+        end if
+        return ""
+    end function
+
+    ' ---- result serialization ---------------------------------------------
+
+    ' True iff `v` contains only values encode() accepts. Pre-checked because
+    ' encode RAISES on a function/handle, which a library cannot catch.
+    function _serializable(v)
+        k = reflect.kind(v)
+        if k = "number" or k = "string" or k = "boolean" then return true
+        if k = "nothing" or k = "unknown" then return true
+        if k = "array" then
+            for each e in v
+                ok = _serializable(e)
+                if not ok then
+                    return false
+                end if
+            end for
+            return true
+        end if
+        if k = "record" then
+            for each key in keys(v)
+                ok = _serializable(v[key])
+                if not ok then
+                    return false
+                end if
+            end for
+            return true
+        end if
+        return false
+    end function
+
+    ' Tool return value -> the string carried back to the model. Strings pass
+    ' through verbatim (text results shouldn't gain JSON quotes); everything else
+    ' is JSON-encoded.
+    '
+    ' NOTE: gBASIC's `encode` writes its own dialect for the empty values —
+    ' `nothing` and `unknown` rather than `null` — which round-trips inside gBASIC
+    ' but is not standard JSON. An empty result is therefore mapped to `null`
+    ' explicitly here. Nested empties inside a returned record/array still encode
+    ' in the dialect; they travel safely (the whole result is escaped into a JSON
+    ' string) but the model reads `nothing` where it expects `null`, so tools are
+    ' better off omitting empty fields. See _json_safe for the message path, where
+    ' the dialect WOULD corrupt the request body.
+    function _result_content(v)
+        if is_string(v) then
+            return v
+        end if
+        if is_unknown(v) or is_nothing(v) then
+            return "null"
+        end if
+        return encode(v)
+    end function
+
+    ' Recursively drop record fields whose value is `nothing`/`unknown`, so a
+    ' replayed provider message never encodes a gBASIC-dialect empty into the
+    ' request body. This matters for the openai adapter, whose assistant tool-call
+    ' turn carries "content": null — encoded verbatim that becomes `"content":nothing`,
+    ' which the provider rejects as malformed JSON. Omitting the field is valid for
+    ' an assistant message that carries tool_calls.
+    function _json_safe(v)
+        k = reflect.kind(v)
+        if k = "record" then
+            out = {}
+            for each key in keys(v)
+                e = v[key]
+                ek = reflect.kind(e)
+                drop = false
+                if ek = "nothing" or ek = "unknown" then
+                    drop = true
+                end if
+                if not drop then
+                    out[key] = _json_safe(e)
+                end if
+            end for
+            return out
+        end if
+        if k = "array" then
+            out = []
+            for each e in v
+                append(out, _json_safe(e))
+            end for
+            return out
+        end if
+        return v
+    end function
+
+    ' ---- dispatch ----------------------------------------------------------
+
+    function _find_tool(tools, name)
+        if is_array(tools) then
+            for each t in tools
+                if t.name = name then
+                    return t
+                end if
+            end for
+        end if
+        return unknown
+    end function
+
+    function _result(id, name, content, is_error)
+        r = {}
+        r["id"] = id
+        r["name"] = name
+        r["content"] = content
+        r["is_error"] = is_error
+        return r
+    end function
+
+    ' Execute one normalized call against the registry. Every failure mode that
+    ' the library can detect becomes a controlled is_error RESULT (which the model
+    ' can read and react to) rather than a raise.
+    function _execute_one(m, c)
+        cerr = c["error"]
+        if is_string(cerr) then
+            return _result(c.id, c.name, cerr, true)
+        end if
+        t = _find_tool(m.tools, c.name)
+        if is_unknown(t) then
+            return _result(c.id, c.name, "unknown tool '" + string(c.name) + "'", true)
+        end if
+        why = _validate_args(t.schema, c.arguments)
+        if why != "" then
+            return _result(c.id, c.name, "invalid arguments: " + why, true)
+        end if
+        fn = t.fn
+        v = fn(c.arguments)
+        ' A tool reports failure by RETURNING { error: "..." } (it must not raise).
+        if is_record(v) then
+            e = _field(v, "error")
+            if is_string(e) then
+                return _result(c.id, c.name, e, true)
+            end if
+        end if
+        ok = _serializable(v)
+        if not ok then
+            return _result(c.id, c.name, "tool result is not serializable", true)
+        end if
+        return _result(c.id, c.name, _result_content(v), false)
+    end function
+
+    ' Public: run every normalized call in order, returning normalized results.
+    function execute_tools(m, calls)
+        out = []
+        for each c in calls
+            append(out, _execute_one(m, c))
+        end for
+        return out
+    end function
+
+    ' ---- continuation messages --------------------------------------------
+
+    ' The assistant turn to replay, in the provider's own shape (it must be echoed
+    ' back verbatim so tool-call ids line up).
+    function _assistant_message(m, response)
+        d = response.raw
+        if m.format = "anthropic" then
+            msg = {}
+            msg["role"] = "assistant"
+            msg["content"] = _json_safe(_field(d, "content"))
+            return msg
+        end if
+        return _json_safe(_field(_at(_field(d, "choices"), 0), "message"))
+    end function
+
+    ' Provider-shaped tool-result messages for one assistant turn.
+    function _tool_result_messages(m, results)
+        out = []
+        if m.format = "anthropic" then
+            blocks = []
+            for each r in results
+                b = {}
+                b["type"] = "tool_result"
+                b["tool_use_id"] = r.id
+                b["content"] = r.content
+                if r.is_error then
+                    b["is_error"] = true
+                end if
+                append(blocks, b)
+            end for
+            msg = {}
+            msg["role"] = "user"
+            msg["content"] = blocks
+            append(out, msg)
+            return out
+        end if
+        for each r in results
+            msg = {}
+            msg["role"] = "tool"
+            msg["tool_call_id"] = r.id
+            msg["content"] = r.content
+            append(out, msg)
+        end for
+        return out
+    end function
+
+    ' Public: messages + this assistant turn + its tool results -> the message list
+    ' for the next request. Use with chat/tool_calls/execute_tools to drive the
+    ' loop manually; run_tools does it for you.
+    function append_tool_results(m, messages, response, results)
+        out = []
+        for each mm in messages
+            append(out, mm)
+        end for
+        append(out, _assistant_message(m, response))
+        for each tm in _tool_result_messages(m, results)
+            append(out, tm)
+        end for
+        return out
+    end function
+
+    ' ---- the automatic loop ------------------------------------------------
+
+    ' Send, run any requested tools, send again, until the model answers without
+    ' calling tools. Returns the final response record with two extra fields:
+    '   rounds   — tool-executing rounds performed
+    '   messages — the full transcript including tool turns
+    ' Raises if the model keeps calling tools past m.max_tool_rounds.
+    function run_tools(m, system, messages)
+        msgs = []
+        for each mm in messages
+            append(msgs, mm)
+        end for
+        rounds = 0
+        while true
+            r = chat(m, system, msgs)
+            calls = tool_calls(r)
+            n = count(calls)
+            if n = 0 then
+                r.rounds = rounds
+                r.messages = msgs
+                return r
+            end if
+            if rounds >= m.max_tool_rounds then
+                error "llm: tool loop exceeded " + string(m.max_tool_rounds) + " rounds"
+            end if
+            results = execute_tools(m, calls)
+            msgs = append_tool_results(m, msgs, r, results)
+            rounds = rounds + 1
+        end while
     end function
 end library

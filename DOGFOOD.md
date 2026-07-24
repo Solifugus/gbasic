@@ -303,3 +303,40 @@ D0.6, the rest remain open or are by-design.
 - **Workaround:** Bind the call result to a variable first, then compare the variable:
   `n = datagrid.row_count(g)` then `string(n = 100)`. Applies anywhere `call(...) =`
   appears in an expression, not just inside `string(...)`.
+
+## 2026-07-24 — CC — while: NAP-13 llm tools — `error` is reserved, so `{ error: ... }` will not parse
+- **Type:** language-surprise
+- **Severity:** low
+- **What:** `error` is a statement keyword (token ERROR_VALUE), so it cannot be used as
+  a record-literal key or a dotted field: `return { error: "no such customer" }` is a
+  parse error ("unexpected ERROR_VALUE, expecting IDENT or RBRACE or NEWLINE"), and so
+  is reading `c.error`. This bites hardest when designing an API, because `error` is
+  the single most natural name for a failure field — the obvious shape for "a tool
+  reports failure by returning a record" is exactly the shape the parser rejects.
+- **Workaround:** Set and read the key dynamically — `r = {}` then `r["error"] = msg`,
+  and `c["error"]` to read. Because that is ugly at every call site, `llm.bas` ships a
+  constructor, `llm.tool_error(message)`, so users never write the literal. The same
+  applies to any other reserved word used as a field name.
+
+## 2026-07-24 — CC — while: NAP-13 llm tools — `encode` emits a gBASIC JSON dialect, not standard JSON
+- **Type:** limitation
+- **Severity:** medium
+- **What:** `encode` writes gBASIC's own spellings for the two empty values — `nothing`
+  and `unknown` — rather than `null`. `encode({a: nothing})` yields `{"a":nothing}`,
+  and `decode("{\"x\":null}")` then `encode` round-trips to `{"x":nothing}`. It is
+  self-consistent inside gBASIC (`decode` accepts the dialect tokens, and
+  `examples/serialization_test.bas` pins the behavior deliberately), but it is NOT
+  standard JSON, so any HTTP body built with `encode` can be rejected by an external
+  API. NAP-13 hit this for real: the openai assistant tool-call turn carries
+  `"content": null`, which replayed verbatim became `"content":nothing` and would have
+  made every tool continuation a malformed request.
+- **Workaround:** `llm.bas` defends its own wire path — `_json_safe` recursively drops
+  empty-valued fields from replayed provider messages (omitting `content` is valid for
+  an assistant message carrying tool_calls), and an empty tool result is emitted as
+  `null`. Verified by parsing every emitted payload with a real JSON parser, not
+  gBASIC's own `decode` (which would accept the dialect and prove nothing).
+  A general fix — a strict-JSON mode for `encode` — was prototyped and then REVERTED:
+  it is a language-level behavior change that moves a golden which documents the
+  current semantics on purpose, so it needs its own decision rather than riding along
+  in a library phase. Flagged SHOULD FIX BEFORE STUDIO: any gBASIC program that
+  POSTs `encode` output to a third-party API is exposed to this, not just `llm.bas`.

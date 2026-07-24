@@ -657,10 +657,29 @@ genuine gap the investigation did find — `datagrid.destroy` / `datagrid.destro
 a finished grid releases its retained widgets, factories and callbacks instead of being
 held by the registry forever. NAP-12 itself is unchanged and remains DONE.
 
-### NAP-13 — `llm.bas` tool/function-calling · B
+### NAP-13 — `llm.bas` tool/function-calling · B — **DONE**
 Add a `tools` parameter + `tool_use`/`tool_result` handling to the anthropic + openai
 adapters (`stdlib/llm.bas`). Tests: offline fixtures (tool-call request/response
 roundtrip, no network). Streaming stays deferred (needs `webclient` SSE).
+
+**Delivered.** A normalized tool layer over both adapters — definitions, calls, ids
+and results share one internal shape, so programs never see provider field names.
+Public API: `llm.tool`, `llm.tool_error`, `llm.with_tools`, `llm.with_max_tool_rounds`,
+`llm.run_tools` (automatic bounded loop), and `llm.tool_calls` / `llm.execute_tools` /
+`llm.append_tool_results` for driving it manually. Tools are ordinary gBASIC functions
+taking one record argument; the registry is the sole dispatch authority (arguments are
+parsed as JSON values, never evaluated as source). Full design + error taxonomy in
+`docs/llm_design.md` §9. Tests: `examples/llm_tools_test.bas` (scripted transport,
+both formats, both directions, every controlled failure class) plus three negatives
+(loop limit, duplicate name, non-callable). `chat`/`ask`/`ask_json` are unchanged and
+their goldens are byte-exact.
+
+Two findings, both logged in DOGFOOD: `error` is a reserved word so `{ error: ... }`
+cannot be written as a record literal (hence the `llm.tool_error` constructor); and
+`encode` emits a gBASIC JSON *dialect* (`nothing`/`unknown` instead of `null`) which
+is invalid standard JSON — the tool path sanitizes its own payloads, but a general
+strict-JSON mode for `encode` is flagged SHOULD FIX BEFORE STUDIO and deliberately
+left to its own decision.
 
 ### Explicitly out of scope (do not implement without a new go-ahead)
 - **WI-5 callback marshalling** (libffi/trampolines) — only if custom drawing or

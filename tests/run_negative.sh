@@ -68,6 +68,9 @@ cases=(
     negative_ownership_stake_unstructured
     negative_llm_retry_exhausted
     negative_llm_offline_miss
+    negative_llm_tool_loop_limit
+    negative_llm_tool_duplicate
+    negative_llm_tool_not_callable
     negative_reflect_unknown_var
     negative_reflect_count_scalar
     negative_reflect_unknown_field

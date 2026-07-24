@@ -155,6 +155,7 @@ examples=(
     llm_adapter_test.bas
     llm_retry_test.bas
     llm_ask_json_test.bas
+    llm_tools_test.bas
     mdna_sections_test.bas
     mdna_prepass_test.bas
     mdna_panel_test.bas

@@ -116,8 +116,7 @@ configuration choice, not an architecture choice.
 - **Token streaming** — analysis workloads read complete responses; also
   depends on `webclient` streaming support. Revisit if an interactive
   customer appears.
-- **Tool use / function calling** — real, but a significant surface;
-  deferred until a customer needs it.
+- ~~**Tool use / function calling**~~ — **SHIPPED (NAP-13)**, see §9.
 - **Images / documents in requests** — deferred.
 - **Embeddings** — deliberately *near*-scope: `llm.embed(m, text) -> list`
   is a natural v2 and immediately useful for filing-similarity work
@@ -162,6 +161,131 @@ Embeddings; provider JSON modes; streaming if a customer appears; then
 graduation of anything the finance panel proves generally useful (e.g. a
 generic N-models-one-referee helper, *if* a second panel-shaped customer
 ever exists — until then it stays in `mdna.bas`).
+
+---
+
+## 9. Tool / function calling (NAP-13, shipped)
+
+A tool is a gBASIC function the model may ask you to run. Both wire formats are
+normalized to one internal shape, so programs never see provider field names.
+
+### Public API
+
+| Call | Purpose |
+| --- | --- |
+| `llm.tool(name, description, schema, fn)` | Build a tool definition (validates). |
+| `llm.tool_error(message)` | Build the failure record a tool returns. |
+| `llm.with_tools(m, tools)` | Attach the registry; raises on duplicate/invalid. |
+| `llm.with_max_tool_rounds(m, n)` | Cap tool-executing rounds (default 8). |
+| `llm.run_tools(m, system, messages)` | Automatic loop → final response. |
+| `llm.tool_calls(response)` | Normalized calls on a response (possibly `[]`). |
+| `llm.execute_tools(m, calls)` | Run calls → normalized results. |
+| `llm.append_tool_results(m, messages, response, results)` | Next message list. |
+
+`chat`/`ask`/`ask_json` are unchanged; `chat` simply gains a `tool_calls` field.
+Use `run_tools` for the automatic loop, or `chat` + the last three calls to drive
+it manually.
+
+### Normalized representation
+
+```
+tool definition : { name, description, schema, fn }
+tool call       : { id, name, arguments, error }
+tool result     : { id, name, content, is_error }
+```
+
+`run_tools` returns the final response plus `rounds` and `messages` (the full
+transcript, including tool turns).
+
+### Callable signature
+
+A tool takes exactly ONE argument — a record of decoded arguments:
+
+```basic
+function get_customer(args)
+    return { id: args.id, name: lookup(args.id) }
+end function
+```
+
+### Tools must be TOTAL
+
+A tool must RETURN, never `error`. gBASIC's `on error resume next` unwinds to the
+top program frame, so a library cannot catch a raise from a function it calls — a
+raising tool aborts the program and the loop cannot contain it. Report failure by
+returning `llm.tool_error("...")` (a constructor, because `error` is a reserved
+word and `{ error: ... }` will not parse). Everything the library *can* check —
+arguments, required fields, result serializability — is pre-validated before the
+call, matching the `_json_valid`-before-`decode` rule used by `ask_json`.
+
+### Schema
+
+A JSON-Schema-subset record passed through to the provider:
+
+```basic
+{ type: "object", properties: { id: { type: "integer" } }, required: ["id"] }
+```
+
+Locally checked: `required` presence, and property types `string`, `number`,
+`integer`, `boolean`, `array`, `object`. Anything else is accepted unchecked —
+this is a practical guard, not a complete JSON Schema validator (the provider
+validates too).
+
+### Security
+
+The registry is the sole authority over what is callable. A call naming an
+unregistered tool yields a controlled error result; arguments are parsed as JSON
+into records and passed as VALUES — never evaluated as gBASIC source, and no
+dynamic name lookup occurs. Prose that merely names a tool is not dispatched.
+
+### Provider mapping
+
+| Normalized | anthropic | openai |
+| --- | --- | --- |
+| definition | `tools[].input_schema` | `tools[].function.parameters` |
+| call | `content[].type="tool_use"` (`id`,`name`,`input`) | `message.tool_calls[]` (`id`, `function.arguments` — a JSON *string*) |
+| result | user msg, `tool_result` block w/ `tool_use_id`, `is_error` | `{role:"tool", tool_call_id, content}` |
+
+Ids and order are preserved exactly; multiple calls in one turn are executed
+sequentially.
+
+### Errors
+
+| Class | Behavior |
+| --- | --- |
+| network/provider, retries exhausted | raises (existing §4 policy) |
+| unknown tool | controlled `is_error` result |
+| malformed tool arguments | controlled `is_error` result |
+| invalid arguments (missing/typed) | controlled `is_error` result, tool NOT called |
+| tool failure (`llm.tool_error`) | controlled `is_error` result |
+| unserializable tool result | controlled `is_error` result, pre-checked |
+| max tool rounds exceeded | raises |
+| tool that RAISES | aborts the program — not containable (see above) |
+
+### Known limitation — the JSON dialect
+
+`encode` writes gBASIC's own spellings for the empty values (`nothing` /
+`unknown`) rather than `null`. That round-trips inside gBASIC (`decode` accepts
+both) but is **not standard JSON**, so any payload built with `encode` can be
+rejected by a real provider. The tool path defends itself: `_json_safe` drops
+empty fields from replayed provider messages (this is what makes the openai
+assistant turn, which carries `"content": null`, valid on the wire), and an empty
+tool result is emitted as `null`. Nested empties inside a returned record still
+encode in the dialect — they travel safely, escaped inside a JSON string, but the
+model reads `nothing` where it expects `null`, so tools should omit empty fields.
+A general fix belongs in `encode` (a strict-JSON mode) and is deliberately NOT
+made here: the dialect is existing, tested behavior and changing it is a
+language-level decision, not a library phase's call.
+
+### Async / cancellation
+
+Calls BLOCK, exactly as before NAP-13 — the tool loop adds rounds, not
+concurrency. `llm.bas` creates no threads and no actors. A native GTK application
+that must stay responsive should run the conversation the way it already runs any
+blocking work (the established actor / main-loop architecture); NAP-13 does not
+change that and does not add UI orchestration. There is no cancellation token:
+the existing surface has none, and the bounded round cap plus the injectable
+transport are the control points. A transport that raises stops the loop
+immediately.
 
 ---
 
