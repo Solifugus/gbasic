@@ -1490,10 +1490,26 @@ program-global registry `_DATAGRID`. It must be created at program scope.
   path bind uses); reads grid values without a rendered window.
 - `datagrid.row_count(handle)`; `datagrid.set_rows(handle, rows)` (array source);
   `datagrid.refresh(handle)`; `datagrid.set_count(handle, n)` (virtual source).
-- `datagrid.destroy(handle)` releases the grid's retained view, selection, model,
-  columns, factories and callback values; `datagrid.destroyed(handle)` reports it.
-  Destroy the containing window separately (GTK owns still-parented widgets). The
-  registry slot is tombstoned rather than removed so existing grid ids stay valid.
+- `datagrid.destroy(handle)` / `datagrid.destroyed(handle)` — lifecycle. Exact
+  semantics:
+  - `destroy` releases the **registry-owned** state: the grid's `GtkColumnView`,
+    selection model, native row model, columns, factories, and the callback-reachable
+    source and `format` function values.
+  - It does **not** destroy an enclosing window or container. Native widgets remain
+    subject to ordinary GTK ownership: anything still parented is owned by its parent
+    and goes away when that parent does. Destroy the window separately.
+  - The registry **slot is tombstoned, not removed**, so grid ids stay stable — the
+    bind handler resolves its grid by id (an index into `grids`), and removing an
+    element would shift every later grid's id.
+  - `destroy` is idempotent; `destroyed(handle)` reports the state. A late in-flight
+    bind on a destroyed grid renders an empty cell rather than unwinding through GTK.
+  - Other accessors (`widget`, `cell`, `refresh`, …) on a destroyed handle currently
+    **raise** — but with an internal message (`unknown record field: view`) rather
+    than a purposeful one. Check `destroyed(handle)` first. Tidying that message is
+    deferred (it would change just-accepted behavior).
+  - Tombstones are constant-size records holding no factories or callbacks, so
+    create/destroy cycles retain nothing; the `grids` array itself still grows by
+    the create count (deferred).
 - `datagrid.accesses()` / `datagrid.setups()` / `datagrid.reset_accesses()` —
   bind and setup counters (instrumentation; `reset_accesses` zeroes both).
 
