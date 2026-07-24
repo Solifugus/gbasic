@@ -3,9 +3,9 @@
 ' nothing materialized) and a modest ARRAY-BACKED source (an array of records).
 ' Run under a display: GBASIC_PATH=stdlib gbasic examples/native_ui/datagrid_demo.bas
 '
-' NOTE (see docs/array_cow_design.md / DOGFOOD): reference each grid's factories
-' from program scope before showing the window so on-screen binding is reliable
-' in the current gi build — real apps that hold their widgets do this naturally.
+' Both grids are built inside `build` and only their handles are kept: a grid's
+' factories stay internal to the datagrid registry, which retains everything
+' rendering needs. Holding a factory in your own variable is never required.
 load gi
 load datagrid
 
@@ -39,10 +39,6 @@ function build(app)
     small = datagrid.create(accounts)
     datagrid.add_column(small, { title: "Account", field: "name" })
     datagrid.add_column(small, { title: "Balance", field: "balance", format: usd })
-
-    ' hold factory references from program scope (see note above)
-    _DATAGRID.big_id = big.id
-    _DATAGRID.small_id = small.id
 
     notebook = gi.new("Gtk.Notebook")
     bigscroll = gi.new("Gtk.ScrolledWindow")

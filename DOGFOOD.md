@@ -271,6 +271,26 @@ D0.6, the rest remain open or are by-design.
   the factories). Data access (`datagrid.cell`), the native model, and all non-display
   behavior are unaffected — the deterministic tests do not depend on rendering. Should
   be root-caused before Studio (which renders grids). Logged as a NAP-12 finding.
+- **RESOLVED 2026-07-23 — this entry was a MISDIAGNOSIS; there is no such bug.** The
+  program-scope reference never mattered. `GtkColumnView` realizes and binds its
+  visible rows when the view is first given a size — i.e. when it is added to a
+  window (`win.set_child`) — **not** on `present()` and not when the main loop runs.
+  The original measurement reset the bind counter *after* `present()`, which zeroed
+  binding that had already completed, and then read zero. `get_item` looked like it
+  "still fired" only because `item_requests` accumulates earlier still, at
+  `view.set_model()` — so the two counters were simply being read on opposite sides
+  of the work. Adding/removing the `keep = ...factory` line changes nothing:
+  instrumented A/B runs give identical setup/bind counts with and without it, and a
+  grid built inside a helper that returns (no factory, column, view or model held
+  anywhere outside the registry) binds normally under record/array churn, repeated
+  refresh, multiple grids, and create/destroy cycles. Covered by
+  `tests/datagrid/lifetime.bas`, which fails (setup true, bind false — the exact
+  symptom reported here) when the bind connection is removed. The workaround lines
+  have been deleted from the demo and the display smoke, and
+  `tests/datagrid/display_smoke.bas` now asserts `req > 0` and `accesses() > 0`
+  instead of a bound that passed trivially at zero. **Lesson: when instrumenting a
+  toolkit, establish *when* the work happens before choosing where to reset the
+  counters — a counter reset past the work reads as "never happened".**
 
 ## 2026-07-23 — CC — while: NAP-12 tests — `call(args) = value` misparses as a modifier clause
 - **Type:** language-surprise

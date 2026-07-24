@@ -8,6 +8,12 @@
 #     native GListModel — count, deep get_item, item identity, change
 #     notification, and the virtualization proof (N direct get_item calls touch
 #     exactly N rows of a 1,000,000-row model). No GTK, no display.
+#   * LIFETIME (with the GTK 4 typelib + a display): the factory/callback
+#     ownership regression — grids built inside a helper that returns, with no
+#     factory/column/view held anywhere outside the datagrid registry, must still
+#     fire setup/bind and render correct cells under record/array churn, repeated
+#     refresh (no duplicate handlers), multiple independent grids, and repeated
+#     create/destroy.
 #   * LOGIC (with the GTK 4 typelib + a display): builds real grids but never
 #     shows them, asserting datagrid.cell displayed-value correctness for every
 #     source shape, COW snapshot semantics, selection, and refresh —
@@ -85,7 +91,8 @@ fi
 if [ -n "${DISPLAY:-}" ] || [ -n "${WAYLAND_DISPLAY:-}" ]; then
     export G_DEBUG="${G_DEBUG:+$G_DEBUG,}fatal-criticals"
     run_golden tests/datagrid/logic.bas
+    run_golden tests/datagrid/lifetime.bas
     run_golden tests/datagrid/display_smoke.bas
 else
-    printf 'SKIP tests/datagrid/{logic,display_smoke}.bas (no display)\n'
+    printf 'SKIP tests/datagrid/{logic,lifetime,display_smoke}.bas (no display)\n'
 fi

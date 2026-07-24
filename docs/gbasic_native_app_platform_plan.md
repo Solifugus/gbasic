@@ -637,14 +637,25 @@ bounded C adapter (two GTypes, ~450 lines) was needed; the entire DataGrid — d
 sources, columns, formatting, selection, updates — is gBASIC over `gi`. No runtime
 subclassing, no callback-marshalling framework.
 
-**Newly discovered issue (SHOULD FIX BEFORE STUDIO, does not block the component):** in
-the current `gi` build, when the only references to a grid's factories live inside the
-library-managed program-global registry, on-screen binding may not start (get_item
-fires, bind does not); a program-scope reference to the grid/factories makes rendering
-reliable (real apps that hold their widgets do this naturally, and the demo/test do).
-Reproduces down to a single script-scope read of the registry factory path. Root cause
-is a subtle gi/COW object-lifetime-or-timing interaction, not yet isolated; data access
-and the model are unaffected. Logged in DOGFOOD.
+**~~Newly discovered issue (SHOULD FIX BEFORE STUDIO)~~ — RETRACTED 2026-07-23: there
+was no defect.** The original note claimed on-screen binding would not start unless a
+grid's factories were referenced from program scope. Investigation (instrumented A/B
+runs, raw-`gi` and library reproductions) showed the program-scope reference is
+irrelevant: `GtkColumnView` realizes and binds its visible rows when the view is first
+given a size — when it is added to a window — not on `present()` and not when the loop
+runs. The original measurement reset the bind counter *after* `present()`, zeroing
+binding that had already completed; `get_item` appeared to "still fire" only because
+`item_requests` accumulates earlier still, at `view.set_model()`. Grids built inside a
+helper that returns, holding nothing outside the registry, bind normally under churn,
+repeated refresh, multiple grids and create/destroy cycles.
+
+Follow-up work (separate commit): the retraction above, removal of the workaround lines
+from the demo and display smoke, a real assertion in `display_smoke.bas` (it previously
+passed trivially at zero), `tests/datagrid/lifetime.bas` as the ownership regression
+(it fails with the exact reported symptom when the bind connection is cut), and the one
+genuine gap the investigation did find — `datagrid.destroy` / `datagrid.destroyed`, so
+a finished grid releases its retained widgets, factories and callbacks instead of being
+held by the registry forever. NAP-12 itself is unchanged and remains DONE.
 
 ### NAP-13 — `llm.bas` tool/function-calling · B
 Add a `tools` parameter + `tool_use`/`tool_result` handling to the anthropic + openai

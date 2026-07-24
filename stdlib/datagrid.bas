@@ -59,8 +59,22 @@
 '   datagrid.set_rows(handle, rows) -> replace an array-backed source, refresh
 '   datagrid.refresh(handle)        -> re-read the source count and reload rows
 '   datagrid.set_count(handle, n)   -> set a virtual source's logical row count
+'   datagrid.destroy(handle)        -> release the grid's retained widgets/callbacks
+'   datagrid.destroyed(handle)      -> true once destroyed
 '   datagrid.accesses()             -> total cell binds so far (instrumentation)
-'   datagrid.reset_accesses()       -> zero the cell-bind counter
+'   datagrid.setups()               -> total cell-widget setups so far
+'   datagrid.reset_accesses()       -> zero both counters
+'
+' OWNERSHIP: a grid handle is all you need to keep. The registry entry holds the
+' view, selection, native model, and every column's factory and format function
+' for as long as the grid lives, so factories may stay entirely internal — you
+' never need to hold one in a variable of your own to make rendering work.
+'
+' MEASURING BINDS: GtkColumnView realizes and binds its visible rows when the view
+' is first given a size — i.e. when it is added to a window — NOT when the window
+' is presented or when the main loop runs. Reset the counters BEFORE building the
+' widget tree; resetting after present zeroes work that has already happened and
+' makes a perfectly healthy grid look like it never bound.
 '
 ' Value semantics (array-backed): datagrid.create takes a COW SNAPSHOT of the
 ' array you pass — it shares the backing store until either side mutates. Later
@@ -79,7 +93,7 @@ library datagrid
     ' Build the empty registry. Assign the result to the program global
     ' `_DATAGRID` once, before creating any grid.
     function new_registry()
-        return { grids: [], next_id: 0, accesses: 0 }
+        return { grids: [], next_id: 0, accesses: 0, setups: 0 }
     end function
 
     ' ---- small helpers -----------------------------------------------------
@@ -147,6 +161,7 @@ library datagrid
     ' ---- factory signal handlers (run on the GTK/interpreter main thread) ---
 
     function _setup(factory, item)
+        _DATAGRID.setups = _DATAGRID.setups + 1
         label = gi.new("Gtk.Label")
         label.set_xalign(0.0)
         item.set_child(label)
@@ -158,6 +173,14 @@ library datagrid
         gid = rowmodel.row_grid(row)
         idx = rowmodel.row_index(row)
         grid = _DATAGRID.grids[gid]
+        ' A destroyed grid keeps a tombstone slot (see destroy). GTK should have
+        ' dropped its widgets by then, but a late in-flight bind must render blank
+        ' rather than unwind through the toolkit.
+        if grid.kind = "destroyed" then
+            label = item.get_child()
+            label.set_label("")
+            return nothing
+        end if
         col = _find_col(grid, factory)
         value = _cell(grid, idx, col)
         label = item.get_child()
@@ -286,14 +309,45 @@ library datagrid
         return handle
     end function
 
+    ' ---- public: disposal --------------------------------------------------
+
+    ' Release everything the grid retains — its GtkColumnView, selection, native
+    ' model, columns, factories, and the callback-reachable source/format function
+    ' values. Call it when a grid is finished with; destroy the containing window
+    ' separately (GTK owns the widgets that are still parented).
+    '
+    ' The registry SLOT is tombstoned, not removed: the factory bind handler finds
+    ' its grid by id (an index into `grids`), so removing an element would shift
+    ' every later grid's id. The tombstone is a constant-size record, so repeated
+    ' create/destroy cycles do not accumulate retained factories or callbacks.
+    function destroy(handle)
+        grid = _DATAGRID.grids[handle.id]
+        if grid.kind = "destroyed" then return handle
+        _DATAGRID.grids[handle.id] = { id: handle.id, kind: "destroyed", columns: [] }
+        return handle
+    end function
+
+    ' True once destroy has released this grid's retained state.
+    function destroyed(handle)
+        grid = _DATAGRID.grids[handle.id]
+        return grid.kind = "destroyed"
+    end function
+
     ' ---- instrumentation ---------------------------------------------------
 
     function accesses()
         return _DATAGRID.accesses
     end function
 
+    ' Total factory "setup" calls so far — one per cell widget GTK realized (as
+    ' opposed to `accesses`, which counts re-bindable cell fills).
+    function setups()
+        return _DATAGRID.setups
+    end function
+
     function reset_accesses()
         _DATAGRID.accesses = 0
+        _DATAGRID.setups = 0
     end function
 
 end library

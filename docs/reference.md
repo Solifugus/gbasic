@@ -1490,6 +1490,12 @@ program-global registry `_DATAGRID`. It must be created at program scope.
   path bind uses); reads grid values without a rendered window.
 - `datagrid.row_count(handle)`; `datagrid.set_rows(handle, rows)` (array source);
   `datagrid.refresh(handle)`; `datagrid.set_count(handle, n)` (virtual source).
+- `datagrid.destroy(handle)` releases the grid's retained view, selection, model,
+  columns, factories and callback values; `datagrid.destroyed(handle)` reports it.
+  Destroy the containing window separately (GTK owns still-parented widgets). The
+  registry slot is tombstoned rather than removed so existing grid ids stay valid.
+- `datagrid.accesses()` / `datagrid.setups()` / `datagrid.reset_accesses()` —
+  bind and setup counters (instrumentation; `reset_accesses` zeroes both).
 
 **Updates** go through the model's `items-changed`, so `GtkColumnView` re-binds
 visible rows rather than rebuilding widgets.
@@ -1504,12 +1510,18 @@ empty text rather than raising. A virtual `cell_fn` that raises is contained by
 the `gi` signal machinery (it does not crash GTK or unwind through C), so keep
 `cell_fn` total where possible.
 
-**Limitation (current gi build):** when the *only* references to a grid's
-factories live inside the library registry, on-screen binding can fail to start;
-holding the grid/widget from program scope (as real apps do) makes rendering
-reliable. Data access (`datagrid.cell`), the model, and all non-display behavior
-are unaffected. See `docs/gbasic_native_app_platform_plan.md` (NAP-12) and DOGFOOD.
-Worked demo: `examples/native_ui/datagrid_demo.bas`.
+**Ownership:** the handle is the only thing you need to keep. The registry entry
+retains the view, selection, native model, and every column's factory and format
+function for as long as the grid lives, so factories stay internal — you never
+need to hold one in a variable of your own for rendering to work. (An earlier
+NAP-12 note claiming otherwise was a measurement artifact and has been retracted;
+see DOGFOOD and `tests/datagrid/lifetime.bas`.)
+
+**Measuring binds:** `GtkColumnView` realizes and binds its visible rows when the
+view is first given a size — when it is added to a window — *not* on `present()`
+and not when the main loop runs. Reset the counters before building the widget
+tree; resetting afterwards zeroes work already done and makes a healthy grid look
+inert. Worked demo: `examples/native_ui/datagrid_demo.bas`.
 
 ## Cryptography
 

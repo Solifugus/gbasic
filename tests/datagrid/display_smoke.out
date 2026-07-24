@@ -1,5 +1,7 @@
 row_count: 1000000
+rows were realized: true
 requests bounded (not proportional to 1e6): true
+cells were bound: true
 cell(0,1): row-0
 cell(900000,1): row-900000
 selected: 0

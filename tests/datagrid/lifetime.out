@@ -1,0 +1,15 @@
+no binds before the view is sized: true
+setup fired without external retention: true
+bind fired without external retention: true
+cell(0,0)=acct-0 cell(0,1)=$0
+cell(3,0)=acct-3 cell(3,1)=$21
+still binds after churn + refresh: true
+refresh cycles bind a constant amount (no duplicate handlers): true
+grid2 binds independently: true
+grid1 cell(2,0)=acct-2 grid2 cell(2,1)=v2
+grid2 still binds after grid1 destroyed: true
+grid2 cell(9,1)=v9
+grid1 reports destroyed: true
+create/destroy cycles retain no live grids beyond the survivor: true
+slots grew by exactly the cycle count: true
+DONE
