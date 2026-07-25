@@ -9,7 +9,11 @@ native-platform research:
   on the SourceEditor question by the coverage doc).
 - `docs/gbasic_native_app_platform_coverage.md` — GTK4/GtkSourceView coverage survey +
   capability matrix + item reclassification.
-- `docs/gbasic_native_app_platform_plan.md` — build-ready phased plan (NAP-0..NAP-13).
+- `docs/gbasic_native_app_platform_plan.md` — build-ready phased plan (NAP-0..NAP-13),
+  now **complete/accepted** (all phases DONE).
+- `docs/gbasic_studio_plan.md` — the Studio **implementation plan** (phases STU-0..STU-11)
+  that turns this design into buildable work now that the platform is complete. This
+  design remains the *what/why/behavior*; that plan is the *ordered how*.
 
 Those four documents own the **low-level generalized GTK/GI/runtime work**. This
 document owns **what Studio is, how it behaves, and how its major systems fit
