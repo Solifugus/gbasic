@@ -15889,6 +15889,288 @@ static Value eval_method_call(AstExpr *expr) {
     return value_null();
 }
 
+/* ---- source_outline: general in-process structural outline (PLAT-OUTLINE) ---
+ *
+ * Lowers the AST produced by the reentrant front end (gb_parse) to a compact,
+ * versioned, gBASIC-reachable outline: a flat, source-ordered array of nodes
+ * (kind/name/range/parent_id/flags) plus diagnostics. It executes nothing — lex
+ * + parse only. The outline is the public contract; the AST stays private.
+ *
+ * Ranges are half-open absolute BYTE offsets [start_offset, end_offset); line and
+ * column are 1-based BYTE positions matching the front end (see diagnostics.h).
+ * Node ranges are terminator-inclusive (they cover `end if`/`end function`/… ) but
+ * exclude the trailing line terminator after the closing construct. */
+
+extern int gb_parse(const char *source, const char *path,
+                    AstStmtList *out_program, gb_diagnostics *diags);
+
+/* Byte-offset index of each 1-based line start over the source text. */
+typedef struct {
+    const char *src;
+    size_t      len;
+    size_t     *starts;      /* starts[i] = byte offset of line (i+1) */
+    size_t      line_count;
+} OutlineLines;
+
+static void outline_lines_build(OutlineLines *l, const char *src, size_t len) {
+    l->src = src;
+    l->len = len;
+    size_t cap = 16, n = 0;
+    size_t *starts = malloc(cap * sizeof(size_t));
+    if (!starts) { abort(); }
+    starts[n++] = 0;                         /* line 1 starts at offset 0 */
+    for (size_t i = 0; i < len; i++) {
+        if (src[i] == '\n') {
+            if (n == cap) {
+                cap *= 2;
+                size_t *grown = realloc(starts, cap * sizeof(size_t));
+                if (!grown) { abort(); }
+                starts = grown;
+            }
+            starts[n++] = i + 1;             /* next line starts after the '\n' */
+        }
+    }
+    l->starts = starts;
+    l->line_count = n;
+}
+
+/* 1-based (line,column) BYTE position -> absolute byte offset (clamped). */
+static size_t outline_offset(const OutlineLines *l, int line, int column) {
+    if (line < 1) { line = 1; }
+    size_t base = ((size_t)line <= l->line_count) ? l->starts[line - 1] : l->len;
+    size_t off = base + (column > 0 ? (size_t)(column - 1) : 0);
+    return off > l->len ? l->len : off;
+}
+
+/* Absolute byte offset -> 1-based (line,column) BYTE position. */
+static void outline_locate(const OutlineLines *l, size_t off, int *line, int *column) {
+    if (off > l->len) { off = l->len; }
+    size_t lo = 0, hi = l->line_count - 1, best = 0;
+    while (lo <= hi) {
+        size_t mid = lo + (hi - lo) / 2;
+        if (l->starts[mid] <= off) {
+            best = mid;
+            lo = mid + 1;
+        } else {
+            if (mid == 0) { break; }
+            hi = mid - 1;
+        }
+    }
+    *line = (int)(best + 1);
+    *column = (int)(off - l->starts[best] + 1);
+}
+
+typedef struct {
+    OutlineLines *l;
+    Value        *items;
+    size_t        count;
+    size_t        cap;
+    int           next_id;
+} OutlineCtx;
+
+static void outline_push(OutlineCtx *c, Value node) {
+    if (c->count == c->cap) {
+        c->cap = c->cap ? c->cap * 2 : 16;
+        Value *grown = realloc(c->items, c->cap * sizeof(Value));
+        if (!grown) { abort(); }
+        c->items = grown;
+    }
+    c->items[c->count++] = node;
+}
+
+/* Build and push one outline node; return its parse-local id (for parenting). */
+static int outline_emit(OutlineCtx *c, AstStmt *stmt, const char *kind,
+                        const char *name, int is_block, int exported,
+                        int attached, int parent_id) {
+    int id = c->next_id++;
+    int sl = stmt->line, sc = stmt->column;
+    size_t start_off = outline_offset(c->l, sl, sc);
+    size_t end_off = (stmt->end_line > 0)
+        ? outline_offset(c->l, stmt->end_line, stmt->end_column)
+        : start_off;
+    /* Exclude the trailing line terminator after a block's closing construct;
+     * simple statements already exclude their own newline. */
+    while (end_off > start_off &&
+           (c->l->src[end_off - 1] == '\n' || c->l->src[end_off - 1] == '\r')) {
+        end_off--;
+    }
+    int el, ec;
+    outline_locate(c->l, end_off, &el, &ec);
+
+    Value node = value_record(NULL, 0);
+    record_set(&node, "id", value_number((double)id));
+    record_set(&node, "parent_id",
+               parent_id > 0 ? value_number((double)parent_id) : value_null());
+    record_set(&node, "kind", value_string(kind));
+    record_set(&node, "name", name ? value_string(name) : value_null());
+    record_set(&node, "start_offset", value_number((double)start_off));
+    record_set(&node, "end_offset", value_number((double)end_off));
+    record_set(&node, "start_line", value_number((double)sl));
+    record_set(&node, "start_column", value_number((double)sc));
+    record_set(&node, "end_line", value_number((double)el));
+    record_set(&node, "end_column", value_number((double)ec));
+    Value flags = value_record(NULL, 0);
+    record_set(&flags, "block", value_bool(is_block));
+    record_set(&flags, "exported", value_bool(exported));
+    record_set(&flags, "attached", value_bool(attached));
+    record_set(&node, "flags", flags);
+    outline_push(c, node);
+    return id;
+}
+
+static void outline_walk_list(OutlineCtx *c, AstStmtList body, int parent_id);
+
+static void outline_walk_stmt(OutlineCtx *c, AstStmt *stmt, int parent_id) {
+    if (!stmt) { return; }
+    switch (stmt->kind) {
+    case AST_STMT_PROGRAM: {
+        int id = outline_emit(c, stmt, "program", stmt->as.program.name, 1, 0, 0, parent_id);
+        outline_walk_list(c, stmt->as.program.body, id);
+        break;
+    }
+    case AST_STMT_LIBRARY: {
+        int id = outline_emit(c, stmt, "library", stmt->as.library.name, 1, 0, 0, parent_id);
+        outline_walk_list(c, stmt->as.library.body, id);
+        break;
+    }
+    case AST_STMT_FUNCTION: {
+        int attached = stmt->as.function.object != NULL;
+        char buf[512];
+        const char *nm;
+        if (attached) {
+            snprintf(buf, sizeof(buf), "%s.%s",
+                     stmt->as.function.object ? stmt->as.function.object : "",
+                     stmt->as.function.field ? stmt->as.function.field : "");
+            nm = buf;
+        } else {
+            nm = stmt->as.function.name;
+        }
+        int id = outline_emit(c, stmt, "function", nm, 1, 0, attached, parent_id);
+        outline_walk_list(c, stmt->as.function.body, id);
+        break;
+    }
+    case AST_STMT_MODIFIER: {
+        int id = outline_emit(c, stmt, "modifier", stmt->as.modifier.name, 1,
+                              stmt->as.modifier.exported, 0, parent_id);
+        outline_walk_list(c, stmt->as.modifier.body, id);
+        break;
+    }
+    case AST_STMT_IF: {
+        int id = outline_emit(c, stmt, "if", NULL, 1, 0, 0, parent_id);
+        outline_walk_list(c, stmt->as.if_stmt.body, id);
+        outline_walk_list(c, stmt->as.if_stmt.else_body, id);
+        break;
+    }
+    case AST_STMT_WHILE: {
+        int id = outline_emit(c, stmt, "while", NULL, 1, 0, 0, parent_id);
+        outline_walk_list(c, stmt->as.while_stmt.body, id);
+        break;
+    }
+    case AST_STMT_FOR_EACH: {
+        int id = outline_emit(c, stmt, "for_each", NULL, 1, 0, 0, parent_id);
+        outline_walk_list(c, stmt->as.for_each.body, id);
+        break;
+    }
+    case AST_STMT_CONSIDER: {
+        int id = outline_emit(c, stmt, "consider", NULL, 1, 0, 0, parent_id);
+        for (size_t i = 0; i < stmt->as.consider.branches.count; i++) {
+            outline_walk_list(c, stmt->as.consider.branches.items[i].body, id);
+        }
+        outline_walk_list(c, stmt->as.consider.else_body, id);
+        break;
+    }
+    case AST_STMT_WATCH: {
+        int id = outline_emit(c, stmt, "watch", NULL, 1, 0, 0, parent_id);
+        outline_walk_list(c, stmt->as.watch.body, id);
+        break;
+    }
+    case AST_STMT_WITHOUT_WATCHERS: {
+        int id = outline_emit(c, stmt, "without_watchers", NULL, 1, 0, 0, parent_id);
+        outline_walk_list(c, stmt->as.without_watchers, id);
+        break;
+    }
+    case AST_STMT_WITH_LOCK: {
+        int id = outline_emit(c, stmt, "with_lock", NULL, 1, 0, 0, parent_id);
+        outline_walk_list(c, stmt->as.with_lock.body, id);
+        break;
+    }
+    default:
+        outline_emit(c, stmt, "statement", NULL, 0, 0, 0, parent_id);
+        break;
+    }
+}
+
+static void outline_walk_list(OutlineCtx *c, AstStmtList body, int parent_id) {
+    for (size_t i = 0; i < body.count; i++) {
+        outline_walk_stmt(c, body.items[i], parent_id);
+    }
+}
+
+/* source_outline(text[, path]) -> { schema_version, ok, nodes, diagnostics }.
+ * Consumes `text`; `path` is borrowed (used only for the diagnostic path). */
+static Value builtin_source_outline_value(Value text, const char *path) {
+    if (text.kind != VALUE_STRING) {
+        value_free(text);
+        runtime_error_raise("source_outline expects a string", 1003, "invalid function call");
+        return value_null();
+    }
+    const char *src = text.as.string;
+    size_t len = string_length(text.as.string);
+
+    gb_diagnostics diags;
+    gb_diagnostics_init(&diags);
+    AstStmtList program = ast_stmt_list_empty();
+    int rc = gb_parse(src, path, &program, &diags);
+
+    OutlineLines lines;
+    outline_lines_build(&lines, src, len);
+
+    Value nodes;
+    if (rc == 0) {
+        OutlineCtx c;
+        c.l = &lines;
+        c.items = NULL;
+        c.count = 0;
+        c.cap = 0;
+        c.next_id = 1;
+        outline_walk_list(&c, program, 0);
+        nodes = value_array(c.items, c.count);
+    } else {
+        nodes = value_array(NULL, 0);   /* all-or-nothing parse: no partial nodes */
+    }
+
+    Value diag_arr = value_array(NULL, 0);
+    for (size_t i = 0; i < gb_diagnostics_count(&diags); i++) {
+        const gb_diag *d = gb_diagnostics_at(&diags, i);
+        const char *sev = d->severity == GB_SEVERITY_ERROR ? "error"
+                        : d->severity == GB_SEVERITY_WARNING ? "warning" : "note";
+        size_t so = outline_offset(&lines, d->span.start_line, d->span.start_column);
+        size_t eo = outline_offset(&lines, d->span.end_line, d->span.end_column);
+        Value dr = value_record(NULL, 0);
+        record_set(&dr, "severity", value_string(sev));
+        record_set(&dr, "message", value_string(d->message ? d->message : ""));
+        record_set(&dr, "start_offset", value_number((double)so));
+        record_set(&dr, "end_offset", value_number((double)eo));
+        record_set(&dr, "start_line", value_number((double)d->span.start_line));
+        record_set(&dr, "start_column", value_number((double)d->span.start_column));
+        record_set(&dr, "end_line", value_number((double)d->span.end_line));
+        record_set(&dr, "end_column", value_number((double)d->span.end_column));
+        diag_arr = append_to_array_value(diag_arr, dr, 0);
+    }
+
+    Value result = value_record(NULL, 0);
+    record_set(&result, "schema_version", value_number(1));
+    record_set(&result, "ok", value_bool(rc == 0));
+    record_set(&result, "nodes", nodes);
+    record_set(&result, "diagnostics", diag_arr);
+
+    free(lines.starts);
+    ast_free_program(program);
+    gb_diagnostics_free(&diags);
+    value_free(text);
+    return result;
+}
+
 static Value eval_call(AstExpr *expr) {
     if (expr->as.call.receiver) {
         return eval_method_call(expr);
@@ -18855,6 +19137,31 @@ static Value eval_call(AstExpr *expr) {
         strcmp(expr->as.call.name, "files") == 0 ||
         strcmp(expr->as.call.name, "folders") == 0) {
         return eval_dir_call(expr);
+    }
+
+    if (strcmp(expr->as.call.name, "source_outline") == 0) {
+        size_t n = expr->as.call.args.count;
+        if (n != 1 && n != 2) {
+            runtime_error_raise("source_outline expects (text) or (text, path)",
+                                1003, "invalid function call");
+            return value_null();
+        }
+        Value text = eval_expr(expr->as.call.args.items[0]);
+        if (error_action_pending()) { value_free(text); return value_null(); }
+        Value pathv = value_null();
+        const char *path = NULL;
+        if (n == 2) {
+            pathv = eval_expr(expr->as.call.args.items[1]);
+            if (error_action_pending()) {
+                value_free(text);
+                value_free(pathv);
+                return value_null();
+            }
+            if (pathv.kind == VALUE_STRING) { path = pathv.as.string; }
+        }
+        Value result = builtin_source_outline_value(text, path);
+        value_free(pathv);
+        return result;
     }
 
     const char *name = expr->as.call.name;
