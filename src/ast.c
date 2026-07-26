@@ -460,6 +460,17 @@ AstStmt *ast_continue(void) {
 AstStmt *ast_stmt_position(AstStmt *stmt, int line, int column) {
     stmt->line = line;
     stmt->column = column;
+    stmt->end_line = 0;
+    stmt->end_column = 0;
+    return stmt;
+}
+
+AstStmt *ast_stmt_span(AstStmt *stmt, int line, int column,
+                       int end_line, int end_column) {
+    stmt->line = line;
+    stmt->column = column;
+    stmt->end_line = end_line;
+    stmt->end_column = end_column;
     return stmt;
 }
 

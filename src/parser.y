@@ -551,29 +551,29 @@ statement_list
     ;
 
 statement
-    : assignment NEWLINE { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
-    | print_statement NEWLINE { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
-    | call_statement NEWLINE { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
-    | with_lock_statement { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
-    | for_each_statement { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
-    | while_statement { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
-    | consider_statement { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
-    | function_statement { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
-    | modifier_statement { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
-    | program_statement { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
-    | library_statement { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
-    | use_statement NEWLINE { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
-    | watch_statement { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
-    | without_watchers_statement { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
-    | on_error_statement NEWLINE { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
-    | error_statement NEWLINE { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
-    | return_statement NEWLINE { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
-    | label_statement NEWLINE { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
-    | goto_statement NEWLINE { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
-    | gosub_statement NEWLINE { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
-    | break_statement NEWLINE { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
-    | continue_statement NEWLINE { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
-    | if_statement { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
+    : assignment NEWLINE { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
+    | print_statement NEWLINE { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
+    | call_statement NEWLINE { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
+    | with_lock_statement { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
+    | for_each_statement { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
+    | while_statement { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
+    | consider_statement { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
+    | function_statement { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
+    | modifier_statement { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
+    | program_statement { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
+    | library_statement { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
+    | use_statement NEWLINE { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
+    | watch_statement { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
+    | without_watchers_statement { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
+    | on_error_statement NEWLINE { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
+    | error_statement NEWLINE { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
+    | return_statement NEWLINE { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
+    | label_statement NEWLINE { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
+    | goto_statement NEWLINE { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
+    | gosub_statement NEWLINE { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
+    | break_statement NEWLINE { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
+    | continue_statement NEWLINE { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
+    | if_statement { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
     ;
 
 assignment
@@ -717,29 +717,29 @@ consider_statement_list
     ;
 
 consider_body_statement
-    : assignment NEWLINE { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
-    | print_statement NEWLINE { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
-    | call_statement NEWLINE { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
-    | with_lock_statement { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
-    | for_each_statement { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
-    | while_statement { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
-    | consider_statement { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
-    | function_statement { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
-    | modifier_statement { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
-    | program_statement { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
-    | library_statement { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
-    | use_statement NEWLINE { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
-    | watch_statement { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
-    | without_watchers_statement { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
-    | on_error_statement NEWLINE { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
-    | error_statement NEWLINE { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
-    | return_statement NEWLINE { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
-    | label_statement NEWLINE { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
-    | goto_statement NEWLINE { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
-    | gosub_statement NEWLINE { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
-    | break_statement NEWLINE { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
-    | continue_statement NEWLINE { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
-    | if_statement { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
+    : assignment NEWLINE { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
+    | print_statement NEWLINE { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
+    | call_statement NEWLINE { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
+    | with_lock_statement { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
+    | for_each_statement { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
+    | while_statement { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
+    | consider_statement { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
+    | function_statement { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
+    | modifier_statement { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
+    | program_statement { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
+    | library_statement { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
+    | use_statement NEWLINE { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
+    | watch_statement { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
+    | without_watchers_statement { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
+    | on_error_statement NEWLINE { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
+    | error_statement NEWLINE { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
+    | return_statement NEWLINE { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
+    | label_statement NEWLINE { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
+    | goto_statement NEWLINE { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
+    | gosub_statement NEWLINE { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
+    | break_statement NEWLINE { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
+    | continue_statement NEWLINE { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
+    | if_statement { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
     ;
 
 function_statement
@@ -911,17 +911,17 @@ if_inline_tail
     ;
 
 inline_statement
-    : assignment { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
-    | print_statement { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
-    | call_statement { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
-    | use_statement { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
-    | on_error_statement { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
-    | error_statement { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
-    | return_statement { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
-    | goto_statement { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
-    | gosub_statement { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
-    | break_statement { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
-    | continue_statement { $$ = ast_stmt_position($1, @1.first_line, @1.first_column); }
+    : assignment { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
+    | print_statement { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
+    | call_statement { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
+    | use_statement { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
+    | on_error_statement { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
+    | error_statement { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
+    | return_statement { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
+    | goto_statement { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
+    | gosub_statement { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
+    | break_statement { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
+    | continue_statement { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
     ;
 
 expression

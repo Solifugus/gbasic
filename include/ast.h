@@ -167,8 +167,10 @@ struct AstExpr {
 
 struct AstStmt {
     AstStmtKind kind;
-    int line;
-    int column;
+    int line;         /* 1-based BYTE start line   (set by ast_stmt_span/position) */
+    int column;       /* 1-based BYTE start column */
+    int end_line;     /* 1-based BYTE end line     (exclusive end; 0 if unset)     */
+    int end_column;   /* 1-based BYTE end column   (exclusive: one past last byte) */
     union {
         struct {
             AstExpr *target;
@@ -302,6 +304,11 @@ AstStmt *ast_consider(AstExpr *subject, AstConsiderBranchList branches, AstStmtL
 AstStmt *ast_break(void);
 AstStmt *ast_continue(void);
 AstStmt *ast_stmt_position(AstStmt *stmt, int line, int column);
+/* Set both the start (line,column) and the exclusive end (end_line,end_column)
+ * BYTE positions on a statement. end_* use the parser's yylloc last_* convention
+ * (one past the last byte of the last token in the construct). */
+AstStmt *ast_stmt_span(AstStmt *stmt, int line, int column,
+                       int end_line, int end_column);
 
 void ast_dump(AstStmtList program);
 void ast_free_program(AstStmtList program);
