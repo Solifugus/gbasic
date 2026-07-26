@@ -800,7 +800,12 @@ network; local `git init` in a temp dir); display smoke for the quiet/engaged st
   (design Q1). Resolution must be a *general* facility (any editor/linter/formatter wants an
   outline API) decided on its own — a Studio-private native path violates the global rules.
   A `process.run ./gbasic --ast` stop-gap exists but should be weighed against a first-class
-  API before STU-3 starts. **Decision required before STU-3.**
+  API before STU-3 starts. **Decision required before STU-3.** **R1 investigation complete:
+  see `docs/source_outline_design.md`** — recommends a general in-process `source_outline`
+  builtin over a reusable outline core fed by the existing reentrant `gb_parse` (with a
+  `gbasic --outline` CLI as an acceptable stopgap); two decisions remain for sign-off
+  (exact-vs-approximate end positions, which implies a bounded grammar change; and freezing
+  the outline record schema).
 - **R2 — COW container updates in helpers.** Records/arrays are copy-on-write **by value**;
   a helper that "modifies" a nested container must **return** the updated value — relying on
   in-place mutation of a copied argument silently loses the update. This bit prior phases;
