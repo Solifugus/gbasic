@@ -414,3 +414,43 @@ D0.6, the rest remain open or are by-design.
   `stdlib/llm.bas` already had to grow for the same reason. Two libraries now hand-roll
   a JSON validator to work around the same gap — a core `json_valid(text)` (or a
   non-raising `try_decode`) would retire both. SHOULD FIX.
+
+## 2026-07-26 — CC — while: STU-2 (document manager, filesystem)
+- **Type:** missing-feature
+- **Severity:** medium
+- **What:** No way to test whether a path is a directory without risking an
+  uncatchable raise. `read(f)` and `file_size(f)` both RAISE on a directory, and
+  gBASIC can't catch a raise, so a "user selected a directory instead of a file"
+  path would crash Studio if probed directly. `list(dir)` returns empty for BOTH a
+  file and an empty directory, so it can't distinguish them either.
+- **Workaround:** `studio_docs._is_dir` asks the PARENT directory for the entry and
+  reads its `type` ("file"/"folder") — reliable even for empty dirs, but O(parent
+  size) per check. A core `is_dir(path)` / `file_type(path)` (non-raising) would
+  remove the parent scan. SHOULD FIX (companion to the earlier non-raising-JSON gap).
+
+## 2026-07-26 — CC — while: STU-2 (record field names)
+- **Type:** language-surprise
+- **Severity:** low
+- **What:** `next` is a reserved word (`resume next`), so `{ next: 1 }` is a parse
+  error ("unexpected NEXT") — another reserved word that cannot be a record field
+  key, joining `error` and `end`. Also re-confirmed: `new` cannot name a function
+  (`function new()` fails; use `create()`), and a library function whose name shadows
+  a builtin (`find`) prints a load-time warning on stderr.
+- **Workaround:** Renamed the field to `next_doc`, the constructor to `create()`, and
+  the lookup to `find_open`. No fix requested — the durable list of reserved words
+  belongs in docs/ai/UNLEARN.md; logging the specific ones that bit here.
+
+## 2026-07-26 — CC — while: STU-2 (saving source files)
+- **Type:** language-surprise
+- **Severity:** low
+- **What:** `atomic_replace(temp, dest)` is rename(2), so the saved file takes the
+  TEMP file's inode: permissions reset to the umask default (verified 600 -> 664) and
+  a symlink `dest` is REPLACED by a regular file rather than written through. For a
+  user's source tree that silently changes file semantics. There is no `chmod`/`lstat`
+  builtin to write-temp-then-fix-perms-then-rename, so a semantics-preserving atomic
+  save isn't expressible.
+- **Workaround:** Studio saves SOURCE files with in-place `write` (preserves perms and
+  symlink target), and keeps `atomic_replace` only for its own metadata stores (where
+  perms don't matter). Documented in docs/gbasic_studio_stu2.md. DEFERRED — a
+  perms/symlink-preserving atomic write (or chmod/lstat) is a general platform nicety,
+  not a blocker.

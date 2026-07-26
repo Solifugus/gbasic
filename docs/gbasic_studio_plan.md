@@ -396,6 +396,38 @@ lifecycle guarantees (keeps its `_lm` alive — do not re-solve).
 **Out of scope.** Execution boundaries or running code (STU-3/4); inspector content
 (STU-5); agent.
 
+**DONE (2026-07-26).** Additive to STU-0/STU-1 (their stores/goldens byte-exact). A
+coherent document lifecycle owned by a headless document manager, with the editor as a
+view: `stdlib/studio_docs.bas` (new) — the authoritative open-document store: stable
+`doc-N` ids, canonical-path de-dupe (lexical, documented), safe open (reuse / directory
+guard / missing → flagged, never crashes), content-vs-saved dirty derivation, in-place
+save (perms/symlink-preserving; parent-dir pre-validated; failure keeps the buffer
+dirty), explicit close policy (save/discard/cancel), external-change detection
+(`file_size` + `number(file_mtime)`) with a safe checkpoint (clean→reload,
+dirty→conflict, deleted→missing), and metadata-only persistence (`to_meta`/`from_meta`,
+buffers re-read from disk). `studio_model.bas` gains a workspace `docs` field (additive,
+normalized in). `studio.bas` `launch` rebuilds `app.dm` and `persist` folds it back,
+plus `open_file`/`edit_document`/`save_document`/`save_all_documents`/`close_document`/
+`checkpoint_documents`/`docs_summary`. `studio_shell.bas` renders a `GtkNotebook` of
+SourceEditor tabs (gBASIC highlighting; `*`/`!` markers). Reference:
+`docs/gbasic_studio_stu2.md`. Tests: `run_studio.sh` gains 11 STU-2 cases (lifecycle +
+disk-save + savefail + close×3 + external + restore + missing-restore + browser +
+valgrind 40-cycle memory) — all pass; display smoke shows a real dirty editor tab under
+`fatal-criticals`. Full battery green, zero unrelated rebaselines; `make dev` clean.
+
+**Deviations (per the STU-2 session brief):** (1) the emphasis is the **document
+lifecycle** (open/edit/dirty/save/close/external-change/restore) with a **notebook**
+tab layout; the horizontally-scrolling `gtkui`-reconciled tab strip, the fixed-left
+`[Agent]` tab, and reorder are deferred (Agent tab → STU-6; a reconciled strip can
+replace the notebook when tab reordering/indicators need it). (2) **Diagnostics→gutter
+marks** (parse-error `!` via `--json-diagnostics`) are deferred — they edge into the
+brief's excluded "parser integration"; only natural syntax highlighting is enabled.
+(3) **Saves use in-place `write`, not `atomic_replace`**, to preserve source-file
+permissions and symlinks (investigated; see the STU-2 doc + DOGFOOD). (4) Persistence
+uses the workspace `docs` field (config-home JSON), consistent with STU-0/STU-1; no
+per-file dot-metadata. **R1 unchanged:** STU-2 handled files as text and gives no new
+evidence on the parse/outline decision, which remains the gate before STU-3.
+
 ---
 
 ## STU-3 — Execution-section engine (structural anchoring) · S(model) — headless · [needs plat? R1]

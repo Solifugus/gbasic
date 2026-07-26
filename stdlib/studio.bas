@@ -265,15 +265,45 @@ library studio
         studio_store.write_atomic(p.registry_file, app.registry)
     end function
 
-    ' STU-1 launch = STU-0 startup + the workspace registry.
+    ' STU-1/STU-2 launch = STU-0 startup + the workspace registry + the live document
+    ' manager reconstructed from the active workspace's persisted open-document
+    ' metadata (studio_docs re-reads each file from disk; buffers are not persisted).
     function launch(home)
         app = studio.startup(home)
         app = studio.load_registry(app)
+        app.dm = studio._reload_docs(app)
         return app
     end function
 
-    ' STU-1 persist = STU-0 shutdown (settings/session/workspace) + the registry.
+    ' Build the live document manager for the app's active workspace (empty when no
+    ' workspace is open).
+    function _reload_docs(app)
+        ws = app.model.workspace
+        if ws = nothing then
+            return studio_docs.create()
+        end if
+        return studio_docs.from_meta(ws.docs)
+    end function
+
+    ' Fold the live document manager's metadata back into the active workspace so it
+    ' is persisted (content is stripped; only open set/order/active/cursor/scroll/
+    ' file-state are stored).
+    function _sync_docs(app)
+        ws = app.model.workspace
+        if ws = nothing then
+            return app
+        end if
+        ws.docs = studio_docs.to_meta(app.dm)
+        model = app.model
+        model.workspace = ws
+        app.model = model
+        return app
+    end function
+
+    ' STU-1/STU-2 persist = sync open documents into the workspace, then STU-0
+    ' shutdown (settings/session/workspace) + the registry.
     function persist(app)
+        app = studio._sync_docs(app)
         saved = studio.shutdown(app)
         studio.save_registry(app)
         saved = append(saved, "registry")
@@ -324,6 +354,7 @@ library studio
         app = studio.create_workspace(app, name)
         ws = app.model.workspace
         app = studio.register_workspace(app, ws.id, name)
+        app.dm = studio_docs.create()
         return app
     end function
 
@@ -341,6 +372,7 @@ library studio
             model.workspace = ws
             model.session = studio_model.set_active_workspace(model.session, id)
             app.model = model
+            app.dm = studio_docs.from_meta(ws.docs)
             app = studio.register_workspace(app, id, ws.name)
             app.diagnostics = append(app.diagnostics, "open:" + id + ":loaded")
         else
@@ -366,10 +398,12 @@ library studio
     ' Close the active workspace: clear it from the model and the session (the
     ' caller persists). The registry entry is kept so it can be reopened.
     function close_workspace(app)
+        app = studio._sync_docs(app)
         model = app.model
         model.workspace = nothing
         model.session = studio_model.set_active_workspace(model.session, "")
         app.model = model
+        app.dm = studio_docs.create()
         return app
     end function
 
@@ -404,6 +438,81 @@ library studio
         lines = append(lines, "registry=" + join(names, ","))
         lines = append(lines, "recent=" + join(reg.recent, ","))
         return join(lines, "\n")
+    end function
+
+    ' ======================================================================
+    ' STU-2 — document/editor lifecycle on the app object. Thin wrappers over the
+    ' headless studio_docs manager (app.dm); the shell binds editor views to it.
+    ' ======================================================================
+
+    ' Open a file into a document tab (reusing an already-open document by canonical
+    ' path). `project_id` may be "" for a loose file. Returns { app, id, status }.
+    function open_file(app, project_id, path)
+        r = studio_docs.open(app.dm, project_id, path)
+        app.dm = r.dm
+        return { app: app, id: r.id, status: r.status }
+    end function
+
+    ' Open the file a browser row points at, under a given project, and activate it.
+    function open_from_browser(app, project_id, path)
+        return studio.open_file(app, project_id, path)
+    end function
+
+    function set_active_document(app, id)
+        app.dm = studio_docs.set_active(app.dm, id)
+        return app
+    end function
+
+    ' Apply an edit (the editor view calls this with the buffer text). Returns app.
+    function edit_document(app, id, content)
+        app.dm = studio_docs.edit(app.dm, id, content)
+        return app
+    end function
+
+    function set_document_cursor(app, id, line, column)
+        app.dm = studio_docs.set_cursor(app.dm, id, line, column)
+        return app
+    end function
+
+    function set_document_scroll(app, id, line)
+        app.dm = studio_docs.set_scroll(app.dm, id, line)
+        return app
+    end function
+
+    ' Save one document. Returns { app, status }.
+    function save_document(app, id)
+        sv = studio_docs.save(app.dm, id)
+        app.dm = sv.dm
+        return { app: app, status: sv.status }
+    end function
+
+    ' Save every dirty document. Returns { app, saved, failed }.
+    function save_all_documents(app)
+        r = studio_docs.save_all(app.dm)
+        app.dm = r.dm
+        return { app: app, saved: r.saved, failed: r.failed }
+    end function
+
+    ' Close a document under an explicit decision ("save"|"discard"|"cancel").
+    ' Returns { app, status }.
+    function close_document(app, id, decision)
+        c = studio_docs.close(app.dm, id, decision)
+        app.dm = c.dm
+        return { app: app, status: c.status }
+    end function
+
+    ' Detect external filesystem changes across all open documents and apply the safe
+    ' policy (clean->reload, dirty->conflict, deleted->missing). Returns
+    ' { app, conflicts, reloaded, deleted }.
+    function checkpoint_documents(app)
+        cp = studio_docs.checkpoint(app.dm)
+        app.dm = cp.dm
+        return { app: app, conflicts: cp.conflicts, reloaded: cp.reloaded, deleted: cp.deleted }
+    end function
+
+    ' Deterministic path-free document summary (delegates to studio_docs).
+    function docs_summary(app)
+        return studio_docs.summary(app.dm)
     end function
 
 end library

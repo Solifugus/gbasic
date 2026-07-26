@@ -33,6 +33,21 @@ mkproj() { # dir — a deterministic project tree for the browser cases
     printf x > "$d/src/a.bas"; printf x > "$d/src/b.bas"; printf x > "$d/docs/guide.md"
 }
 
+mkproj2() { # dir — deterministic source files for the document cases
+    local d="$1"
+    mkdir -p "$d/sub"
+    printf 'aaa\n' > "$d/a.bas"; printf 'bbb\n' > "$d/b.bas"; printf 'ccc\n' > "$d/c.bas"
+}
+
+run_golden3() { # name mode home arg2 golden
+    local name="$1" mode="$2" home="$3" arg2="$4" golden="$5"
+    : >"$stdout_file"
+    if ! timeout 60 ./gbasic "$APP" "$mode" "$home" "$arg2" >"$stdout_file" 2>&1; then
+        cat "$stdout_file"; fail "$name (nonzero exit)"
+    fi
+    if diff -u "$golden" "$stdout_file"; then printf 'PASS %s\n' "$name"; else fail "$name (output diff)"; fi
+}
+
 run_golden() { # name  mode  home  golden
     local name="$1" mode="$2" home="$3" golden="$4"
     : >"$stdout_file"
@@ -162,6 +177,83 @@ if command -v valgrind >/dev/null 2>&1; then
     rm -f "$vg_log"
 else
     printf 'SKIP stu1_memory_cycles (valgrind not installed)\n'
+fi
+
+# ==========================================================================
+# STU-2 — documents & editor lifecycle.
+# ==========================================================================
+
+# 13. Document lifecycle: open, reuse (dup), directory guard, missing file, edit ->
+#     dirty, revert -> clean, save. Plus a disk check that save wrote the file.
+proj_life="$tmproot/life"; mkproj2 "$proj_life"
+run_golden3 "stu2_lifecycle" stu2_lifecycle "$tmproot/lifehome" "$proj_life" tests/studio/stu2_lifecycle.out
+if grep -qx 'saved by studio' "$proj_life/a.bas"; then printf 'PASS stu2_save_disk\n'; else echo "a.bas:"; cat "$proj_life/a.bas"; fail "stu2_save_disk (content)"; fi
+
+# 14. Save failure — writing into a missing directory leaves the document dirty and
+#     preserves the buffer (no crash, not marked clean).
+: >"$stdout_file"
+timeout 60 ./gbasic "$APP" stu2_savefail "$tmproot/failhome" >"$stdout_file" 2>&1 || { cat "$stdout_file"; fail "stu2_savefail (exit)"; }
+if grep -qx 'savefail=error dirty=true' "$stdout_file"; then printf 'PASS stu2_savefail\n'; else cat "$stdout_file"; fail "stu2_savefail"; fi
+
+# 15. Close a dirty document three ways (fresh dir each so prior saves can't bleed):
+#     save -> closed, discard -> closed, cancel -> kept open.
+for spec in "save:closed:0" "discard:closed:0" "cancel:cancelled:1"; do
+    dec="${spec%%:*}"; rest="${spec#*:}"; want_status="${rest%%:*}"; want_open="${rest##*:}"
+    cd_dir="$tmproot/close_$dec"; mkproj2 "$cd_dir"
+    : >"$stdout_file"
+    timeout 60 ./gbasic "$APP" stu2_close "$tmproot/closehome_$dec" "$cd_dir" "$dec" >"$stdout_file" 2>&1 || { cat "$stdout_file"; fail "stu2_close_$dec (exit)"; }
+    if grep -qx "close($dec)=$want_status open=$want_open" "$stdout_file"; then
+        printf 'PASS stu2_close_%s\n' "$dec"
+    else
+        cat "$stdout_file"; fail "stu2_close_$dec"
+    fi
+done
+
+# 16. External changes — clean file changed on disk auto-reloads; a dirty file
+#     changed on disk becomes a preserved conflict; a deleted file becomes missing.
+proj_ext="$tmproot/ext"; mkproj2 "$proj_ext"
+run_golden3 "stu2_external" stu2_external "$tmproot/exthome" "$proj_ext" tests/studio/stu2_external.out
+
+# 17. Restore — open two documents, set cursors + active, persist, relaunch: the open
+#     set, tab order, active document, and cursor positions are restored.
+proj_res="$tmproot/res"; mkproj2 "$proj_res"
+run_golden3 "stu2_restore" stu2_restore "$tmproot/reshome" "$proj_res" tests/studio/stu2_restore.out
+
+# 18. Missing restored file — persist an open file, delete it, relaunch: the document
+#     restores in a missing state, not a crash.
+proj_mr="$tmproot/mr"; mkproj2 "$proj_mr"; home_mr="$tmproot/mrhome"
+timeout 60 ./gbasic "$APP" stu2_open_persist "$home_mr" "$proj_mr" >/dev/null 2>&1 || fail "stu2_missing (setup)"
+rm -f "$proj_mr/a.bas"
+: >"$stdout_file"
+timeout 60 ./gbasic "$APP" stu2_missing_restore "$home_mr" "$proj_mr" >"$stdout_file" 2>&1 || { cat "$stdout_file"; fail "stu2_missing (exit)"; }
+if grep -q 'a.bas clean missing' "$stdout_file"; then printf 'PASS stu2_missing_restore\n'; else cat "$stdout_file"; fail "stu2_missing_restore"; fi
+
+# 19. Browser integration — opening a file the browser points at activates its tab.
+proj_br="$tmproot/br"; mkproj2 "$proj_br"
+: >"$stdout_file"
+timeout 60 ./gbasic "$APP" stu2_browser "$tmproot/brhome" "$proj_br" >"$stdout_file" 2>&1 || { cat "$stdout_file"; fail "stu2_browser (exit)"; }
+if grep -qx 'browser_opened=a.bas active=doc-1' "$stdout_file"; then printf 'PASS stu2_browser\n'; else cat "$stdout_file"; fail "stu2_browser"; fi
+
+# 20. Memory + callbacks — 40 open/edit/save/close/persist cycles under valgrind.
+if command -v valgrind >/dev/null 2>&1; then
+    proj_cy="$tmproot/cy"; mkproj2 "$proj_cy"
+    vg_log="$(mktemp)"; : >"$stdout_file"
+    if timeout 300 valgrind --error-exitcode=99 --leak-check=full --errors-for-leak-kinds=definite \
+            ./gbasic "$APP" stu2_cycles "$tmproot/cyhome" "$proj_cy" >"$stdout_file" 2>"$vg_log"; then
+        if grep -qx 'cycles_done=40' "$stdout_file"; then
+            printf 'PASS stu2_memory_cycles (valgrind clean)\n'
+        else
+            cat "$stdout_file"; rm -f "$vg_log"; fail "stu2_memory_cycles (bad output)"
+        fi
+    else
+        status=$?
+        printf 'FAIL stu2_memory_cycles (valgrind exit %d)\n' "$status"
+        grep -E 'definitely lost|ERROR SUMMARY|Invalid ' "$vg_log" || tail -20 "$vg_log"
+        rm -f "$vg_log"; exit 1
+    fi
+    rm -f "$vg_log"
+else
+    printf 'SKIP stu2_memory_cycles (valgrind not installed)\n'
 fi
 
 printf 'run_studio: all cases passed\n'

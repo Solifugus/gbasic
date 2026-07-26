@@ -67,7 +67,8 @@ library studio_model
             active_project: "",
             projects: [],
             tabs: { order: [], active: "" },
-            nav: { selected_path: "", expanded: [] }
+            nav: { selected_path: "", expanded: [] },
+            docs: { open: [], active: "", next_doc: 1 }
         }
     end function
 

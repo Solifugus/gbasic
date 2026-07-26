@@ -1,14 +1,17 @@
 ' studio_shell.bas — the gBASIC Studio application shell (GTK 4, over gtk.bas).
 '
-' STU-1 scope: a usable NAVIGATION shell — a workspace label, a project list, and a
-' filesystem project browser tree for the active project — plus a placeholder editor
-' area and a status bar. It is a pure VIEW over the app model studio.bas owns: it
-' reads the model (and scans the filesystem via studio_browser) to populate itself
-' and holds no state of its own. The real editor (STU-2) replaces the placeholder;
-' click-to-select / expand wiring that mutates the model is layered on next.
+' STU-1/STU-2 scope: a usable NAVIGATION + EDITING shell — a filesystem project
+' browser tree (left) and a notebook of source-editor tabs for the open documents
+' (right), plus a status bar. It is a pure VIEW over the app model studio.bas owns
+' (the workspace navigation model and the document manager app.dm): it reads the
+' model (and scans the filesystem via studio_browser) to populate itself and holds
+' no document state of its own. Interactive wiring (browser row -> open, editor edit
+' -> document manager) is owned by the entry program's handlers over a global app
+' record, so the callback-scope rules are respected.
 '
-' Requires gi + gtk + studio_browser loaded and GTK initialized, so it is only used
-' in the display modes; the headless lifecycle and tests never touch it.
+' Requires gi + gtk + studio_browser + studio_docs + sourceeditor loaded and GTK
+' initialized, so it is only used in the display modes; the headless lifecycle and
+' tests never touch it.
 library studio_shell
 
     ' Render the navigation pane contents into a listbox from the model + filesystem.
@@ -77,7 +80,7 @@ library studio_shell
         header.append(gtk.button("Refresh"))
         outer.append(header)
 
-        ' --- main split: project browser | editor area ---
+        ' --- main split: project browser | editor tab notebook ---
         split = gtk.paned("h")
         split.vexpand = true
 
@@ -87,27 +90,73 @@ library studio_shell
         split.set_start_child(nav_scroll)
         split.position = 260
 
-        ' editor area — placeholder until STU-2 mounts a SourceEditor here
-        editor = gtk.label("(editor area — STU-2)")
-        editor.vexpand = true
-        editor.hexpand = true
-        editor_scroll = gtk.scrolled(editor)
-        split.set_end_child(editor_scroll)
+        book = studio_shell._editor_tabs(app)
+        split.set_end_child(book)
 
         outer.append(split)
 
         ' --- status bar ---
-        status_text = "ready"
-        if ws != nothing then
-            status_text = "ready — " + ws.name + " — " + count(ws.projects) + " project(s)"
-        end if
-        status = gtk.label(status_text)
+        status = gtk.label(studio_shell.status_text(app))
         outer.append(status)
 
         win.set_child(outer)
         win.present()
 
-        return { window: win, status: status, nav: nav, editor: editor }
+        return { window: win, status: status, nav: nav, notebook: book }
+    end function
+
+    ' Build the editor-tab notebook from the document manager. One page per open
+    ' document: a SourceEditor over its content with gBASIC highlighting; the tab
+    ' label carries a dirty (*) / missing (!) marker. The active document's page is
+    ' selected. (A view is a mirror of a document — the manager stays authoritative.)
+    function _editor_tabs(app)
+        book = gtk.notebook()
+        dm = app.dm
+        if count(dm.docs) = 0 then
+            book.append_page(gtk.label("(no document open)"), gtk.label("Welcome"))
+            return book
+        end if
+        activeidx = 0
+        i = 0
+        for each d in dm.docs
+            ed = sourceeditor.create()
+            ed.set_text(d.content)
+            ed.set_language("gbasic")
+            view = ed.view()
+            sc = gtk.scrolled(view)
+            sc.vexpand = true
+            sc.hexpand = true
+            book.append_page(sc, gtk.label(studio_shell.tab_label(d)))
+            if d.id = dm.active then
+                activeidx = i
+            end if
+            i = i + 1
+        end for
+        book.set_current_page(activeidx)
+        return book
+    end function
+
+    ' A tab label with markers: "! " missing, "* " dirty (unsaved), then the name.
+    function tab_label(doc)
+        marker = ""
+        if doc.missing then
+            marker = "! "
+        else
+            if studio_docs.is_dirty(doc) then
+                marker = "* "
+            end if
+        end if
+        return marker + doc.display_name
+    end function
+
+    function status_text(app)
+        ws = app.model.workspace
+        base = "ready"
+        if ws != nothing then
+            base = "ready — " + ws.name + " — " + count(ws.projects) + " project(s)"
+        end if
+        n = count(app.dm.docs)
+        return base + " — " + n + " open"
     end function
 
 end library

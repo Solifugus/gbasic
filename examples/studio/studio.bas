@@ -66,6 +66,12 @@ function on_activate(gtkapp)
             print "workspace=" + ws.name
             print "projects=" + count(ws.projects)
         end if
+        dm = G.app.dm
+        print "open-docs=" + count(dm.docs)
+        ad = studio_docs.active_doc(dm)
+        if ad != nothing then
+            print "active-tab=" + studio_shell.tab_label(ad)
+        end if
         gtkapp.quit()
     end if
 end function
@@ -77,6 +83,7 @@ program main(args)
     load studio_store
     load studio_model
     load studio_browser
+    load studio_docs
     load studio
 
     mode = "gui"
@@ -204,19 +211,207 @@ program main(args)
         return
     end if
 
+    ' ---- STU-2 headless modes (documents) ---------------------------------
+    ' args[2] is a project directory (created by the harness) unless noted.
+
+    if mode = "stu2_lifecycle" then
+        projdir = args[2]
+        app = studio.launch(home)
+        app = studio.create_registered_workspace(app, "ws")
+        r = studio.open_file(app, "p", projdir + "/a.bas")
+        app = r.app
+        print "open a=" + r.status + " id=" + r.id
+        r = studio.open_file(app, "p", projdir + "/./a.bas")
+        app = r.app
+        print "dup a=" + r.status + " id=" + r.id
+        r = studio.open_file(app, "p", projdir + "/b.bas")
+        app = r.app
+        print "open b=" + r.status
+        r = studio.open_file(app, "p", projdir + "/sub")
+        app = r.app
+        print "open dir=" + r.status
+        r = studio.open_file(app, "p", projdir + "/ghost.bas")
+        app = r.app
+        print "open missing=" + r.status
+        app = studio.edit_document(app, "doc-1", "edited content\n")
+        print "-- after edit --"
+        print studio.docs_summary(app)
+        app = studio.edit_document(app, "doc-1", "aaa\n")
+        d = studio_docs.doc_by_id(app.dm, "doc-1")
+        print "revert clean=" + (not studio_docs.is_dirty(d))
+        app = studio.edit_document(app, "doc-1", "saved by studio\n")
+        sv = studio.save_document(app, "doc-1")
+        app = sv.app
+        print "save=" + sv.status
+        print "-- final --"
+        print studio.docs_summary(app)
+        return
+    end if
+
+    if mode = "stu2_savefail" then
+        app = studio.launch(home)
+        app = studio.create_registered_workspace(app, "ws")
+        r = studio.open_file(app, "", home + "/nodir/x.bas")
+        app = r.app
+        app = studio.edit_document(app, r.id, "content")
+        sv = studio.save_document(app, r.id)
+        app = sv.app
+        d = studio_docs.doc_by_id(app.dm, r.id)
+        print "savefail=" + sv.status + " dirty=" + studio_docs.is_dirty(d)
+        return
+    end if
+
+    if mode = "stu2_close" then
+        projdir = args[2]
+        decision = "discard"
+        if count(args) > 3 then
+            decision = args[3]
+        end if
+        app = studio.launch(home)
+        app = studio.create_registered_workspace(app, "ws")
+        r = studio.open_file(app, "p", projdir + "/a.bas")
+        app = r.app
+        app = studio.edit_document(app, r.id, "dirty edit\n")
+        c = studio.close_document(app, r.id, decision)
+        app = c.app
+        print "close(" + decision + ")=" + c.status + " open=" + count(app.dm.docs)
+        return
+    end if
+
+    if mode = "stu2_restore" then
+        projdir = args[2]
+        app = studio.launch(home)
+        app = studio.create_registered_workspace(app, "ws")
+        r = studio.open_file(app, "p", projdir + "/a.bas")
+        app = r.app
+        app = studio.set_document_cursor(app, r.id, 2, 5)
+        r = studio.open_file(app, "p", projdir + "/b.bas")
+        app = r.app
+        app = studio.set_document_cursor(app, r.id, 1, 3)
+        app = studio.set_active_document(app, "doc-1")
+        studio.persist(app)
+        print "-- relaunch --"
+        app2 = studio.launch(home)
+        print studio.docs_summary(app2)
+        return
+    end if
+
+    if mode = "stu2_missing_restore" then
+        ' harness opens+persists, deletes the file, then runs this to relaunch.
+        app = studio.launch(home)
+        print studio.docs_summary(app)
+        return
+    end if
+
+    if mode = "stu2_open_persist" then
+        projdir = args[2]
+        app = studio.launch(home)
+        app = studio.create_registered_workspace(app, "ws")
+        r = studio.open_file(app, "p", projdir + "/a.bas")
+        app = r.app
+        studio.persist(app)
+        print "persisted id=" + r.id
+        return
+    end if
+
+    if mode = "stu2_external" then
+        projdir = args[2]
+        app = studio.launch(home)
+        app = studio.create_registered_workspace(app, "ws")
+        r = studio.open_file(app, "p", projdir + "/a.bas")
+        app = r.app
+        r = studio.open_file(app, "p", projdir + "/b.bas")
+        app = r.app
+        r = studio.open_file(app, "p", projdir + "/c.bas")
+        app = r.app
+        ' a: clean, changed on disk; b: dirty, changed on disk; c: deleted
+        ea(file) = projdir + "/a.bas"
+        write(ea, "external change to a\n")
+        app = studio.edit_document(app, "doc-2", "my unsaved edits\n")
+        eb(file) = projdir + "/b.bas"
+        write(eb, "external change to b\n")
+        ec(file) = projdir + "/c.bas"
+        delete(ec)
+        cp = studio.checkpoint_documents(app)
+        app = cp.app
+        print "conflicts=" + join(cp.conflicts, ",")
+        print "reloaded=" + join(cp.reloaded, ",")
+        print "deleted=" + join(cp.deleted, ",")
+        print studio.docs_summary(app)
+        return
+    end if
+
+    if mode = "stu2_browser" then
+        projdir = args[2]
+        app = studio.launch(home)
+        app = studio.create_registered_workspace(app, "ws")
+        ws = app.model.workspace
+        ws = studio_model.add_project(ws, "Alpha", projdir)
+        app = studio.set_workspace(app, ws)
+        ' simulate the browser selecting and opening a file
+        proj = studio_model.project_by_id(ws, "proj-1")
+        nodes = studio_browser.scan_project(proj, [])
+        rows = studio_browser.flatten(nodes)
+        picked = ""
+        for each row in rows
+            if row.kind = "file" then
+                if picked = "" then
+                    picked = row.path
+                end if
+            end if
+        end for
+        r = studio.open_from_browser(app, "proj-1", picked)
+        app = r.app
+        d = studio_docs.active_doc(app.dm)
+        print "browser_opened=" + d.display_name + " active=" + app.dm.active
+        return
+    end if
+
+    if mode = "stu2_cycles" then
+        projdir = args[2]
+        i = 0
+        while i < 40
+            a = studio.launch(home)
+            a = studio.create_registered_workspace(a, "ws")
+            rr = studio.open_file(a, "p", projdir + "/a.bas")
+            a = rr.app
+            a = studio.edit_document(a, rr.id, "cycle edit " + i + "\n")
+            s2 = studio.save_document(a, rr.id)
+            a = s2.app
+            c2 = studio.close_document(a, rr.id, "discard")
+            a = c2.app
+            studio.persist(a)
+            i = i + 1
+        end while
+        print "cycles_done=40"
+        return
+    end if
+
     ' ---- display modes (need GTK4 + a display) ----------------------------
 
     G = {}
-    G.app = studio.startup(home)
+    G.app = studio.launch(home)
     G.smoke = false
     G.shell = nothing
     if mode = "smoke" then
         G.smoke = true
         G.app = build_canned(G.app)
     end if
+    if mode = "stu2_smoke" then
+        G.smoke = true
+        G.app = studio.create_registered_workspace(G.app, "ws")
+        docfile = ".gbasic-studio-doc.bas"
+        if count(args) > 2 then
+            docfile = args[2]
+        end if
+        r = studio.open_file(G.app, "", docfile)
+        G.app = r.app
+        G.app = studio.edit_document(G.app, r.id, "' edited in Studio\nprint(\"hi\")\n")
+    end if
 
     load gi
     load gtk
+    load sourceeditor
     load studio_shell
     gi.require("Gtk", "4.0")
 
