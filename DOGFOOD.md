@@ -370,3 +370,47 @@ D0.6, the rest remain open or are by-design.
   `decode`. **Clears the SHOULD FIX BEFORE STUDIO flag from the NAP-13 entry.**
   Still open (DEFERRED, documented in docs/reference.md): `encode`'s bare `nan`/`inf`,
   and `crypto.json_encode` remaining a separate flat encoder.
+
+## 2026-07-25 — CC — while: STU-0 (Studio persistence backbone, pure gBASIC)
+- **Type:** language-surprise
+- **Severity:** medium
+- **What:** A `load` statement placed at the top level (before `program main`) is
+  silently inert when a `program` block is present — top-level statements don't run
+  in that case. The failure surfaces far from the cause: calling a function from the
+  un-loaded library raises `invalid function call: lib.func` (or `undefined variable`
+  for a bare-name library export), which reads like the library or function doesn't
+  exist. Cost real debugging time before the pattern was recognized.
+- **Workaround:** Put every `load` INSIDE the `program` block (as the workbench/
+  crypto examples do). All studio_* loads live at the top of `program main`. Already
+  noted in prior memory as "load/state must be inside program main," but the
+  misleading error message is what makes it a repeat trap. Would help: either run
+  top-level `load` declarations even with a program block, or make the call-site
+  error say "library 'lib' is not loaded".
+
+## 2026-07-25 — CC — while: STU-0 (filesystem persistence)
+- **Type:** language-surprise
+- **Severity:** low
+- **What:** Two filesystem sharp edges hit while writing the store: (1) `exists(f)`
+  rejects a **directory** reference — `d(dir)= path; exists(d)` raises "exists expects
+  a file reference"; you must probe a directory's existence via a `(file)` reference
+  to the same path. (2) `make_dir` raises on an already-existing directory (EEXIST)
+  rather than being idempotent, so every create must be guarded by an existence check.
+- **Workaround:** `ensure_dir` in `stdlib/studio_store.bas` splits the path, and for
+  each segment probes existence with a `(file)` reference and only calls `make_dir`
+  when absent. Works, but an idempotent `make_dir` (or `make_dir` accepting an
+  existing dir as a no-op) and an `exists` that accepts either reference kind would
+  remove the ceremony. DEFERRED (not a blocker).
+
+## 2026-07-25 — CC — while: STU-0 (corrupt-file recovery)
+- **Type:** missing-feature
+- **Severity:** medium
+- **What:** Graceful recovery from a corrupt/truncated JSON store needs to detect
+  invalid JSON WITHOUT raising, because `decode` raises on malformed input and gBASIC
+  cannot catch a raise and continue (the standing `on error resume next` limitation).
+  There is no non-raising decode/validity builtin (`json_encodable` is encode-side
+  only).
+- **Workaround:** Wrote a recursive-descent JSON validator `stdlib/studio_json.bas`
+  (`valid(text)` → bool, `parse_or(text, fallback)`), mirroring the private validator
+  `stdlib/llm.bas` already had to grow for the same reason. Two libraries now hand-roll
+  a JSON validator to work around the same gap — a core `json_valid(text)` (or a
+  non-raising `try_decode`) would retire both. SHOULD FIX.

@@ -22,11 +22,11 @@ fi
 
 status=0
 shopt -s nullglob
-files=(examples/gui/*.bas examples/gi/*.bas examples/native_editor/*.bas examples/native_workbench/*.bas examples/native_ui/*.bas)
+files=(examples/gui/*.bas examples/gi/*.bas examples/native_editor/*.bas examples/native_workbench/*.bas examples/native_ui/*.bas examples/studio/*.bas)
 shopt -u nullglob
 
 if [ ${#files[@]} -eq 0 ]; then
-    echo "FAIL run_gui_parse: no display examples found (expected examples/gui/*.bas, examples/gi/*.bas, examples/native_editor/*.bas, examples/native_workbench/*.bas, examples/native_ui/*.bas)"
+    echo "FAIL run_gui_parse: no display examples found (expected examples/gui/*.bas, examples/gi/*.bas, examples/native_editor/*.bas, examples/native_workbench/*.bas, examples/native_ui/*.bas, examples/studio/*.bas)"
     exit 1
 fi
 

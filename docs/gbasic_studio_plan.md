@@ -266,6 +266,36 @@ corrupt store, missing source for a dotfile, unwritable dir.
 **Out of scope.** Any window/widget; editor; execution; boundaries; agent; secrets/keyring;
 git. No `.bas` is parsed or run in this phase.
 
+**DONE (2026-07-25).** The persistent backbone is implemented as five pure-gBASIC
+stdlib libraries plus a thin entry point, all headless and testable without a display:
+`stdlib/studio_json.bas` (a non-raising JSON validity gate — pre-validate before
+`decode`, since gBASIC cannot catch a raise), `stdlib/studio_store.bas` (versioned,
+crash-safe persistence: `json_encode` → write `.tmp` → `atomic_replace`; defensive
+`read_status` reporting missing/corrupt/loaded), `stdlib/studio_model.bas` (the
+settings/session/workspace/project/document model with counter-minted stable ids
+`ws-N`/`proj-N`/`doc-N`, forward/back-compatible `normalize_*`, and future-version
+detection), `stdlib/studio.bas` (the application object + deterministic startup/shutdown
+pipelines + empty future-hook managers), and `stdlib/studio_shell.bas` (the minimal
+GTK4 shell view). Entry: `examples/studio/studio.bas` (arg-dispatched modes). Full
+reference: `docs/gbasic_studio_stu0.md`. Tests: `tests/run_studio.sh` (empty startup,
+save/restore across a simulated relaunch incl. window state, corrupt-session recovery,
+future-version rejection, 30× atomic save/reload stress, valgrind-clean 50-cycle memory
+probe) — all pass; the shell parses in CI (`run_gui_parse.sh`) and its display smoke
+runs clean under `G_DEBUG=fatal-criticals`. Zero unrelated rebaselines; `make dev` green.
+
+**Deviations from this section's original sketch (both follow the accepted STU-0 session
+brief):** (1) **A minimal application shell window is included** (header/menu placeholder,
+empty nav pane, placeholder editor area, status bar), which this plan had slated for
+STU-1 — the brief asked STU-0 to prove the architecture end-to-end with just enough UI.
+The **project picker** itself remains STU-1. (2) **Persistence uses a config-home with
+three JSON stores** (`settings.json`, `session.json`, `workspaces/<id>.json`) rather than
+the `.gbasic/` per-project dot-metadata layout + SQLite registry sketched above. The
+workspace/project/document/session/settings model and stable-id contract are delivered;
+the SQLite-backed **project registry**, per-source **dot-metadata**, and the `.gbasic/`
+per-project directory are deferred to the phases that first exercise them (registry →
+STU-1 picker; dot-metadata → STU-2 per-file cursor/scroll). No JSON store uses `encode`;
+all use `json_encode`. See DOGFOOD (2026-07-25) for the frictions hit.
+
 ---
 
 ## STU-1 — Workspace shell & project picker · S(ui)
