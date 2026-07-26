@@ -1,0 +1,6 @@
+schema_version=1 ok=true nodes=4 diagnostics=0
+#1 parent=- consider name=- [0,86) 1:1..8:13 block=true exp=false att=false slice=<consider color\nif "r" then\n  print 1\nif "g" then\n  print 2\nelse\n  print 3\nend consider>
+#2 parent=1 statement name=- [29,36) 3:3..3:10 block=false exp=false att=false slice=<print 1>
+#3 parent=1 statement name=- [51,58) 5:3..5:10 block=false exp=false att=false slice=<print 2>
+#4 parent=1 statement name=- [66,73) 7:3..7:10 block=false exp=false att=false slice=<print 3>
+containment_violations=0

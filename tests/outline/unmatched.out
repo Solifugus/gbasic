@@ -1,0 +1,3 @@
+schema_version=1 ok=false nodes=0 diagnostics=1
+! error [51,58) 4:5..4:12 msg=syntax error, unexpected PROGRAM, expecting OP_EQ or MOD_LPAREN or LBRACKET or DOT
+containment_violations=0

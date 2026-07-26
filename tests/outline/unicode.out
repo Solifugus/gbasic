@@ -1,0 +1,4 @@
+schema_version=1 ok=true nodes=2 diagnostics=0
+#1 parent=- statement name=- [0,26) 1:1..1:27 block=false exp=false att=false slice=<greeting = "héllo wörld">
+#2 parent=- statement name=- [27,41) 2:1..2:15 block=false exp=false att=false slice=<print greeting>
+containment_violations=0

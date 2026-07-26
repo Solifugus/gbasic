@@ -1,0 +1,4 @@
+schema_version=1 ok=true nodes=2 diagnostics=0
+#1 parent=- program name=main [0,43) 1:1..3:12 block=true exp=false att=false slice=<program main(args)\n  print "hi"\nend program>
+#2 parent=1 statement name=- [21,31) 2:3..2:13 block=false exp=false att=false slice=<print "hi">
+containment_violations=0

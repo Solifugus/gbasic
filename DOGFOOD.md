@@ -454,3 +454,18 @@ D0.6, the rest remain open or are by-design.
   perms don't matter). Documented in docs/gbasic_studio_stu2.md. DEFERRED — a
   perms/symlink-preserving atomic write (or chmod/lstat) is a general platform nicety,
   not a blocker.
+
+## 2026-07-26 — CC — while: PLAT-OUTLINE (source_outline byte-slice test driver)
+- **Type:** language-surprise
+- **Severity:** low
+- **What:** Two surprises writing a driver that slices source by the byte offsets
+  `source_outline` returns. (1) `mid(s, start, len)` is **0-based** — `mid("abcdef",
+  0, 3)` = `"abc"`, `mid(..., 1, 3)` = `"bcd"` — not 1-based as VB/QBasic intuition
+  expects. (2) `mid` counts **codepoints**, not bytes, so it disagrees with byte
+  offsets on any multi-byte UTF-8 text. Also: `"\r"` is not a valid string escape
+  (only `\n`, `\t`, `\\`, `\"`, `\u{}`), so escaping a CR needs `from_bytes([13])`.
+- **Workaround:** For byte-exact slicing use `byte_at` + `from_bytes` (build the byte
+  array over `[start, start+len)` and `from_bytes` it) rather than `mid`; this matches
+  `source_outline`'s byte-offset convention exactly. Dropped `\r` escaping (fixtures
+  use `\n` only). Documented the byte convention in `docs/source_outline_design.md`
+  §16.2. Not a bug — just a convention gap worth stating for any offset consumer.

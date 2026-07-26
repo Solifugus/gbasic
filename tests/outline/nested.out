@@ -1,0 +1,8 @@
+schema_version=1 ok=true nodes=6 diagnostics=0
+#1 parent=- program name=main [0,160) 1:1..11:12 block=true exp=false att=false slice=<program main(args)\n  if x > 0 then\n    for each n in items\n      while n > 0\n        print n\n      end while\n    end for\n  else\n    print 0\n  end if\nend program>
+#2 parent=1 if name=- [21,148) 2:3..10:9 block=true exp=false att=false slice=<if x > 0 then\n    for each n in items\n      while n > 0\n        print n\n      end while\n    end for\n  else\n    print 0\n  end if>
+#3 parent=2 for_each name=- [39,120) 3:5..7:12 block=true exp=false att=false slice=<for each n in items\n      while n > 0\n        print n\n      end while\n    end for>
+#4 parent=3 while name=- [65,108) 4:7..6:16 block=true exp=false att=false slice=<while n > 0\n        print n\n      end while>
+#5 parent=4 statement name=- [85,92) 5:9..5:16 block=false exp=false att=false slice=<print n>
+#6 parent=2 statement name=- [132,139) 9:5..9:12 block=false exp=false att=false slice=<print 0>
+containment_violations=0

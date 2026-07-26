@@ -1,9 +1,13 @@
 # gBASIC source-outline facility — design & R1 investigation
 
-Status: **investigation / design recommendation.** No implementation. This is the
-resolution study for **Risk R1** in `docs/gbasic_studio_plan.md`: *"there is no
-gBASIC-reachable parse/AST/outline API today,"* which the plan names as the gate
-before **STU-3** (the execution-section engine / structural anchoring).
+Status: **implemented (schema version 1).** The general in-process
+`source_outline(text)` builtin and its exact-range parser/AST support ship as of the
+PLAT-OUTLINE phase. §1–§14 below are the original R1 investigation (retained as the
+architectural record); **§16 documents the shipped facility and its public API** —
+read §16 first if you just want to consume the outline. This resolves **Risk R1** in
+`docs/gbasic_studio_plan.md`: *"there is no gBASIC-reachable parse/AST/outline API
+today,"* which the plan named as the gate before **STU-3** (the execution-section
+engine / structural anchoring). STU-3 is **not** started.
 
 The question this document answers is deliberately **broader than Studio**: what is
 the smallest correct, reusable, gBASIC-accessible facility that lets *any* tool
@@ -566,6 +570,12 @@ the team wants zero new `eval.c` surface during STU-3.
 
 ## 15. Decision
 
+**IMPLEMENTED (schema version 1).** The original decision below was **READY TO
+IMPLEMENT GENERAL PLATFORM FACILITY**; both sign-off points were then resolved
+(exact ranges via a bounded parser change; the schema in §5.1/§7 frozen as v1) and
+the facility shipped. See **§16** for the shipped API and how the two decisions were
+resolved.
+
 **READY TO IMPLEMENT GENERAL PLATFORM FACILITY** — the design is clear and
 overwhelmingly favors **Option A over an Option-E reusable core** (in-process
 `source_outline` on the existing reentrant `gb_parse`, insulated by a frozen outline
@@ -606,3 +616,209 @@ Binary built with `make dev` at investigation time (2026-07-26). Probes:
   productions), `ast.c` (`dump_stmt` 604+), `main.c` (869), `builtins.c` (no parse
   builtin), `eval.c:4203` (import loader), `src/lsp/handlers.c` (diagnostics-only,
   126).
+
+---
+
+# 16. Implemented result (PLAT-OUTLINE, schema version 1)
+
+This section documents what shipped. It is the authoritative reference for
+consumers; §1–§15 are the investigation that led here.
+
+## 16.1 Public API
+
+```
+outline = source_outline(text)          ' text: whole-file source (a string)
+outline = source_outline(text, path)    ' path: optional, used only for the
+                                         '       diagnostic `path` context
+```
+
+`source_outline` is a general in-process builtin, reachable from any gBASIC program
+(not just Studio). It **executes nothing** — it lexes and parses only (via the
+reentrant `gb_parse`), never evaluates. It is deterministic: the same bytes yield the
+same outline. It never raises on malformed *source* (that surfaces as `ok:false` +
+diagnostics); it raises only on a wrong *argument* type (non-string `text`).
+
+It returns a record:
+
+```
+{
+  schema_version: 1,          ' number; bump only on a breaking schema change
+  ok:             <bool>,     ' true iff the source fully parsed
+  nodes:          [ <node> ], ' flat, source-ordered; [] when ok is false
+  diagnostics:    [ <diag> ]  ' 0..1 today (parser stops at the first error)
+}
+```
+
+### node record
+
+```
+{
+  id:           <number>,          ' parse-local, 1-based, assigned in source
+                                   '   (pre-order) order; NOT stable across edits
+  parent_id:    <number> | nothing,' enclosing node's id; nothing at top level
+  kind:         <string>,          ' see 16.3
+  name:         <string> | nothing,' declared name; nothing for unnamed structures
+  start_offset: <number>,          ' absolute BYTE offset, 0-based, inclusive
+  end_offset:   <number>,          ' absolute BYTE offset, 0-based, EXCLUSIVE
+  start_line:   <number>,          ' 1-based BYTE line
+  start_column: <number>,          ' 1-based BYTE column
+  end_line:     <number>,          ' 1-based BYTE line   of end_offset
+  end_column:   <number>,          ' 1-based BYTE column of end_offset
+  flags: { block: <bool>, exported: <bool>, attached: <bool> }
+}
+```
+
+### diagnostic record
+
+```
+{
+  severity:     "error" | "warning" | "note",
+  message:      <string>,
+  start_offset: <number>, end_offset: <number>,   ' 0-based BYTE, half-open
+  start_line:   <number>, start_column: <number>, ' 1-based BYTE
+  end_line:     <number>, end_column:   <number>
+}
+```
+
+If the front end cannot give an exact diagnostic end, the narrowest honest range is
+used (single-token spans use `end = start_column + token_byte_length`, the front
+end's existing yylloc convention).
+
+## 16.2 Range convention (precise)
+
+- Offsets are **absolute byte offsets**, **0-based**, forming a **half-open**
+  interval `[start_offset, end_offset)`. `end_offset - start_offset` is the byte
+  length; `end_offset == start_offset` is an empty range.
+- Line and column are **1-based BYTE** positions, identical to the front end and to
+  `--json-diagnostics` (see §1.3 / `diagnostics.h`): a multi-byte UTF-8 character
+  advances a column by its **byte count**, a tab by 1, only `\n` starts a new line.
+  `end_line`/`end_column` are the position of `end_offset` (one past the last byte).
+- **Node ranges are terminator-inclusive but line-terminator-exclusive**: a block's
+  range covers its closing construct (`end if`, `end function`, `end program`,
+  `end while`, `end for`, `end modifier`, `end consider`, `end with`) but **excludes
+  the trailing newline** after it. Simple statements likewise exclude their own
+  trailing newline. Consequently, for **every** node:
+
+  ```
+  byte_slice(text, node.start_offset, node.end_offset - node.start_offset)
+  ```
+
+  yields exactly the construct's source text. (Slice by **bytes** —
+  `byte_at`/`from_bytes` — not `mid`, which is codepoint-based; the two agree only
+  for ASCII.) This is asserted for every node of every fixture in
+  `tests/run_outline.sh`.
+- A node's range **contains** all its descendants' ranges (also asserted:
+  `containment_violations=0` in every golden).
+
+## 16.3 Node-kind vocabulary (schema v1)
+
+Block kinds (`flags.block = true`, may have children):
+`program`, `library`, `function`, `modifier`, `if`, `while`, `for_each`,
+`consider`, `watch`, `with_lock`, `without_watchers`.
+
+Non-block kind (`flags.block = false`, leaf):
+`statement` — every top-level or nested executable statement that is not one of the
+block constructs above (assignments, `print`, calls, `return`, labels, `goto`,
+`gosub`, `on error …`, `error`, `use`/`load`, `break`, `continue`).
+
+The outline emits **every** statement (recursively through block bodies), classifying
+blocks by kind and everything else as `statement`. It does **not** emit expression
+nodes — this is an outline, not a serialized AST. Representation choices:
+
+- **`if`** children are its then-body followed by its else-body (both parented to the
+  `if`); the else has no separate node.
+- **`consider`** children are each branch body in order followed by the else body
+  (all parented to the `consider`); branch match expressions are not emitted.
+- **`for_each`** does not expose its loop variable as `name` (v1 keeps `name` to
+  declared structure names only); loop variables are `nothing`.
+- **`function`** attached-method form (`function obj.method(...)`) sets
+  `name = "obj.method"` and `flags.attached = true`.
+- **`modifier`** with `export` sets `flags.exported = true`.
+
+## 16.4 Parse-local IDs
+
+`id` and `parent_id` are **parse-local**: assigned fresh per call in source (pre-)
+order. They are stable **within one result** (use them to reconstruct nesting) but
+carry **no meaning across edits or across calls**. Do not persist them as anchors —
+derive your own identity from `kind`/`name`/range/fingerprint (see §8).
+
+## 16.5 Invalid / incomplete source
+
+The parser retains its all-or-nothing behavior (§1.5, §6): it stops at the first
+error and produces no tree. So for invalid or incomplete source `source_outline`
+returns:
+
+```
+{ schema_version: 1, ok: false, nodes: [], diagnostics: [ <one error> ] }
+```
+
+No partial nodes are fabricated. **Consumer guidance:** a tool that keeps a live
+outline (Studio, an outline view) must **retain its last-known-good outline when
+`ok` is false** and refresh only when a later parse returns `ok:true` — never
+mis-attach against a broken parse. Studio's STU-3 drift re-resolution is written
+this way.
+
+## 16.6 Comments
+
+The lexer strips comments (§1.4); **comments are not represented in schema v1** and
+do not appear as nodes or affect node ranges (a node's range is its code, not any
+adjacent comment). Marker-based anchoring, if ever needed, is a separate Studio
+concern over raw text — it is deliberately **not** in this platform API.
+
+## 16.7 Architecture as built
+
+```
+source text ── gb_parse(text, path, &program, &diags) ──▶ AST + gb_diagnostics
+                          (reentrant, stack ctx, no globals; executes nothing)
+AST ──▶ outline core (eval.c: outline_walk_stmt/outline_emit over a line-start
+        byte index) ──▶ flat gBASIC records/arrays ──▶ source_outline result
+```
+
+- **Exact ranges (parser/AST).** `AstStmt` gained `end_line`/`end_column`
+  (`include/ast.h`); `ast_stmt_span()` (`src/ast.c`) sets start+exclusive-end; every
+  statement production in `src/parser.y` now records `@1.first..@1.last` (57 sites),
+  so each statement/block carries an exact terminator-inclusive end. `AstExpr` is
+  unchanged (outline exposes statements, not expressions). Byte **offsets** are
+  computed in the core from a one-pass line-start index over the source (exact, not
+  approximate) and the trailing line terminator is trimmed so slices are exact. The
+  `--ast` dump prints no positions, so it and all existing goldens are byte-exact —
+  the parser change is behavior-neutral (verified: full negative + example suites
+  unchanged).
+- **Outline core + builtin (eval.c, builtins.c).** A single reusable emitter lowers
+  the AST to the public records; `source_outline` is registered in
+  `src/builtins.c` and dispatched in `eval_call`. The transient AST and diagnostics
+  are freed inside the builtin (as `gbasic-lsp` does); results are ordinary GC'd
+  gBASIC values. No Studio concept appears in the platform layer, and no
+  Studio-specific C was added.
+- **Reuse.** The emitter sits on the same `gb_parse` that powers the interpreter and
+  `gbasic-lsp`. A future `gbasic --outline` CLI or LSP `documentSymbol` can reuse the
+  identical core (Option E); neither shipped in this phase (not needed by any current
+  consumer).
+
+## 16.8 Performance (measured, as built)
+
+- 40,000-line file (5,000 functions, 25,000 nodes): **~87 ms per in-process
+  `source_outline`** (parse + full AST→value conversion), isolated from process
+  startup by differencing 1 vs 50 reps. A single invocation including process start
+  + file read is ~0.11 s. Typical files (hundreds of lines) are sub-millisecond.
+- Full reparse per call is acceptable; **no incremental parsing** was added.
+- Memory: valgrind-clean (no definite leaks, no errors) over a fixture and 5×
+  repeated stress; repeated calls are stable and non-growing.
+
+## 16.9 Tests
+
+`tests/run_outline.sh` (headless, GI-independent, path-free goldens):
+12 golden fixtures (`tests/outline/*.out`) covering empty / single statement /
+program / functions (plain + attached) / modifiers (plain + exported) / nested
+if→for_each→while + else / consider / multiline statement / comments + blank lines /
+invalid / unmatched terminator / Unicode-in-string; each dumps kind/name/half-open
+byte range/line:col/flags **plus a byte-exact slice of every node** and a
+`containment_violations=0` self-check; plus large-file (exact 25,000-node count +
+timing ceiling), 50× repeated-call stability, and the valgrind tier.
+
+## 16.10 Anchoring boundary (unchanged from §8)
+
+The platform exposes **source structure** (kind/name/range/offsets/parent/flags +
+diagnostics + `ok`). Studio owns **anchor identity, fingerprints, drift
+re-resolution, stale-flagging, and replay** — none of which appear in this API. STU-3
+consumes `source_outline` directly; it is not started.
