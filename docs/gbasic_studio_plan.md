@@ -334,6 +334,33 @@ collapse/restore panes, self-quit with a deterministic transcript. Parse-only CI
 
 **Out of scope.** Editor/tabs content (STU-2); any execution; agent; branches.
 
+**DONE (2026-07-26).** Additive to the frozen STU-0 backbone (STU-0 stores/goldens
+untouched). Delivered per this session's STU-1 brief, which emphasized **workspace
+navigation + a filesystem project browser** over the picker-modal sketch above:
+`stdlib/studio_browser.bas` (scan a project dir into a folders-first/sorted/lazily-
+expanded tree; `flatten`/`visible_count`/`dump`; graceful empty on missing/unreadable
+dirs), `studio_model.bas` extended with nav state (`nav.selected_path` + `expanded`
+set) and project `remove_project`/`rename_project`/`project_by_id`, `studio.bas`
+extended with a **workspace registry** (`<home>/workspaces.json`) + `launch`/`persist`
++ `create_registered_workspace`/`open_workspace`/`rename_workspace`/`close_workspace`
++ recent-list + `nav_summary`, and `studio_shell.bas` rendering the browser tree +
+project list + status. Reference: `docs/gbasic_studio_stu1.md`. Tests: `run_studio.sh`
+gains STU-1 cases (workspace lifecycle + multiple projects + navigation persistence via
+`stu1_build`→`stu1_restore`, missing-project no-crash, browser correctness, tree
+refresh, registry+recent, valgrind-clean 50-cycle memory) — all pass; shell parses in
+CI and its display smoke renders clean under `G_DEBUG=fatal-criticals`. Full battery
+green, zero unrelated rebaselines; `make dev` clean.
+
+**Deviations from this section's original sketch (per the STU-1 session brief):** the
+emphasis is a **filesystem project browser + workspace registry/switcher**, not the
+search/filter/pin **project-picker modal** or the collapsible right-inspector / bottom-
+console / `[Agent]`-tab-strip panes. Those panes and the picker's search/filter/pin
+affordances are **deferred** — the right-inspector + bottom-console arrive with the
+execution/results phases (STU-4/STU-5), the `[Agent]` tab with STU-6, and the picker's
+richer affordances can layer onto the registry when needed. Persistence uses the
+STU-0 config-home + JSON stores plus the new registry store (no SQLite/dot-metadata),
+consistent with the STU-0 completion note.
+
 ---
 
 ## STU-2 — Editor, file tabs & cheap-layer file restore · S(ui)

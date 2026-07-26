@@ -39,6 +39,20 @@ function build_canned(app)
     return app
 end function
 
+' Build a fixed STU-1 workspace over a real project directory (created by the test
+' harness) plus a deliberately-missing second project, with a canned expansion and
+' selection — so navigation save/restore and the browser are deterministic.
+function build_stu1(app, projdir)
+    app = studio.create_registered_workspace(app, "myws")
+    ws = app.model.workspace
+    ws = studio_model.add_project(ws, "Alpha", projdir)
+    ws = studio_model.add_project(ws, "Beta", projdir + "/ghost")
+    ws = studio_model.expand_path(ws, projdir + "/src")
+    ws = studio_model.set_selected_path(ws, projdir + "/main.bas")
+    app = studio.set_workspace(app, ws)
+    return app
+end function
+
 ' GTK activate handler (display modes only). Reads the global G assembled in main.
 function on_activate(gtkapp)
     shell = studio_shell.build(gtkapp, G.app)
@@ -62,6 +76,7 @@ program main(args)
     load studio_json
     load studio_store
     load studio_model
+    load studio_browser
     load studio
 
     mode = "gui"
@@ -122,6 +137,67 @@ program main(args)
         while i < 50
             a = studio.startup(home)
             studio.shutdown(a)
+            i = i + 1
+        end while
+        print "cycles_done=50"
+        return
+    end if
+
+    ' ---- STU-1 headless modes (navigation) --------------------------------
+    ' For browse/missing modes, `home` carries the project directory path.
+
+    if mode = "stu1_build" then
+        projdir = ".gbasic-studio-proj"
+        if count(args) > 2 then
+            projdir = args[2]
+        end if
+        app = studio.launch(home)
+        app = build_stu1(app, projdir)
+        saved = studio.persist(app)
+        print "saved=" + join(saved, ",")
+        return
+    end if
+
+    if mode = "stu1_restore" then
+        app = studio.launch(home)
+        print studio.nav_summary(app)
+        ws = app.model.workspace
+        proj = studio_model.project_by_id(ws, ws.active_project)
+        nodes = studio_browser.scan_project(proj, ws.nav.expanded)
+        print "browser:"
+        print studio_browser.dump(nodes)
+        return
+    end if
+
+    if mode = "stu1_browse" then
+        nodes = studio_browser.scan(home, [home + "/src"])
+        print studio_browser.dump(nodes)
+        return
+    end if
+
+    if mode = "stu1_missing" then
+        nodes = studio_browser.scan(home + "/does_not_exist", [])
+        print "rows=" + studio_browser.visible_count(nodes)
+        return
+    end if
+
+    if mode = "stu1_registry" then
+        app = studio.launch(home)
+        app = studio.create_registered_workspace(app, "one")
+        studio.persist(app)
+        app = studio.create_registered_workspace(app, "two")
+        studio.persist(app)
+        app = studio.create_registered_workspace(app, "three")
+        studio.persist(app)
+        print studio.nav_summary(app)
+        return
+    end if
+
+    if mode = "stu1_cycles" then
+        i = 0
+        while i < 50
+            a = studio.launch(home)
+            studio.persist(a)
             i = i + 1
         end while
         print "cycles_done=50"

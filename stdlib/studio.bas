@@ -24,7 +24,8 @@ library studio
             home: home,
             settings_file: home + "/settings.json",
             session_file: home + "/session.json",
-            workspaces_dir: home + "/workspaces"
+            workspaces_dir: home + "/workspaces",
+            registry_file: home + "/workspaces.json"
         }
     end function
 
@@ -220,6 +221,188 @@ library studio
             lines = append(lines, "tabs.active=" + ws.tabs.active)
         end if
         lines = append(lines, "diagnostics=" + join(app.diagnostics, ";"))
+        return join(lines, "\n")
+    end function
+
+    ' ======================================================================
+    ' STU-1 — workspace registry, navigation lifecycle, and workspace ops.
+    ' All additive: the STU-0 startup/shutdown/summary above are unchanged, so
+    ' STU-0 stores and goldens are untouched. The registry is a SEPARATE store
+    ' (workspaces.json) persisted via save_registry, not by shutdown.
+    ' ======================================================================
+
+    ' The set of known workspaces (for "open an existing workspace") plus the
+    ' most-recently-opened order (for "recent workspaces").
+    function default_registry()
+        return { schema_version: 1, entries: [], recent: [] }
+    end function
+
+    ' Load the workspace registry into app.registry, recovering to an empty
+    ' registry on a missing/corrupt/future-version file (diagnostic recorded).
+    function load_registry(app)
+        p = app.paths
+        st = studio_store.read_status(p.registry_file)
+        pol = studio._policy(st, studio.default_registry())
+        reg = pol.value
+        if pol.code = "loaded" then
+            defs = studio.default_registry()
+            for each k in keys(defs)
+                v = reg[k]
+                if v = unknown then
+                    reg[k] = defs[k]
+                end if
+            end for
+            reg.schema_version = 1
+        end if
+        app.registry = reg
+        app.diagnostics = append(app.diagnostics, "registry:" + pol.code)
+        return app
+    end function
+
+    function save_registry(app)
+        p = app.paths
+        studio_store.ensure_dir(p.home)
+        studio_store.write_atomic(p.registry_file, app.registry)
+    end function
+
+    ' STU-1 launch = STU-0 startup + the workspace registry.
+    function launch(home)
+        app = studio.startup(home)
+        app = studio.load_registry(app)
+        return app
+    end function
+
+    ' STU-1 persist = STU-0 shutdown (settings/session/workspace) + the registry.
+    function persist(app)
+        saved = studio.shutdown(app)
+        studio.save_registry(app)
+        saved = append(saved, "registry")
+        return saved
+    end function
+
+    ' ---- recent list helper (most-recent-first, de-duplicated) -------------
+
+    function _push_recent(recent, id)
+        kept = [id]
+        for each r in recent
+            if r != id then
+                if count(kept) < 20 then
+                    kept = append(kept, r)
+                end if
+            end if
+        end for
+        return kept
+    end function
+
+    ' ---- workspace registry operations -------------------------------------
+
+    ' Record (or update) a workspace in the registry and mark it most-recent.
+    function register_workspace(app, id, name)
+        reg = app.registry
+        entries = []
+        found = false
+        for each e in reg.entries
+            if e.id = id then
+                entries = append(entries, { id: id, name: name })
+                found = true
+            else
+                entries = append(entries, e)
+            end if
+        end for
+        if not found then
+            entries = append(entries, { id: id, name: name })
+        end if
+        reg.entries = entries
+        reg.recent = studio._push_recent(reg.recent, id)
+        app.registry = reg
+        return app
+    end function
+
+    ' Create a new workspace, install it as active, and register it. Returns the
+    ' updated app (its new workspace is app.model.workspace).
+    function create_registered_workspace(app, name)
+        app = studio.create_workspace(app, name)
+        ws = app.model.workspace
+        app = studio.register_workspace(app, ws.id, name)
+        return app
+    end function
+
+    ' Open an existing workspace by id: load its file, install it as active, and
+    ' mark it most-recent. Missing/corrupt/future file degrades gracefully (the
+    ' workspace is left closed and a diagnostic is recorded) — never a crash.
+    function open_workspace(app, id)
+        p = app.paths
+        wpath = p.workspaces_dir + "/" + id + ".json"
+        st = studio_store.read_status(wpath)
+        pol = studio._policy(st, nothing)
+        if pol.code = "loaded" then
+            ws = studio_model.normalize_workspace(pol.value)
+            model = app.model
+            model.workspace = ws
+            model.session = studio_model.set_active_workspace(model.session, id)
+            app.model = model
+            app = studio.register_workspace(app, id, ws.name)
+            app.diagnostics = append(app.diagnostics, "open:" + id + ":loaded")
+        else
+            app.diagnostics = append(app.diagnostics, "open:" + id + ":" + pol.code)
+        end if
+        return app
+    end function
+
+    ' Rename the active workspace and update its registry entry.
+    function rename_workspace(app, name)
+        model = app.model
+        ws = model.workspace
+        if ws = nothing then
+            return app
+        end if
+        ws.name = name
+        model.workspace = ws
+        app.model = model
+        app = studio.register_workspace(app, ws.id, name)
+        return app
+    end function
+
+    ' Close the active workspace: clear it from the model and the session (the
+    ' caller persists). The registry entry is kept so it can be reopened.
+    function close_workspace(app)
+        model = app.model
+        model.workspace = nothing
+        model.session = studio_model.set_active_workspace(model.session, "")
+        app.model = model
+        return app
+    end function
+
+    ' ---- STU-1 navigation summary (deterministic, path-free) ---------------
+
+    function nav_summary(app)
+        model = app.model
+        ws = model.workspace
+        reg = app.registry
+        lines = []
+        if ws = nothing then
+            lines = append(lines, "workspace=none")
+        else
+            lines = append(lines, "workspace=" + ws.id + ":" + ws.name)
+            lines = append(lines, "active_project=" + ws.active_project)
+            lines = append(lines, "projects=" + count(ws.projects))
+            for each pr in ws.projects
+                lines = append(lines, "  " + pr.id + " " + pr.name)
+            end for
+            sel = ws.nav.selected_path
+            selname = ""
+            if sel != "" then
+                selname = studio_model._basename(sel)
+            end if
+            lines = append(lines, "selected=" + selname)
+            lines = append(lines, "expanded=" + count(ws.nav.expanded))
+        end if
+        names = []
+        for each e in reg.entries
+            names = append(names, e.name)
+        end for
+        lines = append(lines, "registry=" + join(names, ","))
+        lines = append(lines, "recent=" + join(reg.recent, ","))
         return join(lines, "\n")
     end function
 

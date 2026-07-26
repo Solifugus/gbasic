@@ -55,6 +55,9 @@ library studio_model
     end function
 
     ' A fresh, empty workspace with the given stable id and display name.
+    ' `nav` holds STU-1 navigation state (browser selection + expanded dirs); it is
+    ' additive — STU-0 workspaces without it are normalized in, and it is not part of
+    ' the STU-0 summary, so existing goldens are unaffected.
     function new_workspace(id, name)
         return {
             schema_version: 1,
@@ -63,7 +66,8 @@ library studio_model
             next_seq: 1,
             active_project: "",
             projects: [],
-            tabs: { order: [], active: "" }
+            tabs: { order: [], active: "" },
+            nav: { selected_path: "", expanded: [] }
         }
     end function
 
@@ -165,6 +169,95 @@ library studio_model
             error "studio_model: unknown project: " + project_id
         end if
         ws.active_project = project_id
+        return ws
+    end function
+
+    ' Remove a project from the workspace (does NOT touch its files on disk). If it
+    ' was the active project, activation falls back to the first remaining project
+    ' (or "" when none). Returns the updated workspace. Unknown id is a no-op.
+    function remove_project(ws, project_id)
+        kept = []
+        for each p in ws.projects
+            if p.id != project_id then
+                kept = append(kept, p)
+            end if
+        end for
+        ws.projects = kept
+        if ws.active_project = project_id then
+            first = studio_model._first_project_id(ws)
+            ws.active_project = first
+        end if
+        return ws
+    end function
+
+    ' Change a project's display name (id and path are unchanged). Returns the
+    ' updated workspace (nested COW write-back).
+    function rename_project(ws, project_id, name)
+        idx = studio_model._project_index(ws, project_id)
+        if idx < 0 then
+            error "studio_model: unknown project: " + project_id
+        end if
+        proj = ws.projects[idx]
+        proj.name = name
+        ws.projects[idx] = proj
+        return ws
+    end function
+
+    ' The id of the first project, or "" when the workspace has none.
+    function _first_project_id(ws)
+        n = count(ws.projects)
+        if n = 0 then
+            return ""
+        end if
+        p = ws.projects[0]
+        return p.id
+    end function
+
+    ' The project record with `id`, or nothing.
+    function project_by_id(ws, project_id)
+        idx = studio_model._project_index(ws, project_id)
+        if idx < 0 then
+            return nothing
+        end if
+        return ws.projects[idx]
+    end function
+
+    ' ---- navigation state (STU-1 browser: selection + expansion) ------------
+
+    ' Record the browser's selected node path. Returns the updated workspace.
+    function set_selected_path(ws, path)
+        nav = ws.nav
+        nav.selected_path = path
+        ws.nav = nav
+        return ws
+    end function
+
+    ' True when a directory path is currently expanded in the browser.
+    function is_expanded(ws, path)
+        return contains(ws.nav.expanded, path)
+    end function
+
+    ' Toggle a directory path's expanded state. Returns the updated workspace.
+    function toggle_expanded(ws, path)
+        nav = ws.nav
+        present = contains(nav.expanded, path)
+        if present then
+            nav.expanded = remove_value(nav.expanded, path)
+        else
+            nav.expanded = append(nav.expanded, path)
+        end if
+        ws.nav = nav
+        return ws
+    end function
+
+    ' Mark a directory path expanded (idempotent). Returns the updated workspace.
+    function expand_path(ws, path)
+        nav = ws.nav
+        present = contains(nav.expanded, path)
+        if not present then
+            nav.expanded = append(nav.expanded, path)
+        end if
+        ws.nav = nav
         return ws
     end function
 
