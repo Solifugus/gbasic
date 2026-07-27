@@ -1,0 +1,7 @@
+half1_bytes=20
+total_bytes=44
+exit_code=0
+assembled=<line-one
+line-two
+héllo
+no-trailing-newline>

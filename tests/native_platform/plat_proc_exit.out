@@ -1,0 +1,8 @@
+running=false
+exit_code=3
+success=false
+signal=0
+out=<to-stdout
+>
+err=<to-stderr
+>

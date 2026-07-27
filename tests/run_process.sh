@@ -33,6 +33,19 @@ positive_cases=(
     nap6_cwd
     nap6_timeout
     nap6_churn
+    # PLAT-PROC: live child control (process.start/poll/read/wait/stop/release).
+    # Every case is deterministic by construction, not by timing: the fixtures that
+    # need "output arrived while the child was still running" gate the child on a
+    # file the parent creates, so the child provably cannot proceed or exit until
+    # the parent says so -- true on a fast host, a loaded host, and under valgrind.
+    plat_proc_basic
+    plat_proc_exit
+    plat_proc_big
+    plat_proc_stop
+    plat_proc_ignore
+    plat_proc_interleave
+    plat_proc_bytes
+    plat_proc_actor
 )
 
 for name in "${positive_cases[@]}"; do
@@ -65,6 +78,10 @@ negative_cases=(
     negative_nap6_no_command
     negative_nap6_command_type
     negative_nap6_arg_type
+    negative_plat_proc_unknown
+    negative_plat_proc_handle
+    negative_plat_proc_start_command
+    negative_plat_proc_missing
 )
 
 for name in "${negative_cases[@]}"; do
@@ -101,3 +118,59 @@ for name in "${negative_cases[@]}"; do
         exit 1
     fi
 done
+
+# --- PLAT-PROC resource accounting (needs `ps` for the zombie count) -------
+# Abandoning a handle -- dropping the last reference with no explicit release --
+# must leak neither a descriptor nor a zombie, both when the child is already dead
+# and when it is still running. The fixture measures the interpreter's own
+# /proc/<pid>/fd and its zombie children from a child `sh` (for which gbasic is
+# $PPID), as deltas against a baseline so the measuring process.run's own transient
+# fds cancel out.
+if command -v ps >/dev/null 2>&1; then
+    : >"$stdout_file"
+    : >"$stderr_file"
+    if timeout 120 ./gbasic tests/native_platform/plat_proc_abandon.bas \
+            >"$stdout_file" 2>"$stderr_file"; then
+        if diff -u tests/native_platform/plat_proc_abandon.out "$stdout_file"; then
+            printf 'PASS tests/native_platform/plat_proc_abandon.bas\n'
+        else
+            printf 'FAIL tests/native_platform/plat_proc_abandon.bas\n'
+            exit 1
+        fi
+    else
+        printf 'FAIL tests/native_platform/plat_proc_abandon.bas (exit)\n'
+        cat "$stderr_file"
+        exit 1
+    fi
+    # ...and nothing this interpreter started may outlive it: the fixture abandons
+    # 25 LIVE children, which teardown must kill rather than orphan onto the host.
+    # Each child recorded its own pid, so this checks the exact processes with
+    # `kill -0` rather than matching command-line text (which would also match this
+    # runner). Retry briefly: teardown's SIGKILL and the reap are not instantaneous.
+    pidfile=/tmp/gbasic_plat_proc_abandon.pids
+    survivors=""
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+        survivors=""
+        while read -r pid; do
+            [ -n "$pid" ] || continue
+            if kill -0 "$pid" 2>/dev/null; then
+                survivors="$survivors $pid"
+            fi
+        done <"$pidfile"
+        [ -n "$survivors" ] || break
+        sleep 0.2
+    done
+    if [ -n "$survivors" ]; then
+        printf 'FAIL plat_proc_abandon (children survived interpreter exit:%s)\n' "$survivors"
+        rm -f "$pidfile"
+        exit 1
+    fi
+    # Loop A's children are signalled the instant they start, so most die before
+    # they can record a pid; the file is therefore dominated by loop B -- the
+    # LIVE-abandoned children, which are exactly the ones at risk of surviving.
+    printf 'PASS plat_proc_abandon (%d recorded child pids, none survived)\n' \
+        "$(wc -l <"$pidfile")"
+    rm -f "$pidfile"
+else
+    printf 'SKIP tests/native_platform/plat_proc_abandon.bas (ps not installed)\n'
+fi

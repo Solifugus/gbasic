@@ -1,0 +1,1 @@
+runtime error at tests/native_platform/negative_plat_proc_handle.bas:2:1: process.poll expects a process handle from process.start

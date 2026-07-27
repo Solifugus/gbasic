@@ -165,6 +165,7 @@ typedef struct XmlReaderValue XmlReaderValue;
 typedef struct GObjectValue GObjectValue;
 typedef struct GBoxedValue GBoxedValue;
 typedef struct ActorHandle ActorHandle;
+typedef struct ProcessHandle ProcessHandle;
 typedef struct WebServer WebServer;
 typedef struct WebServerClient WebServerClient;
 
@@ -184,6 +185,7 @@ typedef enum {
     VALUE_POSTGRES_CONNECTION,
     VALUE_SQLITE_CONNECTION,
     VALUE_XML_READER,
+    VALUE_PROCESS,
     VALUE_GOBJECT,
     VALUE_ACTOR,
     VALUE_FUNCTION,
@@ -267,6 +269,7 @@ struct Value {
         GObjectValue *gobject;
         GBoxedValue *gboxed;
         ActorHandle *actor;
+        ProcessHandle *process;
         /* A first-class function value: a reference to a registered function by
          * name (NOT a capturing closure — see docs/first_class_functions_design.md
          * §2). `library` is the owning library for an imported function, or NULL
@@ -354,6 +357,42 @@ struct GBoxedValue {
 struct ActorHandle {
     int write_fd;
     uint64_t id;
+    size_t ref_count;
+};
+
+/* A growable byte buffer, used for child output. Declared here (rather than beside
+ * the process module far below) because ProcessHandle embeds two of them and the
+ * value lifecycle needs the full type. */
+typedef struct {
+    char *data;
+    size_t len;
+    size_t cap;
+} ProcBuf;
+
+/* PLAT-PROC: a handle to a LIVE child process started by `process.start`.
+ *
+ * Refcounted exactly like ActorHandle and the connection wrappers, so copies made
+ * by gBASIC's copy-on-read (`env_get` -> `value_copy`) share ONE child rather than
+ * duplicating a pid: polling through one copy must observe what another copy's
+ * `stop` did. The last reference going away is the ABANDONMENT case — see
+ * process_handle_release, which is why dropping a handle can never leak.
+ *
+ * `pid` is also the child's process-group id (the child calls `setpgid(0,0)`), so
+ * signals reach the whole tree, matching process.run's timeout behavior.
+ *
+ * `pending_out`/`pending_err` hold bytes drained off the pipes but not yet handed
+ * to the program. They exist because `wait` must keep draining to avoid the
+ * classic full-pipe deadlock, and those bytes must still reach a later `read`.
+ * Bytes are appended here exactly once and removed exactly once — that is the
+ * whole of the "no loss, no duplication across reads" guarantee. */
+struct ProcessHandle {
+    pid_t pid;
+    int out_fd;             /* read end, O_NONBLOCK; -1 once EOF or closed */
+    int err_fd;
+    ProcBuf pending_out;
+    ProcBuf pending_err;
+    int reaped;             /* waitpid completed; `status` is final */
+    int status;             /* raw wait(2) status, valid when reaped */
     size_t ref_count;
 };
 
@@ -587,6 +626,8 @@ static const char *value_kind_name(ValueKind kind) {
         return "gboxed";
     case VALUE_ACTOR:
         return "actor";
+    case VALUE_PROCESS:
+        return "process";
     case VALUE_FUNCTION:
         return "function";
     }
@@ -1127,6 +1168,104 @@ static void gboxed_release(GBoxedValue *handle) {
     }
 }
 
+/* ---- PLAT-PROC child bookkeeping ---------------------------------------
+ *
+ * Children whose handle went away while they were still running. They are NOT
+ * killed at that moment: dropping a variable is not a decision to end a process,
+ * and a handle copy going out of scope inside a helper function must not be
+ * lethal. They are instead reaped opportunistically (a targeted WNOHANG on every
+ * later process.* call) and, at program teardown, killed and reaped for real so
+ * nothing outlives the interpreter — the same bargain the actor system strikes
+ * with actor_cleanup_children.
+ *
+ * Reaping is always TARGETED (waitpid on a specific pid), never waitpid(-1, …), so
+ * it can never steal the child that a concurrent process.run is waiting for. */
+typedef struct ProcOrphan {
+    pid_t pid;
+    struct ProcOrphan *next;
+} ProcOrphan;
+
+static ProcOrphan *proc_orphans = NULL;
+
+static void proc_orphan_add(pid_t pid) {
+    ProcOrphan *o = calloc(1, sizeof(ProcOrphan));
+    if (!o) {
+        abort();
+    }
+    o->pid = pid;
+    o->next = proc_orphans;
+    proc_orphans = o;
+}
+
+/* Reap any orphan that has since exited. Non-blocking; leaves the still-running
+ * ones on the list. Called from every process.* entry point, so a start/abandon
+ * loop cannot accumulate zombies. */
+static void proc_orphans_sweep(void) {
+    ProcOrphan **link = &proc_orphans;
+    while (*link) {
+        ProcOrphan *o = *link;
+        int st;
+        pid_t r;
+        do {
+            r = waitpid(o->pid, &st, WNOHANG);
+        } while (r < 0 && errno == EINTR);
+        if (r == 0) {              /* still running: keep it for later */
+            link = &o->next;
+        } else {                   /* reaped, or already gone (ECHILD) */
+            *link = o->next;
+            free(o);
+        }
+    }
+}
+
+/* Program teardown: nothing this interpreter started may outlive it. SIGKILL the
+ * group (not just the pid) so a shell's own children go too, then reap for real. */
+static void proc_orphans_clear(void) {
+    while (proc_orphans) {
+        ProcOrphan *o = proc_orphans;
+        proc_orphans = o->next;
+        kill(-o->pid, SIGKILL);
+        kill(o->pid, SIGKILL);
+        int st;
+        pid_t r;
+        do {
+            r = waitpid(o->pid, &st, 0);
+        } while (r < 0 && errno == EINTR);
+        free(o);
+    }
+}
+
+/* Refcount release for a process handle. The last reference is the ABANDONMENT
+ * point, and it must leave neither an open descriptor nor a zombie: the pipes are
+ * closed here unconditionally, and the child is either reaped on the spot (if it
+ * has already exited) or handed to the orphan list above. */
+static void process_handle_release(ProcessHandle *handle) {
+    if (!handle) {
+        return;
+    }
+    if (--handle->ref_count == 0) {
+        if (handle->out_fd >= 0) {
+            close(handle->out_fd);
+        }
+        if (handle->err_fd >= 0) {
+            close(handle->err_fd);
+        }
+        free(handle->pending_out.data);
+        free(handle->pending_err.data);
+        if (!handle->reaped) {
+            int st;
+            pid_t r;
+            do {
+                r = waitpid(handle->pid, &st, WNOHANG);
+            } while (r < 0 && errno == EINTR);
+            if (r == 0) {
+                proc_orphan_add(handle->pid);
+            }
+        }
+        free(handle);
+    }
+}
+
 #if HAVE_GIR
 /* Quark under which each GObject stores a back-pointer to its one canonical
  * wrapper (qdata canonicalization). Looked up lazily so no work happens unless the
@@ -1357,6 +1496,12 @@ static Value value_copy(Value value) {
         value.as.actor->ref_count++;
         return value;
     }
+    if (value.kind == VALUE_PROCESS) {
+        /* Reference semantics: every copy names the SAME child, so a stop seen
+         * through one copy is a stop seen through all of them. */
+        value.as.process->ref_count++;
+        return value;
+    }
     if (value.kind == VALUE_FUNCTION) {
         return value_function(value.as.function.name, value.as.function.library);
     }
@@ -1437,6 +1582,8 @@ static void value_free(Value value) {
         gobject_release(value.as.gobject);
     } else if (value.kind == VALUE_GBOXED) {
         gboxed_release(value.as.gboxed);
+    } else if (value.kind == VALUE_PROCESS) {
+        process_handle_release(value.as.process);
     } else if (value.kind == VALUE_ACTOR) {
         ActorHandle *handle = value.as.actor;
         if (handle && --handle->ref_count == 0) {
@@ -1575,6 +1722,8 @@ static int value_truthy(Value value) {
     case VALUE_GBOXED:
         return 1;
     case VALUE_ACTOR:
+        return 1;
+    case VALUE_PROCESS:
         return 1;
     case VALUE_FUNCTION:
         return 1;
@@ -1737,6 +1886,9 @@ static void value_print(Value value) {
         break;
     case VALUE_ACTOR:
         printf("<actor>\n");
+        break;
+    case VALUE_PROCESS:
+        printf("<process>\n");
         break;
     case VALUE_FUNCTION:
         printf("<function %s>\n", value.as.function.name);
@@ -2095,6 +2247,10 @@ static int value_storage_equal(const Value *left, const Value *right) {
         return left->as.gboxed == right->as.gboxed;
     case VALUE_ACTOR:
         return left->as.actor->id == right->as.actor->id;
+    case VALUE_PROCESS:
+        /* Identity by handle: copies of one handle compare equal, two separately
+         * started children never do (even running the same command). */
+        return left->as.process == right->as.process;
     case VALUE_FUNCTION:
         return function_value_equal(left, right);
     }
@@ -6679,6 +6835,8 @@ static const char *builtin_type_name(Value value) {
         return "gboxed";
     case VALUE_ACTOR:
         return "actor";
+    case VALUE_PROCESS:
+        return "process";
     case VALUE_FUNCTION:
         return "function";
     }
@@ -6982,6 +7140,9 @@ static Value builtin_string_value(Value value) {
     case VALUE_ACTOR:
         value_free(value);
         return value_string("<actor>");
+    case VALUE_PROCESS:
+        value_free(value);
+        return value_string("<process>");
     case VALUE_FUNCTION:
         snprintf(buffer, sizeof(buffer), "<function %s>", value.as.function.name);
         value_free(value);
@@ -7075,6 +7236,7 @@ static int encode_value_to_builder(StringBuilder *builder, Value value, int stri
     case VALUE_GOBJECT:
     case VALUE_GBOXED:
     case VALUE_ACTOR:
+    case VALUE_PROCESS:
     case VALUE_FUNCTION:
         if (strict_json) {
             runtime_error_raise("json_encode supports numbers, strings, booleans, "
@@ -7399,6 +7561,13 @@ static int serialize_value(SerBuf *b, Value v, int depth) {
         return 0;
     case VALUE_GBOXED:
         runtime_error_raise("serialize: boxed values cannot be serialized",
+                            1003, "actor");
+        return 0;
+    case VALUE_PROCESS:
+        /* A process handle owns pipe fds and a wait(2) relationship that only the
+         * process that forked the child holds. It is a local capability, not data:
+         * shipping it would hand a peer a pid it can neither read nor reap. */
+        runtime_error_raise("serialize: process handles cannot be serialized",
                             1003, "actor");
         return 0;
     case VALUE_ACTOR:
@@ -8857,6 +9026,7 @@ int eval_run_actor(AstStmtList program, const char *entry,
     value_free(result);
 
     actor_cleanup_children();
+    proc_orphans_clear();
     retain_clear();
     monitor_clear();
     function_clear();
@@ -15135,12 +15305,6 @@ static Value gi_eval_call(AstExpr *expr) {
  * record. Self-contained POSIX code — deliberately NOT coupled to the actor spawn
  * plumbing, whose fd/mailbox/serialization contract is actor-specific. */
 
-typedef struct {
-    char *data;
-    size_t len;
-    size_t cap;
-} ProcBuf;
-
 static void procbuf_append(ProcBuf *b, const char *src, size_t n) {
     if (n == 0) {
         return;
@@ -15472,9 +15636,644 @@ static Value process_do_run(AstExpr *expr) {
     return result;
 }
 
+/* ===================== PLAT-PROC: live child control =====================
+ * process.run above is fire-and-forget: it decides everything before the child
+ * starts and hands back one record after it is gone. These six primitives expose
+ * the SAME child machinery while the child is alive — start, poll, read, wait,
+ * stop, release — so a gBASIC program can supervise a process it started.
+ *
+ * Deliberately additive: process.run's code path is untouched, and the two share
+ * only the option parser and the launcher below. */
+
+static Value value_process(ProcessHandle *handle) {
+    Value v;
+    v.kind = VALUE_PROCESS;
+    v.as.process = handle;
+    return v;
+}
+
+/* The validated launch inputs, borrowed from the caller's options record (valid
+ * until that record is freed). */
+typedef struct {
+    char **argv;          /* owned by the caller of process_parse_options */
+    const char *cwd;      /* borrowed, or NULL */
+} ProcLaunch;
+
+/* Validate the shared `{command, args, cwd}` options and build argv. `label` names
+ * the calling verb so the diagnostics read "process.start: …" or "process.run: …".
+ * On success returns 1 and fills *out (caller frees out->argv). On failure raises
+ * and returns 0. */
+static int process_parse_options(Value *opts, const char *label, ProcLaunch *out) {
+    char msg[200];
+    out->argv = NULL;
+    out->cwd = NULL;
+
+    RecordField *cmd_f = record_find(opts, "command");
+    if (!cmd_f || cmd_f->value->kind != VALUE_STRING) {
+        snprintf(msg, sizeof(msg), "%s: options.command must be a string", label);
+        process_raise(msg);
+        return 0;
+    }
+    if (!process_str_no_nul(cmd_f->value)) {
+        snprintf(msg, sizeof(msg), "%s: options.command contains a NUL byte", label);
+        process_raise(msg);
+        return 0;
+    }
+
+    size_t nargs = 0;
+    Value *arg_items = NULL;
+    RecordField *args_f = record_find(opts, "args");
+    if (args_f) {
+        if (args_f->value->kind != VALUE_ARRAY) {
+            snprintf(msg, sizeof(msg), "%s: options.args must be an array", label);
+            process_raise(msg);
+            return 0;
+        }
+        arg_items = args_f->value->as.array.store->items;
+        nargs = args_f->value->as.array.store->count;
+        for (size_t i = 0; i < nargs; i++) {
+            if (arg_items[i].kind != VALUE_STRING) {
+                snprintf(msg, sizeof(msg), "%s: every args element must be a string", label);
+                process_raise(msg);
+                return 0;
+            }
+            if (!process_str_no_nul(&arg_items[i])) {
+                snprintf(msg, sizeof(msg), "%s: an args element contains a NUL byte", label);
+                process_raise(msg);
+                return 0;
+            }
+        }
+    }
+
+    RecordField *cwd_f = record_find(opts, "cwd");
+    if (cwd_f) {
+        if (cwd_f->value->kind != VALUE_STRING || !process_str_no_nul(cwd_f->value)) {
+            snprintf(msg, sizeof(msg), "%s: options.cwd must be a string without NUL", label);
+            process_raise(msg);
+            return 0;
+        }
+        out->cwd = cwd_f->value->as.string;
+    }
+
+    out->argv = calloc(nargs + 2, sizeof(char *));
+    if (!out->argv) {
+        abort();
+    }
+    out->argv[0] = cmd_f->value->as.string;
+    for (size_t i = 0; i < nargs; i++) {
+        out->argv[i + 1] = arg_items[i].as.string;
+    }
+    out->argv[nargs + 1] = NULL;
+    return 1;
+}
+
+/* fork + execvp with piped stdout/stderr, identical in every observable respect to
+ * process.run's launch (own process group, CLOEXEC exec-error pipe so a failed
+ * exec is distinguishable from a real exit 127). On success returns the pid and
+ * fills the out_fd/err_fd outputs. Returns -1 and sets launch_errno on exec
+ * failure, or -2 on a pipe/fork failure. */
+static pid_t process_launch(char **argv, const char *cwd,
+                            int *out_fd, int *err_fd, int *launch_errno) {
+    int out_pipe[2] = {-1, -1}, err_pipe[2] = {-1, -1}, exec_pipe[2] = {-1, -1};
+    *launch_errno = 0;
+    if (pipe(out_pipe) != 0 || pipe(err_pipe) != 0 || pipe(exec_pipe) != 0) {
+        for (int i = 0; i < 2; i++) {
+            if (out_pipe[i] >= 0) close(out_pipe[i]);
+            if (err_pipe[i] >= 0) close(err_pipe[i]);
+            if (exec_pipe[i] >= 0) close(exec_pipe[i]);
+        }
+        return -2;
+    }
+    fcntl(exec_pipe[1], F_SETFD, fcntl(exec_pipe[1], F_GETFD) | FD_CLOEXEC);
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        close(out_pipe[0]); close(out_pipe[1]);
+        close(err_pipe[0]); close(err_pipe[1]);
+        close(exec_pipe[0]); close(exec_pipe[1]);
+        return -2;
+    }
+    if (pid == 0) {
+        setpgid(0, 0);
+        if (dup2(out_pipe[1], STDOUT_FILENO) < 0 || dup2(err_pipe[1], STDERR_FILENO) < 0) {
+            int e = errno;
+            ssize_t w = write(exec_pipe[1], &e, sizeof(e)); (void)w;
+            _exit(127);
+        }
+        close(out_pipe[0]); close(out_pipe[1]);
+        close(err_pipe[0]); close(err_pipe[1]);
+        close(exec_pipe[0]);
+        if (cwd && chdir(cwd) != 0) {
+            int e = errno;
+            ssize_t w = write(exec_pipe[1], &e, sizeof(e)); (void)w;
+            _exit(127);
+        }
+        execvp(argv[0], argv);
+        int e = errno;
+        ssize_t w = write(exec_pipe[1], &e, sizeof(e)); (void)w;
+        _exit(127);
+    }
+
+    setpgid(pid, pid);
+    close(out_pipe[1]);
+    close(err_pipe[1]);
+    close(exec_pipe[1]);
+
+    int child_errno = 0;
+    {
+        char eb[sizeof(int)];
+        size_t got = 0;
+        while (got < sizeof(eb)) {
+            ssize_t r = read(exec_pipe[0], eb + got, sizeof(eb) - got);
+            if (r > 0) { got += (size_t)r; continue; }
+            if (r == 0) break;
+            if (errno == EINTR) continue;
+            break;
+        }
+        close(exec_pipe[0]);
+        if (got == sizeof(eb)) {
+            memcpy(&child_errno, eb, sizeof(int));
+        }
+    }
+    if (child_errno != 0) {
+        close(out_pipe[0]);
+        close(err_pipe[0]);
+        int st;
+        while (waitpid(pid, &st, 0) < 0 && errno == EINTR) { }
+        *launch_errno = child_errno;
+        return -1;
+    }
+
+    *out_fd = out_pipe[0];
+    *err_fd = err_pipe[0];
+    return pid;
+}
+
+/* Move whatever has already arrived off the pipes and into the handle's pending
+ * buffers. NEVER blocks: both fds are O_NONBLOCK, so a read with nothing ready
+ * returns EAGAIN and we stop. This is the only place bytes enter the handle. */
+static void process_pump(ProcessHandle *h) {
+    char buf[65536];
+    for (int which = 0; which < 2; which++) {
+        int *fd = which ? &h->err_fd : &h->out_fd;
+        ProcBuf *b = which ? &h->pending_err : &h->pending_out;
+        while (*fd >= 0) {
+            ssize_t r = read(*fd, buf, sizeof(buf));
+            if (r > 0) {
+                procbuf_append(b, buf, (size_t)r);
+                continue;
+            }
+            if (r == 0) {                       /* writer closed: EOF */
+                close(*fd);
+                *fd = -1;
+                break;
+            }
+            if (errno == EINTR) {
+                continue;
+            }
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                break;                          /* nothing more right now */
+            }
+            close(*fd);                         /* unrecoverable: treat as EOF */
+            *fd = -1;
+            break;
+        }
+    }
+}
+
+/* Targeted, non-blocking reap. Records the final status the first time it lands. */
+static void process_try_reap(ProcessHandle *h) {
+    if (h->reaped) {
+        return;
+    }
+    int st;
+    pid_t r;
+    do {
+        r = waitpid(h->pid, &st, WNOHANG);
+    } while (r < 0 && errno == EINTR);
+    if (r == h->pid) {
+        h->status = st;
+        h->reaped = 1;
+    } else if (r < 0) {
+        h->status = 0;      /* ECHILD: already gone; treat as exit 0 unknown */
+        h->reaped = 1;
+    }
+}
+
+/* Wait until the child has exited AND its pipes have hit EOF (so no output is
+ * stranded), or until timeout_ms elapses. timeout_ms < 0 waits indefinitely.
+ * Pumps throughout, which is what keeps a child writing more than a pipe buffer
+ * from deadlocking against us. Returns 1 if reaped, 0 if it timed out. */
+static int process_wait_until(ProcessHandle *h, long timeout_ms) {
+    const long tick_ms = 20;
+    long elapsed_ms = 0;
+    for (;;) {
+        process_pump(h);
+        process_try_reap(h);
+        if (h->reaped && h->out_fd < 0 && h->err_fd < 0) {
+            return 1;
+        }
+        if (timeout_ms >= 0 && elapsed_ms >= timeout_ms) {
+            return h->reaped ? 1 : 0;
+        }
+        long slice = tick_ms;
+        if (timeout_ms >= 0 && timeout_ms - elapsed_ms < slice) {
+            slice = timeout_ms - elapsed_ms;
+            if (slice < 1) slice = 1;
+        }
+        struct pollfd pfds[2];
+        nfds_t n = 0;
+        if (h->out_fd >= 0) { pfds[n].fd = h->out_fd; pfds[n].events = POLLIN; n++; }
+        if (h->err_fd >= 0) { pfds[n].fd = h->err_fd; pfds[n].events = POLLIN; n++; }
+        if (n > 0) {
+            int pr = poll(pfds, n, (int)slice);
+            if (pr < 0 && errno != EINTR) {
+                /* Unrecoverable poll error: fall back to the sleep path below. */
+                struct timespec ts = { slice / 1000, (slice % 1000) * 1000000L };
+                nanosleep(&ts, NULL);
+            }
+        } else {
+            /* Both pipes are at EOF but the child has not been reaped yet. */
+            struct timespec ts = { slice / 1000, (slice % 1000) * 1000000L };
+            nanosleep(&ts, NULL);
+        }
+        elapsed_ms += slice;
+    }
+}
+
+/* The status record shared by poll/wait/stop: {running, exit_code, signal, success}.
+ * `running` is the timeout signal too — a wait that returns with running still true
+ * is a wait that expired. exit_code is -1 whenever there is no exit code to give
+ * (still running, or terminated by a signal), matching process.run's convention. */
+static Value process_make_status(ProcessHandle *h) {
+    int running = !h->reaped;
+    int exit_code = -1;
+    int signal_num = 0;
+    int success = 0;
+    if (h->reaped) {
+        if (WIFEXITED(h->status)) {
+            exit_code = WEXITSTATUS(h->status);
+            success = (exit_code == 0);
+        } else if (WIFSIGNALED(h->status)) {
+            signal_num = WTERMSIG(h->status);
+        }
+    }
+    RecordField *fields = calloc(4, sizeof(RecordField));
+    if (!fields) {
+        abort();
+    }
+    const char *names[] = {"running", "exit_code", "signal", "success"};
+    for (size_t i = 0; i < 4; i++) {
+        fields[i].name = copy_string(names[i]);
+        fields[i].value = cell_alloc();
+        if (!fields[i].value) {
+            abort();
+        }
+    }
+    *fields[0].value = value_bool(running);
+    *fields[1].value = value_number(exit_code);
+    *fields[2].value = value_number(signal_num);
+    *fields[3].value = value_bool(success);
+    return value_record(fields, 4);
+}
+
+/* Hand over everything buffered so far and clear it, so the next call starts where
+ * this one stopped. Bytes leave the handle exactly once: nothing is copied back,
+ * and nothing is dropped. Note this frames NOTHING — a partial line is simply the
+ * bytes that have arrived, and its remainder appears in a later read. */
+static Value process_make_chunk(ProcessHandle *h) {
+    RecordField *fields = calloc(2, sizeof(RecordField));
+    if (!fields) {
+        abort();
+    }
+    const char *names[] = {"stdout", "stderr"};
+    for (size_t i = 0; i < 2; i++) {
+        fields[i].name = copy_string(names[i]);
+        fields[i].value = cell_alloc();
+        if (!fields[i].value) {
+            abort();
+        }
+    }
+    *fields[0].value = value_string_n(h->pending_out.data ? h->pending_out.data : "",
+                                      h->pending_out.len);
+    *fields[1].value = value_string_n(h->pending_err.data ? h->pending_err.data : "",
+                                      h->pending_err.len);
+    h->pending_out.len = 0;
+    h->pending_err.len = 0;
+    return value_record(fields, 2);
+}
+
+/* Evaluate argument `index` and require it to be a process handle. On success the
+ * BORROWED handle is returned and *owner holds the value the caller must free. */
+static ProcessHandle *process_arg_handle(AstExpr *expr, const char *label,
+                                         Value *owner) {
+    char msg[160];
+    *owner = value_null();
+    if (expr->as.call.args.count < 1) {
+        snprintf(msg, sizeof(msg), "%s expects a process handle", label);
+        process_raise(msg);
+        return NULL;
+    }
+    Value v = eval_expr(expr->as.call.args.items[0]);
+    if (error_action_pending()) {
+        value_free(v);
+        return NULL;
+    }
+    if (v.kind != VALUE_PROCESS) {
+        value_free(v);
+        snprintf(msg, sizeof(msg), "%s expects a process handle from process.start", label);
+        process_raise(msg);
+        return NULL;
+    }
+    *owner = v;
+    return v.as.process;
+}
+
+/* Read an optional positive seconds field into milliseconds. Returns 1 on success
+ * (with *out_ms = -1 when the field is absent), 0 after raising. */
+static int process_opt_seconds(Value *opts, const char *field, const char *label,
+                               long *out_ms) {
+    char msg[200];
+    *out_ms = -1;
+    RecordField *f = record_find(opts, field);
+    if (!f) {
+        return 1;
+    }
+    if (f->value->kind != VALUE_NUMBER) {
+        snprintf(msg, sizeof(msg), "%s: options.%s must be a number of seconds",
+                 label, field);
+        process_raise(msg);
+        return 0;
+    }
+    double secs = f->value->as.number;
+    if (secs < 0) {
+        snprintf(msg, sizeof(msg), "%s: options.%s must not be negative", label, field);
+        process_raise(msg);
+        return 0;
+    }
+    *out_ms = (long)(secs * 1000.0);
+    if (secs > 0 && *out_ms < 1) {
+        *out_ms = 1;
+    }
+    return 1;
+}
+
+/* process.start(options) -> handle. Same options as process.run minus `timeout`,
+ * which has no meaning without a blocking wait to bound. */
+static Value process_do_start(AstExpr *expr) {
+    proc_orphans_sweep();
+    if (expr->as.call.args.count != 1) {
+        return process_raise("process.start expects a single options record");
+    }
+    Value opts = eval_expr(expr->as.call.args.items[0]);
+    if (error_action_pending()) { value_free(opts); return value_null(); }
+    if (opts.kind != VALUE_RECORD) {
+        value_free(opts);
+        return process_raise("process.start expects an options record");
+    }
+    if (record_find(&opts, "timeout")) {
+        value_free(opts);
+        return process_raise("process.start: options.timeout is not supported; "
+                             "bound the run with process.wait(handle, seconds) or "
+                             "end it with process.stop");
+    }
+
+    ProcLaunch launch;
+    if (!process_parse_options(&opts, "process.start", &launch)) {
+        value_free(opts);
+        return value_null();
+    }
+
+    int out_fd = -1, err_fd = -1, launch_errno = 0;
+    pid_t pid = process_launch(launch.argv, launch.cwd, &out_fd, &err_fd, &launch_errno);
+    if (pid == -2) {
+        free(launch.argv);
+        value_free(opts);
+        return process_raise("process.start: could not create pipes or fork");
+    }
+    if (pid == -1) {
+        /* Build the message before freeing opts: argv borrows that record. */
+        char msg[320];
+        snprintf(msg, sizeof(msg), "process.start: could not execute '%s': %s",
+                 launch.argv[0], strerror(launch_errno));
+        free(launch.argv);
+        value_free(opts);
+        return process_raise(msg);
+    }
+    free(launch.argv);
+    value_free(opts);
+
+    /* Non-blocking from here on, so process.read can never stall the program. */
+    fcntl(out_fd, F_SETFL, fcntl(out_fd, F_GETFL, 0) | O_NONBLOCK);
+    fcntl(err_fd, F_SETFL, fcntl(err_fd, F_GETFL, 0) | O_NONBLOCK);
+
+    ProcessHandle *h = calloc(1, sizeof(ProcessHandle));
+    if (!h) {
+        abort();
+    }
+    h->pid = pid;
+    h->out_fd = out_fd;
+    h->err_fd = err_fd;
+    h->ref_count = 1;
+    return value_process(h);
+}
+
+/* process.poll(handle) -> status. Never blocks; also pumps, so polling in a loop
+ * keeps a chatty child from filling its pipe. */
+static Value process_do_poll(AstExpr *expr) {
+    proc_orphans_sweep();
+    Value owner;
+    ProcessHandle *h = process_arg_handle(expr, "process.poll", &owner);
+    if (!h) {
+        return value_null();
+    }
+    if (expr->as.call.args.count != 1) {
+        value_free(owner);
+        return process_raise("process.poll expects exactly one argument");
+    }
+    process_pump(h);
+    process_try_reap(h);
+    Value r = process_make_status(h);
+    value_free(owner);
+    return r;
+}
+
+/* process.read(handle) -> {stdout, stderr} available now. Never blocks. */
+static Value process_do_read(AstExpr *expr) {
+    proc_orphans_sweep();
+    Value owner;
+    ProcessHandle *h = process_arg_handle(expr, "process.read", &owner);
+    if (!h) {
+        return value_null();
+    }
+    if (expr->as.call.args.count != 1) {
+        value_free(owner);
+        return process_raise("process.read expects exactly one argument");
+    }
+    process_pump(h);
+    Value r = process_make_chunk(h);
+    value_free(owner);
+    return r;
+}
+
+/* process.wait(handle[, seconds]) -> status. Without a timeout, waits for exit;
+ * with one, gives up after that long and reports `running: true`. */
+static Value process_do_wait(AstExpr *expr) {
+    proc_orphans_sweep();
+    Value owner;
+    ProcessHandle *h = process_arg_handle(expr, "process.wait", &owner);
+    if (!h) {
+        return value_null();
+    }
+    size_t argc = expr->as.call.args.count;
+    if (argc > 2) {
+        value_free(owner);
+        return process_raise("process.wait expects a handle and an optional timeout");
+    }
+    long timeout_ms = -1;
+    if (argc == 2) {
+        Value t = eval_expr(expr->as.call.args.items[1]);
+        if (error_action_pending()) { value_free(t); value_free(owner); return value_null(); }
+        if (t.kind == VALUE_DURATION) {
+            long long ms = duration_to_ms(t.as.duration);
+            timeout_ms = ms < 0 ? 0 : (long)ms;
+        } else if (t.kind == VALUE_NUMBER) {
+            double secs = t.as.number;
+            timeout_ms = secs <= 0 ? 0 : (long)(secs * 1000.0);
+        } else {
+            value_free(t);
+            value_free(owner);
+            return process_raise("process.wait: the timeout must be a number of "
+                                 "seconds or a duration");
+        }
+        value_free(t);
+    }
+    process_wait_until(h, timeout_ms);
+    Value r = process_make_status(h);
+    value_free(owner);
+    return r;
+}
+
+/* process.stop(handle[, {force_after: seconds}]) -> status.
+ *
+ * Escalation is the CALLER's decision, never a hidden policy:
+ *   process.stop(h)                      -- SIGTERM to the group, return at once.
+ *   process.stop(h, {force_after: N})    -- SIGTERM, wait up to N seconds, then
+ *                                           SIGKILL and wait for the child to go.
+ * A child that ignores SIGTERM therefore survives the first form and only the
+ * second can end it. Signals go to the process GROUP so a shell's own children
+ * die with it, exactly as process.run's timeout does. */
+static Value process_do_stop(AstExpr *expr) {
+    proc_orphans_sweep();
+    Value owner;
+    ProcessHandle *h = process_arg_handle(expr, "process.stop", &owner);
+    if (!h) {
+        return value_null();
+    }
+    size_t argc = expr->as.call.args.count;
+    if (argc > 2) {
+        value_free(owner);
+        return process_raise("process.stop expects a handle and optional options");
+    }
+    long force_ms = -1;
+    if (argc == 2) {
+        Value o = eval_expr(expr->as.call.args.items[1]);
+        if (error_action_pending()) { value_free(o); value_free(owner); return value_null(); }
+        if (o.kind != VALUE_RECORD) {
+            value_free(o);
+            value_free(owner);
+            return process_raise("process.stop expects an options record");
+        }
+        if (!process_opt_seconds(&o, "force_after", "process.stop", &force_ms)) {
+            value_free(o);
+            value_free(owner);
+            return value_null();
+        }
+        value_free(o);
+    }
+
+    process_try_reap(h);
+    if (h->reaped) {                 /* already gone: stopping is a no-op */
+        process_pump(h);
+        Value r = process_make_status(h);
+        value_free(owner);
+        return r;
+    }
+
+    kill(-h->pid, SIGTERM);
+    kill(h->pid, SIGTERM);           /* in case setpgid lost a race */
+
+    if (force_ms < 0) {
+        /* Polite only. Do not wait: whether the child honors SIGTERM is its
+         * business, and reporting "still running" truthfully is the point. */
+        process_pump(h);
+        process_try_reap(h);
+        Value r = process_make_status(h);
+        value_free(owner);
+        return r;
+    }
+
+    if (!process_wait_until(h, force_ms)) {
+        kill(-h->pid, SIGKILL);
+        kill(h->pid, SIGKILL);
+        process_wait_until(h, -1);   /* SIGKILL is not refusable; this terminates */
+    }
+    Value r = process_make_status(h);
+    value_free(owner);
+    return r;
+}
+
+/* process.release(handle) -> nothing. Closes the pipes and reaps the child now.
+ * Idempotent, and never required for correctness — dropping the last reference to
+ * a handle does the same work (see process_handle_release). It exists so a program
+ * can be explicit about when a child is collected rather than waiting for the
+ * value to go out of scope. */
+static Value process_do_release(AstExpr *expr) {
+    proc_orphans_sweep();
+    Value owner;
+    ProcessHandle *h = process_arg_handle(expr, "process.release", &owner);
+    if (!h) {
+        return value_null();
+    }
+    if (expr->as.call.args.count != 1) {
+        value_free(owner);
+        return process_raise("process.release expects exactly one argument");
+    }
+    if (h->out_fd >= 0) { close(h->out_fd); h->out_fd = -1; }
+    if (h->err_fd >= 0) { close(h->err_fd); h->err_fd = -1; }
+    process_try_reap(h);
+    if (!h->reaped) {
+        /* Still running and the caller is done with it: hand it to the orphan
+         * list so it is reaped later rather than becoming a zombie. */
+        proc_orphan_add(h->pid);
+        h->reaped = 1;
+        h->status = 0;
+    }
+    value_free(owner);
+    return value_null();
+}
+
 static Value process_eval_call(AstExpr *expr) {
     if (strcmp(expr->as.call.name, "run") == 0) {
         return process_do_run(expr);
+    }
+    if (strcmp(expr->as.call.name, "start") == 0) {
+        return process_do_start(expr);
+    }
+    if (strcmp(expr->as.call.name, "poll") == 0) {
+        return process_do_poll(expr);
+    }
+    if (strcmp(expr->as.call.name, "read") == 0) {
+        return process_do_read(expr);
+    }
+    if (strcmp(expr->as.call.name, "wait") == 0) {
+        return process_do_wait(expr);
+    }
+    if (strcmp(expr->as.call.name, "stop") == 0) {
+        return process_do_stop(expr);
+    }
+    if (strcmp(expr->as.call.name, "release") == 0) {
+        return process_do_release(expr);
     }
     char msg[160];
     snprintf(msg, sizeof(msg), "unknown process function: process.%s", expr->as.call.name);
@@ -15508,6 +16307,7 @@ static const char *reflect_category(Value v) {
     case VALUE_GOBJECT:
     case VALUE_GBOXED:
     case VALUE_ACTOR:
+    case VALUE_PROCESS:
     case VALUE_POSTGRES_CONNECTION:
     case VALUE_SQLITE_CONNECTION:
     case VALUE_XML_READER:
@@ -21435,6 +22235,7 @@ int eval_program(AstStmtList program) {
     loop_depth = 0;
     consider_depth = 0;
     actor_cleanup_children();
+    proc_orphans_clear();
     retain_clear();
     monitor_clear();
     lock_clear();

@@ -1,0 +1,13 @@
+type=process
+running-midrun=true
+exit_code-midrun=-1
+first=<CHUNK-ONE
+>
+running-after-wait=false
+exit_code=0
+signal=0
+success=true
+all=<CHUNK-ONE
+CHUNK-TWO
+>
+after-exit-bytes=0

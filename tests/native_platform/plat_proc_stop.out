@@ -1,0 +1,5 @@
+running-before-stop=true
+running-after-stop=false
+signal=15
+exit_code=-1
+success=false

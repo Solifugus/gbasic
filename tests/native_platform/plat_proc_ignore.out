@@ -1,0 +1,6 @@
+ready=true
+after-polite-running=true
+after-polite-signal=0
+after-force-running=false
+after-force-signal=9
+after-force-success=false

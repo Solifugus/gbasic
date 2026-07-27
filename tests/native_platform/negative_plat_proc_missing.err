@@ -1,0 +1,1 @@
+runtime error at tests/native_platform/negative_plat_proc_missing.bas:3:1: process.start: could not execute './gbasic-no-such-binary-plat-proc': No such file or directory
