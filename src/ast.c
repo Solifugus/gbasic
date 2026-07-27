@@ -1059,3 +1059,57 @@ void ast_free_program(AstStmtList program) {
     }
     free(program.items);
 }
+
+/* Public single-node frees + aggregate frees, used by the parser's %destructor
+ * rules to release semantic values discarded during error recovery (they mirror
+ * the internal free_expr/free_stmt/ast_free_program above). All accept the empty/
+ * NULL case. */
+void ast_free_expr(AstExpr *expr) {
+    free_expr(expr);
+}
+
+void ast_free_stmt(AstStmt *stmt) {
+    free_stmt(stmt);
+}
+
+void ast_free_expr_list(AstExprList list) {
+    for (size_t i = 0; i < list.count; i++) {
+        free_expr(list.items[i]);
+    }
+    free(list.items);
+}
+
+void ast_free_name_list(AstNameList list) {
+    for (size_t i = 0; i < list.count; i++) {
+        free(list.items[i]);
+    }
+    free(list.items);
+}
+
+void ast_free_record_field_list(AstRecordFieldList list) {
+    for (size_t i = 0; i < list.count; i++) {
+        free(list.items[i].name);
+        free_expr(list.items[i].value);
+        free_expr(list.items[i].reset_expr);
+    }
+    free(list.items);
+}
+
+void ast_free_consider_branch_list(AstConsiderBranchList list) {
+    for (size_t i = 0; i < list.count; i++) {
+        free_expr(list.items[i].match);
+        ast_free_program(list.items[i].body);
+    }
+    free(list.items);
+}
+
+void ast_free_modifier_use(AstModifierUse modifier) {
+    free(modifier.library);
+    free(modifier.name);
+    ast_free_expr_list(modifier.args);
+}
+
+void ast_free_modifier_signature(AstModifierSignature sig) {
+    free(sig.name);
+    ast_free_name_list(sig.params);
+}

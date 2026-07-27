@@ -538,6 +538,38 @@ static void report_syntax_error(gb_parse_ctx *ctx, int line, int column,
 %type <ident_suffix> ident_suffix ident_dot_suffix
 %type <text> modifier_name modifier_word modifier_context comparison_operator variable_name watch_target_path
 
+/* Free semantic values discarded during error recovery. Without these, every
+ * syntax error leaks the AST nodes / strings that were on the parser stack — which
+ * matters now that gb_parse is called repeatedly on often-invalid source by
+ * gbasic-lsp (per keystroke) and source_outline. Bison invokes a %destructor only
+ * for symbols DISCARDED (popped on error / left on the stack at abort), never for
+ * symbols consumed by a reduction, so these do not double-free values moved into a
+ * parent node. Actions that both free a symbol and YYERROR null it first (below) so
+ * the destructor's free is a no-op. POD types (number, duration, field_policy w/o
+ * expr) need no destructor. */
+%destructor { free($$); }                              <text>
+%destructor { ast_free_expr($$); }                     <expr>
+%destructor { ast_free_stmt($$); }                     <stmt>
+%destructor { ast_free_program($$); }                  <stmt_list>
+%destructor { ast_free_expr_list($$); }                <expr_list>
+%destructor { ast_free_record_field_list($$); }        <record_field_list>
+%destructor { ast_free_consider_branch_list($$); }     <consider_branch_list>
+%destructor { ast_free_name_list($$); }                <name_list>
+%destructor { ast_free_modifier_use($$); }             <modifier>
+%destructor { ast_free_modifier_signature($$); }       <modifier_signature>
+%destructor { free($$.name); ast_free_expr_list($$.args); } <ident_suffix>
+%destructor { ast_free_expr($$.reset_expr); }          <field_policy>
+
+/* Bison also treats THE START SYMBOL AS DISCARDED WHEN THE PARSE SUCCEEDS: on
+ * YYACCEPT the cleanup loop pops the whole stack, `program` included. Its value
+ * has already been handed to ctx->parsed_program (and thence to the caller's
+ * out_program), so letting the <stmt_list> destructor above run on it frees the
+ * finished AST out from under the evaluator. This per-symbol destructor overrides
+ * the per-type one for `program` alone and deliberately does nothing — ownership
+ * moved to ctx. `program` is only ever on the stack after its own reduction, i.e.
+ * one step from accepting, so exempting it leaks nothing on the error paths. */
+%destructor { (void) $$; }                             program
+
 %%
 
 program
@@ -668,6 +700,7 @@ with_lock_statement
                                 ctx->la_end_line, ctx->la_end_column,
                                 "expected lock in with lock block");
             free($2);
+            $2 = NULL;
             YYERROR;
         }
         free($2);
@@ -786,6 +819,9 @@ use_statement
             free($2);
             free($3);
             free($4);
+            $2 = NULL;
+            $3 = NULL;
+            $4 = NULL;
             YYERROR;
         }
         free($3);
@@ -799,6 +835,9 @@ use_statement
             free($2);
             free($3);
             free($4);
+            $2 = NULL;
+            $3 = NULL;
+            $4 = NULL;
             YYERROR;
         }
         free($3);
@@ -1153,6 +1192,7 @@ field_policy
             spec.policy = AST_FIELD_POLICY_EXCLUDE;
         } else if (strcmp($1, "reset") == 0) {
             free($1);
+            $1 = NULL;
             report_syntax_error(ctx, ctx->la_line, ctx->la_column,
                                 ctx->la_end_line, ctx->la_end_column,
                                 "reset policy requires a value, e.g. (reset 0)");
@@ -1162,6 +1202,7 @@ field_policy
                                 ctx->la_end_line, ctx->la_end_column,
                                 "unknown field policy (expected copy, link, reset, or exclude)");
             free($1);
+            $1 = NULL;
             YYERROR;
         }
         free($1);
@@ -1174,6 +1215,7 @@ field_policy
             spec.reset_expr = $2;
         } else {
             free($1);
+            $1 = NULL;
             report_syntax_error(ctx, ctx->la_line, ctx->la_column,
                                 ctx->la_end_line, ctx->la_end_column,
                                 "only the reset policy takes a value");

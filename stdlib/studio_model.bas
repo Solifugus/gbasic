@@ -57,7 +57,10 @@ library studio_model
     ' A fresh, empty workspace with the given stable id and display name.
     ' `nav` holds STU-1 navigation state (browser selection + expanded dirs); it is
     ' additive — STU-0 workspaces without it are normalized in, and it is not part of
-    ' the STU-0 summary, so existing goldens are unaffected.
+    ' the STU-0 summary, so existing goldens are unaffected. `sections` (STU-3) is
+    ' additive on exactly the same terms: a list of per-document execution-section
+    ' persist records (studio_sections.to_persist tagged with its doc_id), backfilled
+    ' to [] by normalize_workspace for any workspace saved before STU-3.
     function new_workspace(id, name)
         return {
             schema_version: 1,
@@ -68,7 +71,8 @@ library studio_model
             projects: [],
             tabs: { order: [], active: "" },
             nav: { selected_path: "", expanded: [] },
-            docs: { open: [], active: "", next_doc: 1 }
+            docs: { open: [], active: "", next_doc: 1 },
+            sections: []
         }
     end function
 

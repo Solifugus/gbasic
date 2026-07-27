@@ -480,6 +480,39 @@ scenarios (insert-above shifts nothing structurally; delete-marked → stale; re
 **Out of scope.** Running any section (STU-4); breakpoints; branches; rendering the
 boundary widgets (validated as a model here; inline rendering lands with STU-5).
 
+**DONE (2026-07-27).** Additive to STU-0/STU-1/STU-2 (their stores/goldens byte-exact).
+**R1 resolved as preferred**: STU-3 consumes the general in-process `source_outline(text)`
+builtin (PLAT-OUTLINE), not a Studio-private C path and not the `--ast`/`process.run`
+stop-gap. `stdlib/studio_sections.bas` (new) — the section engine: structural derivation
+of the executed list (a lone `program` block's body when present, else the file top
+level; statement runs collapse, compound statements stay atomic, named declarations are
+landmarks), Studio-owned `sec-N` ids from a never-rewinding per-document counter,
+anchors (kind/name/ancestry/ordinal/header+body fingerprints/kinds signature/offset
+hints) over whitespace-folding byte rolling hashes so reindent and blank-line inserts do
+not disturb identity, four-tier reattachment gated on **bidirectional uniqueness** (so
+the result is iteration-order independent), `ambiguous` flagging instead of guessing on
+verbatim duplicates, `stale_ids` for ids nothing matched (never reused, never silently
+dropped), last-known-good retention on `ok=false` parses, cursor resolution by byte
+offset (`section_at`) and by editor 1-based BYTE line/column (`offset_of` /
+`section_at_position`, clamping out-of-range), and persistence (`to_persist`/
+`from_persist` + `persist_into`/`restore_from`/`forget`). `studio_model.bas` gains an
+additive workspace `sections` slot, normalized in exactly like `nav` (STU-1) and `docs`
+(STU-2), so a pre-STU-3 workspace loads with **no migration step**. Supporting parser
+change: `%destructor` rules in `src/parser.y` (plus public single-node/aggregate frees in
+`ast.c`/`ast.h`), because STU-3 reparses often-invalid source per refresh — measured
+20,000 direct + 46,400 indirect bytes lost over 200 invalid `source_outline` calls before,
+0 after; note the start symbol needs a per-symbol no-op destructor, since Bison also
+discards it *on success*. Reference: `docs/gbasic_studio_stu3.md`.
+
+**Delivered vs. the sketch above.** This session's STU-3 brief scoped the phase to
+**derivation + identity + drift** (sections derived from structure, stable ids, anchors,
+deterministic reattachment, ambiguity/stale handling, last-known-good, cursor resolution,
+compatible persistence). The user boundary *editing* operations sketched above —
+add/snap, move/re-snap, remove/merge — are **not** in this phase. Every seam between
+derived sections is a legal boundary by construction, so that overlay is additive over
+this model rather than a rework of it; see `docs/gbasic_studio_stu3.md` §Known
+limitations.
+
 ---
 
 ## STU-4 — Section execution via replay actors · S(model) + S(ui)

@@ -256,4 +256,108 @@ else
     printf 'SKIP stu2_memory_cycles (valgrind not installed)\n'
 fi
 
+# ---- STU-3: execution-section engine (studio_sections) ----------------------
+# Headless, GI-independent, path-free. The sections driver takes only a mode (no
+# home): derivation, cursor resolution, program-body scope, reattachment across
+# edits (blank-insert/internal/rename/sibling/duplicate/delete), invalid-source
+# retention+recovery, persistence round-trip, multi-document isolation, Unicode byte
+# offsets, and repeated-refresh determinism.
+SEC=examples/studio/sections.bas
+run_sections() { # mode
+    local mode="$1"
+    : >"$stdout_file"
+    if ! timeout 60 ./gbasic "$SEC" "$mode" >"$stdout_file" 2>&1; then
+        cat "$stdout_file"; fail "sections_$mode (nonzero exit)"
+    fi
+    if diff -u "tests/studio/sections_$mode.out" "$stdout_file"; then
+        printf 'PASS sections_%s\n' "$mode"
+    else
+        fail "sections_$mode (output diff)"
+    fi
+}
+for m in derive cursor cursor_pos prog insert_blank internal rename sibling duplicate delete invalid persist multidoc unicode repeated; do
+    run_sections "$m"
+done
+
+# The two disk-backed cases: sections ride in the workspace record through strict
+# JSON + atomic_replace (store), and a pre-STU-3 workspace with no `sections` key
+# still loads and accepts sections with no migration step (compat). They take a
+# scratch directory; nothing about the path is printed, so the goldens stay
+# path-free like the rest.
+run_sections_dir() { # mode
+    local mode="$1" d
+    d="$tmproot/sec_$mode"
+    rm -rf "$d"; mkdir -p "$d"
+    : >"$stdout_file"
+    if ! timeout 60 ./gbasic "$SEC" "$mode" "$d" >"$stdout_file" 2>&1; then
+        cat "$stdout_file"; fail "sections_$mode (nonzero exit)"
+    fi
+    if diff -u "tests/studio/sections_$mode.out" "$stdout_file"; then
+        printf 'PASS sections_%s\n' "$mode"
+    else
+        fail "sections_$mode (output diff)"
+    fi
+}
+run_sections_dir store
+run_sections_dir compat
+
+# STU-3 memory: repeated derive/reattach churn under valgrind (no leak across
+# refresh cycles; exercises match/stale/ambiguous/persist paths via the scenarios).
+if command -v valgrind >/dev/null 2>&1; then
+    vg_log="$(mktemp)"
+    sec_ok=1
+    for m in repeated duplicate invalid persist; do
+        : >"$stdout_file"
+        if ! timeout 300 valgrind --error-exitcode=99 --leak-check=full --errors-for-leak-kinds=definite \
+                ./gbasic "$SEC" "$m" >"$stdout_file" 2>"$vg_log"; then
+            printf 'FAIL sections_memory (%s, valgrind)\n' "$m"
+            grep -E 'definitely lost|ERROR SUMMARY|Invalid ' "$vg_log" || tail -20 "$vg_log"
+            sec_ok=0; rm -f "$vg_log"; exit 1
+        fi
+    done
+    # ...and the disk-backed store path (JSON encode/decode + atomic_replace).
+    vg_dir="$tmproot/sec_vg_store"
+    rm -rf "$vg_dir"; mkdir -p "$vg_dir"
+    : >"$stdout_file"
+    if ! timeout 300 valgrind --error-exitcode=99 --leak-check=full --errors-for-leak-kinds=definite \
+            ./gbasic "$SEC" store "$vg_dir" >"$stdout_file" 2>"$vg_log"; then
+        printf 'FAIL sections_memory (store, valgrind)\n'
+        grep -E 'definitely lost|ERROR SUMMARY|Invalid ' "$vg_log" || tail -20 "$vg_log"
+        sec_ok=0; rm -f "$vg_log"; exit 1
+    fi
+    rm -f "$vg_log"
+    [ "$sec_ok" -eq 1 ] && printf 'PASS sections_memory (valgrind clean: repeated/duplicate/invalid/persist/store)\n'
+else
+    printf 'SKIP sections_memory (valgrind not installed)\n'
+fi
+
+# STU-3 display tier (OPTIONAL — this suite stays headless-everywhere; the tier
+# SKIPs, never fails, without GTK 4 or a display). STU-3 draws no widgets of its
+# own (boundary rendering is STU-5), so what is verified here is the INTEGRATION:
+# with the real GTK shell built and a real editor tab open, the live document
+# buffer derives sections and the document's own line/column cursor resolves to a
+# section id. Output is path-free like the rest (the doc lives under $tmproot and
+# only its basename is ever printed).
+if [ -n "${DISPLAY:-}" ] || [ -n "${WAYLAND_DISPLAY:-}" ]; then
+    sec_home="$tmproot/sec_gui"
+    mkdir -p "$sec_home"
+    : >"$stdout_file"
+    if timeout 120 env G_DEBUG="${G_DEBUG:+$G_DEBUG,}fatal-criticals" \
+            ./gbasic "$APP" stu3_smoke "$sec_home" "$sec_home/live.bas" >"$stdout_file" 2>&1; then
+        if diff -u tests/studio/sections_gui.out "$stdout_file"; then
+            printf 'PASS sections_gui (GTK shell + live editor cursor)\n'
+        else
+            fail "sections_gui (output diff)"
+        fi
+    else
+        if grep -q 'gi.require: could not load namespace' "$stdout_file"; then
+            printf 'SKIP sections_gui (GTK 4 typelib not available)\n'
+        else
+            cat "$stdout_file"; fail "sections_gui (nonzero exit)"
+        fi
+    fi
+else
+    printf 'SKIP sections_gui (no display)\n'
+fi
+
 printf 'run_studio: all cases passed\n'

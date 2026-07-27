@@ -72,6 +72,18 @@ function on_activate(gtkapp)
         if ad != nothing then
             print "active-tab=" + studio_shell.tab_label(ad)
         end if
+        if G.sections then
+            doc = studio_docs.doc_by_id(dm, G.doc_id)
+            st = studio_sections.create(G.doc_id)
+            st = studio_sections.refresh(st, doc.content)
+            print studio_sections.summary(st)
+            cur = doc.cursor
+            print "cursor line=" + cur.line + " col=" + cur.column + " -> " + studio_sections.section_at_position(st, doc.content, cur.line, cur.column)
+            ' Persisting through the workspace record works the same under the shell.
+            ws = G.app.model.workspace
+            ws.sections = studio_sections.persist_into(ws.sections, st)
+            print "persisted docs=" + count(ws.sections)
+        end if
         gtkapp.quit()
     end if
 end function
@@ -84,6 +96,7 @@ program main(args)
     load studio_model
     load studio_browser
     load studio_docs
+    load studio_sections
     load studio
 
     mode = "gui"
@@ -393,6 +406,8 @@ program main(args)
     G.app = studio.launch(home)
     G.smoke = false
     G.shell = nothing
+    G.sections = false
+    G.doc_id = ""
     if mode = "smoke" then
         G.smoke = true
         G.app = build_canned(G.app)
@@ -407,6 +422,25 @@ program main(args)
         r = studio.open_file(G.app, "", docfile)
         G.app = r.app
         G.app = studio.edit_document(G.app, r.id, "' edited in Studio\nprint(\"hi\")\n")
+    end if
+    ' STU-3 display check: the section engine driven from the REAL editor state
+    ' (live document buffer + the document's line/column cursor) with the GTK shell
+    ' built. STU-3 renders no widgets of its own (boundary rendering is STU-5), so
+    ' what this proves is the integration: buffer -> sections, cursor -> section id,
+    ' under a real display and a real editor tab.
+    if mode = "stu3_smoke" then
+        G.smoke = true
+        G.sections = true
+        G.app = studio.create_registered_workspace(G.app, "ws")
+        docfile = ".gbasic-studio-doc.bas"
+        if count(args) > 2 then
+            docfile = args[2]
+        end if
+        r = studio.open_file(G.app, "", docfile)
+        G.app = r.app
+        G.doc_id = r.id
+        G.app = studio.edit_document(G.app, r.id, "x = 1\n\nfunction add(a, b)\n  return a + b\nend function\n\nprint add(x, 2)\n")
+        G.app.dm = studio_docs.set_cursor(G.app.dm, r.id, 4, 3)
     end if
 
     load gi

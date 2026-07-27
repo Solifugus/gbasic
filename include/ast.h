@@ -313,4 +313,15 @@ AstStmt *ast_stmt_span(AstStmt *stmt, int line, int column,
 void ast_dump(AstStmtList program);
 void ast_free_program(AstStmtList program);
 
+/* Single-node + aggregate frees for parser error-recovery destructors (all accept
+ * the empty/NULL case). */
+void ast_free_expr(AstExpr *expr);
+void ast_free_stmt(AstStmt *stmt);
+void ast_free_expr_list(AstExprList list);
+void ast_free_name_list(AstNameList list);
+void ast_free_record_field_list(AstRecordFieldList list);
+void ast_free_consider_branch_list(AstConsiderBranchList list);
+void ast_free_modifier_use(AstModifierUse modifier);
+void ast_free_modifier_signature(AstModifierSignature sig);
+
 #endif

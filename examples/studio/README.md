@@ -42,7 +42,13 @@ GBASIC_PATH=stdlib ./gbasic examples/studio/studio.bas gui ~/.gbasic-studio
 | `stress <home>` | no | 30 atomic save/reload cycles; assert every reload loads |
 | `cycles <home>` | no | 50 startup/shutdown cycles (memory/leak probe) |
 | `smoke` | yes | build the shell over a canned workspace, print a transcript, quit |
+| `stu3_smoke <home> [file]` | yes | shell + a real editor tab; derive execution sections from the live buffer and resolve the document's cursor to a section id, then quit |
 | `gui` (default) | yes | startup + shell + run the GTK loop |
+
+`examples/studio/sections.bas` is a separate headless driver for the STU-3
+execution-section engine (`stdlib/studio_sections.bas`); it takes a scenario mode and
+no home, e.g. `GBASIC_PATH=stdlib ./gbasic examples/studio/sections.bas derive`. See
+`docs/gbasic_studio_stu3.md`.
 
 ## Automated tests
 
