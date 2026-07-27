@@ -1636,6 +1636,113 @@ Semantics:
   GUI responsive, run it inside a spawned actor and deliver the result to the main
   loop via `gi.watch_mailbox` (the actor + event-loop pattern).
 
+### Live child control
+
+`process.run` decides everything before the child starts and hands back one record
+after it is gone. When a program needs to **supervise** a child instead — watch it,
+read it as it goes, and end it on its own terms — six primitives expose the same
+machinery while the child is alive. They are additive: `process.run` is unchanged
+and remains the right tool whenever you only want the finished result.
+
+```basic
+h = process.start({ command: "./long-job", args: ["--verbose"] })
+
+while true
+    c = process.read(h)          ' whatever has arrived; never blocks
+    if byte_count(c.stdout) > 0 then
+        print c.stdout
+    end if
+    s = process.poll(h)          ' never blocks
+    if not s.running then
+        break
+    end if
+    sleep(0.05)
+end while
+
+print "exit " + s.exit_code
+process.release(h)
+```
+
+**`process.start(options)`** → a **process handle**. Same `command` / `args` /
+`cwd` options as `process.run`, validated identically; `timeout` is rejected,
+because bounding a run is now the caller's job (`process.wait` or `process.stop`).
+Returns as soon as the child is launched. A child that cannot be launched **raises**
+— exactly as with `process.run`, so it stays distinguishable from a child that ran
+and exited nonzero. `type(h)` is `"process"`.
+
+**`process.poll(handle)`** → `{running, exit_code, signal, success}`. Never blocks.
+
+**`process.read(handle)`** → `{stdout, stderr}` — everything that has arrived since
+the previous read, and nothing else. Never blocks.
+
+**`process.wait(handle)`** / **`process.wait(handle, seconds)`** → the same status
+record. Without a timeout it waits for the child to exit; with one it gives up
+after that long. **A wait that expired is reported by `running` still being `true`**
+— there is no separate `timed_out` field to consult. The timeout accepts a number
+of seconds or a duration (`process.wait(h, 5 seconds)`).
+
+**`process.stop(handle)`** / **`process.stop(handle, {force_after: seconds})`** →
+the status record. See escalation below.
+
+**`process.release(handle)`** → closes the pipes and reaps the child. Idempotent,
+and never required for correctness — see abandonment below.
+
+#### Reading is incremental and never blocks
+
+The read pipes are non-blocking, so `process.read` returns immediately with
+whatever the child has produced so far, which may be nothing. Concatenating every
+read in order reproduces the child's output exactly: **each byte is delivered once
+and once only**, with nothing lost at a boundary and nothing repeated.
+
+`process.read` does **no line framing at all**. If the child has written half a
+line, you get half a line; the remainder arrives on a later read. This is
+deliberate — a reader that split on newlines would have to either buffer a partial
+line invisibly or hand back a line that has not finished. Assembling lines is the
+caller's business, and concatenation is all it takes. The same holds for multi-byte
+UTF-8: a character split across two reads reassembles correctly, because gBASIC
+strings are byte-exact.
+
+`process.wait` keeps draining while it waits. That is not an optimization but a
+requirement: a child writing more than a pipe buffer (~64 KB) would otherwise block
+writing while you block waiting.
+
+#### Stopping, and escalation
+
+Escalation is always the **caller's** choice, never a hidden policy:
+
+| Call | Behavior |
+|---|---|
+| `process.stop(h)` | Sends **SIGTERM** and returns at once. If the child ignores SIGTERM it keeps running, and the returned `running` says so truthfully. |
+| `process.stop(h, {force_after: N})` | Sends SIGTERM, waits up to **N seconds**, and only then sends **SIGKILL** and waits for the child to actually go. |
+
+There is no default grace period, because there is no default escalation: omitting
+`force_after` means "ask politely and tell me what happened," full stop. Choose a
+grace period that suits the child — long enough for it to flush and shut down
+cleanly, short enough that you are not stuck waiting on a process that will never
+comply.
+
+Signals go to the child's **process group**, so a shell script's own children die
+with it, exactly as `process.run`'s timeout does.
+
+#### Handles are safe to abandon
+
+A handle is a **reference**: copies share one child, so a `stop` through one copy is
+visible through every other. When the **last** copy goes away — whether through
+`process.release` or simply by the variable being reassigned or going out of scope —
+the pipes are closed and the child is reaped. Dropping a handle therefore cannot
+leak a descriptor or leave a zombie, and no `release` is strictly required.
+
+Abandoning a handle does **not** kill a running child: letting a variable go out of
+scope is not a decision to end a process, and a handle copy expiring inside a helper
+function must not be lethal. Such children are reaped opportunistically on later
+`process.*` calls, and **at program exit any still running are killed and reaped**,
+so nothing this interpreter started outlives it.
+
+Handles are local capabilities, not data: `serialize`, `send`, and `json_encode`
+reject them, and `reflect.serializable` reports `false`. Each interpreter process —
+including each spawned actor — owns its own children; a handle is meaningful only in
+the process that started it.
+
 ## Reflection Module
 
 `reflect.*` is a general runtime reflection facility — an **unconditional builtin**

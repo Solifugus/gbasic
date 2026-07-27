@@ -469,3 +469,18 @@ D0.6, the rest remain open or are by-design.
   `source_outline`'s byte-offset convention exactly. Dropped `\r` escaping (fixtures
   use `\n` only). Documented the byte convention in `docs/source_outline_design.md`
   §16.2. Not a bug — just a convention gap worth stating for any offset consumer.
+
+## 2026-07-27 — CC — while: PLAT-PROC (writing the live-child-control test fixtures)
+- **Type:** language-surprise
+- **Severity:** low
+- **What:** `contains(haystack, needle)` looks like the natural "does this string
+  contain that substring" test, but it is **array-only**: `contains("hello world",
+  "lo w")` raises `contains expects an array`. The sibling `find` *does* accept
+  strings (`find(value, target)` — "index of a substring in a string, or of an
+  element in an array"), so the pair is asymmetric: `find` is polymorphic over
+  strings and arrays, `contains` is not.
+- **Workaround:** Test substring presence with `find(s, sub) != nothing` — note the
+  absent case is `nothing` for strings, so comparing against `-1` silently never
+  matches. Used throughout the PLAT-PROC fixtures to poll a child's accumulated
+  output for a marker. Not a bug (documented behavior), but the asymmetry is easy to
+  trip over when reaching for the more obviously-named builtin first.

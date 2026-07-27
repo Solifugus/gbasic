@@ -60,6 +60,14 @@ for error handling, `ERRORS.md`.
 
 ## Modules
 
+- **Process (run)** — `process.run`; unconditional builtin, no `load`. Synchronous,
+  argv passed literally (no shell). → `tests/native_platform/nap6_streams.bas`
+- **Process (supervise)** — `process.start` returns a handle;
+  `poll`/`read`/`wait`/`stop`/`release` control a LIVE child. `read` never blocks
+  and never frames lines — concatenate the reads. `stop(h)` is SIGTERM only;
+  escalation to SIGKILL requires `stop(h, {force_after: N})`. Dropping the last
+  handle copy reaps the child, so `release` is optional.
+  → `tests/native_platform/plat_proc_basic.bas`
 - **SQLite** — `load sqlite`; parameterized query/exec. → `examples/sqlite_module_test.bas`
 - **PostgreSQL** — `load pg`; opt-in suite. → `tests/postgres_integration.bas`
 - **WebClient** — `load webclient`; synchronous HTTP against a loopback fixture.
