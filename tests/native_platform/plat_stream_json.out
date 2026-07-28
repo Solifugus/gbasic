@@ -1,0 +1,9 @@
+exit=1/1/1
+stderr-identical-after=true
+stderr-identical-before=true
+stdout-identical-after=true
+stdout-identical-before=true
+stdout=<before
+>
+stderr-is-json=true
+stderr-lines=2

@@ -484,3 +484,24 @@ D0.6, the rest remain open or are by-design.
   matches. Used throughout the PLAT-PROC fixtures to poll a child's accumulated
   output for a marker. Not a bug (documented behavior), but the asymmetry is easy to
   trip over when reaching for the more obviously-named builtin first.
+
+## 2026-07-28 — CC — while: PLAT-STREAM (splitting captured child output into lines)
+- **Type:** language-surprise
+- **Severity:** medium
+- **What:** String escapes are **not** processed inside a modifier clause. `p(split
+  "\n") = s` splits on the two-character sequence backslash-n, not on a newline, so
+  a multi-line string comes back as a single element with no error and no warning:
+  ```
+  s = "a" + "\n" + "b" + "\n"    ' 4 bytes -- "\n" IS a newline here
+  p(split "\n") = s              ' count(p) = 1   <-- silently wrong
+  nl = "\n"
+  r(split nl) = s                ' count(r) = 3   <-- correct
+  ```
+  The same literal means different things depending on whether it sits in an
+  ordinary expression or in a `(...)=` modifier clause, because the modifier body is
+  lexed in a separate content mode (`modifier_content_mode`, `src/lexer.c`) that
+  hands the text through raw.
+- **Workaround:** Bind the separator to a variable first (`nl = "\n"`) and pass the
+  variable into the clause. Used in the PLAT-STREAM volume/diagnostic fixtures, which
+  split captured child output on newlines. The failure is silent — a line count of 1
+  where thousands were expected — so it is worth knowing before it is debugged.

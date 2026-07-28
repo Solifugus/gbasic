@@ -1,0 +1,12 @@
+flagged-midrun-bytes=10
+flagged-midrun-has-one=true
+flagged-midrun-has-two=false
+plain-midrun-bytes=0
+flagged-exit=0
+plain-exit=0
+flagged-all-bytes=20
+plain-all-bytes=20
+totals-identical=true
+all=<CHUNK-ONE
+CHUNK-TWO
+>

@@ -21,6 +21,7 @@ static void print_help(const char *argv0) {
     printf("  %s --add-loads FILE\n", argv0);
     printf("  %s --add-uses FILE\n", argv0);
     printf("  %s --json-diagnostics FILE\n", argv0);
+    printf("  %s --line-buffered FILE\n", argv0);
     printf("\n");
     printf("flags:\n");
     printf("  --help          show this help\n");
@@ -30,6 +31,8 @@ static void print_help(const char *argv0) {
     printf("  --add-loads FILE analyze unresolved calls/modifiers and print source with load statements\n");
     printf("  --add-uses FILE  compatibility alias; emits use statements\n");
     printf("  --json-diagnostics FILE  run FILE, emitting diagnostics as JSON lines to stderr\n");
+    printf("  --line-buffered  flush stdout at every completed line instead of at buffer\n");
+    printf("                   capacity; combines with any of the above\n");
 }
 
 static void print_tokens(const char *source) {
@@ -795,6 +798,36 @@ static void drain_diagnostics(gb_diagnostics *diags, int as_json) {
     }
 }
 
+/* PLAT-STREAM: pull a standalone, mode-independent flag out of argv so the mode
+ * dispatch below keeps seeing exactly the argument shapes it always has.
+ *
+ * Scanning stops at the FIRST argument that does not begin with '-' -- that is
+ * the FILE, and in run mode everything after it belongs to the program, not to
+ * the interpreter. `gbasic prog.bas --line-buffered` therefore passes the flag
+ * through to the program untouched, as any other program argument would be.
+ *
+ * argc/argv are rewritten in place with the flag removed. */
+static int extract_flag(int *argc, char **argv, const char *flag) {
+    int found = 0;
+    int write_index = 1;
+    for (int i = 1; i < *argc; i++) {
+        if (argv[i][0] != '-') {
+            while (i < *argc) {
+                argv[write_index++] = argv[i++];
+            }
+            break;
+        }
+        if (strcmp(argv[i], flag) == 0) {
+            found = 1;
+            continue;
+        }
+        argv[write_index++] = argv[i];
+    }
+    argv[write_index] = NULL;
+    *argc = write_index;
+    return found;
+}
+
 int main(int argc, char **argv) {
     int ast_only = 0;
     int tokens_only = 0;
@@ -806,6 +839,16 @@ int main(int argc, char **argv) {
 
     if (argc >= 4 && strcmp(argv[1], "--actor") == 0) {
         return run_actor_mode(argc, argv);
+    }
+
+    /* When stdout is a pipe, stdio buffers it in ~4 KB blocks, so a program that
+     * prints slowly appears silent to whatever is reading it until it exits. Line
+     * buffering flushes at every completed line instead. Every `print` this
+     * runtime emits ends in a newline, and the one partial line it can produce (an
+     * `input` prompt) is already fflushed explicitly, so this makes the whole
+     * output surface prompt. Must run before any output. */
+    if (extract_flag(&argc, argv, "--line-buffered")) {
+        setvbuf(stdout, NULL, _IOLBF, BUFSIZ);
     }
 
     if (argc == 2 && strcmp(argv[1], "--help") == 0) {
@@ -837,7 +880,7 @@ int main(int argc, char **argv) {
         program_args = &argv[2];
         program_arg_count = (size_t)(argc - 2);
     } else {
-        fprintf(stderr, "usage: %s [--ast|--tokens|--add-loads|--add-uses|--json-diagnostics] FILE [args...]\n", argv[0]);
+        fprintf(stderr, "usage: %s [--ast|--tokens|--add-loads|--add-uses|--json-diagnostics] [--line-buffered] FILE [args...]\n", argv[0]);
         fprintf(stderr, "try '%s --help'\n", argv[0]);
         return 2;
     }

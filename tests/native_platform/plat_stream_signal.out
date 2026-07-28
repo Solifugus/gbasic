@@ -1,0 +1,6 @@
+flagged-signal=15
+plain-signal=15
+flagged-running=false
+flagged-survived=<BEFORE-SIGNAL
+>
+plain-survived-bytes=0

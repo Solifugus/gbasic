@@ -1,0 +1,12 @@
+flagged-midrun=<LINE
+PROMPT>>
+plain-midrun=<LINE
+PROMPT>>
+midrun-identical=true
+flagged-all-bytes=27
+plain-all-bytes=27
+totals-identical=true
+ends-with-newline=false
+all=<LINE
+PROMPT>ANSWER=<>
+TAIL>>
