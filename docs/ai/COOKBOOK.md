@@ -68,6 +68,10 @@ for error handling, `ERRORS.md`.
   escalation to SIGKILL requires `stop(h, {force_after: N})`. Dropping the last
   handle copy reaps the child, so `release` is optional.
   → `tests/native_platform/plat_proc_basic.bas`
+- **Supervising a child from a GUI loop** — `process.start` + a `gi.timeout` callback
+  that polls/reads each tick; no actor and no mailbox are needed, because start/poll/
+  read never block. Note a gBASIC child's stdout is BLOCK-buffered on a pipe, so short
+  output only appears when it exits. → `examples/studio/sessions.bas`
 - **SQLite** — `load sqlite`; parameterized query/exec. → `examples/sqlite_module_test.bas`
 - **PostgreSQL** — `load pg`; opt-in suite. → `tests/postgres_integration.bas`
 - **WebClient** — `load webclient`; synchronous HTTP against a loopback fixture.

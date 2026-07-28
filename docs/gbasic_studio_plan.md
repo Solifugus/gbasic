@@ -568,6 +568,35 @@ checkpoints/snapshots; breakpoints.
 
 ---
 
+**DONE (2026-07-28).** Additive to STU-0..STU-3 (their stores/goldens byte-exact).
+`stdlib/studio_session.bas` (new) — an execution session per document: an eight-state
+machine (idle/materializing/running/stopping/unresponsive/finished/failed/refused) whose
+every transition is recorded and golden-tested; append-only prefix materialization of the
+literal byte prefix `source[0, section_N.end_offset)` from the document's IN-MEMORY
+content (running does not save), written via a new `studio_store.write_text_atomic`, with
+only two end-appends permitted (a trailing newline, and `end program` when the target sits
+inside a program block) so that line N of the child's file is line N of the document;
+`process.start("./gbasic", ["--json-diagnostics", prefix])` with NO timeout, driven from a
+50ms `gi.timeout` — no actor, no mailbox (see the R2 amendment of the same date); error
+attribution to target/prefix/outside through STU-3's ranges; polite `request_stop` (SIGTERM
+only) with an `unresponsive` state rather than a hang, and `force_stop` as a separate
+explicit escalation; restart that completes the stop first; refusal with a UI-displayable
+reason for unparseable source, ambiguous, and stale/removed sections. Concurrency: per
+document, since sessions share no mutable state — Studio-wide single-run would have meant
+adding a coordinator, not removing one. Minimal UI in `studio_shell.bas` (run/stop/force
+strip, session state line, prefix-vs-target output pane). 14 headless goldens + valgrind +
+a display-gated `sessions_gui`. Reference: `docs/gbasic_studio_stu4.md`.
+
+**Two findings recorded there, nothing built for either.** (1) Prefix and target output
+are NOT separable within one run: one child yields one stream, and the append-only
+invariant forbids the boundary marker that would split it, so `split` is `exact` only when
+the target is section 1 and `combined` otherwise (everything shown, nothing claimed). (2) A
+gBASIC child's stdout is BLOCK-BUFFERED on a pipe — measured: short output does not appear
+until the child exits, while a shell child streams — which also settles the watchable-fd
+question, since an `gi.watch_fd` design would have nothing to wake on. `seed(n)` does exist
+in the runtime, but forcing a per-session seed would require PREPENDING to the prefix
+(breaking attribution) and would misrepresent replay as reproducible.
+
 ## STU-5 — Contextual results, inspection & modest tables · S(ui)
 
 **Purpose.** Make results *contextual*, not inlined: per-section console and right-pane

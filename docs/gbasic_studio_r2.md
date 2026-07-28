@@ -454,3 +454,34 @@ Two things that are **not** blockers, recorded so they are not mistaken for one:
   be the runner — which is the recommended architecture anyway.
 - *Studio cannot execute an unsaved buffer directly.* Moot: a prefix must be materialized
   to a file regardless, so the buffer never needed to be executed in place.
+
+---
+
+## Amendment — 2026-07-28
+
+The findings above stand unchanged. Two things have since happened that change what
+follows from them; both are recorded here rather than edited into the text, so the
+investigation stays readable as of its own date.
+
+**1. The named blocker is resolved.** PLAT-PROC (`452bb4b`, `803bfd1`) added live
+child control — `process.start` / `poll` / `read` / `wait` / `stop` / `release`.
+Studio can now stop a running child, escalate to SIGKILL as a separate explicit
+action, and read output as it arrives. The "cannot offer a stop button" conclusion
+no longer holds.
+
+**2. The actor is no longer needed to keep the GTK loop alive.** §Recommended STU-4
+execution architecture, item 2, prescribed running `process.run` *inside a spawned
+actor* with the result delivered via `gi.watch_mailbox` — solely because
+`process.run` blocks. `process.start`, `poll` and `read` do not block, so STU-4
+drives the child **directly from a GTK timeout callback** and the loop stays free.
+No `spawn`, no mailbox, no serialization round-trip in the execution path. That is
+what STU-4 implements; everything else in the recommended architecture (byte-prefix
+materialization from STU-3 ranges, `--json-diagnostics` for structured errors, the
+OS process as the isolation boundary, no state carried between runs) is unchanged.
+
+STU-4 also produced two measurements worth carrying forward, both in
+`docs/gbasic_studio_stu4.md`: a gBASIC child's stdout is **block-buffered** on a
+pipe (so short output does not stream until the child exits, regardless of how the
+parent polls), and the process handle exposes no descriptor, so an event-driven
+`gi.watch_fd` alternative to the timer is not reachable today — and would not help
+while the buffering dominates.
