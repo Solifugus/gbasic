@@ -360,4 +360,92 @@ else
     printf 'SKIP sections_gui (no display)\n'
 fi
 
+# ---- STU-4: execution sessions (studio_session) -----------------------------
+# Headless, GI-independent, path-free. The sessions driver takes a mode and a
+# scratch directory (never printed). Covers every state transition, a clean run,
+# runtime errors in the target and in the replayed prefix, a diagnostic outside
+# every section, polite stop, forced stop, a SIGTERM-ignoring child surfacing as
+# `unresponsive`, restart mid-run, all three refusals, a child killed by signal
+# with no diagnostic, output past a pipe buffer, an edit between two runs, and the
+# scratch-file lifecycle.
+SESS=examples/studio/sessions.bas
+run_session() { # mode
+    local mode="$1" d
+    d="$tmproot/sess_$mode"
+    rm -rf "$d"; mkdir -p "$d"
+    : >"$stdout_file"
+    if ! timeout 180 ./gbasic "$SESS" "$mode" "$d" >"$stdout_file" 2>&1; then
+        cat "$stdout_file"; fail "sessions_$mode (nonzero exit)"
+    fi
+    if diff -u "tests/studio/sessions_$mode.out" "$stdout_file"; then
+        printf 'PASS sessions_%s\n' "$mode"
+    else
+        fail "sessions_$mode (output diff)"
+    fi
+    # No materialized prefix may survive a run, in any scenario.
+    if [ -n "$(ls -A "$d" 2>/dev/null)" ]; then
+        printf 'FAIL sessions_%s (scratch files left behind)\n' "$mode"
+        ls -la "$d"
+        exit 1
+    fi
+}
+for m in clean err_target err_prefix outside prog stop force unresponsive restart \
+         refuse signal big edited scratch; do
+    run_session "$m"
+done
+printf 'PASS sessions_scratch_clean (no materialized prefix left by any case)\n'
+
+# STU-4 memory: the run/stop/attribute paths under valgrind. `force` and
+# `unresponsive` are included because they are the ones that kill a child and
+# release a live process handle.
+if command -v valgrind >/dev/null 2>&1; then
+    vg_log="$(mktemp)"
+    for m in clean err_prefix force unresponsive; do
+        d="$tmproot/sess_vg_$m"
+        rm -rf "$d"; mkdir -p "$d"
+        : >"$stdout_file"
+        if ! timeout 900 valgrind --error-exitcode=99 --leak-check=full --errors-for-leak-kinds=definite \
+                ./gbasic "$SESS" "$m" "$d" >"$stdout_file" 2>"$vg_log"; then
+            printf 'FAIL sessions_memory (%s, valgrind)\n' "$m"
+            grep -E 'definitely lost|ERROR SUMMARY|Invalid ' "$vg_log" || tail -20 "$vg_log"
+            rm -f "$vg_log"; exit 1
+        fi
+    done
+    rm -f "$vg_log"
+    printf 'PASS sessions_memory (valgrind clean: clean/err_prefix/force/unresponsive)\n'
+else
+    printf 'SKIP sessions_memory (valgrind not installed)\n'
+fi
+
+# STU-4 display tier (OPTIONAL; SKIPs, never fails, without GTK 4 or a display).
+# Proves the UI integration: the real GTK shell builds, the section under the
+# document's cursor is resolved and run, and a GTK TIMEOUT -- not an actor, not a
+# mailbox -- drives the session to completion while the loop stays live.
+if [ -n "${DISPLAY:-}" ] || [ -n "${WAYLAND_DISPLAY:-}" ]; then
+    sess_home="$tmproot/sess_gui"
+    mkdir -p "$sess_home"
+    : >"$stdout_file"
+    if timeout 180 env G_DEBUG="${G_DEBUG:+$G_DEBUG,}fatal-criticals" \
+            ./gbasic "$APP" stu4_smoke "$sess_home" "$sess_home/live.bas" \
+            >"$stdout_file" 2>/dev/null; then
+        if diff -u tests/studio/sessions_gui.out "$stdout_file"; then
+            printf 'PASS sessions_gui (GTK shell + timeout-driven run)\n'
+        else
+            fail "sessions_gui (output diff)"
+        fi
+    else
+        if grep -q 'gi.require: could not load namespace' "$stdout_file"; then
+            printf 'SKIP sessions_gui (GTK 4 typelib not available)\n'
+        else
+            cat "$stdout_file"; fail "sessions_gui (nonzero exit)"
+        fi
+    fi
+    if [ -n "$(ls -A "$sess_home/scratch" 2>/dev/null)" ]; then
+        printf 'FAIL sessions_gui (scratch files left behind)\n'
+        exit 1
+    fi
+else
+    printf 'SKIP sessions_gui (no display)\n'
+fi
+
 printf 'run_studio: all cases passed\n'

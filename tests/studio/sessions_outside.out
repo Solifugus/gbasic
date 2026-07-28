@@ -1,0 +1,9 @@
+-- diagnostic outside every section
+state=finished section=sec-3 run=1 split=combined
+exit_code=0 signal=0 success=true
+out_prefix=<in-program
+second
+>
+out_target=<>
+! outside section=- 999:1 synthetic out-of-range
+transitions: idle>materializing materializing>running running>finished

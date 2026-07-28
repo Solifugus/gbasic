@@ -1,0 +1,7 @@
+-- child killed by signal
+state=finished section=sec-1 run=1 split=exact
+exit_code=-1 signal=15 success=false
+out_prefix=<>
+out_target=<>
+transitions: idle>materializing materializing>running running>finished
+diagnostics=0

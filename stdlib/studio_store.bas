@@ -74,6 +74,20 @@ library studio_store
         atomic_replace(scratch, dest)
     end function
 
+    ' Atomically persist raw TEXT (not JSON) to `path`, through the same temp-then-
+    ' rename dance as write_atomic. Used for artifacts that are source files rather
+    ' than stores -- STU-4's materialized execution prefixes -- where json_encode
+    ' would be exactly wrong. Crash-safety matters for the same reason: a reader
+    ' (here, a freshly exec'd interpreter) must see the whole file or none of it,
+    ' never a half-written one.
+    function write_text_atomic(path, text)
+        tmp = path + ".tmp"
+        scratch(file) = tmp
+        write(scratch, text)
+        dest(file) = path
+        atomic_replace(scratch, dest)
+    end function
+
     ' Read `path` and report one of three states without ever raising:
     '   { status: "missing", value: nothing }  — no file there
     '   { status: "corrupt", value: nothing }  — present but not valid JSON
