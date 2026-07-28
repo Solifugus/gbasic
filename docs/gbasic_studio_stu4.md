@@ -112,6 +112,11 @@ will fail under a truncated prefix. STU-4 does not work around this; appending t
 declarations would give them line numbers that no longer match the document, which
 would break attribution for errors inside them. Recorded for STU-5.
 
+> **RESOLVED in STU-4B** (`docs/gbasic_studio_stu4b.md`). Post-target top-level
+> declarations are appended after the prefix, and a position map — built from the
+> content Studio generated, so exact rather than inferred — translates their lines
+> back to the document, which is what makes attribution survive the move.
+
 ## Running
 
 `process.start("./gbasic", ["--json-diagnostics", <prefix path>])`, with **no
@@ -195,6 +200,14 @@ line-offset compensation; or a session-scoped baseline (the byte length of the
 immediately preceding run of sections 1..N-1 at the same document revision), which
 needs no extra execution but only works when the user ran N-1 first and the prefix is
 deterministic.
+
+> **RESOLVED in STU-4B for stdout** (`docs/gbasic_studio_stu4b.md`), by the second
+> of those options: a per-run nonce marker injected at the one boundary, with a
+> single line offset carried in the position map. `split` became per-stream
+> (`split_out` / `split_err`) with values `exact` / `marked` / `combined`, because
+> the marker is a `print` and therefore **stderr is still not separable** when a
+> prefix exists. `combined` survives as the honest answer when the marker appears
+> zero times or more than once.
 
 ## Error attribution
 
@@ -327,6 +340,10 @@ section under the document's cursor, starts a run, and drives it to completion f
 | `sessions_gui` | GTK shell + timeout-driven run (SKIPs headless) |
 
 ## What this changes for STU-5
+
+> All three items below were taken up by **STU-4B** and **PLAT-STREAM**; see
+> `docs/gbasic_studio_stu4b.md` for what is resolved and what is not. Left as
+> written, because they are what STU-4 concluded.
 
 - **Output separation** is the open design question, not a detail. STU-5 should
   decide between a runtime statement-index facility, compensated markers, or the

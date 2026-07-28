@@ -54,7 +54,8 @@ no home, e.g. `GBASIC_PATH=stdlib ./gbasic examples/studio/sections.bas derive`.
 `examples/studio/sessions.bas` is the headless driver for the STU-4 execution-session
 engine (`stdlib/studio_session.bas`); it takes a scenario mode and a scratch directory,
 e.g. `GBASIC_PATH=stdlib ./gbasic examples/studio/sessions.bas clean /tmp/scratch`. See
-`docs/gbasic_studio_stu4.md`.
+`docs/gbasic_studio_stu4.md`, and `docs/gbasic_studio_stu4b.md` for the STU-4B modes
+(`hoist*` declaration hoisting, `split*` output separation, `map`, `stream`).
 
 ## Automated tests
 
