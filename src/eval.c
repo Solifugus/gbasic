@@ -22179,6 +22179,24 @@ int eval_program(AstStmtList program) {
      * top-level functions and resolve function values — including methods, whose
      * dotted-def bodies register under their deterministic internal name. Without
      * a program block the normal top-level walk still registers on-reach. */
+    /* BEGIN PRE-REGISTRATION SET -- tripwired by tests/run_pre_registration.sh.
+     *
+     * The statement kinds registered here are exactly the kinds a program block
+     * can reach REGARDLESS of where in the file they are written, and gBASIC
+     * Studio's STU-4B declaration-hoisting rule is defined as that same set: when
+     * it materializes a byte prefix, it appends post-target declarations of these
+     * kinds and no others, precisely because the interpreter is position-blind to
+     * these and to nothing else (docs/gbasic_studio_stu4b.md, "What qualifies as
+     * hoistable").
+     *
+     * So this set is a shared contract, not a local detail. Adding a kind here
+     * makes Studio's rule incomplete -- it would refuse to hoist something the
+     * runtime now registers. Removing one makes it unsound -- it would hoist
+     * something the runtime no longer registers, manufacturing behaviour the
+     * document does not have. Either way the hoisting rule must move with this
+     * code, and the tripwire fails until it does. Do not silence it by editing
+     * the expected set alone.
+     */
     if (program_block) {
         for (size_t i = 0; i < program.count; i++) {
             AstStmt *stmt = program.items[i];
@@ -22192,6 +22210,7 @@ int eval_program(AstStmtList program) {
          * them so the parent resolves its own function values and a child can too
          * (the internal name is deterministic across the program). */
         register_method_bodies_in(program);
+        /* END PRE-REGISTRATION SET */
 
         /* Bind the program block's declared parameter (conventionally `args`) to
          * the command-line arguments after the script path: a 0-based array of

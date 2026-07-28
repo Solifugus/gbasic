@@ -276,6 +276,15 @@ Scratch is asserted empty after every case, and the valgrind tier is unchanged.
   diagnostic stream, which means either a second injected statement writing to
   stderr (there is no such builtin today) or a structural change to
   `--json-diagnostics`. Neither is in scope here.
+
+  > **Update (PLAT-STDERR, 2026-07-28).** The first of those two routes now exists:
+  > `print to error <expression>` writes to standard error and renders exactly what
+  > `print` renders (`docs/reference.md`, Statements → "Print to standard error").
+  > A future phase can inject a second marker statement at the same boundary to
+  > separate stderr the same way stdout is separated here — the nonce, the
+  > per-stream verdicts and the position map all already accommodate it, and
+  > `split_err` already has `unavailable` as its honest current answer. Nothing in
+  > Studio was changed for it; PLAT-STDERR built the capability only.
 - **The append-only invariant is now stated more precisely.** Studio appends at the
   end (hoisted declarations, `end program`) and injects at exactly one boundary (the
   marker). What it never does is interleave content at more than that one point, or
@@ -284,3 +293,10 @@ Scratch is asserted empty after every case, and the valgrind tier is unchanged.
 - **Hoisting is bounded by the runtime's own rules.** If gBASIC ever pre-registers
   more (or less) than it does today, the hoisting rule must move with it; the
   condition is documented above precisely so that coupling is visible.
+
+  > **Update (PLAT-GUARD, 2026-07-28).** That coupling is now enforced rather than
+  > merely documented. `tests/run_pre_registration.sh` asserts the pre-registered
+  > set both structurally (reading the `BEGIN/END PRE-REGISTRATION SET` markers in
+  > `src/eval.c`) and behaviourally, and fails with a message naming this hoisting
+  > rule as what must move with it. It is sited with the platform, next to the code
+  > it describes, because that is the side that changes first.
