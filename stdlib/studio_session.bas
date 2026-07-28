@@ -92,11 +92,23 @@ library studio_session
             handle: nothing,
             reason: "",
             message: "",
+            out_raw: "",
             out_prefix: "",
             out_target: "",
             err_prefix: "",
             err_target: "",
-            split: "none",
+            ' Separation is PER STREAM (STU-4B). stdout can carry the boundary
+            ' marker; stderr cannot, so the two are never reported as one verdict.
+            '   split_out: none | exact | pending | marked | combined
+            '   split_err: none | exact | unavailable
+            split_out: "none",
+            split_err: "none",
+            split_reason: "",
+            marker: "",
+            ' Test seam: a fixed nonce, so a fixture can print the marker itself.
+            nonce_fixed: "",
+            map: nothing,
+            hoisted: [],
             stderr_raw: "",
             diagnostics: [],
             attribution: [],
@@ -175,24 +187,124 @@ library studio_session
         return mid(text, 0, lo)
     end function
 
-    ' The source text to execute for a run of `section`.
+    ' source[start_off, end_off) as text. Two binary searches; see _byte_prefix.
+    function _byte_slice(source, start_off, end_off)
+        full = studio_session._byte_prefix(source, end_off)
+        head = studio_session._byte_prefix(full, start_off)
+        return mid(full, len(head), len(full) - len(head))
+    end function
+
+    ' Complete lines in `text` -- i.e. its newline count. `split` is a C builtin, so
+    ' this is one pass rather than an interpreted per-byte loop.
+    function _line_count(text)
+        nl = "\n"
+        return count(split(text, nl)) - 1
+    end function
+
+    ' Byte offset of the start of the line containing `off`. Nothing but whitespace
+    ' can precede a section's first token on its line -- gBASIC has no statement
+    ' separator (STU-4B Step 0), so no earlier statement can share it, and a comment
+    ' runs to end of line -- which is what makes inserting a whole line here
+    ' column-preserving.
+    function _line_start(source, off)
+        i = off
+        while i > 0
+            if byte_at(source, i - 1) = 10 then
+                return i
+            end if
+            i = i - 1
+        end while
+        return 0
+    end function
+
+    ' A per-run boundary marker. NOT a fixed sentinel: a user program can print
+    ' anything, and a fixed string would be forgeable by accident. Digits and
+    ' hyphens only, so it is safe inside the generated string literal.
+    function _nonce(session)
+        if session.nonce_fixed != "" then
+            return session.nonce_fixed
+        end if
+        a = floor(random() * 1000000000)
+        b = floor(random() * 1000000000)
+        return "@@gbstudio-" + epoch() + "-" + session.run_seq + "-" + a + "-" + b + "@@"
+    end function
+
+    ' Declarations whose meaning does not depend on where in the file they sit --
+    ' see the hoisting rule in materialize_text.
+    function _hoistable_kind(kind)
+        if kind = "function" then
+            return true
+        end if
+        if kind = "modifier" then
+            return true
+        end if
+        if kind = "library" then
+            return true
+        end if
+        return false
+    end function
+
+    ' The source text to execute for a run of `section`, plus the position map that
+    ' translates a line of it back to a line of the document.
     '
-    ' APPEND ONLY. The body is the literal BYTE PREFIX of the document,
-    ' source[0, section.end_offset) -- never a stitched-together subset. That is what
-    ' keeps every line of the materialized file at the SAME line number as in the
-    ' document, which is in turn what lets --json-diagnostics positions map straight
-    ' back through STU-3's ranges to a section id. Nothing is ever inserted between
-    ' or inside sections, and there are no sentinel markers.
+    ' The body is the literal BYTE PREFIX of the document, source[0,
+    ' section.end_offset) -- never a stitched-together subset -- so a line of the
+    ' prefix keeps its document line number and --json-diagnostics positions map
+    ' straight back through STU-3's ranges. Exactly three things are added, each
+    ' recorded in the map:
     '
-    ' Two appends are permitted, both strictly at the end, neither shifting a line
-    ' of the prefix:
-    '   * a trailing newline, because section ranges are newline-EXCLUSIVE, so the
-    '     raw prefix ends immediately after a terminator;
-    '   * `end program`, when the target section lives inside a `program` block
-    '     (STU-3 records that as ancestry "program:NAME"), because a byte prefix of
-    '     such a document cuts the block open.
-    function materialize_text(source, section)
-        body = studio_session._byte_prefix(source, section.end_offset)
+    '   1. END APPENDS (STU-4). A trailing newline, because section ranges are
+    '      newline-exclusive; and `end program` when the target lives inside a
+    '      `program` block, because a byte prefix cuts the block open. Neither
+    '      shifts a line before it.
+    '
+    '   2. HOISTED DECLARATIONS (STU-4B). Top-level `function`/`modifier`/`library`
+    '      declarations that sit wholly AFTER the prefix, appended at the end in
+    '      source order. Appending shifts nothing before it.
+    '
+    '      Hoisting happens only when the prefix contains a program block that will
+    '      execute, because that is the exact condition under which the interpreter
+    '      itself registers top-level functions and modifiers up front regardless of
+    '      file position (src/eval.c, eval_program) and resolves `library` from the
+    '      whole root. Under that condition hoisting REPRODUCES the document's
+    '      semantics rather than changing them -- and nothing else can be reordered,
+    '      because when a program block is present it is the only thing that runs
+    '      (top-level statements outside it never execute at all). Without a program
+    '      block in the prefix, top-level statements run in order and a declaration
+    '      below the target is invisible to it in the real document too, so hoisting
+    '      it would MANUFACTURE behaviour the document does not have. Nothing is
+    '      hoisted in that case.
+    '
+    '   3. A BOUNDARY MARKER (STU-4B), when `nonce` is non-empty: one whole line
+    '      `print "<nonce>"` inserted at the start of the line beginning section N,
+    '      so replayed output can be told from the target's. gBASIC has no statement
+    '      separator (Step 0), so a zero-line-shift marker is impossible; this is the
+    '      single-injection fallback, and the map carries its single -1 offset.
+    function materialize_text(source, section, sections, nonce)
+        prefix_end = section.end_offset
+
+        ' Will the prefix execute a program block? Any section with `program:`
+        ' ancestry starting before the prefix end means the block opens inside it.
+        prog_in_prefix = false
+        for each s in sections.sections
+            if left(s.anchor.ancestry, 8) = "program:" then
+                if s.start_offset < prefix_end then
+                    prog_in_prefix = true
+                end if
+            end if
+        end for
+
+        marker_line = 0
+        if nonce != "" then
+            ls = studio_session._line_start(source, section.start_offset)
+            head = studio_session._byte_prefix(source, ls)
+            tail = studio_session._byte_slice(source, ls, prefix_end)
+            marker_line = studio_session._line_count(head) + 1
+            body = head + "print \"" + nonce + "\"\n" + tail
+        else
+            body = studio_session._byte_prefix(source, prefix_end)
+        end if
+
         appended = ""
         n = byte_count(body)
         if n > 0 then
@@ -201,6 +313,25 @@ library studio_session
                 appended = "newline"
             end if
         end if
+
+        ' Every line of the prefix is accounted for before anything generated is
+        ' appended, so the map's document segments are fixed at this point.
+        prefix_lines = studio_session._line_count(body)
+        segs = []
+        if marker_line > 0 then
+            if marker_line > 1 then
+                segs = append(segs, { kind: "document", c_start: 1, c_end: marker_line - 1, delta: 0 })
+            end if
+            segs = append(segs, { kind: "marker", c_start: marker_line, c_end: marker_line, delta: 0 })
+            if prefix_lines > marker_line then
+                segs = append(segs, { kind: "document", c_start: marker_line + 1, c_end: prefix_lines, delta: -1 })
+            end if
+        else
+            if prefix_lines > 0 then
+                segs = append(segs, { kind: "document", c_start: 1, c_end: prefix_lines, delta: 0 })
+            end if
+        end if
+
         anc = section.anchor.ancestry
         if left(anc, 8) = "program:" then
             body = body + "end program\n"
@@ -210,7 +341,95 @@ library studio_session
                 appended = appended + "+end-program"
             end if
         end if
-        return { text: body, appended: appended }
+        gen_lines = studio_session._line_count(body)
+        if gen_lines > prefix_lines then
+            segs = append(segs, { kind: "generated", c_start: prefix_lines + 1, c_end: gen_lines, delta: 0 })
+        end if
+
+        hoisted = []
+        if prog_in_prefix then
+            for each s in sections.sections
+                keep = false
+                if s.anchor.ancestry = "top" then
+                    if s.start_offset >= prefix_end then
+                        if studio_session._hoistable_kind(s.kind) then
+                            keep = true
+                        end if
+                    end if
+                end if
+                if keep then
+                    child_start = studio_session._line_count(body) + 1
+                    body = body + studio_session._byte_slice(source, s.start_offset, s.end_offset)
+                    if byte_at(body, byte_count(body) - 1) != 10 then
+                        body = body + "\n"
+                    end if
+                    child_end = studio_session._line_count(body)
+                    nm = ""
+                    if s.name != nothing then
+                        nm = s.name
+                    end if
+                    hoisted = append(hoisted, {
+                        kind: s.kind,
+                        name: nm,
+                        doc_start_line: s.start_line,
+                        child_start_line: child_start,
+                        lines: child_end - child_start + 1
+                    })
+                    segs = append(segs, {
+                        kind: "hoisted",
+                        c_start: child_start,
+                        c_end: child_end,
+                        delta: s.start_line - child_start
+                    })
+                    if appended = "" then
+                        appended = "hoist"
+                    else
+                        if find(appended, "hoist") = nothing then
+                            appended = appended + "+hoist"
+                        end if
+                    end if
+                end if
+            end for
+        end if
+
+        return {
+            text: body,
+            appended: appended,
+            hoisted: hoisted,
+            map: { schema_version: 1, marker_line: marker_line, segments: segs }
+        }
+    end function
+
+    ' Translate a 1-based line of the MATERIALIZED file to a 1-based line of the
+    ' DOCUMENT. Exact, not inferential: every segment was recorded while Studio
+    ' generated the very content it describes.
+    '
+    '   kind = "document"   a prefix line; `line` is its document line
+    '   kind = "hoisted"    a hoisted declaration's line; `line` is where that
+    '                       declaration really lives in the document
+    '   kind = "marker"     the injected boundary line; no document counterpart
+    '   kind = "generated"  an appended `end program`; no document counterpart
+    '   kind = "unmapped"   past the end of what Studio generated (a diagnostic can
+    '                       name a line that does not exist). No shift is known to
+    '                       apply, so the line is passed through unchanged.
+    function map_line(map, child_line)
+        if map = nothing then
+            return { kind: "unmapped", line: child_line }
+        end if
+        for each s in map.segments
+            if child_line >= s.c_start then
+                if child_line <= s.c_end then
+                    if s.kind = "marker" then
+                        return { kind: "marker", line: 0 }
+                    end if
+                    if s.kind = "generated" then
+                        return { kind: "generated", line: 0 }
+                    end if
+                    return { kind: s.kind, line: child_line + s.delta }
+                end if
+            end if
+        end for
+        return { kind: "unmapped", line: child_line }
     end function
 
     function _prefix_path(session)
@@ -240,10 +459,15 @@ library studio_session
         ' Reset per-run results before the new run so nothing leaks across.
         session.reason = ""
         session.message = ""
+        session.out_raw = ""
         session.out_prefix = ""
         session.out_target = ""
         session.err_prefix = ""
         session.err_target = ""
+        session.split_reason = ""
+        session.marker = ""
+        session.map = nothing
+        session.hoisted = []
         session.stderr_raw = ""
         session.diagnostics = []
         session.attribution = []
@@ -264,18 +488,28 @@ library studio_session
             i = i + 1
         end for
         session.section_index = idx
-        ' Section 1 has no prefix, so its output is unambiguously its own; any later
-        ' section shares one output stream with the sections replayed before it.
+        ' Section 1 has no prefix, so its output is unambiguously its own and needs
+        ' no marker. Any later section shares one stdout stream with the sections
+        ' replayed before it, and a boundary marker is injected to tell them apart;
+        ' whether that succeeded is not known until the stream has been seen, so the
+        ' verdict stays `pending` until the run ends. stderr carries no marker at
+        ' all, so it is `unavailable` from the start rather than optimistically
+        ' claimed and later withdrawn.
         if idx = 0 then
-            session.split = "exact"
+            session.split_out = "exact"
+            session.split_err = "exact"
         else
-            session.split = "combined"
+            session.split_out = "pending"
+            session.split_err = "unavailable"
+            session.marker = studio_session._nonce(session)
         end if
 
         session = studio_session._to(session, "materializing")
 
-        m = studio_session.materialize_text(source, target)
+        m = studio_session.materialize_text(source, target, sections, session.marker)
         session.appended = m.appended
+        session.map = m.map
+        session.hoisted = m.hoisted
         session.prefix_bytes = byte_count(m.text)
         studio_store.ensure_dir(session.scratch_dir)
         path = studio_session._prefix_path(session)
@@ -290,9 +524,14 @@ library studio_session
             return session
         end if
 
+        ' --line-buffered (PLAT-STREAM) so a completed `print` reaches us while the
+        ' child is still running: stdout is a pipe here, and stdio would otherwise
+        ' block-buffer it and hand us nothing until exit -- leaving the tick loop
+        ' below polling an empty pipe and losing everything still buffered if the
+        ' user stops the run.
         session.handle = process.start({
             command: session.interpreter,
-            args: ["--json-diagnostics", path]
+            args: ["--line-buffered", "--json-diagnostics", path]
         })
         session = studio_session._to(session, "running")
         return session
@@ -334,30 +573,74 @@ library studio_session
         session.success = s.success
         process.release(session.handle)
         session.handle = nothing
+        session = studio_session._resolve_split(session)
         session = studio_session._to(session, "finished")
         session = studio_session.cleanup_prefix(session)
         return session
     end function
 
-    ' Route freshly-read bytes into the prefix/target buckets.
-    '
-    ' HONEST LIMITATION. A single child produces ONE stdout stream for sections
-    ' 1..N, and the APPEND-ONLY invariant forbids the sentinel between sections N-1
-    ' and N that would be needed to split it. So:
-    '   split = "exact"    -- the target is section 1: there is no prefix, and all
-    '                         output is unambiguously the target's.
-    '   split = "combined" -- the target is a later section: the stream is reported
-    '                         under `prefix`, because every byte of it MAY be replay
-    '                         output. Nothing is discarded and nothing is claimed to
-    '                         be the target's that might not be.
-    ' See docs/gbasic_studio_stu4.md for the options this leaves open to STU-5.
+    ' Accumulate freshly-read bytes verbatim. Splitting happens once, when the run
+    ' ends -- a marker that has not arrived yet is not the same as one that never
+    ' will, and only a complete stream can tell those apart. `out_raw` is what the UI
+    ' shows live.
     function _absorb(session, out_chunk, err_chunk)
-        if session.split = "exact" then
-            session.out_target = session.out_target + out_chunk
-        else
-            session.out_prefix = session.out_prefix + out_chunk
-        end if
+        session.out_raw = session.out_raw + out_chunk
         session.stderr_raw = session.stderr_raw + err_chunk
+        return session
+    end function
+
+    ' Decide the stdout split from the finished stream.
+    '
+    '   exact     the target is section 1: no prefix exists, so all output is its own
+    '   marked    the boundary marker appeared EXACTLY once; the stream splits there
+    '   combined  it appeared zero times or more than once
+    '
+    ' Zero occurrences is the correct answer, not an error, when the child died
+    ' inside the prefix or the marker sat where it could never execute. Two or more
+    ' means a user program printed the nonce itself: there is then no way to tell
+    ' which occurrence is the boundary, so the run does NOT guess -- it reports
+    ' combined and says why (the STU-3 ambiguity principle). Nothing is discarded in
+    ' any case, and nothing that might be the prefix's is shown as the target's.
+    function _resolve_split(session)
+        if session.split_out = "exact" then
+            session.out_target = session.out_raw
+            session.out_prefix = ""
+            return session
+        end if
+        if session.marker = "" then
+            session.split_out = "combined"
+            session.split_reason = "no-marker"
+            session.out_prefix = session.out_raw
+            session.out_target = ""
+            return session
+        end if
+        parts = split(session.out_raw, session.marker)
+        occurrences = count(parts) - 1
+        if occurrences = 1 then
+            session.split_out = "marked"
+            session.split_reason = ""
+            session.out_prefix = parts[0]
+            rest = parts[1]
+            ' The marker statement printed nonce + newline; drop that newline so the
+            ' target's output does not start with a blank line.
+            if byte_count(rest) > 0 then
+                if byte_at(rest, 0) = 10 then
+                    rest = mid(rest, 1, len(rest) - 1)
+                end if
+            end if
+            session.out_target = rest
+            return session
+        end if
+        session.split_out = "combined"
+        session.out_prefix = session.out_raw
+        session.out_target = ""
+        if occurrences = 0 then
+            session.split_reason = "marker-absent"
+        else
+            ' Both occurrences stay in the displayed text: exactly one of them is
+            ' ours, and stripping the wrong one would delete the user's output.
+            session.split_reason = "marker-ambiguous"
+        end if
         return session
     end function
 
@@ -403,6 +686,7 @@ library studio_session
         session.success = s.success
         process.release(session.handle)
         session.handle = nothing
+        session = studio_session._resolve_split(session)
         session = studio_session._to(session, "finished")
         return studio_session.cleanup_prefix(session)
     end function
@@ -451,7 +735,12 @@ library studio_session
             end if
         end for
         session.diagnostics = diags
-        if session.split = "exact" then
+        ' stderr carries no boundary marker -- the marker is a `print`, so it lands
+        ' on stdout only. stderr is therefore separable ONLY when the target is
+        ' section 1 and there is no prefix to separate from. Everything else goes to
+        ' the prefix bucket, and split_err says "unavailable" rather than letting the
+        ' UI infer that stderr was separated because stdout was.
+        if session.split_err = "exact" then
             session.err_target = join(plain, "\n")
         else
             session.err_prefix = join(plain, "\n")
@@ -459,39 +748,58 @@ library studio_session
         return session
     end function
 
-    ' Map each diagnostic's 1-based line/column back to a section id through STU-3's
-    ' byte ranges, and classify where it landed. The mapping is exact BECAUSE the
-    ' materialized file is a literal byte prefix: line 12 of the child's file is line
-    ' 12 of the document.
+    ' Map each diagnostic's position back to the DOCUMENT and classify where it
+    ' landed. The child reports positions in the materialized file, which is no
+    ' longer line-for-line identical to the document once a marker is injected or a
+    ' declaration is hoisted -- so every position goes through the position map
+    ' first, and only then through STU-3's byte ranges. Columns never move: both
+    ' injections are whole-line operations.
     '
-    '   where = "target"   the error is in the section the user asked to run
-    '   where = "prefix"   the error is in a replayed earlier section
-    '   where = "outside"  the position is in no section at all -- a gap between
-    '                      sections, or the appended `end program` line, which sits
-    '                      beyond every section's range
+    '   where = "target"     the error is in the section the user asked to run
+    '   where = "prefix"     the error is in replayed context -- an earlier section,
+    '                        or a hoisted declaration, which is context too
+    '   where = "outside"    a real document position in no section (a gap between
+    '                        sections, or past the end of the document)
+    '   where = "generated"  a line Studio itself generated: the appended
+    '                        `end program` or the boundary marker. It has no
+    '                        document position, so none is invented -- line and
+    '                        column are reported as 0.
     function attribute(session, sections, source)
         out = []
         for each d in session.diagnostics
-            line = d.start.line
+            child_line = d.start.line
             col = d.start.column
-            off = studio_sections.offset_of(source, line, col)
-            sid = studio_sections.section_at(sections, off)
-            where = "outside"
-            if sid != nothing then
-                if sid = session.section_id then
-                    where = "target"
-                else
-                    where = "prefix"
+            m = studio_session.map_line(session.map, child_line)
+            if m.kind = "marker" or m.kind = "generated" then
+                out = append(out, {
+                    section_id: nothing,
+                    where: "generated",
+                    line: 0,
+                    column: 0,
+                    severity: d.severity,
+                    message: d.message
+                })
+            else
+                line = m.line
+                off = studio_sections.offset_of(source, line, col)
+                sid = studio_sections.section_at(sections, off)
+                where = "outside"
+                if sid != nothing then
+                    if sid = session.section_id then
+                        where = "target"
+                    else
+                        where = "prefix"
+                    end if
                 end if
+                out = append(out, {
+                    section_id: sid,
+                    where: where,
+                    line: line,
+                    column: col,
+                    severity: d.severity,
+                    message: d.message
+                })
             end if
-            out = append(out, {
-                section_id: sid,
-                where: where,
-                line: line,
-                column: col,
-                severity: d.severity,
-                message: d.message
-            })
         end for
         session.attribution = out
         return session
@@ -548,8 +856,14 @@ library studio_session
 
     function summary(session)
         lines = []
-        head = "state=" + session.state + " section=" + session.section_id + " run=" + session.run_seq + " split=" + session.split
+        head = "state=" + session.state + " section=" + session.section_id + " run=" + session.run_seq + " split=out:" + session.split_out + " err:" + session.split_err
         lines = append(lines, head)
+        if session.split_reason != "" then
+            lines = append(lines, "split_reason=" + session.split_reason)
+        end if
+        if count(session.hoisted) > 0 then
+            lines = append(lines, "hoisted=" + count(session.hoisted))
+        end if
         if session.reason != "" then
             lines = append(lines, "reason=" + session.reason + " message=" + session.message)
         end if

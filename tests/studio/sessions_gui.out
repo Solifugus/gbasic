@@ -7,8 +7,8 @@ cursor-section=sec-3
 run: running [sec-3]
 run: finished [sec-3] — exit 0
 prefix-pane=<first
-5
 >
-target-pane=<(not separable from the prefix in this run)>
+target-pane=<5
+>
 transitions: idle>materializing materializing>running running>finished
 app-exited

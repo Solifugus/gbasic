@@ -60,6 +60,47 @@ function prog_src()
   return "program main(args)\n  print \"in-program\"\n\n  function helper(n)\n    return n\n  end function\n\n  print \"second\"\nend program\n"
 end function
 
+' ---- STU-4B fixtures -------------------------------------------------------
+
+' Helpers-after-main: the program body calls `add`, which is declared AFTER
+' `end program`. A byte prefix stops before `add` is ever seen, so running a body
+' section fails outright unless the declaration is hoisted. `inner` splits the body
+' into separate sections so a run has a real prefix; `unused` proves source order
+' is preserved among several hoisted declarations.
+function hoist_after_src()
+  return "program main(args)\n  print add(2, 3)\n\n  function inner(n)\n    return n\n  end function\n\n  print \"second\"\nend program\n\nfunction add(a, b)\n  return a + b\nend function\n\nfunction unused()\n  return 0\nend function\n"
+end function
+
+' The same program with the helper declared BEFORE the block: already inside every
+' prefix, so nothing is hoisted and behaviour is exactly STU-4's.
+function hoist_before_src()
+  return "function add(a, b)\n  return a + b\nend function\n\nprogram main(args)\n  print add(2, 3)\n\n  function inner(n)\n    return n\n  end function\n\n  print \"second\"\nend program\n"
+end function
+
+' A hoisted declaration whose BODY raises when called. The diagnostic's position is
+' inside the hoisted text, which the map must translate back to the declaration's
+' real line in the document.
+function hoist_err_src()
+  return "program main(args)\n  print bad(1)\n\n  function inner(n)\n    return n\n  end function\n\n  print \"second\"\nend program\n\nfunction bad(x)\n  return x / 0\nend function\n"
+end function
+
+' A top-level `print` after `end program` never executes (only the program block
+' does), so hoisting declarations past it cannot reorder an observable effect.
+function hoist_inert_src()
+  return "program main(args)\n  print add(1, 1)\n\n  function inner(n)\n    return n\n  end function\n\n  print \"body\"\nend program\n\nprint \"TOP-LEVEL-NEVER-RUNS\"\n\nfunction add(a, b)\n  return a + b\nend function\n"
+end function
+
+' Output on BOTH sides of the N-1/N boundary, so a successful separation has
+' something to separate.
+function split_src()
+  return "print \"PREFIX-OUT\"\n\nfunction f(x)\n  return x\nend function\n\nprint \"TARGET-OUT\"\n"
+end function
+
+' Dies inside the replayed prefix, before the boundary marker is ever reached.
+function split_die_src()
+  return "print \"PREFIX-OUT\"\nprint 1 / 0\n\nfunction f(x)\n  return x\nend function\n\nprint \"TARGET-OUT\"\n"
+end function
+
 ' ---- helpers ---------------------------------------------------------------
 
 function sections_for(src)
@@ -161,7 +202,7 @@ program main(args)
     src = prog_src()
     secs = sections_for(src)
     first = secs.sections[0]
-    m = studio_session.materialize_text(src, first)
+    m = studio_session.materialize_text(src, first, secs, "")
     print "appended=" + m.appended
     print "materialized=<" + m.text + ">"
     sess = studio_session.create("doc-1", scratch)
@@ -359,14 +400,14 @@ program main(args)
     secs1 = sections_for(src1)
     sess = studio_session.create("doc-1", scratch)
     last1 = secs1.sections[count(secs1.sections) - 1]
-    m1 = studio_session.materialize_text(src1, last1)
+    m1 = studio_session.materialize_text(src1, last1, secs1, "")
     print "run1_prefix_bytes=" + byte_count(m1.text)
     sess = run_and_show("run 1", sess, secs1, src1, last1.id)
 
     src2 = "print \"one\"\n\nfunction add(a, b)\n  return a + b\nend function\n\nprint add(2, 3)\n\nprint \"CHANGED\"\n"
     secs2 = studio_sections.refresh(secs1, src2)
     last2 = secs2.sections[count(secs2.sections) - 1]
-    m2 = studio_session.materialize_text(src2, last2)
+    m2 = studio_session.materialize_text(src2, last2, secs2, "")
     print "run2_prefix_bytes=" + byte_count(m2.text)
     print "same_section_id=" + (last1.id = last2.id)
     sess = run_and_show("run 2 after edit", sess, secs2, src2, last2.id)
@@ -396,5 +437,213 @@ program main(args)
     n = studio_session.sweep_scratch(scratch)
     print "swept=" + n
     print "files_after_sweep=" + count(list(d))
+  end if
+
+  ' ---- STU-4B: declaration hoisting --------------------------------------
+
+  if mode = "hoist" then
+    ' The gap STU-4 named: a program body calling a helper declared after
+    ' `end program`. The byte prefix cannot reach the helper, so the run only
+    ' succeeds if the declaration is hoisted after the appended `end program`.
+    src = hoist_after_src()
+    secs = sections_for(src)
+    print "sections=" + count(secs.sections)
+    sess = studio_session.create("doc-1", scratch)
+    first = secs.sections[0]
+    print "target_kind=" + first.kind + " ancestry=" + first.anchor.ancestry
+    sess = run_and_show("run body section calling a helper declared below", sess, secs, src, first.id)
+    print "hoisted=" + count(sess.hoisted)
+  end if
+
+  if mode = "hoist_before" then
+    ' The same program with the helper declared ABOVE: it is already inside every
+    ' prefix, so nothing is hoisted and the result is exactly STU-4's.
+    src = hoist_before_src()
+    secs = sections_for(src)
+    sess = studio_session.create("doc-1", scratch)
+    ' Section 0 is the top-level `add` declaration; section 1 is the body statement.
+    target = secs.sections[1]
+    print "target_kind=" + target.kind + " ancestry=" + target.anchor.ancestry
+    sess = run_and_show("helper declared above the block", sess, secs, src, target.id)
+    print "hoisted=" + count(sess.hoisted)
+  end if
+
+  if mode = "hoist_order" then
+    ' Several post-target declarations: source order preserved, each landing after
+    ' the appended `end program` where a top-level declaration is legal.
+    src = hoist_after_src()
+    secs = sections_for(src)
+    first = secs.sections[0]
+    m = studio_session.materialize_text(src, first, secs, "")
+    print "appended=" + m.appended
+    print "hoisted=" + count(m.hoisted)
+    for each h in m.hoisted
+      print "hoist " + h.kind + " " + h.name + " doc_line=" + h.doc_start_line + " child_line=" + h.child_start_line + " lines=" + h.lines
+    end for
+    print "materialized=<" + m.text + ">"
+  end if
+
+  if mode = "hoist_err" then
+    ' A raise inside a hoisted declaration's body. Its reported position is in the
+    ' hoisted text, and the map must translate it back to the declaration's real
+    ' line in the document.
+    src = hoist_err_src()
+    secs = sections_for(src)
+    sess = studio_session.create("doc-1", scratch)
+    first = secs.sections[0]
+    sess = run_and_show("error inside a hoisted declaration", sess, secs, src, first.id)
+    for each d in sess.diagnostics
+      print "raw_child_line=" + d.start.line
+    end for
+  end if
+
+  if mode = "hoist_target" then
+    ' The target IS a declaration (the in-body `inner`). It is the prefix's last
+    ' section, so it is never hoisted into itself; the declarations below it still
+    ' are.
+    src = hoist_after_src()
+    secs = sections_for(src)
+    sess = studio_session.create("doc-1", scratch)
+    target = secs.sections[1]
+    print "target_kind=" + target.kind + " name=" + target.name
+    sess = run_and_show("target is itself a declaration", sess, secs, src, target.id)
+    print "hoisted=" + count(sess.hoisted)
+    for each h in sess.hoisted
+      print "hoist " + h.kind + " " + h.name
+    end for
+  end if
+
+  if mode = "hoist_inert" then
+    ' Proof that hoisting reorders no observable effect: a top-level `print` sits
+    ' between the block and the hoisted declaration, and it never runs -- because
+    ' when a program block is present it is the ONLY thing that executes.
+    src = hoist_inert_src()
+    secs = sections_for(src)
+    sess = studio_session.create("doc-1", scratch)
+    first = secs.sections[0]
+    sess = run_and_show("top-level statement below the block stays inert", sess, secs, src, first.id)
+    print "top_level_ran=" + (find(sess.out_target + sess.out_prefix, "TOP-LEVEL-NEVER-RUNS") != nothing)
+  end if
+
+  ' ---- STU-4B: output separation -----------------------------------------
+
+  if mode = "split" then
+    ' Output on both sides of the boundary: the injected marker separates them.
+    src = split_src()
+    secs = sections_for(src)
+    sess = studio_session.create("doc-1", scratch)
+    last = secs.sections[count(secs.sections) - 1]
+    sess = run_and_show("separated stdout", sess, secs, src, last.id)
+    print "split_out=" + sess.split_out + " split_err=" + sess.split_err
+    print "split_reason=<" + sess.split_reason + ">"
+    print "marker_in_display=" + (find(sess.out_prefix + sess.out_target, sess.marker) != nothing)
+  end if
+
+  if mode = "split_nonce" then
+    ' A user program that prints the nonce itself. Two occurrences, no way to tell
+    ' which is the boundary -- so the run falls back to combined and says why,
+    ' rather than guessing (the STU-3 ambiguity principle).
+    fixed = "@@studio-boundary-TESTNONCE@@"
+    src = "print \"PREFIX-OUT\"\nprint \"" + fixed + "\"\n\nfunction f(x)\n  return x\nend function\n\nprint \"TARGET-OUT\"\n"
+    secs = sections_for(src)
+    sess = studio_session.create("doc-1", scratch)
+    sess.nonce_fixed = fixed
+    last = secs.sections[count(secs.sections) - 1]
+    sess = run_and_show("user program prints the nonce", sess, secs, src, last.id)
+    print "split_out=" + sess.split_out + " split_err=" + sess.split_err
+    print "split_reason=<" + sess.split_reason + ">"
+  end if
+
+  if mode = "split_die" then
+    ' The child dies inside the prefix, before the marker is reached. No marker is
+    ' the CORRECT answer here, not an error: nothing of the target ever ran.
+    src = split_die_src()
+    secs = sections_for(src)
+    sess = studio_session.create("doc-1", scratch)
+    last = secs.sections[count(secs.sections) - 1]
+    sess = run_and_show("child dies before the boundary", sess, secs, src, last.id)
+    print "split_out=" + sess.split_out + " split_err=" + sess.split_err
+    print "split_reason=<" + sess.split_reason + ">"
+  end if
+
+  if mode = "split_stderr" then
+    ' stdout separates; stderr cannot. The marker is a `print`, so it appears on
+    ' stdout only -- there is no boundary in the diagnostic stream and the session
+    ' says so instead of implying stderr was separated too.
+    src = "print \"PREFIX-OUT\"\n\nfunction f(x)\n  return x\nend function\n\nprint \"TARGET-OUT\"\nprint 1 / 0\n"
+    secs = sections_for(src)
+    sess = studio_session.create("doc-1", scratch)
+    last = secs.sections[count(secs.sections) - 1]
+    sess = run_and_show("stdout separated, stderr not", sess, secs, src, last.id)
+    print "split_out=" + sess.split_out + " split_err=" + sess.split_err
+    print "err_prefix=<" + sess.err_prefix + ">"
+    print "err_target=<" + sess.err_target + ">"
+  end if
+
+  ' ---- STU-4B: the position map, exercised directly ----------------------
+
+  if mode = "map" then
+    ' The map is built from content Studio generated, so it is exact rather than
+    ' inferred. Probe it directly at every boundary instead of only through error
+    ' attribution.
+    ' The last section of the program BODY: a prefix exists (so a marker is
+    ' injected), the block is cut open (so `end program` is generated), and two
+    ' top-level declarations sit below it (so both are hoisted). One materialization
+    ' exercising every segment kind at once.
+    src = hoist_after_src()
+    secs = sections_for(src)
+    target = secs.sections[2]
+    m = studio_session.materialize_text(src, target, secs, "@@nonce@@")
+    print "-- marker + generated + hoist map"
+    print "marker_line=" + m.map.marker_line
+    print "segments=" + count(m.map.segments)
+    for each s in m.map.segments
+      print "seg " + s.kind + " child=" + s.c_start + ".." + s.c_end + " delta=" + s.delta
+    end for
+    probe = 1
+    total = count(split(m.text, "\n")) - 1
+    while probe <= total
+      r = studio_session.map_line(m.map, probe)
+      print "child " + probe + " -> " + r.kind + " " + r.line
+      probe = probe + 1
+    end while
+
+    print "-- no marker (section 1), no hoist"
+    src2 = split_src()
+    secs2 = sections_for(src2)
+    m2 = studio_session.materialize_text(src2, secs2.sections[0], secs2, "")
+    print "marker_line=" + m2.map.marker_line
+    print "segments=" + count(m2.map.segments)
+    r = studio_session.map_line(m2.map, 1)
+    print "child 1 -> " + r.kind + " " + r.line
+  end if
+
+  ' ---- STU-4B: live output (--line-buffered) -----------------------------
+
+  if mode = "stream" then
+    ' PLAT-STREAM: sessions launch the child with --line-buffered, so a completed
+    ' print arrives WHILE the child runs. Without it this loop would spin to its
+    ' guard, because a block-buffered child shows nothing until it exits.
+    src = "print \"EARLY-LINE\"\n\nwhile true\n  sleep(0.05)\nend while\n"
+    secs = sections_for(src)
+    sess = studio_session.create("doc-1", scratch)
+    last = secs.sections[count(secs.sections) - 1]
+    sess = studio_session.run(sess, secs, src, last.id)
+    guard = 0
+    seen_while_running = false
+    while guard < 2000
+      sess = studio_session.tick(sess)
+      if find(sess.out_raw, "EARLY-LINE") != nothing then
+        seen_while_running = (sess.state = "running")
+        break
+      end if
+      guard = guard + 1
+      sleep(0.01)
+    end while
+    print "saw_output_before_exit=" + seen_while_running
+    print "state_at_observation=" + sess.state
+    sess = studio_session.force_stop(sess, 2)
+    sess = studio_session.finalize(sess, secs, src)
+    print "final_state=" + sess.state
   end if
 end program

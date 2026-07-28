@@ -393,6 +393,14 @@ for m in clean err_target err_prefix outside prog stop force unresponsive restar
          refuse signal big edited scratch; do
     run_session "$m"
 done
+
+# ---- STU-4B: materialization completeness -----------------------------------
+# Declaration hoisting (helpers-after-main), boundary-marker output separation,
+# the shared position map probed directly, and live output via --line-buffered.
+for m in hoist hoist_before hoist_order hoist_err hoist_target hoist_inert \
+         split split_nonce split_die split_stderr map stream; do
+    run_session "$m"
+done
 printf 'PASS sessions_scratch_clean (no materialized prefix left by any case)\n'
 
 # STU-4 memory: the run/stop/attribute paths under valgrind. `force` and

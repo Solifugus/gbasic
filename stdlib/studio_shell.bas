@@ -213,16 +213,26 @@ library studio_shell
 
     ' The two panes' text. Prefix output is ALWAYS shown, never folded away: it is
     ' the only way a user can see that the replay re-issued the prefix's side
-    ' effects. When the target is not the first section the two streams are not
-    ' separable (see docs/gbasic_studio_stu4.md), and the pane says so rather than
-    ' pretending a boundary exists.
+    ' effects.
+    '
+    ' While a run is in flight the split is not yet decided, so BOTH panes show the
+    ' raw stream under the prefix heading rather than guessing at a boundary that
+    ' may not have been printed yet. Once the run ends the panes show whichever
+    ' answer the marker actually supports (STU-4B), and when it supports none they
+    ' say so instead of pretending a boundary exists.
     function output_prefix_text(session)
         if session = nothing then
             return "(none)"
         end if
-        if session.split = "combined" then
+        if session.split_out = "pending" then
+            if session.out_raw = "" then
+                return "(running — no output yet)"
+            end if
+            return session.out_raw
+        end if
+        if session.split_out = "combined" then
             if session.out_prefix = "" then
-                return "(none yet — sections 1..N combined)"
+                return "(none — sections 1..N combined)"
             end if
             return session.out_prefix
         end if
@@ -236,7 +246,10 @@ library studio_shell
         if session = nothing then
             return "(none)"
         end if
-        if session.split = "combined" then
+        if session.split_out = "pending" then
+            return "(running — not separated yet)"
+        end if
+        if session.split_out = "combined" then
             return "(not separable from the prefix in this run)"
         end if
         if session.out_target = "" then
