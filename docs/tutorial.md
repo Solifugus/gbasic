@@ -66,7 +66,9 @@ end program
 If a file has no `program` block, the whole file is treated as an implicit
 program. `args` is the array of command-line arguments. Useful CLI flags:
 `./gbasic --tokens file.bas` (dump tokens), `--ast` (dump the parse tree),
-`--add-loads` (suggest `load` lines), `--version`.
+`--add-loads` (suggest `load` lines), `--line-buffered` (flush stdout at every
+line, so output is visible as it is printed when you pipe it somewhere),
+`--version`.
 
 ## Variables
 

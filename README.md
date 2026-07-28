@@ -132,6 +132,7 @@ The built-in WebServer uses POSIX sockets and has no external HTTP dependency.
 ./gbasic --ast program.bas
 ./gbasic --add-loads program.bas
 ./gbasic --json-diagnostics program.bas
+./gbasic --line-buffered program.bas
 ./gbasic --version
 ```
 
@@ -140,6 +141,24 @@ suggested `load` statements. The older `use` syntax and `--add-uses` option
 remain temporarily supported for compatibility. `--json-diagnostics` emits
 parse/runtime diagnostics as JSON on stderr (the same model the language server
 uses) while leaving normal program output untouched.
+
+`--line-buffered` flushes stdout at every completed line. This is the standard
+Unix pipe-buffering surprise, not a gBASIC quirk: when stdout is a **terminal**,
+stdio line-buffers it and output appears as it is printed, but when stdout is a
+**pipe** — `gbasic prog.bas | less`, a log collector, an editor running your
+program — stdio switches to block buffering and holds output until roughly 4 KB
+have accumulated. A program that prints a line every few seconds therefore looks
+silent until it exits, and a program killed before it exits loses whatever was
+still buffered. Pass `--line-buffered` when something is reading your output as
+it is produced. It is orthogonal: no other flag implies it, it implies nothing,
+and it may be combined with any of the above in either order. Without it,
+behavior is exactly what it has always been. The cost is roughly one `write`
+syscall per printed line — measured at about +60% on a program that does nothing
+but print, and unnoticeable on anything else.
+
+A flag-looking argument *after* the file belongs to the program, so
+`./gbasic prog.bas --line-buffered` passes the text through to `program main(args)`
+rather than enabling the flag.
 
 A separate diagnostics language server, `gbasic-lsp`, is built by `make dev`
 (it is kept out of the default `make` target). It speaks LSP over stdio and

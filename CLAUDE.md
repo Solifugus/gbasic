@@ -20,6 +20,7 @@ make clean && make         # full rebuild
 ./gbasic --ast program.bas      # dump parsed AST
 ./gbasic --add-loads program.bas # print source with suggested `load` lines
 ./gbasic --json-diagnostics program.bas # emit parse/runtime diagnostics as JSON on stderr
+./gbasic --line-buffered program.bas # flush stdout per completed line (pipes block-buffer by default)
 ./gbasic --version
 sudo make install          # install to /usr/local (binary + stdlib); PREFIX overridable
 ```
@@ -86,6 +87,7 @@ bash tests/run_bag_smoke.sh
 ./tests/run_gi.sh           # gi.* GObject-Introspection bridge (headless Gio types); skips if libgirepository-2.0 absent
 ./tests/run_native_platform.sh # Native Application Platform (headless; GTK4/GtkSource via gi); skips if those typelibs absent
 ./tests/run_process.sh      # general process API: process.run (NAP-6) + PLAT-PROC live child control (process.start/poll/read/wait/stop/release). GI-independent, never skips. PLAT-PROC cases are deterministic by construction, not timing: children that must be observed mid-run block on a gate file the parent creates. Covers incremental non-blocking reads, nonzero exit, >64KB on both streams without deadlock, stop-by-escalation (SIGTERM-only vs force_after->SIGKILL, incl. a child that ignores SIGTERM), interleaved read/poll, byte fidelity across a mid-codepoint chunk boundary, use inside a spawned actor, and an abandoned-handle fd/zombie audit (SKIPs the zombie tier if `ps` is absent)
+./tests/run_stream.sh       # PLAT-STREAM `--line-buffered`: the opt-in prompt-stdout flag. Headless, GI-independent, never skips (bar the valgrind tier). Gate-file determinism throughout — child fixtures publish a READY file only after the print under test has executed, so a read at that instant is provably post-print. Covers: streaming mid-run WITH the flag and provably not without it, a partial line (`input` prompt — already fflushed by the interpreter, so identical both ways) plus output that ends with no trailing newline, a 20 000-line child checked byte-identical against the unflagged run with every line verified, composition with `--json-diagnostics` in either flag order (stderr byte-identical three ways), a child killed by SIGTERM mid-output (flushed bytes survive; unflagged, nothing does), opt-in proof, and that a flag-looking argument after FILE still reaches the program
 ./tests/run_nap_fs.sh       # NAP-10 filesystem metadata + atomic_replace; GI-independent; xdev case gated on a distinct /dev/shm, opt-in NAP_FS_STRESS=1 concurrency stress (structural coverage also in examples/nap_fs_test.gb + run_negative)
 ./tests/run_native_editor.sh # NAP-7 SourceEditor/gtk.bas/gbasic.lang (GBASIC_PATH=stdlib); headless tier always, display smoke when a display exists; skips if GtkSource typelib absent
 ./tests/run_native_workbench.sh # NAP-8 platform spike (examples/native_workbench); inspect/process always, async gated on libgirepository, full-UI smoke gated on GTK4/GtkSource typelibs + a display

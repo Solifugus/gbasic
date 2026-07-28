@@ -88,6 +88,15 @@ the standing ones.
 
 - **`print` takes a single expression.** `print(a, b)` and `print a; b` are parse
   errors. Concatenate: `print(string(a) + " " + string(b))`.
+- **Printed output does not leave the process when you pipe it.** Into a terminal,
+  output appears line by line; into a **pipe** (`| less`, a log collector, a parent
+  program reading you) stdio switches to block buffering and holds it until ~4 KB
+  have accumulated — so a slow-printing program looks hung, and one that is killed
+  loses whatever was still buffered. This is standard Unix stdio, not a gBASIC
+  quirk, and `print` is not at fault. Run the program with `--line-buffered` (an
+  interpreter flag, so it goes *before* the filename) when something is reading the
+  output as it is produced. An `input` prompt is the exception: the interpreter
+  already flushes those explicitly, so prompts are never withheld.
 
 ## Error handling — the big one
 

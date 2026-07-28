@@ -2451,3 +2451,60 @@ gbasic --json-diagnostics FILE
 as JSON on stderr (the model the language server consumes); normal program
 output on stdout is unchanged. A separate `gbasic-lsp` binary (built by
 `make dev`) serves the same diagnostics over LSP on document sync.
+
+Flush stdout at every completed line:
+
+```sh
+gbasic --line-buffered FILE
+```
+
+### Why `--line-buffered` exists
+
+Nothing about gBASIC decides when your printed bytes leave the process — C stdio
+does, and it decides by looking at what stdout is connected to:
+
+| stdout is | stdio mode | what a reader sees |
+|---|---|---|
+| a terminal | line buffered | each line as it is printed |
+| a pipe or a file | **block buffered** | nothing until ~4 KB accumulate, or exit |
+
+So a program that behaves perfectly at a prompt appears to hang the moment you
+pipe it — `gbasic prog.bas | less`, a log collector, an editor or supervisor
+reading the program it just started. Worse, block-buffered output is *lost* if
+the program is killed rather than allowed to exit: nothing runs stdio's cleanup
+for a signalled process, so whatever was still in the buffer never existed as far
+as the reader is concerned.
+
+`--line-buffered` switches stdout to line buffering (`_IOLBF`) regardless of what
+it is connected to, so every completed line is flushed as it is printed.
+
+This is complete for gBASIC's output surface rather than merely helpful: every
+`print` this runtime emits ends in a newline, so line buffering flushes every one
+of them, and the single construct that writes a partial line — an `input` prompt —
+is already flushed explicitly by the interpreter and was never affected. Unbuffered
+mode (`_IONBF`) would therefore deliver nothing extra while splitting one `print`
+into up to 18 `write` calls (an array print emits its brackets, elements and
+separators separately); line buffering is exactly one `write` per line.
+
+Properties worth relying on:
+
+- **Opt-in.** No other flag implies it and it implies nothing. Without it, output
+  behavior is byte-for-byte and timing-for-timing what it has always been.
+- **Orthogonal.** Combine it with any other flag, in either order:
+  `gbasic --json-diagnostics --line-buffered FILE` and
+  `gbasic --line-buffered --json-diagnostics FILE` are the same run. It touches
+  stdout buffering only; the diagnostic stream is unchanged.
+- **Interpreter-side.** It must come *before* `FILE`. A flag-looking argument after
+  `FILE` is a program argument: `gbasic prog.bas --line-buffered` passes the text
+  through to `program main(args)`.
+- **Nothing changes about the bytes.** Same content, same order, same total — only
+  the moment they leave the process.
+- **stderr needs nothing.** C requires stderr never to be fully buffered, glibc
+  makes it unbuffered, and the interpreter never calls `setvbuf` on it, so
+  diagnostics already appear as they are written.
+
+The cost is one `write` syscall per line instead of one per ~4 KB. On a program
+that does nothing but print, that measures at roughly +60% wall clock
+(200 000 lines piped: 0.149 s → 0.243 s, i.e. ~1.3 M lines/s → ~0.8 M lines/s); on
+any program that also computes, it is not observable. Leave it off for bulk output
+you are redirecting to a file, turn it on whenever something is reading along.
