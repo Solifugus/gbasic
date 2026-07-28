@@ -84,8 +84,52 @@ function on_activate(gtkapp)
             ws.sections = studio_sections.persist_into(ws.sections, st)
             print "persisted docs=" + count(ws.sections)
         end if
+        if G.exec then
+            ' STU-4: build the execution strip + output pane, resolve the section at
+            ' the document's cursor, start a run, and drive it from a GTK TIMEOUT --
+            ' no actor, no mailbox (R2 amendment). The timer is the only thing that
+            ' advances the session; the GTK loop stays free the whole time.
+            bar = studio_shell.run_bar()
+            pane = studio_shell.output_pane()
+            G.bar = bar
+            G.pane = pane
+            doc = studio_docs.doc_by_id(dm, G.doc_id)
+            st = studio_sections.create(G.doc_id)
+            st = studio_sections.refresh(st, doc.content)
+            G.secs = st
+            G.src = doc.content
+            cur = doc.cursor
+            sid = studio_sections.section_at_position(st, doc.content, cur.line, cur.column)
+            print "cursor-section=" + sid
+            sess = studio_session.create(G.doc_id, G.scratch)
+            sess = studio_session.run(sess, st, doc.content, sid)
+            G.sess = sess
+            bar.state.label = studio_shell.session_text(sess)
+            print studio_shell.session_text(sess)
+            gi.timeout(50, on_run_tick)
+            return nothing
+        end if
         gtkapp.quit()
     end if
+end function
+
+' STU-4 timer callback: one non-blocking service of the child per tick. Returns
+' true to stay armed, false to disarm once the run has left an active state.
+function on_run_tick()
+    G.sess = studio_session.tick(G.sess)
+    G.bar.state.label = studio_shell.session_text(G.sess)
+    G.pane.prefix.label = studio_shell.output_prefix_text(G.sess)
+    G.pane.target.label = studio_shell.output_target_text(G.sess)
+    if studio_session.is_active(G.sess) then
+        return true
+    end if
+    G.sess = studio_session.finalize(G.sess, G.secs, G.src)
+    print studio_shell.session_text(G.sess)
+    print "prefix-pane=<" + studio_shell.output_prefix_text(G.sess) + ">"
+    print "target-pane=<" + studio_shell.output_target_text(G.sess) + ">"
+    print "transitions: " + studio_session.transitions(G.sess)
+    G.app_ref.quit()
+    return false
 end function
 
 program main(args)
@@ -97,6 +141,7 @@ program main(args)
     load studio_browser
     load studio_docs
     load studio_sections
+    load studio_session
     load studio
 
     mode = "gui"
@@ -408,6 +453,14 @@ program main(args)
     G.shell = nothing
     G.sections = false
     G.doc_id = ""
+    G.exec = false
+    G.scratch = home + "/scratch"
+    G.sess = nothing
+    G.secs = nothing
+    G.src = ""
+    G.bar = nothing
+    G.pane = nothing
+    G.app_ref = nothing
     if mode = "smoke" then
         G.smoke = true
         G.app = build_canned(G.app)
@@ -443,6 +496,23 @@ program main(args)
         G.app.dm = studio_docs.set_cursor(G.app.dm, r.id, 4, 3)
     end if
 
+    if mode = "stu4_smoke" then
+        G.smoke = true
+        G.exec = true
+        G.app = studio.create_registered_workspace(G.app, "ws")
+        docfile = ".gbasic-studio-exec.bas"
+        if count(args) > 2 then
+            docfile = args[2]
+        end if
+        r = studio.open_file(G.app, "", docfile)
+        G.app = r.app
+        G.doc_id = r.id
+        G.app = studio.edit_document(G.app, r.id, "print \"first\"\n\nfunction add(a, b)\n  return a + b\nend function\n\nprint add(2, 3)\n")
+        ' Cursor inside the LAST section, so the run replays the prefix above it.
+        G.app.dm = studio_docs.set_cursor(G.app.dm, r.id, 7, 1)
+        studio_session.sweep_scratch(G.scratch)
+    end if
+
     load gi
     load gtk
     load sourceeditor
@@ -450,6 +520,7 @@ program main(args)
     gi.require("Gtk", "4.0")
 
     gtkapp = gtk.application("org.gbasic.Studio")
+    G.app_ref = gtkapp
     gi.connect(gtkapp, "activate", on_activate)
     gi.call(gtkapp, "run", 0, nothing)
     print "app-exited"

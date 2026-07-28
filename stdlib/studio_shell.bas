@@ -149,6 +149,102 @@ library studio_shell
         return marker + doc.display_name
     end function
 
+    ' ---- STU-4: execution strip + output pane ------------------------------
+    '
+    ' Deliberately minimal (STU-4 scope): run / stop / force-stop, the session state,
+    ' and an output pane that keeps PREFIX output visually separate from TARGET
+    ' output. No results history, no inspector, no gutter work -- those are STU-5.
+    '
+    ' The widgets are returned rather than wired: like the rest of this shell, the
+    ' entry program owns the handlers over its global app record, because a callback
+    ' cannot rebind a top-level scalar.
+
+    function run_bar()
+        bar = gtk.box("h", 6)
+        run_btn = gtk.button("Run Section")
+        halt_btn = gtk.button("Stop")
+        force_btn = gtk.button("Force Stop")
+        state = gtk.label("run: idle")
+        bar.append(run_btn)
+        bar.append(halt_btn)
+        bar.append(force_btn)
+        bar.append(state)
+        ' `stop` is a gBASIC keyword and cannot be a record key, hence `halt`.
+        return { box: bar, run: run_btn, halt: halt_btn, force: force_btn, state: state }
+    end function
+
+    ' One line of session state for the strip: what is happening, to which section,
+    ' and -- when Studio refused or the child is gone -- why.
+    function session_text(session)
+        if session = nothing then
+            return "run: (no session)"
+        end if
+        line = "run: " + session.state
+        if session.section_id != "" then
+            line = line + " [" + session.section_id + "]"
+        end if
+        if session.state = "refused" then
+            return line + " — " + session.message
+        end if
+        if session.state = "failed" then
+            return line + " — " + session.message
+        end if
+        if session.state = "finished" then
+            if session.signal != 0 then
+                return line + " — killed by signal " + session.signal
+            end if
+            return line + " — exit " + session.exit_code
+        end if
+        return line
+    end function
+
+    function output_pane()
+        box = gtk.box("v", 4)
+        prefix_head = gtk.label("Prefix output — sections replayed before the target")
+        prefix_body = gtk.label("")
+        target_head = gtk.label("Target output — the section you ran")
+        target_body = gtk.label("")
+        box.append(prefix_head)
+        box.append(prefix_body)
+        box.append(target_head)
+        box.append(target_body)
+        return { box: box, prefix: prefix_body, target: target_body }
+    end function
+
+    ' The two panes' text. Prefix output is ALWAYS shown, never folded away: it is
+    ' the only way a user can see that the replay re-issued the prefix's side
+    ' effects. When the target is not the first section the two streams are not
+    ' separable (see docs/gbasic_studio_stu4.md), and the pane says so rather than
+    ' pretending a boundary exists.
+    function output_prefix_text(session)
+        if session = nothing then
+            return "(none)"
+        end if
+        if session.split = "combined" then
+            if session.out_prefix = "" then
+                return "(none yet — sections 1..N combined)"
+            end if
+            return session.out_prefix
+        end if
+        if session.out_prefix = "" then
+            return "(none)"
+        end if
+        return session.out_prefix
+    end function
+
+    function output_target_text(session)
+        if session = nothing then
+            return "(none)"
+        end if
+        if session.split = "combined" then
+            return "(not separable from the prefix in this run)"
+        end if
+        if session.out_target = "" then
+            return "(none)"
+        end if
+        return session.out_target
+    end function
+
     function status_text(app)
         ws = app.model.workspace
         base = "ready"
