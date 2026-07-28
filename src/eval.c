@@ -1767,131 +1767,136 @@ static long long round_to_cents(double amount) {
     return scaled >= 0 ? (long long)(scaled + 0.5) : (long long)(scaled - 0.5);
 }
 
-static void value_print(Value value) {
+/* PLAT-STDERR: `print` and `print to error` differ in one thing -- the destination
+ * stream -- so they share this one renderer rather than duplicating it. Duplication
+ * would be a standing invitation for the two to drift apart on some value shape,
+ * and the whole promise of `print to error` is that it renders what `print`
+ * renders. Passing the stream in makes that promise structural. */
+static void value_print_to(FILE *out, Value value) {
     switch (value.kind) {
     case VALUE_NULL:
-        printf("nothing\n");
+        fprintf(out, "nothing\n");
         break;
     case VALUE_UNKNOWN:
-        printf("unknown\n");
+        fprintf(out, "unknown\n");
         break;
     case VALUE_NUMBER: {
         char nb[32];
         format_number(nb, sizeof(nb), value.as.number);
-        printf("%s\n", nb);
+        fprintf(out, "%s\n", nb);
         break;
     }
     case VALUE_STRING:
-        fwrite(value.as.string, 1, string_length(value.as.string), stdout);
-        putchar('\n');
+        fwrite(value.as.string, 1, string_length(value.as.string), out);
+        fputc('\n', out);
         break;
     case VALUE_BOOL:
-        printf("%s\n", value.as.boolean ? "true" : "false");
+        fprintf(out, "%s\n", value.as.boolean ? "true" : "false");
         break;
     case VALUE_ARRAY:
-        printf("[");
+        fprintf(out, "[");
         for (size_t i = 0; i < value.as.array.store->count; i++) {
             if (i > 0) {
-                printf(", ");
+                fprintf(out, ", ");
             }
             if (value.as.array.store->items[i].kind == VALUE_NUMBER) {
                 char nb[32];
                 format_number(nb, sizeof(nb), value.as.array.store->items[i].as.number);
-                printf("%s", nb);
+                fprintf(out, "%s", nb);
             } else {
-                printf("?");
+                fprintf(out, "?");
             }
         }
-        printf("]\n");
+        fprintf(out, "]\n");
         break;
     case VALUE_RECORD:
-        printf("{record}\n");
+        fprintf(out, "{record}\n");
         break;
     case VALUE_DATETIME:
         if (value.as.datetime.time_only) {
             if (value.as.datetime.precision == PREC_HOUR) {
-                printf("%02d\n", value.as.datetime.hour);
+                fprintf(out, "%02d\n", value.as.datetime.hour);
             } else if (value.as.datetime.precision == PREC_MINUTE) {
-                printf("%02d:%02d\n", value.as.datetime.hour, value.as.datetime.minute);
+                fprintf(out, "%02d:%02d\n", value.as.datetime.hour, value.as.datetime.minute);
             } else {
-                printf("%02d:%02d:%02d\n",
-                       value.as.datetime.hour,
-                       value.as.datetime.minute,
-                       value.as.datetime.second);
+                fprintf(out, "%02d:%02d:%02d\n",
+                             value.as.datetime.hour,
+                             value.as.datetime.minute,
+                             value.as.datetime.second);
             }
         } else if (value.as.datetime.precision == PREC_YEAR) {
-            printf("%04d\n", value.as.datetime.year);
+            fprintf(out, "%04d\n", value.as.datetime.year);
         } else if (value.as.datetime.precision == PREC_MONTH) {
-            printf("%04d-%02d\n", value.as.datetime.year, value.as.datetime.month);
+            fprintf(out, "%04d-%02d\n", value.as.datetime.year, value.as.datetime.month);
         } else if (value.as.datetime.precision == PREC_DAY) {
-            printf("%04d-%02d-%02d\n",
-                   value.as.datetime.year,
-                   value.as.datetime.month,
-                   value.as.datetime.day);
+            fprintf(out, "%04d-%02d-%02d\n",
+                         value.as.datetime.year,
+                         value.as.datetime.month,
+                         value.as.datetime.day);
         } else if (value.as.datetime.precision == PREC_HOUR) {
-            printf("%04d-%02d-%02d %02d\n",
-                   value.as.datetime.year,
-                   value.as.datetime.month,
-                   value.as.datetime.day,
-                   value.as.datetime.hour);
+            fprintf(out, "%04d-%02d-%02d %02d\n",
+                         value.as.datetime.year,
+                         value.as.datetime.month,
+                         value.as.datetime.day,
+                         value.as.datetime.hour);
         } else if (value.as.datetime.precision == PREC_MINUTE) {
-            printf("%04d-%02d-%02d %02d:%02d\n",
-                   value.as.datetime.year,
-                   value.as.datetime.month,
-                   value.as.datetime.day,
-                   value.as.datetime.hour,
-                   value.as.datetime.minute);
+            fprintf(out, "%04d-%02d-%02d %02d:%02d\n",
+                         value.as.datetime.year,
+                         value.as.datetime.month,
+                         value.as.datetime.day,
+                         value.as.datetime.hour,
+                         value.as.datetime.minute);
         } else {
-            printf("%04d-%02d-%02d %02d:%02d:%02d\n",
-                   value.as.datetime.year,
-                   value.as.datetime.month,
-                   value.as.datetime.day,
-                   value.as.datetime.hour,
-                   value.as.datetime.minute,
-                   value.as.datetime.second);
+            fprintf(out, "%04d-%02d-%02d %02d:%02d:%02d\n",
+                         value.as.datetime.year,
+                         value.as.datetime.month,
+                         value.as.datetime.day,
+                         value.as.datetime.hour,
+                         value.as.datetime.minute,
+                         value.as.datetime.second);
         }
         break;
     case VALUE_DURATION:
-        printf("{duration}\n");
+        fprintf(out, "{duration}\n");
         break;
     case VALUE_MONEY: {
         long long cents = value.as.cents;
         if (cents < 0) {
-            printf("-");
+            fprintf(out, "-");
             cents = -cents;
         }
-        printf("%lld.%02lld\n", cents / 100, cents % 100);
+        fprintf(out, "%lld.%02lld\n", cents / 100, cents % 100);
         break;
     }
     case VALUE_FILE:
-        printf("%s\n", value.as.file_path);
+        fprintf(out, "%s\n", value.as.file_path);
         break;
     case VALUE_DIR:
-        printf("%s\n", value.as.dir_path);
+        fprintf(out, "%s\n", value.as.dir_path);
         break;
     case VALUE_POSTGRES_CONNECTION:
-        printf("<postgres_connection>\n");
+        fprintf(out, "<postgres_connection>\n");
         break;
     case VALUE_SQLITE_CONNECTION:
-        printf("<sqlite_connection>\n");
+        fprintf(out, "<sqlite_connection>\n");
         break;
     case VALUE_XML_READER:
-        printf("<xml_reader>\n");
+        fprintf(out, "<xml_reader>\n");
         break;
     case VALUE_GOBJECT:
-        printf("<gobject>\n");
+        fprintf(out, "<gobject>\n");
         break;
     case VALUE_GBOXED:
-        printf("<gboxed>\n");
+        fprintf(out, "<gboxed>\n");
         break;
     case VALUE_ACTOR:
-        printf("<actor>\n");
+        fprintf(out, "<actor>\n");
         break;
     case VALUE_PROCESS:
-        printf("<process>\n");
+        fprintf(out, "<process>\n");
         break;
     case VALUE_FUNCTION:
-        printf("<function %s>\n", value.as.function.name);
+        fprintf(out, "<function %s>\n", value.as.function.name);
         break;
     }
 }
@@ -21776,14 +21781,17 @@ static EvalResult eval_stmt(AstStmt *stmt) {
     }
     case AST_STMT_PRINT: {
         int before_error = error_generation;
-        Value value = eval_expr(stmt->as.print);
+        Value value = eval_expr(stmt->as.print.expr);
         if (error_generation != before_error) {
             value_free(value);
             current_line = previous_line;
             current_column = previous_column;
             return eval_error_result();
         }
-        value_print(value);
+        /* PLAT-STDERR: the destination is the only difference. stderr needs no
+         * flush of its own -- C forbids it being fully buffered and glibc leaves
+         * it unbuffered, so the line is already gone by the time this returns. */
+        value_print_to(stmt->as.print.to_stderr ? stderr : stdout, value);
         value_free(value);
         break;
     }

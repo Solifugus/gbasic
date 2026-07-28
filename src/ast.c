@@ -256,7 +256,16 @@ AstStmt *ast_assign(AstExpr *target, AstModifierUse modifier, AstExpr *value) {
 AstStmt *ast_print(AstExpr *expr) {
     AstStmt *stmt = xmalloc(sizeof(*stmt));
     stmt->kind = AST_STMT_PRINT;
-    stmt->as.print = expr;
+    stmt->as.print.expr = expr;
+    stmt->as.print.to_stderr = 0;
+    return stmt;
+}
+
+/* PLAT-STDERR: `print to error <expression>` -- the same statement with standard
+ * error as its destination. */
+AstStmt *ast_print_error(AstExpr *expr) {
+    AstStmt *stmt = ast_print(expr);
+    stmt->as.print.to_stderr = 1;
     return stmt;
 }
 
@@ -639,8 +648,8 @@ static void dump_stmt(AstStmt *stmt, int indent) {
         dump_expr(stmt->as.assign.value, indent + 1);
         break;
     case AST_STMT_PRINT:
-        printf("Print\n");
-        dump_expr(stmt->as.print, indent + 1);
+        printf("%s\n", stmt->as.print.to_stderr ? "PrintToError" : "Print");
+        dump_expr(stmt->as.print.expr, indent + 1);
         break;
     case AST_STMT_EXPR:
         printf("ExpressionStatement\n");
@@ -947,7 +956,7 @@ static void free_stmt(AstStmt *stmt) {
         free_expr(stmt->as.assign.value);
         break;
     case AST_STMT_PRINT:
-        free_expr(stmt->as.print);
+        free_expr(stmt->as.print.expr);
         break;
     case AST_STMT_EXPR:
         free_expr(stmt->as.expr_stmt);

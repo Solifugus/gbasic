@@ -16,7 +16,7 @@ yet production-stable.
 Implemented language features include:
 
 - a hand-written lexer, Bison parser, AST, and tree-walking evaluator
-- variables, strict expressions, assignment, `print`, and `input`
+- variables, strict expressions, assignment, `print`, `print to error`, and `input`
 - multiline and short inline `if`/`else`, `consider`, and `while`
 - array iteration with `for each item in items` and `for item in items`
 - `break` and `continue`

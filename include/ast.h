@@ -177,7 +177,15 @@ struct AstStmt {
             AstModifierUse modifier;
             AstExpr *value;
         } assign;
-        AstExpr *print;
+        /* PLAT-STDERR: `print` and `print to error` are one node kind with a
+         * destination, not two kinds. They differ only in which stream the
+         * rendered bytes go to, so sharing the node keeps every consumer that
+         * switches on AstStmtKind -- the evaluator, the AST dump, --add-loads,
+         * source_outline -- correct without any of them learning a new case. */
+        struct {
+            AstExpr *expr;
+            int to_stderr;   /* 0 = standard output, 1 = standard error */
+        } print;
         AstExpr *expr_stmt;
         struct {
             AstExpr *file;
@@ -280,6 +288,7 @@ AstExpr *ast_expr_position(AstExpr *expr, int line, int column);
 
 AstStmt *ast_assign(AstExpr *target, AstModifierUse modifier, AstExpr *value);
 AstStmt *ast_print(AstExpr *expr);
+AstStmt *ast_print_error(AstExpr *expr);
 AstStmt *ast_expr_stmt(AstExpr *expr);
 AstStmt *ast_with_lock(AstExpr *file, AstStmtList body);
 AstStmt *ast_for_each(char *name, AstExpr *iterable, AstStmtList body);

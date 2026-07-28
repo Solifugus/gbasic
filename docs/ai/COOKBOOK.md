@@ -76,6 +76,13 @@ for error handling, `ERRORS.md`.
   the child is killed is lost outright. Start the child with `--line-buffered` as its
   FIRST argument and every completed `print` arrives immediately. Opt-in only; nothing
   implies it. → `tests/native_platform/plat_stream_stream.bas`
+- **Writing to standard error** — `print to error <expression>`. Everything that is
+  not the program's data (progress, warnings, usage) goes there, so a caller can
+  pipe the program somewhere and receive the data alone. Renders exactly what
+  `print` renders, and is prompt with or without `--line-buffered` (which governs
+  stdout only). `error` is the only destination keyword — there is no file-handle
+  or redirect form. → `tests/native_platform/plat_stderr_streams.bas`,
+  `tests/native_platform/plat_stderr_parity.bas`
 - **SQLite** — `load sqlite`; parameterized query/exec. → `examples/sqlite_module_test.bas`
 - **PostgreSQL** — `load pg`; opt-in suite. → `tests/postgres_integration.bas`
 - **WebClient** — `load webclient`; synchronous HTTP against a loopback fixture.

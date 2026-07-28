@@ -64,7 +64,26 @@ end program
 ```
 
 If a file has no `program` block, the whole file is treated as an implicit
-program. `args` is the array of command-line arguments. Useful CLI flags:
+program. `args` is the array of command-line arguments.
+
+`print` writes to standard output — the program's data. Anything that is *not*
+data (progress, warnings, usage text) belongs on standard error, which is what
+`print to error` is for:
+
+```basic
+print to error "reading input..."
+print("the answer is 42")
+```
+
+Keeping them apart is what lets your program be used in a pipeline: the reader
+downstream gets the data alone, and the messages still reach the terminal.
+
+```sh
+./gbasic report.bas > data.csv       # messages on screen, data in the file
+./gbasic report.bas 2>/dev/null      # or hide the messages entirely
+```
+
+Useful CLI flags:
 `./gbasic --tokens file.bas` (dump tokens), `--ast` (dump the parse tree),
 `--add-loads` (suggest `load` lines), `--line-buffered` (flush stdout at every
 line, so output is visible as it is printed when you pipe it somewhere),

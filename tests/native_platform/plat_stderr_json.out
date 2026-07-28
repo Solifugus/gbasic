@@ -1,0 +1,21 @@
+loud-exit=1
+quiet-exit=1
+loud-json-count=1
+quiet-json-count=1
+json-identical=true
+loud-has-app=true
+quiet-has-app=false
+parsed-severity=error
+parsed-code=GB_DIAG_RUNTIME_ERROR
+parsed-line=24
+parsed-message=deliberate failure
+loud-stdout=<OUT-before
+>
+quiet-stdout=<OUT-before
+>
+--- loud stderr ---
+app: starting
+app: about to fail
+{"severity":"error","code":"GB_DIAG_RUNTIME_ERROR","subcode":2000,"path":"tests/native_platform/plat_stderr_diag_child.bas","start":{"line":24,"column":1},"end":{"line":24,"column":1},"message":"deliberate failure"}
+
+--- end ---

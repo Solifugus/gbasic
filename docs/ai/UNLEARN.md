@@ -97,6 +97,15 @@ the standing ones.
   interpreter flag, so it goes *before* the filename) when something is reading the
   output as it is produced. An `input` prompt is the exception: the interpreter
   already flushes those explicitly, so prompts are never withheld.
+- **`print` always means standard output; standard error is a separate statement.**
+  Write to it with **`print to error <expression>`**. There is no `print #handle`,
+  no redirect form, and no builtin under another name — `error` is the only
+  destination keyword, and reaching stderr by opening `/dev/stderr` as a file is a
+  trap, not a shortcut: `write` on it *truncates* the file your caller was
+  appending diagnostics to. `print to error` renders exactly what `print` renders
+  (same values, same newline) and is prompt regardless of `--line-buffered`, which
+  governs stdout alone. Put anything that is not the program's data there, or a
+  caller cannot pipe your program anywhere.
 
 ## Error handling — the big one
 
@@ -122,4 +131,5 @@ it will succeed. Proof: `examples/on_error_resume_next_test.bas`.
 Negative knowledge in one line each — feature you expect → gBASIC instead:
 numeric `for` → `for each`; `<>` → `!=`; `mod`/`%` → `a - floor(a/b)*b`;
 `&` → `+`; `rem`/`//` → `'`; `dim x` → just assign; `s[i]` → `mid(s,i,1)`;
-`print a, b` → `print(string(a)+" "+string(b))`; exception catch → pre-validate.
+`print a, b` → `print(string(a)+" "+string(b))`; exception catch → pre-validate;
+`print #f` / stderr redirect → `print to error x`.

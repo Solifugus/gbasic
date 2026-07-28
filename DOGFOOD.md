@@ -505,3 +505,48 @@ D0.6, the rest remain open or are by-design.
   variable into the clause. Used in the PLAT-STREAM volume/diagnostic fixtures, which
   split captured child output on newlines. The failure is silent — a line count of 1
   where thousands were expected — so it is worth knowing before it is debugged.
+
+## 2026-07-28 — CC — while: PLAT-STDERR (writing to standard error before the statement existed)
+- **Type:** missing-feature
+- **Severity:** high
+- **What:** A gBASIC program had no route to standard error. The runtime wrote there
+  (runtime errors, `--json-diagnostics`) but the language exposed nothing: no
+  `print` redirect form, no file-handle mechanism, no builtin under any name — 157
+  builtins, checked one by one. So a command-line tool written in gBASIC had to fold
+  its progress and error messages into stdout, and a caller piping it anywhere got
+  data and chatter mixed together with no way to separate them.
+  The only reachable workaround was a Linux path trick, and it is a trap:
+  ```
+  f(file)= "/dev/stderr"
+  ok = write(f, "message\n")     ' appears on fd 2 -- but see below
+  ```
+  `write` opens with mode `"wb"`, so when the caller has redirected stderr to a
+  file, this **truncates that file**, destroying diagnostics already written to it.
+  Measured: a log holding `PRE-EXISTING-DIAGNOSTIC` contained only `SECOND`
+  afterwards. It also opens a second, independently-buffered file description via
+  `/proc`, so ordering against the runtime's own writes is not guaranteed; it is
+  Linux-specific; and it takes a string rather than rendering a value.
+- **Workaround:** Resolved — `print to error <expression>` (PLAT-STDERR). It shares
+  `print`'s rendering path, so every value shape prints identically, and stderr is
+  unbuffered so it needs no flushing. Reference: `docs/reference.md` (Statements →
+  "Print to standard error"); tests: `tests/run_stderr.sh`.
+
+## 2026-07-28 — CC — while: PLAT-STDERR (running a fixture twice under --json-diagnostics)
+- **Type:** language-surprise
+- **Severity:** low
+- **What:** `--json-diagnostics` takes a FILE and nothing after it. Passing program
+  arguments the way the plain run mode accepts them fails with the usage text and
+  exit 2, even though that usage line itself reads `FILE [args...]`:
+  ```
+  ./gbasic prog.bas one two                       ' args=2
+  ./gbasic --json-diagnostics prog.bas one two    ' usage: ...  (exit 2)
+  ```
+  The dispatch for that mode matches `argc == 3` exactly (`src/main.c`), and
+  `--help` documents it as `--json-diagnostics FILE`, so this is a documented
+  limitation rather than a bug — but the shared usage line implies otherwise, which
+  is what made it surprising. Same for `--ast`, `--tokens` and `--add-loads`.
+- **Workaround:** Pass the parameter through the environment instead and read it
+  with `env(name)`, launching via `/bin/sh -c "VAR=value ./gbasic --json-diagnostics
+  FILE"`. Used in `tests/native_platform/plat_stderr_json.bas`, which needs one
+  fixture to run in two modes from an identical path, line and column so the
+  runtime's diagnostic is byte-comparable between the runs.

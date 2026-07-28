@@ -1,0 +1,12 @@
+flagged-midrun-err=true
+plain-midrun-err=true
+flagged-midrun-out=true
+plain-midrun-out=false
+flagged-midrun-has-late=false
+plain-midrun-has-late=false
+err-totals-identical=true
+all-err=<ERR-EARLY
+ERR-LATE
+>
+flagged-exit=0
+plain-exit=0

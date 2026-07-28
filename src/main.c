@@ -590,7 +590,7 @@ static void analyze_stmt(AddUsesContext *ctx, AstStmt *stmt) {
         analyze_modifier(ctx, stmt->as.assign.modifier, "assign");
         break;
     case AST_STMT_PRINT:
-        analyze_expr(ctx, stmt->as.print);
+        analyze_expr(ctx, stmt->as.print.expr);
         break;
     case AST_STMT_EXPR:
         analyze_expr(ctx, stmt->as.expr_stmt);

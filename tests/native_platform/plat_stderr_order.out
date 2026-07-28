@@ -1,0 +1,21 @@
+--- with --line-buffered (source order) ---
+OUT-1
+ERR-1
+OUT-2
+ERR-2
+OUT-3
+ERR-3
+OUT-4
+ERR-4
+
+--- without (stderr first, stdout at exit) ---
+ERR-1
+ERR-2
+ERR-3
+ERR-4
+OUT-1
+OUT-2
+OUT-3
+OUT-4
+
+--- end ---

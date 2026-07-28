@@ -285,6 +285,8 @@ cases=(
     negative_boolean_conversion
     negative_array_conversion
     negative_record_conversion
+    negative_print_to_missing_expr
+    negative_print_to_unknown_stream
 )
 
 for name in "${cases[@]}"; do

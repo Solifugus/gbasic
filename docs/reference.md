@@ -80,6 +80,55 @@ print(expression)
 
 Compatibility note: statement-style `print expression` still parses for now.
 
+Print to standard error:
+
+```basic
+print to error expression
+print to error ("could not open " + path)
+```
+
+`print to error` is `print` with a destination. It renders its argument through the
+same code path — every value shape, every separator, the same terminating newline —
+and differs only in which stream the bytes go to. `error` is the only destination
+keyword; there is no file-handle or redirect form.
+
+Use it for anything that is not the program's data: progress messages, warnings,
+usage text, diagnostics. That is what makes a gBASIC program compose in a shell
+pipeline, because a downstream reader then receives the data alone:
+
+```basic
+print to error "reading " + count(files) + " files..."
+for each row in rows
+    print row.id + "," + row.name
+end for
+```
+
+```sh
+gbasic report.bas > data.csv        # progress on the terminal, data in the file
+gbasic report.bas 2>/dev/null | wc  # or discard it entirely
+```
+
+Buffering differs between the two streams, and it matters when both are pointed at
+one destination. stderr is unbuffered, so `print to error` leaves the process
+immediately. stdout is line-buffered on a terminal but **block**-buffered on a pipe
+or file, so under `gbasic prog.bas > log 2>&1` the stderr lines appear first and the
+stdout lines arrive in a batch when the program exits. Pass
+[`--line-buffered`](#why---line-buffered-exists) to get source order:
+
+```sh
+gbasic prog.bas > log 2>&1                   # stderr first, stdout at exit
+gbasic --line-buffered prog.bas > log 2>&1   # interleaved in source order
+```
+
+The flag governs stdout only — it calls `setvbuf` on that one stream. `print to
+error` is prompt with or without it.
+
+The runtime also writes to standard error: runtime errors, and the JSON lines
+emitted by `--json-diagnostics`. A program's own writes do not disturb them. The
+two are separated by line, which is the contract `--json-diagnostics` already had,
+so a consumer that reads whole lines and parses the ones beginning with `{` keeps
+working unchanged.
+
 If:
 
 ```basic
@@ -2501,7 +2550,10 @@ Properties worth relying on:
   the moment they leave the process.
 - **stderr needs nothing.** C requires stderr never to be fully buffered, glibc
   makes it unbuffered, and the interpreter never calls `setvbuf` on it, so
-  diagnostics already appear as they are written.
+  diagnostics already appear as they are written. That covers a program's own
+  `print to error` too — it is prompt whether or not this flag is set, so the flag
+  changes the *relative* order of the two streams at a shared destination and
+  nothing about stderr itself.
 
 The cost is one `write` syscall per line instead of one per ~4 KB. On a program
 that does nothing but print, that measures at roughly +60% wall clock

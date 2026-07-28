@@ -1,0 +1,26 @@
+exit=0
+stdout-has-out=true
+stdout-has-err=false
+stderr-has-err=true
+stderr-has-out=false
+stderr-has-fn=true
+stderr-has-inline=true
+stderr-has-loop=true
+stdout-has-fn=true
+stdout-has-inline=true
+--- fd 1 ---
+OUT-1
+OUT-2
+OUT-fn-a
+OUT-inline
+OUT-last
+
+--- fd 2 ---
+ERR-1
+ERR-2
+ERR-fn-a
+ERR-inline
+ERR-loop-1
+ERR-loop-2
+
+--- end ---

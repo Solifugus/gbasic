@@ -657,6 +657,12 @@ modifier_word
 
 print_statement
     : PRINT expression { $$ = ast_print($2); }
+      /* PLAT-STDERR: the same statement with a named destination. `to` cannot
+       * begin an expression, so the two alternatives are distinguishable at the
+       * token right after PRINT and no conflict is introduced. Both existing
+       * keywords are reused, so no identifier that was legal before stops being
+       * legal now. */
+    | PRINT TO ERROR_VALUE expression { $$ = ast_print_error($4); }
     ;
 
 call_statement
