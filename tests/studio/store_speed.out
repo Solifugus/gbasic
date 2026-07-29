@@ -1,0 +1,4 @@
+index_bytes_over_100k=true
+records=240
+status=loaded restored=240
+open_under_5s=true

@@ -122,6 +122,39 @@ fi
 # STU-1 — workspace navigation, project browser, registry.
 # ==========================================================================
 
+# 6b. STU-STORE — studio_store's read path over PLAT-JSON's try_decode.
+# The pure-gBASIC pre-validator is gone: reads are one pass through the platform
+# parser. These cases pin that the three states are unchanged, that a corrupt file
+# now says WHY, that every store shape round-trips, and that a realistic worst-case
+# results index (115 KB, 240 records) opens in under 5 s -- it took 92 s before.
+STORE=examples/studio/store.bas
+for m in status dialect roundtrip speed; do
+    d="$tmproot/store_$m"
+    rm -rf "$d"; mkdir -p "$d"
+    : >"$stdout_file"
+    if ! timeout 120 ./gbasic "$STORE" "$m" "$d" >"$stdout_file" 2>&1; then
+        cat "$stdout_file"; fail "store_$m (nonzero exit)"
+    fi
+    if diff -u "tests/studio/store_$m.out" "$stdout_file"; then
+        printf 'PASS store_%s\n' "$m"
+    else
+        fail "store_$m (output diff)"
+    fi
+done
+
+# studio_store no longer depends on studio_json: `load studio_store` alone must be
+# enough, since try_decode is an unconditional builtin. A stale dependency would
+# only show up as a runtime error on the read path, so assert it directly.
+# Grep for a CALL (`studio_json.`), not a mention: the header still explains what
+# the dependency used to be, and that history is worth keeping.
+if ! grep -q 'studio_json\.' stdlib/studio_store.bas; then
+    printf 'PASS store_no_validator_dep (studio_store calls no pre-validator)\n'
+else
+    printf 'FAIL store_no_validator_dep (studio_store still calls studio_json)\n'
+    grep -n 'studio_json\.' stdlib/studio_store.bas
+    exit 1
+fi
+
 # 7. Workspace lifecycle + multiple projects + navigation persistence:
 #    build a workspace (2 projects incl. one missing dir, an expanded folder, a
 #    selection) over a real tree, persist, and restore it in a SECOND launch.

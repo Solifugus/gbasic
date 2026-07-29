@@ -1,0 +1,6 @@
+-- gBASIC dialect (hand-edited store)
+bare nothing    status=loaded value={"a":null}
+bare unknown    status=loaded value=(holds a value JSON cannot express)
+leading plus    status=loaded value={"a":1}
+studio writes  {"a":null,"b":1}
+refuses unknown=true

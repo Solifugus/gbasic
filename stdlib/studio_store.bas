@@ -10,12 +10,12 @@
 '     (a single rename(2)), so a crash mid-write never leaves a truncated store:
 '     a reader sees either the whole old file or the whole new one.
 '   * READ never raises on a bad file. `decode` raises on malformed JSON and
-'     gBASIC cannot catch a raise (docs/ai/UNLEARN.md), so reads PRE-VALIDATE with
-'     studio_json.valid and report status instead of crashing.
+'     gBASIC cannot catch a raise (docs/ai/UNLEARN.md), so reads go through
+'     `try_decode` (PLAT-JSON), which reports failure as a value.
 '
-' Requires studio_json to be loaded by the program (loads live inside the
-' `program` block — a top-level `load` does not execute when a program block is
-' present).
+' No `load` dependency of its own: `try_decode` is an unconditional builtin, so
+' `load studio_store` is now sufficient. (It previously required studio_json to be
+' loaded as well, for a pre-validation pass that no longer exists.)
 library studio_store
 
     ' Last char of a string ("" when empty). Bound out to avoid the
@@ -89,23 +89,41 @@ library studio_store
     end function
 
     ' Read `path` and report one of three states without ever raising:
-    '   { status: "missing", value: nothing }  — no file there
-    '   { status: "corrupt", value: nothing }  — present but not valid JSON
-    '   { status: "loaded",  value: <record> } — present and well-formed
+    '   { status: "missing", value: nothing, message: "" }  — no file there
+    '   { status: "corrupt", value: nothing, message: <why> } — unreadable
+    '   { status: "loaded",  value: <record>, message: "" } — present, well-formed
     ' The caller (studio_model / studio) applies recovery policy.
+    '
+    ' ONE PASS, through the platform parser. This used to pre-validate with a
+    ' pure-gBASIC JSON scanner and then decode -- two full passes, the first of
+    ' them QUADRATIC, because `mid(s, i, 1)` is O(i) on codepoint-indexed strings
+    ' and a per-character scan is therefore O(n^2). Measured on the scanner it
+    ' replaced: 64 KB 16 s, 128 KB 69 s, 256 KB 291 s; opening a 116 KB results
+    ' index took 92 s. `try_decode` (PLAT-JSON) reports failure as a value instead
+    ' of raising, so the pre-pass has no reason to exist.
+    '
+    ' `message` is new and additive: a corrupt store can now say WHY -- which file
+    ' failed and where -- instead of only that something did.
+    '
+    ' One deliberate classification change comes with this. The old pre-validator
+    ' checked STRICT JSON while `decode` accepts the historical gBASIC dialect, so
+    ' a file containing `nothing`, `unknown` or `+1` was reported corrupt even
+    ' though the decoder could read it. The reader is now self-consistent: what the
+    ' parser can read, it reads. Studio only ever WRITES strict JSON (json_encode),
+    ' so this is reachable only by hand-editing a store.
     function read_status(path)
         ref(file) = path
         present = exists(ref)
         if not present then
-            return { status: "missing", value: nothing }
+            return { status: "missing", value: nothing, message: "" }
         end if
         text = read(ref)
-        ok = studio_json.valid(text)
-        if not ok then
-            return { status: "corrupt", value: nothing }
+        r = try_decode(text)
+        if not r.ok then
+            return { status: "corrupt", value: nothing,
+                     message: r.message + " (line " + r.line + ", column " + r.column + ")" }
         end if
-        parsed = decode(text)
-        return { status: "loaded", value: parsed }
+        return { status: "loaded", value: r.value, message: "" }
     end function
 
 end library

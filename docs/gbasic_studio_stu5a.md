@@ -116,7 +116,17 @@ at roughly **2 KB/s**:
 
 At the chosen retention that layout would have taken *tens of minutes* to open a
 well-used document's results — the policy would have been unusable, not merely
-slow. Captured output is opaque bytes that JSON gains nothing from holding, so it
+slow.
+
+> **Update (PLAT-JSON, 2026-07-28).** The validator is gone: `studio_store` now
+> reads through the `try_decode` builtin, and the numbers above no longer apply to
+> anything. A 115 KB index opens in well under a second, and even a 4.6 MB index of
+> 9 600 records loads in under one. **The sidecar layout is kept anyway**, on the
+> two grounds that were never about parse speed: the index is rewritten whole on
+> every save (`atomic_replace`), so inlining capture text would mean rewriting
+> megabytes on every run; and captures are read only when displayed, so browsing
+> history touches none of them. The layout is unchanged — only its justification
+> is now narrower and more accurate. Captured output is opaque bytes that JSON gains nothing from holding, so it
 lives beside the index: the index stays a few hundred bytes per result and loads
 instantly however much output was captured, and a capture is read with a plain
 `read()` that validates nothing.

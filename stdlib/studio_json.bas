@@ -11,6 +11,15 @@
 '
 ' Scope: RFC-8259 structure (object/array/string/number/true/false/null with
 ' escapes and unicode \uXXXX). It validates syntax, not schema.
+' SUPERSEDED for stores (PLAT-JSON, 2026-07-28). studio_store no longer uses this:
+' reads go through the `try_decode` builtin, which reports failure as a value and
+' parses in C. This library survives for ONE caller --
+' studio_session.parse_diagnostics, which validates each line of a child's stderr
+' before decoding it. That call site is cheap (measured: ~1 ms for a 215-byte
+' diagnostic line, ~1 s for a thousand of them) and changing the session engine was
+' out of scope for that phase, so it was left alone rather than changed untested.
+' Switching it to try_decode would let this file be deleted outright.
+'
 library studio_json
 
     ' Single codepoint at index i (0-based), or "" past the end. Strings are not

@@ -44,6 +44,14 @@
 '   result and loads instantly however much output was captured, and a capture is
 '   read with a plain `read()` that validates nothing.
 '
+'   UPDATE (PLAT-JSON, 2026-07-28): the parse-speed half of that argument is gone.
+'   studio_store now reads through the `try_decode` builtin, and a 4.6 MB index
+'   with 9 600 records loads in under a second. The sidecar layout is KEPT, on the
+'   two grounds that remain and are unaffected: the index is rewritten whole on
+'   every save (atomic_replace), so inlining megabytes of capture text would be
+'   write amplification on every single run; and captures are read only when
+'   displayed, so history browsing touches none of them.
+'
 '   Crash-safety survives the split by ORDERING: capture files are written first,
 '   then the index is swapped in with atomic_replace. A crash in between leaves
 '   unreferenced capture files, which the next save sweeps -- never an index
@@ -65,7 +73,8 @@
 ' with no migration step -- the same additive-by-construction property STU-3's
 ' `sections` slot has.
 '
-' Requires studio_json + studio_store loaded by the program.
+' Requires studio_store loaded by the program (studio_json is no longer involved:
+' studio_store reads through the try_decode builtin).
 library studio_results
 
     function schema_version()
