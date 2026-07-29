@@ -68,6 +68,14 @@ the standing ones.
 - Strings are binary-safe and length-counts-bytes; case folding (`upper`/`lower`)
   is ASCII-only. See the reference for codepoint/byte builtins.
 
+- **Scanning a string per character is fine.** `while i < len(s)` with
+  `mid(s, i, 1)` is O(n), forward or backward, ASCII or multibyte. This was
+  quadratic until PLAT-STRIDX and is the one place where old advice in older
+  notes is now wrong — a 256 000-character scan went from 249 s to 0.30 s. What
+  remains proportional to the string is *building* one: `s = s + x` in a loop
+  copies both sides each time, so collect pieces in an array and `join` at the
+  end.
+
 ## Variables, records, arrays
 
 - **No `dim` / `redim`.** Variables are created by assignment; reading an
@@ -125,6 +133,13 @@ it will succeed. Proof: `examples/on_error_resume_next_test.bas`.
 - **`append(arr, x)` returns a full copy each call**, so accumulating a large list
   with `append` is O(n²). Stream/count in place when you don't need to keep the
   list.
+- **Building a string by repeated `+` is O(n²)** — each concatenation allocates
+  and copies both sides. Collect the pieces in an array and `join` once.
+- **Reading a string variable is not a trap** (it used to be). It shares the
+  buffer rather than copying it, so passing a large string to a function, or
+  touching it inside a loop, costs nothing proportional to its size. Character
+  access is O(1) and a full scan is O(n) in either direction — measured in
+  `tests/run_stridx.sh`, which fails if that stops being true.
 
 ---
 

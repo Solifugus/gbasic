@@ -49,9 +49,16 @@ for error handling, `ERRORS.md`.
   → `examples/serialization_test.bas`
 - **Reading JSON you did not write** — `try_decode(text)` returns
   `{ok, value, message, offset, line, column}` and never raises, so there is no
-  pre-validate pass. Never hand-write a JSON scanner in gBASIC: per-character
-  scanning is quadratic (`mid` is O(i)), which cost 92 s on a 116 KB store before
-  this existed. → `tests/try_decode_test.bas`
+  pre-validate pass. Use it rather than hand-writing a JSON scanner: the C parser
+  is far faster than an interpreted per-character loop, and it reports *where* the
+  input went wrong. (The scanner it replaced took 92 s on a 116 KB store, most of
+  it a quadratic per-character walk that PLAT-STRIDX has since fixed — the walk is
+  linear now, but a gBASIC-level scanner is still much slower than the builtin.)
+  → `tests/try_decode_test.bas`
+- **Walking text character by character** — `while i < len(s)` with
+  `mid(s, i, 1)` is linear, in either direction, for ASCII and multibyte alike.
+  Build strings with an array plus `join`, not repeated `+`.
+  → `tests/stridx_test.bas`
 - **Bitwise** — `band`/`bor`/`bxor`/`bnot`/`shl`/`shr`/`rotl`/`rotr` on 32-bit
   unsigned integers. → `examples/bitwise_test.bas`
 - **Tolerate bad input** — do **not** catch with `on error resume next`;

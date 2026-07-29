@@ -230,6 +230,33 @@ each phase merged green before the next.
 multiprocessing (actors); serialization is now trivial since strings are
 length+bytes (§9).
 
+- **Phase 4 — the cost of codepoint addressing. DONE (2026-07-29, PLAT-STRIDX).**
+  Phase 2 bought codepoint-correct character ops with a walk: `string_codepoint_count`
+  and `string_codepoint_offset` each traversed the whole string on **every** call to
+  `len`/`mid`/`left`/`right`, so a per-character loop was O(n²). Compounding it,
+  `value_copy` duplicated the byte buffer and `env_get` calls `value_copy` on every
+  read of a variable, so even `byte_at(s, i)` — O(1) by construction — cost O(n) per
+  call inside a loop. Measured before: a 256 000-character forward scan 249 s, a
+  1 000 000-byte `byte_at` loop 30 s. Both are removed without any change to what a
+  string *means*:
+  - `StringHeader` gained `refs`; `value_copy` now shares the buffer. Sound because
+    string values are **immutable** — `as.string` is assigned in exactly one place
+    (`value_string_n`), and every "modifying" builtin fills a fresh buffer and
+    constructs a new value from it.
+  - The header also caches `cp_count` (counted once) plus a `cursor_cp`/`cursor_byte`
+    pair so a forward walk resumes rather than restarts. When `cp_count == length`
+    every unit is one byte — true for ASCII, and equally true for malformed bytes
+    under the §7 lenient rule — so the codepoint index *is* the byte offset and
+    access is O(1) by arithmetic.
+  - A sparse `samples` index (one offset per 64 codepoints) is built lazily, only
+    for a multibyte string accessed out of forward order, which is what keeps
+    backward and random traversal linear (256 000 units backwards: 152 s → 0.31 s).
+  The cache needs no invalidation — the bytes it describes cannot change — and it
+  survives across variable reads only because of `refs`; the two are one mechanism.
+  Cost: 40 bytes per string value (measured: 200 000 short strings, 29.3 MB →
+  37.2 MB; negligible against large ones). Tests: `tests/run_stridx.sh`, whose
+  correctness golden was captured *before* the change and must not move.
+
 ## 11. Open questions
 
 1. **Indexing base for `mid`/`byte_at`. RESOLVED (Phase 2): 0-based.** `mid` is
