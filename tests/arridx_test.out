@@ -1,0 +1,23 @@
+-- element assigned from the same array
+a=[30,20,30] b=[10,20,30]
+a2=[1,2,3] b2=[1,2,3]
+n=[[4,2],[3,4]] m=[[1,2],[3,4]]
+-- mutated during iteration
+seen=[1,2,3] c=[1,2,3,101,102,103]
+seen2=[1,2,3,4] d=[]
+seen3=[1,2,3] e=[99,2,3]
+-- captured then mutated
+f=[1,2,3,4] captured=[1,2,3]
+g=[1,2,3] holder=[[1,2],[1,2]]
+h=[77,2] rec.x=[1,2]
+k=[1,2] rec2.x=[55,2]
+-- mutators with a live alias
+sort      base=[1,2,3] alias=[3,1,2]
+reverse   base=[2,1,3] alias=[3,1,2]
+unique    base=[1,2] alias=[1,1,2]
+insert    base=[9,1,2,3] alias=[1,2,3]
+remove    base=[1,3] alias=[1,2,3]
+rem_value base=[1,3] alias=[1,2,3]
+take_frst base=[2,3] alias=[1,2,3]
+take_last base=[1,2] alias=[1,2,3]
+prepend   base=[0,1,2,3] alias=[1,2,3]
