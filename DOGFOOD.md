@@ -550,3 +550,51 @@ D0.6, the rest remain open or are by-design.
   FILE"`. Used in `tests/native_platform/plat_stderr_json.bas`, which needs one
   fixture to run in two modes from an identical path, line and column so the
   runtime's diagnostic is byte-comparable between the runs.
+
+## 2026-07-29 — CC — while: PLAT-STRIDX/PLAT-ARRIDX (measuring cost curves)
+- **Type:** missing-feature
+- **Severity:** medium
+- **What:** gBASIC cannot time anything shorter than a second. `epoch()` returns
+  whole seconds, so every duration a program can measure itself is an integer:
+  ```
+  t0 = epoch()
+  ... work ...
+  print "secs=" + (epoch() - t0)      ' prints 0, or 1, and nothing between
+  ```
+  Two phases of performance work needed sub-second numbers, and none of them
+  could be produced from inside the language. It also means a gBASIC program
+  cannot measure its own hot spots, cannot report a rate, and cannot implement a
+  timeout finer than a second — and STU-5A's stored run durations are whole
+  seconds for this reason, not by choice.
+- **Workaround:** Time the whole process from outside, with
+  `/usr/bin/time -f "%e" ./gbasic prog.bas` or `date +%s.%N` either side, and
+  subtract a do-nothing run to remove startup. Used throughout
+  `tests/run_stridx.sh` and `tests/run_arridx.sh`, which is also why their
+  performance tiers live in the shell runner rather than in a `.bas` fixture.
+  The fixture prints a checksum so the runner can tell a fast run from one that
+  silently did nothing. A monotonic sub-second clock is already on the platform
+  list; this is the concrete cost of not having one.
+
+## 2026-07-29 — CC — while: cleaning up after STU-4/STU-4B test runs
+- **Type:** bug
+- **Severity:** medium
+- **What:** A child started with `process.start` outlives its parent
+  indefinitely if the parent is killed rather than exiting cleanly. Found four
+  `./gbasic --json-diagnostics …/run-doc-1-1.bas` processes still sleeping two
+  days after the runs that created them (started Jul 27 16:18 and Jul 28 03:07,
+  reparented to init, three of them with their working directory already
+  deleted). Only the ACTOR path arms a death signal — `eval_run_actor` calls
+  `prctl(PR_SET_PDEATHSIG, SIGTERM)` and additionally re-checks `getppid() == 1`
+  to close the fork/arm window (`src/eval.c:9141`). The two `process.*` fork
+  sites, `process_launch` and `process_do_run`, fork and `execvp` with neither.
+  STU-4's session engine does sweep orphans *during* a run — the STU-4B scratch
+  file left on disk recorded `orphans_before_sweep=2 swept=2` — so the gap is
+  specifically the case where the sweeping parent never gets to run: an
+  interrupted or killed test runner, or any gBASIC program that is SIGKILLed
+  while holding live child handles.
+- **Workaround:** None applied; killed the strays by hand (all four went down on
+  SIGTERM). NOT fixed here — arming PDEATHSIG on `process.start` would change
+  the semantics of any deliberately detached child, so it wants its own decision
+  rather than a drive-by. Recorded so the next process-lifetime phase starts from
+  evidence. Until then, a runner that launches gBASIC children should kill its
+  own process group on exit rather than trusting the child to notice.
