@@ -598,3 +598,19 @@ D0.6, the rest remain open or are by-design.
   rather than a drive-by. Recorded so the next process-lifetime phase starts from
   evidence. Until then, a runner that launches gBASIC children should kill its
   own process group on exit rather than trusting the child to notice.
+
+## 2026-07-29 — CC — while: PLAT-DEBT 2
+- **Type:** bug
+- **Severity:** medium
+- **Status update to the 2026-07-28 `--json-diagnostics` entry above:** RESOLVED
+  for `--json-diagnostics`, which now accepts and binds `FILE [args...]` exactly
+  as run mode does. It was the mode in the wrong: it RUNS the program (it reaches
+  `eval_program`, and already called `eval_set_program_args` with an empty list),
+  so arguments were always meaningful there — the dispatch just matched
+  `argc == 3`.
+  The other three named in that entry — `--ast`, `--tokens`, `--add-loads`
+  (and `--add-uses`) — were the *documentation* in the wrong, and are unchanged:
+  they only inspect the source and never run it, so a program argument there
+  could only be accepted and ignored. They keep rejecting it, and the usage line
+  now shows two shapes instead of implying one. The env-var workaround recorded
+  in the earlier entry is no longer needed for `--json-diagnostics`.

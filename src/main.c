@@ -15,13 +15,13 @@ void parse_set_source_path(const char *path);
 
 static void print_help(const char *argv0) {
     printf("usage:\n");
-    printf("  %s FILE\n", argv0);
+    printf("  %s FILE [args...]\n", argv0);
     printf("  %s --tokens FILE\n", argv0);
     printf("  %s --ast FILE\n", argv0);
     printf("  %s --add-loads FILE\n", argv0);
     printf("  %s --add-uses FILE\n", argv0);
-    printf("  %s --json-diagnostics FILE\n", argv0);
-    printf("  %s --line-buffered FILE\n", argv0);
+    printf("  %s --json-diagnostics FILE [args...]\n", argv0);
+    printf("  %s --line-buffered FILE [args...]\n", argv0);
     printf("\n");
     printf("flags:\n");
     printf("  --help          show this help\n");
@@ -30,7 +30,9 @@ static void print_help(const char *argv0) {
     printf("  --ast FILE      parse and print AST\n");
     printf("  --add-loads FILE analyze unresolved calls/modifiers and print source with load statements\n");
     printf("  --add-uses FILE  compatibility alias; emits use statements\n");
-    printf("  --json-diagnostics FILE  run FILE, emitting diagnostics as JSON lines to stderr\n");
+    printf("  --json-diagnostics FILE [args...]  run FILE, emitting diagnostics as JSON\n");
+    printf("                   lines to stderr. Runs the program, so it takes program\n");
+    printf("                   arguments; the inspect-only modes above do not.\n");
     printf("  --line-buffered  flush stdout at every completed line instead of at buffer\n");
     printf("                   capacity; combines with any of the above\n");
 }
@@ -869,9 +871,16 @@ int main(int argc, char **argv) {
     } else if (argc == 3 && strcmp(argv[1], "--add-uses") == 0) {
         add_loads_keyword = "use";
         path = argv[2];
-    } else if (argc == 3 && strcmp(argv[1], "--json-diagnostics") == 0) {
+    } else if (argc >= 3 && strcmp(argv[1], "--json-diagnostics") == 0) {
+        /* This mode RUNS the program (it falls through to eval_program below,
+         * unlike --ast/--tokens/--add-loads which only inspect it), so program
+         * arguments are meaningful here and are bound exactly as in run mode.
+         * They were rejected until PLAT-DEBT 2 purely because the dispatch
+         * matched argc == 3; the plumbing was already in place. */
         json_diagnostics = 1;
         path = argv[2];
+        program_args = &argv[3];
+        program_arg_count = (size_t)(argc - 3);
     } else if (argc >= 2 && argv[1][0] != '-') {
         /* Run mode: FILE followed by zero or more program arguments. The args
          * after the script path bind to a `program NAME(param)` block's
@@ -880,7 +889,11 @@ int main(int argc, char **argv) {
         program_args = &argv[2];
         program_arg_count = (size_t)(argc - 2);
     } else {
-        fprintf(stderr, "usage: %s [--ast|--tokens|--add-loads|--add-uses|--json-diagnostics] [--line-buffered] FILE [args...]\n", argv[0]);
+        /* Two shapes, because only the modes that RUN the program can use
+         * program arguments. The inspect-only modes reject them rather than
+         * accepting and ignoring them, which would be a silent wrong answer. */
+        fprintf(stderr, "usage: %s [--line-buffered] [--json-diagnostics] FILE [args...]\n", argv[0]);
+        fprintf(stderr, "       %s [--line-buffered] [--ast|--tokens|--add-loads|--add-uses] FILE\n", argv[0]);
         fprintf(stderr, "try '%s --help'\n", argv[0]);
         return 2;
     }
