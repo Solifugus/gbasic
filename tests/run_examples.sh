@@ -64,6 +64,7 @@ examples=(
     cookbook_econ_test.bas
     epoch_test.bas
     bitwise_test.bas
+    monotonic_test.bas
     hex_literal_test.bas
     stats_frame_test.bas
     type_builtin_test.bas

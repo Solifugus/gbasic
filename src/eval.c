@@ -17691,6 +17691,38 @@ static Value eval_call(AstExpr *expr) {
         return value_number((double)raw);
     }
 
+    /* Elapsed-interval clock. Seconds as a floating-point number, from an
+     * unspecified origin, so only DIFFERENCES between two readings mean
+     * anything — the absolute value must never be stored, printed as a date, or
+     * compared across processes or reboots. For those, `epoch()` and `now()`.
+     *
+     * The point of it is the guarantee `epoch()` cannot give: CLOCK_MONOTONIC
+     * never steps backwards. A duration computed by subtracting two wall-clock
+     * readings can come out NEGATIVE when NTP corrects the clock or a DST shift
+     * lands between them, and a program that has only whole-second wall time —
+     * which is all `epoch()` offers — cannot measure a sub-second interval at
+     * all. STU-5A records run durations as whole seconds for exactly that
+     * reason. Every performance figure in this tree was taken by a shell wrapper
+     * around the interpreter, which is why those numbers include process
+     * startup; this is what a program needs to measure itself.
+     *
+     * One honest caveat: on Linux CLOCK_MONOTONIC does not advance while the
+     * system is suspended, so an interval spanning a suspend reads short. That
+     * is the right behaviour for timing work and the wrong one for timing
+     * wall-clock elapsed; it is documented rather than papered over. */
+    if (strcmp(expr->as.call.name, "monotonic") == 0) {
+        if (expr->as.call.args.count != 0) {
+            runtime_error_raise("monotonic expects no arguments", 1003, "invalid function call");
+            return value_null();
+        }
+        struct timespec ts;
+        if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
+            runtime_error_raise("could not read the monotonic clock", 1003, "clock");
+            return value_null();
+        }
+        return value_number((double)ts.tv_sec + (double)ts.tv_nsec / 1000000000.0);
+    }
+
     if (strcmp(expr->as.call.name, "from_epoch") == 0) {
         if (expr->as.call.args.count != 1) {
             runtime_error_raise("from_epoch expects one argument", 1003, "invalid function call");

@@ -288,6 +288,7 @@ cases=(
     negative_print_to_missing_expr
     negative_print_to_unknown_stream
     negative_try_decode_arity
+    negative_monotonic_arity
     negative_try_decode_type
 )
 

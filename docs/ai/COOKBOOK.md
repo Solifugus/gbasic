@@ -66,6 +66,10 @@ for error handling, `ERRORS.md`.
   `mid(s, i, 1)` is linear, in either direction, for ASCII and multibyte alike —
   asserted by `tests/run_stridx.sh`. Build strings with an array plus `join`, not
   repeated `+`. → `tests/stridx_test.bas`
+- **Timing an operation** — `monotonic()` returns fractional seconds from an
+  arbitrary origin; subtract two readings. Never `epoch()`, which is whole
+  seconds and can step backwards when the wall clock is corrected.
+  → `examples/monotonic_test.bas`
 - **Bitwise** — `band`/`bor`/`bxor`/`bnot`/`shl`/`shr`/`rotl`/`rotr` on 32-bit
   unsigned integers. → `examples/bitwise_test.bas`
 - **Tolerate bad input** — do **not** catch with `on error resume next`;

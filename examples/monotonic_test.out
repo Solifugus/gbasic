@@ -1,0 +1,13 @@
+-- type and origin
+is_number=true
+origin_is_not_1970=true
+-- never goes backwards
+non_decreasing_over_2000_samples=true
+-- resolves what epoch() cannot
+sub_second_interval_epoch_reports_as_zero=true
+-- measures real work
+work_len=20000
+elapsed_positive=true
+elapsed_plausible=true
+-- differences are what compose
+inner_within_outer=true

@@ -1939,6 +1939,36 @@ exp = epoch(issued + 1 hour)     ' seconds since 1970 for the token deadline
 when = from_epoch(exp)           ' back to a datetime
 ```
 
+#### Measuring how long something took
+
+**`monotonic()`** returns seconds as a floating-point number, from an
+**unspecified origin**. Only the *difference* between two readings is meaningful:
+subtract them to get an elapsed interval.
+
+```basic
+t0 = monotonic()
+... the work ...
+elapsed = monotonic() - t0       ' seconds, fractional
+```
+
+Use it instead of `epoch()` for any duration, for two reasons:
+
+- **It cannot go backwards.** `epoch()` reads the wall clock, which NTP can step
+  and a DST change can shift, so a duration computed by subtracting two
+  wall-clock readings can come out *negative*. `monotonic()` is guaranteed
+  non-decreasing.
+- **It has sub-second resolution.** `epoch()` is whole seconds, so anything
+  faster than a second measures as `0`.
+
+Do not store it, print it as a date, or compare readings taken by different
+processes or either side of a reboot — the origin is arbitrary and is not shared.
+`epoch()` and `now()` remain the answer for "what time is it".
+
+One caveat, stated because it is easy to be caught by: on Linux the monotonic
+clock does not advance while the system is suspended. An interval spanning a
+suspend therefore reads short — correct for measuring work, wrong for measuring
+wall-clock elapsed.
+
 ### Password Hashing
 
 **`password_hash(password)`** - Hashes a password string using the platform's

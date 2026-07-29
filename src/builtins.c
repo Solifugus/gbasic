@@ -12,6 +12,7 @@ int gbasic_builtin_function(const char *name) {
         "secure_token",
         "epoch",
         "from_epoch",
+        "monotonic",
         "base64_encode",
         "base64_decode",
         "base64url_encode",
