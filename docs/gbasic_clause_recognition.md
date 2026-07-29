@@ -1,0 +1,497 @@
+# R3 — Clause recognition
+
+Status: **investigation**. No implementation, no ruling. This document exists so
+that a decision can be made; it does not make one.
+
+Written 2026-07-29, against `5078042` (post PLAT-DEBT).
+
+PLAT-DEBT found that `if (m1 - m0) > 0` does not parse, because `if (` is lexed
+as `MOD_LPAREN`. It was correctly left alone at the time: it is a distinct
+problem from the escape bug, it fails loudly, and changing when a clause is
+recognised is a grammar-adjacent decision. This is the investigation that was
+deferred.
+
+The headline is that the reported symptom is the smaller half of the problem.
+
+---
+
+## 1. The current rule, exactly
+
+### Where the decision is made and committed
+
+`modifier_lparen_ahead()` — **`src/parser.y:373`**. It is called from the
+token-translation shim at **`src/parser.y:1436`**:
+
+```c
+case TOKEN_LPAREN:
+    if (modifier_lparen_ahead(ctx, token.start)) {
+        lexer_begin_modifier_content(ctx->active_lexer);
+        return MOD_LPAREN;
+    }
+    return LPAREN;
+```
+
+Two things follow from this shape and both constrain every option below.
+
+**The decision is made on raw source text, not on tokens.** Its inputs are the
+parse context and a `const char *` pointing at the `(` in the source buffer. It
+scans the raw characters forward from the `(` and backward from it. There is no
+token stream, no previous-token record in the context (there is no `prev_token`
+field anywhere in `parser.y`), and no parser state beyond the source pointer.
+
+**The decision is irrevocable once taken.** `lexer_begin_modifier_content()`
+mutates lexer state, so the *next* token is a raw `MOD_CONTENT` span rather than
+ordinary tokens. There is no backtracking: by the time the grammar could object,
+the text has already been consumed as raw clause content. This is why a misfire
+surfaces as `syntax error, unexpected MOD_LPAREN` rather than as a quiet
+mis-parse — and it is the one genuinely good property of the current design.
+
+### What makes it fire
+
+Reading `src/parser.y:373-470`, a `(` becomes `MOD_LPAREN` when **all** of:
+
+1. **The content is "simple".** Scanning forward, only identifiers, numbers,
+   strings, whitespace and the characters `+ - * / . [ ]` are accepted. A comma
+   returns 0 immediately (`:424`). Any other character — notably `(`, `>`, `<`,
+   `=` — returns 0 (`:429`).
+2. **At least one term was seen** (`saw_term`), and the scan ended on `)`
+   (`:433`).
+3. **The `)` is immediately followed by a comparison or assignment operator** —
+   `=`, `>`, `<`, or `!` followed by one of those (`:440`). Anything else returns
+   0.
+4. **The identifier immediately before the `(` is not a known function**
+   (`:461`). "Known" means `gbasic_builtin_function(name)` — the static builtin
+   registry — or `source_declares_function(ctx, name)`, which re-scans **the
+   current source file** for a `function <name>` declaration.
+
+Condition 3 is not arbitrary. It exists because both grammar positions that
+consume a clause require an operator immediately after it:
+
+- **`src/parser.y:626`** — `lvalue modifier OP_EQ expression`, the assign form:
+  `f(file) = path`.
+- **`src/parser.y:1005`** — `additive_expression modifier comparison_operator
+  additive_expression`, the compare form: `name(caseless) = "joe"`.
+- **`src/parser.y:1002`** — the same compare shape for the `{...}` lens form.
+
+### The three-way ambiguity, and how it is resolved today
+
+A modifier clause, a function call and a parenthesised expression can all present
+as *something* followed by `(`.
+
+| | distinguished by | at what stage |
+|---|---|---|
+| function call | condition 4 — backward scan for a known function name | parse time, **current file only** |
+| parenthesised expression | conditions 1–3 — content shape and the trailing operator | parse time, text only |
+| modifier clause | whatever survives both | parse time |
+
+The critical observation is that **the compare form and a parenthesised
+expression are structurally identical**. `X (m) > Y` is the compare form; `(a - b)
+> 0` is a parenthesised expression compared against something. The lookahead
+distinguishes them only by hoping the content of a real clause looks like a
+modifier phrase and the content of an expression does not — and `a - b` looks
+exactly like a modifier phrase, because `-` is in the accepted set.
+
+### When are modifiers "known"?
+
+PLAT-DEBT noted the raw capture is deliberate so a clause can be split into name
+and argument once registered modifiers are known. Establishing *when* that is
+bounds option C below.
+
+**The parser knows no modifier names at all.** Grepping `src/parser.y` for any
+modifier name, name table, or registry returns nothing; the only namespace it
+consults is `gbasic_builtin_function` (functions) and `source_declares_function`
+(functions). There is no `source_declares_modifier`.
+
+**Modifiers are registered at eval time.** `modifier_register_def()` —
+`src/eval.c:4351` — is reached from statement evaluation and from
+`eval_program`'s pre-registration pass; resolution happens in
+`modifier_resolve()`, `src/eval.c:4306`. Library modifiers arrive later still,
+when `load` executes.
+
+So the ordering is: **lex/parse decides → eval registers → eval resolves.** The
+decision is committed two stages before the information that would inform it
+exists. This is not an implementation accident that could be reordered cheaply:
+`load` is a runtime statement, so the set of modifiers is not statically knowable
+from one file at all.
+
+---
+
+## 2. The measured misfire surface
+
+Measured by running programs, not by reading. Every case below was executed.
+
+### Class A — a parenthesised expression followed by a comparison
+
+`if` is not special. **Every context tested fails**, because nothing about the
+preceding context is consulted unless it is an identifier:
+
+| context | example | result |
+|---|---|---|
+| after `if` | `if (a - b) > 0 then` | `unexpected MOD_LPAREN` |
+| after `while` | `while (a - b) > 99` | `unexpected MOD_LPAREN` |
+| after `return` | `return (a - b) > 0` | `unexpected MOD_LPAREN` |
+| after `print` | `print (a - b) > 0` | `unexpected MOD_LPAREN` |
+| after `=` | `c = (a - b) > 0` | `unexpected MOD_LPAREN` |
+| after an operator | `c = 1 + ((a - b) > 0)` | `unexpected MOD_LPAREN` |
+| after a comma | `g(1, (a - b) > 0)` | `unexpected MOD_LPAREN` |
+| after `(` | `c = ((a - b) > 0)` | `unexpected MOD_LPAREN` |
+| statement start | `(a - b) > 0` | `unexpected MOD_LPAREN` |
+
+`until` and `elseif` are not gBASIC keywords and were not applicable; `then` is
+covered by the `if` row.
+
+**What escapes class A** — the boundary, also measured:
+
+| form | why it is safe |
+|---|---|
+| `if (a > b) then` | `>` inside the parens is not in the accepted content set |
+| `if ((a) - b) > 0` | a nested `(` is not in the accepted content set |
+| `if (abs(a - b)) > 0` | same — the inner `(` rejects it |
+| `if (a - b) then` | trailing token is not a comparison operator |
+| `if (a - b) and c` | same |
+| `print (a - b) + 1` | same |
+| `if abs(a - b) > 0` | preceded by a known builtin (condition 4) |
+
+So class A requires: simple content, a trailing comparison operator, and no
+preceding known-function name. That is an ordinary shape, which is why it is hit
+in normal use.
+
+### Class B — a call the lookahead cannot see
+
+This class was **not** in the brief's list and is the more damaging half. It was
+found in the corpus (§3) and then reproduced.
+
+| case | example | result |
+|---|---|---|
+| function declared in the **same file** | `if kind(1) = "record"` | **parses** |
+| function from a **loaded library** | `if helper.kind(1) = "record"` | `unexpected MOD_LPAREN` |
+| **method** held in a record field | `if r.m(1) = "record"` | `unexpected MOD_LPAREN` |
+
+The cause is condition 4's incompleteness, in two independent ways:
+
+1. `source_declares_function` scans only `ctx->active_lexer->source` — the file
+   being parsed. A function in a `load`ed library is invisible, because at parse
+   time that file has not been read.
+2. The backward scan stops at any non-alphanumeric character, so for
+   `helper.kind(1)` it extracts `kind`, not `helper.kind`; and for `r.m(1)` it
+   extracts `m`, which is a record field holding a function value and is not a
+   declared function name in any file.
+
+Class B cannot be fixed by refining the lookahead, because the information it
+needs — the set of callable names — is not available at parse time for exactly
+the same reason modifier names are not (§1). **This is the finding that most
+constrains the options.**
+
+### The converse: what must keep working
+
+Measured against the prototype in §4. All of these are recognised today and must
+remain so:
+
+- `f(file) = "/tmp/x"` — the dominant corpus form, a type/reference lens
+- `t(trimmed) = "  hi  "` — a no-argument assign modifier
+- `p(split ",") = "a,b,c"` — an assign modifier with a string argument
+- `name(caseless) = "joe barnes"` — the compare form
+- `"x"{rounded 2} = y` — the `{...}` lens form
+
+Any option that fixes `if` by breaking these is not a candidate.
+
+---
+
+## 3. How much existing code this touches
+
+### Constructs relying on clause recognition
+
+Across `stdlib/`, `examples/` and `tests/`:
+
+- **580 clause uses** in **168 files**, `(...)` form.
+- **39** uses of the `{...}` lens form.
+- **37** of the 580 are in `stdlib/studio_*.bas`.
+
+By modifier name, the top of the distribution is overwhelmingly the
+reference/lens family rather than user-defined modifiers:
+
+| name | uses | | name | uses |
+|---|---|---|---|---|
+| `file` | 153 | | `args` | 22 |
+| `date` | 52 | | `dir` | 14 |
+| `string` | 44 | | `lowered` | 12 |
+| `trimmed` | 27 | | `day` | 12 |
+| `number` | 25 | | `words` | 10 |
+
+This matters for option D: the syntax is not a niche feature used in a corner,
+it is how file and directory references are constructed everywhere.
+
+### Constructs that route around the defect
+
+Seven distinct places, found by grepping for the workaround rather than the
+symptom. This is the proxy for how long this has been absorbed without being
+reported as a defect:
+
+1. **`docs/pbi_design.md:151-158`** — the strongest signal. PBI's policy
+   annotations use `:` instead of `=` **specifically because** `prop (copy)= …`
+   would tokenize as `MOD_LPAREN`. A language design decision was made to route
+   around this rule.
+2. **`docs/pbi_design.md:167,186`** — PBI twice records deliberately *not*
+   reusing the clause lexer mode.
+3. **`stdlib/studio_store.bas:21-22`** — `_last` exists as a bound-out helper
+   "to avoid the `call(...) = x` modifier-lexer collision on inline
+   comparisons".
+4. **`docs/PROGRESS.md:1673-1675`** — `if monitor_alerts.severity(...) =
+   "critical"` failed to parse; worked around by binding to a temp. This is
+   class B.
+5. **`DOGFOOD.md:294-305`** (2026-07-23, NAP-12) — `string(datagrid.row_count(g)
+   = 100)` and `if reflect.kind(x) = "record"`. Also class B, logged as severity
+   low.
+6. **`docs/gbasic_studio_plan.md:914`** — records the collision as a known
+   constraint of the language.
+7. **`examples/monotonic_test.bas:46-47`** (2026-07-29, PLAT-DEBT 3) — the
+   instance that prompted this investigation.
+
+Two observations. The workarounds are **not** concentrated in one subsystem —
+they span the PBI language design, the Studio store, the EDGAR monitor, the
+NAP-12 DataGrid tests and the platform tests. And items 4 and 5 are class B, not
+class A: the more common lived complaint is `call(...) =`, not `if (`.
+
+---
+
+## 4. Options, with costs
+
+### A — restrict by the preceding token
+
+**Rule change.** A clause may only follow something that can *end* an `lvalue` or
+an `additive_expression`. Concretely: if the identifier before `(` is a reserved
+keyword, it is not a clause; if there is no preceding identifier, only `]` or `)`
+may precede it. `END` and `NEXT` must be exempted, because
+`variable_name: IDENT | END | NEXT` (`src/parser.y:643-647`) admits them as
+variable names.
+
+**Prototyped.** Built in a scratch worktree at `5078042`, ~30 lines: a
+`lexer_identifier_type()` accessor exported from `src/lexer.c`, and the gate
+added to `modifier_lparen_ahead`. Measured:
+
+- **Fixes all of class A.** Every row of the class A table now parses and runs.
+- **Fixes none of class B.** `helper.kind(1) = …` and `r.m(1) = …` still misfire,
+  because the preceding token *is* an identifier and the gate passes.
+- **Breaks nothing measured.** Full suite green: examples 200, negative 281, and
+  `run_studio` (94), `run_outline`, `run_gui_parse`, `run_stridx`, `run_arridx`,
+  `run_process`, `run_stderr`, `run_stream`, `run_try_decode`,
+  `run_json_diagnostics`, `run_docs_gate`, `run_nap_fs`, `run_sqlite`, `run_gi`,
+  `run_native_platform` all pass unchanged.
+- All five must-keep-working forms in §2 still work.
+
+**Does any currently-legal program change meaning?** No silent change was found.
+The gate only ever turns `MOD_LPAREN` into `LPAREN`, i.e. turns a parse error
+into a successful parse. A program that parses today either still parses
+identically, or was relying on a clause directly preceded by a keyword — which
+is not reachable, since no grammar position admits `if (mod) = x`.
+
+**Lookahead refinement or grammar change?** Refinement. No rule, token or
+precedence changes; the grammar is untouched.
+
+**Cost.** Small. The prototype is ~30 lines. The real cost is the keyword
+exemption list and the tests to pin it: every keyword in `identifier_type`
+(`src/lexer.c:265`) needs a decision, and `END`/`NEXT` are known exceptions —
+there may be others.
+
+**`source_outline` blast radius.** Schema and ranges unchanged. Measured on an
+ordinary file, before and after: identical (`ok=true, nodes=18, diags=0`). The
+only change is for a file that previously *failed to parse*: `ok=false, nodes=0,
+diags=1` becomes `ok=true, nodes=5, diags=0`. That is strictly the correct
+direction — a valid program stops being reported invalid — and it moves no
+golden (`run_outline` and `run_studio` both pass). STU-3's "last-known-good on
+invalid source" path is simply exercised less often.
+
+### B — restrict by what follows the `(`
+
+**Rule change.** Refine the forward scan or the trailing-operator test rather
+than the trigger.
+
+**Analytically dead for class A, no prototype needed.** The compare form is
+`additive_expression modifier comparison_operator additive_expression`. Its text
+after the `(` is a modifier phrase, then `)`, then a comparison operator. A
+parenthesised expression in `if (a - b) > 0` presents *exactly* that text. There
+is no refinement of the forward scan that separates `(caseless) =` from
+`(a - b) >`, because `a - b` is a legal modifier phrase shape — `rounded 2` and
+`split ","` are the same shape. Tightening the content set (e.g. forbidding `-`)
+would break real clauses and still not separate `(trimmed) =` from `(x) =`.
+
+**Cost.** Not viable alone. Could narrow class A slightly at the price of
+rejecting legal modifier phrases.
+
+### C — require the clause name to be a registered modifier
+
+**Blocked by timing, established in §1.** The parser knows zero modifier names,
+and modifiers are registered at eval time, after `load` runs. Making this work
+would require either:
+
+- a parse-time modifier declaration scan analogous to
+  `source_declares_function` — which would cover only same-file modifiers and so
+  reproduce class B's incompleteness exactly, breaking every clause whose
+  modifier comes from a library (the `file`/`dir`/`date` family, i.e. most of
+  the 580); or
+- deferring the lex decision until eval, which means not committing to
+  `MOD_CONTENT` at token time — a re-architecture of the clause mechanism, not a
+  refinement.
+
+**Cost.** Large, and the cheap version is actively wrong.
+
+### D — a distinguishing syntactic marker on clauses
+
+**Rule change.** Give clauses an unambiguous marker, e.g. `f(:file) = path` or
+`f[file] = path`, so no lookahead is needed.
+
+**Breaks existing programs: yes, comprehensively.** 580 uses across 168 files,
+plus 39 lens uses if the lens form changes too. Every `f(file) = path` in the
+tree would need rewriting, including 37 in Studio.
+
+**Grammar change,** and it also removes the need for `modifier_lparen_ahead`
+entirely, which would delete a whole class of ambiguity — including class B —
+permanently. It is the only option that fixes both classes.
+
+**Cost.** Very large in migration; moderate in implementation. Would need a
+deprecation path, or a mechanical rewrite of the corpus, or both syntaxes
+supported for a period. `source_outline` blast radius is nil for the schema, but
+every existing document's ranges shift if the source text is rewritten.
+
+### E — leave it, document the constraint
+
+**Cost.** Zero to build. The ongoing cost is measured in §3: seven recorded
+workarounds, one of which redirected a language feature's syntax, and a defect
+class (B) that produces a confusing error for ordinary method and library calls.
+The constraint is currently documented in scattered places
+(`docs/pbi_design.md`, `DOGFOOD.md`, `docs/gbasic_studio_plan.md`,
+`docs/PROGRESS.md`) but is **not** in `docs/ai/UNLEARN.md`, which is where a
+contributor would look.
+
+### Not evaluated, but suggested by the code
+
+**F — extend condition 4 to qualified names.** The backward scan could recognise
+`helper.kind` rather than `kind`, and treat *any* dotted name as a call rather
+than a clause. Clauses are never dotted at the call site (the library
+qualification lives *inside* the parens — `parse_modifier_use` splits on `.`
+within the clause text, `src/parser.y:308`). This would fix the `r.m(1) =` and
+`helper.kind(1) =` rows of class B without needing to know any names. It would
+not fix an *unqualified* call to a library function. This is a lookahead
+refinement and composes with A; it was not prototyped.
+
+---
+
+## 5. Scanner census
+
+PLAT-DEBT found three scanners by tracing one clause end to end and said it had
+not proved a fourth did not exist. Searching instead for the pattern (`in_string`
+tracking and quote handling across `src/*.c`, `src/*.y`, `src/modules/*.c`)
+finds **ten** paths that scan gBASIC clause or literal text, plus four that scan
+a deliberately different dialect.
+
+### gBASIC literals and clause bodies
+
+| # | function | file:line | handles escapes consistently? |
+|---|---|---|---|
+| 1 | `string_token` | `src/lexer.c:78` | **reference** — validates, rejects invalid escapes |
+| 2 | `modifier_content_token` | `src/lexer.c:136` | yes (fixed in PLAT-DEBT 4) |
+| 3 | `lens_content_token` | `src/lexer.c:178` | yes (already did) |
+| 4 | `copy_string_literal` | `src/parser.y:78` | **reference decoder** |
+| 5 | `source_declares_function` | `src/parser.y:214` | yes — tracks strings *and* comments |
+| 6 | `modifier_lparen_ahead` | `src/parser.y:373` | yes (fixed in PLAT-DEBT 4) |
+| 7 | `modifier_string_literal` | `src/eval.c:20556` | yes — mirrors #4 (added PLAT-DEBT 4) |
+| 8 | `eval_modifier_arg_text` | `src/eval.c:20648` | delegates to #7 |
+| 9 | `modifier_args_have_comma` | `src/eval.c:20702` | yes |
+| 10 | `bind_modifier_args` | `src/eval.c:20742` | **NO** — see below |
+
+**#10 is the one genuine inconsistency, and it is demonstrably broken.** The
+multi-argument path splits on commas with a bare `strchr(start, ',')`
+(`src/eval.c:20772`), with no string awareness. Reproduced:
+
+```basic
+modifier wrap(a, b) for compare ... end modifier
+if "x"{wrap "L,R", "T"} = "xL,RT" then
+```
+→ `undefined variable: "L` and `undefined variable: R"`
+
+It splits inside the string literal and then looks up the fragments as variable
+names. It fails loudly rather than silently, but the error names a fragment of
+the user's own string, which is baffling rather than diagnostic.
+
+Reachable only through the `{...}` lens form: the `(...)` form rejects a comma in
+the lookahead (`src/parser.y:424`), so a multi-argument clause cannot be written
+that way at all. **Finding only — not fixed, per the non-goals.**
+
+### Different dialects (correctly different, listed for completeness)
+
+| function | file:line | dialect |
+|---|---|---|
+| `decode_parse_string` | `src/eval.c:9357` | JSON — `\/`, `\uXXXX` |
+| `encode_string_literal` | `src/eval.c:7182` | `encode` output |
+| `pg_json_append_string` | `src/eval.c:12372` | Postgres JSON output |
+| attribute quoting | `src/modules/xml.c:523` | XML |
+
+Two more live in gBASIC rather than C and scan JSON, not gBASIC literals:
+`stdlib/studio_json.bas` (one surviving caller) and `stdlib/crypto.bas`
+(flat-JSON).
+
+---
+
+## 6. Recommendation
+
+**A + F together**, as a lookahead refinement, and not as a syntax change.
+
+A is prototyped, fixes the entire measured class A, breaks nothing across ~700
+test cases including all of Studio, leaves `source_outline`'s schema and ranges
+untouched, and is roughly thirty lines. F is the natural companion: it addresses
+the two class B rows that were actually complained about in the corpus
+(`helper.kind(1) =` and `r.m(1) =`) using information the lookahead already has
+in hand, without needing a name registry.
+
+D is the only option that removes the ambiguity at its root, and if the language
+were younger it would be the right answer. Against 580 call sites in 168 files it
+is a migration project, not a fix, and the recommendation is to not spend that
+now.
+
+E is defensible only if paired with putting the constraint in
+`docs/ai/UNLEARN.md`, where it currently is not. Seven recorded workarounds
+across five subsystems is evidence that leaving it costs something real and
+recurring.
+
+### What I am uncertain about
+
+- **A + F still leaves class B partly open.** An unqualified call to a function
+  from a `load`ed library — `kind(1) = "record"` where `kind` comes from a
+  library — would still misfire. I did not measure how common that is versus the
+  qualified form; the corpus evidence (items 4 and 5 in §3) is qualified in both
+  cases, but two instances is not a distribution.
+- **The keyword exemption list is not settled.** I verified `END` and `NEXT` must
+  be exempt because the grammar admits them as variable names. I did not audit
+  every keyword in `identifier_type` (`src/lexer.c:265`) for the same property.
+- **F is unprototyped.** Its claim — that a clause is never dotted at the call
+  site — is read from `parse_modifier_use` (`src/parser.y:308`), which splits the
+  library qualifier out of the clause *interior*. I did not test whether any
+  corpus construct puts a dot immediately before a clause's `(`.
+- **"Breaks nothing" means nothing in this corpus.** The suite is large and
+  includes Studio, but it is not a proof about programs nobody here has written.
+
+**The decision is not mine.** This document is written to make a ruling possible,
+not to pre-empt one. Whether the recurring cost in §3 justifies touching clause
+recognition at all — and whether a partial fix that leaves class B open is worth
+having — is a judgement about the language's direction, which belongs to its
+author.
+
+---
+
+## 7. What I could not settle
+
+- **Whether class B has a fix short of option D.** A + F narrows it; nothing
+  short of knowing all callable names closes it, and that information does not
+  exist at parse time because `load` is a runtime statement. I could not find a
+  formulation that avoids this.
+- **Whether the trailing-operator condition could be dropped** if A were in
+  place. It exists to separate a clause from an ordinary call, but with a
+  preceding-token gate some of that work may be redundant. I did not test
+  removing it, and doing so would widen rather than narrow recognition, so it
+  carries risk I could not bound in this investigation.
+- **The cost of D accurately.** I counted the call sites (580 across 168 files)
+  but did not attempt a mechanical rewrite, so I cannot say whether migration is
+  a scripted afternoon or a long tail of hand-edits.
+- **Whether any *third-party* gBASIC exists** outside this repository that would
+  be affected by A. If it does, "breaks nothing measured" understates the risk of
+  any change here.
