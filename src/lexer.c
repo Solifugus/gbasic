@@ -119,15 +119,40 @@ static Token string_token(Lexer *lexer, const char *start, int line, int column)
     return error_token_message(lexer, start, line, column, "unterminated string");
 }
 
+/* Scan a modifier clause `(...)` as one raw span, stopping at the `)` that is
+ * not inside a string. The content is handed on verbatim; escapes are decoded
+ * later, when an argument is turned into a value (`modifier_string_literal`,
+ * src/eval.c), because the clause may hold a multi-word phrase like
+ * `split ","` whose name and argument are only separated once the registered
+ * modifiers are known.
+ *
+ * Escape tracking here is only about finding the right `)`. It used to test
+ * `current[-1] != '\\'`, the usual broken approximation: it cannot tell `\"`
+ * (an escaped quote, still inside the string) from `\\"` (an escaped backslash
+ * followed by the real closing quote), so a clause containing either failed to
+ * lex at all. `lens_content_token` below — the direct sibling of this function —
+ * already tracked escapes properly, which is why this reads as an oversight
+ * rather than a decision. It now matches. */
 static Token modifier_content_token(Lexer *lexer) {
     const char *start = lexer->current;
     int line = lexer->line;
     int column = lexer->column;
     int in_string = 0;
+    int escape = 0;
 
     while (!is_at_end(lexer)) {
         char ch = peek(lexer);
-        if (ch == '"' && (lexer->current == start || lexer->current[-1] != '\\')) {
+        if (escape) {
+            escape = 0;
+            advance(lexer);
+            continue;
+        }
+        if (in_string && ch == '\\') {
+            escape = 1;
+            advance(lexer);
+            continue;
+        }
+        if (ch == '"') {
             in_string = !in_string;
         }
         if (!in_string && ch == ')') {

@@ -38,7 +38,9 @@ for error handling, `ERRORS.md`.
 - **Arrays** — build and mutate: `append`/`prepend` extend in place,
   `insert`/`remove` shift. Cost story is the value-semantics entry above.
   → `examples/array_append_prepend_test.bas`
-- **Modifiers** — assignment/comparison modifier clauses. → `examples/modifier_test.gb`
+- **Modifiers** — assignment/comparison modifier clauses. A string literal in a
+  clause means what it means anywhere else: `p(split "\n") = s` splits on a
+  newline. → `examples/modifier_test.gb`, `examples/modifier_escape_test.bas`
 - **Watchers** — `watch(...)` runs once at registration, then synchronously on
   storage-changing mutations. → `examples/watch_test.gb`
 - **File locks** — `with lock(f) … end with` unlocks on exit and on error.

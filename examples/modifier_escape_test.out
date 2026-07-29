@@ -1,0 +1,20 @@
+-- every escape, through a modifier clause and through a literal
+newline   clause=[97,10,98] literal=[97,10,98] identical=true
+tab       clause=[97,9,98] literal=[97,9,98] identical=true
+quote     clause=[97,34,98] literal=[97,34,98] identical=true
+backslash clause=[97,92,98] literal=[97,92,98] identical=true
+u+263A    clause=[97,226,152,186,98] literal=[97,226,152,186,98] identical=true
+u+1F600   clause=[97,240,159,152,128,98] literal=[97,240,159,152,128,98] identical=true
+plain     clause=[97,112,108,97,105,110,98] literal=[97,112,108,97,105,110,98] identical=true
+mixed     clause=[97,120,10,121,9,122,98] literal=[97,120,10,121,9,122,98] identical=true
+all four  clause=[97,113,34,114,92,115,10,116,98] literal=[97,113,34,114,92,115,10,116,98] identical=true
+-- the reported case: split on a real newline
+clause split count=3
+variable split count=3
+agree=true
+first=one last=three
+-- a separator that is itself a quote or a backslash
+quote sep count=2
+backslash sep count=2
+-- escapes still work in the trailing position and alone
+two nl    clause=[97,10,10,98] literal=[97,10,10,98] identical=true

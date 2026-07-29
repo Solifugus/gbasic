@@ -20520,6 +20520,131 @@ static char *copy_trimmed_span(const char *start, size_t length) {
     return text;
 }
 
+/* Decode the escape sequences of a string literal written inside a modifier
+ * clause, so that a literal means the same thing there as it does anywhere else.
+ *
+ * WHY THIS EXISTS AT ALL. A modifier clause is lexed as ONE raw token
+ * (`modifier_content_token`, src/lexer.c): the lexer tracks quotes only well
+ * enough to know which `)` closes the clause, and hands the whole span over
+ * verbatim. That raw capture is deliberate — it is what lets a clause hold a
+ * multi-word phrase like `split ","` whose name and argument are only separated
+ * later, by matching against the registered modifier names. The consequence,
+ * though, was accidental: the argument never passes through the string lexer, so
+ * `eval_modifier_arg_text` used to strip the quotes and take the bytes as they
+ * lay. `p(split "\n") = text` therefore split on a literal backslash-n and
+ * returned one element — a silent wrong answer, with nothing in the result to
+ * suggest the escape was the problem.
+ *
+ * This mirrors `copy_string_literal()` in src/parser.y: the same escape set
+ * (\n, \t, \\, \", \u{...}), the same six-digit / 0x10FFFF / surrogate / \u{0}
+ * rules. The duplication is deliberate — the parser's copy reports through the
+ * parse context and cannot be called from here — and it is held in step by test
+ * rather than by hope: examples/modifier_escape_test.bas emits every escape
+ * through BOTH paths and requires the two to be byte-identical, so a change to
+ * one that is not made to the other fails.
+ *
+ * Only the FAILURE MODE differs, unavoidably: the parser reports a diagnostic at
+ * parse time, this raises when the modifier runs, because that is the first
+ * moment the text is looked at as a string at all. */
+static int modifier_hex_value(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+static Value modifier_string_literal(const char *inner, size_t len) {
+    char *out = malloc(len + 1);
+    if (!out) {
+        abort();
+    }
+    size_t w = 0;
+    for (size_t i = 0; i < len; i++) {
+        if (inner[i] != '\\') {
+            out[w++] = inner[i];
+            continue;
+        }
+        if (i + 1 >= len) {
+            free(out);
+            runtime_error_raise("unterminated escape sequence", 1003, "modifier");
+            return value_null();
+        }
+        char esc = inner[++i];
+        if (esc == 'n') {
+            out[w++] = '\n';
+        } else if (esc == 't') {
+            out[w++] = '\t';
+        } else if (esc == '"' || esc == '\\') {
+            out[w++] = esc;
+        } else if (esc == 'u') {
+            /* Unlike the parser's copy, the shape has NOT been pre-validated by
+             * the lexer here — the raw capture skipped it — so every part of
+             * \u{HHHH} is checked before use. */
+            if (i + 1 >= len || inner[i + 1] != '{') {
+                free(out);
+                runtime_error_raise("invalid unicode escape: expected { after \\u", 1003, "modifier");
+                return value_null();
+            }
+            i += 2;
+            unsigned cp = 0;
+            int digits = 0;
+            while (i < len && inner[i] != '}') {
+                int v = modifier_hex_value(inner[i]);
+                if (v < 0) {
+                    free(out);
+                    runtime_error_raise("invalid unicode escape: \\u{} needs hex digits", 1003, "modifier");
+                    return value_null();
+                }
+                cp = cp * 16u + (unsigned)v;
+                digits++;
+                i++;
+            }
+            if (i >= len || inner[i] != '}') {
+                free(out);
+                runtime_error_raise("invalid unicode escape: expected } after \\u{", 1003, "modifier");
+                return value_null();
+            }
+            if (digits == 0) {
+                free(out);
+                runtime_error_raise("invalid unicode escape: \\u{} needs hex digits", 1003, "modifier");
+                return value_null();
+            }
+            if (digits > 6 || cp > 0x10FFFFu) {
+                free(out);
+                runtime_error_raise("invalid unicode escape: codepoint must be between 0 and 0x10FFFF",
+                                    1003, "modifier");
+                return value_null();
+            }
+            if (cp >= 0xD800u && cp <= 0xDFFFu) {
+                free(out);
+                runtime_error_raise("invalid unicode escape: surrogate codepoints (0xD800..0xDFFF) are not valid",
+                                    1003, "modifier");
+                return value_null();
+            }
+            if (cp == 0) {
+                free(out);
+                runtime_error_raise("invalid unicode escape: \\u{0} is not allowed in a literal; use chr(0)",
+                                    1003, "modifier");
+                return value_null();
+            }
+            char utf8[4];
+            size_t n = utf8_encode_codepoint(cp, utf8);
+            memcpy(out + w, utf8, n);
+            w += n;
+        } else {
+            char message[64];
+            snprintf(message, sizeof(message), "invalid escape sequence: \\%c", esc);
+            free(out);
+            runtime_error_raise(message, 1003, "modifier");
+            return value_null();
+        }
+    }
+    out[w] = '\0';
+    Value value = value_string_n(out, w);
+    free(out);
+    return value;
+}
+
 static Value eval_modifier_arg_text(const char *text) {
     while (*text == ' ' || *text == '\t') {
         text++;
@@ -20532,15 +20657,7 @@ static Value eval_modifier_arg_text(const char *text) {
         return value_null();
     }
     if (text[0] == '"' && len >= 2 && text[len - 1] == '"') {
-        char *inner = malloc(len - 1);
-        if (!inner) {
-            abort();
-        }
-        memcpy(inner, text + 1, len - 2);
-        inner[len - 2] = '\0';
-        Value value = value_string(inner);
-        free(inner);
-        return value;
+        return modifier_string_literal(text + 1, len - 2);
     }
     char *end = NULL;
     double number = strtod(text, &end);

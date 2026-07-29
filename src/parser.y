@@ -387,8 +387,21 @@ static int modifier_lparen_ahead(gb_parse_ctx *ctx, const char *start) {
         } else if ((*p >= '0' && *p <= '9') || *p == '"') {
             saw_term = 1;
             if (*p == '"') {
+                /* Skip the string. A backslash escapes the next character, so
+                 * that `"\""` is one string rather than two — without this, the
+                 * scan stops at the ESCAPED quote, reads the real closing quote
+                 * as the start of a second string, finds no terminator before
+                 * the newline and gives up, and the whole clause silently
+                 * degrades to an ordinary parenthesised expression. This is the
+                 * first of three string scanners a modifier clause passes
+                 * through; the others are modifier_content_token (src/lexer.c)
+                 * and modifier_string_literal (src/eval.c). */
                 p++;
                 while (*p && *p != '"' && *p != '\n') {
+                    if (*p == '\\' && p[1] && p[1] != '\n') {
+                        p += 2;
+                        continue;
+                    }
                     p++;
                 }
                 if (*p != '"') {

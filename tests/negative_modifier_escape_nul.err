@@ -1,0 +1,1 @@
+runtime error at tests/negative_modifier_escape_nul.bas:2:3: invalid unicode escape: \u{0} is not allowed in a literal; use chr(0)

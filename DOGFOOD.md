@@ -614,3 +614,35 @@ D0.6, the rest remain open or are by-design.
   could only be accepted and ignored. They keep rejecting it, and the usage line
   now shows two shapes instead of implying one. The env-var workaround recorded
   in the earlier entry is no longer needed for `--json-diagnostics`.
+
+## 2026-07-29 — CC — while: PLAT-DEBT 4
+- **Type:** bug
+- **Severity:** medium
+- **Status update to the 2026-07-28 modifier-clause escape entry above:** RESOLVED.
+  A string literal now means the same thing inside a `(...)=` modifier clause as
+  it does anywhere else. `p(split "\n") = s` splits on a newline; `\t`, `\"`,
+  `\\` and `\u{...}` all behave as they do in an ordinary expression, and an
+  invalid escape raises instead of passing through as literal text.
+- **What it actually was:** not one bug but THREE string scanners that had to
+  agree and did not, none of which is the ordinary string lexer — a modifier
+  clause is deliberately captured as raw text so a multi-word phrase like
+  `split ","` can be separated into name and argument only once the registered
+  modifiers are known.
+  1. `modifier_lparen_ahead` (`src/parser.y`) decides whether `(` opens a clause
+     at all. Its string skip had no escape handling, so `"\""` read as two
+     strings, the second unterminated — it gave up and the clause silently
+     degraded to an ordinary parenthesised expression.
+  2. `modifier_content_token` (`src/lexer.c`) finds the `)` that closes the
+     clause. It tested `current[-1] != '\\'`, the usual broken approximation,
+     which cannot tell `\"` from `\\"`. Its direct sibling `lens_content_token`,
+     thirty lines below, already tracked escapes properly — which is what makes
+     this an oversight rather than a decision.
+  3. `eval_modifier_arg_text` (`src/eval.c`) turns the argument into a value. It
+     stripped the quotes and took the bytes verbatim. THIS is the one that
+     produced the silent wrong answer in the original report; the other two
+     produced loud parse failures.
+- **Workaround:** none needed now. The variable-binding workaround still works
+  and the fixtures that use it were left alone. Held in step by
+  `examples/modifier_escape_test.bas`, which emits every escape through both the
+  clause path and the ordinary literal path and requires the two to be
+  byte-identical, so fixing one scanner and not the others fails a test.

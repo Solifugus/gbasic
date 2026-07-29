@@ -289,6 +289,9 @@ cases=(
     negative_print_to_unknown_stream
     negative_try_decode_arity
     negative_monotonic_arity
+    negative_modifier_escape_invalid
+    negative_modifier_escape_surrogate
+    negative_modifier_escape_nul
     negative_try_decode_type
 )
 
