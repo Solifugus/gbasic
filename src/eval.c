@@ -663,9 +663,67 @@ static char *copy_string(const char *text) {
  * Phase 0 establishes the representation; the length is stored but not yet
  * consumed (every string built today is valid NUL-terminated text, so
  * strlen == length and behaviour is unchanged). Phase 1 makes the runtime
- * length-authoritative. */
+ * length-authoritative.
+ *
+ * --- PLAT-STRIDX: sharing and the codepoint cache -----------------------------
+ *
+ * Four more fields ride in the same header, all there to keep per-character
+ * access out of O(n^2). None of them changes what a string MEANS.
+ *
+ *   `refs`  — the buffer is shared, not copied. `value_copy` used to memcpy the
+ *      whole string, and `env_get` calls `value_copy` on every read of a
+ *      variable, so `byte_at(s, i)` in a loop — an O(1) operation — copied n
+ *      bytes per iteration and a 1 000 000-byte scan took 30 s. Sharing is safe
+ *      because string values are IMMUTABLE: `as.string` is assigned in exactly
+ *      one place (`value_string_n`), every builtin that "modifies" a string
+ *      fills a fresh malloc buffer and constructs a new value from it, and
+ *      nothing writes through a `Value`'s data pointer. That invariant is what
+ *      makes this correct — do not write into a string buffer in place.
+ *
+ *   `cp_count` / `cursor_*` — codepoint bookkeeping, filled lazily on first use.
+ *      A codepoint index has to be translated to a byte offset, and `len`,
+ *      `mid`, `left` and `right` each did that by walking the whole string on
+ *      every call. `cp_count` remembers the answer. When it equals `length`
+ *      every unit occupies exactly one byte — true for ASCII, and equally true
+ *      for invalid bytes under the lenient rule, since those count as one unit
+ *      each — so the codepoint index IS the byte offset and access is O(1).
+ *      Otherwise the cursor remembers the last (codepoint index -> byte offset)
+ *      pair so a forward walk RESUMES instead of restarting, which is what makes
+ *      a sequential scan linear.
+ *
+ *   `samples` — a sparse codepoint->byte index, built lazily and only for a
+ *      multibyte string that is actually accessed out of forward order. The
+ *      cursor alone leaves a BACKWARD scan quadratic, because every index falls
+ *      before the cursor and restarts the walk from zero (measured: 151 s to
+ *      walk a 256 000-unit multibyte string backwards). One offset every
+ *      STRING_INDEX_STRIDE codepoints bounds any lookup to a short walk from
+ *      the nearest sample. It is built by the same forward walk as everything
+ *      else, so it cannot disagree with it.
+ *
+ * The cache needs no invalidation: the buffer it describes can never change. It
+ * survives across variable reads only BECAUSE of `refs` — with copying, every
+ * read would hand back a fresh buffer with an empty cache, and the walk would
+ * come straight back. Sharing and caching are one mechanism, not two: fixing
+ * either alone leaves a per-character loop quadratic. */
+#define STRING_CP_UNKNOWN ((size_t)-1)
+
+/* One sampled byte offset every this many codepoints. 64 bounds a lookup to at
+ * most 63 decode steps while costing cp_count/64 pointers-worth of memory
+ * (12.5% of the codepoint count, in bytes) — and only for strings that need it. */
+#define STRING_INDEX_STRIDE 64
+
+/* Below this many codepoints a full walk is already trivial, so indexing would
+ * cost memory to save nothing. */
+#define STRING_INDEX_MIN_CP 512
+
 typedef struct {
-    size_t length;
+    size_t refs;         /* shared-buffer references; 1 at construction */
+    size_t length;       /* authoritative byte length, excluding the terminator */
+    size_t cp_count;     /* codepoints, or STRING_CP_UNKNOWN until first asked */
+    size_t cursor_cp;    /* memoized cursor: a codepoint index... */
+    size_t cursor_byte;  /* ...and the byte offset at which that unit begins */
+    size_t *samples;     /* sparse cp->byte index, or NULL; length derived from
+                          * cp_count, so no separate count is stored */
 } StringHeader;
 
 #define STRING_HEADER_SIZE (sizeof(StringHeader))
@@ -678,7 +736,13 @@ static char *string_new(const char *bytes, size_t length) {
     if (!block) {
         abort();
     }
-    ((StringHeader *)block)->length = length;
+    StringHeader *header = (StringHeader *)block;
+    header->refs = 1;
+    header->length = length;
+    header->cp_count = STRING_CP_UNKNOWN;
+    header->cursor_cp = 0;
+    header->cursor_byte = 0;
+    header->samples = NULL;
     char *data = block + STRING_HEADER_SIZE;
     if (length > 0) {
         memcpy(data, bytes, length);
@@ -687,17 +751,41 @@ static char *string_new(const char *bytes, size_t length) {
     return data;
 }
 
-/* Authoritative byte length of a runtime string value's data pointer. */
-static size_t string_length(const char *data) {
-    return ((const StringHeader *)(data - STRING_HEADER_SIZE))->length;
+/* The bookkeeping that rides in front of a runtime string's byte data. The cast
+ * drops const because the cache fields are mutable state ABOUT immutable bytes:
+ * reading a string may fill them in, and that is not a modification of the
+ * string's value. The bytes themselves are never written after construction. */
+static StringHeader *string_header(const char *data) {
+    return (StringHeader *)(void *)(data - STRING_HEADER_SIZE);
 }
 
-/* Release a runtime string buffer created by string_new. */
+/* Authoritative byte length of a runtime string value's data pointer. */
+static size_t string_length(const char *data) {
+    return string_header(data)->length;
+}
+
+/* Take a second reference to an existing buffer. O(1), and the reason
+ * `value_copy` on a string no longer touches the bytes at all. */
+static char *string_retain(char *data) {
+    if (data) {
+        string_header(data)->refs++;
+    }
+    return data;
+}
+
+/* Drop a reference; free the buffer when the last one goes. */
 static void string_free(char *data) {
     if (data) {
-        free(data - STRING_HEADER_SIZE);
+        StringHeader *header = string_header(data);
+        if (--header->refs == 0) {
+            free(header->samples);
+            free(header);
+        }
     }
 }
+
+/* The codepoint cache accessors live further down, next to the walkers they
+ * memoize (string_cp_count / string_cp_offset / string_cp_index_at_byte). */
 
 /* Binary-safe equality of two runtime string values (string_new buffers).
  * Compares the full authoritative byte length, so interior NULs are honored. */
@@ -843,17 +931,113 @@ static long string_find_bytes(const char *hay, size_t hlen,
     return -1;
 }
 
-/* Byte offset at which the codepoint at index `cp_index` begins. If `cp_index`
- * is at or past the codepoint count, returns `len` (one-past-the-end). */
-static size_t string_codepoint_offset(const char *s, size_t len, size_t cp_index) {
+/* --- PLAT-STRIDX: the memoized forms of the walk above -----------------------
+ *
+ * These take a runtime string VALUE's data pointer (so the header is present)
+ * rather than an arbitrary pointer+length, and remember what they learn. The
+ * raw walker above is still used where the caller asks about a PREFIX of a
+ * string rather than the whole of one. */
+
+/* Codepoints in this string, counted once and remembered. */
+static size_t string_cp_count(const char *data) {
+    StringHeader *header = string_header(data);
+    if (header->cp_count == STRING_CP_UNKNOWN) {
+        header->cp_count = string_codepoint_count(data, header->length);
+    }
+    return header->cp_count;
+}
+
+/* Number of sampled offsets a string of `count` codepoints carries: one for
+ * codepoint 0, then one every STRING_INDEX_STRIDE. */
+static size_t string_sample_count(size_t count) {
+    return count / STRING_INDEX_STRIDE + 1;
+}
+
+/* Build the sparse codepoint->byte index in one forward pass. Called only when
+ * a lookup has already had to give up on the cursor, so the pass it costs is a
+ * pass that was about to happen anyway. On allocation failure the string simply
+ * keeps walking — this is a cache, so failing to build it is slow, not wrong. */
+static void string_build_index(const char *data) {
+    StringHeader *header = string_header(data);
+    size_t count = string_cp_count(data);
+    size_t length = header->length;
+    size_t slots = string_sample_count(count);
+    size_t *samples = malloc(slots * sizeof(size_t));
+    if (!samples) {
+        return;
+    }
     size_t pos = 0;
     size_t seen = 0;
-    while (pos < len && seen < cp_index) {
+    size_t next = 0;
+    samples[next++] = 0;
+    while (pos < length && seen < count) {
         unsigned cp;
-        pos += utf8_decode_first(s + pos, len - pos, &cp);
+        pos += utf8_decode_first(data + pos, length - pos, &cp);
+        seen++;
+        if (seen % STRING_INDEX_STRIDE == 0 && next < slots) {
+            samples[next++] = pos;
+        }
+    }
+    /* Any unreached slot would only be read for an index past the end, which
+     * returns early — but leave nothing undefined for a future reader. */
+    while (next < slots) {
+        samples[next++] = length;
+    }
+    header->samples = samples;
+}
+
+/* Byte offset at which codepoint `cp_index` begins, or the byte length if the
+ * index is at or past the end.
+ *
+ * Fastest case first: one byte per unit, so the index IS the offset. Otherwise
+ * start from the best known position — the sparse index if it exists, the
+ * cursor if it is closer — and walk forward from there. A lookup that would
+ * otherwise restart from zero builds the index first, which is what keeps a
+ * backward or random-order traversal linear rather than quadratic. */
+static size_t string_cp_offset(const char *data, size_t cp_index) {
+    StringHeader *header = string_header(data);
+    size_t length = header->length;
+    size_t count = string_cp_count(data);
+    if (cp_index >= count) {
+        return length;
+    }
+    if (count == length) {
+        return cp_index;
+    }
+    if (!header->samples && header->cursor_cp > cp_index &&
+        count >= STRING_INDEX_MIN_CP) {
+        string_build_index(data);
+    }
+    size_t pos = 0;
+    size_t seen = 0;
+    if (header->samples) {
+        seen = (cp_index / STRING_INDEX_STRIDE) * STRING_INDEX_STRIDE;
+        pos = header->samples[cp_index / STRING_INDEX_STRIDE];
+    }
+    if (header->cursor_cp <= cp_index && header->cursor_cp >= seen) {
+        pos = header->cursor_byte;
+        seen = header->cursor_cp;
+    }
+    while (pos < length && seen < cp_index) {
+        unsigned cp;
+        pos += utf8_decode_first(data + pos, length - pos, &cp);
         seen++;
     }
+    header->cursor_cp = seen;
+    header->cursor_byte = pos;
     return pos;
+}
+
+/* Inverse direction: the codepoint index of a BYTE offset. Only the one-byte-
+ * per-unit case is shortcut. The general case defers to the original walk
+ * unchanged, because `byte_off` is not guaranteed to land on a unit boundary —
+ * it comes from a byte-wise substring search — and the truncating walk is what
+ * defines the answer there. */
+static size_t string_cp_index_at_byte(const char *data, size_t byte_off) {
+    if (string_cp_count(data) == string_header(data)->length) {
+        return byte_off;
+    }
+    return string_codepoint_count(data, byte_off);
 }
 
 void eval_set_source_path(const char *path) {
@@ -1462,8 +1646,14 @@ static Value value_error_object(void) {
 
 static Value value_copy(Value value) {
     if (value.kind == VALUE_STRING) {
-        /* Length-aware so binary-safe content (interior NULs) survives a copy. */
-        return value_string_n(value.as.string, string_length(value.as.string));
+        /* Share the buffer instead of duplicating it (PLAT-STRIDX). String
+         * values are immutable, so two references can never disagree, and this
+         * is what stops `env_get` — which copies on EVERY read of a variable —
+         * from making an O(1) operation cost O(n) inside a loop. Binary-safe
+         * for free: nothing is re-derived, so interior NULs cannot be lost. */
+        Value shared = value;
+        shared.as.string = string_retain(value.as.string);
+        return shared;
     }
     if (value.kind == VALUE_FILE) {
         return value_file(value.as.file_path);
@@ -6044,8 +6234,7 @@ static Value builtin_len_value(Value value) {
         return value_number(count);
     }
     if (value.kind == VALUE_STRING) {
-        double count = (double)string_codepoint_count(value.as.string,
-                                                      string_length(value.as.string));
+        double count = (double)string_cp_count(value.as.string);
         value_free(value);
         return value_number(count);
     }
@@ -19372,7 +19561,7 @@ static Value eval_call(AstExpr *expr) {
             long off = string_find_bytes(value.as.string, hlen, target.as.string, nlen);
             /* Report the match as a codepoint index, not a byte offset. */
             Value result = off >= 0
-                ? value_number((double)string_codepoint_count(value.as.string, (size_t)off))
+                ? value_number((double)string_cp_index_at_byte(value.as.string, (size_t)off))
                 : value_null();
             value_free(value);
             value_free(target);
@@ -19621,7 +19810,7 @@ static Value eval_call(AstExpr *expr) {
             return value_null();
         }
         size_t byte_len = string_length(text.as.string);
-        size_t cp_len = string_codepoint_count(text.as.string, byte_len);
+        size_t cp_len = string_cp_count(text.as.string);
         int requested = (int)count_value.as.number;
         size_t count = requested < 0 ? 0 : (size_t)requested;
         if (count > cp_len) {
@@ -19630,11 +19819,11 @@ static Value eval_call(AstExpr *expr) {
         /* Translate codepoint slice bounds to byte offsets. */
         size_t byte_start, byte_end;
         if (strcmp(name, "right") == 0) {
-            byte_start = string_codepoint_offset(text.as.string, byte_len, cp_len - count);
+            byte_start = string_cp_offset(text.as.string, cp_len - count);
             byte_end = byte_len;
         } else {
             byte_start = 0;
-            byte_end = string_codepoint_offset(text.as.string, byte_len, count);
+            byte_end = string_cp_offset(text.as.string, count);
         }
         size_t byte_count = byte_end - byte_start;
         char *result_text = malloc(byte_count + 1);
@@ -19669,7 +19858,7 @@ static Value eval_call(AstExpr *expr) {
         }
 
         size_t byte_len = string_length(text.as.string);
-        size_t cp_len = string_codepoint_count(text.as.string, byte_len);
+        size_t cp_len = string_cp_count(text.as.string);
         int raw_start = (int)start_value.as.number;
         int raw_count = (int)count_value.as.number;
         size_t start = raw_start < 0 ? 0 : (size_t)raw_start;
@@ -19681,8 +19870,8 @@ static Value eval_call(AstExpr *expr) {
         if (count > cp_len - start) {
             count = cp_len - start;
         }
-        size_t byte_start = string_codepoint_offset(text.as.string, byte_len, start);
-        size_t byte_end = string_codepoint_offset(text.as.string, byte_len, start + count);
+        size_t byte_start = string_cp_offset(text.as.string, start);
+        size_t byte_end = string_cp_offset(text.as.string, start + count);
 
         if (expr->as.call.args.count == 3) {
             size_t slice = byte_end - byte_start;
