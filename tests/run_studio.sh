@@ -403,6 +403,93 @@ for m in hoist hoist_before hoist_order hoist_err hoist_target hoist_inert \
 done
 printf 'PASS sessions_scratch_clean (no materialized prefix left by any case)\n'
 
+# ---- STU-5A: persistent, section-linked results and history ------------------
+# Headless and path-free: the driver takes a mode, a scratch directory for
+# materialized prefixes, and a throwaway Studio home holding the results store.
+# Neither path is printed, and every timestamp is pinned through the session's
+# `clock_fixed` seam, so the goldens are byte-stable while real runs still happen.
+RES=examples/studio/results.bas
+res_home_root="$tmproot/results_homes"
+run_results() { # mode
+    local mode="$1" d h
+    d="$tmproot/res_$mode"; h="$res_home_root/$mode"
+    rm -rf "$d" "$h"; mkdir -p "$d" "$h"
+    : >"$stdout_file"
+    if ! timeout 300 ./gbasic "$RES" "$mode" "$d" "$h" >"$stdout_file" 2>&1; then
+        cat "$stdout_file"; fail "results_$mode (nonzero exit)"
+    fi
+    if diff -u "tests/studio/results_$mode.out" "$stdout_file"; then
+        printf 'PASS results_%s\n' "$mode"
+    else
+        fail "results_$mode (output diff)"
+    fi
+    # Results are durable; materialized prefixes are not. No run may leave one.
+    if [ -n "$(ls -A "$d" 2>/dev/null)" ]; then
+        printf 'FAIL results_%s (scratch files left behind)\n' "$mode"
+        ls -la "$d"
+        exit 1
+    fi
+}
+for m in persist history fingerprint orphan refused signal truncate truncate_unit \
+         evict concurrent compat store view; do
+    run_results "$m"
+done
+printf 'PASS results_scratch_clean (no materialized prefix left by any case)\n'
+
+# The results store must live OUTSIDE the workspace record: STU-3's anchors are
+# small and bounded, results are neither. Assert the separation on disk rather
+# than trusting the code to have kept it.
+res_store_dir="$res_home_root/truncate/results"
+if [ -d "$res_store_dir" ] && [ -z "$(ls -A "$res_home_root/truncate" 2>/dev/null | grep -v '^results$')" ]; then
+    printf 'PASS results_store_separate (results/ is the only thing the store writes)\n'
+else
+    printf 'FAIL results_store_separate\n'
+    ls -la "$res_home_root/truncate" 2>/dev/null
+    exit 1
+fi
+
+# The index must stay SMALL however much output was captured: studio_store's read
+# path pre-validates it with studio_json.valid, which is pure gBASIC at roughly
+# 2 KB/s, so an index carrying capture text would take tens of seconds to open.
+# Assert the separation rather than trusting it: the biggest index in the suite is
+# from `evict` (21 results), and it must still be far below one capture's cap.
+biggest_index=$(find "$res_home_root" -name '*.json' -printf '%s\n' 2>/dev/null | sort -n | tail -1)
+if [ -n "$biggest_index" ] && [ "$biggest_index" -lt 65536 ]; then
+    printf 'PASS results_index_small (largest index %s bytes, under the 64K capture cap)\n' "$biggest_index"
+else
+    printf 'FAIL results_index_small (largest index %s bytes)\n' "${biggest_index:-none}"
+    exit 1
+fi
+
+# Retention and the size cap are policy, so measure what they actually cost:
+# `truncate` pushes ~84 KB of child output through a 64 KB cap, and `evict` writes
+# past the per-section limit. Both must stay bounded on disk.
+printf 'INFO results_disk_size total=%s truncate=%s evict=%s largest_index=%sB\n' \
+    "$(du -sh "$res_home_root" 2>/dev/null | cut -f1)" \
+    "$(du -sh "$res_home_root/truncate" 2>/dev/null | cut -f1)" \
+    "$(du -sh "$res_home_root/evict" 2>/dev/null | cut -f1)" \
+    "$biggest_index"
+
+# STU-5A memory: the record/evict/truncate/classify paths under valgrind.
+if command -v valgrind >/dev/null 2>&1; then
+    vg_log="$(mktemp)"
+    for m in persist truncate truncate_unit evict orphan; do
+        d="$tmproot/res_vg_$m"; h="$res_home_root/vg_$m"
+        rm -rf "$d" "$h"; mkdir -p "$d" "$h"
+        : >"$stdout_file"
+        if ! timeout 900 valgrind --error-exitcode=99 --leak-check=full --errors-for-leak-kinds=definite \
+                ./gbasic "$RES" "$m" "$d" "$h" >"$stdout_file" 2>"$vg_log"; then
+            printf 'FAIL results_memory (%s, valgrind)\n' "$m"
+            grep -E 'definitely lost|ERROR SUMMARY|Invalid ' "$vg_log" || tail -20 "$vg_log"
+            rm -f "$vg_log"; exit 1
+        fi
+    done
+    rm -f "$vg_log"
+    printf 'PASS results_memory (valgrind clean: persist/truncate/truncate_unit/evict/orphan)\n'
+else
+    printf 'SKIP results_memory (valgrind not installed)\n'
+fi
+
 # STU-4 memory: the run/stop/attribute paths under valgrind. `force` and
 # `unresponsive` are included because they are the ones that kill a child and
 # release a live process handle.

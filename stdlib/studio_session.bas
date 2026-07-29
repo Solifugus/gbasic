@@ -107,6 +107,14 @@ library studio_session
             marker: "",
             ' Test seam: a fixed nonce, so a fixture can print the marker itself.
             nonce_fixed: "",
+            ' STU-5A timing. The runtime's clock is whole seconds (`epoch()`), so a
+            ' run shorter than a second records a duration of 0 -- reported as it is
+            ' rather than dressed up with a millisecond figure the platform cannot
+            ' actually measure. `clock_fixed` is the test seam that keeps goldens
+            ' byte-stable while a real run still happens.
+            clock_fixed: 0,
+            started_epoch: 0,
+            finished_epoch: 0,
             map: nothing,
             hoisted: [],
             stderr_raw: "",
@@ -123,6 +131,14 @@ library studio_session
             stop_ticks: 0,
             stop_grace_ticks: 20
         }
+    end function
+
+    ' Wall-clock seconds, or the pinned value when a test has fixed the clock.
+    function _now(session)
+        if session.clock_fixed != 0 then
+            return session.clock_fixed
+        end if
+        return epoch()
     end function
 
     ' ---- refusal -----------------------------------------------------------
@@ -447,6 +463,12 @@ library studio_session
             return session
         end if
 
+        ' Stamp the clock before the gate: a refusal is a thing that happened at a
+        ' time, and STU-5A records it as one.
+        now = studio_session._now(session)
+        session.started_epoch = now
+        session.finished_epoch = now
+
         gate = studio_session.can_run(sections, section_id)
         if not gate.ok then
             session = studio_session._to(session, "refused")
@@ -521,6 +543,7 @@ library studio_session
             session = studio_session._to(session, "failed")
             session.reason = "materialize-failed"
             session.message = "could not write the execution prefix"
+            session.finished_epoch = studio_session._now(session)
             return session
         end if
 
@@ -571,6 +594,7 @@ library studio_session
         session.exit_code = s.exit_code
         session.signal = s.signal
         session.success = s.success
+        session.finished_epoch = studio_session._now(session)
         process.release(session.handle)
         session.handle = nothing
         session = studio_session._resolve_split(session)
@@ -684,6 +708,7 @@ library studio_session
         session.exit_code = s.exit_code
         session.signal = s.signal
         session.success = s.success
+        session.finished_epoch = studio_session._now(session)
         process.release(session.handle)
         session.handle = nothing
         session = studio_session._resolve_split(session)
@@ -809,6 +834,74 @@ library studio_session
     function finalize(session, sections, source)
         session = studio_session.parse_diagnostics(session)
         return studio_session.attribute(session, sections, source)
+    end function
+
+    ' ---- STU-5A: emitting a durable result ---------------------------------
+
+    ' Build the record STU-5A persists. This EMITS what the run already produced;
+    ' it changes nothing about how a run happens.
+    '
+    ' The section FINGERPRINT is captured here, from the sections state the run was
+    ' launched against -- not looked up later. Section ids are deliberately stable
+    ' across edits (that is STU-3's purpose), so a result keyed by id alone would
+    ' silently appear to describe code that has since changed. Recording the
+    ' content hash as run is what lets studio_results say "this result predates the
+    ' section's current text" instead of showing a stale result as current.
+    '
+    ' A refusal produces a record too: Studio declining to run is an event, and a
+    ' history that quietly omitted it would misrepresent the session.
+    function to_result(session, sections)
+        found = nothing
+        for each s in sections.sections
+            if s.id = session.section_id then
+                found = s
+            end if
+        end for
+        fp = ""
+        kind = ""
+        nm = nothing
+        if found != nothing then
+            fp = studio_results.fingerprint_of(found)
+            kind = found.kind
+            nm = found.name
+        end if
+
+        ' The three terminal states map straight through; anything else means the
+        ' caller asked before the run ended, and the state is reported as-is rather
+        ' than being coerced into one of the three.
+        outcome = session.state
+
+        dur = session.finished_epoch - session.started_epoch
+        if dur < 0 then
+            dur = 0
+        end if
+
+        return {
+            result_id: "",
+            section_id: session.section_id,
+            section_fingerprint: fp,
+            section_kind: kind,
+            section_name: nm,
+            started_epoch: session.started_epoch,
+            finished_epoch: session.finished_epoch,
+            duration_seconds: dur,
+            outcome: outcome,
+            exit_code: session.exit_code,
+            signal: session.signal,
+            success: session.success,
+            reason: session.reason,
+            message: session.message,
+            split_out: session.split_out,
+            split_err: session.split_err,
+            split_reason: session.split_reason,
+            out_prefix: session.out_prefix,
+            out_target: session.out_target,
+            err_prefix: session.err_prefix,
+            err_target: session.err_target,
+            truncated: [],
+            attribution: session.attribution,
+            run_seq: session.run_seq
+        }
     end function
 
     ' ---- scratch lifecycle -------------------------------------------------
