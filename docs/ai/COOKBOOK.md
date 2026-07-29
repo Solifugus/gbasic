@@ -18,10 +18,12 @@ for error handling, `ERRORS.md`.
   → `examples/while_break_continue_test.bas`
 - **Iterate a collection** — `for each x in coll … end for`. Preferred for
   readability; indexing in a `while` loop is linear too, and has been since
-  arrays became copy-on-write. → `examples/for_each_test.bas`
+  arrays became copy-on-write (cost pinned by `tests/run_arridx.sh`).
+  → `examples/for_each_test.bas`
 - **Array value semantics** — assignment, argument passing and mutation are
   independent at any depth, over a shared refcounted store; indexing and
-  `append` are linear. → `tests/arridx_test.bas`
+  `append` are linear, which `tests/run_arridx.sh` fails if it stops being true.
+  → `tests/arridx_test.bas`
 - **Functions** — definition, params, `return`. → `examples/function_test.gb`
 - **Function values** — a bare function name is a value you can store, pass, and
   call; equality is same-reference. → `examples/first_class_function_test.bas`
@@ -33,7 +35,8 @@ for error handling, `ERRORS.md`.
   govern inheritance/copy-on-write. → `examples/pbi_derive_test.bas`
 - **Records** — literals (identifier keys only), nested access, bracket keys for
   non-identifier fields. → `examples/record_test.gb`
-- **Arrays** — build and mutate; prefer `for each`, and remember `append` copies.
+- **Arrays** — build and mutate: `append`/`prepend` extend in place,
+  `insert`/`remove` shift. Cost story is the value-semantics entry above.
   → `examples/array_append_prepend_test.bas`
 - **Modifiers** — assignment/comparison modifier clauses. → `examples/modifier_test.gb`
 - **Watchers** — `watch(...)` runs once at registration, then synchronously on
@@ -57,12 +60,12 @@ for error handling, `ERRORS.md`.
   is far faster than an interpreted per-character loop, and it reports *where* the
   input went wrong. (The scanner it replaced took 92 s on a 116 KB store, most of
   it a quadratic per-character walk that PLAT-STRIDX has since fixed — the walk is
-  linear now, but a gBASIC-level scanner is still much slower than the builtin.)
-  → `tests/try_decode_test.bas`
+  linear now (`tests/run_stridx.sh` guards that), but a gBASIC-level scanner is
+  still much slower than the builtin.) → `tests/try_decode_test.bas`
 - **Walking text character by character** — `while i < len(s)` with
-  `mid(s, i, 1)` is linear, in either direction, for ASCII and multibyte alike.
-  Build strings with an array plus `join`, not repeated `+`.
-  → `tests/stridx_test.bas`
+  `mid(s, i, 1)` is linear, in either direction, for ASCII and multibyte alike —
+  asserted by `tests/run_stridx.sh`. Build strings with an array plus `join`, not
+  repeated `+`. → `tests/stridx_test.bas`
 - **Bitwise** — `band`/`bor`/`bxor`/`bnot`/`shl`/`shr`/`rotl`/`rotr` on 32-bit
   unsigned integers. → `examples/bitwise_test.bas`
 - **Tolerate bad input** — do **not** catch with `on error resume next`;

@@ -131,7 +131,10 @@ it will succeed. Proof: `examples/on_error_resume_next_test.bas`.
 - **Building a string by repeated `+` is O(n²)** — each concatenation allocates
   and copies both sides. Collect the pieces in an array and `join` once. This is
   the one that is still real; measured 0.33 s to build 200 000 characters that
-  way, 8.11 s for 800 000.
+  way, 8.11 s for 800 000. Pinned by the negative control in
+  `tests/run_arridx.sh`, which requires this to stay quadratic — so if it is ever
+  fixed, that test fails and this bullet has to be rewritten rather than left
+  standing as a lie.
 - **Arrays are not a trap** (they were until 2026-07-23). `arr[i]` inside
   `while i < count(arr)`, and accumulating with `append`, are both **linear** —
   arrays are a shared refcounted store with copy-on-write, so reading a variable,
