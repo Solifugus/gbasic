@@ -16,8 +16,12 @@ for error handling, `ERRORS.md`.
   enclosing loop. → `examples/consider_test.bas`
 - **Loop** — `while` with `break`/`continue`. There is no numeric `for`.
   → `examples/while_break_continue_test.bas`
-- **Iterate a collection** — `for each x in coll … end for`. This is also the
-  fix for the O(n²) `arr[i]`-in-`while` trap. → `examples/for_each_test.bas`
+- **Iterate a collection** — `for each x in coll … end for`. Preferred for
+  readability; indexing in a `while` loop is linear too, and has been since
+  arrays became copy-on-write. → `examples/for_each_test.bas`
+- **Array value semantics** — assignment, argument passing and mutation are
+  independent at any depth, over a shared refcounted store; indexing and
+  `append` are linear. → `tests/arridx_test.bas`
 - **Functions** — definition, params, `return`. → `examples/function_test.gb`
 - **Function values** — a bare function name is a value you can store, pass, and
   call; equality is same-reference. → `examples/first_class_function_test.bas`

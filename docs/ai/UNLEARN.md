@@ -28,8 +28,9 @@ the standing ones.
   end for
   ```
 
-  To count, use `while` with your own counter — but note the O(n²) array trap
-  below.
+  To count, use `while` with your own counter. (Older notes warn that indexing
+  in a `while` loop is O(n²); that has not been true since 2026-07-23 — see
+  Performance traps.)
 
 - **`goto`/`gosub` work only inside functions.** At the top level they raise.
 
@@ -127,14 +128,18 @@ it will succeed. Proof: `examples/on_error_resume_next_test.bas`.
 
 ## Performance traps (correctness-adjacent)
 
-- **`arr[i]` inside `while i < count(arr)` is O(n²)** — each index deep-copies the
-  whole array. Iterate with `for each` instead (seconds → milliseconds on large
-  arrays).
-- **`append(arr, x)` returns a full copy each call**, so accumulating a large list
-  with `append` is O(n²). Stream/count in place when you don't need to keep the
-  list.
 - **Building a string by repeated `+` is O(n²)** — each concatenation allocates
-  and copies both sides. Collect the pieces in an array and `join` once.
+  and copies both sides. Collect the pieces in an array and `join` once. This is
+  the one that is still real; measured 0.33 s to build 200 000 characters that
+  way, 8.11 s for 800 000.
+- **Arrays are not a trap** (they were until 2026-07-23). `arr[i]` inside
+  `while i < count(arr)`, and accumulating with `append`, are both **linear** —
+  arrays are a shared refcounted store with copy-on-write, so reading a variable,
+  indexing and passing an array to a function are O(1), and `append` grows by
+  doubling. Measured at 1 000 000 elements: indexed read 1.14 s, append 0.70 s,
+  `for each` 0.84 s. `for each` is still the more readable loop and is slightly
+  faster, but the O(n²) reason for preferring it is gone. Guarded by
+  `tests/run_arridx.sh`, which fails if any of them goes superlinear.
 - **Reading a string variable is not a trap** (it used to be). It shares the
   buffer rather than copying it, so passing a large string to a function, or
   touching it inside a loop, costs nothing proportional to its size. Character
