@@ -2119,7 +2119,10 @@ count({})                      # 0
 **Conversion function differences:**
 - `string(value)` - canonical string conversion for any value
 - `encode(value)` - gBASIC's **JSON-like dialect** for structured data (see below)
-- `decode(text)` - parses JSON *and* the dialect back into values
+- `decode(text)` - parses JSON *and* the dialect back into values; **raises** on
+  malformed input
+- `try_decode(text)` - the same parse, reporting failure as a **value** instead of
+  raising (see below)
 - `json_encode(value)` - **standards-compliant JSON (RFC 8259)** for external
   interchange: HTTP APIs, LLM providers, anything outside gBASIC
 - `json_encodable(value)` - preflight predicate: would `json_encode` succeed?
@@ -2141,6 +2144,48 @@ gBASIC round-trip (`decode` accepts both). No other JSON parser does, so **never
 put `encode` output on the wire**; use `json_encode`. (`encode` also prints
 non-finite numbers as bare `nan`/`inf`, which not even `decode` accepts — see
 DOGFOOD.) Both behaviors are long-standing and deliberately left unchanged.
+
+**`try_decode(text)` — decode that cannot raise.** `decode` raises on malformed
+input, and gBASIC has no way to catch a raise, so any program reading a file it did
+not write has to decide what to do *before* parsing. `try_decode` answers with a
+record instead:
+
+```basic
+r = try_decode(text)
+if r.ok then
+    settings = r.value
+else
+    print to error "settings.json: " + r.message + " (line " + r.line + ")"
+    settings = defaults()
+end if
+```
+
+| field | on success | on failure |
+| --- | --- | --- |
+| `ok` | `true` | `false` |
+| `value` | the decoded value | `nothing` |
+| `message` | `""` | why it failed, and where (e.g. `expected ',' or '}' at byte 6`) |
+| `offset` | `0` | 0-based **byte** offset of the failure |
+| `line`, `column` | `0` | 1-based position, for a human reading a log |
+
+It shares `decode`'s parser, so the two accept exactly the same dialect and
+diagnose any given input identically — `try_decode` reports the same text `decode`
+raises. `decode` itself is unchanged.
+
+A *non-string* argument still raises (`try_decode expects a string`): that is a bug
+in the caller, not malformed data. `try_decode` reports on the **content** of a
+string; it is not a type-checking wrapper.
+
+**Nesting is bounded.** Both entry points refuse documents nested deeper than
+10 000 levels — `decode` raises, `try_decode` reports. Before this limit existed,
+the parser's recursion overran the C stack and segfaulted at around 45 000 levels;
+a non-raising decode whose failure mode is a crash would be worthless.
+
+**Why it matters for performance.** Pre-validating in gBASIC is not merely
+inconvenient, it is quadratic: `mid(s, i, 1)` is O(i) on codepoint-indexed strings,
+so a per-character scan is O(n²). Measured — 16 KB: 1 s; 64 KB: 16 s; 128 KB: 69 s;
+256 KB: 291 s. The C parser handles all of those in well under a second, so
+`try_decode` replaces a scan that got dramatically worse with size.
 
 **`json_encode(value)` — strict JSON.** Type mapping:
 

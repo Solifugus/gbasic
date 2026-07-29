@@ -47,6 +47,11 @@ for error handling, `ERRORS.md`.
   `examples/money_test.bas`
 - **Serialize/deserialize** — `encode`/`decode` round-trips values through text.
   → `examples/serialization_test.bas`
+- **Reading JSON you did not write** — `try_decode(text)` returns
+  `{ok, value, message, offset, line, column}` and never raises, so there is no
+  pre-validate pass. Never hand-write a JSON scanner in gBASIC: per-character
+  scanning is quadratic (`mid` is O(i)), which cost 92 s on a 116 KB store before
+  this existed. → `tests/try_decode_test.bas`
 - **Bitwise** — `band`/`bor`/`bxor`/`bnot`/`shl`/`shr`/`rotl`/`rotr` on 32-bit
   unsigned integers. → `examples/bitwise_test.bas`
 - **Tolerate bad input** — do **not** catch with `on error resume next`;

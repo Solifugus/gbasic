@@ -72,6 +72,7 @@ int gbasic_builtin_function(const char *name) {
         "input",
         "encode",
         "decode",
+        "try_decode",
         "json_encode",
         "json_encodable",
         "source_outline",

@@ -9081,11 +9081,24 @@ static Value builtin_quote_value(Value value) {
     return result;
 }
 
+/* PLAT-JSON: the value parser recurses per nesting level, so without a bound a
+ * deeply nested document overruns the C stack and takes the whole interpreter
+ * down. Measured on an 8 MB stack: depth 40 000 parsed, depth 50 000 segfaulted.
+ * A non-raising decode whose failure mode is a crash would be worthless, so the
+ * depth is capped for BOTH entry points -- decode raises, try_decode reports.
+ *
+ * 10 000 is chosen to sit ~4.5x below the observed crash point (so it holds on a
+ * stack a quarter the size) while still accepting every depth that works today up
+ * to it. Real documents nest a few dozen levels; anything past this is a bug or an
+ * attack, not data. */
+#define DECODE_MAX_DEPTH 10000
+
 typedef struct {
     const char *text;
     size_t pos;
     int ok;
     int json_only;
+    int depth;
     char message[160];
 } DecodeParser;
 
@@ -9438,11 +9451,17 @@ static Value decode_parse_value(DecodeParser *parser) {
     if (ch == '"') {
         return decode_parse_string(parser);
     }
-    if (ch == '[') {
-        return decode_parse_array(parser);
-    }
-    if (ch == '{') {
-        return decode_parse_record(parser);
+    if (ch == '[' || ch == '{') {
+        /* Only the container branches recurse, so the depth is charged here. */
+        if (parser->depth >= DECODE_MAX_DEPTH) {
+            decode_error(parser, "maximum nesting depth exceeded");
+            return value_null();
+        }
+        parser->depth++;
+        Value nested = (ch == '[') ? decode_parse_array(parser)
+                                   : decode_parse_record(parser);
+        parser->depth--;
+        return nested;
     }
     if (decode_match_text(parser, "true")) {
         return value_bool(1);
@@ -9497,6 +9516,94 @@ static Value builtin_decode_text(Value text) {
     }
     value_free(text);
     return result;
+}
+
+/* PLAT-JSON: build try_decode's result record. */
+static Value try_decode_result(int ok, Value value, const char *message,
+                               size_t offset, size_t line, size_t column) {
+    RecordField *fields = calloc(6, sizeof(RecordField));
+    if (!fields) {
+        abort();
+    }
+    const char *names[] = {"ok", "value", "message", "offset", "line", "column"};
+    for (size_t i = 0; i < 6; i++) {
+        fields[i].name = copy_string(names[i]);
+        fields[i].value = cell_alloc();
+        if (!fields[i].value) {
+            abort();
+        }
+    }
+    *fields[0].value = value_bool(ok);
+    *fields[1].value = value;
+    *fields[2].value = value_string(message);
+    *fields[3].value = value_number((double)offset);
+    *fields[4].value = value_number((double)line);
+    *fields[5].value = value_number((double)column);
+    return value_record(fields, 6);
+}
+
+/* 1-based line and column of a byte offset, for a human reading a log. Columns
+ * count BYTES, matching the parser's own positions and the rest of the runtime's
+ * diagnostics (--json-diagnostics, source_outline). */
+static void try_decode_line_col(const char *text, size_t offset,
+                                size_t *line, size_t *column) {
+    size_t l = 1;
+    size_t c = 1;
+    for (size_t i = 0; i < offset && text[i] != '\0'; i++) {
+        if (text[i] == '\n') {
+            l++;
+            c = 1;
+        } else {
+            c++;
+        }
+    }
+    *line = l;
+    *column = c;
+}
+
+/* try_decode(text) -- decode that reports failure as a VALUE instead of raising.
+ *
+ * Strictly additive: `decode` is untouched, and this shares its parser, so the two
+ * accept exactly the same dialect and diagnose a given input identically. It
+ * exists because gBASIC cannot catch a raise, which forced every caller reading a
+ * file it did not write to pre-validate in gBASIC first -- and any per-character
+ * scan in gBASIC is quadratic, because `mid` is O(i) on codepoint-indexed strings.
+ *
+ * Returns { ok, value, message, offset, line, column }. On success `message` is ""
+ * and the positions are 0; on failure `value` is nothing and `message` carries the
+ * parser's own description, which already names what was expected and where. */
+static Value builtin_try_decode_text(Value text) {
+    if (text.kind != VALUE_STRING) {
+        /* A non-string argument is a programming error in the CALLER, not
+         * malformed data, so it raises exactly as decode does. try_decode reports
+         * on the content of a string; it is not a type-checking wrapper. */
+        value_free(text);
+        runtime_error_raise("try_decode expects a string", 1003, "serialization");
+        return value_null();
+    }
+
+    DecodeParser parser = {0};
+    parser.text = text.as.string;
+    parser.ok = 1;
+    Value result = decode_parse_value(&parser);
+    if (parser.ok) {
+        decode_skip_ws(&parser);
+        if (parser.text[parser.pos] != '\0') {
+            value_free(result);
+            decode_error(&parser, "unexpected trailing text");
+            result = value_null();
+        }
+    }
+    if (!parser.ok) {
+        size_t line = 0;
+        size_t column = 0;
+        try_decode_line_col(parser.text, parser.pos, &line, &column);
+        value_free(result);
+        value_free(text);
+        return try_decode_result(0, value_null(), parser.message, parser.pos, line, column);
+    }
+    value_free(text);
+    return try_decode_result(1, result, "", 0, 0, 0);
 }
 
 #if HAVE_LIBCURL
@@ -18776,6 +18883,14 @@ static Value eval_call(AstExpr *expr) {
             return value_null();
         }
         return builtin_decode_text(eval_expr(expr->as.call.args.items[0]));
+    }
+
+    if (strcmp(expr->as.call.name, "try_decode") == 0) {
+        if (expr->as.call.args.count != 1) {
+            runtime_error_raise("try_decode expects one argument", 1003, "serialization");
+            return value_null();
+        }
+        return builtin_try_decode_text(eval_expr(expr->as.call.args.items[0]));
     }
 
     if (strcmp(expr->as.call.name, "serialize") == 0) {

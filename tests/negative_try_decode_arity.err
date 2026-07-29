@@ -1,0 +1,1 @@
+runtime error at tests/negative_try_decode_arity.bas:1:1: try_decode expects one argument

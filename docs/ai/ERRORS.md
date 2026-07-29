@@ -102,9 +102,17 @@ this mode:
    generation counter**, so it does not rescue the caller.
 
 The consequence for library code: **pre-validate**. Ship a non-raising checker and
-call the raising builtin only on input that will succeed (e.g. `stdlib/llm.bas`'s
-`_json_valid` before `decode`). Do not rely on `on error` inside a function to
-tolerate bad input.
+call the raising builtin only on input that will succeed. Do not rely on `on error`
+inside a function to tolerate bad input.
+
+**For JSON, do not write that checker — use `try_decode(text)`.** It returns
+`{ok, value, message, offset, line, column}` and never raises, so the pre-validate
+pass disappears entirely. This matters beyond convenience: a hand-written scanner
+in gBASIC is **quadratic**, because `mid(s, i, 1)` is O(i) on codepoint-indexed
+strings. Measured on the validator this replaced — 64 KB: 16 s, 128 KB: 69 s,
+256 KB: 291 s, against well under a second for the C parser. If you find yourself
+scanning a string character by character in gBASIC, that curve is what you are
+signing up for.
 
 ## 4. How this file was derived / regenerating it
 

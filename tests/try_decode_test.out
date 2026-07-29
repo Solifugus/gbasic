@@ -1,0 +1,55 @@
+== valid: every shape the dialect accepts ==
+object      ok=true value={"a":1,"b":"two"}
+array       ok=true value=[1,2,3]
+nested      ok=true value={"a":[1,{"b":[true,false]}]}
+string      ok=true value="hello"
+escapes     ok=true value="a\nb\tc\"d\\eA"
+number int  ok=true value=42
+number neg  ok=true value=-7
+number frac ok=true value=3.5
+number exp  ok=true value=1000
+true        ok=true value=true
+false       ok=true value=false
+null        ok=true value=null
+empty obj   ok=true value={}
+empty arr   ok=true value=[]
+ws around   ok=true value={"a":1}
+
+== the gBASIC dialect decode accepts is accepted identically ==
+nothing     ok=true value=null
+unknown     ok=true value=(unknown)
+
+== malformed: every class, reported as a value ==
+truncated obj   ok=false message=<expected ',' or '}' at byte 6> at 1:7 offset=6
+truncated arr   ok=false message=<expected value at byte 5> at 1:6 offset=5
+missing value   ok=false message=<expected value at byte 5> at 1:6 offset=5
+unterminated    ok=false message=<unterminated string at byte 17> at 1:18 offset=17
+bad escape      ok=false message=<invalid escape sequence at byte 4> at 1:5 offset=4
+bad unicode     ok=false message=<invalid unicode escape at byte 7> at 1:8 offset=7
+empty input     ok=false message=<expected value at byte 0> at 1:1 offset=0
+whitespace only ok=false message=<expected value at byte 6> at 2:3 offset=6
+trailing text   ok=false message=<unexpected trailing text at byte 7> at 1:8 offset=7
+missing colon   ok=false message=<expected ':' at byte 5> at 1:6 offset=5
+bare word       ok=false message=<expected value at byte 0> at 1:1 offset=0
+lone comma      ok=false message=<expected value at byte 1> at 1:2 offset=1
+unclosed nest   ok=false message=<expected value at byte 6> at 1:7 offset=6
+object as key   ok=false message=<expected string at byte 1> at 1:2 offset=1
+
+== round-trip against json_encode ==
+sample 0 ok=true stable=true
+sample 1 ok=true stable=true
+sample 2 ok=true stable=true
+sample 3 ok=true stable=true
+
+== bytes are preserved, not re-encoded ==
+ok=true bytes=6 chars=5
+
+== a large valid document ==
+big_bytes=80001 ok=true elements=40000
+bigobj_bytes=81781 ok=true keys=4000
+
+== deep nesting is bounded, not fatal ==
+depth 500 ok=true
+depth 20000 ok=false message=<maximum nesting depth exceeded at byte 10000>
+depth 100000 ok=false message=<maximum nesting depth exceeded at byte 10000>
+deep unclosed ok=false message=<maximum nesting depth exceeded at byte 10000>
