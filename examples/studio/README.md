@@ -44,6 +44,7 @@ GBASIC_PATH=stdlib ./gbasic examples/studio/studio.bas gui ~/.gbasic-studio
 | `smoke` | yes | build the shell over a canned workspace, print a transcript, quit |
 | `stu3_smoke <home> [file]` | yes | shell + a real editor tab; derive execution sections from the live buffer and resolve the document's cursor to a section id, then quit |
 | `stu4_smoke <home> [file]` | yes | shell + run bar + output pane; run the section under the cursor and drive the child from a GTK timeout until it finishes, then quit |
+| `stu5_smoke <home> [file]` | yes | as `stu4_smoke`, plus the results pane: the finished run is recorded, persisted, read back from disk and rendered, then the section is edited so the stale-content mark appears |
 | `gui` (default) | yes | startup + shell + run the GTK loop |
 
 `examples/studio/sections.bas` is a separate headless driver for the STU-3
@@ -56,6 +57,13 @@ engine (`stdlib/studio_session.bas`); it takes a scenario mode and a scratch dir
 e.g. `GBASIC_PATH=stdlib ./gbasic examples/studio/sessions.bas clean /tmp/scratch`. See
 `docs/gbasic_studio_stu4.md`, and `docs/gbasic_studio_stu4b.md` for the STU-4B modes
 (`hoist*` declaration hoisting, `split*` output separation, `map`, `stream`).
+
+`examples/studio/results.bas` is the headless driver for the STU-5A persistent
+results store (`stdlib/studio_results.bas`); it takes a scenario mode, a scratch
+directory, and a throwaway Studio home, e.g.
+`GBASIC_PATH=stdlib ./gbasic examples/studio/results.bas persist /tmp/scratch /tmp/home`.
+Modes: `persist history fingerprint orphan refused signal truncate evict concurrent
+compat store view`. See `docs/gbasic_studio_stu5a.md`.
 
 ## Automated tests
 

@@ -543,4 +543,36 @@ else
     printf 'SKIP sessions_gui (no display)\n'
 fi
 
+# STU-5A display tier (OPTIONAL; SKIPs, never fails, without GTK 4 or a display).
+# The results pane over a REAL run: rendered before the run, again after the result
+# has been written and READ BACK FROM DISK, and once more after the section is
+# edited -- which is where the stale-content mark has to appear. The clock is
+# pinned exactly as the headless cases pin it, so the golden is byte-stable.
+if [ -n "${DISPLAY:-}" ] || [ -n "${WAYLAND_DISPLAY:-}" ]; then
+    res_home="$tmproot/res_gui"
+    mkdir -p "$res_home"
+    : >"$stdout_file"
+    if timeout 180 env G_DEBUG="${G_DEBUG:+$G_DEBUG,}fatal-criticals" \
+            ./gbasic "$APP" stu5_smoke "$res_home" "$res_home/live.bas" \
+            >"$stdout_file" 2>/dev/null; then
+        if diff -u tests/studio/results_gui.out "$stdout_file"; then
+            printf 'PASS results_gui (GTK shell + persisted result + stale mark)\n'
+        else
+            fail "results_gui (output diff)"
+        fi
+    else
+        if grep -q 'gi.require: could not load namespace' "$stdout_file"; then
+            printf 'SKIP results_gui (GTK 4 typelib not available)\n'
+        else
+            cat "$stdout_file"; fail "results_gui (nonzero exit)"
+        fi
+    fi
+    if [ -n "$(ls -A "$res_home/scratch" 2>/dev/null)" ]; then
+        printf 'FAIL results_gui (scratch files left behind)\n'
+        exit 1
+    fi
+else
+    printf 'SKIP results_gui (no display)\n'
+fi
+
 printf 'run_studio: all cases passed\n'

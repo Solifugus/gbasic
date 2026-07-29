@@ -101,7 +101,19 @@ function on_activate(gtkapp)
             cur = doc.cursor
             sid = studio_sections.section_at_position(st, doc.content, cur.line, cur.column)
             print "cursor-section=" + sid
+            G.sid = sid
+            if G.results then
+                ' STU-5A: mount the results pane before the run, so "no runs yet"
+                ' is a state the pane actually renders rather than a special case.
+                G.store = studio_results.open(G.home, G.doc_path)
+                G.rpane = studio_shell.results_pane()
+                G.rpane.body.label = studio_shell.results_text(G.home, G.store, st, sid)
+                print "results-pane-before=<" + G.rpane.body.label + ">"
+            end if
             sess = studio_session.create(G.doc_id, G.scratch)
+            ' Pin the clock so the display golden is byte-stable, exactly as the
+            ' headless cases do.
+            sess.clock_fixed = 1000
             sess = studio_session.run(sess, st, doc.content, sid)
             G.sess = sess
             bar.state.label = studio_shell.session_text(sess)
@@ -128,6 +140,24 @@ function on_run_tick()
     print "prefix-pane=<" + studio_shell.output_prefix_text(G.sess) + ">"
     print "target-pane=<" + studio_shell.output_target_text(G.sess) + ">"
     print "transitions: " + studio_session.transitions(G.sess)
+    if G.results then
+        ' STU-5A: the run is over, so it becomes a durable record -- written, read
+        ' back, and rendered, so the pane is showing persisted state and not the
+        ' live session it happens to sit next to.
+        G.store = studio_results.add_result(G.home, G.store, studio_session.to_result(G.sess, G.secs))
+        studio_results.save(G.home, G.store)
+        reloaded = studio_results.open(G.home, G.doc_path)
+        G.rpane.body.label = studio_shell.results_text(G.home, reloaded, G.secs, G.sid)
+        print "results-pane-after=<" + G.rpane.body.label + ">"
+
+        ' Now edit the section the result describes. Its id survives (STU-3), so
+        ' only the fingerprint can tell the pane that the result is behind the
+        ' text on screen -- which is the whole point of recording it.
+        edited = "print \"first\"\n\nfunction add(a, b)\n  return a + b\nend function\n\nprint add(2, 4)\n"
+        st2 = studio_sections.refresh(G.secs, edited)
+        G.rpane.body.label = studio_shell.results_text(G.home, reloaded, st2, G.sid)
+        print "results-pane-edited=<" + G.rpane.body.label + ">"
+    end if
     G.app_ref.quit()
     return false
 end function
@@ -142,6 +172,7 @@ program main(args)
     load studio_docs
     load studio_sections
     load studio_session
+    load studio_results
     load studio
 
     mode = "gui"
@@ -461,6 +492,13 @@ program main(args)
     G.bar = nothing
     G.pane = nothing
     G.app_ref = nothing
+    ' STU-5A: durable results for the display tier.
+    G.results = false
+    G.home = home
+    G.doc_path = ""
+    G.store = nothing
+    G.rpane = nothing
+    G.sid = ""
     if mode = "smoke" then
         G.smoke = true
         G.app = build_canned(G.app)
@@ -509,6 +547,28 @@ program main(args)
         G.doc_id = r.id
         G.app = studio.edit_document(G.app, r.id, "print \"first\"\n\nfunction add(a, b)\n  return a + b\nend function\n\nprint add(2, 3)\n")
         ' Cursor inside the LAST section, so the run replays the prefix above it.
+        G.app.dm = studio_docs.set_cursor(G.app.dm, r.id, 7, 1)
+        studio_session.sweep_scratch(G.scratch)
+    end if
+
+    ' STU-5A display check: the same real run as stu4_smoke, but its result is
+    ' RECORDED, persisted, and rendered in the results pane -- and then the section
+    ' is edited so the pane's stale-content mark is exercised through the actual UI
+    ' path rather than only in the headless goldens.
+    if mode = "stu5_smoke" then
+        G.smoke = true
+        G.exec = true
+        G.results = true
+        G.app = studio.create_registered_workspace(G.app, "ws")
+        docfile = ".gbasic-studio-results.bas"
+        if count(args) > 2 then
+            docfile = args[2]
+        end if
+        r = studio.open_file(G.app, "", docfile)
+        G.app = r.app
+        G.doc_id = r.id
+        G.doc_path = docfile
+        G.app = studio.edit_document(G.app, r.id, "print \"first\"\n\nfunction add(a, b)\n  return a + b\nend function\n\nprint add(2, 3)\n")
         G.app.dm = studio_docs.set_cursor(G.app.dm, r.id, 7, 1)
         studio_session.sweep_scratch(G.scratch)
     end if

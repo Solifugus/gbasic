@@ -258,6 +258,39 @@ library studio_shell
         return session.out_target
     end function
 
+    ' ---- STU-5A: the results pane ------------------------------------------
+    '
+    ' Deliberately minimal (STU-5A scope): the latest result for the section at the
+    ' cursor, the history behind it, and -- the part that is not optional -- a
+    ' visible mark whenever a result's fingerprint no longer matches the section's
+    ' current content. No inspector, no diffing, no charts.
+    '
+    ' Section ids are stable across edits by design, so a results pane keyed by id
+    ' alone would show a run of code the user has since replaced as though it
+    ' described what is on screen. The mark is what stops that.
+
+    function results_pane()
+        box = gtk.box("v", 4)
+        head = gtk.label("Results — the section at the cursor")
+        body = gtk.label("")
+        box.append(head)
+        box.append(body)
+        return { box: box, head: head, body: body }
+    end function
+
+    ' The pane's text for `section_id` against the CURRENT sections. Delegates the
+    ' wording to studio_results so the headless goldens and the display tier can
+    ' never drift apart -- the view is one function, rendered in two places.
+    function results_text(home, store, sections, section_id)
+        if store = nothing then
+            return "Results\n(no results store)"
+        end if
+        if section_id = "" then
+            return "Results\n(no section at the cursor)"
+        end if
+        return studio_results.view_text(home, store, sections, section_id)
+    end function
+
     function status_text(app)
         ws = app.model.workspace
         base = "ready"
