@@ -12,6 +12,9 @@ bare ident   ok
 qualified    ok
 method       ok
 same file    ok
+unqual num   ok
+unqual str   ok
+unqual nest  ok
 -- clauses that already worked, and must keep working
 file ref     ok=true
 trimmed      ok=[hi]

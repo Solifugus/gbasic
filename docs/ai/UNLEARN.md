@@ -60,13 +60,16 @@ the standing ones.
 - **`x(mod) = v` is a modifier clause, and `(` is otherwise just a paren.**
   `if (a - b) > 0` parses normally, as does a qualified or method call in a
   comparison (`lib.f(1) = "x"`, `rec.m(1) = "x"`). **One case still misfires:** an
-  **unqualified** call to a function from a **`load`ed library**, with a single
-  argument, compared with `=` — `if kind(1) = "record"` where `kind` came from a
-  library. The lookahead cannot see across a file boundary, so `(1)` is read as a
-  clause; it *parses* and fails at run time with `compare modifier not found: 1`,
-  naming a piece of your own argument. Call it qualified (`lib.kind(1)`) or bind
-  the result to a variable first. Pinned in `tests/negative_clause_residual.bas`;
-  full analysis in `docs/gbasic_clause_recognition.md` §8.
+  **unqualified** call to a function from a **`load`ed library** whose argument is
+  a bare *identifier* — `if kind(x) = "record"` where `kind` came from a library.
+  It *parses*, then fails at run time with `compare modifier not found: x`, naming
+  your own argument. A number or string argument (`kind(1)`, `kind("q")`) is fine:
+  a modifier name is always identifier-shaped, so those cannot be clauses. The
+  identifier case is not fixable here — `name(caseless) = "joe"` is the same
+  tokens in the same order and must mean a clause. Call it qualified
+  (`lib.kind(x)`) or bind the result to a variable first. Pinned in
+  `tests/negative_clause_residual.bas`; analysis in
+  `docs/gbasic_clause_recognition.md` §9.
 
 ## Strings
 

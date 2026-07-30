@@ -377,6 +377,35 @@ static int modifier_lparen_ahead(gb_parse_ctx *ctx, const char *start) {
     while (*p == ' ' || *p == '\t' || *p == '\r') {
         p++;
     }
+    /* --- A clause body begins with a NAME (PLAT-CLAUSE-B, option B narrow) ---
+     *
+     * A clause always opens with the modifier's name, and a modifier name is a
+     * sequence of `modifier_word`, which the grammar defines as
+     * `IDENT | TO | END | NEXT` — always identifier-shaped. So a body whose
+     * first character starts a NUMBER or a STRING cannot be a clause, whatever
+     * follows it.
+     *
+     * That rejects `kind(1) = "record"` and `kind("q") = "record"`, calls to a
+     * `load`ed library's function which options A and F cannot reach: the
+     * preceding token is an ordinary identifier and there is no dot, and the
+     * function check cannot see across a file boundary. Those used to PARSE and
+     * then fail at run time with `compare modifier not found: 1`.
+     *
+     * It does NOT reject `kind(x) = "record"`. That is not an oversight and no
+     * refinement here can fix it: `name(caseless) = "joe"` and
+     * `kind(x) = "record"` are the same tokens in the same order —
+     * IDENT `(` IDENT `)` `=` STRING — and the first must be a clause while the
+     * second must be a call. Separating them needs to know whether `caseless`
+     * is a registered modifier or `kind` is callable, and neither fact exists
+     * until eval (docs/gbasic_clause_recognition.md §1, §8).
+     *
+     * Identifier-start is A-Z, a-z and `_`, matching the lexer's own test at
+     * src/lexer.c:428 (`isalpha(ch) || ch == '_'`). Nothing calls setlocale, so
+     * that runs in the C locale and is ASCII-only; a non-ASCII byte does not
+     * start an identifier there either. */
+    if (!((*p >= 'A' && *p <= 'Z') || (*p >= 'a' && *p <= 'z') || *p == '_')) {
+        return 0;
+    }
     while (*p && *p != ')' && *p != '\n') {
         if ((*p >= 'A' && *p <= 'Z') || (*p >= 'a' && *p <= 'z') || *p == '_') {
             saw_term = 1;

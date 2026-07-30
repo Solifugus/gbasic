@@ -546,8 +546,10 @@ the clause path legitimately when the chain is broken by an index**.
 `player.inventory[slot].name(trimmed) = v` is a working clause in
 `examples/nested_lvalue_test.bas` — `]` before the dot means the lexer does not
 build a `QUALIFIED_IDENT`. An early, broader form of F that rejected *any*
-preceding dot broke exactly that file, and the corpus-wide `source_outline`
-sweep is what caught it.
+preceding dot broke exactly that file. The corpus-wide `source_outline` sweep is
+what caught it **first**, but only because it was run first — `run_examples.sh`
+catches it too, and PLAT-CLAUSE's claim that the suite would have missed it was
+wrong. See §9.
 
 The backward scan still stops at the dot when extracting the name for the
 function check; F reads the boundary character rather than ignoring it.
@@ -591,15 +593,15 @@ complete legal clause. No content test can separate them; only the preceding
 token can, which is what A does. `if (a) > 0` is the counterexample, and it is
 covered by `examples/clause_recognition_test.bas`.
 
-But a **narrow form of B composes with A + F and would close the residual
-exactly**. Because `modifier_word` is only ever identifier-like, a clause body
-can never begin with a digit or a quote. Requiring the first non-space character
-after the `(` to start an identifier would reject `(1)` and `("x")` while
-accepting every legal clause in the corpus.
+But a **narrow form of B composes with A + F** and closes part of the residual.
+Because `modifier_word` is only ever identifier-like, a clause body can never
+begin with a digit or a quote. Requiring the first non-space character after the
+`(` to start an identifier rejects `(1)` and `("x")` while accepting every legal
+clause in the corpus.
 
-This was **not implemented** — it was not part of the ruling. It is recorded here
-because it is a grammar-derived, few-line change that would retire the residual
-above, and the decision belongs to the language's author.
+It was adopted and implemented as PLAT-CLAUSE-B. **It does not close the residual
+"exactly", as this section originally claimed — that overstated it.** See §9 for
+what it actually closes and what cannot be closed at all.
 
 ### Effect on the recorded workarounds
 
@@ -639,3 +641,109 @@ remains reachable only through the `{...}` lens form.
   position map and STU-5A's fingerprints are unaffected.
 - valgrind clean on the clause, nested-lvalue and modifier paths, and on both
   new negative tests.
+
+---
+
+## 9. PLAT-CLAUSE-B (2026-07-30) — the narrow content test, and a correction
+
+Option **B-narrow was adopted and implemented**, composed with A and F. Option D
+remains deferred.
+
+### The rule
+
+A clause body always opens with the modifier's **name**, and a modifier name is
+a sequence of `modifier_word`, which the grammar defines as
+`IDENT | TO | END | NEXT` — always identifier-shaped. So the first non-space
+character after the `(` must start an identifier, or the `(` is an ordinary
+parenthesis.
+
+**Identifier-start is `A-Z`, `a-z`, `_`.** Taken from the lexer's own test
+(`isalpha(ch) || ch == '_'`, `src/lexer.c:428`), not assumed. Nothing in the tree
+calls `setlocale`, so that runs in the C locale and is ASCII-only; a non-ASCII
+byte does not start an identifier there either, and the lexer would reject it as
+an unexpected character.
+
+### What it closes, measured — and what it does not
+
+The residual was wider than the single pinned case. Against an unqualified call
+to a `load`ed library's function:
+
+| form | before B-narrow | after |
+|---|---|---|
+| `kind(1) = "record"` | runtime `compare modifier not found: 1` | **fixed** |
+| `kind("q") = "record"` | runtime `compare modifier not found: "q"` | **fixed** |
+| `kind(x) = "record"` | runtime `compare modifier not found: x` | **still broken** |
+| `kind(one(1)) = "record"` | already worked | unchanged |
+| `kind((1)) = "record"` | already worked | unchanged |
+
+§8 said B-narrow "would close the residual exactly". That was wrong, and the
+error was in the direction that matters: it understated what remains.
+
+### The identifier-argument case is unresolvable at token delivery
+
+Not an oversight, and no refinement of this lookahead can fix it. These two lines
+are the same tokens in the same order — `IDENT ( IDENT ) = STRING`:
+
+```basic
+if name(caseless) = "joe" then      ' MUST be a modifier clause
+if kind(x)        = "record" then   ' MUST be a call
+```
+
+Both were run in one program to confirm it: the first works, the second fails.
+Separating them requires knowing whether `caseless` is a registered modifier, or
+whether `kind` is callable. Neither fact exists at token delivery — modifiers are
+registered at eval time and `load` is a runtime statement (§1) — and the decision
+is committed irrevocably when the token is handed over, because
+`lexer_begin_modifier_content` has already changed how the next token is read.
+
+**This is the argument for option D.** A syntactic marker on clauses removes the
+ambiguity rather than narrowing it, and it is the only option that can. Recorded
+here, not acted on: D remains deferred.
+
+Pinned by `tests/negative_clause_residual.bas`, updated in this phase to assert
+the *reduced* residual (`kind(x)`, the identifier form) rather than the numeric
+form it used to assert, which now works.
+
+### Monotonicity
+
+B-narrow only ever adds a `return 0`, so like A and F it can only turn a
+`MOD_LPAREN` into an `LPAREN`, never the reverse. Two consequences:
+
+- No construct that parsed before stops parsing. Everything it changes either
+  failed to parse or failed at run time.
+- The `{...}` comma-splitter's reachability is unchanged **again**. The `(...)`
+  form still cannot carry a comma (the lookahead returns 0 on one), and the lens
+  form does not consult `modifier_lparen_ahead` at all — it is `LBRACE`,
+  `lens_content_token`, `RBRACE`, a separate path.
+
+### The coverage question, and a correction
+
+PLAT-CLAUSE reported that a first cut of F broke
+`examples/nested_lvalue_test.bas` and that "the corpus-wide `source_outline`
+sweep is what caught it, not the suite". **The second half of that was wrong.**
+
+`nested_lvalue_test.bas` is in `run_examples.sh`'s case list (line 170) and has a
+`.out`. The runner treats a nonzero exit as a failure, prints `FAIL` and aborts.
+Reintroducing the broad F and running the suite confirms it directly:
+
+```
+FAIL examples/nested_lvalue_test.bas
+parse error at examples/nested_lvalue_test.bas:30:37: syntax error, unexpected OP_EQ, expecting NEWLINE
+```
+
+The sweep caught it first only because it was run first. There was no coverage
+gap for that file, and the earlier claim should not be relied on.
+
+**A smaller, real gap did turn up.** The runner passes a case with no `.out` on
+exit status alone (`else printf 'PASS'`). Of 190 case-list entries, 5 had no
+golden. Four were deterministic and path-free and are now goldened — listed as
+intentional additions, since they add assertions rather than move any:
+
+- `examples/error_test.out` (13 lines) — the most valuable of them; it pins the
+  error model's messages, codes and propagation, which was entirely unasserted.
+- `examples/lock_cleanup_test.out`, `examples/program_test.out` (1 line each).
+- `examples/library_test.out` (empty — pins that it produces no output).
+
+The fifth, `dir_test.gb`, is deliberately left ungoldened: it lists the live
+`examples/` directory, so its output changes whenever a file is added there —
+including by this phase. That is why it has no golden, and it should not get one.
