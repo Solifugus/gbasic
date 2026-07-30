@@ -456,11 +456,96 @@ static int modifier_lparen_ahead(gb_parse_ctx *ctx, const char *start) {
             name_start[-1] == '_')) {
         name_start--;
     }
+    /* --- What may precede a clause (PLAT-CLAUSE, option A) -------------------
+     *
+     * Only two grammar positions ever consume a clause, and both put a TARGET
+     * to its left: `lvalue modifier OP_EQ expression` and
+     * `additive_expression modifier comparison_operator additive_expression`.
+     * So the `(` must follow something that can END an expression. A keyword,
+     * an operator, `=`, `,`, `(`, `[`, `.`, or the start of a statement cannot,
+     * and a `(` after any of those is an ordinary parenthesis.
+     *
+     * Without this the lookahead consulted nothing to its left except a
+     * function name, so `if (a - b) > 0` — and the same shape after `while`,
+     * `return`, `print`, `=`, an operator, a comma, an opening paren, or at the
+     * start of a statement — was read as a clause and failed to parse.
+     *
+     * The permitted set is deliberately WIDER than the set of legal targets.
+     * `is_modifier_target_expr` accepts only an identifier, a field or an index,
+     * so a string, a number or a call result can never be a legal target — but
+     * they can end an expression, so they are allowed through here and rejected
+     * by that check instead, which reports "modifier target must be a variable,
+     * field, or index". Rejecting them here would replace a precise diagnostic
+     * with a generic syntax error. Deciding "could this be a clause" is this
+     * function's job; deciding "is this a legal target" is the grammar's. */
     if (name_start < name_end) {
-        char *name = copy_text(name_start, (int)(name_end - name_start));
-        int is_function = gbasic_builtin_function(name) || source_declares_function(ctx, name);
-        free(name);
-        if (is_function) {
+        /* An identifier- or number-shaped run precedes the `(`. */
+        if (*name_start >= '0' && *name_start <= '9') {
+            /* A numeric literal. Cannot be a legal target, but ends an
+             * expression; the grammar action produces the error. */
+        } else {
+            char *name = copy_text(name_start, (int)(name_end - name_start));
+            int is_function = gbasic_builtin_function(name) || source_declares_function(ctx, name);
+            free(name);
+            if (is_function) {
+                return 0;
+            }
+            /* Option A: a reserved word cannot be a modifier target. `end` and
+             * `next` are exempt because `variable_name` admits them as ordinary
+             * variable names. */
+            TokenType word = lexer_identifier_type(name_start, (int)(name_end - name_start));
+            if (word != TOKEN_IDENT && word != TOKEN_END && word != TOKEN_NEXT) {
+                return 0;
+            }
+            /* --- A qualified name is a call (PLAT-CLAUSE, option F) ----------
+             *
+             * `helper.kind(1) = "record"` and `holder.m(1) = "record"` are
+             * calls, but the function check above cannot know it: it re-scans
+             * only the file being parsed, so a `load`ed library's functions are
+             * invisible, and the name run stops at the dot, so it tests `kind`
+             * or `m` rather than the qualified name.
+             *
+             * The shape settles it without needing to know any names — but only
+             * the EXACT shape the lexer turns into a QUALIFIED_IDENT, which is
+             * `IDENT . IDENT (`: one plain identifier, one dot, one identifier,
+             * then the paren (see identifier_token, src/lexer.c). For that shape
+             * the grammar has a call production and no clause production, so
+             * reading it as a clause could only ever be wrong.
+             *
+             * Anything else keeps its clause. In particular a FIELD target
+             * reaches here legitimately when the chain is broken by an index —
+             * `player.inventory[slot].name(trimmed) = v` is a working clause in
+             * examples/nested_lvalue_test.bas, and `]` before the dot means the
+             * lexer does not build a QUALIFIED_IDENT. Rejecting every dotted
+             * name, rather than this one shape, breaks it. */
+            if (name_start > ctx->active_lexer->source && name_start[-1] == '.') {
+                const char *dot = name_start - 1;
+                const char *seg = dot;
+                while (seg > ctx->active_lexer->source &&
+                       ((seg[-1] >= 'A' && seg[-1] <= 'Z') ||
+                        (seg[-1] >= 'a' && seg[-1] <= 'z') ||
+                        (seg[-1] >= '0' && seg[-1] <= '9') ||
+                        seg[-1] == '_')) {
+                    seg--;
+                }
+                int rooted_at_plain_ident =
+                    seg < dot &&
+                    !(seg[0] >= '0' && seg[0] <= '9') &&
+                    (seg == ctx->active_lexer->source ||
+                     (seg[-1] != '.' && seg[-1] != ']')) &&
+                    lexer_identifier_type(seg, (int)(dot - seg)) == TOKEN_IDENT;
+                if (rooted_at_plain_ident) {
+                    return 0;
+                }
+            }
+        }
+    } else {
+        /* No identifier or number run. Only these can still end an expression. */
+        if (name_end == ctx->active_lexer->source) {
+            return 0;
+        }
+        char prev = name_end[-1];
+        if (prev != ')' && prev != ']' && prev != '"') {
             return 0;
         }
     }

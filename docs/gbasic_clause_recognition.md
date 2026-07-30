@@ -1,9 +1,12 @@
 # R3 — Clause recognition
 
-Status: **investigation**. No implementation, no ruling. This document exists so
-that a decision can be made; it does not make one.
+Status: **investigation, since RULED ON and implemented.** Options A and F were
+adopted and shipped as PLAT-CLAUSE; option D was explicitly deferred as a
+language-design question. See §8 for what actually landed, what remains broken,
+and the two answers PLAT-CLAUSE's Step 0 added to this document.
 
-Written 2026-07-29, against `5078042` (post PLAT-DEBT).
+Written 2026-07-29, against `5078042` (post PLAT-DEBT). §8 appended after
+implementation.
 
 PLAT-DEBT found that `if (m1 - m0) > 0` does not parse, because `if (` is lexed
 as `MOD_LPAREN`. It was correctly left alone at the time: it is a distinct
@@ -495,3 +498,144 @@ author.
 - **Whether any *third-party* gBASIC exists** outside this repository that would
   be affected by A. If it does, "breaks nothing measured" understates the risk of
   any change here.
+
+---
+
+## 8. Outcome — PLAT-CLAUSE (2026-07-29)
+
+Options **A and F were adopted and implemented**; option D was deferred as a
+language-design question, not a defect fix. Both landed as a lookahead
+refinement inside `modifier_lparen_ahead`: the parsing tables
+(`yytable`/`yycheck`/`yypact`/`yydefact`/`yydefgoto`/`yypgoto`/`yyr1`/`yyr2`/
+`yystos`/`yytranslate`, 601 lines) are byte-identical before and after, so the
+grammar is untouched.
+
+### What A permits, derived from the grammar rather than from the prototype
+
+A clause may only follow a token that can **end an expression**. Only two
+grammar positions consume a clause and both put a target to its left
+(`lvalue modifier OP_EQ expression`; `additive_expression modifier
+comparison_operator additive_expression`).
+
+**Permitted before the `(`:** `IDENT`, `END`, `NEXT` (both admitted as variable
+names by `variable_name`), `NUMBER`, `STRING`, `)`, `]`.
+
+**Forbidden:** every other keyword, every operator, `=`, `,`, `(`, `[`, `.`,
+and the start of a statement.
+
+The permitted set is deliberately **wider than the set of legal targets**.
+`is_modifier_target_expr` accepts only an identifier, a field or an index, so a
+number, a string or a call result can never be a legal target — but they *can*
+end an expression, so they are allowed through the lookahead and rejected by
+that check instead, which says "modifier target must be a variable, field, or
+index". Rejecting them earlier would replace a precise diagnostic with a generic
+syntax error and would move `tests/negative_function_result_modifier`. Deciding
+*could this be a clause* is the lookahead's job; deciding *is this a legal
+target* is the grammar's.
+
+### What "dotted" means in F
+
+F rejects **only the exact shape the lexer turns into a `QUALIFIED_IDENT`**:
+`IDENT . IDENT (` — one plain identifier, one dot, one identifier, then the
+paren (`identifier_token`, `src/lexer.c`). For that shape the grammar has a call
+production and no clause production, so reading it as a clause could only ever
+be wrong.
+
+Every other dotted form keeps its clause. This matters: a **field target reaches
+the clause path legitimately when the chain is broken by an index**.
+`player.inventory[slot].name(trimmed) = v` is a working clause in
+`examples/nested_lvalue_test.bas` — `]` before the dot means the lexer does not
+build a `QUALIFIED_IDENT`. An early, broader form of F that rejected *any*
+preceding dot broke exactly that file, and the corpus-wide `source_outline`
+sweep is what caught it.
+
+The backward scan still stops at the dot when extracting the name for the
+function check; F reads the boundary character rather than ignoring it.
+
+### The residual — reachable, and it fails at run time
+
+**A + F do not close class B.** An **unqualified** call to a function from a
+**loaded library**, with a single argument, followed by a comparison, is still
+read as a clause: the preceding token is an ordinary identifier, so A permits it;
+there is no dot, so F does not apply; and the function check cannot see across
+the file boundary.
+
+```basic
+load clause_probe from "libs/clause_probe.bas"
+if kind(1) = "record" then      ' `kind` lives in the library
+```
+
+It is worse than the misfires that were fixed, because it does **not** fail at
+parse time. `1` is a legal clause body, so the program parses and fails at run
+time with:
+
+```
+runtime error: compare modifier not found: 1
+```
+
+— a message naming a fragment of the caller's own argument list, which points
+nowhere near the cause. It requires the argument list to contain no comma, since
+a comma still returns 0 in the lookahead, so only single-argument calls reach it.
+
+Pinned by `tests/negative_clause_residual.bas`, which asserts the current
+behaviour rather than the desired one, so that closing it later forces the test
+to be retired deliberately.
+
+### Why option B was rejected, and the narrow form that would close the residual
+
+B was rejected as a **complete** fix for class A, and correctly: a no-argument
+clause and a single-identifier parenthesised expression are textually identical.
+`(caseless)` and `(a)` are the same shape, and `modifier_name : modifier_word+`
+with `modifier_word : IDENT | TO | END | NEXT` means a bare identifier **is** a
+complete legal clause. No content test can separate them; only the preceding
+token can, which is what A does. `if (a) > 0` is the counterexample, and it is
+covered by `examples/clause_recognition_test.bas`.
+
+But a **narrow form of B composes with A + F and would close the residual
+exactly**. Because `modifier_word` is only ever identifier-like, a clause body
+can never begin with a digit or a quote. Requiring the first non-space character
+after the `(` to start an identifier would reject `(1)` and `("x")` while
+accepting every legal clause in the corpus.
+
+This was **not implemented** — it was not part of the ruling. It is recorded here
+because it is a grammar-derived, few-line change that would retire the residual
+above, and the decision belongs to the language's author.
+
+### Effect on the recorded workarounds
+
+Measured, and **neither was changed** (out of scope):
+
+- **`stdlib/studio_store.bas`'s `_last` helper could now be unbent.**
+  `if studio_store._last(acc) = "/" then` parses — that is a `QUALIFIED_IDENT`
+  call, which F now settles.
+- **PBI's `:` annotations still stand on their own.** `prop (copy)= 1` remains
+  `unexpected MOD_LPAREN`, because the `(` follows an ordinary identifier, which
+  A permits. Option A does not unbend PBI; nothing about that design decision
+  changes.
+
+### Part 3 — the comma splitter
+
+R3's census found ten paths over clause and literal text, nine consistent. The
+tenth, `bind_modifier_args`, split multi-argument clauses with a bare `strchr`
+for a comma. It now **shares** the existing string-aware scanner rather than
+gaining a tenth behaviour: `modifier_args_have_comma` was generalised into
+`modifier_args_next_comma`, and both callers use it. `{wrap "L,R", "T"}` no
+longer splits inside the string.
+
+**Reachability is unchanged by A and F.** Both only ever *add* rejections — they
+turn a `MOD_LPAREN` into an `LPAREN`, never the reverse — so the `(...)` form
+still cannot carry a comma (the lookahead returns 0 on one), and the splitter
+remains reachable only through the `{...}` lens form.
+
+### Verification
+
+- Full suite from `make clean`: examples 201, negative 283, and 365 further
+  cases across 23 runners including `run_studio` (94). Zero rebaselines — no
+  existing golden moved.
+- `source_outline` compared over **693 corpus files**, old binary against new:
+  **692 byte-identical**. The one difference is
+  `examples/clause_recognition_test.bas`, added by this phase, which previously
+  failed to parse. Schema and ranges are unmoved, so STU-3's anchors, STU-4B's
+  position map and STU-5A's fingerprints are unaffected.
+- valgrind clean on the clause, nested-lvalue and modifier paths, and on both
+  new negative tests.

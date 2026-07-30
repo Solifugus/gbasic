@@ -1,0 +1,25 @@
+-- class A: a parenthesised expression followed by a comparison
+if           ok
+while        ok
+return       ok=true
+true
+assign       ok=true
+operator     ok=true
+comma        ok=true
+open paren   ok=true
+bare ident   ok
+-- class B: a call the lookahead cannot see
+qualified    ok
+method       ok
+same file    ok
+-- clauses that already worked, and must keep working
+file ref     ok=true
+trimmed      ok=[hi]
+split        ok=3
+split esc    ok=2
+compare      ok
+index target ok=[x]
+-- the {...} lens form, including multiple arguments
+lens 2 args  ok
+comma in arg ok
+quote in arg ok

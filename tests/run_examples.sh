@@ -66,6 +66,7 @@ examples=(
     bitwise_test.bas
     monotonic_test.bas
     modifier_escape_test.bas
+    clause_recognition_test.bas
     hex_literal_test.bas
     stats_frame_test.bas
     type_builtin_test.bas

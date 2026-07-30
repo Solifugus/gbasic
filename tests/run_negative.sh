@@ -292,6 +292,8 @@ cases=(
     negative_modifier_escape_invalid
     negative_modifier_escape_surrogate
     negative_modifier_escape_nul
+    negative_clause_residual
+    negative_clause_stmt_start
     negative_try_decode_type
 )
 

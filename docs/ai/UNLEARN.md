@@ -57,6 +57,17 @@ the standing ones.
   are fine, but `Name` and `name` are different variables (reading the wrong case
   raises `undefined variable`).
 
+- **`x(mod) = v` is a modifier clause, and `(` is otherwise just a paren.**
+  `if (a - b) > 0` parses normally, as does a qualified or method call in a
+  comparison (`lib.f(1) = "x"`, `rec.m(1) = "x"`). **One case still misfires:** an
+  **unqualified** call to a function from a **`load`ed library**, with a single
+  argument, compared with `=` — `if kind(1) = "record"` where `kind` came from a
+  library. The lookahead cannot see across a file boundary, so `(1)` is read as a
+  clause; it *parses* and fails at run time with `compare modifier not found: 1`,
+  naming a piece of your own argument. Call it qualified (`lib.kind(1)`) or bind
+  the result to a variable first. Pinned in `tests/negative_clause_residual.bas`;
+  full analysis in `docs/gbasic_clause_recognition.md` §8.
+
 ## Strings
 
 - **`mid` is 0-based**, and strings are **not indexable**. `s[0]` raises

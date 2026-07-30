@@ -109,4 +109,7 @@ void lexer_begin_lens_content(Lexer *lexer);
 Token lexer_next(Lexer *lexer);
 const char *token_type_name(TokenType type);
 
+/* Classify an identifier-shaped span: TOKEN_IDENT, or the keyword's token. */
+TokenType lexer_identifier_type(const char *start, int length);
+
 #endif

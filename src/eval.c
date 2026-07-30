@@ -20699,7 +20699,19 @@ static int modifier_args_empty(const char *args_text) {
     return *args_text == '\0';
 }
 
-static int modifier_args_have_comma(const char *args_text) {
+/* The next comma that SEPARATES ARGUMENTS, i.e. one not inside a string
+ * literal, or NULL if there is none.
+ *
+ * This is the single place that answers that question. `bind_modifier_args`
+ * used to ask it with a bare `strchr(start, ',')`, which cannot see string
+ * boundaries: `{wrap "L,R", "T"}` was cut at the comma INSIDE the first
+ * literal, and the fragments `"L` and `R"` were then looked up as variable
+ * names, so the user was told `undefined variable: "L` — their own string,
+ * quoted back at them, with nothing to indicate the splitter was at fault.
+ *
+ * Escapes are honoured on the same terms as everywhere else, so an escaped
+ * quote inside an argument does not end the string it is in. */
+static const char *modifier_args_next_comma(const char *args_text) {
     int in_string = 0;
     int escape = 0;
     for (const char *p = args_text; *p; p++) {
@@ -20716,10 +20728,14 @@ static int modifier_args_have_comma(const char *args_text) {
             continue;
         }
         if (*p == ',' && !in_string) {
-            return 1;
+            return p;
         }
     }
-    return 0;
+    return NULL;
+}
+
+static int modifier_args_have_comma(const char *args_text) {
+    return modifier_args_next_comma(args_text) != NULL;
 }
 
 static Value eval_optional_modifier_arg(const char *modifier_name,
@@ -20769,7 +20785,9 @@ static void bind_modifier_args(AstStmt *stmt, const char *args_text) {
 
     const char *start = args_text;
     for (size_t i = 0; i < expected; i++) {
-        const char *end = strchr(start, ',');
+        /* Shares the one string-aware scanner rather than using strchr, which
+         * would split inside a string literal. */
+        const char *end = modifier_args_next_comma(start);
         if (!end && i + 1 < expected) {
             char message[256];
             snprintf(message, sizeof(message), "modifier %s expects %zu arguments",

@@ -310,6 +310,18 @@ static TokenType identifier_type(const char *start, int length) {
     return TOKEN_IDENT;
 }
 
+/* The token an identifier-shaped span would lex as — TOKEN_IDENT if it is an
+ * ordinary name, or the keyword's own token if it is reserved.
+ *
+ * Exposed for the parser's modifier-clause lookahead, which has to decide from
+ * raw source whether the thing before a `(` could be a modifier TARGET. A
+ * keyword cannot be one, and the authoritative list of keywords is here. There
+ * is no other caller and no token stream involved; this is a pure classifier
+ * over a span of bytes. */
+TokenType lexer_identifier_type(const char *start, int length) {
+    return identifier_type(start, length);
+}
+
 static Token identifier_token(Lexer *lexer, const char *start, int line, int column) {
     while (isalnum((unsigned char)peek(lexer)) || peek(lexer) == '_') {
         advance(lexer);
