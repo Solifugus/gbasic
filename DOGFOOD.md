@@ -646,3 +646,34 @@ D0.6, the rest remain open or are by-design.
   `examples/modifier_escape_test.bas`, which emits every escape through both the
   clause path and the ordinary literal path and requires the two to be
   byte-identical, so fixing one scanner and not the others fails a test.
+
+## 2026-07-31 — CC — while: Studio STU-2B (wiring the shell's first input handlers)
+- **Type:** missing-feature
+- **Severity:** medium
+- **What:** the `gi` bridge has **no way to emit a signal**. The dispatch table
+  (`gi_eval_call`, `src/eval.c:15560`) is `require/new/new_struct/get/set/
+  struct_get/struct_set/call/invoke/connect/disconnect/enum/is_a/type_name/main/
+  quit/timeout/idle/source_remove/watch_fd/watch_mailbox/variant_*` — there is no
+  `emit`, no `signal_emit`, and `g_signal_emit_by_name` is not introspectable, so
+  `gi.invoke` cannot reach it either. A GTK program written in gBASIC therefore
+  has no direct way to test its own handlers: you can `gi.connect` a callback but
+  you cannot make it fire.
+- **Workaround:** synthesise the signal through an introspected method that emits
+  it as a documented side effect. Verified against GTK 4.22:
+  - `gi.call(row, "activate")` → `row-activated` on the parent GtkListBox — sync
+  - `gi.call(listbox, "select_row", row)` → `row-selected` — sync
+  - `gi.call(notebook, "set_current_page", n)` → `switch-page` — sync
+  - `buffer.text = s` (GtkTextBuffer) → `changed` — sync, and fires **twice**
+    (delete then insert); the first fire sees an EMPTY buffer, so a handler that
+    mirrors buffer text into a model must tolerate a transient "".
+  - `gi.call(button, "activate")` → `clicked` **asynchronously**, ~250 ms later
+    via GtkButton's own activate timeout. It does *not* fire inline, so a test
+    that clicks a button has to give the main loop back (`gi.timeout`) rather
+    than asserting on the next line.
+  Also verified: rebuilding a GtkListBox (remove every row, re-append) from
+  inside that same listbox's `row-activated` handler is safe under
+  `G_DEBUG=fatal-criticals` — no criticals, and the box stays usable.
+  This is enough to test input end-to-end and no language change was needed, but
+  a first-class `gi.emit(obj, signal, args...)` would make it direct rather than
+  a per-widget scavenger hunt, and would cover signals no method happens to emit.
+  Used by gbasic-studio `tests/run_studio.sh` (`ui_gui`, `ui_gui_cold`).
