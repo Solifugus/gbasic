@@ -13,7 +13,7 @@
 # Studio materializes a byte prefix to run one execution section, it appends
 # post-target declarations of those kinds and no others, precisely because the
 # interpreter is position-blind to those and to nothing else. The coupling is
-# deliberate and documented (docs/gbasic_studio_stu4b.md, "What qualifies as
+# deliberate and documented (gbasic-studio's docs/gbasic_studio_stu4b.md, "What qualifies as
 # hoistable"), but it is invisible from either side -- nothing in Studio references
 # eval_program, and nothing in eval_program references Studio.
 #
@@ -65,7 +65,7 @@ report_drift() {
     printf '  The set of declarations eval_program pre-registers has changed.\n'
     printf '  gBASIC STUDIO STU-4B DECLARATION HOISTING MUST MOVE WITH IT.\n'
     printf '\n'
-    printf '  studio_session._hoistable_kind() in stdlib/studio_session.bas decides\n'
+    printf '  studio_session._hoistable_kind() in the SEPARATE gbasic-studio project\n'
     printf '  which post-target declarations are appended to a materialized prefix,\n'
     printf '  and it is defined AS this set. Adding a kind here without updating it\n'
     printf '  leaves hoisting incomplete (Studio refuses to hoist something the\n'
@@ -73,7 +73,7 @@ report_drift() {
     printf '  something the runtime no longer registers, manufacturing behaviour the\n'
     printf '  document does not have).\n'
     printf '\n'
-    printf '  Fix the hoisting rule and docs/gbasic_studio_stu4b.md first, then\n'
+    printf '  (lib/studio_session.bas) mirrors this set. Fix it there first, then\n'
     printf '  update the expected set in this file.\n'
     status=1
 }

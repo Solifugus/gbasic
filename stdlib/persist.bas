@@ -100,7 +100,7 @@ library persist
     '   { status: "missing", value: nothing, message: "" }  — no file there
     '   { status: "corrupt", value: nothing, message: <why> } — unreadable
     '   { status: "loaded",  value: <record>, message: "" } — present, well-formed
-    ' The caller (studio_model / studio) applies recovery policy.
+    ' The caller owns the recovery policy -- keep, rebuild, or refuse to start.
     '
     ' ONE PASS, through the platform parser. This used to pre-validate with a
     ' pure-gBASIC JSON scanner and then decode -- two full passes, the first of

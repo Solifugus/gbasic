@@ -87,12 +87,12 @@ program main(args)
     put(dir + "/d3.json", "{\"a\":+1}")
     show("leading plus   ", persist.read_status(dir + "/d3.json"))
 
-    ' What Studio itself writes is strict JSON, and stays that way: write_atomic
+    ' What persist itself writes is strict JSON, and stays that way: write_atomic
     ' pre-checks json_encodable, so a dialect-only value never reaches a store
-    ' through Studio's own writer.
+    ' through persist's own writer.
     persist.write_atomic(dir + "/d4.json", { a: nothing, b: 1 })
     fr(file) = dir + "/d4.json"
-    print "studio writes  " + read(fr)
+    print "we write      " + read(fr)
     print "refuses unknown=" + (not json_encodable({ a: unknown_free() }))
   end if
 
