@@ -100,9 +100,12 @@ for error handling, `ERRORS.md`.
   escalation to SIGKILL requires `stop(h, {force_after: N})`. Dropping the last
   handle copy reaps the child, so `release` is optional.
   → `tests/native_platform/plat_proc_basic.bas`
-- **Supervising a child from a GUI loop** — `process.start` + a `gi.timeout` callback
-  that polls/reads each tick; no actor and no mailbox are needed, because start/poll/
-  read never block. → `examples/studio/sessions.bas`
+- **Supervising a child from a GUI loop** — compose the two: `process.start`,
+  then a `gi.timeout` callback that polls and reads each tick. No actor and no
+  mailbox are needed, because `start`/`poll`/`read` never block, so a GUI loop
+  can drive a live child without a worker. → `tests/native_platform/plat_proc_basic.bas`
+  (the non-blocking primitives), `tests/native_platform/loop_timeout.bas` (the
+  GTK timeout that drives them)
 - **Seeing a child's output while it runs** — a gBASIC child's stdout is BLOCK-buffered
   on a pipe, so short output only appears when it exits, and output still buffered when
   the child is killed is lost outright. Start the child with `--line-buffered` as its

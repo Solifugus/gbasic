@@ -1,6 +1,6 @@
-' STU-STORE headless driver for persist's read path.
+' Headless driver for persist's read path (was Studio's STU-STORE).
 '
-' persist used to PRE-VALIDATE every file with a pure-gBASIC JSON scanner
+' persist (then studio_store) used to PRE-VALIDATE every file with a scanner
 ' before handing it to `decode`, because `decode` raises and gBASIC cannot catch a
 ' raise. That scanner was quadratic (`mid` is O(i) on codepoint-indexed strings),
 ' so reading a 116 KB store took 92 s. PLAT-JSON's `try_decode` removes the need
@@ -32,7 +32,7 @@ function put(path, text)
 end function
 
 program main(args)
-  load persist
+  load persist from "../stdlib/persist.bas"
 
   mode = ""
   if count(args) > 0 then
