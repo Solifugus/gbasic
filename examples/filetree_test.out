@@ -1,0 +1,9 @@
+-- collapsed: directories present, contents not scanned
+  dir src
+  file a.txt
+-- src expanded
+  dir src
+    dir inner
+    file b.txt
+  file a.txt
+visible rows collapsed=2

@@ -1,7 +1,7 @@
 ' studio_model.bas — the gBASIC Studio domain model (headless, pure gBASIC).
 '
 ' This is the authoritative shape of Studio's persistent state. It has NO GTK and
-' NO file I/O: it constructs, mutates, and normalizes plain records. studio_store
+' NO file I/O: it constructs, mutates, and normalizes plain records. persist
 ' persists them; studio.bas composes them into the startup/shutdown lifecycle and
 ' owns the single live instance. Keeping the model pure is what makes every Studio
 ' data rule testable without a display.

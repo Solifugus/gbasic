@@ -8,7 +8,6 @@ it, relaunch, and find the working context restored.
 The domain model and persistence are pure-gBASIC stdlib libraries — headless and
 fully testable without a display:
 
-- `stdlib/studio_json.bas` — non-raising JSON validity gate (pre-validate before `decode`)
 - `stdlib/studio_store.bas` — crash-safe, versioned persistence (atomic write, defensive read)
 - `stdlib/studio_model.bas` — the domain model (settings / session / workspace / project / document), stable ids, forward/back-compatible normalization
 - `stdlib/studio.bas` — the application object + startup/shutdown lifecycle

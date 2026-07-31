@@ -12,6 +12,12 @@
 ' loaded through `gi`, not linked.
 library gtk
 
+
+    ' Dependencies, declared rather than assumed. A library that calls into
+    ' another must load it: relying on the caller to have done so turns a
+    ' missing load into a runtime failure deep inside a call, and it stops
+    ' working entirely once these libraries live in separate projects.
+    load gi
     ' Ensure the GTK 4 namespace is available. Safe to call repeatedly.
     function require()
         gi.require("Gtk", "4.0")

@@ -165,10 +165,9 @@ end function
 program main(args)
     ' Core backbone libraries — always available (loads live inside the program
     ' block; a top-level load does not run when a program block is present).
-    load studio_json
-    load studio_store
+    load persist
     load studio_model
-    load studio_browser
+    load filetree
     load studio_docs
     load studio_sections
     load studio_session
@@ -259,21 +258,21 @@ program main(args)
         print studio.nav_summary(app)
         ws = app.model.workspace
         proj = studio_model.project_by_id(ws, ws.active_project)
-        nodes = studio_browser.scan_project(proj, ws.nav.expanded)
+        nodes = filetree.scan(proj.path, ws.nav.expanded)
         print "browser:"
-        print studio_browser.dump(nodes)
+        print filetree.dump(nodes)
         return
     end if
 
     if mode = "stu1_browse" then
-        nodes = studio_browser.scan(home, [home + "/src"])
-        print studio_browser.dump(nodes)
+        nodes = filetree.scan(home, [home + "/src"])
+        print filetree.dump(nodes)
         return
     end if
 
     if mode = "stu1_missing" then
-        nodes = studio_browser.scan(home + "/does_not_exist", [])
-        print "rows=" + studio_browser.visible_count(nodes)
+        nodes = filetree.scan(home + "/does_not_exist", [])
+        print "rows=" + filetree.visible_count(nodes)
         return
     end if
 
@@ -439,8 +438,8 @@ program main(args)
         app = studio.set_workspace(app, ws)
         ' simulate the browser selecting and opening a file
         proj = studio_model.project_by_id(ws, "proj-1")
-        nodes = studio_browser.scan_project(proj, [])
-        rows = studio_browser.flatten(nodes)
+        nodes = filetree.scan(proj.path, [])
+        rows = filetree.flatten(nodes)
         picked = ""
         for each row in rows
             if row.kind = "file" then

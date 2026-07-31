@@ -88,6 +88,12 @@
 
 library datagrid
 
+
+    ' Dependencies, declared rather than assumed. A library that calls into
+    ' another must load it: relying on the caller to have done so turns a
+    ' missing load into a runtime failure deep inside a call, and it stops
+    ' working entirely once these libraries live in separate projects.
+    load gi
     ' ---- registry ----------------------------------------------------------
 
     ' Build the empty registry. Assign the result to the program global

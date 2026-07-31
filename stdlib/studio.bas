@@ -6,15 +6,23 @@
 ' / examples/studio/studio.bas) is a VIEW bound to the model this layer owns, never
 ' a second copy of the state.
 '
-' Layering:   studio (lifecycle)  ->  studio_model (rules)  ->  studio_store (I/O)
-'                                                          ->  studio_json (safe parse)
+' Layering:   studio (lifecycle)  ->  studio_model (rules)  ->  persist (I/O)
+'                                                          ->  try_decode (safe parse)
 ' Every store is versioned and read defensively: missing / corrupt / future-version
 ' inputs recover to defaults with a recorded diagnostic, never a crash.
 '
-' Requires studio_json, studio_store, and studio_model to be loaded by the program
+' Requires persist and studio_model to be loaded by the program
 ' (loads live inside the `program` block).
 library studio
 
+
+    ' Dependencies, declared rather than assumed. A library that calls into
+    ' another must load it: relying on the caller to have done so turns a
+    ' missing load into a runtime failure deep inside a call, and it stops
+    ' working entirely once these libraries live in separate projects.
+    load studio_docs
+    load studio_model
+    load persist
     ' ---- paths -------------------------------------------------------------
 
     ' Resolve every store path under a single config `home` directory. Tests point
@@ -50,7 +58,7 @@ library studio
 
     ' ---- load policy -------------------------------------------------------
 
-    ' Turn a studio_store.read_status result into a value + a policy code:
+    ' Turn a persist.read_status result into a value + a policy code:
     '   missing -> default (code "default")
     '   corrupt -> default (code "corrupt-recovered")
     '   loaded but future schema_version -> default (code "future-version-rejected")
@@ -78,13 +86,13 @@ library studio
     ' built from it afterwards (studio_shell), keeping persistence and widgets apart.
     function startup(home)
         p = studio.paths(home)
-        studio_store.ensure_dir(p.home)
-        studio_store.ensure_dir(p.workspaces_dir)
+        persist.ensure_dir(p.home)
+        persist.ensure_dir(p.workspaces_dir)
 
         diagnostics = []
 
         ' settings
-        ss = studio_store.read_status(p.settings_file)
+        ss = persist.read_status(p.settings_file)
         sp = studio._policy(ss, studio_model.default_settings())
         settings = sp.value
         if sp.code = "loaded" then
@@ -93,7 +101,7 @@ library studio
         diagnostics = append(diagnostics, "settings:" + sp.code)
 
         ' session
-        es = studio_store.read_status(p.session_file)
+        es = persist.read_status(p.session_file)
         ep = studio._policy(es, studio_model.default_session())
         session = ep.value
         if ep.code = "loaded" then
@@ -107,7 +115,7 @@ library studio
         if want_ws != "" then
             if settings.restore_last_session then
                 wpath = p.workspaces_dir + "/" + want_ws + ".json"
-                ws_status = studio_store.read_status(wpath)
+                ws_status = persist.read_status(wpath)
                 wp = studio._policy(ws_status, nothing)
                 if wp.code = "loaded" then
                     workspace = studio_model.normalize_workspace(wp.value)
@@ -168,24 +176,24 @@ library studio
     ' ---- shutdown pipeline -------------------------------------------------
 
     ' collect current state -> serialize settings/session/workspace -> atomic
-    ' replace each -> clean. Writes are atomic (studio_store), so a crash mid-save
+    ' replace each -> clean. Writes are atomic (persist), so a crash mid-save
     ' never leaves a truncated store. Returns a diagnostics array of what was saved.
     function shutdown(app)
         p = app.paths
         model = app.model
-        studio_store.ensure_dir(p.home)
-        studio_store.ensure_dir(p.workspaces_dir)
+        persist.ensure_dir(p.home)
+        persist.ensure_dir(p.workspaces_dir)
 
         saved = []
-        studio_store.write_atomic(p.settings_file, model.settings)
+        persist.write_atomic(p.settings_file, model.settings)
         saved = append(saved, "settings")
-        studio_store.write_atomic(p.session_file, model.session)
+        persist.write_atomic(p.session_file, model.session)
         saved = append(saved, "session")
 
         ws = model.workspace
         if ws != nothing then
             wpath = p.workspaces_dir + "/" + ws.id + ".json"
-            studio_store.write_atomic(wpath, ws)
+            persist.write_atomic(wpath, ws)
             saved = append(saved, "workspace:" + ws.id)
         end if
         return saved
@@ -241,7 +249,7 @@ library studio
     ' registry on a missing/corrupt/future-version file (diagnostic recorded).
     function load_registry(app)
         p = app.paths
-        st = studio_store.read_status(p.registry_file)
+        st = persist.read_status(p.registry_file)
         pol = studio._policy(st, studio.default_registry())
         reg = pol.value
         if pol.code = "loaded" then
@@ -261,8 +269,8 @@ library studio
 
     function save_registry(app)
         p = app.paths
-        studio_store.ensure_dir(p.home)
-        studio_store.write_atomic(p.registry_file, app.registry)
+        persist.ensure_dir(p.home)
+        persist.write_atomic(p.registry_file, app.registry)
     end function
 
     ' STU-1/STU-2 launch = STU-0 startup + the workspace registry + the live document
@@ -364,7 +372,7 @@ library studio
     function open_workspace(app, id)
         p = app.paths
         wpath = p.workspaces_dir + "/" + id + ".json"
-        st = studio_store.read_status(wpath)
+        st = persist.read_status(wpath)
         pol = studio._policy(st, nothing)
         if pol.code = "loaded" then
             ws = studio_model.normalize_workspace(pol.value)

@@ -39,6 +39,12 @@
 ' ----------------------------------------------------------------------------
 library gtkui
 
+
+    ' Dependencies, declared rather than assumed. A library that calls into
+    ' another must load it: relying on the caller to have done so turns a
+    ' missing load into a runtime failure deep inside a call, and it stops
+    ' working entirely once these libraries live in separate projects.
+    load gi
     ' ---- container-kind table (extensible: add a type -> a branch) ----------
 
     ' Classify a GI type name by how it parents children. "box" = ordered

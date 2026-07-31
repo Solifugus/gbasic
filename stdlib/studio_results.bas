@@ -34,8 +34,8 @@
 '   <home>/results/<key>.d/      the captures -- raw bytes, one file per stream
 '                                  res-1.out_target, res-1.err_prefix, ...
 '
-'   MEASURED, and the reason for the split: studio_store's read path must
-'   PRE-VALIDATE with studio_json.valid, because `decode` raises and gBASIC cannot
+'   MEASURED, and the reason for the split: persist's read path must
+'   use `try_decode`, because `decode` raises and gBASIC cannot
 '   catch a raise (docs/ai/UNLEARN.md). That validator is pure gBASIC walking one
 '   character at a time -- about 2 KB/s. On a store holding two 64 KB captures it
 '   took 53 s to validate what the C `decode` builtin then parsed in under a
@@ -45,7 +45,7 @@
 '   read with a plain `read()` that validates nothing.
 '
 '   UPDATE (PLAT-JSON, 2026-07-28): the parse-speed half of that argument is gone.
-'   studio_store now reads through the `try_decode` builtin, and a 4.6 MB index
+'   persist now reads through the `try_decode` builtin, and a 4.6 MB index
 '   with 9 600 records loads in under a second. The sidecar layout is KEPT, on the
 '   two grounds that remain and are unaffected: the index is rewritten whole on
 '   every save (atomic_replace), so inlining megabytes of capture text would be
@@ -73,10 +73,16 @@
 ' with no migration step -- the same additive-by-construction property STU-3's
 ' `sections` slot has.
 '
-' Requires studio_store loaded by the program (studio_json is no longer involved:
-' studio_store reads through the try_decode builtin).
+' Requires persist loaded by the program (JSON is read through the
+' persist reads through the try_decode builtin).
 library studio_results
 
+
+    ' Dependencies, declared rather than assumed. A library that calls into
+    ' another must load it: relying on the caller to have done so turns a
+    ' missing load into a runtime failure deep inside a call, and it stops
+    ' working entirely once these libraries live in separate projects.
+    load persist
     function schema_version()
         return 1
     end function
@@ -200,7 +206,7 @@ library studio_results
     '   corrupt present but not valid JSON
     '   future  written by a newer schema; refused rather than misread
     function open(home, doc_path)
-        st = studio_store.read_status(studio_results.store_path(home, doc_path))
+        st = persist.read_status(studio_results.store_path(home, doc_path))
         if st.status = "missing" then
             return studio_results._empty(doc_path, "empty")
         end if
@@ -228,8 +234,8 @@ library studio_results
     ' Persist atomically. `status` is live-only and is dropped on the way out, so a
     ' reload cannot mistake a past read's status for stored truth.
     function save(home, store)
-        studio_store.ensure_dir(studio_results.results_dir(home))
-        studio_store.write_atomic(studio_results.store_path(home, store.doc_path), {
+        persist.ensure_dir(studio_results.results_dir(home))
+        persist.write_atomic(studio_results.store_path(home, store.doc_path), {
             schema_version: studio_results.schema_version(),
             doc_path: store.doc_path,
             next_result: store.next_result,
@@ -310,7 +316,7 @@ library studio_results
             end if
         end for
 
-        studio_store.ensure_dir(studio_results.capture_dir(home, store.doc_path))
+        persist.ensure_dir(studio_results.capture_dir(home, store.doc_path))
         cut = []
         sizes = { out_prefix: 0, out_target: 0, err_prefix: 0, err_target: 0 }
         for each name in studio_results.capture_names()

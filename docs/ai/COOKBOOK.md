@@ -43,6 +43,13 @@ for error handling, `ERRORS.md`.
   newline. → `examples/modifier_test.gb`, `examples/modifier_escape_test.bas`
 - **Watchers** — `watch(...)` runs once at registration, then synchronously on
   storage-changing mutations. → `examples/watch_test.gb`
+- **Persisting application state** — `load persist`; `write_atomic` swaps a
+  temp file in with a single rename so a crash never truncates it, and
+  `read_status` returns `missing`/`corrupt`/`loaded` as a value instead of
+  raising. → `examples/persist_test.bas`
+- **Walking a directory as a tree** — `load filetree`; `scan(path, expanded)`
+  builds a value tree (caller controls which directories expand), `flatten`
+  gives display rows with depth. → `examples/filetree_test.bas`
 - **File locks** — `with lock(f) … end with` unlocks on exit and on error.
   → `examples/lock_test.gb`
 - **Program arguments** — declare `program main(args)`; `args` is the 0-based

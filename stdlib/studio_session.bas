@@ -40,6 +40,14 @@
 
 library studio_session
 
+
+    ' Dependencies, declared rather than assumed. A library that calls into
+    ' another must load it: relying on the caller to have done so turns a
+    ' missing load into a runtime failure deep inside a call, and it stops
+    ' working entirely once these libraries live in separate projects.
+    load studio_results
+    load studio_sections
+    load persist
     function schema_version()
         return 1
     end function
@@ -533,9 +541,9 @@ library studio_session
         session.map = m.map
         session.hoisted = m.hoisted
         session.prefix_bytes = byte_count(m.text)
-        studio_store.ensure_dir(session.scratch_dir)
+        persist.ensure_dir(session.scratch_dir)
         path = studio_session._prefix_path(session)
-        studio_store.write_text_atomic(path, m.text)
+        persist.write_text_atomic(path, m.text)
         session.prefix_path = path
 
         pf(file) = path
@@ -744,14 +752,22 @@ library studio_session
             if line = "" then
                 continue
             end if
-            ok = studio_json.valid(line)
+            ' One pass through the platform parser. This used to pre-validate
+            ' with a pure-gBASIC scanner and then `decode`, because `decode`
+            ' raises and gBASIC cannot catch a raise; `try_decode` reports
+            ' failure as a value, so the pre-pass has no reason to exist. A
+            ' child's stderr line that is not JSON at all is the normal case
+            ' here, not an error, and lands in `plain` exactly as before.
+            r = try_decode(line)
             handled = false
-            if ok then
-                d = decode(line)
-                if has(d, "severity") then
-                    if has(d, "start") then
-                        diags = append(diags, d)
-                        handled = true
+            if r.ok then
+                d = r.value
+                if is_record(d) then
+                    if has(d, "severity") then
+                        if has(d, "start") then
+                            diags = append(diags, d)
+                            handled = true
+                        end if
                     end if
                 end if
             end if
@@ -926,7 +942,7 @@ library studio_session
     ' Returns how many files were removed.
     function sweep_scratch(scratch_dir)
         ' `exists` wants a FILE reference even when the path is a directory (same
-        ' quirk studio_store.ensure_dir documents).
+        ' quirk persist.ensure_dir documents).
         probe(file) = scratch_dir
         if not exists(probe) then
             return 0

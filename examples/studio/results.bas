@@ -137,8 +137,7 @@ function show_classified(store, secs, label)
 end function
 
 program main(args)
-  load studio_json
-  load studio_store
+  load persist
   load studio_sections
   load studio_session
   load studio_results
@@ -471,7 +470,7 @@ program main(args)
     ' cannot collide on the scratch file either -- the failure mode a shared
     ' `.tmp` name would introduce.
     ' Bound out rather than compared inline: a `)` followed by `(` trips the
-    ' modifier-clause lexer (the collision studio_store._last documents).
+    ' modifier-clause lexer (the collision persist._last documents).
     ta = pa + ".tmp"
     tb = pb + ".tmp"
     print "distinct_tmp=" + (ta != tb)
@@ -523,7 +522,7 @@ program main(args)
     ' A store written by a FUTURE schema is refused rather than misread.
     print "-- future schema"
     p2 = studio_results.store_path(home, "/proj/d.bas")
-    studio_store.write_atomic(p2, { schema_version: 999, doc_path: "/proj/d.bas", next_result: 1, results: [] })
+    persist.write_atomic(p2, { schema_version: 999, doc_path: "/proj/d.bas", next_result: 1, results: [] })
     fut = studio_results.open(home, "/proj/d.bas")
     print "status=" + fut.status
     print "results=" + count(fut.results)
@@ -592,7 +591,7 @@ program main(args)
     store = run_and_record(home, store, pinned_session("doc-1", scratch, 1000), secs, src, last.id)
     studio_results.save(home, store)
 
-    raw = studio_store.read_status(studio_results.store_path(home, "/proj/a.bas"))
+    raw = persist.read_status(studio_results.store_path(home, "/proj/a.bas"))
     print "status=" + raw.status
     print "schema_version=" + raw.value.schema_version
     print "doc_path=" + raw.value.doc_path
@@ -609,10 +608,10 @@ program main(args)
     ' Results live OUTSIDE the workspace record, so the workspace is unaffected.
     print "separate_from_workspace=" + (find(studio_results.store_path(home, "/proj/a.bas"), "/results/") != nothing)
 
-    ' The two-part layout on disk: a small index, and the captures beside it. The
-    ' index size is the number that matters -- studio_store must PRE-VALIDATE it
-    ' with studio_json.valid on every read, and that validator runs at roughly
-    ' 2 KB/s, so anything unbounded in here would make opening the store unusable.
+    ' The two-part layout on disk: a small index, and the captures beside it.
+    ' The split predates `try_decode` -- it was forced by a quadratic pure-gBASIC
+    ' validator -- and is kept for write amplification (the index is rewritten
+    ' whole on every save) and lazy reads (captures load only when displayed).
     print "-- on disk"
     idx(file) = studio_results.store_path(home, "/proj/a.bas")
     print "index_bytes_under_1k=" + (file_size(idx) < 1024)

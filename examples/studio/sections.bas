@@ -65,8 +65,7 @@ end function
 
 program main(args)
   load "studio_sections"
-  load "studio_json"
-  load "studio_store"
+  load "persist"
   load "studio_model"
 
   mode = ""
@@ -224,9 +223,9 @@ program main(args)
     ws.sections = studio_sections.persist_into(ws.sections, st)
     print "encodable=" + json_encodable(ws)
     path = dir + "/workspace.json"
-    studio_store.write_atomic(path, ws)
+    persist.write_atomic(path, ws)
 
-    r = studio_store.read_status(path)
+    r = persist.read_status(path)
     print "read=" + r.status
     back = studio_model.normalize_workspace(r.value)
     st2 = studio_sections.restore_from(back.sections, "doc-1")
@@ -258,8 +257,8 @@ program main(args)
       docs: { open: [], active: "", next_doc: 1 }
     }
     path = dir + "/old_workspace.json"
-    studio_store.write_atomic(path, old)
-    r = studio_store.read_status(path)
+    persist.write_atomic(path, old)
+    r = persist.read_status(path)
     print "read=" + r.status
     raw = r.value
     print "has sections before normalize=" + has(raw, "sections")

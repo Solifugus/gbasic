@@ -1,22 +1,30 @@
-' studio_store.bas — crash-safe, versioned persistence for gBASIC Studio.
+' persist.bas — crash-safe, versioned persistence for application state.
 '
-' A thin persistence MANAGER over the platform filesystem primitives. It knows
-' nothing about Studio's schema (that is studio_model.bas); it only reads and
-' writes gBASIC records as standards-compliant JSON, safely:
+' A thin manager over the filesystem primitives, for any program that has to
+' remember something across runs — settings, session state, a cache, a document
+' index. It knows nothing about what it is storing.
 '
 '   * WRITE is atomic. `json_encode` produces strict RFC-8259 JSON (never the
-'     lenient `encode` dialect — external files must be real JSON, per the plan).
-'     The text is written to a `.tmp` sibling and swapped in with `atomic_replace`
-'     (a single rename(2)), so a crash mid-write never leaves a truncated store:
+'     lenient `encode` dialect — a file other tools may read must be real JSON).
+'     The text goes to a `.tmp` sibling and is swapped in with `atomic_replace`
+'     (a single rename(2)), so a crash mid-write never leaves a truncated file:
 '     a reader sees either the whole old file or the whole new one.
-'   * READ never raises on a bad file. `decode` raises on malformed JSON and
-'     gBASIC cannot catch a raise (docs/ai/UNLEARN.md), so reads go through
-'     `try_decode` (PLAT-JSON), which reports failure as a value.
+'   * READ never raises. `decode` raises on malformed JSON and gBASIC cannot
+'     catch a raise (docs/ai/ERRORS.md), so reads go through `try_decode` and
+'     report one of three states as a VALUE — missing, corrupt (with the parser's
+'     reason and position), or loaded. The caller owns the recovery policy.
 '
-' No `load` dependency of its own: `try_decode` is an unconditional builtin, so
-' `load studio_store` is now sufficient. (It previously required studio_json to be
-' loaded as well, for a pre-validation pass that no longer exists.)
-library studio_store
+'   persist.ensure_dir(home)
+'   persist.write_atomic(home + "/settings.json", { schema_version: 1, theme: "dark" })
+'
+'   st = persist.read_status(home + "/settings.json")
+'   if st.status = "loaded" then
+'       settings = st.value
+'   end if
+'
+' No `load` dependency of its own: `try_decode` and `atomic_replace` are
+' unconditional builtins.
+library persist
 
     ' Last char of a string ("" when empty). Bound out to avoid the
     ' `call(...) = x` modifier-lexer collision on inline comparisons.
@@ -41,7 +49,7 @@ library studio_store
                 if acc = "" then
                     acc = seg
                 else
-                    tail = studio_store._last(acc)
+                    tail = persist._last(acc)
                     if tail = "/" then
                         acc = acc + seg
                     else
@@ -64,7 +72,7 @@ library studio_store
     function write_atomic(path, record)
         encodable = json_encodable(record)
         if not encodable then
-            error "studio_store: value is not JSON-encodable for " + path
+            error "persist: value is not JSON-encodable for " + path
         end if
         text = json_encode(record)
         tmp = path + ".tmp"

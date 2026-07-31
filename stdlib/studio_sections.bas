@@ -617,7 +617,7 @@ library studio_sections
     '   * a future reader that does not know the slot simply ignores it.
     ' The whole bundle is json_encodable (offsets/fingerprints are numbers, an absent
     ' name is `nothing` -> JSON null -> `nothing` again on decode), so it goes through
-    ' studio_store.write_atomic unchanged.
+    ' persist.write_atomic unchanged.
 
     function _bundle(raw)
         if raw = unknown then

@@ -4,16 +4,27 @@
 ' browser tree (left) and a notebook of source-editor tabs for the open documents
 ' (right), plus a status bar. It is a pure VIEW over the app model studio.bas owns
 ' (the workspace navigation model and the document manager app.dm): it reads the
-' model (and scans the filesystem via studio_browser) to populate itself and holds
+' model (and scans the filesystem via filetree) to populate itself and holds
 ' no document state of its own. Interactive wiring (browser row -> open, editor edit
 ' -> document manager) is owned by the entry program's handlers over a global app
 ' record, so the callback-scope rules are respected.
 '
-' Requires gi + gtk + studio_browser + studio_docs + sourceeditor loaded and GTK
+' Requires gi + gtk + filetree + studio_docs + sourceeditor loaded and GTK
 ' initialized, so it is only used in the display modes; the headless lifecycle and
 ' tests never touch it.
 library studio_shell
 
+
+    ' Dependencies, declared rather than assumed. A library that calls into
+    ' another must load it: relying on the caller to have done so turns a
+    ' missing load into a runtime failure deep inside a call, and it stops
+    ' working entirely once these libraries live in separate projects.
+    load gtk
+    load sourceeditor
+    load filetree
+    load studio_docs
+    load studio_model
+    load studio_results
     ' Render the navigation pane contents into a listbox from the model + filesystem.
     function _fill_nav(nav, app)
         ws = app.model.workspace
@@ -34,8 +45,8 @@ library studio_shell
         if proj = nothing then
             return nothing
         end if
-        nodes = studio_browser.scan_project(proj, ws.nav.expanded)
-        for each r in studio_browser.flatten(nodes)
+        nodes = filetree.scan(proj.path, ws.nav.expanded)
+        for each r in filetree.flatten(nodes)
             indent = "  "
             i = 0
             while i < r.depth

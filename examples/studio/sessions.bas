@@ -138,8 +138,7 @@ function run_and_show(label, sess, secs, src, sid)
 end function
 
 program main(args)
-  load studio_json
-  load studio_store
+  load persist
   load studio_sections
   load studio_session
 
@@ -416,7 +415,7 @@ program main(args)
   if mode = "scratch" then
     ' Scratch lifecycle: a finished run leaves nothing behind, and a sweep clears
     ' whatever a crashed Studio did leave.
-    studio_store.ensure_dir(scratch)
+    persist.ensure_dir(scratch)
     d(dir) = scratch
     src = base_src()
     secs = sections_for(src)

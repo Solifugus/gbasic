@@ -122,7 +122,7 @@ fi
 # STU-1 — workspace navigation, project browser, registry.
 # ==========================================================================
 
-# 6b. STU-STORE — studio_store's read path over PLAT-JSON's try_decode.
+# 6b. STU-STORE — persist's read path over PLAT-JSON's try_decode.
 # The pure-gBASIC pre-validator is gone: reads are one pass through the platform
 # parser. These cases pin that the three states are unchanged, that a corrupt file
 # now says WHY, that every store shape round-trips, and that a realistic worst-case
@@ -142,18 +142,20 @@ for m in status dialect roundtrip speed; do
     fi
 done
 
-# studio_store no longer depends on studio_json: `load studio_store` alone must be
-# enough, since try_decode is an unconditional builtin. A stale dependency would
-# only show up as a runtime error on the read path, so assert it directly.
-# Grep for a CALL (`studio_json.`), not a mention: the header still explains what
-# the dependency used to be, and that history is worth keeping.
-if ! grep -q 'studio_json\.' stdlib/studio_store.bas; then
-    printf 'PASS store_no_validator_dep (studio_store calls no pre-validator)\n'
-else
-    printf 'FAIL store_no_validator_dep (studio_store still calls studio_json)\n'
-    grep -n 'studio_json\.' stdlib/studio_store.bas
+# No pure-gBASIC JSON validator survives anywhere in Studio. Every read goes
+# through `try_decode`, an unconditional builtin, so no library needs loading for
+# it and no caller can reintroduce a quadratic pre-pass by accident. Assert both
+# halves: the file is gone, and nothing calls into it.
+if [ -f stdlib/studio_json.bas ]; then
+    printf 'FAIL no_gbasic_json_validator (stdlib/studio_json.bas is back)\n'
     exit 1
 fi
+if grep -rn 'studio_json\.' stdlib/studio_*.bas examples/studio/*.bas >/dev/null 2>&1; then
+    printf 'FAIL no_gbasic_json_validator (a caller still uses studio_json)\n'
+    grep -rn 'studio_json\.' stdlib/studio_*.bas examples/studio/*.bas
+    exit 1
+fi
+printf 'PASS no_gbasic_json_validator (retired; all reads go through try_decode)\n'
 
 # 7. Workspace lifecycle + multiple projects + navigation persistence:
 #    build a workspace (2 projects incl. one missing dir, an expanded folder, a
@@ -481,9 +483,10 @@ else
     exit 1
 fi
 
-# The index must stay SMALL however much output was captured: studio_store's read
-# path pre-validates it with studio_json.valid, which is pure gBASIC at roughly
-# 2 KB/s, so an index carrying capture text would take tens of seconds to open.
+# The index must stay SMALL however much output was captured. The split was
+# forced by a quadratic pure-gBASIC validator that no longer exists; it is kept
+# for write amplification (the index is rewritten whole on every save) and lazy
+# reads (a capture loads only when displayed).
 # Assert the separation rather than trusting it: the biggest index in the suite is
 # from `evict` (21 results), and it must still be far below one capture's cap.
 biggest_index=$(find "$res_home_root" -name '*.json' -printf '%s\n' 2>/dev/null | sort -n | tail -1)

@@ -1,9 +1,18 @@
-' studio_browser.bas — the gBASIC Studio filesystem project browser (STU-1).
+' filetree.bas — a directory as a navigable TREE.
 '
-' Turns a project's directory into a navigation TREE that reflects the filesystem.
-' It treats files as files — no parsing, no symbols, no code intelligence (those are
-' later phases). The tree is a plain gBASIC value (a model, not widgets), so the
-' shell renders it and tests assert it headlessly.
+' Turns a directory into a tree of plain gBASIC values — a model, not widgets — so
+' a GUI can render it, a CLI can print it, and a test can assert it headlessly. It
+' treats files as files: no parsing, no symbols, no interpretation of contents.
+'
+' Expansion is caller-controlled, which is what makes it usable for a navigation
+' pane: pass the set of directory paths that are open and only those are scanned,
+' so the cost is bounded by what is visible and the state survives a refresh or a
+' restart. Pass an empty set for a one-level listing.
+'
+'   nodes = filetree.scan("/home/u/proj", expanded)
+'   for each row in filetree.flatten(nodes)
+'       print repeat("  ", row.depth) + row.name
+'   end for
 '
 ' Design notes:
 '   * Directory entries are read with the `list` builtin, which returns records
@@ -17,7 +26,7 @@
 '     visible and lets expansion state persist across refresh/restart (STU-1).
 '
 ' A tree node:  { name, path, kind: "file"|"dir", expanded: bool, children: [node] }
-library studio_browser
+library filetree
 
     ' Build the sorted child nodes of `dir_path`, recursing into directories whose
     ' path is present in `expanded`. Missing/unreadable dir -> empty (no raise).
@@ -41,7 +50,7 @@ library studio_browser
             exp = contains(expanded, childpath)
             kids = []
             if exp then
-                kids = studio_browser._entries(childpath, expanded)
+                kids = filetree._entries(childpath, expanded)
             end if
             nodes = append(nodes, { name: nm, path: childpath, kind: "dir", expanded: exp, children: kids })
         end for
@@ -56,12 +65,7 @@ library studio_browser
     ' `expanded` set of directory paths. Re-invoking this IS the refresh operation:
     ' it re-reads the filesystem, so created/deleted files appear on the next scan.
     function scan(path, expanded)
-        return studio_browser._entries(path, expanded)
-    end function
-
-    ' Convenience: scan a project's directory with a workspace expansion set.
-    function scan_project(project, expanded)
-        return studio_browser._entries(project.path, expanded)
+        return filetree._entries(path, expanded)
     end function
 
     ' ---- projections over a scanned tree ----------------------------------
@@ -70,7 +74,7 @@ library studio_browser
     ' directory's children appear only when it is expanded). Each row:
     '   { name, path, kind, depth, expanded }
     function flatten(nodes)
-        return studio_browser._flatten_into(nodes, 0, [])
+        return filetree._flatten_into(nodes, 0, [])
     end function
 
     function _flatten_into(nodes, depth, out)
@@ -78,7 +82,7 @@ library studio_browser
             out = append(out, { name: n.name, path: n.path, kind: n.kind, depth: depth, expanded: n.expanded })
             if n.kind = "dir" then
                 if n.expanded then
-                    out = studio_browser._flatten_into(n.children, depth + 1, out)
+                    out = filetree._flatten_into(n.children, depth + 1, out)
                 end if
             end if
         end for
@@ -87,14 +91,14 @@ library studio_browser
 
     ' Number of currently-visible rows (files + expanded-visible entries).
     function visible_count(nodes)
-        rows = studio_browser.flatten(nodes)
+        rows = filetree.flatten(nodes)
         return count(rows)
     end function
 
     ' A deterministic, path-free text rendering of the visible tree. Markers:
     '   "v " expanded dir · "> " collapsed dir · "  " file. Two spaces per depth.
     function dump(nodes)
-        rows = studio_browser.flatten(nodes)
+        rows = filetree.flatten(nodes)
         lines = []
         for each r in rows
             indent = ""
