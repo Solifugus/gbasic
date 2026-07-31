@@ -1,6 +1,7 @@
 # gBASIC text & pattern library — design proposal
 
-Status: proposal (not yet implemented)
+Status: **Layer 0 (regex builtins) ACCEPTED and in build; Layer 1 (ARI) still a
+proposal.** Decisions recorded in §13 (2026-07-31).
 
 A two-layer library for finding and extracting structured data from text:
 
@@ -116,8 +117,16 @@ A **match record** is plain data (inspectable, no new value kind):
   `re_find(s, pat, "i")` (ignore case), `"m"` (multiline `^`/`$`), `"s"`
   (dot matches newline). Absent ⇒ defaults (case-sensitive, `.` excludes
   newline). Kept as a string so the common call stays two arguments.
-- **Determinism**: same inputs ⇒ same output, always. `start`/`end` are byte
-  offsets into the (binary-safe) string; group ordering is by opening paren.
+- **Determinism**: same inputs ⇒ same output, always. Group ordering is by
+  opening paren.
+- **`start`/`end` are CODEPOINT indices, not byte offsets** (decided 2026-07-31,
+  overriding this document's original byte-offset proposal). The existing `find`
+  builtin already returns a codepoint index precisely so that
+  `mid(s, find(s, x), n)` composes; a regex match that reported bytes would
+  disagree with it and could not be fed to `mid`/`left`/`right` for any string
+  containing non-ASCII. The POSIX engine works in bytes internally, so the
+  implementation converts on the way out — O(1) for one-byte-per-unit strings
+  after PLAT-STRIDX, and bounded by the cached cursor otherwise.
 - **Compile caching**: `re_*` compiles the pattern on each call, but the
   implementation caches the last-compiled pattern string ⇒ compiled program, so a
   pattern reused across a loop compiles once. (An explicit `re_compile` handle is
@@ -285,17 +294,29 @@ parsing by writing specs and diffing frames, never by reading C.
 
 ## 10. Performance notes
 
-The known gBASIC O(n²) traps (per project gotchas) matter in a text engine:
+**CORRECTED 2026-07-31.** This section was written when gBASIC had two O(n²)
+traps, and it shaped the design around avoiding them. Both are gone:
 
-- **Regex**: reuse the compiled-pattern cache (§3); don't rebuild a pattern
-  inside a loop. `re_find_all` returns the whole list — iterate it with
-  `for each`, not indexed `while`.
-- **ARI**: hold the report as a list of lines built once; iterate lines and
-  fields with `for each`; assemble a section's rows into a parts list and build
-  the frame columns in one pass rather than `append`-ing cell by cell in a hot
-  loop. ARI targets documents (filings, reports), not multi-gigabyte streams —
-  the whole report lives in memory as lines, which is the right call for the
-  target domain but is stated as a bound, not hidden.
+- Indexed array access in a `while` loop, and `append`, became linear on
+  2026-07-23 (copy-on-write arrays). `for each` is still the more readable loop;
+  it is no longer the faster one.
+- Per-character string scanning became linear on 2026-07-29 (PLAT-STRIDX): a
+  256 000-character scan went from 249 s to 0.30 s, in either direction.
+
+That second fix is what makes Layer 1 viable at all. A pure-gBASIC ARI parser
+walks a report character by character; at the sizes real filings reach, the old
+behaviour would have made the layer unusable, and the design would have had to
+push ARI into C. It does not.
+
+What still holds:
+
+- **Regex**: reuse the compiled-pattern cache (§3); do not rebuild a pattern
+  inside a loop. That is a real cost and the cache is why it is bounded.
+- **String building**: `s = s + x` in a loop is still O(n²) — the one trap that
+  was not fixed. Accumulate into an array and `join` once.
+- **Memory bound**: ARI holds the whole report in memory as lines. That is the
+  right call for filings and reports and the wrong one for multi-gigabyte
+  streams; it is stated as a bound, not hidden.
 
 ## 11. Non-goals (v1)
 
@@ -320,7 +341,32 @@ The known gBASIC O(n²) traps (per project gotchas) matter in a text engine:
 - **Reusable specs** — an ARI spec is a text value: read it from a file, pass it
   around, generate it programmatically, and golden-test it.
 
-## 13. Open questions for the user
+## 13. Decisions (answered 2026-07-31)
+
+Answered before Layer 0 went into build. The original questions are kept below
+each answer so the reasoning stays legible.
+
+**A. Match offsets are CODEPOINT indices.** Not in the original list — raised
+because §3 specified byte offsets while the existing `find` builtin returns
+codepoints so it composes with `mid`. Two conventions in one language for the
+same idea is the kind of thing nobody remembers correctly. See §3.
+
+**B. This phase ships LAYER 0 ONLY** — the six `re_*` builtins, tested,
+documented, with a cookbook entry. ARI is a later phase, designed against
+builtins that exist rather than against a specification of them.
+
+**C. ARI type keywords: the four generic ones** (`date`, `money`, `integer`,
+`decimal`). Domain identifiers such as `cik`/`accession`/`cusip` stay
+user-defined via `type` with a regex, rather than putting EDGAR vocabulary in a
+general text library. Revisit once ARI has run against real filings.
+
+**Adopted as proposed** (the document's own leans, taken unchanged): the
+whitelisted `\d \D \w \W \s \S` shorthand set with `\b` left out (POSIX's
+`[[:<:]]`/`[[:>:]]` is not portable); libc-only for v1 with `HAVE_LIBPCRE2`
+deferred until a power feature is actually asked for; and `stdlib/ari.bas` alone,
+with no `text.bas` wrapper layer over the builtins.
+
+### The original open questions
 
 1. **Regex shorthand set** — is the whitelisted `\d \D \w \W \s \S` translation
    (§2) the right scope for v1, or do you also want `\b` word boundaries (POSIX
