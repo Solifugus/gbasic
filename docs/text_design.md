@@ -225,6 +225,16 @@ codepoint 9, and `[0-9,]+` cannot cross the `.`, so the first group stops at
 An ARI spec is a text value. Faithful to the original, with the gBASIC
 adaptations noted above.
 
+> **A tightened, implementable draft of this syntax lives in
+> `docs/ari_spec_language.md`** (2026-08-01), written against the two committed
+> fixtures. It supersedes this section's sketch where the two differ: the grammar
+> below is ambiguous about where a `:` goes, and three of its assumptions did not
+> survive measurement — a column heading cannot locate its own column (headings
+> drift 4–11 columns from their data), a fixed column span cannot locate a value
+> either (a trailing-minus negative is one column wider than the positives above
+> it), and word-boundary anchoring is needed but unavailable. See that document's
+> §1.
+
 **Overall structure:**
 
 ```
