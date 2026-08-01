@@ -266,6 +266,63 @@ type CURRENCY:
     output: decimal
 ```
 
+## 5.1 The variation problem (recorded 2026-08-01, from production experience)
+
+This section exists because it is the reason ARI is worth building, and because
+every instinct that says "just write a regex for the amount column" dies here.
+
+Reports of this class are produced by long-lived programs in archaic languages,
+edited by different people across decades. **A single report is not internally
+consistent**, because different sections were written at different times by
+different hands. This is not an edge case to be tolerated; it is the normal
+condition of the input, and the design must assume it.
+
+**Money is the worst offender.** All of the following occur, and more than one
+can occur *within the same document*:
+
+| form | example | note |
+|---|---|---|
+| symbol, no padding | `$1,234.56` | |
+| symbol, value right-justified in a fixed field | `$    1,234.56` | the gap is padding, not a delimiter |
+| no symbol at all | `1,234.56` | |
+| no grouping separators | `1234.56` | |
+| trailing minus | `$1,234.56-` | the form in `teller_totals.rpt` |
+| leading minus, before the symbol | `-$1,234.56` | |
+| leading minus, after the symbol | `$-1,234.56` | |
+| bracketed negative | `<$1,234.56>` | also seen with other bracket pairs |
+| parenthesized negative | `(1,234.56)` | the accounting convention |
+| credit/debit suffix | `1,234.56CR` | |
+
+**The design consequence is structural, not cosmetic.** A built-in `money`
+keyword cannot be one fixed pattern, and it cannot be one setting for the whole
+report either, because the report disagrees with itself. Type recognition must
+therefore be **scoped**: a default permissive recognizer covering the union of
+common forms, overridable **per section and per field** where the permissive one
+would be wrong or ambiguous.
+
+That ambiguity is real, not theoretical. `1,234.56-` is a negative amount in one
+report and a positive amount followed by a separator in another; `(1,234.56)` is
+negative under the accounting convention and a parenthetical note elsewhere.
+Nothing in the token decides it — only the surrounding document does. So the
+permissive recognizer must be *overridable*, and the override must be local.
+
+This raises the standing of custom `type` blocks (§5). They were positioned as
+an advanced convenience; they are in fact the mechanism by which a spec author
+copes with a report that contradicts itself, and the built-in keywords are best
+understood as pre-supplied common cases rather than as the primary interface.
+
+**Other archaisms in the same family**, all seen and all to be represented in
+fixtures: identifiers glued to labels with no separator (`CHK#4211` inside a
+free-text description column); the same field labelled two ways in one document
+(`Teller #:` and `Teller#:`); fields whose order differs between otherwise
+identical blocks; and column headings that shift position between tables.
+
+**Fixture policy that follows from this.** Inventing *additional* section kinds
+purely to widen the variation covered is explicitly worthwhile — a fixture is not
+required to be a faithful reproduction of any one real report, and a synthetic
+section that exercises a bracketed negative earns its place even if no observed
+report pairs it with that layout.
+
 ## 6. ARI gBASIC API
 
 ```
@@ -536,8 +593,8 @@ The alternatives — spelling the test `not is_unknown(match(s, p))`, or adding 
 fifth name `matches(s, p)` — were rejected as clunky and as surface growth
 respectively.
 
-**H. OPEN — repeating page furniture has no representation in the spec
-language.** Raised 2026-08-01, blocking Phase 2 design.
+**H. Repeating page furniture is removed by a grid preprocessing pass.** Raised
+and resolved 2026-08-01.
 
 The target domain is paginated print-image reports from mainframe-era systems
 (teller totals, trial balances, transaction registers). Those files are not a
@@ -559,24 +616,61 @@ file, and a distance of `up 2` means something different before and after the
 excision. That is a core model decision, so it belongs before implementation
 rather than after.
 
-Three candidate shapes, none yet chosen:
+**RESOLVED 2026-08-01**, on production experience of the modeled report:
 
-1. **A `skip`/`ignore` pattern at section scope** — `section x ignore(/^\f/ .. 5)`:
-   lines matching a pattern (and optionally the N following) are removed from the
-   grid before anchoring. Most flexible; needs a rule for what `up`/`down` count.
-2. **Page-aware parsing** — split the document on form feeds into pages, treat a
-   page header as a fixed prologue of N lines, and concatenate the remainders
-   into one logical grid. Matches how these files are actually produced; weaker
-   when the header height varies.
-3. **Anchor-relative immunity** — no spec construct; rely on `starts`/`ends` plus
-   sufficiently specific anchors and accept that some reports cannot be parsed.
-   Cheapest, and the honest fallback if 1 and 2 both prove unwieldy.
+- **Form feeds are present** in the real document (the hand-made
+  `teller_totals.rpt` fixture omits them; that is a fixture defect, not a
+  property of the format).
+- **A page break can occur ANYWHERE — including mid-section.** Pagination is
+  driven by lines-per-page, which is unrelated to the report's logical
+  structure. A teller's detail table can be cut in half by a form feed, a page
+  header, and a resumption.
+- The report contains **many branches**, each with the full teller structure, so
+  branch sections begin at arbitrary points and are themselves subject to being
+  split across pages.
 
-My lean is **2 with 1 as the escape hatch**: form-feed pagination covers the
-common case declaratively, and an `ignore` pattern handles the rest. Both need
-the grid question answered explicitly and documented, because "which lines do
-`up`/`down` count?" is precisely the sort of thing that is obvious to whoever
-wrote the engine and invisible to everyone else.
+That settles the mechanism. Because a page break is **independent of logical
+structure**, page furniture cannot be handled inside the section machinery at
+all — there is no section-relative rule that describes "somewhere in the middle,
+possibly between any two lines." It must be removed **before anchoring, as a
+preprocessing pass over the line grid**:
+
+```
+raw lines ─► strip page furniture ─► CLEAN GRID ─► section/field anchoring
+```
+
+**This is also the answer to the grid question.** `up`/`down` count over the
+**clean grid**, never the physical file. A section spanning three pages sees its
+lines as contiguous, which is what makes an anchor like `down 1` mean the same
+thing whether or not a page happened to break at that point. Line numbers
+reported in diagnostics should map back to physical lines, so a user can find
+the line in the original file.
+
+**The furniture declaration is report-scoped, not section-scoped.** This follows
+from the pass ordering rather than being a style choice: furniture is removed
+*before* any section is located, so at the moment it runs there is no section to
+attribute a declaration to. It is declared once at the top of the spec and
+applies to the whole document.
+
+**What constitutes furniture** is spec-declared, in two forms so that both
+report styles are expressible:
+
+1. **Form-feed anchored** (this report): furniture begins at `\f` and runs for a
+   declared number of lines, or through the last line matching a declared header
+   pattern.
+2. **Pattern anchored** (no form feeds — the case the fixture accidentally
+   modeled): furniture is any line matching a header pattern, plus a declared
+   number of following lines.
+
+Both must exist. Form feeds are the reliable signal where present, but a report
+that lacks them is not thereby unparseable, and the fixture proved that case is
+easy to encounter by accident.
+
+*(Superseded lean, for the record: form-feed pagination as primary with an
+`ignore` pattern as an escape hatch, on the assumption that page breaks align
+with structure. The "anywhere, including mid-section" fact is what moved
+furniture removal out of the section machinery and into a grid preprocessing
+pass — a bigger change than choosing between the original three candidates.)*
 
 **Adopted as proposed** (the document's own leans, taken unchanged): the
 whitelisted `\d \D \w \W \s \S` shorthand set with `\b` left out (POSIX's
@@ -644,10 +738,23 @@ ranges** exist because real reports do not hold a constant label-to-value gap
 across every row — an exact-distance-only engine matches the first row of a
 column and misses the rest. Without these three, ARI parses examples.
 
+Phase 2 also owns **page-furniture removal** (§13.H) — form-feed-anchored and
+pattern-anchored — because it is a property of the line grid every anchor reads,
+not a feature layered on top of one.
+
 ### Phase 3 — ARI advanced (conversion and reuse)
 The built-in type keywords (`date`, `money`, `integer`, `decimal`) with native
 value conversion; regex-with-transform (`/re/repl/`); custom `type` blocks.
 Golden tests per feature.
+
+Scoping note (§5.1): the type keywords cannot be single fixed patterns, and
+cannot be one setting per report — a real report contradicts itself between
+sections, because different sections were written by different people years
+apart. Each keyword is a permissive recognizer over the union of common forms,
+**overridable per section and per field**. Custom `type` blocks are therefore
+not a convenience at the end of the list; they are the mechanism by which a spec
+author resolves a document that disagrees with itself, and the built-in keywords
+are pre-supplied common cases rather than the primary interface.
 
 ### Phase 4 — optional power engine + ergonomics
 Optional `HAVE_LIBPCRE2` engine behind the same Layer 0 surface (lookaround,

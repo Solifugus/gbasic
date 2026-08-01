@@ -1,0 +1,9 @@
+# Print-image report fixtures (docs/text_design.md §9). These are page images,
+# not text in the usual sense: column alignment depends on exact byte positions,
+# trailing spaces are significant padding, and form feeds (0x0C) are the page
+# markers. Any normalization silently changes what the file MEANS, so all of it
+# is disabled here rather than relied upon not to happen.
+#
+#   -text        no line-ending conversion in either direction
+#   -whitespace  trailing space is data; do not flag it as an error
+examples/fixtures/ari/*.rpt -text -whitespace
