@@ -715,3 +715,62 @@ D0.6, the rest remain open or are by-design.
   (with `gi.require("Gio", "2.0")` first). Either a `flags` parameter on
   `gtk.application` or one sentence in its comment naming the default would have
   saved the hunt — the failure mode is silent and acts at a distance.
+
+## 2026-08-01 — CC — while: ARI Phase 2 (locating a literal anchor in a report line)
+
+- **Type:** language-surprise
+- **Severity:** medium
+- **What:** `find` and `match` are the literal and regex halves of the same
+  operation, and they report a miss **differently**:
+
+  ```basic
+  print type(find("abc", "z"))     ' nothing
+  print type(match("abc", "z"))    ' unknown
+  ```
+
+  `match` returning `unknown` is deliberate — it is the NA policy, and
+  `is_unknown` is the documented miss test (docs/text_design.md §3). But `find`
+  predates that policy and returns `nothing`, so the obvious guard silently does
+  not fire:
+
+  ```basic
+  idx = find(hay, needle)
+  if is_unknown(idx) then return unknown end if   ' never true on a miss
+  r = idx + 1                                     ' arithmetic operator '+' expected number but got nothing
+  ```
+
+  The failure surfaces a few frames away from its cause, in whatever arithmetic
+  first touches the null. Adding regex to the core made this worse, not better:
+  there are now two closely-related builtins with two miss conventions, and
+  nothing warns you which one you are holding.
+- **Workaround:** check both in any helper that can take either path
+  (`is_nothing(idx)` then `is_unknown(idx)`), so callers see one miss value.
+  See `stdlib/ari.bas` `_find_token`. A real fix would be to decide one
+  convention for miss across the string builtins; changing `find` is a breaking
+  change and would need its own phase.
+
+## 2026-08-01 — CC — while: ARI Phase 2 (printing parsed money amounts)
+
+- **Type:** bug
+- **Severity:** high
+- **What:** `print` and `string()` render numbers with about **6 significant
+  digits**, so any amount from $10,000.00 up silently loses its cents:
+
+  ```basic
+  v = 13586.25
+  print v            ' 13586.2    <- a cent has vanished
+  print string(v)    ' 13586.2
+  print v * 100      ' 1358625    <- the VALUE is fine
+  print v = 13586.25 ' true
+  ```
+
+  The stored value is exact; only the rendering is lossy. That distinction is
+  cold comfort in a reporting library, where the rendering *is* the product — a
+  teller totals report printed through gBASIC would be wrong on every line over
+  $9,999.99, and wrong quietly. It also makes golden tests misleading: a golden
+  captured from `print` cannot distinguish 13586.25 from 13586.20.
+- **Workaround:** in `examples/ari_teller_test.bas`, money is displayed as
+  integer cents (`v * 100`) so the golden proves what was parsed. That is a test
+  device, not a fix. Previously noted as a "%g number-display precision" gap
+  during the bitwise work; recording it again with a concrete cost, because it
+  is materially worse for money than for the bit patterns that first surfaced it.

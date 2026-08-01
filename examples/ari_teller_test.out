@@ -1,0 +1,61 @@
+== page furniture ==
+raw lines   = 76
+clean lines = 72
+headers left= 0
+
+== parse ==
+ok          = true
+branch      = 14
+tellers     = 3
+
+== tellers (field ORDER differs between them) ==
+-- teller 386 (Wendy Hermin)
+   beginning = 1358625c
+   ending    = -865175c
+   total     = 5687050c
+   rows      = 3
+     Cash Deposit | 001000234 | 12 | 925000c
+     Check Deposit CHK#4211 | 001002345 | 11 | 1850000c
+     ACH Transfer | 001004326 | 13 | -600025c
+-- teller 261 (Ryan Bellbowl)
+   beginning = 386350c
+   ending    = 1851075c
+   total     = 6692135c
+   rows      = 3
+     Cash Deposit | 001000234 | 12 | 1225000c
+     Check Deposit CHK#5621 | 001002345 | 11 | 2830000c
+     ACH Transfer | 001004326 | 13 | -100050c
+-- teller 262 (Ryan Bellbowl)
+   beginning = 386350c
+   ending    = 1851075c
+   total     = 6692135c
+   rows      = 2
+     Cash Deposit | 001000234 | 12 | 1225000c
+     Check Deposit CHK#3467 | 001002345 | 11 | 2830000c
+
+== closing drawers ==
+-- teller 386 hundreds=13 dollars=1
+   bait_cash = unknown
+-- teller 261 hundreds=13 dollars=1
+   bait_cash = unknown
+-- teller 262 hundreds=13 dollars=1
+   bait_cash = unknown
+
+== generated fixture: form feeds + money union ==
+raw lines   = 230
+clean lines = 222
+form feeds left = 0
+ok          = true
+branches    = 3
+-- branch 14 total=25589400c tellers=3
+   teller 261 begin=575575c end=-1165325c
+   teller 274 begin=585000c end=1180275c
+   teller 287 begin=594425c end=1195225c
+-- branch 21 total=26834400c tellers=3
+   teller 301 begin=604575c end=-1211325c
+   teller 314 begin=614000c end=1226275c
+   teller 327 begin=623425c end=1241225c
+-- branch 28 total=28079400c tellers=3
+   teller 341 begin=633575c end=-1257325c
+   teller 354 begin=643000c end=1272275c
+   teller 367 begin=652425c end=1287225c
