@@ -1,0 +1,83 @@
+-- regex(): a compiled pattern is a value
+reusable  =true
+reusable  =false
+same as string=true
+-- contains: string + LITERAL (new; this used to raise)
+substring =true
+absent    =false
+dot literal=false
+dot regex  =true
+star literal=false
+star regex  =true
+-- contains: the ARRAY case is untouched
+member    =true
+non-member=false
+-- contains: flags
+no flag   =false
+i flag    =true
+dot nl    =false
+s flag    =true
+m flag    =true
+anchored  =true
+alternation=true
+-- match: the match record
+found     =[1500] @6+4 groups=0
+composes  =1500
+miss      =unknown
+miss is unknown=true
+-- match: SCANS, it does not anchor (§13.E)
+not at start=[42] @3+2 groups=0
+anchor is opt-in=true
+-- match: flags as a trailing argument on a bare string pattern
+no flag   =true
+i flag    =[HELLO] @0+5 groups=0
+same as regex()=true
+-- regex values compare by pattern and flags, not by identity
+same      =true
+diff pat  =false
+flag order=true
+diff flags=false
+-- match: offsets are CODEPOINTS, not bytes
+start     =2
+bytes were=3
+composes  =llo
+agrees with find=true
+-- match: capture groups
+whole     =$1,500.00
+groups    =1,500|00
+count     =2
+-- match: groups is ALWAYS a list, empty when there are none
+no groups =0
+-- match: a non-participating group is unknown, not "" (§13.F)
+alternation=<unknown> <abc>
+matched empty=<>
+-- match_all
+count     =3
+matches   =1@1 22@4 333@8
+none      =0
+-- match_all: anchors restrict, they do not collapse to match
+unanchored=3
+anchored  =0
+-- match_all: an empty-width match must terminate
+terminates=true
+-- replace
+literal   =a#b2c3
+regex     =a#b#c#
+groups    =31/07/2026
+no match  =abc
+dot literal=a#c abc
+dot regex  =#######
+-- split
+count     =3 parts=a|b|c
+no match  =abc
+dot literal=axbxc
+dot regex  =|||||
+-- find is NOT overloaded: it stays literal and returns a number
+literal   =2
+still number=true
+-- binary safety: an interior NUL must not end the subject
+len       =3
+finds B   =true
+-- a compiled pattern is stable under reuse
+stable over 50 uses=true
+stable when interleaved=true

@@ -130,6 +130,43 @@ the standing ones.
   governs stdout alone. Put anything that is not the program's data there, or a
   caller cannot pipe your program anywhere.
 
+## Regex
+
+- **`match` SCANS; it does not anchor.** It is Python's `re.search`, not
+  Python's `re.match`. Reading it as "matches the whole string" gives wrong
+  answers with no error:
+
+  ```basic
+  print(match("xx 42", "[0-9]+").text)    ' 42  -- found mid-string
+  print(is_unknown(match("xx 42", "^[0-9]+")))   ' true -- anchoring is opt-in
+  ```
+
+- **There is no `re_find`/`re_replace` family, and no `/pattern/` literal.**
+  A pattern is either a plain string or a compiled `regex(p)` value, and the
+  verbs you already know are overloaded on it: `contains(s, regex(p))`,
+  `replace(s, regex(p), r)`, `split(s, regex(p))`. Only `match`/`match_all` are
+  new names, because their return shape (a record, not an index) has no literal
+  counterpart. **`find` is NOT overloaded** — it stays literal and returns a
+  number.
+
+- **A string pattern means a LITERAL, always.** `contains(s, "b*")` asks whether
+  the two characters `b*` occur; `contains(s, regex("b*"))` is the pattern. The
+  same split applies to `replace` and `split`. Forgetting `regex(...)` does not
+  raise — it silently searches for the pattern text itself.
+
+- **A match record carries `length`, not `end`** (`end` is a reserved word and
+  cannot be a record field), and `start`/`length` are **codepoint** measures, so
+  `mid(s, m.start, m.length)` composes. A miss is `unknown`, not an error:
+  test with `is_unknown`.
+
+- **`\b` does not exist**, nor lookaround, backreferences, or non-greedy
+  quantifiers — the engine is POSIX ERE. `\d \D \w \W \s \S` do work (they are
+  translated), but `\D \W \S` are rejected *inside* `[...]` because POSIX has no
+  negated class there.
+
+- **`contains` now takes a string as well as an array.** `contains("hello",
+  "ell")` used to raise `contains expects an array`; it returns `true` now.
+
 ## Error handling — the big one
 
 `on error resume next` does **not** work like an exception catch. See

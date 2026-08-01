@@ -2041,10 +2041,12 @@ record({a:1, b:2})            # {a:1, b:2}
 
 ### String Helpers
 
-**`replace(text, from, to)`** - Replaces all occurrences of `from` with `to`:
+**`replace(text, from, to)`** - Replaces all occurrences of `from` with `to`.
+`from` may be a literal string or a `regex` value (see *Regular Expressions*):
 ```basic
 replace("hello", "l", "x")     # "hexxo"
 replace("hello world", "o", "0")  # "hell0 w0rld"
+replace("a1b2", regex("[0-9]"), "#")  # "a#b#"
 ```
 
 **`starts_with(text, prefix)`** - Returns `true` if text starts with prefix:
@@ -2101,6 +2103,68 @@ values `0..255`:
 from_bytes([72, 105])          # "Hi"
 from_bytes([0, 255])           # a two-byte binary string
 ```
+
+### Regular Expressions
+
+Always available — the engine is the POSIX ERE support in libc, so there is no
+optional dependency and no `load`. Design: `docs/text_design.md`.
+
+**`regex(pattern [, flags])`** - Compiles a pattern into an immutable regex
+value. Compiling once and reusing it is how you keep a pattern out of a loop's
+inner cost:
+```basic
+digits = regex("[0-9]+")
+print(contains("order 1500", digits))    # true
+```
+Flags are a short string: `"i"` ignore case, `"m"` `^`/`$` match at line
+boundaries, `"s"` `.` matches a newline. They are independent, and unknown
+letters raise rather than being ignored.
+
+**`match(text, pattern [, flags])`** - The first match as a record, or `unknown`
+if there is none. **It scans** — it is Python's `re.search`, not `re.match`;
+anchor with `^` if you want the start of the string:
+```basic
+m = match("order 1500 shipped", "[0-9]+")
+print(m.text)                            # "1500"
+print(mid("order 1500 shipped", m.start, m.length))   # "1500"
+print(is_unknown(match("none", "[0-9]+")))            # true
+```
+The record is `{text, start, length, groups}`. `start` and `length` are
+**codepoint** measures, matching `find`, so they compose with `mid`/`left`/
+`right`. The field is `length` rather than `end` because `end` is a reserved
+word. `groups` is always a list (empty when the pattern has no captures); a
+group that did not participate is `unknown`, distinct from one that matched the
+empty string.
+
+**`match_all(text, pattern [, flags])`** - Every non-overlapping match, left to
+right, as a list of the same records:
+```basic
+for each m in match_all("a1 b22 c333", "[0-9]+")
+    print(m.text)                        # 1, 22, 333
+end for
+```
+
+**Overloads.** Three verbs that already take a literal also accept a `regex`
+value, and mean the pattern version when given one. A plain string argument
+always stays **literal**:
+```basic
+contains("hello", "ell")                 # true  (literal substring)
+contains("hello", regex("h.llo"))        # true  (pattern)
+contains("hello", "h.llo")               # false (literal — no dot in "hello")
+split("a1b22c", regex("[0-9]+"))         # ["a", "b", "c"]
+```
+`find` is **not** overloaded: it returns a single index, which cannot carry a
+match record, so `match` exists under its own name instead.
+
+**Supported syntax.** POSIX Extended Regular Expressions, plus a translation of
+`\d \D \w \W \s \S` to their POSIX classes. Not supported: `\b` word
+boundaries, lookaround, backreferences within a pattern, non-greedy
+quantifiers, and named groups. `\D`, `\W` and `\S` are rejected *inside* a
+`[...]` bracket expression, because POSIX offers no negated class there.
+
+A pattern may not contain an interior NUL byte (`regcomp` cannot honor one, so
+it raises rather than silently truncating). The **subject** has no such limit:
+matching is binary-safe and searches the full byte length.
 
 ### Record Helpers
 

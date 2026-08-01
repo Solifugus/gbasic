@@ -81,6 +81,20 @@ for error handling, `ERRORS.md`.
   → `examples/monotonic_test.bas`
 - **Bitwise** — `band`/`bor`/`bxor`/`bnot`/`shl`/`shr`/`rotl`/`rotr` on 32-bit
   unsigned integers. → `examples/bitwise_test.bas`
+- **Match a pattern** — `match(s, p)` for the first match, `match_all(s, p)` for
+  every one; a miss is `unknown`, so test with `is_unknown`. The record is
+  `{text, start, length, groups}` with `start`/`length` in codepoints, so
+  `mid(s, m.start, m.length)` composes. `match` scans rather than anchoring —
+  it is Python's `re.search`, not `re.match`. → `tests/regex_test.bas`
+- **Search, replace or split by pattern** — pass `regex(p)` where the verb takes
+  a literal: `contains(s, regex(p))`, `replace(s, regex(p), "$1")`,
+  `split(s, regex(p))`. A plain string argument stays literal, so omitting
+  `regex(...)` silently searches for the pattern text itself. `find` is not
+  overloaded. → `tests/regex_test.bas`
+- **Reuse a pattern** — `regex(p)` compiles once and is an immutable value; hoist
+  it out of a loop rather than passing the string each time. Flags belong to
+  `regex(p, "ims")`: `i` ignore case, `m` `^`/`$` per line, `s` dot matches
+  newline. → `tests/regex_test.bas`
 - **Tolerate bad input** — do **not** catch with `on error resume next`;
   pre-validate and call the raising builtin only when it will succeed. See
   `ERRORS.md`. → `examples/on_error_resume_next_test.bas`

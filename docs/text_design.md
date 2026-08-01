@@ -1,12 +1,26 @@
 # gBASIC text & pattern library — design proposal
 
-Status: **Layer 0 (regex builtins) ACCEPTED and in build; Layer 1 (ARI) still a
-proposal.** Decisions recorded in §13 (2026-07-31).
+Status: **Layer 0 (regex in the core) IMPLEMENTED 2026-08-01 — Phase 1 of §14 is
+done. Layer 1 (ARI) remains a proposal.** Decisions recorded in §13.
+
+The Layer 0 surface was redesigned on 2026-08-01, before any C was written — see
+§13 decision D — from six `re_*`-prefixed builtins to a `regex` value kind plus
+overloads of the existing `contains`/`replace`/`split` verbs. Sections 2, 3, 9
+and 11 reflect the shipped shape; the superseded surface is recorded in §13.D
+rather than deleted.
+
+What shipped: `VALUE_REGEX` (copy/free/print/compare/`SER_REGEX`), `regex()`,
+`match()`, `match_all()`, the three overloads, the shorthand translation, the
+flag handling, codepoint offsets, and binary-safe subjects via `REG_STARTEND`.
+Tested by `tests/run_regex.sh` (golden + flag matrix + 8 negative cases + actor
+round-trip + valgrind); documented in `docs/reference.md`, `docs/ai/UNLEARN.md`
+and `docs/ai/COOKBOOK.md`.
 
 A two-layer library for finding and extracting structured data from text:
 
-- **Layer 0 — regex**: a small set of always-available C builtins (`re_*`) for
-  linear pattern matching, backed by the POSIX regex engine already in libc.
+- **Layer 0 — regex**: an always-available core value kind (`regex`) plus a small
+  set of C builtins for linear pattern matching, backed by the POSIX regex engine
+  already in libc.
 - **Layer 1 — ARI**: a pure-gBASIC `stdlib` library that parses *messy,
   semi-structured reports* declaratively and returns a **frame**. ARI is built
   on Layer 0.
@@ -24,8 +38,13 @@ demand.
 
 ## 0. Motivation (the genuine gap)
 
-gBASIC has `find`, `replace`, `split`, `contains`, `starts_with`, `ends_with`,
-`trim` — all **literal** string operations. There is **no regular expression
+gBASIC has `find`, `replace`, `split`, `starts_with`, `ends_with`, `trim` — all
+**literal** string operations. (This list originally included `contains`;
+**corrected 2026-08-01** — `contains` was array-only and *raised* `contains
+expects an array` on a string first argument, verified against the built
+interpreter. §13.G resolves this by giving `contains` the string case, literal
+and regex, so the list above becomes true rather than merely asserted.) There is
+**no regular expression
 support at any level**, and the EDGAR suite already feels it: `mdna.bas` and the
 filing readers do ad-hoc substring surgery to pull prose and numbers out of SEC
 documents. Two distinct needs go unmet:
@@ -46,7 +65,7 @@ field patterns are themselves regexes**.
    (stdlib, pure gBASIC; parses the spec, walks the report as a line grid)
                           │
                           ▼  uses
-  re_test / re_find / re_find_all / re_replace / re_split      (C builtins, libc)
+  regex() / match() / match_all() / contains() / replace() / split()   (core, libc)
 ```
 
 - **Layer 0** is C, always compiled in (§2), and usable on its own.
@@ -58,16 +77,17 @@ field patterns are themselves regexes**.
 
 This is the crux decision for Layer 0.
 
-- **It is a C builtin, not a `stdlib` library.** A correct regex engine is real
+- **It is in the core, not a `stdlib` library.** A correct regex engine is real
   machinery (NFA compilation, matching) with a performance floor a tree-walked
   gBASIC reimplementation could never meet. This clears the "earn a C
   implementation" bar the way XML and crypto did.
 - **The engine is `regcomp`/`regexec` from libc** (POSIX Extended Regular
   Expressions). Crucially, this is **not an optional dependency** — POSIX regex
   is part of libc on every platform gBASIC targets. So unlike `sqlite`/`pg`/`xml`
-  behind `HAVE_*`, the regex builtins are **always available**, with no guard and
-  no "feature compiled out" runtime error. They are core builtins, registered in
-  `src/builtins.c` next to the bitwise verbs and implemented in `src/eval.c`.
+  behind `HAVE_*`, regex is **always available**, with no guard and no "feature
+  compiled out" runtime error. The new names are registered in `src/builtins.c`
+  next to the bitwise verbs and implemented in `src/eval.c`; the `regex` value
+  kind lives alongside the existing date/money/file kinds (§3).
 
 **The tradeoff, stated plainly.** POSIX ERE lacks some PCRE conveniences:
 no lookaround, no backreferences *in the pattern*, greedy-only quantifiers, and
@@ -91,32 +111,76 @@ demand for PCRE power features appears, the clean upgrade path is an **optional*
 `HAVE_LIBPCRE2` engine selected at build time behind the same builtin surface
 (§14 Phase 4) — the always-on libc engine remains the floor.
 
-## 3. Decision B — the regex surface (`re_*` builtins)
+## 3. Decision B — the regex surface (a value kind + overloads)
 
-Six builtins. Names take an `re_` prefix because `find`/`replace`/`split`
-already exist as literal-string builtins and must not change meaning.
+**Revised 2026-08-01 (§13.D).** The original design added six `re_*`-prefixed
+builtins, the prefix existing solely because `find`/`replace`/`split` already
+mean *literal* string operations and must not change meaning. A namespace solves
+that problem properly instead of working around it: inside a regex value, the
+verbs go back to being the verbs they already are.
 
-| builtin | returns | notes |
+**A `regex` value is a compiled pattern.** `regex(pat)` (optionally
+`regex(pat, flags)`) compiles once and returns an immutable value holding the
+compiled program and its flags.
+
+Three of the four operations then **overload existing verbs**, dispatching on the
+kind of the pattern argument exactly the way `find` already dispatches on
+`VALUE_STRING` vs `VALUE_ARRAY` (`src/eval.c:19577`). A string argument stays
+literal, so every existing program keeps its meaning by construction:
+
+| call | returns | notes |
 |---|---|---|
-| `re_test(s, pat)` | boolean | does the pattern match anywhere in `s`? |
-| `re_find(s, pat)` | match record or `unknown` | first match; `unknown` if none |
-| `re_find_all(s, pat)` | list of match records | non-overlapping, left to right |
-| `re_replace(s, pat, repl)` | string | `$1`..`$9` group refs in `repl` |
-| `re_split(s, pat)` | list of strings | split on matches |
-| `re_groups(m)` | list | convenience: capture groups of a match record |
+| `regex(pat [, flags])` | regex value | compiles; reuse it to compile once |
+| `contains(s, regex(p))` | boolean | does it match anywhere in `s`? (§13.G) |
+| `contains(s, "sub")` | boolean | literal substring; new, previously raised |
+| `replace(s, regex(p), repl)` | string | `$1`..`$9` group refs in `repl` |
+| `split(s, regex(p))` | list of strings | split on matches |
+| `match(s, p)` | match record or `unknown` | first match; `unknown` if none |
+| `match_all(s, p)` | list of match records | non-overlapping, left to right |
 
-A **match record** is plain data (inspectable, no new value kind):
+**`find` deliberately does not overload.** It returns a single number, because a
+literal match *is* the needle you already hold. A regex match must return the
+whole record — you do not know what matched, and the captures are the point.
+Overloading `find` would make its return type depend on a runtime property of its
+second argument, so every caller would have to know which it got. `match` earns a
+separate name for the honest reason that its return shape genuinely differs.
+`match`/`match_all` accept a plain string pattern or a `regex` value.
+
+**Naming caution.** `match` scans for a match anywhere in the subject — it is
+Python's `re.search`, **not** Python's `re.match`, which anchors at the start.
+Reading it as "matches the whole string" gives wrong answers with no error, so
+this divergence gets an `UNLEARN.md` bullet. Anchoring is one `^` away.
+
+A **match record** is plain data (inspectable, not a new value kind — only the
+compiled pattern is):
+
+For `match("balance: $1,500.00 due", "\$([0-9,]+)\.([0-9]{2})")`:
 
 ```
-{ text: "$1,500.00", start: 21, end: 30, groups: ["1,500.00"] }
+{ text: "$1,500.00", start: 9, length: 9, groups: ["1,500", "00"] }
 ```
 
+(Verified against the implementation. An earlier draft of this example wrote
+`start: 10` and a first group of `"1,500.00"`; both were wrong — the `$` sits at
+codepoint 9, and `[0-9,]+` cannot cross the `.`, so the first group stops at
+`"1,500"`. `mid(s, 9, 9)` returns `"$1,500.00"`.)
+
+- **`length`, not `end`.** `end` is a reserved word and cannot be a record field,
+  and `start` + `length` is exactly what `mid` takes.
 - **No match** is `unknown`, not an error — consistent with gBASIC's NA policy,
-  so `is_unknown(re_find(...))` is the miss test and a missing match propagates.
-- **Flags** ride as a trailing optional argument, a short flag string:
-  `re_find(s, pat, "i")` (ignore case), `"m"` (multiline `^`/`$`), `"s"`
-  (dot matches newline). Absent ⇒ defaults (case-sensitive, `.` excludes
-  newline). Kept as a string so the common call stays two arguments.
+  so `is_unknown(match(...))` is the miss test and a missing match propagates.
+- **`groups` is always a list**, empty when the pattern has no capture groups, so
+  `count(m.groups)` is always safe. A group that **did not participate** (the
+  unmatched side of `(a)|(b)`) is `unknown`, distinct from a group that matched
+  the empty string, which is `""`. POSIX reports the difference for free and
+  collapsing it would throw information away.
+- **`re_groups` is gone** — capture groups are `m.groups` on an ordinary record,
+  so the convenience accessor has nothing to do.
+- **Flags** ride as an optional second argument to `regex`: `regex(p, "i")`
+  (ignore case), `"m"` (multiline `^`/`$`), `"s"` (dot matches newline). Absent ⇒
+  defaults (case-sensitive, `.` excludes newline). `match`/`match_all` accept the
+  same flag string as a trailing third argument when given a bare string pattern,
+  so the common call stays two arguments.
 - **Determinism**: same inputs ⇒ same output, always. Group ordering is by
   opening paren.
 - **`start`/`end` are CODEPOINT indices, not byte offsets** (decided 2026-07-31,
@@ -127,16 +191,18 @@ A **match record** is plain data (inspectable, no new value kind):
   containing non-ASCII. The POSIX engine works in bytes internally, so the
   implementation converts on the way out — O(1) for one-byte-per-unit strings
   after PLAT-STRIDX, and bounded by the cached cursor otherwise.
-- **Compile caching**: `re_*` compiles the pattern on each call, but the
-  implementation caches the last-compiled pattern string ⇒ compiled program, so a
-  pattern reused across a loop compiles once. (An explicit `re_compile` handle is
-  deliberately deferred — see Non-goals — to keep the surface stateless.)
+- **Compile caching is now explicit and user-controlled.** The original design
+  hid a single-entry cache (last pattern string ⇒ compiled program) inside the
+  builtins. `regex(p)` replaces it: hoist the call out of a loop and the pattern
+  compiles once, visibly. Passing a bare string still works and compiles per
+  call, which is the right default for one-shot use. This change also removes a
+  real defect the hidden cache would have had in ARI — see §10.
 
 ## 4. Decision C — ARI as pure gBASIC, emitting a frame
 
 - **ARI stays in `stdlib` (pure gBASIC).** It wraps no native library — it is
-  spec-parsing plus column arithmetic over lines, all on top of the `re_*`
-  builtins. The earn-a-C-module bar is *not* met, so it is `stdlib/ari.bas`.
+  spec-parsing plus column arithmetic over lines, all on top of the Layer 0
+  surface. The earn-a-C-module bar is *not* met, so it is `stdlib/ari.bas`.
 - **ARI emits a frame.** This is the key adaptation, and the reason ARI fits
   gBASIC better than it fit AmorphDB. A repeating `section ... break` is exactly
   a frame: named columns, equal-length, one record per repeat. A flat (non-break)
@@ -183,7 +249,7 @@ section section_name [starts("pattern")] [ends("pattern")]:
 | Type | Syntax | Example |
 |---|---|---|
 | Text literal | `"text"` | `"ID"`, `"TOTAL"` |
-| Regex | `/regex/` | `/\d{4}-\d{2}-\d{2}/` (compiled via the `re_*` engine) |
+| Regex | `/regex/` | `/\d{4}-\d{2}-\d{2}/` (compiled to a `regex` value at spec-parse time) |
 | Regex with transform | `/regex/replacement/` | `/(\d{2})\/(\d{2})\/(\d{4})/$3-$1-$2/` |
 | Built-in type | `date`, `money`, `integer`, `decimal` | native gBASIC values |
 
@@ -284,7 +350,7 @@ section bank_report:
 
 Both layers are deterministic, so both test the standard gBASIC way:
 
-- **Regex**: a `.bas` that prints `re_find_all(...)` results, a sibling `.out`.
+- **Regex**: a `.bas` that prints `match_all(...)` results, a sibling `.out`.
 - **ARI**: because a spec *is a text value*, a test is `input.txt` + `spec.ari`
   (or an inline spec) + a `.bas` that prints the parsed frame + a `.out`. No
   network, fully reproducible.
@@ -310,8 +376,16 @@ push ARI into C. It does not.
 
 What still holds:
 
-- **Regex**: reuse the compiled-pattern cache (§3); do not rebuild a pattern
-  inside a loop. That is a real cost and the cache is why it is bounded.
+- **Regex**: compile once with `regex(p)` and hoist it out of the loop. That is a
+  real cost, and making it explicit is why it is now controllable.
+- **The hidden cache would have broken ARI** (found 2026-08-01, while revising
+  §3). The original single-entry cache held only the *last* pattern. An ARI spec
+  with N field patterns walking M report lines alternates between all N on every
+  line, so every lookup evicts the previous one and **every pattern recompiles M
+  times** — the cache would have had a 0% hit rate on precisely the workload
+  Layer 1 exists to serve. With a `regex` value, ARI compiles each field's
+  pattern **once when it parses the spec** and reuses it across the whole report.
+  This was not the reason for the redesign; it was found by it.
 - **String building**: `s = s + x` in a loop is still O(n²) — the one trap that
   was not fixed. Accumulate into an array and `join` once.
 - **Memory bound**: ARI holds the whole report in memory as lines. That is the
@@ -323,8 +397,12 @@ What still holds:
 - **PCRE power features** — lookaround, backreferences in the pattern,
   non-greedy quantifiers, named groups. POSIX ERE doesn't offer them; the
   optional `HAVE_LIBPCRE2` upgrade (§14) is the path if they're needed.
-- **A compiled-pattern handle type** (`re_compile` → object). The cache gives the
-  performance benefit without adding a stateful value kind or a dispose story.
+- ~~**A compiled-pattern handle type**~~ — **reversed 2026-08-01.** This was a
+  non-goal on the grounds that a hidden cache gave the benefit "without adding a
+  stateful value kind or a dispose story." The premise was wrong twice over: the
+  cache did not give the benefit (§10), and a compiled pattern is **not stateful**
+  — it is immutable, so it needs no dispose story any more than a `date` does.
+  `regex(p)` is now the design (§3).
 - **CSV/TSV parsing** — `frame.read_csv` already owns that; ARI is for
   *irregular* fixed-width/positional reports, not delimited data.
 - **Full grammar / BNF parsing** — ARI extracts fields by spatial anchoring; it
@@ -351,14 +429,88 @@ because §3 specified byte offsets while the existing `find` builtin returns
 codepoints so it composes with `mid`. Two conventions in one language for the
 same idea is the kind of thing nobody remembers correctly. See §3.
 
-**B. This phase ships LAYER 0 ONLY** — the six `re_*` builtins, tested,
-documented, with a cookbook entry. ARI is a later phase, designed against
-builtins that exist rather than against a specification of them.
+**B. This phase ships LAYER 0 ONLY** — tested, documented, with a cookbook entry.
+ARI is a later phase, designed against a surface that exists rather than against
+a specification of one. (Decision D is what this decision was for: the surface
+changed shape before a line of C was written, which is the cheapest possible
+moment for it to happen.)
 
 **C. ARI type keywords: the four generic ones** (`date`, `money`, `integer`,
 `decimal`). Domain identifiers such as `cik`/`accession`/`cusip` stay
 user-defined via `type` with a regex, rather than putting EDGAR vocabulary in a
 general text library. Revisit once ARI has run against real filings.
+
+**D. The Layer 0 surface is a `regex` VALUE KIND plus OVERLOADS of the existing
+verbs** (decided 2026-08-01, superseding the six `re_*` builtins of decision B's
+original phrasing). Nothing had been implemented yet, so this cost only the
+documentation.
+
+*Superseded surface, for the record:* `re_test`, `re_find`, `re_find_all`,
+`re_replace`, `re_split`, `re_groups` — six new names, prefixed because
+`find`/`replace`/`split` already mean literal operations.
+
+*Why it changed.* The prefix existed only to dodge a name collision, and a
+namespace dissolves the collision instead. Overloading by argument kind is
+already the house idiom, not a new mechanism: `find` dispatches on
+`VALUE_STRING` vs `VALUE_ARRAY` (`src/eval.c:19577`) to do two entirely different
+jobs under one name. Passing a string keeps the literal meaning, so existing
+programs are unaffected by construction.
+
+*What it costs, stated plainly:*
+
+- A new value kind is not free — `VALUE_REGEX` needs copy, free, print, compare,
+  and a `SER_` tag for actor serialization (the existing set runs `SER_NULL`
+  through `SER_FUNCTION`, `src/eval.c:7535`). The project has paid this price
+  before for `date`, `money`, and `file`; a half-typed tagged record dispatched
+  by magic field name was the alternative and was rejected as the odd one out.
+- Three shipped core verbs get touched. The only negative test pinning their
+  messages is `tests/negative_replace_type.err`, which pins the *first*
+  argument's message, so overloading the second does not disturb it.
+- `find` cannot join (return shape, §3), so the symmetry is imperfect and that
+  asymmetry is permanent.
+
+*Rejected alternative: a `/pat/` regex literal.* `TOKEN_SLASH` is division and
+nothing else (`src/lexer.c:458`); telling division from a pattern opener requires
+knowing whether the previous token ended an expression — the JavaScript lexer
+hack — inside a lexer already carrying three context-sensitive modes. `PLAT-CLAUSE`
+and `PLAT-CLAUSE-B` were both recent repairs to ambiguous `(`; a second ambiguous
+punctuation mark is not worth syntax sugar. **ARI keeps `/regex/` in its spec
+text**, where the grammar has no division and therefore no ambiguity.
+
+**E. `match`, not `search`.** It pairs with "match record." It scans rather than
+anchors, diverging from Python's `re.match`, and that divergence is a silent
+trap — so it is documented in §3 and gets an `UNLEARN.md` bullet.
+
+**F. A non-participating capture group is `unknown`**, distinct from a group that
+matched the empty string (`""`). POSIX distinguishes them at no cost and
+collapsing them would discard information.
+
+**G. `contains` is EXTENDED to strings — substring *and* regex** (decided
+2026-08-01). Decision D assumed `contains(s, regex(p))` on the strength of §0's
+claim that `contains` was a literal *string* operation. **That claim was false**:
+`contains` is array-only (`src/eval.c:19646`) and raises on a string first
+argument. Rather than route around it, `contains` gains the string case it was
+already assumed to have, in both forms:
+
+```
+contains(array, element)      ' unchanged — membership
+contains(s, "sub")            ' NEW — literal substring
+contains(s, regex(p))         ' NEW — pattern occurs anywhere in s
+```
+
+All three return a boolean, so the verb keeps one meaning: *does this haystack
+contain this needle?* The literal-substring case is a small scope addition beyond
+regex, taken deliberately — it was a real gap (`contains("hello","ell")` raises
+today), and it is what makes the regex case an overload rather than a special
+case bolted onto an array verb.
+
+*Safety of the change:* the string-first-argument path is currently a raise, so
+no existing program can depend on it, and no test in `tests/` pins the
+`contains expects an array` message (checked). The array path is untouched.
+
+The alternatives — spelling the test `not is_unknown(match(s, p))`, or adding a
+fifth name `matches(s, p)` — were rejected as clunky and as surface growth
+respectively.
 
 **Adopted as proposed** (the document's own leans, taken unchanged): the
 whitelisted `\d \D \w \W \s \S` shorthand set with `\b` left out (POSIX's
@@ -390,11 +542,14 @@ with no `text.bas` wrapper layer over the builtins.
 
 Each phase is independently shippable and golden-file testable.
 
-### Phase 1 — regex builtins
-`re_test`, `re_find`, `re_find_all`, `re_replace`, `re_split`, `re_groups` on the
-libc engine, with the shorthand translation, flag string, match-record shape,
-`unknown`-on-miss, and the compile cache. Golden + negative tests. Unblocks all
-linear text work immediately, including a first pass at cleaning up `mdna.bas`.
+### Phase 1 — regex in the core
+The `regex` value kind (compile, copy, free, print, compare, serialize) plus
+`match`, `match_all`, and the `contains`/`replace`/`split` overloads on the libc
+engine, with the shorthand translation, flag string, match-record shape,
+`unknown`-on-miss, and codepoint offsets. Golden + negative tests, and an
+`UNLEARN.md` bullet for the `match`-scans-not-anchors divergence (§13.E).
+Unblocks all linear text work immediately, including a first pass at cleaning up
+`mdna.bas`.
 
 ### Phase 2 — ARI core
 `stdlib/ari.bas`: `ari.parse` / `ari.import`; `section`/`field`; the five
@@ -408,6 +563,6 @@ built-in type keywords (native value conversion); regex-with-transform
 (`/re/repl/`); custom `type` blocks. Golden tests per feature.
 
 ### Phase 4 — optional power engine + ergonomics
-Optional `HAVE_LIBPCRE2` engine behind the same `re_*` surface (lookaround,
+Optional `HAVE_LIBPCRE2` engine behind the same Layer 0 surface (lookaround,
 non-greedy, named groups) selected at build time; optional `text.bas` ergonomic
 wrappers if §13.3 favors them. Purely additive — the libc floor never regresses.

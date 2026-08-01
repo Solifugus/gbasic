@@ -14,6 +14,7 @@
 #include <limits.h>
 #include <math.h>
 #include <poll.h>
+#include <regex.h>
 #include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -161,6 +162,7 @@ void parse_set_source_path(const char *path);
 
 typedef struct PgConnectionValue PgConnectionValue;
 typedef struct SqliteConnectionValue SqliteConnectionValue;
+typedef struct RegexValue RegexValue;
 typedef struct XmlReaderValue XmlReaderValue;
 typedef struct GObjectValue GObjectValue;
 typedef struct GBoxedValue GBoxedValue;
@@ -189,7 +191,8 @@ typedef enum {
     VALUE_GOBJECT,
     VALUE_ACTOR,
     VALUE_FUNCTION,
-    VALUE_GBOXED
+    VALUE_GBOXED,
+    VALUE_REGEX
 } ValueKind;
 
 typedef enum {
@@ -265,6 +268,7 @@ struct Value {
         char *dir_path;
         PgConnectionValue *postgres_connection;
         SqliteConnectionValue *sqlite_connection;
+        RegexValue *regex;
         XmlReaderValue *xml_reader;
         GObjectValue *gobject;
         GBoxedValue *gboxed;
@@ -295,6 +299,27 @@ struct SqliteConnectionValue {
 #endif
     size_t ref_count;
     int closed;
+};
+
+/* A compiled regular expression (docs/text_design.md §3, decision §13.D).
+ *
+ * Reference-counted like the other handle-shaped values, but unlike them it is
+ * IMMUTABLE: the compiled program is a pure function of (pattern, flags), so
+ * two references can never observe different behavior and there is no dispose
+ * story to get wrong. That immutability is why §11's original "no compiled-
+ * pattern handle" non-goal was reversed — its premise was that such a value
+ * would be stateful, and it is not.
+ *
+ * `pattern` and `flags` keep the caller's ORIGINAL text, not the translated
+ * form: they are what gets displayed, what equality compares, and what
+ * serialization ships (the receiver re-compiles, since a regex_t is opaque and
+ * not portable across a process boundary). */
+struct RegexValue {
+    size_t ref_count;
+    char *pattern;       /* as written by the caller, pre-translation */
+    char *flags;         /* normalized, sorted, "" when none given */
+    regex_t compiled;
+    size_t group_count;  /* re_nsub: capture groups, excluding the whole match */
 };
 
 /* An opaque streaming XML reader handle (xml_design.md §4). Refcounted like the
@@ -630,6 +655,8 @@ static const char *value_kind_name(ValueKind kind) {
         return "process";
     case VALUE_FUNCTION:
         return "function";
+    case VALUE_REGEX:
+        return "regex";
     }
     return "value";
 }
@@ -1297,6 +1324,579 @@ static Value value_xml_reader(XmlReaderValue *reader) {
     return value;
 }
 
+static void runtime_error_raise(const char *message, int code, const char *source);
+
+/* --- Regular expressions (docs/text_design.md §2-§3) -----------------------
+ *
+ * The engine is libc's POSIX ERE (regcomp/regexec). It is NOT an optional
+ * dependency — POSIX regex is in libc on every platform gBASIC targets — so
+ * unlike sqlite/pg/xml there is no HAVE_* guard and no "compiled out" error.
+ *
+ * Two adaptations sit between gBASIC's surface and POSIX, both in
+ * regex_translate below:
+ *
+ *   1. SHORTHAND. POSIX spells classes [[:digit:]]; patterns are written \d.
+ *      A bounded, whitelisted translation bridges the two (§2). It is
+ *      bracket-aware, because inside [...] the expansion must drop its outer
+ *      brackets ([\d\s] -> [[:digit:][:space:]]).
+ *
+ *   2. NEWLINE FLAGS. gBASIC's "m" (^/$ match at line boundaries) and "s" (dot
+ *      matches newline) are INDEPENDENT; POSIX couples both to the single
+ *      REG_NEWLINE bit, which turns them on together:
+ *
+ *          REG_NEWLINE off:  `.` matches \n,      ^/$ anchor the string
+ *          REG_NEWLINE on:   `.` excludes \n,     ^/$ anchor each line
+ *
+ *      So two of the four gBASIC combinations are unreachable directly, and the
+ *      gap is closed by rewriting `.` (verified against the real engine, not
+ *      inferred from the spec):
+ *
+ *          flags   REG_NEWLINE   `.` becomes
+ *          ----    -----------   -----------
+ *          (none)  off           [^\n]        exclude \n while ^/$ stay string
+ *          "s"     off           .            native
+ *          "m"     on            .            native
+ *          "ms"    on            (.|\n)       re-admit \n under REG_NEWLINE
+ *
+ *      REG_NEWLINE has one further side effect: it also stops NEGATED BRACKETS
+ *      ([^x]) from matching a newline, which PCRE's /m does not do. Any "m"
+ *      pattern therefore rewrites [^...] to ([^...]|\n) to restore the
+ *      familiar behavior. Without this, adding "m" would silently change what
+ *      [^x] means — exactly the class of surprise this project logs.
+ *
+ * Subjects are matched with REG_STARTEND where available so that gBASIC's
+ * binary-safe strings (which may hold interior NULs) match in full; see
+ * regex_exec_at. */
+
+/* The whitelisted shorthand set (§2). Negated forms have no in-bracket spelling
+ * — POSIX offers no negated class inside a bracket expression — so they are
+ * rejected there with a specific message rather than mistranslated. */
+typedef struct {
+    char letter;
+    const char *outside;   /* expansion when used on its own */
+    const char *inside;    /* expansion when used within [...]; NULL if illegal */
+} RegexShorthand;
+
+static const RegexShorthand regex_shorthands[] = {
+    { 'd', "[[:digit:]]",    "[:digit:]"    },
+    { 'D', "[^[:digit:]]",   NULL           },
+    { 'w', "[[:alnum:]_]",   "[:alnum:]_"   },
+    { 'W', "[^[:alnum:]_]",  NULL           },
+    { 's', "[[:space:]]",    "[:space:]"    },
+    { 'S', "[^[:space:]]",   NULL           },
+};
+
+static const RegexShorthand *regex_shorthand_find(char letter) {
+    for (size_t i = 0; i < sizeof regex_shorthands / sizeof regex_shorthands[0]; i++) {
+        if (regex_shorthands[i].letter == letter) {
+            return &regex_shorthands[i];
+        }
+    }
+    return NULL;
+}
+
+/* A growable byte buffer for building the translated pattern. */
+typedef struct {
+    char *data;
+    size_t len;
+    size_t cap;
+} RegexBuf;
+
+static void regex_buf_push(RegexBuf *b, const char *bytes, size_t n) {
+    if (b->len + n + 1 > b->cap) {
+        size_t cap = b->cap ? b->cap * 2 : 64;
+        while (cap < b->len + n + 1) {
+            cap *= 2;
+        }
+        char *grown = realloc(b->data, cap);
+        if (!grown) {
+            abort();
+        }
+        b->data = grown;
+        b->cap = cap;
+    }
+    memcpy(b->data + b->len, bytes, n);
+    b->len += n;
+    b->data[b->len] = '\0';
+}
+
+static void regex_buf_push_str(RegexBuf *b, const char *s) {
+    regex_buf_push(b, s, strlen(s));
+}
+
+static void regex_buf_push_char(RegexBuf *b, char c) {
+    regex_buf_push(b, &c, 1);
+}
+
+/* Translate a gBASIC pattern into POSIX ERE. Returns a malloc'd string, or NULL
+ * with *error set to a static message the caller raises.
+ *
+ * `newline_mode` is REG_NEWLINE's state (1 when the "m" flag is present) and
+ * `dot_all` is the "s" flag; together they select the `.` rewrite from the table
+ * above. */
+static char *regex_translate(const char *pattern,
+                             size_t length,
+                             int newline_mode,
+                             int dot_all,
+                             const char **error) {
+    RegexBuf out = {0};
+    int in_bracket = 0;
+    int bracket_negated = 0;
+    size_t bracket_start = 0;   /* out.len at the '[' that opened the bracket */
+    *error = NULL;
+
+    for (size_t i = 0; i < length; i++) {
+        char c = pattern[i];
+
+        /* An escape. Inside a bracket expression POSIX treats backslash as an
+         * ordinary character, but gBASIC translates the shorthand set in both
+         * positions so that [\d] means what it looks like. */
+        if (c == '\\' && i + 1 < length) {
+            char next = pattern[i + 1];
+            const RegexShorthand *sh = regex_shorthand_find(next);
+            if (sh) {
+                if (in_bracket) {
+                    if (!sh->inside) {
+                        free(out.data);
+                        *error = "regex: \\D, \\W and \\S have no meaning inside a "
+                                 "[...] bracket expression (POSIX has no negated "
+                                 "class there); negate the whole bracket instead";
+                        return NULL;
+                    }
+                    regex_buf_push_str(&out, sh->inside);
+                } else {
+                    regex_buf_push_str(&out, sh->outside);
+                }
+                i++;
+                continue;
+            }
+            /* Not a shorthand: pass the escape through untouched so \$ \. \\
+             * keep their POSIX meaning. */
+            regex_buf_push_char(&out, '\\');
+            regex_buf_push_char(&out, next);
+            i++;
+            continue;
+        }
+
+        if (!in_bracket && c == '[') {
+            in_bracket = 1;
+            bracket_negated = 0;
+            bracket_start = out.len;
+            regex_buf_push_char(&out, '[');
+            /* A leading ^ negates; a ] immediately after either is a literal. */
+            if (i + 1 < length && pattern[i + 1] == '^') {
+                bracket_negated = 1;
+                regex_buf_push_char(&out, '^');
+                i++;
+            }
+            if (i + 1 < length && pattern[i + 1] == ']') {
+                regex_buf_push_char(&out, ']');
+                i++;
+            }
+            continue;
+        }
+
+        /* A [:class:] inside a bracket copies through verbatim; its ] must not
+         * be mistaken for the end of the enclosing bracket. */
+        if (in_bracket && c == '[' && i + 1 < length &&
+            (pattern[i + 1] == ':' || pattern[i + 1] == '.' || pattern[i + 1] == '=')) {
+            char delim = pattern[i + 1];
+            size_t j = i + 2;
+            while (j + 1 < length && !(pattern[j] == delim && pattern[j + 1] == ']')) {
+                j++;
+            }
+            if (j + 1 < length) {
+                regex_buf_push(&out, pattern + i, j + 2 - i);
+                i = j + 1;
+                continue;
+            }
+            /* Unterminated: fall through and let regcomp report it. */
+        }
+
+        if (in_bracket && c == ']') {
+            regex_buf_push_char(&out, ']');
+            in_bracket = 0;
+            /* Under REG_NEWLINE a negated bracket stops matching \n. PCRE's /m
+             * does not do that, so re-admit it explicitly. */
+            if (newline_mode && bracket_negated) {
+                size_t span = out.len - bracket_start;
+                char *saved = malloc(span + 1);
+                if (!saved) {
+                    abort();
+                }
+                memcpy(saved, out.data + bracket_start, span);
+                saved[span] = '\0';
+                out.len = bracket_start;
+                out.data[out.len] = '\0';
+                regex_buf_push_char(&out, '(');
+                regex_buf_push(&out, saved, span);
+                regex_buf_push_str(&out, "|\n)");
+                free(saved);
+            }
+            continue;
+        }
+
+        /* `.` outside a bracket is the one construct whose meaning has to be
+         * reconstructed from the coupled REG_NEWLINE bit (see the table above). */
+        if (!in_bracket && c == '.') {
+            if (!dot_all && !newline_mode) {
+                regex_buf_push_str(&out, "[^\n]");
+            } else if (dot_all && newline_mode) {
+                regex_buf_push_str(&out, "(.|\n)");
+            } else {
+                regex_buf_push_char(&out, '.');
+            }
+            continue;
+        }
+
+        regex_buf_push_char(&out, c);
+    }
+
+    if (in_bracket) {
+        free(out.data);
+        *error = "regex: unterminated [ bracket expression";
+        return NULL;
+    }
+    if (!out.data) {
+        /* The empty pattern is legal and matches everywhere. */
+        out.data = calloc(1, 1);
+        if (!out.data) {
+            abort();
+        }
+    }
+    return out.data;
+}
+
+/* Parse and normalize a flag string. Returns 1 on success. Unknown letters are
+ * rejected loudly rather than ignored: a silently dropped flag would change what
+ * a pattern means with nothing to show for it. */
+static int regex_parse_flags(const char *flags,
+                             size_t length,
+                             int *icase,
+                             int *newline_mode,
+                             int *dot_all,
+                             char *normalized,
+                             char *bad_letter) {
+    *icase = 0;
+    *newline_mode = 0;
+    *dot_all = 0;
+    for (size_t i = 0; i < length; i++) {
+        switch (flags[i]) {
+        case 'i': *icase = 1; break;
+        case 'm': *newline_mode = 1; break;
+        case 's': *dot_all = 1; break;
+        default:
+            *bad_letter = flags[i];
+            return 0;
+        }
+    }
+    /* Canonical order, so two spellings of the same flag set compare equal. */
+    size_t n = 0;
+    if (*icase) normalized[n++] = 'i';
+    if (*newline_mode) normalized[n++] = 'm';
+    if (*dot_all) normalized[n++] = 's';
+    normalized[n] = '\0';
+    return 1;
+}
+
+static Value value_regex(RegexValue *regex) {
+    Value value = {0};
+    value.kind = VALUE_REGEX;
+    value.as.regex = regex;
+    return value;
+}
+
+static void regex_release(RegexValue *regex) {
+    if (!regex) {
+        return;
+    }
+    if (--regex->ref_count == 0) {
+        regfree(&regex->compiled);
+        free(regex->pattern);
+        free(regex->flags);
+        free(regex);
+    }
+}
+
+/* Compile a pattern into a RegexValue, or raise and return NULL. `pattern` and
+ * `flags` are runtime string buffers (binary-safe, so lengths are explicit).
+ *
+ * A pattern containing an interior NUL is rejected rather than silently
+ * truncated: regcomp takes a NUL-terminated pattern, so there is no way to honor
+ * one, and quietly matching a prefix would be worse than saying so. (Subjects
+ * are a different matter and ARE binary-safe — see regex_exec_at.) */
+static RegexValue *regex_compile(const char *pattern,
+                                 size_t pattern_len,
+                                 const char *flags,
+                                 size_t flags_len) {
+    if (memchr(pattern, '\0', pattern_len) != NULL) {
+        runtime_error_raise("regex: a pattern cannot contain an interior NUL byte",
+                            1007, "regex");
+        return NULL;
+    }
+
+    int icase = 0, newline_mode = 0, dot_all = 0;
+    char normalized[4];
+    char bad = '\0';
+    if (!regex_parse_flags(flags, flags_len, &icase, &newline_mode, &dot_all,
+                           normalized, &bad)) {
+        char message[160];
+        snprintf(message, sizeof message,
+                 "regex: unknown flag '%c' (supported: \"i\" ignore case, "
+                 "\"m\" multiline ^/$, \"s\" dot matches newline)", bad);
+        runtime_error_raise(message, 1007, "regex");
+        return NULL;
+    }
+
+    const char *translate_error = NULL;
+    char *translated = regex_translate(pattern, pattern_len, newline_mode, dot_all,
+                                       &translate_error);
+    if (!translated) {
+        runtime_error_raise(translate_error, 1007, "regex");
+        return NULL;
+    }
+
+    RegexValue *regex = calloc(1, sizeof *regex);
+    if (!regex) {
+        abort();
+    }
+    int cflags = REG_EXTENDED | (icase ? REG_ICASE : 0) | (newline_mode ? REG_NEWLINE : 0);
+    int rc = regcomp(&regex->compiled, translated, cflags);
+    free(translated);
+    if (rc != 0) {
+        char reason[160];
+        regerror(rc, &regex->compiled, reason, sizeof reason);
+        regfree(&regex->compiled);
+        free(regex);
+        char message[320];
+        snprintf(message, sizeof message, "regex: %s", reason);
+        runtime_error_raise(message, 1007, "regex");
+        return NULL;
+    }
+
+    regex->ref_count = 1;
+    regex->group_count = regex->compiled.re_nsub;
+    regex->pattern = malloc(pattern_len + 1);
+    if (!regex->pattern) {
+        abort();
+    }
+    memcpy(regex->pattern, pattern, pattern_len);
+    regex->pattern[pattern_len] = '\0';
+    regex->flags = copy_string(normalized);
+    return regex;
+}
+
+/* Run the compiled program against `subject` starting at byte offset `from`.
+ *
+ * REG_STARTEND is what makes a binary-safe subject work: it passes an explicit
+ * byte range instead of relying on a NUL terminator, so a string holding an
+ * interior NUL matches in full. Where the extension is unavailable the match is
+ * bounded by the first NUL instead — the degradation is narrow and is stated
+ * here rather than hidden.
+ *
+ * REG_NOTBOL matters when `from` > 0: without it, `^` would match at every
+ * restart point during a scan, so `match_all(s, "^a")` would find an "a" in the
+ * middle of the string. */
+static int regex_exec_at(const RegexValue *regex,
+                         const char *subject,
+                         size_t subject_len,
+                         size_t from,
+                         regmatch_t *groups,
+                         size_t group_slots) {
+    int eflags = from > 0 ? REG_NOTBOL : 0;
+#ifdef REG_STARTEND
+    groups[0].rm_so = (regoff_t)from;
+    groups[0].rm_eo = (regoff_t)subject_len;
+    int rc = regexec(&regex->compiled, subject, group_slots, groups,
+                     eflags | REG_STARTEND);
+    if (rc == 0) {
+        /* REG_STARTEND reports offsets relative to the buffer start already;
+         * no adjustment is needed. */
+        return 1;
+    }
+    return 0;
+#else
+    (void)subject_len;
+    int rc = regexec(&regex->compiled, subject + from, group_slots, groups, eflags);
+    if (rc != 0) {
+        return 0;
+    }
+    for (size_t i = 0; i < group_slots; i++) {
+        if (groups[i].rm_so >= 0) {
+            groups[i].rm_so += (regoff_t)from;
+            groups[i].rm_eo += (regoff_t)from;
+        }
+    }
+    return 1;
+#endif
+}
+
+/* Build the match record described in §3:
+ *   { text, start, length, groups }
+ * `start` and `length` are CODEPOINT measures, not byte offsets, so they compose
+ * with mid/left/right exactly as `find`'s result does (§3, decision §13.A).
+ * A group that did not participate is `unknown`, distinct from one that matched
+ * the empty string (decision §13.F). */
+static Value regex_build_match(const char *subject,
+                               const regmatch_t *groups,
+                               size_t group_count) {
+    size_t so = (size_t)groups[0].rm_so;
+    size_t eo = (size_t)groups[0].rm_eo;
+    size_t start_cp = string_cp_index_at_byte(subject, so);
+    size_t end_cp = string_cp_index_at_byte(subject, eo);
+
+    Value *items = NULL;
+    if (group_count > 0) {
+        items = calloc(group_count, sizeof(Value));
+        if (!items) {
+            abort();
+        }
+        for (size_t i = 0; i < group_count; i++) {
+            const regmatch_t *g = &groups[i + 1];
+            if (g->rm_so < 0) {
+                items[i] = value_unknown();
+            } else {
+                items[i] = value_string_n(subject + g->rm_so,
+                                          (size_t)(g->rm_eo - g->rm_so));
+            }
+        }
+    }
+
+    RecordField *fields = calloc(4, sizeof(RecordField));
+    if (!fields) {
+        abort();
+    }
+    fields[0].name = copy_string("text");
+    fields[0].value = cell_alloc();
+    *fields[0].value = value_string_n(subject + so, eo - so);
+    fields[1].name = copy_string("start");
+    fields[1].value = cell_alloc();
+    *fields[1].value = value_number((double)start_cp);
+    fields[2].name = copy_string("length");
+    fields[2].value = cell_alloc();
+    *fields[2].value = value_number((double)(end_cp - start_cp));
+    fields[3].name = copy_string("groups");
+    fields[3].value = cell_alloc();
+    *fields[3].value = value_array(items, group_count);
+    return value_record(fields, 4);
+}
+
+/* Step one CODEPOINT forward from a byte offset. Used to advance past a
+ * zero-width match: advancing by a byte would split a UTF-8 sequence. Invalid
+ * UTF-8 still advances at least one byte, so a scan can never fail to
+ * terminate. */
+static size_t regex_next_codepoint(const char *subject, size_t len, size_t at) {
+    size_t next = at + 1;
+    while (next < len && (((unsigned char)subject[next]) & 0xC0) == 0x80) {
+        next++;
+    }
+    return next;
+}
+
+/* Resolve a pattern argument into a compiled regex, returning a reference the
+ * caller must release, or NULL after raising.
+ *
+ * A regex VALUE is used as-is (this is the compile-once path). A plain STRING is
+ * compiled here and thrown away after the call — the right default for one-shot
+ * use, and the reason there is no hidden cache to go stale (§3). */
+static RegexValue *regex_from_argument(Value pattern,
+                                       Value flags,
+                                       int has_flags,
+                                       const char *verb) {
+    if (pattern.kind == VALUE_REGEX) {
+        if (has_flags) {
+            char message[128];
+            snprintf(message, sizeof message,
+                     "%s: flags belong to regex(), not to a call that is already "
+                     "given a compiled pattern", verb);
+            runtime_error_raise(message, 1007, "regex");
+            return NULL;
+        }
+        pattern.as.regex->ref_count++;
+        return pattern.as.regex;
+    }
+    if (pattern.kind != VALUE_STRING) {
+        char message[128];
+        snprintf(message, sizeof message,
+                 "%s: pattern must be a string or a regex value, not %s",
+                 verb, value_kind_name(pattern.kind));
+        runtime_error_raise(message, 1007, "regex");
+        return NULL;
+    }
+    if (has_flags && flags.kind != VALUE_STRING) {
+        char message[128];
+        snprintf(message, sizeof message, "%s: flags must be a string", verb);
+        runtime_error_raise(message, 1007, "regex");
+        return NULL;
+    }
+    const char *flag_bytes = has_flags ? flags.as.string : "";
+    size_t flag_len = has_flags ? string_length(flags.as.string) : 0;
+    return regex_compile(pattern.as.string, string_length(pattern.as.string),
+                         flag_bytes, flag_len);
+}
+
+/* Does the pattern match anywhere in the subject? */
+static int regex_matches_anywhere(const RegexValue *regex,
+                                  const char *subject,
+                                  size_t subject_len) {
+    regmatch_t groups[1];
+    return regex_exec_at(regex, subject, subject_len, 0, groups, 1);
+}
+
+/* A growable Value list, for the builtins that return arrays. */
+typedef struct {
+    Value *items;
+    size_t count;
+    size_t cap;
+} RegexList;
+
+static void regex_list_push(RegexList *list, Value value) {
+    if (list->count == list->cap) {
+        list->cap = list->cap ? list->cap * 2 : 8;
+        Value *grown = realloc(list->items, list->cap * sizeof(Value));
+        if (!grown) {
+            abort();
+        }
+        list->items = grown;
+    }
+    list->items[list->count++] = value;
+}
+
+/* Expand $0..$9 group references in a replacement string. $0 is the whole match,
+ * $$ is a literal $, and a $ before anything else stays literal so that prices
+ * and shell-ish text survive unescaped. A reference to a group that did not
+ * participate expands to nothing. */
+static void regex_expand_replacement(RegexBuf *out,
+                                     const char *subject,
+                                     const regmatch_t *groups,
+                                     size_t group_count,
+                                     const char *repl,
+                                     size_t repl_len) {
+    for (size_t i = 0; i < repl_len; i++) {
+        if (repl[i] == '$' && i + 1 < repl_len) {
+            char next = repl[i + 1];
+            if (next == '$') {
+                regex_buf_push_char(out, '$');
+                i++;
+                continue;
+            }
+            if (next >= '0' && next <= '9') {
+                size_t index = (size_t)(next - '0');
+                if (index <= group_count) {
+                    const regmatch_t *g = &groups[index];
+                    if (g->rm_so >= 0) {
+                        regex_buf_push(out, subject + g->rm_so,
+                                       (size_t)(g->rm_eo - g->rm_so));
+                    }
+                }
+                i++;
+                continue;
+            }
+        }
+        regex_buf_push_char(out, repl[i]);
+    }
+}
+
 /* Refcount release: last owner frees the underlying xmlTextReader. Defined here
  * (not in modules/xml.c) so value_free can call it even in a HAVE_LIBXML2=0
  * build, where no reader is ever created and this is dead code. */
@@ -1695,6 +2295,13 @@ static Value value_copy(Value value) {
     if (value.kind == VALUE_FUNCTION) {
         return value_function(value.as.function.name, value.as.function.library);
     }
+    if (value.kind == VALUE_REGEX) {
+        /* Share the compiled program. Sound because a RegexValue is immutable:
+         * it is fully determined by (pattern, flags) and nothing ever writes to
+         * it after regex_compile returns. */
+        value.as.regex->ref_count++;
+        return value;
+    }
     if (value.kind == VALUE_ARRAY) {
         /* Copy-on-write: share the one backing store and bump its refcount
          * (O(1)). Mutation later detaches via array_ensure_unique. */
@@ -1785,6 +2392,8 @@ static void value_free(Value value) {
     } else if (value.kind == VALUE_FUNCTION) {
         free(value.as.function.name);
         free(value.as.function.library);
+    } else if (value.kind == VALUE_REGEX) {
+        regex_release(value.as.regex);
     }
 }
 
@@ -1916,6 +2525,8 @@ static int value_truthy(Value value) {
     case VALUE_PROCESS:
         return 1;
     case VALUE_FUNCTION:
+        return 1;
+    case VALUE_REGEX:
         return 1;
     case VALUE_NULL:
         return 0;
@@ -2087,6 +2698,9 @@ static void value_print_to(FILE *out, Value value) {
         break;
     case VALUE_FUNCTION:
         fprintf(out, "<function %s>\n", value.as.function.name);
+        break;
+    case VALUE_REGEX:
+        fprintf(out, "<regex %s>\n", value.as.regex->pattern);
         break;
     }
 }
@@ -2448,6 +3062,13 @@ static int value_storage_equal(const Value *left, const Value *right) {
         return left->as.process == right->as.process;
     case VALUE_FUNCTION:
         return function_value_equal(left, right);
+    case VALUE_REGEX:
+        /* Structural, not by handle: a regex is fully determined by its pattern
+         * and flags, so two separately compiled copies of the same pattern are
+         * the same value. Flags are compared in normalized form, so regex(p,
+         * "si") equals regex(p, "is"). */
+        return strcmp(left->as.regex->pattern, right->as.regex->pattern) == 0 &&
+               strcmp(left->as.regex->flags, right->as.regex->flags) == 0;
     }
     return 0;
 }
@@ -7033,6 +7654,8 @@ static const char *builtin_type_name(Value value) {
         return "process";
     case VALUE_FUNCTION:
         return "function";
+    case VALUE_REGEX:
+        return "regex";
     }
     return "value";
 }
@@ -7341,6 +7964,15 @@ static Value builtin_string_value(Value value) {
         snprintf(buffer, sizeof(buffer), "<function %s>", value.as.function.name);
         value_free(value);
         return value_string(buffer);
+    case VALUE_REGEX:
+        if (value.as.regex->flags[0]) {
+            snprintf(buffer, sizeof(buffer), "<regex %s/%s>",
+                     value.as.regex->pattern, value.as.regex->flags);
+        } else {
+            snprintf(buffer, sizeof(buffer), "<regex %s>", value.as.regex->pattern);
+        }
+        value_free(value);
+        return value_string(buffer);
     }
 
     if (!used_builder) {
@@ -7432,6 +8064,7 @@ static int encode_value_to_builder(StringBuilder *builder, Value value, int stri
     case VALUE_ACTOR:
     case VALUE_PROCESS:
     case VALUE_FUNCTION:
+    case VALUE_REGEX:
         if (strict_json) {
             runtime_error_raise("json_encode supports numbers, strings, booleans, "
                                 "nothing, arrays, and records; live and typed values "
@@ -7545,7 +8178,8 @@ typedef enum {
     SER_FILE,
     SER_DIR,
     SER_ACTOR,  /* spawn-args only: an actor handle, realized by an inherited fd */
-    SER_FUNCTION /* a function value: registered name (+ optional library), §10 */
+    SER_FUNCTION, /* a function value: registered name (+ optional library), §10 */
+    SER_REGEX   /* a compiled regex: its pattern + flags; the receiver recompiles */
 } SerTag;
 
 /* --- fd transfer for spawn arguments (docs/multiprocessing_design.md §4.1) ----
@@ -7826,6 +8460,15 @@ static int serialize_value(SerBuf *b, Value v, int depth) {
             serbuf_u8(b, 0);
         }
         return 1;
+    case VALUE_REGEX:
+        /* Ship the SOURCE (pattern + flags), not the compiled program: a regex_t
+         * is an opaque libc structure holding internal pointers and is
+         * meaningless in another address space. The receiver recompiles, which
+         * is deterministic — same pattern, same flags, same engine. */
+        serbuf_u8(b, SER_REGEX);
+        serbuf_blob(b, v.as.regex->pattern, strlen(v.as.regex->pattern));
+        serbuf_blob(b, v.as.regex->flags, strlen(v.as.regex->flags));
+        return 1;
     }
     runtime_error_raise("serialize: unsupported value", 1003, "actor");
     return 0;
@@ -8096,6 +8739,31 @@ static Value deserialize_value(SerReader *r, int depth) {
         free(name);
         free(library);
         return v;
+    }
+    case SER_REGEX: {
+        uint64_t plen = serread_u64(r);
+        if (!r->ok || plen > r->len - r->pos) {
+            r->ok = 0;
+            return value_null();
+        }
+        const char *pattern = r->data + r->pos;
+        r->pos += (size_t)plen;
+        uint64_t flen = serread_u64(r);
+        if (!r->ok || flen > r->len - r->pos) {
+            r->ok = 0;
+            return value_null();
+        }
+        const char *flags = r->data + r->pos;
+        r->pos += (size_t)flen;
+        /* Recompile from the shipped source. Deterministic: same pattern, same
+         * flags, same libc engine. A frame that fails to compile is a corrupt
+         * frame, not a program error, so it fails the read rather than raising. */
+        RegexValue *regex = regex_compile(pattern, (size_t)plen, flags, (size_t)flen);
+        if (!regex) {
+            r->ok = 0;
+            return value_null();
+        }
+        return value_regex(regex);
     }
     default:
         r->ok = 0;
@@ -16647,7 +17315,7 @@ static int reflect_serializable(Value v, int depth) {
     switch (v.kind) {
     case VALUE_NULL: case VALUE_UNKNOWN: case VALUE_BOOL: case VALUE_NUMBER:
     case VALUE_STRING: case VALUE_DATETIME: case VALUE_DURATION: case VALUE_MONEY:
-    case VALUE_FILE: case VALUE_DIR: case VALUE_FUNCTION:
+    case VALUE_FILE: case VALUE_DIR: case VALUE_FUNCTION: case VALUE_REGEX:
         return 1;
     case VALUE_ARRAY:
         for (size_t i = 0; i < v.as.array.store->count; i++) {
@@ -18353,11 +19021,71 @@ static Value eval_call(AstExpr *expr) {
             runtime_error_raise("replace: first argument must be a string", 1003, "invalid argument type");
             return value_null();
         }
+        /* A regex needle replaces every match rather than every literal
+         * occurrence, and the replacement may reference capture groups with
+         * $1..$9 (§3). The literal path below is untouched. */
+        if (from.kind == VALUE_REGEX) {
+            if (to.kind != VALUE_STRING) {
+                value_free(text);
+                value_free(from);
+                value_free(to);
+                runtime_error_raise("replace: third argument must be a string", 1003,
+                                    "invalid argument type");
+                return value_null();
+            }
+            RegexValue *regex = from.as.regex;
+            const char *bytes = text.as.string;
+            size_t len = string_length(bytes);
+            const char *repl = to.as.string;
+            size_t repl_len = string_length(repl);
+            size_t slots = regex->group_count + 1;
+            regmatch_t *groups = calloc(slots, sizeof(regmatch_t));
+            if (!groups) {
+                abort();
+            }
+            RegexBuf out = {0};
+            size_t pos = 0;
+            size_t last = 0;
+            while (pos <= len) {
+                if (!regex_exec_at(regex, bytes, len, pos, groups, slots)) {
+                    break;
+                }
+                size_t so = (size_t)groups[0].rm_so;
+                size_t eo = (size_t)groups[0].rm_eo;
+                regex_buf_push(&out, bytes + last, so - last);
+                regex_expand_replacement(&out, bytes, groups, regex->group_count,
+                                         repl, repl_len);
+                last = eo;
+                if (eo == so) {
+                    /* Zero-width match: emit the character it sat before, then
+                     * step past it, so the scan advances and nothing is lost. */
+                    if (eo >= len) {
+                        break;
+                    }
+                    size_t next = regex_next_codepoint(bytes, len, eo);
+                    regex_buf_push(&out, bytes + eo, next - eo);
+                    last = next;
+                    pos = next;
+                } else {
+                    pos = eo;
+                }
+            }
+            regex_buf_push(&out, bytes + last, len - last);
+            free(groups);
+            Value result = value_string_n(out.data ? out.data : "", out.len);
+            free(out.data);
+            value_free(text);
+            value_free(from);
+            value_free(to);
+            return result;
+        }
+
         if (from.kind != VALUE_STRING) {
             value_free(text);
             value_free(from);
             value_free(to);
-            runtime_error_raise("replace: second argument must be a string", 1003, "invalid argument type");
+            runtime_error_raise("replace: second argument must be a string or a regex",
+                                1003, "invalid argument type");
             return value_null();
         }
         if (to.kind != VALUE_STRING) {
@@ -19574,6 +20302,158 @@ static Value eval_call(AstExpr *expr) {
         return result;
     }
 
+    /* regex(pattern [, flags]) -> a compiled pattern (docs/text_design.md §3). */
+    if (strcmp(expr->as.call.name, "regex") == 0) {
+        if (expr->as.call.args.count != 1 && expr->as.call.args.count != 2) {
+            runtime_error_raise("regex expects one or two arguments", 1003,
+                                "invalid function call");
+            return value_null();
+        }
+        Value pattern = eval_expr(expr->as.call.args.items[0]);
+        Value flags = value_null();
+        int has_flags = expr->as.call.args.count == 2;
+        if (has_flags && !error_action_pending()) {
+            flags = eval_expr(expr->as.call.args.items[1]);
+        }
+        if (error_action_pending()) {
+            value_free(pattern);
+            value_free(flags);
+            return value_null();
+        }
+        if (pattern.kind == VALUE_REGEX && !has_flags) {
+            /* Idempotent: compiling a compiled pattern is the pattern. */
+            value_free(flags);
+            return pattern;
+        }
+        if (pattern.kind != VALUE_STRING) {
+            char message[128];
+            snprintf(message, sizeof message,
+                     "regex: pattern must be a string, not %s",
+                     value_kind_name(pattern.kind));
+            value_free(pattern);
+            value_free(flags);
+            runtime_error_raise(message, 1007, "regex");
+            return value_null();
+        }
+        if (has_flags && flags.kind != VALUE_STRING) {
+            value_free(pattern);
+            value_free(flags);
+            runtime_error_raise("regex: flags must be a string", 1007, "regex");
+            return value_null();
+        }
+        RegexValue *compiled = regex_compile(pattern.as.string,
+                                             string_length(pattern.as.string),
+                                             has_flags ? flags.as.string : "",
+                                             has_flags ? string_length(flags.as.string) : 0);
+        value_free(pattern);
+        value_free(flags);
+        if (!compiled) {
+            return value_null();
+        }
+        return value_regex(compiled);
+    }
+
+    /* match(s, pattern [, flags])     -> first match record, or unknown
+     * match_all(s, pattern [, flags]) -> every non-overlapping match, left to right
+     *
+     * These carry their own names rather than overloading `find` because their
+     * return shape differs: a literal find yields one index, a regex match must
+     * yield text/start/length/groups (§3). `match` SCANS — it is Python's
+     * re.search, not re.match (§13.E). */
+    if (strcmp(expr->as.call.name, "match") == 0 ||
+        strcmp(expr->as.call.name, "match_all") == 0) {
+        int all = strcmp(expr->as.call.name, "match_all") == 0;
+        const char *verb = all ? "match_all" : "match";
+        if (expr->as.call.args.count != 2 && expr->as.call.args.count != 3) {
+            char message[64];
+            snprintf(message, sizeof message, "%s expects two or three arguments", verb);
+            runtime_error_raise(message, 1003, "invalid function call");
+            return value_null();
+        }
+        Value subject = eval_expr(expr->as.call.args.items[0]);
+        Value pattern = value_null();
+        Value flags = value_null();
+        int has_flags = expr->as.call.args.count == 3;
+        if (!error_action_pending()) {
+            pattern = eval_expr(expr->as.call.args.items[1]);
+        }
+        if (has_flags && !error_action_pending()) {
+            flags = eval_expr(expr->as.call.args.items[2]);
+        }
+        if (error_action_pending()) {
+            value_free(subject);
+            value_free(pattern);
+            value_free(flags);
+            return value_null();
+        }
+        if (subject.kind != VALUE_STRING) {
+            char message[128];
+            snprintf(message, sizeof message,
+                     "%s: first argument must be a string, not %s",
+                     verb, value_kind_name(subject.kind));
+            value_free(subject);
+            value_free(pattern);
+            value_free(flags);
+            runtime_error_raise(message, 1007, "regex");
+            return value_null();
+        }
+        RegexValue *regex = regex_from_argument(pattern, flags, has_flags, verb);
+        value_free(pattern);
+        value_free(flags);
+        if (!regex) {
+            value_free(subject);
+            return value_null();
+        }
+
+        size_t slots = regex->group_count + 1;
+        regmatch_t *groups = calloc(slots, sizeof(regmatch_t));
+        if (!groups) {
+            abort();
+        }
+        const char *bytes = subject.as.string;
+        size_t len = string_length(bytes);
+
+        if (!all) {
+            Value result;
+            if (regex_exec_at(regex, bytes, len, 0, groups, slots)) {
+                result = regex_build_match(bytes, groups, regex->group_count);
+            } else {
+                /* A miss is unknown, not an error and not an empty record: the
+                 * NA policy, so `is_unknown` is the miss test (§3). */
+                result = value_unknown();
+            }
+            free(groups);
+            regex_release(regex);
+            value_free(subject);
+            return result;
+        }
+
+        RegexList list = {0};
+        size_t pos = 0;
+        while (pos <= len) {
+            if (!regex_exec_at(regex, bytes, len, pos, groups, slots)) {
+                break;
+            }
+            size_t so = (size_t)groups[0].rm_so;
+            size_t eo = (size_t)groups[0].rm_eo;
+            regex_list_push(&list, regex_build_match(bytes, groups, regex->group_count));
+            if (eo == so) {
+                /* A zero-width match (`a*` against "b") matches at every
+                 * position. Advancing past it is what makes the scan finish. */
+                if (eo >= len) {
+                    break;
+                }
+                pos = regex_next_codepoint(bytes, len, eo);
+            } else {
+                pos = eo;
+            }
+        }
+        free(groups);
+        regex_release(regex);
+        value_free(subject);
+        return value_array(list.items, list.count);
+    }
+
     if (strcmp(expr->as.call.name, "find") == 0) {
         if (expr->as.call.args.count != 2) {
             runtime_error_raise("find expects two arguments", 1003, "invalid function call");
@@ -19643,10 +20523,42 @@ static Value eval_call(AstExpr *expr) {
             value_free(target);
             return value_null();
         }
+
+        /* A STRING haystack asks a different question with the same shape: does
+         * this text contain this needle? Literal for a string needle, pattern
+         * for a regex one (§13.G). This case used to raise, so no existing
+         * program can be relying on the old behavior. */
+        if (array.kind == VALUE_STRING) {
+            const char *bytes = array.as.string;
+            size_t len = string_length(bytes);
+            if (target.kind == VALUE_STRING) {
+                long off = string_find_bytes(bytes, len, target.as.string,
+                                             string_length(target.as.string));
+                value_free(array);
+                value_free(target);
+                return value_bool(off >= 0);
+            }
+            if (target.kind == VALUE_REGEX) {
+                int found = regex_matches_anywhere(target.as.regex, bytes, len);
+                value_free(array);
+                value_free(target);
+                return value_bool(found);
+            }
+            char message[128];
+            snprintf(message, sizeof message,
+                     "contains: searching a string expects a string or regex "
+                     "needle, not %s", value_kind_name(target.kind));
+            value_free(array);
+            value_free(target);
+            runtime_error_raise(message, 1003, "invalid function call");
+            return value_null();
+        }
+
         if (array.kind != VALUE_ARRAY) {
             value_free(array);
             value_free(target);
-            runtime_error_raise("contains expects an array", 1003, "invalid function call");
+            runtime_error_raise("contains expects an array or a string", 1003,
+                                "invalid function call");
             return value_null();
         }
 
@@ -19971,6 +20883,53 @@ static Value eval_call(AstExpr *expr) {
         if (has_separator) {
             separator = eval_expr(expr->as.call.args.items[1]);
         }
+
+        /* A regex separator splits on every match instead of on a literal run
+         * (§3). The literal path below is untouched. */
+        if (has_separator && separator.kind == VALUE_REGEX) {
+            if (text.kind != VALUE_STRING) {
+                char message[128];
+                snprintf(message, sizeof message,
+                         "split: first argument must be a string, not %s",
+                         value_kind_name(text.kind));
+                value_free(text);
+                value_free(separator);
+                runtime_error_raise(message, 1007, "regex");
+                return value_null();
+            }
+            RegexValue *regex = separator.as.regex;
+            const char *bytes = text.as.string;
+            size_t len = string_length(bytes);
+            regmatch_t groups[1];
+            RegexList list = {0};
+            size_t pos = 0;
+            size_t last = 0;
+            while (pos <= len) {
+                if (!regex_exec_at(regex, bytes, len, pos, groups, 1)) {
+                    break;
+                }
+                size_t so = (size_t)groups[0].rm_so;
+                size_t eo = (size_t)groups[0].rm_eo;
+                if (so == eo) {
+                    /* A zero-width match is not a separator — splitting on one
+                     * would emit an empty piece between every character. Step
+                     * past it and keep looking for a real separator. */
+                    if (eo >= len) {
+                        break;
+                    }
+                    pos = regex_next_codepoint(bytes, len, eo);
+                    continue;
+                }
+                regex_list_push(&list, value_string_n(bytes + last, so - last));
+                last = eo;
+                pos = eo;
+            }
+            regex_list_push(&list, value_string_n(bytes + last, len - last));
+            value_free(text);
+            value_free(separator);
+            return value_array(list.items, list.count);
+        }
+
         return builtin_split_value(text, separator, has_separator);
     }
 
@@ -20998,6 +21957,36 @@ static Value eval_comparison(AstExpr *expr, Value left, Value right) {
             result = 1;
         } else {
             runtime_error_raise("functions support only = and !=", 1003, "comparison");
+            value_free(left);
+            value_free(right);
+            return value_null();
+        }
+    } else if (left.kind == VALUE_REGEX && right.kind == VALUE_REGEX) {
+        /* Structural, not by handle: a regex is fully determined by its pattern
+         * and its (normalized) flags, so two separately compiled copies of the
+         * same pattern are the same value — unlike a gobject or a boxed handle,
+         * which have identity but no comparable content. */
+        int equal = strcmp(left.as.regex->pattern, right.as.regex->pattern) == 0 &&
+                    strcmp(left.as.regex->flags, right.as.regex->flags) == 0;
+        if (strcmp(op, "=") == 0) {
+            result = equal;
+        } else if (strcmp(op, "!=") == 0) {
+            result = !equal;
+        } else {
+            runtime_error_raise("regex values support only = and !=", 1003, "comparison");
+            value_free(left);
+            value_free(right);
+            return value_null();
+        }
+    } else if (left.kind == VALUE_REGEX || right.kind == VALUE_REGEX) {
+        /* A regex compared against a non-regex: unequal, matching the function
+         * and gobject rules. */
+        if (strcmp(op, "=") == 0) {
+            result = 0;
+        } else if (strcmp(op, "!=") == 0) {
+            result = 1;
+        } else {
+            runtime_error_raise("regex values support only = and !=", 1003, "comparison");
             value_free(left);
             value_free(right);
             return value_null();

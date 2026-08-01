@@ -89,6 +89,13 @@ int gbasic_builtin_function(const char *name) {
         "len",
         "find",
         "contains",
+        /* Regex (docs/text_design.md §3). `contains`, `replace` and `split`
+         * above are OVERLOADED on a regex argument rather than duplicated under
+         * an re_* prefix; only the two verbs whose return shape has no literal
+         * counterpart need names of their own. */
+        "regex",
+        "match",
+        "match_all",
         "remove_value",
         "find_by",
         "join_from",
