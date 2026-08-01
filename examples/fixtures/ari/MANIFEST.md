@@ -14,6 +14,30 @@ fixtures must never become a route by which real data enters the repository.
 | file | shape modeled | authored | notes |
 |---|---|---|---|
 | `teller_totals.rpt` | credit-union teller totals report | 2026-08-01, hand-made | 76 lines, no form feeds — pagination is signalled by the header line alone (see §13.H). Deliberately irregular; see below. |
+| `teller_totals_generated.rpt` | the same, at scale and with wider variation | 2026-08-01, generated | 230 lines, 4 pages, form feeds. Reproduce exactly with `gbasic tools/gen_teller_report.bas 3 3 66 1 42`. |
+
+## Two fixtures, two jobs
+
+They are not redundant and neither replaces the other.
+
+`teller_totals.rpt` is the **irregularity** fixture. Its value is that it is
+inconsistent with itself in the ways a real report is, and those inconsistencies
+were authored by hand because a template cannot invent them.
+
+`teller_totals_generated.rpt` is the **scale and variation** fixture, produced by
+`tools/gen_teller_report.bas`. A generator's natural output is regular, which is
+exactly the wrong thing here, so that program deliberately generates the awkward
+cases: pagination is a separate pass that counts lines and is blind to content,
+so **page breaks land mid-section** — in the committed sample, one falls between
+a `Bills / Coins` heading and its rows; money format varies **by branch**, so one
+document contains several of the §5.1 forms; summary field order differs between
+tellers; and column headings shift. It is deterministic (seeded RNG, fixed run
+stamp, no clock), so regeneration is byte-identical and it can back a golden.
+
+The committed sample is small on purpose. Larger corpora are generated on demand
+rather than committed — 80 branches gives ~7 900 lines and 415 KB in 0.24 s.
+When `tests/run_ari.sh` exists it should regenerate this file and diff it, so the
+generator and the committed sample cannot drift apart.
 
 ## `teller_totals.rpt` — the irregularities are the point
 
