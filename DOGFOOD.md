@@ -677,3 +677,41 @@ D0.6, the rest remain open or are by-design.
   a first-class `gi.emit(obj, signal, args...)` would make it direct rather than
   a per-widget scavenger hunt, and would cover signals no method happens to emit.
   Used by gbasic-studio `tests/run_studio.sh` (`ui_gui`, `ui_gui_cold`).
+
+## 2026-08-01 — CC — while: Studio STU-2D (building a list of strings)
+- **Type:** language-surprise
+- **Severity:** low
+- **What:** `+` concatenates strings and adds numbers, but on two arrays it raises
+  `arithmetic operator '+' expected number but got array`. Splitting a long list
+  across statements the obvious way (`a = ["x"]` then `a = a + ["y"]`) therefore
+  fails at run time, not at parse time. There is no `concat`/`extend` builtin
+  either — `append(arr, value)` adds ONE element, so joining two arrays means a
+  loop.
+- **Workaround:** a single array literal spanning several physical lines, which
+  *does* parse (`a = ["x",\n "y",\n "z"]` works). Good outcome for this case, but
+  a list assembled conditionally still needs a `for each ... append` loop. An
+  array `+` (or a `concat(a, b)`) would remove it; UNLEARN.md's operator section
+  says `+` concatenates "when either operand is a string" and is silent on
+  arrays, so the failure is only discoverable by hitting it.
+
+## 2026-08-01 — CC — while: Studio STU-2D (two windows at once)
+- **Type:** doc-gap
+- **Severity:** medium
+- **What:** `gtk.application(app_id)` builds a `Gtk.Application` with default flags,
+  which is SINGLE-INSTANCE. A second process running the same program therefore
+  does not open a second window: it registers as a remote, forwards "activate" to
+  the first process and exits, having printed nothing. Worse for the first
+  process — it receives an extra "activate", so an app that builds its window in
+  that handler builds a SECOND one over the same globals and ends up with two of
+  every signal handler. In Studio this surfaced as a display test that
+  occasionally saw one synthesised click land twice, which took a while to trace
+  back to a stdlib default. `gtk.bas` documents no flags parameter and says
+  nothing about instance semantics.
+- **Workaround:** build the application by hand, which `gtk.bas`'s header already
+  sanctions ("callers drop straight down to the raw gi bridge for anything not
+  wrapped here"):
+  `solo = gi.enum("Gio.ApplicationFlags.NON_UNIQUE")` then
+  `gi.new("Gtk.Application", "application-id", id, "flags", solo)`
+  (with `gi.require("Gio", "2.0")` first). Either a `flags` parameter on
+  `gtk.application` or one sentence in its comment naming the default would have
+  saved the hunt — the failure mode is silent and acts at a distance.
