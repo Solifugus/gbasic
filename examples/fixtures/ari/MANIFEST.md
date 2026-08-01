@@ -100,3 +100,34 @@ is explicitly in scope. In particular, money appears as `$1,234.56`,
 `$    1,234.56` (right-justified in a fixed field), `1,234.56` (no symbol),
 `$1,234.56-`, `-$1,234.56`, `$-1,234.56`, `<$1,234.56>`, `(1,234.56)` and
 `1,234.56CR` — and more than one form can appear in a single document.
+
+## `delinquency.rpt` — the constructs teller_totals cannot reach
+
+| file | shape modeled | authored | notes |
+|---|---|---|---|
+| `delinquency.rpt` | consolidated loan delinquency register | 2026-08-01, generated | 90 lines, 2 pages, form feeds. Reproduce with `gbasic tools/gen_delinquency_report.bas 2 2 60 1 7`. |
+
+A second report *shape*: deeply hierarchical (region → branch → loans) around a
+genuine table, where teller_totals is a flat sequence of blocks. It exists
+because every value in teller_totals sits on the same line as its label, which
+let four constructs inside ARI's own Phase 2 scope go unexercised. Each part
+below forces one of them:
+
+- **`OFFICER` on one line, the name on the next** → requires `down 1 of`. The
+  entire vertical direction is untested without this.
+- **`BRANCH TOTAL` prints its amount ABOVE the label**, under a rule line — the
+  ordinary shape of a totals block → requires `up 2 of`.
+- **The gap after `REMARKS:` varies by branch** — measured at 1, 2, 2 and 3
+  lines in the committed sample → requires a distance RANGE. No exact distance
+  matches all four, which is the honest reason ranges exist.
+- **A `NOTES` line with a dotted leader to the right margin** → `flush`.
+- **Dates are DD/MM/YYYY.** This is the residue §5.1 predicted: `03/04/2026` is
+  3 April or 4 March and nothing in the token decides. It is the case the union
+  recognizer genuinely cannot settle, and therefore the case `using date:` and
+  custom `type` blocks exist for. Days 13–28 are used for most rows **on
+  purpose**, so a wrong reading yields a plausible wrong date rather than an
+  out-of-range error — guessing must not look safe.
+
+Money here is uniform (plain, parenthesised negatives). Dialect mixing is
+already covered by `teller_totals_generated.rpt`; repeating it would add size
+without coverage.
