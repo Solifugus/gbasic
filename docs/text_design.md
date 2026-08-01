@@ -358,6 +358,30 @@ Both layers are deterministic, so both test the standard gBASIC way:
 This is exactly what makes the library handable to Adrian: he validates report
 parsing by writing specs and diffing frames, never by reading C.
 
+**The corpus problem (2026-08-01).** ARI's motivating targets — teller totals,
+settlement registers, card-processor reports — are exactly the documents that
+cannot be committed as fixtures: they are proprietary, and they carry account
+data. So the fixtures have to be *representative rather than real*, and that is
+a genuine risk to the design: §7's worked example is invented, and a report
+parser validated only against invented reports is a parser that handles invented
+reports.
+
+Two mitigations, both worth doing:
+
+- **Public print-image analogues.** What qualifies is narrow — the file must be a
+  *human-readable page image*, not a record-coded interchange format. BAI2 and
+  NACHA look relevant and are not: every line carries a leading type code, so
+  they are parsed by record type, and spatial anchoring buys nothing. The right
+  class is pre-XBRL **SEC EDGAR ASCII filings** (fixed-width financial data
+  schedules and 13F tables in plain-text submissions), archived statistical
+  releases that predate their PDF/XML era, and sample report *output* printed
+  inside vendor documentation for mainframe report writers.
+- **Structure without data.** A spec is a description of layout, not of content.
+  A fixture can reproduce a proprietary report's *shape* — page height, header
+  block, column positions, subtotal placement, rollup depth — under wholly
+  invented numbers and names, and still exercise every hard part of the engine.
+  That is the practical route when the real file cannot leave its building.
+
 ## 10. Performance notes
 
 **CORRECTED 2026-07-31.** This section was written when gBASIC had two O(n²)
@@ -512,6 +536,48 @@ The alternatives — spelling the test `not is_unknown(match(s, p))`, or adding 
 fifth name `matches(s, p)` — were rejected as clunky and as surface growth
 respectively.
 
+**H. OPEN — repeating page furniture has no representation in the spec
+language.** Raised 2026-08-01, blocking Phase 2 design.
+
+The target domain is paginated print-image reports from mainframe-era systems
+(teller totals, trial balances, transaction registers). Those files are not a
+clean stream of data lines: a logical section is interrupted every 55–66 lines
+by a **page break and a repeated header block** — form feed (`\f`, 0x0C), report
+title, run date, page number, and a re-printed set of column headings. Footers
+and continuation banners appear the same way.
+
+`starts`/`ends` cannot express this. They bound a region **once**; page furniture
+*recurs inside* the region they bound. A `section transactions starts(...)
+ends(...)` spanning four pages contains three header blocks, and every one of
+them will be walked by the field anchors as if it were data — matching a column
+heading that reads `AMOUNT` when the anchor is looking for the literal
+`"AMOUNT"`, which is exactly the pattern such a spec would use.
+
+This also cuts at the **line grid** (§4), not just the spec syntax: if pages are
+excised, the grid the `up`/`down` directions count over is no longer the physical
+file, and a distance of `up 2` means something different before and after the
+excision. That is a core model decision, so it belongs before implementation
+rather than after.
+
+Three candidate shapes, none yet chosen:
+
+1. **A `skip`/`ignore` pattern at section scope** — `section x ignore(/^\f/ .. 5)`:
+   lines matching a pattern (and optionally the N following) are removed from the
+   grid before anchoring. Most flexible; needs a rule for what `up`/`down` count.
+2. **Page-aware parsing** — split the document on form feeds into pages, treat a
+   page header as a fixed prologue of N lines, and concatenate the remainders
+   into one logical grid. Matches how these files are actually produced; weaker
+   when the header height varies.
+3. **Anchor-relative immunity** — no spec construct; rely on `starts`/`ends` plus
+   sufficiently specific anchors and accept that some reports cannot be parsed.
+   Cheapest, and the honest fallback if 1 and 2 both prove unwieldy.
+
+My lean is **2 with 1 as the escape hatch**: form-feed pagination covers the
+common case declaratively, and an `ignore` pattern handles the rest. Both need
+the grid question answered explicitly and documented, because "which lines do
+`up`/`down` count?" is precisely the sort of thing that is obvious to whoever
+wrote the engine and invisible to everyone else.
+
 **Adopted as proposed** (the document's own leans, taken unchanged): the
 whitelisted `\d \D \w \W \s \S` shorthand set with `\b` left out (POSIX's
 `[[:<:]]`/`[[:>:]]` is not portable); libc-only for v1 with `HAVE_LIBPCRE2`
@@ -552,15 +618,36 @@ Unblocks all linear text work immediately, including a first pass at cleaning up
 `mdna.bas`.
 
 ### Phase 2 — ARI core
-`stdlib/ari.bas`: `ari.parse` / `ari.import`; `section`/`field`; the five
-directions with exact distances; literal and `/regex/` patterns; `break`
-(default + `on`); single-record and frame output; `unknown` on not-found. Enough
-to parse the worked example end to end. Golden tests with inline specs.
 
-### Phase 3 — ARI advanced
-Distance ranges and `flush`; nested sections; `starts`/`ends` boundaries; the
-built-in type keywords (native value conversion); regex-with-transform
-(`/re/repl/`); custom `type` blocks. Golden tests per feature.
+**Rebalanced 2026-08-01.** The previous split was internally contradictory: it
+claimed Phase 2 was "enough to parse the worked example end to end" while
+assigning **five** of that example's features to Phase 3 — `starts`/`ends`,
+`flush`, the `1-5` distance range, the nested `transactions` section, and the
+`date` type keyword. Phase 2's own success criterion was unmeetable by Phase 2.
+
+The split now follows a real boundary: **Phase 2 is everything needed to locate
+a field; Phase 3 is everything needed to convert one.** Structure before
+coercion. That makes §7 parseable end to end (bar its one `date` keyword, which
+Phase 2 returns as a string), and it front-loads the features that decide
+whether ARI works on a real report at all rather than on a tidy fixture.
+
+`stdlib/ari.bas`: `ari.parse` / `ari.import`; `section`/`field`; the five
+directions; **exact distances, ranges (`2-10`, `3-`, `-8`) and `flush`**;
+literal and `/regex/` patterns; **`starts`/`ends` section boundaries**;
+**nested sections**; `break` (default + `on`); single-record and frame output;
+`unknown` on not-found. Golden tests with inline specs.
+
+The three promotions are not conveniences. **Section boundaries** are what
+separate a detail block from the page furniture around it; **nesting** is how a
+teller-within-branch-within-report rollup is expressed at all; and **distance
+ranges** exist because real reports do not hold a constant label-to-value gap
+across every row — an exact-distance-only engine matches the first row of a
+column and misses the rest. Without these three, ARI parses examples.
+
+### Phase 3 — ARI advanced (conversion and reuse)
+The built-in type keywords (`date`, `money`, `integer`, `decimal`) with native
+value conversion; regex-with-transform (`/re/repl/`); custom `type` blocks.
+Golden tests per feature.
 
 ### Phase 4 — optional power engine + ergonomics
 Optional `HAVE_LIBPCRE2` engine behind the same Layer 0 surface (lookaround,
