@@ -51,13 +51,29 @@ So neither the heading nor the column can find the amount. What works is
 central decision in §4 — `as <type>` does not merely convert a value, it
 *delimits* it.
 
-**1.4 Word-boundary anchoring is needed and is not available.** The closing-cash
-grid contains both `Dollars` and `Half-Dollars`. Anchoring on the literal
-`"Dollars"` matches inside `"Half-Dollars"`. The natural fix is `/\bDollars\b/`,
-and TEXT-0 deliberately omitted `\b` (POSIX's `[[:<:]]`/`[[:>:]]` is not
-portable — §13, original question 1). Ordering rescues this particular case
-because the two words fall on different lines and the first match wins, but that
-is luck, not design. Recorded as open in §8.
+**1.4 A literal anchor can match inside a longer word — and `\b` is not the fix.**
+The closing-cash grid contains both `Dollars` and `Half-Dollars`, so anchoring on
+the literal `"Dollars"` matches both.
+
+**CORRECTED 2026-08-01.** An earlier revision of this section called `/\bDollars\b/`
+the natural fix and blamed TEXT-0 for omitting `\b`. Both halves were wrong, and
+measurement is what showed it:
+
+- **`\b` would not have helped.** A hyphen is a non-word character, so there *is*
+  a word boundary between `-` and `D`. `\bDollars` matches inside `Half-Dollars`
+  exactly as the bare literal does. The example never needed a word boundary; it
+  needed a *whitespace-or-line-start* boundary, which is a different assertion.
+- **A portable POSIX ERE spelling already exists** and needs no engine feature:
+
+  ```
+  /(^| )Dollars/    matches "…13            Dollars       1"       ✓
+                    does not match "…4            Half-Dollars  0"  ✓
+  ```
+
+So the fixture case is solved with what TEXT-0 already ships, and the `within
+columns` qualifier used in §6 is a convenience rather than a workaround. `\b`
+remains a genuine gap for other patterns, but it is not blocking and is not this
+one. Its real status is measured in §8.
 
 ## 2. Page furniture (report-scoped)
 
@@ -289,37 +305,54 @@ is `usd_trailing`, and they are all instances of the **same** `section branches`
 declaration. A lexical `using` cannot express "whichever dialect this instance
 happens to use."
 
-Three ways out, none chosen:
+**RESOLVED 2026-08-01: the built-in recognizer covers the full §5.1 union.**
 
-1. **Let the permissive default handle it.** Make built-in `money` recognize the
-   full §5.1 union, and reserve `using`/custom types for cases the union cannot
-   disambiguate. Simplest, and probably right for most reports — but it gives up
-   on `1,234.56-`, which is genuinely ambiguous without knowing the dialect.
-2. **Per-instance dialect detection** — a section declares a discriminator
-   (`money detect: first-match-wins over a listed set`) resolved per instance.
-   Powerful, and a new concept.
-3. **Accept it.** Declare that a report mixing dialects across instances of one
-   section needs those branches split into separate sections with distinct
-   `starts` patterns. Honest, and unpleasant when there are forty branches.
+The precedent is date parsing, which faces the same problem and solves it the
+same way: dates arrive in many forms, and for the most part a recognizer can
+decipher them without being told which form to expect. Money is no harder. So
+`as money` handles the union by default, and `using` plus custom types exist for
+the residue the union genuinely cannot settle.
 
-My lean is **1 with 2 held in reserve**, on the grounds that the union recognizer
-is needed anyway and the ambiguous forms are rarer than the merely various ones.
-Resolving this is the last thing blocking implementation.
+That residue is small but real, and the spec author must be able to see it:
+`1,234.56-` is negative under a trailing-minus dialect and a positive followed by
+a separator under another. Where the union is ambiguous the recognizer must
+**prefer the more common reading and record the ambiguity**, rather than pick
+silently — and the escape hatch is naming a custom type at field or section
+scope, which always wins.
+
+Per-instance dialect detection (a section discriminating its own dialect at
+runtime) is **not** built. It is held in reserve for a report that proves the
+union insufficient, and should not be added speculatively.
 
 ## 8. Open
 
-- **§7's per-instance dialect problem** — the lean above needs confirming.
-- **Word boundaries (§1.4).** ARI wants `\b`, TEXT-0 does not have it, and the
-  `within columns` workaround only helps when a column split exists. Options:
-  revisit `\b` in Layer 0 (a bounded translation to `[[:<:]]`/`[[:>:]]` where the
-  libc supports it, refusing elsewhere), synthesize it in ARI by wrapping literal
-  anchors in explicit delimiter classes, or leave it. This is the first concrete
-  cost of that TEXT-0 decision and should be recorded against it either way.
-- **Whether `columns` should exist at all.** §0 pitches ARI as anchor-relative
-  *instead of* positional, yet §6 uses `columns 0-24` for three fields, because
-  within one table the data columns genuinely are stable even when the heading is
-  not. The honest position is that both belong, with anchors preferred; that
-  should be stated in the design rather than left as an apparent contradiction.
+**RESOLVED — `columns` is a first-class capability, not an embarrassment.** §0
+pitches ARI as anchor-relative *instead of* positional, and §6 nonetheless uses
+`columns 0-24` for three fields, because within one table the data columns
+genuinely are stable even where the heading above them is not (§1.2). Both
+belong. The rule is: **anchors by default, columns where an area is clearly
+columnar and the annotation says so.** Reading a known-columnar area as columns
+is also the cheaper operation, since it needs no search. What the design must not
+do is imply columns are a failure mode — the contradiction in §0 should be
+rewritten rather than left standing.
+
+**Still open:**
+
+- **`\b` — measured, and less urgent than §1.4 first claimed.** On this glibc,
+  `\b` and `\<` **are** supported and honored (`\bollars` correctly fails to
+  match `Dollars`), while the BSD spelling `[[:<:]]` **fails to compile**. So the
+  original portability worry has the shape backwards for the platform gBASIC
+  mostly runs on: the GNU form works here and the POSIX-ish form does not. musl
+  is unmeasured and supports neither GNU extension.
+
+  The real hazard is not absence but **silence** — a `\b` that compiles and is
+  ignored would over-match with nothing to show for it. So if `\b` is added, it
+  should go through the existing shorthand-translation table with a **probe at
+  build or first use**, raising a clear error where the libc does not honor it
+  rather than quietly changing what a pattern means. That turns "non-portable"
+  into "portable, or a loud failure", which is the standard applied everywhere
+  else here. Not blocking: the fixture case needs `/(^| )X/`, not `\b`.
+
 - **Multi-line records.** Neither fixture has a wrapped or continuation line, and
   the grammar has no way to say "this record spans two physical lines." Real
   reports have them. Deferred, but it is a gap, not an omission.
