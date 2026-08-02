@@ -1,0 +1,56 @@
+== undeclared dates: the ambiguous minority is refused, not guessed ==
+ok        = true
+regions   = 2
+-- region SOUTHEAST (SE-04)
+   branch 142
+     officer   = T. OKONKWO
+     total     = 4492410c
+     notes     = SEE SCHEDULE B
+     remarks   = Member contacted; promised payment.
+     loan 0017447348 SMITH, JOHN Q opened=unknown bal=2436882c
+     loan 0017921191 GARCIA, MARIA opened=unknown bal=2055528c
+   branch 149
+     officer   = R. BELLBOWL
+     total     = 4869523c
+     notes     = SEE SCHEDULE B
+     remarks   = Member contacted; promised payment.
+     loan 0012009906 LINDQVIST, INES opened=unknown bal=3044072c
+     loan 0012133143 AHMED, COLE opened=unknown bal=1825451c
+-- region NORTHWEST (SE-07)
+   branch 172
+     officer   = A. LINDQVIST
+     total     = 2203515c
+     notes     = SEE SCHEDULE B
+     remarks   = Skip trace initiated.
+     loan 0016958899 OBRIEN, ADA opened=unknown bal=1888288c
+     loan 0019836074 SMITH, JOHN Q opened=2019-04-23 bal=315227c
+   branch 179
+     officer   = M. VASQUEZ
+     total     = 5316636c
+     notes     = SEE SCHEDULE B
+     remarks   = Skip trace initiated.
+     loan 0019179208 OKONKWO, TOMAS opened=2022-06-22 bal=1784597c
+     loan 0017685922 LINDQVIST, INES opened=2020-12-16 bal=2681709c
+     loan 0017551862 AHMED, COLE opened=2019-05-21 bal=850330c
+
+diagnostics = 5
+  ambiguous-date at report.regions[0].branches[0].loans.rows[0].opened (line 11)
+  ambiguous-date at report.regions[0].branches[0].loans.rows[1].opened (line 12)
+  ambiguous-date at report.regions[0].branches[1].loans.rows[0].opened (line 27)
+  ambiguous-date at report.regions[0].branches[1].loans.rows[1].opened (line 28)
+  ambiguous-date at report.regions[1].branches[0].loans.rows[0].opened (line 50)
+
+== inspect: what the author should declare ==
+  5x  report.regions[].branches[].loans.rows[].opened :: ambiguous-date  -> declare `using date: dmy` (or mdy) on the enclosing section
+
+== declared `using date: euro_date`: every date settles ==
+ambiguous remaining = 0
+  0017447348 opened=2021-12-07
+  0017921191 opened=2019-03-04
+  0012009906 opened=2022-05-10
+  0012133143 opened=2024-04-10
+  0016958899 opened=2021-11-03
+  0019836074 opened=2019-04-23
+  0019179208 opened=2022-06-22
+  0017685922 opened=2020-12-16
+  0017551862 opened=2019-05-21

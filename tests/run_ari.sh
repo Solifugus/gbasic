@@ -57,11 +57,50 @@ else
     status=1
 fi
 
+# --- Tier 1b: the delinquency fixture ------------------------------------------
+# The constructs teller_totals cannot reach: down/up line offsets, distance
+# RANGES (the gap after REMARKS: is 1, 2, 2 and 3 lines across four branches, so
+# no exact distance matches all of them), flush, and using/custom `type`. Also
+# the date contract: run undeclared, the ambiguous minority must come back
+# `unknown` WITH diagnostics rather than guessed; run with `using date:`, every
+# date must settle AND the ones already settled undeclared must not change.
+printf -- '-- golden: delinquency (down/up/ranges/flush/using)\n'
+if GBASIC_PATH=stdlib timeout 120 ./gbasic examples/ari_delinquency_test.bas \
+        >"$out" 2>"$err" </dev/null; then
+    if diff -u examples/ari_delinquency_test.out "$out"; then
+        printf 'PASS examples/ari_delinquency_test.bas\n'
+    else
+        printf 'FAIL examples/ari_delinquency_test.bas (output differs)\n'
+        status=1
+    fi
+else
+    printf 'FAIL examples/ari_delinquency_test.bas (exit)\n'
+    cat "$err"
+    status=1
+fi
+
+# A guess must never reach the value. If ambiguous dates ever start resolving
+# without a declaration, this fails -- and nothing in the golden would say why,
+# because a plausible wrong date looks exactly like a right one.
+if grep -q 'ambiguous-date' examples/ari_delinquency_test.out; then
+    printf 'PASS ambiguous dates refused rather than guessed\n'
+else
+    printf 'FAIL ambiguous dates no longer reported -- is something guessing?\n'
+    status=1
+fi
+
 # --- Tier 2: the generator and its committed sample must not drift -------------
 printf -- '-- generator drift\n'
 if timeout 120 ./gbasic tools/gen_teller_report.bas 3 3 66 1 42 >"$out" 2>"$err" </dev/null; then
     if diff -q examples/fixtures/ari/teller_totals_generated.rpt "$out" >/dev/null; then
-        printf 'PASS generated fixture reproduces byte-identically\n'
+        printf 'PASS teller fixture reproduces byte-identically\n'
+        if timeout 120 ./gbasic tools/gen_delinquency_report.bas 2 2 60 1 7 >"$out" 2>"$err" </dev/null \
+           && diff -q examples/fixtures/ari/delinquency.rpt "$out" >/dev/null; then
+            printf 'PASS delinquency fixture reproduces byte-identically\n'
+        else
+            printf 'FAIL delinquency fixture differs from its generator\n'
+            status=1
+        fi
     else
         printf 'FAIL generated fixture differs from tools/gen_teller_report.bas output\n'
         printf '     regenerate with: ./gbasic tools/gen_teller_report.bas 3 3 66 1 42 > examples/fixtures/ari/teller_totals_generated.rpt\n'

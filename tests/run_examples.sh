@@ -69,6 +69,7 @@ examples=(
     clause_recognition_test.bas
     persist_test.bas
     ari_teller_test.bas
+    ari_delinquency_test.bas
     filetree_test.bas
     hex_literal_test.bas
     stats_frame_test.bas

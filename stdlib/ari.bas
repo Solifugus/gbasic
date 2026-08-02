@@ -237,26 +237,148 @@ library ari
         return number(cleaned)
     end function
 
+    function _pad2(n)
+        if n < 10 then
+            return "0" + string(n)
+        end if
+        return string(n)
+    end function
+
+    ' Dates. Returns { val, why } — `why` is "" on success, otherwise a reason
+    ' code that becomes a diagnostic.
+    '
+    ' TWO-COMPONENT DATES ARE THE ONE CASE THE UNION CANNOT SETTLE (§5.1).
+    ' 27/12/2021 is decided by the token itself: 27 cannot be a month. But
+    ' 03/04/2026 is 3 April or 4 March and NOTHING in the value says which.
+    '
+    ' Per-token disambiguation is done here and needs no declaration, which
+    ' covers most real dates — roughly 60% of a natural spread has a day above
+    ' 12. What is deliberately NOT done is inferring the dialect from OTHER rows
+    ' in the same column. That reads well and fails badly: inference is stable
+    ' for one file but can differ between files of the same recurring report, so
+    ' January's extract (containing a row dated the 27th) resolves correctly and
+    ' February's (all days <= 12) falls back to a guess and reads EVERY date
+    ' wrong, silently, with the same spec. Intermittent and invisible is the
+    ' worst shape this bug can take.
+    '
+    ' So an ambiguous token with no declared dialect yields `unknown` plus a
+    ' diagnostic naming the fix. Since most values resolve, an undeclared DD/MM
+    ' column comes out mostly-converted with a few unknowns — a legible signal
+    ' pointing straight at `using date: dmy`.
+    '
+    ' Output is a normalized ISO string, not a native datetime: gBASIC has no
+    ' timezone-free runtime constructor from year/month/day (only `now` and a
+    ' shifting `from_epoch`), so a native value could not be produced without
+    ' inventing a timezone. See /DOGFOOD.md 2026-08-01.
+    function _date_in(text, dialect)
+        iso = match(text, regex("([0-9]{4})-([0-9]{2})-([0-9]{2})"))
+        if not is_unknown(iso) then
+            return { val: iso.groups[0] + "-" + iso.groups[1] + "-" + iso.groups[2], why: "" }
+        end if
+
+        m = match(text, regex("([0-9]{1,2})[/.-]([0-9]{1,2})[/.-]([0-9]{4})"))
+        if is_unknown(m) then
+            return { val: unknown, why: "no-date-found" }
+        end if
+        a = number(m.groups[0])
+        b = number(m.groups[1])
+        y = m.groups[2]
+
+        if dialect = "dmy" then
+            return { val: y + "-" + _pad2(b) + "-" + _pad2(a), why: "" }
+        end if
+        if dialect = "mdy" then
+            return { val: y + "-" + _pad2(a) + "-" + _pad2(b), why: "" }
+        end if
+
+        ' No declared dialect: settle it from the token alone, or refuse.
+        if a > 12 then
+            return { val: y + "-" + _pad2(b) + "-" + _pad2(a), why: "" }
+        end if
+        if b > 12 then
+            return { val: y + "-" + _pad2(a) + "-" + _pad2(b), why: "" }
+        end if
+        return { val: unknown, why: "ambiguous-date" }
+    end function
+
     ' Convert an extracted span according to its declared type. `as <type>`
     ' DELIMITS as well as converts: the span handed in may carry neighbouring
     ' text, and the recognizer takes the token of that shape out of it.
-    function _convert(span, ty, want_last)
+    '
+    ' `ctx` carries the spec's custom `type` declarations and the `using`
+    ' bindings in scope, so a section can rebind what `money` or `date` means
+    ' for itself and its children (§5.1).
+    ' Returns { val, why }.
+    function _convert(span, ty, want_last, ctx)
         if ty = "" then
-            return trim(span)
+            return { val: trim(span), why: "" }
         end if
         if ty = "text" then
-            return trim(span)
+            return { val: trim(span), why: "" }
         end if
-        if ty = "money" then
-            return _money_in(span, want_last)
+
+        ' A `using <builtin>: <name>` binding in scope redirects the builtin to
+        ' a custom type; a field naming a custom type directly beats any binding.
+        eff = ty
+        bound = ctx.usings[ty]
+        if not is_unknown(bound) then
+            eff = bound
         end if
-        if ty = "integer" then
-            return _integer_in(span, want_last)
+
+        custom = ctx.types[eff]
+        if not is_unknown(custom) then
+            ' A custom type is an ordered rule list: first match wins, so the
+            ' negative form must be declared before the general one.
+            for each rule in custom.rules
+                mm = match(span, regex(rule.re))
+                if not is_unknown(mm) then
+                    ' A rule need not capture: with no group, the whole match is
+                    ' the value. Indexing groups[0] blindly would fail on every
+                    ' uncaptured rule.
+                    raw = mm.text
+                    if count(mm.groups) > 0 then
+                        g0 = mm.groups[0]
+                        if not is_unknown(g0) then
+                            raw = g0
+                        end if
+                    end if
+                    if custom.base = "date" then
+                        return _date_in(raw, rule.dialect)
+                    end if
+                    v = _to_amount(raw, rule.neg)
+                    if not is_unknown(v) then
+                        return { val: v, why: "" }
+                    end if
+                end if
+            end for
+            return { val: unknown, why: "no-rule-matched" }
         end if
-        if ty = "decimal" then
-            return _decimal_in(span, want_last)
+
+        if eff = "money" then
+            v = _money_in(span, want_last)
+            if is_unknown(v) then
+                return { val: unknown, why: "malformed-money" }
+            end if
+            return { val: v, why: "" }
         end if
-        return trim(span)
+        if eff = "integer" then
+            v = _integer_in(span, want_last)
+            if is_unknown(v) then
+                return { val: unknown, why: "no-integer-found" }
+            end if
+            return { val: v, why: "" }
+        end if
+        if eff = "decimal" then
+            v = _decimal_in(span, want_last)
+            if is_unknown(v) then
+                return { val: unknown, why: "no-decimal-found" }
+            end if
+            return { val: v, why: "" }
+        end if
+        if eff = "date" then
+            return _date_in(span, "")
+        end if
+        return { val: trim(span), why: "" }
     end function
 
     ' ------------------------------------------------------- the page-furniture
@@ -445,6 +567,7 @@ library ari
     function ari_parse_spec(spec_text)
         lines = split(spec_text, "\n")
         page = { kind: "none", pattern: "", drop: 0 }
+        types = { }
         root = unknown
 
         i = 0
@@ -502,6 +625,49 @@ library ari
                 continue
             end if
 
+            ' `type <name>:` — an ordered rule list plus an output base type.
+            ' Rules are tried in order and first match wins, so a negative form
+            ' must be declared before the general one. This is the mechanism for
+            ' a document that contradicts itself (§5.1), not a nicety.
+            tym = match(t, regex("^type[ ]+([A-Za-z_][A-Za-z0-9_]*)[ ]*:"))
+            if not is_unknown(tym) then
+                tname = tym.groups[0]
+                rules = []
+                base = "text"
+                j = i + 1
+                while j < block_end
+                    rt = trim(lines[j])
+                    om = match(rt, regex("^output:[ ]*([A-Za-z_]+)"))
+                    if not is_unknown(om) then
+                        base = om.groups[0]
+                    else
+                        ' /regex/ -> [negate] [as <base>] | /regex/ -> dmy|mdy
+                        ' Greedy up to the LAST slash before `->`: a rule's
+                        ' regex may itself contain escaped slashes (a date
+                        ' pattern almost always does), which a [^/]* body
+                        ' cannot span.
+                        rm = match(rt, regex("^/(.*)/[ ]*->[ ]*(.*)$"))
+                        if not is_unknown(rm) then
+                            body = rm.groups[0]
+                            act = trim(rm.groups[1])
+                            neg = contains(act, "negate")
+                            dial = ""
+                            if contains(act, "dmy") then
+                                dial = "dmy"
+                            end if
+                            if contains(act, "mdy") then
+                                dial = "mdy"
+                            end if
+                            append(rules, { re: body, neg: neg, dialect: dial })
+                        end if
+                    end if
+                    j = j + 1
+                end while
+                types[tname] = { rules: rules, base: base }
+                i = block_end
+                continue
+            end if
+
             if starts_with(t, "section ") then
                 sec = _parse_section_header(t)
                 if not is_unknown(sec) then
@@ -515,7 +681,7 @@ library ari
             i = i + 1
         end while
 
-        return { page: page, root: root }
+        return { page: page, root: root, types: types }
     end function
 
     ' -------------------------------------------------------------- locators
@@ -602,12 +768,78 @@ library ari
         return { ok: false, span: "" }
     end function
 
-    ' Resolve one field against a block of grid lines.
-    function _resolve_field(block, f)
+    ' Parse a vertical locator: `down <dist> of <pat> [<inner locator>]`, where
+    ' <dist> is an exact count (`1`), a range (`1-3`), an open range (`3-`,
+    ' `-8`) or `flush` (to the block edge).
+    '
+    ' A RANGE is not a convenience. In the delinquency fixture the gap between
+    ' `REMARKS:` and its note is 1, 2, 2 and 3 lines across four branches,
+    ' because the generator emits a varying number of blank lines — which is
+    ' what real reports do. An exact distance matches one branch and misses the
+    ' rest, silently.
+    function _parse_vertical(loc)
+        vm = match(loc, regex("^(down|up)[ ]+([0-9]+-[0-9]+|[0-9]+-|-[0-9]+|[0-9]+|flush)[ ]+of[ ]+(.*)$"))
+        if is_unknown(vm) then
+            return unknown
+        end if
+        dir = vm.groups[0]
+        dist = vm.groups[1]
+        rest = trim(vm.groups[2])
+
+        lo = 1
+        hi = 1
+        if dist = "flush" then
+            lo = 1
+            hi = 0 - 1                      ' to the block edge
+        else
+            rm = match(dist, regex("^([0-9]+)-([0-9]+)$"))
+            if not is_unknown(rm) then
+                lo = number(rm.groups[0])
+                hi = number(rm.groups[1])
+            else
+                om = match(dist, regex("^([0-9]+)-$"))
+                if not is_unknown(om) then
+                    lo = number(om.groups[0])
+                    hi = 0 - 1
+                else
+                    um = match(dist, regex("^-([0-9]+)$"))
+                    if not is_unknown(um) then
+                        lo = 1
+                        hi = number(um.groups[0])
+                    else
+                        lo = number(dist)
+                        hi = lo
+                    end if
+                end if
+            end if
+        end if
+
+        ' The anchor token is the leading "literal" or /regex/; anything after it
+        ' is an inner locator applied to the target line. With none, the whole
+        ' target line is the span.
+        inner = ""
+        tm = match(rest, regex("^(\"[^\"]*\"|/[^/]*/)[ ]*(.*)$"))
+        tok = rest
+        if not is_unknown(tm) then
+            tok = tm.groups[0]
+            inner = trim(tm.groups[1])
+        end if
+        return { dir: dir, lo: lo, hi: hi, token: tok, inner: inner }
+    end function
+
+    ' Resolve one field against a block of grid lines. Returns { val, why }.
+    function _resolve_field(block, f, ctx)
         ' `first`/`last <type>` carries its own type; otherwise use `as <type>`.
         want_last = false
         ty = f.type
-        sm = match(f.locator, regex("^(first|last)[ ]+([A-Za-z_]+)[ ]*$"))
+        loc = f.locator
+
+        ' `flush` reads naturally in a horizontal locator and means exactly what
+        ' `right of` already does — to the end of the line. Accepted so specs can
+        ' say it, then dropped.
+        loc = replace(loc, "right flush of ", "right of ")
+
+        sm = match(loc, regex("^(first|last)[ ]+([A-Za-z_]+)[ ]*$"))
         if not is_unknown(sm) then
             if sm.groups[0] = "last" then
                 want_last = true
@@ -617,17 +849,64 @@ library ari
             end if
         end if
 
+        v = _parse_vertical(loc)
+        if not is_unknown(v) then
+            ' Find the anchor line, then walk the offset window from it.
+            i = 0
+            while i < count(block)
+                hit = _find_token(block[i].text, v.token)
+                if not is_unknown(hit) then
+                    last_off = v.hi
+                    if last_off < 0 then
+                        last_off = count(block)
+                    end if
+                    d = v.lo
+                    while d <= last_off
+                        j = i + d
+                        if v.dir = "up" then
+                            j = i - d
+                        end if
+                        if j >= 0 then
+                            if j < count(block) then
+                                span = block[j].text
+                                if v.inner != "" then
+                                    r2 = _locate_in_line(span, v.inner)
+                                    if r2.ok then
+                                        span = r2.span
+                                    end if
+                                end if
+                                blank = _is_blank(span)
+                                if not blank then
+                                    got = _convert(span, ty, want_last, ctx)
+                                    if not is_unknown(got.val) then
+                                        return got
+                                    end if
+                                end if
+                            end if
+                        end if
+                        d = d + 1
+                    end while
+                end if
+                i = i + 1
+            end while
+            return { val: unknown, why: "anchor-not-found" }
+        end if
+
+        why = "not-found"
         for each row in block
-            r = _locate_in_line(row.text, f.locator)
+            r = _locate_in_line(row.text, loc)
             if r.ok then
-                v = _convert(r.span, ty, want_last)
-                if not is_unknown(v) then
-                    return v
+                got = _convert(r.span, ty, want_last, ctx)
+                if not is_unknown(got.val) then
+                    return got
+                end if
+                if got.why != "" then
+                    why = got.why
                 end if
             end if
         end for
         ' Not found anywhere in the block: unknown, never a guess (§8).
-        return unknown
+        return { val: unknown, why: why }
     end function
 
     ' ------------------------------------------------------------- the walker
@@ -695,13 +974,42 @@ library ari
         return out
     end function
 
-    ' Build one record for one instance of a section.
-    function _build_record(grid, lo, hi, sec)
+    ' Merge a section's `using` bindings over those inherited from its parent.
+    ' A binding applies to the declaring section and everything nested inside it,
+    ' and an inner one overrides an outer (§5).
+    function _extend_usings(inherited, own)
+        merged = { }
+        for each k in keys(inherited)
+            merged[k] = inherited[k]
+        end for
+        for each k in keys(own)
+            merged[k] = own[k]
+        end for
+        return merged
+    end function
+
+    ' Build one record for one instance of a section. Returns { rec, diags }.
+    '
+    ' Diagnostics are collected OUT OF BAND rather than attached to the value:
+    ' gBASIC's `unknown` is a bare singleton with no payload, and giving it one
+    ' would change equality and serialization for every existing user of the NA
+    ' policy. The reason is a fact about the parse event, not about the datum —
+    ' two cells unknown for different reasons must still behave identically.
+    ' So the cell stays `unknown` and the why travels alongside with a path,
+    ' which is also what makes the authoring-time `inspect` summary possible.
+    function _build_record(grid, lo, hi, sec, ctx, path)
         rec = { }
+        diags = []
         block = _slice(grid, lo, hi)
 
+        local_ctx = { types: ctx.types, usings: _extend_usings(ctx.usings, sec.usings) }
+
         for each f in sec.fields
-            rec[f.name] = _resolve_field(block, f)
+            got = _resolve_field(block, f, local_ctx)
+            rec[f.name] = got.val
+            if is_unknown(got.val) then
+                append(diags, { path: path + "." + f.name, reason: got.why, line: grid[lo].line })
+            end if
         end for
 
         ' `rows:` — one record per remaining line, emitted as a frame (columns
@@ -717,15 +1025,21 @@ library ari
             if sec.starts != "" then
                 k = lo + 1
             end if
+            ridx = 0
             while k < hi
                 line = grid[k].text
                 blank = _is_blank(line)
                 if not blank then
                     one = [grid[k]]
                     for each rf in sec.rows
-                        v = _resolve_field(one, rf)
-                        append(cols[rf.name], v)
+                        got = _resolve_field(one, rf, local_ctx)
+                        append(cols[rf.name], got.val)
+                        if is_unknown(got.val) then
+                            rp = path + ".rows[" + ridx + "]." + rf.name
+                            append(diags, { path: rp, reason: got.why, line: grid[k].line })
+                        end if
                     end for
+                    ridx = ridx + 1
                 end if
                 k = k + 1
             end while
@@ -736,20 +1050,34 @@ library ari
             spans = _find_instances(grid, lo, hi, child)
             if child.repeats then
                 items = []
+                idx = 0
                 for each sp in spans
-                    append(items, _build_record(grid, sp.lo, sp.hi, child))
+                    cp = path + "." + child.name + "[" + idx + "]"
+                    sub = _build_record(grid, sp.lo, sp.hi, child, local_ctx, cp)
+                    append(items, sub.rec)
+                    for each d in sub.diags
+                        append(diags, d)
+                    end for
+                    idx = idx + 1
                 end for
                 rec[child.name] = items
             else
                 if count(spans) = 0 then
                     rec[child.name] = unknown
+                    np = path + "." + child.name
+                    append(diags, { path: np, reason: "section-not-found", line: grid[lo].line })
                 else
-                    rec[child.name] = _build_record(grid, spans[0].lo, spans[0].hi, child)
+                    cp = path + "." + child.name
+                    sub = _build_record(grid, spans[0].lo, spans[0].hi, child, local_ctx, cp)
+                    rec[child.name] = sub.rec
+                    for each d in sub.diags
+                        append(diags, d)
+                    end for
                 end if
             end if
         end for
 
-        return rec
+        return { rec: rec, diags: diags }
     end function
 
     ' ------------------------------------------------------------ public API
@@ -759,15 +1087,54 @@ library ari
     function parse(report_text, spec_text)
         spec = ari_parse_spec(spec_text)
         if is_unknown(spec.root) then
-            return { ok: false, message: "spec has no root section", value: unknown }
+            return { ok: false, message: "spec has no root section", value: unknown, diagnostics: [] }
         end if
         grid = _build_grid(report_text, spec.page)
         spans = _find_instances(grid, 0, count(grid), spec.root)
         if count(spans) = 0 then
-            return { ok: false, message: "root section not found in report", value: unknown }
+            return { ok: false, message: "root section not found in report", value: unknown, diagnostics: [] }
         end if
-        v = _build_record(grid, spans[0].lo, spans[0].hi, spec.root)
-        return { ok: true, message: "", value: v, lines: count(grid) }
+        ctx = { types: spec.types, usings: { } }
+        out = _build_record(grid, spans[0].lo, spans[0].hi, spec.root, ctx, spec.root.name)
+        return { ok: true, message: "", value: out.rec, lines: count(grid), diagnostics: out.diags }
+    end function
+
+    ' Authoring-time advisory: summarize the diagnostics by reason so a spec
+    ' author can see WHAT to declare rather than guessing.
+    '
+    ' This is where cross-row inference belongs — looking across instances is
+    ' exactly how a person settles a DD/MM column, and doing it here gives the
+    ' benefit without letting a guess into the parse path (see _date_in). Run it
+    ' once, read the suggestion, write the declaration into the spec.
+    function inspect(report_text, spec_text)
+        r = parse(report_text, spec_text)
+        if not r.ok then
+            return r
+        end if
+        tally = { }
+        for each d in r.diagnostics
+            ' Collapse instance indices so `branches[0].opened` and
+            ' `branches[1].opened` report as one field, which is the level a
+            ' declaration is written at.
+            gen = replace(d.path, regex("\\[[0-9]+\\]"), "[]")
+            k = gen + " :: " + d.reason
+            prior = tally[k]
+            if is_unknown(prior) then
+                tally[k] = 1
+            else
+                tally[k] = prior + 1
+            end if
+        end for
+        findings = []
+        for each k in keys(tally)
+            hint = ""
+            amb = contains(k, "ambiguous-date")
+            if amb then
+                hint = "declare `using date: dmy` (or mdy) on the enclosing section"
+            end if
+            append(findings, { what: k, count: tally[k], hint: hint })
+        end for
+        return { ok: true, message: "", value: r.value, lines: r.lines, diagnostics: r.diagnostics, findings: findings }
     end function
 
     ' Read a file and parse it. The read is deliberately plain: a missing file

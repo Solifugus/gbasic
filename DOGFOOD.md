@@ -774,3 +774,27 @@ D0.6, the rest remain open or are by-design.
   device, not a fix. Previously noted as a "%g number-display precision" gap
   during the bitwise work; recording it again with a concrete cost, because it
   is materially worse for money than for the bit patterns that first surfaced it.
+
+## 2026-08-01 — CC — while: ARI Phase 2 (converting a parsed date to a value)
+
+- **Type:** missing-feature
+- **Severity:** medium
+- **What:** gBASIC has a `datetime` value kind, but no way to **construct one
+  from year/month/day at run time**. There is no `date(y, m, d)` builtin, and no
+  date literal I could find — `d = 2024-03-15` parses as arithmetic and yields
+  the number 2006. The only constructors are `now()` and `from_epoch(secs)`, and
+  `from_epoch` applies a timezone shift:
+
+  ```basic
+  print from_epoch(1710460800)    ' 2024-03-14 20:00:00  (asked for the 15th UTC)
+  ```
+
+  So a library that parses `27/12/2021` out of a report cannot turn it into a
+  native date without either computing an epoch and then fighting the timezone
+  back off it, or inventing a timezone the source document never specified.
+- **Workaround:** `ari`'s `as date` yields a **normalized ISO string**
+  (`"2021-12-27"`) rather than a `datetime`. That is deterministic, timezone-
+  free, lexically sortable and comparable, and it round-trips — but it is not
+  what docs/text_design.md §4 promised ("type keywords map to native gBASIC
+  values"), so the design is now ahead of the language on this point. A
+  timezone-free `date(y, m, d)` constructor would close it.

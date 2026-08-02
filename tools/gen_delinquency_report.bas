@@ -156,9 +156,18 @@ function build_content(regions, branches)
       i = 0
       while i < rows
         acct = "00" + string(12000000 + random_int(0, 8999999))
-        ' Day 13-28 so a DD/MM vs MM/DD misread yields a PLAUSIBLE wrong date
-        ' rather than an out-of-range error. Guessing must not look safe.
-        dd = 13 + random_int(0, 15)
+        ' Days 1-28, deliberately spanning the 12 boundary. A day ABOVE 12 is
+        ' self-disambiguating (27 cannot be a month), and a day at or below it
+        ' is genuinely ambiguous — 03/04/2026 is 3 April or 4 March and nothing
+        ' in the token decides. A real column contains both, which is exactly
+        ' the situation the design has to handle: most values resolve on their
+        ' own and a minority cannot, so an undeclared column comes out
+        ' mostly-converted with a few unknowns rather than uniformly wrong.
+        '
+        ' An earlier revision generated days 13-28 only, which made EVERY date
+        ' self-disambiguating and left the ambiguous case untested while
+        ' claiming to cover it.
+        dd = 1 + random_int(0, 27)
         mm = 1 + random_int(0, 11)
         yy = 2018 + random_int(0, 7)
         bal = 500.0 + random_int(0, 40000) + random_int(0, 99) / 100
