@@ -105,7 +105,7 @@ is explicitly in scope. In particular, money appears as `$1,234.56`,
 
 | file | shape modeled | authored | notes |
 |---|---|---|---|
-| `delinquency.rpt` | consolidated loan delinquency register | 2026-08-01, generated | 90 lines, 2 pages, form feeds. Reproduce with `gbasic tools/gen_delinquency_report.bas 2 2 60 1 7`. |
+| `delinquency.rpt` | consolidated loan delinquency register | 2026-08-01, generated | 2 pages, form feeds, two tables per branch, wrapped rows. Reproduce with `gbasic tools/gen_delinquency_report.bas 2 2 60 1 7`. |
 
 A second report *shape*: deeply hierarchical (region → branch → loans) around a
 genuine table, where teller_totals is a flat sequence of blocks. It exists
@@ -121,6 +121,14 @@ below forces one of them:
   lines in the committed sample → requires a distance RANGE. No exact distance
   matches all four, which is the honest reason ranges exist.
 - **A `NOTES` line with a dotted leader to the right margin** → `flush`.
+- **TWO tables per branch** (`CURRENT CYCLE` / `PRIOR CYCLE`), same column
+  layout, each closed by a blank line or a rule → `repeats` combined with an
+  explicit `ends`. One table per branch could not distinguish "found them all"
+  from "found the first and stopped".
+- **Every other loan row WRAPS** onto an indented `COLLATERAL:` line — one
+  record, two physical lines → `rows continue(/pattern/)`. Rows that do not wrap
+  leave `collateral` unknown, which is correct and surfaces as a diagnostic
+  rather than a guess.
 - **Dates are DD/MM/YYYY.** This is the residue §5.1 predicted: `03/04/2026` is
   3 April or 4 March and nothing in the token decides. It is the case the union
   recognizer genuinely cannot settle, and therefore the case `using date:` and

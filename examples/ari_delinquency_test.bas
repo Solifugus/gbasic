@@ -65,12 +65,19 @@ function base_spec(date_decl)
   ' The gap varies by branch: 1, 2, 2, 3 lines. Only a range matches all four.
   append(sp, "            field remarks: down 1-3 of \"REMARKS:\"")
   append(sp, "")
-  append(sp, "            section loans starts(/^    ACCOUNT/) ends(/^    -+$/):")
-  append(sp, "                rows:")
+  ' REPEATS with an explicit ENDS: two tables per branch, each closed by a
+  ' blank line or a rule. One instance could not distinguish "found them all"
+  ' from "found the first and stopped".
+  append(sp, "            section loans repeats starts(/^    ACCOUNT/) ends(/^[ ]*$|^    -+$/):")
+  ' CONTINUE: every other row wraps onto a COLLATERAL line. One record, two
+  ' physical lines. Rows without a wrap leave `collateral` unknown, which is
+  ' correct and shows up as a diagnostic rather than a guess.
+  append(sp, "                rows continue(/^[ ]+COLLATERAL/):")
   append(sp, "                    field account: columns 4-18")
   append(sp, "                    field member: columns 19-45")
   append(sp, "                    field opened: columns 46-56 as date")
   append(sp, "                    field balance: last money")
+  append(sp, "                    field collateral: right of \"COLLATERAL:\"")
   return join(sp, "\n")
 end function
 
@@ -98,14 +105,21 @@ program main(args)
       print "     notes     = " + trim(show(b.notes))
       ' down 1-3 of  (the gap differs per branch)
       print "     remarks   = " + trim(show(b.remarks))
-      ln = b.loans
-      if not is_unknown(ln) then
+      print "     tables    = " + count(b.loans)
+      ti = 0
+      for each ln in b.loans
+        print "     table " + ti + " rows=" + count(ln.rows.account)
         i = 0
         while i < count(ln.rows.account)
-          print "     loan " + trim(ln.rows.account[i]) + " " + trim(ln.rows.member[i]) + " opened=" + show(ln.rows.opened[i]) + " bal=" + cents(ln.rows.balance[i])
+          coll = "-"
+          if not is_unknown(ln.rows.collateral[i]) then
+            coll = trim(ln.rows.collateral[i])
+          end if
+          print "       " + trim(ln.rows.account[i]) + " " + trim(ln.rows.member[i]) + " opened=" + show(ln.rows.opened[i]) + " bal=" + cents(ln.rows.balance[i]) + " coll=" + coll
           i = i + 1
         end while
-      end if
+        ti = ti + 1
+      end for
     end for
   end for
 
@@ -127,6 +141,17 @@ program main(args)
   end for
 
   print ""
+  print "== ari.import: read the file itself, same answer as ari.parse =="
+  ' The convenience entry point had never been called. It must agree with
+  ' parse() exactly — the only difference is who reads the bytes.
+  im = ari.import("examples/fixtures/ari/delinquency.rpt", base_spec(""))
+  print "ok            = " + im.ok
+  print "same lines    = " + (im.lines = r.lines)
+  print "same regions  = " + (count(im.value.regions) = count(v.regions))
+  print "same diags    = " + (count(im.diagnostics) = count(r.diagnostics))
+  print "same 1st total= " + (im.value.regions[0].branches[0].branch_total = v.regions[0].branches[0].branch_total)
+
+  print ""
   print "== declared `using date: euro_date`: every date settles =="
   r2 = ari.parse(report, base_spec("using date: euro_date"))
   amb = 0
@@ -138,14 +163,13 @@ program main(args)
   print "ambiguous remaining = " + amb
   for each rg in r2.value.regions
     for each b in rg.branches
-      ln = b.loans
-      if not is_unknown(ln) then
+      for each ln in b.loans
         i = 0
         while i < count(ln.rows.opened)
           print "  " + trim(ln.rows.account[i]) + " opened=" + show(ln.rows.opened[i])
           i = i + 1
         end while
-      end if
+      end for
     end for
   end for
 end program

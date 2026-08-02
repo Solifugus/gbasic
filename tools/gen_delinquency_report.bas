@@ -149,12 +149,26 @@ function build_content(regions, branches)
       append(lines, "  OFFICER")
       append(lines, "  " + officer_name(r * 2 + b))
       append(lines, "  " + rule)
-      append(lines, "    ACCOUNT        MEMBER                     OPENED      BALANCE   DAYS")
 
+      ' TWO tables per branch, same column layout, each closed by a rule line.
+      ' A section that `repeats` with an explicit `ends` needs more than one
+      ' instance inside its parent before the combination proves anything, and
+      ' one table per branch could not distinguish "found them all" from "found
+      ' the first and stopped".
+      tbl = 0
       branch_total = 0
-      rows = 2 + random_int(0, 2)
-      i = 0
-      while i < rows
+      while tbl < 2
+        if tbl = 0 then
+          append(lines, "    CURRENT CYCLE")
+        end if
+        if tbl = 1 then
+          append(lines, "")
+          append(lines, "    PRIOR CYCLE")
+        end if
+        append(lines, "    ACCOUNT        MEMBER                     OPENED      BALANCE   DAYS")
+        rows = 1 + random_int(0, 1)
+        i = 0
+        while i < rows
         acct = "00" + string(12000000 + random_int(0, 8999999))
         ' Days 1-28, deliberately spanning the 12 boundary. A day ABOVE 12 is
         ' self-disambiguating (27 cannot be a month), and a day at or below it
@@ -177,7 +191,15 @@ function build_content(regions, branches)
         days = 31 + random_int(0, 120)
         branch_total = branch_total + bal
         append(lines, "    " + pad_right(acct, 15) + pad_right(member_name(r * 7 + b * 3 + i), 27) + fmt_date(dd, mm, yy) + fmt_amount(bal, 13) + pad_left(string(days), 7))
+        ' Every other row WRAPS: a collateral note continues the record on the
+        ' next physical line, indented past the account column. One record, two
+        ' lines — which the grammar had no way to express before `continue(...)`.
+        if i - floor(i / 2) * 2 = 0 then
+          append(lines, "                   COLLATERAL: 2019 FORD F-150 VIN 1FTEW1E5XKKE" + string(10000 + random_int(0, 89999)))
+        end if
         i = i + 1
+        end while
+        tbl = tbl + 1
       end while
 
       ' A totals block prints the amount ABOVE its label, under a rule.

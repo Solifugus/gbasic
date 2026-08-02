@@ -4,53 +4,85 @@ regions   = 2
 -- region SOUTHEAST (SE-04)
    branch 142
      officer   = T. OKONKWO
-     total     = 4492410c
+     total     = 9018072c
      notes     = SEE SCHEDULE B
      remarks   = Member contacted; promised payment.
-     loan 0017447348 SMITH, JOHN Q opened=unknown bal=2436882c
-     loan 0017921191 GARCIA, MARIA opened=unknown bal=2055528c
+     tables    = 2
+     table 0 rows=2
+       0017447348 SMITH, JOHN Q opened=unknown bal=2436882c coll=2019 FORD F-150 VIN 1FTEW1E5XKKE81191
+       0015615407 GARCIA, MARIA opened=2022-06-23 bal=3686853c coll=-
+     table 1 rows=2
+       0012009906 SMITH, JOHN Q opened=unknown bal=3044072c coll=2019 FORD F-150 VIN 1FTEW1E5XKKE53143
+       0015646533 GARCIA, MARIA opened=unknown bal=-149735c coll=-
    branch 149
      officer   = R. BELLBOWL
-     total     = 4869523c
+     total     = 4412515c
      notes     = SEE SCHEDULE B
-     remarks   = Member contacted; promised payment.
-     loan 0012009906 LINDQVIST, INES opened=unknown bal=3044072c
-     loan 0012133143 AHMED, COLE opened=unknown bal=1825451c
+     remarks   = Referred to collections.
+     tables    = 2
+     table 0 rows=2
+       0018887310 LINDQVIST, INES opened=2022-08-23 bal=1587605c coll=2019 FORD F-150 VIN 1FTEW1E5XKKE75110
+       0013332795 AHMED, COLE opened=2021-08-26 bal=2759495c coll=-
+     table 1 rows=1
+       0016986065 LINDQVIST, INES opened=2018-05-18 bal=65415c coll=2019 FORD F-150 VIN 1FTEW1E5XKKE57135
 -- region NORTHWEST (SE-07)
    branch 172
      officer   = A. LINDQVIST
-     total     = 2203515c
+     total     = 2864087c
      notes     = SEE SCHEDULE B
-     remarks   = Skip trace initiated.
-     loan 0016958899 OBRIEN, ADA opened=unknown bal=1888288c
-     loan 0019836074 SMITH, JOHN Q opened=2019-04-23 bal=315227c
+     remarks   = Referred to collections.
+     tables    = 2
+     table 0 rows=1
+       0012252609 OBRIEN, ADA opened=2022-06-14 bal=483312c coll=2019 FORD F-150 VIN 1FTEW1E5XKKE86002
+     table 1 rows=1
+       0013293175 OBRIEN, ADA opened=unknown bal=2380775c coll=2019 FORD F-150 VIN 1FTEW1E5XKKE12177
    branch 179
      officer   = M. VASQUEZ
-     total     = 5316636c
+     total     = 7374239c
      notes     = SEE SCHEDULE B
-     remarks   = Skip trace initiated.
-     loan 0019179208 OKONKWO, TOMAS opened=2022-06-22 bal=1784597c
-     loan 0017685922 LINDQVIST, INES opened=2020-12-16 bal=2681709c
-     loan 0017551862 AHMED, COLE opened=2019-05-21 bal=850330c
+     remarks   = Referred to collections.
+     tables    = 2
+     table 0 rows=2
+       0012116202 OKONKWO, TOMAS opened=2021-06-24 bal=3683679c coll=2019 FORD F-150 VIN 1FTEW1E5XKKE23107
+       0019061174 LINDQVIST, INES opened=unknown bal=2512830c coll=-
+     table 1 rows=1
+       0012309996 OKONKWO, TOMAS opened=unknown bal=1177730c coll=2019 FORD F-150 VIN 1FTEW1E5XKKE32808
 
-diagnostics = 5
-  ambiguous-date at report.regions[0].branches[0].loans.rows[0].opened (line 11)
-  ambiguous-date at report.regions[0].branches[0].loans.rows[1].opened (line 12)
-  ambiguous-date at report.regions[0].branches[1].loans.rows[0].opened (line 27)
-  ambiguous-date at report.regions[0].branches[1].loans.rows[1].opened (line 28)
-  ambiguous-date at report.regions[1].branches[0].loans.rows[0].opened (line 50)
+diagnostics = 10
+  no-date-found at report.regions[0].branches[0].loans[0].rows[0].opened (line 12)
+  not-found at report.regions[0].branches[0].loans[0].rows[1].collateral (line 14)
+  no-date-found at report.regions[0].branches[0].loans[1].rows[0].opened (line 18)
+  ambiguous-date at report.regions[0].branches[0].loans[1].rows[1].opened (line 20)
+  not-found at report.regions[0].branches[0].loans[1].rows[1].collateral (line 20)
+  not-found at report.regions[0].branches[1].loans[0].rows[1].collateral (line 38)
+  no-date-found at report.regions[1].branches[0].loans[1].rows[0].opened (line 74)
+  ambiguous-date at report.regions[1].branches[1].loans[0].rows[1].opened (line 94)
+  not-found at report.regions[1].branches[1].loans[0].rows[1].collateral (line 94)
+  no-date-found at report.regions[1].branches[1].loans[1].rows[0].opened (line 98)
 
 == inspect: what the author should declare ==
-  5x  report.regions[].branches[].loans.rows[].opened :: ambiguous-date  -> declare `using date: dmy` (or mdy) on the enclosing section
+  4x  report.regions[].branches[].loans[].rows[].opened :: no-date-found
+  4x  report.regions[].branches[].loans[].rows[].collateral :: not-found
+  2x  report.regions[].branches[].loans[].rows[].opened :: ambiguous-date  -> declare `using date: dmy` (or mdy) on the enclosing section
+
+== ari.import: read the file itself, same answer as ari.parse ==
+ok            = true
+same lines    = true
+same regions  = true
+same diags    = true
+same 1st total= true
 
 == declared `using date: euro_date`: every date settles ==
 ambiguous remaining = 0
   0017447348 opened=2021-12-07
-  0017921191 opened=2019-03-04
+  0015615407 opened=2022-06-23
   0012009906 opened=2022-05-10
-  0012133143 opened=2024-04-10
-  0016958899 opened=2021-11-03
-  0019836074 opened=2019-04-23
-  0019179208 opened=2022-06-22
-  0017685922 opened=2020-12-16
-  0017551862 opened=2019-05-21
+  0015646533 opened=2019-11-08
+  0018887310 opened=2022-08-23
+  0013332795 opened=2021-08-26
+  0016986065 opened=2018-05-18
+  0012252609 opened=2022-06-14
+  0013293175 opened=2020-02-02
+  0012116202 opened=2021-06-24
+  0019061174 opened=2024-06-10
+  0012309996 opened=2019-02-06

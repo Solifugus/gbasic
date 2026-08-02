@@ -438,7 +438,7 @@ library ari
     function _new_section(name)
         return { name: name, repeats: false, starts: "", ends: "",
                  fields: [], sections: [], rows: [], has_rows: false,
-                 usings: { } }
+                 row_continue: "", usings: { } }
     end function
 
     function _parse_field(body)
@@ -531,13 +531,24 @@ library ari
                 continue
             end if
 
-            if starts_with(t, "rows:") then
-                holder = _new_section("rows")
-                inner = _parse_block(holder, lines, i + 1, child_end, ind + 1)
-                sec.rows = inner.sec.fields
-                sec.has_rows = true
-                i = child_end
-                continue
+            if starts_with(t, "rows") then
+                rm2 = match(t, regex("^rows[ ]*(continue\\(([^)]*)\\))?[ ]*:"))
+                if not is_unknown(rm2) then
+                    holder = _new_section("rows")
+                    inner = _parse_block(holder, lines, i + 1, child_end, ind + 1)
+                    sec.rows = inner.sec.fields
+                    sec.has_rows = true
+                    ' `rows continue(<pat>):` — a line matching <pat> is a
+                    ' CONTINUATION of the record above it, not a new record.
+                    ' Wrapped fields are ordinary in these reports and there was
+                    ' previously no way to say so.
+                    g1 = rm2.groups[1]
+                    if not is_unknown(g1) then
+                        sec.row_continue = trim(g1)
+                    end if
+                    i = child_end
+                    continue
+                end if
             end if
 
             if starts_with(t, "field ") then
@@ -1029,19 +1040,45 @@ library ari
             while k < hi
                 line = grid[k].text
                 blank = _is_blank(line)
-                if not blank then
-                    one = [grid[k]]
-                    for each rf in sec.rows
-                        got = _resolve_field(one, rf, local_ctx)
-                        append(cols[rf.name], got.val)
-                        if is_unknown(got.val) then
-                            rp = path + ".rows[" + ridx + "]." + rf.name
-                            append(diags, { path: rp, reason: got.why, line: grid[k].line })
-                        end if
-                    end for
-                    ridx = ridx + 1
+                if blank then
+                    k = k + 1
+                    continue
                 end if
+
+                ' A logical row is a BLOCK of lines, not necessarily one. With no
+                ' `continue` pattern that block is always a single line, so this
+                ' is behaviour-identical to before; with one, wrapped lines are
+                ' absorbed into the record above. `_resolve_field` already takes a
+                ' block, so every locator — including the vertical ones — works
+                ' inside a multi-line record with no further change.
+                first_line = grid[k].line
+                one = [grid[k]]
                 k = k + 1
+                if sec.row_continue != "" then
+                    while k < hi
+                        nxt = grid[k].text
+                        nblank = _is_blank(nxt)
+                        if nblank then
+                            break
+                        end if
+                        iscont = _line_matches(nxt, sec.row_continue)
+                        if not iscont then
+                            break
+                        end if
+                        append(one, grid[k])
+                        k = k + 1
+                    end while
+                end if
+
+                for each rf in sec.rows
+                    got = _resolve_field(one, rf, local_ctx)
+                    append(cols[rf.name], got.val)
+                    if is_unknown(got.val) then
+                        rp = path + ".rows[" + ridx + "]." + rf.name
+                        append(diags, { path: rp, reason: got.why, line: first_line })
+                    end if
+                end for
+                ridx = ridx + 1
             end while
             rec["rows"] = cols
         end if
