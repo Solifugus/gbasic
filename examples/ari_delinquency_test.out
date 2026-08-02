@@ -4,49 +4,49 @@ regions   = 2
 -- region SOUTHEAST (SE-04)
    branch 142
      officer   = T. OKONKWO
-     total     = 9018072c
+     total     = 90180.72
      notes     = SEE SCHEDULE B
      remarks   = Member contacted; promised payment.
      tables    = 2
      table 0 rows=2
-       0017447348 SMITH, JOHN Q opened=unknown bal=2436882c coll=2019 FORD F-150 VIN 1FTEW1E5XKKE81191
-       0015615407 GARCIA, MARIA opened=2022-06-23 bal=3686853c coll=-
+       0017447348 SMITH, JOHN Q opened=unknown bal=24368.82 coll=2019 FORD F-150 VIN 1FTEW1E5XKKE81191
+       0015615407 GARCIA, MARIA opened=2022-06-23 bal=36868.53 coll=-
      table 1 rows=2
-       0012009906 SMITH, JOHN Q opened=unknown bal=3044072c coll=2019 FORD F-150 VIN 1FTEW1E5XKKE53143
-       0015646533 GARCIA, MARIA opened=unknown bal=-149735c coll=-
+       0012009906 SMITH, JOHN Q opened=unknown bal=30440.72 coll=2019 FORD F-150 VIN 1FTEW1E5XKKE53143
+       0015646533 GARCIA, MARIA opened=unknown bal=-1497.35 coll=-
    branch 149
      officer   = R. BELLBOWL
-     total     = 4412515c
+     total     = 44125.15
      notes     = SEE SCHEDULE B
      remarks   = Referred to collections.
      tables    = 2
      table 0 rows=2
-       0018887310 LINDQVIST, INES opened=2022-08-23 bal=1587605c coll=2019 FORD F-150 VIN 1FTEW1E5XKKE75110
-       0013332795 AHMED, COLE opened=2021-08-26 bal=2759495c coll=-
+       0018887310 LINDQVIST, INES opened=2022-08-23 bal=15876.05 coll=2019 FORD F-150 VIN 1FTEW1E5XKKE75110
+       0013332795 AHMED, COLE opened=2021-08-26 bal=27594.95 coll=-
      table 1 rows=1
-       0016986065 LINDQVIST, INES opened=2018-05-18 bal=65415c coll=2019 FORD F-150 VIN 1FTEW1E5XKKE57135
+       0016986065 LINDQVIST, INES opened=2018-05-18 bal=654.15 coll=2019 FORD F-150 VIN 1FTEW1E5XKKE57135
 -- region NORTHWEST (SE-07)
    branch 172
      officer   = A. LINDQVIST
-     total     = 2864087c
+     total     = 28640.87
      notes     = SEE SCHEDULE B
      remarks   = Referred to collections.
      tables    = 2
      table 0 rows=1
-       0012252609 OBRIEN, ADA opened=2022-06-14 bal=483312c coll=2019 FORD F-150 VIN 1FTEW1E5XKKE86002
+       0012252609 OBRIEN, ADA opened=2022-06-14 bal=4833.12 coll=2019 FORD F-150 VIN 1FTEW1E5XKKE86002
      table 1 rows=1
-       0013293175 OBRIEN, ADA opened=unknown bal=2380775c coll=2019 FORD F-150 VIN 1FTEW1E5XKKE12177
+       0013293175 OBRIEN, ADA opened=unknown bal=23807.75 coll=2019 FORD F-150 VIN 1FTEW1E5XKKE12177
    branch 179
      officer   = M. VASQUEZ
-     total     = 7374239c
+     total     = 73742.39
      notes     = SEE SCHEDULE B
      remarks   = Referred to collections.
      tables    = 2
      table 0 rows=2
-       0012116202 OKONKWO, TOMAS opened=2021-06-24 bal=3683679c coll=2019 FORD F-150 VIN 1FTEW1E5XKKE23107
-       0019061174 LINDQVIST, INES opened=unknown bal=2512830c coll=-
+       0012116202 OKONKWO, TOMAS opened=2021-06-24 bal=36836.79 coll=2019 FORD F-150 VIN 1FTEW1E5XKKE23107
+       0019061174 LINDQVIST, INES opened=unknown bal=25128.30 coll=-
      table 1 rows=1
-       0012309996 OKONKWO, TOMAS opened=unknown bal=1177730c coll=2019 FORD F-150 VIN 1FTEW1E5XKKE32808
+       0012309996 OKONKWO, TOMAS opened=unknown bal=11777.30 coll=2019 FORD F-150 VIN 1FTEW1E5XKKE32808
 
 diagnostics = 10
   no-date-found at report.regions[0].branches[0].loans[0].rows[0].opened (line 12)
@@ -86,3 +86,9 @@ ambiguous remaining = 0
   0012116202 opened=2021-06-24
   0019061174 opened=2024-06-10
   0012309996 opened=2019-02-06
+
+== regex-with-transform reaches the same answer as the dialect ==
+transform agrees with dialect = true
+sample = 2021-12-07
+date kind  = datetime
+money kind = money

@@ -798,3 +798,53 @@ D0.6, the rest remain open or are by-design.
   what docs/text_design.md §4 promised ("type keywords map to native gBASIC
   values"), so the design is now ahead of the language on this point. A
   timezone-free `date(y, m, d)` constructor would close it.
+
+## 2026-08-01 — CC — while: scoping ARI Phase 3 (native value conversion)
+
+- **Type:** doc-gap
+- **Severity:** low
+- **Status update / CORRECTION** to the entry above, "*while: ARI Phase 2
+  (converting a parsed date to a value)*", which claimed gBASIC has **no way to
+  construct a date at run time**. **That was wrong.** Dates and money are built
+  with **assign modifiers**, not functions or literals:
+
+  ```basic
+  m(USD) = 12.34            ' money
+  d(date) = "2021-12-27"    ' datetime
+  s = "2019-03-04"
+  e(date) = s               ' works from a runtime string too
+  ```
+
+  Both verified. The `date` modifier takes an ISO-like string and is
+  timezone-free, so it is exactly the constructor the earlier entry said did not
+  exist. `from_epoch` and its timezone shift were never the only route.
+- **What actually went wrong:** I searched for a `date(...)` builtin and a date
+  *literal*, found neither, and concluded there was no constructor — without
+  checking the modifier surface, which is where gBASIC puts typed construction.
+  The real gap is a **documentation** one: `docs/reference.md` describes money
+  and datetime values but does not show how to make one, and nothing in
+  `docs/ai/COOKBOOK.md` covers it either. That is why a fairly careful search
+  missed it, and it will keep costing whoever looks next.
+- **Workaround:** none needed. ARI Phase 3 can convert to native values. The
+  ISO-string intermediate `as date` already produces turns out to be precisely
+  the input the `date` modifier wants, so the two compose.
+
+## 2026-08-01 — CC — while: ARI Phase 3 (native money conversion)
+
+- **Type:** doc-gap
+- **Severity:** low
+- **Status note** on the entry above, "*while: ARI Phase 2 (printing parsed
+  money amounts)*", which recorded that `print` loses cents above $9,999.99.
+  That entry stands for plain NUMBERS — but a **native money value prints
+  correctly**:
+
+  ```basic
+  v = 13586.25       : print v      ' 13586.2    <- number, cent lost
+  m(USD) = 13586.25  : print m      ' 13586.25   <- money, exact
+  ```
+
+  So the mitigation for anything monetary is to hold it as money rather than as
+  a number, which is what `ari`'s `as money` now does. Both ARI goldens dropped
+  their integer-cents workaround as a result and show amounts as a reader would.
+  The underlying `%g` behaviour for plain numbers is unchanged and still wrong
+  for financial work that has not converted.

@@ -7,31 +7,32 @@ headers left= 0
 ok          = true
 branch      = 14
 tellers     = 3
+money kind  = money
 
 == tellers (field ORDER differs between them) ==
 -- teller 386 (Wendy Hermin)
-   beginning = 1358625c
-   ending    = -865175c
-   total     = 5687050c
+   beginning = 13586.25
+   ending    = -8651.75
+   total     = 56870.50
    rows      = 3
-     Cash Deposit | 001000234 | 12 | 925000c
-     Check Deposit CHK#4211 | 001002345 | 11 | 1850000c
-     ACH Transfer | 001004326 | 13 | -600025c
+     Cash Deposit | 001000234 | 12 | 9250.00
+     Check Deposit CHK#4211 | 001002345 | 11 | 18500.00
+     ACH Transfer | 001004326 | 13 | -6000.25
 -- teller 261 (Ryan Bellbowl)
-   beginning = 386350c
-   ending    = 1851075c
-   total     = 6692135c
+   beginning = 3863.50
+   ending    = 18510.75
+   total     = 66921.35
    rows      = 3
-     Cash Deposit | 001000234 | 12 | 1225000c
-     Check Deposit CHK#5621 | 001002345 | 11 | 2830000c
-     ACH Transfer | 001004326 | 13 | -100050c
+     Cash Deposit | 001000234 | 12 | 12250.00
+     Check Deposit CHK#5621 | 001002345 | 11 | 28300.00
+     ACH Transfer | 001004326 | 13 | -1000.50
 -- teller 262 (Ryan Bellbowl)
-   beginning = 386350c
-   ending    = 1851075c
-   total     = 6692135c
+   beginning = 3863.50
+   ending    = 18510.75
+   total     = 66921.35
    rows      = 2
-     Cash Deposit | 001000234 | 12 | 1225000c
-     Check Deposit CHK#3467 | 001002345 | 11 | 2830000c
+     Cash Deposit | 001000234 | 12 | 12250.00
+     Check Deposit CHK#3467 | 001002345 | 11 | 28300.00
 
 == closing drawers ==
 -- teller 386 hundreds=13 dollars=1
@@ -47,15 +48,15 @@ clean lines = 222
 form feeds left = 0
 ok          = true
 branches    = 3
--- branch 14 total=25589400c tellers=3
-   teller 261 begin=575575c end=-1165325c
-   teller 274 begin=585000c end=1180275c
-   teller 287 begin=594425c end=1195225c
--- branch 21 total=26834400c tellers=3
-   teller 301 begin=604575c end=-1211325c
-   teller 314 begin=614000c end=1226275c
-   teller 327 begin=623425c end=1241225c
--- branch 28 total=28079400c tellers=3
-   teller 341 begin=633575c end=-1257325c
-   teller 354 begin=643000c end=1272275c
-   teller 367 begin=652425c end=1287225c
+-- branch 14 total=255894.00 tellers=3
+   teller 261 begin=5755.75 end=-11653.25
+   teller 274 begin=5850.00 end=11802.75
+   teller 287 begin=5944.25 end=11952.25
+-- branch 21 total=268344.00 tellers=3
+   teller 301 begin=6045.75 end=-12113.25
+   teller 314 begin=6140.00 end=12262.75
+   teller 327 begin=6234.25 end=12412.25
+-- branch 28 total=280794.00 tellers=3
+   teller 341 begin=6335.75 end=-12573.25
+   teller 354 begin=6430.00 end=12722.75
+   teller 367 begin=6524.25 end=12872.25

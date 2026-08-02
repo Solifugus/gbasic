@@ -12,21 +12,16 @@
 '   * `Teller #:` and `Teller#:` are the same field spelled two ways.
 '   * Bait cash is malformed in one block and must become `unknown` alone.
 
-' Money as integer CENTS. `print` renders ~6 significant digits, so 13586.25
-' comes out "13586.2" and a golden captured from it could not tell that apart
-' from 13586.20 (/DOGFOOD.md, 2026-08-01). The value is exact; only the
-' rendering is lossy. Showing cents keeps the golden honest about what was
-' actually parsed.
-function cents(v)
+' Money renders directly now. `as money` yields a NATIVE money value, and
+' money prints its cents in full — 13586.25, not the "13586.2" a plain number
+' gives above $9,999.99 (/DOGFOOD.md, 2026-08-01). An earlier revision of this
+' test printed integer cents to work around exactly that; native conversion
+' removed the need, so the golden now shows amounts as a reader would.
+function amt(v)
   if is_unknown(v) then
     return "unknown"
   end if
-  n = v * 100
-  r = floor(n + 0.5)
-  if n < 0 then
-    r = 0 - floor(0 - n + 0.5)
-  end if
-  return string(r) + "c"
+  return string(v)
 end function
 
 program main(args)
@@ -90,14 +85,18 @@ program main(args)
   v = r.value
   print "branch      = " + v.branch
   print "tellers     = " + count(v.tellers)
+  ' NATIVE values, not lookalike strings (§4). `as money` yields a money value,
+  ' which is what lets the output flow into frame/stats and what prints its
+  ' cents in full.
+  print "money kind  = " + type(v.tellers[0].beginning_cash)
 
   print ""
   print "== tellers (field ORDER differs between them) =="
   for each t in v.tellers
     print "-- teller " + t.teller_no + " (" + trim(t.name) + ")"
-    print "   beginning = " + cents(t.beginning_cash)
-    print "   ending    = " + cents(t.ending_cash)
-    print "   total     = " + cents(t.total_trans)
+    print "   beginning = " + amt(t.beginning_cash)
+    print "   ending    = " + amt(t.ending_cash)
+    print "   total     = " + amt(t.total_trans)
     d = t.detail
     if is_unknown(d) then
       print "   detail    = none"
@@ -106,7 +105,7 @@ program main(args)
       print "   rows      = " + count(rows.amount)
       i = 0
       while i < count(rows.amount)
-        print "     " + trim(rows.gl[i]) + " | " + trim(rows.tran_no[i]) + " | " + rows.tran_ty[i] + " | " + cents(rows.amount[i])
+        print "     " + trim(rows.gl[i]) + " | " + trim(rows.tran_no[i]) + " | " + rows.tran_ty[i] + " | " + amt(rows.amount[i])
         i = i + 1
       end while
     end if
@@ -116,7 +115,7 @@ program main(args)
   print "== closing drawers =="
   for each c in v.closing
     print "-- teller " + c.teller_no + " hundreds=" + c.hundreds + " dollars=" + c.dollars
-    print "   bait_cash = " + cents(c.bait_cash)
+    print "   bait_cash = " + amt(c.bait_cash)
   end for
 
   ' ------------------------------------------------------------------------
@@ -164,12 +163,12 @@ program main(args)
     gv = gr.value
     print "branches    = " + count(gv.branches)
     for each b in gv.branches
-      print "-- branch " + b.branch_no + " total=" + cents(b.branch_total) + " tellers=" + count(b.tellers)
+      print "-- branch " + b.branch_no + " total=" + amt(b.branch_total) + " tellers=" + count(b.tellers)
       ' Each branch prints money in a different dialect. The values must come
       ' out identical in kind regardless: plain, then symbol-with-inner-padding,
       ' then no-symbol-with-trailing-minus.
       for each t in b.tellers
-        print "   teller " + t.teller_no + " begin=" + cents(t.beginning_cash) + " end=" + cents(t.ending_cash)
+        print "   teller " + t.teller_no + " begin=" + amt(t.beginning_cash) + " end=" + amt(t.ending_cash)
       end for
     end for
   end if

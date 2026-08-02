@@ -244,8 +244,43 @@ library ari
         return string(n)
     end function
 
+    ' Native typed values. gBASIC builds money and datetime with ASSIGN
+    ' MODIFIERS rather than functions or literals — `m(USD) = 12.34`,
+    ' `d(date) = "2021-12-27"` — which is why a search for a `date(...)` builtin
+    ' finds nothing (see /DOGFOOD.md 2026-08-01, correction entry).
+    function _to_money(n)
+        m(USD) = n
+        return m
+    end function
+
+    ' The `date` modifier RAISES on a malformed string, and gBASIC cannot catch
+    ' a raise (docs/ai/ERRORS.md), so every caller must pre-validate. _date_in
+    ' below is the only producer and range-checks before returning.
+    function _to_date(iso)
+        d(date) = iso
+        return d
+    end function
+
+    function _valid_ymd(y, mo, da)
+        if mo < 1 then
+            return false
+        end if
+        if mo > 12 then
+            return false
+        end if
+        if da < 1 then
+            return false
+        end if
+        if da > 31 then
+            return false
+        end if
+        return true
+    end function
+
     ' Dates. Returns { val, why } — `why` is "" on success, otherwise a reason
-    ' code that becomes a diagnostic.
+    ' code that becomes a diagnostic. `val` is a normalized ISO STRING; the
+    ' caller turns it into a native datetime, so custom-type rules and the
+    ' builtin path share one validated producer.
     '
     ' TWO-COMPONENT DATES ARE THE ONE CASE THE UNION CANNOT SETTLE (§5.1).
     ' 27/12/2021 is decided by the token itself: 27 cannot be a month. But
@@ -285,17 +320,33 @@ library ari
         y = m.groups[2]
 
         if dialect = "dmy" then
+            ok1 = _valid_ymd(y, b, a)
+            if not ok1 then
+                return { val: unknown, why: "invalid-date" }
+            end if
             return { val: y + "-" + _pad2(b) + "-" + _pad2(a), why: "" }
         end if
         if dialect = "mdy" then
+            ok2 = _valid_ymd(y, a, b)
+            if not ok2 then
+                return { val: unknown, why: "invalid-date" }
+            end if
             return { val: y + "-" + _pad2(a) + "-" + _pad2(b), why: "" }
         end if
 
         ' No declared dialect: settle it from the token alone, or refuse.
         if a > 12 then
+            ok3 = _valid_ymd(y, b, a)
+            if not ok3 then
+                return { val: unknown, why: "invalid-date" }
+            end if
             return { val: y + "-" + _pad2(b) + "-" + _pad2(a), why: "" }
         end if
         if b > 12 then
+            ok4 = _valid_ymd(y, a, b)
+            if not ok4 then
+                return { val: unknown, why: "invalid-date" }
+            end if
             return { val: y + "-" + _pad2(a) + "-" + _pad2(b), why: "" }
         end if
         return { val: unknown, why: "ambiguous-date" }
@@ -335,18 +386,43 @@ library ari
                     ' A rule need not capture: with no group, the whole match is
                     ' the value. Indexing groups[0] blindly would fail on every
                     ' uncaptured rule.
+                    ' With a TRANSFORM the whole match is the input to the
+                    ' rewrite; group references live in the replacement. Without
+                    ' one, a captured group is the value — which is how the money
+                    ' rules pull digits out of their symbols and signs. Feeding
+                    ' groups[0] to a transform would hand it only the first
+                    ' capture (a two-digit day, in the date case) and rewrite
+                    ' that.
                     raw = mm.text
-                    if count(mm.groups) > 0 then
-                        g0 = mm.groups[0]
-                        if not is_unknown(g0) then
-                            raw = g0
+                    if rule.repl = "" then
+                        if count(mm.groups) > 0 then
+                            g0 = mm.groups[0]
+                            if not is_unknown(g0) then
+                                raw = g0
+                            end if
                         end if
                     end if
+                    ' `/re/repl/` — a rule may REWRITE as well as match, with
+                    ' $1..$9 group references. That is what lets a spec
+                    ' normalize a shape the recognizers do not know, e.g.
+                    ' /(\d{2})\/(\d{2})\/(\d{4})/$3-$1-$2/ turning a slashed
+                    ' date into ISO before the date conversion sees it.
+                    if rule.repl != "" then
+                        raw = replace(raw, regex(rule.re), rule.repl)
+                    end if
+
                     if custom.base = "date" then
-                        return _date_in(raw, rule.dialect)
+                        dr = _date_in(raw, rule.dialect)
+                        if is_unknown(dr.val) then
+                            return dr
+                        end if
+                        return { val: _to_date(dr.val), why: "" }
                     end if
                     v = _to_amount(raw, rule.neg)
                     if not is_unknown(v) then
+                        if custom.base = "money" then
+                            return { val: _to_money(v), why: "" }
+                        end if
                         return { val: v, why: "" }
                     end if
                 end if
@@ -359,7 +435,11 @@ library ari
             if is_unknown(v) then
                 return { val: unknown, why: "malformed-money" }
             end if
-            return { val: v, why: "" }
+            ' A native money value, not a bare number: that is what §4 promised
+            ' and what makes the output flow into frame/stats as designed. It
+            ' also prints its cents correctly, which a number above $9,999.99
+            ' does not (/DOGFOOD.md 2026-08-01).
+            return { val: _to_money(v), why: "" }
         end if
         if eff = "integer" then
             v = _integer_in(span, want_last)
@@ -376,7 +456,11 @@ library ari
             return { val: v, why: "" }
         end if
         if eff = "date" then
-            return _date_in(span, "")
+            dr = _date_in(span, "")
+            if is_unknown(dr.val) then
+                return dr
+            end if
+            return { val: _to_date(dr.val), why: "" }
         end if
         return { val: trim(span), why: "" }
     end function
@@ -439,6 +523,52 @@ library ari
         return { name: name, repeats: false, starts: "", ends: "",
                  fields: [], sections: [], rows: [], has_rows: false,
                  row_continue: "", usings: { } }
+    end function
+
+    ' Split a type rule into its slash-delimited parts and its action:
+    '
+    '     /re/ -> as decimal          -> parts ["re"],         action "as decimal"
+    '     /re/repl/ -> as date        -> parts ["re","repl"],  action "as date"
+    '
+    ' Hand-scanned rather than matched with a regex because a rule's own regex
+    ' routinely contains ESCAPED SLASHES — a date pattern always does — and
+    ' POSIX ERE has no lookbehind, so `/(.*)/([^/]*)/` cannot tell a delimiter
+    ' from a `\/` inside the body. It silently mis-split `/[0-9]{2}\/[0-9]{2}\/
+    ' [0-9]{4}/ -> dmy` into a transform whose pattern ended in a lone
+    ' backslash, which regcomp then rejected.
+    function _split_rule(rt)
+        opens = starts_with(rt, "/")
+        if not opens then
+            return unknown
+        end if
+        parts = []
+        cur = []
+        i = 1
+        n = len(rt)
+        while i < n
+            c = mid(rt, i, 1)
+            if c = "\\" then
+                if i + 1 < n then
+                    append(cur, c + mid(rt, i + 1, 1))
+                    i = i + 2
+                    continue
+                end if
+            end if
+            if c = "/" then
+                append(parts, join(cur, ""))
+                cur = []
+                i = i + 1
+                rest = trim(mid(rt, i, n - i))
+                arrow = starts_with(rest, "->")
+                if arrow then
+                    return { parts: parts, action: trim(mid(rest, 2, len(rest) - 2)) }
+                end if
+                continue
+            end if
+            append(cur, c)
+            i = i + 1
+        end while
+        return unknown
     end function
 
     function _parse_field(body)
@@ -657,10 +787,14 @@ library ari
                         ' regex may itself contain escaped slashes (a date
                         ' pattern almost always does), which a [^/]* body
                         ' cannot span.
-                        rm = match(rt, regex("^/(.*)/[ ]*->[ ]*(.*)$"))
-                        if not is_unknown(rm) then
-                            body = rm.groups[0]
-                            act = trim(rm.groups[1])
+                        sp2 = _split_rule(rt)
+                        if not is_unknown(sp2) then
+                            body = sp2.parts[0]
+                            repl = ""
+                            if count(sp2.parts) > 1 then
+                                repl = sp2.parts[1]
+                            end if
+                            act = sp2.action
                             neg = contains(act, "negate")
                             dial = ""
                             if contains(act, "dmy") then
@@ -669,7 +803,7 @@ library ari
                             if contains(act, "mdy") then
                                 dial = "mdy"
                             end if
-                            append(rules, { re: body, neg: neg, dialect: dial })
+                            append(rules, { re: body, neg: neg, dialect: dial, repl: repl })
                         end if
                     end if
                     j = j + 1

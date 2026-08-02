@@ -23,16 +23,11 @@ function show(v)
   return string(v)
 end function
 
-function cents(v)
+function amt(v)
   if is_unknown(v) then
     return "unknown"
   end if
-  n = v * 100
-  r = floor(n + 0.5)
-  if n < 0 then
-    r = 0 - floor(0 - n + 0.5)
-  end if
-  return string(r) + "c"
+  return string(v)
 end function
 
 ' Everything except the date declaration, which differs between the two runs.
@@ -44,6 +39,13 @@ function base_spec(date_decl)
   append(sp, "")
   append(sp, "type euro_date:")
   append(sp, "    /[0-9]{2}\\/[0-9]{2}\\/[0-9]{4}/ -> dmy")
+  append(sp, "    output: date")
+  append(sp, "")
+  ' The SAME conversion by a different mechanism: a /re/repl/ transform
+  ' rewrites DD/MM/YYYY to ISO with $-group references before the date
+  ' conversion sees it, rather than naming a dialect. The two must agree.
+  append(sp, "type rewritten_date:")
+  append(sp, "    /([0-9]{2})\\/([0-9]{2})\\/([0-9]{4})/$3-$2-$1/ -> as date")
   append(sp, "    output: date")
   append(sp, "")
   append(sp, "section report:")
@@ -100,7 +102,7 @@ program main(args)
       ' down 1 of
       print "     officer   = " + trim(show(b.officer))
       ' up 2 of
-      print "     total     = " + cents(b.branch_total)
+      print "     total     = " + amt(b.branch_total)
       ' right flush of
       print "     notes     = " + trim(show(b.notes))
       ' down 1-3 of  (the gap differs per branch)
@@ -115,7 +117,7 @@ program main(args)
           if not is_unknown(ln.rows.collateral[i]) then
             coll = trim(ln.rows.collateral[i])
           end if
-          print "       " + trim(ln.rows.account[i]) + " " + trim(ln.rows.member[i]) + " opened=" + show(ln.rows.opened[i]) + " bal=" + cents(ln.rows.balance[i]) + " coll=" + coll
+          print "       " + trim(ln.rows.account[i]) + " " + trim(ln.rows.member[i]) + " opened=" + show(ln.rows.opened[i]) + " bal=" + amt(ln.rows.balance[i]) + " coll=" + coll
           i = i + 1
         end while
         ti = ti + 1
@@ -172,4 +174,36 @@ program main(args)
       end for
     end for
   end for
+
+  print ""
+  print "== regex-with-transform reaches the same answer as the dialect =="
+  ' /re/repl/ and `-> dmy` are different mechanisms for one conversion. If they
+  ' ever disagree, one of them is wrong and the golden says which.
+  r3 = ari.parse(report, base_spec("using date: rewritten_date"))
+  same = true
+  ri = 0
+  for each rg in r2.value.regions
+    bi = 0
+    for each b in rg.branches
+      li = 0
+      for each ln in b.loans
+        i = 0
+        while i < count(ln.rows.opened)
+          other = r3.value.regions[ri].branches[bi].loans[li].rows.opened[i]
+          if show(ln.rows.opened[i]) != show(other) then
+            same = false
+          end if
+          i = i + 1
+        end while
+        li = li + 1
+      end for
+      bi = bi + 1
+    end for
+    ri = ri + 1
+  end for
+  print "transform agrees with dialect = " + same
+  print "sample = " + show(r3.value.regions[0].branches[0].loans[0].rows.opened[0])
+  ' Native kinds, not lookalike strings (§4).
+  print "date kind  = " + type(r3.value.regions[0].branches[0].loans[0].rows.opened[0])
+  print "money kind = " + type(r2.value.regions[0].branches[0].branch_total)
 end program
