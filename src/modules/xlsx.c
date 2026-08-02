@@ -778,6 +778,679 @@ static XlsxSheet *xlsx_find_sheet(XlsxWorkbook *wb, const char *name) {
 
 #endif /* HAVE_ZLIB && HAVE_LIBXML2 */
 
+/* ==================================================================== FORMULA
+ *
+ * Phase A+B of docs/xlsx_design.md §13.G: the expression evaluator (operators,
+ * references, ranges) plus the durable-core functions.
+ *
+ * WHY THE EXPRESSION EVALUATOR IS THE FIRST MILESTONE. Measured on the Enron
+ * corpus, four of the nine most-used "functions" are arithmetic operators
+ * (+ - * /), so precedence, references and ranges carry the largest single
+ * share of real usage before any function library exists.
+ *
+ * THE ORACLE, AND ITS LIMIT. An xlsx stores both the formula and Excel's own
+ * cached result for every formula cell, so `xlsx.check` can evaluate each
+ * formula and compare. Crucially this needs NO DEPENDENCY GRAPH: every input
+ * cell already carries a cached value, so each formula can be checked in
+ * isolation. The graph is only required once something is CHANGED.
+ *
+ * The limit is worth stating plainly: on a SYNTHETIC fixture the cached values
+ * were written by hand, so `check` measures self-consistency, not conformance
+ * to Excel. It becomes a real oracle only when pointed at a workbook Excel
+ * actually wrote.
+ *
+ * VOLATILE FUNCTIONS CANNOT PARTICIPATE. NOW/TODAY/RAND are in the measured top
+ * nine, and their cached value dates from whenever the workbook last
+ * calculated, so comparing against it is meaningless. They are reported
+ * separately rather than counted as agreements or failures. */
+
+typedef enum { XV_NUM, XV_STR, XV_BOOL, XV_ERR, XV_EMPTY } XlsxValKind;
+
+typedef struct {
+    XlsxValKind kind;
+    double num;
+    char *str;              /* owned: STR text, or the ERR code */
+} XlsxVal;
+
+static XlsxVal xv_num(double d) { XlsxVal v = {XV_NUM, d, NULL}; return v; }
+static XlsxVal xv_bool(int b) { XlsxVal v = {XV_BOOL, b ? 1 : 0, NULL}; return v; }
+static XlsxVal xv_empty(void) { XlsxVal v = {XV_EMPTY, 0, NULL}; return v; }
+static XlsxVal xv_str(const char *s) { XlsxVal v = {XV_STR, 0, copy_string(s)}; return v; }
+static XlsxVal xv_err(const char *e) { XlsxVal v = {XV_ERR, 0, copy_string(e)}; return v; }
+static void xv_free(XlsxVal v) { free(v.str); }
+
+/* One cell of a parsed sheet snapshot. The snapshot exists so evaluation does
+ * not re-parse the sheet XML per reference — checking a sheet of N formulas
+ * would otherwise be O(N) full XML parses. */
+typedef struct {
+    long row, col;
+    XlsxValKind kind;
+    double num;
+    char *str;
+    char *formula;          /* NULL when the cell is a literal */
+} XlsxSnapCell;
+
+typedef struct {
+    XlsxSnapCell *cells;
+    size_t count;
+} XlsxSnap;
+
+static void xlsx_snap_free(XlsxSnap *s) {
+    for (size_t i = 0; i < s->count; i++) {
+        free(s->cells[i].str);
+        free(s->cells[i].formula);
+    }
+    free(s->cells);
+    s->cells = NULL;
+    s->count = 0;
+}
+
+/* Parse one sheet into a snapshot. Sparse: only populated cells appear. */
+static int xlsx_snapshot(XlsxWorkbook *wb, const char *sheet_name, XlsxSnap *out) {
+    out->cells = NULL;
+    out->count = 0;
+    XlsxSheet *sheet = xlsx_find_sheet(wb, sheet_name);
+    XlsxPart *sp = sheet && sheet->part ? xlsx_find_part(wb, sheet->part) : NULL;
+    if (!sp) {
+        return 0;
+    }
+    xmlDocPtr doc = xlsx_parse_part(sp);
+    if (!doc) {
+        return 0;
+    }
+    size_t cap = 0;
+    xmlNodePtr root = xmlDocGetRootElement(doc);
+    for (xmlNodePtr n = root ? root->children : NULL; n; n = n->next) {
+        if (!xlsx_is(n, "sheetData")) continue;
+        for (xmlNodePtr r = n->children; r; r = r->next) {
+            if (!xlsx_is(r, "row")) continue;
+            for (xmlNodePtr c = r->children; c; c = c->next) {
+                if (!xlsx_is(c, "c")) continue;
+                char *ref = xlsx_prop(c, "r");
+                long col = 0, row = 0;
+                if (!ref || !xlsx_parse_ref(ref, &col, &row)) { free(ref); continue; }
+                free(ref);
+                char *type = xlsx_prop(c, "t");
+                char *formula = NULL, *vtext = NULL, *inl = NULL;
+                for (xmlNodePtr k = c->children; k; k = k->next) {
+                    if (xlsx_is(k, "f")) formula = xlsx_text_of(k);
+                    else if (xlsx_is(k, "v")) vtext = xlsx_text_of(k);
+                    else if (xlsx_is(k, "is")) inl = xlsx_text_of(k);
+                }
+                if (out->count == cap) {
+                    cap = cap ? cap * 2 : 64;
+                    XlsxSnapCell *g = realloc(out->cells, cap * sizeof(XlsxSnapCell));
+                    if (!g) abort();
+                    out->cells = g;
+                }
+                XlsxSnapCell *sc = &out->cells[out->count++];
+                sc->row = row; sc->col = col; sc->formula = formula;
+                sc->str = NULL; sc->num = 0; sc->kind = XV_EMPTY;
+                if (type && strcmp(type, "s") == 0) {
+                    long idx = vtext ? strtol(vtext, NULL, 10) : -1;
+                    sc->kind = XV_STR;
+                    sc->str = copy_string(idx >= 0 && (size_t)idx < wb->shared_count
+                                          ? wb->shared[idx] : "");
+                } else if (type && (strcmp(type, "inlineStr") == 0 || strcmp(type, "str") == 0)) {
+                    sc->kind = XV_STR;
+                    sc->str = copy_string(inl ? inl : (vtext ? vtext : ""));
+                } else if (type && strcmp(type, "b") == 0) {
+                    sc->kind = XV_BOOL;
+                    sc->num = (vtext && strcmp(vtext, "0") != 0) ? 1 : 0;
+                } else if (type && strcmp(type, "e") == 0) {
+                    sc->kind = XV_ERR;
+                    sc->str = copy_string(vtext ? vtext : "#ERROR");
+                } else if (vtext) {
+                    sc->kind = XV_NUM;
+                    sc->num = strtod(vtext, NULL);
+                }
+                free(type); free(vtext); free(inl);
+            }
+        }
+    }
+    xmlFreeDoc(doc);
+    return 1;
+}
+
+static const XlsxSnapCell *xlsx_snap_at(const XlsxSnap *s, long row, long col) {
+    for (size_t i = 0; i < s->count; i++) {
+        if (s->cells[i].row == row && s->cells[i].col == col) {
+            return &s->cells[i];
+        }
+    }
+    return NULL;
+}
+
+/* ------------------------------------------------------------ formula lexer */
+
+typedef enum {
+    XT_END, XT_NUM, XT_STR, XT_REF, XT_NAME, XT_OP, XT_LPAREN, XT_RPAREN,
+    XT_COMMA, XT_COLON, XT_ERRLIT
+} XlsxTokKind;
+
+typedef struct {
+    XlsxTokKind kind;
+    double num;
+    char text[128];
+} XlsxTok;
+
+typedef struct {
+    const char *p;
+    XlsxTok cur;
+    int bad;
+} XlsxLex;
+
+static void xlsx_lex_next(XlsxLex *lx) {
+    while (*lx->p == ' ' || *lx->p == '\t' || *lx->p == '\n' || *lx->p == '\r') lx->p++;
+    lx->cur.text[0] = '\0';
+    char c = *lx->p;
+    if (!c) { lx->cur.kind = XT_END; return; }
+
+    if (c == '(') { lx->p++; lx->cur.kind = XT_LPAREN; return; }
+    if (c == ')') { lx->p++; lx->cur.kind = XT_RPAREN; return; }
+    if (c == ',') { lx->p++; lx->cur.kind = XT_COMMA; return; }
+    if (c == ':') { lx->p++; lx->cur.kind = XT_COLON; return; }
+
+    if (c == '"') {
+        /* "" is an escaped quote inside an Excel string literal. */
+        lx->p++;
+        size_t n = 0;
+        while (*lx->p) {
+            if (*lx->p == '"') {
+                if (lx->p[1] == '"') { if (n + 1 < sizeof lx->cur.text) lx->cur.text[n++] = '"'; lx->p += 2; continue; }
+                lx->p++; break;
+            }
+            if (n + 1 < sizeof lx->cur.text) lx->cur.text[n++] = *lx->p;
+            lx->p++;
+        }
+        lx->cur.text[n] = '\0';
+        lx->cur.kind = XT_STR;
+        return;
+    }
+
+    if (c == '#') {                       /* an error literal: #DIV/0! #N/A ... */
+        size_t n = 0;
+        while (*lx->p && (isalnum((unsigned char)*lx->p) || strchr("#/!?_", *lx->p))) {
+            if (n + 1 < sizeof lx->cur.text) lx->cur.text[n++] = *lx->p;
+            lx->p++;
+        }
+        lx->cur.text[n] = '\0';
+        lx->cur.kind = XT_ERRLIT;
+        return;
+    }
+
+    if (isdigit((unsigned char)c) || (c == '.' && isdigit((unsigned char)lx->p[1]))) {
+        char *end = NULL;
+        lx->cur.num = strtod(lx->p, &end);
+        lx->p = end;
+        lx->cur.kind = XT_NUM;
+        return;
+    }
+
+    /* A reference or a name. `$` marks absolute addressing, which matters only
+     * when a formula is COPIED; evaluating one in place, $A$1 and A1 name the
+     * same cell, so the marker is stripped. */
+    if (isalpha((unsigned char)c) || c == '_' || c == '$') {
+        size_t n = 0;
+        const char *start = lx->p;
+        while (*lx->p && (isalnum((unsigned char)*lx->p) || *lx->p == '_' || *lx->p == '$' || *lx->p == '.')) {
+            if (*lx->p != '$' && n + 1 < sizeof lx->cur.text) lx->cur.text[n++] = *lx->p;
+            lx->p++;
+        }
+        lx->cur.text[n] = '\0';
+        (void)start;
+        /* TRUE/FALSE are literals, not names. */
+        long col, row;
+        if (*lx->p == '(') {
+            lx->cur.kind = XT_NAME;
+        } else if (xlsx_parse_ref(lx->cur.text, &col, &row)) {
+            lx->cur.kind = XT_REF;
+        } else {
+            lx->cur.kind = XT_NAME;
+        }
+        return;
+    }
+
+    if (strchr("+-*/^&%=<>", c)) {
+        size_t n = 0;
+        lx->cur.text[n++] = c;
+        lx->p++;
+        if ((c == '<' && (*lx->p == '=' || *lx->p == '>')) || (c == '>' && *lx->p == '=')) {
+            lx->cur.text[n++] = *lx->p;
+            lx->p++;
+        }
+        lx->cur.text[n] = '\0';
+        lx->cur.kind = XT_OP;
+        return;
+    }
+
+    lx->bad = 1;
+    lx->cur.kind = XT_END;
+}
+
+/* --------------------------------------------------- recursive-descent parse
+ *
+ * Evaluated directly rather than built into an AST first: Phase A only needs
+ * one-shot evaluation, and the tree would be built and discarded per cell. When
+ * the dependency graph arrives it will want a retained AST, and this becomes
+ * the front half of it. */
+
+typedef struct {
+    XlsxLex lx;
+    XlsxWorkbook *wb;
+    const XlsxSnap *snap;
+    int depth;
+    int unsupported;        /* set when a function is not implemented */
+    char unsupported_name[64];
+} XlsxEval;
+
+static XlsxVal xlsx_expr(XlsxEval *ev);
+
+static XlsxVal xlsx_cell_value(XlsxEval *ev, const char *ref) {
+    long col, row;
+    if (!xlsx_parse_ref(ref, &col, &row)) return xv_err("#REF!");
+    const XlsxSnapCell *c = xlsx_snap_at(ev->snap, row, col);
+    if (!c) return xv_empty();
+    switch (c->kind) {
+    case XV_NUM:  return xv_num(c->num);
+    case XV_BOOL: return xv_bool((int)c->num);
+    case XV_STR:  return xv_str(c->str ? c->str : "");
+    case XV_ERR:  return xv_err(c->str ? c->str : "#ERROR");
+    default:      return xv_empty();
+    }
+}
+
+/* Coerce for arithmetic. Empty is zero; a non-numeric string is #VALUE!,
+ * matching Excel rather than silently reading as zero. */
+static int xlsx_as_num(XlsxVal v, double *out) {
+    switch (v.kind) {
+    case XV_NUM:  *out = v.num; return 1;
+    case XV_BOOL: *out = v.num; return 1;
+    case XV_EMPTY: *out = 0; return 1;
+    case XV_STR: {
+        if (!v.str || !*v.str) { *out = 0; return 1; }
+        char *end = NULL;
+        double d = strtod(v.str, &end);
+        while (end && *end == ' ') end++;
+        if (end && *end == '\0') { *out = d; return 1; }
+        return 0;
+    }
+    default: return 0;
+    }
+}
+
+static void xlsx_to_text(XlsxVal v, char *buf, size_t n) {
+    switch (v.kind) {
+    case XV_STR:  snprintf(buf, n, "%s", v.str ? v.str : ""); break;
+    case XV_NUM:  snprintf(buf, n, "%.15g", v.num); break;
+    case XV_BOOL: snprintf(buf, n, "%s", v.num ? "TRUE" : "FALSE"); break;
+    case XV_ERR:  snprintf(buf, n, "%s", v.str ? v.str : "#ERROR"); break;
+    default:      snprintf(buf, n, "%s", ""); break;
+    }
+}
+
+/* Collect a function argument. A bare range (B2:B3) expands to its cells; every
+ * other argument yields one value. */
+static void xlsx_arg_values(XlsxEval *ev, XlsxVal **vals, size_t *n, size_t *cap) {
+    /* A range is REF COLON REF and can only appear as a whole argument. */
+    if (ev->lx.cur.kind == XT_REF) {
+        char first[128];
+        snprintf(first, sizeof first, "%s", ev->lx.cur.text);
+        XlsxLex save = ev->lx;
+        xlsx_lex_next(&ev->lx);
+        if (ev->lx.cur.kind == XT_COLON) {
+            xlsx_lex_next(&ev->lx);
+            if (ev->lx.cur.kind == XT_REF) {
+                long c1, r1, c2, r2;
+                if (xlsx_parse_ref(first, &c1, &r1) && xlsx_parse_ref(ev->lx.cur.text, &c2, &r2)) {
+                    if (c1 > c2) { long t = c1; c1 = c2; c2 = t; }
+                    if (r1 > r2) { long t = r1; r1 = r2; r2 = t; }
+                    for (long r = r1; r <= r2; r++) {
+                        for (long c = c1; c <= c2; c++) {
+                            const XlsxSnapCell *sc = xlsx_snap_at(ev->snap, r, c);
+                            XlsxVal v = xv_empty();
+                            if (sc) {
+                                switch (sc->kind) {
+                                case XV_NUM: v = xv_num(sc->num); break;
+                                case XV_BOOL: v = xv_bool((int)sc->num); break;
+                                case XV_STR: v = xv_str(sc->str ? sc->str : ""); break;
+                                case XV_ERR: v = xv_err(sc->str ? sc->str : "#ERROR"); break;
+                                default: break;
+                                }
+                            }
+                            if (*n == *cap) {
+                                *cap = *cap ? *cap * 2 : 8;
+                                XlsxVal *g = realloc(*vals, *cap * sizeof(XlsxVal));
+                                if (!g) abort();
+                                *vals = g;
+                            }
+                            (*vals)[(*n)++] = v;
+                        }
+                    }
+                    xlsx_lex_next(&ev->lx);
+                    return;
+                }
+            }
+        }
+        ev->lx = save;   /* not a range after all; re-parse as an expression */
+    }
+    XlsxVal v = xlsx_expr(ev);
+    if (*n == *cap) {
+        *cap = *cap ? *cap * 2 : 8;
+        XlsxVal *g = realloc(*vals, *cap * sizeof(XlsxVal));
+        if (!g) abort();
+        *vals = g;
+    }
+    (*vals)[(*n)++] = v;
+}
+
+static int xlsx_is_volatile(const char *name) {
+    return strcmp(name, "NOW") == 0 || strcmp(name, "TODAY") == 0 ||
+           strcmp(name, "RAND") == 0 || strcmp(name, "RANDBETWEEN") == 0;
+}
+
+static XlsxVal xlsx_call(XlsxEval *ev, const char *name) {
+    XlsxVal *args = NULL;
+    size_t n = 0, cap = 0;
+    /* On entry the current token is the NAME and the input sits at '('. Two
+     * advances are needed: one to land ON the paren, one to step PAST it. With
+     * only one, the first argument is parsed as a parenthesised expression —
+     * which made SUM(B2:B3) silently return B2 alone, a wrong number that looks
+     * entirely plausible. */
+    xlsx_lex_next(&ev->lx);              /* cur == '(' */
+    xlsx_lex_next(&ev->lx);              /* cur == first argument, or ')' */
+    if (ev->lx.cur.kind != XT_RPAREN) {
+        for (;;) {
+            xlsx_arg_values(ev, &args, &n, &cap);
+            if (ev->lx.cur.kind != XT_COMMA) break;
+            xlsx_lex_next(&ev->lx);
+        }
+    }
+    if (ev->lx.cur.kind == XT_RPAREN) xlsx_lex_next(&ev->lx);
+
+    XlsxVal out = xv_err("#NAME?");
+
+    /* Any error among the arguments propagates, which is Excel's rule and the
+     * reason an error is its own kind rather than a string. */
+    for (size_t i = 0; i < n; i++) {
+        if (args[i].kind == XV_ERR) {
+            if (strcmp(name, "IFERROR") != 0) {
+                out = xv_err(args[i].str);
+                goto done;
+            }
+        }
+    }
+
+    if (strcmp(name, "SUM") == 0 || strcmp(name, "AVERAGE") == 0) {
+        double total = 0; long cnt = 0;
+        for (size_t i = 0; i < n; i++) {
+            /* Text and empties are SKIPPED by SUM over a range, not coerced —
+             * Excel counts only numbers, and coercing would invent data. */
+            if (args[i].kind == XV_NUM || args[i].kind == XV_BOOL) { total += args[i].num; cnt++; }
+        }
+        if (strcmp(name, "AVERAGE") == 0) {
+            out = cnt ? xv_num(total / (double)cnt) : xv_err("#DIV/0!");
+        } else {
+            out = xv_num(total);
+        }
+    } else if (strcmp(name, "COUNT") == 0) {
+        long cnt = 0;
+        for (size_t i = 0; i < n; i++) if (args[i].kind == XV_NUM) cnt++;
+        out = xv_num((double)cnt);
+    } else if (strcmp(name, "COUNTA") == 0) {
+        long cnt = 0;
+        for (size_t i = 0; i < n; i++) if (args[i].kind != XV_EMPTY) cnt++;
+        out = xv_num((double)cnt);
+    } else if (strcmp(name, "MIN") == 0 || strcmp(name, "MAX") == 0) {
+        int is_min = strcmp(name, "MIN") == 0;
+        double best = 0; int seen = 0;
+        for (size_t i = 0; i < n; i++) {
+            if (args[i].kind != XV_NUM && args[i].kind != XV_BOOL) continue;
+            if (!seen || (is_min ? args[i].num < best : args[i].num > best)) { best = args[i].num; seen = 1; }
+        }
+        out = xv_num(seen ? best : 0);
+    } else if (strcmp(name, "ROUND") == 0 || strcmp(name, "ROUNDUP") == 0 ||
+               strcmp(name, "ROUNDDOWN") == 0) {
+        double x = 0, digits = 0;
+        if (n >= 1 && xlsx_as_num(args[0], &x) && (n < 2 || xlsx_as_num(args[1], &digits))) {
+            double scale = pow(10.0, digits);
+            double y = x * scale;
+            if (strcmp(name, "ROUND") == 0) y = (y < 0) ? -floor(-y + 0.5) : floor(y + 0.5);
+            else if (strcmp(name, "ROUNDUP") == 0) y = (y < 0) ? floor(y) : ceil(y);
+            else y = (y < 0) ? ceil(y) : floor(y);
+            out = xv_num(y / scale);
+        } else {
+            out = xv_err("#VALUE!");
+        }
+    } else if (strcmp(name, "ABS") == 0) {
+        double x = 0;
+        out = (n >= 1 && xlsx_as_num(args[0], &x)) ? xv_num(fabs(x)) : xv_err("#VALUE!");
+    } else if (strcmp(name, "IF") == 0) {
+        double c = 0;
+        int truthy = n >= 1 && xlsx_as_num(args[0], &c) && c != 0;
+        if (n >= 3) out = args[truthy ? 1 : 2], args[truthy ? 1 : 2] = xv_empty();
+        else if (n == 2) out = truthy ? (args[1]) : xv_bool(0), args[1] = truthy ? xv_empty() : args[1];
+        else out = xv_err("#VALUE!");
+    } else if (strcmp(name, "IFERROR") == 0) {
+        if (n >= 2) {
+            if (args[0].kind == XV_ERR) { out = args[1]; args[1] = xv_empty(); }
+            else { out = args[0]; args[0] = xv_empty(); }
+        } else {
+            out = xv_err("#VALUE!");
+        }
+    } else if (strcmp(name, "TRUE") == 0) {
+        out = xv_bool(1);
+    } else if (strcmp(name, "FALSE") == 0) {
+        out = xv_bool(0);
+    } else {
+        /* REFUSE LOUDLY. In a financial model a plausible wrong number is worse
+         * than a failure, so an unimplemented function is reported by name
+         * rather than defaulted to zero (§13.G). */
+        ev->unsupported = 1;
+        snprintf(ev->unsupported_name, sizeof ev->unsupported_name, "%s", name);
+        out = xv_err("#NAME?");
+    }
+
+done:
+    for (size_t i = 0; i < n; i++) xv_free(args[i]);
+    free(args);
+    return out;
+}
+
+static XlsxVal xlsx_primary(XlsxEval *ev) {
+    if (ev->depth++ > 64) return xv_err("#VALUE!");
+    XlsxVal v = xv_err("#VALUE!");
+    switch (ev->lx.cur.kind) {
+    case XT_NUM: v = xv_num(ev->lx.cur.num); xlsx_lex_next(&ev->lx); break;
+    case XT_STR: v = xv_str(ev->lx.cur.text); xlsx_lex_next(&ev->lx); break;
+    case XT_ERRLIT: v = xv_err(ev->lx.cur.text); xlsx_lex_next(&ev->lx); break;
+    case XT_REF: {
+        char ref[128];
+        snprintf(ref, sizeof ref, "%s", ev->lx.cur.text);
+        v = xlsx_cell_value(ev, ref);
+        xlsx_lex_next(&ev->lx);
+        break;
+    }
+    case XT_NAME: {
+        char nm[128];
+        size_t i = 0;
+        for (; ev->lx.cur.text[i] && i < sizeof nm - 1; i++) nm[i] = (char)toupper((unsigned char)ev->lx.cur.text[i]);
+        nm[i] = '\0';
+        if (strcmp(nm, "TRUE") == 0) { v = xv_bool(1); xlsx_lex_next(&ev->lx); break; }
+        if (strcmp(nm, "FALSE") == 0) { v = xv_bool(0); xlsx_lex_next(&ev->lx); break; }
+        v = xlsx_call(ev, nm);
+        break;
+    }
+    case XT_LPAREN:
+        xlsx_lex_next(&ev->lx);
+        v = xlsx_expr(ev);
+        if (ev->lx.cur.kind == XT_RPAREN) xlsx_lex_next(&ev->lx);
+        break;
+    case XT_OP:
+        if (strcmp(ev->lx.cur.text, "-") == 0) {
+            xlsx_lex_next(&ev->lx);
+            XlsxVal inner = xlsx_primary(ev);
+            double d = 0;
+            v = xlsx_as_num(inner, &d) ? xv_num(-d) : xv_err("#VALUE!");
+            xv_free(inner);
+        } else if (strcmp(ev->lx.cur.text, "+") == 0) {
+            xlsx_lex_next(&ev->lx);
+            v = xlsx_primary(ev);
+        }
+        break;
+    default: break;
+    }
+    /* Postfix percent binds tighter than any infix operator. */
+    while (ev->lx.cur.kind == XT_OP && strcmp(ev->lx.cur.text, "%") == 0) {
+        double d = 0;
+        if (xlsx_as_num(v, &d)) { xv_free(v); v = xv_num(d / 100.0); }
+        xlsx_lex_next(&ev->lx);
+    }
+    ev->depth--;
+    return v;
+}
+
+static XlsxVal xlsx_power(XlsxEval *ev) {
+    XlsxVal a = xlsx_primary(ev);
+    while (ev->lx.cur.kind == XT_OP && strcmp(ev->lx.cur.text, "^") == 0) {
+        xlsx_lex_next(&ev->lx);
+        XlsxVal b = xlsx_primary(ev);
+        double x = 0, y = 0;
+        XlsxVal r = (a.kind == XV_ERR) ? xv_err(a.str) : (b.kind == XV_ERR) ? xv_err(b.str)
+                  : (xlsx_as_num(a, &x) && xlsx_as_num(b, &y)) ? xv_num(pow(x, y)) : xv_err("#VALUE!");
+        xv_free(a); xv_free(b);
+        a = r;
+    }
+    return a;
+}
+
+static XlsxVal xlsx_term(XlsxEval *ev) {
+    XlsxVal a = xlsx_power(ev);
+    while (ev->lx.cur.kind == XT_OP &&
+           (strcmp(ev->lx.cur.text, "*") == 0 || strcmp(ev->lx.cur.text, "/") == 0)) {
+        int div = ev->lx.cur.text[0] == '/';
+        xlsx_lex_next(&ev->lx);
+        XlsxVal b = xlsx_power(ev);
+        double x = 0, y = 0;
+        XlsxVal r;
+        if (a.kind == XV_ERR) r = xv_err(a.str);
+        else if (b.kind == XV_ERR) r = xv_err(b.str);
+        else if (!xlsx_as_num(a, &x) || !xlsx_as_num(b, &y)) r = xv_err("#VALUE!");
+        else if (div && y == 0) r = xv_err("#DIV/0!");
+        else r = xv_num(div ? x / y : x * y);
+        xv_free(a); xv_free(b);
+        a = r;
+    }
+    return a;
+}
+
+static XlsxVal xlsx_arith(XlsxEval *ev) {
+    XlsxVal a = xlsx_term(ev);
+    while (ev->lx.cur.kind == XT_OP &&
+           (strcmp(ev->lx.cur.text, "+") == 0 || strcmp(ev->lx.cur.text, "-") == 0)) {
+        int sub = ev->lx.cur.text[0] == '-';
+        xlsx_lex_next(&ev->lx);
+        XlsxVal b = xlsx_term(ev);
+        double x = 0, y = 0;
+        XlsxVal r;
+        if (a.kind == XV_ERR) r = xv_err(a.str);
+        else if (b.kind == XV_ERR) r = xv_err(b.str);
+        else if (!xlsx_as_num(a, &x) || !xlsx_as_num(b, &y)) r = xv_err("#VALUE!");
+        else r = xv_num(sub ? x - y : x + y);
+        xv_free(a); xv_free(b);
+        a = r;
+    }
+    return a;
+}
+
+static XlsxVal xlsx_concat(XlsxEval *ev) {
+    XlsxVal a = xlsx_arith(ev);
+    while (ev->lx.cur.kind == XT_OP && strcmp(ev->lx.cur.text, "&") == 0) {
+        xlsx_lex_next(&ev->lx);
+        XlsxVal b = xlsx_arith(ev);
+        XlsxVal r;
+        if (a.kind == XV_ERR) r = xv_err(a.str);
+        else if (b.kind == XV_ERR) r = xv_err(b.str);
+        else {
+            char sa[256], sb[256], joined[512];
+            xlsx_to_text(a, sa, sizeof sa);
+            xlsx_to_text(b, sb, sizeof sb);
+            snprintf(joined, sizeof joined, "%s%s", sa, sb);
+            r = xv_str(joined);
+        }
+        xv_free(a); xv_free(b);
+        a = r;
+    }
+    return a;
+}
+
+static XlsxVal xlsx_expr(XlsxEval *ev) {
+    XlsxVal a = xlsx_concat(ev);
+    while (ev->lx.cur.kind == XT_OP &&
+           (strcmp(ev->lx.cur.text, "=") == 0 || strcmp(ev->lx.cur.text, "<>") == 0 ||
+            strcmp(ev->lx.cur.text, "<") == 0 || strcmp(ev->lx.cur.text, ">") == 0 ||
+            strcmp(ev->lx.cur.text, "<=") == 0 || strcmp(ev->lx.cur.text, ">=") == 0)) {
+        char op[4];
+        snprintf(op, sizeof op, "%s", ev->lx.cur.text);
+        xlsx_lex_next(&ev->lx);
+        XlsxVal b = xlsx_concat(ev);
+        XlsxVal r;
+        if (a.kind == XV_ERR) r = xv_err(a.str);
+        else if (b.kind == XV_ERR) r = xv_err(b.str);
+        else {
+            int cmp = 0;
+            double x = 0, y = 0;
+            if (a.kind == XV_STR || b.kind == XV_STR) {
+                char sa[256], sb[256];
+                xlsx_to_text(a, sa, sizeof sa);
+                xlsx_to_text(b, sb, sizeof sb);
+                cmp = strcmp(sa, sb);
+            } else {
+                xlsx_as_num(a, &x); xlsx_as_num(b, &y);
+                cmp = (x < y) ? -1 : (x > y) ? 1 : 0;
+            }
+            int res = 0;
+            if (!strcmp(op, "=")) res = cmp == 0;
+            else if (!strcmp(op, "<>")) res = cmp != 0;
+            else if (!strcmp(op, "<")) res = cmp < 0;
+            else if (!strcmp(op, ">")) res = cmp > 0;
+            else if (!strcmp(op, "<=")) res = cmp <= 0;
+            else if (!strcmp(op, ">=")) res = cmp >= 0;
+            r = xv_bool(res);
+        }
+        xv_free(a); xv_free(b);
+        a = r;
+    }
+    return a;
+}
+
+/* Evaluate one formula's TEXT (without the leading '='). */
+static XlsxVal xlsx_eval_formula(XlsxWorkbook *wb, const XlsxSnap *snap,
+                                 const char *formula, int *unsupported,
+                                 char *unsupported_name, size_t un_len) {
+    XlsxEval ev;
+    memset(&ev, 0, sizeof ev);
+    ev.wb = wb;
+    ev.snap = snap;
+    ev.lx.p = formula;
+    ev.lx.bad = 0;
+    xlsx_lex_next(&ev.lx);
+    XlsxVal v = xlsx_expr(&ev);
+    if (unsupported) *unsupported = ev.unsupported;
+    if (unsupported_name && un_len) snprintf(unsupported_name, un_len, "%s", ev.unsupported_name);
+    return v;
+}
+
+static Value xlsx_val_to_gbasic(XlsxVal v) {
+    switch (v.kind) {
+    case XV_NUM:  return value_number(v.num);
+    case XV_BOOL: return value_bool((int)v.num);
+    case XV_STR:  return value_string(v.str ? v.str : "");
+    case XV_ERR:  return value_string(v.str ? v.str : "#ERROR");
+    default:      return value_unknown();
+    }
+}
+
 /* ----------------------------------------------------------- the value kind */
 
 static Value value_workbook(XlsxWorkbook *wb) {
@@ -1342,6 +2015,196 @@ static Value xlsx_eval_call(AstExpr *expr) {
             return xlsx_raise("xlsx.save: short write");
         }
         return value_number((double)len);
+    }
+
+    /* Evaluate one cell's formula against the sheet's cached values. */
+    if (strcmp(name, "evaluate") == 0) {
+        if (expr->as.call.args.count != 3) {
+            return xlsx_raise("xlsx.evaluate expects three arguments (workbook, sheet, ref)");
+        }
+        Value wbv = eval_expr(expr->as.call.args.items[0]);
+        Value shv = eval_expr(expr->as.call.args.items[1]);
+        Value refv = eval_expr(expr->as.call.args.items[2]);
+        if (wbv.kind != VALUE_WORKBOOK || shv.kind != VALUE_STRING || refv.kind != VALUE_STRING) {
+            value_free(wbv); value_free(shv); value_free(refv);
+            return xlsx_raise("xlsx.evaluate expects a workbook, a sheet name and a ref");
+        }
+        XlsxSnap snap;
+        if (!xlsx_snapshot(wbv.as.workbook, shv.as.string, &snap)) {
+            char message[256];
+            snprintf(message, sizeof message, "xlsx: no such sheet: %s", shv.as.string);
+            value_free(wbv); value_free(shv); value_free(refv);
+            return xlsx_raise(message);
+        }
+        long col = 0, row = 0;
+        Value out = value_unknown();
+        if (xlsx_parse_ref(refv.as.string, &col, &row)) {
+            const XlsxSnapCell *c = xlsx_snap_at(&snap, row, col);
+            if (c && c->formula) {
+                int unsup = 0;
+                char un[64] = "";
+                XlsxVal v = xlsx_eval_formula(wbv.as.workbook, &snap, c->formula, &unsup, un, sizeof un);
+                out = xlsx_val_to_gbasic(v);
+                xv_free(v);
+            } else if (c) {
+                /* Not a formula: the literal is its own value. */
+                switch (c->kind) {
+                case XV_NUM: out = value_number(c->num); break;
+                case XV_BOOL: out = value_bool((int)c->num); break;
+                case XV_STR: out = value_string(c->str ? c->str : ""); break;
+                case XV_ERR: out = value_string(c->str ? c->str : "#ERROR"); break;
+                default: break;
+                }
+            }
+        }
+        xlsx_snap_free(&snap);
+        value_free(wbv); value_free(shv); value_free(refv);
+        return out;
+    }
+
+    /* THE ORACLE. Evaluate every formula on a sheet and compare against the
+     * value Excel cached for it.
+     *
+     * No dependency graph is needed: each input cell already carries a cached
+     * value, so every formula is checkable in isolation. The graph is only
+     * required once something CHANGES.
+     *
+     * Volatile functions are reported separately rather than counted as
+     * agreements or failures — their cached value dates from whenever the
+     * workbook last calculated, so comparing against it is meaningless. */
+    if (strcmp(name, "check") == 0) {
+        if (expr->as.call.args.count != 2) {
+            return xlsx_raise("xlsx.check expects two arguments (workbook, sheet)");
+        }
+        Value wbv = eval_expr(expr->as.call.args.items[0]);
+        Value shv = eval_expr(expr->as.call.args.items[1]);
+        if (wbv.kind != VALUE_WORKBOOK || shv.kind != VALUE_STRING) {
+            value_free(wbv); value_free(shv);
+            return xlsx_raise("xlsx.check expects a workbook and a sheet name");
+        }
+        XlsxSnap snap;
+        if (!xlsx_snapshot(wbv.as.workbook, shv.as.string, &snap)) {
+            char message[256];
+            snprintf(message, sizeof message, "xlsx: no such sheet: %s", shv.as.string);
+            value_free(wbv); value_free(shv);
+            return xlsx_raise(message);
+        }
+
+        long agree = 0, disagree = 0, volatile_n = 0, unsupported_n = 0;
+        Value *rows = NULL;
+        size_t rn = 0, rcap = 0;
+
+        for (size_t i = 0; i < snap.count; i++) {
+            const XlsxSnapCell *c = &snap.cells[i];
+            if (!c->formula) continue;
+            int unsup = 0;
+            char un[64] = "";
+            XlsxVal got = xlsx_eval_formula(wbv.as.workbook, &snap, c->formula, &unsup, un, sizeof un);
+
+            int is_vol = 0;
+            for (const char *q = c->formula; *q; q++) {
+                if (isalpha((unsigned char)*q)) {
+                    char word[32];
+                    size_t w = 0;
+                    while (*q && isalpha((unsigned char)*q) && w < sizeof word - 1) word[w++] = (char)toupper((unsigned char)*q++);
+                    word[w] = '\0';
+                    if (xlsx_is_volatile(word)) { is_vol = 1; break; }
+                    if (!*q) break;
+                }
+            }
+
+            const char *verdict;
+            if (is_vol) { verdict = "volatile"; volatile_n++; }
+            else if (unsup) { verdict = "unsupported"; unsupported_n++; }
+            else {
+                int same = 0;
+                if (got.kind == XV_NUM && c->kind == XV_NUM) {
+                    /* Compare with a relative tolerance: the cached value is a
+                     * decimal rendering of a binary double, so exact equality
+                     * would report spurious disagreements on ordinary
+                     * arithmetic. */
+                    double a2 = got.num, b2 = c->num;
+                    double scale = fabs(a2) > fabs(b2) ? fabs(a2) : fabs(b2);
+                    same = fabs(a2 - b2) <= (scale > 0 ? scale * 1e-9 : 1e-9);
+                } else if (got.kind == XV_BOOL && c->kind == XV_BOOL) {
+                    same = ((int)got.num != 0) == ((int)c->num != 0);
+                } else if (got.kind == XV_STR && c->kind == XV_STR) {
+                    same = strcmp(got.str ? got.str : "", c->str ? c->str : "") == 0;
+                } else if (got.kind == XV_ERR && c->kind == XV_ERR) {
+                    same = strcmp(got.str ? got.str : "", c->str ? c->str : "") == 0;
+                }
+                verdict = same ? "agree" : "disagree";
+                if (same) agree++; else disagree++;
+            }
+
+            if (strcmp(verdict, "agree") != 0) {
+                char refbuf[32];
+                long cc = c->col + 1;
+                char colname[8];
+                size_t cl = 0;
+                while (cc > 0 && cl < sizeof colname - 1) {
+                    long rem = (cc - 1) % 26;
+                    colname[cl++] = (char)('A' + rem);
+                    cc = (cc - 1) / 26;
+                }
+                colname[cl] = '\0';
+                for (size_t x = 0; x < cl / 2; x++) {
+                    char t = colname[x]; colname[x] = colname[cl - 1 - x]; colname[cl - 1 - x] = t;
+                }
+                snprintf(refbuf, sizeof refbuf, "%s%ld", colname, c->row);
+
+                char gotbuf[256], wantbuf[256];
+                XlsxVal cached = xv_empty();
+                switch (c->kind) {
+                case XV_NUM: cached = xv_num(c->num); break;
+                case XV_BOOL: cached = xv_bool((int)c->num); break;
+                case XV_STR: cached = xv_str(c->str ? c->str : ""); break;
+                case XV_ERR: cached = xv_err(c->str ? c->str : "#ERROR"); break;
+                default: break;
+                }
+                xlsx_to_text(got, gotbuf, sizeof gotbuf);
+                xlsx_to_text(cached, wantbuf, sizeof wantbuf);
+                xv_free(cached);
+
+                RecordField *fields = calloc(5, sizeof(RecordField));
+                if (!fields) abort();
+                fields[0].name = copy_string("ref");
+                fields[0].value = cell_alloc(); *fields[0].value = value_string(refbuf);
+                fields[1].name = copy_string("verdict");
+                fields[1].value = cell_alloc(); *fields[1].value = value_string(verdict);
+                fields[2].name = copy_string("formula");
+                fields[2].value = cell_alloc(); *fields[2].value = value_string(c->formula);
+                fields[3].name = copy_string("computed");
+                fields[3].value = cell_alloc(); *fields[3].value = value_string(gotbuf);
+                fields[4].name = copy_string("cached");
+                fields[4].value = cell_alloc(); *fields[4].value = value_string(wantbuf);
+                if (rn == rcap) {
+                    rcap = rcap ? rcap * 2 : 8;
+                    Value *g = realloc(rows, rcap * sizeof(Value));
+                    if (!g) abort();
+                    rows = g;
+                }
+                rows[rn++] = value_record(fields, 5);
+            }
+            xv_free(got);
+        }
+
+        xlsx_snap_free(&snap);
+        value_free(wbv); value_free(shv);
+
+        RecordField *fields = calloc(5, sizeof(RecordField));
+        if (!fields) abort();
+        fields[0].name = copy_string("agree");
+        fields[0].value = cell_alloc(); *fields[0].value = value_number((double)agree);
+        fields[1].name = copy_string("disagree");
+        fields[1].value = cell_alloc(); *fields[1].value = value_number((double)disagree);
+        fields[2].name = copy_string("volatile_skipped");
+        fields[2].value = cell_alloc(); *fields[2].value = value_number((double)volatile_n);
+        fields[3].name = copy_string("unsupported");
+        fields[3].value = cell_alloc(); *fields[3].value = value_number((double)unsupported_n);
+        fields[4].name = copy_string("notes");
+        fields[4].value = cell_alloc(); *fields[4].value = value_array(rows, rn);
+        return value_record(fields, 5);
     }
 
     char message[160];

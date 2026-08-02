@@ -1,15 +1,16 @@
 handle kind = workbook
-sheets      = Ledger | Notes & Refs
+sheets      = Ledger | Notes & Refs | Formulas
 
 == the part tree: everything retained ==
-  [Content_Types].xml  bytes=952  modelled=false
+  [Content_Types].xml  bytes=1088  modelled=false
   _rels/.rels  bytes=296  modelled=false
-  xl/workbook.xml  bytes=340  modelled=true
-  xl/_rels/workbook.xml.rels  bytes=706  modelled=true
+  xl/workbook.xml  bytes=388  modelled=true
+  xl/_rels/workbook.xml.rels  bytes=847  modelled=true
   xl/sharedStrings.xml  bytes=261  modelled=true
   xl/styles.xml  bytes=392  modelled=false
   xl/worksheets/sheet1.xml  bytes=704  modelled=false
   xl/worksheets/sheet2.xml  bytes=241  modelled=false
+  xl/worksheets/sheet3.xml  bytes=1453  modelled=false
   xl/customData/vendor.xml  bytes=125  modelled=false
 
 == a part nothing models survives byte-for-byte ==

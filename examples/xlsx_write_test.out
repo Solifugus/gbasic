@@ -1,6 +1,6 @@
 == save with no edits: a pure round trip ==
 wrote bytes > 0 = true
-part count      = 9
+part count      = 10
 parts changed   = 0
 
 == edit one sheet: only that part may change ==

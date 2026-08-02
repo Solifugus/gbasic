@@ -113,6 +113,43 @@ if command -v unzip >/dev/null 2>&1; then
     fi
 fi
 
+# --- Tier 1c: the formula evaluator and its oracle ----------------------------
+printf -- '-- golden: formula evaluator\n'
+if timeout 120 ./gbasic examples/xlsx_formula_test.bas >"$out" 2>"$err" </dev/null; then
+    if diff -u examples/xlsx_formula_test.out "$out"; then
+        printf 'PASS examples/xlsx_formula_test.bas\n'
+    else
+        printf 'FAIL examples/xlsx_formula_test.bas (output differs)\n'
+        status=1
+    fi
+else
+    printf 'FAIL examples/xlsx_formula_test.bas (exit)\n'
+    cat "$err"
+    status=1
+fi
+
+# ZERO DISAGREEMENTS is the assertion; the golden alone would happily record a
+# regression as "the new expected output". A disagreement means the evaluator
+# and the cached value differ, which on a real workbook means we are wrong.
+printf 'program main(args)\n  wb = xlsx.open("%s")\n  r = xlsx.check(wb, "Formulas")\n  print r.disagree\nend program\n' "$FIXTURE" >"$tmp/chk.bas"
+if [ "$(timeout 60 ./gbasic "$tmp/chk.bas" 2>/dev/null)" = "0" ]; then
+    printf 'PASS evaluator agrees with every cached value it can judge\n'
+else
+    printf 'FAIL evaluator disagrees with a cached value\n'
+    status=1
+fi
+
+# An unimplemented function must be NAMED, never defaulted to a plausible
+# number. In a financial model a wrong number that looks right is worse than a
+# failure, so this is asserted rather than assumed.
+printf 'program main(args)\n  wb = xlsx.open("%s")\n  r = xlsx.check(wb, "Formulas")\n  print r.unsupported\nend program\n' "$FIXTURE" >"$tmp/uns.bas"
+if [ "$(timeout 60 ./gbasic "$tmp/uns.bas" 2>/dev/null)" -ge 1 ] 2>/dev/null; then
+    printf 'PASS unsupported functions reported by name, not silently zeroed\n'
+else
+    printf 'FAIL the unsupported-function fixture case is no longer detected\n'
+    status=1
+fi
+
 # --- Tier 2: the reader discards nothing ---------------------------------------
 printf -- '-- retention: every container entry survives the read\n'
 # The ZIP's own entry names, straight from the central directory, via unzip if
