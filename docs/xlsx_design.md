@@ -1,6 +1,12 @@
 # gBASIC Excel (xlsx) module — design proposal
 
-Status: proposal (not yet implemented)
+Status: **proposal — decisions taken 2026-08-01, not yet implemented.**
+Recorded in §13; they revise §3 (write path), §13.1–13.4, and the §14 roadmap.
+
+Scope is confirmed as **read + write + an internal formula engine**, staged.
+This is not an import library: organizations in finance work *in* spreadsheets,
+so the destination is round-trip fidelity plus the ability to evaluate what a
+workbook contains.
 
 A module for getting real work done with the spreadsheets that still run
 FinTech, healthcare, banking, and back-office finance: read and write `.xlsx`,
@@ -280,23 +286,123 @@ the formula compiler and is valuable on its own.
 - **EDGAR / FinTech workflows** — consolidate loan tapes, financial exhibits, and
   analyst workbooks into queryable tables and charts.
 
-## 13. Open questions for the user
+## 13. Decisions (2026-08-01)
 
-1. **Write path** — `libxlsxwriter` (my lean, correctness) vs. self-emit
-   (no new dep, more risk)? This gates L0-write.
-2. **Unzip dependency** — `libzip`, `minizip`+zlib, or hand-rolled inflate? Any
-   preference given what's typically installed on your targets (incl. the RISC-V
-   box)?
-3. **Shared ARI engine** — should L2 literally reuse the text library's ARI
-   parser/notation (one spec language to learn, some coupling), or a grid-native
-   spec that borrows the concepts but stands alone? My lean: share the notation,
-   with grid-specific extensions (`header rows`, cell-address anchors).
-4. **L4 ambition for v1** — ship L0–L3 + schema-to-DB first and treat the
-   formula compiler as a distinct later effort (my strong lean), or commit to a
-   formula-subset MVP in the first cut?
-5. **Function coverage for the eventual compiler** — which Excel functions are
-   the must-haves for your CECL/FinTech work (I'd guess `IF`, `SUMIF(S)`,
-   `VLOOKUP`, `ROUND`, date math), so Phase-by-phase coverage matches real use?
+**A. Write path: a PART TREE, not `libxlsxwriter`. Reverses §13.1's original
+lean.** The premise of that lean was that writing is a separate act from
+reading. It is not, once round-trip is in scope: `libxlsxwriter` *generates new
+workbooks and cannot edit an existing one*. So the moment "someone sends us a
+workbook, we change three cells, we send it back" is a requirement, that library
+is the wrong tool at any level of quality.
+
+The shape instead: unzip the container into a **part tree**, retain **every**
+part, and on write re-emit untouched parts **byte-for-byte**, regenerating only
+what changed. This is the only approach that does not silently destroy the
+charts, pivot tables, conditional formatting and macros we do not model. It also
+needs no new dependency.
+
+*Consequence for the reader, and it is the expensive one to get wrong:* the
+reader may discard nothing. A cell needs its cached value, its formula text AND
+its style/number-format reference; the workbook needs the shared-string table
+and every part we do not understand. Deferring write until after extraction
+would mean discovering late that the reader threw away what write needed —
+which is why §14 now sequences write **before** extraction.
+
+**B. Unzip: zlib plus our own ZIP container reader.** Measured on the
+development box: `libzip` **absent**, `minizip` **absent**, `zlib` **1.3.1
+present**. Choosing libzip means installing a dependency before anything can be
+built or tested, here and again on the RISC-V target. zlib is effectively
+universal and gives `inflate`/`deflate`; the container itself — central
+directory, local headers, CRCs — is a few hundred lines of ours. The nicer API
+is not worth the deployment cost.
+
+**C. VBA: preserved, never executed.** Executing it is a VB6 interpreter and is
+out of scope permanently. Preserving is nearly free under the part tree, since
+`vbaProject.bin` is just another part copied through. Two details need a test
+rather than an assumption: the package relationships referencing it must survive
+regeneration, and the file must keep its `.xlsm` content type or Excel rejects
+it.
+
+**D. TWO formula engines, for two different jobs. Both wanted; recalc first.**
+This replaces §13.4's either/or framing.
+
+- **Local recalculation** — a dependency graph over a workbook's cells,
+  evaluated in process, no database. For workbook fidelity: change an input, see
+  dependents update; write a formula, emit a correct cached value.
+- **Set-based compilation to SQL** — the L4 payoff, targeting Postgres *and*
+  SQLite (a common subset, so local work needs no server). `IF`→`CASE`,
+  `SUMIF`→filtered aggregate, `VLOOKUP`→join, run once over millions of rows.
+
+§1's warning stands and is not in conflict: a cell-by-cell calc graph is the
+wrong model for *bulk data*. It is exactly the right model for *a workbook*,
+which is what Excel itself does.
+
+*Why recalc is first, and the second reason is the strong one:*
+
+1. **They share a front end.** Both need an Excel formula parser producing an
+   AST; they differ only in the back end. The parser is the bulk of the work and
+   the compiler inherits it, so this is not a detour.
+2. **Recalc has a free, exact test oracle — and it then becomes the compiler's
+   oracle.** An xlsx stores both the formula and *Excel's own cached result* for
+   every formula cell, so an evaluator can be checked against Excel cell by cell
+   on any real workbook. Nothing comparable exists for the compiler: SQL that
+   runs successfully over a million rows and returns a subtly wrong number looks
+   exactly like SQL that is right. With recalc validated first, the two engines
+   can be run over the same workbook and *required to agree* — the same
+   cross-check that caught the date bug in ARI, where a `/re/repl/` transform
+   and a `-> dmy` dialect had to produce identical output.
+
+**E. Data representation: the workbook is a HANDLE; values crossing to gBASIC
+are plain data.**
+
+The deciding factor is mutation, not speed. gBASIC arrays and records have value
+semantics with copy-on-write, and **a function cannot mutate its caller's
+state**. A gBASIC recalc engine would have to thread the whole grid through
+every recursive call and return it. `stdlib/ari.bas` demonstrated the cost of a
+much milder version: threading an append-only *diagnostics list* through nested
+sections was the ugliest part of that library, and a mutable 50 000-cell grid
+with a dependency graph over it would be far worse — where every bug is a
+silently stale cell, the worst failure a spreadsheet can have.
+
+Speed is secondary but real: gBASIC does roughly a million simple array
+operations per second (measured, `tests/run_arridx.sh`), and a formula is a few
+dozen interpreter steps in a gBASIC-written evaluator.
+
+**The line this project already draws is the right one.** `sqlite`, `pg`, `xml`
+and `process` are handles — mutable state with identity. `ari`, `persist`,
+`frame` and `stats` are pure gBASIC — immutable input, value output. ARI is pure
+gBASIC *because* its input is immutable text. A workbook being recalculated is
+unambiguously the first kind. So:
+
+- **C:** the workbook handle (sparse cell store — sheets are mostly empty), the
+  ZIP/part tree, the formula parser, the dependency graph, the evaluator.
+- **gBASIC:** the ARI-for-grids spec, extraction to frames, consolidation and
+  mapping, driver logic — and the compiler's target, since frames and SQL are
+  gBASIC-side.
+- **The boundary:** a *cell* handed to gBASIC is a plain **record**
+  (`{value, formula, type, ...}`), never a handle. Only the workbook is a
+  handle. Everything stays inspectable and golden-testable; you simply cannot
+  hold half a workbook by value.
+
+This costs nothing on testing: recalc in C is still driven from gBASIC, so the
+Excel-cached-value oracle works exactly the same.
+
+**F. Shared ARI notation — confirmed, with what actually transfers now known.**
+ARI shipped on 2026-08-01, so this is no longer speculative:
+
+- *Transfers directly:* `starts`/`ends`, nesting, `repeats`, the union type
+  recognizers (arguably **more** valuable on a sheet, where exported reports are
+  full of numbers stored as text), and the diagnostics/`inspect` mechanism.
+- *Transfers with a change of substrate, and gets simpler:* `columns a-b`
+  becomes a cell range; `right of "LABEL"` becomes "the cell right of the cell
+  containing LABEL". Cells are already discrete, so no character scanning.
+- *Has no analogue:* the page-furniture pass (§13.H of the text design). Sheets
+  are not paginated; that machinery is dead weight here.
+
+**G. STILL OPEN — function coverage.** Which Excel functions are the must-haves
+for the CECL/FinTech work, so phase-by-phase coverage matches real use? The
+guess remains `IF`, `SUMIF(S)`, `VLOOKUP`/`XLOOKUP`, `ROUND`, and date math.
+Not blocking: the parser is function-agnostic and coverage grows by table.
 
 ## 14. Roadmap (phases)
 
@@ -314,13 +420,30 @@ spec path: header anchoring, multi-row headers, section boundaries, totals
 exclusion, blank-break. Emits frames. Golden tests with intentionally messy
 fixtures.
 
-### Phase 3 — consolidation + write + DB load (L3, L0 write, easy half of L4)
+### Phase 3 — consolidation + DB load (L3, easy half of L4)
 Mapping spec (aliasing, unit/percent normalization, required columns, provenance
-merge); `.xlsx` writing; schema inference → `CREATE/ALTER TABLE` and bulk load
-via sqlite/pg. This closes the CECL consolidation use case end to end.
+merge); schema inference → `CREATE/ALTER TABLE` and bulk load via sqlite/pg.
+This closes the CECL consolidation use case end to end. (Writing moved to
+Phase 2 — see the reordering note below.)
+
+### Phase 2b — write + round-trip (L0 write)  **[moved up from Phase 3]**
+Re-emit the part tree with edits; untouched parts byte-identical. Sequenced
+before extraction deliberately: round-trip fidelity is a property of the
+*reader* (§13.A), so deferring it means discovering late that the reader
+discarded what write needed. The proof is a `read → write → read` test over a
+workbook with charts, conditional formatting and a VBA project, asserting the
+untouched parts survive byte-for-byte.
+
+### Phase 3b — formula parser + local recalculation
+The Excel-formula parser (shared with Phase 4) and an in-process dependency
+graph + evaluator. Validated against **Excel's own cached values** on real
+workbooks, cell by cell (§13.D). No database required.
 
 ### Phase 4 — formula compiler (hard half of L4)
 Excel-formula parser for the tabular subset; compile to frame transforms and to
 pushed-down SQL (`IF`→`CASE`, `SUMIF`→filtered aggregate, `VLOOKUP`→join);
-execute set-based; refuse-with-diagnostic what won't lower. Golden tests assert
-generated SQL; integration tests run it. The scaling promise, delivered.
+execute set-based; refuse-with-diagnostic what won't lower. Targets Postgres and
+SQLite over a common subset, so local work needs no server. Golden tests assert
+generated SQL; integration tests run it; and a CROSS-CHECK tier requires the
+compiler and the Phase 3b recalc engine to agree over the same workbook — the
+compiler's only real oracle (§13.D). The scaling promise, delivered.
