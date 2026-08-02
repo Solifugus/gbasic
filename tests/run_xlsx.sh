@@ -1,8 +1,17 @@
 #!/usr/bin/env bash
-# xlsx Stage 1 — ZIP container, part tree, read-only cells (docs/xlsx_design.md).
+# xlsx Stages 1-2 — ZIP container, part tree, cells, write + round-trip
+# (docs/xlsx_design.md).
 #
 # Tiers:
-#   1. GOLDEN -- examples/xlsx_read_test.bas over the committed fixture.
+#   1. GOLDEN -- read (examples/xlsx_read_test.bas) and write
+#      (examples/xlsx_write_test.bas) over the committed fixture. The write
+#      golden is the payoff for the part tree: editing ONE sheet must change
+#      that part and nothing else, including the vendor part nothing models.
+#      Also: save is byte-DETERMINISTIC across runs (ZIP mod-time fields are
+#      fixed, not taken from the clock -- a clock there would look like a
+#      successful write while quietly making byte comparison useless), and the
+#      written container validates under `unzip -t`, i.e. by something other
+#      than our own reader.
 #   2. RETENTION -- the claim the whole design rests on: the reader discards
 #      NOTHING. Every part in the container must appear in xlsx.parts, and the
 #      one part nothing models must come back byte-identical. Round-trip write
@@ -60,6 +69,48 @@ else
     printf 'FAIL examples/xlsx_read_test.bas (exit)\n'
     cat "$err"
     status=1
+fi
+
+# --- Tier 1b: write + round-trip ----------------------------------------------
+printf -- '-- golden: write + round-trip\n'
+if timeout 120 ./gbasic examples/xlsx_write_test.bas >"$out" 2>"$err" </dev/null; then
+    if diff -u examples/xlsx_write_test.out "$out"; then
+        printf 'PASS examples/xlsx_write_test.bas\n'
+    else
+        printf 'FAIL examples/xlsx_write_test.bas (output differs)\n'
+        status=1
+    fi
+else
+    printf 'FAIL examples/xlsx_write_test.bas (exit)\n'
+    cat "$err"
+    status=1
+fi
+
+# Writing is DETERMINISTIC: the same workbook saved twice must produce the same
+# bytes. The ZIP header carries mod-time fields, and taking them from the clock
+# would make every save differ from the last -- which would look like a
+# successful write while quietly making byte comparison useless as a test.
+printf 'program main(args)\n  wb = xlsx.open("%s")\n  print xlsx.save(wb, "%s")\nend program\n' \
+    "$FIXTURE" "$tmp/det1.xlsx" >"$tmp/det.bas"
+timeout 60 ./gbasic "$tmp/det.bas" >/dev/null 2>&1
+printf 'program main(args)\n  wb = xlsx.open("%s")\n  print xlsx.save(wb, "%s")\nend program\n' \
+    "$FIXTURE" "$tmp/det2.xlsx" >"$tmp/det.bas"
+timeout 60 ./gbasic "$tmp/det.bas" >/dev/null 2>&1
+if cmp -s "$tmp/det1.xlsx" "$tmp/det2.xlsx"; then
+    printf 'PASS save is byte-deterministic across runs\n'
+else
+    printf 'FAIL save differs between two runs of identical input (a clock in the output?)\n'
+    status=1
+fi
+
+# The written file must be a valid ZIP by something other than our own reader.
+if command -v unzip >/dev/null 2>&1; then
+    if unzip -t "$tmp/det1.xlsx" >/dev/null 2>&1; then
+        printf 'PASS written container validates under unzip -t\n'
+    else
+        printf 'FAIL written container does not validate under unzip -t\n'
+        status=1
+    fi
 fi
 
 # --- Tier 2: the reader discards nothing ---------------------------------------
@@ -131,6 +182,32 @@ head -c 400 "$FIXTURE" >"$tmp/trunc.xlsx"
 negative "truncated" "$tmp/trunc.xlsx" "xlsx"
 
 negative "missing file" "$tmp/does_not_exist.xlsx" "cannot read"
+
+# Writing over a formula cell must RAISE. The cached value and the formula would
+# disagree, Excel would recalculate on open, and the edit would silently revert
+# -- a wrong answer that looks like a successful write.
+printf 'program main(args)\n  wb = xlsx.open("%s")\n  xlsx.set(wb, "Ledger", "B5", 1)\nend program\n' "$FIXTURE" >"$tmp/neg2.bas"
+if timeout 60 ./gbasic "$tmp/neg2.bas" >/dev/null 2>"$err" </dev/null; then
+    printf 'FAIL negative %-18s (overwrote a formula cell)\n' "formula overwrite"
+    status=1
+elif grep -qF "refusing to overwrite a formula cell" "$err"; then
+    printf 'PASS negative %-18s refusing to overwrite a formula cell\n' "formula overwrite"
+else
+    printf 'FAIL negative %-18s wrong message: %s\n' "formula overwrite" "$(cat "$err")"
+    status=1
+fi
+
+# Creating a cell that does not exist is refused rather than placed wrongly.
+printf 'program main(args)\n  wb = xlsx.open("%s")\n  xlsx.set(wb, "Ledger", "Z99", 1)\nend program\n' "$FIXTURE" >"$tmp/neg3.bas"
+if timeout 60 ./gbasic "$tmp/neg3.bas" >/dev/null 2>"$err" </dev/null; then
+    printf 'FAIL negative %-18s (invented a cell)\n' "new cell"
+    status=1
+elif grep -qF "creating a new cell is not supported" "$err"; then
+    printf 'PASS negative %-18s new-cell creation refused explicitly\n' "new cell"
+else
+    printf 'FAIL negative %-18s wrong message: %s\n' "new cell" "$(cat "$err")"
+    status=1
+fi
 
 # --- Tier 4: valgrind ----------------------------------------------------------
 if command -v valgrind >/dev/null 2>&1; then

@@ -1,0 +1,20 @@
+== save with no edits: a pure round trip ==
+wrote bytes > 0 = true
+part count      = 9
+parts changed   = 0
+
+== edit one sheet: only that part may change ==
+B2 before = 1250.5
+B2 after  = 9999.99
+A1 after  = Renamed
+B6 after  = false
+B5 formula survives = SUM(B2:B3)
+B5 cached survives  = 1151.25
+
+changed vs original:
+  xl/worksheets/sheet1.xml
+(everything else, including the unmodelled vendor part, is untouched)
+vendor part identical = true
+
+== writing over a formula is refused, not guessed ==
+B5 still has a formula = true

@@ -598,6 +598,175 @@ static Value xlsx_cell_record(XlsxWorkbook *wb, xmlNodePtr c) {
     return value_record(fields, 5);
 }
 
+/* ------------------------------------------------------------- ZIP writing
+ *
+ * The counterpart to the reader, and the reason the part tree exists. An
+ * UNTOUCHED part is written from the bytes we read, never regenerated — so
+ * charts, pivot tables, conditional formatting, VBA and anything else we do not
+ * model survive a round trip exactly. Only parts marked dirty are rebuilt.
+ *
+ * The output is a fresh ZIP rather than an in-place edit: entry offsets shift
+ * when any part changes size, so rewriting the container is both simpler and
+ * safer than patching it. Compression level and ordering may therefore differ
+ * from the input — what must not differ is any part's CONTENT. */
+
+typedef struct {
+    unsigned char *data;
+    size_t len;
+    size_t cap;
+} XlsxBuf;
+
+static void xlsx_buf_put(XlsxBuf *b, const void *bytes, size_t n) {
+    if (b->len + n > b->cap) {
+        size_t cap = b->cap ? b->cap * 2 : 4096;
+        while (cap < b->len + n) {
+            cap *= 2;
+        }
+        unsigned char *g = realloc(b->data, cap);
+        if (!g) {
+            abort();
+        }
+        b->data = g;
+        b->cap = cap;
+    }
+    memcpy(b->data + b->len, bytes, n);
+    b->len += n;
+}
+
+static void xlsx_put16(XlsxBuf *b, unsigned v) {
+    unsigned char t[2] = { (unsigned char)(v & 0xff), (unsigned char)((v >> 8) & 0xff) };
+    xlsx_buf_put(b, t, 2);
+}
+
+static void xlsx_put32(XlsxBuf *b, unsigned long v) {
+    unsigned char t[4] = { (unsigned char)(v & 0xff), (unsigned char)((v >> 8) & 0xff),
+                           (unsigned char)((v >> 16) & 0xff), (unsigned char)((v >> 24) & 0xff) };
+    xlsx_buf_put(b, t, 4);
+}
+
+/* Raw deflate, matching what the reader expects (no zlib wrapper). Falls back
+ * to STORED when compression would not shrink the part, which is both smaller
+ * and what real producers do for tiny entries. */
+static unsigned char *xlsx_deflate(const unsigned char *in, size_t in_len,
+                                   size_t *out_len, int *stored) {
+    *stored = 0;
+    uLongf bound = compressBound((uLong)in_len) + 64;
+    unsigned char *out = malloc(bound ? bound : 1);
+    if (!out) {
+        abort();
+    }
+    z_stream zs;
+    memset(&zs, 0, sizeof zs);
+    if (deflateInit2(&zs, Z_DEFAULT_COMPRESSION, Z_DEFLATED, -MAX_WBITS, 8,
+                     Z_DEFAULT_STRATEGY) != Z_OK) {
+        free(out);
+        return NULL;
+    }
+    zs.next_in = (Bytef *)in;
+    zs.avail_in = (uInt)in_len;
+    zs.next_out = out;
+    zs.avail_out = (uInt)bound;
+    int rc = deflate(&zs, Z_FINISH);
+    size_t produced = zs.total_out;
+    deflateEnd(&zs);
+    if (rc != Z_STREAM_END) {
+        free(out);
+        return NULL;
+    }
+    if (produced >= in_len) {
+        free(out);
+        *stored = 1;
+        *out_len = in_len;
+        unsigned char *copy = malloc(in_len ? in_len : 1);
+        if (!copy) {
+            abort();
+        }
+        memcpy(copy, in, in_len);
+        return copy;
+    }
+    *out_len = produced;
+    return out;
+}
+
+/* Serialize the whole part tree as a ZIP. Returns a malloc'd buffer. */
+static unsigned char *xlsx_write_container(XlsxWorkbook *wb, size_t *out_len) {
+    XlsxBuf body = {0};
+    XlsxBuf dir = {0};
+    size_t written = 0;
+
+    for (size_t i = 0; i < wb->part_count; i++) {
+        XlsxPart *p = &wb->parts[i];
+        size_t comp_len = 0;
+        int stored = 0;
+        unsigned char *comp = xlsx_deflate(p->data, p->length, &comp_len, &stored);
+        if (!comp) {
+            free(body.data);
+            free(dir.data);
+            return NULL;
+        }
+        unsigned long crc = crc32(0L, Z_NULL, 0);
+        crc = crc32(crc, (const Bytef *)p->data, (uInt)p->length);
+        unsigned method = stored ? 0 : 8;
+        size_t name_len = strlen(p->name);
+        size_t local_off = written;
+
+        /* Local file header. Timestamps are fixed rather than taken from the
+         * clock: a workbook written twice from identical input must produce
+         * identical bytes, or the round-trip test measures the clock. */
+        xlsx_put32(&body, 0x04034b50);
+        xlsx_put16(&body, 20);              /* version needed */
+        xlsx_put16(&body, 0);               /* flags */
+        xlsx_put16(&body, method);
+        xlsx_put16(&body, 0);               /* mod time  (fixed) */
+        xlsx_put16(&body, 0x21);            /* mod date  (fixed: 1980-01-01) */
+        xlsx_put32(&body, crc);
+        xlsx_put32(&body, (unsigned long)comp_len);
+        xlsx_put32(&body, (unsigned long)p->length);
+        xlsx_put16(&body, (unsigned)name_len);
+        xlsx_put16(&body, 0);               /* extra len */
+        xlsx_buf_put(&body, p->name, name_len);
+        xlsx_buf_put(&body, comp, comp_len);
+        written = body.len;
+
+        /* Central directory entry. */
+        xlsx_put32(&dir, 0x02014b50);
+        xlsx_put16(&dir, 20);               /* version made by */
+        xlsx_put16(&dir, 20);               /* version needed */
+        xlsx_put16(&dir, 0);
+        xlsx_put16(&dir, method);
+        xlsx_put16(&dir, 0);
+        xlsx_put16(&dir, 0x21);
+        xlsx_put32(&dir, crc);
+        xlsx_put32(&dir, (unsigned long)comp_len);
+        xlsx_put32(&dir, (unsigned long)p->length);
+        xlsx_put16(&dir, (unsigned)name_len);
+        xlsx_put16(&dir, 0);                /* extra */
+        xlsx_put16(&dir, 0);                /* comment */
+        xlsx_put16(&dir, 0);                /* disk */
+        xlsx_put16(&dir, 0);                /* internal attrs */
+        xlsx_put32(&dir, 0);                /* external attrs */
+        xlsx_put32(&dir, (unsigned long)local_off);
+        xlsx_buf_put(&dir, p->name, name_len);
+
+        free(comp);
+    }
+
+    size_t cd_off = body.len;
+    xlsx_buf_put(&body, dir.data, dir.len);
+    xlsx_put32(&body, 0x06054b50);
+    xlsx_put16(&body, 0);
+    xlsx_put16(&body, 0);
+    xlsx_put16(&body, (unsigned)wb->part_count);
+    xlsx_put16(&body, (unsigned)wb->part_count);
+    xlsx_put32(&body, (unsigned long)dir.len);
+    xlsx_put32(&body, (unsigned long)cd_off);
+    xlsx_put16(&body, 0);                   /* comment length */
+
+    free(dir.data);
+    *out_len = body.len;
+    return body.data;
+}
+
 static XlsxSheet *xlsx_find_sheet(XlsxWorkbook *wb, const char *name) {
     for (size_t i = 0; i < wb->sheet_count; i++) {
         if (strcmp(wb->sheets[i].name, name) == 0) {
@@ -998,6 +1167,181 @@ static Value xlsx_eval_call(AstExpr *expr) {
         value_free(wbv);
         value_free(shv);
         return value_record(fields, 5);
+    }
+
+    /* Set a cell's value, regenerating only that sheet's part.
+     *
+     * A written cell's CACHED VALUE and FORMULA go out of step the moment one
+     * changes: writing a literal over a formula cell must drop the <f>, or
+     * Excel recalculates and silently reverts the edit. Until the recalc engine
+     * exists (§13.D) this refuses to write over a formula rather than guess
+     * which the caller meant. */
+    if (strcmp(name, "set") == 0) {
+        if (expr->as.call.args.count != 4) {
+            return xlsx_raise("xlsx.set expects four arguments (workbook, sheet, ref, value)");
+        }
+        Value wbv = eval_expr(expr->as.call.args.items[0]);
+        Value shv = eval_expr(expr->as.call.args.items[1]);
+        Value refv = eval_expr(expr->as.call.args.items[2]);
+        Value newv = eval_expr(expr->as.call.args.items[3]);
+        if (wbv.kind != VALUE_WORKBOOK || shv.kind != VALUE_STRING || refv.kind != VALUE_STRING) {
+            value_free(wbv); value_free(shv); value_free(refv); value_free(newv);
+            return xlsx_raise("xlsx.set expects a workbook, a sheet name and a ref");
+        }
+        XlsxWorkbook *wb = wbv.as.workbook;
+        XlsxSheet *sheet = xlsx_find_sheet(wb, shv.as.string);
+        XlsxPart *sp = sheet && sheet->part ? xlsx_find_part(wb, sheet->part) : NULL;
+        if (!sp) {
+            char message[256];
+            snprintf(message, sizeof message, "xlsx: no such sheet: %s", shv.as.string);
+            value_free(wbv); value_free(shv); value_free(refv); value_free(newv);
+            return xlsx_raise(message);
+        }
+        xmlDocPtr doc = xlsx_parse_part(sp);
+        if (!doc) {
+            value_free(wbv); value_free(shv); value_free(refv); value_free(newv);
+            return xlsx_raise("xlsx: sheet part is not well-formed XML");
+        }
+
+        xmlNodePtr target = NULL;
+        xmlNodePtr root = xmlDocGetRootElement(doc);
+        for (xmlNodePtr n = root ? root->children : NULL; n && !target; n = n->next) {
+            if (!xlsx_is(n, "sheetData")) {
+                continue;
+            }
+            for (xmlNodePtr r = n->children; r && !target; r = r->next) {
+                if (!xlsx_is(r, "row")) {
+                    continue;
+                }
+                for (xmlNodePtr c = r->children; c; c = c->next) {
+                    if (!xlsx_is(c, "c")) {
+                        continue;
+                    }
+                    char *cref = xlsx_prop(c, "r");
+                    int hit = cref && strcmp(cref, refv.as.string) == 0;
+                    free(cref);
+                    if (hit) {
+                        target = c;
+                        break;
+                    }
+                }
+            }
+        }
+        if (!target) {
+            /* Creating a cell means placing it in the right row in column
+             * order, and inserting the row if absent. Not yet implemented, and
+             * saying so beats writing it into the wrong place. */
+            xmlFreeDoc(doc);
+            value_free(wbv); value_free(shv); value_free(refv); value_free(newv);
+            return xlsx_raise("xlsx.set: creating a new cell is not supported yet; "
+                              "only existing cells can be written");
+        }
+
+        int has_formula = 0;
+        for (xmlNodePtr k = target->children; k; k = k->next) {
+            if (xlsx_is(k, "f")) {
+                has_formula = 1;
+            }
+        }
+        if (has_formula) {
+            xmlFreeDoc(doc);
+            value_free(wbv); value_free(shv); value_free(refv); value_free(newv);
+            return xlsx_raise("xlsx.set: refusing to overwrite a formula cell; "
+                              "the formula would recalculate and revert the value");
+        }
+
+        /* Rewrite the cell: drop existing children, set type and <v>. */
+        xmlNodePtr child = target->children;
+        while (child) {
+            xmlNodePtr next = child->next;
+            xmlUnlinkNode(child);
+            xmlFreeNode(child);
+            child = next;
+        }
+        char buf[64];
+        if (newv.kind == VALUE_NUMBER) {
+            xmlUnsetProp(target, (const xmlChar *)"t");
+            snprintf(buf, sizeof buf, "%.15g", newv.as.number);
+            xmlNewChild(target, NULL, (const xmlChar *)"v", (const xmlChar *)buf);
+        } else if (newv.kind == VALUE_BOOL) {
+            xmlSetProp(target, (const xmlChar *)"t", (const xmlChar *)"b");
+            xmlNewChild(target, NULL, (const xmlChar *)"v",
+                        (const xmlChar *)(newv.as.boolean ? "1" : "0"));
+        } else if (newv.kind == VALUE_STRING) {
+            /* inlineStr rather than a shared-string index: appending to the
+             * shared table would renumber nothing but would make this edit
+             * depend on a second part staying in step. Inline is self-contained
+             * and Excel accepts it everywhere. */
+            xmlSetProp(target, (const xmlChar *)"t", (const xmlChar *)"inlineStr");
+            xmlNodePtr is = xmlNewChild(target, NULL, (const xmlChar *)"is", NULL);
+            xmlNewChild(is, NULL, (const xmlChar *)"t", (const xmlChar *)newv.as.string);
+        } else {
+            xmlFreeDoc(doc);
+            value_free(wbv); value_free(shv); value_free(refv); value_free(newv);
+            return xlsx_raise("xlsx.set: value must be a number, boolean or string");
+        }
+
+        xmlChar *dumped = NULL;
+        int dumped_len = 0;
+        xmlDocDumpMemory(doc, &dumped, &dumped_len);
+        xmlFreeDoc(doc);
+        if (!dumped) {
+            value_free(wbv); value_free(shv); value_free(refv); value_free(newv);
+            return xlsx_raise("xlsx.set: could not serialize the sheet");
+        }
+        free(sp->data);
+        sp->data = malloc((size_t)dumped_len ? (size_t)dumped_len : 1);
+        if (!sp->data) {
+            abort();
+        }
+        memcpy(sp->data, dumped, (size_t)dumped_len);
+        sp->length = (size_t)dumped_len;
+        xmlFree(dumped);
+
+        value_free(wbv); value_free(shv); value_free(refv); value_free(newv);
+        return value_bool(1);
+    }
+
+    /* Write the workbook out. Untouched parts are emitted from the bytes they
+     * were read as — that is the round-trip guarantee (§13.A). */
+    if (strcmp(name, "save") == 0) {
+        if (expr->as.call.args.count != 2) {
+            return xlsx_raise("xlsx.save expects two arguments (workbook, path)");
+        }
+        Value wbv = eval_expr(expr->as.call.args.items[0]);
+        Value pathv = eval_expr(expr->as.call.args.items[1]);
+        if (wbv.kind != VALUE_WORKBOOK ||
+            (pathv.kind != VALUE_STRING && pathv.kind != VALUE_FILE)) {
+            value_free(wbv);
+            value_free(pathv);
+            return xlsx_raise("xlsx.save expects a workbook and a path");
+        }
+        const char *path = pathv.kind == VALUE_FILE ? pathv.as.file_path : pathv.as.string;
+        size_t len = 0;
+        unsigned char *bytes = xlsx_write_container(wbv.as.workbook, &len);
+        if (!bytes) {
+            value_free(wbv);
+            value_free(pathv);
+            return xlsx_raise("xlsx.save: could not compress the container");
+        }
+        FILE *f = fopen(path, "wb");
+        if (!f) {
+            free(bytes);
+            char message[512];
+            snprintf(message, sizeof message, "xlsx.save: cannot write %s", path);
+            value_free(wbv);
+            value_free(pathv);
+            return xlsx_raise(message);
+        }
+        size_t put = fwrite(bytes, 1, len, f);
+        int closed = fclose(f);
+        free(bytes);
+        value_free(wbv);
+        value_free(pathv);
+        if (put != len || closed != 0) {
+            return xlsx_raise("xlsx.save: short write");
+        }
+        return value_number((double)len);
     }
 
     char message[160];

@@ -71,6 +71,7 @@ examples=(
     ari_teller_test.bas
     ari_delinquency_test.bas
     xlsx_read_test.bas
+    xlsx_write_test.bas
     filetree_test.bas
     hex_literal_test.bas
     stats_frame_test.bas
