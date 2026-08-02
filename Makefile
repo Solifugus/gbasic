@@ -33,6 +33,16 @@ LIBXML2_AVAILABLE := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config
 LIBXML2_CFLAGS := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --cflags libxml-2.0 2>/dev/null)
 LIBXML2_LIBS := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --libs libxml-2.0 2>/dev/null)
 
+# zlib, for the xlsx module's ZIP container (docs/xlsx_design.md §13.B). An
+# .xlsx is a ZIP of XML parts; zlib supplies inflate/deflate and the container
+# itself -- central directory, local headers, CRCs -- is ours. Chosen over
+# libzip/minizip because zlib is effectively universal and those are not
+# installed on the development or RISC-V targets, so requiring them would gate
+# every build and test behind a dependency install.
+ZLIB_AVAILABLE := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --exists zlib && printf 1 || printf 0)
+ZLIB_CFLAGS := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --cflags zlib 2>/dev/null)
+ZLIB_LIBS := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --libs zlib 2>/dev/null)
+
 # GObject-Introspection bridge (gi.* module). Targets the modern GLib-merged
 # libgirepository (girepository-2.0, gi_repository_* API, GLib >= 2.80); the
 # legacy 1.x gobject-introspection-1.0 API is intentionally NOT supported.
@@ -96,6 +106,13 @@ CFLAGS += -DHAVE_LIBXML2=1 $(LIBXML2_CFLAGS)
 LDLIBS += $(LIBXML2_LIBS)
 else
 CFLAGS += -DHAVE_LIBXML2=0
+endif
+
+ifeq ($(ZLIB_AVAILABLE),1)
+CFLAGS += -DHAVE_ZLIB=1 $(ZLIB_CFLAGS)
+LDLIBS += $(ZLIB_LIBS)
+else
+CFLAGS += -DHAVE_ZLIB=0
 endif
 
 ifeq ($(GIR_AVAILABLE),1)
@@ -174,7 +191,7 @@ src/parser.tab.o: src/parser.tab.c src/parser.tab.h include/ast.h include/lexer.
 src/ast.o: src/ast.c include/ast.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
-src/eval.o: src/eval.c src/modules/xml.c src/modules/rowmodel.c include/eval.h include/ast.h include/builtins.h include/actor.h include/diagnostics.h
+src/eval.o: src/eval.c src/modules/xml.c src/modules/rowmodel.c src/modules/xlsx.c include/eval.h include/ast.h include/builtins.h include/actor.h include/diagnostics.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
 src/builtins.o: src/builtins.c include/builtins.h

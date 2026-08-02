@@ -163,6 +163,7 @@ void parse_set_source_path(const char *path);
 typedef struct PgConnectionValue PgConnectionValue;
 typedef struct SqliteConnectionValue SqliteConnectionValue;
 typedef struct RegexValue RegexValue;
+typedef struct XlsxWorkbook XlsxWorkbook;
 typedef struct XmlReaderValue XmlReaderValue;
 typedef struct GObjectValue GObjectValue;
 typedef struct GBoxedValue GBoxedValue;
@@ -192,7 +193,8 @@ typedef enum {
     VALUE_ACTOR,
     VALUE_FUNCTION,
     VALUE_GBOXED,
-    VALUE_REGEX
+    VALUE_REGEX,
+    VALUE_WORKBOOK
 } ValueKind;
 
 typedef enum {
@@ -269,6 +271,7 @@ struct Value {
         PgConnectionValue *postgres_connection;
         SqliteConnectionValue *sqlite_connection;
         RegexValue *regex;
+        XlsxWorkbook *workbook;
         XmlReaderValue *xml_reader;
         GObjectValue *gobject;
         GBoxedValue *gboxed;
@@ -657,6 +660,8 @@ static const char *value_kind_name(ValueKind kind) {
         return "function";
     case VALUE_REGEX:
         return "regex";
+    case VALUE_WORKBOOK:
+        return "workbook";
     }
     return "value";
 }
@@ -2244,6 +2249,12 @@ static Value value_error_object(void) {
     return value_record(fields, 5);
 }
 
+/* Defined in modules/xlsx.c, declared here so value_copy/value_free can reach a
+ * workbook handle before the module's struct definition is in scope — the same
+ * arrangement xml_reader_release uses. */
+static void xlsx_workbook_retain(XlsxWorkbook *wb);
+static void xlsx_workbook_release(XlsxWorkbook *wb);
+
 static Value value_copy(Value value) {
     if (value.kind == VALUE_STRING) {
         /* Share the buffer instead of duplicating it (PLAT-STRIDX). String
@@ -2294,6 +2305,14 @@ static Value value_copy(Value value) {
     }
     if (value.kind == VALUE_FUNCTION) {
         return value_function(value.as.function.name, value.as.function.library);
+    }
+    if (value.kind == VALUE_WORKBOOK) {
+        /* Reference semantics: every copy names the SAME workbook, so an edit
+         * seen through one copy is seen through all of them. A workbook is
+         * mutable state with identity, which is exactly why it is a handle and
+         * not a record (docs/xlsx_design.md §13.E). */
+        xlsx_workbook_retain(value.as.workbook);
+        return value;
     }
     if (value.kind == VALUE_REGEX) {
         /* Share the compiled program. Sound because a RegexValue is immutable:
@@ -2394,6 +2413,8 @@ static void value_free(Value value) {
         free(value.as.function.library);
     } else if (value.kind == VALUE_REGEX) {
         regex_release(value.as.regex);
+    } else if (value.kind == VALUE_WORKBOOK) {
+        xlsx_workbook_release(value.as.workbook);
     }
 }
 
@@ -2527,6 +2548,8 @@ static int value_truthy(Value value) {
     case VALUE_FUNCTION:
         return 1;
     case VALUE_REGEX:
+        return 1;
+    case VALUE_WORKBOOK:
         return 1;
     case VALUE_NULL:
         return 0;
@@ -2701,6 +2724,9 @@ static void value_print_to(FILE *out, Value value) {
         break;
     case VALUE_REGEX:
         fprintf(out, "<regex %s>\n", value.as.regex->pattern);
+        break;
+    case VALUE_WORKBOOK:
+        fprintf(out, "<workbook>\n");
         break;
     }
 }
@@ -3069,6 +3095,10 @@ static int value_storage_equal(const Value *left, const Value *right) {
          * "si") equals regex(p, "is"). */
         return strcmp(left->as.regex->pattern, right->as.regex->pattern) == 0 &&
                strcmp(left->as.regex->flags, right->as.regex->flags) == 0;
+    case VALUE_WORKBOOK:
+        /* Identity by handle: copies of one workbook compare equal, two
+         * separately opened files never do even from the same path. */
+        return left->as.workbook == right->as.workbook;
     }
     return 0;
 }
@@ -7656,6 +7686,8 @@ static const char *builtin_type_name(Value value) {
         return "function";
     case VALUE_REGEX:
         return "regex";
+    case VALUE_WORKBOOK:
+        return "workbook";
     }
     return "value";
 }
@@ -7973,6 +8005,9 @@ static Value builtin_string_value(Value value) {
         }
         value_free(value);
         return value_string(buffer);
+    case VALUE_WORKBOOK:
+        value_free(value);
+        return value_string("<workbook>");
     }
 
     if (!used_builder) {
@@ -8065,6 +8100,7 @@ static int encode_value_to_builder(StringBuilder *builder, Value value, int stri
     case VALUE_PROCESS:
     case VALUE_FUNCTION:
     case VALUE_REGEX:
+    case VALUE_WORKBOOK:
         if (strict_json) {
             runtime_error_raise("json_encode supports numbers, strings, booleans, "
                                 "nothing, arrays, and records; live and typed values "
@@ -16266,6 +16302,7 @@ static Value gi_eval_call(AstExpr *expr) {
  * bridge) because it reuses gi_canonical_wrap/gi_object_arg to hand its GTypes
  * back as ordinary gBASIC gobject values. Self-guarded on HAVE_GIR && HAVE_GIO. */
 #include "modules/rowmodel.c"
+#include "modules/xlsx.c"
 
 /* ===================== process.run (NAP-6) ==============================
  * A general, shell-injection-safe synchronous process runner. Structured argv is
@@ -17280,6 +17317,7 @@ static const char *reflect_category(Value v) {
     case VALUE_POSTGRES_CONNECTION:
     case VALUE_SQLITE_CONNECTION:
     case VALUE_XML_READER:
+    case VALUE_WORKBOOK:
         return "foreign";
     default:
         return "scalar";
@@ -18016,6 +18054,13 @@ static Value eval_call(AstExpr *expr) {
          * above, so this only fires for the module itself. */
         if (strcmp(expr->as.call.library, "reflect") == 0) {
             return reflect_eval_call(expr);
+        }
+
+        /* xlsx.* — Office Open XML workbooks. Unconditional like process and
+         * reflect (no `load`), degrading to a clean runtime error when zlib or
+         * libxml2 was unavailable at build time. */
+        if (strcmp(expr->as.call.library, "xlsx") == 0) {
+            return xlsx_eval_call(expr);
         }
 
         /* NAP-12: rowmodel.* is the native GListModel adapter behind the general

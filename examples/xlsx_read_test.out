@@ -1,0 +1,43 @@
+handle kind = workbook
+sheets      = Ledger | Notes & Refs
+
+== the part tree: everything retained ==
+  [Content_Types].xml  bytes=952  modelled=false
+  _rels/.rels  bytes=296  modelled=false
+  xl/workbook.xml  bytes=340  modelled=true
+  xl/_rels/workbook.xml.rels  bytes=706  modelled=true
+  xl/sharedStrings.xml  bytes=261  modelled=true
+  xl/styles.xml  bytes=392  modelled=false
+  xl/worksheets/sheet1.xml  bytes=704  modelled=false
+  xl/worksheets/sheet2.xml  bytes=241  modelled=false
+  xl/customData/vendor.xml  bytes=125  modelled=false
+
+== a part nothing models survives byte-for-byte ==
+<?xml version="1.0" encoding="UTF-8"?><vendorBlob who="not-modelled"><keep>this must survive a round trip</keep></vendorBlob>
+absent part = true
+
+== cells are SPARSE: absent, not blank ==
+used rows 1-7, cols 0-3
+cell count  = 12
+  A1  kind=text  style=0  formula=-  value=Account
+  B1  kind=text  style=0  formula=-  value=Balance
+  A2  kind=text  style=0  formula=-  value=Opening & carry
+  B2  kind=number  style=1  formula=-  value=1250.5
+  A3  kind=text  style=0  formula=-  value=café
+  B3  kind=number  style=1  formula=-  value=-99.25
+  A5  kind=text  style=0  formula=-  value=Total
+  B5  kind=number  style=1  formula=SUM(B2:B3)  value=1151.25
+  A6  kind=number  style=2  formula=-  value=45000
+  B6  kind=boolean  style=0  formula=-  value=true
+  A7  kind=error  style=0  formula=-  value=#DIV/0!
+  D7  kind=number  style=0  formula=B5*2  value=2302.5
+
+== a formula cell keeps BOTH halves ==
+formula = SUM(B2:B3)
+cached  = 1151.25
+
+== the second sheet, resolved through r:id not by guessing ==
+  A1 = second sheet
+
+== handles are reference semantics ==
+same handle = true
