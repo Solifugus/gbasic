@@ -1441,6 +1441,96 @@ static XlsxVal xlsx_eval_formula(XlsxWorkbook *wb, const XlsxSnap *snap,
     return v;
 }
 
+/* ------------------------------------------------------- the dependency graph
+ *
+ * Needed the moment something CHANGES. Until then every input carries Excel's
+ * cached value and each formula is evaluable in isolation, which is what let
+ * the evaluator be validated before this existed.
+ *
+ * Order matters and cannot be faked by iterating cells in sheet order: a
+ * formula in row 2 may depend on one in row 40, so evaluating top to bottom
+ * would feed it a stale input and produce a confidently wrong number. */
+
+/* Every cell a formula reads, ranges expanded. Reuses the formula lexer so the
+ * set of things treated as a reference cannot drift from what evaluation
+ * treats as one. */
+static void xlsx_formula_refs(const char *formula, long **rows, long **cols, size_t *n) {
+    size_t cap = 0;
+    *rows = NULL; *cols = NULL; *n = 0;
+    XlsxLex lx;
+    lx.p = formula;
+    lx.bad = 0;
+    xlsx_lex_next(&lx);
+    while (lx.cur.kind != XT_END) {
+        if (lx.cur.kind != XT_REF) {
+            xlsx_lex_next(&lx);
+            continue;
+        }
+        char first[128];
+        snprintf(first, sizeof first, "%s", lx.cur.text);
+        long c1, r1, c2, r2;
+        if (!xlsx_parse_ref(first, &c1, &r1)) { xlsx_lex_next(&lx); continue; }
+        c2 = c1; r2 = r1;
+        XlsxLex save = lx;
+        xlsx_lex_next(&lx);
+        if (lx.cur.kind == XT_COLON) {
+            xlsx_lex_next(&lx);
+            if (lx.cur.kind == XT_REF && xlsx_parse_ref(lx.cur.text, &c2, &r2)) {
+                xlsx_lex_next(&lx);
+            } else {
+                lx = save;
+                xlsx_lex_next(&lx);
+                c2 = c1; r2 = r1;
+            }
+        }
+        if (c1 > c2) { long t = c1; c1 = c2; c2 = t; }
+        if (r1 > r2) { long t = r1; r1 = r2; r2 = t; }
+        for (long r = r1; r <= r2; r++) {
+            for (long c = c1; c <= c2; c++) {
+                if (*n == cap) {
+                    cap = cap ? cap * 2 : 8;
+                    long *gr = realloc(*rows, cap * sizeof(long));
+                    long *gc = realloc(*cols, cap * sizeof(long));
+                    if (!gr || !gc) abort();
+                    *rows = gr; *cols = gc;
+                }
+                (*rows)[*n] = r;
+                (*cols)[*n] = c;
+                (*n)++;
+            }
+        }
+    }
+}
+
+/* Depth-first topological order over the formula cells. `state` is 0 unvisited,
+ * 1 in-progress, 2 done; an edge back into an in-progress cell is a CIRCULAR
+ * REFERENCE, which is reported rather than iterated toward a fixed point (Excel
+ * only does that when the user opts in). */
+static void xlsx_topo_visit(const XlsxSnap *snap, size_t i, int *state,
+                            size_t *order, size_t *on, int *circular) {
+    if (state[i] == 2) return;
+    if (state[i] == 1) { circular[i] = 1; return; }
+    state[i] = 1;
+    const XlsxSnapCell *c = &snap->cells[i];
+    if (c->formula) {
+        long *rr = NULL, *cc = NULL;
+        size_t rn = 0;
+        xlsx_formula_refs(c->formula, &rr, &cc, &rn);
+        for (size_t k = 0; k < rn; k++) {
+            for (size_t j = 0; j < snap->count; j++) {
+                if (snap->cells[j].row == rr[k] && snap->cells[j].col == cc[k] &&
+                    snap->cells[j].formula) {
+                    xlsx_topo_visit(snap, j, state, order, on, circular);
+                    if (circular[j]) circular[i] = 1;
+                }
+            }
+        }
+        free(rr); free(cc);
+    }
+    state[i] = 2;
+    order[(*on)++] = i;
+}
+
 static Value xlsx_val_to_gbasic(XlsxVal v) {
     switch (v.kind) {
     case XV_NUM:  return value_number(v.num);
@@ -2205,6 +2295,148 @@ static Value xlsx_eval_call(AstExpr *expr) {
         fields[4].name = copy_string("notes");
         fields[4].value = cell_alloc(); *fields[4].value = value_array(rows, rn);
         return value_record(fields, 5);
+    }
+
+    /* Recalculate a sheet in dependency order and persist the new cached
+     * values, so a subsequent xlsx.save writes a workbook Excel will agree
+     * with.
+     *
+     * Order is computed, not assumed: a formula in row 2 may depend on one in
+     * row 40, so evaluating in sheet order would feed it a stale input and
+     * produce a confidently wrong number. */
+    if (strcmp(name, "recalc") == 0) {
+        if (expr->as.call.args.count != 2) {
+            return xlsx_raise("xlsx.recalc expects two arguments (workbook, sheet)");
+        }
+        Value wbv = eval_expr(expr->as.call.args.items[0]);
+        Value shv = eval_expr(expr->as.call.args.items[1]);
+        if (wbv.kind != VALUE_WORKBOOK || shv.kind != VALUE_STRING) {
+            value_free(wbv); value_free(shv);
+            return xlsx_raise("xlsx.recalc expects a workbook and a sheet name");
+        }
+        XlsxWorkbook *wb = wbv.as.workbook;
+        XlsxSnap snap;
+        if (!xlsx_snapshot(wb, shv.as.string, &snap)) {
+            char message[256];
+            snprintf(message, sizeof message, "xlsx: no such sheet: %s", shv.as.string);
+            value_free(wbv); value_free(shv);
+            return xlsx_raise(message);
+        }
+
+        int *state = calloc(snap.count ? snap.count : 1, sizeof(int));
+        int *circ = calloc(snap.count ? snap.count : 1, sizeof(int));
+        size_t *order = calloc(snap.count ? snap.count : 1, sizeof(size_t));
+        if (!state || !circ || !order) abort();
+        size_t on = 0;
+        for (size_t i = 0; i < snap.count; i++) {
+            if (snap.cells[i].formula) {
+                xlsx_topo_visit(&snap, i, state, order, &on, circ);
+            }
+        }
+
+        long evaluated = 0, changed = 0, circular = 0, unsupported_n = 0;
+        for (size_t k = 0; k < on; k++) {
+            size_t i = order[k];
+            XlsxSnapCell *c = &snap.cells[i];
+            if (!c->formula) continue;
+            if (circ[i]) { circular++; continue; }
+            int unsup = 0;
+            char un[64] = "";
+            XlsxVal v = xlsx_eval_formula(wb, &snap, c->formula, &unsup, un, sizeof un);
+            evaluated++;
+            if (unsup) { unsupported_n++; xv_free(v); continue; }
+
+            /* Write the result back into the SNAPSHOT before evaluating
+             * anything downstream — that is the whole point of the ordering. */
+            int differs = 0;
+            if (v.kind != c->kind) differs = 1;
+            else if (v.kind == XV_NUM && v.num != c->num) differs = 1;
+            else if (v.kind == XV_BOOL && ((int)v.num != 0) != ((int)c->num != 0)) differs = 1;
+            else if ((v.kind == XV_STR || v.kind == XV_ERR) &&
+                     strcmp(v.str ? v.str : "", c->str ? c->str : "") != 0) differs = 1;
+            if (differs) {
+                changed++;
+                free(c->str);
+                c->str = NULL;
+                c->kind = v.kind;
+                c->num = v.num;
+                if (v.str) c->str = copy_string(v.str);
+            }
+            xv_free(v);
+        }
+
+        /* Persist the recalculated values into the sheet part. Only the <v> of
+         * formula cells is touched; the formula itself and every other part are
+         * left exactly as they were. */
+        if (changed > 0) {
+            XlsxSheet *sheet = xlsx_find_sheet(wb, shv.as.string);
+            XlsxPart *sp = sheet && sheet->part ? xlsx_find_part(wb, sheet->part) : NULL;
+            xmlDocPtr doc = sp ? xlsx_parse_part(sp) : NULL;
+            if (doc) {
+                xmlNodePtr root = xmlDocGetRootElement(doc);
+                for (xmlNodePtr n = root ? root->children : NULL; n; n = n->next) {
+                    if (!xlsx_is(n, "sheetData")) continue;
+                    for (xmlNodePtr r = n->children; r; r = r->next) {
+                        if (!xlsx_is(r, "row")) continue;
+                        for (xmlNodePtr c = r->children; c; c = c->next) {
+                            if (!xlsx_is(c, "c")) continue;
+                            char *ref = xlsx_prop(c, "r");
+                            long col = 0, row = 0;
+                            if (!ref || !xlsx_parse_ref(ref, &col, &row)) { free(ref); continue; }
+                            free(ref);
+                            const XlsxSnapCell *sc = xlsx_snap_at(&snap, row, col);
+                            if (!sc || !sc->formula) continue;
+                            char buf[64];
+                            const char *newtype = NULL;
+                            const char *text = buf;
+                            switch (sc->kind) {
+                            case XV_NUM: snprintf(buf, sizeof buf, "%.15g", sc->num); break;
+                            case XV_BOOL: snprintf(buf, sizeof buf, "%s", sc->num ? "1" : "0"); newtype = "b"; break;
+                            case XV_STR: text = sc->str ? sc->str : ""; newtype = "str"; break;
+                            case XV_ERR: text = sc->str ? sc->str : "#ERROR"; newtype = "e"; break;
+                            default: snprintf(buf, sizeof buf, "0"); break;
+                            }
+                            if (newtype) xmlSetProp(c, (const xmlChar *)"t", (const xmlChar *)newtype);
+                            else xmlUnsetProp(c, (const xmlChar *)"t");
+                            xmlNodePtr v = NULL;
+                            for (xmlNodePtr k = c->children; k; k = k->next) {
+                                if (xlsx_is(k, "v")) { v = k; break; }
+                            }
+                            if (!v) v = xmlNewChild(c, NULL, (const xmlChar *)"v", NULL);
+                            xmlNodeSetContent(v, (const xmlChar *)text);
+                        }
+                    }
+                }
+                xmlChar *dumped = NULL;
+                int dumped_len = 0;
+                xmlDocDumpMemory(doc, &dumped, &dumped_len);
+                xmlFreeDoc(doc);
+                if (dumped) {
+                    free(sp->data);
+                    sp->data = malloc((size_t)dumped_len ? (size_t)dumped_len : 1);
+                    if (!sp->data) abort();
+                    memcpy(sp->data, dumped, (size_t)dumped_len);
+                    sp->length = (size_t)dumped_len;
+                    xmlFree(dumped);
+                }
+            }
+        }
+
+        free(state); free(circ); free(order);
+        xlsx_snap_free(&snap);
+        value_free(wbv); value_free(shv);
+
+        RecordField *fields = calloc(4, sizeof(RecordField));
+        if (!fields) abort();
+        fields[0].name = copy_string("evaluated");
+        fields[0].value = cell_alloc(); *fields[0].value = value_number((double)evaluated);
+        fields[1].name = copy_string("changed");
+        fields[1].value = cell_alloc(); *fields[1].value = value_number((double)changed);
+        fields[2].name = copy_string("circular");
+        fields[2].value = cell_alloc(); *fields[2].value = value_number((double)circular);
+        fields[3].name = copy_string("unsupported");
+        fields[3].value = cell_alloc(); *fields[3].value = value_number((double)unsupported_n);
+        return value_record(fields, 4);
     }
 
     char message[160];

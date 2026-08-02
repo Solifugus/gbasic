@@ -1,0 +1,25 @@
+== before ==
+B2 = 1250.5
+B5 = 1151.25   (SUM(B2:B3))
+D7 = 2302.5   (B5*2, and it sits ABOVE B5)
+
+== change an input, then recalculate ==
+evaluated=2 changed=2 circular=0 unsupported=0
+B2 = 1000
+B5 = 900.75   (1000 + -99.25)
+D7 = 1801.5   (transitive: needed the NEW B5)
+
+== the new values persist, and the formulas do not ==
+B5 value   = 900.75
+B5 formula = SUM(B2:B3)
+D7 value   = 1801.5
+D7 formula = B5*2
+oracle disagreements after recalc = 0
+
+== only the edited sheet's part changed ==
+  changed: xl/worksheets/sheet1.xml
+vendor part still identical = true
+
+== a circular reference is reported, not iterated ==
+evaluated=1 changed=0 circular=2
+the healthy cell on that sheet = 15

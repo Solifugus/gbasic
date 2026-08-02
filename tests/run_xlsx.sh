@@ -150,6 +150,43 @@ else
     status=1
 fi
 
+# --- Tier 1d: recalculation in dependency order -------------------------------
+printf -- '-- golden: recalc\n'
+if timeout 120 ./gbasic examples/xlsx_recalc_test.bas >"$out" 2>"$err" </dev/null; then
+    if diff -u examples/xlsx_recalc_test.out "$out"; then
+        printf 'PASS examples/xlsx_recalc_test.bas\n'
+    else
+        printf 'FAIL examples/xlsx_recalc_test.bas (output differs)\n'
+        status=1
+    fi
+else
+    printf 'FAIL examples/xlsx_recalc_test.bas (exit)\n'
+    cat "$err"
+    status=1
+fi
+
+# ORDER, asserted rather than assumed. On Ledger, D7 = B5*2 sits ABOVE
+# B5 = SUM(B2:B3) in sheet order, so an engine evaluating top to bottom hands
+# D7 a stale B5 and prints a plausible wrong number. Change B2 to 1000 and the
+# only correct transitive answer is D7 = 1801.5; a stale read gives 2302.5.
+printf 'program main(args)\n  wb = xlsx.open("%s")\n  xlsx.set(wb, "Ledger", "B2", 1000)\n  xlsx.recalc(wb, "Ledger")\n  print xlsx.cell(wb, "Ledger", "D7").value\nend program\n' "$FIXTURE" >"$tmp/ord.bas"
+got=$(timeout 60 ./gbasic "$tmp/ord.bas" 2>/dev/null)
+if [ "$got" = "1801.5" ]; then
+    printf 'PASS transitive dependent recomputed in the right order\n'
+else
+    printf 'FAIL transitive dependent = %s (want 1801.5; 2302.5 means a stale input)\n' "$got"
+    status=1
+fi
+
+# A cycle is REPORTED, and must not take the rest of the sheet with it.
+printf 'program main(args)\n  wb = xlsx.open("%s")\n  c = xlsx.recalc(wb, "Circular")\n  print c.circular\n  print xlsx.evaluate(wb, "Circular", "B2")\nend program\n' "$FIXTURE" >"$tmp/cyc.bas"
+if [ "$(timeout 60 ./gbasic "$tmp/cyc.bas" 2>/dev/null | tr '\n' ' ')" = "2 15 " ]; then
+    printf 'PASS circular reference reported; healthy cells on the sheet still evaluate\n'
+else
+    printf 'FAIL circular-reference handling changed\n'
+    status=1
+fi
+
 # --- Tier 2: the reader discards nothing ---------------------------------------
 printf -- '-- retention: every container entry survives the read\n'
 # The ZIP's own entry names, straight from the central directory, via unzip if
