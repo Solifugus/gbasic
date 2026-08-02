@@ -399,10 +399,77 @@ ARI shipped on 2026-08-01, so this is no longer speculative:
 - *Has no analogue:* the page-furniture pass (§13.H of the text design). Sheets
   are not paginated; that machinery is dead weight here.
 
-**G. STILL OPEN — function coverage.** Which Excel functions are the must-haves
-for the CECL/FinTech work, so phase-by-phase coverage matches real use? The
-guess remains `IF`, `SUMIF(S)`, `VLOOKUP`/`XLOOKUP`, `ROUND`, and date math.
-Not blocking: the parser is function-agnostic and coverage grows by table.
+**G. Function coverage — the durable core comes from measurement, the modern
+tail from reasoning** (2026-08-02).
+
+*The core, measured.* Hermans & Murphy-Hill analysed the **Enron corpus** —
+16,189 unique spreadsheets recovered from 51,572 Excel files in the email
+archive. Only **134 distinct functions** appear in the whole corpus, against
+300+ available. The **top nine cover 63.6% of spreadsheets**:
+
+    SUM   +   -   /   *   IF   NOW   AVERAGE   VLOOKUP
+
+and the top fifteen cover 75.6%. (The remaining six of that fifteen are in the
+paper's Table VI, which is not openly accessible; not guessed at here.)
+
+Three consequences, none of them obvious before seeing the list:
+
+1. **Four of the top nine are arithmetic operators, not functions.** The
+   expression evaluator — precedence, cell references, ranges — carries the
+   largest single share of coverage before any function library exists. That
+   makes it the right first milestone, and it is testable against cached values
+   immediately.
+2. **`NOW` in the top nine breaks the oracle.** Volatile functions (`NOW`,
+   `TODAY`, `RAND`) cannot be validated against Excel's cached value, because
+   that value dates from whenever the workbook last calculated. They must be
+   excluded from oracle comparison EXPLICITLY, or the suite is either flaky or
+   silently skipping them.
+3. **`VLOOKUP` is load-bearing for both engines** — it is the hard one to
+   evaluate and it is exactly what lowers to a join in the SQL compiler, so it
+   should shape the design early rather than be bolted on.
+
+*The caveat that limits all of this: the corpus is 2001.* It predates `SUMIFS`
+(2007) and `XLOOKUP` (2019) entirely. It is evidence about the durable core, not
+about modern usage. [FUSE](https://www.researchgate.net/publication/308861425)
+(249k spreadsheets from Common Crawl) is the larger, more recent follow-up if
+post-2007 data is wanted.
+
+*The modern tail, reasoned rather than measured* — flagged as ESTIMATE, to be
+replaced by measurement (below). For CECL and credit-union work specifically,
+which is discounted cash flow, vintage analysis and loss rates:
+
+- `IFERROR` (2007) — very common, usually wrapping a lookup. Interacts directly
+  with the error value kind the reader already models.
+- `SUMIFS` / `COUNTIFS` / `AVERAGEIFS` — conditional aggregation; the natural
+  successors to the `SUMPRODUCT` idiom that pervades older finance models.
+- `INDEX`/`MATCH` — the lookup pair finance modelling prefers to `VLOOKUP`.
+- `XLOOKUP` — in anything authored recently.
+- Date math: `EOMONTH`, `EDATE`, `YEARFRAC`, `NETWORKDAYS` — day-count
+  conventions are central to amortization.
+- Financial: `NPV`, `XNPV`, `IRR`, `XIRR`, `PMT`, `IPMT`, `PPMT`, `RATE`. CECL
+  is literally discounted cash flow, so these are likelier here than the Enron
+  ranking suggests.
+- `ROUND` / `ROUNDUP` / `ROUNDDOWN`, and `TEXT` / `LEFT` / `RIGHT` / `MID`.
+
+*The better corpus is the user's own, and it is obtainable.* A **list of function
+names** is not proprietary in the way the data is. Counting the contents of
+`<f>` elements across real workbooks yields a ranked list from actual CECL work,
+which beats any public corpus for this purpose — and once Stage 1 read exists
+(it does), the module can produce that scan itself. Do this before committing to
+Phase C/D coverage.
+
+*Phasing:*
+
+| phase | scope | why here |
+|---|---|---|
+| A | expression evaluator: operators, references, ranges | the largest single share of usage |
+| B | `SUM`, `IF`, `AVERAGE`, `ROUND`, `MIN`/`MAX`, `COUNT` | the rest of the durable core |
+| C | `VLOOKUP`, then `SUMIF(S)`/`COUNTIF(S)`, `IFERROR`, `INDEX`/`MATCH` | the lookup and conditional-aggregate family; also the compiler's join story |
+| D | by demand, from the corpus scan | the tail is thin — 134 total across 16k spreadsheets |
+
+Throughout: **an unknown function refuses loudly** rather than returning a
+plausible wrong number. In a financial model a wrong number that looks right is
+worse than a failure.
 
 ## 14. Roadmap (phases)
 
