@@ -471,6 +471,101 @@ Throughout: **an unknown function refuses loudly** rather than returning a
 plausible wrong number. In a financial model a wrong number that looks right is
 worse than a failure.
 
+**I. The corpus scan, actually run** (2026-08-03). §G said to measure before
+committing to Phase C/D coverage. Done — against the Enron corpus itself rather
+than a paraphrase of the paper.
+
+*Method.* The figshare distribution
+([10.6084/m9.figshare.1221767](https://doi.org/10.6084/m9.figshare.1221767),
+CC BY 4.0) ships the spreadsheets **already converted to `.xlsx`** — 15,871
+OOXML files, re-saved through Excel by the researcher in 2014, plus 58 stragglers
+still in legacy `.xls`. No conversion was needed, and because Excel wrote these
+files their cached values are genuine Excel output, so `xlsx.check` against them
+is a true oracle rather than the self-consistency check the hand-built fixture
+allows. Each workbook was scanned in its own process (see the DOGFOOD entry:
+`xlsx.open` raises and gBASIC cannot catch a raise, so an in-process directory
+walk would abort the whole scan on the first bad file). Result: **15,871 / 15,871
+read successfully**, 20.7M formula cells, 6.0M function calls, 231 distinct names.
+
+*The scan found exactly one reader defect,* and it was not in the ZIP, the XML or
+the cell parsing — those had zero failures across the corpus. It was that a sheet
+declared with an empty `r:id` (a VBA module or macro sheet: really in the
+workbook, no worksheet part behind it) was listed by `xlsx.sheets` and then
+rejected by `xlsx.cells` as "no such sheet". 400 workbooks (2.5%) carry one.
+Fixed; `examples/xlsx_macro_sheet_test.bas` pins it.
+
+*The paper's ranking replicates.* Measured independently, by percentage of
+formula-bearing workbooks, the top functions are **SUM (73.2%), IF (21.1%),
+NOW (16.3%), AVERAGE (11.1%), VLOOKUP (9.3%)** — precisely the five non-operator
+entries of the paper's top nine, in the same order. §G's core can be relied on.
+
+*But share-of-calls and breadth-of-use are very different questions,* and only
+one of them is about coverage:
+
+| function | % of workbooks | % of all calls |
+|---|---|---|
+| SUM | 73.2% | 13.8% |
+| IF | 21.1% | 29.8% |
+| VLOOKUP | 9.3% | 17.0% |
+| YEAR / MONTH | 3.3% / 3.8% | 7.2% / 7.1% |
+| NOW | 16.3% | 0.07% |
+
+`VLOOKUP`, `YEAR` and `MONTH` look enormous by call count only because a handful
+of workbooks use them tens of thousands of times each. `NOW` is the inverse: one
+call per workbook, in a sixth of them. Ranking by call count would have built the
+wrong things first.
+
+*The metric that decides build order* is neither of those: **what fraction of
+workbooks can be recalculated COMPLETELY** — every function in them supported.
+A workbook missing one function is not 99% done, it is unrecalculable.
+
+- Formula-bearing workbooks: **9,220** (58.1% of the corpus).
+- **3.0% can never be reached**: they call proprietary Enron add-ins (`_XLL.*`)
+  or VBA user-defined functions. This is a real ceiling, not a gap to close.
+- With the 14 functions already implemented: **56.1% fully recalculable.**
+  (863 of those need no functions at all — pure operators, which is §G's point
+  about the expression evaluator, confirmed.)
+- With **25 more functions: 87.9%.**
+
+Greedy build order — at each step, the function that unlocks the most additional
+*fully* recalculable workbooks:
+
+| # | add | → fully recalculable |
+|---|---|---|
+| 1 | `NOW` | 68.0% |
+| 2 | `SUBTOTAL` | 71.4% |
+| 3 | `CELL` | 74.7% |
+| 4 | `TODAY` | 77.0% |
+| 5 | `SUMIF` | 78.1% |
+| 6 | `VLOOKUP` | 79.2% |
+| 7 | `WEEKDAY` | 80.4% |
+| 8 | `TEXT` | 81.2% |
+| 9–14 | `EOMONTH`, `ISNA`, `YEAR`, `MONTH`, `CONCATENATE`, `COUNTIF` | 83.7% |
+| 15–25 | `NPV`, `PMT`, `AND`, `OR`, `REPT`, `TRANSPOSE`, `HLOOKUP`, `DATE`, `SUMPRODUCT`, `INT`, `LOOKUP` | 87.9% |
+
+Three things this changes:
+
+1. **`NOW` and `TODAY` are the largest single win and are nearly free** — +12 and
+   +2.3 points for a date serial. They were already recognised as volatile by the
+   evaluator; they just were not *implemented*. But this is precisely the tension
+   §G point 2 flagged: implementing them makes those workbooks recalculable while
+   making them permanently unverifiable against cached values. Both facts hold,
+   and the oracle must keep skipping them.
+2. **`CELL` at rank 3 was not on anyone's list** — not in §G's measured core, not
+   in its reasoned modern tail. It is cheap (`CELL("filename",…)` in a header
+   dominates) and it unlocks 300 workbooks. Measurement beat reasoning here.
+3. **`VLOOKUP` drops to rank 6** by this metric though it is 17% of all calls.
+   Still worth building early for the reasons in §G — it shapes the SQL
+   compiler's join story — but it is not the coverage emergency the call count
+   suggests.
+
+*Standing caveat.* This is 2001 usage. `SUMIFS`, `XLOOKUP` and `IFERROR` cannot
+appear in it at all, and §G's reasoned modern tail is untouched by this scan —
+it remains an ESTIMATE. The scan answers "what does the durable core actually
+cost to cover", not "what will a 2026 CECL workbook need".
+`tools/xlsx_function_scan.bas` exists to answer the second question against real
+workbooks when some are available; it prints only names and counts.
+
 ## 14. Roadmap (phases)
 
 Each phase is independently shippable and golden-file testable.

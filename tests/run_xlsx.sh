@@ -44,6 +44,7 @@ tmp=$(mktemp -d)
 trap 'rm -rf "$out" "$err" "$tmp"' EXIT
 
 FIXTURE=examples/fixtures/xlsx/basic.xlsx
+MACRO_FIXTURE=examples/fixtures/xlsx/macro_sheet.xlsx
 
 # Degrade check: if the module was compiled out, the error must be the clean one.
 printf 'program main(args)\n  print xlsx.open("%s")\nend program\n' "$FIXTURE" >"$tmp/probe.bas"
@@ -231,6 +232,33 @@ if [ -s "$tmp/want" ]; then
     fi
 fi
 
+# --- Tier 2b: a sheet with no worksheet part ------------------------------------
+#
+# Excel writes VBA module and macro sheets as <sheet name="Module1"
+# state="veryHidden" r:id=""/>: really in the workbook, nothing behind it. The
+# reader used to list such a sheet from xlsx.sheets and then raise "no such
+# sheet" from xlsx.cells, which is both self-contradictory and false.
+#
+# This tier exists because of a MEASUREMENT, not a hunch. Scanning the
+# 15,871-workbook Enron corpus (figshare 10.6084/m9.figshare.1221767, CC BY 4.0)
+# one workbook per process, 400 files (2.5%) failed, and all 400 were this one
+# case -- no ZIP, XML or cell-parsing failure occurred anywhere in the corpus.
+# The corpus is not in the test path; this fixture reproduces the shape,
+# including the trailing space in "VBACode " that seven of those files carry.
+printf -- '-- a sheet that exists with no worksheet part (macro/module sheet)\n'
+if timeout 120 ./gbasic examples/xlsx_macro_sheet_test.bas >"$out" 2>"$err" </dev/null; then
+    if diff -u examples/xlsx_macro_sheet_test.out "$out"; then
+        printf 'PASS examples/xlsx_macro_sheet_test.bas\n'
+    else
+        printf 'FAIL examples/xlsx_macro_sheet_test.bas (output differs)\n'
+        status=1
+    fi
+else
+    printf 'FAIL examples/xlsx_macro_sheet_test.bas (exit)\n'
+    cat "$err"
+    status=1
+fi
+
 # --- Tier 3: negative ----------------------------------------------------------
 printf -- '-- negative (container errors are reported, not guessed at)\n'
 negative() { # label file expected-substring
@@ -280,6 +308,35 @@ elif grep -qF "creating a new cell is not supported" "$err"; then
     printf 'PASS negative %-18s new-cell creation refused explicitly\n' "new cell"
 else
     printf 'FAIL negative %-18s wrong message: %s\n' "new cell" "$(cat "$err")"
+    status=1
+fi
+
+# A partless sheet READS as empty, but a name that is not in the workbook at all
+# must still raise -- otherwise the leniency above is blanket leniency and a
+# typo'd sheet name silently returns nothing.
+printf 'program main(args)\n  wb = xlsx.open("%s")\n  print count(xlsx.cells(wb, "NoSuchSheet"))\nend program\n' "$MACRO_FIXTURE" >"$tmp/neg4.bas"
+if timeout 60 ./gbasic "$tmp/neg4.bas" >/dev/null 2>"$err" </dev/null; then
+    printf 'FAIL negative %-18s (an absent sheet returned a result)\n' "absent sheet"
+    status=1
+elif grep -qF "no such sheet: NoSuchSheet" "$err"; then
+    printf 'PASS negative %-18s absent sheet still raises\n' "absent sheet"
+else
+    printf 'FAIL negative %-18s wrong message: %s\n' "absent sheet" "$(cat "$err")"
+    status=1
+fi
+
+# Writing to a partless sheet has nowhere to put the cell, so it is refused --
+# but with the REASON, not by claiming the sheet does not exist. The old message
+# was a false statement, which is what sent the corpus scan looking in the wrong
+# place; pinning the wording is the point of this case.
+printf 'program main(args)\n  wb = xlsx.open("%s")\n  xlsx.set(wb, "Module1", "A1", 1)\nend program\n' "$MACRO_FIXTURE" >"$tmp/neg5.bas"
+if timeout 60 ./gbasic "$tmp/neg5.bas" >/dev/null 2>"$err" </dev/null; then
+    printf 'FAIL negative %-18s (wrote to a sheet with no part)\n' "write partless"
+    status=1
+elif grep -qF "has no worksheet part" "$err" && ! grep -qF "no such sheet" "$err"; then
+    printf 'PASS negative %-18s refused with the real reason, not "no such sheet"\n' "write partless"
+else
+    printf 'FAIL negative %-18s wrong message: %s\n' "write partless" "$(cat "$err")"
     status=1
 fi
 

@@ -848,3 +848,35 @@ D0.6, the rest remain open or are by-design.
   their integer-cents workaround as a result and show amounts as a reader would.
   The underlying `%g` behaviour for plain numbers is unchanged and still wrong
   for financial work that has not converted.
+
+## 2026-08-03 — CC — while: scanning the 15,871-workbook Enron corpus for xlsx function usage
+
+- **Type:** missing-feature
+- **Severity:** medium
+- **What:** `tools/xlsx_function_scan.bas` walks a directory in-process, and
+  that shape cannot survive a real corpus. Two independent reasons, both found
+  by reading the runtime rather than by the scan blowing up:
+  1. `list_files` does not recurse (`src/eval.c`, a plain `opendir`), so a
+     nested corpus is silently under-scanned rather than refused.
+  2. **`xlsx.open` raises, and gBASIC cannot catch a raise.** One malformed
+     workbook in thousands aborts the entire scan and yields no data at all.
+     The scanner's own comment claimed a "pre-validation" guard, but no such
+     guard was ever in the code — the comment described an intent.
+
+  This is the same shape that produced `try_decode` (PLAT-JSON): an operation
+  that must report failure as a *value* because there is no way to recover from
+  a raise. A batch tool over untrusted inputs needs that, and `xlsx.open` is
+  exactly such an operation.
+- **Workaround:** drove the scan from a shell loop, **one `gbasic` process per
+  workbook**, so a raise costs exactly that file and the exit status identifies
+  it. This turned out to be a benefit as well as a workaround — the failure list
+  *is* the robustness data, and it is what located the partless-sheet bug (400
+  files, 2.5%, all 400 failures the same cause). 14-way parallel, ~4 minutes for
+  15,871 files. Not a substitute for a fix: the natural in-process idiom is
+  still unavailable, and the eventual answer is probably an `xlsx.try_open`
+  returning `{ok, workbook, message}` alongside the raising form, mirroring
+  `try_decode`/`decode`.
+- **Related, and genuinely fixed here:** the corpus also showed
+  `xlsx.sheets`/`xlsx.cells` contradicting each other on macro sheets. That one
+  was a real defect and is fixed, with the measurement recorded in
+  `docs/xlsx_design.md` §13.I.

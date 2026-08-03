@@ -74,6 +74,7 @@ examples=(
     xlsx_write_test.bas
     xlsx_formula_test.bas
     xlsx_recalc_test.bas
+    xlsx_macro_sheet_test.bas
     filetree_test.bas
     hex_literal_test.bas
     stats_frame_test.bas

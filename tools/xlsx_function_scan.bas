@@ -65,10 +65,17 @@ program main(args)
       continue
     end if
 
-    ' A workbook that cannot be opened is REPORTED, never skipped silently:
-    ' a scan that quietly ignored half the corpus would give a confident
-    ' ranking of the wrong thing. gBASIC cannot catch a raise, so the check is
-    ' a pre-validation — the container must at least be readable.
+    ' LIMIT, stated because the earlier comment here claimed a guard that was
+    ' never in the code: `xlsx.open` RAISES on an unreadable workbook and
+    ' gBASIC cannot catch a raise, so ONE bad file aborts this whole scan and
+    ' yields nothing. `list_files` also does not recurse (plain opendir), so a
+    ' nested corpus is under-scanned rather than refused.
+    '
+    ' For a directory you control, this is fine. For an untrusted corpus, drive
+    ' it one process per file from a shell loop instead — that is how the
+    ' 15,871-workbook Enron scan in docs/xlsx_design.md §13.I was run, and the
+    ' per-file exit status is what located the one reader bug it found.
+    ' See the 2026-08-03 DOGFOOD entry.
     wb = xlsx.open(path)
     workbooks = workbooks + 1
 
