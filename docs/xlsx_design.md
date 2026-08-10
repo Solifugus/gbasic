@@ -659,6 +659,95 @@ The function list is not wrong, but it is no longer the top of the queue: the
 structural gaps above account for more disagreeing cells than every missing
 function combined.
 
+**K. Post-2001 capabilities, and the second structural blocker** (2026-08-09).
+
+Everything in §G–§J is measured on a 2001 corpus, which cannot contain a single
+function added since. That half needed its own fixture, and building it turned
+up a blocker of the same kind as shared formulas.
+
+**A modern function is not stored under its own name.** Excel writes anything
+newer than the original ECMA-376 function list with a *future-function prefix*,
+so an older reader cannot mistake it for something it knows:
+
+```
+XLOOKUP(...)      →  _xlfn.XLOOKUP(...)
+SORT(...)         →  _xlfn._xlws.SORT(...)      worksheet-only
+LET(x, A1, x*2)   →  _xlfn.LET(_xlpm.x, A1, _xlpm.x*2)
+```
+
+Until those are stripped, **every** modern function is an unknown name however
+well it is implemented. The split is by schema version, not release year, which
+is why the 2007-era additions — `IFERROR`, `SUMIFS`, `COUNTIFS`, `AVERAGEIFS`,
+`EOMONTH`, `YEARFRAC`, `NETWORKDAYS` — carry no prefix while `STDEV.S` and
+`IFNA` do. Established by generating each one and reading the bytes back.
+
+What must **not** be stripped: `_xll.` (a third-party add-in) and `_xludf.` (a
+VBA function). Those are unevaluable *in principle* — the 3.0% ceiling of §I —
+and stripping them would silently reclassify "impossible" as "not done yet".
+`basic.xlsx` now uses `_xll.HPVAL` as its unsupported-function case for exactly
+this reason: it previously used `XLOOKUP`, and that test broke the moment
+XLOOKUP was implemented — a fixture pinned to a gap that later closed.
+
+*The fixture and its oracle.* `tools/make_xlsx_modern_fixture.sh` drives
+**LibreOffice** to compute the cached values in
+`examples/fixtures/xlsx/modern.xlsx`. This matters: hand-written expectations,
+which `basic.xlsx` is stuck with, only ever prove self-consistency — misread
+`SUMIFS` and you write the wrong expected value and the test agrees with you.
+Having an independent engine compute them removes precisely that failure mode.
+
+The honest ranking of evidence, which the fixture header states too:
+
+> Excel-authored (the corpus)  >  LibreOffice-authored (this)  >  hand-written
+
+LibreOffice is not Excel and the two are known to differ at the edges, so
+agreement is strong evidence rather than proof. The fixture's arithmetic is
+also kept small enough to verify by eye (East is 1200 + 1500 + 950, so `SUMIFS`
+must be 3650) — a third independent check. Where LibreOffice's own answer was
+not clearly right it was *not* matched: see `YEARFRAC` below.
+
+*Implemented and confirmed against that oracle* — 62 formulas, zero
+disagreements:
+
+| group | functions |
+|---|---|
+| conditional aggregation | `SUMIF` `SUMIFS` `COUNTIF` `COUNTIFS` `AVERAGEIF` `AVERAGEIFS` `MAXIFS` `MINIFS` |
+| logic | `IFNA` `NA` `XOR` `IFS` `SWITCH` |
+| text | `CONCAT` `CONCATENATE` `TEXTJOIN` `TEXTBEFORE` `TEXTAFTER` |
+| lookup | `XLOOKUP` `XMATCH` (exact mode) |
+| dates | `EOMONTH` `EDATE` `DATE` `DAYS` `YEAR` `MONTH` `DAY` `WEEKDAY` `ISOWEEKNUM` `NETWORKDAYS` `YEARFRAC` |
+| statistics | `STDEV(.S/.P)` `VAR(.S/.P)` `MEDIAN` `PERCENTILE(.INC)` `QUARTILE(.INC)` `RANK(.EQ)` `SMALL` `LARGE` `AGGREGATE` |
+
+The criteria matcher these share supports comparison operators, numeric vs text
+comparison (`">4"` must match 12 — string comparison would sort `"12"` before
+`"4"` and quietly drop it), case-insensitive text, and `*`/`?` wildcards.
+
+*Deliberately refused rather than approximated:*
+
+- **`YEARFRAC` basis 1** (actual/actual). Its denominator rule is intricate;
+  getting it subtly wrong yields a plausible interest figure, which is the exact
+  failure this module exists to avoid. Bases 0, 2, 3 and 4 are implemented.
+- **`XLOOKUP`/`XMATCH` non-exact match modes**, which would otherwise return a
+  plausible neighbouring row.
+- **`AGGREGATE` reference forms** (function numbers 14–19).
+
+*Deferred, with reasons:*
+
+- **Dynamic arrays** (`UNIQUE`, `SORT`, `FILTER`, `SEQUENCE`). These **spill**
+  into cells that do not exist in the file, so they are a structural feature of
+  the grid rather than a function to add — closer in size to shared formulas
+  than to `SUMIFS`.
+- **`LET`/`LAMBDA`**, which need a local binding environment in the evaluator.
+
+*Effect on the 2001 corpus,* which is the independent check that none of this
+regressed the durable core (many of these functions predate 2001 too):
+
+| | before | after |
+|---|---|---|
+| agreement rate | 66.06% | **69.69%** |
+| cells agreeing | 11,166,551 | **12,432,251** |
+| unsupported | 3,710,388 | **2,773,051** |
+| workbooks with zero disagreements | 5,169 | **5,507** of 9,220 |
+
 ## 14. Roadmap (phases)
 
 Each phase is independently shippable and golden-file testable.

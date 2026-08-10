@@ -10,7 +10,7 @@ sheets      = Ledger | Notes & Refs | Formulas | Circular
   xl/styles.xml  bytes=392  modelled=false
   xl/worksheets/sheet1.xml  bytes=704  modelled=false
   xl/worksheets/sheet2.xml  bytes=241  modelled=false
-  xl/worksheets/sheet3.xml  bytes=1453  modelled=false
+  xl/worksheets/sheet3.xml  bytes=1444  modelled=false
   xl/worksheets/sheet4.xml  bytes=324  modelled=false
   xl/customData/vendor.xml  bytes=125  modelled=false
 

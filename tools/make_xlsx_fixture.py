@@ -66,7 +66,18 @@ _f = [
   '<row r="16"><c r="B16"><f>COUNT(A1:A4)</f><v>3</v></c></row>',
   '<row r="17"><c r="B17" t="str"><f>IFERROR(A1/0,"caught")</f><v>caught</v></c></row>',
   '<row r="18"><c r="B18"><f>NOW()</f><v>45870.5</v></c></row>',
-  '<row r="19"><c r="B19"><f>XLOOKUP(A1,A1:A3,A1:A3)</f><v>10</v></c></row>',
+  # An UNSUPPORTED function, which must be reported BY NAME rather than
+  # defaulted to a plausible zero. This was XLOOKUP until XLOOKUP was
+  # implemented, at which point the test asserting "at least one unsupported"
+  # started failing -- a fixture pinned to a gap that later closed.
+  #
+  # An add-in call cannot suffer that: `_xll.` names a third-party XLL and is
+  # unevaluable IN PRINCIPLE, not merely unimplemented. It is also the real
+  # shape from the corpus, where _xll.HPVAL alone appears 9,240 times, and it
+  # doubles as the guard that the future-function prefix stripper does NOT
+  # strip `_xll.` -- doing so would turn this into a call to a function named
+  # HPVAL and quietly reclassify "impossible" as "not done yet".
+  '<row r="19"><c r="B19"><f>_xll.HPVAL(A1)</f><v>10</v></c></row>',
 ]
 parts['xl/worksheets/sheet3.xml'] = (
     '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'

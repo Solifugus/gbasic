@@ -1,0 +1,75 @@
+== the data the criteria functions run over ==
+  row 2  East  Loan A  1200
+  row 3  West  Loan B  800
+  row 4  East  Loan B  1500
+  row 5  West  Loan A  400
+  row 6  East  Loan A  950
+  row 7  North  Other  2200
+
+== every formula, computed by us ==
+  SUMIFS region = 3650
+  SUMIFS two crit = 2150
+  COUNTIFS = 2
+  AVERAGEIFS = 600
+  MAXIFS = 1500
+  MINIFS = 950
+  SUMIF = 3650
+  SUMIF wildcard = 4850
+  COUNTIF ne = 3
+  AVERAGEIF = 1633.33
+  IFERROR = caught
+  IFNA hit = was-na
+  IFNA passthru = 42
+  IFS = big
+  SWITCH = w
+  SWITCH default = fallback
+  XOR = false
+  CONCAT = EastWestEast
+  CONCATENATE = East-Loan A
+  TEXTJOIN = East|West|East|West|East|North
+  TEXTBEFORE = Loan A
+  TEXTAFTER = East
+  XLOOKUP = 800
+  XLOOKUP missing = none
+  XMATCH = 6
+  EOMONTH 0 = 46053
+  EOMONTH +2 = 46112
+  EOMONTH -1 = 46022
+  EDATE = 46109
+  DAYS = 75
+  YEARFRAC us = 0.458333
+  YEARFRAC act360 = 0.461111
+  YEARFRAC act365 = 0.454795
+  YEARFRAC euro = 0.458333
+  NETWORKDAYS = 32
+  ISOWEEKNUM = 3
+  WEEKDAY 1 = 5
+  WEEKDAY 2 = 4
+  YEAR = 2026
+  MONTH = 6
+  DAY = 30
+  DATE normalise = 46388
+  STDEV.S = 624.3
+  STDEV.P = 569.905
+  VAR.S = 389750
+  VAR.P = 324792
+  MEDIAN = 1075
+  PERCENTILE.INC = 837.5
+  QUARTILE.INC = 1425
+  RANK.EQ desc = 2
+  RANK.EQ asc = 5
+  SMALL = 800
+  LARGE = 1500
+  AGGREGATE sum = 7050
+  AGGREGATE skiperr = 7050
+  SUBTOTAL 109 = 7050
+
+== the on-disk spelling is prefixed; the evaluator sees through it ==
+  F19 stored as: _xlfn.CONCAT(A2:A4)
+  F26 stored as: _xlfn.XMATCH("North",A2:A7)
+  F41 stored as: MONTH(D6)
+
+== compared against the values LibreOffice cached in the file ==
+agree       = 62
+disagree    = 0
+unsupported = 0

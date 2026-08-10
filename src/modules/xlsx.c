@@ -1616,6 +1616,59 @@ static double xlsx_serial_from_civil(long y, unsigned m, unsigned d) {
     return s;
 }
 
+/* A date ARGUMENT: already a serial, or text Excel would coerce to one.
+ * Kept separate from xlsx_as_num rather than folded into it, so that widening
+ * what counts as a number cannot quietly change the meaning of ordinary
+ * arithmetic elsewhere in the evaluator. */
+static int xlsx_as_serial(XlsxVal v, double *out);
+
+static long xlsx_days_in_month(long y, unsigned m) {
+    static const int len[13] = {0,31,28,31,30,31,30,31,31,30,31,30,31};
+    if (m < 1 || m > 12) return 30;
+    if (m == 2) {
+        int leap = (y % 4 == 0 && y % 100 != 0) || (y % 400 == 0);
+        return leap ? 29 : 28;
+    }
+    return len[m];
+}
+
+/* The inverse of xlsx_serial_from_civil (Hinnant's civil_from_days). Returns 0
+ * for a serial inside the range the 1900 leap-year bug makes ambiguous, so a
+ * date function refuses rather than answering one day out. */
+static int xlsx_civil_from_serial(double serial, long *y, long *m, long *d) {
+    if (serial < XLSX_SERIAL_1900_03_01) return 0;
+    long z = (long)serial - XLSX_EPOCH_1970 + 719468L;
+    long era = (z >= 0 ? z : z - 146096) / 146097;
+    unsigned long doe = (unsigned long)(z - era * 146097L);
+    unsigned long yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    long yy = (long)yoe + era * 400;
+    unsigned long doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    unsigned long mp = (5 * doy + 2) / 153;
+    unsigned long dd = doy - (153 * mp + 2) / 5 + 1;
+    unsigned long mm = mp + (mp < 10 ? 3 : -9);
+    *y = yy + (mm <= 2);
+    *m = (long)mm;
+    *d = (long)dd;
+    return 1;
+}
+
+static int xlsx_as_serial(XlsxVal v, double *out) {
+    if (v.kind == XV_NUM || v.kind == XV_BOOL || v.kind == XV_EMPTY) {
+        return xlsx_as_num(v, out);
+    }
+    if (v.kind != XV_STR || !v.str) return 0;
+    long y = 0, m = 0, d = 0;
+    if (sscanf(v.str, "%ld-%ld-%ld", &y, &m, &d) == 3 ||
+        sscanf(v.str, "%ld/%ld/%ld", &m, &d, &y) == 3) {
+        if (m < 1 || m > 12 || d < 1 || d > xlsx_days_in_month(y, (unsigned)m)) return 0;
+        double s = xlsx_serial_from_civil(y, (unsigned)m, (unsigned)d);
+        if (s < 0) return 0;
+        *out = s;
+        return 1;
+    }
+    return xlsx_as_num(v, out);
+}
+
 /* The current instant as an Excel serial, in LOCAL time -- Excel's NOW() is
  * local, and a UTC answer would be a day out for half the world near midnight.
  *
@@ -1651,6 +1704,128 @@ static double xlsx_now_serial(void) {
     return day + frac;
 }
 
+/* ------------------------------------------------- post-2001 function naming
+ *
+ * A function newer than the original ECMA-376 function list is not stored under
+ * its own name. Excel writes it with a FUTURE-FUNCTION PREFIX so that an older
+ * reader cannot mistake it for something it knows:
+ *
+ *     XLOOKUP(...)      is stored as  _xlfn.XLOOKUP(...)
+ *     SORT(...)         is stored as  _xlfn._xlws.SORT(...)     worksheet-only
+ *     LET(x, A1, x*2)   is stored as  _xlfn.LET(_xlpm.x, A1, _xlpm.x*2)
+ *
+ * The split is by SCHEMA VERSION, not by release year, which is why the
+ * 2007-era additions -- IFERROR, SUMIFS, COUNTIFS, AVERAGEIFS, EOMONTH,
+ * YEARFRAC, NETWORKDAYS -- carry no prefix at all while STDEV.S and IFNA do.
+ * Verified by generating each one and reading the bytes back, not assumed.
+ *
+ * Stripping these is a precondition for supporting ANY modern function: without
+ * it every one of them is an unknown name however well it is implemented.
+ *
+ * What must NOT be stripped: `_xll.` (a third-party add-in, e.g. Enron's
+ * _xll.HPVAL, 9,240 uses in the corpus) and `_xludf.` (a VBA user-defined
+ * function). Those genuinely cannot be evaluated, and reporting them by their
+ * real name is the point -- they are the 3.0% ceiling in §13.I. */
+static const char *xlsx_strip_future_prefix(const char *name) {
+    for (;;) {
+        if (strncasecmp(name, "_xlfn.", 6) == 0) { name += 6; continue; }
+        if (strncasecmp(name, "_xlws.", 6) == 0) { name += 6; continue; }
+        break;
+    }
+    return name;
+}
+
+/* ------------------------------------------------------ criteria matching
+ *
+ * Shared by the whole IF-criteria family (SUMIF, SUMIFS, and kin). A criterion is a VALUE with an optional
+ * leading comparison operator, all inside one string: ">4", "<>x", "apple",
+ * "<=2026-01-01". A bare value means equality.
+ *
+ * Two rules that are easy to get wrong and silently produce plausible totals:
+ *   * a NUMERIC criterion compares numerically, so ">4" matches 12 -- string
+ *     comparison would put "12" before "4" and quietly drop it;
+ *   * text comparison is CASE-INSENSITIVE in Excel, so "apple" matches "Apple".
+ *
+ * Wildcards (* and ?) are supported for text equality, since a criterion like
+ * "Loan*" is ordinary in exactly the report-shaped work this is for. */
+static int xlsx_wild_match(const char *pat, const char *s) {
+    /* Iterative backtracking: no recursion, so a pathological pattern cannot
+     * blow the stack the way the JSON parser once did. */
+    const char *star = NULL, *ss = s;
+    while (*s) {
+        if (*pat == '~' && (pat[1] == '*' || pat[1] == '?')) {
+            /* ~ escapes a literal * or ? in Excel criteria. */
+            if (tolower((unsigned char)pat[1]) != tolower((unsigned char)*s)) {
+                if (!star) return 0;
+                pat = star + 1; s = ++ss; continue;
+            }
+            pat += 2; s++; continue;
+        }
+        if (*pat == '?' || tolower((unsigned char)*pat) == tolower((unsigned char)*s)) {
+            pat++; s++; continue;
+        }
+        if (*pat == '*') { star = pat++; ss = s; continue; }
+        if (star) { pat = star + 1; s = ++ss; continue; }
+        return 0;
+    }
+    while (*pat == '*') pat++;
+    return *pat == '\0';
+}
+
+static int xlsx_criteria_match(XlsxVal v, const char *crit) {
+    if (!crit) return 0;
+    /* Split off a leading comparison operator. */
+    int op = '='; size_t skip = 0;
+    if (crit[0] == '>' && crit[1] == '=') { op = 'G'; skip = 2; }
+    else if (crit[0] == '<' && crit[1] == '=') { op = 'L'; skip = 2; }
+    else if (crit[0] == '<' && crit[1] == '>') { op = 'N'; skip = 2; }
+    else if (crit[0] == '>') { op = '>'; skip = 1; }
+    else if (crit[0] == '<') { op = '<'; skip = 1; }
+    else if (crit[0] == '=') { op = '='; skip = 1; }
+    const char *rhs = crit + skip;
+
+    /* Numeric comparison when the criterion's value is a number AND the cell
+     * holds one. An empty cell participates in no comparison but equality
+     * against an empty criterion. */
+    char *end = NULL;
+    double rnum = strtod(rhs, &end);
+    int rhs_numeric = end && end != rhs && *end == '\0';
+
+    if (rhs_numeric && (v.kind == XV_NUM || v.kind == XV_BOOL)) {
+        double x = v.num;
+        switch (op) {
+        case '>': return x > rnum;
+        case '<': return x < rnum;
+        case 'G': return x >= rnum;
+        case 'L': return x <= rnum;
+        case 'N': return x != rnum;
+        default:  return x == rnum;
+        }
+    }
+
+    /* Otherwise compare as text, case-insensitively. */
+    char buf[256];
+    xlsx_to_text(v, buf, sizeof buf);
+    if (v.kind == XV_EMPTY) buf[0] = '\0';
+    if (op == '=' || op == 'N') {
+        int eq;
+        if (strpbrk(rhs, "*?")) eq = xlsx_wild_match(rhs, buf);
+        else eq = strcasecmp(buf, rhs) == 0;
+        /* An empty cell does not satisfy "not equal to X" in Excel. */
+        if (op == 'N') return v.kind == XV_EMPTY ? 0 : !eq;
+        return eq;
+    }
+    if (v.kind == XV_EMPTY) return 0;
+    int c = strcasecmp(buf, rhs);
+    switch (op) {
+    case '>': return c > 0;
+    case '<': return c < 0;
+    case 'G': return c >= 0;
+    case 'L': return c <= 0;
+    default:  return 0;
+    }
+}
+
 /* Does this cell hold a SUBTOTAL formula? SUBTOTAL ignores nested SUBTOTALs in
  * its range, which is the whole reason the function exists rather than SUM: a
  * grand total can span a column that already contains per-group subtotals
@@ -1663,7 +1838,11 @@ static int xlsx_cell_is_subtotal(const XlsxSnapCell *c) {
     return strncasecmp(p, "SUBTOTAL", 8) == 0;
 }
 
-static XlsxVal xlsx_call(XlsxEval *ev, const char *name) {
+static XlsxVal xlsx_call(XlsxEval *ev, const char *raw_name) {
+    /* Resolve the on-disk spelling to the function's real name before anything
+     * else looks at it, so every dispatch below -- and the unsupported report
+     * -- sees XLOOKUP rather than _xlfn.XLOOKUP. */
+    const char *name = xlsx_strip_future_prefix(raw_name);
     XlsxVal *args = NULL;
     const XlsxSnapCell **srcs = NULL;
     size_t n = 0, cap = 0;
@@ -1675,25 +1854,46 @@ static XlsxVal xlsx_call(XlsxEval *ev, const char *name) {
      * entirely plausible. */
     xlsx_lex_next(&ev->lx);              /* cur == '(' */
     xlsx_lex_next(&ev->lx);              /* cur == first argument, or ')' */
+    /* ARGUMENT BOUNDARIES. A range argument expands to many values, so the flat
+     * list alone cannot say which argument a value came from -- and the
+     * IF-criteria family is defined by walking two or more ranges IN PARALLEL.
+     * argoff[k] is where argument k starts; argoff[argc] is n. */
+    size_t *argoff = NULL, argc = 0, argcap = 0;
     if (ev->lx.cur.kind != XT_RPAREN) {
         for (;;) {
+            if (argc == argcap) {
+                argcap = argcap ? argcap * 2 : 8;
+                size_t *g = realloc(argoff, (argcap + 1) * sizeof *g);
+                if (!g) abort();
+                argoff = g;
+            }
+            argoff[argc++] = n;
             xlsx_arg_values(ev, &args, want_srcs ? &srcs : NULL, &n, &cap);
             if (ev->lx.cur.kind != XT_COMMA) break;
             xlsx_lex_next(&ev->lx);
         }
     }
+    if (argoff) argoff[argc] = n;
+    /* Length of argument k, and its first value -- the two accessors every
+     * criteria function below is written in terms of. */
+    #define ARG_LEN(k)  ((k) < argc ? argoff[(k) + 1] - argoff[(k)] : 0)
+    #define ARG_AT(k,i) (args[argoff[(k)] + (i)])
     if (ev->lx.cur.kind == XT_RPAREN) xlsx_lex_next(&ev->lx);
 
     XlsxVal out = xv_err("#NAME?");
 
     /* Any error among the arguments propagates, which is Excel's rule and the
      * reason an error is its own kind rather than a string. */
-    for (size_t i = 0; i < n; i++) {
+    /* The error-CATCHING functions must see their arguments, errors and all;
+     * everything else propagates the first error it was handed, which is
+     * Excel's rule and the reason an error is its own value kind. */
+    int catches_errors = strcmp(name, "IFERROR") == 0 || strcmp(name, "IFNA") == 0 ||
+                         strcmp(name, "ISERROR") == 0 || strcmp(name, "ISERR") == 0 ||
+                         strcmp(name, "ISNA") == 0 || strcmp(name, "AGGREGATE") == 0;
+    for (size_t i = 0; i < n && !catches_errors; i++) {
         if (args[i].kind == XV_ERR) {
-            if (strcmp(name, "IFERROR") != 0) {
-                out = xv_err(args[i].str);
-                goto done;
-            }
+            out = xv_err(args[i].str);
+            goto done;
         }
     }
 
@@ -1758,6 +1958,207 @@ static XlsxVal xlsx_call(XlsxEval *ev, const char *name) {
         out = xv_bool(1);
     } else if (strcmp(name, "FALSE") == 0) {
         out = xv_bool(0);
+    } else if (strcmp(name, "SUMIF") == 0 || strcmp(name, "AVERAGEIF") == 0 ||
+               strcmp(name, "COUNTIF") == 0) {
+        /* The single-criterion forms, whose argument order is the ODD one:
+         *     SUMIF(range, criteria, [sum_range])
+         * with the aggregated range LAST and optional, where the *IFS forms
+         * below put it first and require it. Mixing the two up yields a
+         * confident wrong total, so they are implemented separately rather
+         * than folded together. */
+        char crit[256];
+        if (argc < 2) { out = xv_err("#VALUE!"); goto done; }
+        xlsx_to_text(ARG_AT(1, 0), crit, sizeof crit);
+        size_t rn = ARG_LEN(0);
+        int have_agg = argc >= 3;
+        double total = 0; long cnt = 0;
+        for (size_t i = 0; i < rn; i++) {
+            if (!xlsx_criteria_match(ARG_AT(0, i), crit)) continue;
+            if (strcmp(name, "COUNTIF") == 0) { cnt++; continue; }
+            /* The aggregated cell is the one at the SAME OFFSET in the other
+             * range; a shorter sum_range simply has no cell there. */
+            XlsxVal a = have_agg ? (i < ARG_LEN(2) ? ARG_AT(2, i) : xv_empty())
+                                 : ARG_AT(0, i);
+            if (a.kind == XV_NUM || a.kind == XV_BOOL) { total += a.num; cnt++; }
+        }
+        if (strcmp(name, "COUNTIF") == 0) out = xv_num((double)cnt);
+        else if (strcmp(name, "AVERAGEIF") == 0)
+            out = cnt ? xv_num(total / (double)cnt) : xv_err("#DIV/0!");
+        else out = xv_num(total);
+    } else if (strcmp(name, "SUMIFS") == 0 || strcmp(name, "AVERAGEIFS") == 0 ||
+               strcmp(name, "COUNTIFS") == 0 || strcmp(name, "MAXIFS") == 0 ||
+               strcmp(name, "MINIFS") == 0) {
+        /* The multi-criteria forms. COUNTIFS is pairs only; the rest lead with
+         * the range being aggregated:
+         *     SUMIFS(sum_range, crit_range1, crit1, crit_range2, crit2, ...)
+         *     COUNTIFS(crit_range1, crit1, ...)
+         * A row counts only when EVERY criterion matches at that offset. */
+        int counting = strcmp(name, "COUNTIFS") == 0;
+        size_t first_pair = counting ? 0 : 1;
+        if (argc < first_pair + 2 || ((argc - first_pair) % 2) != 0) {
+            out = xv_err("#VALUE!"); goto done;
+        }
+        size_t rows = counting ? ARG_LEN(0) : ARG_LEN(1);
+        double total = 0, best = 0; long cnt = 0; int seen = 0;
+        int is_max = strcmp(name, "MAXIFS") == 0, is_min = strcmp(name, "MINIFS") == 0;
+        for (size_t i = 0; i < rows; i++) {
+            int all = 1;
+            for (size_t p = first_pair; p + 1 < argc && all; p += 2) {
+                char crit[256];
+                xlsx_to_text(ARG_AT(p + 1, 0), crit, sizeof crit);
+                if (i >= ARG_LEN(p) || !xlsx_criteria_match(ARG_AT(p, i), crit)) all = 0;
+            }
+            if (!all) continue;
+            if (counting) { cnt++; continue; }
+            XlsxVal a = i < ARG_LEN(0) ? ARG_AT(0, i) : xv_empty();
+            if (a.kind != XV_NUM && a.kind != XV_BOOL) continue;
+            total += a.num; cnt++;
+            if (!seen || (is_min ? a.num < best : a.num > best)) { best = a.num; seen = 1; }
+        }
+        if (counting) out = xv_num((double)cnt);
+        else if (is_max || is_min) out = xv_num(seen ? best : 0);
+        else if (strcmp(name, "AVERAGEIFS") == 0)
+            out = cnt ? xv_num(total / (double)cnt) : xv_err("#DIV/0!");
+        else out = xv_num(total);
+    } else if (strcmp(name, "IFNA") == 0) {
+        /* Narrower than IFERROR on purpose: only #N/A is caught, so a genuine
+         * #VALUE! still surfaces instead of being swallowed by a lookup guard. */
+        if (n >= 2) {
+            int is_na = args[0].kind == XV_ERR && args[0].str &&
+                        strcmp(args[0].str, "#N/A") == 0;
+            size_t take = is_na ? 1 : 0;
+            out = args[take];
+            args[take] = xv_empty();
+        } else out = xv_err("#VALUE!");
+    } else if (strcmp(name, "NA") == 0) {
+        out = xv_err("#N/A");
+    } else if (strcmp(name, "XOR") == 0) {
+        long t = 0;
+        for (size_t i = 0; i < n; i++) {
+            double x = 0;
+            if (xlsx_as_num(args[i], &x) && x != 0) t++;
+        }
+        out = xv_bool((int)(t & 1));
+    } else if (strcmp(name, "IFS") == 0) {
+        /* Condition/value pairs, first true wins. No else branch: Excel returns
+         * #N/A when nothing matches, which authors emulate with a final TRUE. */
+        out = xv_err("#N/A");
+        for (size_t i = 0; i + 1 < n; i += 2) {
+            double c = 0;
+            if (xlsx_as_num(args[i], &c) && c != 0) {
+                out = args[i + 1]; args[i + 1] = xv_empty();
+                break;
+            }
+        }
+    } else if (strcmp(name, "SWITCH") == 0) {
+        /* SWITCH(expr, v1, r1, v2, r2, ..., [default]) -- a trailing odd
+         * argument is the default. */
+        out = xv_err("#N/A");
+        char want[256];
+        xlsx_to_text(n ? args[0] : xv_empty(), want, sizeof want);
+        size_t i = 1;
+        int matched = 0;
+        for (; i + 1 < n; i += 2) {
+            char have[256];
+            xlsx_to_text(args[i], have, sizeof have);
+            if (strcasecmp(want, have) == 0) {
+                out = args[i + 1]; args[i + 1] = xv_empty();
+                matched = 1;
+                break;
+            }
+        }
+        if (!matched && n >= 2 && ((n - 1) % 2) == 1) {
+            out = args[n - 1]; args[n - 1] = xv_empty();
+        }
+    } else if (strcmp(name, "CONCAT") == 0 || strcmp(name, "CONCATENATE") == 0) {
+        /* CONCAT takes ranges; CONCATENATE (the older name) takes single
+         * values. Both flatten to the same list here, so one body serves. */
+        size_t len = 0;
+        char *buf = malloc(1); buf[0] = '\0';
+        for (size_t i = 0; i < n; i++) {
+            char piece[256];
+            xlsx_to_text(args[i], piece, sizeof piece);
+            size_t pl = strlen(piece);
+            char *g = realloc(buf, len + pl + 1);
+            if (!g) abort();
+            buf = g;
+            memcpy(buf + len, piece, pl + 1);
+            len += pl;
+        }
+        out = xv_str(buf);
+        free(buf);
+    } else if (strcmp(name, "TEXTJOIN") == 0) {
+        /* TEXTJOIN(delimiter, ignore_empty, text...) */
+        if (argc < 3) { out = xv_err("#VALUE!"); goto done; }
+        char delim[128];
+        xlsx_to_text(ARG_AT(0, 0), delim, sizeof delim);
+        double ig = 0;
+        xlsx_as_num(ARG_AT(1, 0), &ig);
+        size_t len = 0;
+        char *buf = malloc(1); buf[0] = '\0';
+        int first = 1;
+        for (size_t k = 2; k < argc; k++) {
+            for (size_t i = 0; i < ARG_LEN(k); i++) {
+                XlsxVal v = ARG_AT(k, i);
+                if (ig != 0 && v.kind == XV_EMPTY) continue;
+                char piece[256];
+                xlsx_to_text(v, piece, sizeof piece);
+                if (ig != 0 && !*piece) continue;
+                size_t dl = first ? 0 : strlen(delim), pl = strlen(piece);
+                char *g = realloc(buf, len + dl + pl + 1);
+                if (!g) abort();
+                buf = g;
+                if (dl) { memcpy(buf + len, delim, dl); len += dl; }
+                memcpy(buf + len, piece, pl + 1);
+                len += pl;
+                first = 0;
+            }
+        }
+        out = xv_str(buf);
+        free(buf);
+    } else if (strcmp(name, "XLOOKUP") == 0 || strcmp(name, "XMATCH") == 0) {
+        /* XLOOKUP(lookup, lookup_array, return_array, [if_not_found])
+         * XMATCH(lookup, lookup_array)
+         *
+         * Only EXACT match is implemented -- which is XLOOKUP's default, unlike
+         * VLOOKUP's. The approximate and binary-search modes take a match_mode
+         * argument; rather than ignore it and return a plausible neighbour,
+         * anything other than exact is refused by name below. */
+        int is_match = strcmp(name, "XMATCH") == 0;
+        if (argc < 2) { out = xv_err("#VALUE!"); goto done; }
+        double mode = 0;
+        size_t mode_arg = is_match ? 2 : 3;
+        int has_mode = 0;
+        if (!is_match && argc >= 5) { xlsx_as_num(ARG_AT(4, 0), &mode); has_mode = 1; }
+        if (is_match && argc >= 3) { xlsx_as_num(ARG_AT(mode_arg, 0), &mode); has_mode = 1; }
+        if (has_mode && mode != 0) {
+            ev->unsupported = 1;
+            snprintf(ev->unsupported_name, sizeof ev->unsupported_name,
+                     "%s (match_mode %g)", name, mode);
+            out = xv_err("#NAME?");
+            goto done;
+        }
+        char want[256];
+        xlsx_to_text(ARG_AT(0, 0), want, sizeof want);
+        size_t ln = ARG_LEN(1);
+        long hit = -1;
+        for (size_t i = 0; i < ln; i++) {
+            char have[256];
+            xlsx_to_text(ARG_AT(1, i), have, sizeof have);
+            if (strcasecmp(want, have) == 0) { hit = (long)i; break; }
+        }
+        if (hit < 0) {
+            /* XLOOKUP's 4th argument is the not-found value; without one both
+             * functions give #N/A. */
+            if (!is_match && argc >= 4) { out = ARG_AT(3, 0); ARG_AT(3, 0) = xv_empty(); }
+            else out = xv_err("#N/A");
+        } else if (is_match) {
+            out = xv_num((double)hit + 1);        /* 1-based, like MATCH */
+        } else if (argc >= 3 && (size_t)hit < ARG_LEN(2)) {
+            out = ARG_AT(2, (size_t)hit); ARG_AT(2, (size_t)hit) = xv_empty();
+        } else {
+            out = xv_err("#REF!");
+        }
     } else if (strcmp(name, "SUBTOTAL") == 0) {
         /* SUBTOTAL(function_num, ref1, ...). Rank 2 in the corpus build order
          * (+316 fully-recalculable workbooks, docs/xlsx_design.md §13.I).
@@ -1839,6 +2240,289 @@ static XlsxVal xlsx_call(XlsxEval *ev, const char *name) {
                 }
             }
         }
+    } else if (strcmp(name, "MEDIAN") == 0 || strcmp(name, "PERCENTILE") == 0 ||
+               strcmp(name, "PERCENTILE.INC") == 0 || strcmp(name, "QUARTILE") == 0 ||
+               strcmp(name, "QUARTILE.INC") == 0 || strcmp(name, "SMALL") == 0 ||
+               strcmp(name, "LARGE") == 0) {
+        /* Order statistics. The 2010 renames (PERCENTILE -> PERCENTILE.INC and
+         * kin) are the SAME function under a new name -- Excel split each into
+         * .INC/.EXC and kept the old spelling as the inclusive one -- so they
+         * share a body rather than being reimplemented. */
+        size_t rn = ARG_LEN(0);
+        double *v = malloc((rn ? rn : 1) * sizeof *v);
+        if (!v) abort();
+        size_t m = 0;
+        for (size_t i = 0; i < rn; i++)
+            if (ARG_AT(0, i).kind == XV_NUM || ARG_AT(0, i).kind == XV_BOOL)
+                v[m++] = ARG_AT(0, i).num;
+        if (!m) { free(v); out = xv_err("#NUM!"); goto done; }
+        for (size_t i = 1; i < m; i++) {           /* insertion sort: m is small */
+            double x = v[i]; size_t j = i;
+            while (j && v[j - 1] > x) { v[j] = v[j - 1]; j--; }
+            v[j] = x;
+        }
+        double p = 0.5;
+        int ok = 1;
+        if (strcmp(name, "MEDIAN") == 0) p = 0.5;
+        else if (strncmp(name, "QUARTILE", 8) == 0) {
+            double q = 0;
+            if (argc < 2 || !xlsx_as_num(ARG_AT(1, 0), &q) || q < 0 || q > 4) ok = 0;
+            p = q / 4.0;
+        } else if (strcmp(name, "SMALL") == 0 || strcmp(name, "LARGE") == 0) {
+            double k = 0;
+            if (argc < 2 || !xlsx_as_num(ARG_AT(1, 0), &k) || k < 1 || k > (double)m) ok = 0;
+            else {
+                size_t idx = strcmp(name, "SMALL") == 0 ? (size_t)k - 1 : m - (size_t)k;
+                out = xv_num(v[idx]);
+                free(v);
+                goto done;
+            }
+        } else {
+            if (argc < 2 || !xlsx_as_num(ARG_AT(1, 0), &p) || p < 0 || p > 1) ok = 0;
+        }
+        if (!ok) { free(v); out = xv_err("#NUM!"); goto done; }
+        /* Inclusive percentile: linear interpolation between order statistics. */
+        double pos = p * (double)(m - 1);
+        size_t lo = (size_t)floor(pos);
+        double frac = pos - (double)lo;
+        double res = (lo + 1 < m) ? v[lo] + frac * (v[lo + 1] - v[lo]) : v[m - 1];
+        free(v);
+        out = xv_num(res);
+    } else if (strcmp(name, "STDEV") == 0 || strcmp(name, "STDEV.S") == 0 ||
+               strcmp(name, "STDEVP") == 0 || strcmp(name, "STDEV.P") == 0 ||
+               strcmp(name, "VAR") == 0 || strcmp(name, "VAR.S") == 0 ||
+               strcmp(name, "VARP") == 0 || strcmp(name, "VAR.P") == 0) {
+        /* Sample forms divide by n-1, population forms by n. STDEV.S/STDEV.P
+         * are the 2010 renames of STDEV/STDEVP. */
+        int pop = strcmp(name, "STDEVP") == 0 || strcmp(name, "STDEV.P") == 0 ||
+                  strcmp(name, "VARP") == 0 || strcmp(name, "VAR.P") == 0;
+        int want_sd = strncmp(name, "STDEV", 5) == 0;
+        double sum = 0; long cnt = 0;
+        for (size_t i = 0; i < n; i++)
+            if (args[i].kind == XV_NUM || args[i].kind == XV_BOOL) { sum += args[i].num; cnt++; }
+        if (cnt < (pop ? 1 : 2)) { out = xv_err("#DIV/0!"); goto done; }
+        double mean = sum / (double)cnt, ss = 0;
+        for (size_t i = 0; i < n; i++)
+            if (args[i].kind == XV_NUM || args[i].kind == XV_BOOL) {
+                double d0 = args[i].num - mean; ss += d0 * d0;
+            }
+        double var = ss / (double)(pop ? cnt : cnt - 1);
+        out = xv_num(want_sd ? sqrt(var) : var);
+    } else if (strcmp(name, "RANK") == 0 || strcmp(name, "RANK.EQ") == 0) {
+        /* RANK.EQ is the 2010 rename of RANK. Order 0 (default) ranks
+         * descending, anything else ascending; ties share the better rank. */
+        double x = 0, order = 0;
+        if (argc < 2 || !xlsx_as_num(ARG_AT(0, 0), &x)) { out = xv_err("#VALUE!"); goto done; }
+        if (argc >= 3) xlsx_as_num(ARG_AT(2, 0), &order);
+        long better = 0, found = 0;
+        for (size_t i = 0; i < ARG_LEN(1); i++) {
+            XlsxVal c = ARG_AT(1, i);
+            if (c.kind != XV_NUM && c.kind != XV_BOOL) continue;
+            if (c.num == x) found = 1;
+            if (order == 0 ? c.num > x : c.num < x) better++;
+        }
+        out = found ? xv_num((double)better + 1) : xv_err("#N/A");
+    } else if (strcmp(name, "AGGREGATE") == 0) {
+        /* AGGREGATE(fn, options, range...) -- SUBTOTAL's successor, adding
+         * ERROR SKIPPING via the options argument, which is why it is in the
+         * error-catching list above. Options 2/3/6/7 ignore errors; the
+         * reference forms (fn 14-19) take an extra k argument and are refused
+         * by name rather than approximated. */
+        double fn = 0, opt = 0;
+        if (argc < 3 || !xlsx_as_num(ARG_AT(0, 0), &fn) || !xlsx_as_num(ARG_AT(1, 0), &opt)) {
+            out = xv_err("#VALUE!"); goto done;
+        }
+        int op = (int)fn;
+        if (op > 13) {
+            ev->unsupported = 1;
+            snprintf(ev->unsupported_name, sizeof ev->unsupported_name,
+                     "AGGREGATE (function %d)", op);
+            out = xv_err("#NAME?");
+            goto done;
+        }
+        int o = (int)opt;
+        int skip_err = (o == 2 || o == 3 || o == 6 || o == 7);
+        double total = 0, best = 0, prod = 1;
+        long cnt = 0, cnt_all = 0; int seen = 0;
+        for (size_t k = 2; k < argc; k++) {
+            for (size_t i = 0; i < ARG_LEN(k); i++) {
+                XlsxVal a = ARG_AT(k, i);
+                if (a.kind == XV_ERR) {
+                    if (skip_err) continue;
+                    out = xv_err(a.str); goto done;
+                }
+                if (a.kind != XV_EMPTY) cnt_all++;
+                if (a.kind != XV_NUM && a.kind != XV_BOOL) continue;
+                total += a.num; cnt++; prod *= a.num;
+                if (!seen || (op == 5 ? a.num < best : a.num > best)) { best = a.num; seen = 1; }
+            }
+        }
+        switch (op) {
+        case 1:  out = cnt ? xv_num(total / (double)cnt) : xv_err("#DIV/0!"); break;
+        case 2:  out = xv_num((double)cnt); break;
+        case 3:  out = xv_num((double)cnt_all); break;
+        case 4:  case 5: out = xv_num(seen ? best : 0); break;
+        case 6:  out = xv_num(cnt ? prod : 0); break;
+        case 9:  out = xv_num(total); break;
+        default:
+            ev->unsupported = 1;
+            snprintf(ev->unsupported_name, sizeof ev->unsupported_name,
+                     "AGGREGATE (function %d)", op);
+            out = xv_err("#NAME?");
+            break;
+        }
+    } else if (strcmp(name, "TEXTBEFORE") == 0 || strcmp(name, "TEXTAFTER") == 0) {
+        char hay[512], nee[256];
+        if (argc < 2) { out = xv_err("#VALUE!"); goto done; }
+        xlsx_to_text(ARG_AT(0, 0), hay, sizeof hay);
+        xlsx_to_text(ARG_AT(1, 0), nee, sizeof nee);
+        const char *at = *nee ? strstr(hay, nee) : NULL;
+        if (!at) { out = xv_err("#N/A"); goto done; }
+        if (strcmp(name, "TEXTBEFORE") == 0) {
+            size_t len = (size_t)(at - hay);
+            char *b = malloc(len + 1);
+            memcpy(b, hay, len); b[len] = '\0';
+            out = xv_str(b); free(b);
+        } else {
+            out = xv_str(at + strlen(nee));
+        }
+    } else if (strcmp(name, "ISOWEEKNUM") == 0) {
+        /* ISO 8601: week 1 is the one containing the first Thursday, and weeks
+         * start on Monday. Computed by shifting to that week's Thursday, which
+         * avoids the year-boundary special cases entirely. */
+        double s = 0;
+        if (n < 1 || !xlsx_as_serial(args[0], &s)) { out = xv_err("#VALUE!"); goto done; }
+        long ser = (long)floor(s);
+        long dow_mon = ((ser - 1) % 7 + 7) % 7;      /* 0=Sun */
+        long iso_dow = dow_mon == 0 ? 7 : dow_mon;   /* 1=Mon .. 7=Sun */
+        long thursday = ser - iso_dow + 4;
+        long y, m, d;
+        if (!xlsx_civil_from_serial((double)thursday, &y, &m, &d)) { out = xv_err("#NUM!"); goto done; }
+        double jan1 = xlsx_serial_from_civil(y, 1, 1);
+        out = xv_num(floor(((double)thursday - jan1) / 7.0) + 1);
+    } else if (strcmp(name, "NETWORKDAYS") == 0) {
+        /* Whole weekdays between two dates, inclusive, less any listed
+         * holidays that fall on a weekday inside the range. */
+        double a = 0, b = 0;
+        if (argc < 2 || !xlsx_as_serial(ARG_AT(0, 0), &a) || !xlsx_as_serial(ARG_AT(1, 0), &b)) {
+            out = xv_err("#VALUE!"); goto done;
+        }
+        long s0 = (long)floor(a), s1 = (long)floor(b), sign = 1;
+        if (s0 > s1) { long t = s0; s0 = s1; s1 = t; sign = -1; }
+        long days = 0;
+        for (long k = s0; k <= s1; k++) {
+            long dow = ((k - 1) % 7 + 7) % 7;        /* 0=Sun, 6=Sat */
+            if (dow == 0 || dow == 6) continue;
+            int holiday = 0;
+            for (size_t h = 2; h < argc && !holiday; h++)
+                for (size_t i = 0; i < ARG_LEN(h); i++) {
+                    double hv = 0;
+                    if (xlsx_as_serial(ARG_AT(h, i), &hv) && (long)floor(hv) == k) { holiday = 1; break; }
+                }
+            if (!holiday) days++;
+        }
+        out = xv_num((double)(days * sign));
+    } else if (strcmp(name, "YEARFRAC") == 0) {
+        /* Day-count conventions. Basis 0 (US 30/360) is the default and the one
+         * amortization schedules use; 2 and 3 are simple actual/360 and
+         * actual/365; 4 is the European 30/360.
+         *
+         * Basis 1 (actual/actual) is REFUSED rather than approximated: its
+         * denominator rule is intricate and getting it subtly wrong produces a
+         * plausible interest figure, which is precisely the failure this module
+         * refuses to make. */
+        double a = 0, b = 0, basis = 0;
+        if (argc < 2 || !xlsx_as_serial(ARG_AT(0, 0), &a) || !xlsx_as_serial(ARG_AT(1, 0), &b)) {
+            out = xv_err("#VALUE!"); goto done;
+        }
+        if (argc >= 3) xlsx_as_num(ARG_AT(2, 0), &basis);
+        long s0 = (long)floor(a), s1 = (long)floor(b);
+        if (s0 > s1) { long t = s0; s0 = s1; s1 = t; }
+        long y1, m1, d1, y2, m2, d2;
+        if (!xlsx_civil_from_serial((double)s0, &y1, &m1, &d1) ||
+            !xlsx_civil_from_serial((double)s1, &y2, &m2, &d2)) { out = xv_err("#NUM!"); goto done; }
+        int ib = (int)basis;
+        if (ib == 0 || ib == 4) {
+            if (ib == 0) {
+                if (d1 == 31) d1 = 30;
+                if (d2 == 31 && d1 >= 30) d2 = 30;
+            } else {
+                if (d1 == 31) d1 = 30;
+                if (d2 == 31) d2 = 30;
+            }
+            double days = (double)((y2 - y1) * 360 + (m2 - m1) * 30 + (d2 - d1));
+            out = xv_num(days / 360.0);
+        } else if (ib == 2 || ib == 3) {
+            out = xv_num((double)(s1 - s0) / (ib == 2 ? 360.0 : 365.0));
+        } else {
+            ev->unsupported = 1;
+            snprintf(ev->unsupported_name, sizeof ev->unsupported_name,
+                     "YEARFRAC (basis %d)", ib);
+            out = xv_err("#NAME?");
+        }
+    } else if (strcmp(name, "EOMONTH") == 0 || strcmp(name, "EDATE") == 0) {
+        /* EOMONTH(start, months) / EDATE(start, months). Day-count work is what
+         * amortization schedules are made of, so these matter more for CECL
+         * than their corpus frequency suggests (§13.G).
+         *
+         * Both are month arithmetic on a SERIAL, which means converting back to
+         * a civil date, shifting, and converting forward -- adding 30*months
+         * would drift, and drift in a payment schedule is silent. */
+        double s = 0, mo = 0;
+        if (argc < 2 || !xlsx_as_serial(ARG_AT(0, 0), &s) || !xlsx_as_num(ARG_AT(1, 0), &mo)) {
+            out = xv_err("#VALUE!"); goto done;
+        }
+        long y, m, d;
+        if (!xlsx_civil_from_serial(floor(s), &y, &m, &d)) { out = xv_err("#NUM!"); goto done; }
+        long total = (y * 12 + (m - 1)) + (long)mo;
+        long ny = total / 12, nm = total % 12;
+        if (nm < 0) { nm += 12; ny -= 1; }
+        nm += 1;
+        long last = xlsx_days_in_month(ny, (unsigned)nm);
+        long nd = strcmp(name, "EOMONTH") == 0 ? last : (d < last ? d : last);
+        double ser = xlsx_serial_from_civil(ny, (unsigned)nm, (unsigned)nd);
+        out = ser < 0 ? xv_err("#NUM!") : xv_num(ser);
+    } else if (strcmp(name, "DAYS") == 0) {
+        double a = 0, b = 0;
+        if (argc >= 2 && xlsx_as_serial(ARG_AT(0, 0), &a) && xlsx_as_serial(ARG_AT(1, 0), &b))
+            out = xv_num(floor(a) - floor(b));
+        else out = xv_err("#VALUE!");
+    } else if (strcmp(name, "YEAR") == 0 || strcmp(name, "MONTH") == 0 ||
+               strcmp(name, "DAY") == 0) {
+        double s = 0;
+        long y, m, d;
+        if (n >= 1 && xlsx_as_serial(args[0], &s) && xlsx_civil_from_serial(floor(s), &y, &m, &d)) {
+            out = xv_num(strcmp(name, "YEAR") == 0 ? (double)y
+                       : strcmp(name, "MONTH") == 0 ? (double)m : (double)d);
+        } else out = xv_err("#VALUE!");
+    } else if (strcmp(name, "DATE") == 0) {
+        double y = 0, m = 0, d = 0;
+        if (n >= 3 && xlsx_as_num(args[0], &y) && xlsx_as_num(args[1], &m) &&
+            xlsx_as_num(args[2], &d)) {
+            /* Excel normalises out-of-range months and days, which is how
+             * DATE(y, m+1, 0) is used to mean "last day of month m". */
+            long total = ((long)y * 12) + ((long)m - 1);
+            long ny = total / 12, nm = total % 12;
+            if (nm < 0) { nm += 12; ny -= 1; }
+            double ser = xlsx_serial_from_civil(ny, (unsigned)nm + 1, 1);
+            out = ser < 0 ? xv_err("#NUM!") : xv_num(ser + ((long)d - 1));
+        } else out = xv_err("#VALUE!");
+    } else if (strcmp(name, "WEEKDAY") == 0) {
+        /* Serial 1 (1900-01-01) was a Sunday, so type 1 (Sun=1) is
+         * ((serial - 1) mod 7) + 1 -- and the 1900 leap-year bug does not
+         * disturb it, because the phantom day shifts every later serial by
+         * exactly one whole day. */
+        double s = 0, type = 1;
+        if (n < 1 || !xlsx_as_serial(args[0], &s)) { out = xv_err("#VALUE!"); goto done; }
+        if (n >= 2) xlsx_as_num(args[1], &type);
+        long ser = (long)floor(s);
+        long dow = ((ser - 1) % 7 + 7) % 7;         /* 0 = Sunday */
+        switch ((int)type) {
+        case 1:  out = xv_num((double)(dow + 1)); break;            /* Sun=1 */
+        case 2:  out = xv_num((double)((dow + 6) % 7 + 1)); break;  /* Mon=1 */
+        case 3:  out = xv_num((double)((dow + 6) % 7)); break;      /* Mon=0 */
+        default: out = xv_err("#NUM!"); break;
+        }
     } else if (strcmp(name, "NOW") == 0) {
         /* VOLATILE. Measured on the Enron corpus this is the single largest
          * coverage win available -- present in 16.3% of formula-bearing
@@ -1870,6 +2554,9 @@ done:
     for (size_t i = 0; i < n; i++) xv_free(args[i]);
     free(args);
     free(srcs);   /* borrowed pointers into the snapshot; only the array is ours */
+    free(argoff);
+    #undef ARG_LEN
+    #undef ARG_AT
     return out;
 }
 

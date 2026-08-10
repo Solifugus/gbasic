@@ -46,6 +46,7 @@ trap 'rm -rf "$out" "$err" "$tmp"' EXIT
 FIXTURE=examples/fixtures/xlsx/basic.xlsx
 MACRO_FIXTURE=examples/fixtures/xlsx/macro_sheet.xlsx
 SHARED_FIXTURE=examples/fixtures/xlsx/shared.xlsx
+MODERN_FIXTURE=examples/fixtures/xlsx/modern.xlsx
 
 # Degrade check: if the module was compiled out, the error must be the clean one.
 printf 'program main(args)\n  print xlsx.open("%s")\nend program\n' "$FIXTURE" >"$tmp/probe.bas"
@@ -435,6 +436,53 @@ if [ "$t4" -le 1200 ]; then
     printf 'PASS shape 40k-row sheet evaluated in %sms (ceiling 1200ms; linear scan needs ~2400ms)\n' "$t4"
 else
     printf 'FAIL shape 40k-row sheet took %sms, over the 1200ms ceiling; the (row,col) index may be gone\n' "$t4"
+    status=1
+fi
+
+
+# --- Tier 2f: post-2001 capabilities --------------------------------------------
+#
+# The corpus is 2001 and cannot contain one function added since, so everything
+# §13.I/J measures is about the durable core. This fixture covers the other half.
+# Its cached values were computed by LIBREOFFICE (tools/make_xlsx_modern_fixture.sh),
+# which makes xlsx.check here a comparison against an independent implementation
+# rather than against our own output -- the weakness every hand-written fixture
+# has. LibreOffice is not Excel, so this is strong evidence, not proof; the
+# fixture's arithmetic is also small enough to check by eye.
+printf -- '-- post-2001 functions (fixture computed by LibreOffice)\n'
+if timeout 120 ./gbasic examples/xlsx_modern_test.bas >"$out" 2>"$err" </dev/null; then
+    if diff -u examples/xlsx_modern_test.out "$out"; then
+        printf 'PASS examples/xlsx_modern_test.bas\n'
+    else
+        printf 'FAIL examples/xlsx_modern_test.bas (output differs)\n'
+        status=1
+    fi
+else
+    printf 'FAIL examples/xlsx_modern_test.bas (exit)\n'
+    cat "$err"
+    status=1
+fi
+
+# ZERO disagreements against the other implementation, asserted separately from
+# the golden -- a golden records whatever we produce, including a regression.
+printf 'program main(args)\n  wb = xlsx.open("%s")\n  r = xlsx.check(wb, xlsx.sheets(wb)[0])\n  print r.disagree\n  print r.unsupported\nend program\n' "$MODERN_FIXTURE" >"$tmp/mod.bas"
+mod_res=$(timeout 60 ./gbasic "$tmp/mod.bas" 2>/dev/null | tr '\n' ' ')
+if [ "$mod_res" = "0 0 " ]; then
+    printf 'PASS every post-2001 formula agrees with LibreOffice, none unsupported\n'
+else
+    printf 'FAIL post-2001 check: disagree/unsupported were "%s", want "0 0"\n' "$mod_res"
+    status=1
+fi
+
+# The future-function prefix must be STRIPPED for real functions and KEPT for
+# add-ins and VBA. Stripping _xll. would turn Enron's _xll.HPVAL (9,240 uses in
+# the corpus) into a call to a function named HPVAL that we would then report as
+# merely unimplemented -- hiding the fact that it is unevaluable in principle.
+printf 'program main(args)\n  wb = xlsx.open("%s")\n  print xlsx.cell(wb, xlsx.sheets(wb)[0], "F19").formula\nend program\n' "$MODERN_FIXTURE" >"$tmp/pfx.bas"
+if timeout 60 ./gbasic "$tmp/pfx.bas" 2>/dev/null | grep -q '^_xlfn\.CONCAT'; then
+    printf 'PASS the prefix survives in the FORMULA TEXT (only evaluation strips it)\n'
+else
+    printf 'FAIL the stored formula text should keep its _xlfn. prefix\n'
     status=1
 fi
 
