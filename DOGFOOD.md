@@ -880,3 +880,28 @@ D0.6, the rest remain open or are by-design.
   `xlsx.sheets`/`xlsx.cells` contradicting each other on macro sheets. That one
   was a real defect and is fixed, with the measurement recorded in
   `docs/xlsx_design.md` §13.I.
+
+## 2026-08-09 — CC — while: pinning NOW()/TODAY() in a golden test
+
+- **Type:** language-surprise
+- **Severity:** low
+- **What:** an Excel date serial cannot be golden-tested through `print`.
+  `print` renders numbers with roughly six significant digits, so the serial
+  46237.5674884 (2026-08-03 13:37:11) comes out as `46237.6`. A golden over the
+  raw value therefore pins the DAY and almost nothing else — the time of day,
+  which is the half most likely to be wrong, is rounded away before it can be
+  compared.
+
+  Not the same entry as the money/`%g` one already logged: that was about cents
+  being lost from a value someone would read. This is about a test being unable
+  to observe a difference the code genuinely computes.
+- **Workaround:** assert the two halves separately, each in a range `print` can
+  represent exactly — `floor(n)` for the day and
+  `floor((n - floor(n)) * 86400 + 0.5)` for the seconds of day. Both are small
+  integers, so the golden pins every digit. `tests/xlsx_volatile_test.bas`
+  documents the reasoning inline so the next person does not "simplify" it back
+  into printing the serial.
+- **Also worth knowing:** the underlying computation was verified correct to
+  full precision by cross-checking against LibreOffice, which is where the real
+  confidence comes from; the split assertion is what makes it *repeatable in
+  CI*.

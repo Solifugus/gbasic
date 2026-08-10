@@ -566,6 +566,99 @@ cost to cover", not "what will a 2026 CECL workbook need".
 `tools/xlsx_function_scan.bas` exists to answer the second question against real
 workbooks when some are available; it prints only names and counts.
 
+**J. Running the oracle over the corpus — and what counting functions could not
+see** (2026-08-09).
+
+§I ranked work by *function name*. Building the top of that list
+(`NOW`, `TODAY`, `SUBTOTAL`) and then pointing `xlsx.check` at all 15,871
+workbooks produced a result that reorders the roadmap, because the dominant
+defects were **not missing functions at all** — and a scan that counts
+`NAME(` tokens is structurally incapable of seeing any of them.
+
+*This is now a true oracle.* The figshare files were re-saved through Excel in
+2014, so their cached values are Excel's own output. Baseline over the whole
+corpus:
+
+| | |
+|---|---|
+| formula cells judged | 16,902,786 |
+| **agree** | **11,166,551 (66.1%)** |
+| disagree | 5,736,235 (33.9%) |
+| unsupported (named, skipped) | 3,710,388 |
+| volatile (skipped) | 121,178 |
+| workbooks with ZERO disagreements | 5,169 of 9,220 (56.1%) |
+
+**1. Shared formulas — 61% of workbooks, and we were CORRUPTING them.** Excel
+does not repeat a formula filled down a column. It writes the text once and
+gives the rest of the run an empty back-reference:
+
+```xml
+<c r="C2"><f t="shared" ref="C2:C6" si="0">A2*$B$1</f><v>20</v></c>
+<c r="C3"><f t="shared" si="0"/><v>30</v></c>
+```
+
+Read naively C3 has "a formula whose text is empty", which evaluates to
+`#VALUE!`. Since `xlsx.recalc` writes values back, it **replaced every such cell
+with `#VALUE!`** — measured at 171 cells on the first corpus file tried. This is
+not a corner: **13.2M of the 20.7M formula cells in the corpus are
+continuations**, so nearly two thirds of every formula cell was being read as
+empty, and 61.0% of formula-bearing workbooks contain at least one.
+
+Resolving one means translating the anchor's text by the offset between the
+cells — relative references shift, absolute (`$`) ones do not, and a
+reference-looking substring inside a string literal is text. Getting that wrong
+would be *worse* than not doing it, because the result is a plausible number
+computed from the wrong cells; hence a fixture with one column per rule
+(`examples/xlsx_shared_formula_test.bas`).
+
+*This also means §I's function ranking is measured on a biased sample* — the
+scanner only ever saw master and plain formulas, never the two-thirds of cells
+whose text lives elsewhere. The ranking is still the best available evidence
+about the durable core, but it is not a census of formula cells.
+
+**2. Cross-sheet references — 3.09M disagreements, the single largest cause.**
+`Map!$E$106`, `'[1]Date Master'!$B$1`. The evaluator holds one sheet's snapshot
+and cannot see another, so every one of these is `#VALUE!`. This is 54% of all
+disagreements and is now the top item of remaining work.
+
+**3. A formula yielding an EMPTY cell is 0, not empty** — 351,897 disagreements,
+about 6%, fixed by one line. `=Z50` where Z50 is blank displays 0 in Excel.
+Empty already coerced to 0 *inside* arithmetic; only the top-level result was
+wrong. Confirmed against LibreOffice, along with the three neighbouring cases
+that were already right (`Z50+1`→1, `Z50&"x"`→"x", `IF(Z50="",…)`→ the empty
+branch).
+
+**4. Defined names — ~145k.** `cappercentile`, `VALUEDATE`, `Tot_Cost`, and bare
+names used as operands (`ML`, `NB`). Workbook-level named ranges in
+`<definedNames>`, which we do not resolve. Invisible to a function-name scan for
+the same reason as everything above: they have no parentheses.
+
+*A performance defect the corpus also exposed.* Both cell lookups — the
+evaluator's and the dependency graph's — were linear scans over every cell, run
+inside per-formula loops, so the cost was the product. On
+`john_griffith__15586__Crude.xlsx` (182,752 cells, 50,343 formulas on one sheet)
+`xlsx.check` **did not finish in 300 seconds**, while merely reading the same
+file took 0.44s — so the cost was entirely the scans. A `(row,col)` hash index
+built once per snapshot took it to **2.7s**, and corpus throughput from 197 to
+6,477 workbooks per minute. Guarded by a CEILING rather than a ratio in
+`tests/run_xlsx.sh`, for a measured reason: with the linear scan restored the
+4x-size step reports 7.7–8.0x, which an 8x ratio gate would have passed.
+
+*Revised order of work,* by measured share of disagreements rather than by
+function frequency:
+
+| | cause | disagreements |
+|---|---|---|
+| 1 | cross-sheet references | 3,092,583 |
+| 2 | ~~shared formulas~~ **done** | (was ~2/3 of all formula cells) |
+| 3 | ~~empty-cell result~~ **done** | 351,897 |
+| 4 | defined names | ~145,000 |
+| 5 | the §I function list (`CELL`, `SUMIF`, `VLOOKUP`, …) | the remainder |
+
+The function list is not wrong, but it is no longer the top of the queue: the
+structural gaps above account for more disagreeing cells than every missing
+function combined.
+
 ## 14. Roadmap (phases)
 
 Each phase is independently shippable and golden-file testable.

@@ -514,7 +514,68 @@ static int xlsx_parse_ref(const char *ref, long *col, long *row) {
 }
 
 /* Build the gBASIC record for one <c> element. Returns a record value. */
-static Value xlsx_cell_record(XlsxWorkbook *wb, xmlNodePtr c) {
+/* Defined with the rest of the shared-formula machinery, further down; used
+ * here by the cell-record path, which is earlier in the file. */
+static char *xlsx_translate_formula(const char *src, long drow, long dcol);
+
+/* The shared-formula master table for one sheet: si -> text and anchor cell.
+ * Collected in a pre-pass because the reading paths need it before they reach
+ * the continuations, and a master may in principle follow one. Full rationale
+ * on xlsx_translate_formula. */
+typedef struct { long si; char *text; long row, col; } XlsxSharedMaster;
+typedef struct { XlsxSharedMaster *items; size_t count; } XlsxShared;
+
+static void xlsx_shared_collect(xmlNodePtr root, XlsxShared *sh) {
+    sh->items = NULL; sh->count = 0;
+    size_t cap = 0;
+    for (xmlNodePtr n = root ? root->children : NULL; n; n = n->next) {
+        if (!xlsx_is(n, "sheetData")) continue;
+        for (xmlNodePtr r = n->children; r; r = r->next) {
+            if (!xlsx_is(r, "row")) continue;
+            for (xmlNodePtr c = r->children; c; c = c->next) {
+                if (!xlsx_is(c, "c")) continue;
+                for (xmlNodePtr k = c->children; k; k = k->next) {
+                    if (!xlsx_is(k, "f")) continue;
+                    char *ft = xlsx_prop(k, "t");
+                    if (!ft || strcmp(ft, "shared") != 0) { free(ft); continue; }
+                    free(ft);
+                    char *txt = xlsx_text_of(k);
+                    char *si = xlsx_prop(k, "si");
+                    char *cref = xlsx_prop(c, "r");
+                    long col = 0, row = 0;
+                    if (txt && *txt && si && cref && xlsx_parse_ref(cref, &col, &row)) {
+                        if (sh->count == cap) {
+                            cap = cap ? cap * 2 : 32;
+                            XlsxSharedMaster *g = realloc(sh->items, cap * sizeof *g);
+                            if (!g) abort();
+                            sh->items = g;
+                        }
+                        sh->items[sh->count].si = strtol(si, NULL, 10);
+                        sh->items[sh->count].text = txt;
+                        sh->items[sh->count].row = row;
+                        sh->items[sh->count].col = col;
+                        sh->count++;
+                        txt = NULL;               /* ownership moved */
+                    }
+                    free(txt); free(si); free(cref);
+                }
+            }
+        }
+    }
+}
+
+static void xlsx_shared_free(XlsxShared *sh) {
+    for (size_t i = 0; i < sh->count; i++) free(sh->items[i].text);
+    free(sh->items);
+    sh->items = NULL; sh->count = 0;
+}
+
+static const XlsxSharedMaster *xlsx_shared_find(const XlsxShared *sh, long si) {
+    for (size_t i = 0; i < sh->count; i++) if (sh->items[i].si == si) return &sh->items[i];
+    return NULL;
+}
+
+static Value xlsx_cell_record(XlsxWorkbook *wb, xmlNodePtr c, const XlsxShared *shared) {
     char *ref = xlsx_prop(c, "r");
     char *type = xlsx_prop(c, "t");
     char *style = xlsx_prop(c, "s");
@@ -522,13 +583,33 @@ static Value xlsx_cell_record(XlsxWorkbook *wb, xmlNodePtr c) {
     char *formula = NULL;
     char *vtext = NULL;
     char *inline_text = NULL;
+    long shared_si = -1;
     for (xmlNodePtr k = c->children; k; k = k->next) {
         if (xlsx_is(k, "f")) {
             formula = xlsx_text_of(k);
+            char *ft = xlsx_prop(k, "t");
+            if (ft && strcmp(ft, "shared") == 0) {
+                char *si = xlsx_prop(k, "si");
+                if (si) shared_si = strtol(si, NULL, 10);
+                free(si);
+            }
+            free(ft);
         } else if (xlsx_is(k, "v")) {
             vtext = xlsx_text_of(k);
         } else if (xlsx_is(k, "is")) {
             inline_text = xlsx_text_of(k);
+        }
+    }
+    /* A shared-formula CONTINUATION carries an empty <f/>. Report the formula
+     * it actually stands for, translated to this cell, so that what a caller
+     * reads back matches what xlsx.evaluate computes -- the two disagreeing
+     * would be worse than either being wrong alone. */
+    if (formula && !*formula) { free(formula); formula = NULL; }
+    if (!formula && shared_si >= 0 && shared && ref) {
+        const XlsxSharedMaster *m = xlsx_shared_find(shared, shared_si);
+        long col = 0, row = 0;
+        if (m && xlsx_parse_ref(ref, &col, &row)) {
+            formula = xlsx_translate_formula(m->text, row - m->row, col - m->col);
         }
     }
 
@@ -828,14 +909,80 @@ typedef struct {
     double num;
     char *str;
     char *formula;          /* NULL when the cell is a literal */
+    int hidden;             /* the row's hidden="1" -- SUBTOTAL 101-111 needs it */
 } XlsxSnapCell;
 
+/* A sheet snapshot, plus an INDEX from (row,col) to position.
+ *
+ * The index is not a micro-optimisation. Without it both lookups here are
+ * linear scans of every cell, and they run inside per-formula loops, so the
+ * cost is the PRODUCT: evaluating a sheet is O(formulas x refs x cells).
+ * Measured on the Enron corpus, one real workbook
+ * (john_griffith__15586__Crude.xlsx) has 182,752 cells and 50,343 formulas on
+ * a single sheet -- billions of comparisons, and xlsx.check on it did not
+ * finish inside 300 seconds. Reading the same file takes 0.44s, so the cost
+ * was entirely in the scans, not the parsing.
+ *
+ * Open addressing, linear probing, power-of-two capacity at 2x count. Built
+ * once when the snapshot is complete, and valid for its whole life because
+ * recalculation mutates cell VALUES in place and never adds or removes a
+ * cell. */
 typedef struct {
     XlsxSnapCell *cells;
     size_t count;
+    size_t *slots;      /* position + 1, or 0 for empty */
+    size_t mask;        /* capacity - 1; capacity is a power of two */
 } XlsxSnap;
 
+static size_t xlsx_snap_hash(long row, long col) {
+    /* 64-bit mix of the two coordinates; splitmix64's finaliser. */
+    unsigned long long h = (unsigned long long)row * 0x9E3779B97F4A7C15ULL
+                         ^ (unsigned long long)col * 0xC2B2AE3D27D4EB4FULL;
+    h ^= h >> 30; h *= 0xBF58476D1CE4E5B9ULL;
+    h ^= h >> 27; h *= 0x94D049BB133111EBULL;
+    h ^= h >> 31;
+    return (size_t)h;
+}
+
+static void xlsx_snap_build_index(XlsxSnap *s) {
+    free(s->slots);
+    s->slots = NULL;
+    s->mask = 0;
+    if (!s->count) return;
+    size_t cap = 16;
+    while (cap < s->count * 2) cap *= 2;
+    s->slots = calloc(cap, sizeof(size_t));
+    if (!s->slots) abort();
+    s->mask = cap - 1;
+    for (size_t i = 0; i < s->count; i++) {
+        size_t p = xlsx_snap_hash(s->cells[i].row, s->cells[i].col) & s->mask;
+        /* A duplicate ref keeps the FIRST occurrence, matching the previous
+         * linear scan, which returned the first match. */
+        while (s->slots[p]) {
+            const XlsxSnapCell *e = &s->cells[s->slots[p] - 1];
+            if (e->row == s->cells[i].row && e->col == s->cells[i].col) break;
+            p = (p + 1) & s->mask;
+        }
+        if (!s->slots[p]) s->slots[p] = i + 1;
+    }
+}
+
+/* Position of a cell, or (size_t)-1. */
+static size_t xlsx_snap_pos(const XlsxSnap *s, long row, long col) {
+    if (!s->slots) return (size_t)-1;
+    size_t p = xlsx_snap_hash(row, col) & s->mask;
+    while (s->slots[p]) {
+        const XlsxSnapCell *e = &s->cells[s->slots[p] - 1];
+        if (e->row == row && e->col == col) return s->slots[p] - 1;
+        p = (p + 1) & s->mask;
+    }
+    return (size_t)-1;
+}
+
 static void xlsx_snap_free(XlsxSnap *s) {
+    free(s->slots);
+    s->slots = NULL;
+    s->mask = 0;
     for (size_t i = 0; i < s->count; i++) {
         free(s->cells[i].str);
         free(s->cells[i].formula);
@@ -866,12 +1013,165 @@ static void xlsx_snap_free(XlsxSnap *s) {
  * genuinely not in the workbook still raises "no such sheet".
  */
 
+/* ------------------------------------------------------------ SHARED FORMULAS
+ *
+ * Excel does not repeat a formula that was filled down a column. It writes the
+ * text ONCE on the first cell --
+ *
+ *     <c r="C2"><f t="shared" ref="C2:C500" si="0">A2*B2</f><v>12</v></c>
+ *
+ * -- and every other cell in the run carries only a back-reference with NO
+ * TEXT AT ALL:
+ *
+ *     <c r="C3"><f t="shared" si="0"/><v>15</v></c>
+ *
+ * Read naively, C3 has "a formula whose text is the empty string", which
+ * evaluates to #VALUE!. That is not a cosmetic misreading: `xlsx.recalc`
+ * WRITES evaluated values back, so it replaced every such cell with #VALUE! --
+ * silent corruption of a real workbook, measured at 171 cells on the first
+ * corpus file tried.
+ *
+ * This is not a rare shape. Across the Enron corpus, 61.0% of formula-bearing
+ * workbooks use shared formulas, and 13.2 MILLION of the 20.7M formula cells
+ * are continuations -- so nearly two thirds of every formula cell in the
+ * corpus was being read as empty (docs/xlsx_design.md §13.J).
+ *
+ * Resolving one means TRANSLATING the master's text by the offset between the
+ * two cells: relative references shift, absolute ones ($) do not. That is what
+ * xlsx_translate_formula does, and getting it wrong is worse than not doing it
+ * at all, because the result is a plausible number computed from the wrong
+ * cells. */
+
+/* Is s[i..] a cell reference token, and where does it end? Sets the parsed
+ * column/row and which halves were absolute. Deliberately strict: the token
+ * must be exactly [$]LETTERS[$]DIGITS, so `B2` is a reference while `B2B`,
+ * `LOG10` and a bare defined name like `DateToday` are not. */
+static int xlsx_ref_token(const char *s, size_t *len,
+                          long *col, long *row, int *abs_col, int *abs_row) {
+    size_t i = 0;
+    *abs_col = 0; *abs_row = 0;
+    if (s[i] == '$') { *abs_col = 1; i++; }
+    size_t l0 = i;
+    long c = 0;
+    while (isalpha((unsigned char)s[i])) {
+        c = c * 26 + (toupper((unsigned char)s[i]) - 'A' + 1);
+        i++;
+        if (i - l0 > 3) return 0;          /* no column beyond XFD */
+    }
+    if (i == l0) return 0;
+    if (s[i] == '$') { *abs_row = 1; i++; }
+    size_t d0 = i;
+    long r = 0;
+    while (isdigit((unsigned char)s[i])) {
+        r = r * 10 + (s[i] - '0');
+        i++;
+        if (i - d0 > 7) return 0;
+    }
+    if (i == d0) return 0;
+    /* A trailing letter, digit-continuation or '(' means this was part of a
+     * longer name, not a reference. */
+    if (isalnum((unsigned char)s[i]) || s[i] == '_' || s[i] == '(') return 0;
+    *len = i; *col = c; *row = r;
+    return 1;
+}
+
+/* Rewrite `src` as it would read if the formula were moved by (drow, dcol).
+ * Returns a malloc'd string. Text inside string literals is copied verbatim,
+ * and a reference shifted off the sheet becomes #REF!, as Excel does. */
+static char *xlsx_translate_formula(const char *src, long drow, long dcol) {
+    size_t cap = strlen(src) * 2 + 32, len = 0;
+    char *out = malloc(cap);
+    if (!out) abort();
+    for (size_t i = 0; src[i];) {
+        if (len + 32 > cap) {
+            cap = cap * 2 + 32;
+            char *g = realloc(out, cap);
+            if (!g) abort();
+            out = g;
+        }
+        /* A quoted string: copy through, honouring Excel's "" escape. A
+         * reference-looking substring inside one is text, not a reference. */
+        if (src[i] == '"') {
+            out[len++] = src[i++];
+            while (src[i]) {
+                if (len + 4 > cap) {
+                    cap = cap * 2 + 32;
+                    char *g = realloc(out, cap);
+                    if (!g) abort();
+                    out = g;
+                }
+                if (src[i] == '"' && src[i + 1] == '"') {
+                    out[len++] = src[i++]; out[len++] = src[i++];
+                    continue;
+                }
+                if (src[i] == '"') { out[len++] = src[i++]; break; }
+                out[len++] = src[i++];
+            }
+            continue;
+        }
+        /* A quoted sheet name ('My Sheet'!A1): copy the quoted part verbatim,
+         * then let the reference after it translate normally. */
+        if (src[i] == '\'') {
+            out[len++] = src[i++];
+            while (src[i]) {
+                if (len + 4 > cap) {
+                    cap = cap * 2 + 32;
+                    char *g = realloc(out, cap);
+                    if (!g) abort();
+                    out = g;
+                }
+                if (src[i] == '\'' && src[i + 1] == '\'') {
+                    out[len++] = src[i++]; out[len++] = src[i++];
+                    continue;
+                }
+                if (src[i] == '\'') { out[len++] = src[i++]; break; }
+                out[len++] = src[i++];
+            }
+            continue;
+        }
+        /* Only try a reference at a token BOUNDARY, so the "A1" tail of
+         * `NAMEDA1` is never mistaken for one. */
+        int boundary = (i == 0) || !(isalnum((unsigned char)src[i - 1]) ||
+                                     src[i - 1] == '_' || src[i - 1] == '.' ||
+                                     src[i - 1] == '$' || src[i - 1] == '!');
+        size_t tl; long c, r; int ac, ar;
+        if (boundary && (src[i] == '$' || isalpha((unsigned char)src[i])) &&
+            xlsx_ref_token(src + i, &tl, &c, &r, &ac, &ar)) {
+            long nc = ac ? c : c + dcol;
+            long nr = ar ? r : r + drow;
+            if (nc < 1 || nr < 1 || nc > 16384 || nr > 1048576) {
+                memcpy(out + len, "#REF!", 5); len += 5;
+            } else {
+                char colname[8];
+                size_t cl = 0;
+                long t = nc;
+                while (t > 0 && cl < sizeof colname - 1) {
+                    long rem = (t - 1) % 26;
+                    colname[cl++] = (char)('A' + rem);
+                    t = (t - 1) / 26;
+                }
+                if (ac) out[len++] = '$';
+                while (cl) out[len++] = colname[--cl];
+                if (ar) out[len++] = '$';
+                len += (size_t)snprintf(out + len, cap - len, "%ld", nr);
+            }
+            i += tl;
+            continue;
+        }
+        out[len++] = src[i++];
+    }
+    out[len] = '\0';
+    return out;
+}
+
 /* Parse one sheet into a snapshot. Sparse: only populated cells appear.
  * Returns 0 only when the sheet cannot be read at all; a sheet that exists but
  * has no worksheet part succeeds with an empty snapshot (see above). */
 static int xlsx_snapshot(XlsxWorkbook *wb, const char *sheet_name, XlsxSnap *out) {
     out->cells = NULL;
     out->count = 0;
+    out->slots = NULL;
+    out->mask = 0;
     XlsxSheet *sheet = xlsx_find_sheet(wb, sheet_name);
     if (!sheet) {
         return 0;
@@ -888,11 +1188,24 @@ static int xlsx_snapshot(XlsxWorkbook *wb, const char *sheet_name, XlsxSnap *out
         return 0;
     }
     size_t cap = 0;
+    /* Shared-formula bookkeeping: masters carry the text, continuations point
+     * at one by si and are resolved after the sweep. */
+    typedef struct { long si; const char *text; long row, col; } XlsxMaster;
+    typedef struct { size_t cell; long si; } XlsxPending;
+    XlsxMaster *mast = NULL; size_t mast_n = 0, mast_cap = 0;
+    XlsxPending *pend = NULL; size_t pend_n = 0, pend_cap = 0;
     xmlNodePtr root = xmlDocGetRootElement(doc);
     for (xmlNodePtr n = root ? root->children : NULL; n; n = n->next) {
         if (!xlsx_is(n, "sheetData")) continue;
         for (xmlNodePtr r = n->children; r; r = r->next) {
             if (!xlsx_is(r, "row")) continue;
+            /* Hidden is a ROW attribute, so it is read here and copied onto
+             * each of the row's cells -- SUBTOTAL's 101-111 forms are defined
+             * in terms of it, and by then the row element is long out of
+             * scope. */
+            char *hid = xlsx_prop(r, "hidden");
+            int row_hidden = hid && (strcmp(hid, "1") == 0 || strcmp(hid, "true") == 0);
+            free(hid);
             for (xmlNodePtr c = r->children; c; c = c->next) {
                 if (!xlsx_is(c, "c")) continue;
                 char *ref = xlsx_prop(c, "r");
@@ -901,10 +1214,52 @@ static int xlsx_snapshot(XlsxWorkbook *wb, const char *sheet_name, XlsxSnap *out
                 free(ref);
                 char *type = xlsx_prop(c, "t");
                 char *formula = NULL, *vtext = NULL, *inl = NULL;
+                long shared_si = -1;
+                int shared_master = 0;
                 for (xmlNodePtr k = c->children; k; k = k->next) {
-                    if (xlsx_is(k, "f")) formula = xlsx_text_of(k);
+                    if (xlsx_is(k, "f")) {
+                        formula = xlsx_text_of(k);
+                        char *ft = xlsx_prop(k, "t");
+                        if (ft && strcmp(ft, "shared") == 0) {
+                            char *si = xlsx_prop(k, "si");
+                            if (si) shared_si = strtol(si, NULL, 10);
+                            free(si);
+                            /* The master is the one carrying the text; every
+                             * other cell in the run has an empty <f/>. */
+                            shared_master = formula && *formula;
+                        }
+                        free(ft);
+                    }
                     else if (xlsx_is(k, "v")) vtext = xlsx_text_of(k);
                     else if (xlsx_is(k, "is")) inl = xlsx_text_of(k);
+                }
+                /* An empty <f/> is NOT a formula whose text is "" -- it is a
+                 * continuation to be resolved once every master is known.
+                 * Masters can in principle follow their continuations, so this
+                 * cannot be done in one pass. */
+                if (formula && !*formula) { free(formula); formula = NULL; }
+                if (shared_si >= 0 && !shared_master) {
+                    if (pend_n == pend_cap) {
+                        pend_cap = pend_cap ? pend_cap * 2 : 64;
+                        XlsxPending *g = realloc(pend, pend_cap * sizeof *g);
+                        if (!g) abort();
+                        pend = g;
+                    }
+                    pend[pend_n].cell = out->count;   /* filled in just below */
+                    pend[pend_n].si = shared_si;
+                    pend_n++;
+                } else if (shared_master) {
+                    if (mast_n == mast_cap) {
+                        mast_cap = mast_cap ? mast_cap * 2 : 64;
+                        XlsxMaster *g = realloc(mast, mast_cap * sizeof *g);
+                        if (!g) abort();
+                        mast = g;
+                    }
+                    mast[mast_n].si = shared_si;
+                    mast[mast_n].text = formula;      /* borrowed, not owned */
+                    mast[mast_n].row = row;
+                    mast[mast_n].col = col;
+                    mast_n++;
                 }
                 if (out->count == cap) {
                     cap = cap ? cap * 2 : 64;
@@ -915,6 +1270,7 @@ static int xlsx_snapshot(XlsxWorkbook *wb, const char *sheet_name, XlsxSnap *out
                 XlsxSnapCell *sc = &out->cells[out->count++];
                 sc->row = row; sc->col = col; sc->formula = formula;
                 sc->str = NULL; sc->num = 0; sc->kind = XV_EMPTY;
+                sc->hidden = row_hidden;
                 if (type && strcmp(type, "s") == 0) {
                     long idx = vtext ? strtol(vtext, NULL, 10) : -1;
                     sc->kind = XV_STR;
@@ -937,17 +1293,31 @@ static int xlsx_snapshot(XlsxWorkbook *wb, const char *sheet_name, XlsxSnap *out
             }
         }
     }
+    /* Resolve shared-formula continuations now that every master is known.
+     * Each gets the master's text translated by the offset between the two
+     * cells, which is what makes A2*B2 on row 2 become A3*B3 on row 3. A
+     * continuation whose master is missing (a damaged file) is left with no
+     * formula rather than given a wrong one -- it keeps its cached value and
+     * is simply not recalculated. */
+    for (size_t i = 0; i < pend_n; i++) {
+        const XlsxMaster *m = NULL;
+        for (size_t k = 0; k < mast_n; k++) {
+            if (mast[k].si == pend[i].si) { m = &mast[k]; break; }
+        }
+        if (!m || !m->text) continue;
+        XlsxSnapCell *sc = &out->cells[pend[i].cell];
+        sc->formula = xlsx_translate_formula(m->text, sc->row - m->row, sc->col - m->col);
+    }
+    free(mast);
+    free(pend);
     xmlFreeDoc(doc);
+    xlsx_snap_build_index(out);
     return 1;
 }
 
 static const XlsxSnapCell *xlsx_snap_at(const XlsxSnap *s, long row, long col) {
-    for (size_t i = 0; i < s->count; i++) {
-        if (s->cells[i].row == row && s->cells[i].col == col) {
-            return &s->cells[i];
-        }
-    }
-    return NULL;
+    size_t p = xlsx_snap_pos(s, row, col);
+    return p == (size_t)-1 ? NULL : &s->cells[p];
 }
 
 /* ------------------------------------------------------------ formula lexer */
@@ -1119,8 +1489,15 @@ static void xlsx_to_text(XlsxVal v, char *buf, size_t n) {
 }
 
 /* Collect a function argument. A bare range (B2:B3) expands to its cells; every
- * other argument yields one value. */
-static void xlsx_arg_values(XlsxEval *ev, XlsxVal **vals, size_t *n, size_t *cap) {
+ * other argument yields one value.
+ *
+ * `srcs`, when non-NULL, receives the SOURCE CELL behind each value, or NULL
+ * for anything computed rather than read. Only SUBTOTAL needs it, and it needs
+ * it for two things it cannot do from the values alone: skip hidden rows, and
+ * skip cells that are themselves SUBTOTALs. Both are properties of where a
+ * value came from, which flattening to a value list would otherwise discard. */
+static void xlsx_arg_values(XlsxEval *ev, XlsxVal **vals, const XlsxSnapCell ***srcs,
+                            size_t *n, size_t *cap) {
     /* A range is REF COLON REF and can only appear as a whole argument. */
     if (ev->lx.cur.kind == XT_REF) {
         char first[128];
@@ -1152,7 +1529,14 @@ static void xlsx_arg_values(XlsxEval *ev, XlsxVal **vals, size_t *n, size_t *cap
                                 XlsxVal *g = realloc(*vals, *cap * sizeof(XlsxVal));
                                 if (!g) abort();
                                 *vals = g;
+                                if (srcs) {
+                                    const XlsxSnapCell **gs =
+                                        realloc(*srcs, *cap * sizeof(*gs));
+                                    if (!gs) abort();
+                                    *srcs = gs;
+                                }
                             }
+                            if (srcs) (*srcs)[*n] = sc;
                             (*vals)[(*n)++] = v;
                         }
                     }
@@ -1163,13 +1547,27 @@ static void xlsx_arg_values(XlsxEval *ev, XlsxVal **vals, size_t *n, size_t *cap
         }
         ev->lx = save;   /* not a range after all; re-parse as an expression */
     }
+    /* A single REF is still a cell read, so it keeps its provenance: a grand
+     * total written SUBTOTAL(9,B2,B5,B9) over individual subtotal cells must
+     * exclude them exactly as the range form does. */
+    const XlsxSnapCell *one = NULL;
+    if (srcs && ev->lx.cur.kind == XT_REF) {
+        long c0, r0;
+        if (xlsx_parse_ref(ev->lx.cur.text, &c0, &r0)) one = xlsx_snap_at(ev->snap, r0, c0);
+    }
     XlsxVal v = xlsx_expr(ev);
     if (*n == *cap) {
         *cap = *cap ? *cap * 2 : 8;
         XlsxVal *g = realloc(*vals, *cap * sizeof(XlsxVal));
         if (!g) abort();
         *vals = g;
+        if (srcs) {
+            const XlsxSnapCell **gs = realloc(*srcs, *cap * sizeof(*gs));
+            if (!gs) abort();
+            *srcs = gs;
+        }
     }
+    if (srcs) (*srcs)[*n] = one;
     (*vals)[(*n)++] = v;
 }
 
@@ -1178,9 +1576,98 @@ static int xlsx_is_volatile(const char *name) {
            strcmp(name, "RAND") == 0 || strcmp(name, "RANDBETWEEN") == 0;
 }
 
+/* ------------------------------------------------------- Excel date serials
+ *
+ * A date in Excel is a NUMBER: days since the epoch, with the time of day as
+ * the fraction. Only the cell's number format distinguishes 45000 from a date,
+ * which is why the reader preserves style indices (§13.B).
+ *
+ * THE EPOCH IS 1899-12-30, NOT 1900-01-01. Lotus 1-2-3 treated 1900 as a leap
+ * year; Excel reproduced the bug deliberately for file compatibility and is
+ * stuck with it. So serial 60 is the day that never existed, 1900-02-29, and
+ * every serial from 61 on is one greater than a correct day count would give.
+ * Shifting the epoch back two days makes all dates from 1900-03-01 onward come
+ * out right, which is the whole range anyone has data in. Dates before that are
+ * REFUSED rather than returned off by one -- see xlsx_serial_from_civil.
+ *
+ * 25569 is the resulting serial for 1970-01-01, the well-known constant. */
+#define XLSX_EPOCH_1970 25569
+#define XLSX_SERIAL_1900_03_01 61
+
+/* Days since 1970-01-01 for a proleptic Gregorian date (Howard Hinnant's
+ * days_from_civil). Exact for the whole range we care about, and it does not
+ * call mktime, whose DST normalisation would shift a bare date by an hour. */
+static long xlsx_days_from_civil(long y, unsigned m, unsigned d) {
+    y -= m <= 2;
+    const long era = (y >= 0 ? y : y - 399) / 400;
+    const unsigned yoe = (unsigned)(y - era * 400);
+    const unsigned doy = (153u * (m + (m > 2 ? -3 : 9)) + 2u) / 5u + d - 1u;
+    const unsigned doe = yoe * 365u + yoe / 4u - yoe / 100u + doy;
+    return era * 146097L + (long)doe - 719468L;
+}
+
+/* The Excel serial for a civil date, or -1 if it predates the epoch bug's
+ * safe range. Refusing is deliberate: 1900-01-01..1900-02-28 would each need a
+ * different correction, and returning a silently-wrong day is the failure mode
+ * this module exists to avoid. */
+static double xlsx_serial_from_civil(long y, unsigned m, unsigned d) {
+    double s = (double)xlsx_days_from_civil(y, m, d) + XLSX_EPOCH_1970;
+    if (s < XLSX_SERIAL_1900_03_01) return -1;
+    return s;
+}
+
+/* The current instant as an Excel serial, in LOCAL time -- Excel's NOW() is
+ * local, and a UTC answer would be a day out for half the world near midnight.
+ *
+ * GBASIC_XLSX_NOW is a TEST SEAM, and the only reason it exists: the epoch
+ * above is exactly the kind of arithmetic that is wrong by one and stays wrong,
+ * and a test that can only assert "NOW is a plausible number" would never catch
+ * that. Set it to an integer number of seconds since the Unix epoch (UTC) to
+ * pin the clock. Unset -- always, outside the test suite -- the real clock is
+ * used. It is read fresh on each call rather than cached, so a test can step
+ * it between recalculations. */
+static double xlsx_now_serial(void) {
+    time_t t;
+    const char *pin = getenv("GBASIC_XLSX_NOW");
+    if (pin && *pin) {
+        char *end = NULL;
+        long long v = strtoll(pin, &end, 10);
+        if (end && *end == '\0') {
+            t = (time_t)v;
+        } else {
+            t = time(NULL);
+        }
+    } else {
+        t = time(NULL);
+    }
+    struct tm lt;
+    if (!localtime_r(&t, &lt)) return 0;
+    double day = xlsx_serial_from_civil((long)lt.tm_year + 1900,
+                                        (unsigned)lt.tm_mon + 1,
+                                        (unsigned)lt.tm_mday);
+    if (day < 0) return 0;
+    double frac = ((double)lt.tm_hour * 3600.0 + (double)lt.tm_min * 60.0 +
+                   (double)lt.tm_sec) / 86400.0;
+    return day + frac;
+}
+
+/* Does this cell hold a SUBTOTAL formula? SUBTOTAL ignores nested SUBTOTALs in
+ * its range, which is the whole reason the function exists rather than SUM: a
+ * grand total can span a column that already contains per-group subtotals
+ * without double-counting them. Without this, the classic report layout
+ * silently returns twice the right answer. */
+static int xlsx_cell_is_subtotal(const XlsxSnapCell *c) {
+    if (!c || !c->formula) return 0;
+    const char *p = c->formula;
+    while (*p == ' ' || *p == '=' || *p == '+') p++;
+    return strncasecmp(p, "SUBTOTAL", 8) == 0;
+}
+
 static XlsxVal xlsx_call(XlsxEval *ev, const char *name) {
     XlsxVal *args = NULL;
+    const XlsxSnapCell **srcs = NULL;
     size_t n = 0, cap = 0;
+    int want_srcs = strcmp(name, "SUBTOTAL") == 0;
     /* On entry the current token is the NAME and the input sits at '('. Two
      * advances are needed: one to land ON the paren, one to step PAST it. With
      * only one, the first argument is parsed as a parenthesised expression —
@@ -1190,7 +1677,7 @@ static XlsxVal xlsx_call(XlsxEval *ev, const char *name) {
     xlsx_lex_next(&ev->lx);              /* cur == first argument, or ')' */
     if (ev->lx.cur.kind != XT_RPAREN) {
         for (;;) {
-            xlsx_arg_values(ev, &args, &n, &cap);
+            xlsx_arg_values(ev, &args, want_srcs ? &srcs : NULL, &n, &cap);
             if (ev->lx.cur.kind != XT_COMMA) break;
             xlsx_lex_next(&ev->lx);
         }
@@ -1271,6 +1758,105 @@ static XlsxVal xlsx_call(XlsxEval *ev, const char *name) {
         out = xv_bool(1);
     } else if (strcmp(name, "FALSE") == 0) {
         out = xv_bool(0);
+    } else if (strcmp(name, "SUBTOTAL") == 0) {
+        /* SUBTOTAL(function_num, ref1, ...). Rank 2 in the corpus build order
+         * (+316 fully-recalculable workbooks, docs/xlsx_design.md §13.I).
+         *
+         * Measured in the corpus before implementing: 399 workbooks use it,
+         * and the function_num histogram is 9 (SUM) 34,571 uses, 3 (COUNTA)
+         * 3,651, 1 (AVERAGE) 402, 5 (MIN) 200, 4 (MAX) 100 -- and NOTHING in
+         * the 101-111 range, which postdates this 2001 corpus. Both families
+         * are implemented anyway; 101-111 costs one comparison once the row's
+         * hidden flag is carried on the cell.
+         *
+         * THE ONE GENUINE AMBIGUITY, stated rather than papered over: 1-11
+         * include manually hidden rows but exclude rows hidden by an active
+         * FILTER, and the file format records both as hidden="1". We include
+         * them, which is right for manual hiding and wrong under a live
+         * filter. At most 47 corpus workbooks have both an autoFilter and a
+         * hidden row anywhere, so the exposure is small and measurable -- and
+         * because these workbooks carry Excel's own cached values, xlsx.check
+         * over the corpus reports how often it actually bites, rather than
+         * leaving it a matter of opinion. */
+        double fn = 0;
+        if (n < 1 || !xlsx_as_num(args[0], &fn)) {
+            out = xv_err("#VALUE!");
+        } else {
+            int code = (int)fn;
+            int skip_hidden = code > 100;
+            int op = skip_hidden ? code - 100 : code;
+            if (op < 1 || op > 11) {
+                out = xv_err("#VALUE!");
+            } else {
+                double total = 0, best = 0, prod = 1;
+                long cnt = 0, cnt_all = 0;
+                int seen = 0;
+                /* Two accumulators for the variance/stdev family, which needs
+                 * the mean before it can sum squared deviations; a second pass
+                 * over the kept values is cheaper than storing them. */
+                double sum_for_mean = 0; long n_for_mean = 0;
+                for (size_t i = 1; i < n; i++) {
+                    const XlsxSnapCell *sc = srcs ? srcs[i] : NULL;
+                    if (skip_hidden && sc && sc->hidden) continue;
+                    if (xlsx_cell_is_subtotal(sc)) continue;
+                    if (args[i].kind != XV_EMPTY) cnt_all++;      /* COUNTA */
+                    if (args[i].kind != XV_NUM && args[i].kind != XV_BOOL) continue;
+                    double x = args[i].num;
+                    total += x; cnt++;
+                    prod *= x;
+                    sum_for_mean += x; n_for_mean++;
+                    if (!seen || (op == 5 ? x < best : x > best)) { best = x; seen = 1; }
+                }
+                switch (op) {
+                case 1:  out = cnt ? xv_num(total / (double)cnt) : xv_err("#DIV/0!"); break;
+                case 2:  out = xv_num((double)cnt); break;          /* COUNT   */
+                case 3:  out = xv_num((double)cnt_all); break;      /* COUNTA  */
+                case 4:  out = xv_num(seen ? best : 0); break;      /* MAX     */
+                case 5:  out = xv_num(seen ? best : 0); break;      /* MIN     */
+                case 6:  out = xv_num(cnt ? prod : 0); break;       /* PRODUCT */
+                case 9:  out = xv_num(total); break;                /* SUM     */
+                case 7: case 8: case 10: case 11: {
+                    /* STDEV(7)/STDEVP(8)/VAR(10)/VARP(11). Sample forms divide
+                     * by n-1 and need at least two values. */
+                    int sample = (op == 7 || op == 10);
+                    if (n_for_mean < (sample ? 2 : 1)) { out = xv_err("#DIV/0!"); break; }
+                    double mean = sum_for_mean / (double)n_for_mean;
+                    double ss = 0;
+                    for (size_t i = 1; i < n; i++) {
+                        const XlsxSnapCell *sc = srcs ? srcs[i] : NULL;
+                        if (skip_hidden && sc && sc->hidden) continue;
+                        if (xlsx_cell_is_subtotal(sc)) continue;
+                        if (args[i].kind != XV_NUM && args[i].kind != XV_BOOL) continue;
+                        double d = args[i].num - mean;
+                        ss += d * d;
+                    }
+                    double denom = sample ? (double)(n_for_mean - 1) : (double)n_for_mean;
+                    double var = ss / denom;
+                    out = (op == 7 || op == 8) ? xv_num(sqrt(var)) : xv_num(var);
+                    break;
+                }
+                default: out = xv_err("#VALUE!"); break;
+                }
+            }
+        }
+    } else if (strcmp(name, "NOW") == 0) {
+        /* VOLATILE. Measured on the Enron corpus this is the single largest
+         * coverage win available -- present in 16.3% of formula-bearing
+         * workbooks, and 1,099 of them become fully recalculable the moment it
+         * exists (docs/xlsx_design.md §13.I). It is also nearly free.
+         *
+         * The catch, which is real and permanent: implementing it makes those
+         * workbooks recalculable while making them UNVERIFIABLE against their
+         * cached values, since the cache dates from whenever Excel last
+         * calculated. xlsx.check must keep skipping it -- xlsx_is_volatile
+         * above is what enforces that, and it already listed NOW before NOW
+         * could be evaluated at all. */
+        out = xv_num(xlsx_now_serial());
+    } else if (strcmp(name, "TODAY") == 0) {
+        /* The date with the time fraction discarded. floor, not truncation:
+         * they differ for pre-epoch serials, and floor is what Excel's INT
+         * does. */
+        out = xv_num(floor(xlsx_now_serial()));
     } else {
         /* REFUSE LOUDLY. In a financial model a plausible wrong number is worse
          * than a failure, so an unimplemented function is reported by name
@@ -1283,6 +1869,7 @@ static XlsxVal xlsx_call(XlsxEval *ev, const char *name) {
 done:
     for (size_t i = 0; i < n; i++) xv_free(args[i]);
     free(args);
+    free(srcs);   /* borrowed pointers into the snapshot; only the array is ours */
     return out;
 }
 
@@ -1465,6 +2052,17 @@ static XlsxVal xlsx_eval_formula(XlsxWorkbook *wb, const XlsxSnap *snap,
     ev.lx.bad = 0;
     xlsx_lex_next(&ev.lx);
     XlsxVal v = xlsx_expr(&ev);
+    /* A formula that yields an EMPTY cell is ZERO, not empty. `=Z50` where Z50
+     * is blank displays 0 in Excel, and the cached value in the file is 0.
+     * Empty already coerces to 0 inside arithmetic (xlsx_as_num), so this is
+     * only about the top-level result -- but it is not a rounding error:
+     * measured over the corpus it accounts for 351,897 disagreeing cells,
+     * about 6% of all disagreements, for this one line.
+     *
+     * It applies only to a formula RESULT. An empty string produced on purpose
+     * -- IF(A1="","",...) -- is XV_STR and untouched, and a cell that does not
+     * exist at all is still reported as unknown by xlsx.evaluate. */
+    if (v.kind == XV_EMPTY) { xv_free(v); v = xv_num(0); }
     if (unsupported) *unsupported = ev.unsupported;
     if (unsupported_name && un_len) snprintf(unsupported_name, un_len, "%s", ev.unsupported_name);
     return v;
@@ -1546,12 +2144,14 @@ static void xlsx_topo_visit(const XlsxSnap *snap, size_t i, int *state,
         size_t rn = 0;
         xlsx_formula_refs(c->formula, &rr, &cc, &rn);
         for (size_t k = 0; k < rn; k++) {
-            for (size_t j = 0; j < snap->count; j++) {
-                if (snap->cells[j].row == rr[k] && snap->cells[j].col == cc[k] &&
-                    snap->cells[j].formula) {
-                    xlsx_topo_visit(snap, j, state, order, on, circular);
-                    if (circular[j]) circular[i] = 1;
-                }
+            /* Indexed, not scanned. This loop is per-reference inside a
+             * per-formula walk, so a linear scan here made building the
+             * dependency graph quadratic in the sheet -- the same defect as in
+             * xlsx_snap_at, and on the same workbooks. */
+            size_t j = xlsx_snap_pos(snap, rr[k], cc[k]);
+            if (j != (size_t)-1 && snap->cells[j].formula) {
+                xlsx_topo_visit(snap, j, state, order, on, circular);
+                if (circular[j]) circular[i] = 1;
             }
         }
         free(rr); free(cc);
@@ -1837,6 +2437,10 @@ static Value xlsx_eval_call(AstExpr *expr) {
         size_t count = 0, cap = 0;
         Value found = value_unknown();
         xmlNodePtr root = xmlDocGetRootElement(doc);
+        /* Shared-formula masters, collected before the walk so continuations
+         * can be reported as the formula they stand for. */
+        XlsxShared shared;
+        xlsx_shared_collect(root, &shared);
         for (xmlNodePtr n = root ? root->children : NULL; n; n = n->next) {
             if (!xlsx_is(n, "sheetData")) {
                 continue;
@@ -1857,7 +2461,7 @@ static Value xlsx_eval_call(AstExpr *expr) {
                             continue;
                         }
                         value_free(found);
-                        found = xlsx_cell_record(wb, c);
+                        found = xlsx_cell_record(wb, c, &shared);
                         continue;
                     }
                     if (count == cap) {
@@ -1868,10 +2472,11 @@ static Value xlsx_eval_call(AstExpr *expr) {
                         }
                         items = g;
                     }
-                    items[count++] = xlsx_cell_record(wb, c);
+                    items[count++] = xlsx_cell_record(wb, c, &shared);
                 }
             }
         }
+        xlsx_shared_free(&shared);
         xmlFreeDoc(doc);
         value_free(wbv);
         value_free(shv);
@@ -2241,10 +2846,19 @@ static Value xlsx_eval_call(AstExpr *expr) {
         for (size_t i = 0; i < snap.count; i++) {
             const XlsxSnapCell *c = &snap.cells[i];
             if (!c->formula) continue;
-            int unsup = 0;
-            char un[64] = "";
-            XlsxVal got = xlsx_eval_formula(wbv.as.workbook, &snap, c->formula, &unsup, un, sizeof un);
 
+            /* Volatility is decided BEFORE evaluating, and a volatile cell is
+             * then not evaluated at all.
+             *
+             * Not an optimisation -- a correctness property of this call's
+             * output. Once NOW() actually returns the clock, reporting its
+             * computed value makes `check`'s result differ on every run, so any
+             * golden written over a sheet containing NOW is broken by design --
+             * ours was, and so would every user's be. Since the comparison is
+             * meaningless anyway (the cached value dates from whenever Excel
+             * last calculated), the honest report is that the cell was skipped,
+             * not a number that invites exactly the comparison this refuses to
+             * make. */
             int is_vol = 0;
             for (const char *q = c->formula; *q; q++) {
                 if (isalpha((unsigned char)*q)) {
@@ -2256,6 +2870,12 @@ static Value xlsx_eval_call(AstExpr *expr) {
                     if (!*q) break;
                 }
             }
+
+            int unsup = 0;
+            char un[64] = "";
+            XlsxVal got = is_vol
+                ? xv_str("(not evaluated: volatile)")
+                : xlsx_eval_formula(wbv.as.workbook, &snap, c->formula, &unsup, un, sizeof un);
 
             const char *verdict;
             if (is_vol) { verdict = "volatile"; volatile_n++; }

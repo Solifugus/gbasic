@@ -11,7 +11,7 @@ unsupported      = 1
 
 anything not agreeing is reported, never silently counted:
   volatile  B18  NOW()
-      computed=#NAME?  cached=45870.5
+      computed=(not evaluated: volatile)  cached=45870.5
   unsupported  B19  XLOOKUP(A1,A1:A3,A1:A3)
       computed=#NAME?  cached=10
 

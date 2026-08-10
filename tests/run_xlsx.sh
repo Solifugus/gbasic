@@ -45,6 +45,7 @@ trap 'rm -rf "$out" "$err" "$tmp"' EXIT
 
 FIXTURE=examples/fixtures/xlsx/basic.xlsx
 MACRO_FIXTURE=examples/fixtures/xlsx/macro_sheet.xlsx
+SHARED_FIXTURE=examples/fixtures/xlsx/shared.xlsx
 
 # Degrade check: if the module was compiled out, the error must be the clean one.
 printf 'program main(args)\n  print xlsx.open("%s")\nend program\n' "$FIXTURE" >"$tmp/probe.bas"
@@ -256,6 +257,184 @@ if timeout 120 ./gbasic examples/xlsx_macro_sheet_test.bas >"$out" 2>"$err" </de
 else
     printf 'FAIL examples/xlsx_macro_sheet_test.bas (exit)\n'
     cat "$err"
+    status=1
+fi
+
+# --- Tier 2d: shared formulas ---------------------------------------------------
+#
+# Excel stores a filled-down formula ONCE and leaves the rest of the run with an
+# empty <f t="shared" si="n"/>. Read naively those cells have "a formula whose
+# text is empty", which evaluates to #VALUE! -- and because recalc writes values
+# back, it CORRUPTED them. 61.0% of formula-bearing workbooks in the corpus use
+# shared formulas; 13.2M of 20.7M formula cells are continuations (§13.J).
+printf -- '-- shared formulas (a formula filled down, stored once)\n'
+if timeout 120 ./gbasic examples/xlsx_shared_formula_test.bas >"$out" 2>"$err" </dev/null; then
+    if diff -u examples/xlsx_shared_formula_test.out "$out"; then
+        printf 'PASS examples/xlsx_shared_formula_test.bas\n'
+    else
+        printf 'FAIL examples/xlsx_shared_formula_test.bas (output differs)\n'
+        status=1
+    fi
+else
+    printf 'FAIL examples/xlsx_shared_formula_test.bas (exit)\n'
+    cat "$err"
+    status=1
+fi
+
+# THE CORRUPTION REGRESSION, asserted on the saved bytes rather than in memory.
+# The failure being guarded is not "a wrong answer" but "a damaged file": recalc
+# then save used to persist #VALUE! over every continuation cell.
+printf 'program main(args)\n  wb = xlsx.open("%s")\n  xlsx.recalc(wb, "Filled")\n  xlsx.save(wb, "%s")\n  again = xlsx.open("%s")\n  n = 0\n  for each c in xlsx.cells(again, "Filled")\n    if c.value = "#VALUE!" then\n      n = n + 1\n    end if\n  end for\n  print n\n  print xlsx.cell(again, "Filled", "C6").value\nend program\n' \
+    "$SHARED_FIXTURE" "$tmp/shared_out.xlsx" "$tmp/shared_out.xlsx" >"$tmp/sh.bas"
+sh_res=$(timeout 60 ./gbasic "$tmp/sh.bas" 2>"$err" </dev/null | tr '\n' ' ')
+if [ "$sh_res" = "0 60 " ]; then
+    printf 'PASS recalc+save leaves no #VALUE! behind (and C6 still 60)\n'
+else
+    printf 'FAIL recalc+save damaged the shared-formula cells: got "%s" %s\n' "$sh_res" "$(cat "$err")"
+    status=1
+fi
+
+# --- Tier 2c: NOW / TODAY, the Excel date serial --------------------------------
+#
+# The largest single coverage win in the corpus (docs/xlsx_design.md §13.I):
+# NOW appears in 16.3% of formula-bearing workbooks and makes 1,099 of them
+# fully recalculable. It is also the one function whose correctness a golden
+# cannot pin, because its whole job is to differ every run.
+#
+# GBASIC_XLSX_NOW pins the clock (seconds since the Unix epoch, UTC). It exists
+# for this tier and nothing else: Excel's epoch is 1899-12-30 rather than
+# 1900-01-01 -- Lotus treated 1900 as a leap year and Excel kept the bug for
+# compatibility -- and a two-day shift is exactly the error that a "is it a
+# plausible number" assertion would never catch. The expected serials below were
+# cross-checked against LibreOffice, an independent implementation of the same
+# broken epoch, not just re-derived from the same reasoning as the code.
+printf -- '-- NOW/TODAY: the Excel date serial (clock pinned)\n'
+if TZ=UTC GBASIC_XLSX_NOW=1785758400 timeout 120 ./gbasic tests/xlsx_volatile_test.bas >"$out" 2>"$err" </dev/null; then
+    if diff -u tests/xlsx_volatile_test.out "$out"; then
+        printf 'PASS tests/xlsx_volatile_test.bas\n'
+    else
+        printf 'FAIL tests/xlsx_volatile_test.bas (output differs)\n'
+        status=1
+    fi
+else
+    printf 'FAIL tests/xlsx_volatile_test.bas (exit)\n'
+    cat "$err"
+    status=1
+fi
+
+# The epoch, at the dates where it can be wrong. 1900-03-01 is the first day the
+# leap-year bug leaves consistent; 2000-02-29 is a real leap day a naive rule
+# would drop; 2100-03-01 follows a century year that is NOT a leap year.
+serial_case() { # label  epoch-seconds  want-day  want-secs
+    local label=$1 when=$2 wd=$3 ws=$4
+    local got
+    got=$(TZ=UTC GBASIC_XLSX_NOW="$when" timeout 60 ./gbasic tests/xlsx_serial_probe.bas 2>"$err" </dev/null | tr '\n' ' ')
+    if [ "$got" = "$wd $ws " ]; then
+        printf 'PASS serial %-12s %s -> day %s\n' "$label" "$when" "$wd"
+    else
+        printf 'FAIL serial %-12s want "%s %s" got "%s" %s\n' "$label" "$wd" "$ws" "$got" "$(cat "$err")"
+        status=1
+    fi
+}
+serial_case "1900-03-01" -2203848000  61     43200
+serial_case "1970-01-01" 43200        25569  43200
+serial_case "2000-02-29" 951825600    36585  43200
+serial_case "2026-08-03" 1785758400   46237  43200
+serial_case "2100-03-01" 4107585600   73110  43200
+# Midnight and one second before it: the fraction must be exactly 0 and 86399,
+# not rounded across the day boundary.
+serial_case "midnight"   1785715200   46237  0
+serial_case "23:59:59"   1785801599   46237  86399
+
+# Excel's NOW() is LOCAL time. Same instant, two zones either side of the date
+# line: the day must differ, or the answer is a day out for half the world.
+d_utc=$(TZ=UTC             GBASIC_XLSX_NOW=1785801000 timeout 60 ./gbasic tests/xlsx_serial_probe.bas 2>/dev/null | head -1)
+d_syd=$(TZ=Australia/Sydney GBASIC_XLSX_NOW=1785801000 timeout 60 ./gbasic tests/xlsx_serial_probe.bas 2>/dev/null | head -1)
+if [ -n "$d_utc" ] && [ -n "$d_syd" ] && [ "$d_syd" -eq $((d_utc + 1)) ]; then
+    printf 'PASS serial %-12s local time honoured (UTC %s, Sydney %s)\n' "timezone" "$d_utc" "$d_syd"
+else
+    printf 'FAIL serial %-12s expected Sydney one day ahead; got UTC=%s Sydney=%s\n' "timezone" "$d_utc" "$d_syd"
+    status=1
+fi
+
+# The REAL clock path, unpinned -- otherwise this whole tier could pass with the
+# production path broken and only the test seam working.
+real=$(timeout 60 ./gbasic tests/xlsx_serial_probe.bas 2>/dev/null | head -1)
+sys=$(date +%s)
+want=$(( (sys / 86400) + 25569 ))
+if [ -n "$real" ] && [ "$real" -ge $((want - 1)) ] && [ "$real" -le $((want + 1)) ]; then
+    printf 'PASS serial %-12s unpinned clock agrees with date(1) (%s)\n' "real clock" "$real"
+else
+    printf 'FAIL serial %-12s unpinned clock gave %s, date(1) implies ~%s\n' "real clock" "$real" "$want"
+    status=1
+fi
+
+# --- Tier 2e: SHAPE -- evaluation must not be quadratic in the sheet ------------
+#
+# Both cell lookups used to be linear scans of every cell, and both run inside
+# per-formula loops, so the cost was the PRODUCT. On a real corpus workbook
+# (182,752 cells, 50,343 formulas on one sheet) xlsx.check did not finish in 300
+# seconds, while merely READING the same file took 0.44s -- so the cost was
+# entirely the scans. A (row,col) hash index made that file 2.7s.
+#
+# Asserted as a RATIO across a 4x size step, never an absolute time: linear is
+# ~4x, quadratic ~16x, and the gate sits at 8x. An absolute bound would just
+# measure how busy the machine is.
+#
+# The fixture is generated HERE with awk and zip, so the tier needs no python3
+# and nothing large is committed.
+printf -- '-- shape: evaluation cost vs sheet size\n'
+make_big() { # rows outfile
+    local rows=$1 dir=$2
+    rm -rf "$dir"; mkdir -p "$dir/_rels" "$dir/xl/_rels" "$dir/xl/worksheets"
+    printf '%s' '<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>' >"$dir/[Content_Types].xml"
+    printf '%s' '<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>' >"$dir/_rels/.rels"
+    printf '%s' '<?xml version="1.0"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Big" sheetId="1" r:id="rId1"/></sheets></workbook>' >"$dir/xl/workbook.xml"
+    printf '%s' '<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>' >"$dir/xl/_rels/workbook.xml.rels"
+    awk -v n="$rows" 'BEGIN{
+        printf "<?xml version=\"1.0\"?><worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\"><sheetData>";
+        for (i=1;i<=n;i++) {
+            printf "<row r=\"%d\"><c r=\"A%d\"><v>%d</v></c>", i, i, i;
+            # B references A on the same row: one lookup per formula, so a
+            # linear lookup makes the sheet quadratic.
+            printf "<c r=\"B%d\"><f>A%d*2</f><v>%d</v></c></row>", i, i, i*2;
+        }
+        printf "</sheetData></worksheet>";
+    }' >"$dir/xl/worksheets/sheet1.xml"
+    ( cd "$dir" && zip -q -r -X ../"$(basename "$dir")".xlsx . )
+}
+time_check() { # xlsxfile -> seconds (as integer milliseconds)
+    printf 'program main(args)\n  wb = xlsx.open("%s")\n  print xlsx.check(wb, "Big").disagree\nend program\n' "$1" >"$tmp/big.bas"
+    local s e
+    s=$(date +%s%N)
+    timeout 300 ./gbasic "$tmp/big.bas" >/dev/null 2>&1
+    e=$(date +%s%N)
+    echo $(( (e - s) / 1000000 ))
+}
+make_big 10000 "$tmp/big1"
+make_big 40000 "$tmp/big4"
+t1=$(time_check "$tmp/big1.xlsx")
+t4=$(time_check "$tmp/big4.xlsx")
+if [ "$t1" -lt 5 ]; then t1=5; fi
+ratio=$(( t4 * 10 / t1 ))
+printf '     4x rows -> %s.%sx time (%sms -> %sms)\n' $((ratio / 10)) $((ratio % 10)) "$t1" "$t4"
+
+# A CEILING is the assertion here, not the ratio, and the reason is measured
+# rather than stylistic: with the linear scan restored, this same step reports
+# 7.7x -- under an 8x ratio gate, so a ratio test would have PASSED the very
+# regression it exists to catch. Fixed startup and linear XML parsing dilute
+# the ratio too much at any size this suite can afford.
+#
+# The absolute numbers on the development machine are 312ms indexed against
+# 2415ms scanned, so a 1200ms ceiling sits ~4x above the good case and ~2x
+# below the bad one. Generous enough not to flake on a loaded machine, tight
+# enough that reverting the index fails it. Both figures are recorded here so a
+# later reader can tell whether a new failure means "slower machine" or
+# "quadratic is back".
+if [ "$t4" -le 1200 ]; then
+    printf 'PASS shape 40k-row sheet evaluated in %sms (ceiling 1200ms; linear scan needs ~2400ms)\n' "$t4"
+else
+    printf 'FAIL shape 40k-row sheet took %sms, over the 1200ms ceiling; the (row,col) index may be gone\n' "$t4"
     status=1
 fi
 

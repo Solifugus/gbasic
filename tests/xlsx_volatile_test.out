@@ -1,0 +1,18 @@
+NOW   day      = 46237
+NOW   secs     = 43200
+TODAY          = 46237
+TODAY is whole = true
+same day       = true
+NOW > TODAY    = true
+
+== the cached values are STALE, and check must not compare against them ==
+cached TODAY   = 45870
+cached NOW     = 45870.5
+agree          = 1
+disagree       = 0
+volatile       = 2
+  volatile  A1  TODAY()  computed=(not evaluated: volatile)
+  volatile  A2  NOW()  computed=(not evaluated: volatile)
+
+== a volatile cell does not stop the rest of the sheet being judged ==
+B1 computed    = 5
