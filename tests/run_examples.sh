@@ -78,6 +78,7 @@ examples=(
     xlsx_shared_formula_test.bas
     xlsx_modern_test.bas
     xlsx_crosssheet_test.bas
+    xlsx_workbook_recalc_test.bas
     filetree_test.bas
     hex_literal_test.bas
     stats_frame_test.bas

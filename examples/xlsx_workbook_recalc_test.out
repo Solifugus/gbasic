@@ -1,0 +1,24 @@
+sheet order (reverse of dependency order) = Out, Mid, Inputs, Cycle, Cycle2
+Inputs A1 = 10
+Mid    A1 = 20   (Inputs!A1*2)
+Out    A1 = 21   (Mid!A1+1)
+
+== recalculating ONE sheet is not enough, and says so by being wrong ==
+after recalc(wb, "Out") : Out A1 = 21   (stale; correct is 201)
+
+== recalculating the WORKBOOK orders across sheets ==
+evaluated = 4
+changed   = 4
+circular  = 2
+Mid A1 = 200   (Inputs!A1*2)
+Out A1 = 201   (transitive: needed the NEW Mid)
+Out B1 = 305   (SUM(Mid!A1:A2)+Inputs!A1)
+
+== a cycle ACROSS sheets is reported, not iterated ==
+Cycle  B1 (healthy neighbour) = 300
+
+== the new values persist, and the formulas survive ==
+Out A1 value   = 201
+Out A1 formula = Mid!A1+1
+Mid A1 value   = 200
+Mid A1 formula = Inputs!A1*2

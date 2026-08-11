@@ -48,6 +48,7 @@ MACRO_FIXTURE=examples/fixtures/xlsx/macro_sheet.xlsx
 SHARED_FIXTURE=examples/fixtures/xlsx/shared.xlsx
 MODERN_FIXTURE=examples/fixtures/xlsx/modern.xlsx
 CROSS_FIXTURE=examples/fixtures/xlsx/crosssheet.xlsx
+CHAIN_FIXTURE=examples/fixtures/xlsx/chain.xlsx
 
 # Degrade check: if the module was compiled out, the error must be the clean one.
 printf 'program main(args)\n  print xlsx.open("%s")\nend program\n' "$FIXTURE" >"$tmp/probe.bas"
@@ -520,6 +521,49 @@ fi
 # cross-sheet population is this shape.
 printf 'program main(args)\n  wb = xlsx.open("%s")\n  print xlsx.evaluate(wb, "Calc", "A2")\nend program\n' "$CROSS_FIXTURE" >"$tmp/ex.bas"
 timeout 60 ./gbasic "$tmp/ex.bas" >/dev/null 2>&1 && printf 'PASS a resolvable cross-sheet ref still evaluates\n' || { printf 'FAIL cross-sheet evaluation broke\n'; status=1; }
+
+
+# --- Tier 2h: workbook-wide recalculation ---------------------------------------
+#
+# Ordering ACROSS sheets. The per-sheet form became a trap once cross-sheet
+# references worked: a formula can depend on a FORMULA on another sheet, and
+# recalculating only its own sheet reads the other's stale cached value.
+printf -- '-- workbook-wide recalc (ordering across sheets)\n'
+if timeout 120 ./gbasic examples/xlsx_workbook_recalc_test.bas >"$out" 2>"$err" </dev/null; then
+    if diff -u examples/xlsx_workbook_recalc_test.out "$out"; then
+        printf 'PASS examples/xlsx_workbook_recalc_test.bas\n'
+    else
+        printf 'FAIL examples/xlsx_workbook_recalc_test.bas (output differs)\n'
+        status=1
+    fi
+else
+    printf 'FAIL examples/xlsx_workbook_recalc_test.bas (exit)\n'
+    cat "$err"
+    status=1
+fi
+
+# THE ORDERING, named rather than implied. Sheets are declared Out, Mid, Inputs
+# -- the reverse of the dependency order -- so an engine recalculating in sheet
+# order hands Out a stale Mid and prints 21. The only correct answer is 201.
+printf 'program main(args)\n  wb = xlsx.open("%s")\n  xlsx.set(wb, "Inputs", "A1", 100)\n  xlsx.recalc(wb)\n  print xlsx.cell(wb, "Out", "A1").value\n  print xlsx.cell(wb, "Mid", "A1").value\nend program\n' "$CHAIN_FIXTURE" >"$tmp/wb.bas"
+wb_res=$(timeout 60 ./gbasic "$tmp/wb.bas" 2>/dev/null | tr '\n' ' ')
+if [ "$wb_res" = "201 200 " ]; then
+    printf 'PASS transitive cross-sheet dependent recomputed in the right order\n'
+else
+    printf 'FAIL cross-sheet ordering: got "%s", want "201 200 " (21 means a stale read)\n' "$wb_res"
+    status=1
+fi
+
+# A cycle spanning two sheets is reported, and a healthy cell beside it still
+# evaluates -- one cycle must not sink the workbook.
+printf 'program main(args)\n  wb = xlsx.open("%s")\n  r = xlsx.recalc(wb)\n  print r.circular\n  print xlsx.cell(wb, "Cycle", "B1").value\nend program\n' "$CHAIN_FIXTURE" >"$tmp/cyc.bas"
+cyc_res=$(timeout 60 ./gbasic "$tmp/cyc.bas" 2>/dev/null | tr '\n' ' ')
+if [ "$cyc_res" = "2 30 " ]; then
+    printf 'PASS cross-sheet cycle reported; healthy neighbour still evaluates\n'
+else
+    printf 'FAIL cross-sheet cycle: got "%s", want "2 30 "\n' "$cyc_res"
+    status=1
+fi
 
 # --- Tier 3: negative ----------------------------------------------------------
 printf -- '-- negative (container errors are reported, not guessed at)\n'

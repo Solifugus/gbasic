@@ -811,12 +811,63 @@ actual extent.
 | unsupported (declared) | 3,710,388 | 2,773,051 | 3,912,152 |
 | workbooks with zero disagreements | 5,169 | 5,507 | **6,779** of 9,220 |
 
-*Known limit, stated rather than discovered later:* `xlsx.recalc` remains a
-**per-sheet** operation. A cross-sheet reference reads the other sheet's
-*cached* values, exactly as a same-sheet reference reads the snapshot, which
-keeps evaluation non-recursive. So recalculating sheet A after changing sheet B
-uses B's stale values. Workbook-wide recalculation needs a workbook-level
-dependency graph and is the natural next step.
+*Known limit at the time, closed in §M below:* `xlsx.recalc` was a per-sheet
+operation, so recalculating sheet A after changing sheet B used B's stale
+values.
+
+**M. Workbook-wide recalculation** (2026-08-11).
+
+`xlsx.recalc(wb, sheet)` orders one sheet. That was correct while the evaluator
+could not see another sheet at all; once §L landed it became a **trap**, because
+a formula on one sheet can depend on a *formula* on another, and recalculating
+only the first reads the second's stale cached value. Nothing errors — the
+number is simply wrong, which is the failure mode this module exists to avoid.
+
+`xlsx.recalc(wb)`, with no sheet, orders across the whole workbook.
+
+*The fixture is built to make a wrong answer visible.* `chain.xlsx` holds
+
+```
+Inputs!A1 = 10           a literal
+Mid!A1    = Inputs!A1*2
+Out!A1    = Mid!A1+1
+```
+
+with the sheets declared **Out, Mid, Inputs — the reverse of dependency
+order**, so an engine recalculating in sheet order hands `Out` a stale `Mid`.
+Set `Inputs!A1` to 100 and the only correct answers are `Mid=200`, `Out=201`; a
+stale read gives 21. The test names both numbers, exactly as the single-sheet
+D7/B5 case does in §13.D.
+
+*Implementation notes worth keeping:*
+
+- A node is one cell of one sheet, addressed `base[sheet] + position`, so the
+  topological order spans sheets and a cycle may run `A!x → B!y → A!x`. Such a
+  cycle is **reported, not iterated**, and a healthy cell beside it still
+  evaluates — one cycle must not sink a workbook.
+- The walk is an **explicit stack, not recursion**. Depth here is the length of
+  a dependency chain, which on a real workbook runs to tens of thousands of
+  cells; recursing would overflow the stack exactly as the JSON parser once did
+  (PLAT-JSON).
+- A dependency edge is kept as a **rectangle**, not expanded to cells: a
+  whole-column reference covers a million of them. Small rectangles are probed
+  by direct lookup; large ones are resolved by scanning the target sheet's own
+  cells once and testing membership. Both are bounded.
+
+*Two leaks valgrind caught here,* both pre-existing and both invisible until
+workbook recalc made the call count large enough: `xlsx_call` and
+`xlsx_primary` each pre-filled their result with an *allocated* error string
+that every branch then overwrote. Fixing the first naively — initialising to
+an empty value — would have been worse than the leak: empty becomes 0 at the
+top level, so a branch that failed to assign would turn an unsupported function
+into a plausible zero. The result now starts as an **unassigned sentinel** (the
+error kind with no text) that is resolved to `#NAME?` at the end, which is
+leak-free *and* keeps the loud refusal. Confirmed behaviour-neutral by
+re-running the whole corpus: byte-identical verdicts.
+
+*Corpus state after this work:* 15,871 workbooks scanned, **0 failures**,
+agreement **94.97%** (15,923,882 agree / 842,999 disagree), 3,846,293 cells
+declared unsupported rather than guessed at.
 
 ## 14. Roadmap (phases)
 
