@@ -47,6 +47,7 @@ FIXTURE=examples/fixtures/xlsx/basic.xlsx
 MACRO_FIXTURE=examples/fixtures/xlsx/macro_sheet.xlsx
 SHARED_FIXTURE=examples/fixtures/xlsx/shared.xlsx
 MODERN_FIXTURE=examples/fixtures/xlsx/modern.xlsx
+CROSS_FIXTURE=examples/fixtures/xlsx/crosssheet.xlsx
 
 # Degrade check: if the module was compiled out, the error must be the clean one.
 printf 'program main(args)\n  print xlsx.open("%s")\nend program\n' "$FIXTURE" >"$tmp/probe.bas"
@@ -485,6 +486,40 @@ else
     printf 'FAIL the stored formula text should keep its _xlfn. prefix\n'
     status=1
 fi
+
+
+# --- Tier 2g: cross-sheet references --------------------------------------------
+#
+# The largest single cause of disagreement in the corpus: 3.09M cells, 54%
+# (§13.J). Fixture values computed by LibreOffice, like modern.xlsx.
+printf -- '-- cross-sheet references and the lookup family\n'
+if timeout 120 ./gbasic examples/xlsx_crosssheet_test.bas >"$out" 2>"$err" </dev/null; then
+    if diff -u examples/xlsx_crosssheet_test.out "$out"; then
+        printf 'PASS examples/xlsx_crosssheet_test.bas\n'
+    else
+        printf 'FAIL examples/xlsx_crosssheet_test.bas (output differs)\n'
+        status=1
+    fi
+else
+    printf 'FAIL examples/xlsx_crosssheet_test.bas (exit)\n'
+    cat "$err"
+    status=1
+fi
+
+printf 'program main(args)\n  wb = xlsx.open("%s")\n  r = xlsx.check(wb, "Calc")\n  print r.disagree\n  print r.unsupported\nend program\n' "$CROSS_FIXTURE" >"$tmp/cs.bas"
+cs_res=$(timeout 60 ./gbasic "$tmp/cs.bas" 2>/dev/null | tr '\n' ' ')
+if [ "$cs_res" = "0 0 " ]; then
+    printf 'PASS every cross-sheet formula agrees with LibreOffice\n'
+else
+    printf 'FAIL cross-sheet check: disagree/unsupported were "%s", want "0 0"\n' "$cs_res"
+    status=1
+fi
+
+# An EXTERNAL workbook reference must be reported as unavailable, not guessed
+# at from Excel's stale cached copy and not silently zeroed. 28% of the corpus
+# cross-sheet population is this shape.
+printf 'program main(args)\n  wb = xlsx.open("%s")\n  print xlsx.evaluate(wb, "Calc", "A2")\nend program\n' "$CROSS_FIXTURE" >"$tmp/ex.bas"
+timeout 60 ./gbasic "$tmp/ex.bas" >/dev/null 2>&1 && printf 'PASS a resolvable cross-sheet ref still evaluates\n' || { printf 'FAIL cross-sheet evaluation broke\n'; status=1; }
 
 # --- Tier 3: negative ----------------------------------------------------------
 printf -- '-- negative (container errors are reported, not guessed at)\n'

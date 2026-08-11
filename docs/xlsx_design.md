@@ -748,6 +748,76 @@ regressed the durable core (many of these functions predate 2001 too):
 | unsupported | 3,710,388 | **2,773,051** |
 | workbooks with zero disagreements | 5,169 | **5,507** of 9,220 |
 
+**L. Cross-sheet references — the largest remaining cause, closed**
+(2026-08-10).
+
+§J named this the top item: 3.09M disagreeing cells, 54% of all of them. The
+evaluator held one sheet's snapshot and could not see another, so every
+`'Rate Table'!B2` was `#VALUE!`. Three populations, measured:
+
+| share | shape | disposition |
+|---|---|---|
+| 42% | quoted name — `'Nymex hist.'!A:B` | resolved |
+| 30% | plain — `Data!$A$1` | resolved |
+| 28% | **external** — `[4]CurveFetch!$D$8` | reported unavailable |
+
+An external reference names a **different workbook**, which is not in front of
+us. Excel caches a copy of its last-known values, and reading that would have
+made the numbers "agree" — but presenting a stale value from a file we do not
+have as though it were current is exactly the confident wrong number this
+module exists to refuse. It is reported by name instead, which is why
+`unsupported` *rises* in the table below while disagreements collapse: those
+cells moved from "silently wrong" to "declared unavailable".
+
+The overwhelming consumer is `VLOOKUP`, so `VLOOKUP`/`HLOOKUP`/`INDEX`/`MATCH`
+and the `IS*` predicates landed with it. Two traps in that family, both silent
+in opposite directions: **`VLOOKUP`'s 4th argument defaults to APPROXIMATE**,
+not exact, as does `MATCH`'s 3rd — so assuming exact turns a valid approximate
+lookup into `#N/A`, and assuming approximate returns a confidently wrong
+neighbouring row. Both modes are implemented.
+
+Also required: **whole-column ranges** (`A:B`, `3:7`), which real lookup tables
+are written with because the author does not know how far the data will grow.
+`A:B` nominally spans 1,048,576 rows, so an open end is clamped to the sheet's
+actual extent.
+
+*Three defects found while building this, each worth recording:*
+
+1. **An off-by-one that a passing test concealed.** `xlsx_parse_ref` stores
+   columns 0-based and rows 1-based; the whole-column code used 1-based
+   columns. `COUNTA('Rate Table'!A:A)` returned the *right answer for the wrong
+   column* — it read column B, which happened to hold four values too. Only
+   `AVERAGE(B:B)` (reading empty column C) exposed it.
+2. **A dangling pointer that crashed on real data.** The sheet-snapshot pool
+   grew by `realloc` while callers held `XlsxSnap*` into it, so the second
+   sheet a formula touched could move the first out from under a live pointer.
+   One corpus workbook segfaulted. Snapshots are now heap-allocated
+   individually. Clean under valgrind.
+3. **Materialising a range per lookup is ruinous.** One workbook calls
+   `VLOOKUP` twice per formula over `'CP Trade Data'!$D$2:$P$6949` — a
+   90,324-cell rectangle — across thousands of formulas: 116s for one file.
+   The four functions that address a range *by position* now take an
+   unmaterialised descriptor and read only the cells they need, searching one
+   column (6,948 indexed lookups) instead of copying the rectangle. **116s →
+   12s.**
+
+*Corpus effect,* measured over all 15,871 workbooks:
+
+| | start of session | +post-2001 | +cross-sheet |
+|---|---|---|---|
+| **agreement rate** | 66.06% | 69.69% | **94.91%** |
+| cells agreeing | 11,166,551 | 12,432,251 | **15,760,973** |
+| disagreeing | 5,736,235 | 5,407,872 | **840,849** |
+| unsupported (declared) | 3,710,388 | 2,773,051 | 3,912,152 |
+| workbooks with zero disagreements | 5,169 | 5,507 | **6,779** of 9,220 |
+
+*Known limit, stated rather than discovered later:* `xlsx.recalc` remains a
+**per-sheet** operation. A cross-sheet reference reads the other sheet's
+*cached* values, exactly as a same-sheet reference reads the snapshot, which
+keeps evaluation non-recursive. So recalculating sheet A after changing sheet B
+uses B's stale values. Workbook-wide recalculation needs a workbook-level
+dependency graph and is the natural next step.
+
 ## 14. Roadmap (phases)
 
 Each phase is independently shippable and golden-file testable.

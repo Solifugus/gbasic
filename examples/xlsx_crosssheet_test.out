@@ -1,0 +1,38 @@
+== the referenced sheet ==
+  A1=East  B1=10
+  A2=North  B2=20
+  A3=South  B3=30
+  A4=West  B4=40
+
+== every cross-sheet formula, computed by us ==
+  'Rate Table'!B2
+      = 20
+  SUM('Rate Table'!B1:B4)
+      = 100
+  VLOOKUP(A1,'Rate Table'!A1:B4,2,0)
+      = 30
+  VLOOKUP("North",'Rate Table'!A:B,2,0)
+      = 20
+  VLOOKUP(25,'Rate Table'!B1:B4,1)
+      = 20
+  HLOOKUP("b",'Rate Table'!A6:C7,2,0)
+      = 2
+  MATCH("West",'Rate Table'!A1:A4,0)
+      = 4
+  INDEX('Rate Table'!B1:B4,3)
+      = 30
+  INDEX('Rate Table'!A1:B4,2,2)
+      = 20
+  COUNTA('Rate Table'!A:A)
+      = 6
+  AVERAGE('Rate Table'!B:B)
+      = 20.4
+  SUMIF('Rate Table'!A1:A4,"South",'Rate Table'!B1:B4)
+      = 30
+  IF(ISNA(VLOOKUP("Nowhere",'Rate Table'!A1:B4,2,0)),"missing","found")
+      = missing
+
+== compared against the values LibreOffice cached ==
+agree       = 13
+disagree    = 0
+unsupported = 0

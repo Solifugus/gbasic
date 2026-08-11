@@ -1331,6 +1331,17 @@ typedef struct {
     XlsxTokKind kind;
     double num;
     char text[128];
+    /* A reference may be QUALIFIED BY A SHEET: Data!A1, 'Nymex hist.'!A:B.
+     * Measured on the corpus, cross-sheet references are the single largest
+     * cause of disagreement -- 3.09M cells, 54% of all of them -- so the
+     * qualifier travels with the token rather than being handled by callers.
+     * Empty means "the sheet being evaluated".
+     *
+     * `external` marks the [n] form, '[4]CurveFetch'!$D$8, which names a
+     * DIFFERENT WORKBOOK. That file is not in front of us, so it is reported
+     * rather than guessed at -- 28% of the cross-sheet population. */
+    char sheet[128];
+    int external;
 } XlsxTok;
 
 typedef struct {
@@ -1339,9 +1350,43 @@ typedef struct {
     int bad;
 } XlsxLex;
 
+/* Scan the reference that follows a sheet qualifier's `!`. The sheet name is
+ * already in lx->cur.sheet.
+ *
+ * This also accepts the WHOLE-COLUMN and WHOLE-ROW forms -- 'Nymex hist.'!A:B,
+ * Data!$3:$7 -- which appear constantly in real lookup tables because the
+ * author does not know how far the data will grow. A bare column letter is not
+ * a cell reference, so it is emitted as a REF with row 0 meaning "unbounded",
+ * and the range logic fills in the sheet's actual extent later. */
+static void xlsx_lex_sheet_qualified(XlsxLex *lx) {
+    size_t n = 0;
+    while (*lx->p && (isalnum((unsigned char)*lx->p) || *lx->p == '$' || *lx->p == '_' ||
+                      *lx->p == '.')) {
+        if (*lx->p != '$' && n + 1 < sizeof lx->cur.text) lx->cur.text[n++] = *lx->p;
+        lx->p++;
+    }
+    lx->cur.text[n] = '\0';
+    long col, row;
+    if (xlsx_parse_ref(lx->cur.text, &col, &row)) {
+        lx->cur.kind = XT_REF;
+        return;
+    }
+    /* A bare column ("A") or row ("3"): only valid as one end of a range, and
+     * xlsx_parse_ref rejects it. Pass it through as a REF and let the range
+     * builder interpret it. */
+    if (*lx->cur.text) {
+        lx->cur.kind = XT_REF;
+        return;
+    }
+    lx->bad = 1;
+    lx->cur.kind = XT_END;
+}
+
 static void xlsx_lex_next(XlsxLex *lx) {
     while (*lx->p == ' ' || *lx->p == '\t' || *lx->p == '\n' || *lx->p == '\r') lx->p++;
     lx->cur.text[0] = '\0';
+    lx->cur.sheet[0] = '\0';
+    lx->cur.external = 0;
     char c = *lx->p;
     if (!c) { lx->cur.kind = XT_END; return; }
 
@@ -1364,6 +1409,33 @@ static void xlsx_lex_next(XlsxLex *lx) {
         }
         lx->cur.text[n] = '\0';
         lx->cur.kind = XT_STR;
+        return;
+    }
+
+    /* A QUOTED SHEET NAME: 'Nymex hist.'!A:B. Quoting is required whenever the
+     * name holds a space or punctuation, which is why 42% of the corpus's
+     * cross-sheet references take this form -- more than the plain kind. '' is
+     * an escaped apostrophe. */
+    if (c == '\'') {
+        lx->p++;
+        size_t n = 0;
+        while (*lx->p) {
+            if (*lx->p == '\'') {
+                if (lx->p[1] == '\'') {
+                    if (n + 1 < sizeof lx->cur.sheet) lx->cur.sheet[n++] = '\'';
+                    lx->p += 2;
+                    continue;
+                }
+                lx->p++;
+                break;
+            }
+            if (n + 1 < sizeof lx->cur.sheet) lx->cur.sheet[n++] = *lx->p;
+            lx->p++;
+        }
+        lx->cur.sheet[n] = '\0';
+        if (*lx->p != '!') { lx->bad = 1; lx->cur.kind = XT_END; return; }
+        lx->p++;
+        xlsx_lex_sheet_qualified(lx);
         return;
     }
 
@@ -1398,6 +1470,14 @@ static void xlsx_lex_next(XlsxLex *lx) {
         }
         lx->cur.text[n] = '\0';
         (void)start;
+        /* An unquoted sheet qualifier: Data!A1. What was just scanned is the
+         * SHEET NAME, not a reference. */
+        if (*lx->p == '!') {
+            snprintf(lx->cur.sheet, sizeof lx->cur.sheet, "%s", lx->cur.text);
+            lx->p++;
+            xlsx_lex_sheet_qualified(lx);
+            return;
+        }
         /* TRUE/FALSE are literals, not names. */
         long col, row;
         if (*lx->p == '(') {
@@ -1407,6 +1487,25 @@ static void xlsx_lex_next(XlsxLex *lx) {
         } else {
             lx->cur.kind = XT_NAME;
         }
+        return;
+    }
+
+    /* An EXTERNAL workbook reference begins with the bracketed index of an
+     * entry in xl/externalLinks: [4]CurveFetch!$D$8. Consumed here so the
+     * evaluator can report it as unavailable rather than the lexer failing on
+     * a character it does not know. */
+    if (c == '[') {
+        size_t n = 0;
+        lx->cur.sheet[n++] = '[';
+        lx->p++;
+        while (*lx->p && *lx->p != '!' ) {
+            if (n + 1 < sizeof lx->cur.sheet) lx->cur.sheet[n++] = *lx->p;
+            lx->p++;
+        }
+        lx->cur.sheet[n] = '\0';
+        lx->cur.external = 1;
+        if (*lx->p == '!') lx->p++;
+        xlsx_lex_sheet_qualified(lx);
         return;
     }
 
@@ -1434,21 +1533,102 @@ static void xlsx_lex_next(XlsxLex *lx) {
  * the dependency graph arrives it will want a retained AST, and this becomes
  * the front half of it. */
 
+/* Snapshots of OTHER sheets, taken on demand.
+ *
+ * A cross-sheet reference needs the referenced sheet parsed, and parsing it per
+ * reference would be ruinous -- a sheet of N formulas each pointing at a lookup
+ * table would re-parse that table N times. So each sheet is snapshotted at most
+ * once per evaluation and kept until the evaluation ends.
+ *
+ * Values are read from the referenced sheet's CACHED values, exactly as a
+ * same-sheet reference reads the snapshot rather than recomputing. That keeps
+ * evaluation non-recursive across sheets, and it is why xlsx.recalc remains a
+ * per-sheet operation -- see the note on xlsx_recalc. */
+typedef struct {
+    char *name;
+    /* HEAP-ALLOCATED, not stored inline. The pool grows by realloc, and callers
+     * hold the XlsxSnap* they were handed -- a range descriptor keeps one for
+     * the length of a call. Storing snapshots inline meant the second sheet a
+     * formula touched could move the first one out from under a live pointer,
+     * which crashed on a real corpus workbook rather than merely reading
+     * stale data. */
+    XlsxSnap *snap;
+    int ok;
+} XlsxSheetCache;
+
+/* Owned by the CALLER of a whole evaluation pass, not by one formula.
+ * xlsx.check and xlsx.recalc walk thousands of formulas that all point at the
+ * same lookup table; a per-formula cache would re-parse that sheet once per
+ * formula, which is the same shape of blowup the (row,col) index removed. */
+typedef struct {
+    XlsxSheetCache *items;
+    size_t count;
+} XlsxSheetPool;
+
+static void xlsx_pool_free(XlsxSheetPool *p) {
+    for (size_t i = 0; i < p->count; i++) {
+        free(p->items[i].name);
+        if (p->items[i].snap) {
+            if (p->items[i].ok) xlsx_snap_free(p->items[i].snap);
+            free(p->items[i].snap);
+        }
+    }
+    free(p->items);
+    p->items = NULL; p->count = 0;
+}
+
 typedef struct {
     XlsxLex lx;
     XlsxWorkbook *wb;
-    const XlsxSnap *snap;
+    const XlsxSnap *snap;         /* the sheet being evaluated */
+    const char *sheet_name;       /* its name, so Self!A1 resolves to itself */
+    XlsxSheetPool *pool;          /* borrowed; lives for the whole pass */
     int depth;
     int unsupported;        /* set when a function is not implemented */
     char unsupported_name[64];
 } XlsxEval;
 
+/* The snapshot for `sheet`, or NULL if there is no such sheet. An empty name
+ * means the sheet under evaluation. */
+static const XlsxSnap *xlsx_eval_sheet(XlsxEval *ev, const char *sheet) {
+    if (!sheet || !*sheet) return ev->snap;
+    if (ev->sheet_name && strcmp(sheet, ev->sheet_name) == 0) return ev->snap;
+    if (!ev->pool) return NULL;
+    for (size_t i = 0; i < ev->pool->count; i++) {
+        if (strcmp(ev->pool->items[i].name, sheet) == 0) {
+            return ev->pool->items[i].ok ? ev->pool->items[i].snap : NULL;
+        }
+    }
+    XlsxSheetCache *g = realloc(ev->pool->items, (ev->pool->count + 1) * sizeof *g);
+    if (!g) abort();
+    ev->pool->items = g;
+    XlsxSheetCache *slot = &ev->pool->items[ev->pool->count++];
+    slot->name = copy_string(sheet);
+    slot->snap = calloc(1, sizeof *slot->snap);
+    if (!slot->snap) abort();
+    slot->ok = xlsx_snapshot(ev->wb, sheet, slot->snap);
+    return slot->ok ? slot->snap : NULL;
+}
+
 static XlsxVal xlsx_expr(XlsxEval *ev);
 
-static XlsxVal xlsx_cell_value(XlsxEval *ev, const char *ref) {
+static XlsxVal xlsx_cell_value_in(XlsxEval *ev, const char *sheet, int external,
+                                  const char *ref) {
     long col, row;
     if (!xlsx_parse_ref(ref, &col, &row)) return xv_err("#REF!");
-    const XlsxSnapCell *c = xlsx_snap_at(ev->snap, row, col);
+    if (external) {
+        /* A different workbook, which is not open. Excel caches the last-known
+         * value in xl/externalLinks, but reading a stale copy of a file we do
+         * not have and presenting it as current would be exactly the confident
+         * wrong number this module refuses. Reported by name instead. */
+        ev->unsupported = 1;
+        snprintf(ev->unsupported_name, sizeof ev->unsupported_name,
+                 "external workbook reference %s", sheet);
+        return xv_err("#REF!");
+    }
+    const XlsxSnap *snap = xlsx_eval_sheet(ev, sheet);
+    if (!snap) return xv_err("#REF!");
+    const XlsxSnapCell *c = xlsx_snap_at(snap, row, col);
     if (!c) return xv_empty();
     switch (c->kind) {
     case XV_NUM:  return xv_num(c->num);
@@ -1488,6 +1668,104 @@ static void xlsx_to_text(XlsxVal v, char *buf, size_t n) {
     }
 }
 
+/* A range left UNMATERIALISED: where it is, not what is in it.
+ *
+ * VLOOKUP over a big lookup table is the dominant shape in real workbooks, and
+ * expanding the table into a value list per call is ruinous -- one corpus
+ * workbook calls VLOOKUP twice per formula over 'CP Trade Data'!$D$2:$P$6949,
+ * a 90,324-cell rectangle, across thousands of formulas. Searching one column
+ * of it costs 6,948 indexed lookups instead of 90,324 value copies.
+ *
+ * So the four functions that address a range BY POSITION take the descriptor
+ * and read the cells they actually need. Everything else still gets the flat
+ * list, because an aggregate genuinely does have to visit every cell. */
+typedef struct {
+    const XlsxSnap *snap;
+    long r1, c1, r2, c2;
+    int is_range;
+} XlsxRangeDesc;
+
+/* One cell of an unmaterialised range, addressed from its top-left. */
+static XlsxVal xlsx_range_cell(const XlsxRangeDesc *d, long r, long c) {
+    if (!d->is_range || !d->snap) return xv_empty();
+    long row = d->r1 + r, col = d->c1 + c;
+    if (row < d->r1 || row > d->r2 || col < d->c1 || col > d->c2) return xv_empty();
+    const XlsxSnapCell *sc = xlsx_snap_at(d->snap, row, col);
+    if (!sc) return xv_empty();
+    switch (sc->kind) {
+    case XV_NUM:  return xv_num(sc->num);
+    case XV_BOOL: return xv_bool((int)sc->num);
+    case XV_STR:  return xv_str(sc->str ? sc->str : "");
+    case XV_ERR:  return xv_err(sc->str ? sc->str : "#ERROR");
+    default:      return xv_empty();
+    }
+}
+
+/* Could this token be one END of a range? A REF always can. A bare column
+ * ("B") or row ("7") lexes as a NAME because it names no single cell, but it is
+ * exactly what the whole-column form A:B is made of, so it qualifies too --
+ * and only when it is purely letters or purely digits, which keeps a defined
+ * name from being mistaken for one. */
+static int xlsx_range_endpoint(const XlsxTok *t) {
+    if (t->kind == XT_REF) return 1;
+    if (t->kind != XT_NAME || !t->text[0]) return 0;
+    int letters = 1, digits = 1;
+    for (const char *p = t->text; *p; p++) {
+        if (!isalpha((unsigned char)*p)) letters = 0;
+        if (!isdigit((unsigned char)*p)) digits = 0;
+    }
+    return (letters && strlen(t->text) <= 3) || digits;
+}
+
+/* The extent of a sheet's populated cells. Used to give a WHOLE-COLUMN range a
+ * finite size. */
+static void xlsx_snap_extent(const XlsxSnap *s, long *max_row, long *max_col) {
+    *max_row = 0; *max_col = 0;
+    for (size_t i = 0; i < s->count; i++) {
+        if (s->cells[i].row > *max_row) *max_row = s->cells[i].row;
+        if (s->cells[i].col > *max_col) *max_col = s->cells[i].col;
+    }
+}
+
+/* Resolve the two ends of a range, including the WHOLE-COLUMN and WHOLE-ROW
+ * forms (A:B, 3:7) that a lookup table is usually written with because the
+ * author does not know how far the data will grow.
+ *
+ * A:B nominally means 1,048,576 rows. Materialising that per formula is not an
+ * option -- the corpus has sheets with tens of thousands of such formulas -- so
+ * an open end is clamped to the sheet's ACTUAL extent, which contains every
+ * value the range could have held anyway. */
+static int xlsx_range_bounds(const XlsxSnap *snap, const char *a, const char *b,
+                             long *c1, long *r1, long *c2, long *r2) {
+    long mr = 0, mc = 0;
+    int a_full_col = 1, b_full_col = 1, a_full_row = 1, b_full_row = 1;
+    for (const char *p = a; *p; p++) { if (isdigit((unsigned char)*p)) a_full_col = 0; else a_full_row = 0; }
+    for (const char *p = b; *p; p++) { if (isdigit((unsigned char)*p)) b_full_col = 0; else b_full_row = 0; }
+    if (!*a || !*b) return 0;
+
+    if (a_full_col && b_full_col) {          /* A:B -- whole columns */
+        xlsx_snap_extent(snap, &mr, &mc);
+        long ca = 0, cb = 0;
+        for (const char *p = a; *p; p++) ca = ca * 26 + (toupper((unsigned char)*p) - 'A' + 1);
+        for (const char *p = b; *p; p++) cb = cb * 26 + (toupper((unsigned char)*p) - 'A' + 1);
+        /* xlsx_parse_ref stores columns ZERO-based (A -> 0) while rows stay
+         * 1-based, so the letter value must be decremented to match. Getting
+         * this wrong reads the neighbouring column, which is invisible when the
+         * neighbour happens to hold a plausible value: COUNTA(A:A) returned the
+         * right answer for the wrong column purely because column B also had
+         * four entries. */
+        *c1 = ca - 1; *c2 = cb - 1; *r1 = 1; *r2 = mr ? mr : 1;
+        return 1;
+    }
+    if (a_full_row && b_full_row) {          /* 3:7 -- whole rows */
+        xlsx_snap_extent(snap, &mr, &mc);
+        *r1 = strtol(a, NULL, 10); *r2 = strtol(b, NULL, 10);
+        *c1 = 1; *c2 = mc ? mc : 1;
+        return 1;
+    }
+    return xlsx_parse_ref(a, c1, r1) && xlsx_parse_ref(b, c2, r2);
+}
+
 /* Collect a function argument. A bare range (B2:B3) expands to its cells; every
  * other argument yields one value.
  *
@@ -1497,23 +1775,44 @@ static void xlsx_to_text(XlsxVal v, char *buf, size_t n) {
  * skip cells that are themselves SUBTOTALs. Both are properties of where a
  * value came from, which flattening to a value list would otherwise discard. */
 static void xlsx_arg_values(XlsxEval *ev, XlsxVal **vals, const XlsxSnapCell ***srcs,
-                            size_t *n, size_t *cap) {
-    /* A range is REF COLON REF and can only appear as a whole argument. */
-    if (ev->lx.cur.kind == XT_REF) {
-        char first[128];
+                            size_t *n, size_t *cap, long *out_rows, long *out_cols,
+                            XlsxRangeDesc *out_range, int lazy) {
+    /* A range is ENDPOINT COLON ENDPOINT and can only appear as a whole
+     * argument. */
+    if (xlsx_range_endpoint(&ev->lx.cur)) {
+        char first[128], sheet[128];
+        int ext = ev->lx.cur.external;
         snprintf(first, sizeof first, "%s", ev->lx.cur.text);
+        snprintf(sheet, sizeof sheet, "%s", ev->lx.cur.sheet);
         XlsxLex save = ev->lx;
         xlsx_lex_next(&ev->lx);
         if (ev->lx.cur.kind == XT_COLON) {
             xlsx_lex_next(&ev->lx);
-            if (ev->lx.cur.kind == XT_REF) {
+            if (xlsx_range_endpoint(&ev->lx.cur)) {
                 long c1, r1, c2, r2;
-                if (xlsx_parse_ref(first, &c1, &r1) && xlsx_parse_ref(ev->lx.cur.text, &c2, &r2)) {
+                const XlsxSnap *rs = ext ? NULL : xlsx_eval_sheet(ev, sheet);
+                if (ext) {
+                    ev->unsupported = 1;
+                    snprintf(ev->unsupported_name, sizeof ev->unsupported_name,
+                             "external workbook reference %s", sheet);
+                }
+                if (rs && xlsx_range_bounds(rs, first, ev->lx.cur.text, &c1, &r1, &c2, &r2)) {
                     if (c1 > c2) { long t = c1; c1 = c2; c2 = t; }
                     if (r1 > r2) { long t = r1; r1 = r2; r2 = t; }
+                    if (out_range) {
+                        out_range->snap = rs; out_range->is_range = 1;
+                        out_range->r1 = r1; out_range->c1 = c1;
+                        out_range->r2 = r2; out_range->c2 = c2;
+                    }
+                    if (out_rows) *out_rows = r2 - r1 + 1;
+                    if (out_cols) *out_cols = c2 - c1 + 1;
+                    if (lazy) {           /* the caller will read cells itself */
+                        xlsx_lex_next(&ev->lx);
+                        return;
+                    }
                     for (long r = r1; r <= r2; r++) {
                         for (long c = c1; c <= c2; c++) {
-                            const XlsxSnapCell *sc = xlsx_snap_at(ev->snap, r, c);
+                            const XlsxSnapCell *sc = xlsx_snap_at(rs, r, c);
                             XlsxVal v = xv_empty();
                             if (sc) {
                                 switch (sc->kind) {
@@ -1540,6 +1839,8 @@ static void xlsx_arg_values(XlsxEval *ev, XlsxVal **vals, const XlsxSnapCell ***
                             (*vals)[(*n)++] = v;
                         }
                     }
+                    if (out_rows) *out_rows = r2 - r1 + 1;
+                    if (out_cols) *out_cols = c2 - c1 + 1;
                     xlsx_lex_next(&ev->lx);
                     return;
                 }
@@ -1551,9 +1852,10 @@ static void xlsx_arg_values(XlsxEval *ev, XlsxVal **vals, const XlsxSnapCell ***
      * total written SUBTOTAL(9,B2,B5,B9) over individual subtotal cells must
      * exclude them exactly as the range form does. */
     const XlsxSnapCell *one = NULL;
-    if (srcs && ev->lx.cur.kind == XT_REF) {
+    if (srcs && ev->lx.cur.kind == XT_REF && !ev->lx.cur.external) {
         long c0, r0;
-        if (xlsx_parse_ref(ev->lx.cur.text, &c0, &r0)) one = xlsx_snap_at(ev->snap, r0, c0);
+        const XlsxSnap *os = xlsx_eval_sheet(ev, ev->lx.cur.sheet);
+        if (os && xlsx_parse_ref(ev->lx.cur.text, &c0, &r0)) one = xlsx_snap_at(os, r0, c0);
     }
     XlsxVal v = xlsx_expr(ev);
     if (*n == *cap) {
@@ -1569,6 +1871,8 @@ static void xlsx_arg_values(XlsxEval *ev, XlsxVal **vals, const XlsxSnapCell ***
     }
     if (srcs) (*srcs)[*n] = one;
     (*vals)[(*n)++] = v;
+    if (out_rows) *out_rows = 1;
+    if (out_cols) *out_cols = 1;
 }
 
 static int xlsx_is_volatile(const char *name) {
@@ -1859,6 +2163,15 @@ static XlsxVal xlsx_call(XlsxEval *ev, const char *raw_name) {
      * IF-criteria family is defined by walking two or more ranges IN PARALLEL.
      * argoff[k] is where argument k starts; argoff[argc] is n. */
     size_t *argoff = NULL, argc = 0, argcap = 0;
+    /* Per-argument SHAPE. VLOOKUP and friends must index a range by row and
+     * column -- "the 15th column of the matched row" -- which a flat list
+     * cannot express. Recorded here because only the collector knows it. */
+    long *argrows = NULL, *argcols = NULL;
+    XlsxRangeDesc *argrange = NULL;
+    /* The four functions that address a range BY POSITION read cells directly
+     * from the descriptor instead of having the whole rectangle materialised. */
+    int lazy = strcmp(name, "VLOOKUP") == 0 || strcmp(name, "HLOOKUP") == 0 ||
+               strcmp(name, "INDEX") == 0 || strcmp(name, "MATCH") == 0;
     if (ev->lx.cur.kind != XT_RPAREN) {
         for (;;) {
             if (argc == argcap) {
@@ -1866,9 +2179,19 @@ static XlsxVal xlsx_call(XlsxEval *ev, const char *raw_name) {
                 size_t *g = realloc(argoff, (argcap + 1) * sizeof *g);
                 if (!g) abort();
                 argoff = g;
+                long *gr = realloc(argrows, argcap * sizeof *gr);
+                long *gc = realloc(argcols, argcap * sizeof *gc);
+                XlsxRangeDesc *gd = realloc(argrange, argcap * sizeof *gd);
+                if (!gr || !gc || !gd) abort();
+                argrows = gr; argcols = gc; argrange = gd;
             }
-            argoff[argc++] = n;
-            xlsx_arg_values(ev, &args, want_srcs ? &srcs : NULL, &n, &cap);
+            argoff[argc] = n;
+            argrows[argc] = 0; argcols[argc] = 0;
+            memset(&argrange[argc], 0, sizeof argrange[argc]);
+            argc++;
+            xlsx_arg_values(ev, &args, want_srcs ? &srcs : NULL, &n, &cap,
+                            &argrows[argc - 1], &argcols[argc - 1],
+                            &argrange[argc - 1], lazy);
             if (ev->lx.cur.kind != XT_COMMA) break;
             xlsx_lex_next(&ev->lx);
         }
@@ -1878,6 +2201,10 @@ static XlsxVal xlsx_call(XlsxEval *ev, const char *raw_name) {
      * criteria function below is written in terms of. */
     #define ARG_LEN(k)  ((k) < argc ? argoff[(k) + 1] - argoff[(k)] : 0)
     #define ARG_AT(k,i) (args[argoff[(k)] + (i)])
+    /* Row-major within the argument's rectangle. */
+    #define ARG_RC(k,r,c) (args[argoff[(k)] + (size_t)((r) * argcols[(k)] + (c))])
+    /* One cell of a descriptor-held range, by offset from its top-left. */
+    #define RNG_AT(k,r,c) xlsx_range_cell(&argrange[(k)], (r), (c))
     if (ev->lx.cur.kind == XT_RPAREN) xlsx_lex_next(&ev->lx);
 
     XlsxVal out = xv_err("#NAME?");
@@ -1889,7 +2216,10 @@ static XlsxVal xlsx_call(XlsxEval *ev, const char *raw_name) {
      * Excel's rule and the reason an error is its own value kind. */
     int catches_errors = strcmp(name, "IFERROR") == 0 || strcmp(name, "IFNA") == 0 ||
                          strcmp(name, "ISERROR") == 0 || strcmp(name, "ISERR") == 0 ||
-                         strcmp(name, "ISNA") == 0 || strcmp(name, "AGGREGATE") == 0;
+                         strcmp(name, "ISNA") == 0 || strcmp(name, "ISBLANK") == 0 ||
+                         strcmp(name, "ISNUMBER") == 0 || strcmp(name, "ISTEXT") == 0 ||
+                         strcmp(name, "ISNONTEXT") == 0 || strcmp(name, "ISLOGICAL") == 0 ||
+                         strcmp(name, "AGGREGATE") == 0;
     for (size_t i = 0; i < n && !catches_errors; i++) {
         if (args[i].kind == XV_ERR) {
             out = xv_err(args[i].str);
@@ -2032,6 +2362,29 @@ static XlsxVal xlsx_call(XlsxEval *ev, const char *raw_name) {
         } else out = xv_err("#VALUE!");
     } else if (strcmp(name, "NA") == 0) {
         out = xv_err("#N/A");
+    } else if (strcmp(name, "ISNA") == 0 || strcmp(name, "ISERROR") == 0 ||
+               strcmp(name, "ISERR") == 0 || strcmp(name, "ISNUMBER") == 0 ||
+               strcmp(name, "ISTEXT") == 0 || strcmp(name, "ISNONTEXT") == 0 ||
+               strcmp(name, "ISBLANK") == 0 || strcmp(name, "ISLOGICAL") == 0) {
+        /* The type predicates. ISNA/ISERROR/ISERR are in the error-catching
+         * list above, so they receive an error argument instead of propagating
+         * it -- which is the whole point of them. The three differ: ISERROR is
+         * any error, ISERR is any error EXCEPT #N/A, and ISNA is only #N/A.
+         * A failed lookup wrapped in the wrong one silently changes which
+         * failures are hidden. */
+        XlsxVal a = n >= 1 ? args[0] : xv_empty();
+        int is_err = a.kind == XV_ERR;
+        int is_na = is_err && a.str && strcmp(a.str, "#N/A") == 0;
+        int r = 0;
+        if (strcmp(name, "ISNA") == 0)            r = is_na;
+        else if (strcmp(name, "ISERROR") == 0)    r = is_err;
+        else if (strcmp(name, "ISERR") == 0)      r = is_err && !is_na;
+        else if (strcmp(name, "ISNUMBER") == 0)   r = a.kind == XV_NUM;
+        else if (strcmp(name, "ISTEXT") == 0)     r = a.kind == XV_STR;
+        else if (strcmp(name, "ISNONTEXT") == 0)  r = a.kind != XV_STR;
+        else if (strcmp(name, "ISBLANK") == 0)    r = a.kind == XV_EMPTY;
+        else                                      r = a.kind == XV_BOOL;
+        out = xv_bool(r);
     } else if (strcmp(name, "XOR") == 0) {
         long t = 0;
         for (size_t i = 0; i < n; i++) {
@@ -2116,6 +2469,99 @@ static XlsxVal xlsx_call(XlsxEval *ev, const char *raw_name) {
         }
         out = xv_str(buf);
         free(buf);
+    } else if (strcmp(name, "VLOOKUP") == 0 || strcmp(name, "HLOOKUP") == 0) {
+        /* VLOOKUP(value, table, index, [range_lookup]) -- the workhorse, and
+         * the dominant consumer of cross-sheet ranges in the corpus.
+         *
+         * THE DEFAULT IS THE DANGEROUS PART. Omitting the 4th argument means
+         * APPROXIMATE match, not exact: the table is assumed sorted ascending
+         * and the largest value not greater than the lookup wins. Treating a
+         * missing argument as exact would turn a legitimate approximate lookup
+         * into #N/A, and treating an exact request as approximate would return
+         * a confidently wrong neighbouring row. Both directions are silent, so
+         * both are implemented rather than one being assumed. */
+        int vert = strcmp(name, "VLOOKUP") == 0;
+        double idx = 0, approx = 1;
+        if (argc < 3 || !xlsx_as_num(ARG_AT(2, 0), &idx)) { out = xv_err("#VALUE!"); goto done; }
+        if (argc >= 4) {
+            double a = 0;
+            if (xlsx_as_num(ARG_AT(3, 0), &a)) approx = (a != 0);
+        }
+        if (!argrange[1].is_range) { out = xv_err("#REF!"); goto done; }
+        long rows = argrows[1], cols = argcols[1];
+        long span = vert ? rows : cols;
+        if (idx < 1 || (vert ? idx > cols : idx > rows)) { out = xv_err("#REF!"); goto done; }
+        char want[256];
+        xlsx_to_text(ARG_AT(0, 0), want, sizeof want);
+        double wnum = 0;
+        int want_num = ARG_AT(0, 0).kind == XV_NUM || ARG_AT(0, 0).kind == XV_BOOL;
+        if (want_num) wnum = ARG_AT(0, 0).num;
+        long hit = -1;
+        for (long i = 0; i < span; i++) {
+            XlsxVal key = vert ? RNG_AT(1, i, 0) : RNG_AT(1, 0, i);
+            int num_key = key.kind == XV_NUM || key.kind == XV_BOOL;
+            if (want_num && num_key) {
+                if (approx) { if (key.num <= wnum) hit = i; else { xv_free(key); break; } }
+                else if (key.num == wnum) { hit = i; xv_free(key); break; }
+            } else if (!want_num && key.kind != XV_EMPTY) {
+                char have[256];
+                xlsx_to_text(key, have, sizeof have);
+                int cmp = strcasecmp(have, want);
+                if (approx) { if (cmp <= 0) hit = i; else { xv_free(key); break; } }
+                else if (cmp == 0) { hit = i; xv_free(key); break; }
+            }
+            xv_free(key);
+        }
+        if (hit < 0) { out = xv_err("#N/A"); goto done; }
+        out = vert ? RNG_AT(1, hit, (long)idx - 1) : RNG_AT(1, (long)idx - 1, hit);
+    } else if (strcmp(name, "INDEX") == 0) {
+        /* INDEX(range, row, [col]). A one-dimensional range takes a single
+         * ordinal, which is how INDEX/MATCH pairs are usually written. */
+        long rows = argrows[0], cols = argcols[0];
+        double rr = 0, cc = 0;
+        if (argc < 2 || !argrange[0].is_range) { out = xv_err("#REF!"); goto done; }
+        xlsx_as_num(ARG_AT(1, 0), &rr);
+        if (argc >= 3) xlsx_as_num(ARG_AT(2, 0), &cc);
+        long r0, c0;
+        if (argc >= 3) { r0 = (long)rr - 1; c0 = (long)cc - 1; }
+        else if (rows == 1) { r0 = 0; c0 = (long)rr - 1; }
+        else { r0 = (long)rr - 1; c0 = 0; }
+        if (r0 < 0 || c0 < 0 || r0 >= rows || c0 >= cols) { out = xv_err("#REF!"); goto done; }
+        out = RNG_AT(0, r0, c0);
+    } else if (strcmp(name, "MATCH") == 0) {
+        /* MATCH(value, range, [type]). Type 1 (the DEFAULT) is "largest value
+         * <= lookup, assuming ascending order"; 0 is exact; -1 is descending.
+         * Same trap as VLOOKUP: the default is not exact. */
+        double type = 1;
+        if (argc < 2 || !argrange[1].is_range) { out = xv_err("#N/A"); goto done; }
+        if (argc >= 3) xlsx_as_num(ARG_AT(2, 0), &type);
+        char want[256];
+        xlsx_to_text(ARG_AT(0, 0), want, sizeof want);
+        double wnum = 0;
+        int want_num = ARG_AT(0, 0).kind == XV_NUM || ARG_AT(0, 0).kind == XV_BOOL;
+        if (want_num) wnum = ARG_AT(0, 0).num;
+        long span = argrows[1] * argcols[1];
+        long hit = -1;
+        for (long i = 0; i < span; i++) {
+            long rr2 = argcols[1] == 1 ? i : 0, cc2 = argcols[1] == 1 ? 0 : i;
+            if (argrows[1] > 1 && argcols[1] > 1) { rr2 = i / argcols[1]; cc2 = i % argcols[1]; }
+            XlsxVal key = RNG_AT(1, rr2, cc2);
+            int num_key = key.kind == XV_NUM || key.kind == XV_BOOL;
+            if (type == 0) {
+                if (want_num && num_key) { if (key.num == wnum) { hit = i; xv_free(key); break; } }
+                else if (!want_num && key.kind != XV_EMPTY) {
+                    char have[256];
+                    xlsx_to_text(key, have, sizeof have);
+                    if (strcasecmp(have, want) == 0) { hit = i; xv_free(key); break; }
+                }
+            } else if (type > 0) {
+                if (want_num && num_key) { if (key.num <= wnum) hit = i; else { xv_free(key); break; } }
+            } else {
+                if (want_num && num_key) { if (key.num >= wnum) hit = i; else { xv_free(key); break; } }
+            }
+            xv_free(key);
+        }
+        out = hit < 0 ? xv_err("#N/A") : xv_num((double)hit + 1);
     } else if (strcmp(name, "XLOOKUP") == 0 || strcmp(name, "XMATCH") == 0) {
         /* XLOOKUP(lookup, lookup_array, return_array, [if_not_found])
          * XMATCH(lookup, lookup_array)
@@ -2555,6 +3001,11 @@ done:
     free(args);
     free(srcs);   /* borrowed pointers into the snapshot; only the array is ours */
     free(argoff);
+    free(argrows);
+    free(argcols);
+    free(argrange);
+    #undef RNG_AT
+    #undef ARG_RC
     #undef ARG_LEN
     #undef ARG_AT
     return out;
@@ -2568,9 +3019,11 @@ static XlsxVal xlsx_primary(XlsxEval *ev) {
     case XT_STR: v = xv_str(ev->lx.cur.text); xlsx_lex_next(&ev->lx); break;
     case XT_ERRLIT: v = xv_err(ev->lx.cur.text); xlsx_lex_next(&ev->lx); break;
     case XT_REF: {
-        char ref[128];
+        char ref[128], sheet[128];
+        int ext = ev->lx.cur.external;
         snprintf(ref, sizeof ref, "%s", ev->lx.cur.text);
-        v = xlsx_cell_value(ev, ref);
+        snprintf(sheet, sizeof sheet, "%s", ev->lx.cur.sheet);
+        v = xlsx_cell_value_in(ev, sheet, ext, ref);
         xlsx_lex_next(&ev->lx);
         break;
     }
@@ -2728,13 +3181,16 @@ static XlsxVal xlsx_expr(XlsxEval *ev) {
 }
 
 /* Evaluate one formula's TEXT (without the leading '='). */
-static XlsxVal xlsx_eval_formula(XlsxWorkbook *wb, const XlsxSnap *snap,
+static XlsxVal xlsx_eval_formula_in(XlsxWorkbook *wb, const XlsxSnap *snap,
+                                 const char *sheet_name, XlsxSheetPool *pool,
                                  const char *formula, int *unsupported,
                                  char *unsupported_name, size_t un_len) {
     XlsxEval ev;
     memset(&ev, 0, sizeof ev);
     ev.wb = wb;
     ev.snap = snap;
+    ev.sheet_name = sheet_name;
+    ev.pool = pool;
     ev.lx.p = formula;
     ev.lx.bad = 0;
     xlsx_lex_next(&ev.lx);
@@ -3466,6 +3922,7 @@ static Value xlsx_eval_call(AstExpr *expr) {
             return xlsx_raise("xlsx.evaluate expects a workbook, a sheet name and a ref");
         }
         XlsxSnap snap;
+        XlsxSheetPool pool = {NULL, 0};
         if (!xlsx_snapshot(wbv.as.workbook, shv.as.string, &snap)) {
             char message[256];
             snprintf(message, sizeof message, "xlsx: no such sheet: %s", shv.as.string);
@@ -3479,7 +3936,8 @@ static Value xlsx_eval_call(AstExpr *expr) {
             if (c && c->formula) {
                 int unsup = 0;
                 char un[64] = "";
-                XlsxVal v = xlsx_eval_formula(wbv.as.workbook, &snap, c->formula, &unsup, un, sizeof un);
+                XlsxVal v = xlsx_eval_formula_in(wbv.as.workbook, &snap, shv.as.string, &pool,
+                                                 c->formula, &unsup, un, sizeof un);
                 out = xlsx_val_to_gbasic(v);
                 xv_free(v);
             } else if (c) {
@@ -3493,6 +3951,7 @@ static Value xlsx_eval_call(AstExpr *expr) {
                 }
             }
         }
+        xlsx_pool_free(&pool);
         xlsx_snap_free(&snap);
         value_free(wbv); value_free(shv); value_free(refv);
         return out;
@@ -3519,6 +3978,7 @@ static Value xlsx_eval_call(AstExpr *expr) {
             return xlsx_raise("xlsx.check expects a workbook and a sheet name");
         }
         XlsxSnap snap;
+        XlsxSheetPool pool = {NULL, 0};
         if (!xlsx_snapshot(wbv.as.workbook, shv.as.string, &snap)) {
             char message[256];
             snprintf(message, sizeof message, "xlsx: no such sheet: %s", shv.as.string);
@@ -3562,7 +4022,8 @@ static Value xlsx_eval_call(AstExpr *expr) {
             char un[64] = "";
             XlsxVal got = is_vol
                 ? xv_str("(not evaluated: volatile)")
-                : xlsx_eval_formula(wbv.as.workbook, &snap, c->formula, &unsup, un, sizeof un);
+                : xlsx_eval_formula_in(wbv.as.workbook, &snap, shv.as.string, &pool,
+                                        c->formula, &unsup, un, sizeof un);
 
             const char *verdict;
             if (is_vol) { verdict = "volatile"; volatile_n++; }
@@ -3640,6 +4101,7 @@ static Value xlsx_eval_call(AstExpr *expr) {
             xv_free(got);
         }
 
+        xlsx_pool_free(&pool);
         xlsx_snap_free(&snap);
         value_free(wbv); value_free(shv);
 
@@ -3677,6 +4139,7 @@ static Value xlsx_eval_call(AstExpr *expr) {
         }
         XlsxWorkbook *wb = wbv.as.workbook;
         XlsxSnap snap;
+        XlsxSheetPool pool = {NULL, 0};
         if (!xlsx_snapshot(wb, shv.as.string, &snap)) {
             char message[256];
             snprintf(message, sizeof message, "xlsx: no such sheet: %s", shv.as.string);
@@ -3703,7 +4166,8 @@ static Value xlsx_eval_call(AstExpr *expr) {
             if (circ[i]) { circular++; continue; }
             int unsup = 0;
             char un[64] = "";
-            XlsxVal v = xlsx_eval_formula(wb, &snap, c->formula, &unsup, un, sizeof un);
+            XlsxVal v = xlsx_eval_formula_in(wb, &snap, shv.as.string, &pool,
+                                             c->formula, &unsup, un, sizeof un);
             evaluated++;
             if (unsup) { unsupported_n++; xv_free(v); continue; }
 
@@ -3784,6 +4248,7 @@ static Value xlsx_eval_call(AstExpr *expr) {
         }
 
         free(state); free(circ); free(order);
+        xlsx_pool_free(&pool);
         xlsx_snap_free(&snap);
         value_free(wbv); value_free(shv);
 
