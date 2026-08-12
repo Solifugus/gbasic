@@ -1003,6 +1003,70 @@ exactly the cents the pipeline exists to preserve.
 formula compiler proper — lowering a column formula to a vectorised frame pass
 or to SQL — for which `xlsx.recalc` is the oracle.
 
+**Q. The formula compiler, phase 1** (2026-08-12). `xlsx.to_sql(formula,
+mapping)` → `{ok, sql, reason}`. §7's headline, narrowly and honestly scoped.
+
+    IF(C2>0.05, ROUND(B2*C2,2), 0)
+      -> CASE WHEN "rate" > 0.05 THEN ROUND("balance" * "rate", 2) ELSE 0 END
+
+It is a **second pass over the same lexer** as the evaluator, with the same
+precedence chain, emitting text instead of computing values. Sharing the lexer
+is the point: a compiler that parsed the dialect slightly differently would
+disagree with the interpreter on inputs neither test covers — and the
+interpreter is the oracle it is checked against.
+
+*Lowered:* arithmetic and comparison, `&`, unary minus, postfix `%`, `^` (via
+`POWER`), row ranges, `IF`, `AND`/`OR`/`NOT`, `SUM` (row-wise), `MIN`/`MAX`
+(multi-argument), `ROUND`, `ABS`, `IFERROR` (→ `COALESCE`), `CONCAT(ENATE)`,
+`LEN`, `UPPER`/`LOWER`, and a mapped reference-to-constant so a `$F$1` factor
+cell folds in.
+
+*Refused, each because it would otherwise produce a plausible wrong number:*
+
+| shape | why |
+|---|---|
+| `SUM(B2:B99)` | a row-**spanning** range is an aggregate and changes cardinality |
+| `B3*2` on row 2 | a reference to another row is a window function |
+| `VLOOKUP`, `INDEX`/`MATCH` | lowers to a **join** — phase 2 |
+| `SUMIF`, `SUBTOTAL`, `AGGREGATE` | lowers to a **filtered aggregate** |
+| `NOW()` | volatile; no set-based meaning |
+| `Other!B2` | needs the other sheet as a table |
+| `MIN(B2)` | one argument is SQL's *aggregate* MIN, not the scalar one |
+
+The `mapping` may carry `_row`, pinning the row the formula sits on, so a
+reference to a fixed cell **above** the data (`B1` in a formula on row 2) is
+caught rather than silently compiling to that row's `B`.
+
+*THE ORACLE TIER IS THE POINT.* The same workbook is evaluated cell by cell by
+`xlsx.evaluate` **and** loaded into SQLite and computed by the compiled
+expression, then compared row by row. It is the only check that can catch a
+compiler which is self-consistently wrong, and it earned its keep immediately:
+it caught the compiler lowering `AND` to SQL while the evaluator still reported
+`AND` as unimplemented, so the two disagreed on every row of that column.
+`AND`/`OR`/`NOT` were then implemented in the evaluator.
+
+*Two bugs the tests caught, both of the exact class this module refuses:*
+
+1. `SUM(B2:D2)` compiled to `COALESCE("balance","rate","term",0)` — SQL's
+   *first-non-null*, not a sum. The row range was emitted as one comma-joined
+   argument; range expansion had to move into the argument collector, which is
+   the only place one argument can become several.
+2. A bare defined name consumed the following tokens as if it were a call,
+   so `VLOOKUP(A2, X:Y, 2, 0)` was refused with "Y does not lower" instead of
+   naming `VLOOKUP`.
+
+*Corpus effect of adding `AND`/`OR`/`NOT`,* reported as measured rather than as
+a headline: **410,121 cells moved out of "unsupported" into "judged"**, of
+which 380,430 agree. The agreement *rate* therefore dips slightly, 94.97% →
+94.92%, because the newly-judged population agrees at about 93% against the
+existing 95%. Cells that were previously declared unevaluable are now being
+judged and mostly getting the right answer; quoting only the rate would report
+that as a regression, and quoting only the agree count would hide the 29,691
+new disagreements.
+
+*Still to do in §7:* the vectorised in-memory target (`frame.with_column`), and
+phase 2's joins and filtered aggregates.
+
 ## 14. Roadmap (phases)
 
 Each phase is independently shippable and golden-file testable.

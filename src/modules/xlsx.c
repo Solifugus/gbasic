@@ -2395,6 +2395,32 @@ static XlsxVal xlsx_call(XlsxEval *ev, const char *raw_name) {
         else if (strcmp(name, "ISBLANK") == 0)    r = a.kind == XV_EMPTY;
         else                                      r = a.kind == XV_BOOL;
         out = xv_bool(r);
+    } else if (strcmp(name, "AND") == 0 || strcmp(name, "OR") == 0 ||
+               strcmp(name, "NOT") == 0) {
+        /* Added when the COMPILER's oracle tier caught the two disagreeing:
+         * xlsx.to_sql lowered AND to SQL while the evaluator still reported it
+         * as unimplemented, so the compiled column and the interpreted column
+         * differed on every row. That divergence is exactly what the oracle
+         * exists to find, and it is the reason the compiler is checked against
+         * the interpreter rather than against a golden. */
+        if (strcmp(name, "NOT") == 0) {
+            double x = 0;
+            out = (n >= 1 && xlsx_as_num(args[0], &x)) ? xv_bool(x == 0) : xv_err("#VALUE!");
+        } else {
+            int is_and = strcmp(name, "AND") == 0;
+            int acc = is_and ? 1 : 0;
+            long seen = 0;
+            for (size_t i = 0; i < n; i++) {
+                /* Text and empties are IGNORED by AND/OR, not treated as
+                 * false -- Excel's rule, and the difference shows up whenever
+                 * a range with blanks is passed. */
+                if (args[i].kind != XV_NUM && args[i].kind != XV_BOOL) continue;
+                seen++;
+                int t = args[i].num != 0;
+                if (is_and) acc = acc && t; else acc = acc || t;
+            }
+            out = seen ? xv_bool(acc) : xv_err("#VALUE!");
+        }
     } else if (strcmp(name, "XOR") == 0) {
         long t = 0;
         for (size_t i = 0; i < n; i++) {
@@ -3194,6 +3220,506 @@ static XlsxVal xlsx_expr(XlsxEval *ev) {
         a = r;
     }
     return a;
+}
+
+/* ==================================================== THE FORMULA COMPILER
+ *
+ * docs/xlsx_design.md §7. A business user's COLUMN formula is not a million
+ * cell evaluations -- it is one transformation over a column. So this lowers
+ * `IF(C2>0.05, B2*0.02, 0)` to `CASE WHEN rate > 0.05 THEN balance * 0.02 ELSE
+ * 0 END` and lets the database run it once over the whole table.
+ *
+ * It is a SECOND PASS over the same lexer as the evaluator, with the same
+ * precedence chain, emitting text instead of computing values. Sharing the
+ * lexer is the point: a compiler that parsed the dialect slightly differently
+ * from the interpreter would disagree with it on inputs neither test covers,
+ * and the interpreter is the oracle this is checked against.
+ *
+ * WHAT IT REFUSES, AND WHY EACH REFUSAL EXISTS. §7's promise is deliberately
+ * narrow: lower the column-formula subset business users actually write, and
+ * refuse the rest with a diagnostic rather than fall back to per-row
+ * evaluation. The refusals are not gaps to be quietly widened later --
+ *
+ *   * A COLUMN RANGE (B2:B99) is an AGGREGATE, not a row expression. SUM over
+ *     it changes cardinality, so lowering it as if it were a row-wise sum
+ *     would produce a confident wrong number. A ROW range (B2:D2) is fine and
+ *     expands to its columns.
+ *   * A REFERENCE TO ANOTHER ROW is a window function. Treating B3 as "this
+ *     row's B" inside a formula written on row 2 is silently wrong.
+ *   * VLOOKUP / SUMIF and friends lower to joins and filtered aggregates --
+ *     real work, and out of this phase.
+ *   * A VOLATILE function has no set-based meaning at all.
+ *   * A CROSS-SHEET reference needs the other sheet as a table.
+ */
+
+typedef struct {
+    XlsxLex lx;
+    Value mapping;            /* record: column letter -> SQL name, ref -> constant */
+    long row;                 /* the row every relative reference must be on */
+    int have_row;
+    int failed;
+    char reason[256];
+    char *out;
+    size_t len, cap;
+} XlsxSql;
+
+static void xsql_put(XlsxSql *g, const char *s) {
+    size_t n = strlen(s);
+    if (g->len + n + 1 > g->cap) {
+        g->cap = (g->len + n + 1) * 2;
+        char *grow = realloc(g->out, g->cap);
+        if (!grow) abort();
+        g->out = grow;
+    }
+    memcpy(g->out + g->len, s, n + 1);
+    g->len += n;
+}
+
+static void xsql_fail(XlsxSql *g, const char *fmt, const char *what) {
+    if (g->failed) return;
+    g->failed = 1;
+    snprintf(g->reason, sizeof g->reason, fmt, what);
+}
+
+/* A record field, or NULL. */
+static const Value *xsql_lookup(const Value *rec, const char *key) {
+    if (!rec || rec->kind != VALUE_RECORD) return NULL;
+    for (size_t i = 0; i < rec->as.record.count; i++) {
+        if (strcmp(rec->as.record.fields[i].name, key) == 0) {
+            return rec->as.record.fields[i].value;
+        }
+    }
+    return NULL;
+}
+
+/* Emit one cell reference. A relative reference becomes the mapped SQL column;
+ * a reference the mapping gives a VALUE for becomes that literal, which is how
+ * a `$F$1` factor cell is folded in. */
+static void xsql_ref(XlsxSql *g, const char *ref) {
+    const Value *lit = xsql_lookup(&g->mapping, ref);
+    if (lit) {                                  /* a named constant cell */
+        char buf[64];
+        if (lit->kind == VALUE_NUMBER) {
+            snprintf(buf, sizeof buf, "%.15g", lit->as.number);
+            xsql_put(g, buf);
+        } else {
+            xsql_put(g, "'");
+            xsql_put(g, lit->kind == VALUE_STRING ? lit->as.string : "");
+            xsql_put(g, "'");
+        }
+        return;
+    }
+    long col = 0, row = 0;
+    if (!xlsx_parse_ref(ref, &col, &row)) {
+        xsql_fail(g, "cannot lower reference %s", ref);
+        return;
+    }
+    /* Every relative reference must name the SAME row -- the row the formula
+     * is written on. A different row is a window function, not a column
+     * expression, and pretending otherwise is silently wrong. */
+    if (!g->have_row) { g->row = row; g->have_row = 1; }
+    else if (row != g->row) {
+        xsql_fail(g, "%s refers to another row: that is a window function, not a column expression", ref);
+        return;
+    }
+    char letter[8];
+    size_t li = 0;
+    long c = col + 1;
+    while (c > 0 && li < sizeof letter - 1) {
+        letter[li++] = (char)('A' + (c - 1) % 26);
+        c = (c - 1) / 26;
+    }
+    letter[li] = '\0';
+    for (size_t i = 0; i < li / 2; i++) {
+        char t = letter[i]; letter[i] = letter[li - 1 - i]; letter[li - 1 - i] = t;
+    }
+    const Value *name = xsql_lookup(&g->mapping, letter);
+    if (!name || name->kind != VALUE_STRING) {
+        xsql_fail(g, "no column mapped for %s", letter);
+        return;
+    }
+    xsql_put(g, "\"");
+    xsql_put(g, name->as.string);
+    xsql_put(g, "\"");
+}
+
+static void xsql_expr(XlsxSql *g);
+
+static void xsql_primary(XlsxSql *g) {
+    if (g->failed) return;
+    switch (g->lx.cur.kind) {
+    case XT_NUM: {
+        char buf[64];
+        snprintf(buf, sizeof buf, "%.15g", g->lx.cur.num);
+        xsql_put(g, buf);
+        xlsx_lex_next(&g->lx);
+        return;
+    }
+    case XT_STR: {
+        /* '' is SQL's escape for a quote, same as Excel's for its own. */
+        xsql_put(g, "'");
+        for (const char *p = g->lx.cur.text; *p; p++) {
+            if (*p == '\'') xsql_put(g, "'");
+            char one[2] = { *p, '\0' };
+            xsql_put(g, one);
+        }
+        xsql_put(g, "'");
+        xlsx_lex_next(&g->lx);
+        return;
+    }
+    case XT_LPAREN:
+        xsql_put(g, "(");
+        xlsx_lex_next(&g->lx);
+        xsql_expr(g);
+        if (g->lx.cur.kind == XT_RPAREN) xlsx_lex_next(&g->lx);
+        xsql_put(g, ")");
+        return;
+    case XT_REF: {
+        if (g->lx.cur.sheet[0]) {
+            xsql_fail(g, "cross-sheet reference %s: lower the other sheet to a table first",
+                      g->lx.cur.text);
+            return;
+        }
+        char first[128];
+        snprintf(first, sizeof first, "%s", g->lx.cur.text);
+        XlsxLex save = g->lx;
+        xlsx_lex_next(&g->lx);
+        if (g->lx.cur.kind == XT_COLON) {
+            xlsx_lex_next(&g->lx);
+            if (xlsx_range_endpoint(&g->lx.cur)) {
+                /* A range reached here is NOT a function argument -- those are
+                 * expanded by the argument collector, which can turn one range
+                 * into several arguments. A bare range in an expression has no
+                 * row-expression meaning. */
+                long c1, r1, c2, r2;
+                if (!xlsx_parse_ref(first, &c1, &r1) ||
+                    !xlsx_parse_ref(g->lx.cur.text, &c2, &r2) || r1 != r2) {
+                    xsql_fail(g, "%s spans rows: that is an AGGREGATE and changes cardinality, so it is refused rather than lowered as a row-wise expression", first);
+                    return;
+                }
+                xsql_fail(g, "%s: a range outside a function has no row-expression meaning", first);
+                return;
+            }
+        }
+        g->lx = save;
+        xsql_ref(g, first);
+        xlsx_lex_next(&g->lx);
+        return;
+    }
+    case XT_NAME: {
+        char nm[128];
+        size_t i = 0;
+        const char *raw = xlsx_strip_future_prefix(g->lx.cur.text);
+        for (; raw[i] && i < sizeof nm - 1; i++) nm[i] = (char)toupper((unsigned char)raw[i]);
+        nm[i] = '\0';
+        if (strcmp(nm, "TRUE") == 0) { xsql_put(g, "1"); xlsx_lex_next(&g->lx); return; }
+        if (strcmp(nm, "FALSE") == 0) { xsql_put(g, "0"); xlsx_lex_next(&g->lx); return; }
+        if (xlsx_is_volatile(nm)) {
+            xsql_fail(g, "%s is volatile and has no set-based meaning", nm);
+            return;
+        }
+        /* A NAME not followed by '(' is a DEFINED NAME, not a call. Detected
+         * before the argument collector runs, which would otherwise consume
+         * the following tokens as if they were a parameter list and produce a
+         * diagnostic naming the wrong thing. */
+        {
+            XlsxLex peek = g->lx;
+            xlsx_lex_next(&peek);
+            if (peek.cur.kind != XT_LPAREN) {
+                xsql_fail(g, "%s is a defined name; the compiler has no value for it", nm);
+                return;
+            }
+        }
+        /* The Phase 2 family, refused BY NAME with what each would become, so
+         * the diagnostic tells the reader where the work is rather than
+         * complaining about a token inside the arguments. */
+        if (strcmp(nm, "VLOOKUP") == 0 || strcmp(nm, "HLOOKUP") == 0 ||
+            strcmp(nm, "XLOOKUP") == 0 || strcmp(nm, "INDEX") == 0 ||
+            strcmp(nm, "MATCH") == 0 || strcmp(nm, "XMATCH") == 0) {
+            xsql_fail(g, "%s lowers to a JOIN, which this phase does not do", nm);
+            return;
+        }
+        if (strcmp(nm, "SUMIF") == 0 || strcmp(nm, "SUMIFS") == 0 ||
+            strcmp(nm, "COUNTIF") == 0 || strcmp(nm, "COUNTIFS") == 0 ||
+            strcmp(nm, "AVERAGEIF") == 0 || strcmp(nm, "AVERAGEIFS") == 0 ||
+            strcmp(nm, "MAXIFS") == 0 || strcmp(nm, "MINIFS") == 0 ||
+            strcmp(nm, "SUBTOTAL") == 0 || strcmp(nm, "AGGREGATE") == 0) {
+            xsql_fail(g, "%s lowers to a filtered AGGREGATE, which changes cardinality and is not a row expression", nm);
+            return;
+        }
+        /* Collect the argument list, each argument compiled in turn. */
+        xlsx_lex_next(&g->lx);              /* on '(' */
+        xlsx_lex_next(&g->lx);              /* past it */
+        char *args[16];
+        size_t argn = 0;
+        size_t saved_len = g->len;
+        if (g->lx.cur.kind != XT_RPAREN) {
+            for (;;) {
+                /* A ROW RANGE argument (B2:D2) becomes SEVERAL arguments, one
+                 * per column. Expanded HERE rather than in the expression
+                 * parser because only the collector can turn one argument into
+                 * many -- emitting "b, c, d" as a single argument made
+                 * SUM(B2:D2) compile to COALESCE(b, c, d, 0), which is SQL's
+                 * first-non-null and not a sum at all. A plausible wrong
+                 * number, caught by the oracle tier. */
+                if (g->lx.cur.kind == XT_REF && !g->lx.cur.sheet[0]) {
+                    char f1[128];
+                    snprintf(f1, sizeof f1, "%s", g->lx.cur.text);
+                    XlsxLex save2 = g->lx;
+                    xlsx_lex_next(&g->lx);
+                    if (g->lx.cur.kind == XT_COLON) {
+                        xlsx_lex_next(&g->lx);
+                        if (xlsx_range_endpoint(&g->lx.cur)) {
+                            long c1, r1, c2, r2;
+                            if (!xlsx_parse_ref(f1, &c1, &r1) ||
+                                !xlsx_parse_ref(g->lx.cur.text, &c2, &r2)) {
+                                xsql_fail(g, "%s: a whole-column range is an aggregate, not a row expression", f1);
+                                for (size_t k = 0; k < argn; k++) free(args[k]);
+                                return;
+                            }
+                            if (r1 != r2) {
+                                xsql_fail(g, "%s spans rows: that is an AGGREGATE and changes cardinality, so it is refused rather than lowered as a row-wise expression", f1);
+                                for (size_t k = 0; k < argn; k++) free(args[k]);
+                                return;
+                            }
+                            if (c1 > c2) { long t = c1; c1 = c2; c2 = t; }
+                            for (long c = c1; c <= c2 && argn < 16; c++) {
+                                char letter[8];
+                                size_t li = 0;
+                                long cc = c + 1;
+                                while (cc > 0 && li < sizeof letter - 1) {
+                                    letter[li++] = (char)('A' + (cc - 1) % 26);
+                                    cc = (cc - 1) / 26;
+                                }
+                                letter[li] = '\0';
+                                for (size_t i2 = 0; i2 < li / 2; i2++) {
+                                    char t = letter[i2]; letter[i2] = letter[li-1-i2]; letter[li-1-i2] = t;
+                                }
+                                char rf[32];
+                                snprintf(rf, sizeof rf, "%s%ld", letter, r1);
+                                size_t st = g->len;
+                                xsql_ref(g, rf);
+                                if (g->failed) { for (size_t k = 0; k < argn; k++) free(args[k]); return; }
+                                size_t n2 = g->len - st;
+                                args[argn] = malloc(n2 + 1);
+                                if (!args[argn]) abort();
+                                memcpy(args[argn], g->out + st, n2);
+                                args[argn][n2] = '\0';
+                                argn++;
+                                g->len = st;
+                                g->out[g->len] = '\0';
+                            }
+                            xlsx_lex_next(&g->lx);
+                            if (g->lx.cur.kind != XT_COMMA) break;
+                            xlsx_lex_next(&g->lx);
+                            continue;
+                        }
+                    }
+                    g->lx = save2;
+                }
+                size_t start = g->len;
+                xsql_expr(g);
+                if (g->failed) { for (size_t k = 0; k < argn; k++) free(args[k]); return; }
+                size_t n = g->len - start;
+                if (argn < 16) {
+                    args[argn] = malloc(n + 1);
+                    if (!args[argn]) abort();
+                    memcpy(args[argn], g->out + start, n);
+                    args[argn][n] = '\0';
+                    argn++;
+                }
+                g->len = start;
+                g->out[g->len] = '\0';
+                if (g->lx.cur.kind != XT_COMMA) break;
+                xlsx_lex_next(&g->lx);
+            }
+        }
+        if (g->lx.cur.kind == XT_RPAREN) xlsx_lex_next(&g->lx);
+        g->len = saved_len;
+        g->out[g->len] = '\0';
+
+        #define XSQL_DONE(...) do { for (size_t k = 0; k < argn; k++) free(args[k]); return; } while (0)
+        if (strcmp(nm, "IF") == 0 && argn >= 2) {
+            xsql_put(g, "CASE WHEN "); xsql_put(g, args[0]);
+            xsql_put(g, " THEN "); xsql_put(g, args[1]);
+            xsql_put(g, " ELSE "); xsql_put(g, argn >= 3 ? args[2] : "0");
+            xsql_put(g, " END");
+            XSQL_DONE();
+        }
+        if ((strcmp(nm, "AND") == 0 || strcmp(nm, "OR") == 0) && argn >= 1) {
+            const char *joiner = strcmp(nm, "AND") == 0 ? " AND " : " OR ";
+            xsql_put(g, "(");
+            for (size_t k = 0; k < argn; k++) {
+                if (k) xsql_put(g, joiner);
+                xsql_put(g, "("); xsql_put(g, args[k]); xsql_put(g, ")");
+            }
+            xsql_put(g, ")");
+            XSQL_DONE();
+        }
+        if (strcmp(nm, "NOT") == 0 && argn == 1) {
+            xsql_put(g, "(NOT ("); xsql_put(g, args[0]); xsql_put(g, "))");
+            XSQL_DONE();
+        }
+        if (strcmp(nm, "SUM") == 0 && argn >= 1) {
+            /* Row-wise: the arguments are this row's columns. A column range
+             * never reaches here -- it is refused above. */
+            xsql_put(g, "(");
+            for (size_t k = 0; k < argn; k++) {
+                if (k) xsql_put(g, " + ");
+                xsql_put(g, "COALESCE("); xsql_put(g, args[k]); xsql_put(g, ", 0)");
+            }
+            xsql_put(g, ")");
+            XSQL_DONE();
+        }
+        if ((strcmp(nm, "MIN") == 0 || strcmp(nm, "MAX") == 0) && argn >= 1) {
+            /* SQLite's scalar MIN/MAX take several arguments; the aggregate
+             * form takes one, so a single argument would change meaning. */
+            if (argn < 2) {
+                xsql_fail(g, "%s with one argument is an aggregate in SQL, not a row expression", nm);
+                XSQL_DONE();
+            }
+            xsql_put(g, strcmp(nm, "MIN") == 0 ? "MIN(" : "MAX(");
+            for (size_t k = 0; k < argn; k++) {
+                if (k) xsql_put(g, ", ");
+                xsql_put(g, args[k]);
+            }
+            xsql_put(g, ")");
+            XSQL_DONE();
+        }
+        if (strcmp(nm, "ROUND") == 0 && argn >= 1) {
+            xsql_put(g, "ROUND("); xsql_put(g, args[0]);
+            xsql_put(g, ", "); xsql_put(g, argn >= 2 ? args[1] : "0");
+            xsql_put(g, ")");
+            XSQL_DONE();
+        }
+        if (strcmp(nm, "ABS") == 0 && argn == 1) {
+            xsql_put(g, "ABS("); xsql_put(g, args[0]); xsql_put(g, ")");
+            XSQL_DONE();
+        }
+        if (strcmp(nm, "IFERROR") == 0 && argn == 2) {
+            /* The only error SQL can produce here is NULL from a division by
+             * zero, which is precisely what COALESCE catches. */
+            xsql_put(g, "COALESCE("); xsql_put(g, args[0]);
+            xsql_put(g, ", "); xsql_put(g, args[1]); xsql_put(g, ")");
+            XSQL_DONE();
+        }
+        if (strcmp(nm, "CONCATENATE") == 0 || strcmp(nm, "CONCAT") == 0) {
+            xsql_put(g, "(");
+            for (size_t k = 0; k < argn; k++) {
+                if (k) xsql_put(g, " || ");
+                xsql_put(g, args[k]);
+            }
+            xsql_put(g, ")");
+            XSQL_DONE();
+        }
+        if (strcmp(nm, "LEN") == 0 && argn == 1) {
+            xsql_put(g, "LENGTH("); xsql_put(g, args[0]); xsql_put(g, ")");
+            XSQL_DONE();
+        }
+        if (strcmp(nm, "UPPER") == 0 || strcmp(nm, "LOWER") == 0) {
+            xsql_put(g, strcmp(nm, "UPPER") == 0 ? "UPPER(" : "LOWER(");
+            xsql_put(g, argn ? args[0] : "''");
+            xsql_put(g, ")");
+            XSQL_DONE();
+        }
+        xsql_fail(g, "%s does not lower to a row expression in this phase", nm);
+        XSQL_DONE();
+        #undef XSQL_DONE
+    }
+    case XT_ERRLIT:
+        xsql_fail(g, "%s: an error literal has no SQL equivalent", g->lx.cur.text);
+        return;
+    default:
+        xsql_fail(g, "%s", "unexpected token");
+        return;
+    }
+}
+
+static void xsql_unary(XlsxSql *g) {
+    if (g->lx.cur.kind == XT_OP && strcmp(g->lx.cur.text, "-") == 0) {
+        xsql_put(g, "-");
+        xlsx_lex_next(&g->lx);
+        xsql_unary(g);
+        return;
+    }
+    if (g->lx.cur.kind == XT_OP && strcmp(g->lx.cur.text, "+") == 0) {
+        xlsx_lex_next(&g->lx);
+        xsql_unary(g);
+        return;
+    }
+    xsql_primary(g);
+    /* Postfix percent, as in the evaluator. */
+    while (g->lx.cur.kind == XT_OP && strcmp(g->lx.cur.text, "%") == 0) {
+        xsql_put(g, " / 100.0");
+        xlsx_lex_next(&g->lx);
+    }
+}
+
+static void xsql_power(XlsxSql *g) {
+    xsql_unary(g);
+    while (!g->failed && g->lx.cur.kind == XT_OP && strcmp(g->lx.cur.text, "^") == 0) {
+        /* SQLite has no ^ operator; POWER is the portable spelling and needs
+         * the left side wrapped, which is why this is not a simple infix. */
+        size_t start = 0;
+        (void)start;
+        char *lhs = copy_string(g->out);
+        g->len = 0; g->out[0] = '\0';
+        xsql_put(g, "POWER("); xsql_put(g, lhs); xsql_put(g, ", ");
+        free(lhs);
+        xlsx_lex_next(&g->lx);
+        xsql_unary(g);
+        xsql_put(g, ")");
+    }
+}
+
+static void xsql_term(XlsxSql *g) {
+    xsql_power(g);
+    while (!g->failed && g->lx.cur.kind == XT_OP &&
+           (strcmp(g->lx.cur.text, "*") == 0 || strcmp(g->lx.cur.text, "/") == 0)) {
+        xsql_put(g, g->lx.cur.text[0] == '*' ? " * " : " / ");
+        /* Excel's / by zero is an ERROR; SQLite's is NULL. Both propagate and
+         * both are caught by IFERROR -> COALESCE, so the shapes agree; a
+         * bare division by zero simply reads as NULL rather than #DIV/0!, and
+         * that difference is documented rather than papered over. */
+        xlsx_lex_next(&g->lx);
+        xsql_power(g);
+    }
+}
+
+static void xsql_arith(XlsxSql *g) {
+    xsql_term(g);
+    while (!g->failed && g->lx.cur.kind == XT_OP &&
+           (strcmp(g->lx.cur.text, "+") == 0 || strcmp(g->lx.cur.text, "-") == 0)) {
+        xsql_put(g, g->lx.cur.text[0] == '+' ? " + " : " - ");
+        xlsx_lex_next(&g->lx);
+        xsql_term(g);
+    }
+}
+
+static void xsql_concat_level(XlsxSql *g) {
+    xsql_arith(g);
+    while (!g->failed && g->lx.cur.kind == XT_OP && strcmp(g->lx.cur.text, "&") == 0) {
+        xsql_put(g, " || ");
+        xlsx_lex_next(&g->lx);
+        xsql_arith(g);
+    }
+}
+
+static void xsql_expr(XlsxSql *g) {
+    xsql_concat_level(g);
+    while (!g->failed && g->lx.cur.kind == XT_OP &&
+           (strcmp(g->lx.cur.text, "=") == 0 || strcmp(g->lx.cur.text, "<>") == 0 ||
+            strcmp(g->lx.cur.text, "<") == 0 || strcmp(g->lx.cur.text, ">") == 0 ||
+            strcmp(g->lx.cur.text, "<=") == 0 || strcmp(g->lx.cur.text, ">=") == 0)) {
+        const char *op = g->lx.cur.text;
+        xsql_put(g, strcmp(op, "=") == 0 ? " = " :
+                    strcmp(op, "<>") == 0 ? " <> " :
+                    strcmp(op, "<=") == 0 ? " <= " :
+                    strcmp(op, ">=") == 0 ? " >= " :
+                    strcmp(op, "<") == 0 ? " < " : " > ");
+        xlsx_lex_next(&g->lx);
+        xsql_concat_level(g);
+    }
 }
 
 /* Evaluate one formula's TEXT (without the leading '='). */
@@ -4139,6 +4665,70 @@ static Value xlsx_eval_call(AstExpr *expr) {
     }
 
     /* Evaluate one cell's formula against the sheet's cached values. */
+    /* xlsx.to_sql(formula, mapping) -> { ok, sql, reason }
+     *
+     * The §7 compiler. `mapping` maps a column LETTER to a SQL column name,
+     * and may additionally map a full reference to a constant value, which is
+     * how a `$F$1` factor cell is folded in.
+     *
+     * Returns a RECORD rather than raising, because a refusal is the expected
+     * outcome for a large share of real formulas and the caller must be able
+     * to inspect the reason and move on. */
+    if (strcmp(name, "to_sql") == 0) {
+        if (expr->as.call.args.count != 2) {
+            return xlsx_raise("xlsx.to_sql expects two arguments (formula, mapping)");
+        }
+        Value fv = eval_expr(expr->as.call.args.items[0]);
+        Value mv = eval_expr(expr->as.call.args.items[1]);
+        if (fv.kind != VALUE_STRING || mv.kind != VALUE_RECORD) {
+            value_free(fv); value_free(mv);
+            return xlsx_raise("xlsx.to_sql expects a formula string and a mapping record");
+        }
+        XlsxSql g;
+        memset(&g, 0, sizeof g);
+        g.mapping = mv;
+        g.cap = 256;
+        g.out = malloc(g.cap);
+        if (!g.out) abort();
+        g.out[0] = '\0';
+        const char *src = fv.as.string;
+        while (*src == '=' || *src == ' ') src++;   /* a stored formula has no '=', a typed one might */
+        /* `_row`, when given, pins the row the formula is written on, so a
+         * reference to a FIXED cell above the data (B1 in a formula on row 2)
+         * is caught instead of silently compiling to this row's B. Without it
+         * the compiler can only require every reference to agree with the
+         * first one it sees. */
+        const Value *pin = xsql_lookup(&mv, "_row");
+        if (pin && pin->kind == VALUE_NUMBER) {
+            g.row = (long)pin->as.number;
+            g.have_row = 1;
+        }
+        g.lx.p = src;
+        g.lx.bad = 0;
+        xlsx_lex_next(&g.lx);
+        xsql_expr(&g);
+        if (!g.failed && g.lx.cur.kind != XT_END) {
+            snprintf(g.reason, sizeof g.reason, "trailing input after a complete expression");
+            g.failed = 1;
+        }
+        if (!g.failed && g.lx.bad) {
+            snprintf(g.reason, sizeof g.reason, "the formula could not be tokenised");
+            g.failed = 1;
+        }
+
+        RecordField *fields = calloc(3, sizeof(RecordField));
+        if (!fields) abort();
+        fields[0].name = copy_string("ok");
+        fields[0].value = cell_alloc(); *fields[0].value = value_bool(!g.failed);
+        fields[1].name = copy_string("sql");
+        fields[1].value = cell_alloc(); *fields[1].value = value_string(g.failed ? "" : g.out);
+        fields[2].name = copy_string("reason");
+        fields[2].value = cell_alloc(); *fields[2].value = value_string(g.failed ? g.reason : "");
+        free(g.out);
+        value_free(fv); value_free(mv);
+        return value_record(fields, 3);
+    }
+
     if (strcmp(name, "evaluate") == 0) {
         if (expr->as.call.args.count != 3) {
             return xlsx_raise("xlsx.evaluate expects three arguments (workbook, sheet, ref)");

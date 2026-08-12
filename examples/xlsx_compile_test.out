@@ -1,0 +1,58 @@
+== what lowers ==
+  B2*0.02
+      "balance" * 0.02
+  IF(C2>0.05, B2*0.02, 0)
+      CASE WHEN "rate" > 0.05 THEN "balance" * 0.02 ELSE 0 END
+  ROUND(B2*C2, 2)
+      ROUND("balance" * "rate", 2)
+  IF(AND(C2>0.04, B2>1000), "high", "low")
+      CASE WHEN (("rate" > 0.04) AND ("balance" > 1000)) THEN 'high' ELSE 'low' END
+  SUM(B2:D2)
+      (COALESCE("balance", 0) + COALESCE("rate", 0) + COALESCE("term", 0))
+  B2*$F$1
+      "balance" * 0.02
+  IFERROR(B2/C2, 0)
+      COALESCE("balance" / "rate", 0)
+  -B2 + 50%
+      -"balance" + 50 / 100.0
+  2^10
+      POWER(2, 10)
+  B2 & "-" & A2
+      "balance" || '-' || "id"
+  MAX(B2, D2)
+      MAX("balance", "term")
+  UPPER(A2)
+      UPPER("id")
+
+== what is refused, and why ==
+  SUM(B2:B99)
+      B2 spans rows: that is an AGGREGATE and changes cardinality, so it is refused rather than lowered as a row-wise expression
+  B3*2
+      B3 refers to another row: that is a window function, not a column expression
+  B1*2
+      B1 refers to another row: that is a window function, not a column expression
+  VLOOKUP(A2, X:Y, 2, 0)
+      VLOOKUP lowers to a JOIN, which this phase does not do
+  SUMIF(B2:B99, ">0", C2:C99)
+      SUMIF lowers to a filtered AGGREGATE, which changes cardinality and is not a row expression
+  NOW()
+      NOW is volatile and has no set-based meaning
+  Other!B2
+      cross-sheet reference B2: lower the other sheet to a table first
+  MIN(B2)
+      MIN with one argument is an aggregate in SQL, not a row expression
+  SUM(B2:D2, B3:D3)
+      B3 refers to another row: that is a window function, not a column expression
+
+== THE ORACLE: the compiled SQL must agree with the interpreter ==
+  column E (IF(C2>0.05, ROUND(B2*C2,2), 0))
+      6 rows compared, 0 disagreements
+  column F (IF(AND(C2>0.04,B2>1000),"high","low"))
+      6 rows compared, 0 disagreements
+  column G (SUM(B2:D2))
+      6 rows compared, 0 disagreements
+  total disagreements across all columns = 0
+
+== and it runs set-based: one statement over the whole table ==
+  select count(*) n, round(sum(CASE WHEN "rate" > 0.05 THEN ROUND("balance" * "rate", 2) ELSE 0 END), 2) fees from loans
+  -> 6 loans, total fees 16573.8
