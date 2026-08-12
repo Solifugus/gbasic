@@ -113,5 +113,42 @@ program main(args)
   print "  " + q
   print "  -> " + row.n + " loans, total fees " + row.fees
 
+  print ""
+  print "== the OTHER target: the same formula run in memory over a frame =="
+  ' §7 compiles to one of two targets. xlsx.apply is the in-memory one: one
+  ' call produces a whole column, with no workbook, no sheet snapshot and no
+  ' per-cell dispatch. It is a vectorised PASS, not a compiled expression --
+  ' the formula is re-lexed per row, because the evaluator has no retained AST
+  ' yet -- so the claim made for it is only the one that can be measured.
+  three_way = 0
+  for each col in ["E", "F", "G"]
+    f = xlsx.cell(wb, "Loans", col + "2").formula
+    vec = xlsx.apply(f, mapping, r.frame)
+    c = xlsx.to_sql(f, mapping)
+    sqlrows = sqlite.query(db, "select id, (" + c.sql + ") v from loans order by id", [])
+    bad = 0
+    i = 0
+    while i < count(vec)
+      a = xlsx.evaluate(wb, "Loans", col + (i + 2))
+      b = vec[i]
+      cc = sqlrows[i].v
+      same = string(a) = string(b) and string(a) = string(cc)
+      if is_number(a) and is_number(b) and is_number(cc) then
+        same = abs(number(a) - number(b)) < 0.0000001
+        if same then
+          same = abs(number(a) - number(cc)) < 0.0000001
+        end if
+      end if
+      if not same then
+        bad = bad + 1
+        print "    row " + (i + 2) + " interp=" + a + " frame=" + b + " sql=" + cc
+      end if
+      i = i + 1
+    end while
+    three_way = three_way + bad
+    print "  column " + col + ": " + count(vec) + " rows, interpreter = frame = SQL, " + bad + " disagreements"
+  end for
+  print "  THREE-WAY disagreements across all columns = " + three_way
+
   sqlite.close(db)
 end program

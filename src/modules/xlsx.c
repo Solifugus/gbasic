@@ -1583,6 +1583,13 @@ typedef struct {
     const XlsxSnap *snap;         /* the sheet being evaluated */
     const char *sheet_name;       /* its name, so Self!A1 resolves to itself */
     XlsxSheetPool *pool;          /* borrowed; lives for the whole pass */
+    /* FRAME-BACKED evaluation (docs/xlsx_design.md §7's in-memory target).
+     * When `fr` is set a reference resolves to a column of the frame at
+     * `row_index` instead of to a cell of a sheet, so one formula can be run
+     * down a whole column without a workbook in the picture at all. */
+    const Value *fr;
+    const Value *colmap;
+    long row_index;
     int depth;
     int unsupported;        /* set when a function is not implemented */
     char unsupported_name[64];
@@ -1612,10 +1619,65 @@ static const XlsxSnap *xlsx_eval_sheet(XlsxEval *ev, const char *sheet) {
 
 static XlsxVal xlsx_expr(XlsxEval *ev);
 
+/* Defined with the SQL compiler further down; used here too. */
+static const Value *xsql_lookup(const Value *rec, const char *key);
+
+/* A gBASIC value as an evaluator value. */
+static XlsxVal xlsx_from_gbasic(const Value *v) {
+    if (!v) return xv_empty();
+    switch (v->kind) {
+    case VALUE_NUMBER:  return xv_num(v->as.number);
+    case VALUE_BOOL:    return xv_bool(v->as.boolean);
+    case VALUE_STRING:  return xv_str(v->as.string ? v->as.string : "");
+    case VALUE_UNKNOWN: return xv_empty();
+    default: {
+        /* Money, dates and the rest arrive as their numeric or text form
+         * rather than being refused: a frame built from a spreadsheet legitimately
+         * holds them, and a formula over them should see what the cell held. */
+        if (v->kind == VALUE_MONEY) return xv_num((double)v->as.cents / 100.0);
+        return xv_empty();
+    }
+    }
+}
+
+/* Resolve a reference against the FRAME: column letter -> mapped column name
+ * -> that column's value at the current row. */
+static XlsxVal xlsx_frame_cell(XlsxEval *ev, const char *ref, long col) {
+    /* A reference the mapping gives a literal for is a constant cell. */
+    const Value *lit = xsql_lookup(ev->colmap, ref);
+    if (lit) return xlsx_from_gbasic(lit);
+
+    char letter[8];
+    size_t li = 0;
+    long c = col + 1;
+    while (c > 0 && li < sizeof letter - 1) {
+        letter[li++] = (char)('A' + (c - 1) % 26);
+        c = (c - 1) / 26;
+    }
+    letter[li] = '\0';
+    for (size_t i = 0; i < li / 2; i++) {
+        char t = letter[i]; letter[i] = letter[li - 1 - i]; letter[li - 1 - i] = t;
+    }
+    const Value *name = xsql_lookup(ev->colmap, letter);
+    if (!name || name->kind != VALUE_STRING) return xv_err("#REF!");
+    const Value *colv = xsql_lookup(ev->fr, name->as.string);
+    if (!colv || colv->kind != VALUE_ARRAY || !colv->as.array.store) return xv_err("#REF!");
+    if (ev->row_index < 0 || (size_t)ev->row_index >= colv->as.array.store->count) {
+        return xv_err("#REF!");
+    }
+    return xlsx_from_gbasic(&colv->as.array.store->items[ev->row_index]);
+}
+
 static XlsxVal xlsx_cell_value_in(XlsxEval *ev, const char *sheet, int external,
                                   const char *ref) {
     long col, row;
     if (!xlsx_parse_ref(ref, &col, &row)) return xv_err("#REF!");
+    if (ev->fr) {
+        /* A frame has no sheets and no rows other than the one being
+         * computed, so both are errors rather than something to guess at. */
+        if (external || (sheet && *sheet)) return xv_err("#REF!");
+        return xlsx_frame_cell(ev, ref, col);
+    }
     if (external) {
         /* A different workbook, which is not open. Excel caches the last-known
          * value in xl/externalLinks, but reading a stale copy of a file we do
@@ -1790,6 +1852,39 @@ static void xlsx_arg_values(XlsxEval *ev, XlsxVal **vals, const XlsxSnapCell ***
             xlsx_lex_next(&ev->lx);
             if (xlsx_range_endpoint(&ev->lx.cur)) {
                 long c1, r1, c2, r2;
+                /* FRAME MODE: a range is a row range over the mapped columns,
+                 * and there is no snapshot to consult. A row-SPANNING range
+                 * has no meaning here -- a frame row cannot see its
+                 * neighbours -- so it yields #REF! rather than a partial sum,
+                 * which is what silently returning only the first column would
+                 * have been. */
+                if (ev->fr) {
+                    if (xlsx_parse_ref(first, &c1, &r1) &&
+                        xlsx_parse_ref(ev->lx.cur.text, &c2, &r2)) {
+                        if (c1 > c2) { long t = c1; c1 = c2; c2 = t; }
+                        for (long c = c1; c <= c2; c++) {
+                            XlsxVal v = (r1 == r2) ? xlsx_frame_cell(ev, "", c)
+                                                   : xv_err("#REF!");
+                            if (*n == *cap) {
+                                *cap = *cap ? *cap * 2 : 8;
+                                XlsxVal *g = realloc(*vals, *cap * sizeof(XlsxVal));
+                                if (!g) abort();
+                                *vals = g;
+                                if (srcs) {
+                                    const XlsxSnapCell **gs = realloc(*srcs, *cap * sizeof(*gs));
+                                    if (!gs) abort();
+                                    *srcs = gs;
+                                }
+                            }
+                            if (srcs) (*srcs)[*n] = NULL;
+                            (*vals)[(*n)++] = v;
+                        }
+                        if (out_rows) *out_rows = 1;
+                        if (out_cols) *out_cols = c2 - c1 + 1;
+                        xlsx_lex_next(&ev->lx);
+                        return;
+                    }
+                }
                 const XlsxSnap *rs = ext ? NULL : xlsx_eval_sheet(ev, sheet);
                 if (ext) {
                     ev->unsupported = 1;
@@ -4674,6 +4769,74 @@ static Value xlsx_eval_call(AstExpr *expr) {
      * Returns a RECORD rather than raising, because a refusal is the expected
      * outcome for a large share of real formulas and the caller must be able
      * to inspect the reason and move on. */
+    /* xlsx.apply(formula, mapping, frame) -> an array, one value per row.
+     *
+     * §7's OTHER compile target: the in-memory one. Where to_sql hands the work
+     * to a database, this runs the formula down a frame's columns in a single
+     * pass and returns the result column, ready to be attached with
+     * frame.with_column.
+     *
+     * WHAT THIS IS AND IS NOT, stated plainly. It is ONE call that produces a
+     * whole column, with no workbook, no sheet snapshot and no per-cell
+     * dispatch from gBASIC. It is NOT a compiled expression: the formula is
+     * re-lexed per row, because the evaluator has no retained AST yet (the note
+     * on xlsx_primary already flags that as the front half of future work).
+     * The measured win is against the alternative a caller would otherwise
+     * write -- a gBASIC loop calling xlsx.evaluate per row -- and the test
+     * measures it rather than asserting it. */
+    if (strcmp(name, "apply") == 0) {
+        if (expr->as.call.args.count != 3) {
+            return xlsx_raise("xlsx.apply expects three arguments (formula, mapping, frame)");
+        }
+        Value fv = eval_expr(expr->as.call.args.items[0]);
+        Value mv = eval_expr(expr->as.call.args.items[1]);
+        Value dv = eval_expr(expr->as.call.args.items[2]);
+        if (fv.kind != VALUE_STRING || mv.kind != VALUE_RECORD || dv.kind != VALUE_RECORD) {
+            value_free(fv); value_free(mv); value_free(dv);
+            return xlsx_raise("xlsx.apply expects a formula string, a mapping record and a frame");
+        }
+        /* Row count comes from the first MAPPED column that the frame actually
+         * has, so a mapping naming a column the frame lacks fails loudly on the
+         * first reference rather than silently producing zero rows. */
+        size_t rows = 0;
+        int found_any = 0;
+        for (size_t i = 0; i < mv.as.record.count; i++) {
+            const Value *nm = mv.as.record.fields[i].value;
+            if (!nm || nm->kind != VALUE_STRING) continue;
+            const Value *colv = xsql_lookup(&dv, nm->as.string);
+            if (colv && colv->kind == VALUE_ARRAY && colv->as.array.store) {
+                rows = colv->as.array.store->count;
+                found_any = 1;
+                break;
+            }
+        }
+        if (!found_any) {
+            value_free(fv); value_free(mv); value_free(dv);
+            return xlsx_raise("xlsx.apply: the mapping names no column present in the frame");
+        }
+
+        const char *src = fv.as.string;
+        while (*src == '=' || *src == ' ') src++;
+
+        Value *items = rows ? calloc(rows, sizeof(Value)) : NULL;
+        for (size_t r = 0; r < rows; r++) {
+            XlsxEval ev;
+            memset(&ev, 0, sizeof ev);
+            ev.fr = &dv;
+            ev.colmap = &mv;
+            ev.row_index = (long)r;
+            ev.lx.p = src;
+            ev.lx.bad = 0;
+            xlsx_lex_next(&ev.lx);
+            XlsxVal v = xlsx_expr(&ev);
+            if (v.kind == XV_EMPTY) { xv_free(v); v = xv_num(0); }
+            items[r] = xlsx_val_to_gbasic(v);
+            xv_free(v);
+        }
+        value_free(fv); value_free(mv); value_free(dv);
+        return value_array(items, rows);
+    }
+
     if (strcmp(name, "to_sql") == 0) {
         if (expr->as.call.args.count != 2) {
             return xlsx_raise("xlsx.to_sql expects two arguments (formula, mapping)");

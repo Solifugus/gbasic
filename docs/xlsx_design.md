@@ -1064,8 +1064,42 @@ judged and mostly getting the right answer; quoting only the rate would report
 that as a regression, and quoting only the agree count would hide the 29,691
 new disagreements.
 
-*Still to do in §7:* the vectorised in-memory target (`frame.with_column`), and
-phase 2's joins and filtered aggregates.
+**R. The vectorised in-memory target** (2026-08-12). `xlsx.apply(formula,
+mapping, frame)` → an array, one value per row: §7's *other* compile target.
+Where `to_sql` hands the work to a database, this runs the formula down a
+frame's columns in a single pass and hands back the result column.
+
+*What it is, and what it is not.* One call produces a whole column, with no
+workbook, no sheet snapshot and no per-cell dispatch from gBASIC. It is **not**
+a compiled expression: the formula is re-lexed per row, because the evaluator
+still has no retained AST. So the only claim made for it is the one that can be
+measured — against the loop a caller would otherwise write, `xlsx.evaluate` per
+row, which rebuilds the sheet snapshot every time:
+
+| | 2,400 rows |
+|---|---|
+| `xlsx.apply` | **5.3 ms** |
+| per-row `xlsx.evaluate` | ~374 ms (projected) |
+| | **~70x** |
+
+Asserted as a ratio with the gate at 8x, never an absolute time — an absolute
+bound would measure how busy the machine is, and the wide margin means the tier
+fails on a lost optimisation rather than on a loaded box.
+
+*The three-way check.* Interpreter, SQL and the vectorised pass must produce
+the **same column**. Two agreeing could be two implementations of a single
+misunderstanding; three agreeing across genuinely different execution models —
+a cell-graph interpreter, a database, and an in-memory pass — is a much
+stronger statement, and it is what the tier asserts.
+
+*One gap it exposed:* range expansion required a sheet snapshot, so `SUM(B2:D2)`
+silently returned only `B` in frame mode. Frame mode now expands a row range
+across the mapped columns, and a row-**spanning** range yields `#REF!` there,
+since a frame row cannot see its neighbours — a partial sum would have been the
+plausible wrong answer.
+
+*Still to do in §7:* phase 2's joins and filtered aggregates (`VLOOKUP`,
+`SUMIF`), which are the two largest refusals.
 
 ## 14. Roadmap (phases)
 

@@ -133,6 +133,99 @@ else
     status=1
 fi
 
+# The VECTORISED target, and the only claim made for it that can be measured:
+# one call producing a whole column beats the loop a caller would otherwise
+# write (xlsx.evaluate per row, which rebuilds the sheet snapshot each time).
+# A RATIO, never an absolute time -- an absolute bound would measure how busy
+# the machine is. The gate is deliberately far below the ~70x observed, so it
+# fails on a lost optimisation rather than on a loaded box.
+cat >"$tmp/perf.bas" <<'EOF'
+program main(args)
+  load grid
+  load frame
+  wb = xlsx.open("examples/fixtures/xlsx/formulacol.xlsx")
+  base = grid.extract(grid.of(wb, "Loans"), { header_row: 1 }).frame
+  rows = []
+  n = 0
+  while n < 400
+    for each r in frame.to_rows(base)
+      append(rows, r)
+    end for
+    n = n + 1
+  end while
+  big = frame.from_rows(rows)
+  m = { A: "id", B: "balance", C: "rate", D: "term" }
+  f = "IF(C2>0.05, ROUND(B2*C2,2), 0)"
+  t0 = monotonic()
+  vals = xlsx.apply(f, m, big)
+  t1 = monotonic()
+  t2 = monotonic()
+  i = 0
+  while i < 240
+    rowno = 2 + (i - floor(i / 6) * 6)
+    x = xlsx.evaluate(wb, "Loans", "E" + rowno)
+    i = i + 1
+  end while
+  t3 = monotonic()
+  per = (t3 - t2) / 240.0
+  vec = t1 - t0
+  if vec <= 0 then
+    vec = 0.000001
+  end if
+  print floor((per * count(vals)) / vec)
+end program
+EOF
+p_res=$(timeout 120 ./gbasic "$tmp/perf.bas" 2>/dev/null | tail -1)
+if [ -n "$p_res" ] && [ "$p_res" -ge 8 ] 2>/dev/null; then
+    printf 'PASS vectorised pass beats per-row evaluation by %sx (gate 8x, observed ~70x)\n' "$p_res"
+else
+    printf 'FAIL vectorised pass only %sx faster than per-row evaluation (gate 8x)\n' "$p_res"
+    status=1
+fi
+
+# Three-way agreement: interpreter, SQL and the vectorised pass must produce
+# the SAME column. Two agreeing could be two implementations of one
+# misunderstanding; three agreeing across different execution models is a much
+# stronger statement.
+cat >"$tmp/three.bas" <<'EOF'
+program main(args)
+  load grid
+  load dbframe
+  wb = xlsx.open("examples/fixtures/xlsx/formulacol.xlsx")
+  r = grid.extract(grid.of(wb, "Loans"), { header_row: 1 })
+  db = sqlite.connect(":memory:")
+  dbframe.to_table(r.frame, db, "loans", { replace: true })
+  m = { A: "id", B: "balance", C: "rate", D: "term", _row: 2 }
+  bad = 0
+  for each col in ["E", "F", "G"]
+    f = xlsx.cell(wb, "Loans", col + "2").formula
+    vec = xlsx.apply(f, m, r.frame)
+    c = xlsx.to_sql(f, m)
+    rows = sqlite.query(db, "select id, (" + c.sql + ") v from loans order by id", [])
+    i = 0
+    while i < count(vec)
+      a = xlsx.evaluate(wb, "Loans", col + (i + 2))
+      if string(a) != string(vec[i]) then
+        bad = bad + 1
+      end if
+      if string(a) != string(rows[i].v) then
+        bad = bad + 1
+      end if
+      i = i + 1
+    end while
+  end for
+  print bad
+  print sqlite.close(db)
+end program
+EOF
+t_res=$(timeout 60 ./gbasic "$tmp/three.bas" 2>/dev/null | head -1)
+if [ "$t_res" = "0" ]; then
+    printf 'PASS interpreter, SQL and vectorised frame pass all produce the same column\n'
+else
+    printf 'FAIL three-way comparison found %s mismatch(es)\n' "$t_res"
+    status=1
+fi
+
 if command -v valgrind >/dev/null 2>&1; then
     if valgrind --error-exitcode=9 --leak-check=full --errors-for-leak-kinds=definite -q \
         ./gbasic examples/xlsx_compile_test.bas >/dev/null 2>"$err"; then
