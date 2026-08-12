@@ -960,6 +960,49 @@ values — which also proves the cents survive, since `print` renders 23750.25 a
 inside a plausible band: a mis-inferred scale yields a number that is entirely
 plausible in isolation, so only a band check catches it.
 
+**P. L4's easy half built — a frame becomes a table** (2026-08-12).
+`stdlib/dbframe.bas`. §7 sequences this before the formula compiler and calls
+it valuable on its own, which it is: with L2 extracting and L3 consolidating,
+the remaining step for any real workflow is getting the result somewhere it can
+be queried and joined.
+
+    dbframe.schema(df)                        inferred {name, column, type}
+    dbframe.create_sql(table, df)             the DDL, for inspection and diffing
+    dbframe.to_table(df, db, table, options)  create and bulk load
+
+*Two refusals, both for the module's standing reason:*
+
+- **A type is never guessed from one value.** It is decided from every value in
+  the column: all-whole → `INTEGER`, any fractional → `REAL`, anything mixed →
+  `TEXT`. Taking the first value's type and coercing the rest is how `"n/a"`
+  becomes `0`, and a zero that should have been a gap changes a total.
+  `unknown` becomes `NULL`, which is what it means.
+- **SQL is never built by pasting values.** Every value is *bound*; identifiers
+  cannot be bound, so they are validated and refused rather than escaped. A
+  table name that is not a plain identifier is rejected, and two headings that
+  collapse to the same identifier are rejected too — silently overwriting one
+  with the other is the quiet version of losing a column.
+
+*The injection tier executes the claim rather than asserting it.* A loan id of
+`'); drop table loans;--` is loaded, read back and compared to itself, and the
+other table is then counted to prove it still stands. "We use bound parameters"
+is a claim only a test can make true.
+
+*Append versus replace has no silent default.* Loading twice appends, which is
+right for a growing pool and wrong for a re-run, so the caller chooses. The
+append path issues `create table if not exists`; a genuine schema mismatch
+still fails loudly from the insert, which is the correct outcome — appending a
+tape with different columns to an existing pool should stop, not reshape it.
+(The bare `create` on the append path was a real bug the test caught.)
+
+*The exactness tier compares rather than prints:* the loaded total must equal
+265550.75, and `print` renders that as 265551, so a printed total would hide
+exactly the cents the pipeline exists to preserve.
+
+**L0–L3 and the easy half of L4 are now built.** What remains of §7 is the
+formula compiler proper — lowering a column formula to a vectorised frame pass
+or to SQL — for which `xlsx.recalc` is the oracle.
+
 ## 14. Roadmap (phases)
 
 Each phase is independently shippable and golden-file testable.

@@ -1,0 +1,43 @@
+== types are decided from EVERY value, not the first ==
+  all whole numbers      -> INTEGER
+  one fractional         -> REAL
+  numbers then text      -> TEXT
+  text then numbers      -> TEXT
+  all unknown            -> TEXT
+  numbers with a gap     -> INTEGER
+
+== headings become identifiers, visibly ==
+  Q1 Units -> q1_units
+  Rate (%) -> rate
+  Loan # -> loan
+    spaced   -> spaced
+  2024 total -> c_2024_total
+
+== the pipeline, end to end ==
+loaded ok = true   rows = 6
+create table "loans" (
+  "tape" TEXT,
+  "loan_id" TEXT,
+  "balance" REAL,
+  "rate" REAL
+)
+
+== now the database can answer questions about the pool ==
+  CU_A  loans 2
+  CU_B  loans 2
+  CU_C  loans 2
+  total balance is exact = true
+  highest rate is C-301 (all rates on one scale, so this is meaningful)
+
+== values are BOUND, so data cannot become SQL ==
+  round-tripped intact = true
+  apostrophe intact    = true
+  loans table survived = true
+
+== identifiers are validated, and refusals say why ==
+  bad table name: ok=false  unsafe table name: loans; drop table loans
+  colliding columns: ok=false  columns Rate (%) and rate both become "rate"
+
+== loading twice APPENDS unless replace is asked for ==
+  rows after two loads = 12
+  rows after replace   = 6
