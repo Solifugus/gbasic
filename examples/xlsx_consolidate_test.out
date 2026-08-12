@@ -1,0 +1,49 @@
+== the four tapes, as they arrive ==
+  CU_A: Loan # | Balance | Int Rate | Orig Date
+  CU_B: Note ID | Principal | Interest Rate | Origination
+  CU_C: loan_number | Amount | Rate (%) | Date
+  CU_D: Loan # | Int Rate
+
+== consolidating ==
+ok       = false   (false because a source was rejected)
+accepted = CU_A, CU_B, CU_C
+rejected = CU_D
+
+what it decided, and why:
+  CU_A.rate: inferred whole (a value exceeds 1, which no fraction rate can)
+  CU_B.rate: AMBIGUOUS, assumed fraction (every value is at or below 1: fractions, or whole percents under 1% -- declare `scale` to be sure)
+  CU_C.rate: inferred whole (the values carry a written % sign)
+  CU_D: REJECTED, missing required column(s) balance
+
+== one frame, one set of names, provenance on every row ==
+columns: tape | loan_id | balance | rate
+  CU_A  A-100  balance 150000  rate 0.0525
+  CU_A  A-101  balance 82500.5  rate 0.04875
+  CU_B  B-200  balance 1500  rate 0.0475
+  CU_B  B-201  balance 23750.2  rate 0.0525
+  CU_C  C-300  balance -1200  rate 0.06
+  CU_C  C-301  balance 9000  rate 0.065
+
+== every rate is now on ONE scale, whatever the tape wrote ==
+  A-100 -> 5.25%
+  A-101 -> 4.875%
+  B-200 -> 4.75%
+  B-201 -> 5.25%
+  C-300 -> 6%
+  C-301 -> 6.5%
+
+== declaring beats inferring, and the report shows the difference ==
+  CU_B.rate: scale declared as fraction
+
+== the money forms, checked one by one ==
+  1500        -> 1500
+  "$1,500.00" -> 1500
+  "(1,200.00)"-> -1200
+  "1,200.00-" -> -1200
+  "9,000"     -> 9000
+  "n/a"       -> unknown
+
+== name matching is normalised, so punctuation and case do not matter ==
+  "Rate (%)" ~ "rate"        : true
+  "Int. Rate" ~ "int rate"   : true
+  "Loan #" ~ "loan"          : true

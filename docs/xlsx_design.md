@@ -913,6 +913,53 @@ Deferred: the ARI **text** spec language over grids. The spec is a record for
 now, which needs no parser; §5's ambition of one shared notation stands as
 future work rather than being half-built.
 
+**O. L3 built — consolidation** (2026-08-11). `stdlib/consolidate.bas`,
+implementing §6. Many tapes with the same *meaning* and a different *surface*,
+merged into one frame.
+
+`consolidate.merge(sources, spec)` → `{ok, frame, accepted, rejected, notes}`.
+A spec column is `{names: [aliases], kind: "text"|"money"|"percent"|"number",
+required: bool, scale: "whole"|"fraction"|"infer"}`. The fields are `names` and
+`kind` rather than the natural `from` and `as` because **both of those are
+reserved words** (`load X from`, ARI's `as money`) and a reserved word cannot
+be a record key.
+
+*What it handles:*
+
+- **Aliasing**, fuzzy first: names are normalised to letters and digits, so
+  `"Rate (%)"`, `"rate %"` and `"RATE"` collapse together without an entry. The
+  alias list exists only for what fuzz cannot reach (`"Note ID"` → `loan_id`).
+- **Money**, the same union ARI recognises in print-image reports, because the
+  surface chaos is identical and only the substrate differs: `1500`,
+  `"$1,500.00"`, `"(1,200.00)"`, `"1,200.00-"`, `"9,000"`; anything else is
+  `unknown`, never zero.
+- **Required columns** — a source missing one is **rejected by name**, not
+  emitted with unknowns. A tape silently short a balance column understates the
+  pool, and an understated pool looks exactly like a small one.
+- **Provenance** — every output row carries its source. A consolidated figure
+  nobody can trace back is not auditable.
+
+*The trap this layer exists for is the percent scale.* `5.25` and `0.0475` are
+the same kind of thing written 100x apart, and nothing in either file says
+which. Following ARI's **infer to advise, declare to parse**:
+
+- a written `%` settles it outright — nothing is inferred, and the report says
+  so rather than claiming an inference;
+- otherwise the judgement is made **per column, from every value at once**,
+  because a single cell cannot be judged: if any value exceeds 1 the column
+  must be whole percents, since no fraction rate can;
+- a column whose values all sit at or below 1 is genuinely **ambiguous** —
+  fractions, or whole percents under 1% — and is reported as such, with
+  `scale:` available to remove the guess. The test shows the note changing from
+  `AMBIGUOUS, assumed fraction` to `scale declared as fraction`.
+
+*The assertions that carry the tier are arithmetic, not goldens.* The
+consolidated balances must sum to a figure derived from the four tapes' own
+values — which also proves the cents survive, since `print` renders 23750.25 as
+23750.2 and a display check would miss it. And every normalised rate must land
+inside a plausible band: a mis-inferred scale yields a number that is entirely
+plausible in isolation, so only a band check catches it.
+
 ## 14. Roadmap (phases)
 
 Each phase is independently shippable and golden-file testable.
