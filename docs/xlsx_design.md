@@ -869,6 +869,50 @@ re-running the whole corpus: byte-identical verdicts.
 agreement **94.97%** (15,923,882 agree / 842,999 disagree), 3,846,293 cells
 declared unsupported rather than guessed at.
 
+**N. L2 built — ARI-for-grids** (2026-08-11). `stdlib/grid.bas`, implementing
+§5. Pure gBASIC, for the reason ARI is: the reading is done, and what remains
+is *policy* — which row is a header, which row is a total — which belongs where
+the person who owns the report can read and change it.
+
+*The contract, unchanged from §5:* **automatic when safe, spec when not, and it
+tells you which.**
+
+| verb | does |
+|---|---|
+| `grid.of(wb, sheet)` | a sparse addressable grid: `at`, `kind_at`, `is_blank`, `row_width` |
+| `grid.blocks(g)` | contiguous non-blank row runs — the most reliable structural signal a sheet gives |
+| `grid.tables(g)` | best-effort candidates, each with a **confidence and its reasons** |
+| `grid.extract(g, spec)` | exactly what the spec says; a frame out |
+
+Spec fields: `starts` / `ends` (anchor by content, so inserting rows above
+cannot break it — the ARI idea on a grid), `header_row`, `header_rows`,
+`first_row` / `last_row`, `break_on_blank`, `drop_totals`, `drop_matching`,
+`label_col`, `columns`.
+
+*The fixture is built so a wrong answer is loud.* `messy.xlsx` carries every
+irregularity §5 names — a title above the table, a **two-row header whose
+parent is written only above the first child** (how Excel stores a merged
+cell), a subtotal interleaved with data, a grand total, a trailing note after a
+blank row, a second table of different width, and an empty spacer column inside
+the first table's span. The correct answer is deliberately not what a
+top-left-to-bottom-right reader produces.
+
+Results on it: the automatic path returns **low** confidence and names both
+problems ("two-row header?", "contains 2 rows that look like totals"); the
+clean sheet returns **high** with no spec at all. The spec path produces
+`Region | Q1 Units | Q1 Value | Q2 Units | Q2 Value` — parent carried across the
+merged span, spacer column dropped, both totals removed, 4 data rows.
+
+*The assertion that carries the tier* is arithmetic, not a golden: the extracted
+column must sum to the figure **the sheet's own TOTAL row** claims. A golden
+would happily record a subtotal absorbed as data; this cannot, because
+absorbing one makes the sum too large. It is checked against the sheet rather
+than a number written in the test.
+
+Deferred: the ARI **text** spec language over grids. The spec is a record for
+now, which needs no parser; §5's ambition of one shared notation stands as
+future work rather than being half-built.
+
 ## 14. Roadmap (phases)
 
 Each phase is independently shippable and golden-file testable.

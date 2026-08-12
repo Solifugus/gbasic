@@ -1,0 +1,41 @@
+== the sheet's structure, as blank rows reveal it ==
+  rows 1..2
+  rows 4..11
+  rows 13..13
+  rows 15..19
+
+== the automatic path: a guess, with its confidence and reasons ==
+  rows 1..2  confidence none  (no header)
+      ! no all-text row found: cannot name the columns
+  rows 4..11  confidence low  header row 4
+      ! the row below also looks like a header: two-row header? pass header_rows: 2
+      ! contains 2 row(s) that look like totals: pass drop_totals: true
+      columns: Q1 | Q2
+  rows 13..13  confidence none  (no header)
+      ! single filled cell: a title or note, not a table
+  rows 15..19  confidence medium  header row 16
+      ! rows above the header were skipped (title or stub)
+      columns: Ref | Amount
+
+== the spec path: exactly what it is told ==
+ok = true   data rows 6..11
+columns: Region | Q1 Units | Q1 Value | Q2 Units | Q2 Value
+row count: 4   (6 data rows minus 2 totals)
+  East  Q1 120/2400.5   Q2 130/2600
+  West  Q1 90/1800   Q2 95/1900.25
+  South  Q1 70/1400   Q2 75/1500
+  Central  Q1 60/1200.75   Q2 65/1300.5
+
+== the totals are gone from the data, so the sum is the data's own ==
+sum of Q1 Units   = 340
+sheet's TOTAL row = 340
+
+== anchoring by content, not row number ==
+second table columns: Ref | Amount
+second table rows:    3
+
+== a clean sheet needs no spec at all ==
+  confidence high  columns: Item | Qty | Price
+
+== a spec that matches nothing REPORTS, it does not guess ==
+ok = false   message = no row matched `starts`

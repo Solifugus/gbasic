@@ -905,3 +905,41 @@ D0.6, the rest remain open or are by-design.
   full precision by cross-checking against LibreOffice, which is where the real
   confidence comes from; the split assertion is what makes it *repeatable in
   CI*.
+
+## 2026-08-11 — CC — while: building stdlib/grid.bas (L2, ARI-for-grids)
+
+- **Type:** doc-gap
+- **Severity:** medium
+- **What:** a library's dependency on another library must be declared INSIDE
+  the `library` block, and a top-level `load` silently does not work:
+
+  ```basic
+  load frame            ' file top level -- does NOT put frame in scope for
+  library grid          ' this library's own functions
+      function f()
+          return frame.from_rows([])   ' invalid function call: frame.from_rows
+      end function
+  end library
+  ```
+
+  The correct form, as `stats.bas` does over `matrix.bas`:
+
+  ```basic
+  library grid
+      load frame from "frame.bas"
+      ...
+  ```
+
+  What made this cost real time is that the broken form **works whenever the
+  CALLER also loads the dependency**. My first tests did `load grid` and
+  `load frame` in the program, so everything passed; the failure only appeared
+  once a test loaded `grid` alone — which is how every real user would call it.
+  A library shipped that way would look fine in its own test suite and break in
+  the first program that used it.
+- **Workaround:** none needed — the in-block form is correct and documented by
+  example in `stats.bas`, `forensics.bas` and `screener.bas`. But nothing in
+  `docs/reference.md` or `docs/ai/COOKBOOK.md` states the rule, and the failure
+  mode (works until the caller stops loading your dependency for you) is not
+  one a reader would guess.
+- **Also:** `has_key` does not exist; the record key-presence builtin is
+  `has(record, key)`. Found by writing the former and reading `builtins.c`.
