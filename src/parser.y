@@ -9,6 +9,18 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* A keyword used as a FIELD NAME arrives as its own token, carrying no text,
+ * so the spelling is supplied here. Local rather than reusing eval.c's
+ * copy_string: the parser is a separate translation unit and strdup is not in
+ * strict C11. */
+static char *kw_name(const char *s) {
+    size_t n = strlen(s) + 1;
+    char *out = malloc(n);
+    if (!out) abort();
+    memcpy(out, s, n);
+    return out;
+}
+
 /* Report a diagnostic with an explicit span. Routes through gb_report_to, which
  * pushes to the per-parse sink (ctx->diags) or, when that is NULL, prints in the
  * legacy stderr format. */
@@ -655,6 +667,7 @@ static void report_syntax_error(gb_parse_ctx *ctx, int line, int column,
 %type <expr> expression or_expression and_expression comparison_expression
 %type <expr> additive_expression multiplicative_expression unary_expression postfix_expression primary lvalue record_literal
 %type <expr_list> argument_list argument_list_opt array_argument_list
+%type <text> field_name
 %type <record_field_list> record_field_list
 %type <field_policy> field_policy
 %type <consider_branch_list> consider_branch_list
@@ -1300,12 +1313,65 @@ parameter_list
     | parameter_list COMMA IDENT { $$ = ast_name_list_append($1, $3); }
     ;
 
+
+/* A FIELD NAME may be a keyword.
+ *
+ * Both places a field name appears are CLOSED CONTEXTS -- immediately before
+ * ':' or '=' inside a record literal, and immediately after '.' -- so nothing
+ * but a name is legal there and a keyword cannot be anything else. Without
+ * this the keyword namespace reaches into the DATA namespace: a mapping spec
+ * cannot say `from:` or `as:`, and ends up named by the grammar rather than by
+ * meaning. See the 2026-08-12 DOGFOOD entry (c). */
+field_name
+    : IDENT { $$ = $1; }
+    | NEXT           { $$ = kw_name("next"); }
+    | STOP           { $$ = kw_name("stop"); }
+    | ERROR_VALUE    { $$ = kw_name("error"); }
+    | END            { $$ = kw_name("end"); }
+    | TO             { $$ = kw_name("to"); }
+    | IN             { $$ = kw_name("in"); }
+    | ON             { $$ = kw_name("on"); }
+    | NEW            { $$ = kw_name("new"); }
+    | EACH           { $$ = kw_name("each"); }
+    | WITH           { $$ = kw_name("with"); }
+    | WITHOUT        { $$ = kw_name("without"); }
+    | THEN           { $$ = kw_name("then"); }
+    | ELSE           { $$ = kw_name("else"); }
+    | FOR            { $$ = kw_name("for"); }
+    | IF             { $$ = kw_name("if"); }
+    | WHILE          { $$ = kw_name("while"); }
+    | PRINT          { $$ = kw_name("print"); }
+    | RETURN         { $$ = kw_name("return"); }
+    | LOAD           { $$ = kw_name("load"); }
+    | USE            { $$ = kw_name("use"); }
+    | NOT            { $$ = kw_name("not"); }
+    | AND            { $$ = kw_name("and"); }
+    | OR             { $$ = kw_name("or"); }
+    | TRUE           { $$ = kw_name("true"); }
+    | FALSE          { $$ = kw_name("false"); }
+    | NOTHING        { $$ = kw_name("nothing"); }
+    | BREAK          { $$ = kw_name("break"); }
+    | CONTINUE       { $$ = kw_name("continue"); }
+    | GOTO           { $$ = kw_name("goto"); }
+    | GOSUB          { $$ = kw_name("gosub"); }
+    | SPAWN          { $$ = kw_name("spawn"); }
+    | EXPORT         { $$ = kw_name("export"); }
+    | LIBRARY        { $$ = kw_name("library"); }
+    | FUNCTION       { $$ = kw_name("function"); }
+    | MODIFIER       { $$ = kw_name("modifier"); }
+    | PROGRAM        { $$ = kw_name("program"); }
+    | RESUME         { $$ = kw_name("resume"); }
+    | WATCH          { $$ = kw_name("watch"); }
+    | WATCHERS       { $$ = kw_name("watchers"); }
+    | CONSIDER       { $$ = kw_name("consider"); }
+    ;
+
 record_field_list
-    : IDENT OP_EQ expression { $$ = ast_record_field_list_append(ast_record_field_list_empty(), $1, $3); }
-    | IDENT COLON expression { $$ = ast_record_field_list_append(ast_record_field_list_empty(), $1, $3); }
+    : field_name OP_EQ expression { $$ = ast_record_field_list_append(ast_record_field_list_empty(), $1, $3); }
+    | field_name COLON expression { $$ = ast_record_field_list_append(ast_record_field_list_empty(), $1, $3); }
     | IDENT LPAREN field_policy RPAREN COLON expression { $$ = ast_record_field_list_append_policy(ast_record_field_list_empty(), $1, $6, $3.policy, $3.reset_expr); }
-    | record_field_list COMMA optional_newlines IDENT OP_EQ expression { $$ = ast_record_field_list_append($1, $4, $6); }
-    | record_field_list COMMA optional_newlines IDENT COLON expression { $$ = ast_record_field_list_append($1, $4, $6); }
+    | record_field_list COMMA optional_newlines field_name OP_EQ expression { $$ = ast_record_field_list_append($1, $4, $6); }
+    | record_field_list COMMA optional_newlines field_name COLON expression { $$ = ast_record_field_list_append($1, $4, $6); }
     | record_field_list COMMA optional_newlines IDENT LPAREN field_policy RPAREN COLON expression { $$ = ast_record_field_list_append_policy($1, $4, $9, $6.policy, $6.reset_expr); }
     ;
 

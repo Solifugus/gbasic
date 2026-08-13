@@ -1,0 +1,11 @@
+from  = src
+to    = dst
+next  = 1
+end   = 2
+error = none
+for   = 3
+if    = 4
+not   = 6
+print = 7
+keywords still parse as keywords: i = 2
+non-identifier key = 5

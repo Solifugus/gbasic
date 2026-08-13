@@ -89,6 +89,7 @@ examples=(
     parse_test.gb
     record_test.gb
     record_helpers_test.bas
+    record_keyword_keys_test.bas
     datetime_test.gb
     datetime_exact_comparison_test.bas
     datetime_lens_test.bas

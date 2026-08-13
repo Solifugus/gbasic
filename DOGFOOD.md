@@ -1031,3 +1031,30 @@ finding gets lost.
   `i - floor(i / 6) * 6`); the record key-presence builtin is `has`, not
   `has_key`, and is discoverable only by reading `src/builtins.c`; still no
   line continuation, which shapes how every multi-line expression is written.
+
+## 2026-08-12 — CC — while: testing whether entry (c) above is cheap to fix
+
+- **Type:** language-surprise
+- **Severity:** medium
+- **Status update on (c).** The grammar experiment was run rather than argued,
+  and it split the problem in two:
+
+  * **Record KEYS: done.** A `field_name` nonterminal (`IDENT` plus the keyword
+    tokens, each supplying its own spelling) admits `{ from: 1, next: 2,
+    error: 3 }` with **zero new LALR conflicts** and every suite green,
+    including the 283 negative tests — which mattered, since turning keywords
+    into field names could have swallowed parse errors those tests expect.
+  * **DOT access: not the same problem.** `rec.next` still fails. The reason is
+    that `a.b` is assembled in the LEXER, which can emit a single
+    `QUALIFIED_IDENT`, so admitting keywords after a dot is a lexer change, not
+    a grammar one. My earlier analysis said both sides were closed contexts in
+    the grammar; that was right about record keys and wrong about dot access,
+    and the parse error names `QUALIFIED_IDENT` explicitly.
+
+  Also learned: `as` and `from` are not declared parser tokens at all. The
+  lexer emits `TOKEN_AS`, the grammar has no rule for it, and the result is an
+  undeclared-token syntax error rather than a keyword clash. So `as:` needs the
+  token declaring before it can join the field-name list; `from:` already works
+  because `from` lexes as an ordinary identifier.
+- **Workaround:** none needed for keys. For a keyword field in dot position,
+  bracket access reaches it today.
