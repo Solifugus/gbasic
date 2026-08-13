@@ -565,6 +565,55 @@ else
     status=1
 fi
 
+
+# --- Tier 2i: an INDEPENDENT reader opens what we write --------------------------
+#
+# The gap this closes: everything else asserting our output is well-formed is
+# either our own reader or `unzip -t`, and unzip only proves it is a valid ZIP,
+# not a valid workbook. Nothing had ever confirmed that another spreadsheet
+# implementation can open a file we wrote.
+#
+# LibreOffice is not Excel, so this is strong evidence and not proof -- the same
+# standing caveat as the fixtures it generates. But it exercises the whole read
+# path of a foreign implementation: shared strings, an XML entity, non-ASCII, a
+# sparse row, a number format, a boolean, an error value and a formula's cached
+# value all have to survive for the CSV below to come out right.
+#
+# SKIPs when libreoffice is absent, per the optional-dependency convention --
+# the suite must not require it.
+if command -v libreoffice >/dev/null 2>&1; then
+    printf -- '-- an independent implementation opens what we wrote\n'
+    printf 'program main(args)\n  wb = xlsx.open("%s")\n  xlsx.set(wb, "Ledger", "B2", 4242.42)\n  xlsx.save(wb, args[0])\nend program\n' "$FIXTURE" >"$tmp/wr.bas"
+    if timeout 60 ./gbasic "$tmp/wr.bas" "$tmp/ours.xlsx" >/dev/null 2>"$err" </dev/null &&
+       timeout 240 libreoffice --headless --convert-to csv "$tmp/ours.xlsx" --outdir "$tmp" >/dev/null 2>&1 &&
+       [ -f "$tmp/ours.csv" ]; then
+        miss=""
+        # The value we wrote, and the shapes most likely to be lost by a writer
+        # that produced a merely-valid ZIP: an entity, non-ASCII, an error, a
+        # boolean, a styled date and a formula's cached value.
+        grep -q '4242.42'          "$tmp/ours.csv" || miss="$miss written-value"
+        grep -q 'Opening & carry'  "$tmp/ours.csv" || miss="$miss xml-entity"
+        grep -q 'café'             "$tmp/ours.csv" || miss="$miss utf8"
+        grep -q '#DIV/0!'          "$tmp/ours.csv" || miss="$miss error-value"
+        grep -q 'TRUE'             "$tmp/ours.csv" || miss="$miss boolean"
+        grep -q '2023'             "$tmp/ours.csv" || miss="$miss date-format"
+        grep -q '2302.5'           "$tmp/ours.csv" || miss="$miss formula-cached-value"
+        if [ -z "$miss" ]; then
+            printf 'PASS LibreOffice opened our written workbook and read every shape back\n'
+        else
+            printf 'FAIL LibreOffice read our file but lost:%s\n' "$miss"
+            cat "$tmp/ours.csv"
+            status=1
+        fi
+    else
+        printf 'FAIL LibreOffice could not open a workbook we wrote\n'
+        cat "$err"
+        status=1
+    fi
+else
+    printf 'SKIP independent-reader tier (libreoffice not installed)\n'
+fi
+
 # --- Tier 3: negative ----------------------------------------------------------
 printf -- '-- negative (container errors are reported, not guessed at)\n'
 negative() { # label file expected-substring

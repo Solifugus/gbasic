@@ -1147,6 +1147,26 @@ and takes ~13 s on a 1.4 MB sheet. 32 files (0.2%) failed under 14-way parallel
 load and succeed run alone, which is memory pressure, not a defect. The
 corpus's largest file (42 MB) does not finish.
 
+**U. An independent implementation opens what we write** (2026-08-12). The one
+claim in this module that had never been checked by anything but ourselves.
+
+Every other assertion about our output came from our own reader or from
+`unzip -t` — and `unzip -t` only proves the file is a valid ZIP, not a valid
+workbook. Demonstrated rather than argued: a ZIP containing a single text file
+**passes `unzip -t`** and is not a spreadsheet at all.
+
+The tier writes a cell with our writer, then has **LibreOffice** open the result
+and export it, and checks that every awkward shape survived the trip through a
+foreign reader: the value written, an XML entity (`Opening & carry`),
+non-ASCII (`café`), a sparse blank row, a styled date (serial 45000 arriving as
+`03/15/2023`), a boolean, an Excel error, and a formula's cached value.
+
+The standing caveat is unchanged: LibreOffice is not Excel, so this is strong
+evidence and not proof, and it does not retire the open question of whether
+Excel itself opens our files. What it does retire is the weaker and more
+embarrassing possibility — that we had only ever proved *we* could read our own
+output. SKIPs when libreoffice is absent; the suite does not require it.
+
 **T. Chasing that cost, and where it actually was** (2026-08-12). Three
 measurements, two of which contradicted the guess before them — recorded
 because the wrong guesses are the useful part.
