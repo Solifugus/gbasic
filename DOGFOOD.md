@@ -1058,3 +1058,12 @@ finding gets lost.
   because `from` lexes as an ordinary identifier.
 - **Workaround:** none needed for keys. For a keyword field in dot position,
   bracket access reaches it today.
+
+- **Follow-up, same day:** `as` now works as a field name too. It needed the
+  TOKEN DECLARING as well as the grammar rule — the lexer emits it for ARI's
+  `as money` conversions, but the parser had no rule for it at all, so it hit
+  the token mapper's default arm and was reported as an unexpected token. Zero
+  new conflicts; the ARI suite (10 cases, where `as` is load-bearing in the
+  modifier syntax) is green, as are the 283 negative tests. `stdlib/consolidate.bas`
+  can now be renamed from `names:`/`kind:` to the natural `from:`/`as:`, which
+  is left as a separate change rather than mixed into a parser commit.

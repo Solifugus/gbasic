@@ -640,6 +640,11 @@ typedef struct {
 
 %token <number> NUMBER
 %token <text> IDENT STRING MOD_CONTENT LENS_CONTENT QUALIFIED_IDENT
+/* `as` reaches the parser ONLY as a field name; everywhere else it is consumed
+ * by the lexer's modifier/lens modes. Declared so it can join field_name --
+ * before this it fell through to the token mapper's default arm and was
+ * reported as an unexpected token rather than a keyword clash. */
+%token AS
 %token IF CONSIDER_IF THEN ELSE CONSIDER_ELSE END END_CONSIDER PRINT TRUE FALSE NOTHING UNKNOWN_VALUE AND OR NOT WITH NEW SPAWN FOR TO IN EACH WHILE CONSIDER BREAK CONTINUE FUNCTION RETURN GOTO GOSUB WATCH WITHOUT WATCHERS ON RESUME NEXT STOP ERROR_VALUE MODIFIER PROGRAM LIBRARY LOAD USE EXPORT
 %token OP_EQ OP_NE OP_GT OP_LT OP_GE OP_LE OP_NGT OP_NLT OP_NGE OP_NLE
 %token PLUS MINUS STAR SLASH LPAREN MOD_LPAREN RPAREN LBRACKET RBRACKET LBRACE RBRACE COMMA COLON NEWLINE
@@ -1324,6 +1329,7 @@ parameter_list
  * meaning. See the 2026-08-12 DOGFOOD entry (c). */
 field_name
     : IDENT { $$ = $1; }
+    | AS             { $$ = kw_name("as"); }
     | NEXT           { $$ = kw_name("next"); }
     | STOP           { $$ = kw_name("stop"); }
     | ERROR_VALUE    { $$ = kw_name("error"); }
@@ -1527,6 +1533,7 @@ static int yylex(YYSTYPE *lvalp, YYLTYPE *llocp, gb_parse_ctx *ctx) {
     case TOKEN_QUALIFIED_IDENT:
         lvalp->text = copy_text(token.start, token.length);
         return QUALIFIED_IDENT;
+    case TOKEN_AS: return AS;
     case TOKEN_NUMBER:
     {
         /* Convert exactly the token's bytes (handles decimal and 0x hex), so a

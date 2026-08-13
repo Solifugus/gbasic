@@ -7,5 +7,6 @@ for   = 3
 if    = 4
 not   = 6
 print = 7
+as    = money
 keywords still parse as keywords: i = 2
 non-identifier key = 5

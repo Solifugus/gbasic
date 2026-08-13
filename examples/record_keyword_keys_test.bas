@@ -18,7 +18,8 @@
 
 program main(args)
   r = { from: "src", to: "dst", next: 1, end: 2, error: "none",
-        for: 3, if: 4, in: 5, not: 6, print: 7, while: 8, function: 9 }
+        for: 3, if: 4, in: 5, not: 6, print: 7, while: 8, function: 9,
+        as: "money" }
 
   print "from  = " + r["from"]
   print "to    = " + r["to"]
@@ -29,6 +30,10 @@ program main(args)
   print "if    = " + r["if"]
   print "not   = " + r["not"]
   print "print = " + r["print"]
+  ' `as` needed its token DECLARING as well as the grammar rule: the lexer
+  ' emits it for ARI's `as money` conversions, but the parser had no rule at
+  ' all, so it failed as an unexpected token rather than a keyword clash.
+  print "as    = " + r["as"]
 
   ' The keyword still works as a keyword in the very next statement, which is
   ' the property that would break if this leaked out of the field-name context.
