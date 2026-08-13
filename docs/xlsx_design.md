@@ -1101,6 +1101,54 @@ plausible wrong answer.
 *Still to do in §7:* phase 2's joins and filtered aggregates (`VLOOKUP`,
 `SUMIF`), which are the two largest refusals.
 
+**S. L2 measured against the corpus** (2026-08-12). Everything above the reader
+had been tested only against fixtures written for it — I invented the mess,
+then checked I could handle the mess I invented. This is L2 pointed at 15,839
+real workbooks instead.
+
+*It did not run at all at first.* `grid.of` indexed cells in a RECORD keyed
+`"r,c"`, and a gBASIC record is a **linear-scan association list, not a hash
+map**, so building N fields costs O(N²) — measured, 2,000 inserts take 28 ms
+and 16,000 take 744 ms. A real 182,000-cell sheet is roughly 1.6×10¹⁰
+comparisons; the first workbook tried timed out at 120 s. Rebuilt as sparse
+per-row arrays (`rownos` ascending, `rowdata[i]` the cells of that row) with a
+binary search for the row and a short scan within it. The public API and every
+golden are unchanged.
+
+*Then the actual question: does the confidence mean anything?* Self-checked by
+asking how often a table STILL CONTAINS A ROW THAT LOOKS LIKE A TOTAL — the
+error the layer exists to prevent:
+
+| confidence | candidates | of which contain a totals row |
+|---|---|---|
+| high | 41,206 | **0.6%** |
+| medium | 21,180 | 1.3% |
+| low | 46,250 | **14.9%** |
+| none | 257,693 | — (no frame emitted) |
+
+**A 25x separation between high and low.** The heuristic knows when it does not
+know, which is the property "automatic when safe" actually needs — and it is
+now measured rather than asserted.
+
+*Coverage.* 91.4% of workbooks yield at least one usable candidate. Per
+candidate the picture looks worse — 70.3% return `none` — but that is mostly
+correct refusal rather than failure: 217,102 of those are "no all-text row
+found: cannot name the columns", and most blocks on a real sheet are stray
+cells, notes and single rows rather than tables.
+
+*What the wild confirmed about the fixture.* Two-row headers are not exotic:
+41,852 candidates (11%) triggered that note, and 39,353 had a title or stub
+above the header. Both were in `messy.xlsx` on the strength of the design
+document; the corpus says they were the right things to include.
+
+*Honest limits, quantified.* L2 materialises a whole sheet as gBASIC values and
+costs about **300x the file size in RAM** — 194 MB peak for a 648 KB workbook —
+and takes ~13 s on a 1.4 MB sheet. 32 files (0.2%) failed under 14-way parallel
+load and succeed run alone, which is memory pressure, not a defect. The
+corpus's largest file (42 MB) does not finish. So the layer is sound on
+ordinary workbooks and needs a streaming or column-oriented representation
+before it is safe on large ones.
+
 ## 14. Roadmap (phases)
 
 Each phase is independently shippable and golden-file testable.

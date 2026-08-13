@@ -30,22 +30,41 @@ library grid
 
     ' ---------------------------------------------------------------- building
 
-    ' A grid is a plain record: the cells indexed by "r,c" for O(1) access, plus
-    ' the extent. Sparse — a cell that is not present is `unknown`, which is
-    ' also what an empty cell reads as, so callers need not distinguish.
+    ' A grid holds its cells as SPARSE PER-ROW ARRAYS: `rownos` ascending, and
+    ' `rowdata[i]` the cells of row rownos[i] as {c, v, k} in column order.
+    '
+    ' The obvious design -- one record field per cell, keyed "r,c" -- is the one
+    ' this replaced, and it could not run on a real sheet. A gBASIC record is a
+    ' LINEAR-SCAN association list, not a hash map, so building N fields costs
+    ' O(N^2): measured, 2,000 inserts take 28 ms and 16,000 take 744 ms, which
+    ' puts a real 182,000-cell corpus sheet at roughly 1.6e10 comparisons. The
+    ' first workbook tried timed out at 120 s.
+    '
+    ' Arrays are O(1) indexed, so this build is one linear pass (xlsx.cells
+    ' returns row-major, so rows close as the row number changes) and a lookup
+    ' is a binary search for the row plus a short scan within it -- rows are a
+    ' few dozen cells wide, not thousands.
     function of(wb, sheet_name)
-        cells = { }
-        kinds = { }
-        min_r = 0
-        max_r = 0
+        rownos = []
+        rowdata = []
+        cur = []
+        cur_row = 0 - 1
         min_c = 0
         max_c = 0
+        min_r = 0
+        max_r = 0
         seen = false
         for each cell in xlsx.cells(wb, sheet_name)
             rc = _split_ref(cell.ref)
-            key = rc.row + "," + rc.col
-            cells[key] = cell.value
-            kinds[key] = cell.kind
+            if rc.row != cur_row then
+                if cur_row >= 0 then
+                    append(rownos, cur_row)
+                    append(rowdata, cur)
+                end if
+                cur = []
+                cur_row = rc.row
+            end if
+            append(cur, { c: rc.col, v: cell.value, k: cell.kind })
             if not seen then
                 min_r = rc.row
                 max_r = rc.row
@@ -67,7 +86,11 @@ library grid
                 end if
             end if
         end for
-        return { sheet: sheet_name, cells: cells, kinds: kinds,
+        if cur_row >= 0 then
+            append(rownos, cur_row)
+            append(rowdata, cur)
+        end if
+        return { sheet: sheet_name, rownos: rownos, rowdata: rowdata,
                  first_row: min_r, last_row: max_r,
                  first_col: min_c, last_col: max_c, any: seen }
     end function
@@ -88,19 +111,52 @@ library grid
         return { row: number(mid(ref, i, len(ref) - i)), col: col - 1 }
     end function
 
-    function at(g, r, c)
-        key = r + "," + c
-        if has(g.cells, key) then
-            return g.cells[key]
+    ' Index of row r in rownos, or -1. Binary search: a sheet can have tens of
+    ' thousands of rows and this is called from every cell access.
+    function _row_index(g, r)
+        lo = 0
+        hi = count(g.rownos) - 1
+        while lo <= hi
+            mid_i = floor((lo + hi) / 2)
+            v = g.rownos[mid_i]
+            if v = r then
+                return mid_i
+            end if
+            if v < r then
+                lo = mid_i + 1
+            else
+                hi = mid_i - 1
+            end if
+        end while
+        return 0 - 1
+    end function
+
+    ' The cells of row r, in column order. Empty when the row is absent.
+    ' Callers that walk a whole row should use THIS rather than calling `at`
+    ' per column -- the row is found once instead of once per cell.
+    function row_cells(g, r)
+        i = _row_index(g, r)
+        if i < 0 then
+            return []
         end if
+        return g.rowdata[i]
+    end function
+
+    function at(g, r, c)
+        for each cell in row_cells(g, r)
+            if cell.c = c then
+                return cell.v
+            end if
+        end for
         return unknown
     end function
 
     function kind_at(g, r, c)
-        key = r + "," + c
-        if has(g.kinds, key) then
-            return g.kinds[key]
-        end if
+        for each cell in row_cells(g, r)
+            if cell.c = c then
+                return cell.k
+            end if
+        end for
         return "blank"
     end function
 
@@ -113,13 +169,14 @@ library grid
     end function
 
     function row_is_blank(g, r)
-        c = g.first_col
-        while c <= g.last_col
-            if not is_blank(g, r, c) then
+        for each cell in row_cells(g, r)
+            if is_unknown(cell.v) then
+                continue
+            end if
+            if string(cell.v) != "" then
                 return false
             end if
-            c = c + 1
-        end while
+        end for
         return true
     end function
 
@@ -127,13 +184,14 @@ library grid
     ' apart from a real data row.
     function row_width(g, r)
         n = 0
-        c = g.first_col
-        while c <= g.last_col
-            if not is_blank(g, r, c) then
+        for each cell in row_cells(g, r)
+            if is_unknown(cell.v) then
+                continue
+            end if
+            if string(cell.v) != "" then
                 n = n + 1
             end if
-            c = c + 1
-        end while
+        end for
         return n
     end function
 
@@ -170,16 +228,18 @@ library grid
     ' more than one of them — a single text cell is a title, not a header.
     function _looks_header(g, r)
         n = 0
-        c = g.first_col
-        while c <= g.last_col
-            if not is_blank(g, r, c) then
-                if kind_at(g, r, c) != "text" then
-                    return false
-                end if
-                n = n + 1
+        for each cell in row_cells(g, r)
+            if is_unknown(cell.v) then
+                continue
             end if
-            c = c + 1
-        end while
+            if string(cell.v) = "" then
+                continue
+            end if
+            if cell.k != "text" then
+                return false
+            end if
+            n = n + 1
+        end for
         return n > 1
     end function
 
