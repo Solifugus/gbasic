@@ -4784,6 +4784,126 @@ static Value xlsx_eval_call(AstExpr *expr) {
      * The measured win is against the alternative a caller would otherwise
      * write -- a gBASIC loop calling xlsx.evaluate per row -- and the test
      * measures it rather than asserting it. */
+    /* xlsx.grid(wb, sheet) -> { rownos, rcols, rvals, rkinds }
+     *
+     * The same cells as xlsx.cells, COLUMN-ORIENTED instead of one record per
+     * cell -- per row: the column numbers, the values, and the kinds, as three
+     * parallel arrays.
+     *
+     * WHY IT EXISTS. xlsx.cells builds a five-field record for every cell, and
+     * measured on a real corpus workbook that costs about 2.5 KB per cell:
+     * 192 MB of resident memory for 78,124 cells in a 648 KB file. The records
+     * are convenient for reading a handful of cells and ruinous for reading a
+     * sheet, which is exactly what L2 does. Three arrays per row hold the same
+     * information with one allocation per row instead of five per cell.
+     *
+     * xlsx.cells is unchanged and remains the right call for looking at a few
+     * cells with their style and formula. */
+    if (strcmp(name, "grid") == 0) {
+        if (expr->as.call.args.count != 2) {
+            return xlsx_raise("xlsx.grid expects two arguments (workbook, sheet)");
+        }
+        Value wbv = eval_expr(expr->as.call.args.items[0]);
+        Value shv = eval_expr(expr->as.call.args.items[1]);
+        if (wbv.kind != VALUE_WORKBOOK || shv.kind != VALUE_STRING) {
+            value_free(wbv); value_free(shv);
+            return xlsx_raise("xlsx.grid expects a workbook and a sheet name");
+        }
+        XlsxWorkbook *wb = wbv.as.workbook;
+        XlsxSheet *sheet = xlsx_find_sheet(wb, shv.as.string);
+        if (!sheet) {
+            char message[256];
+            snprintf(message, sizeof message, "xlsx: no such sheet: %s", shv.as.string);
+            value_free(wbv); value_free(shv);
+            return xlsx_raise(message);
+        }
+        XlsxSnap snap;
+        memset(&snap, 0, sizeof snap);
+        /* A partless (macro) sheet snapshots as empty, which is what it is. */
+        xlsx_snapshot(wb, shv.as.string, &snap);
+
+        /* The snapshot is in document order, so rows are already grouped. */
+        Value *rownos = NULL, *rcols = NULL, *rvals = NULL, *rkinds = NULL;
+        size_t nrows = 0, rcap = 0;
+        size_t i = 0;
+        while (i < snap.count) {
+            long row = snap.cells[i].row;
+            size_t j = i;
+            while (j < snap.count && snap.cells[j].row == row) j++;
+            size_t width = j - i;
+            Value *cols = malloc(width ? width * sizeof(Value) : 1);
+            Value *vals = malloc(width ? width * sizeof(Value) : 1);
+            Value *kinds = malloc(width ? width * sizeof(Value) : 1);
+            if (!cols || !vals || !kinds) abort();
+            for (size_t k = 0; k < width; k++) {
+                const XlsxSnapCell *c = &snap.cells[i + k];
+                cols[k] = value_number((double)c->col);
+                switch (c->kind) {
+                case XV_NUM:  vals[k] = value_number(c->num); kinds[k] = value_string("number"); break;
+                case XV_BOOL: vals[k] = value_bool((int)c->num); kinds[k] = value_string("boolean"); break;
+                case XV_STR:  vals[k] = value_string(c->str ? c->str : ""); kinds[k] = value_string("text"); break;
+                case XV_ERR:  vals[k] = value_string(c->str ? c->str : "#ERROR"); kinds[k] = value_string("error"); break;
+                default:      vals[k] = value_unknown(); kinds[k] = value_string("blank"); break;
+                }
+            }
+            if (nrows == rcap) {
+                rcap = rcap ? rcap * 2 : 64;
+                Value *a = realloc(rownos, rcap * sizeof(Value));
+                Value *b = realloc(rcols, rcap * sizeof(Value));
+                Value *c2 = realloc(rvals, rcap * sizeof(Value));
+                Value *d = realloc(rkinds, rcap * sizeof(Value));
+                if (!a || !b || !c2 || !d) abort();
+                rownos = a; rcols = b; rvals = c2; rkinds = d;
+            }
+            rownos[nrows] = value_number((double)row);
+            rcols[nrows] = value_array(cols, width);
+            rvals[nrows] = value_array(vals, width);
+            rkinds[nrows] = value_array(kinds, width);
+            nrows++;
+            i = j;
+        }
+
+        long min_r = 0, max_r = 0, min_c = 0, max_c = 0;
+        for (size_t k = 0; k < snap.count; k++) {
+            if (k == 0) {
+                min_r = max_r = snap.cells[k].row;
+                min_c = max_c = snap.cells[k].col;
+            } else {
+                if (snap.cells[k].row < min_r) min_r = snap.cells[k].row;
+                if (snap.cells[k].row > max_r) max_r = snap.cells[k].row;
+                if (snap.cells[k].col < min_c) min_c = snap.cells[k].col;
+                if (snap.cells[k].col > max_c) max_c = snap.cells[k].col;
+            }
+        }
+        int any = snap.count != 0;
+        xlsx_snap_free(&snap);
+
+        RecordField *fields = calloc(10, sizeof(RecordField));
+        if (!fields) abort();
+        fields[0].name = copy_string("sheet");
+        fields[0].value = cell_alloc(); *fields[0].value = value_string(shv.as.string);
+        fields[1].name = copy_string("rownos");
+        fields[1].value = cell_alloc(); *fields[1].value = value_array(rownos, nrows);
+        fields[2].name = copy_string("rcols");
+        fields[2].value = cell_alloc(); *fields[2].value = value_array(rcols, nrows);
+        fields[3].name = copy_string("rvals");
+        fields[3].value = cell_alloc(); *fields[3].value = value_array(rvals, nrows);
+        fields[4].name = copy_string("rkinds");
+        fields[4].value = cell_alloc(); *fields[4].value = value_array(rkinds, nrows);
+        fields[5].name = copy_string("first_row");
+        fields[5].value = cell_alloc(); *fields[5].value = value_number((double)min_r);
+        fields[6].name = copy_string("last_row");
+        fields[6].value = cell_alloc(); *fields[6].value = value_number((double)max_r);
+        fields[7].name = copy_string("first_col");
+        fields[7].value = cell_alloc(); *fields[7].value = value_number((double)min_c);
+        fields[8].name = copy_string("last_col");
+        fields[8].value = cell_alloc(); *fields[8].value = value_number((double)max_c);
+        fields[9].name = copy_string("any");
+        fields[9].value = cell_alloc(); *fields[9].value = value_bool(any);
+        value_free(wbv); value_free(shv);
+        return value_record(fields, 10);
+    }
+
     if (strcmp(name, "apply") == 0) {
         if (expr->as.call.args.count != 3) {
             return xlsx_raise("xlsx.apply expects three arguments (formula, mapping, frame)");

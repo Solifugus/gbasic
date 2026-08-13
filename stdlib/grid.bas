@@ -30,69 +30,33 @@ library grid
 
     ' ---------------------------------------------------------------- building
 
-    ' A grid holds its cells as SPARSE PER-ROW ARRAYS: `rownos` ascending, and
-    ' `rowdata[i]` the cells of row rownos[i] as {c, v, k} in column order.
+    ' A grid holds its cells as PARALLEL PER-ROW ARRAYS: `rownos` ascending,
+    ' and for row i the columns, values and kinds in `rcols[i]`, `rvals[i]`,
+    ' `rkinds[i]`.
     '
-    ' The obvious design -- one record field per cell, keyed "r,c" -- is the one
-    ' this replaced, and it could not run on a real sheet. A gBASIC record is a
-    ' LINEAR-SCAN association list, not a hash map, so building N fields costs
-    ' O(N^2): measured, 2,000 inserts take 28 ms and 16,000 take 744 ms, which
-    ' puts a real 182,000-cell corpus sheet at roughly 1.6e10 comparisons. The
-    ' first workbook tried timed out at 120 s.
+    ' TWO REPRESENTATIONS WERE MEASURED AND DISCARDED before this one, both on
+    ' real workbooks rather than on the small fixture:
     '
-    ' Arrays are O(1) indexed, so this build is one linear pass (xlsx.cells
-    ' returns row-major, so rows close as the row number changes) and a lookup
-    ' is a binary search for the row plus a short scan within it -- rows are a
-    ' few dozen cells wide, not thousands.
+    '   * one RECORD FIELD PER CELL keyed "r,c". A gBASIC record is a
+    '     linear-scan association list, not a hash map, so building N fields is
+    '     O(N^2) -- 2,000 inserts 28 ms, 16,000 inserts 744 ms. A 182,000-cell
+    '     sheet is ~1.6e10 comparisons; the first corpus file tried timed out
+    '     at 120 s.
+    '   * one RECORD PER CELL inside per-row arrays. Correct and linear, but a
+    '     three-field record per cell cost about 300x the file size in RAM --
+    '     194 MB peak for a 648 KB workbook -- which made 14-way parallel
+    '     scanning fail on memory rather than on any defect.
+    '
+    ' Parallel arrays keep one record per ROW instead of one per CELL, which is
+    ' roughly an order of magnitude fewer allocations on a real sheet, and
+    ' arrays are contiguous where records are not.
     function of(wb, sheet_name)
-        rownos = []
-        rowdata = []
-        cur = []
-        cur_row = 0 - 1
-        min_c = 0
-        max_c = 0
-        min_r = 0
-        max_r = 0
-        seen = false
-        for each cell in xlsx.cells(wb, sheet_name)
-            rc = _split_ref(cell.ref)
-            if rc.row != cur_row then
-                if cur_row >= 0 then
-                    append(rownos, cur_row)
-                    append(rowdata, cur)
-                end if
-                cur = []
-                cur_row = rc.row
-            end if
-            append(cur, { c: rc.col, v: cell.value, k: cell.kind })
-            if not seen then
-                min_r = rc.row
-                max_r = rc.row
-                min_c = rc.col
-                max_c = rc.col
-                seen = true
-            else
-                if rc.row < min_r then
-                    min_r = rc.row
-                end if
-                if rc.row > max_r then
-                    max_r = rc.row
-                end if
-                if rc.col < min_c then
-                    min_c = rc.col
-                end if
-                if rc.col > max_c then
-                    max_c = rc.col
-                end if
-            end if
-        end for
-        if cur_row >= 0 then
-            append(rownos, cur_row)
-            append(rowdata, cur)
-        end if
-        return { sheet: sheet_name, rownos: rownos, rowdata: rowdata,
-                 first_row: min_r, last_row: max_r,
-                 first_col: min_c, last_col: max_c, any: seen }
+        ' The whole build is one C call now. Doing it in gBASIC meant reading
+        ' xlsx.cells, which materialises a five-field RECORD per cell -- 192 MB
+        ' for the 78,124 cells of one 648 KB corpus workbook, about 2.5 KB a
+        ' cell. xlsx.grid returns the same information column-oriented, one
+        ' allocation per row instead of five per cell.
+        return xlsx.grid(wb, sheet_name)
     end function
 
     ' "B7" -> { row: 7, col: 1 }. Columns are 0-based to match the reader.
@@ -112,7 +76,7 @@ library grid
     end function
 
     ' Index of row r in rownos, or -1. Binary search: a sheet can have tens of
-    ' thousands of rows and this is called from every cell access.
+    ' thousands of rows and this is reached from every cell access.
     function _row_index(g, r)
         lo = 0
         hi = count(g.rownos) - 1
@@ -131,33 +95,41 @@ library grid
         return 0 - 1
     end function
 
-    ' The cells of row r, in column order. Empty when the row is absent.
-    ' Callers that walk a whole row should use THIS rather than calling `at`
-    ' per column -- the row is found once instead of once per cell.
-    function row_cells(g, r)
-        i = _row_index(g, r)
-        if i < 0 then
-            return []
-        end if
-        return g.rowdata[i]
+    ' Position of column c within row-index i, or -1.
+    function _col_index(g, i, c)
+        cols = g.rcols[i]
+        j = 0
+        while j < count(cols)
+            if cols[j] = c then
+                return j
+            end if
+            j = j + 1
+        end while
+        return 0 - 1
     end function
 
     function at(g, r, c)
-        for each cell in row_cells(g, r)
-            if cell.c = c then
-                return cell.v
-            end if
-        end for
-        return unknown
+        i = _row_index(g, r)
+        if i < 0 then
+            return unknown
+        end if
+        j = _col_index(g, i, c)
+        if j < 0 then
+            return unknown
+        end if
+        return g.rvals[i][j]
     end function
 
     function kind_at(g, r, c)
-        for each cell in row_cells(g, r)
-            if cell.c = c then
-                return cell.k
-            end if
-        end for
-        return "blank"
+        i = _row_index(g, r)
+        if i < 0 then
+            return "blank"
+        end if
+        j = _col_index(g, i, c)
+        if j < 0 then
+            return "blank"
+        end if
+        return g.rkinds[i][j]
     end function
 
     function is_blank(g, r, c)
@@ -169,11 +141,15 @@ library grid
     end function
 
     function row_is_blank(g, r)
-        for each cell in row_cells(g, r)
-            if is_unknown(cell.v) then
+        i = _row_index(g, r)
+        if i < 0 then
+            return true
+        end if
+        for each v in g.rvals[i]
+            if is_unknown(v) then
                 continue
             end if
-            if string(cell.v) != "" then
+            if string(v) != "" then
                 return false
             end if
         end for
@@ -183,12 +159,16 @@ library grid
     ' How many cells a row actually fills. Used to tell a one-cell title or note
     ' apart from a real data row.
     function row_width(g, r)
+        i = _row_index(g, r)
+        if i < 0 then
+            return 0
+        end if
         n = 0
-        for each cell in row_cells(g, r)
-            if is_unknown(cell.v) then
+        for each v in g.rvals[i]
+            if is_unknown(v) then
                 continue
             end if
-            if string(cell.v) != "" then
+            if string(v) != "" then
                 n = n + 1
             end if
         end for
@@ -227,19 +207,30 @@ library grid
     ' Does this row look like a header? Every filled cell is text, and there is
     ' more than one of them — a single text cell is a title, not a header.
     function _looks_header(g, r)
+        i = _row_index(g, r)
+        if i < 0 then
+            return false
+        end if
         n = 0
-        for each cell in row_cells(g, r)
-            if is_unknown(cell.v) then
-                continue
+        vals = g.rvals[i]
+        kinds = g.rkinds[i]
+        j = 0
+        while j < count(vals)
+            v = vals[j]
+            skip = is_unknown(v)
+            if not skip then
+                if string(v) = "" then
+                    skip = true
+                end if
             end if
-            if string(cell.v) = "" then
-                continue
+            if not skip then
+                if kinds[j] != "text" then
+                    return false
+                end if
+                n = n + 1
             end if
-            if cell.k != "text" then
-                return false
-            end if
-            n = n + 1
-        end for
+            j = j + 1
+        end while
         return n > 1
     end function
 

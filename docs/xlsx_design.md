@@ -1145,9 +1145,34 @@ document; the corpus says they were the right things to include.
 costs about **300x the file size in RAM** — 194 MB peak for a 648 KB workbook —
 and takes ~13 s on a 1.4 MB sheet. 32 files (0.2%) failed under 14-way parallel
 load and succeed run alone, which is memory pressure, not a defect. The
-corpus's largest file (42 MB) does not finish. So the layer is sound on
-ordinary workbooks and needs a streaming or column-oriented representation
-before it is safe on large ones.
+corpus's largest file (42 MB) does not finish.
+
+**T. Chasing that cost, and where it actually was** (2026-08-12). Three
+measurements, two of which contradicted the guess before them — recorded
+because the wrong guesses are the useful part.
+
+1. *Guessed: the per-cell records inside `grid.of`.* Rewrote them as parallel
+   per-row arrays (one record per ROW rather than per cell). Result: **194 MB →
+   193 MB.** Essentially nothing. The representation was not the cost.
+2. *Measured instead of guessed.* `xlsx.cells` alone, doing nothing else, on
+   the same file: **192 MB for 78,124 cells, ~2.5 KB per cell.** Practically
+   all of it was upstream of L2 entirely — a five-field record per cell, with
+   its names, cells and strings.
+3. *Fixed at the source.* New `xlsx.grid(wb, sheet)` returns the same cells
+   **column-oriented** — per row, three parallel arrays of columns, values and
+   kinds — one allocation per row instead of five per cell. `grid.of` is now a
+   single call to it.
+
+Result on the same workbook: **`grid.of` costs 0.39 s and 142 MB**, where the
+equivalent work previously dominated a ~50 s run. `xlsx.cells` is unchanged and
+remains right for reading a few cells with their style and formula.
+
+What is left is *not* the grid, and saying so precisely matters more than the
+improvement: the residual memory is the sheet parse itself (libxml2's DOM plus
+the snapshot), and the residual time is `grid.tables` eagerly building a frame
+for **every** block — on the file above, seven frames over a 66,091-row sheet.
+Making `tables` lazy, and streaming the sheet parse rather than building a DOM,
+are the two remaining levers; neither is done.
 
 ## 14. Roadmap (phases)
 
