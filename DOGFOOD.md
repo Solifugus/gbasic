@@ -943,3 +943,91 @@ D0.6, the rest remain open or are by-design.
   one a reader would guess.
 - **Also:** `has_key` does not exist; the record key-presence builtin is
   `has(record, key)`. Found by writing the former and reading `builtins.c`.
+
+## 2026-08-12 — CC — while: xlsx L2/L3/L4 and the corpus scans (a batch)
+
+Logged late, in one batch, which is itself the first entry: the house rule says
+*append before continuing* and I did not, so several of these were carried in
+working memory across days instead of written down. That is exactly how a
+finding gets lost.
+
+### (a) Records are a linear-scan association list, and there is no map type
+- **Type:** perf
+- **Severity:** high
+- **What:** indexing data by string key is O(n^2) to build, and nothing says
+  so. Measured on this machine:
+
+  | fields | build time |
+  |---|---|
+  | 2,000 | 28 ms |
+  | 4,000 | 91 ms |
+  | 8,000 | 333 ms |
+  | 16,000 | 744 ms |
+
+  `src/eval.c` looks a field up with `for (size_t i = 0; i < record.count; i++)`.
+  I wrote the natural implementation of a sheet index — cells keyed `"r,c"` —
+  and it could not run on a real workbook at all: a 182,000-cell sheet is about
+  1.6e10 comparisons and the first corpus file tried timed out at 120 s.
+- **Workaround:** sparse parallel per-row arrays with a binary search for the
+  row (`stdlib/grid.bas`), and ultimately a new C verb `xlsx.grid` returning
+  column-oriented arrays so the index is never built in gBASIC at all.
+- **Why this is core work, not a library concern:** it caps what anyone can
+  build in the language, silently, at a size small enough to miss in testing
+  and large enough to matter in use. There is a proven template in this
+  codebase: strings (PLAT-STRIDX) and arrays (PLAT-ARRIDX) were both rescued
+  from quadratic behaviour by adding an index behind an unchanged API. Records
+  are the third member of that family and the only one still unfixed.
+
+### (b) `print` renders about six significant digits
+- **Type:** bug
+- **Severity:** high (for the domain this is aimed at)
+- **What:** every test written this session had to route around it.
+  `265550.75` prints as `265551`; `23750.25` as `23750.2`; the Excel date
+  serial `46237.5674884` as `46237.6`. A money VALUE prints exactly, but data
+  read from a spreadsheet arrives as plain numbers, so the money path does not
+  save you.
+- **Workaround:** assert by COMPARISON rather than by printed text
+  (`print sum(...) = 265550.75`), and for date serials split the value into
+  day and seconds-of-day, each small enough to survive. Both are documented
+  inline in the tests so nobody "simplifies" them back.
+- **Note:** this is separate from the earlier money/`%g` entries. Those were
+  about a value a person reads; this is about a test being unable to observe a
+  difference the code genuinely computes.
+
+### (c) Reserved words cannot be record keys, and literal keys must be identifiers
+- **Type:** language-surprise
+- **Severity:** medium
+- **What:** the natural vocabulary for a mapping spec collides with the
+  keyword namespace. `{ from: [...], as: "money" }` is a parse error, so the
+  spec ships as `names:`/`kind:` — worse names, chosen by the grammar rather
+  than by meaning. Previously the same thing forced `next_at`, `halt`,
+  `message`. Separately, a record LITERAL accepts only identifier keys, so
+  `{ "Rate (%)": 1 }` will not parse and the record must be built by
+  assignment.
+- **Workaround:** rename the fields; build by assignment when a key is not an
+  identifier.
+- **Analysis, because this one looks cheaper to fix than it seems:** both
+  places are CLOSED CONTEXTS in the grammar. `record_field_list`
+  (`src/parser.y:1304`) requires `IDENT` immediately before `COLON`/`OP_EQ`,
+  and field access is `DOT IDENT`. In both positions nothing but a field name
+  is legal, so a `field_name` nonterminal — `IDENT` plus the keyword tokens,
+  each yielding its own spelling — would admit `from:` and `rec.from` with no
+  quoting on either side.
+
+  What is NOT known, and must be measured rather than assumed: whether that
+  introduces LALR conflicts. `DOT IDENT` appears in seven rules including
+  method calls, lvalues and watch paths, and the record rule also carries the
+  PBI `IDENT (policy):` form. The experiment is cheap — add the nonterminal,
+  run bison, count new conflicts — and it should be run before anyone promises
+  this.
+
+  Quoted keys would still be wanted for names that are not identifiers at all
+  (`"Rate (%)"`), which is what bracket access already handles.
+
+### (d) Small gaps that each cost real time
+- **Type:** missing-feature
+- **Severity:** low
+- **What:** no modulo operator (`i % 6` is a lexer error; written as
+  `i - floor(i / 6) * 6`); the record key-presence builtin is `has`, not
+  `has_key`, and is discoverable only by reading `src/builtins.c`; still no
+  line continuation, which shapes how every multi-line expression is written.
