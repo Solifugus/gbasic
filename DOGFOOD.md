@@ -1067,3 +1067,81 @@ finding gets lost.
   modifier syntax) is green, as are the 283 negative tests. `stdlib/consolidate.bas`
   can now be renamed from `names:`/`kind:` to the natural `from:`/`as:`, which
   is left as a separate change rather than mixed into a parser commit.
+
+## 2026-08-13 — CC — while: fixing entry (a) above (records as a map)
+
+### Status update on 2026-08-12 (a): fixed, and it was TWO costs not one
+- **Type:** perf
+- **Severity:** was high
+- **Resolved.** Records now carry a lazily-built hash index from field name to
+  slot, and the field array is shared with copy-on-write instead of being
+  duplicated on every read. `tests/run_recidx.sh`.
+- **The finding worth recording is that the index alone fixed nothing.** With
+  the index in and sharing not yet done, building a record by string key went
+  from 3.42 s to 0.04 s at 32 000 fields — which looked like the fix, and was
+  the only thing my first benchmark measured. But `env_get` calls `value_copy`
+  on every read of a variable, and `value_copy` on a record duplicated the whole
+  field array, so every READ still cost O(fields) *and threw the freshly built
+  index away*. Measured: 300 000 lookups of ONE key against a 1 000-field
+  record 0.65 s, against 8 000 fields 8.41 s — a fixed amount of work growing
+  with the size of the record. A loop reading n keys stayed quadratic.
+
+  This is written down two hundred lines above the code I was editing, in the
+  PLAT-STRIDX comment: *"Sharing and caching are one mechanism, not two: fixing
+  either alone leaves a per-character loop quadratic."* Strings needed both.
+  Arrays needed both. Records needed both. I measured the write path, saw a
+  85x improvement, and nearly stopped.
+- **What caught it:** not a test. A mutation test — deliberately breaking the
+  index to check the new fixture could go red — did NOT go red, which made no
+  sense until a trace showed the record being copied (and its index rebuilt)
+  between the write and the read. The test I had written was passing for the
+  wrong reason.
+- **Lesson for the next one of these:** a per-element cost has a *build* side
+  and a *read* side and they are separately quadratic. Benchmark both before
+  claiming the class changed. The `tests/run_recidx.sh` shape tiers are split
+  along exactly that line — ops that touch every field are gated as linear, ops
+  doing FIXED work against a GROWING record are gated as flat — because the flat
+  tier is the one that was failing and a suite of linear-only gates would have
+  reported the half-fix as done.
+
+### `=` on two records is always true
+- **Type:** bug
+- **Severity:** medium
+- **What:** `{ x: 1 } = { y: 2 }` evaluates to `true`, as does every other pair
+  of records. Confirmed against an untouched binary, so it is pre-existing and
+  not something the work above introduced. `value_storage_equal` implements
+  record comparison correctly (count, then each field by name); the `=`
+  operator does not reach it for records.
+- **Why it cost me time:** I wrote a test asserting that two records built with
+  DIFFERENT keys are unequal. It passed. It would have passed against any
+  implementation, including one where the index resolved every name to slot 0.
+  A test that cannot fail is worse than no test, and this one looked like the
+  strongest check in the file.
+- **Workaround:** compare `encode(a) = encode(b)`, which walks the fields in
+  slot order and so sees content and order both. Used in
+  `tests/recidx_test.bas`, with the reason written inline so nobody
+  "simplifies" it back to `=`.
+- **Not fixed here:** it is a separate defect in the comparison operator, and
+  fixing it will move goldens wherever a program is currently relying on two
+  records comparing equal.
+
+### A refcounted value needs to know which pointers are owners
+- **Type:** language-surprise
+- **Severity:** medium (for anyone editing the runtime)
+- **What:** making the record field array refcounted was straightforward except
+  for one thing: `Value` is passed around as both an owner and a borrow with
+  nothing in the type to say which. My first version detached inside
+  `record_find`, on the reasoning that a caller taking a writable pointer must
+  own the record. Called on a borrow, that decrements a refcount the caller
+  never held, and the real owner plus any legitimate copy are then both holding
+  an array whose count is one too low — a double free, which surfaced as the
+  webserver dying on its third request.
+- **Workaround / resolution:** detach only where ownership is structural —
+  `resolve_lvalue_ref`, which by construction walks owned storage, and
+  `record_set`, which is handed a record to mutate. That is the same rule
+  `array_ensure_unique` already follows, which I should have read first: the
+  answer for the third member of the family was written down for the second.
+- **Also:** the two real defects here (this one, and an uninitialised `refs` on
+  the path that grows an empty record) were both found by valgrind and neither
+  produced a wrong VALUE — the suites were green when the first one was live.
+  For a refcounting change, a valgrind tier is not an extra; it is the tier.

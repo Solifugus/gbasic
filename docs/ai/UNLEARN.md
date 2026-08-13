@@ -199,6 +199,20 @@ it will succeed. Proof: `examples/on_error_resume_next_test.bas`.
   touching it inside a loop, costs nothing proportional to its size. Character
   access is O(1) and a full scan is O(n) in either direction — measured in
   `tests/run_stridx.sh`, which fails if that stops being true.
+- **Records are not a trap either** (they were until 2026-08-13). Keying data by
+  string — `r["k" + string(i)] = v` in a loop, then reading it back — is
+  **linear**, so a record is a usable map. Two things changed: field lookup uses
+  a hash index once a record is big enough to need one, and the field array is
+  shared with copy-on-write instead of being duplicated on every read of the
+  variable. Both were needed; either alone leaves the loop quadratic. Measured:
+  building 32 000 fields 3.42 s → 0.04 s, and 128 000 fields (previously not
+  finishing in useful time) 0.13 s. Reading is flat in the record's size — 300
+  000 lookups of one key cost the same against a 1 000-field record as an 8 000
+  -field one, where before they cost 0.65 s and 8.41 s. Guarded by
+  `tests/run_recidx.sh`, which fails if a lookup ever starts scaling with the
+  record again. Still proportional to the field count, by design: assigning a
+  record to a name that already holds an equal one compares them field by field
+  to decide whether a watcher fires.
 
 ---
 

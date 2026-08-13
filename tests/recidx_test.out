@@ -1,0 +1,85 @@
+linear count ok
+linear sum ok
+linear keys-len ok
+linear keys-first ok
+linear keys-last ok
+linear values-first ok
+linear values-last ok
+linear absent ok
+linear absent-has ok
+linear present-has ok
+linear overwrite ok
+linear overwrite-count ok
+linear grown-count ok
+linear grown-old-key ok
+linear grown-new-key ok
+linear cow-orig ok
+linear cow-copy ok
+linear cow-orig-new-field ok
+linear cow-copy-new-field ok
+linear removed-count ok
+linear removed-gone ok
+linear removed-kept ok
+linear removed-kept-late ok
+linear readded ok
+linear readded-count ok
+linear encode-same ok
+linear encode-differs ok
+linear roundtrip-count ok
+linear roundtrip-sum ok
+linear wire-count ok
+linear wire-sum ok
+indexed count ok
+indexed sum ok
+indexed keys-len ok
+indexed keys-first ok
+indexed keys-last ok
+indexed values-first ok
+indexed values-last ok
+indexed absent ok
+indexed absent-has ok
+indexed present-has ok
+indexed overwrite ok
+indexed overwrite-count ok
+indexed grown-count ok
+indexed grown-old-key ok
+indexed grown-new-key ok
+indexed cow-orig ok
+indexed cow-copy ok
+indexed cow-orig-new-field ok
+indexed cow-copy-new-field ok
+indexed removed-count ok
+indexed removed-gone ok
+indexed removed-kept ok
+indexed removed-kept-late ok
+indexed readded ok
+indexed readded-count ok
+indexed encode-same ok
+indexed encode-differs ok
+indexed roundtrip-count ok
+indexed roundtrip-sum ok
+indexed wire-count ok
+indexed wire-sum ok
+dup-linear ok
+dup-indexed ok
+dup-linear-count ok
+dup-indexed-count ok
+probe-count ok
+probe-plain ok
+probe-suffixed ok
+unicode-count ok
+unicode-cyrillic ok
+unicode-cjk ok
+empty-count ok
+empty-absent ok
+empty-has ok
+single-count ok
+single-read ok
+literal-count ok
+literal-first ok
+literal-mid ok
+literal-last ok
+nested-count ok
+nested-inner-count ok
+nested-inner-read ok
+foreach ok

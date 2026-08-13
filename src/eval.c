@@ -1170,10 +1170,236 @@ static Value value_array(Value *items, size_t count) {
     return value;
 }
 
+/* --- PLAT-RECIDX: record field lookup that is not linear ---------------------
+ *
+ * A record is an ordered list of named fields, and finding one by name was a
+ * `strcmp` walk over every field. That made building an index — the natural way
+ * to key data by string in gBASIC — O(n^2): measured 28 ms at 2 000 fields,
+ * 744 ms at 16 000, and 3.4 s at 32 000, which is why a 182 000-cell sheet index
+ * could not be built in the language at all (DOGFOOD 2026-08-12).
+ *
+ * The fix is the third instance of a pattern this codebase already runs twice:
+ * strings (PLAT-STRIDX) and arrays (PLAT-ARRIDX) were both pulled out of
+ * quadratic behaviour by adding bookkeeping behind an unchanged API. Here the
+ * bookkeeping is a hash index from field name to slot, built lazily.
+ *
+ * WHERE IT LIVES, AND WHY THAT MATTERS. The header rides immediately *in front
+ * of* the RecordField array, exactly as StringHeader rides in front of a
+ * string's bytes and for the same reason. `as.record.fields` keeps pointing at
+ * field 0, so the ~80 sites that read `value.as.record.fields[i]` are untouched.
+ * More importantly, a `Value` is shallow-copied all over this file (borrowed
+ * into locals, passed by value); putting the index in the `Value` itself would
+ * give every such copy its own pointer to free or to leave dangling. Attached to
+ * the array, its lifetime is identical to `fields`, which the code already gets
+ * right: it is allocated where the array is and freed where the array is freed.
+ *
+ * ORDER IS STILL THE TRUTH. The index is an accelerator over the slot list, not
+ * a replacement for it. Iteration, `keys`, `values`, equality, serialization and
+ * encoding all still walk slots 0..count-1 in order, so field order — which is
+ * observable in gBASIC — is unchanged. Duplicate names are possible (a record
+ * can be built from `select 1 as x, 2 as x`), and a linear scan returns the
+ * FIRST match; the index preserves that by inserting in slot order and never
+ * overwriting an existing entry.
+ *
+ * INVALIDATION. There is exactly one way a live record's field list changes:
+ * `record_set` appending a new field. That path inserts into the index rather
+ * than dropping it, so appends stay O(1) amortized. Field names are never
+ * rewritten in place (every `.name =` in the tree is at construction, before
+ * the array reaches `value_record`), fields are never removed in place (the
+ * delete builtin builds a new record), and nothing reorders them. So no other
+ * invalidation point exists — if one is ever added, it must free `buckets` and
+ * zero `bucket_count`/`indexed` so the next lookup rebuilds.
+ *
+ * `capacity` is here for the same reason ArrayStorage has one: `record_set` used
+ * to `realloc` by exactly one slot per append, which is its own quadratic term
+ * underneath the strcmp walk. Growth now doubles.
+ *
+ * --- Why `refs` is here too, and why an index alone is not a fix -------------
+ *
+ * `value_copy` used to duplicate the whole field array — a fresh allocation, a
+ * `copy_string` per name — and `env_get` calls `value_copy` on every read of a
+ * variable. So `r["k"]` cost O(fields) before the lookup even began, and the
+ * index it had just built was thrown away with the copy. Measured on the
+ * unshared build: 20 000 lookups of ONE key took 0.65 s against a 1 000-field
+ * record and 8.41 s against 8 000 — a fixed amount of work growing with the size
+ * of the record, so a loop reading n keys stayed O(n^2) with the index in place.
+ *
+ * This is the same trap PLAT-STRIDX documents two hundred lines up: sharing and
+ * caching are one mechanism, not two. Fixing either alone leaves the loop
+ * quadratic. Records need both for the same reason strings did.
+ *
+ * So the array is shared and refcounted, and copied only when someone is about
+ * to write to a copy that others can see (`record_ensure_unique`) — the
+ * ArrayStorage pattern from docs/array_cow_design.md, applied one level in.
+ * Value semantics are unchanged: `b = a` then `b.x = 1` still leaves `a` alone,
+ * because the write detaches first.
+ *
+ * WHAT MAKES THIS AUDITABLE. The field array is mutated in exactly two
+ * functions — `record_set` (append, or repoint a field's cell) and
+ * `cell_fork_for_write` (repoint a field's cell). Nothing else in the tree
+ * assigns to `.name`, `.value` or `.policy` of a live field; every other write
+ * goes THROUGH a field's ValueCell, which carries its own refcount and its own
+ * fork-on-write. That is why detaching at the few places that reach those two
+ * functions is sufficient rather than hopeful:
+ *
+ *   - `record_find` (the mutable one) detaches before handing back a writable
+ *     `RecordField *`. Read-only callers use `record_find_const`, which does
+ *     not — and which the hot read paths (`rec.field`, `rec[key]`, `has`) use,
+ *     since detaching there would restore exactly the per-read copy this is
+ *     removing.
+ *   - `resolve_lvalue_ref` detaches each record it walks THROUGH, so nested
+ *     mutation (`a.b.c = x`) isolates every level, exactly as the array branch
+ *     beside it already does with `array_ensure_unique`.
+ *
+ * A detach costs what the old unconditional copy cost, and only when a record is
+ * genuinely shared and genuinely written. */
+
+/* Below this many fields the linear walk is already faster than hashing, and an
+ * index would cost an allocation to save nothing. Records in this language are
+ * overwhelmingly small — a handful of named fields — so the common case must not
+ * pay for this at all. */
+#define RECORD_INDEX_MIN_FIELDS 16
+
+/* Load factor is kept at or below 1/2 (buckets >= 2 * count) so linear probing
+ * stays short. */
+#define RECORD_INDEX_MIN_BUCKETS 32
+
+typedef struct {
+    size_t refs;          /* shared-array references; 1 at construction */
+    size_t capacity;      /* allocated RecordField slots; >= the record's count */
+    size_t bucket_count;  /* power of two, or 0 when no index is built */
+    size_t indexed;       /* how many leading slots the buckets reflect */
+    size_t *buckets;      /* slot + 1 per bucket, 0 meaning empty; NULL until built */
+} RecordHeader;
+
+#define RECORD_HEADER_SIZE (sizeof(RecordHeader))
+
+/* Recover the bookkeeping in front of a record's field array. The cast drops
+ * const for the same reason string_header does: the index is mutable state
+ * ABOUT the fields, and filling it in while reading a record is not a change to
+ * the record's value. Never call this with a NULL fields pointer — an empty
+ * record keeps `fields == NULL` and allocates nothing. */
+static RecordHeader *record_header(const RecordField *fields) {
+    return (RecordHeader *)(void *)((const char *)(const void *)fields - RECORD_HEADER_SIZE);
+}
+
+/* FNV-1a over a NUL-terminated field name. Field names come from copy_string,
+ * so they are ordinary C strings; a record key with an interior NUL cannot be
+ * expressed. */
+static size_t record_hash(const char *name) {
+    size_t hash = (size_t)1469598103934665603ULL;
+    for (const unsigned char *p = (const unsigned char *)name; *p; p++) {
+        hash ^= (size_t)*p;
+        hash *= (size_t)1099511628211ULL;
+    }
+    return hash;
+}
+
+
+/* Take ownership of a plain `calloc`ed RecordField array and re-home it into a
+ * header-prefixed block, returning a pointer to field 0.
+ *
+ * Re-homing here rather than making all ~30 construction sites allocate the
+ * prefixed shape is deliberate: `value_record` is the ONLY place in the tree
+ * that sets `kind = VALUE_RECORD`, so it is the single choke point through which
+ * every record must pass. Sites that build a field array and then abandon it on
+ * an error path (sqlite/pg row construction, the JSON decoder) never reach here
+ * and keep freeing a plain array with plain `free`, which stays correct. The
+ * cost is one malloc + memcpy of count*sizeof(RecordField) per record, against
+ * the per-field copy_string and cell_alloc the caller has already paid. */
+static RecordField *record_fields_adopt(RecordField *fields, size_t count) {
+    if (count == 0) {
+        /* The canonical empty record allocates nothing, as before. `record_set`
+         * handles growing from NULL. */
+        free(fields);
+        return NULL;
+    }
+    char *block = malloc(RECORD_HEADER_SIZE + sizeof(RecordField) * count);
+    if (!block) {
+        abort();
+    }
+    RecordHeader *header = (RecordHeader *)block;
+    header->refs = 1;
+    header->capacity = count;
+    header->bucket_count = 0;
+    header->indexed = 0;
+    header->buckets = NULL;
+    RecordField *slots = (RecordField *)(void *)(block + RECORD_HEADER_SIZE);
+    memcpy(slots, fields, sizeof(RecordField) * count);
+    free(fields);
+    return slots;
+}
+
+/* Take a second reference to a field array. O(1), and the reason reading a
+ * record variable no longer touches the fields at all. */
+static RecordField *record_fields_retain(RecordField *fields) {
+    if (fields) {
+        record_header(fields)->refs++;
+    }
+    return fields;
+}
+
+/* Drop a reference. Returns non-zero when this was the last one, meaning the
+ * caller still owns the fields themselves and must release each name and cell
+ * before the array goes. NULL is the empty record and owns nothing. */
+static int record_fields_release(RecordField *fields) {
+    if (!fields) {
+        return 0;
+    }
+    RecordHeader *header = record_header(fields);
+    if (--header->refs > 0) {
+        return 0;
+    }
+    free(header->buckets);
+    return 1;
+}
+
+/* Free the array itself. Only valid after record_fields_release returned true. */
+static void record_fields_free(RecordField *fields) {
+    if (fields) {
+        free(record_header(fields));
+    }
+}
+
+/* Ensure room for at least `need` slots, doubling so a run of appends is
+ * amortized O(1). Returns the (possibly moved) field array. Slot indices are
+ * stable across a move, which is why the index stores indices and not pointers
+ * and so survives this untouched.
+ *
+ * PRECONDITION: the array must be uniquely owned — this reallocates in place,
+ * which would move it out from under every other holder. The one caller
+ * (record_set) calls record_ensure_unique first. */
+static RecordField *record_fields_reserve(RecordField *fields, size_t need) {
+    if (fields && need <= record_header(fields)->capacity) {
+        return fields;
+    }
+    size_t capacity = fields ? record_header(fields)->capacity : 0;
+    size_t newcap = capacity ? capacity * 2 : 4;
+    if (newcap < need) {
+        newcap = need;
+    }
+    char *block = fields ? (char *)(void *)record_header(fields) : NULL;
+    char *grown = realloc(block, RECORD_HEADER_SIZE + sizeof(RecordField) * newcap);
+    if (!grown) {
+        abort();
+    }
+    RecordHeader *header = (RecordHeader *)grown;
+    if (!block) {
+        /* Growing from the empty record: this block is brand new, so every
+         * header field has to be established here, `refs` included. */
+        header->refs = 1;
+        header->bucket_count = 0;
+        header->indexed = 0;
+        header->buckets = NULL;
+    }
+    header->capacity = newcap;
+    return (RecordField *)(void *)(grown + RECORD_HEADER_SIZE);
+}
+
 static Value value_record(RecordField *fields, size_t count) {
     Value value = {0};
     value.kind = VALUE_RECORD;
-    value.as.record.fields = fields;
+    value.as.record.fields = record_fields_adopt(fields, count);
     value.as.record.count = count;
     return value;
 }
@@ -2328,29 +2554,13 @@ static Value value_copy(Value value) {
         return value;
     }
     if (value.kind == VALUE_RECORD) {
-        RecordField *fields = NULL;
-        if (value.as.record.count > 0) {
-            fields = calloc(value.as.record.count, sizeof(RecordField));
-            if (!fields) {
-                abort();
-            }
-            for (size_t i = 0; i < value.as.record.count; i++) {
-                RecordField *src = &value.as.record.fields[i];
-                fields[i].name = copy_string(src->name);
-                /* Preserve PBI policy so it travels with copies/assignments. */
-                fields[i].policy = src->policy;
-                fields[i].reset_expr = src->reset_expr;
-                /* Share the cell (refcount++). For `link` this is permanent
-                 * write-through identity; for every other policy it is
-                 * copy-on-write — the field's write barrier (cell_fork_for_write)
-                 * forks the cell on first mutation so the copy stays independent.
-                 * This makes value_copy O(fields) instead of a full deep copy. */
-                ValueCell *cell = (ValueCell *)src->value;
-                cell->refcount++;
-                fields[i].value = src->value;
-            }
-        }
-        return value_record(fields, value.as.record.count);
+        /* Copy-on-write: share the one field array and bump its refcount (O(1)).
+         * A write later detaches via record_ensure_unique. This used to
+         * duplicate the array and copy_string every name, which made reading a
+         * record variable cost O(fields) and made the field index useless
+         * because it was discarded with each copy. */
+        record_fields_retain(value.as.record.fields);
+        return value;
     }
     return value;
 }
@@ -2367,11 +2577,14 @@ static void value_free(Value value) {
     } else if (value.kind == VALUE_ARRAY) {
         array_storage_release(value.as.array.store);
     } else if (value.kind == VALUE_RECORD) {
-        for (size_t i = 0; i < value.as.record.count; i++) {
-            free(value.as.record.fields[i].name);
-            cell_release(value.as.record.fields[i].value);
+        /* Drop a reference; the fields themselves only die with the last one. */
+        if (record_fields_release(value.as.record.fields)) {
+            for (size_t i = 0; i < value.as.record.count; i++) {
+                free(value.as.record.fields[i].name);
+                cell_release(value.as.record.fields[i].value);
+            }
+            record_fields_free(value.as.record.fields);
         }
-        free(value.as.record.fields);
     } else if (value.kind == VALUE_POSTGRES_CONNECTION) {
         PgConnectionValue *connection = value.as.postgres_connection;
         if (connection && --connection->ref_count == 0) {
@@ -2935,31 +3148,148 @@ static int unlock_path(const char *path) {
     return 0;
 }
 
+/* Insert slot `slot` into an already-sized bucket table. Linear probing; an
+ * entry for the same name that is already present WINS, which is what keeps a
+ * duplicate name resolving to its first occurrence exactly as the linear walk
+ * did. */
+static void record_index_insert(RecordHeader *header, const RecordField *fields, size_t slot) {
+    size_t mask = header->bucket_count - 1;
+    size_t probe = record_hash(fields[slot].name) & mask;
+    while (header->buckets[probe] != 0) {
+        if (strcmp(fields[header->buckets[probe] - 1].name, fields[slot].name) == 0) {
+            return;
+        }
+        probe = (probe + 1) & mask;
+    }
+    header->buckets[probe] = slot + 1;
+}
+
+/* Build (or rebuild at a larger size) the bucket table over slots 0..count-1.
+ * Slot order is the insertion order, so first-occurrence-wins falls out of the
+ * walk rather than needing a special case. */
+static void record_index_build(RecordHeader *header, const RecordField *fields, size_t count) {
+    size_t buckets = RECORD_INDEX_MIN_BUCKETS;
+    while (buckets < count * 2) {
+        buckets *= 2;
+    }
+    free(header->buckets);
+    header->buckets = calloc(buckets, sizeof(size_t));
+    if (!header->buckets) {
+        abort();
+    }
+    header->bucket_count = buckets;
+    for (size_t i = 0; i < count; i++) {
+        record_index_insert(header, fields, i);
+    }
+    header->indexed = count;
+}
+
+/* Resolve a field name to its slot, or `count` when absent.
+ *
+ * Small records take the linear walk unchanged. Once a record is big enough for
+ * the walk to matter, the first lookup builds the index and every later one is a
+ * hash probe. Note the index is only consulted when it reflects the whole record
+ * (`indexed == count`); the append path keeps that true incrementally, and the
+ * guard means a stale table can never answer instead of the fields themselves. */
+static size_t record_slot_of(const RecordField *fields, size_t count, const char *name) {
+    if (count < RECORD_INDEX_MIN_FIELDS) {
+        for (size_t i = 0; i < count; i++) {
+            if (strcmp(fields[i].name, name) == 0) {
+                return i;
+            }
+        }
+        return count;
+    }
+
+    RecordHeader *header = record_header(fields);
+    if (!header->buckets || header->indexed != count) {
+        record_index_build(header, fields, count);
+    }
+    size_t mask = header->bucket_count - 1;
+    size_t probe = record_hash(name) & mask;
+    while (header->buckets[probe] != 0) {
+        size_t slot = header->buckets[probe] - 1;
+        if (strcmp(fields[slot].name, name) == 0) {
+            return slot;
+        }
+        probe = (probe + 1) & mask;
+    }
+    return count;
+}
+
+/* Detach a record from a shared field array before it is written to. This is
+ * the copy `value_copy` no longer makes: a private array, `copy_string` per
+ * name, and a reference taken on each field's ValueCell — which reproduces
+ * exactly the state a value_copy used to leave behind, so the cell-level write
+ * barrier (cell_fork_for_write) and the PBI `link` write-through both behave as
+ * before. The fresh array starts with no index; it is rebuilt on demand.
+ *
+ * A no-op for a private array and for the empty record, both O(1). */
+static void record_ensure_unique(Value *record) {
+    if (record->kind != VALUE_RECORD || !record->as.record.fields) {
+        return;
+    }
+    RecordField *shared = record->as.record.fields;
+    if (record_header(shared)->refs == 1) {
+        return;
+    }
+    size_t count = record->as.record.count;
+    RecordField *copy = calloc(count, sizeof(RecordField));
+    if (!copy) {
+        abort();
+    }
+    for (size_t i = 0; i < count; i++) {
+        copy[i].name = copy_string(shared[i].name);
+        /* Preserve PBI policy so it travels with copies/assignments. */
+        copy[i].policy = shared[i].policy;
+        copy[i].reset_expr = shared[i].reset_expr;
+        /* Share the cell (refcount++). For `link` this is permanent
+         * write-through identity; for every other policy it is copy-on-write —
+         * the field's write barrier forks the cell on first mutation so the
+         * copy stays independent. */
+        ValueCell *cell = (ValueCell *)shared[i].value;
+        cell->refcount++;
+        copy[i].value = shared[i].value;
+    }
+    record_header(shared)->refs--;
+    record->as.record.fields = record_fields_adopt(copy, count);
+}
+
+/* Find a field, handing back a writable pointer into the record.
+ *
+ * This does NOT detach a shared field array, and that is deliberate. A `Value`
+ * in this runtime is sometimes an owner and sometimes a borrow, with nothing in
+ * the type to say which, and `record_ensure_unique` decrements the refcount of
+ * the array it detaches from. Called on a BORROW that would be a decrement of a
+ * reference the caller never held: the real owner and any legitimate copy both
+ * keep pointing at an array whose count is now one too low, and the next free
+ * releases it out from under the other — which is exactly the double free this
+ * arrangement replaced (`tests/run_gbasic_site.sh`, found by valgrind).
+ *
+ * So detaching happens only where ownership is known, which is the same rule
+ * arrays follow: `resolve_lvalue_ref`, which by construction walks owned
+ * storage, and `record_set`, which is handed a record to mutate. Both call
+ * record_ensure_unique explicitly. */
 static RecordField *record_find(Value *record, const char *name) {
     if (record->kind != VALUE_RECORD) {
         return NULL;
     }
-    for (size_t i = 0; i < record->as.record.count; i++) {
-        if (strcmp(record->as.record.fields[i].name, name) == 0) {
-            return &record->as.record.fields[i];
-        }
-    }
-    return NULL;
+    size_t slot = record_slot_of(record->as.record.fields, record->as.record.count, name);
+    return slot < record->as.record.count ? &record->as.record.fields[slot] : NULL;
 }
 
 static const RecordField *record_find_const(const Value *record, const char *name) {
     if (record->kind != VALUE_RECORD) {
         return NULL;
     }
-    for (size_t i = 0; i < record->as.record.count; i++) {
-        if (strcmp(record->as.record.fields[i].name, name) == 0) {
-            return &record->as.record.fields[i];
-        }
-    }
-    return NULL;
+    size_t slot = record_slot_of(record->as.record.fields, record->as.record.count, name);
+    return slot < record->as.record.count ? &record->as.record.fields[slot] : NULL;
 }
 
 static void record_set(Value *record, const char *name, Value value) {
+    /* About to repoint a field's cell or append a slot, both of which mutate the
+     * field array, so detach from a shared one first. */
+    record_ensure_unique(record);
     RecordField *field = record_find(record, name);
     if (field) {
         if (field->policy != AST_FIELD_POLICY_LINK &&
@@ -2977,12 +3307,11 @@ static void record_set(Value *record, const char *name, Value value) {
         return;
     }
 
-    RecordField *fields = realloc(record->as.record.fields,
-                                  sizeof(RecordField) * (record->as.record.count + 1));
-    if (!fields) {
-        abort();
-    }
-    record->as.record.fields = fields;
+    /* Append. Growth doubles (record_fields_reserve) rather than adding one slot
+     * per call, so building a record field by field is amortized O(1) per field
+     * in the copy as well as in the lookup above. */
+    record->as.record.fields = record_fields_reserve(record->as.record.fields,
+                                                     record->as.record.count + 1);
     field = &record->as.record.fields[record->as.record.count];
     field->name = copy_string(name);
     field->value = cell_alloc();
@@ -2995,7 +3324,23 @@ static void record_set(Value *record, const char *name, Value value) {
      * return above, which only reassigns the value.) */
     field->policy = AST_FIELD_POLICY_COPY;
     field->reset_expr = NULL;
+    size_t slot = record->as.record.count;
     record->as.record.count++;
+
+    /* Keep the index current instead of dropping it, or a build loop would
+     * rebuild the whole table on every append and stay quadratic. The name is
+     * known absent (record_find above returned NULL), so this cannot introduce a
+     * duplicate. Rehash when the table would pass half full; that is the only
+     * O(n) step and it happens O(log n) times. */
+    RecordHeader *header = record_header(record->as.record.fields);
+    if (header->buckets) {
+        if (header->indexed != slot || record->as.record.count * 2 > header->bucket_count) {
+            record_index_build(header, record->as.record.fields, record->as.record.count);
+        } else {
+            record_index_insert(header, record->as.record.fields, slot);
+            header->indexed = record->as.record.count;
+        }
+    }
 }
 
 static int value_storage_equal(const Value *left, const Value *right) {
@@ -3887,6 +4232,9 @@ static int gui_widget_set_string_field(Value *widget_record, const char *field_n
     if (!widget_record || widget_record->kind != VALUE_RECORD) {
         return 0;
     }
+    /* This writes through the field's cell, so the record must own its field
+     * array first. `widget_record` is a live widget record, not a borrow. */
+    record_ensure_unique(widget_record);
     RecordField *field = record_find(widget_record, field_name);
     if (!field || field->value->kind != VALUE_STRING) {
         return 0;
@@ -3905,6 +4253,9 @@ static int gui_widget_set_bool_field(Value *widget_record, const char *field_nam
     if (!widget_record || widget_record->kind != VALUE_RECORD) {
         return 0;
     }
+    /* This writes through the field's cell, so the record must own its field
+     * array first. `widget_record` is a live widget record, not a borrow. */
+    record_ensure_unique(widget_record);
     RecordField *field = record_find(widget_record, field_name);
     if (!field || field->value->kind != VALUE_BOOL) {
         return 0;
@@ -19628,8 +19979,8 @@ static Value eval_call(AstExpr *expr) {
             return value_null();
         }
 
-        // Check if key exists
-        RecordField *field = record_find(&record, key.as.string);
+        // Check if key exists (read-only: must not detach the shared field array)
+        const RecordField *field = record_find_const(&record, key.as.string);
         int result = field != NULL;
 
         value_free(record);
@@ -22579,7 +22930,9 @@ static Value eval_expr(AstExpr *expr) {
             return result;
         }
         if (array.kind == VALUE_RECORD && index.kind == VALUE_STRING) {
-            RecordField *field = record_find(&array, index.as.string);
+            /* Read-only: the const lookup, so reading `rec[key]` does not detach
+             * the record from its shared field array. */
+            const RecordField *field = record_find_const(&array, index.as.string);
             if (!field) {
                 value_free(array);
                 value_free(index);
@@ -22629,7 +22982,9 @@ static Value eval_expr(AstExpr *expr) {
             value_free(object);
             return value_null();
         }
-        RecordField *field = record_find(&object, expr->as.field.field);
+        /* Read-only: the const lookup, so reading `rec.field` does not detach
+         * the record from its shared field array. */
+        const RecordField *field = record_find_const(&object, expr->as.field.field);
         if (!field) {
             Value *widget = gui_window_lookup_widget_ref(&object, expr->as.field.field);
             if (widget) {
@@ -22938,6 +23293,11 @@ static Value *resolve_lvalue_ref(AstExpr *target) {
             runtime_error_raise("field assignment target expects a record", 1003, "assignment");
             return NULL;
         }
+        /* About to hand out a mutable pointer into this record, so detach it
+         * from any shared copy-on-write field array first. As with the array
+         * branch below, the recursion detaches every level of a nested path
+         * (a.b.c = x), and `object` is owned storage by construction. */
+        record_ensure_unique(object);
         RecordField *field = record_find(object, target->as.field.field);
         if (!field) {
             Value *widget = gui_window_lookup_widget_ref(object, target->as.field.field);
@@ -22979,6 +23339,9 @@ static Value *resolve_lvalue_ref(AstExpr *target) {
             return &container->as.array.store->items[position];
         }
         if (container->kind == VALUE_RECORD && index.kind == VALUE_STRING) {
+            /* See the array branch above: detach before handing out a mutable
+             * pointer into this container. */
+            record_ensure_unique(container);
             RecordField *field = record_find(container, index.as.string);
             if (!field) {
                 char message[256];
