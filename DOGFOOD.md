@@ -1232,3 +1232,51 @@ finding gets lost.
   would shrink persisted files — but as its own change.
 - **Note:** `pg_parameter_text` also uses `%.17g` and should STAY that way. It
   is a wire format where maximum precision is the point and nobody reads it.
+
+## 2026-08-14 — CC — while: scoping the next core-language item
+
+### `=` on two compound values is unconditionally true — and it is not just records
+- **Type:** bug
+- **Severity:** high
+- **What:** the 2026-08-13 note recorded this as "records compare equal". The
+  real rule is broader and the cause is one line. `eval_comparison`'s final
+  `else` (src/eval.c:22495) coerces BOTH sides with `value_number_or_zero` and
+  compares as numbers. A record coerces to 0, an array coerces to 0, and a
+  non-numeric string coerces to 0, so:
+
+      {x:1} = {y:2}       -> true
+      [1,2] = [3,4,5]     -> true
+      []    = [1,2,3]     -> true
+      [1,2] = "hi"        -> true      (array 0, string 0)
+      {x:1} = 5           -> false     (accidentally right: 0 != 5)
+      {x:1} = unknown     -> false     (caught by the earlier NULL/UNKNOWN arm)
+
+  Ordering operators are the same coercion, so `{a:1} > {a:2}` is a silent
+  false rather than a refusal.
+- **The damaging consequence is not the operator, it is the search builtins.**
+  `contains` and `find` route through `values_equal` -> `eval_comparison`, so a
+  search through an array of records matches the FIRST element and reports
+  success:
+
+      people = [{name:"ann"}, {name:"bob"}]
+      contains(people, {name:"bob"})   -> true    (right answer, wrong reason)
+      contains(people, {name:"zed"})   -> true    (absent value "found")
+      find(people, {name:"bob"})       -> 0       (index of ann)
+
+  An array of records is exactly how every frame in the xlsx pipeline is
+  represented, so this is live in the code we have been building on. `unique` is
+  the honourable exception — it RAISES "unique supports only scalar array
+  values" rather than guessing, which is what the others should have done.
+- **Workaround:** none in use, because nothing in the suites depended on it —
+  which is precisely why it survived. Compare records field by field yourself,
+  or search with an explicit loop on a key (`p.name = "bob"`).
+- **The fix is not far away:** `value_storage_equal` (src/eval.c:3382) ALREADY
+  implements correct deep comparison for arrays and records, recursing properly,
+  and is what watchers use to decide whether a value changed. `=`/`!=` need to
+  reach it for compound kinds; the ordering operators should raise on compound
+  operands rather than coerce, the way `unique` already does.
+- **Note on evidence:** no golden can catch this class, because a golden records
+  whatever answer the binary gives as the expected one. It is the third defect
+  in a row of that shape (PLAT-RECIDX's cost, PLAT-NUMFMT's truncation, this),
+  and all three were found by asking a question no test was asking rather than
+  by a test going red.
