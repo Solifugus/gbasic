@@ -28,11 +28,16 @@ program main(args)
       if n.verdict = "disagree" then
         got = _kind_of(n.computed)
         want = _kind_of(n.cached)
-        print "SHAPE " + got + "->" + want
+        ' The FILE is on every line so the report can count DISTINCT WORKBOOKS
+        ' as well as cells. Cell counts alone are badly skewed here: one formula
+        ' template filled down tens of thousands of rows outvotes a thousand
+        ' separate workbooks, which is exactly how the 1900-serial fix came to
+        ' be estimated at ~198,000 cells when it was worth 25,320 (§13.X).
+        print "SHAPE " + got + "->" + want + "\t" + args[0]
         if got = "err" then
-          print "ERRC " + n.computed + "->" + want
+          print "ERRC " + n.computed + "->" + want + "\t" + args[0]
         end if
-        print "FUNC " + _first_function(n.formula)
+        print "FUNC " + _first_function(n.formula) + "\t" + args[0]
       end if
     end for
   end for

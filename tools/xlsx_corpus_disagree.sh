@@ -28,10 +28,25 @@ find "$dir" -maxdepth 1 -type f -name '*.xlsx' -print0 \
   | xargs -0 -P "$jobs" -I{} bash -c 'one "$@"' _ {}
 cat "$part"/*.txt > "$out" 2>/dev/null
 
-printf '\n=== MISMATCH SHAPE (computed -> cached) ===\n'
-grep '^SHAPE ' "$out" | sort | uniq -c | sort -rn | head -20
-printf '\n=== WHEN WE PRODUCE AN ERROR AND EXCEL DID NOT ===\n'
-grep '^ERRC ' "$out" | sort | uniq -c | sort -rn | head -20
-printf '\n=== leading function, context only ===\n'
-grep '^FUNC ' "$out" | sort | uniq -c | sort -rn | head -20
-printf '\ntotal disagreeing cells: %s\n' "$(grep -c '^SHAPE ' "$out")"
+# Every bucket is reported as CELLS and as DISTINCT WORKBOOKS. Cells alone
+# mislead badly on this corpus -- one formula template filled down tens of
+# thousands of rows outvotes a thousand separate workbooks -- and acting on the
+# cell count alone is how the 1900-serial fix came to be estimated at ~198,000
+# cells when it was worth 25,320 (§13.X). A cause present in many workbooks is
+# usually the more general defect, even when its cell count is smaller.
+rank() { # label key-prefix
+    printf '\n=== %s ===\n' "$1"
+    printf '%10s %8s  %s\n' CELLS BOOKS BUCKET
+    grep "^$2 " "$out" | awk -F'\t' '
+        { c[$1]++; seen[$1 SUBSEP $2] = 1 }
+        END {
+            for (k in seen) { split(k, p, SUBSEP); b[p[1]]++ }
+            for (k in c) printf "%10d %8d  %s\n", c[k], b[k], k
+        }' | sort -rn | head -20
+}
+rank "MISMATCH SHAPE (computed -> cached)" SHAPE
+rank "WHEN WE PRODUCE AN ERROR AND EXCEL DID NOT" ERRC
+rank "leading function, context only" FUNC
+printf '\ntotal disagreeing cells: %s in %s workbooks\n' \
+  "$(grep -c '^SHAPE ' "$out")" \
+  "$(grep '^SHAPE ' "$out" | cut -f2 | sort -u | wc -l)"
