@@ -1454,3 +1454,53 @@ finding gets lost.
   parameter builder keep `%.17g`. Those are wire formats nobody reads, where
   maximum precision is the safe default and there is no consistency argument to
   serve. Noted at both sites so the next person does not "finish the job".
+
+## 2026-08-15 — CC — while: returning to the xlsx track
+
+### A keyword can be a record LITERAL key but still not follow a dot
+- **Type:** language-surprise
+- **Severity:** low
+- **What:** the 2026-08-13 parser change made reserved words legal as record
+  field names, and it half-landed in a way worth knowing. `{ as: 1 }` parses;
+  `r.as` does not — `syntax error, unexpected AS, expecting IDENT or
+  QUALIFIED_IDENT`. Measured across a sample: `from`, `kind`, `names`, `of` and
+  `by` work in BOTH positions, while `as`, `to`, `in` and `end` work only as
+  literal keys. So a field can be created and never read with dot notation.
+- **Workaround:** `r["as"]`, which always works. Or pick a name in the
+  both-positions set.
+- **Why the split:** the two positions are handled in different places. A record
+  literal key is a grammar production that now admits keyword tokens, but
+  `r.as` is resolved in the LEXER, which emits `QUALIFIED_IDENT` for `ident.ident`
+  and does not do so when the tail is a keyword token. This is exactly the
+  distinction noted when the change was made — dot access is lexer-level, not
+  grammar-level — so this is a known boundary rather than a regression. Logged
+  because the asymmetry is invisible until you hit it, and the error names the
+  keyword rather than explaining that the literal form would have worked.
+- **Consequence today:** `stdlib/consolidate.bas` was renamed from `names:` to
+  the natural `from:`, which now works in both positions. The type field stays
+  `kind:` rather than becoming `as:` for exactly this reason — `rule.as` would
+  not compile, forcing `rule["as"]` throughout the library — and `kind` says
+  more than `as` anyway. `names:` is still accepted, with one call site in
+  examples/xlsx_consolidate_test.bas deliberately left on it so the
+  compatibility path stays exercised rather than merely claimed.
+
+### The oracle could count what it refused but not say what it was
+- **Type:** missing-feature (tooling)
+- **Severity:** medium
+- **What:** `xlsx.check` reports an `unsupported` count — 3.44M cells across the
+  corpus, four times the 872K disagreements — but its per-cell notes carried
+  `ref`, `verdict`, `formula`, `computed` and `cached` and *not the name of the
+  function it refused*. The evaluator knew: it fills a buffer with exactly that
+  name. It simply was not surfaced. So the only way to rank 3.44M cells was to
+  count `NAME(` tokens in the formula text, which is the method §13.J already
+  showed to be structurally blind — a formula usually holds several functions
+  and only one of them is the blocker, and following that ranking misdirected
+  the roadmap twice.
+- **Workaround:** resolved. Notes now carry `blocked_by`, the name actually
+  refused, empty for other verdicts. `tools/xlsx_corpus_blockers.{bas,sh}` rank
+  it across a corpus, so the oracle now ranks its own roadmap instead of a proxy
+  for it.
+- **Note:** the fix is six lines. It sat unnoticed because the count alone
+  *looked* like enough information — a number with no breakdown reads as a
+  measurement, and it took wanting to act on it to notice it could not be acted
+  on.

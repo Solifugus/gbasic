@@ -1,7 +1,18 @@
-# gBASIC Excel (xlsx) module — design proposal
+# gBASIC Excel (xlsx) module — design and implementation record
 
-Status: **proposal — decisions taken 2026-08-01, not yet implemented.**
-Recorded in §13; they revise §3 (write path), §13.1–13.4, and the §14 roadmap.
+Status: **largely implemented.** This began as a proposal; decisions were taken
+2026-08-01 and are recorded in §13, revising §3 (write path), §13.1–13.4 and the
+§14 roadmap. Since then L0–L3 and both halves of L4 have shipped — read, write
+and round-trip, the formula evaluator, workbook-wide dependency-ordered recalc,
+grid extraction, consolidation, the SQLite loader, and phase 1 of the formula
+compiler. **Read §13 before treating anything in §§1–12 as current:** the
+sections above record the original reasoning, and where measurement overturned
+it — which happened repeatedly, and is the most useful thing in this document —
+§13 is what says so.
+
+What remains of the roadmap: compiler phase 2 (`VLOOKUP`→join, `SUMIF`→filtered
+aggregate — the refusals are in place and diagnostic, see §13.Q), streaming the
+sheet parse, and making `grid.tables` lazy.
 
 Scope is confirmed as **read + write + an internal formula engine**, staged.
 This is not an import library: organizations in finance work *in* spreadsheets,
@@ -918,11 +929,20 @@ implementing §6. Many tapes with the same *meaning* and a different *surface*,
 merged into one frame.
 
 `consolidate.merge(sources, spec)` → `{ok, frame, accepted, rejected, notes}`.
-A spec column is `{names: [aliases], kind: "text"|"money"|"percent"|"number",
-required: bool, scale: "whole"|"fraction"|"infer"}`. The fields are `names` and
-`kind` rather than the natural `from` and `as` because **both of those are
-reserved words** (`load X from`, ARI's `as money`) and a reserved word cannot
-be a record key.
+A spec column is `{from: [aliases], kind: "text"|"money"|"percent"|"number",
+required: bool, scale: "whole"|"fraction"|"infer"}`.
+
+*On those field names,* which changed once and are worth explaining. They were
+originally `names` and `kind`, because both of the natural spellings — `from`
+and `as` — are reserved words (`load X from`, ARI's `as money`) and a reserved
+word could not be a record key at all. The parser change of 2026-08-13 lifted
+that, so `from` is now used and `names` is still accepted for compatibility.
+`kind` stays, because the lift was only half of what it looks like: a keyword
+can be a record **literal key** but still cannot follow a **dot**, so `{as: 1}`
+parses while `rule.as` is a syntax error (dot access is resolved in the lexer,
+not the grammar — see DOGFOOD 2026-08-15). Spelling the type field `as` would
+therefore force `rule["as"]` throughout the library, and `kind` is the more
+informative word regardless.
 
 *What it handles:*
 

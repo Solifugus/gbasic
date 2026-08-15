@@ -70,9 +70,9 @@ program main(args)
     append(srcs, { name: s, frame: r.frame })
   end for
   spec = { columns: {
-             loan_id: { names: ["Loan #", "Note ID", "loan_number"], kind: "text", required: true },
-             balance: { names: ["Balance", "Principal", "Amount"], kind: "money", required: true },
-             rate:    { names: ["Int Rate", "Interest Rate", "Rate (%)"], kind: "percent" } } }
+             loan_id: { from: ["Loan #", "Note ID", "loan_number"], kind: "text", required: true },
+             balance: { from: ["Balance", "Principal", "Amount"], kind: "money", required: true },
+             rate:    { from: ["Int Rate", "Interest Rate", "Rate (%)"], kind: "percent" } } }
   res = consolidate.merge(srcs, spec)
   print sum(res.frame["balance"]) = 265550.75
   ok = true

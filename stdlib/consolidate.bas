@@ -224,12 +224,16 @@ library consolidate
     ' merge(sources, spec) -> { ok, frame, report }
     '
     ' `sources` is a list of { name: "CU_A", frame: f }.
-    ' `spec.columns` maps a canonical name to { names: [aliases], kind: type,
+    ' `spec.columns` maps a canonical name to { from: [aliases], kind: type,
     ' required: bool, scale: "whole"|"fraction"|"infer" }.
     '
-    ' The fields are `names` and `kind` rather than the more natural `from` and
-    ' `as` because both of those are RESERVED WORDS in gBASIC (`load X from`,
-    ' and ARI's `as money`), and a reserved word cannot be a record key.
+    ' `from` was originally spelled `names` because a reserved word could not be
+    ' a record key at all. That was fixed on 2026-08-13 (commits 2ebb9f2 and
+    ' e62a2f1), so the natural spelling is available and used here. The type
+    ' field stays `kind` rather than becoming `as`: `as` is legal as a record
+    ' LITERAL key but still cannot follow a dot -- `rule.as` is a parse error --
+    ' so it would force `rule["as"]` throughout, and `kind` says more anyway.
+    ' `names` is still accepted, so existing specs keep working.
     ' `spec.source_column` names the provenance column (default "source").
     '
     ' A source missing a REQUIRED column is REJECTED, not emitted with unknowns:
@@ -254,8 +258,14 @@ library consolidate
             for each canon in canon_names
                 rule = spec.columns[canon]
                 aliases = []
-                if has(rule, "names") then
-                    aliases = rule.names
+                if has(rule, "from") then
+                    aliases = rule.from
+                else
+                    ' The pre-2026-08-13 spelling, when `from` could not be a
+                    ' record key. Still accepted so old specs keep working.
+                    if has(rule, "names") then
+                        aliases = rule.names
+                    end if
                 end if
                 found = _find_column(cols, canon, aliases)
                 if is_unknown(found) then

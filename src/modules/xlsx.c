@@ -5180,7 +5180,18 @@ static Value xlsx_eval_call(AstExpr *expr) {
                 xlsx_to_text(cached, wantbuf, sizeof wantbuf);
                 xv_free(cached);
 
-                RecordField *fields = calloc(5, sizeof(RecordField));
+                /* `blocked_by` names the function that made this cell
+                 * unsupported, empty for every other verdict. The evaluator
+                 * already knew it -- it fills `un` -- but until 2026-08-15 the
+                 * note did not carry it, so a corpus scan could count 3.4M
+                 * unsupported cells and not say what they were waiting on. That
+                 * left the only way to rank the remaining work as counting
+                 * `NAME(` tokens in the formula text, which is the method
+                 * SS13.J showed to be structurally blind: a formula usually
+                 * contains several functions and only one of them is the one
+                 * being refused. Reported here, the oracle ranks its own
+                 * roadmap. */
+                RecordField *fields = calloc(6, sizeof(RecordField));
                 if (!fields) abort();
                 fields[0].name = copy_string("ref");
                 fields[0].value = cell_alloc(); *fields[0].value = value_string(refbuf);
@@ -5192,13 +5203,15 @@ static Value xlsx_eval_call(AstExpr *expr) {
                 fields[3].value = cell_alloc(); *fields[3].value = value_string(gotbuf);
                 fields[4].name = copy_string("cached");
                 fields[4].value = cell_alloc(); *fields[4].value = value_string(wantbuf);
+                fields[5].name = copy_string("blocked_by");
+                fields[5].value = cell_alloc(); *fields[5].value = value_string(unsup ? un : "");
                 if (rn == rcap) {
                     rcap = rcap ? rcap * 2 : 8;
                     Value *g = realloc(rows, rcap * sizeof(Value));
                     if (!g) abort();
                     rows = g;
                 }
-                rows[rn++] = value_record(fields, 5);
+                rows[rn++] = value_record(fields, 6);
             }
             xv_free(got);
         }

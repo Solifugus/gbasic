@@ -34,9 +34,9 @@ program main(args)
   end for
 
   spec = { columns: {
-             loan_id: { names: ["Loan #", "Note ID", "loan_number"], kind: "text", required: true },
-             balance: { names: ["Balance", "Principal", "Amount"], kind: "money", required: true },
-             rate:    { names: ["Int Rate", "Interest Rate", "Rate (%)"], kind: "percent" } },
+             loan_id: { from: ["Loan #", "Note ID", "loan_number"], kind: "text", required: true },
+             balance: { from: ["Balance", "Principal", "Amount"], kind: "money", required: true },
+             rate:    { from: ["Int Rate", "Interest Rate", "Rate (%)"], kind: "percent" } },
            source_column: "tape" }
 
   print ""
@@ -75,6 +75,9 @@ program main(args)
   ' are fractions or sub-1% whole percents. Declaring the scale removes the
   ' guess -- and the note changes from AMBIGUOUS to declared.
   spec2 = { columns: {
+              ' Deliberately on the OLD `names:` spelling: it predates `from`
+              ' being a legal record key (2026-08-13) and is still accepted, so
+              ' this call is what keeps that compatibility path exercised.
               loan_id: { names: ["Note ID"], kind: "text", required: true },
               rate:    { names: ["Interest Rate"], kind: "percent", scale: "fraction" } } }
   only_b = []
