@@ -1433,6 +1433,19 @@ static void xlsx_lex_next(XlsxLex *lx) {
             lx->p++;
         }
         lx->cur.sheet[n] = '\0';
+        /* An external reference can be QUOTED, in which case the bracketed
+         * workbook index sits INSIDE the quotes: '[1]FINANCIAL PIVOT'!B12. The
+         * unquoted arm below keys on a leading '[' and never sees these, so
+         * they were being taken for an ordinary sheet named "[1]FINANCIAL
+         * PIVOT" -- which does not resolve, yielding #REF! WITHOUT marking the
+         * cell unavailable, so xlsx.check scored it as a wrong ANSWER rather
+         * than an absent input.
+         *
+         * Measured before the fix: 272,134 cells, 35% of every disagreement in
+         * the corpus and the single largest cause. Quoting is forced by a space
+         * in the name, so this is not a rare spelling -- §13.L already recorded
+         * that the quoted form is 42% of the cross-sheet population. */
+        if (lx->cur.sheet[0] == '[') lx->cur.external = 1;
         if (*lx->p != '!') { lx->bad = 1; lx->cur.kind = XT_END; return; }
         lx->p++;
         xlsx_lex_sheet_qualified(lx);

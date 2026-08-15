@@ -1593,3 +1593,37 @@ finding gets lost.
   going to surface this, because the shape that triggers it — a guard around a
   deliberately-failing branch — is exactly what a fixture author does not think
   to write, having just written the functions that make the guard unnecessary.
+
+## 2026-08-15 — CC — while: ranking the remaining disagreements
+
+### A third of all "wrong answers" were not answers at all
+- **Type:** bug
+- **Severity:** high
+- **What:** with refusals no longer dominant, the 784,787 remaining
+  disagreements needed ranking. Bucketed by the SHAPE of the mismatch rather
+  than by function name, 61% were "we produced an error where Excel produced a
+  number" — and the single largest cause, **272,134 cells or 35% of every
+  disagreement in the corpus**, was `#REF!` against a cached number. Sampling
+  found 295 of 295 were external workbook references.
+- **The cause is one missed spelling.** External references are detected in the
+  lexer by a leading `[` — the unquoted `[4]CurveFetch!$D$8` form. But an
+  external reference can be QUOTED, and then the bracket is INSIDE the quotes:
+  `'[1]FINANCIAL PIVOT'!B12`. Those went down the quoted-sheet path, which read
+  the whole thing as an ordinary sheet named `[1]FINANCIAL PIVOT`, failed to
+  resolve it, and returned `#REF!` **without setting `unsupported`** — so
+  `xlsx.check` scored an unavailable input as a wrong ANSWER.
+- **Workaround:** the quoted path marks `external` when the name begins with
+  `[`. One workbook went from 288 disagreements to 0, with all 288 correctly
+  reclassified as unsupported.
+- **Why it hid, and it is the same shape as §13.L:** quoting is forced by a
+  space in the sheet name, so the two spellings are not variants of taste — they
+  are determined by the data, and any corpus is full of both. §13.L already
+  recorded that the quoted form is 42% of the cross-sheet population. The
+  unquoted case was implemented, tested, and correct, and its correctness said
+  nothing about the other 42%.
+- **The measurement lesson:** this was invisible for as long as it was, partly
+  because it inflated the *disagreement* pool rather than the unsupported one.
+  A cell counted as a wrong answer looks like a formula defect, so every
+  ranking by function name scattered these 272,134 cells across `EXPR`, `IF`,
+  `VLOOKUP` and the rest instead of naming the one cause. Bucketing by mismatch
+  SHAPE found it immediately — the instrument decided what was findable.
