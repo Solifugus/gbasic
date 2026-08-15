@@ -1484,7 +1484,35 @@ first, `#VALUE!`→num is 171,981 cells across 652 workbooks.
 
 ## 14. Roadmap (phases)
 
-Each phase is independently shippable and golden-file testable.
+**Read this section as history, not as a plan.** Phases 1 through 3b are built,
+and the ordering below is the one reasoned out on 2026-08-01 before any of it
+existed. It is kept because the places where it turned out wrong are the most
+useful thing in this document — but it is no longer what says what to do next.
+
+*What supersedes it.* Since 2026-08-15 the work is ordered by the corpus, using
+the instruments in `tools/xlsx_corpus_*.sh`: `blockers` ranks what the evaluator
+REFUSES by the name it actually refused, and `disagree` ranks wrong ANSWERS by
+the shape of the mismatch, both reporting distinct workbooks beside cell counts.
+Run them; act on the top of the list; re-run. §13.V through §13.Y are that loop,
+and the ranking at the end of §13.Y is current as of the commit that added it.
+
+*Why the change is not a preference.* The ordering below has now been contradicted
+by measurement three separate times. Phase 4 — the formula compiler's join and
+filtered-aggregate lowering — has been "next" since it was written, and each
+measurement has put it at roughly 14,000 affected cells while something unglamorous
+sat far above it: 240,587 for a missing `FIND`, 272,134 for a quoted external
+reference misclassified, 203,299 for `IF` mishandling an unused branch. None of
+those three was foreseeable from the design, and none was a *function* at all —
+which is precisely what §13.J first established and what a phase list, being
+written before contact with real files, is structurally unable to express.
+
+Phase 4 remains genuinely valuable and genuinely unbuilt. It is simply not the
+next thing, and it will not become the next thing by being written at the bottom
+of a list. It gets built when either the ranking puts it there or a caller needs
+it.
+
+Each phase below was independently shippable and golden-file testable, which was
+the right property to design for and remains so.
 
 ### Phase 1 — read + grid (L0 read, L1)
 Unzip + XML-backed reader; workbook/sheet/cell/range access; typed cells mapping
@@ -1525,3 +1553,12 @@ SQLite over a common subset, so local work needs no server. Golden tests assert
 generated SQL; integration tests run it; and a CROSS-CHECK tier requires the
 compiler and the Phase 3b recalc engine to agree over the same workbook — the
 compiler's only real oracle (§13.D). The scaling promise, delivered.
+
+**Status: phase 1 built (§13.Q), phase 2 not.** `xlsx.to_sql` lowers a column
+formula and refuses, by name and with a reason, what it cannot: a row-spanning
+range is an aggregate, an other-row reference is a window function, `VLOOKUP` is
+a join, `SUMIF` a filtered aggregate. Those refusals are the phase-2 worklist and
+they are diagnostic rather than silent, which is why leaving them unbuilt costs
+correctness nothing. Measured share of corpus cells affected: ~14,000. See the
+note at the head of this section on why that number, not this position in the
+list, decides when it happens.
