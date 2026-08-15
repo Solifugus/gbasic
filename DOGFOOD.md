@@ -1280,3 +1280,62 @@ finding gets lost.
   in a row of that shape (PLAT-RECIDX's cost, PLAT-NUMFMT's truncation, this),
   and all three were found by asking a question no test was asking rather than
   by a test going red.
+
+## 2026-08-14 — CC — while: PLAT-EQ, fixing compound comparison
+
+### Status update on the entry above: fixed
+- **Resolved.** `eval_comparison` now has branches for arrays and records. `=`
+  and `!=` delegate to `value_storage_equal`, which already implemented correct
+  deep comparison and is what watchers use — so the operator and "did this
+  change?" can no longer disagree. Ordering operators refuse compound operands
+  (`arrays support only = and !=`), following the idiom the same function
+  already used for functions, regexes, gobjects and boxed values. Record
+  comparison is order-insensitive, since a record is a mapping and field order
+  is how it was written rather than what it means.
+- **What this fixed beyond the operator:** `contains`, `find` and `remove_value`
+  became correct because they route through `values_equal`, and `consider` can
+  now dispatch on a record's shape — which is a capability, not just a repair.
+  It previously took its first branch whatever the subject was.
+- **Zero regressions, zero golden movement** across every suite. Worth stating
+  plainly rather than as reassurance: nothing in 215 examples, 287 negative
+  tests or any module suite depended on the broken answer. That is precisely why
+  it survived this long, and it is the argument for why a change this deep in a
+  core value type was nonetheless safe to make.
+
+### The tier that could not go red is the interesting one
+- **Type:** doc-gap (test-design)
+- **Severity:** medium
+- **What:** every tier of `tests/run_equality.sh` was proven red against the
+  pre-change binary except valgrind, which passed. That is not a weakness in the
+  valgrind tier — it is the defining property of this defect class. The old code
+  was memory-correct, crash-free, and produced a wrong answer. No sanitiser, no
+  fuzzer over memory safety, and above all **no golden** could have caught it,
+  because a golden records whatever the binary answers as the expected output.
+  A golden written a month ago would have pinned `{x:1} = {y:2}` → `true` and
+  actively defended it.
+- **Workaround:** the fixture is self-checking — every line states its own
+  expected answer and prints `ok` or a MISMATCH naming both sides — and every
+  pair is additionally checked against a deep equality written in gBASIC, so the
+  C comparison has an independent second opinion that shares no code with it.
+- **The pattern across three fixes now:** PLAT-RECIDX (cost), PLAT-NUMFMT
+  (truncation) and PLAT-EQ (wrong answer) were all found by asking a question no
+  test was asking, never by a test going red. The suites are good at defending
+  what they already assert and blind to what nobody thought to assert. Worth a
+  deliberate sweep at some point for other "what does nothing ask?" questions,
+  rather than waiting to trip over the next one.
+
+### Found while here, NOT fixed: `print` renders strings inside an array as `?`
+- **Type:** bug
+- **Severity:** medium
+- **What:** `print(["a", "b"])` outputs `[?, ?]`, and `print([1, "two", true,
+  unknown])` outputs `[1, ?, ?, ?]` — only numbers survive. `string()` on the
+  same array is correct (`["a"]`), so `print` and `string` disagree about how an
+  array renders, which also means the obvious workaround
+  (`print(string(arr))`) works.
+- **Workaround:** `print(string(arr))`, or `join(arr, ", ")` for a flat list of
+  strings.
+- **Note:** pre-existing and unrelated to PLAT-EQ — found while checking what
+  `keys()` returns, since `print(keys(rec))` shows `[?, ?]` and looks at first
+  like `keys` is broken when it is fine. That misdirection is the expensive
+  part. Not fixed here because it is a separate surface (the array-element
+  formatter, not the comparison) and deserves its own change and golden pass.

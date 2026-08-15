@@ -20,6 +20,10 @@ cases=(
     negative_take_last_empty
     negative_reverse_type
     negative_unique_type
+    negative_compare_array_order
+    negative_compare_record_order
+    negative_compare_array_scalar_order
+    negative_compare_record_scalar_order
     negative_unique_nested_array
     negative_sort_type
     negative_sort_mixed

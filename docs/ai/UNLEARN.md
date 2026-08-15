@@ -107,6 +107,30 @@ the standing ones.
 - **`rec.field` on a missing field raises; `rec["field"]` returns `unknown`.**
   Guard optional nested reads with the bracket form.
 
+- **`=` on two records or arrays is a deep, structural comparison** — and field
+  order does not matter, because a record is a mapping:
+
+  ```basic
+  print({ a: 1, b: 2 } = { b: 2, a: 1 })    ' true
+  print([{ x: [1, 2] }] = [{ x: [1, 2] }])  ' true  -- all the way down
+  print([1, 2] = [1, 2, 3])                 ' false
+  ```
+
+  This was wrong until 2026-08-14: every pair of compound values compared
+  **equal**, because they fell through to a numeric coercion where both sides
+  became `0`. If you read older code that avoids comparing records, that is why.
+  `contains`, `find`, `remove_value` and `consider` all use this comparison, so
+  they were wrong in the same way — a search through an array of records
+  matched the first element and reported success.
+
+- **Ordering operators refuse compound values.** `{a:1} < {a:2}` raises
+  `records support only = and !=`, and likewise for arrays. There is no
+  defensible `<` between two records, and the old coercion silently answered one
+  anyway. Pinned by `tests/run_equality.sh`.
+
+- **`find` answers `nothing` for a miss, not `-1`.** Test with `is_nothing`,
+  not by comparing to an index — position `0` is a real hit.
+
 ## `print`
 
 - **`print` takes a single expression.** `print(a, b)` and `print a; b` are parse

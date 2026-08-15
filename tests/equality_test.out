@@ -1,0 +1,72 @@
+-- the cases that used to be unconditionally true --
+differing records ok
+differing arrays ok
+empty vs full ok
+record vs array ok
+array vs string ok
+record vs string ok
+empty record vs empty array ok
+-- equal compounds --
+identical records ok
+identical arrays ok
+empty records ok
+empty arrays ok
+field order irrelevant ok
+-- inequality is detected, not just equality --
+differing value ok
+differing key name ok
+extra field ok
+missing field ok
+differing element ok
+differing length ok
+element order matters ok
+-- deep, both directions --
+nested equal ok
+nested differing ok
+record of arrays equal ok
+record of arrays differing ok
+deeply nested equal ok
+deeply nested differing ok
+-- mixed element types --
+mixed equal ok
+mixed differing ok
+number vs numeric string ok
+-- scalars are unchanged --
+equal strings ok
+differing strings ok
+equal numbers ok
+int vs float form ok
+differing numbers ok
+equal booleans ok
+differing booleans ok
+-- != is the negation, not a second implementation --
+!= differing records ok
+!= identical records ok
+!= differing arrays ok
+!= identical arrays ok
+-- aliases and copies --
+alias equals original ok
+independent copy equals ok
+mutating the alias detaches ok
+original unchanged ok
+-- the damaging consequence: searching an array of records --
+contains present ok
+contains absent ok
+contains near-miss ok
+contains partial record ok
+find present ok
+find first ok
+find absent is nothing ok
+find present is not nothing ok
+contains nested array ok
+contains absent nested ok
+find nested ok
+-- scalar searching still works --
+contains number ok
+contains absent number ok
+contains string ok
+find number ok
+-- remove_value, which shares the comparison --
+remove_value removed one ok
+remove_value kept the first ok
+remove_value kept the last ok

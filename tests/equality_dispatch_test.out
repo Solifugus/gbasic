@@ -1,0 +1,23 @@
+-- consider dispatches on a record's shape --
+  right: matched circle r2
+-- consider reaches else when nothing matches --
+  right: fell through to else
+-- consider dispatches on an array --
+  right: matched [1,2]
+-- consider on a scalar is unchanged --
+  right: matched look
+-- a watcher agrees with the operator about what changed --
+  FIRED
+  assigning an EQUAL record (must not fire)
+  assigning the same fields in another order (must not fire)
+  assigning a DIFFERENT nested value (must fire)
+  FIRED
+  assigning a DIFFERENT shape (must fire)
+  FIRED
+  done
+-- the same for an array --
+  FIRED xs
+  assigning an equal array (must not fire)
+  assigning a longer array (must fire)
+  FIRED xs
+  done

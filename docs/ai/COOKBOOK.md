@@ -24,6 +24,12 @@ for error handling, `ERRORS.md`.
   independent at any depth, over a shared refcounted store; indexing and
   `append` are linear, which `tests/run_arridx.sh` fails if it stops being true.
   → `tests/arridx_test.bas`
+- **Compare or search compound values** — `=` and `!=` on records and arrays are
+  deep and structural, and record field order is irrelevant. `contains`, `find`,
+  `remove_value` and `consider` all use the same comparison, so dispatching on a
+  record's shape works; `find` answers `nothing` on a miss. Ordering operators
+  (`<`, `>`) refuse compound operands rather than guessing.
+  → `tests/equality_test.bas`, `tests/equality_dispatch_test.bas`
 - **Show a number** — `print` renders the shortest decimal that reads back as
   the same value, so nothing is truncated and `number(string(x)) = x` always
   holds. That makes floating-point error visible (`0.1 + 0.2` shows

@@ -22369,6 +22369,71 @@ static Value eval_comparison(AstExpr *expr, Value left, Value right) {
         value_free(left);
         value_free(right);
         return value_null();
+    } else if (left.kind == VALUE_ARRAY && right.kind == VALUE_ARRAY) {
+        /* Structural, elementwise, and deep -- value_storage_equal recurses, so
+         * arrays of records of arrays compare all the way down. This is what a
+         * BASIC programmer means by comparing two lists, and it is the same
+         * function watchers already use to decide whether a value changed, so
+         * `=` and "did this change?" cannot disagree.
+         *
+         * Before this branch existed, two arrays fell through to the numeric
+         * coercion at the end of the chain, where an array becomes 0 -- so ANY
+         * two arrays compared equal, including [] = [1,2,3]. */
+        int equal = value_storage_equal(&left, &right);
+        if (strcmp(op, "=") == 0) {
+            result = equal;
+        } else if (strcmp(op, "!=") == 0) {
+            result = !equal;
+        } else {
+            /* Refused rather than guessed. There is no defensible ordering
+             * between two arrays, and the coercion silently answered one
+             * anyway: [9,9,9] < [1] was `false` because both sides were 0. */
+            runtime_error_raise("arrays support only = and !=", 1003, "comparison");
+            value_free(left);
+            value_free(right);
+            return value_null();
+        }
+    } else if (left.kind == VALUE_ARRAY || right.kind == VALUE_ARRAY) {
+        /* An array compared against a non-array: unequal, matching the function
+         * and gobject rules above. Previously `[1,2] = "hi"` was TRUE, both
+         * sides having coerced to 0. */
+        if (strcmp(op, "=") == 0) {
+            result = 0;
+        } else if (strcmp(op, "!=") == 0) {
+            result = 1;
+        } else {
+            runtime_error_raise("arrays support only = and !=", 1003, "comparison");
+            value_free(left);
+            value_free(right);
+            return value_null();
+        }
+    } else if (left.kind == VALUE_RECORD && right.kind == VALUE_RECORD) {
+        /* Field-by-field and order-insensitive: {a:1, b:2} equals {b:2, a:1},
+         * since a record is a mapping and field order is how it was written
+         * rather than what it means. Deep, for the same reason as arrays. */
+        int equal = value_storage_equal(&left, &right);
+        if (strcmp(op, "=") == 0) {
+            result = equal;
+        } else if (strcmp(op, "!=") == 0) {
+            result = !equal;
+        } else {
+            runtime_error_raise("records support only = and !=", 1003, "comparison");
+            value_free(left);
+            value_free(right);
+            return value_null();
+        }
+    } else if (left.kind == VALUE_RECORD || right.kind == VALUE_RECORD) {
+        /* A record compared against a non-record: unequal. */
+        if (strcmp(op, "=") == 0) {
+            result = 0;
+        } else if (strcmp(op, "!=") == 0) {
+            result = 1;
+        } else {
+            runtime_error_raise("records support only = and !=", 1003, "comparison");
+            value_free(left);
+            value_free(right);
+            return value_null();
+        }
     } else if (left.kind == VALUE_FUNCTION && right.kind == VALUE_FUNCTION) {
         int equal = function_value_equal(&left, &right);
         if (strcmp(op, "=") == 0) {

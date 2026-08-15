@@ -1,0 +1,1 @@
+runtime error at tests/negative_compare_record_order.bas:1:16: records support only = and !=
