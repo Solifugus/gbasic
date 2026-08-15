@@ -2108,7 +2108,35 @@ static long xlsx_days_in_month(long y, unsigned m) {
  * for a serial inside the range the 1900 leap-year bug makes ambiguous, so a
  * date function refuses rather than answering one day out. */
 static int xlsx_civil_from_serial(double serial, long *y, long *m, long *d) {
-    if (serial < XLSX_SERIAL_1900_03_01) return 0;
+    if (serial < 0) return 0;
+    /* Serials 0..60 predate the 1900 leap-year bug's correction point, so the
+     * proleptic Gregorian arithmetic below is off by one there. Excel's mapping
+     * in that range is nevertheless WELL DEFINED -- it is wrong about history,
+     * not ambiguous -- and since this module implements Excel, matching it
+     * exactly is the correct answer rather than a concession:
+     *
+     *     0        1900-01-00   (Excel's day zero; DAY(0) really is 0)
+     *     1..31    1900-01-01 .. 1900-01-31
+     *     32..59   1900-02-01 .. 1900-02-28
+     *     60       1900-02-29   the phantom day Lotus invented and Excel kept
+     *
+     * This range used to be refused wholesale, on the reasoning that answering
+     * one day out is worse than not answering. That was right about the risk
+     * and wrong about the cost: an EMPTY cell coerces to serial 0, so every
+     * YEAR/MONTH/DAY of a blank date cell failed -- and the shape
+     * `(YEAR(Q)-YEAR(P))*12+MONTH(Q)-MONTH(P)+1` over blank rows is ubiquitous
+     * in real workbooks, where Excel answers 1 and we answered #VALUE!.
+     * Measured as the dominant cause of the `#VALUE!`-vs-number disagreement
+     * class, itself 25% of all remaining disagreements. */
+    if (serial < XLSX_SERIAL_1900_03_01) {
+        long ser = (long)serial;
+        *y = 1900;
+        if (ser == 0)       { *m = 1; *d = 0; }
+        else if (ser <= 31) { *m = 1; *d = ser; }
+        else if (ser <= 59) { *m = 2; *d = ser - 31; }
+        else                { *m = 2; *d = 29; }
+        return 1;
+    }
     long z = (long)serial - XLSX_EPOCH_1970 + 719468L;
     long era = (z >= 0 ? z : z - 146096) / 146097;
     unsigned long doe = (unsigned long)(z - era * 146097L);

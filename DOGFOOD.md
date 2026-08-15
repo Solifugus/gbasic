@@ -1627,3 +1627,28 @@ finding gets lost.
   ranking by function name scattered these 272,134 cells across `EXPR`, `IF`,
   `VLOOKUP` and the rest instead of naming the one cause. Bucketing by mismatch
   SHAPE found it immediately — the instrument decided what was findable.
+
+### Refusing an ambiguous date range cost more than answering it
+- **Type:** bug
+- **Severity:** high
+- **What:** `xlsx_civil_from_serial` refused every serial below 1900-03-01, on
+  the reasoning that the 1900 leap-year bug makes that range ambiguous and
+  answering one day out is worse than not answering. That was right about the
+  risk and wrong about the cost. An EMPTY cell coerces to serial **0**, so
+  `YEAR`/`MONTH`/`DAY` of any blank date cell returned `#VALUE!` — and the shape
+  `(YEAR(Q)-YEAR(P))*12+MONTH(Q)-MONTH(P)+1` over blank rows is everywhere in
+  real workbooks. Excel answers 1; we answered `#VALUE!`.
+- **And the range is not actually ambiguous.** Excel's serial→date mapping there
+  is well defined — it is wrong about *history*, not undetermined: 0 is
+  1900-01-00 (`DAY(0)` really is 0), 1..59 are 1900-01-01..1900-02-28, and 60 is
+  the phantom 1900-02-29 that Lotus invented and Excel kept. Since this module
+  implements Excel, reproducing that mapping is the correct answer, not a
+  concession to a bug.
+- **Workaround:** resolved — the range is mapped explicitly, negatives still
+  refused. One corpus workbook went from 503 disagreements to 8.
+- **The pattern, for the third time today:** a defensive refusal written to
+  avoid a *plausible wrong answer* turned out to be the wrong trade, because the
+  input that reaches it in practice was not the ambiguous case anyone imagined —
+  it was a blank cell. `IF` propagating an unused branch's error was the same
+  shape: correct-looking strictness whose real-world traffic is dominated by
+  inputs the strictness was never meant for.
