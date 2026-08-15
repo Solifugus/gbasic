@@ -857,7 +857,17 @@ static XlsxSheet *xlsx_find_sheet(XlsxWorkbook *wb, const char *name) {
     return NULL;
 }
 
-#endif /* HAVE_ZLIB && HAVE_LIBXML2 */
+/* NOTE: the guard opened at the top of the READER continues past here.
+ * Everything below -- the formula evaluator, the recalc engine and the SQL
+ * compiler -- reaches libxml2 and zlib types through the reader's structures,
+ * so it cannot compile without them either. The `#endif` used to sit HERE, and
+ * the module then grew several thousand lines past it: on a machine without
+ * libxml2 headers the build FAILED at the first `xmlNodePtr` below rather than
+ * degrading to a runtime error, which is the opposite of what this project's
+ * optional-dependency rule promises. Found by building on riscv64, where
+ * libxml2-dev was absent -- x86 dev boxes all had it, so nothing local could
+ * have caught it. The matching #endif is now immediately before the
+ * !HAVE_ZLIB || !HAVE_LIBXML2 stub block. */
 
 /* ==================================================================== FORMULA
  *
@@ -4681,6 +4691,11 @@ static Value value_workbook(XlsxWorkbook *wb) {
     return value;
 }
 
+#endif /* HAVE_ZLIB && HAVE_LIBXML2 -- opened before the READER, above.
+         * Everything from there to here needs libxml2 and zlib types. What
+         * follows must exist in BOTH configurations: the workbook refcount
+         * helpers, and xlsx_eval_call, which is what returns the clean
+         * runtime error when the feature is compiled out. */
 static void xlsx_workbook_retain(XlsxWorkbook *wb) {
     if (wb) {
         wb->ref_count++;

@@ -1697,3 +1697,46 @@ finding gets lost.
   such today, after quoted external refs and the `blocked_by` gap. A meaningful
   share of this project's "defects" have been in the instruments, and they are
   harder to notice because a number with no breakdown still reads as a fact.
+
+## 2026-08-15 — CC — while: re-validating the riscv64 port
+
+### The xlsx module grew several thousand lines past its own `#if` guard
+- **Type:** bug
+- **Severity:** high (build-breaking, on any machine without libxml2 headers)
+- **What:** `src/modules/xlsx.c` opens `#if HAVE_ZLIB && HAVE_LIBXML2` before the
+  reader and used to close it at line 860. The module then grew to ~4,700 lines
+  — the formula evaluator, recalc engine and SQL compiler all reach libxml2 and
+  zlib types through the reader's structures — and all of that sat OUTSIDE the
+  guard. On a machine without `libxml2-dev` the build did not degrade; it FAILED
+  at the first `xmlNodePtr`, which is the exact opposite of what this project's
+  optional-dependency rule promises.
+- **Workaround:** resolved — the guard now closes immediately before
+  `xlsx_workbook_retain`/`release` and `xlsx_eval_call`, which must exist in both
+  configurations because the last of them is what returns the clean "install
+  zlib and libxml2 and rebuild" error.
+- **Nothing local could have caught it.** Every x86 dev box here has
+  libxml2-dev, so `HAVE_LIBXML2` was 1 in every build anyone ran. It took an
+  architecture where the package happened to be absent. `make LIBXML2_AVAILABLE=0
+  ZLIB_AVAILABLE=0` reproduces it on any machine and is now the cheap check —
+  worth running before a release, since the same drift can recur the next time
+  the module grows.
+- **The general shape:** a conditional-compilation guard is invisible to the
+  compiler you build with. It is only ever tested by a configuration somebody
+  actually builds, and "optional dependency" means precisely the configuration
+  nobody on the team has.
+
+### valgrind does not exist for riscv64
+- **Type:** doc-gap (platform)
+- **Severity:** medium
+- **What:** `apt-cache policy valgrind` on Ubuntu 24.04 riscv64 reports no
+  candidate — upstream's RISC-V port is too recent. So the valgrind tiers in
+  run_recidx/stridx/arridx/equality/render/numfmt can only ever SKIP there, and
+  the refcounting work those tiers exist to guard is unverifiable on that
+  platform by that means.
+- **Workaround:** gcc's AddressSanitizer and UBSan do work on riscv64 and cover
+  the use-after-free / double-free class. Honest limit measured on the box: ASan
+  caught a deliberate use-after-free but reported it as `SEGV on unknown
+  address` rather than `heap-use-after-free`, so its diagnostics there are
+  degraded rather than absent.
+- **Note for release:** this is a permanent platform gap, not a to-do. It should
+  be stated in whatever ships, not quietly left as an untested tier.
