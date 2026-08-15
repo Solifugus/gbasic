@@ -14,10 +14,24 @@ out=${2:-/tmp/xlsx_corpus_blockers.txt}
 jobs=${3:-$(( $(nproc 2>/dev/null || echo 4) - 2 ))}
 [ "$jobs" -lt 1 ] && jobs=1
 make >/dev/null 2>&1 || { echo "build failed" >&2; exit 1; }
-one() { timeout 300 ./gbasic tools/xlsx_corpus_blockers.bas "$1" 2>/dev/null; }
+
+# Each worker writes to its OWN file, concatenated at the end. Writing straight
+# to a shared redirected stdout looked fine and was not: with 20 workers, stdio
+# flushes interleave and lines SPLICE, producing entries like
+# "BLOCK SUMMONTHSBLOCK BOOK" and splitting one name's count across two rows of
+# the ranking. The corruption is small but it is silent, and a ranking is
+# exactly the thing you read without re-deriving.
+part=$(mktemp -d)
+trap 'rm -rf "$part"' EXIT
+export part
+one() {
+    timeout 300 ./gbasic tools/xlsx_corpus_blockers.bas "$1" 2>/dev/null \
+        >"$part/$$.$RANDOM.txt"
+}
 export -f one
 find "$dir" -maxdepth 1 -type f -name '*.xlsx' -print0 \
-  | xargs -0 -P "$jobs" -I{} bash -c 'one "$@"' _ {} > "$out"
+  | xargs -0 -P "$jobs" -I{} bash -c 'one "$@"' _ {}
+cat "$part"/*.txt > "$out" 2>/dev/null
 printf '\n=== TOP BLOCKERS (unsupported cells, by the name actually refused) ===\n'
 grep '^BLOCK ' "$out" | sort | uniq -c | sort -rn | head -40
 printf '\n=== DISAGREEING CELLS by leading function (EXPR = operators only) ===\n'

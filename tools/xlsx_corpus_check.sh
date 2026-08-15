@@ -42,6 +42,21 @@ if ! make >/dev/null 2>&1; then
     exit 1
 fi
 
+# Scan with a FROZEN COPY of the binary, not ./gbasic itself.
+#
+# A run that shared ./gbasic with the source tree reported 7,797 read errors
+# out of 15,871 -- a catastrophic-looking regression that was not real. A test
+# suite run in the same tree had done `make clean && make`, deleting and
+# rewriting the binary while 18 scan processes were exec'ing it. The failures
+# were ENOENT and partial-image errors, indistinguishable in the output from a
+# reader that had started crashing on real workbooks.
+#
+# Copying costs a few megabytes and removes the whole class: the scan is now
+# unaffected by anything happening in the tree while it runs, which for a scan
+# measured in tens of minutes is not a hypothetical.
+frozen=$(mktemp -d)/gbasic
+cp ./gbasic "$frozen"
+
 printf 'scanning %s with %s parallel processes -> %s\n' "$dir" "$jobs" "$out" >&2
 
 # A per-file timeout so one pathological workbook cannot stall the run. Files
@@ -50,7 +65,7 @@ printf 'scanning %s with %s parallel processes -> %s\n' "$dir" "$jobs" "$out" >&
 # rate.
 scan_one() {
     f=$1
-    line=$(timeout 300 ./gbasic tools/xlsx_corpus_check.bas "$f" 2>/dev/null)
+    line=$(timeout 300 "$GB" tools/xlsx_corpus_check.bas "$f" 2>/dev/null)
     rc=$?
     if [ "$rc" = "124" ]; then
         printf 'TIMEOUT\t%s\n' "$f"
@@ -61,6 +76,7 @@ scan_one() {
     fi
 }
 export -f scan_one
+export GB="$frozen"
 
 # -print0 / -0 throughout: corpus filenames contain spaces, and a plain `for`
 # loop over them splits mid-name.

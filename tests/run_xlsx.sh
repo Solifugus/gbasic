@@ -489,6 +489,73 @@ else
 fi
 
 
+# --- Tier 2f2: the TEXT and MATH families ---------------------------------------
+#
+# Added 2026-08-15, and the reason is a correction to how this roadmap was being
+# read. `xlsx.check` counted `unsupported` cells but never recorded WHICH name it
+# refused, so the only available ranking was counting `NAME(` tokens in formula
+# text -- the method §13.J had already shown to be structurally blind. Once the
+# notes carried `blocked_by` and the corpus was re-ranked by the name actually
+# refused, the top was not the lookup/aggregate work that was next on the plan
+# (~14k cells) but FIND at 240,587 blocked cells and LEFT at 207,757, with LN,
+# EXP, SQRT, MID and HOUR behind them: ordinary functions never written.
+#
+# Fixture values are LibreOffice's, so this is a comparison against an
+# independent implementation. Deliberately NOT covered by it: CEILING/FLOOR on a
+# negative, because LibreOffice exports those as _xlfn.CEILING.MATH and then
+# cannot evaluate its own output (it caches #VALUE!), so it is no oracle for
+# them -- that behaviour follows Microsoft's documentation and has no second
+# opinion behind it, which the generator says outright.
+printf -- '-- text and math families (fixture computed by LibreOffice)\n'
+if timeout 120 ./gbasic examples/xlsx_textmath_test.bas >"$out" 2>"$err" </dev/null; then
+    if diff -u examples/xlsx_textmath_test.out "$out"; then
+        printf 'PASS examples/xlsx_textmath_test.bas\n'
+    else
+        printf 'FAIL examples/xlsx_textmath_test.bas (output differs)\n'
+        status=1
+    fi
+else
+    printf 'FAIL examples/xlsx_textmath_test.bas (exit)\n'
+    cat "$err"
+    status=1
+fi
+
+TEXTMATH_FIXTURE=examples/fixtures/xlsx/textmath.xlsx
+printf 'program main(args)\n  wb = xlsx.open("%s")\n  r = xlsx.check(wb, xlsx.sheets(wb)[0])\n  print r.disagree\n  print r.unsupported\nend program\n' "$TEXTMATH_FIXTURE" >"$tmp/tm.bas"
+tm_res=$(timeout 60 ./gbasic "$tmp/tm.bas" 2>/dev/null | tr '\n' ' ')
+if [ "$tm_res" = "0 0 " ]; then
+    printf 'PASS every text/math formula agrees with LibreOffice, none unsupported\n'
+else
+    printf 'FAIL text/math check: disagree/unsupported were "%s", want "0 0"\n' "$tm_res"
+    status=1
+fi
+
+# The distinctions a plausible-but-wrong implementation gets wrong. Asserted by
+# name so a regression says WHICH rule broke, rather than only that a golden
+# moved. Each pair differs precisely where a naive implementation would not.
+rule() { # label expected actual
+    if [ "$2" = "$3" ]; then
+        printf 'PASS rule %-34s %s\n' "$1" "$2"
+    else
+        printf 'FAIL rule %-34s expected %s, got %s\n' "$1" "$2" "$3"
+        status=1
+    fi
+}
+# Read straight out of the golden by label, which keeps this tier honest about
+# using the same computed values the fixture check just validated.
+tm_label() { grep -F "  $1 = " examples/xlsx_textmath_test.out | head -1 | sed "s/^  $1 = //"; }
+rule "INT floors a negative"          "-2"          "$(tm_label 'INT negative')"
+rule "TRUNC truncates a negative"     "-1"          "$(tm_label 'TRUNC negative')"
+rule "MOD takes the divisor sign"     "1"           "$(tm_label 'MOD negative')"
+rule "MOD neg divisor"                "-1"          "$(tm_label 'MOD neg divisor')"
+rule "FIND is case-sensitive"         "not-found"   "$(tm_label 'FIND case')"
+rule "SEARCH is not"                  "1"           "$(tm_label 'SEARCH case')"
+rule "FIND absent is an error"        "not-found"   "$(tm_label 'FIND absent')"
+rule "TRIM collapses interior runs"   "Loan A East" "$(tm_label 'TRIM interior')"
+rule "MID start<1 is an error"        "err"         "$(tm_label 'MID start err')"
+rule "CEILING rounds to a multiple"   "2.5"         "$(tm_label 'CEILING')"
+rule "time parts are self-consistent" "33"          "$(tm_label 'MINUTE')"
+
 # --- Tier 2g: cross-sheet references --------------------------------------------
 #
 # The largest single cause of disagreement in the corpus: 3.09M cells, 54%

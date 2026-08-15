@@ -1221,6 +1221,108 @@ for **every** block — on the file above, seven frames over a 66,091-row sheet.
 Making `tables` lazy, and streaming the sheet parse rather than building a DOM,
 are the two remaining levers; neither is done.
 
+**V. The oracle could not name what it refused, and the roadmap paid for it**
+(2026-08-15). §13.J established that ranking work by counting `NAME(` tokens in
+formula text is structurally blind — a formula usually holds several functions
+and only one is the blocker. The lesson was recorded and the *instrument* was
+not fixed: `xlsx.check` reported an `unsupported` COUNT with no name attached,
+so the blind method remained the only one available and kept steering for
+months under its own documented warning.
+
+`xlsx.check` notes now carry `blocked_by`, the name the evaluator actually
+refused. Ranked that way over 15,870 workbooks, the top of the remaining work
+was not what §14 said came next:
+
+| blocked cells | function |
+|---|---|
+| 240,587 | `FIND` |
+| 207,757 | `LEFT` |
+| 48,767 | `LN` |
+| 38,315 | `EXP` |
+| 29,312 | `SQRT` |
+| 27,518 | `HOUR` |
+| 26,896 | `MID` |
+| ~14,000 | `VLOOKUP`/`SUMIF` — *the planned Phase 4 work* |
+
+Everything above the line is an ordinary text or math function that had simply
+never been written, while the roadmap pointed at joins and filtered aggregates
+affecting an order of magnitude fewer cells. The rest of the top of the list is
+not implementable at all: Enron's own defined names (`SUMMONTHS`, `FOLIOS`,
+`PGDBUCKETS`) and external workbook references, both correctly refused.
+
+Implemented in response: the TEXT family (`LEN`, `LEFT`, `RIGHT`, `MID`, `FIND`,
+`SEARCH`, `TRIM`, `SUBSTITUTE`, `REPLACE`, `REPT`, `UPPER`, `LOWER`, `PROPER`,
+`EXACT`, `CHAR`, `CODE`, `VALUE`, `T`), the MATH family (`SQRT`, `EXP`, `LN`,
+`LOG`, `LOG10`, `POWER`, `INT`, `TRUNC`, `MOD`, `SIGN`, `PI`, `CEILING`,
+`FLOOR`, `CEILING.MATH`, `FLOOR.MATH`, `PRODUCT`, `SUMPRODUCT`) and the clock
+parts (`HOUR`, `MINUTE`, `SECOND`, `TIME`).
+
+*The distinctions that carry the tier,* each a place where a plausible
+implementation is wrong in a way positives do not reveal: `INT` FLOORS while
+`TRUNC` truncates, so they differ only on negatives; `MOD` takes the sign of the
+DIVISOR like Python and unlike C's `fmod`; Excel's `TRIM` collapses interior
+space runs rather than only stripping ends; `FIND` is case-sensitive and
+`SEARCH` is not; a `FIND` miss is `#VALUE!` and not `0`, which is why callers
+wrap it in `IFERROR`; `MID` with a start below 1 is an ERROR rather than a
+clamp; `CEILING`/`FLOOR` round to a MULTIPLE of significance, not to an integer.
+Positions are 1-based and counted in characters, so the implementation counts
+UTF-8 codepoints — which agree with Excel's UTF-16 units for everything outside
+the astral planes.
+
+`_xlfn.CEILING.MATH` is **not** an alias for `CEILING`: significance becomes
+optional and a third `mode` argument decides how negatives round. LibreOffice
+rewrites a bare `CEILING` into that spelling on export, so a reader knowing only
+the legacy names refuses a formula the user typed plainly. And for exactly the
+negative cases where the two differ, LibreOffice emits the name and then cannot
+evaluate its own output — it caches `#VALUE!` — so the fixture excludes them and
+that behaviour follows Microsoft's documentation with **no independent
+validation behind it**. That gap is stated rather than papered over.
+
+*What the corpus said afterwards, including the part that looked like a loss.*
+Implementing the families moved 768,700 cells out of `unsupported` into
+`judged`, and only 85% of them agreed — so the headline rate FELL, 94.92% to
+94.49%. Read alone that is a regression; read with the judged total it is the
+§13.J pattern again, a newly-judged population agreeing below the existing
+average. But sampling the new disagreements found something better than an
+explanation: 43,309 of 43,900 sampled were formulas containing `FIND`, nearly
+all of one shape —
+
+```
+IF(ISNUMBER(FIND("Pow",F11)), <arithmetic using FIND("-",R11)>, Q11-P11+1)
+```
+
+— where `F11` is `"US Natural Gas"`, `FIND` correctly returns `#VALUE!`,
+`ISNUMBER` correctly returns `FALSE`, and the answer is the else branch. We
+returned `#VALUE!`. **`IF` was propagating an error from the branch it did not
+take.** Arguments are evaluated before dispatch and `IF` was not in the
+error-catching set; Excel evaluates only the chosen branch. `IFS` and `SWITCH`
+had the same shape.
+
+The bug is older than this work and could not have been seen before it. The
+guard exists precisely to protect a branch that would otherwise fail, so while
+`FIND` was unimplemented the whole cell was skipped as `unsupported`.
+Implementing `FIND` made the guard work, made the unused branch legitimately
+error, and only then did `IF` mishandle it — a latent defect that a missing
+feature had been hiding. Each of the three now still propagates an error in its
+own CONDITION, since `IF(#VALUE!, a, b)` must remain `#VALUE!` rather than
+quietly taking the else branch and returning a plausible number.
+
+| | baseline | text+math | + the `IF` fix |
+|---|---|---|---|
+| judged | 17,177,002 | 17,945,768 | 17,945,702 |
+| agree | 16,304,312 | 16,957,682 | **17,160,915** |
+| disagree | 872,690 | 988,086 | **784,787** |
+| unsupported | 3,436,172 | 2,667,406 | 2,667,472 |
+| agreement | 94.92% | 94.49% | **95.63%** |
+| workbooks with zero disagreements | 13,247 | 13,237 | **13,358** |
+
+Absolute disagreements end 87,903 BELOW the baseline while judging 768,700 more
+cells. Note that neither the fixture tier (65/65 against LibreOffice) nor any
+suite could have found the `IF` defect: the triggering shape is a guard around a
+deliberately-failing branch, which is exactly what a fixture author does not
+write, having just implemented the functions that make the guard look
+unnecessary.
+
 ## 14. Roadmap (phases)
 
 Each phase is independently shippable and golden-file testable.

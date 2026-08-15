@@ -1504,3 +1504,92 @@ finding gets lost.
   *looked* like enough information — a number with no breakdown reads as a
   measurement, and it took wanting to act on it to notice it could not be acted
   on.
+
+## 2026-08-15 — CC — while: implementing the TEXT and MATH families
+
+### The roadmap was ranked by a proxy for two months, and the proxy was wrong
+- **Type:** doc-gap (methodology)
+- **Severity:** high (in wasted direction, not in broken code)
+- **What:** the next task was going to be compiler phase 2 — `VLOOKUP`→join and
+  `SUMIF`→filtered aggregate — because that is what §14's roadmap says comes
+  next. Ranking the corpus by the function the evaluator ACTUALLY refused put
+  those at roughly 14,000 cells, and put **FIND at 240,587 and LEFT at 207,757**,
+  with LN (48,767), EXP (38,315), SQRT (29,312), HOUR (27,518) and MID (26,896)
+  behind them. Ordinary text and math functions, never written, blocking more
+  than an order of magnitude more cells than the planned work.
+- **Why it stayed hidden:** §13.J had already established that counting `NAME(`
+  tokens in formula text is structurally blind, and then that remained the only
+  available method, because `xlsx.check` reported an `unsupported` COUNT without
+  the name attached. The lesson was learned and the instrument was not fixed, so
+  the same blindness kept operating for months under a documented warning.
+- **Workaround:** notes now carry `blocked_by`; the corpus ranks itself.
+- **The general shape:** a known-flawed measurement will keep steering as long
+  as it is the only one available. Recording that a method is unreliable does
+  not stop it being used — replacing it does.
+
+### `_xlfn.CEILING.MATH` is not an alias for `CEILING`
+- **Type:** language-surprise (Excel's, not gBASIC's)
+- **Severity:** medium
+- **What:** LibreOffice rewrites a plain `CEILING(2.1,0.5)` into
+  `_xlfn.CEILING.MATH(2.1,0.5)` on export, so a reader that implements only the
+  legacy names refuses a formula the user typed as `CEILING`. They are not the
+  same function: `.MATH` makes significance OPTIONAL and adds a third `mode`
+  argument that decides how negatives round — `CEILING.MATH(-2.1)` is `-2`
+  (toward zero) by default and `-3` with a non-zero mode. Aliasing them would be
+  right on every positive input and wrong on negatives.
+- **Workaround:** implemented separately, with the mirror relationship written
+  as one condition so the two cannot drift.
+- **AND THE ORACLE FAILED HERE:** LibreOffice emits `_xlfn.CEILING.MATH` and
+  then **cannot evaluate its own output** — it caches `#VALUE!`. So for exactly
+  the cases where the two functions differ, the independent implementation has
+  no answer. Those cases are excluded from the fixture rather than pinned to an
+  artifact, and the negative-mode behaviour is implemented from Microsoft's
+  documentation with **no second opinion behind it**. Stated plainly because it
+  is the one part of this work that is not independently validated.
+
+### A concurrent `make clean` made the corpus report 7,797 read failures
+- **Type:** doc-gap (methodology)
+- **Severity:** medium
+- **What:** the post-change corpus run reported 7,797 read errors out of 15,871
+  against zero before — which reads as a catastrophic regression in the reader.
+  It was not. `tests/run_examples.sh` begins with `make clean && make`, and it
+  was running in the same tree while 20 scan processes were exec'ing `./gbasic`.
+  The scan was recording ENOENT and partial-image failures, indistinguishable in
+  its output from a reader that had started crashing on real workbooks.
+- **Workaround:** the scanner copies the binary and runs the frozen copy, so
+  nothing happening in the tree during a tens-of-minutes scan can affect it.
+- **Note:** worth recording because the false signal was far more alarming than
+  any true one so far, and the first instinct — that the new functions had
+  broken the reader — was wrong. Re-running a single "failing" file passed
+  immediately, which is what identified it. A measurement harness that shares
+  mutable state with a build is not measuring the thing it names.
+
+### `IF` propagated an error from the branch it did NOT take
+- **Type:** bug
+- **Severity:** high
+- **What:** Excel evaluates only the chosen branch of an `IF`. This evaluator
+  evaluates all arguments first and then dispatches, and `IF` was not in the
+  error-catching list — so an error produced by the branch it did not take
+  propagated and failed the cell. `IFS` and `SWITCH` had the same shape.
+- **Why it stayed invisible, and this is the interesting part:** the archetypal
+  formula is `IF(ISNUMBER(FIND("Pow",F11)), <arithmetic using FIND("-",R11)>,
+  Q11-P11+1)` — a guard whose entire purpose is to protect a branch that would
+  otherwise error. While `FIND` was unimplemented the whole cell was skipped as
+  `unsupported`, so the bug could not be observed. Implementing `FIND` made the
+  guard work, made the unused branch legitimately produce `#VALUE!`, and only
+  then did `IF` propagate it. **A latent bug that a missing feature had been
+  hiding, revealed by adding the feature.**
+- **Measured:** it is the dominant cause of the 115,396 new disagreements the
+  TEXT family introduced — 43,309 of 43,900 sampled disagreements were formulas
+  containing `FIND`, essentially all of this shape. On one corpus workbook
+  (`andy_zipper__115__DYNEGY-ICE VOL Jun1.xlsx`) disagreements fell from 1,462
+  to 503 with the fix alone.
+- **Workaround:** `IF`/`IFS`/`SWITCH` join the error-catching set, with each site
+  still propagating an error in its own CONDITION or SUBJECT — only an unused
+  RESULT is excused. `IF(#VALUE!, a, b)` must stay `#VALUE!`, and without that
+  guard it would quietly take the else branch and return a plausible number.
+- **The lesson about the corpus, again:** the fixture tier passed 65/65 against
+  LibreOffice and every suite was green. Nothing but 15,870 real workbooks was
+  going to surface this, because the shape that triggers it — a guard around a
+  deliberately-failing branch — is exactly what a fixture author does not think
+  to write, having just written the functions that make the guard unnecessary.

@@ -77,6 +77,7 @@ examples=(
     xlsx_macro_sheet_test.bas
     xlsx_shared_formula_test.bas
     xlsx_modern_test.bas
+    xlsx_textmath_test.bas
     xlsx_crosssheet_test.bas
     xlsx_workbook_recalc_test.bas
     filetree_test.bas

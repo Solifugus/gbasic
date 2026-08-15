@@ -1730,6 +1730,66 @@ static void xlsx_to_text(XlsxVal v, char *buf, size_t n) {
     }
 }
 
+/* ---- text helpers for the TEXT family -------------------------------------
+ *
+ * Excel measures string positions in CHARACTERS, not bytes, so LEFT/MID/FIND
+ * and friends have to count UTF-8 codepoints. (Excel actually counts UTF-16
+ * code units; those agree with codepoints for everything in the Basic
+ * Multilingual Plane, differing only for astral characters like emoji, which
+ * do not appear in the spreadsheets this module exists to read. Noted so the
+ * difference is a known limit rather than a latent surprise.)
+ *
+ * Written here rather than reusing the interpreter's string helpers because
+ * these operate on plain C strings from the XlsxVal model, which has no
+ * StringHeader in front of it. */
+static size_t xlsx_cp_len(const char *s) {
+    size_t n = 0;
+    for (const unsigned char *p = (const unsigned char *)s; *p; p++) {
+        if ((*p & 0xC0) != 0x80) n++;   /* count non-continuation bytes */
+    }
+    return n;
+}
+
+/* Byte offset of codepoint index `cp`, clamped to the end of the string, so a
+ * caller asking past the end gets the terminator rather than walking off it. */
+static size_t xlsx_cp_off(const char *s, size_t cp) {
+    size_t seen = 0;
+    const unsigned char *p = (const unsigned char *)s;
+    while (*p) {
+        if ((*p & 0xC0) != 0x80) {
+            if (seen == cp) break;
+            seen++;
+        }
+        p++;
+    }
+    return (size_t)((const char *)p - s);
+}
+
+/* The full text of a value as an owned string. Distinct from xlsx_to_text,
+ * which writes into a caller's fixed buffer: that is fine for a criteria
+ * comparison but truncates a long cell, and LEFT/MID/SUBSTITUTE must not
+ * silently operate on a truncated copy. Strings are taken directly; other
+ * kinds are rendered through xlsx_to_text so the two agree on how a number or
+ * boolean reads as text. */
+static char *xlsx_text_dup(XlsxVal v) {
+    if (v.kind == XV_STR) return copy_string(v.str ? v.str : "");
+    char buf[256];
+    xlsx_to_text(v, buf, sizeof buf);
+    return copy_string(buf);
+}
+
+/* Case-insensitive substring search, for SEARCH. ASCII folding only, matching
+ * the interpreter's own upper/lower. */
+static const char *xlsx_stristr(const char *hay, const char *nee) {
+    if (!*nee) return hay;
+    for (const char *h = hay; *h; h++) {
+        const char *a = h, *b = nee;
+        while (*a && *b && tolower((unsigned char)*a) == tolower((unsigned char)*b)) { a++; b++; }
+        if (!*b) return h;
+    }
+    return NULL;
+}
+
 /* A range left UNMATERIALISED: where it is, not what is in it.
  *
  * VLOOKUP over a big lookup table is the dominant shape in real workbooks, and
@@ -2324,7 +2384,26 @@ static XlsxVal xlsx_call(XlsxEval *ev, const char *raw_name) {
                          strcmp(name, "ISNA") == 0 || strcmp(name, "ISBLANK") == 0 ||
                          strcmp(name, "ISNUMBER") == 0 || strcmp(name, "ISTEXT") == 0 ||
                          strcmp(name, "ISNONTEXT") == 0 || strcmp(name, "ISLOGICAL") == 0 ||
-                         strcmp(name, "AGGREGATE") == 0;
+                         strcmp(name, "AGGREGATE") == 0 ||
+                         /* IF/IFS/SWITCH SELECT one of their arguments, so an
+                          * error in a branch they do not take is not their
+                          * error. Arguments here are already evaluated -- there
+                          * is no lazy branch evaluation -- so without this the
+                          * unused branch's error propagates and the cell fails.
+                          *
+                          * Measured, and it is not an edge case: this is the
+                          * dominant cause of the 115,396 new disagreements the
+                          * TEXT family exposed. `IF(ISNUMBER(FIND("Pow",F11)),
+                          * <uses FIND("-",R11)>, Q11-P11+1)` is an ordinary
+                          * shape -- the guard is the whole point of it -- and
+                          * while FIND was unimplemented the cell was skipped as
+                          * `unsupported` so the bug was invisible. Implementing
+                          * FIND made the guard work and the unused branch
+                          * legitimately produce #VALUE!, which IF then wrongly
+                          * propagated. Each of these still propagates an error
+                          * in its own CONDITION, handled at each site. */
+                         strcmp(name, "IF") == 0 || strcmp(name, "IFS") == 0 ||
+                         strcmp(name, "SWITCH") == 0;
     for (size_t i = 0; i < n && !catches_errors; i++) {
         if (args[i].kind == XV_ERR) {
             out = xv_err(args[i].str);
@@ -2377,6 +2456,10 @@ static XlsxVal xlsx_call(XlsxEval *ev, const char *raw_name) {
         double x = 0;
         out = (n >= 1 && xlsx_as_num(args[0], &x)) ? xv_num(fabs(x)) : xv_err("#VALUE!");
     } else if (strcmp(name, "IF") == 0) {
+        /* The CONDITION's own error is still IF's error -- only the unused
+         * branch is excused. Without this, IF(#VALUE!, a, b) would quietly take
+         * the else branch and answer b. */
+        if (n >= 1 && args[0].kind == XV_ERR) { out = xv_err(args[0].str); goto done; }
         double c = 0;
         int truthy = n >= 1 && xlsx_as_num(args[0], &c) && c != 0;
         if (n >= 3) out = args[truthy ? 1 : 2], args[truthy ? 1 : 2] = xv_empty();
@@ -2529,6 +2612,9 @@ static XlsxVal xlsx_call(XlsxEval *ev, const char *raw_name) {
         out = xv_err("#N/A");
         for (size_t i = 0; i + 1 < n; i += 2) {
             double c = 0;
+            /* A CONDITION that is an error is IFS's error, the same rule IF
+             * follows; only an unused RESULT is excused. */
+            if (args[i].kind == XV_ERR) { out = xv_err(args[i].str); goto done; }
             if (xlsx_as_num(args[i], &c) && c != 0) {
                 out = args[i + 1]; args[i + 1] = xv_empty();
                 break;
@@ -2538,6 +2624,8 @@ static XlsxVal xlsx_call(XlsxEval *ev, const char *raw_name) {
         /* SWITCH(expr, v1, r1, v2, r2, ..., [default]) -- a trailing odd
          * argument is the default. */
         out = xv_err("#N/A");
+        /* The SUBJECT's error is SWITCH's error; an unused result's is not. */
+        if (n >= 1 && args[0].kind == XV_ERR) { out = xv_err(args[0].str); goto done; }
         char want[256];
         xlsx_to_text(n ? args[0] : xv_empty(), want, sizeof want);
         size_t i = 1;
@@ -3118,6 +3206,364 @@ static XlsxVal xlsx_call(XlsxEval *ev, const char *raw_name) {
          * they differ for pre-epoch serials, and floor is what Excel's INT
          * does. */
         out = xv_num(floor(xlsx_now_serial()));
+    /* ---- the TEXT family --------------------------------------------------
+     *
+     * Added 2026-08-15 because the corpus said so, and said something I had
+     * assumed away. `xlsx.check` counts an `unsupported` cell but until today
+     * did not record WHICH function it refused; once it did, the ranking over
+     * 15,870 workbooks put FIND at 240,587 blocked cells and LEFT at 207,757 --
+     * ordinary text functions, not the lookup and aggregate work that was next
+     * on the roadmap, which the same measurement showed affects ~14k cells.
+     *
+     * All positions are 1-BASED and measured in characters, per Excel. */
+    } else if (strcmp(name, "LEN") == 0) {
+        if (n < 1) { out = xv_err("#VALUE!"); goto done; }
+        char *t = xlsx_text_dup(args[0]);
+        out = xv_num((double)xlsx_cp_len(t));
+        free(t);
+    } else if (strcmp(name, "LEFT") == 0 || strcmp(name, "RIGHT") == 0) {
+        if (n < 1) { out = xv_err("#VALUE!"); goto done; }
+        double cnt = 1;                       /* Excel's default is one char */
+        if (n >= 2 && !xlsx_as_num(args[1], &cnt)) { out = xv_err("#VALUE!"); goto done; }
+        if (cnt < 0) { out = xv_err("#VALUE!"); goto done; }
+        char *t = xlsx_text_dup(args[0]);
+        size_t total = xlsx_cp_len(t), want = (size_t)cnt;
+        if (want > total) want = total;
+        size_t from = strcmp(name, "LEFT") == 0 ? 0 : total - want;
+        size_t b0 = xlsx_cp_off(t, from), b1 = xlsx_cp_off(t, from + want);
+        char *r = malloc(b1 - b0 + 1);
+        if (!r) abort();
+        memcpy(r, t + b0, b1 - b0); r[b1 - b0] = '\0';
+        out = xv_str(r); free(r); free(t);
+    } else if (strcmp(name, "MID") == 0) {
+        double start = 0, cnt = 0;
+        if (n < 3 || !xlsx_as_num(args[1], &start) || !xlsx_as_num(args[2], &cnt)) {
+            out = xv_err("#VALUE!"); goto done;
+        }
+        /* Excel: start < 1 is an error, not a clamp -- a caller who computed a
+         * zero or negative start has a bug, and silently reading from the
+         * beginning would hide it. */
+        if (start < 1 || cnt < 0) { out = xv_err("#VALUE!"); goto done; }
+        char *t = xlsx_text_dup(args[0]);
+        size_t total = xlsx_cp_len(t), from = (size_t)start - 1;
+        if (from >= total) { out = xv_str(""); free(t); goto done; }
+        size_t want = (size_t)cnt;
+        if (from + want > total) want = total - from;
+        size_t b0 = xlsx_cp_off(t, from), b1 = xlsx_cp_off(t, from + want);
+        char *r = malloc(b1 - b0 + 1);
+        if (!r) abort();
+        memcpy(r, t + b0, b1 - b0); r[b1 - b0] = '\0';
+        out = xv_str(r); free(r); free(t);
+    } else if (strcmp(name, "FIND") == 0 || strcmp(name, "SEARCH") == 0) {
+        /* FIND is case-SENSITIVE, SEARCH is case-insensitive. Both are 1-based
+         * and both return #VALUE! when the needle is absent -- NOT 0, which is
+         * why callers wrap them in IFERROR so often. */
+        if (n < 2) { out = xv_err("#VALUE!"); goto done; }
+        int fold = strcmp(name, "SEARCH") == 0;
+        char *nee = xlsx_text_dup(args[0]);
+        char *hay = xlsx_text_dup(args[1]);
+        double startd = 1;
+        if (n >= 3 && !xlsx_as_num(args[2], &startd)) {
+            free(nee); free(hay); out = xv_err("#VALUE!"); goto done;
+        }
+        if (startd < 1) { free(nee); free(hay); out = xv_err("#VALUE!"); goto done; }
+        size_t total = xlsx_cp_len(hay);
+        size_t from_cp = (size_t)startd - 1;
+        if (from_cp > total) { free(nee); free(hay); out = xv_err("#VALUE!"); goto done; }
+        /* SEARCH supports * and ? wildcards in Excel. Rather than answer a
+         * wildcard query as if it were literal -- which returns a plausible
+         * position for the wrong reason -- it is refused by name, the same rule
+         * the rest of the module follows. */
+        if (fold && (strchr(nee, '*') || strchr(nee, '?'))) {
+            free(nee); free(hay);
+            ev->unsupported = 1;
+            snprintf(ev->unsupported_name, sizeof ev->unsupported_name, "SEARCH with wildcards");
+            out = xv_err("#NAME?"); goto done;
+        }
+        const char *base = hay + xlsx_cp_off(hay, from_cp);
+        const char *at = fold ? xlsx_stristr(base, nee) : strstr(base, nee);
+        if (!at) { out = xv_err("#VALUE!"); }
+        else {
+            /* Byte offset back to a character position, since the answer is
+             * fed straight into MID by essentially every caller. */
+            size_t bytes = (size_t)(at - hay);
+            char save = hay[bytes]; hay[bytes] = '\0';
+            out = xv_num((double)xlsx_cp_len(hay) + 1);
+            hay[bytes] = save;
+        }
+        free(nee); free(hay);
+    } else if (strcmp(name, "TRIM") == 0) {
+        /* Excel's TRIM is not just a strip: it also collapses runs of interior
+         * spaces to one. That is the behaviour reports depend on when cleaning
+         * fixed-width exports, so a plain strip would be subtly wrong. */
+        if (n < 1) { out = xv_err("#VALUE!"); goto done; }
+        char *t = xlsx_text_dup(args[0]);
+        char *r = malloc(strlen(t) + 1);
+        if (!r) abort();
+        size_t w = 0; int seen_space = 0, started = 0;
+        for (const char *p = t; *p; p++) {
+            if (*p == ' ') { seen_space = 1; continue; }
+            if (started && seen_space) r[w++] = ' ';
+            r[w++] = *p; started = 1; seen_space = 0;
+        }
+        r[w] = '\0';
+        out = xv_str(r); free(r); free(t);
+    } else if (strcmp(name, "SUBSTITUTE") == 0) {
+        if (n < 3) { out = xv_err("#VALUE!"); goto done; }
+        char *t = xlsx_text_dup(args[0]);
+        char *o = xlsx_text_dup(args[1]);
+        char *w = xlsx_text_dup(args[2]);
+        double which = 0;
+        int one_only = 0;
+        if (n >= 4) {
+            if (!xlsx_as_num(args[3], &which) || which < 1) {
+                free(t); free(o); free(w); out = xv_err("#VALUE!"); goto done;
+            }
+            one_only = 1;
+        }
+        if (!*o) { out = xv_str(t); free(t); free(o); free(w); goto done; }
+        size_t ol = strlen(o), wl = strlen(w), cap = strlen(t) + 1, len = 0, hit = 0;
+        char *r = malloc(cap);
+        if (!r) abort();
+        for (const char *p = t; *p; ) {
+            if (strncmp(p, o, ol) == 0) {
+                hit++;
+                if (!one_only || hit == (size_t)which) {
+                    if (len + wl + 1 > cap) { cap = (len + wl + 1) * 2; r = realloc(r, cap); if (!r) abort(); }
+                    memcpy(r + len, w, wl); len += wl; p += ol; continue;
+                }
+            }
+            if (len + 2 > cap) { cap = (len + 2) * 2; r = realloc(r, cap); if (!r) abort(); }
+            r[len++] = *p++;
+        }
+        r[len] = '\0';
+        out = xv_str(r);
+        free(r); free(t); free(o); free(w);
+    } else if (strcmp(name, "REPLACE") == 0) {
+        double start = 0, cnt = 0;
+        if (n < 4 || !xlsx_as_num(args[1], &start) || !xlsx_as_num(args[2], &cnt)) {
+            out = xv_err("#VALUE!"); goto done;
+        }
+        if (start < 1 || cnt < 0) { out = xv_err("#VALUE!"); goto done; }
+        char *t = xlsx_text_dup(args[0]);
+        char *w = xlsx_text_dup(args[3]);
+        size_t total = xlsx_cp_len(t), from = (size_t)start - 1;
+        if (from > total) from = total;
+        size_t upto = from + (size_t)cnt;
+        if (upto > total) upto = total;
+        size_t b0 = xlsx_cp_off(t, from), b1 = xlsx_cp_off(t, upto), wl = strlen(w);
+        size_t tail = strlen(t) - b1;
+        char *r = malloc(b0 + wl + tail + 1);
+        if (!r) abort();
+        memcpy(r, t, b0);
+        memcpy(r + b0, w, wl);
+        memcpy(r + b0 + wl, t + b1, tail);
+        r[b0 + wl + tail] = '\0';
+        out = xv_str(r); free(r); free(t); free(w);
+    } else if (strcmp(name, "REPT") == 0) {
+        double times = 0;
+        if (n < 2 || !xlsx_as_num(args[1], &times) || times < 0) { out = xv_err("#VALUE!"); goto done; }
+        char *t = xlsx_text_dup(args[0]);
+        size_t tl = strlen(t), k = (size_t)times;
+        /* Excel caps a cell at 32,767 characters; refuse rather than allocate
+         * something enormous from a mistyped count. */
+        if (tl && k > 32767 / (tl ? tl : 1)) { free(t); out = xv_err("#VALUE!"); goto done; }
+        char *r = malloc(tl * k + 1);
+        if (!r) abort();
+        for (size_t i = 0; i < k; i++) memcpy(r + i * tl, t, tl);
+        r[tl * k] = '\0';
+        out = xv_str(r); free(r); free(t);
+    } else if (strcmp(name, "UPPER") == 0 || strcmp(name, "LOWER") == 0 ||
+               strcmp(name, "PROPER") == 0) {
+        if (n < 1) { out = xv_err("#VALUE!"); goto done; }
+        char *t = xlsx_text_dup(args[0]);
+        int up = strcmp(name, "UPPER") == 0, proper = strcmp(name, "PROPER") == 0;
+        int boundary = 1;
+        for (char *p = t; *p; p++) {
+            unsigned char c = (unsigned char)*p;
+            if (proper) {
+                if (isalpha(c)) { *p = (char)(boundary ? toupper(c) : tolower(c)); boundary = 0; }
+                else boundary = 1;
+            } else {
+                *p = (char)(up ? toupper(c) : tolower(c));
+            }
+        }
+        out = xv_str(t); free(t);
+    } else if (strcmp(name, "EXACT") == 0) {
+        if (n < 2) { out = xv_err("#VALUE!"); goto done; }
+        char *a = xlsx_text_dup(args[0]), *b = xlsx_text_dup(args[1]);
+        out = xv_bool(strcmp(a, b) == 0);
+        free(a); free(b);
+    } else if (strcmp(name, "CHAR") == 0) {
+        double c = 0;
+        if (n < 1 || !xlsx_as_num(args[0], &c) || c < 1 || c > 255) { out = xv_err("#VALUE!"); goto done; }
+        char b[2] = { (char)(int)c, '\0' };
+        out = xv_str(b);
+    } else if (strcmp(name, "CODE") == 0) {
+        if (n < 1) { out = xv_err("#VALUE!"); goto done; }
+        char *t = xlsx_text_dup(args[0]);
+        out = *t ? xv_num((double)(unsigned char)*t) : xv_err("#VALUE!");
+        free(t);
+    } else if (strcmp(name, "VALUE") == 0) {
+        if (n < 1) { out = xv_err("#VALUE!"); goto done; }
+        double d = 0;
+        out = xlsx_as_num(args[0], &d) ? xv_num(d) : xv_err("#VALUE!");
+    } else if (strcmp(name, "T") == 0) {
+        /* The text of a value if it IS text, empty otherwise -- not a
+         * conversion. */
+        out = (n >= 1 && args[0].kind == XV_STR) ? xv_str(args[0].str ? args[0].str : "") : xv_str("");
+
+    /* ---- the MATH family --------------------------------------------------
+     * Ranked the same way: LN 48,767 blocked cells, EXP 38,315, SQRT 29,312. */
+    } else if (strcmp(name, "SQRT") == 0) {
+        double x = 0;
+        if (n < 1 || !xlsx_as_num(args[0], &x)) { out = xv_err("#VALUE!"); goto done; }
+        out = x < 0 ? xv_err("#NUM!") : xv_num(sqrt(x));
+    } else if (strcmp(name, "EXP") == 0) {
+        double x = 0;
+        out = (n >= 1 && xlsx_as_num(args[0], &x)) ? xv_num(exp(x)) : xv_err("#VALUE!");
+    } else if (strcmp(name, "LN") == 0 || strcmp(name, "LOG10") == 0) {
+        double x = 0;
+        if (n < 1 || !xlsx_as_num(args[0], &x)) { out = xv_err("#VALUE!"); goto done; }
+        out = x <= 0 ? xv_err("#NUM!")
+                     : xv_num(strcmp(name, "LN") == 0 ? log(x) : log10(x));
+    } else if (strcmp(name, "LOG") == 0) {
+        double x = 0, base = 10;               /* Excel's LOG defaults to 10 */
+        if (n < 1 || !xlsx_as_num(args[0], &x)) { out = xv_err("#VALUE!"); goto done; }
+        if (n >= 2 && !xlsx_as_num(args[1], &base)) { out = xv_err("#VALUE!"); goto done; }
+        out = (x <= 0 || base <= 0 || base == 1) ? xv_err("#NUM!") : xv_num(log(x) / log(base));
+    } else if (strcmp(name, "POWER") == 0) {
+        double x = 0, y = 0;
+        if (n < 2 || !xlsx_as_num(args[0], &x) || !xlsx_as_num(args[1], &y)) {
+            out = xv_err("#VALUE!"); goto done;
+        }
+        double r = pow(x, y);
+        out = isfinite(r) ? xv_num(r) : xv_err("#NUM!");
+    } else if (strcmp(name, "INT") == 0) {
+        /* FLOOR, not truncation: INT(-1.5) is -2 in Excel. The two agree for
+         * positives, which is why getting it wrong survives casual testing. */
+        double x = 0;
+        out = (n >= 1 && xlsx_as_num(args[0], &x)) ? xv_num(floor(x)) : xv_err("#VALUE!");
+    } else if (strcmp(name, "TRUNC") == 0) {
+        double x = 0, digits = 0;
+        if (n < 1 || !xlsx_as_num(args[0], &x)) { out = xv_err("#VALUE!"); goto done; }
+        if (n >= 2 && !xlsx_as_num(args[1], &digits)) { out = xv_err("#VALUE!"); goto done; }
+        double scale = pow(10, digits);
+        out = xv_num(trunc(x * scale) / scale);
+    } else if (strcmp(name, "MOD") == 0) {
+        /* Excel's MOD takes the sign of the DIVISOR, like Python and unlike
+         * C's fmod: MOD(-3, 2) is 1, fmod(-3, 2) is -1. Financial models use it
+         * for cyclical period arithmetic where a negative result silently shifts
+         * everything by a period. */
+        double a = 0, b = 0;
+        if (n < 2 || !xlsx_as_num(args[0], &a) || !xlsx_as_num(args[1], &b)) {
+            out = xv_err("#VALUE!"); goto done;
+        }
+        out = b == 0 ? xv_err("#DIV/0!") : xv_num(a - b * floor(a / b));
+    } else if (strcmp(name, "SIGN") == 0) {
+        double x = 0;
+        out = (n >= 1 && xlsx_as_num(args[0], &x)) ? xv_num(x > 0 ? 1 : (x < 0 ? -1 : 0))
+                                                   : xv_err("#VALUE!");
+    } else if (strcmp(name, "PI") == 0) {
+        out = xv_num(3.14159265358979323846);
+    } else if (strcmp(name, "CEILING") == 0 || strcmp(name, "FLOOR") == 0) {
+        /* Excel's CEILING/FLOOR round to a MULTIPLE of `significance`, not to an
+         * integer -- CEILING(2.1, 0.5) is 2.5. Defaulting significance to 1
+         * would quietly turn these into ceil/floor. */
+        double x = 0, sig = 0;
+        if (n < 2 || !xlsx_as_num(args[0], &x) || !xlsx_as_num(args[1], &sig)) {
+            out = xv_err("#VALUE!"); goto done;
+        }
+        if (sig == 0) { out = xv_num(0); goto done; }
+        if (x > 0 && sig < 0) { out = xv_err("#NUM!"); goto done; }
+        out = xv_num(strcmp(name, "CEILING") == 0 ? ceil(x / sig) * sig : floor(x / sig) * sig);
+    } else if (strcmp(name, "CEILING.MATH") == 0 || strcmp(name, "FLOOR.MATH") == 0) {
+        /* The modern replacements, and NOT aliases of CEILING/FLOOR: here
+         * significance is OPTIONAL (default 1) and a third `mode` argument
+         * decides how negatives go. Excel writes these prefixed as
+         * `_xlfn.CEILING.MATH`, and LibreOffice rewrites a bare CEILING into
+         * one on export, so a reader that only knew the legacy names would
+         * refuse a formula the user typed as plain CEILING.
+         *
+         * Negatives are the whole reason the pair exists. CEILING.MATH(-2.1)
+         * is -2 (toward zero) by default and -3 with a non-zero mode; FLOOR.MATH
+         * is the mirror. Treating them as the legacy functions would answer one
+         * of those two wrongly and look right on every positive input. */
+        int up = strcmp(name, "CEILING.MATH") == 0;
+        double x = 0, sig = 1, mode = 0;
+        if (n < 1 || !xlsx_as_num(args[0], &x)) { out = xv_err("#VALUE!"); goto done; }
+        if (n >= 2 && !xlsx_as_num(args[1], &sig))  { out = xv_err("#VALUE!"); goto done; }
+        if (n >= 3 && !xlsx_as_num(args[2], &mode)) { out = xv_err("#VALUE!"); goto done; }
+        if (sig == 0 || x == 0) { out = xv_num(0); goto done; }
+        sig = fabs(sig);                     /* the sign of significance is ignored */
+        double q = x / sig, r;
+        /* For a positive number both functions do the obvious thing. For a
+         * NEGATIVE number the default (mode 0) is CEILING toward zero and FLOOR
+         * away from zero, and a non-zero mode swaps that. Written as one
+         * condition because the two functions are exact mirrors. */
+        int toward_zero_default = (x > 0 || mode == 0);
+        if (up) r = toward_zero_default ? ceil(q)  : floor(q);
+        else    r = toward_zero_default ? floor(q) : ceil(q);
+        out = xv_num(r * sig);
+    } else if (strcmp(name, "PRODUCT") == 0) {
+        double acc = 1; int any = 0;
+        for (size_t i = 0; i < n; i++) {
+            double v = 0;
+            if (args[i].kind == XV_EMPTY) continue;
+            if (!xlsx_as_num(args[i], &v)) continue;   /* text is skipped, as SUM does */
+            acc *= v; any = 1;
+        }
+        out = xv_num(any ? acc : 0);
+    } else if (strcmp(name, "SUMPRODUCT") == 0) {
+        /* Elementwise product of equal-length ranges, summed. Ranges of
+         * different lengths are #VALUE! in Excel rather than zero-padded, and
+         * that refusal matters: a mismatched pair is a mis-specified formula,
+         * and padding it produces a total that looks right. */
+        if (argc < 1) { out = xv_err("#VALUE!"); goto done; }
+        size_t len = ARG_LEN(0);
+        for (size_t k = 1; k < argc; k++) {
+            if (ARG_LEN(k) != len) { out = xv_err("#VALUE!"); goto done; }
+        }
+        double total = 0;
+        for (size_t i = 0; i < len; i++) {
+            double prod = 1;
+            for (size_t k = 0; k < argc; k++) {
+                double v = 0;
+                /* Non-numeric entries count as zero, per Excel. */
+                if (!xlsx_as_num(ARG_AT(k, i), &v)) v = 0;
+                prod *= v;
+            }
+            total += prod;
+        }
+        out = xv_num(total);
+
+    /* ---- clock parts ------------------------------------------------------
+     * The date parts (YEAR/MONTH/DAY) already existed; the time parts did not,
+     * and HOUR alone blocked 27,518 cells. All three read the FRACTION of the
+     * serial, so they work on a bare time value as well as a timestamp. */
+    } else if (strcmp(name, "HOUR") == 0 || strcmp(name, "MINUTE") == 0 ||
+               strcmp(name, "SECOND") == 0) {
+        double s = 0;
+        if (n < 1 || !xlsx_as_serial(args[0], &s)) { out = xv_err("#VALUE!"); goto done; }
+        double frac = s - floor(s);
+        /* Rounded to the nearest second before splitting: a serial is a binary
+         * fraction of a day, so 13:30:00 can arrive as ...29.9999997 and
+         * truncating would report 29 seconds. */
+        long secs = (long)floor(frac * 86400.0 + 0.5);
+        if (secs >= 86400) secs = 86399;
+        if (strcmp(name, "HOUR") == 0)        out = xv_num((double)(secs / 3600));
+        else if (strcmp(name, "MINUTE") == 0) out = xv_num((double)((secs / 60) % 60));
+        else                                  out = xv_num((double)(secs % 60));
+    } else if (strcmp(name, "TIME") == 0) {
+        double h = 0, m = 0, sec = 0;
+        if (n < 3 || !xlsx_as_num(args[0], &h) || !xlsx_as_num(args[1], &m) ||
+            !xlsx_as_num(args[2], &sec)) { out = xv_err("#VALUE!"); goto done; }
+        double total = h * 3600 + m * 60 + sec;
+        /* Excel wraps past 24h rather than erroring. */
+        double day = 86400.0;
+        total = fmod(total, day);
+        if (total < 0) total += day;
+        out = xv_num(total / day);
     } else {
         /* REFUSE LOUDLY. In a financial model a plausible wrong number is worse
          * than a failure, so an unimplemented function is reported by name
