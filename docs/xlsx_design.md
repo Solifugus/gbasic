@@ -1376,8 +1376,56 @@ those cells had previously *agreed* by coincidence — our `#REF!` happening to
 match a cached `#REF!` — which is exactly the kind of accidental agreement a
 rate alone would have protected.
 
-*What is left,* by the same ranking: `#VALUE!`→num (198,633), the wrong-error-code
-classes (~156,000), and genuine arithmetic differences (66,353).
+**X. The `#VALUE!` class, and a lesson about sampling** (2026-08-15). The next
+class down was `#VALUE!` against a cached number. Sampling its formulas, the
+visible oddities — leading `+`/`-` Lotus syntax, `TRANSPOSE`, Enron's lowercase
+UDFs — accounted for barely 1,200 of 25,108 lines. The bulk was one shape:
+`(YEAR(Q274)-YEAR(P274))*12+MONTH(Q274)-MONTH(P274)+1`, cached `1`.
+
+`xlsx_civil_from_serial` refused every serial below 1900-03-01, because the 1900
+leap-year bug makes the range look ambiguous and answering one day out is worse
+than not answering. **An empty cell coerces to serial 0**, so `YEAR`/`MONTH`/
+`DAY` of a blank date cell failed, and that formula over blank rows is
+everywhere. Excel answers 1.
+
+The range is not ambiguous either — Excel's mapping is wrong about *history*,
+not undetermined: 0 is 1900-01-00 (`DAY(0)` really is 0), 1..59 are
+1900-01-01..1900-02-28, 60 is the phantom 1900-02-29. This module implements
+Excel, so reproducing that is correct rather than a concession. Negatives stay
+refused.
+
+| | before | after |
+|---|---|---|
+| agreement | 97.20% | **97.35%** |
+| disagree | 493,494 | **468,174** |
+| clean workbooks | 14,208 | 14,214 |
+
+*And the sampling was biased, which is the part worth keeping.* One workbook
+went from 503 disagreements to 8, and the sample suggested a class of ~198,000.
+The corpus-wide gain was 25,320. The sample was taken with `head -80` over the
+dirty-workbook list — **not a sample**, a prefix — and a few large files in it,
+all repeating one formula template down tens of thousands of rows, dominated
+every count. The defect and fix are real; the estimate of reach was not. A
+corpus makes it easy to measure and just as easy to measure the wrong
+population, and per-cell counts are especially prone to it because one
+templated column can outvote a thousand distinct workbooks. Future sampling
+here should stride the list, or count DISTINCT WORKBOOKS affected alongside
+cells.
+
+*Also worth recording as a pattern:* both substantive fixes today were
+**defensive refusals that were right in principle and wrong in practice** — `IF`
+propagating an unused branch's error, and this range refusal. In each case the
+strictness guarded a hazard that barely occurs while intercepting ordinary
+traffic (a guard formula; a blank cell). That is not an argument against the
+refuse-don't-guess rule, which has been repeatedly right, but a refusal's cost
+can only be priced by real data — a fixture will never show it, because you
+write fixtures for the case you had in mind.
+
+*What is left,* by the ranking taken before these two fixes: the
+wrong-error-code classes (~156,000) and genuine arithmetic differences
+(66,353). Both figures predate the external-reference and 1900-serial changes,
+so **the ranking should be re-run before acting on them** rather than trusted as
+current.
 
 ## 14. Roadmap (phases)
 
