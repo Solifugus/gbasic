@@ -20,6 +20,13 @@ print gi.struct_get(c, "alpha")
 print type(c)
 
 ' Reference semantics: d aliases c's box, so mutating d is visible through c.
+'
+' The value reads back as 0.8999999761581421, not 0.9, and that is correct: a
+' GdkRGBA component is a C `float`, so 0.9 is stored at single precision and
+' widened back to a double on read. `print` showed 0.9 until PLAT-NUMFMT
+' (2026-08-14) because it rendered six significant digits and rounded the
+' difference away. The lossy round-trip was always happening; only its
+' visibility changed.
 d = c
 gi.struct_set(d, "red", 0.9)
 print gi.struct_get(c, "red")

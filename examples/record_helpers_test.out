@@ -1,10 +1,10 @@
-[?, ?]
+["x","y"]
 []
-[1, 2]
+[1,2]
 []
 true
 false
 false
-{record}
-{record}
-{record}
+{"y":2}
+{"x":1,"y":2}
+{}

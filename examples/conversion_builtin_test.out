@@ -5,7 +5,7 @@ true
 false
 true
 false
-[1, 2, 3]
-[?, ?]
-{record}
-{record}
+[1,2,3]
+["a","b"]
+{"x":1,"y":2}
+{"name":"test","value":42}

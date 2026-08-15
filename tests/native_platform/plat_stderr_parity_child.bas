@@ -39,7 +39,11 @@ both(from_bytes([72, 0, 73]))
 both(true)
 both(false)
 
-' --- arrays: empty, numeric, non-numeric (renders as ?), nested ----------
+' --- arrays: empty, numeric, non-numeric, nested -------------------------
+' Non-numeric and nested arrays rendered as `[?, ?]` until 2026-08-14, when
+' `print` stopped carrying its own renderer and started delegating to the same
+' one `string()` uses (PLAT-RENDER). Records rendered as the literal
+' `{record}`, and durations as `{duration}`.
 both([])
 both([1, 2, 3])
 both(["a", "b"])

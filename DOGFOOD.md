@@ -1339,3 +1339,73 @@ finding gets lost.
   like `keys` is broken when it is fine. That misdirection is the expensive
   part. Not fixed here because it is a separate surface (the array-element
   formatter, not the comparison) and deserves its own change and golden pass.
+
+## 2026-08-14 — CC — while: PLAT-RENDER, unifying print with string()
+
+### Status update on the `[?, ?]` entry above: fixed, and it was bigger than reported
+- **Resolved.** `print` had its own renderer. It understood numbers inside an
+  array and nothing else, so beyond `["a","b"]` → `[?, ?]` the real headline was
+  that **a record could not be displayed at all** — `print({a:1})` emitted the
+  literal word `{record}`. `print` now delegates to `builtin_string_value`, and
+  `tests/run_render.sh` requires `print v` and `print string(v)` to stay
+  byte-identical across 58 value shapes.
+- **The file already knew the argument.** The comment above `value_print_to`
+  explains that `print` and `print to error` share one renderer precisely so
+  they cannot drift apart on some value shape. That reasoning is right, and it
+  had simply not been applied one level out. Worth remembering as a review
+  question: when a comment justifies deduplicating two things, check whether a
+  third belongs in the set.
+- **Two goldens were defending the bug.** `examples/record_helpers_test.out` and
+  `examples/conversion_builtin_test.out` contained `[?, ?]` and `{record}` as
+  expected output, and `tests/native_platform/plat_stderr_parity_child.bas` had
+  a comment reading "non-numeric (renders as ?)" — the defect documented as a
+  feature. This is the golden failure mode from the PLAT-EQ entry, caught in the
+  wild twice in one day.
+
+### Delegating naively would have made `print` able to kill the program
+- **Type:** bug (avoided)
+- **Severity:** high, had it shipped
+- **What:** `string()` renders compound values through the JSON encoder, which
+  legitimately refuses anything with no JSON form. So `string([aDate])`,
+  `string([aFunction])` and `string({when: aDate})` all **raised**. Pointing
+  `print` at that would have converted a display operation into a
+  program-ending error for values that display perfectly well.
+- **Workaround:** the walker gained a third mode. `RENDER_JSON` (json_encode,
+  strict), `RENDER_ENCODE` (encode — lenient about `unknown`, which `decode`
+  reads back, but still refusing typed values), and `RENDER_DISPLAY`, which is
+  **total**: for a typed or live kind it recurses into the single-value
+  renderer, which has a text form for every one. No cycle, because that renderer
+  only re-enters the walker for arrays and records.
+- **The principle worth keeping:** displaying a value must never be able to fail.
+  Encoding one may — `encode` refusing a date is correct, because a lossy token
+  would produce text `decode` cannot read back. Those are different jobs and it
+  was the shared implementation, not the shared intent, that conflated them.
+
+### Durations had no text form at all
+- **Type:** missing-feature
+- **Severity:** medium
+- **What:** `print(2 days 3 hours)` and `string(2 days 3 hours)` both produced
+  the literal `{duration}`. Coherent between the two renderers, and useless in
+  both — after the unification it was the only value kind a program could hold
+  and not display.
+- **Workaround:** resolved. Renders in the words the literal syntax uses, so
+  what you read back is what you would write: `2 days 3 hours`, `1 day`
+  (singular at 1), `0 seconds` for an empty duration rather than an empty line,
+  which would be indistinguishable from a failure to print.
+
+### A PLAT-NUMFMT golden was missed because its suite is display-gated
+- **Type:** doc-gap (process)
+- **Severity:** medium
+- **What:** `tests/native_platform/boxed_struct.out` should have been
+  rebaselined by PLAT-NUMFMT and was not. `run_native_platform.sh` is gated on
+  GTK4 typelibs plus a display, so it was not in that day's sweep, and the
+  failure only surfaced today. The value is honest — a `GdkRGBA` component is a
+  C `float`, so 0.9 stored at single precision and widened back reads
+  `0.8999999761581421`, which `%g` had been rounding away — but the point is
+  that a whole suite silently sat outside the verification.
+- **Workaround:** rebaselined, with the float32 explanation recorded in the
+  fixture so the next reader does not file it as a bug.
+- **Note:** the display-gated suites (`run_native_platform`, `run_native_editor`,
+  `run_gtkui`, `run_datagrid`, `run_gi`) are the blind spot for any change to a
+  shared renderer. This machine HAS a display, so there is no excuse for
+  skipping them; they just are not in the reflexive list.

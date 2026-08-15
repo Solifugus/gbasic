@@ -2845,139 +2845,27 @@ static long long round_to_cents(double amount) {
  * would be a standing invitation for the two to drift apart on some value shape,
  * and the whole promise of `print to error` is that it renders what `print`
  * renders. Passing the stream in makes that promise structural. */
+static Value builtin_string_value(Value value);
+
 static void value_print_to(FILE *out, Value value) {
-    switch (value.kind) {
-    case VALUE_NULL:
-        fprintf(out, "nothing\n");
-        break;
-    case VALUE_UNKNOWN:
-        fprintf(out, "unknown\n");
-        break;
-    case VALUE_NUMBER: {
-        char nb[32];
-        format_number(nb, sizeof(nb), value.as.number);
-        fprintf(out, "%s\n", nb);
-        break;
+    /* ONE renderer. `print` used to carry its own switch, which understood only
+     * numbers inside an array and had no case for a record at all -- so
+     * print(["a","b"]) was `[?, ?]` and print({a:1}) was the literal `{record}`,
+     * while string() rendered both correctly. Two renderers that mostly agree is
+     * exactly the drift this file already warns about for print / print to
+     * error; it had simply happened one level out.
+     *
+     * builtin_string_value is now the only thing that turns a value into text,
+     * and it is TOTAL in display mode, so this cannot raise: printing a value
+     * must never be able to end the program. It borrows -- the caller frees --
+     * hence the copy. */
+    Value text = builtin_string_value(value_copy(value));
+    if (text.kind == VALUE_STRING) {
+        /* Binary-safe: strings may carry interior NULs, so length, not strlen. */
+        fwrite(text.as.string, 1, string_length(text.as.string), out);
     }
-    case VALUE_STRING:
-        fwrite(value.as.string, 1, string_length(value.as.string), out);
-        fputc('\n', out);
-        break;
-    case VALUE_BOOL:
-        fprintf(out, "%s\n", value.as.boolean ? "true" : "false");
-        break;
-    case VALUE_ARRAY:
-        fprintf(out, "[");
-        for (size_t i = 0; i < value.as.array.store->count; i++) {
-            if (i > 0) {
-                fprintf(out, ", ");
-            }
-            if (value.as.array.store->items[i].kind == VALUE_NUMBER) {
-                char nb[32];
-                format_number(nb, sizeof(nb), value.as.array.store->items[i].as.number);
-                fprintf(out, "%s", nb);
-            } else {
-                fprintf(out, "?");
-            }
-        }
-        fprintf(out, "]\n");
-        break;
-    case VALUE_RECORD:
-        fprintf(out, "{record}\n");
-        break;
-    case VALUE_DATETIME:
-        if (value.as.datetime.time_only) {
-            if (value.as.datetime.precision == PREC_HOUR) {
-                fprintf(out, "%02d\n", value.as.datetime.hour);
-            } else if (value.as.datetime.precision == PREC_MINUTE) {
-                fprintf(out, "%02d:%02d\n", value.as.datetime.hour, value.as.datetime.minute);
-            } else {
-                fprintf(out, "%02d:%02d:%02d\n",
-                             value.as.datetime.hour,
-                             value.as.datetime.minute,
-                             value.as.datetime.second);
-            }
-        } else if (value.as.datetime.precision == PREC_YEAR) {
-            fprintf(out, "%04d\n", value.as.datetime.year);
-        } else if (value.as.datetime.precision == PREC_MONTH) {
-            fprintf(out, "%04d-%02d\n", value.as.datetime.year, value.as.datetime.month);
-        } else if (value.as.datetime.precision == PREC_DAY) {
-            fprintf(out, "%04d-%02d-%02d\n",
-                         value.as.datetime.year,
-                         value.as.datetime.month,
-                         value.as.datetime.day);
-        } else if (value.as.datetime.precision == PREC_HOUR) {
-            fprintf(out, "%04d-%02d-%02d %02d\n",
-                         value.as.datetime.year,
-                         value.as.datetime.month,
-                         value.as.datetime.day,
-                         value.as.datetime.hour);
-        } else if (value.as.datetime.precision == PREC_MINUTE) {
-            fprintf(out, "%04d-%02d-%02d %02d:%02d\n",
-                         value.as.datetime.year,
-                         value.as.datetime.month,
-                         value.as.datetime.day,
-                         value.as.datetime.hour,
-                         value.as.datetime.minute);
-        } else {
-            fprintf(out, "%04d-%02d-%02d %02d:%02d:%02d\n",
-                         value.as.datetime.year,
-                         value.as.datetime.month,
-                         value.as.datetime.day,
-                         value.as.datetime.hour,
-                         value.as.datetime.minute,
-                         value.as.datetime.second);
-        }
-        break;
-    case VALUE_DURATION:
-        fprintf(out, "{duration}\n");
-        break;
-    case VALUE_MONEY: {
-        long long cents = value.as.cents;
-        if (cents < 0) {
-            fprintf(out, "-");
-            cents = -cents;
-        }
-        fprintf(out, "%lld.%02lld\n", cents / 100, cents % 100);
-        break;
-    }
-    case VALUE_FILE:
-        fprintf(out, "%s\n", value.as.file_path);
-        break;
-    case VALUE_DIR:
-        fprintf(out, "%s\n", value.as.dir_path);
-        break;
-    case VALUE_POSTGRES_CONNECTION:
-        fprintf(out, "<postgres_connection>\n");
-        break;
-    case VALUE_SQLITE_CONNECTION:
-        fprintf(out, "<sqlite_connection>\n");
-        break;
-    case VALUE_XML_READER:
-        fprintf(out, "<xml_reader>\n");
-        break;
-    case VALUE_GOBJECT:
-        fprintf(out, "<gobject>\n");
-        break;
-    case VALUE_GBOXED:
-        fprintf(out, "<gboxed>\n");
-        break;
-    case VALUE_ACTOR:
-        fprintf(out, "<actor>\n");
-        break;
-    case VALUE_PROCESS:
-        fprintf(out, "<process>\n");
-        break;
-    case VALUE_FUNCTION:
-        fprintf(out, "<function %s>\n", value.as.function.name);
-        break;
-    case VALUE_REGEX:
-        fprintf(out, "<regex %s>\n", value.as.regex->pattern);
-        break;
-    case VALUE_WORKBOOK:
-        fprintf(out, "<workbook>\n");
-        break;
-    }
+    fputc('\n', out);
+    value_free(text);
 }
 
 static Symbol *env_find_in_frame(Env *env, const char *name) {
@@ -8246,7 +8134,26 @@ static void encode_string_literal(StringBuilder *builder, const char *text, size
     sb_append_char(builder, '"');
 }
 
-static int encode_value_to_builder(StringBuilder *builder, Value value, int strict_json);
+/* How a compound value is rendered into text. One walker, three destinations,
+ * because they differ only in what they do with a value that has no JSON form.
+ *
+ *   RENDER_JSON    json_encode(): refuse anything not representable in RFC 8259.
+ *   RENDER_ENCODE  encode(): the same, but `unknown` is allowed a token, since
+ *                  decode() reads it back. Typed and live values still refuse --
+ *                  emitting a lossy token would produce text that silently does
+ *                  not round-trip.
+ *   RENDER_DISPLAY string() and print: TOTAL. Never raises, because displaying a
+ *                  value must not be able to kill the program. A date inside a
+ *                  record has no JSON form but obviously has a readable one, and
+ *                  before this mode existed `string({when: aDate})` raised while
+ *                  `string(aDate)` was fine. */
+typedef enum {
+    RENDER_ENCODE = 0,
+    RENDER_JSON = 1,
+    RENDER_DISPLAY = 2
+} RenderMode;
+
+static int encode_value_to_builder(StringBuilder *builder, Value value, RenderMode mode);
 
 static Value builtin_string_value(Value value) {
     char buffer[128];
@@ -8277,7 +8184,7 @@ static Value builtin_string_value(Value value) {
     case VALUE_RECORD:
         sb_init(&builder);
         used_builder = 1;
-        if (!encode_value_to_builder(&builder, value, 0)) {
+        if (!encode_value_to_builder(&builder, value, RENDER_DISPLAY)) {
             free(builder.items);
             value_free(value);
             return value_null();
@@ -8332,9 +8239,47 @@ static Value builtin_string_value(Value value) {
         }
         value_free(value);
         return value_string(buffer);
-    case VALUE_DURATION:
+    case VALUE_DURATION: {
+        /* Rendered in the same words the literal syntax uses -- `2 days 3 hours`
+         * -- so what you read back is what you would write. Only non-zero
+         * components appear, largest first, and the unit is singular at 1.
+         *
+         * This was the literal text "{duration}" until 2026-08-14, which made
+         * duration the one value kind a program could hold and not display.
+         * That was tolerable while `print` had its own broken renderer; once
+         * every other kind rendered properly it was the only hole left. A
+         * duration of nothing prints as `0 seconds` rather than empty, because
+         * an empty line is indistinguishable from a failure to print. */
+        Duration d = value.as.duration;
+        struct { int amount; const char *unit; } parts[] = {
+            { d.years, "year" }, { d.months, "month" }, { d.weeks, "week" },
+            { d.days, "day" }, { d.hours, "hour" },
+            { d.minutes, "minute" }, { d.seconds, "second" }
+        };
+        buffer[0] = '\0';
+        size_t used = 0;
+        for (size_t i = 0; i < sizeof(parts) / sizeof(parts[0]); i++) {
+            if (parts[i].amount == 0) {
+                continue;
+            }
+            int written = snprintf(buffer + used,
+                                   sizeof(buffer) - used,
+                                   "%s%d %s%s",
+                                   used > 0 ? " " : "",
+                                   parts[i].amount,
+                                   parts[i].unit,
+                                   parts[i].amount == 1 || parts[i].amount == -1 ? "" : "s");
+            if (written <= 0 || (size_t)written >= sizeof(buffer) - used) {
+                break;
+            }
+            used += (size_t)written;
+        }
+        if (used == 0) {
+            snprintf(buffer, sizeof(buffer), "0 seconds");
+        }
         value_free(value);
-        return value_string("{duration}");
+        return value_string(buffer);
+    }
     case VALUE_MONEY: {
         long long cents = value.as.cents;
         long long abs_cents = cents < 0 ? -cents : cents;
@@ -8416,14 +8361,14 @@ static Value builtin_string_value(Value value) {
  * bare nan/inf, none of which are legal JSON; strict mode maps `nothing` to null
  * and REFUSES everything it cannot represent faithfully rather than inventing a
  * token. Traversal, escaping and depth are shared so the two can never drift. */
-static int encode_value_to_builder(StringBuilder *builder, Value value, int strict_json) {
+static int encode_value_to_builder(StringBuilder *builder, Value value, RenderMode mode) {
     char number[64];
     switch (value.kind) {
     case VALUE_NULL:
-        sb_append_text(builder, strict_json ? "null" : "nothing");
+        sb_append_text(builder, mode == RENDER_JSON ? "null" : "nothing");
         return 1;
     case VALUE_UNKNOWN:
-        if (strict_json) {
+        if (mode == RENDER_JSON) {
             runtime_error_raise("json_encode: `unknown` has no JSON representation; "
                                 "omit the field or replace it with nothing (null)",
                                 1003, "serialization");
@@ -8432,7 +8377,7 @@ static int encode_value_to_builder(StringBuilder *builder, Value value, int stri
         sb_append_text(builder, "unknown");
         return 1;
     case VALUE_NUMBER:
-        if (strict_json && !isfinite(value.as.number)) {
+        if (mode == RENDER_JSON && !isfinite(value.as.number)) {
             runtime_error_raise("json_encode: NaN and infinity have no JSON "
                                 "representation", 1003, "serialization");
             return 0;
@@ -8452,7 +8397,7 @@ static int encode_value_to_builder(StringBuilder *builder, Value value, int stri
             if (i > 0) {
                 sb_append_char(builder, ',');
             }
-            if (!encode_value_to_builder(builder, value.as.array.store->items[i], strict_json)) {
+            if (!encode_value_to_builder(builder, value.as.array.store->items[i], mode)) {
                 return 0;
             }
         }
@@ -8467,7 +8412,7 @@ static int encode_value_to_builder(StringBuilder *builder, Value value, int stri
             encode_string_literal(builder, value.as.record.fields[i].name,
                                   strlen(value.as.record.fields[i].name));
             sb_append_char(builder, ':');
-            if (!encode_value_to_builder(builder, *value.as.record.fields[i].value, strict_json)) {
+            if (!encode_value_to_builder(builder, *value.as.record.fields[i].value, mode)) {
                 return 0;
             }
         }
@@ -8488,13 +8433,29 @@ static int encode_value_to_builder(StringBuilder *builder, Value value, int stri
     case VALUE_FUNCTION:
     case VALUE_REGEX:
     case VALUE_WORKBOOK:
-        if (strict_json) {
+        if (mode == RENDER_JSON) {
             runtime_error_raise("json_encode supports numbers, strings, booleans, "
                                 "nothing, arrays, and records; live and typed values "
                                 "(dates, money, durations, files, functions, handles) "
                                 "have no JSON representation",
                                 1003, "serialization");
             return 0;
+        }
+        if (mode == RENDER_DISPLAY) {
+            /* Total by construction: recurse into the single-value renderer,
+             * which has a text form for every kind. It cannot come back here --
+             * builtin_string_value only reaches this walker for arrays and
+             * records, and those are handled above -- so there is no cycle.
+             * Costs an allocation per nested typed value, which display can
+             * afford and encode could not. */
+            Value text = builtin_string_value(value_copy(value));
+            if (text.kind == VALUE_STRING) {
+                sb_append_text(builder, text.as.string);
+            } else {
+                sb_append_text(builder, "?");
+            }
+            value_free(text);
+            return 1;
         }
         runtime_error_raise("encode supports numbers, strings, booleans, nothing, unknown, arrays, and records",
                             1003,
@@ -8544,7 +8505,7 @@ static int json_encodable_value(Value v, int depth) {
 static Value builtin_json_encode_value(Value value) {
     StringBuilder builder;
     sb_init(&builder);
-    if (!encode_value_to_builder(&builder, value, 1)) {
+    if (!encode_value_to_builder(&builder, value, RENDER_JSON)) {
         free(builder.items);
         value_free(value);
         return value_null();
@@ -8559,7 +8520,7 @@ static Value builtin_json_encode_value(Value value) {
 static Value builtin_encode_value(Value value) {
     StringBuilder builder;
     sb_init(&builder);
-    if (!encode_value_to_builder(&builder, value, 0)) {
+    if (!encode_value_to_builder(&builder, value, RENDER_ENCODE)) {
         free(builder.items);
         value_free(value);
         return value_null();

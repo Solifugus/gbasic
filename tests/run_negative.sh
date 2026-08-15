@@ -20,6 +20,7 @@ cases=(
     negative_take_last_empty
     negative_reverse_type
     negative_unique_type
+    negative_encode_typed
     negative_compare_array_order
     negative_compare_record_order
     negative_compare_array_scalar_order

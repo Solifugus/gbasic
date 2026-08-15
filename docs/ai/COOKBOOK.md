@@ -24,6 +24,12 @@ for error handling, `ERRORS.md`.
   independent at any depth, over a shared refcounted store; indexing and
   `append` are linear, which `tests/run_arridx.sh` fails if it stops being true.
   → `tests/arridx_test.bas`
+- **Display any value** — `print v` and `string(v)` use one renderer and always
+  agree, so a record shows its fields (`{"a":1}`), an array its elements
+  (`["a","b"]`) and a duration its units (`2 days 3 hours`). Display is total —
+  it never raises, even for a date or function nested in a record — whereas
+  `encode`/`json_encode` refuse those, because a lossy token would not survive
+  `decode`. → `tests/render_parity_test.bas`
 - **Compare or search compound values** — `=` and `!=` on records and arrays are
   deep and structural, and record field order is irrelevant. `contains`, `find`,
   `remove_value` and `consider` all use the same comparison, so dispatching on a

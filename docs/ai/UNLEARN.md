@@ -135,6 +135,25 @@ the standing ones.
 
 - **`print` takes a single expression.** `print(a, b)` and `print a; b` are parse
   errors. Concatenate: `print(string(a) + " " + string(b))`.
+- **`print` and `string()` render identically** — one renderer, as of
+  2026-08-14. Records and arrays show their contents:
+
+  ```basic
+  print({ a: 1, b: "two" })     ' {"a":1,"b":"two"}
+  print(["a", "b"])             ' ["a","b"]
+  print(2 days 3 hours)         ' 2 days 3 hours
+  ```
+
+  Before that, `print` had its own renderer that understood only numbers inside
+  an array: `["a","b"]` printed as `[?, ?]` and a record printed as the literal
+  word `{record}`. If you find older code calling `print(string(x))` to see a
+  record, that is why — the wrapper is now redundant. Pinned by
+  `tests/run_render.sh`, which requires the two to stay byte-identical.
+- **Displaying a value never raises, but encoding one can.** `string()` and
+  `print` have a text form for every value, including a date or a function
+  nested inside a record. `encode` and `json_encode` deliberately **refuse**
+  those — a lossy token would produce text `decode` cannot read back. So
+  `print({ when: aDate })` is fine and `encode({ when: aDate })` raises.
 - **Printed output does not leave the process when you pipe it.** Into a terminal,
   output appears line by line; into a **pipe** (`| less`, a log collector, a parent
   program reading you) stdio switches to block buffering and holds it until ~4 KB
