@@ -1,11 +1,11 @@
-twoway A f 83.3333 p 1e-06
+twoway A f 83.333333 p 1e-06
 twoway B f 51.3 p 1e-06
 twoway AB f 0.633333 p 0.547667
-rm f 26.9091 df1 2 df2 8 p 0.00028 peta 0.870588
-friedman stat 9.57895 df 2 p 0.008317
-tukey 0-1 md -5 padj 0.000835 ci -7.6679 -2.3321 reject true
-tukey 0-2 md 4 padj 0.004635 ci 1.3321 6.6679 reject true
-tukey 1-2 md 9 padj 4e-06 ci 6.3321 11.6679 reject true
+rm f 26.909091 df1 2 df2 8 p 0.00028 peta 0.870588
+friedman stat 9.578947 df 2 p 0.008317
+tukey 0-1 md -5 padj 0.000835 ci -7.667896 -2.332104 reject true
+tukey 0-2 md 4 padj 0.004635 ci 1.332104 6.667896 reject true
+tukey 1-2 md 9 padj 4e-06 ci 6.332104 11.667896 reject true
 guard_twoway unknown
 guard_rm unknown
 guard_tukey unknown

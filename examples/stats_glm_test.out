@@ -8,7 +8,7 @@ probit ll -40.0556 aic 86.1113
 probit ame 0.25399 -0.01481 se 0.04335 0.08779
 negbin b 0.1837 0.7962 -0.5248
 negbin se 0.2587 0.1534 0.2282
-negbin alpha 0.242 ll -95.7091 aic 199.418
+negbin alpha 0.242 ll -95.7091 aic 199.4183
 ordinal b 0.9366 -0.8446
 ordinal se 0.3019 0.4798
 ordinal cuts 0.2655 1.8826 ll -55.4391
@@ -16,7 +16,7 @@ ordinal prsq 0.10763
 mnl cat1 1.0929 0.4914 -1.3096
 mnl cat2 -0.3007 -0.5946 0.5669
 mnl se1 0.6388 0.3481 0.5965
-mnl ll -76.3001 aic 164.6
+mnl ll -76.3001 aic 164.6002
 mnl prsq 0.11724
 guard_ord unknown
 guard_mnl unknown

@@ -1,0 +1,34 @@
+money-ish ok
+cents ok
+date serial ok
+tenth ok
+half ok
+three halves ok
+quarter ok
+point-one plus point-two ok
+third ok
+two thirds ok
+small int ok
+int-valued float ok
+negative int ok
+epoch-sized ok
+2^53 - 1 ok
+bitwise result ok
+zero ok
+parity print below, string [265550.75], quote ["265550.75"]
+265550.75
+roundtrip battery: 1420 values, 0 lost
+tiny roundtrip ok
+big non-integer roundtrip ok
+negative fraction roundtrip ok
+near-integer roundtrip ok
+widest negative ok
+widest is 24 chars
+largest double ok
+smallest subnormal ok
+smallest normal ok
+1e20 ok
+negative zero ok
+largest double roundtrip ok
+smallest subnormal roundtrip ok
+smallest normal roundtrip ok

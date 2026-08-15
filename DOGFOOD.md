@@ -1145,3 +1145,90 @@ finding gets lost.
   the path that grows an empty record) were both found by valgrind and neither
   produced a wrong VALUE — the suites were green when the first one was live.
   For a refcounting change, a valgrind tier is not an extra; it is the tier.
+
+## 2026-08-14 — CC — while: PLAT-NUMFMT, fixing the six-digit `print`
+
+### Status update on 2026-08-12 (b): fixed
+- **Resolved.** `format_number` in `src/eval.c` emitted `%g`, six significant
+  digits. It now emits the **shortest decimal that reads back as the same
+  double**, so `265550.75` prints as `265550.75`, `23750.25` as `23750.25`, and
+  the serial `46237.5674884` in full. The integer branch is untouched: an
+  integer-valued double below 2^53 still prints plainly, so ids, epoch seconds
+  and bitwise results are unaffected.
+- **Why shortest rather than `%.17g`:** both round-trip, but `%.17g` renders
+  `0.1` as `0.10000000000000001`. Shortest-round-trip is the only rule that is
+  simultaneously lossless and not noisy, and it makes `number(string(x)) = x` a
+  property the language can assert about itself — which is the load-bearing
+  tier in `tests/run_numfmt.sh`, because unlike a list of expected digit
+  strings it cannot rot.
+- **Cost, stated plainly:** floating-point error is now VISIBLE.
+  `print(0.1 + 0.2)` shows `0.30000000000000004` where it used to show `0.3`.
+  That is the honest rendering of a value binary floating point cannot hold, and
+  the old format was concealing the difference rather than removing it — but it
+  is a real change in what a program's output looks like, and any program
+  printing derived floats will look noisier. `round(x, 2)` for display, or a
+  money value, both still print tidily.
+- **Rebaseline:** 17 goldens moved, all in the same direction (digits that were
+  being truncated): 13 stats examples, plus `xlsx_compile`, `xlsx_consolidate`,
+  `xlsx_modern` and `insiders_cluster`. Listed here because a golden that moves
+  is supposed to be a deliberate, enumerated act.
+- **What did NOT change:** the tests that assert by COMPARISON rather than by
+  printed text stay that way. The formatter gap was the original reason for the
+  idiom, but it is the better assertion regardless — it tests that the pipeline
+  preserved a value rather than that the interpreter can display one. The stale
+  *justifications* in `CLAUDE.md` and `docs/xlsx_design.md` were updated rather
+  than left to become the next six-week-old lie (cf. the PLAT-DEBT 1 rule).
+
+### The oracle tier was vacuous on the first attempt
+- **Type:** doc-gap (test-design, really)
+- **Severity:** medium
+- **What:** the suite's independent tier dumped every rendered number and had
+  awk recompute the shortest form of each, requiring agreement. It passed
+  against the **unfixed** binary. The reason is circular and worth remembering:
+  awk parsed *our own printed text*, and the shortest representation of the
+  double that `0.333333` denotes is `0.333333`, so a truncated rendering agrees
+  with itself. The tier could detect spurious digits and was structurally
+  incapable of detecting the actual defect.
+- **Workaround:** the dump now emits a **recipe** (`div 1 3<TAB>0.3333333333333333`)
+  and the checker recomputes the value from the recipe in its own arithmetic,
+  never reading our number; the two meet only at the comparison. Every recipe is
+  one correctly-rounded IEEE primitive, so both languages land on the identical
+  double. Proven red at 2590 of 4070 disagreements against the pre-change binary.
+- **The general lesson:** an oracle fed the output it is checking is not an
+  oracle. It has to reach the expected answer by a path that does not pass
+  through the thing under test — the same reason `xlsx.check` uses Excel's
+  cached values rather than our own evaluator's.
+
+### `1e20` is not a number — it lexes as a duration
+- **Type:** language-surprise
+- **Severity:** low
+- **What:** gBASIC has no exponent literal. `print(1e20)` fails with
+  `unknown duration unit: e20`, and `-1.2345678901234567e-308` fails with
+  `unknown duration unit: e` followed by a type error, because the duration
+  syntax claims the trailing identifier. Nothing about the message points at
+  scientific notation, so it reads as a lexer bug until you know.
+- **Workaround:** build the value from text — `number("1e20")`. Used throughout
+  the width tier of `tests/numfmt_test.bas`, which needs the extreme doubles and
+  cannot write any of them as literals. Documented in `docs/ai/UNLEARN.md`.
+- **Note:** low severity because the workaround is one call and extreme
+  magnitudes are rare in BASIC-shaped programs. It is logged because the
+  diagnostic actively misleads, which is the expensive part, not the gap.
+
+### Found while here, NOT fixed: `encode` and `print` now disagree
+- **Type:** language-surprise
+- **Severity:** low
+- **What:** JSON `encode` renders numbers with `%.17g`, which this change did
+  not touch, so the two surfaces now say different things about the same value:
+  `print(0.1)` shows `0.1` while `encode({a: 0.1})` shows
+  `{"a":0.10000000000000001}`. Both are lossless and both read back correctly —
+  this is verbosity, not a wrong answer — but the inconsistency is new, and it
+  is visible in anything that persists JSON, `stdlib/persist.bas` included.
+- **Workaround:** none needed; the values are correct.
+- **Deliberately out of scope:** PLAT-NUMFMT was about a program being unable to
+  DISPLAY a value it computed. `encode` never had that problem. Fixing it means
+  pointing `format_number` at the JSON writer and rebaselining every JSON
+  golden, which is a separate, enumerable act rather than a rider on this one.
+  Worth doing — every mainstream JSON emitter uses shortest-round-trip, and it
+  would shrink persisted files — but as its own change.
+- **Note:** `pg_parameter_text` also uses `%.17g` and should STAY that way. It
+  is a wire format where maximum precision is the point and nobody reads it.

@@ -20,7 +20,7 @@ columns: tape | loan_id | balance | rate
   CU_A  A-100  balance 150000  rate 0.0525
   CU_A  A-101  balance 82500.5  rate 0.04875
   CU_B  B-200  balance 1500  rate 0.0475
-  CU_B  B-201  balance 23750.2  rate 0.0525
+  CU_B  B-201  balance 23750.25  rate 0.0525
   CU_C  C-300  balance -1200  rate 0.06
   CU_C  C-301  balance 9000  rate 0.065
 

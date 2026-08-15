@@ -1471,11 +1471,47 @@ static Value value_datetime(DateTime datetime) {
  * 32-bit bitwise results, and large ids read correctly — while everything else
  * keeps the compact %g form. Distinct from the %.17g used for serialize/decode
  * round-trips, which must stay full-precision. */
+/* The single number formatter: `print`, `string()` and `quote()` all arrive
+ * here, so this decides what every gBASIC program's numeric output looks like.
+ *
+ * It emits the SHORTEST decimal that reads back as the same double. This used
+ * to be plain "%g" -- six significant digits -- which meant a program could
+ * compute a value it had no way to display: 265550.75 printed as 265551 and
+ * 23750.25 as 23750.2, so a total could silently lose its cents. Shortest
+ * round-trip is chosen over the other lossless option, "%.17g", because that
+ * one renders 0.1 as 0.10000000000000001; shortest is the only rule that is
+ * both faithful and quiet. It also makes number(string(x)) == x a property the
+ * language can assert about itself, which is what tests/run_numfmt.sh leans on.
+ *
+ * The trade is that floating-point error becomes visible -- 0.1 + 0.2 shows as
+ * 0.30000000000000004 -- which is the honest rendering of a value binary
+ * floating point cannot hold. The old format concealed the difference rather
+ * than removing it.
+ *
+ * Widest possible output is 24 chars (-1.2345678901234567e-308) plus the NUL;
+ * the smallest caller buffer is 32. run_numfmt.sh's WIDTH tier asserts this,
+ * because the change made output longer into buffers sized for six digits.
+ */
 static void format_number(char *buf, size_t bufsize, double v) {
+    /* Integer-valued and below 2^53: print in full, no exponent, no point, so
+     * ids, epoch seconds and bitwise results read as integers. Above 2^53 the
+     * digits a full form would show are not all real, so it falls through. */
     if (isfinite(v) && v == floor(v) && fabs(v) < 9007199254740992.0) {
         snprintf(buf, bufsize, "%.0f", v);
-    } else {
+        return;
+    }
+    if (!isfinite(v)) {
         snprintf(buf, bufsize, "%g", v);
+        return;
+    }
+    /* 17 significant digits always round-trips a double, so this terminates
+     * with a faithful rendering in buf even if the loop never hits the early
+     * return. */
+    for (int p = 1; p <= 17; p++) {
+        snprintf(buf, bufsize, "%.*g", p, v);
+        if (strtod(buf, NULL) == v) {
+            return;
+        }
     }
 }
 

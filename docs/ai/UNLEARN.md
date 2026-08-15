@@ -130,6 +130,47 @@ the standing ones.
   governs stdout alone. Put anything that is not the program's data there, or a
   caller cannot pipe your program anywhere.
 
+## Numbers on screen
+
+- **`print` shows the number the program actually holds, in full.** Until
+  2026-08-14 it rendered about six significant digits, so `265550.75` came out
+  as `265551` and a program could compute a total it had no way to display.
+  It now prints the **shortest decimal that reads back as the same value** —
+  which is exact, and is why `number(string(x)) = x` for every `x`.
+
+- **That means floating-point error is now visible, and that is deliberate.**
+
+  ```basic
+  print(0.1 + 0.2)      ' 0.30000000000000004, not 0.3
+  print(1 / 3)          ' 0.3333333333333333
+  ```
+
+  Binary floating point genuinely cannot hold `0.3`, and the old format hid the
+  difference rather than removing it. If you want a tidy display, round for
+  display — `round(0.1 + 0.2, 2)` prints `0.30` — but do not expect the
+  formatter to do it for you. For money, use a **money value**, declared with a
+  currency modifier, which displays at fixed currency precision:
+
+  ```basic
+  a(USD)= 0.1
+  b(USD)= 0.2
+  print a + b           ' 0.30
+  t(USD)= 265550.75
+  print t               ' 265550.75
+  ```
+
+- **Integers are unaffected** — an integer-valued number below 2^53 still prints
+  in full with no exponent and no decimal point, so ids, epoch seconds and
+  bitwise results read as you would expect. At or above 2^53 the exponent form
+  appears (`1e+20`), because past that point the digits a full form would print
+  are not all real.
+
+- **There is no exponent literal.** `1e20` is not a number — `e20` lexes as a
+  **duration unit** and raises `unknown duration unit: e20`. Build such values
+  from text: `number("1e20")`.
+
+Pinned by `tests/run_numfmt.sh`.
+
 ## Regex
 
 - **`match` SCANS; it does not anchor.** It is Python's `re.search`, not

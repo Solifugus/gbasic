@@ -1,4 +1,4 @@
-prop1 z 2.35702 p 0.018422 ci 0.100513 0.199487
+prop1 z 2.357023 p 0.018422 ci 0.100513 0.199487
 prop2 z 2.19089 p 0.02846 diff 0.15 ci 0.01743 0.28257
 ab lift 0.25 diff 0.03 p 0.04964 sig true
 funnel 0 count 1000 conv 1 cum 1 drop 0

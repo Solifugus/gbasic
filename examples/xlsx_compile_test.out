@@ -55,7 +55,7 @@
 
 == and it runs set-based: one statement over the whole table ==
   select count(*) n, round(sum(CASE WHEN "rate" > 0.05 THEN ROUND("balance" * "rate", 2) ELSE 0 END), 2) fees from loans
-  -> 6 loans, total fees 16573.8
+  -> 6 loans, total fees 16573.77
 
 == the OTHER target: the same formula run in memory over a frame ==
   column E: 6 rows, interpreter = frame = SQL, 0 disagreements

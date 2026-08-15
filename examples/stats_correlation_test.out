@@ -3,8 +3,8 @@ kendall tau 0.636364 p 0.006435
 partial r 0.811834 p 0.004341
 pbis r 0.268113 p 0.425378
 cramers v 0.054331 chi2 0.271575 dof 2
-hedges d 2.35702 g 2.12892
-odds or 1.55556 ci 0.679496 3.5611
+hedges d 2.357023 g 2.128924
+odds or 1.555556 ci 0.679496 3.561097
 eta 0.658574 omega 0.561404
 guard_len unknown
 guard_small unknown

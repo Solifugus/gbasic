@@ -955,8 +955,12 @@ which. Following ARI's **infer to advise, declare to parse**:
 
 *The assertions that carry the tier are arithmetic, not goldens.* The
 consolidated balances must sum to a figure derived from the four tapes' own
-values — which also proves the cents survive, since `print` renders 23750.25 as
-23750.2 and a display check would miss it. And every normalised rate must land
+values — which also proves the cents survive. (When this tier was written a
+display check would additionally have missed them, because `print` rendered
+23750.25 as 23750.2; that gap closed with PLAT-NUMFMT on 2026-08-14 and
+`print` now shows the value in full. The arithmetic assertion is kept anyway —
+it tests the pipeline's result rather than the interpreter's formatter, which
+is what this tier is for.) And every normalised rate must land
 inside a plausible band: a mis-inferred scale yields a number that is entirely
 plausible in isolation, so only a band check catches it.
 
@@ -996,8 +1000,11 @@ tape with different columns to an existing pool should stop, not reshape it.
 (The bare `create` on the append path was a real bug the test caught.)
 
 *The exactness tier compares rather than prints:* the loaded total must equal
-265550.75, and `print` renders that as 265551, so a printed total would hide
-exactly the cents the pipeline exists to preserve.
+265550.75. When this was written `print` rendered that as 265551, so a printed
+total would have hidden exactly the cents the pipeline exists to preserve;
+PLAT-NUMFMT fixed the formatter on 2026-08-14 and it now prints in full. The
+comparison stands regardless, because what this tier is asserting is that the
+pipeline preserved the value, not that the interpreter can display it.
 
 **L0–L3 and the easy half of L4 are now built.** What remains of §7 is the
 formula compiler proper — lowering a column formula to a vectorised frame pass

@@ -1,7 +1,7 @@
 mean 5
 pvariance 4
 pstdev 2
-variance 4.57143
+variance 4.571429
 stdev 2.13809
 skewness 0.65625
 kurtosis -0.21875
@@ -20,5 +20,5 @@ q25 4
 median_q 4.5
 q75 5.5
 p90 7.6
-covariance 5.28571
+covariance 5.285714
 correlation 0.955336

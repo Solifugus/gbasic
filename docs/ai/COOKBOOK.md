@@ -24,6 +24,13 @@ for error handling, `ERRORS.md`.
   independent at any depth, over a shared refcounted store; indexing and
   `append` are linear, which `tests/run_arridx.sh` fails if it stops being true.
   → `tests/arridx_test.bas`
+- **Show a number** — `print` renders the shortest decimal that reads back as
+  the same value, so nothing is truncated and `number(string(x)) = x` always
+  holds. That makes floating-point error visible (`0.1 + 0.2` shows
+  `0.30000000000000004`): round for display with `round(x, 2)`, or use a money
+  value (`t(USD)= 265550.75`) for figures that must read exactly. Integers below
+  2^53 print plainly; there is no exponent *literal*, so build extremes with
+  `number("1e20")`. → `tests/numfmt_test.bas`
 - **Functions** — definition, params, `return`. → `examples/function_test.gb`
 - **Function values** — a bare function name is a value you can store, pass, and
   call; equality is same-reference. → `examples/first_class_function_test.bas`

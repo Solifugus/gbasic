@@ -1,8 +1,8 @@
 uniform pdf 0.166667 cdf 0.5 q 3.8
-expon pdf 0.111565 cdf 0.77687 q 2.40795
-gamma pdf 0.291913 cdf 0.693781 q 3.07879
+expon pdf 0.111565 cdf 0.77687 q 2.407946
+gamma pdf 0.291913 cdf 0.693781 q 3.078786
 beta pdf 2.1609 cdf 0.579825 q 0.422448
-lognormal pdf 0.257287 cdf 0.601615 q 1.99374
+lognormal pdf 0.257287 cdf 0.601615 q 1.993736
 weibull pdf 0.339242 cdf 0.477703 q 1.56644
 negbinom pmf 0.077414 cdf 0.17367 q 7
 guard_uniform unknown
