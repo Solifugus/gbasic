@@ -71,6 +71,21 @@ program main(args)
     show(mode, [{ a: 1 }, { a: 2 }])
     show(mode, [nothing, unknown])
 
+    ' --- NESTED NUMBERS: a value must not change shape by being contained ----
+    ' The first version of this fixture had nested INTEGERS only, which render
+    ' the same under any formatter, so it missed that nested numbers went
+    ' through a second formatter still using "%.17g": print(0.1) was `0.1` while
+    ' print([0.1]) was `[0.10000000000000001]`. The parity tier could not catch
+    ' it either -- `print` and `string()` agreed with each other, both wrong.
+    ' Agreement is not correctness, which is why these are here.
+    show(mode, [0.1])
+    show(mode, [1 / 3])
+    show(mode, [0.1 + 0.2])
+    show(mode, { x: 0.1 })
+    show(mode, [[0.1]])
+    show(mode, { deep: { frac: 1 / 3 } })
+    show(mode, [265550.75, 23750.25])
+
     ' --- records: used to render as the literal {record} ---------------------
     show(mode, { })
     show(mode, { a: 1, b: "two" })

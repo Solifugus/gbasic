@@ -149,6 +149,11 @@ the standing ones.
   word `{record}`. If you find older code calling `print(string(x))` to see a
   record, that is why — the wrapper is now redundant. Pinned by
   `tests/run_render.sh`, which requires the two to stay byte-identical.
+- **A number renders the same bare or nested**, in display and in JSON alike:
+  `print(0.1)` and `print([0.1])` give `0.1` and `[0.1]`, and
+  `encode({a: 0.1})` gives `{"a":0.1}`. All of it is shortest-round-trip, so
+  `decode(encode(x))` returns exactly `x`. (`encode` emitted 17 digits until
+  2026-08-14 — lossless but noisy, and it disagreed with `print`.)
 - **Displaying a value never raises, but encoding one can.** `string()` and
   `print` have a text form for every value, including a date or a function
   nested inside a record. `encode` and `json_encode` deliberately **refuse**

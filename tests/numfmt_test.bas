@@ -125,6 +125,59 @@ program main(args)
   print(rt("negative fraction", -0.007))
   print(rt("near-integer", 2.9999999999999996))
 
+  ' --- nesting: containment must not change a number's rendering ------------
+  ' A number inside an array or record goes through a different code path (the
+  ' shared encode/display walker) than a bare one. That path had its own
+  ' formatter, still "%.17g", so string(0.1) was "0.1" while string([0.1]) was
+  ' "[0.10000000000000001]" -- one value with two renderings, decided by whether
+  ' it sat inside a container. Shipped 2026-08-14 with PLAT-RENDER and fixed the
+  ' same day; these assert the invariant directly rather than pinning digits, so
+  ' they hold whatever any particular value needs.
+  print(shows("nested tenth", [0.1], "[0.1]"))
+  print(shows("nested third", [1 / 3], "[0.3333333333333333]"))
+  print(shows("nested money-ish", [265550.75], "[265550.75]"))
+  print(shows("record fraction", { x: 0.1 }, "{\"x\":0.1}"))
+
+  ' The general form, so this cannot rot the way a digit list can: wrapping a
+  ' value in an array must wrap its rendering in brackets and change nothing
+  ' else. Checked over the same awkward battery used above.
+  nest_bad = 0
+  nest_checked = 0
+  i = 1
+  while i <= 40
+    j = 1
+    while j <= 9
+      v = i / j
+      if string([v]) != "[" + string(v) + "]" then
+        nest_bad = nest_bad + 1
+        print("NESTING DIFFERS bare " + string(v) + " nested " + string([v]))
+      end if
+      nest_checked = nest_checked + 1
+      j = j + 1
+    end while
+    i = i + 1
+  end while
+  print("nesting battery: " + string(nest_checked) + " values, " + string(nest_bad) + " differ")
+
+  ' JSON must still read back exactly what it wrote. Shortest-round-trip is
+  ' lossless, which is the whole reason it is safe to use for `encode` as well
+  ' as for display -- so this asserts the property rather than the digits.
+  json_bad = 0
+  i = 1
+  while i <= 40
+    j = 1
+    while j <= 9
+      v = i / j
+      if decode(encode({ n: v })).n != v then
+        json_bad = json_bad + 1
+        print("JSON ROUND-TRIP LOST " + string(v))
+      end if
+      j = j + 1
+    end while
+    i = i + 1
+  end while
+  print("json battery: " + string(nest_checked) + " values, " + string(json_bad) + " lost")
+
   ' --- extremes, and the WIDTH they need ------------------------------------
   ' The renderings below are the longest this format can produce, and they are
   ' pinned because the change made output LONGER: format_number writes into

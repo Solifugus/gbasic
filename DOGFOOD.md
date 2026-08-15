@@ -1409,3 +1409,48 @@ finding gets lost.
   `run_gtkui`, `run_datagrid`, `run_gi`) are the blind spot for any change to a
   shared renderer. This machine HAS a display, so there is no excuse for
   skipping them; they just are not in the reflexive list.
+
+## 2026-08-14 — CC — while: the nested-number inconsistency PLAT-RENDER shipped
+
+### I shipped a defect and the parity tier could not see it
+- **Type:** bug
+- **Severity:** medium
+- **What:** an hour after PLAT-RENDER went out, `print(0.1)` gave `0.1` and
+  `print([0.1])` gave `[0.10000000000000001]`. One value, two renderings,
+  decided by whether it sat inside a container. Numbers nested in an array or
+  record go through the shared encode/display walker, which had its own
+  `snprintf(..., "%.17g", ...)` that PLAT-NUMFMT never touched — the unification
+  made that second formatter reachable from `print` for the first time, so a
+  pre-existing inconsistency became a visible one.
+- **Workaround:** resolved. The walker now calls `format_number`, the same
+  function `print` and `string()` use on a bare number.
+- **THE TEST-DESIGN LESSON, which is the reason this entry exists.** PLAT-RENDER's
+  headline tier asserts that `print v` and `print string(v)` are byte-identical
+  across every value shape. It passed. It *had* to pass: both paths reach the
+  same walker, so both were wrong in exactly the same way. **A parity tier proves
+  agreement, not correctness** — the two things it compares can be two faces of
+  one mistake. It is the same failure as PLAT-NUMFMT's first oracle, which fed
+  awk our own printed text, and I wrote that lesson down the same day and then
+  walked into the neighbouring version of it.
+- **The other half was fixture coverage.** `render_parity_test.bas` had nested
+  INTEGERS (`[1,2,3]`) and a top-level fraction, but no nested fraction — and
+  integers render identically under any formatter, so the one shape that would
+  have exposed it was the one missing. Nothing in 215 examples or 288 negative
+  tests had a nested fraction either: the fix moved ZERO goldens, which is not
+  reassurance but a measure of the hole.
+- **Now asserted as an invariant, not as digits:** `string([v])` must equal
+  `"[" + string(v) + "]"` over a generated battery, so it holds for values
+  nobody listed. Proven red against the binary I had pushed an hour earlier.
+
+### `encode` and `json_encode` now use shortest-round-trip too
+- **Resolved** (this was the standing item from the PLAT-NUMFMT entry).
+  `encode({a: 0.1})` was `{"a":0.10000000000000001}` and is now `{"a":0.1}`.
+  Both forms round-trip exactly — shortest-round-trip IS the guarantee `%.17g`
+  was there to provide — so nothing is lost, stored JSON gets smaller and
+  readable, and it matches what every mainstream JSON emitter produces. A
+  360-value `decode(encode(v)) = v` battery asserts the losslessness directly
+  rather than trusting the argument.
+- **Deliberately NOT changed:** `pg_parameter_text` and the PostgreSQL JSON
+  parameter builder keep `%.17g`. Those are wire formats nobody reads, where
+  maximum precision is the safe default and there is no consistency argument to
+  serve. Noted at both sites so the next person does not "finish the job".

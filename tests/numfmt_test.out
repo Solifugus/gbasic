@@ -22,6 +22,12 @@ tiny roundtrip ok
 big non-integer roundtrip ok
 negative fraction roundtrip ok
 near-integer roundtrip ok
+nested tenth ok
+nested third ok
+nested money-ish ok
+record fraction ok
+nesting battery: 360 values, 0 differ
+json battery: 360 values, 0 lost
 widest negative ok
 widest is 24 chars
 largest double ok

@@ -28,6 +28,14 @@
 #      is checkable inside the language, and unlike a list of expected digit
 #      strings it cannot rot -- it stays true however many digits any particular
 #      value turns out to need.
+#   2b. NESTING   -- a number inside a container goes through a DIFFERENT
+#      formatter (the shared encode/display walker) than a bare one, and that
+#      second path kept "%.17g" for a day after this change shipped: string(0.1)
+#      was "0.1" while string([0.1]) was "[0.10000000000000001]". Asserted as an
+#      invariant -- wrapping a value wraps its rendering and changes nothing
+#      else -- so it holds for values nobody listed. Plus a JSON round-trip
+#      battery, since shortest-round-trip is used for `encode` too and that is
+#      only safe because it is lossless.
 #   3. ORACLE     -- an INDEPENDENT reimplementation of the rule, in awk, run
 #      over ~3000 generated values. This is the tier that would catch a
 #      minimality search that is self-consistently wrong: the golden records
@@ -91,6 +99,37 @@ if grep -q 'roundtrip battery: .* 0 lost' "$out"; then
 else
     printf 'FAIL round-trip battery did not report 0 lost\n'
     grep 'roundtrip battery' "$out" || printf '  (battery line absent -- fixture did not reach it)\n'
+    status=1
+fi
+
+# --- Tier 2b: nesting ---------------------------------------------------------
+# A number inside a container goes through a different formatter than a bare
+# one, and that second path kept "%.17g" for a day after PLAT-NUMFMT: string(0.1)
+# was "0.1" while string([0.1]) was "[0.10000000000000001]". Asserted as an
+# invariant (wrapping a value wraps its rendering and changes nothing else)
+# rather than as digits, so it holds for values nobody listed.
+if grep -q 'NESTING DIFFERS' "$out"; then
+    printf 'FAIL nesting -- a number renders differently inside a container:\n'
+    grep 'NESTING DIFFERS' "$out"
+    status=1
+elif grep -q 'nesting battery: .* 0 differ' "$out"; then
+    printf 'PASS nesting (%s)\n' "$(grep -o 'nesting battery: .*' "$out")"
+else
+    printf 'FAIL nesting battery did not report 0 differ\n'
+    grep 'nesting battery' "$out" || printf '  (battery line absent)\n'
+    status=1
+fi
+
+# Shortest-round-trip is used for `encode` as well as display, which is only
+# safe because it is lossless. Asserted directly.
+if grep -q 'JSON ROUND-TRIP LOST' "$out"; then
+    printf 'FAIL json round-trip -- encode/decode did not preserve a value:\n'
+    grep 'JSON ROUND-TRIP LOST' "$out"
+    status=1
+elif grep -q 'json battery: .* 0 lost' "$out"; then
+    printf 'PASS json round-trip (%s)\n' "$(grep -o 'json battery: .*' "$out")"
+else
+    printf 'FAIL json battery did not report 0 lost\n'
     status=1
 fi
 

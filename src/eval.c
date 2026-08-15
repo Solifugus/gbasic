@@ -8382,7 +8382,25 @@ static int encode_value_to_builder(StringBuilder *builder, Value value, RenderMo
                                 "representation", 1003, "serialization");
             return 0;
         }
-        snprintf(number, sizeof(number), "%.17g", value.as.number);
+        /* The same formatter `print` and `string()` use on a bare number, so a
+         * value does not change shape by being nested. This was "%.17g" until
+         * 2026-08-14, which meant print(0.1) showed `0.1` while print([0.1])
+         * showed `[0.10000000000000001]` -- one value, two renderings, decided
+         * by whether it sat inside a container.
+         *
+         * Applies to `encode` and `json_encode` too, not only display. Both
+         * forms round-trip exactly, so nothing is lost: shortest-round-trip IS
+         * the guarantee %.17g was there to provide, it is what every mainstream
+         * JSON emitter produces, and it makes stored JSON smaller and easier to
+         * read. Non-finite values never reach here under RENDER_JSON (refused
+         * just above); under the other modes format_number emits inf/nan
+         * exactly as %.17g did.
+         *
+         * The sibling site in the PostgreSQL JSON parameter builder keeps
+         * "%.17g" deliberately: that is a wire format nobody reads, where
+         * maximum precision is the safe default and there is no consistency
+         * argument to serve. */
+        format_number(number, sizeof(number), value.as.number);
         sb_append_text(builder, number);
         return 1;
     case VALUE_STRING:
