@@ -2534,10 +2534,32 @@ static XlsxVal xlsx_call(XlsxEval *ev, const char *raw_name) {
         for (size_t i = 0; i < rn; i++) {
             if (!xlsx_criteria_match(ARG_AT(0, i), crit)) continue;
             if (strcmp(name, "COUNTIF") == 0) { cnt++; continue; }
-            /* The aggregated cell is the one at the SAME OFFSET in the other
-             * range; a shorter sum_range simply has no cell there. */
-            XlsxVal a = have_agg ? (i < ARG_LEN(2) ? ARG_AT(2, i) : xv_empty())
-                                 : ARG_AT(0, i);
+            /* The aggregated cell is the one at the same POSITION in the
+             * other range -- by row and column, not by flat offset.
+             *
+             * Excel anchors sum_range at its TOP-LEFT and reshapes it to the
+             * criteria range's shape, so SUMIF($D2:$D95,"x",N2:AQ95) sums
+             * N2:N95 and never touches columns O..AQ. Indexing both ranges by
+             * a flat row-major offset instead walks the first 94 cells of a
+             * 30-column rectangle -- the first three ROWS, spread sideways --
+             * and returns a large confident wrong total: measured 608,160
+             * against Excel's 1,004 on one corpus workbook.
+             *
+             * A mismatched sum_range is not a typo, either. It is what Excel
+             * produces when a range is dragged or a column inserted, so real
+             * files are full of them. */
+            XlsxVal a;
+            if (!have_agg) {
+                a = ARG_AT(0, i);
+            } else {
+                long cc = argcols[0] > 0 ? argcols[0] : 1;
+                long sc = argcols[2] > 0 ? argcols[2] : 1;
+                size_t r = (size_t)((long)i / cc), c = (size_t)((long)i % cc);
+                size_t j = r * (size_t)sc + c;
+                /* Outside the sum_range's own extent there is simply no cell,
+                 * which contributes nothing rather than erroring. */
+                a = (c < (size_t)sc && j < ARG_LEN(2)) ? ARG_AT(2, j) : xv_empty();
+            }
             if (a.kind == XV_NUM || a.kind == XV_BOOL) { total += a.num; cnt++; }
         }
         if (strcmp(name, "COUNTIF") == 0) out = xv_num((double)cnt);
@@ -5626,7 +5648,17 @@ static Value xlsx_eval_call(AstExpr *expr) {
                      * arithmetic. */
                     double a2 = got.num, b2 = c->num;
                     double scale = fabs(a2) > fabs(b2) ? fabs(a2) : fabs(b2);
-                    same = fabs(a2 - b2) <= (scale > 0 ? scale * 1e-9 : 1e-9);
+                    /* Relative OR absolute. A purely relative tolerance is
+                     * meaningless against zero: comparing our -1.16e-10 to a
+                     * cached 0 gives scale = 1.16e-10 and a tolerance of
+                     * 1.16e-19, which nothing can meet, so every near-zero
+                     * residue was reported as a disagreement however close it
+                     * actually was. `W38-X38` on two equal-looking values is
+                     * the archetype -- Excel stores 0, IEEE subtraction leaves
+                     * a picogram of dust, and the two are not in disagreement
+                     * about anything a spreadsheet means. */
+                    same = fabs(a2 - b2) <= (scale > 0 ? scale * 1e-9 : 0.0) ||
+                           fabs(a2 - b2) <= 1e-9;
                 } else if (got.kind == XV_BOOL && c->kind == XV_BOOL) {
                     same = ((int)got.num != 0) == ((int)c->num != 0);
                 } else if (got.kind == XV_STR && c->kind == XV_STR) {

@@ -1652,3 +1652,48 @@ finding gets lost.
   it was a blank cell. `IF` propagating an unused branch's error was the same
   shape: correct-looking strictness whose real-world traffic is dominated by
   inputs the strictness was never meant for.
+
+### Ranking by workbooks, not cells, reordered the list immediately
+- **Type:** doc-gap (methodology)
+- **Severity:** medium
+- **What:** the disagreement ranker now reports DISTINCT WORKBOOKS beside cells,
+  applying §13.X's lesson to the instrument that produced it. It reordered the
+  top on the first run: `#NUM!`→err is 64,534 cells but only **9 workbooks**, and
+  `bool`→num is 20,680 cells in **12** — concentrated artifacts that a cell-only
+  ranking placed near the top. Meanwhile `num`→`num` is 66,353 cells across
+  **779 workbooks**, the widest of anything, and would have looked like a
+  third-tier concern.
+- **Workaround:** built in, so the skew is legible in the output rather than
+  something to remember to correct for. I did not remember it an hour earlier,
+  which is the argument for putting it in the tool.
+
+### `SUMIF`'s sum_range is reshaped, not walked flat
+- **Type:** bug
+- **Severity:** high
+- **What:** `SUMIF($D2:$D95,"Quantity",N2:AQ95)` returned 608,160 where Excel
+  cached 1,004. Excel anchors sum_range at its TOP-LEFT and reshapes it to the
+  criteria range's shape, so that call sums `N2:N95` and never touches columns
+  O..AQ. Indexing both ranges by a flat row-major offset instead walks the first
+  94 cells of a 30-column rectangle — the first three ROWS, spread sideways.
+- **Workaround:** resolved; the offset is mapped by (row, column) using the
+  per-argument column counts the collector already records.
+- **Why it matters more than a typo:** a mismatched sum_range is not a mistake
+  users make and correct. It is what Excel *produces* when a range is dragged or
+  a column inserted, so real files are full of them — and the wrong answer is a
+  plausible large number, not an error.
+
+### A relative-only tolerance cannot compare anything to zero
+- **Type:** bug (in the measurement)
+- **Severity:** medium
+- **What:** `xlsx.check` compared numbers with `|a-b| <= max(|a|,|b|) * 1e-9`.
+  Against a cached `0` that collapses: our `-1.16e-10` gives a tolerance of
+  `1.16e-19`, which nothing can meet, so every near-zero floating-point residue
+  was counted as a disagreement however close it was in absolute terms.
+  `W38-X38` on two equal-looking values is the archetype — Excel stores 0, IEEE
+  subtraction leaves dust, and the two are not in disagreement about anything a
+  spreadsheet means.
+- **Workaround:** relative OR an absolute 1e-9 floor.
+- **Note:** this one inflated the *measurement*, not the product — the third
+  such today, after quoted external refs and the `blocked_by` gap. A meaningful
+  share of this project's "defects" have been in the instruments, and they are
+  harder to notice because a number with no breakdown still reads as a fact.
