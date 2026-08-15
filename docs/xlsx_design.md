@@ -1427,6 +1427,61 @@ wrong-error-code classes (~156,000) and genuine arithmetic differences
 so **the ranking should be re-run before acting on them** rather than trusted as
 current.
 
+**Y. Ranking by workbooks, and what it changed** (2026-08-15). §13.X's lesson
+applied to the instrument that produced it: the disagreement ranker reports
+DISTINCT WORKBOOKS beside cells. It reordered the top on its first run.
+
+| | cells | workbooks | |
+|---|---|---|---|
+| `err` → num | 208,950 | 775 | |
+| `err` → err | 162,602 | 469 | right to fail, wrong code |
+| num → num | 66,353 | **779** | *widest of anything* |
+| bool → num | 20,680 | **12** | concentrated artifact |
+| `#NUM!` → err | 64,534 | **9** | concentrated artifact |
+
+Two entries a cell-only ranking placed near the top turned out to live in nine
+and twelve workbooks respectively, while `num`→`num` — the most widespread
+defect in the corpus and the most dangerous class, silently wrong numbers —
+looked third-tier. Acting on breadth found two causes:
+
+*`SUMIF` reshapes its sum_range.* `SUMIF($D2:$D95,"Quantity",N2:AQ95)` returned
+608,160 against Excel's 1,004. Excel anchors sum_range at its TOP-LEFT and
+reshapes it to the criteria range's shape, so that call sums `N2:N95` and never
+touches columns O..AQ; a flat row-major offset instead walks the first 94 cells
+of a 30-column rectangle — the first three ROWS, spread sideways. A mismatched
+sum_range is not a typo users make and fix, it is what Excel PRODUCES when a
+range is dragged or a column inserted, so real files are full of them and the
+wrong answer is a plausible large number.
+
+*The checker could not compare anything to zero.* `|a-b| <= max(|a|,|b|) * 1e-9`
+collapses against a cached `0`: our `-1.16e-10` yields a tolerance of `1.16e-19`.
+Every near-zero residue counted as a disagreement — `W38-X38` on two
+equal-looking values, where Excel stores 0 and IEEE subtraction leaves dust.
+Now relative OR an absolute 1e-9 floor.
+
+| | before | after |
+|---|---|---|
+| agreement | 97.35% | **97.38%** |
+| disagree | 468,174 | **461,578** |
+| clean workbooks | 14,214 (89.6%) | **14,455 (91.1%)** |
+
+**6,596 cells and 241 workbooks** — the best cells-per-workbook ratio of the
+session, and precisely the shape a cell-only ranking calls negligible. That is
+the case for the second column.
+
+*Session total:* 94.92% → 97.38%, disagreements 872,690 → 461,578 (−47%),
+workbooks with zero disagreements 13,247 → 14,455 (83.5% → 91.1%).
+
+*A tally worth keeping.* Of the seven defects found today, **three were in the
+instruments** — `xlsx.check` not naming what it refused, quoted external
+references scored as wrong answers rather than absent inputs, and this
+zero-comparison. Instrument defects are harder to notice than product ones,
+because a number with no breakdown still reads as a fact.
+
+*What is left,* and this ranking is current: `err`→num (208,950 cells / 775
+books) and the wrong-error-code class `err`→err (162,602 / 469). Within the
+first, `#VALUE!`→num is 171,981 cells across 652 workbooks.
+
 ## 14. Roadmap (phases)
 
 Each phase is independently shippable and golden-file testable.
