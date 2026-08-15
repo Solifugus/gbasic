@@ -1323,6 +1323,62 @@ deliberately-failing branch, which is exactly what a fixture author does not
 write, having just implemented the functions that make the guard look
 unnecessary.
 
+**W. Ranking the disagreements, and the third of them that were not wrong
+answers** (2026-08-15). With refusals no longer dominant, the remaining 784,787
+disagreements needed an instrument. Ranking them by function name would have
+repeated the §13.J mistake in a new place: a cell disagrees because of what the
+whole formula did, and its leading function is rarely the cause. Bucketed by the
+SHAPE of the mismatch instead:
+
+| computed → cached | cells | |
+|---|---|---|
+| `err` → num | 478,723 | 61% of all disagreements |
+| `err` → err | 165,283 | right to fail, wrong error code |
+| num → num | 66,353 | genuine arithmetic difference |
+| `err` → text | 41,507 | |
+| bool → num | 21,714 | |
+
+and within the first class, `#REF!` → num alone was **272,134 cells, 35% of
+every disagreement in the corpus**. A sample was 295 of 295 external workbook
+references.
+
+*The cause was one missed spelling.* External references are detected in the
+lexer by a leading `[` — the unquoted `[4]CurveFetch!$D$8`. They can also be
+QUOTED, and then the bracket sits INSIDE the quotes: `'[1]FINANCIAL PIVOT'!B12`.
+Those took the quoted-sheet path, were read as an ordinary sheet named
+`[1]FINANCIAL PIVOT`, failed to resolve, and returned `#REF!` **without setting
+`unsupported`** — so an unavailable input was scored as a wrong ANSWER. The
+evaluator's behaviour was correct throughout (refusing to read Excel's stale
+cached copy of a workbook we do not hold); only the classification was wrong.
+
+This is §13.L's shape again, and the reason is structural rather than careless:
+quoting is forced by a SPACE in the sheet name, so the two spellings are not
+stylistic variants that a test author covers interchangeably — they are decided
+by the data, and any real corpus holds both. §13.L had already measured the
+quoted form at 42% of the cross-sheet population. The unquoted case was
+implemented, tested and correct, and said nothing about the other 42%.
+
+*Where the whole day landed:*
+
+| | session start | + text/math | + the `IF` fix | + quoted external |
+|---|---|---|---|---|
+| judged | 17,177,002 | 17,945,768 | 17,945,702 | 17,640,192 |
+| agree | 16,304,312 | 16,957,682 | 17,160,915 | **17,146,698** |
+| disagree | 872,690 | 988,086 | 784,787 | **493,494** |
+| unsupported | 3,436,172 | 2,667,406 | 2,667,472 | 2,972,982 |
+| agreement | 94.92% | 94.49% | 95.63% | **97.20%** |
+| clean workbooks | 13,247 | 13,237 | 13,358 | **14,208 (89.5%)** |
+
+Disagreements fell 43% across the session and workbooks with zero disagreements
+rose by 961. Note the last column's `judged` DROPS and `unsupported` RISES by
+the same 305,510: that is the reclassification, not lost coverage, and 14,217 of
+those cells had previously *agreed* by coincidence — our `#REF!` happening to
+match a cached `#REF!` — which is exactly the kind of accidental agreement a
+rate alone would have protected.
+
+*What is left,* by the same ranking: `#VALUE!`→num (198,633), the wrong-error-code
+classes (~156,000), and genuine arithmetic differences (66,353).
+
 ## 14. Roadmap (phases)
 
 Each phase is independently shippable and golden-file testable.
