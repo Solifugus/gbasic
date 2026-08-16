@@ -1,0 +1,154 @@
+# CI exists because of a specific, measured failure: on 2026-08-15 gBASIC did not
+# build AT ALL on Ubuntu 24.04 LTS or 25.04 when the optional dependencies were
+# present, and a 216-example / 303-negative-case suite did not notice, because a
+# `#if HAVE_*` guard and a `pkg-config --exists` check are both blind to the
+# configuration they did not select. Three separate defects had accumulated that
+# way, one of them for three weeks.
+#
+# So the matrix is not about breadth for its own sake. Each job is a
+# configuration that was actually broken and could not be seen from a developer
+# machine:
+#
+#   full      every optional module enabled -- catches the link/compile errors
+#             that only appear when a module is COMPILED, e.g. the GTK 3 gui
+#             module, which no local build here compiles at all.
+#   minimal   nothing optional -- catches the opposite: code that assumes a
+#             library is present, and suites that fail cases for correctly
+#             reporting a module is absent (34 of 182 examples once did).
+#   older     the current LTS, whose library VERSIONS differ from a dev box.
+#             gi_repository_dup_default and libxml2's const change were both
+#             version defects, not missing-dependency defects.
+name: CI
+
+on:
+  push:
+    branches: [master]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  full:
+    name: all optional modules (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          # NOTE: libcrypt-dev, not libxcrypt-dev, and libgirepository-2.0-dev,
+          # not libgirepository1.0-dev. Both wrong names were in check-deps.sh
+          # until 2026-08-15; because --install issues a single apt-get, one bad
+          # name meant nothing was installed at all.
+          sudo apt-get install -y -qq \
+            build-essential bison pkg-config \
+            zlib1g-dev libxml2-dev libsqlite3-dev libpq-dev \
+            libcurl4-openssl-dev libssl-dev libcrypt-dev \
+            libgtk-3-dev libgirepository-2.0-dev libglib2.0-dev
+
+      - name: Report what was detected
+        run: ./tools/check-deps.sh
+
+      - name: Build everything
+        run: make dev
+
+      - name: Version
+        run: ./gbasic --version
+
+      - name: Run every suite
+        run: |
+          status=0
+          for s in tests/run_*.sh; do
+            printf '\n===== %s =====\n' "$s"
+            if ! timeout 2400 bash "$s"; then
+              printf '::error::%s failed\n' "$s"
+              status=1
+            fi
+          done
+          printf '\n===== tests/lsp/run_lsp.sh =====\n'
+          timeout 600 bash tests/lsp/run_lsp.sh || status=1
+          exit "$status"
+
+  minimal:
+    name: no optional modules
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      # Deliberately NOT installing pkg-config: without it the Makefile disables
+      # every optional module, which is the leanest configuration anyone can
+      # build and the one a source release must still work in.
+      - name: Install only what is required
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq build-essential bison
+
+      - name: Build
+        run: make
+
+      # A NON-INTERACTIVE smoke. Not the adventure example: at EOF on stdin it
+      # loops rather than exiting, so it hangs the job until the runner's own
+      # timeout -- measured, not guessed.
+      - name: The interpreter must still work
+        run: |
+          ./gbasic --version
+          printf 'program main()\n    print "hello from a minimal build"\nend program\n' > /tmp/smoke.bas
+          timeout 60 ./gbasic /tmp/smoke.bas
+
+      # The suites must SKIP the module-dependent cases, not fail them. This is
+      # the tier that would have caught "34 of 182 examples fail on a build with
+      # no optional dependencies", which was true and unnoticed until 2026-08-15.
+      - name: Suites must skip, not fail
+        run: |
+          set -e
+          bash tests/run_examples.sh | tail -5
+          bash tests/run_negative.sh | tail -5
+          bash tests/run_xlsx.sh
+          bash tests/run_xlsx_cookbook.sh
+
+  install:
+    name: install to a prefix and run from it
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq build-essential bison pkg-config \
+            zlib1g-dev libxml2-dev libsqlite3-dev
+
+      # The stdlib path is COMPILED IN, so `make` followed by `make install
+      # PREFIX=...` used to install a binary still pointing at /usr/local. It
+      # failed silently: `load` either failed later for no visible reason, or
+      # resolved against a different gBASIC's stdlib. Build first, deliberately,
+      # so this job exercises that exact sequence.
+      - name: Build, then install elsewhere
+        run: |
+          make
+          make install PREFIX="$HOME/.local"
+          make install-lsp PREFIX="$HOME/.local"
+
+      - name: The installed binary must find its own stdlib
+        run: |
+          mkdir -p /tmp/elsewhere && cd /tmp/elsewhere
+          printf 'program main()\n    load stats\n    print "stdlib resolved"\nend program\n' > t.bas
+          env -u GBASIC_PATH "$HOME/.local/bin/gbasic" t.bas
+          test -f "$HOME/.local/share/doc/gbasic/LICENSE"
+          test -f "$HOME/.local/share/doc/gbasic/NOTICE"
+
+      - name: Uninstall must leave nothing behind
+        run: |
+          cd "$GITHUB_WORKSPACE"
+          make uninstall PREFIX="$HOME/.local"
+          ! test -e "$HOME/.local/bin/gbasic"
+          ! test -e "$HOME/.local/share/gbasic"
+          ! test -e "$HOME/.local/share/doc/gbasic"
