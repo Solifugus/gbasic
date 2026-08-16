@@ -327,11 +327,11 @@ rm -f "$help_file"
 version_file="$(mktemp)"
 if ./gbasic --version >"$version_file"; then
     version_text="$(cat "$version_file")"
-    if [[ "$version_text" == "gBASIC 0.1.0-dev" ]]; then
+    if [[ "$version_text" == "gBASIC 0.1.0-rc1" ]]; then
         printf 'PASS %s\n' "gbasic --version"
     else
         printf 'FAIL %s\n' "gbasic --version"
-        printf 'expected: gBASIC 0.1.0-dev\n'
+        printf 'expected: gBASIC 0.1.0-rc1\n'
         printf 'actual: %s\n' "$version_text"
         rm -f "$version_file"
         exit 1

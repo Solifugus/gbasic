@@ -19,7 +19,7 @@ Scope and companion documents:
 - `gbasic_dogfood_notes.md` — running list of language/library friction found
   while building real programs.
 
-Status: gBASIC is `0.1.0-dev`. Where this document describes something not yet
+Status: gBASIC is `0.1.0-rc1`. Where this document describes something not yet
 built, it is marked **(future)**.
 
 ---

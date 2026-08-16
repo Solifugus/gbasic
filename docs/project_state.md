@@ -8,7 +8,7 @@ development phases are summarized in `docs/historical_development_archive.md`.
 
 ## Current Version
 
-- Version: `0.1.0-dev`
+- Version: `0.1.0-rc1`
 - Implementation: C11
 - Front end: hand-written lexer and Bison parser
 - Runtime: tree-walking evaluator
