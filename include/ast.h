@@ -202,6 +202,17 @@ struct AstStmt {
             AstStmtList body;
             char *object;        /* dotted `function obj.method()`: receiver var name; else NULL */
             char *field;         /* dotted: the method field name; else NULL */
+            /* The file this function was PARSED from, or NULL for the root
+             * source. Owned here; stamped at registration (eval.c), not by the
+             * parser, because the parser is handed text and does not know the
+             * path it came from.
+             *
+             * It exists so a runtime error inside a loaded library names the
+             * LIBRARY. Line numbers come from the library's own AST nodes, but
+             * the path used to come from a global that had already been restored
+             * by the time the function was CALLED -- so every stdlib diagnostic
+             * reported a real line against the wrong file. */
+            char *source_path;
         } function;
         AstExpr *return_expr;
         char *label;

@@ -1931,3 +1931,36 @@ finding gets lost.
   diagnostics rather than results, and both fixes touch error plumbing — which
   is not something to rush the same day a tag is cut. Recorded here so it is a
   known defect with a diagnosis rather than a surprise.
+
+### RESOLVED 2026-08-16 — library diagnostics name the library
+The entry above (an error inside a `load`ed library reporting the library's line
+number against the ROOT file's path) is fixed. The cheaper of the two candidate
+fixes was taken: the file a function was PARSED from is stamped onto its AST node
+at registration -- the one moment both the node and `current_import_path` are in
+hand -- and `invoke_function` swaps `current_import_path` for the duration of the
+call, saved and restored exactly like `current_env` and `current_this` beside it.
+
+Two things worth keeping:
+
+- **The swap is UNCONDITIONAL**, including when the stamped path is NULL. The
+  first version only assigned when a path existed, which left a LIBRARY's path in
+  place while a root-program function it called was executing -- the same defect
+  one level further in. Proven with a fixture where a library calls back into a
+  root function that raises; it now correctly names the root file.
+- **The test had to be built so the answer could not be a coincidence.** The
+  first draft put the library's `error` on line 6 and the caller was 6 lines
+  long, so a wrong answer and a right one looked identical. The fixture now pads
+  the library so the raise sits at line 17 while the caller is 6 lines, making
+  the old behaviour impossible to read as correct.
+
+Nine goldens moved, all in the same direction: from naming the calling test file
+to naming `stdlib/edgar.bas`, `stdlib/ownership.bas` or `stdlib/llm.bas`. Those
+same nine had been rebaselined the day before for the line NUMBERS shifting, and
+were re-recording a wrong path both times -- which is the standing lesson about
+goldens, twice over on the same nine files.
+
+**Known cosmetic follow-up:** the reported path is the resolved one as given, so
+a library loaded as `"../stdlib/edgar.bas"` from `tests/` prints as
+`tests/../stdlib/edgar.bas`. It resolves and editors open it, but it is not
+normalised. Left alone deliberately rather than adding path canonicalisation to
+a diagnostics fix.

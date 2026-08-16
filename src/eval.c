@@ -5149,6 +5149,16 @@ static void function_register_def(AstStmt *stmt, int imported, const char *libra
         }
     }
 
+    /* Stamp the file this function came from, so a runtime error inside it can
+     * name that file rather than whatever the root program happened to be.
+     * Registration is the only moment both facts are in hand: the AST node, and
+     * current_import_path, which is set for exactly the duration of the import
+     * and restored immediately afterwards. By the time the function is CALLED it
+     * is NULL again -- which is precisely why the path used to be wrong. */
+    if (!stmt->as.function.source_path && current_import_path && current_import_path[0]) {
+        stmt->as.function.source_path = copy_string(current_import_path);
+    }
+
     FunctionDef *function = function_find_local(stmt->as.function.name);
     if (function) {
         if (imported && !function->imported) {
@@ -6998,6 +7008,20 @@ static Value invoke_function(AstStmt *stmt, Value *args, size_t argc, Value *rec
     Value *previous_this = current_this;
     current_this = receiver;
 
+    /* Report errors raised in this body against the file the function was
+     * PARSED from. Saved and restored exactly like current_env above, so
+     * recursion, nested library calls and a library calling back into the root
+     * program all unwind correctly. A function from the root source has no
+     * stamped path and leaves the global alone, falling back to
+     * root_source_path as before. */
+    /* UNCONDITIONAL, including when source_path is NULL. A function declared in
+     * the root program has no stamped path, and if a LIBRARY function calls it,
+     * leaving the global alone would report the root program's error against the
+     * library that happened to call it -- the same defect, one level further in.
+     * Assigning NULL restores the root-source fallback, which is correct. */
+    char *previous_import_path = current_import_path;
+    current_import_path = stmt->as.function.source_path;
+
     for (size_t i = 0; i < argc; i++) {
         env_set(stmt->as.function.params.items[i], args[i]);
     }
@@ -7063,6 +7087,7 @@ static Value invoke_function(AstStmt *stmt, Value *args, size_t argc, Value *rec
     function_depth--;
     current_env = previous_env;
     current_this = previous_this;
+    current_import_path = previous_import_path;
     env_clear(&local_env);
     if (result.did_return) {
         return result.value;

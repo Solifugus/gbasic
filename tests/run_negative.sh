@@ -300,6 +300,7 @@ cases=(
     negative_clause_residual
     negative_clause_stmt_start
     negative_try_decode_type
+    negative_library_error_path
 )
 
 for name in "${cases[@]}"; do

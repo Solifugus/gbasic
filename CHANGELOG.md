@@ -232,12 +232,6 @@ library is absent.
 ### Known limits
 
 - Not stable. The language surface may change before 1.0.0.
-- **An error raised inside a `load`ed library reports the library's line number
-  against the calling file's path**, so the file/line pair in the message cannot
-  be looked up. The message itself is correct. Since the standard library is
-  written in gBASIC, this affects most stdlib diagnostics. Diagnosed in
-  `DOGFOOD.md` (2026-08-16) with two candidate fixes; deliberately not attempted
-  during release prep because both touch error plumbing.
 - No closures, no exponent literals (`1e20` lexes as a duration — use
   `number("1e20")`), and repeated string `+` is quadratic.
 - `valgrind` has no riscv64 port, so the memory tiers can only skip there;

@@ -1,1 +1,1 @@
-runtime error at tests/negative_edgar_offline_miss.bas:177:17: edgar: offline fixture missing for https://data.sec.gov/submissions/CIK9999999999.json (expected examples/fixtures/edgar/submissions_CIK9999999999.json)
+runtime error at tests/../stdlib/edgar.bas:177:17: edgar: offline fixture missing for https://data.sec.gov/submissions/CIK9999999999.json (expected examples/fixtures/edgar/submissions_CIK9999999999.json)
