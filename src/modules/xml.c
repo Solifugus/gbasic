@@ -43,8 +43,22 @@
                        HTML_PARSE_NOERROR | HTML_PARSE_NOWARNING | HTML_PARSE_NODEFDTD)
 
 /* Swallow libxml2's default error printing to stderr — the error is captured
- * from the parser context and re-raised as a structured gBASIC error instead. */
+ * from the parser context and re-raised as a structured gBASIC error instead.
+ *
+ * The handler's second parameter gained a `const` in libxml2 2.12.0, so its type
+ * must track the headers being built against rather than the one this was
+ * written on. Getting it wrong is not cosmetic: passing a mismatched function
+ * pointer is a -Wincompatible-pointer-types diagnostic, and GCC 14 (Ubuntu
+ * 25.04) makes that an ERROR by default -- so the whole `gbasic` binary failed
+ * to compile there, while Ubuntu 24.04's GCC 13 let the identical code through
+ * as a warning. Both ship libxml2 2.9.14; the const form is what a current
+ * developer machine (2.15.2 here) has, which is why only the older distros
+ * broke. */
+#if defined(LIBXML_VERSION) && LIBXML_VERSION >= 21200
 static void xml_silent_error(void *user, const xmlError *err) {
+#else
+static void xml_silent_error(void *user, xmlError *err) {
+#endif
     (void)user;
     (void)err;
 }

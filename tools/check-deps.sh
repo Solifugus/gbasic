@@ -39,9 +39,9 @@ zlib|zlib1g-dev|REQUIRED BY xlsx (with libxml2): the ZIP container
 libcrypto|libssl-dev|crypto builtins (hashing, HMAC, AES-GCM, Ed25519) + crypto.bas
 libcurl|libcurl4-openssl-dev|webclient module
 libpq|libpq-dev|pg.* PostgreSQL module (its tests are opt-in regardless)
-libxcrypt|libxcrypt-dev|password_hash / password_verify
+libxcrypt|libcrypt-dev|password_hash / password_verify
 gtk+-3.0|libgtk-3-dev|the GTK 3 gui.* module
-girepository-2.0|libgirepository1.0-dev|the gi.* GObject-Introspection bridge (GTK 4 path)
+girepository-2.0|libgirepository-2.0-dev|the gi.* GObject-Introspection bridge (GTK 4 path)
 gio-2.0|libglib2.0-dev|gi.* support types
 "
 

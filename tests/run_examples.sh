@@ -264,6 +264,25 @@ for example in "${examples[@]}"; do
         rm -f "$stdout_file" "$stderr_file"
     else
         status=$?
+        # An OPTIONAL-DEPENDENCY build, not a defect. The Makefile compiles each
+        # optional module out when its library is absent and the runtime then
+        # raises a fixed "not available in this build" error -- that degradation
+        # IS the documented contract (CLAUDE.md, "Conventions"). This list, by
+        # contrast, is unconditional, so on a build without zlib/libxml2/sqlite/
+        # libpq/libcurl/libxcrypt those cases failed the suite for doing exactly
+        # what they promise: measured 34 of 182 examples on a no-optional-deps
+        # build, i.e. the minimal configuration could not pass its own tests.
+        #
+        # Matched on the runtime's own message rather than a name->capability
+        # table on purpose: a table is a second list to keep in step with the
+        # first, and it silently rots when an example starts using a new module.
+        # The message is emitted only by the `#if HAVE_*` guards, so it cannot be
+        # produced by a genuine failure of the feature under test.
+        if [[ -s "$stderr_file" ]] && grep -qE 'support is (not available in this build|unavailable)' "$stderr_file"; then
+            printf 'SKIP %s (%s)\n' "$path" "$(sed -n 's/.*: \([A-Za-z-]* support is [^;]*\).*/\1/p' "$stderr_file" | head -1)"
+            rm -f "$stdout_file" "$stderr_file"
+            continue
+        fi
         printf 'FAIL %s\n' "$path"
         if [[ -s "$stderr_file" ]]; then
             cat "$stderr_file"

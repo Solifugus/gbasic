@@ -1740,3 +1740,91 @@ finding gets lost.
   degraded rather than absent.
 - **Note for release:** this is a permanent platform gap, not a to-do. It should
   be stated in whatever ships, not quietly left as an untested tier.
+
+## 2026-08-15 — CC — while: release-prep doc sweep (xml "release blocker")
+- **Type:** doc-gap
+- **Severity:** high (it manufactured a false release blocker)
+- **What:** `load` is an EXECUTABLE statement, so when a `program` block exists a
+  top-level `load` never runs — the same rule that makes declaration hoisting
+  safe (`tests/run_pre_registration.sh` asserts `top-level-ran=false`). The
+  symptom is a runtime error naming the library, not the `load`:
+
+  ```basic
+  load xml                    ' never runs
+  program main()
+      doc = xml.parse("<a/>") ' runtime error: library not loaded: xml
+  end program
+  ```
+
+  A previous session hit exactly this, and — because `docs/xml_design.md` still
+  said "design proposal; nothing built" — concluded the xml module had never
+  been wired, and filed it as a release blocker. The module is fully built:
+  every entry point in `docs/reference.md` (parse/parse_file/parse_html,
+  find/find_all/attr/text/encode, reader/read/skip_to/subtree/close) runs, and
+  six `examples/xml_*_test.bas` goldens have been in `tests/run_examples.sh` the
+  whole time.
+- **Workaround:** none needed — put `load` inside the block, which every shipped
+  example already does. Documented in `docs/reference.md` §Libraries with the
+  wrong/right pair and the hoisted-declaration set; the four stale status lines
+  (xml, pbi, ari, statistics) corrected.
+- **The general shape:** TWO stale artifacts pointed the same way and became
+  evidence for each other — a status line that said "nothing built" and an error
+  message that said "not loaded". Neither was about the other, and the module
+  was fine. A status line is a claim with no test behind it; the goldens that
+  contradicted it were passing in the same suite the whole time. Worth trusting
+  the suite over the prose: `grep -l` for the feature's tests before believing a
+  doc that says it does not exist.
+
+## 2026-08-15 — CC — while: release prep (clean-container builds)
+- **Type:** bug
+- **Severity:** high (gBASIC did not build on the current Ubuntu LTS)
+- **What:** three independent portability defects, none visible on this dev box,
+  all found by building in a clean `ubuntu:24.04` / `ubuntu:25.04` container:
+  1. **`gi_repository_dup_default` does not exist before ~2.88.** The Makefile
+     sets `HAVE_GIR=1` on `pkg-config --exists girepository-2.0` with **no
+     version floor**. Measured: symbol absent in 2.80.0 (24.04 LTS) and 2.84.1
+     (25.04), present in 2.88.0 (here). So on the LTS the build got `HAVE_GIR=1`
+     and then **failed to LINK — killing the whole `gbasic` binary**, not just
+     the gi module. Fixed by using `gi_repository_new()`, present in all three.
+  2. **The libxml2 structured-error handler gained a `const` in 2.12.0.** Our
+     handler used the new form; against 2.9.14 (what BOTH containers ship) that
+     is `-Wincompatible-pointer-types` — a *warning* under GCC 13 (24.04) and an
+     **ERROR** under GCC 14 (25.04), so 25.04 could not compile at all. Fixed by
+     selecting the signature on `LIBXML_VERSION`.
+  3. **The GTK 3 `gui` module had not compiled since 2026-07-23.** It still read
+     `value->as.array.count` / `.items`, the layout PLAT-ARRIDX replaced with a
+     refcounted `as.array.store->`. `gtk+-3.0` is absent on this box, so
+     `HAVE_GTK=0` and nobody had compiled that code in three weeks.
+- **Workaround:** all three fixed. `ubuntu:24.04` now builds `gbasic` +
+  `gbasic-lsp` with every optional module enabled.
+- **Also found, same sweep:** `tools/check-deps.sh` named two packages that do
+  not exist on Debian/Ubuntu — `libxcrypt-dev` (it is `libcrypt-dev`) and
+  `libgirepository1.0-dev` for a `girepository-2.0` module (it is
+  `libgirepository-2.0-dev`). Because `--install` runs ONE
+  `apt-get install -y $missing`, a single bad name aborts the whole command, so
+  following our own instructions installed **nothing**.
+- **The general shape, and it is the one already written in the entry above:**
+  "optional dependency" means the configuration nobody on the team builds — and
+  the same is true of the LIBRARY VERSION nobody on the team has. Every one of
+  these was invisible to `make` here and to every test, because a `#if` guard
+  and a `pkg-config --exists` check are both blind to what they did not select.
+  A version floor is part of a dependency declaration; `--exists` is not enough.
+
+## 2026-08-15 — CC — while: release prep (suite on a minimal build)
+- **Type:** bug
+- **Severity:** medium
+- **What:** `tests/run_examples.sh` and `tests/run_negative.sh` list every case
+  unconditionally, so on a build without the optional libraries they FAILED for
+  cases doing exactly what the contract promises — raising "X support is not
+  available in this build". Measured on a no-optional-deps build: **34 of 182
+  examples failed**, i.e. the minimal configuration could not pass its own test
+  suite, while the module-specific runners (`run_sqlite.sh` etc.) skip cleanly.
+- **Workaround:** both runners now SKIP a case whose stderr carries the runtime's
+  own "not available in this build" / "is unavailable" message. Matched on that
+  message rather than a name→capability table, because a table is a second list
+  to keep in step with the first and rots silently when an example picks up a new
+  module. `run_negative.sh` additionally requires that the EXPECTED text is not
+  itself that message, so `negative_xml_not_loaded` and friends — which assert an
+  unavailable module on purpose — are still compared, not skipped past.
+  Behaviour-neutral with deps present: 216 PASS / 0 SKIP before and after.
+  Without deps: examples 180 PASS / 36 SKIP / 0 FAIL, negative 240/48/0.

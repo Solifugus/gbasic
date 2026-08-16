@@ -767,6 +767,31 @@ end program
 
 If a `program` block exists, only that program executes. If no `program` block exists, top-level statements are treated as an implicit program.
 
+**`load` goes inside the `program` block.** `load` is an executable statement,
+not a declaration, so the rule above applies to it: when a `program` block
+exists, a `load` written at top level **never runs**, and the first qualified
+call then fails with `library not loaded: NAME`. Note the example above puts
+`load text` inside `program demo`, which is the idiom to follow — as do the
+shipped `examples/xml_*_test.bas`.
+
+```basic
+load xml                  ' WRONG when a program block exists — never runs
+program main()
+    doc = xml.parse("<a/>")   ' runtime error: library not loaded: xml
+end program
+
+program main()
+    load xml              ' RIGHT
+    doc = xml.parse("<a/>")
+end program
+```
+
+What *is* hoisted, and so may be written below `end program`, is exactly:
+function declarations, modifier declarations, `library` declarations, and
+dotted-def method bodies. That set is pinned by `tests/run_pre_registration.sh`.
+Snippets elsewhere in this reference show `load` at top level because they have
+no `program` block, where it is correct.
+
 Same-file load:
 
 ```basic

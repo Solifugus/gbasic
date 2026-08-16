@@ -321,6 +321,19 @@ for name in "${cases[@]}"; do
 
     actual_text="$(cat "$stderr_file")"
     expected_text="$(cat "$expected")"
+    # Same optional-dependency rule as run_examples.sh: when a module is compiled
+    # out, its negative cases raise the build's "not available" error instead of
+    # the specific misuse they pin, which is correct behaviour and not a failure.
+    # Only skip when the EXPECTED text is not itself that message -- negative_
+    # xml_not_loaded and friends deliberately assert an unavailable module, and
+    # must still be compared rather than skipped past.
+    if [[ "$actual_text" != "$expected_text" ]] &&
+       grep -qE 'support is (not available in this build|unavailable)' "$stderr_file" &&
+       ! grep -qE 'support is (not available in this build|unavailable)' "$expected"; then
+        printf 'SKIP %s (module compiled out)\n' "$source"
+        rm -f "$stdout_file" "$stderr_file"
+        continue
+    fi
     if [[ "$actual_text" == "$expected_text" ]]; then
         printf 'PASS %s\n' "$source"
     else

@@ -1,6 +1,11 @@
 # Policy-Based Inheritance (PBI) — Design
 
-Status: **proposal / not yet implemented.** This document works through the
+Status: **IMPLEMENTED (v1, all phases).** Goldens in `tests/run_examples.sh`:
+`examples/pbi_policy_parse_test.bas` (parsing), `pbi_derive_test.bas`
+(derivation), `pbi_cow_test.bas` (copy-on-write). This line read "proposal / not
+yet implemented" until 2026-08-15. Where the design below disagrees with the
+implementation, the code and its goldens are authoritative. This document works
+through the
 language model, syntax, runtime/memory model, a staged implementation plan
 grounded in the current code, and the open questions. It is the design counterpart
 to the Unicode and multiprocessing threads; where those threads converge with PBI
@@ -172,9 +177,11 @@ sub-expression (not raw text), and the policy set is closed and context-bound.
 Inside a record literal, after `IDENT`, a `(` was previously a syntax error, so
 the new rule is unambiguous and needs no source-level lookahead heuristic.
 
-Status: **parsing implemented (Phase 1).** Policies are stored in the AST
-(`AstRecordField.policy` / `.reset_expr`) and shown by `--ast`; they are inert at
-runtime until derivation (Phase 2) consumes them.
+Status: **IMPLEMENTED.** Policies are stored in the AST
+(`AstRecordField.policy` / `.reset_expr`) and shown by `--ast`. This line read
+"parsing implemented (Phase 1) … inert at runtime until derivation (Phase 2)
+consumes them" until 2026-08-15; derivation shipped, so they are no longer inert
+(`examples/pbi_derive_test.bas`).
 
 **`copy`/`link`/`reset`/`exclude` must be contextual keywords, not reserved
 words.** `copy` is already a file builtin (`docs/historical_development_archive.md`),

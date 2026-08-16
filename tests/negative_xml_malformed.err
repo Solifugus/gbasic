@@ -1,1 +1,1 @@
-runtime error at tests/negative_xml_malformed.bas:3:5: xml: Opening and ending tag mismatch: unclosed line 1 and root (line 1, column 24)
+runtime error at tests/negative_xml_malformed.bas:14:5: xml: Opening and ending tag mismatch: a line 1 and b (line 1, column 14)

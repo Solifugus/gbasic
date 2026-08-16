@@ -1,6 +1,17 @@
 # XML Library — Design
 
-Status: **design proposal; nothing built.** A general-purpose XML module for
+Status: **IMPLEMENTED.** Shipped as `src/modules/xml.c` behind `HAVE_LIBXML2`,
+dispatched from `src/eval.c`; the surface documented in `docs/reference.md`
+(parse/parse_file/parse_html, find/find_all/attr/text/encode, and the
+reader/read/skip_to/subtree/close streaming cursor) is exercised by six example
+goldens — `examples/xml_{parse,form4,encode,reader,window_13f,parse_html}_test.bas`
+— wired into `tests/run_examples.sh`. This status line read "design proposal;
+nothing built" until 2026-08-15, contradicting both `reference.md` and
+`CLAUDE.md`; a release-prep sweep read the stale line and concluded the module
+had never been wired. Note the calling idiom: `load xml` is an EXECUTABLE
+statement, so in a program with a `program` block it must be written INSIDE the
+block — a top-level `load` does not run (see `tests/run_pre_registration.sh`),
+and the symptom is `library not loaded: xml`. A general-purpose XML module for
 gBASIC: parse small documents into plain record trees, stream arbitrarily
 large documents through a pull cursor in constant memory, encode records back
 to XML, and (bonus, same engine) leniently parse HTML to a tree. First

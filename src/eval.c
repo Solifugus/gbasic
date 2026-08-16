@@ -4324,7 +4324,7 @@ static void gui_box_pack_children(Value *contains_value,
                                   GtkOrientation orientation,
                                   GuiNativeWindow *window,
                                   GuiSpacingMode spacing_mode) {
-    size_t count = contains_value ? contains_value->as.array.count : 0;
+    size_t count = contains_value ? contains_value->as.array.store->count : 0;
 
     if (spacing_mode == GUI_SPACING_END ||
         spacing_mode == GUI_SPACING_CENTER ||
@@ -4338,7 +4338,7 @@ static void gui_box_pack_children(Value *contains_value,
             gui_box_pack_flexible_spacer(box, orientation);
         }
 
-        GtkWidget *child = gui_build_gtk_widget(&contains_value->as.array.items[i], window);
+        GtkWidget *child = gui_build_gtk_widget(&contains_value->as.array.store->items[i], window);
         if (error_action_pending()) {
             return;
         }
@@ -14504,7 +14504,19 @@ static GMainLoop *gi_main_loop = NULL;
 static GIRepository *gi_repo(void) {
     static GIRepository *repo = NULL;
     if (!repo) {
-        repo = gi_repository_dup_default();
+        /* gi_repository_new(), NOT gi_repository_dup_default(). The Makefile
+         * enables HAVE_GIR on `pkg-config --exists girepository-2.0` alone, with
+         * no version floor, and `dup_default` does not exist in girepository-2.0
+         * until well after the library itself appeared: measured absent in 2.80.0
+         * (Ubuntu 24.04 LTS) and 2.84.1 (Ubuntu 25.04), present in 2.88.0. So on
+         * the current LTS the build got HAVE_GIR=1 and then failed to LINK --
+         * taking the whole `gbasic` binary with it, not just the gi module, which
+         * is exactly what the optional-dependency contract promises cannot happen.
+         * `gi_repository_new` is present in all three. It returns a fresh
+         * repository rather than the shared default, which costs us nothing: this
+         * static caches one instance for the process, the gi bridge is its only
+         * user, and on 2.80/2.84 there is no default-repository concept at all. */
+        repo = gi_repository_new();
     }
     return repo;
 }

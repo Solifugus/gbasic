@@ -1,6 +1,9 @@
 # Statistics Library & Data Frames — Design
 
-Status: **design proposal; Phase 1 numeric foundation in progress.** The
+Status: **IMPLEMENTED** through the scientist-shortlist phases; 23
+`examples/stats_*_test.bas` goldens run in `tests/run_examples.sh`. This line
+read "design proposal; Phase 1 numeric foundation in progress" until 2026-08-15,
+contradicting the rest of its own paragraph. The
 elementary math builtins (now incl. `erf`/`erfc`), the dispersion/shape
 reductions, the order statistics / paired measures (`quantile`/`percentile`/`iqr`/
 `range`/`correlation`/`covariance`), and the `stdlib/stats.bas` distribution
@@ -20,8 +23,12 @@ Phase 3); notably the PCA eigensolver stayed in gBASIC — the §6 "earn it" bar
 a C builtin was not crossed. **Phase 4 (time series — moving averages SMA/EWMA,
 differencing, acf/pacf, and the exponential-smoothing family: simple, Holt's
 linear trend, additive Holt-Winters) is also complete** (see §8 Phase 4),
-likewise pure gBASIC; only the ARIMA/GARCH stretch (which needs a shared MLE
-optimizer) remains proposal. This sketches the data representation and the
+likewise pure gBASIC. **The ARIMA/GARCH stretch has since shipped too**, on the
+shared MLE optimizer it was waiting for — `examples/stats_optimize_test.bas`,
+`stats_arima_test.bas`, `stats_arima_mle_test.bas`, `stats_garch_test.bas` —
+along with the scientist-shortlist phases (GLM suite, mediation/moderation,
+econometric diagnostics, robust SEs, power analysis, reliability, experimental
+design), each with its own golden. This sketches the data representation and the
 statistical-operation surface for a gBASIC statistics library. The guiding
 constraint is **simplicity**: make statistical work as easy as possible *without
 sacrificing functionality*, building on the values gBASIC already has. Any change

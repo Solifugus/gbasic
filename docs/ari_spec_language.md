@@ -1,9 +1,10 @@
 # ARI spec language — syntax draft
 
-Status: **DRAFT, unexecuted.** `stdlib/ari.bas` does not exist, so nothing here
-has been run. Every spec below was written and checked by hand against the two
-committed fixtures. Treat the specs as claims to be verified by the
-implementation, not as behavior.
+Status: **IMPLEMENTED.** `stdlib/ari.bas` exists (1,331 lines) with its own
+suite, `tests/run_ari.sh`. This line read "DRAFT, unexecuted — `stdlib/ari.bas`
+does not exist" until 2026-08-15. The specs below were originally hand-checked
+against the two committed fixtures rather than run; where a spec here disagrees
+with `stdlib/ari.bas`, the implementation and its suite are authoritative.
 
 Companion to `docs/text_design.md` (§4–§5 for the model, §5.1 for the variation
 problem, §13.H for page furniture). This document tightens §5's sketch into
