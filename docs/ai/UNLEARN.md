@@ -256,6 +256,63 @@ Pinned by `tests/run_numfmt.sh`.
 - **`contains` now takes a string as well as an array.** `contains("hello",
   "ell")` used to raise `contains expects an array`; it returns `true` now.
 
+## Names and forms that nearly work
+
+Every item here is a case where the obvious guess is *close enough to look
+right* and fails on a detail. Four of the five were hit in one sitting writing
+five short sample programs, by someone who had been reading this codebase all
+day — so assume you will hit them too.
+
+- **The builtin is `upper`; the modifier is `uppered`.** They are different
+  things with deliberately different names, and the near-miss is easy. Same for
+  `lower`/`lowered` and `trim`/`trimmed`.
+
+  ```basic
+  print upper("ada")     ' ADA          — builtin, called
+  x (uppered)= "ada"     ' ADA          — modifier, applied at assignment
+  x (upper)= "ada"       ' assign modifier not found: upper
+  ```
+
+- **Money and dates are modifiers, not literals.** There is no `$19.99` syntax —
+  it is a lexer error (`unexpected token`). A modifier gives the value its kind
+  at the point of assignment, and the result is a real `money`/`datetime`, not a
+  number or a string.
+
+  ```basic
+  price(USD)= 19.95
+  print type(price)              ' money
+  print price * 3                ' 59.85
+  due (date)= "2026-03-01 09:00:00"
+  print due + 45 days            ' 2026-04-15 09:00:00
+  ```
+
+- **There is no `today()`.** `now()` exists and returns a `datetime`, so
+  `today()` is the natural guess; it fails with `invalid function call: today`.
+
+- **`spawn` needs the call form, even with no arguments of your own.**
+  `spawn worker` is a *parse* error (`expecting LPAREN`), not a runtime one.
+
+  ```basic
+  w = spawn worker(self())   ' right
+  w = spawn worker           ' syntax error, unexpected NEWLINE, expecting LPAREN
+  ```
+
+- **`watch(...)` requires its variables to already exist**, and getting this
+  wrong fails *late and quietly*. Written first — the natural order, since it
+  reads like a declaration — it raises `undefined variable` from inside the
+  watcher body, then **carries on**, and the value you expected the watcher to
+  compute simply reads as `nothing` later.
+
+  ```basic
+  a = 5                  ' declare FIRST
+  watch(a)
+      b = a * 2
+  end watch
+  print b                ' 10
+  a = 10
+  print b                ' 20
+  ```
+
 ## Error handling — the big one
 
 `on error resume next` does **not** work like an exception catch. See
