@@ -126,6 +126,12 @@ Read in this order. gBASIC diverges from QBasic/VB intuition in ways that fail
 
 ---
 
-Not in this directory but worth knowing: [`/DOGFOOD.md`](../DOGFOOD.md) records
-every limitation and surprise hit while using gBASIC, and
-[`/CHANGELOG.md`](../CHANGELOG.md) records what shipped in each release.
+Not in this directory but worth knowing:
+
+- [`/DOGFOOD.md`](../DOGFOOD.md) — every limitation and surprise hit while
+  actually using gBASIC, with the workaround. Often more useful than a design
+  document, because it records what went wrong rather than what was intended.
+- [`/CHANGELOG.md`](../CHANGELOG.md) — what shipped in each release.
+- [`/CONTRIBUTING.md`](../CONTRIBUTING.md) — how to build and test, and the
+  house rules. Note code contributions are not being merged yet, pending a CLA.
+- [`/LICENSE`](../LICENSE) and [`/NOTICE`](../NOTICE) — Apache-2.0.

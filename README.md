@@ -763,10 +763,19 @@ Current output:
 gBASIC 0.1.0-rc1
 ```
 
+## Contributing
+
+Issues, bug reports and questions are welcome. **Code contributions are not
+being merged yet** — a Contributor License Agreement is being prepared, and
+merging code before it is in place would permanently remove the option to
+dual-license later. See [CONTRIBUTING.md](CONTRIBUTING.md) for the details, how
+to build and test, and the house rules the codebase is held to.
+
 ## License
 
 Licensed under the [Apache License, Version 2.0](LICENSE).
 
     Copyright 2026 Matthew C. Tedder
 
-See [NOTICE](NOTICE). Contributions are accepted under the same license.
+See [NOTICE](NOTICE). Contributions will be accepted under the same license,
+plus a CLA granting the right to sublicense.
