@@ -1,0 +1,15 @@
+sheets: Ledger, Notes & Refs, Formulas, Circular
+Ledger rows 1-7, cols 0-3
+
+parts (modelled = something interpreted it):
+  [Content_Types].xml bytes=1224 modelled=false
+  _rels/.rels bytes=296 modelled=false
+  xl/workbook.xml bytes=436 modelled=true
+  xl/_rels/workbook.xml.rels bytes=988 modelled=true
+  xl/sharedStrings.xml bytes=261 modelled=true
+  xl/styles.xml bytes=392 modelled=false
+  xl/worksheets/sheet1.xml bytes=704 modelled=true
+  xl/worksheets/sheet2.xml bytes=241 modelled=false
+  xl/worksheets/sheet3.xml bytes=1444 modelled=false
+  xl/worksheets/sheet4.xml bytes=324 modelled=false
+  xl/customData/vendor.xml bytes=125 modelled=false

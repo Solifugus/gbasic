@@ -1,0 +1,10 @@
+B5 = SUM(B2:B3), and D7 = B5*2 -- but D7 sits ABOVE B5 in sheet order.
+before: B2=1250.5 B5=1151.25 D7=2302.5
+
+evaluated=2 changed=2 circular=0
+after:  B2=1000 B5=900.75 D7=1801.5
+
+D7 is 1801.5, not 2302.5 -- it was recomputed from the NEW B5, not the
+stale one, because recalc walks dependencies rather than sheet order.
+
+Circular sheet: evaluated=1 circular=2

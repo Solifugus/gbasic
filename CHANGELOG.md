@@ -152,9 +152,20 @@ streaming), and libcrypto-backed crypto builtins with `stdlib/crypto.bas`.
   out instead of failing them. A build with no optional dependencies previously
   failed 34 of 182 examples for behaving exactly as documented.
 
+### Documentation
+
+`docs/xlsx_cookbook.md` is a 12-recipe tutorial for the spreadsheet library,
+covering all fifteen `xlsx.*` calls and the `grid`/`consolidate`/`dbframe`
+layers above them. Every code block and every output block on the page is
+checked byte-for-byte against a real file in `examples/xlsx_cookbook/` and its
+recorded output, so the page cannot drift from the product:
+`tools/sync_xlsx_cookbook.sh` copies both in, and `tests/run_xlsx_cookbook.sh`
+fails while any of them disagree — including the case a run-only suite would
+wave through, where a comment-only edit leaves the output identical.
+
 ### Testing
 
-216 example goldens, 303 negative cases and 44 suite runners. Goldens are
+216 example goldens, 303 negative cases and 45 suite runners. Goldens are
 compared byte-for-byte. Optional-dependency suites skip cleanly when their
 library is absent.
 

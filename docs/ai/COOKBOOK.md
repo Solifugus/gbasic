@@ -158,7 +158,24 @@ for error handling, `ERRORS.md`.
 - **WebServer** — `load webserver`; single request/connection.
   → `tests/webserver_integration.bas`
 - **XML** — `load xml`; parse and navigate by path; streaming reader for large
-  files. → `examples/xml_parse_test.bas`
+  files. Note `load` is an EXECUTABLE statement, so with a `program` block it
+  goes INSIDE the block — a top-level `load` never runs and the symptom is
+  `library not loaded: xml`. → `examples/xml_parse_test.bas`
+- **Spreadsheets (`xlsx`)** — no `load`; needs zlib + libxml2. Read, EDIT and
+  save an existing workbook (unmodelled parts survive byte-for-byte), evaluate
+  formulas, and check our engine against Excel's own cached values with
+  `xlsx.check` before trusting anything computed. Rows are 1-based, columns
+  0-based; cells are SPARSE, so loop the cells you were given rather than
+  rows × columns. Full tutorial in `docs/xlsx_cookbook.md`, whose code and
+  output blocks are checked against these files by `tests/run_xlsx_cookbook.sh`.
+  → `examples/xlsx_cookbook/01_open_and_look.bas`,
+  `examples/xlsx_cookbook/06_check_the_oracle.bas`
+- **Spreadsheet → table** — `grid.extract` a sheet into a frame,
+  `consolidate.merge` several differently-shaped sheets onto one schema,
+  `dbframe.to_table` into SQLite. Column types are inferred from EVERY value,
+  not the first; a source missing a required column is rejected by name rather
+  than filled with blanks. → `examples/xlsx_cookbook/09_messy_sheet.bas`,
+  `examples/xlsx_cookbook/11_frame_to_sqlite.bas`
 - **Cryptography (builtins)** — password hashing and random tokens.
   → `examples/password_hash_test.bas`, `examples/secure_token_test.bas`
 - **Cryptography (`load crypto`)** — signed cookies, CSRF, JWT/HS256, flat JSON.

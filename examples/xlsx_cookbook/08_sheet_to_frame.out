@@ -1,0 +1,11 @@
+ok = true
+columns: Item | Qty | Price
+rows: 3
+
+  bolt  qty 10  @ 0.25
+  nut  qty 20  @ 0.1
+  washer  qty 5  @ 0.05
+
+total units = 35
+
+spec matching nothing: ok = false

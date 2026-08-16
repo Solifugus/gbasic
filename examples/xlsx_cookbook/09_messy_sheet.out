@@ -1,0 +1,22 @@
+blocks the blank rows reveal:
+  rows 1..2
+  rows 4..11
+  rows 13..13
+  rows 15..19
+
+the automatic guess, with its reasons:
+  rows 1..2 confidence none (no header)
+      ! no all-text row found: cannot name the columns
+  rows 4..11 confidence low header row 4
+      ! the row below also looks like a header: two-row header? pass header_rows: 2
+      ! contains 2 row(s) that look like totals: pass drop_totals: true
+  rows 13..13 confidence none (no header)
+      ! single filled cell: a title or note, not a table
+  rows 15..19 confidence medium header row 16
+      ! rows above the header were skipped (title or stub)
+
+spec: ok=true rows 6..11
+columns: Region | Q1 Units | Q1 Value | Q2 Units | Q2 Value
+
+sum of extracted Q1 Units = 340
+the sheet's own TOTAL row = 340

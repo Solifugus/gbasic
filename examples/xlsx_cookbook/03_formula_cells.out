@@ -1,0 +1,7 @@
+B5 formula      = SUM(B2:B3)
+B5 cached value = 1151.25
+B5 kind         = number
+B5 evaluated    = 1151.25
+
+B2 has a formula = false
+B2 value         = 1250.5

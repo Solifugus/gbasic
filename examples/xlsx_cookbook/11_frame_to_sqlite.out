@@ -1,0 +1,19 @@
+headings become identifiers:
+  Q1 Units -> q1_units
+  Rate (%) -> rate
+  Loan # -> loan
+
+loaded ok = true  rows = 6
+create table "loans" (
+  "tape" TEXT,
+  "loan_id" TEXT,
+  "balance" REAL,
+  "rate" REAL
+)
+
+  CU_A  loans 2
+  CU_B  loans 2
+  CU_C  loans 2
+
+total balance = 265550.75
+exact         = true

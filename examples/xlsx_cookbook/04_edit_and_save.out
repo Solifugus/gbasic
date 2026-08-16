@@ -1,0 +1,9 @@
+before: B2 = 1250.5
+wrote 4050 bytes
+
+after:  A1 = Renamed
+after:  B2 = 9999.99
+after:  B6 = false
+
+vendor part still present = true
+sheets unchanged          = Ledger, Notes & Refs, Formulas, Circular

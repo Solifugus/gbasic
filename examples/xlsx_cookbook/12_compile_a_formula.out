@@ -1,0 +1,28 @@
+what lowers:
+  B2*0.02
+      "balance" * 0.02
+  IF(C2>0.05, B2*0.02, 0)
+      CASE WHEN "rate" > 0.05 THEN "balance" * 0.02 ELSE 0 END
+  ROUND(B2*C2, 2)
+      ROUND("balance" * "rate", 2)
+  SUM(B2:D2)
+      (COALESCE("balance", 0) + COALESCE("rate", 0) + COALESCE("term", 0))
+  B2*$F$1
+      "balance" * 0.02
+
+what is refused, and why:
+  VLOOKUP(A2, X:Y, 2, 0)
+      VLOOKUP lowers to a JOIN, which this phase does not do
+  SUMIF(B2:B99, ">0", C2:C99)
+      SUMIF lowers to a filtered AGGREGATE, which changes cardinality and is not a row expression
+  NOW()
+      NOW is volatile and has no set-based meaning
+  Other!B2
+      cross-sheet reference B2: lower the other sheet to a table first
+  MIN(B2)
+      MIN with one argument is an aggregate in SQL, not a row expression
+
+column E formula = IF(C2>0.05, ROUND(B2*C2,2), 0)
+compiled         = CASE WHEN "rate" > 0.05 THEN ROUND("balance" * "rate", 2) ELSE 0 END
+rows where compiled SQL agrees with the interpreter: 6/6
+xlsx.apply gives 6 values, first = 7875

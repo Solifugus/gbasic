@@ -1,0 +1,22 @@
+CU_A: Loan # | Balance | Int Rate | Orig Date
+CU_B: Note ID | Principal | Interest Rate | Origination
+CU_C: loan_number | Amount | Rate (%) | Date
+CU_D: Loan # | Int Rate
+
+ok       = false   (false: a source was rejected)
+accepted = CU_A, CU_B, CU_C
+rejected = CU_D
+
+what it decided, and why:
+  CU_A.rate: inferred whole (a value exceeds 1, which no fraction rate can)
+  CU_B.rate: AMBIGUOUS, assumed fraction (every value is at or below 1: fractions, or whole percents under 1% -- declare `scale` to be sure)
+  CU_C.rate: inferred whole (the values carry a written % sign)
+  CU_D: REJECTED, missing required column(s) balance
+
+every row carries its source, because an untraceable figure is not auditable:
+  CU_A  A-100  balance 150000  rate 0.0525
+  CU_A  A-101  balance 82500.5  rate 0.04875
+  CU_B  B-200  balance 1500  rate 0.0475
+  CU_B  B-201  balance 23750.25  rate 0.0525
+  CU_C  C-300  balance -1200  rate 0.06
+  CU_C  C-301  balance 9000  rate 0.065

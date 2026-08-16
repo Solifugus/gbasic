@@ -1,0 +1,8 @@
+agree            = 17
+disagree         = 0
+volatile skipped = 1
+unsupported      = 1
+
+  volatile B18  NOW()
+  unsupported B19  _xll.HPVAL(A1)
+      blocked_by=_XLL.HPVAL
