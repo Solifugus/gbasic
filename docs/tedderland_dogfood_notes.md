@@ -115,3 +115,35 @@ output for deleted projects.
 Suggestion: add a recursive `remove_tree(path)` (or make `remove_dir` recursive
 with an opt-in flag), and/or an `is_dir(path)`/`file_exists(path)` predicate so
 output-tree cleanup is writable in gBASIC.
+
+## 2026-08-16 — writing gBASIC *samples* is where the surprises land
+While rewriting the gBASIC project page I wrote five short samples and ran every
+one before publishing it. Four of the five failed on the first attempt, and none
+of the failures was a language defect — all four were me writing the obvious
+thing rather than the real thing. That is worth recording precisely because the
+page is aimed at newcomers, who will guess the same way:
+
+- **`watch(a, b)` requires the watched variables to already exist.** Writing the
+  watcher first (the natural order, since it reads like a declaration) gives
+  `undefined variable: subtotal` and then prints `nothing` twice — so it fails
+  *late and quietly* rather than at the watch statement.
+- **Money is a modifier, not a literal.** `price = $19.99` is a lexer error;
+  it is `price(USD)= 19.95`. Nothing in the error text points at the modifier
+  form.
+- **The string modifiers are `uppered`/`lowered`/`trimmed`, not
+  `upper`/`lower`/`trim`.** The builtins are `upper`/`lower`; the modifiers take
+  the past participle. `name (upper)= "x"` gives `assign modifier not found:
+  upper`, which is a good message but the near-miss is easy to hit.
+- **There is no `today()`.** `now()` exists, so `today()` is the natural guess
+  for a date-only value; it fails as `invalid function call: today`.
+- **`spawn f` needs the call form** — `spawn worker` is a parse error
+  (`expecting LPAREN`); it must be `spawn worker(args...)` even when the child
+  takes only the parent handle.
+
+None of these needs a language change and most are documented somewhere. The
+observation is about *shape*: every one is a case where the obvious guess is
+close enough to look right and fails on a detail. That is exactly the population
+`docs/ai/UNLEARN.md` exists for, and four of these five are not in it.
+Suggestion: a short "first twenty minutes" section in the tutorial covering the
+modifier-vs-builtin naming split (`upper` vs `uppered`), the money/date modifier
+forms, and the ordering requirement for `watch`.
