@@ -194,7 +194,18 @@ recorded output, so the page cannot drift from the product:
 fails while any of them disagree — including the case a run-only suite would
 wave through, where a comment-only edit leaves the output identical.
 
+`CONTRIBUTING.md` covers building, running the suites, and the house rules —
+and states plainly that code contributions are not being merged yet, pending a
+Contributor License Agreement.
+
 ### Testing
+
+CI (`.github/workflows/ci.yml`) builds three configurations on every push: all
+optional modules enabled, none enabled, and install-to-a-prefix-then-run-from-it.
+Each is a configuration that was genuinely broken and invisible from a developer
+machine — which is the failure class tests cannot reach, since a `#if` guard and
+a `pkg-config --exists` check are both blind to the configuration they did not
+select.
 
 216 example goldens, 303 negative cases and 45 suite runners. Goldens are
 compared byte-for-byte. Optional-dependency suites skip cleanly when their
