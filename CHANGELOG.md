@@ -130,6 +130,28 @@ data. No test performs network access.
 `sqlite`, `pg` (PostgreSQL), `webclient`, `webserver`, `xml` (tree and
 streaming), and libcrypto-backed crypto builtins with `stdlib/crypto.bas`.
 
+### License
+
+gBASIC is released under the **Apache License, Version 2.0** — see `LICENSE`
+(verbatim, md5 `3b83ef96387f14655fc854ddc3c6bd57`) and `NOTICE`. The repository
+previously carried no license at all, which meant default copyright applied and
+nobody had permission to use it. `make install` now places both under
+`$PREFIX/share/doc/gbasic`, since Apache-2.0 requires the license to travel with
+the work.
+
+### Packaging
+
+- **`make install PREFIX=...` installed a binary that looked somewhere else.**
+  The stdlib path is compiled in (`GBASIC_DEFAULT_STDLIB`), but make cannot see a
+  changed `-D`, so `make && make install PREFIX=$HOME/.local` — the sequence the
+  Makefile itself recommends — installed an already-built binary still pointing
+  at `/usr/local`. Nothing errored; `load` simply failed later, or silently
+  resolved against a different gBASIC's stdlib. A stamp now invalidates the two
+  objects that carry the path, and only those.
+- `make install-lsp` installs `gbasic-lsp`, which previously had no supported
+  route to a `PATH`. Kept separate from `make install` so a plain install stays
+  lean; `make uninstall` removes both, plus the doc directory.
+
 ### Portability
 
 - **riscv64** is a supported target; the suite runs on Ubuntu 24.04 riscv64.

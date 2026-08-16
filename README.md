@@ -136,9 +136,12 @@ make install PREFIX=$HOME/.local
 
 After installing you can run `gbasic program.bas` from anywhere, and unqualified
 `load` of a standard library (e.g. `load dates`) resolves automatically. The
-install path is baked in at build time; `GBASIC_PATH` still works and takes
-precedence when you want to point at a different stdlib (e.g. during development:
-`GBASIC_PATH=stdlib ./gbasic program.bas`). Remove with `sudo make uninstall`.
+install path is baked in at build time, so changing `PREFIX` rebuilds the two
+objects that carry it — you do not need `make clean` in between. `GBASIC_PATH`
+still works and takes precedence when you want to point at a different stdlib
+(e.g. during development: `GBASIC_PATH=stdlib ./gbasic program.bas`). `LICENSE`
+and `NOTICE` are installed alongside, under `$PREFIX/share/doc/gbasic`. Remove
+with `sudo make uninstall`.
 
 The interpreter still builds when an optional dependency is unavailable.
 Loading or calling the affected feature then produces a clear runtime error.
@@ -182,7 +185,9 @@ rather than enabling the flag.
 
 A separate diagnostics language server, `gbasic-lsp`, is built by `make dev`
 (it is kept out of the default `make` target). It speaks LSP over stdio and
-publishes diagnostics on document sync.
+publishes diagnostics on document sync. Install it with `sudo make install-lsp`,
+which is deliberately separate from `make install` so a plain install stays
+lean; `make uninstall` removes both.
 
 ## Language Example
 
@@ -757,3 +762,11 @@ Current output:
 ```text
 gBASIC 0.1.0-rc1
 ```
+
+## License
+
+Licensed under the [Apache License, Version 2.0](LICENSE).
+
+    Copyright 2026 Matthew C. Tedder
+
+See [NOTICE](NOTICE). Contributions are accepted under the same license.

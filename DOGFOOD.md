@@ -1858,3 +1858,37 @@ finding gets lost.
   invisible the whole time. A sweep that reports "1 failure" from this runner
   means "at least 1" — to get the true list, loop the cases without the early
   exit, as was done here.
+
+## 2026-08-15 — CC — while: release prep (packaging)
+- **Type:** bug
+- **Severity:** high (silently installed a broken binary)
+- **What:** the stdlib search path is COMPILED IN (`GBASIC_DEFAULT_STDLIB`,
+  derived from `PREFIX`), but `make` cannot see a changed `-D`. So the sequence
+  the Makefile's own comment recommends was broken:
+
+      make                              # bakes /usr/local/share/gbasic/stdlib
+      make install PREFIX=$HOME/.local  # installs there; binary still says /usr/local
+
+  `gbasic` was already built and up to date, so make installed the OLD binary
+  under the new prefix. Nothing errors. Either `load frame` fails later for no
+  visible reason, or — worse — it silently resolves against a DIFFERENT gBASIC's
+  stdlib in `/usr/local`, which is the failure that does not look like one.
+  This also made my first attempt to verify a prefixed install meaningless: it
+  "worked", because it was reading /usr/local, not the tree I had just installed.
+- **Workaround:** resolved. A `.stdlibdir-stamp` records the STDLIBDIR each
+  object was built with; only `main.o` and `eval.o` read the macro, so only they
+  rebuild when it changes. Verified four ways: changing PREFIX rebuilds, changing
+  back rebuilds, a no-op `make` stays a no-op (0 compile commands), and `clean`
+  removes the stamp. Note the rule had to be defined BELOW `all` — a target
+  above it becomes the default goal, and a bare `make` then builds only the
+  stamp, which is how I first broke the build entirely.
+- **The general shape:** a value injected through `CFLAGS` is invisible to
+  make's dependency graph. Any `-D` that changes program BEHAVIOUR (not just
+  optimisation) needs something in the graph to represent it, or the build
+  silently keeps the old answer. `HAVE_*` flags have the same exposure — they
+  change with the environment rather than the command line, which is why the
+  DOGFOOD entries above about conditional compilation keep recurring.
+- **Also found here:** `make install` did not install `LICENSE`/`NOTICE` (an
+  Apache-2.0 distribution must carry them), `uninstall` did not remove the doc
+  directory, and `gbasic-lsp` had no install target at all — `make dev` built a
+  language server with no supported route onto a PATH.

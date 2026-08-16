@@ -14,3 +14,7 @@ examples/gbasic_site/server_port.txt
 examples/gbasic_site/tmp_port.txt
 examples/gbasic_site/backups/
 tests/__pycache__/
+.stdlibdir-stamp
+examples/tmp_*.xlsx
+examples/tmp_*.db
+examples/tmp_*.xml

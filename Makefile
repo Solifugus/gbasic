@@ -6,9 +6,27 @@ PREFIX ?= /usr/local
 BINDIR := $(PREFIX)/bin
 DATADIR := $(PREFIX)/share/gbasic
 STDLIBDIR := $(DATADIR)/stdlib
+# Apache-2.0 requires the licence to travel with the work, so an install that
+# drops it is not a compliant distribution.
+DOCDIR := $(PREFIX)/share/doc/gbasic
 # Baked-in fallback the loader searches when GBASIC_PATH does not resolve a library,
 # so an installed `gbasic` finds its stdlib without any environment setup.
 CFLAGS += -DGBASIC_DEFAULT_STDLIB='"$(STDLIBDIR)"'
+
+# Because that path is COMPILED IN, changing PREFIX has to invalidate the objects
+# that carry it -- and make cannot see a changed -D on its own. Without this, the
+# sequence the comment above actually recommends is silently broken:
+#
+#     make                              # bakes /usr/local/share/gbasic/stdlib
+#     make install PREFIX=$HOME/.local  # installs there, binary still looks in /usr/local
+#
+# make sees `gbasic` already built and up to date, so it installs the OLD binary
+# under the new prefix. Nothing errors; `load frame` just fails later, or worse
+# silently resolves against a different gBASIC's stdlib in /usr/local. The stamp
+# records the STDLIBDIR each object was built with; only main.o and eval.o read
+# the macro, so only they rebuild when it changes. The rule itself lives further
+# down, below `all` -- a target defined up here would become the DEFAULT GOAL and
+# a bare `make` would build nothing but the stamp.
 GTK_AVAILABLE := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --exists gtk+-3.0 && printf 1 || printf 0)
 GTK_CFLAGS := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --cflags gtk+-3.0 2>/dev/null)
 GTK_LIBS := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --libs gtk+-3.0 2>/dev/null)
@@ -46,6 +64,22 @@ ZLIB_LIBS := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --libs 
 # GObject-Introspection bridge (gi.* module). Targets the modern GLib-merged
 # libgirepository (girepository-2.0, gi_repository_* API, GLib >= 2.80); the
 # legacy 1.x gobject-introspection-1.0 API is intentionally NOT supported.
+#
+# `--exists` IS the version floor here, and deliberately so: girepository-2.0
+# did not exist before GLib 2.80 (that is the release the library was merged
+# into GLib), so a system that has the module has at least 2.80.
+#
+# The floor that bites is therefore not this one but the API's own. Symbols kept
+# arriving after 2.80, and using one adds a floor NOTHING HERE CHECKS -- the
+# build simply fails to LINK, and it takes the whole gbasic binary with it, not
+# just the gi module. That happened: gi_repository_dup_default() is absent in
+# 2.80.0 (Ubuntu 24.04 LTS) and 2.84.1 (25.04) and present in 2.88.0, so the
+# current LTS could not build gBASIC at all while every dev box here was fine.
+# Fixed by using gi_repository_new(), which exists across all three.
+#
+# So: when adding a gi_* call, check it exists in 2.80, or raise this floor to
+# a `--atleast-version` and say why. Verified by BUILDING in an ubuntu:24.04
+# container, which is the only thing that actually proves it.
 GIR_AVAILABLE := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --exists girepository-2.0 && printf 1 || printf 0)
 GIR_CFLAGS := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --cflags girepository-2.0 2>/dev/null)
 GIR_LIBS := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --libs girepository-2.0 2>/dev/null)
@@ -179,7 +213,14 @@ third_party/cjson/cJSON.o: third_party/cjson/cJSON.c third_party/cjson/cJSON.h
 src/parser.tab.c src/parser.tab.h: src/parser.y include/ast.h include/lexer.h include/diagnostics.h include/parse_ctx.h
 	bison -d -o src/parser.tab.c src/parser.y
 
-src/main.o: src/main.c include/ast.h include/eval.h include/lexer.h include/builtins.h include/gbasic.h include/diagnostics.h
+# See the PREFIX note at the top of this file. Kept here rather than up there so
+# it cannot become the default goal.
+.stdlibdir-stamp: FORCE
+	@printf '%s' '$(STDLIBDIR)' | cmp -s - $@ 2>/dev/null || printf '%s' '$(STDLIBDIR)' > $@
+FORCE:
+.PHONY: FORCE
+
+src/main.o: src/main.c include/ast.h include/eval.h include/lexer.h include/builtins.h include/gbasic.h include/diagnostics.h .stdlibdir-stamp
 	$(CC) $(CFLAGS) -c $< -o $@
 
 src/lexer.o: src/lexer.c include/lexer.h
@@ -191,7 +232,7 @@ src/parser.tab.o: src/parser.tab.c src/parser.tab.h include/ast.h include/lexer.
 src/ast.o: src/ast.c include/ast.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
-src/eval.o: src/eval.c src/modules/xml.c src/modules/rowmodel.c src/modules/xlsx.c include/eval.h include/ast.h include/builtins.h include/actor.h include/diagnostics.h
+src/eval.o: src/eval.c src/modules/xml.c src/modules/rowmodel.c src/modules/xlsx.c include/eval.h include/ast.h include/builtins.h include/actor.h include/diagnostics.h .stdlibdir-stamp
 	$(CC) $(CFLAGS) -c $< -o $@
 
 src/builtins.o: src/builtins.c include/builtins.h
@@ -213,13 +254,29 @@ install: gbasic
 	install -m 0644 stdlib/*.bas $(DESTDIR)$(STDLIBDIR)/
 	install -d $(DESTDIR)$(STDLIBDIR)/gtksourceview
 	install -m 0644 stdlib/gtksourceview/gbasic.lang $(DESTDIR)$(STDLIBDIR)/gtksourceview/
-	@echo "Installed gbasic to $(DESTDIR)$(BINDIR) and stdlib to $(DESTDIR)$(STDLIBDIR)"
+	install -d $(DESTDIR)$(DOCDIR)
+	install -m 0644 LICENSE NOTICE $(DESTDIR)$(DOCDIR)/
+	@echo "Installed gbasic to $(DESTDIR)$(BINDIR), stdlib to $(DESTDIR)$(STDLIBDIR),"
+	@echo "and LICENSE/NOTICE to $(DESTDIR)$(DOCDIR)"
+
+# The language server installs SEPARATELY, mirroring the decision that keeps it
+# out of `all`: a plain install stays lean, and someone wiring up an editor asks
+# for it explicitly. Without this target the binary `make dev` produces has no
+# supported way to reach a PATH, which for an editor integration is most of the
+# point of building it.
+install-lsp: gbasic-lsp
+	install -d $(DESTDIR)$(BINDIR)
+	install -m 0755 gbasic-lsp $(DESTDIR)$(BINDIR)/gbasic-lsp
+	@echo "Installed gbasic-lsp to $(DESTDIR)$(BINDIR)"
 
 uninstall:
 	rm -f $(DESTDIR)$(BINDIR)/gbasic
+	rm -f $(DESTDIR)$(BINDIR)/gbasic-lsp
 	rm -rf $(DESTDIR)$(DATADIR)
-	@echo "Removed gbasic from $(DESTDIR)$(BINDIR) and $(DESTDIR)$(DATADIR)"
+	rm -rf $(DESTDIR)$(DOCDIR)
+	@echo "Removed gbasic from $(DESTDIR)$(BINDIR), $(DESTDIR)$(DATADIR) and $(DESTDIR)$(DOCDIR)"
 
 clean:
 	rm -f gbasic libgbasic.a $(OBJS) src/parser.tab.c src/parser.tab.h
 	rm -f gbasic-lsp $(LSP_OBJS)
+	rm -f .stdlibdir-stamp
