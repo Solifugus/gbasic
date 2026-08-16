@@ -1,3 +1,6 @@
+' SPDX-License-Identifier: Apache-2.0
+' Copyright 2026 Matthew C. Tedder. See LICENSE and LICENSING.md.
+
 ' ari.bas — Anchor Relative Identification: parse messy, semi-structured
 ' reports declaratively and return a frame.
 '

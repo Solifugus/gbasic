@@ -773,9 +773,28 @@ to build and test, and the house rules the codebase is held to.
 
 ## License
 
-Licensed under the [Apache License, Version 2.0](LICENSE).
+gBASIC is **dual-licensed**, and every file declares which applies in its own
+header. Full map: **[LICENSING.md](LICENSING.md)**.
+
+| | License |
+|---|---|
+| The language, the interpreter, and most of the standard library | **[Apache-2.0](LICENSE)** |
+| The EDGAR suite and the spreadsheet-to-database layers | **[AGPL-3.0-or-later](LICENSE.AGPL-3.0)** |
+
+**If you are writing gBASIC programs or embedding the interpreter, you are under
+Apache-2.0** and nothing here restricts you. That includes the entire xlsx engine
+— reading, writing, evaluating and recalculating spreadsheets — because it is
+compiled into the binary.
+
+Ten standard libraries are AGPL: `grid` `consolidate` `dbframe` (the pipeline
+that turns messy sheets into queryable tables) and `edgar` `fundamentals`
+`forensics` `insiders` `ownership` `mdna` `screener` (securities analysis).
+Build on those and distribute, or run them as a network service, and the AGPL
+asks you to release your source too. **A commercial license is available** if
+that does not suit you — contact matthewct@gmail.com.
 
     Copyright 2026 Matthew C. Tedder
 
-See [NOTICE](NOTICE). Contributions will be accepted under the same license,
-plus a CLA granting the right to sublicense.
+See [NOTICE](NOTICE). Contributions will be accepted under both licenses, plus a
+CLA granting the right to sublicense — which is what keeps the commercial option
+possible.

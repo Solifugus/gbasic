@@ -255,7 +255,7 @@ install: gbasic
 	install -d $(DESTDIR)$(STDLIBDIR)/gtksourceview
 	install -m 0644 stdlib/gtksourceview/gbasic.lang $(DESTDIR)$(STDLIBDIR)/gtksourceview/
 	install -d $(DESTDIR)$(DOCDIR)
-	install -m 0644 LICENSE NOTICE $(DESTDIR)$(DOCDIR)/
+	install -m 0644 LICENSE LICENSE.AGPL-3.0 NOTICE LICENSING.md $(DESTDIR)$(DOCDIR)/
 	@echo "Installed gbasic to $(DESTDIR)$(BINDIR), stdlib to $(DESTDIR)$(STDLIBDIR),"
 	@echo "and LICENSE/NOTICE to $(DESTDIR)$(DOCDIR)"
 

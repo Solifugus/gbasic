@@ -1,3 +1,6 @@
+' SPDX-License-Identifier: Apache-2.0
+' Copyright 2026 Matthew C. Tedder. See LICENSE and LICENSING.md.
+
 ' filetree.bas — a directory as a navigable TREE.
 '
 ' Turns a directory into a tree of plain gBASIC values — a model, not widgets — so

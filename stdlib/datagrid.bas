@@ -1,3 +1,6 @@
+' SPDX-License-Identifier: Apache-2.0
+' Copyright 2026 Matthew C. Tedder. See LICENSE and LICENSING.md.
+
 ' datagrid.bas — a general, reusable virtualized data grid for GTK 4.
 '
 ' A DataGrid displays large tabular datasets in a GtkColumnView without building

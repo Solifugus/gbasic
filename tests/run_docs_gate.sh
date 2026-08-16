@@ -191,4 +191,43 @@ else
     fi
 fi
 
+# --- (4) The licence split must stay unambiguous -------------------------------
+#
+# gBASIC is dual-licensed: Apache-2.0 except for ten stdlib libraries that are
+# AGPL, so that they can also be offered commercially. A file whose licence is
+# unclear is worse than either choice -- a user cannot tell what they may do, and
+# the copyright holder cannot tell what they may sell. So: every stdlib library
+# declares an SPDX identifier, LICENSING.md lists every one of them, and the two
+# agree. Adding a library without deciding its licence fails here.
+LICMAP=LICENSING.md
+if [ ! -f "$LICMAP" ]; then
+    echo "FAIL missing        $LICMAP (the licence map)"
+    status=1
+else
+    lic_ok=1
+    for f in stdlib/*.bas; do
+        base=$(basename "$f" .bas)
+        spdx=$(grep -m1 -oE 'SPDX-License-Identifier: [A-Za-z0-9.+-]+' "$f" | sed 's/.*: //')
+        if [ -z "$spdx" ]; then
+            echo "FAIL no SPDX        $f -- add a licence header and list it in $LICMAP"
+            lic_ok=0; status=1; continue
+        fi
+        # The map lists names as `word` inside the section for their licence.
+        if ! grep -qF "\`$base\`" "$LICMAP"; then
+            echo "FAIL unmapped       $f declares $spdx but is not listed in $LICMAP"
+            lic_ok=0; status=1
+        fi
+    done
+    # And the reverse: a name in the AGPL list must actually declare AGPL.
+    agpl_listed=$(sed -n '/^### AGPL-3.0-or-later/,/^## /p' "$LICMAP" | grep -oE '`[a-z_]+`' | tr -d '`' | sort -u)
+    for n in $agpl_listed; do
+        [ -f "stdlib/$n.bas" ] || continue
+        if ! grep -q 'SPDX-License-Identifier: AGPL-3.0-or-later' "stdlib/$n.bas"; then
+            echo "FAIL licence drift  $LICMAP lists $n as AGPL but stdlib/$n.bas does not declare it"
+            lic_ok=0; status=1
+        fi
+    done
+    [ "$lic_ok" = "1" ] && echo "PASS licensing      every stdlib library declares a licence and matches $LICMAP"
+fi
+
 exit "$status"

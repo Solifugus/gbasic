@@ -132,12 +132,30 @@ streaming), and libcrypto-backed crypto builtins with `stdlib/crypto.bas`.
 
 ### License
 
-gBASIC is released under the **Apache License, Version 2.0** — see `LICENSE`
-(verbatim, md5 `3b83ef96387f14655fc854ddc3c6bd57`) and `NOTICE`. The repository
-previously carried no license at all, which meant default copyright applied and
-nobody had permission to use it. `make install` now places both under
-`$PREFIX/share/doc/gbasic`, since Apache-2.0 requires the license to travel with
-the work.
+gBASIC is **dual-licensed**. `LICENSING.md` is the map, and every file declares
+its own license with an SPDX identifier.
+
+- **Apache-2.0** (`LICENSE`, verbatim, md5 `3b83ef96387f14655fc854ddc3c6bd57`) —
+  the language, the interpreter, every C module compiled into it *including the
+  whole xlsx engine*, and 14 of the 24 standard libraries.
+- **AGPL-3.0-or-later** (`LICENSE.AGPL-3.0`, verbatim from gnu.org, md5
+  `eb1e647870add0502f8f010b19de32af`) — the spreadsheet-to-database pipeline
+  (`grid`, `consolidate`, `dbframe`) and the EDGAR securities-analysis suite
+  (`edgar`, `fundamentals`, `forensics`, `insiders`, `ownership`, `mdna`,
+  `screener`). A commercial license for these is available.
+
+Writing gBASIC programs, or embedding the interpreter, is Apache-2.0 and
+unrestricted. The xlsx *engine* is Apache because it compiles into the binary
+and could not carry a different license without making the whole interpreter
+AGPL; what is AGPL is the layer built on top of it.
+
+No Apache-licensed file depends on an AGPL one — the dependency graph was
+checked, and the AGPL libraries are leaves. The docs gate enforces that every
+stdlib library declares a license and that it matches `LICENSING.md`.
+
+The repository previously carried no license at all, which meant default
+copyright applied and nobody had permission to use it. `make install` places
+both license texts, `NOTICE` and `LICENSING.md` under `$PREFIX/share/doc/gbasic`.
 
 ### Packaging
 
@@ -214,6 +232,12 @@ library is absent.
 ### Known limits
 
 - Not stable. The language surface may change before 1.0.0.
+- **An error raised inside a `load`ed library reports the library's line number
+  against the calling file's path**, so the file/line pair in the message cannot
+  be looked up. The message itself is correct. Since the standard library is
+  written in gBASIC, this affects most stdlib diagnostics. Diagnosed in
+  `DOGFOOD.md` (2026-08-16) with two candidate fixes; deliberately not attempted
+  during release prep because both touch error plumbing.
 - No closures, no exponent literals (`1e20` lexes as a duration — use
   `number("1e20")`), and repeated string `+` is quadratic.
 - `valgrind` has no riscv64 port, so the memory tiers can only skip there;

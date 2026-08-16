@@ -1,3 +1,6 @@
+' SPDX-License-Identifier: Apache-2.0
+' Copyright 2026 Matthew C. Tedder. See LICENSE and LICENSING.md.
+
 ' crypto.bas — ergonomic cryptography compositions in gBASIC.
 '
 ' Built entirely on the crypto C builtins (docs/crypto_design.md Phases 1-2-4):

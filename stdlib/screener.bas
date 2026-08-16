@@ -1,3 +1,26 @@
+' SPDX-License-Identifier: AGPL-3.0-or-later
+'
+' Copyright (C) 2026 Matthew C. Tedder
+'
+' This file is part of gBASIC. Unlike the gBASIC interpreter and the rest of the
+' standard library, which are Apache-2.0, THIS FILE IS LICENSED UNDER THE GNU
+' AFFERO GENERAL PUBLIC LICENSE v3.0 OR LATER. See LICENSE.AGPL-3.0, and
+' LICENSING.md for which files are under which licence and why.
+'
+' This program is free software: you can redistribute it and/or modify it under
+' the terms of the GNU Affero General Public License as published by the Free
+' Software Foundation, either version 3 of the License, or (at your option) any
+' later version.
+'
+' This program is distributed in the hope that it will be useful, but WITHOUT
+' ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+' FOR A PARTICULAR PURPOSE. See the GNU Affero General Public License for more
+' details. You should have received a copy along with this program; if not, see
+' <https://www.gnu.org/licenses/>.
+'
+' A COMMERCIAL LICENCE is available for use in proprietary or hosted products
+' without the AGPL's obligations. Contact matthewct@gmail.com.
+
 ' screener.bas — the whole-market bulk tier (edgar_design.md §4.6, §8.5, WP-SCR-1).
 '
 ' The nightly companyfacts.zip holds one CIK{10}.json per filer. Ingest once into

@@ -1,3 +1,6 @@
+' SPDX-License-Identifier: Apache-2.0
+' Copyright 2026 Matthew C. Tedder. See LICENSE and LICENSING.md.
+
 ' llm.bas — chat-completion client for gBASIC (llm_design.md §1–§4, WP-LLM-1).
 '
 ' An LLM call is JSON over HTTPS, nothing more, so this is pure gBASIC over the

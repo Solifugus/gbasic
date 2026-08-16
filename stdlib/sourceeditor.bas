@@ -1,3 +1,6 @@
+' SPDX-License-Identifier: Apache-2.0
+' Copyright 2026 Matthew C. Tedder. See LICENSE and LICENSING.md.
+
 ' sourceeditor.bas — a reusable source/text editor over GtkSourceView 5.
 '
 ' General-purpose: nothing here is named after or specific to any application.

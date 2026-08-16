@@ -1,1 +1,1 @@
-runtime error at tests/negative_llm_offline_miss.bas:260:13: llm: offline fixture missing (expected examples/fixtures/llm_empty/openai_response.json)
+runtime error at tests/negative_llm_offline_miss.bas:263:13: llm: offline fixture missing (expected examples/fixtures/llm_empty/openai_response.json)

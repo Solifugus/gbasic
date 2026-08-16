@@ -1,3 +1,6 @@
+' SPDX-License-Identifier: Apache-2.0
+' Copyright 2026 Matthew C. Tedder. See LICENSE and LICENSING.md.
+
 ' matrix.bas — minimal vector/matrix toolkit (statistics_design.md §8 shared
 ' infrastructure). A matrix is a list of rows; each row is a list of numbers.
 ' A vector is a list of numbers. Indices are 0-based.

@@ -17,9 +17,20 @@
 
 ---
 
-gBASIC is licensed under [Apache-2.0](LICENSE). Contributions will be accepted
-under the same license, plus a CLA granting the right to sublicense — see the
-notice above.
+gBASIC is **dual-licensed** — Apache-2.0 for the language, the interpreter and
+most of the standard library; AGPL-3.0-or-later for the EDGAR suite and the
+spreadsheet-to-database layers. Every file declares its own license with an
+SPDX identifier, and [LICENSING.md](LICENSING.md) is the map.
+
+Contributions will be accepted under the license of the file you are changing,
+plus a CLA granting the right to sublicense. That CLA is not bureaucracy: the
+AGPL files are also offered under a commercial license, and a contribution
+without a sublicensing grant could never be included in a commercially licensed
+copy. See the notice above.
+
+**If you add a file to `stdlib/`,** give it an SPDX header and list it in
+`LICENSING.md` — the docs gate fails otherwise, deliberately, because a file
+whose license is unclear is worse than either choice.
 
 ## Getting set up
 

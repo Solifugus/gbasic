@@ -1,3 +1,6 @@
+' SPDX-License-Identifier: Apache-2.0
+' Copyright 2026 Matthew C. Tedder. See LICENSE and LICENSING.md.
+
 ' persist.bas — crash-safe, versioned persistence for application state.
 '
 ' A thin manager over the filesystem primitives, for any program that has to

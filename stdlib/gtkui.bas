@@ -1,3 +1,6 @@
+' SPDX-License-Identifier: Apache-2.0
+' Copyright 2026 Matthew C. Tedder. See LICENSE and LICENSING.md.
+
 ' gtkui.bas — a dynamic declarative widget-tree reconciler for GTK 4.
 '
 ' You describe a UI as a tree of plain gBASIC records ("nodes"); gtkui builds the

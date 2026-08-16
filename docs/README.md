@@ -7,7 +7,7 @@ exist, so a new document cannot quietly become invisible.
 **Read the status column before you rely on anything.** This repository has
 repeatedly been bitten by design proposals read as descriptions of shipped
 behaviour — and, worse, by *stale* status lines claiming something was unbuilt
-long after it shipped. Four such lines were corrected on 2026-08-15, one of
+long after it shipped. Six such lines were corrected on 2026-08-15, one of
 which had caused a working module to be filed as a release blocker.
 
 | Status | Means |
@@ -134,4 +134,7 @@ Not in this directory but worth knowing:
 - [`/CHANGELOG.md`](../CHANGELOG.md) — what shipped in each release.
 - [`/CONTRIBUTING.md`](../CONTRIBUTING.md) — how to build and test, and the
   house rules. Note code contributions are not being merged yet, pending a CLA.
-- [`/LICENSE`](../LICENSE) and [`/NOTICE`](../NOTICE) — Apache-2.0.
+- [`/LICENSING.md`](../LICENSING.md) — which files are Apache-2.0 and which are
+  AGPL-3.0, and why the line falls where it does. Enforced by the docs gate.
+- [`/LICENSE`](../LICENSE), [`/LICENSE.AGPL-3.0`](../LICENSE.AGPL-3.0) and
+  [`/NOTICE`](../NOTICE) — the licence texts.

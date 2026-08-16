@@ -1892,3 +1892,42 @@ finding gets lost.
   Apache-2.0 distribution must carry them), `uninstall` did not remove the doc
   directory, and `gbasic-lsp` had no install target at all — `make dev` built a
   language server with no supported route onto a PATH.
+
+## 2026-08-16 — CC — while: release prep (dual-licensing the stdlib)
+- **Type:** bug
+- **Severity:** medium (wrong diagnostics, not wrong execution)
+- **What:** an error raised inside a `load`ed library reports the LIBRARY'S LINE
+  NUMBER against the ROOT FILE'S PATH. `tests/negative_edgar_unset_identify.bas`
+  is 12 lines long and the diagnostic reads:
+
+      runtime error at tests/negative_edgar_unset_identify.bas:170:13: edgar: ...
+
+  Line 170 does not exist in that file. 170 is the line in `stdlib/edgar.bas`
+  where the `error` statement actually is. So every diagnostic from a stdlib
+  library names a file/line pair that cannot be looked up — and gBASIC's entire
+  standard library is `.bas`, so this is the common case, not an edge one.
+- **Why it surfaced now:** adding a 23-line licence header to `stdlib/edgar.bas`
+  moved the number from 147 to 170 and the golden went red. **The golden had
+  been recording a wrong answer since it was written** — the path was always
+  wrong, only the number was stable. A golden pins whatever the binary says,
+  which is the same lesson as PLAT-EQ: no golden can catch a defect whose output
+  is stable.
+- **Diagnosis:** `current_import_path` is set only while a library is being
+  IMPORTED and restored immediately after, so by the time one of its functions
+  is CALLED it is NULL and `runtime_error_path()` falls back to
+  `root_source_path`. Meanwhile `current_line` comes from the library's own AST
+  node. Line and path come from different places and nothing reconciles them.
+- **Workaround:** none needed by users; the message is still readable, just
+  unlookupable. Golden rebaselined deliberately (listed in the commit).
+- **Two candidate fixes, neither done:**
+  1. *Correct but invasive* — give every AST node a source-file identity, set at
+     parse time. `include/ast.h` nodes carry `line`/`column` and no file, so this
+     touches the parser, ast.c and eval.c.
+  2. *Cheaper seam* — `function_register_def(stmt, imported, library)` already
+     knows a function came from a library. Store the resolved path on the
+     function record and set `current_import_path` for the duration of the call.
+     Smaller, but needs care around recursion, nested library calls and actors.
+- **Deliberately NOT fixed during release prep.** It is pre-existing, affects
+  diagnostics rather than results, and both fixes touch error plumbing — which
+  is not something to rush the same day a tag is cut. Recorded here so it is a
+  known defect with a diagnosis rather than a surprise.

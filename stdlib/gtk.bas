@@ -1,3 +1,6 @@
+' SPDX-License-Identifier: Apache-2.0
+' Copyright 2026 Matthew C. Tedder. See LICENSE and LICENSING.md.
+
 ' gtk.bas — thin ergonomic conveniences for GTK 4 from gBASIC.
 '
 ' This is NOT a new widget framework and NOT the declarative reconciler planned

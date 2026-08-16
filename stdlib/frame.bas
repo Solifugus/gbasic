@@ -1,3 +1,6 @@
+' SPDX-License-Identifier: Apache-2.0
+' Copyright 2026 Matthew C. Tedder. See LICENSE and LICENSING.md.
+
 ' frame.bas — the structural data-frame layer (statistics_design.md §4).
 '
 ' A frame is a plain record whose fields are equal-length lists (column-major:

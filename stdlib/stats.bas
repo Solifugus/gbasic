@@ -1,3 +1,6 @@
+' SPDX-License-Identifier: Apache-2.0
+' Copyright 2026 Matthew C. Tedder. See LICENSE and LICENSING.md.
+
 ' stats.bas — higher-level statistical compositions in gBASIC.
 '
 ' These build on the C builtins (the elementary math and list reductions from
