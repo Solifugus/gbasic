@@ -30,8 +30,11 @@ Implemented language features include:
 - distinct `nothing` and `unknown` values
 - date/time, duration, money, file, and directory values
 - binary-safe, Unicode-aware strings and codepoint operations
+- regular expressions as a **value kind**, overloading `contains`/`replace`/
+  `split`, plus `match`/`match_all` (always available; no optional library)
 - bitwise builtins (`band`/`bor`/`bxor`/`bnot`/`shl`/`shr`/`rotl`/`rotr`)
-- JSON-like serialization with `encode` and `decode`
+- JSON-like serialization with `encode` and `decode`, plus `try_decode`, which
+  reports a malformed document as a value instead of raising
 
 Implemented runtime and module features include:
 
@@ -44,14 +47,31 @@ Implemented runtime and module features include:
 - a built-in loopback HTTP server using live request and response queues
 - an XML module (optional libxml2-backed) for tree parsing, navigation,
   encoding, lenient HTML, and constant-memory streaming
+- an **xlsx module** (optional, needs zlib and libxml2) that *edits existing*
+  spreadsheets rather than only generating new ones — the reader keeps every
+  part of the workbook, including parts it does not model, so a save does not
+  destroy what it did not understand. It carries a formula evaluator,
+  dependency-ordered recalculation across sheets, and `xlsx.check`, which
+  scores our engine against the results Excel itself cached in the file.
+  Measured against 15,871 real Excel workbooks: **97.38%** of formula cells
+  agree, with no disagreement at all in 91.1% of workbooks. See the
+  [cookbook](docs/xlsx_cookbook.md).
+- a general process API — `process.run` for a child, and
+  `process.start`/`poll`/`read`/`wait`/`stop` to drive a live one without
+  blocking
 - a cryptography library (optional libcrypto-backed): hashing, HMAC, AES-GCM,
   Ed25519, JWT/HS256, and signed cookies
 - an optional GTK 3 GUI proof of concept through Stage 6A
 - a generic GObject-Introspection bridge (the optional libgirepository-backed
   `gi` module) for native GObject libraries, with GTK 4 as the first target
 
-The standard library also ships two large pure-gBASIC toolkits:
+The standard library also ships three large pure-gBASIC toolkits:
 
+- a **spreadsheet-to-database pipeline** over the xlsx module — `grid` turns a
+  messy worksheet into clean frames (guessing where it can, and reporting how
+  confident it is), `consolidate` merges differently-shaped sources onto one
+  schema, and `dbframe` loads the result into SQLite with column types inferred
+  from every value rather than the first
 - a **statistics** library — descriptive and inferential statistics,
   regression and the GLM suite, mediation/moderation, time-series and
   econometric diagnostics, and finance metrics
@@ -673,57 +693,44 @@ GUI testing remains manual because it requires a display.
 
 ## Documentation
 
-### Start here
+**[Full documentation index →](docs/README.md)** — every document, each marked
+**Shipped**, **Proposal**, **Partial** or **Record**, so you can tell a
+description of working behaviour from a design for something that does not
+exist. `tests/run_docs_gate.sh` fails if a document is missing from that index
+or if the index links to something that is not there.
 
-- [Tutorial](docs/tutorial.md) — learn the language by writing programs
-- [Language and runtime reference](docs/reference.md) — syntax, semantics, and
-  builtins
-- [Language design](docs/gbasic-design.md) — consolidated design of the language
-  and core runtime
+### Learn the language
 
-### Language features
+- [Tutorial](docs/tutorial.md) — learn gBASIC by writing programs
+- [Reference](docs/reference.md) — syntax, semantics and every builtin
+- [Language design](docs/gbasic-design.md) — the reasoning behind the language
 
-- [Policy-Based Inheritance (objects)](docs/pbi_design.md)
-- [First-class functions](docs/first_class_functions_design.md)
-- [Strings and Unicode](docs/unicode_design.md)
-- [Multiprocessing (actors)](docs/multiprocessing_design.md)
-- [Bitwise operations](docs/bitwise_design.md)
-- [Cryptography library](docs/crypto_design.md)
+### Cookbooks — task-oriented, with runnable examples
 
-### Modules
+- [Spreadsheets (xlsx)](docs/xlsx_cookbook.md) — read, edit and save real
+  workbooks; evaluate formulas; check the engine against Excel's own cached
+  answers; turn messy sheets into queryable tables. Every code and output block
+  on that page is verified against a real file that the suite runs.
+- [EDGAR securities analysis](docs/edgar_tutorial.md) — build a forensic
+  dossier on a filer
+- [Statistics: social & behavioral](docs/cookbook_social_behavioral.md) and
+  [econometrics & finance](docs/cookbook_econometrics_finance.md)
 
-- [SQLite design](docs/sqlite_design.md)
-- [PostgreSQL design and implementation status](docs/postgres_design.md)
-- [WebClient design](docs/webclient_design.md)
-- [WebServer design](docs/webserver_design.md)
-- [GUI design](docs/gui_design.md)
-- [XML module design](docs/xml_design.md)
+### Writing gBASIC with an AI agent
 
-### Statistics library
+gBASIC diverges from QBasic/VB intuition in ways that fail *silently*.
+Start at [docs/ai/START-HERE.md](docs/ai/START-HERE.md), then
+[UNLEARN.md](docs/ai/UNLEARN.md).
 
-- [Statistics design](docs/statistics_design.md)
-- [Cookbook: social & behavioral sciences](docs/cookbook_social_behavioral.md)
-- [Cookbook: econometrics & finance](docs/cookbook_econometrics_finance.md)
+### What shipped, and what bit us
 
-### EDGAR securities-analysis suite
+- [CHANGELOG.md](CHANGELOG.md) — what is in each release
+- [DOGFOOD.md](DOGFOOD.md) — every limitation and surprise hit while actually
+  using gBASIC, with the workaround
 
-- [Tutorial & cookbook](docs/edgar_tutorial.md) — build a forensic dossier, plus
-  copy-pasteable recipes per library
-- [Reference](docs/edgar_reference.md) — every public function and its return
-  shape
-- [Design](docs/edgar_design.md) — domain primer, model rationale, and
-  applicability caveats
-
-### Status & history
-
-- [Development progress ledger](docs/PROGRESS.md) — per-work-package evidence
-- [Project state](docs/project_state.md)
-- [Completed development history](docs/historical_development_archive.md)
-
-Design documents may discuss unimplemented future work. Check the
-implementation-status documents (and the progress ledger) before relying on a
-design proposal as an available feature; the historical archive summarizes
-completed phases without keeping each temporary tracker active.
+A design document may describe unimplemented work. Rather than asking you to go
+and verify that elsewhere, the [index](docs/README.md) states each document's
+status next to its link.
 
 ## Project Limitations
 

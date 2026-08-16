@@ -1,6 +1,13 @@
 # LLM Client Library (`llm.bas`) — Design
 
-Status: **design proposal; nothing built.** A general chat-completion client
+Status: **IMPLEMENTED.** Ships as `stdlib/llm.bas` (1,182 lines) behind four
+example goldens — `examples/llm_{adapter,retry,ask_json,tools}_test.bas` —
+delivered as WP-LLM-1/2 (`docs/PROGRESS.md`). Pure gBASIC over `webclient`, as
+argued below; the compositions rule held and no core change was needed. Tests
+run against offline fixtures, never the network. This line read "design
+proposal; nothing built" until 2026-08-15.
+
+A general chat-completion client
 for gBASIC. First customer is `mdna.bas` (the analyst panel in
 `edgar_design.md`), but the module is general: an LLM call is JSON over
 HTTPS, nothing more, so this is **pure gBASIC over `webclient`** — the

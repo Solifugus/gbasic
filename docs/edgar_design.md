@@ -1,6 +1,19 @@
 # EDGAR & Securities Analysis Library — Design (v2)
 
-Status: **design proposal; nothing built.** v2 expands v1 in four ways: a
+Status: **IMPLEMENTED.** All 33 work packages in
+`docs/edgar_suite_development_plan.md` are complete, with per-package evidence
+in `docs/PROGRESS.md`; the suite ships as `stdlib/{edgar,fundamentals,forensics,
+insiders,ownership,mdna,screener,llm}.bas` behind 22 example goldens, built
+against real SEC data captured under an authorized identity
+(`examples/fixtures/edgar/MANIFEST.md`). Deliberately NOT built, and still
+proposals where this document describes them: the network forms of
+`report_13f` and 13D/G full-text search, grants/exercises, and full-market
+acceptance against bulk data — no test performs network access. This line read
+"design proposal; nothing built" until 2026-08-15. For what the suite actually
+does, read `docs/edgar_tutorial.md` and `docs/edgar_reference.md`; this
+document is the rationale behind it.
+
+v2 expanded v1 in four ways: a
 **forensic-accounting module** (the published manipulation/distress scores —
 the "are they being honest" question, quantified), **activist ownership**
 (13D/13G), a **red-flag events** surface (late filings, restatements, auditor

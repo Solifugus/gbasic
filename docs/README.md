@@ -1,0 +1,131 @@
+# gBASIC documentation index
+
+Every document in `docs/` is listed here. `tests/run_docs_gate.sh` fails if one
+is missing from this page or if this page links to something that does not
+exist, so a new document cannot quietly become invisible.
+
+**Read the status column before you rely on anything.** This repository has
+repeatedly been bitten by design proposals read as descriptions of shipped
+behaviour — and, worse, by *stale* status lines claiming something was unbuilt
+long after it shipped. Four such lines were corrected on 2026-08-15, one of
+which had caused a working module to be filed as a release blocker.
+
+| Status | Means |
+|---|---|
+| **Shipped** | Describes behaviour you can run today, backed by tests. |
+| **Proposal** | Describes work that does **not** exist. Do not code against it. |
+| **Partial** | Some of it ships; the document says which parts. |
+| **Record** | History, plans, notes. Not a description of current behaviour. |
+
+---
+
+## Start here
+
+| Document | Status | What it is |
+|---|---|---|
+| [tutorial.md](tutorial.md) | Shipped | Learn the language by writing programs. Start here if you are new. |
+| [reference.md](reference.md) | Shipped | Syntax, semantics and every builtin. The document to keep open. |
+| [gbasic-design.md](gbasic-design.md) | Shipped | Consolidated design of the language and core runtime — the *why*. |
+
+## Tutorials and cookbooks
+
+Task-oriented, with runnable examples.
+
+| Document | Status | What it is |
+|---|---|---|
+| [xlsx_cookbook.md](xlsx_cookbook.md) | Shipped | 12 recipes for spreadsheets: read, edit, save, evaluate formulas, check against Excel's own answers, turn sheets into queryable tables. Every code and output block is verified against a real file by `tests/run_xlsx_cookbook.sh`. |
+| [edgar_tutorial.md](edgar_tutorial.md) | Shipped | Build a forensic dossier on a filer, plus recipes per library. |
+| [cookbook_social_behavioral.md](cookbook_social_behavioral.md) | Shipped | Statistics by method cluster: social and behavioral sciences. |
+| [cookbook_econometrics_finance.md](cookbook_econometrics_finance.md) | Shipped | Statistics by method cluster: econometrics and finance. |
+
+## Language features
+
+| Document | Status | What it is |
+|---|---|---|
+| [pbi_design.md](pbi_design.md) | Shipped | Policy-Based Inheritance — gBASIC's object model (`copy`/`link`/`reset`/`exclude`, `new`). |
+| [first_class_functions_design.md](first_class_functions_design.md) | Shipped | Function values, methods via `this`, `constructor`. Note: **no closures**. |
+| [unicode_design.md](unicode_design.md) | Shipped | Binary-safe, UTF-8-aware strings; codepoint and byte operations. |
+| [multiprocessing_design.md](multiprocessing_design.md) | Shipped | Shared-nothing actors over fork+exec; `spawn`/`send`/`receive`/`monitor`. |
+| [text_design.md](text_design.md) | Partial | Layer 0 (regex as a value kind) ships. Layer 1 is `stdlib/ari.bas`. |
+| [ari_spec_language.md](ari_spec_language.md) | Shipped | The ARI spec language for parsing paginated print-image reports. |
+| [bitwise_design.md](bitwise_design.md) | Shipped | `band`/`bor`/`bxor`/`bnot`/`shl`/`shr`/`rotl`/`rotr`, 32-bit unsigned. |
+| [crypto_design.md](crypto_design.md) | Shipped | Hashing, HMAC, AES-GCM, Ed25519, plus `stdlib/crypto.bas` (JWT, CSRF, signed cookies). |
+| [array_cow_design.md](array_cow_design.md) | Shipped | Why arrays are shared, refcounted and copy-on-write. |
+| [source_outline_design.md](source_outline_design.md) | Shipped | `source_outline(text)` — structural outline over the reentrant parser. |
+| [gbasic_clause_recognition.md](gbasic_clause_recognition.md) | Shipped | How clause recognition was ruled on and implemented. |
+
+## Modules
+
+| Document | Status | What it is |
+|---|---|---|
+| [xlsx_design.md](xlsx_design.md) | Partial | The spreadsheet engine: ZIP container, part tree, formula evaluator, recalculation, the SQL compiler — plus the corpus measurements and what was rejected. Says which parts are unbuilt. |
+| [xml_design.md](xml_design.md) | Shipped | Tree parse, path navigation, and a streaming reader for large documents. |
+| [sqlite_design.md](sqlite_design.md) | Shipped | `sqlite.*` — parameterized query and exec. |
+| [postgres_design.md](postgres_design.md) | Shipped | `pg.*` — PostgreSQL. Its test suite is opt-in. |
+| [webclient_design.md](webclient_design.md) | Shipped | `webclient.*` — synchronous HTTP. |
+| [webserver_design.md](webserver_design.md) | Shipped | `webserver.*` — local development use only, by design. |
+| [llm_design.md](llm_design.md) | Shipped | `stdlib/llm.bas` — chat completion over `webclient`. |
+| [gui_design.md](gui_design.md) | Partial | The GTK 3 `gui` module — an experimental proof of concept. Prefer `gi` for new work. |
+| [chart_design.md](chart_design.md) | **Proposal** | A charting library. **Nothing is built.** |
+
+## Statistics
+
+| Document | Status | What it is |
+|---|---|---|
+| [statistics_design.md](statistics_design.md) | Shipped | Distributions, matrices, OLS, GLMs, clustering, time series through ARIMA/GARCH, data frames. |
+| [statistics_scientist_plan.md](statistics_scientist_plan.md) | Record | The plan that took the library to "usable by working scientists". |
+
+## EDGAR securities-analysis suite
+
+| Document | Status | What it is |
+|---|---|---|
+| [edgar_reference.md](edgar_reference.md) | Shipped | Every public function and its return shape. |
+| [edgar_design.md](edgar_design.md) | Partial | Domain primer, model rationale, applicability caveats. Names the parts deliberately not built (network 13F, 13D/G full-text search, grants/exercises). |
+| [edgar_suite_development_plan.md](edgar_suite_development_plan.md) | Record | The 33 work packages and the session protocol they were built under. |
+| [PROGRESS.md](PROGRESS.md) | Record | Per-work-package evidence ledger for the suite. |
+
+## Native application platform and GUI
+
+| Document | Status | What it is |
+|---|---|---|
+| [gbasic_native_app_platform_plan.md](gbasic_native_app_platform_plan.md) | Partial | The NAP plan. The platform items (NAP-0..13) ship; read the document for which. |
+| [gbasic_native_app_platform_coverage.md](gbasic_native_app_platform_coverage.md) | Record | Capability survey against other toolkits. |
+| [gbasic_execution_boundaries.md](gbasic_execution_boundaries.md) | **Proposal** | Execution-boundary specification for gBASIC Studio. Not implemented here. |
+
+## The gBASIC site (sample application)
+
+| Document | Status | What it is |
+|---|---|---|
+| [gbasic_site_plan.md](gbasic_site_plan.md) | Record | Plan for the Postgres-backed sample site. |
+| [gbasic_site_auth_plan.md](gbasic_site_auth_plan.md) | Shipped | Auth, sessions and CSRF for that site. |
+| [gbasic_site_deployment.md](gbasic_site_deployment.md) | Record | Deployment and hardening notes. |
+
+## For AI agents writing gBASIC
+
+Read in this order. gBASIC diverges from QBasic/VB intuition in ways that fail
+*silently*, which is what these exist for.
+
+| Document | Status | What it is |
+|---|---|---|
+| [ai/START-HERE.md](ai/START-HERE.md) | Shipped | The entry point. Read it first. |
+| [ai/UNLEARN.md](ai/UNLEARN.md) | Shipped | What your BASIC intuition gets wrong here. |
+| [ai/COOKBOOK.md](ai/COOKBOOK.md) | Shipped | One blessed idiom per task, each pointing at a suite-verified file. |
+| [ai/ERRORS.md](ai/ERRORS.md) | Shipped | Diagnostic and runtime-error catalog. |
+
+## Project record
+
+| Document | Status | What it is |
+|---|---|---|
+| [project_state.md](project_state.md) | Record | Where the project stands. |
+| [historical_development_archive.md](historical_development_archive.md) | Record | Completed phases, so retired trackers need not stay active. |
+| [future_library_ideas.md](future_library_ideas.md) | **Proposal** | Directions not committed to. |
+| [TOKENS.md](TOKENS.md) | Record | Token inventory. |
+| [gbasic_dogfood_notes.md](gbasic_dogfood_notes.md) | Record | Friction found using gBASIC on real work. See also `/DOGFOOD.md`. |
+| [tedderland_dogfood_notes.md](tedderland_dogfood_notes.md) | Record | Friction found building tedderland.com in gBASIC. |
+| [s390x-vm-setup.md](s390x-vm-setup.md) | Record | s390x VM setup for portability testing. |
+
+---
+
+Not in this directory but worth knowing: [`/DOGFOOD.md`](../DOGFOOD.md) records
+every limitation and surprise hit while using gBASIC, and
+[`/CHANGELOG.md`](../CHANGELOG.md) records what shipped in each release.

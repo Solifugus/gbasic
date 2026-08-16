@@ -321,6 +321,32 @@ for name in "${cases[@]}"; do
 
     actual_text="$(cat "$stderr_file")"
     expected_text="$(cat "$expected")"
+
+    # A few goldens pin a message that libxml2 WROTE, not one we wrote, and
+    # libxml2 rewords its diagnostics between releases. negative_xml_reader_depth
+    # is the example: 2.15.2 says "Excessive depth in document: 256, use
+    # XML_PARSE_HUGE option ... column 774" and 2.9.14 (Ubuntu 24.04 LTS, and the
+    # riscv64 VM) drops the comma and reports column 777. Unlike
+    # negative_xml_malformed -- fixed by choosing an input whose message is
+    # stable -- there is no wording here that both versions produce, because the
+    # COLUMN differs too.
+    #
+    # So such a case declares the libxml2 it was captured against in a sidecar
+    # `tests/NAME.libxml2min`, and is skipped on anything older. A sidecar rather
+    # than a name hardcoded in this runner: the requirement then lives next to
+    # the golden it constrains, and shows up when someone looks at the case.
+    minfile="tests/$name.libxml2min"
+    if [ -f "$minfile" ] && command -v pkg-config >/dev/null 2>&1; then
+        have="$(pkg-config --modversion libxml-2.0 2>/dev/null || echo "")"
+        want="$(tr -d '[:space:]' <"$minfile")"
+        if [ -n "$have" ] && [ "$have" != "$want" ] &&
+           [ "$(printf '%s\n%s\n' "$have" "$want" | sort -V | head -1)" = "$have" ]; then
+            printf 'SKIP %s (golden pins libxml2 %s wording; this build has %s)\n' \
+                   "$source" "$want" "$have"
+            rm -f "$stdout_file" "$stderr_file"
+            continue
+        fi
+    fi
     # Same optional-dependency rule as run_examples.sh: when a module is compiled
     # out, its negative cases raise the build's "not available" error instead of
     # the specific misuse they pin, which is correct behaviour and not a failure.

@@ -1828,3 +1828,33 @@ finding gets lost.
   unavailable module on purpose — are still compared, not skipped past.
   Behaviour-neutral with deps present: 216 PASS / 0 SKIP before and after.
   Without deps: examples 180 PASS / 36 SKIP / 0 FAIL, negative 240/48/0.
+
+## 2026-08-15 — CC — while: release prep (riscv64 sweep, second pass)
+- **Type:** doc-gap (testing)
+- **Severity:** medium
+- **What:** two negative goldens pinned a message **libxml2 wrote**, not one we
+  wrote, and libxml2 rewords its diagnostics between releases. Neither was a
+  riscv defect — both fail identically on any x86 box with the older library:
+  - `negative_xml_malformed`: our input made libxml2 record TWO errors and we
+    report the LAST, so 2.9.14 said "Premature end of data" where 2.15.2 said
+    "Opening and ending tag mismatch". Fixed properly, by choosing an input that
+    produces ONE error and therefore the same message on both.
+  - `negative_xml_reader_depth`: 2.15.2 writes "…: 256, use XML_PARSE_HUGE…
+    column 774", 2.9.14 drops the comma and says column 777. **No input makes
+    this stable** — the column differs too — so the case now declares the
+    libxml2 it was captured against in a sidecar `tests/NAME.libxml2min` and is
+    skipped on anything older. A sidecar rather than a name hardcoded in the
+    runner, so the constraint lives next to the golden it constrains.
+- **Workaround:** resolved. riscv64 is now examples 215 PASS/1 SKIP/0 FAIL and
+  negative 276 PASS/12 SKIP/0 FAIL, every skip explained (11 pg = module
+  compiled out, 1 = the libxml2 wording).
+- **Two general shapes worth keeping.**
+  (a) *A golden that quotes a third-party library is a golden about that
+  library's version.* It will fail on someone else's machine and the failure
+  will look like a defect in your code. Prefer an input whose message is stable;
+  where none exists, declare the dependency instead of hiding it.
+  (b) **`run_negative.sh` exits on the FIRST failure**, so it reports exactly one
+  no matter how many exist. Fixing that one revealed the next, which had been
+  invisible the whole time. A sweep that reports "1 failure" from this runner
+  means "at least 1" — to get the true list, loop the cases without the early
+  exit, as was done here.

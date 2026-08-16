@@ -154,6 +154,15 @@ streaming), and libcrypto-backed crypto builtins with `stdlib/crypto.bas`.
 
 ### Documentation
 
+`docs/README.md` indexes every document and marks each **Shipped**, **Proposal**,
+**Partial** or **Record**, so a design for unbuilt work cannot be mistaken for a
+description of working behaviour. `tests/run_docs_gate.sh` fails if a document is
+missing from the index or if the index links to something that does not exist.
+
+Six stale status lines were corrected — `xml`, `pbi`, `ari`, `statistics`,
+`edgar` and `llm` all claimed unbuilt what ships with passing goldens. The xml
+one had caused a working module to be filed as a release blocker.
+
 `docs/xlsx_cookbook.md` is a 12-recipe tutorial for the spreadsheet library,
 covering all fifteen `xlsx.*` calls and the `grid`/`consolidate`/`dbframe`
 layers above them. Every code block and every output block on the page is

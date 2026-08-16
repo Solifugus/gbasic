@@ -152,4 +152,43 @@ if [ "$perf_status" -ne 0 ]; then
     status=1
 fi
 
+# --- (3) The documentation index must be complete, in both directions ---------
+#
+# docs/README.md is the only place that lists every document AND says whether it
+# describes shipped behaviour or proposes unbuilt work. That distinction is the
+# one this project keeps getting hurt by -- a design proposal read as a
+# description, and stale status lines claiming unbuilt what shipped months ago
+# (four corrected on 2026-08-15, one of which turned a working module into a
+# release blocker). An index nobody maintains would reproduce the same failure
+# one level up, so it is checked rather than trusted: every doc must appear, and
+# every link must resolve.
+INDEX=docs/README.md
+if [ ! -f "$INDEX" ]; then
+    echo "FAIL missing        $INDEX (the documentation index)"
+    status=1
+else
+    for f in docs/*.md docs/ai/*.md; do
+        rel="${f#docs/}"
+        [ "$rel" = "README.md" ] && continue
+        if ! grep -qF "($rel)" "$INDEX"; then
+            echo "FAIL not indexed    $f -- add it to $INDEX with a status"
+            status=1
+        fi
+    done
+    # Every relative link in the index must point at a real file.
+    for link in $(grep -oE '\]\([A-Za-z0-9_./-]+\.md\)' "$INDEX" | sed 's/^](//; s/)$//'); do
+        case "$link" in
+            ../*) target="${link#../}" ;;
+            *)    target="docs/$link" ;;
+        esac
+        if [ ! -f "$target" ]; then
+            echo "FAIL index dangling $link -- $INDEX links to a file that does not exist"
+            status=1
+        fi
+    done
+    if [ "$status" -eq 0 ]; then
+        echo "PASS index          every doc listed in $INDEX, every link resolves"
+    fi
+fi
+
 exit "$status"
