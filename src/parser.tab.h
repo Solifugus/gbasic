@@ -108,57 +108,58 @@ typedef struct {
     SPAWN = 282,                   /* SPAWN  */
     FOR = 283,                     /* FOR  */
     TO = 284,                      /* TO  */
-    IN = 285,                      /* IN  */
-    EACH = 286,                    /* EACH  */
-    WHILE = 287,                   /* WHILE  */
-    CONSIDER = 288,                /* CONSIDER  */
-    BREAK = 289,                   /* BREAK  */
-    CONTINUE = 290,                /* CONTINUE  */
-    FUNCTION = 291,                /* FUNCTION  */
-    RETURN = 292,                  /* RETURN  */
-    GOTO = 293,                    /* GOTO  */
-    GOSUB = 294,                   /* GOSUB  */
-    WATCH = 295,                   /* WATCH  */
-    WITHOUT = 296,                 /* WITHOUT  */
-    WATCHERS = 297,                /* WATCHERS  */
-    ON = 298,                      /* ON  */
-    RESUME = 299,                  /* RESUME  */
-    NEXT = 300,                    /* NEXT  */
-    STOP = 301,                    /* STOP  */
-    ERROR_VALUE = 302,             /* ERROR_VALUE  */
-    MODIFIER = 303,                /* MODIFIER  */
-    PROGRAM = 304,                 /* PROGRAM  */
-    LIBRARY = 305,                 /* LIBRARY  */
-    LOAD = 306,                    /* LOAD  */
-    USE = 307,                     /* USE  */
-    EXPORT = 308,                  /* EXPORT  */
-    OP_EQ = 309,                   /* OP_EQ  */
-    OP_NE = 310,                   /* OP_NE  */
-    OP_GT = 311,                   /* OP_GT  */
-    OP_LT = 312,                   /* OP_LT  */
-    OP_GE = 313,                   /* OP_GE  */
-    OP_LE = 314,                   /* OP_LE  */
-    OP_NGT = 315,                  /* OP_NGT  */
-    OP_NLT = 316,                  /* OP_NLT  */
-    OP_NGE = 317,                  /* OP_NGE  */
-    OP_NLE = 318,                  /* OP_NLE  */
-    PLUS = 319,                    /* PLUS  */
-    MINUS = 320,                   /* MINUS  */
-    STAR = 321,                    /* STAR  */
-    SLASH = 322,                   /* SLASH  */
-    LPAREN = 323,                  /* LPAREN  */
-    MOD_LPAREN = 324,              /* MOD_LPAREN  */
-    RPAREN = 325,                  /* RPAREN  */
-    LBRACKET = 326,                /* LBRACKET  */
-    RBRACKET = 327,                /* RBRACKET  */
-    LBRACE = 328,                  /* LBRACE  */
-    RBRACE = 329,                  /* RBRACE  */
-    COMMA = 330,                   /* COMMA  */
-    COLON = 331,                   /* COLON  */
-    NEWLINE = 332,                 /* NEWLINE  */
-    IF_WITHOUT_ELSE = 333,         /* IF_WITHOUT_ELSE  */
-    NO_DOT = 334,                  /* NO_DOT  */
-    DOT = 335                      /* DOT  */
+    STEP = 285,                    /* STEP  */
+    IN = 286,                      /* IN  */
+    EACH = 287,                    /* EACH  */
+    WHILE = 288,                   /* WHILE  */
+    CONSIDER = 289,                /* CONSIDER  */
+    BREAK = 290,                   /* BREAK  */
+    CONTINUE = 291,                /* CONTINUE  */
+    FUNCTION = 292,                /* FUNCTION  */
+    RETURN = 293,                  /* RETURN  */
+    GOTO = 294,                    /* GOTO  */
+    GOSUB = 295,                   /* GOSUB  */
+    WATCH = 296,                   /* WATCH  */
+    WITHOUT = 297,                 /* WITHOUT  */
+    WATCHERS = 298,                /* WATCHERS  */
+    ON = 299,                      /* ON  */
+    RESUME = 300,                  /* RESUME  */
+    NEXT = 301,                    /* NEXT  */
+    STOP = 302,                    /* STOP  */
+    ERROR_VALUE = 303,             /* ERROR_VALUE  */
+    MODIFIER = 304,                /* MODIFIER  */
+    PROGRAM = 305,                 /* PROGRAM  */
+    LIBRARY = 306,                 /* LIBRARY  */
+    LOAD = 307,                    /* LOAD  */
+    USE = 308,                     /* USE  */
+    EXPORT = 309,                  /* EXPORT  */
+    OP_EQ = 310,                   /* OP_EQ  */
+    OP_NE = 311,                   /* OP_NE  */
+    OP_GT = 312,                   /* OP_GT  */
+    OP_LT = 313,                   /* OP_LT  */
+    OP_GE = 314,                   /* OP_GE  */
+    OP_LE = 315,                   /* OP_LE  */
+    OP_NGT = 316,                  /* OP_NGT  */
+    OP_NLT = 317,                  /* OP_NLT  */
+    OP_NGE = 318,                  /* OP_NGE  */
+    OP_NLE = 319,                  /* OP_NLE  */
+    PLUS = 320,                    /* PLUS  */
+    MINUS = 321,                   /* MINUS  */
+    STAR = 322,                    /* STAR  */
+    SLASH = 323,                   /* SLASH  */
+    LPAREN = 324,                  /* LPAREN  */
+    MOD_LPAREN = 325,              /* MOD_LPAREN  */
+    RPAREN = 326,                  /* RPAREN  */
+    LBRACKET = 327,                /* LBRACKET  */
+    RBRACKET = 328,                /* RBRACKET  */
+    LBRACE = 329,                  /* LBRACE  */
+    RBRACE = 330,                  /* RBRACE  */
+    COMMA = 331,                   /* COMMA  */
+    COLON = 332,                   /* COLON  */
+    NEWLINE = 333,                 /* NEWLINE  */
+    IF_WITHOUT_ELSE = 334,         /* IF_WITHOUT_ELSE  */
+    NO_DOT = 335,                  /* NO_DOT  */
+    DOT = 336                      /* DOT  */
   };
   typedef enum yytokentype yytoken_kind_t;
 #endif
@@ -184,7 +185,7 @@ union YYSTYPE
     AstIdentSuffix ident_suffix;
     FieldPolicySpec field_policy;
 
-#line 188 "src/parser.tab.h"
+#line 189 "src/parser.tab.h"
 
 };
 typedef union YYSTYPE YYSTYPE;

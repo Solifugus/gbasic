@@ -645,7 +645,7 @@ typedef struct {
  * before this it fell through to the token mapper's default arm and was
  * reported as an unexpected token rather than a keyword clash. */
 %token AS
-%token IF CONSIDER_IF THEN ELSE CONSIDER_ELSE END END_CONSIDER PRINT TRUE FALSE NOTHING UNKNOWN_VALUE AND OR NOT WITH NEW SPAWN FOR TO IN EACH WHILE CONSIDER BREAK CONTINUE FUNCTION RETURN GOTO GOSUB WATCH WITHOUT WATCHERS ON RESUME NEXT STOP ERROR_VALUE MODIFIER PROGRAM LIBRARY LOAD USE EXPORT
+%token IF CONSIDER_IF THEN ELSE CONSIDER_ELSE END END_CONSIDER PRINT TRUE FALSE NOTHING UNKNOWN_VALUE AND OR NOT WITH NEW SPAWN FOR TO STEP IN EACH WHILE CONSIDER BREAK CONTINUE FUNCTION RETURN GOTO GOSUB WATCH WITHOUT WATCHERS ON RESUME NEXT STOP ERROR_VALUE MODIFIER PROGRAM LIBRARY LOAD USE EXPORT
 %token OP_EQ OP_NE OP_GT OP_LT OP_GE OP_LE OP_NGT OP_NLT OP_NGE OP_NLE
 %token PLUS MINUS STAR SLASH LPAREN MOD_LPAREN RPAREN LBRACKET RBRACKET LBRACE RBRACE COMMA COLON NEWLINE
 %precedence IF_WITHOUT_ELSE
@@ -865,6 +865,15 @@ for_each_statement
       }
     | FOR EACH IDENT IN expression NEWLINE statement_list END FOR NEWLINE {
         $$ = ast_for_each($3, $5, $7);
+      }
+    /* Counted loop. `to` is INCLUSIVE, as every BASIC has had it, and `step`
+     * defaults to 1. Distinguished from `for each`/`for ... in` by the token
+     * after the name -- OP_EQ here, IN there -- so one lookahead settles it. */
+    | FOR IDENT OP_EQ expression TO expression NEWLINE statement_list END FOR NEWLINE {
+        $$ = ast_for_range($2, $4, $6, NULL, $8);
+      }
+    | FOR IDENT OP_EQ expression TO expression STEP expression NEWLINE statement_list END FOR NEWLINE {
+        $$ = ast_for_range($2, $4, $6, $8, $10);
       }
     ;
 
@@ -1581,6 +1590,7 @@ static int yylex(YYSTYPE *lvalp, YYLTYPE *llocp, gb_parse_ctx *ctx) {
     case TOKEN_SPAWN: return SPAWN;
     case TOKEN_FOR: return FOR;
     case TOKEN_TO: return TO;
+    case TOKEN_STEP: return STEP;
     case TOKEN_IN: return IN;
     case TOKEN_EACH: return EACH;
     case TOKEN_WHILE: return WHILE;

@@ -23823,6 +23823,68 @@ static EvalResult eval_stmt(AstStmt *stmt) {
         free(path);
         break;
     }
+    case AST_STMT_FOR_RANGE: {
+        /* `for i = a to b [step c]`. Bounds and step are evaluated ONCE, at loop
+         * entry, which is the classic BASIC rule and the one that makes the loop
+         * predictable: changing `b` inside the body does not move the finish
+         * line. The counter is an ordinary variable, so it keeps its last value
+         * after the loop, and assigning to it inside the body is allowed and
+         * affects the next test -- again as BASIC has always behaved. */
+        int before_error = error_generation;
+        Value start_v = eval_expr(stmt->as.for_range.start);
+        Value limit_v = eval_expr(stmt->as.for_range.limit);
+        Value step_v = stmt->as.for_range.step
+            ? eval_expr(stmt->as.for_range.step)
+            : value_number(1);
+        if (error_generation != before_error) {
+            value_free(start_v); value_free(limit_v); value_free(step_v);
+            current_line = previous_line;
+            current_column = previous_column;
+            return eval_error_result();
+        }
+        if (start_v.kind != VALUE_NUMBER || limit_v.kind != VALUE_NUMBER ||
+            step_v.kind != VALUE_NUMBER) {
+            runtime_error_raise("for bounds and step must be numbers", 1003,
+                                "invalid operation");
+            value_free(start_v); value_free(limit_v); value_free(step_v);
+            current_line = previous_line;
+            current_column = previous_column;
+            return eval_error_result();
+        }
+        double start = start_v.as.number;
+        double limit = limit_v.as.number;
+        double step = step_v.as.number;
+        value_free(start_v); value_free(limit_v); value_free(step_v);
+        /* Refused rather than run: `step 0` cannot reach any limit, so it is a
+         * hang, and a hang is the least debuggable outcome available. */
+        if (step == 0) {
+            runtime_error_raise("for step cannot be zero", 1003, "invalid operation");
+            current_line = previous_line;
+            current_column = previous_column;
+            return eval_error_result();
+        }
+        loop_depth++;
+        for (double i = start; step > 0 ? i <= limit : i >= limit; i += step) {
+            env_set(stmt->as.for_range.name, value_number(i));
+            EvalResult result = eval_stmt_list(stmt->as.for_range.body);
+            if (result.did_break) {
+                value_free(result.value);
+                break;
+            }
+            if (result.did_continue) {
+                value_free(result.value);
+                continue;
+            }
+            if (eval_result_exits_block(result)) {
+                loop_depth--;
+                current_line = previous_line;
+                current_column = previous_column;
+                return result;
+            }
+        }
+        loop_depth--;
+        break;
+    }
     case AST_STMT_FOR_EACH: {
         int before_error = error_generation;
         Value iterable = eval_expr(stmt->as.for_each.iterable);

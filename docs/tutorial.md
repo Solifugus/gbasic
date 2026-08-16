@@ -346,6 +346,25 @@ while i < 5
 end while
 ```
 
+A counted `for` when you want a number rather than an element. `to` is
+**inclusive**, `step` defaults to 1 and may be negative or fractional:
+
+```basic
+for i = 1 to 5
+    print(i)                ' 1 2 3 4 5
+end for
+
+for i = 10 to 0 step -2     ' 10 8 6 4 2 0
+    print(i)
+end for
+```
+
+The bounds are read **once**, at the start, so changing them inside the body
+does not move the finish line. The counter is an ordinary variable and keeps
+its last value after the loop. `for i = 5 to 1` — a limit already passed, with
+no negative step — simply does not run; and `step 0` raises rather than looping
+forever.
+
 `for each` iterates arrays (and `keys(...)`/`values(...)` of records). The
 `each` word is optional — `for v in xs` is the same as `for each v in xs`:
 

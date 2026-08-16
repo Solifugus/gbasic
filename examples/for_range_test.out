@@ -1,0 +1,11 @@
+ascending      : 1 2 3 4 5 
+step 2         : 0 2 4 6 8 10 
+step -1        : 5 4 3 2 1 
+fractional step: 0 0.25 0.5 0.75 1 
+5 to 1 ran     : no
+limit fixed    : 1 2 3 
+counter after  : 3
+break/continue : 1 2 4 5 
+nested total   : 6
+expr bounds    : 1 2 3 4 
+for each       : 10 20 30 

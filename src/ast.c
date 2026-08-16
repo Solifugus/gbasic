@@ -293,6 +293,18 @@ AstStmt *ast_for_each(char *name, AstExpr *iterable, AstStmtList body) {
     return stmt;
 }
 
+AstStmt *ast_for_range(char *name, AstExpr *start, AstExpr *limit,
+                       AstExpr *step, AstStmtList body) {
+    AstStmt *stmt = xmalloc(sizeof(*stmt));
+    stmt->kind = AST_STMT_FOR_RANGE;
+    stmt->as.for_range.name = name;
+    stmt->as.for_range.start = start;
+    stmt->as.for_range.limit = limit;
+    stmt->as.for_range.step = step;   /* NULL means 1 */
+    stmt->as.for_range.body = body;
+    return stmt;
+}
+
 AstStmt *ast_function(char *name, AstNameList params, AstStmtList body) {
     AstStmt *stmt = xmalloc(sizeof(*stmt));
     stmt->kind = AST_STMT_FUNCTION;
@@ -667,6 +679,25 @@ static void dump_stmt(AstStmt *stmt, int indent) {
             dump_stmt(stmt->as.with_lock.body.items[i], indent + 2);
         }
         break;
+    case AST_STMT_FOR_RANGE:
+        printf("ForRange %s\n", stmt->as.for_range.name);
+        dump_indent(indent + 1);
+        printf("Start\n");
+        dump_expr(stmt->as.for_range.start, indent + 2);
+        dump_indent(indent + 1);
+        printf("Limit\n");
+        dump_expr(stmt->as.for_range.limit, indent + 2);
+        if (stmt->as.for_range.step) {
+            dump_indent(indent + 1);
+            printf("Step\n");
+            dump_expr(stmt->as.for_range.step, indent + 2);
+        }
+        dump_indent(indent + 1);
+        printf("Body\n");
+        for (size_t i = 0; i < stmt->as.for_range.body.count; i++) {
+            dump_stmt(stmt->as.for_range.body.items[i], indent + 2);
+        }
+        break;
     case AST_STMT_FOR_EACH:
         printf("ForEach %s\n", stmt->as.for_each.name);
         dump_indent(indent + 1);
@@ -965,6 +996,13 @@ static void free_stmt(AstStmt *stmt) {
     case AST_STMT_WITH_LOCK:
         free_expr(stmt->as.with_lock.file);
         ast_free_program(stmt->as.with_lock.body);
+        break;
+    case AST_STMT_FOR_RANGE:
+        free(stmt->as.for_range.name);
+        free_expr(stmt->as.for_range.start);
+        free_expr(stmt->as.for_range.limit);
+        free_expr(stmt->as.for_range.step);
+        ast_free_program(stmt->as.for_range.body);
         break;
     case AST_STMT_FOR_EACH:
         free(stmt->as.for_each.name);

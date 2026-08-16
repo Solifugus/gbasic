@@ -9,6 +9,7 @@ typedef enum {
     AST_STMT_EXPR,
     AST_STMT_WITH_LOCK,
     AST_STMT_FOR_EACH,
+    AST_STMT_FOR_RANGE,
     AST_STMT_FUNCTION,
     AST_STMT_RETURN,
     AST_STMT_LABEL,
@@ -197,6 +198,13 @@ struct AstStmt {
             AstStmtList body;
         } for_each;
         struct {
+            char *name;          /* the counter variable */
+            AstExpr *start;
+            AstExpr *limit;      /* INCLUSIVE, as BASIC has always had it */
+            AstExpr *step;       /* NULL means 1 */
+            AstStmtList body;
+        } for_range;
+        struct {
             char *name;          /* bare: the declared name; dotted: internal name (NULL until eval) */
             AstNameList params;
             AstStmtList body;
@@ -303,6 +311,8 @@ AstStmt *ast_print_error(AstExpr *expr);
 AstStmt *ast_expr_stmt(AstExpr *expr);
 AstStmt *ast_with_lock(AstExpr *file, AstStmtList body);
 AstStmt *ast_for_each(char *name, AstExpr *iterable, AstStmtList body);
+AstStmt *ast_for_range(char *name, AstExpr *start, AstExpr *limit,
+                       AstExpr *step, AstStmtList body);
 AstStmt *ast_function(char *name, AstNameList params, AstStmtList body);
 AstStmt *ast_return(AstExpr *expr);
 AstStmt *ast_label(char *name);

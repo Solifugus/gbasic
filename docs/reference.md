@@ -179,6 +179,32 @@ end while
 
 `break` exits the nearest enclosing `while`. `continue` skips to the next iteration.
 
+Counted `for`:
+
+```basic
+for i = 1 to 5
+    print i             ' 1 2 3 4 5 — `to` is INCLUSIVE
+end for
+
+for i = 0 to 10 step 2  ' 0 2 4 6 8 10
+end for
+
+for i = 5 to 1 step -1  ' counts down
+end for
+```
+
+- **`to` is inclusive**, as in every BASIC.
+- **`step` defaults to 1** and may be negative or fractional. A negative step
+  counts down; the sign decides which comparison ends the loop, so
+  `for i = 5 to 1` with no step never runs its body.
+- **Bounds and step are evaluated once**, at loop entry. Changing them inside
+  the body does not move the finish line.
+- **The counter is an ordinary variable.** It keeps its last value after the
+  loop — the last value the body actually saw, not one past it.
+- `step 0` raises (`for step cannot be zero`) rather than looping forever, and
+  non-numeric bounds raise rather than coercing.
+- `break` and `continue` work as they do in `while`.
+
 Consider:
 
 ```basic

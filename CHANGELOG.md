@@ -43,6 +43,14 @@ be exercised by someone else first.
   `match`/`match_all` for the cases a literal API cannot express.
 - Bitwise builtins (`band`/`bor`/`bxor`/`bnot`/`shl`/`shr`/`rotl`/`rotr`).
 
+### Language additions since 0.1.0-rc1
+
+- **Counted `for`** — `for i = a to b [step c] … end for`. gBASIC previously had
+  only `while` and `for each`, so every counted loop was a hand-rolled counter;
+  that idiom appeared 22 times in shipped code, including the standard library.
+  `to` is inclusive, `step` defaults to 1 and may be negative or fractional,
+  bounds are evaluated once at entry, and `step 0` raises rather than hanging.
+
 ### Platform
 
 - `--tokens`, `--ast`, `--add-loads`, `--json-diagnostics`, `--line-buffered`.
