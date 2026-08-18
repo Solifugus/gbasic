@@ -79,6 +79,16 @@ The floor of the datetime redesign, and three genuine bug fixes:
   by integers; seconds round to the whole second). Results are canonical:
   `(45 minutes) * 4` is `3 hours`.
 
+### Datetime component extraction (docs/datetime_design.md §3)
+
+`d.year`, `d.month`, `d.day`, `d.hour`, `d.minute`, `d.second`, `d.weekday`
+(ISO Monday=1…Sunday=7), `d.dayname`, `d.day_of_year`, `d.precision`, and
+`d.time` (an exact duration since midnight). A field finer than the value's
+precision reads as `unknown`; an unknown field *name* raises. Durations answer
+their stored components and `total_seconds`, which is refused for
+month-bearing durations. Previously there was no way to get 2026 out of a
+datetime as a number short of slicing its string.
+
 ### Platform
 
 - `--tokens`, `--ast`, `--add-loads`, `--json-diagnostics`, `--line-buffered`.

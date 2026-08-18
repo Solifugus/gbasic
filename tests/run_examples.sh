@@ -94,6 +94,7 @@ examples=(
     datetime_test.gb
     datetime_exact_comparison_test.bas
     datetime_arithmetic_test.bas
+    datetime_fields_test.bas
     datetime_lens_test.bas
     datetime_lens_operator_test.bas
     datetime_modifier_test.bas

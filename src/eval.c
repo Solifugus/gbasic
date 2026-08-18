@@ -4956,6 +4956,131 @@ static DateTime add_duration_to_datetime(DateTime dt, Duration duration, int sig
     return dt;
 }
 
+/* docs/datetime_design.md §3: dot fields EXTRACT numbers/strings where the
+ * lenses TRUNCATE to coarser datetimes. Two mechanisms, two jobs.
+ *
+ * Weekday by Sakamoto's algorithm -- pure arithmetic, no libc time machinery,
+ * so no timezone can leak into a calendar question. ISO 8601 numbering,
+ * Monday=1 .. Sunday=7 (ISO has no zero; Sunday=0 is the C/JavaScript
+ * convention, Sunday=1 is Excel's), which makes `d.weekday <= 5` the workday
+ * test. */
+static int datetime_weekday_iso(int year, int month, int day) {
+    static const int offsets[] = {0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4};
+    int y = month < 3 ? year - 1 : year;
+    int w = (y + y / 4 - y / 100 + y / 400 + offsets[month - 1] + day) % 7;
+    return w == 0 ? 7 : w;
+}
+
+static const char *datetime_precision_name(DateTime dt) {
+    if (dt.time_only) {
+        return "time";
+    }
+    switch (dt.precision) {
+    case PREC_YEAR: return "year";
+    case PREC_MONTH: return "month";
+    case PREC_DAY: return "day";
+    case PREC_HOUR: return "hour";
+    case PREC_MINUTE: return "minute";
+    default: return "second";
+    }
+}
+
+static Value datetime_field_value(DateTime dt, const char *name) {
+    /* THE PRECISION RULE: a field finer than the value's declared precision is
+     * absent information and reads as unknown -- never a plausible zero. A
+     * month value has no day; a day value has no hour. Unknown FIELD NAMES
+     * raise, so a typo is an error rather than a quiet unknown. */
+    if (strcmp(name, "precision") == 0) {
+        return value_string(datetime_precision_name(dt));
+    }
+    int has_date = !dt.time_only;
+    if (strcmp(name, "year") == 0) {
+        return has_date ? value_number(dt.year) : value_unknown();
+    }
+    if (strcmp(name, "month") == 0) {
+        return has_date && dt.precision >= PREC_MONTH
+            ? value_number(dt.month) : value_unknown();
+    }
+    if (strcmp(name, "day") == 0) {
+        return has_date && dt.precision >= PREC_DAY
+            ? value_number(dt.day) : value_unknown();
+    }
+    if (strcmp(name, "hour") == 0) {
+        return dt.precision >= PREC_HOUR ? value_number(dt.hour) : value_unknown();
+    }
+    if (strcmp(name, "minute") == 0) {
+        return dt.precision >= PREC_MINUTE ? value_number(dt.minute) : value_unknown();
+    }
+    if (strcmp(name, "second") == 0) {
+        return dt.precision >= PREC_SECOND ? value_number(dt.second) : value_unknown();
+    }
+    if (strcmp(name, "weekday") == 0) {
+        return has_date && dt.precision >= PREC_DAY
+            ? value_number(datetime_weekday_iso(dt.year, dt.month, dt.day))
+            : value_unknown();
+    }
+    if (strcmp(name, "dayname") == 0) {
+        static const char *names[] = { "Monday", "Tuesday", "Wednesday",
+                                       "Thursday", "Friday", "Saturday",
+                                       "Sunday" };
+        if (!has_date || dt.precision < PREC_DAY) {
+            return value_unknown();
+        }
+        return value_string(names[datetime_weekday_iso(dt.year, dt.month, dt.day) - 1]);
+    }
+    if (strcmp(name, "day_of_year") == 0) {
+        if (!has_date || dt.precision < PREC_DAY) {
+            return value_unknown();
+        }
+        int doy = dt.day;
+        for (int m = 1; m < dt.month; m++) {
+            doy += days_in_month(dt.year, m);
+        }
+        return value_number(doy);
+    }
+    if (strcmp(name, "time") == 0) {
+        /* Time of day IS an exact duration since midnight (§6) -- there is no
+         * time kind. Below hour precision the time of day is absent, not
+         * midnight. */
+        if (dt.precision < PREC_HOUR) {
+            return value_unknown();
+        }
+        long long secs = (long long)dt.hour * 3600 +
+                         (long long)dt.minute * 60 + dt.second;
+        return value_duration(duration_from_totals(0, secs));
+    }
+    char message[128];
+    snprintf(message, sizeof(message), "datetime has no field '%s'", name);
+    runtime_error_raise(message, 1003, "datetime");
+    return value_null();
+}
+
+static Value duration_field_value(Duration d, const char *name) {
+    /* Components as stored: `2 weeks` keeps weeks=2 (weeks are input sugar and
+     * computed results never carry them, but a literal renders as written). */
+    if (strcmp(name, "years") == 0) return value_number(d.years);
+    if (strcmp(name, "months") == 0) return value_number(d.months);
+    if (strcmp(name, "weeks") == 0) return value_number(d.weeks);
+    if (strcmp(name, "days") == 0) return value_number(d.days);
+    if (strcmp(name, "hours") == 0) return value_number(d.hours);
+    if (strcmp(name, "minutes") == 0) return value_number(d.minutes);
+    if (strcmp(name, "seconds") == 0) return value_number(d.seconds);
+    if (strcmp(name, "total_seconds") == 0) {
+        long long months, seconds;
+        duration_totals(d, &months, &seconds);
+        if (months != 0) {
+            runtime_error_raise("a month has no fixed length; total_seconds requires an exact duration",
+                                1003, "duration");
+            return value_null();
+        }
+        return value_number((double)seconds);
+    }
+    char message[128];
+    snprintf(message, sizeof(message), "duration has no field '%s'", name);
+    runtime_error_raise(message, 1003, "duration");
+    return value_null();
+}
+
 static Value eval_expr(AstExpr *expr);
 static Value eval_comparison(AstExpr *expr, Value left, Value right);
 static EvalResult eval_stmt(AstStmt *stmt);
@@ -23259,6 +23384,19 @@ static Value eval_expr(AstExpr *expr) {
             return result;
         }
 #endif
+        /* §3 of docs/datetime_design.md: datetimes and durations answer dot
+         * fields (d.year, d.weekday, dur.total_seconds), keeping extraction out
+         * of the global namespace -- the lenses truncate, the fields extract. */
+        if (object.kind == VALUE_DATETIME) {
+            DateTime dt = object.as.datetime;
+            value_free(object);
+            return datetime_field_value(dt, expr->as.field.field);
+        }
+        if (object.kind == VALUE_DURATION) {
+            Duration dur = object.as.duration;
+            value_free(object);
+            return duration_field_value(dur, expr->as.field.field);
+        }
         if (object.kind != VALUE_RECORD) {
             runtime_error_raise("field access expects a record", 1003, "field access");
             value_free(object);

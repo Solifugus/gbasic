@@ -2000,6 +2000,33 @@ There is intentionally no `today()` builtin: `today` is too common an
 identifier to reserve, and the date is derivable from `now()` and the `(day)=`
 truncation lens as shown above.
 
+**Datetime fields.** Components come out as *numbers* via dot access — the
+lenses truncate, the fields extract, and no global names are spent on it:
+
+```basic
+d (date)= "2026-03-15 09:30:45"
+d.year          ' 2026        d.hour    ' 9
+d.month         ' 3           d.minute  ' 30
+d.day           ' 15          d.second  ' 45
+d.weekday       ' 7 — ISO 8601: Monday=1 … Sunday=7, so d.weekday <= 5 is the workday test
+d.dayname       ' "Sunday"
+d.day_of_year   ' 74
+d.precision     ' "second" — one of year/month/day/hour/minute/second (or "time")
+d.time          ' 9 hours 30 minutes 45 seconds — an exact duration since midnight
+```
+
+Reading a field **finer than the value's precision yields `unknown`** — a
+month-precision value has no meaningful `.day`, and unknown is how gBASIC says
+"absent", never a plausible zero. An unknown field *name* raises
+(`datetime has no field 'yaer'`), so a typo is an error rather than a quiet
+unknown. Note the ISO weekday numbering has no zero: Sunday=0 is the
+C/JavaScript convention, Sunday=1 is Excel's; gBASIC follows ISO.
+
+**Duration fields.** `dur.years`/`.months`/`.weeks`/`.days`/`.hours`/
+`.minutes`/`.seconds` return the components as stored, and
+`dur.total_seconds` returns the whole duration in seconds — raising if the
+duration carries months or years, which have no fixed length.
+
 **`epoch(datetime)`** converts a `datetime` to a number of seconds since the
 Unix epoch, and **`from_epoch(number)`** converts such a number back to a
 `datetime`. These bridge to systems that speak epoch seconds (for example JWT

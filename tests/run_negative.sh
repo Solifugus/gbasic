@@ -306,6 +306,9 @@ cases=(
     negative_duration_order_months
     negative_duration_scale_fraction
     negative_duration_div_zero
+    negative_duration_total_months
+    negative_datetime_bad_field
+    negative_duration_bad_field
 )
 
 for name in "${cases[@]}"; do

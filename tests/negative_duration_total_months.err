@@ -1,0 +1,1 @@
+runtime error at tests/negative_duration_total_months.bas:4:1: a month has no fixed length; total_seconds requires an exact duration

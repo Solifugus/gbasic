@@ -1,6 +1,8 @@
 # Dates, times, durations, and schedules — Design
 
-Status: **§4 (the arithmetic floor) IMPLEMENTED 2026-08-17** — accountant's
+Status: **§3 (dot extraction) and §4 (the arithmetic floor) IMPLEMENTED
+2026-08-17** — §3 behind `examples/datetime_fields_test.bas` (31 self-checks)
+with three pinned negatives; §4 — accountant's
 month rule, datetime subtraction, duration algebra, and the comparison respec,
 behind `examples/datetime_arithmetic_test.bas` (36 self-checks, proven red
 first) and three pinned negatives. **Everything else remains proposal.**
@@ -68,7 +70,7 @@ A **date literal is deliberately NOT added**: `d = 2026-03-15` already parses as
 existing expression, and the modifier form `(date)=` is established. (The
 arithmetic reading is a silent trap worth an UNLEARN entry regardless.)
 
-## 3. Component extraction: dot fields
+## 3. Component extraction: dot fields — IMPLEMENTED 2026-08-17
 
 Numbers out of a datetime, no new global names:
 

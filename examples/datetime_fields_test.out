@@ -1,0 +1,31 @@
+ok year        
+ok month       
+ok day         
+ok hour        
+ok minute      
+ok second      
+ok precision   
+ok weekday Sun 
+ok dayname     
+ok weekday Mon 
+ok workday test
+ok day_of_year 
+ok doy leap    
+ok time        
+ok m.year      
+ok m.month     
+ok m.day unk   
+ok m.precision 
+ok d.hour unk  
+ok d.time unk  
+ok d.weekday ok
+ok r.at.year   
+ok dur.years   
+ok dur.months  
+ok dur.weeks   
+ok dur.days    
+ok dur.hours   
+ok dur.minutes 
+ok dur.seconds 
+ok total_secs  
+ok 2d total    

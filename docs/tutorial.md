@@ -733,6 +733,14 @@ Module errors carry a `source` (`"watcher"`, `"sqlite"`, `"postgres"`, `"actor"`
 Money, dates, times, and durations are **first-class value types**, not just
 formatted numbers and strings.
 
+Datetime components come out as numbers with dot access — `d.year`,
+`d.month`, `d.day`, `d.hour`, `d.minute`, `d.second`, plus `d.weekday`
+(ISO: Monday=1 … Sunday=7), `d.dayname`, `d.day_of_year`, `d.precision`, and
+`d.time` (the time of day, as an exact duration since midnight). A field finer
+than the value's precision reads as `unknown`. Durations answer
+`dur.total_seconds` (refused for month-bearing durations, which have no fixed
+length) and their stored components.
+
 `USD` creates money, stored internally as integer cents:
 
 ```basic
