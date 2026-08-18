@@ -1,7 +1,6 @@
 # Dates, times, durations, and schedules — Design
 
-Status: **§3 (dot extraction), §4 (the arithmetic floor), and §5 (business
-calendars, `dates.merge`, `dates.between`) IMPLEMENTED 2026-08-17** — §3 behind `examples/datetime_fields_test.bas` (31 self-checks)
+Status: **§3, §4, §5 and §7 (matches/select/series) IMPLEMENTED 2026-08-17** — §3 behind `examples/datetime_fields_test.bas` (31 self-checks)
 with three pinned negatives; §4 — accountant's
 month rule, datetime subtraction, duration algebra, and the comparison respec,
 behind `examples/datetime_arithmetic_test.bas` (36 self-checks, proven red
@@ -248,7 +247,15 @@ field policy (expected copy, link, reset, or exclude)`, pinned by
 `negative_pbi_unknown_policy` — and opening that closed set to general
 modifiers would put two unrelated mechanisms in one grammar position.
 
-## 7. One vocabulary, three verbs
+## 7. One vocabulary, three verbs — IMPLEMENTED 2026-08-17
+
+Two field names changed at implementation time, both for the keyword-after-dot
+rule that already renamed `hours.end`: the series sub-rule is **`when:`**
+(`spec.on` is a parse error — `on` is a keyword) and series bounds are
+**`{ from:, through: }` or `{ from:, count: }`** (`bounds.to` is a parse
+error, and `through` is honest about being inclusive). A malformed spec
+ERRORS; a spec no day satisfies yields UNKNOWN — the two failure modes mean
+different things.
 
 Everything Matthew listed — third Thursday, first Tuesday after the 15th, last
 Wednesday of the month, first business day before a deadline — is one question
@@ -294,13 +301,14 @@ dates.select({ nth: 1, kind: "business", before: deadline }, d, cal)
 
 ' board meets every third Thursday at 14:00, all year
 meetings = dates.series(
-    { every: "month", on: { nth: 3, weekday: "thursday" }, at: "14:00" },
-    { from: jan1, to: dec31 }, cal)
+    { every: "month", when: { nth: 3, weekday: "thursday" }, at: "14:00" },
+    { from: jan1, through: dec31 }, cal)
 
 ' payroll: every 2 weeks from an anchor payday, rolled OFF weekends/holidays
 paydays = dates.series(
     { every: 2 weeks, roll: "backward" },
-    { from: first_payday, count: 26 }, cal)
+    { from: first_payday, count: 26 }, cal)   ' steps are start + step*k,
+                                              ' never cumulative
 ```
 
 `select` returns **`unknown`** when nothing satisfies the spec (a fifth Tuesday,

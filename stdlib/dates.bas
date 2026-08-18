@@ -398,4 +398,443 @@ library dates
         end if
         error "dates.between: unit must be days, months, or years"
     end function
+
+    ' ------------------------------------------------------------------
+    ' Selectors (docs/datetime_design.md §7): ONE spec vocabulary, three
+    ' verbs. matches(d, spec, cal) asks; select(spec, anchor, cal) finds the
+    ' one day (or unknown); series(spec, bounds, cal) enumerates.
+    '
+    ' Two field names differ from the design's first draft, both for the same
+    ' grammar reason as hours.open/close: a keyword can be a record-literal
+    ' key but cannot follow a dot. The series sub-rule is `when:` (not `on:`,
+    ' since spec.on is a parse error) and bounds are `{ from:, through: }`
+    ' (not `to:` -- bounds.to is a parse error; `through` is also honest about
+    ' being INCLUSIVE). A malformed spec ERRORS; a spec no day satisfies
+    ' yields UNKNOWN -- the two failure modes mean different things.
+
+    function _pad2(n)
+        if n < 10 then
+            return "0" + n
+        end if
+        return "" + n
+    end function
+
+    function _mkday(y, m, d)
+        s = y + "-" + _pad2(m) + "-" + _pad2(d)
+        out (date)= s
+        return out
+    end function
+
+    ' Scope bounds lean on the core operators rather than a day table: the
+    ' last day of a month is first-of-month + 1 month - 1 day, which is
+    ' correct in February because the core add clamps.
+    function _scope(d, within)
+        if within = "month" then
+            first = _mkday(d.year, d.month, 1)
+            return { first: first, last: first + 1 month - 1 day }
+        end if
+        if within = "quarter" then
+            qm = floor((d.month - 1) / 3) * 3 + 1
+            first = _mkday(d.year, qm, 1)
+            return { first: first, last: first + 3 months - 1 day }
+        end if
+        if within = "year" then
+            return { first: _mkday(d.year, 1, 1), last: _mkday(d.year, 12, 31) }
+        end if
+        if within = "week" then
+            dd (day)= d
+            first = dd - (1 day) * (dd.weekday - 1)   ' ISO week: Monday first
+            return { first: first, last: first + 6 days }
+        end if
+        error "dates: within must be week, month, quarter, or year"
+    end function
+
+    function _tod(t)
+        if type(t) = "duration" then
+            return t
+        end if
+        parts = split(t, ":")
+        secs = number(parts[0]) * 3600 + number(parts[1]) * 60
+        if count(parts) > 2 then
+            secs = secs + number(parts[2])
+        end if
+        return (1 second) * secs
+    end function
+
+    ' A day plus a time of day. t is a string ("14:00") or an exact duration.
+    ' Note "0:00" adds a zero duration, which does not bump precision -- a
+    ' midnight stamp keeps day precision, which renders without a time.
+    function at(d, t)
+        dd (day)= d
+        return dd + _tod(t)
+    end function
+
+    function _nth_num(v)
+        if type(v) = "string" then
+            return 0 - 1                              ' "last"
+        end if
+        return v
+    end function
+
+    function _wd_ok(d, w)
+        name = lower(d.dayname)
+        if type(w) = "array" then
+            for each x in w
+                if lower(x) = name then
+                    return true
+                end if
+            end for
+            return false
+        end if
+        return lower(w) = name
+    end function
+
+    function _excepted(dd, spec)
+        if not has(spec, "except") then
+            return false
+        end if
+        for each e in spec.except
+            ed (day)= e
+            if ed = dd then
+                return true
+            end if
+        end for
+        return false
+    end function
+
+    ' The non-positional constraints: is this day even eligible?
+    function _candidate(dd, spec, cal)
+        if has(spec, "weekday") then
+            if not _wd_ok(dd, spec.weekday) then
+                return false
+            end if
+        end if
+        if has(spec, "day") then
+            if dd.day != spec.day then
+                return false
+            end if
+        end if
+        if has(spec, "kind") then
+            if spec.kind = "business" then
+                if not is_business_day(dd, cal) then
+                    return false
+                end if
+            end if
+        end if
+        if _excepted(dd, spec) then
+            return false
+        end if
+        return true
+    end function
+
+    ' An anchor bound is a datetime, or a component record like { day: 15 }
+    ' meaning "day 15 of the reference day's month".
+    function _bound(b, ref)
+        if type(b) = "record" then
+            return _mkday(ref.year, ref.month, b.day)
+        end if
+        bb (day)= b
+        return bb
+    end function
+
+    function _apply_roll(dd, spec, cal)
+        if not has(spec, "roll") then
+            return dd
+        end if
+        if is_business_day(dd, cal) then
+            return dd
+        end if
+        if spec.roll = "forward" then
+            return next_business_day(dd, cal)
+        end if
+        if spec.roll = "backward" then
+            return previous_business_day(dd, cal)
+        end if
+        if spec.roll = "modified" then
+            ' Forward, unless that crosses into the next month -- then back.
+            ' The finance convention, where a payment date must stay in its
+            ' accounting month.
+            f = next_business_day(dd, cal)
+            if f.month != dd.month then
+                return previous_business_day(dd, cal)
+            end if
+            return f
+        end if
+        error "dates: roll must be forward, backward, or modified"
+    end function
+
+    function _finish(dd, spec, cal)
+        rolled = _apply_roll(dd, spec, cal)
+        if has(spec, "at") then
+            return at(rolled, spec.at)
+        end if
+        return rolled
+    end function
+
+    function matches(d, spec, cal)
+        dd (day)= d
+        if not _candidate(dd, spec, cal) then
+            return false
+        end if
+        if has(spec, "after") then
+            if not (dd > _bound(spec.after, dd)) then
+                return false
+            end if
+        end if
+        if has(spec, "on_or_after") then
+            if not (dd >= _bound(spec.on_or_after, dd)) then
+                return false
+            end if
+        end if
+        if has(spec, "before") then
+            if not (dd < _bound(spec.before, dd)) then
+                return false
+            end if
+        end if
+        if has(spec, "on_or_before") then
+            if not (dd <= _bound(spec.on_or_before, dd)) then
+                return false
+            end if
+        end if
+        if has(spec, "nth") then
+            within = "month"
+            if has(spec, "within") then
+                within = spec.within
+            end if
+            sc = _scope(dd, within)
+            total = 0
+            mypos = 0
+            cur = sc.first
+            while cur <= sc.last
+                if _candidate(cur, spec, cal) then
+                    total = total + 1
+                    if cur = dd then
+                        mypos = total
+                    end if
+                end if
+                cur = cur + 1 day
+            end while
+            n = _nth_num(spec.nth)
+            if n > 0 then
+                if mypos != n then
+                    return false
+                end if
+            else
+                if mypos != total + 1 + n then
+                    return false
+                end if
+            end if
+        end if
+        return true
+    end function
+
+    function select(spec, anchor, cal)
+        aa (day)= anchor
+        n = 1
+        if has(spec, "nth") then
+            n = _nth_num(spec.nth)
+        end if
+        dir = 0
+        bound = aa
+        inclusive = false
+        if has(spec, "after") then
+            dir = 1
+            bound = _bound(spec.after, aa)
+        end if
+        if has(spec, "on_or_after") then
+            dir = 1
+            inclusive = true
+            bound = _bound(spec.on_or_after, aa)
+        end if
+        if has(spec, "before") then
+            dir = 0 - 1
+            bound = _bound(spec.before, aa)
+        end if
+        if has(spec, "on_or_before") then
+            dir = 0 - 1
+            inclusive = true
+            bound = _bound(spec.on_or_before, aa)
+        end if
+        if dir = 0 and not has(spec, "nth") and not has(spec, "within") then
+            ' Bare spec: the (next X) reading -- first candidate STRICTLY
+            ' after the anchor, matching the lenses' exclusive convention.
+            dir = 1
+        end if
+        if dir != 0 then
+            if n < 1 then
+                error "dates.select: nth must be positive when searching from an anchor"
+            end if
+            dd = bound
+            if not inclusive then
+                dd = dd + (1 day) * dir
+            end if
+            seen = 0
+            guard = 0
+            while guard <= 3700
+                if _candidate(dd, spec, cal) then
+                    seen = seen + 1
+                    if seen = n then
+                        return _finish(dd, spec, cal)
+                    end if
+                end if
+                dd = dd + (1 day) * dir
+                guard = guard + 1
+            end while
+            return unknown                            ' a miss, not an error
+        end if
+        if not has(spec, "nth") then
+            error "dates.select: nth is required with within (or use after/before)"
+        end if
+        within = "month"
+        if has(spec, "within") then
+            within = spec.within
+        end if
+        sc = _scope(aa, within)
+        found = []
+        cur = sc.first
+        while cur <= sc.last
+            if _candidate(cur, spec, cal) then
+                append(found, cur)
+            end if
+            cur = cur + 1 day
+        end while
+        idx = n
+        if n < 0 then
+            idx = count(found) + 1 + n
+        end if
+        if idx < 1 or idx > count(found) then
+            return unknown                            ' e.g. the fifth Tuesday
+        end if
+        return _finish(found[idx - 1], spec, cal)
+    end function
+
+    function _step_to(start, every, k, prev, cal)
+        if type(every) = "duration" then
+            return start + every * k
+        end if
+        if every = "day" then
+            return start + (1 day) * k
+        end if
+        if every = "week" then
+            return start + (7 days) * k
+        end if
+        if every = "month" then
+            return start + (1 month) * k
+        end if
+        if every = "quarter" then
+            return start + (3 months) * k
+        end if
+        if every = "year" then
+            return start + (1 year) * k
+        end if
+        if every = "business day" then
+            return next_business_day(prev, cal)
+        end if
+        error "dates.series: every must be a duration or one of day, week, month, quarter, year, business day"
+    end function
+
+    function _period(unit, k)
+        if unit = "week" then
+            return (7 days) * k
+        end if
+        if unit = "month" then
+            return (1 month) * k
+        end if
+        if unit = "quarter" then
+            return (3 months) * k
+        end if
+        return (1 year) * k
+    end function
+
+    function series(spec, bounds, cal)
+        start (day)= bounds.from
+        want = 0 - 1
+        if has(bounds, "count") then
+            want = bounds.count
+        end if
+        has_through = has(bounds, "through")
+        stop_at = start
+        if has_through then
+            stop_at (day)= bounds.through
+        end if
+        if not has_through and want < 1 then
+            error "dates.series: bounds need through: or count:"
+        end if
+        out = []
+        if has(spec, "when") then
+            ' Period mode: every period, the day the sub-rule picks.
+            unit = ""
+            if has(spec, "every") then
+                unit = spec.every
+            end if
+            if unit != "week" and unit != "month" and unit != "quarter" and unit != "year" then
+                error "dates.series: when: needs every: week, month, quarter, or year"
+            end if
+            sub = spec.when
+            sub.within = unit
+            sc = _scope(start, unit)
+            k = 0
+            while k < 10000
+                anchor = sc.first + _period(unit, k)
+                if has_through and anchor > stop_at then
+                    return out
+                end if
+                d = select(sub, anchor, cal)
+                if not is_unknown(d) then
+                    dd (day)= d
+                    if dd >= start then
+                        emit = true
+                        if has_through and dd > stop_at then
+                            return out
+                        end if
+                        if _excepted(dd, spec) then
+                            emit = false               ' a gap, not a reschedule
+                        end if
+                        if emit then
+                            append(out, _finish(dd, spec, cal))
+                            if want > 0 and count(out) >= want then
+                                return out
+                            end if
+                        end if
+                    end if
+                end if
+                k = k + 1
+            end while
+            return out
+        end if
+        ' Stepping mode. Steps are MULTIPLICATIVE from the start -- start +
+        ' step*k, never cumulative -- so monthly from Jan 31 gives Feb 28 then
+        ' MAR 31, not the Feb-28-forever drift that cumulative clamping causes.
+        if not has(spec, "every") then
+            error "dates.series: spec needs every: (or when: with every:)"
+        end if
+        if type(spec.every) = "duration" then
+            if spec.every = (0 seconds) then
+                error "dates.series: every cannot be zero"
+            end if
+        end if
+        dd = start
+        if type(spec.every) = "string" then
+            if spec.every = "business day" then
+                if not is_business_day(dd, cal) then
+                    dd = next_business_day(dd, cal)
+                end if
+            end if
+        end if
+        k = 0
+        while k < 10000
+            if has_through and dd > stop_at then
+                return out
+            end if
+            if not _excepted(dd, spec) then
+                append(out, _finish(dd, spec, cal))
+                if want > 0 and count(out) >= want then
+                    return out
+                end if
+            end if
+            k = k + 1
+            dd = _step_to(start, spec.every, k, dd, cal)
+        end while
+        return out
+    end function
 end library

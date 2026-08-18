@@ -105,6 +105,21 @@ calendar difference, consistent with clamping by construction (Jan 31 → Feb 28
 is 1 month, exactly as Jan 31 + 1 month is Feb 28). An empty calendar makes
 lookups fail fast rather than hang.
 
+### Date selectors (docs/datetime_design.md §7, `stdlib/dates.bas`)
+
+One spec-record vocabulary, three verbs: `dates.matches(d, spec, cal)`,
+`dates.select(spec, anchor, cal)` (the one day, or `unknown` on a miss),
+`dates.series(spec, bounds, cal)`. "Third Thursday of the month", "first
+Tuesday after the 15th", "first business day before a deadline", "every third
+Thursday at 14:00 all year", "payroll every 2 weeks rolled off holidays" are
+all one-liners, and every series element satisfies `matches` with the same
+rule — the two verbs verify each other in the tests. Strictness lives in the
+anchor names (`after` vs `on_or_after`); roll conventions include the finance
+`modified` rule; monthly stepping is multiplicative from the start, so
+Jan 31 → Feb 28 → **Mar 31**, not Feb-28-forever. The series sub-rule is
+`when:` and bounds are `{from:, through:|count:}` — `on` and `to` are keywords
+that cannot follow a dot.
+
 ### Platform
 
 - `--tokens`, `--ast`, `--add-loads`, `--json-diagnostics`, `--line-buffered`.

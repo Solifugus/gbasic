@@ -1,0 +1,28 @@
+ok 3rd Thursday          
+ok last Wednesday        
+ok nth -1 = last         
+ok 5th Tuesday -> unknown
+ok 1st Monday of quarter 
+ok 1st Friday of year    
+ok last bday of ISO week 
+ok 1st Tue after the 15th
+ok 1st bday before a date
+ok on_or_after includes  
+ok after excludes        
+ok bare spec = next-after
+ok roll modified stays in month
+ok roll forward crosses  
+ok matches 3rd Thursday  
+ok 2nd Thursday does not 
+ok matches kind business 
+ok 6 meetings Jan-Jun    
+ok first stamped 14:00   
+ok every one matches rule
+ok except leaves a gap   
+ok 26 biweekly? 6 asked  
+ok holiday payday rolled 
+ok others unmoved        
+ok no payday on off-day  
+ok no cumulative drift   
+ok clamps where it must  
+ok bday steps skip hol   
