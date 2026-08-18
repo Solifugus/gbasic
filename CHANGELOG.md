@@ -57,6 +57,28 @@ be exercised by someone else first.
   never begin a statement and so remain usable as variable names and as labels;
   `do` does, and is reserved like `while` and `for`.
 
+### Datetime and duration arithmetic (docs/datetime_design.md §4)
+
+The floor of the datetime redesign, and three genuine bug fixes:
+
+- **`Jan 31 + 1 month` is now `Feb 28`**, not `Mar 3` — the accountant's rule:
+  years and months are added first, the day is clamped to the resulting month,
+  then exact parts (weeks/days/hours/minutes/seconds) are added as elapsed
+  time. The old behaviour added "the number of days in the starting month",
+  which is right everywhere except month-end — where invoices live.
+- **Duration comparison worked in no direction and now works in every one.**
+  Durations fell through to numeric coercion (the PLAT-EQ defect, fixed for
+  arrays and records, missed for durations), so every equality was true and
+  every ordering false — `(1 month) = (30 days)` *and* `= (31 days)` were both
+  true. Now: equality compares (months, seconds) pairs (`1 year = 12 months`,
+  `1 week = 7 days`, `1 month = 30 days` is **false**); ordering is a total
+  order on exact durations, and ordering a month-bearing duration is refused —
+  a month has no fixed length.
+- **The missing arithmetic exists**: `datetime − datetime` → signed exact
+  duration; `duration ± duration`; `duration × n` and `/ n` (months scale only
+  by integers; seconds round to the whole second). Results are canonical:
+  `(45 minutes) * 4` is `3 hours`.
+
 ### Platform
 
 - `--tokens`, `--ast`, `--add-loads`, `--json-diagnostics`, `--line-buffered`.

@@ -1,0 +1,36 @@
+ok Jan31 + 1 month        
+ok Jan31 + 1 month + 1 day
+ok Feb29 + 1 year         
+ok Mar31 + 1 month        
+ok Feb01 + 1 month        
+ok Mar31 - 1 month        
+ok Jan31 + 13 months      
+ok (Jan31+1mo)-1mo != Jan31
+ok dt - dt                
+ok dt - dt (negative)     
+ok dt - itself            
+ok 1h + 30m               
+ok 2h - 30m               
+ok 45m * 4                
+ok 4 * 45m                
+ok 1 day / 2              
+ok 30m - 2h (signed)      
+ok 1mo + 1mo              
+ok 14mo canonical         
+ok months scale integer   
+ok mixed calendar+exact   
+ok 90m > 1h               
+ok 1h < 90m               
+ok 2h > 90m               
+ok 25h > 1 day            
+ok 1 week >= 7 days       
+ok 59m <= 1h              
+ok 90m = 1h30m            
+ok 1yr = 12mo             
+ok 1wk = 7d               
+ok 3wk = 21d              
+ok 1mo = 30d is FALSE     
+ok 1mo = 31d is FALSE     
+ok 1mo != 30d             
+ok contains 60m           
+ok contains 2h            

@@ -4891,10 +4891,57 @@ static void normalize_datetime(DateTime *dt) {
     }
 }
 
+/* A duration reduces to two totals that must never be blurred into one number:
+ * calendar months (a month has no fixed length) and exact seconds (a day is
+ * 86 400 s -- exact, because gBASIC has no timezone). Every §4 rule in
+ * docs/datetime_design.md is defined over this pair. */
+static void duration_totals(Duration d, long long *months, long long *seconds) {
+    *months = (long long)d.years * 12 + d.months;
+    *seconds = ((long long)d.weeks * 7 + d.days) * 86400LL +
+               (long long)d.hours * 3600 +
+               (long long)d.minutes * 60 +
+               d.seconds;
+}
+
+/* Canonical decomposition: years+months from the month total, days downward
+ * from the second total. Weeks are INPUT sugar (`2 weeks` = 14 days) and never
+ * appear in computed results. C's truncating division keeps signs consistent:
+ * -14 months becomes -1 year -2 months, which renders as written. */
+static Duration duration_from_totals(long long months, long long seconds) {
+    Duration d = {0};
+    d.years = (int)(months / 12);
+    d.months = (int)(months % 12);
+    d.days = (int)(seconds / 86400);
+    long long r = seconds % 86400;
+    d.hours = (int)(r / 3600);
+    r %= 3600;
+    d.minutes = (int)(r / 60);
+    d.seconds = (int)(r % 60);
+    return d;
+}
+
 static DateTime add_duration_to_datetime(DateTime dt, Duration duration, int sign) {
-    dt.year += sign * duration.years;
-    dt.month += sign * duration.months;
-    normalize_datetime(&dt);
+    /* The accountant's rule (docs/datetime_design.md §4.1): calendar parts
+     * first, CLAMP the day, then exact parts. The previous implementation let
+     * normalize_datetime roll an overflowing day into the next month, which is
+     * how Jan 31 + 1 month became Mar 3 -- plausible everywhere except
+     * month-end, which is exactly where invoices and due dates live. */
+    long long dm = (long long)sign * ((long long)duration.years * 12 + duration.months);
+    if (dm != 0) {
+        long long total = (long long)dt.year * 12 + (dt.month - 1) + dm;
+        long long y = total / 12;
+        long long m = total % 12;
+        if (m < 0) {
+            m += 12;
+            y -= 1;
+        }
+        dt.year = (int)y;
+        dt.month = (int)m + 1;
+        int dim = days_in_month(dt.year, dt.month);
+        if (dt.day > dim) {
+            dt.day = dim;               /* Jan 31 + 1 month = Feb 28 */
+        }
+    }
 
     dt.day += sign * (duration.weeks * 7 + duration.days);
     dt.hour += sign * duration.hours;
@@ -22345,6 +22392,49 @@ static Value eval_comparison(AstExpr *expr, Value left, Value right) {
         value_free(left);
         value_free(right);
         return value_null();
+    } else if (left.kind == VALUE_DURATION && right.kind == VALUE_DURATION) {
+        /* docs/datetime_design.md §4.3. Before this branch existed, durations
+         * fell through to the numeric coercion at the end of the chain -- the
+         * PLAT-EQ defect, fixed for arrays and records, missed for durations --
+         * so EVERY equality was true (0 = 0) and EVERY ordering false. The
+         * probes that exposed it: (1 month) = (30 days) and = (31 days) were
+         * both true; (90 minutes) > (1 hour) and its converse both false.
+         *
+         * Equality compares the (months, seconds) pair, which canonicalises
+         * 1 year = 12 months and 1 week = 7 days and keeps the two families
+         * apart: 1 month = 30 days is FALSE, not a guess. Ordering is a total
+         * order on EXACT durations only; a month has no fixed length, so
+         * ordering one is refused rather than answered plausibly. */
+        long long lm, ls, rm, rs;
+        duration_totals(left.as.duration, &lm, &ls);
+        duration_totals(right.as.duration, &rm, &rs);
+        if (strcmp(op, "=") == 0) {
+            result = (lm == rm && ls == rs);
+        } else if (strcmp(op, "!=") == 0) {
+            result = !(lm == rm && ls == rs);
+        } else if (lm != 0 || rm != 0) {
+            runtime_error_raise("a month has no fixed length; compare exact durations or use dates.between",
+                                1003, "duration");
+            value_free(left);
+            value_free(right);
+            return value_null();
+        } else {
+            int cmp = (ls > rs) - (ls < rs);
+            result = comparison_result_from_cmp(op, cmp);
+        }
+    } else if (left.kind == VALUE_DURATION || right.kind == VALUE_DURATION) {
+        /* Mixed duration vs other: equal is honestly false (so `contains` over
+         * a mixed array works), ordering is refused like money and datetime. */
+        if (strcmp(op, "=") == 0) {
+            result = 0;
+        } else if (strcmp(op, "!=") == 0) {
+            result = 1;
+        } else {
+            runtime_error_raise("duration comparison requires duration values", 1003, "duration");
+            value_free(left);
+            value_free(right);
+            return value_null();
+        }
     } else if (!expr->as.binary.modifier.library &&
         modifier_is(expr->as.binary.modifier.name, "caseless") &&
         left.kind == VALUE_STRING &&
@@ -22692,6 +22782,81 @@ static Value eval_binary(AstExpr *expr) {
         current_line = previous_line;
         current_column = previous_column;
         return value_datetime(result);
+    }
+
+    /* datetime - datetime -> EXACT duration (docs/datetime_design.md §4.2):
+     * days/hours/minutes/seconds, never months -- "how many months apart" is a
+     * calendar question served by dates.between in stdlib. Signed, so earlier
+     * minus later is honest rather than an error. */
+    if (strcmp(op, "-") == 0 &&
+        left.kind == VALUE_DATETIME &&
+        right.kind == VALUE_DATETIME) {
+        int ok_left = 1;
+        int ok_right = 1;
+        double ea = datetime_to_epoch(left.as.datetime, &ok_left);
+        double eb = datetime_to_epoch(right.as.datetime, &ok_right);
+        value_free(left);
+        value_free(right);
+        current_line = previous_line;
+        current_column = previous_column;
+        if (!ok_left || !ok_right) {
+            runtime_error_raise("a time-only value has no epoch", 1003, "datetime");
+            return value_null();
+        }
+        return value_duration(duration_from_totals(0, (long long)llround(ea - eb)));
+    }
+
+    /* Duration algebra (§4.2): closed under + - and scaling, computed on the
+     * (months, seconds) totals and returned in canonical form -- so
+     * (45 minutes) * 4 is 3 hours, not 180 minutes. */
+    if ((strcmp(op, "+") == 0 || strcmp(op, "-") == 0) &&
+        left.kind == VALUE_DURATION &&
+        right.kind == VALUE_DURATION) {
+        long long lm, ls, rm, rs;
+        duration_totals(left.as.duration, &lm, &ls);
+        duration_totals(right.as.duration, &rm, &rs);
+        int sub = strcmp(op, "-") == 0;
+        Duration out = duration_from_totals(sub ? lm - rm : lm + rm,
+                                            sub ? ls - rs : ls + rs);
+        value_free(left);
+        value_free(right);
+        current_line = previous_line;
+        current_column = previous_column;
+        return value_duration(out);
+    }
+
+    if ((strcmp(op, "*") == 0 &&
+         ((left.kind == VALUE_DURATION && right.kind == VALUE_NUMBER) ||
+          (left.kind == VALUE_NUMBER && right.kind == VALUE_DURATION))) ||
+        (strcmp(op, "/") == 0 &&
+         left.kind == VALUE_DURATION && right.kind == VALUE_NUMBER)) {
+        Duration d = left.kind == VALUE_DURATION ? left.as.duration
+                                                 : right.as.duration;
+        double n = left.kind == VALUE_NUMBER ? left.as.number : right.as.number;
+        value_free(left);
+        value_free(right);
+        current_line = previous_line;
+        current_column = previous_column;
+        if (strcmp(op, "/") == 0) {
+            if (n == 0) {
+                runtime_error_raise("division by zero", 1003, "duration");
+                return value_null();
+            }
+            n = 1.0 / n;
+        }
+        long long dm, ds;
+        duration_totals(d, &dm, &ds);
+        /* Months scale only by integers: 2.5 months has no meaning, and a
+         * plausible wrong answer would be worse than the refusal. Seconds
+         * scale freely and round to the whole second, which durations are. */
+        double scaled_months = (double)dm * n;
+        if (fabs(scaled_months - llround(scaled_months)) > 1e-9) {
+            runtime_error_raise("cannot scale a duration with months or years by a non-integer",
+                                1003, "duration");
+            return value_null();
+        }
+        return value_duration(duration_from_totals(llround(scaled_months),
+                                                   llround((double)ds * n)));
     }
 
     if (strcmp(op, "+") == 0 &&

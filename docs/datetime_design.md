@@ -1,6 +1,10 @@
 # Dates, times, durations, and schedules — Design
 
-Status: **proposal; nothing built.** Agreed in outline with Matthew 2026-08-17
+Status: **§4 (the arithmetic floor) IMPLEMENTED 2026-08-17** — accountant's
+month rule, datetime subtraction, duration algebra, and the comparison respec,
+behind `examples/datetime_arithmetic_test.bas` (36 self-checks, proven red
+first) and three pinned negatives. **Everything else remains proposal.**
+Agreed in outline with Matthew 2026-08-17
 (dot extraction, accountant's month arithmetic, spec-record selectors, business
 calendars as data); the open questions are listed in §10 and nothing below is
 implemented until this line says so. Backward compatibility MAY be broken — the
@@ -180,6 +184,25 @@ edge: `roll: "forward"` (next business day), `"backward"`, or `"modified"`
 standard). Selectors and series accept `roll:`; payment-date code needs it on
 day one.
 
+**Merging calendars** (Matthew's addition, 2026-08-17): finding mutual meeting
+days needs no new search machinery, because combining calendars is a *union of
+constraints* — and the merged result composes with every verb already designed:
+
+```basic
+both = dates.merge([cal_alice, cal_bob])
+' weekend: union · holidays: union · hours: latest start, earliest end
+day = dates.next_business_day(d, both)          ' first mutual working day
+slots = schedule.slots(day, spec, both)         ' mutual free slots that day
+```
+
+with the law that makes it testable by arithmetic:
+`is_business_day(d, merge([a, b])) = is_business_day(d, a) and
+is_business_day(d, b)`. A merge can produce an empty working window (one
+calendar ends before the other begins); the consumers already handle that —
+`slots` yields none, `layout` reports everything unplaced — so `merge` itself
+never raises. Intra-day busy-time (existing bookings) stays application state
+in v1; it folds in later with business-hours arithmetic (§9).
+
 Deferred, recorded so they are decisions rather than gaps: observed-holiday
 shifting (Christmas-on-Saturday → Friday off), half days, per-weekday hours.
 
@@ -350,13 +373,16 @@ twice.
 1. ~~The `9:00` time literal~~ — **resolved, rejected** (Matthew,
    2026-08-17): dates cannot be literals, so a time-only literal is
    incoherent in the bigger picture. See §6 for the resolution.
-2. **Calendar: separate argument or spec field?** Above it is a separate
-   argument (specs stay reusable across calendars); the alternative is
-   `calendar:` inside the spec (one record travels alone). Pick one, everywhere.
-3. **Signed durations** — `a - b` when b > a: signed duration (proposed), or
-   raise and force `abs`?
-4. **`d.weekday` numbering** — ISO Monday=1 proposed; Sunday=1 is the US
-   convention some spreadsheet users expect. One must win.
+2. ~~Calendar: separate argument or spec field?~~ — **resolved: separate
+   argument** (Matthew, 2026-08-17). One spec reused against two calendars is
+   the realistic case.
+3. ~~Signed durations~~ — **resolved: signed** (Matthew, 2026-08-17): "the
+   honest algebra is right." Implemented; `b - a` for a later `b` yields a
+   negative exact duration, rendered with per-component signs.
+4. ~~`d.weekday` numbering~~ — **resolved: ISO 8601, Monday=1 … Sunday=7**
+   (Matthew, 2026-08-17). Fact check recorded because it came up: ISO has no
+   zero — Sunday=0 is the C/JavaScript convention, Sunday=1 is Excel's. ISO's
+   numbering makes `d.weekday <= 5` the workday test, which suits the domain.
 
 ## 11. Test strategy (before any code)
 
@@ -375,6 +401,8 @@ checkable by arithmetic, not transcript:
 - **month-end table** — the §4.1 examples pinned exactly; plus the round-trip
   property `(d + 1 month) - 1 month = d` documented as NOT holding at month-end
   (clamping is lossy), so nobody "fixes" it later.
+- **calendar merge law** — `is_business_day(d, merge([a,b]))` equals the
+  conjunction, property-checked over generated calendars and days.
 - **duration law checks** — ordering is a total order on exact durations;
   equality is transitive (property-tested over generated values, the
   PLAT-NUMFMT pattern); the removed behaviours (`1 month = 30 days`) pinned as

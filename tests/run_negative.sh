@@ -303,6 +303,9 @@ cases=(
     negative_library_error_path
     negative_for_step_zero
     negative_for_bound_type
+    negative_duration_order_months
+    negative_duration_scale_fraction
+    negative_duration_div_zero
 )
 
 for name in "${cases[@]}"; do

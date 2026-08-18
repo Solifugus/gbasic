@@ -1,0 +1,1 @@
+runtime error at tests/negative_duration_scale_fraction.bas:2:1: cannot scale a duration with months or years by a non-integer
