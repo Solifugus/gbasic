@@ -25,4 +25,8 @@ ok others unmoved
 ok no payday on off-day  
 ok no cumulative drift   
 ok clamps where it must  
+ok MWF: six standups     
+ok MWF starts Monday     
+ok MWF wraps to next week
+ok MWF all match rule    
 ok bday steps skip hol   

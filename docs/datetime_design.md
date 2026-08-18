@@ -1,6 +1,8 @@
 # Dates, times, durations, and schedules — Design
 
-Status: **§3, §4, §5, §7 and §8 IMPLEMENTED 2026-08-17 — every planned v1 layer is built.** Remaining: the §9 deferrals (timezones, business-hours arithmetic, observed holidays), each a recorded decision. — §3 behind `examples/datetime_fields_test.bas` (31 self-checks)
+Status: **§3, §4, §5, §7 and §8 IMPLEMENTED 2026-08-17 — every planned v1
+layer is built** (§7 extended 2026-08-18: `when:` without `nth:` emits every
+candidate per period). Remaining: the §9 deferrals (timezones, business-hours arithmetic, observed holidays), each a recorded decision. — §3 behind `examples/datetime_fields_test.bas` (31 self-checks)
 with three pinned negatives; §4 — accountant's
 month rule, datetime subtraction, duration algebra, and the comparison respec,
 behind `examples/datetime_arithmetic_test.bas` (36 self-checks, proven red
@@ -280,7 +282,8 @@ Spec fields (v1, deliberately small):
 | `within:` | `"month"` \| `"quarter"` \| `"year"` \| `"week"` — scope for `nth`, taken from the anchor |
 | `after:` / `on_or_after:` / `before:` / `on_or_before:` | anchor constraints — **strictness is in the name**, because the `(next friday)`-from-a-Friday trap must not be reproduced |
 | `at:` | a time of day to stamp on the result — a string (`"14:00"`) or an exact duration |
-| `every:` | series only — `"day"`, `"week"`, `"month"`, `"quarter"`, `"year"`, or a duration (`2 weeks` for payroll) |
+| `every:` | series only — `"day"`, `"week"`, `"month"`, `"quarter"`, `"year"`, `"business day"`, or a duration (`2 weeks` for payroll) |
+| `when:` | series only — the day rule inside each period. **With `nth:`, the nth candidate; without it, EVERY candidate** — Mon/Wed/Fri standups are `when: { weekday: ["monday","wednesday","friday"] }` (added 2026-08-18; RRULE's BYDAY-list case) |
 | `except:` | days to skip (a list, or `cal.holidays`) |
 | `roll:` | what to do when the computed day is not a business day |
 
@@ -376,11 +379,39 @@ twice.
 
 ## 9. What this deliberately does not do (v1)
 
-- **Timezones.** Everything is naive local time. A decision, not a drift:
-  retrofitting zones is painful, but the target domain (one organisation's
-  calendar) mostly lives in one zone, and zones would double the design. The
-  door left open: the datetime representation must not preclude a zone field
-  later.
+- **Timezones — position AGREED 2026-08-18 (Matthew), implementation still
+  deferred.** The doctrine: **UTC for the timeline, civil time for the
+  calendar, zone names at the edges.** An enterprise server serves many zones
+  at once, so *instants* (things that happened: logs, transactions) belong in
+  UTC. But *future calendar intentions* must NOT be stored as UTC instants —
+  "every third Thursday at 14:00 Chicago time" stored as `19:00Z` silently
+  moves an hour when DST flips, and moves again when a legislature changes the
+  zone rules (the IANA database updates several times a year because they do).
+  All-day values (due dates, holidays) have no instant at all; storing them as
+  UTC midnight is the classic off-by-one-day-across-zones bug.
+
+  So: intentions are stored as **the rule plus a zone name** — and gBASIC's
+  spec records already are that. The zoneless precision-carrying datetime IS
+  civil time; nothing in §2–§8 changes. What v2 adds is only the edge:
+
+  ```basic
+  utc = dates.from_zone(local_dt, "America/Chicago")   ' civil-in-zone -> UTC
+  loc = dates.to_zone(utc_dt, "Europe/Berlin")         ' UTC -> civil-in-zone
+  off = dates.zone_offset(dt, zone)                    ' offset in force AT dt
+  ```
+
+  No new value kind and no zone field on datetime — conversions take and
+  return plain civil datetimes, and the zone name lives in the caller's data.
+  Implementation route measured feasible with zero dependencies: the system
+  IANA tzdb (`/usr/share/zoneinfo`, TZif) via the `TZ`+`tzset` technique —
+  not thread-safe in general, but gBASIC actors are processes, so the hazard
+  does not exist here. One policy decision remains open for implementation
+  time: DST makes some local times NONEXISTENT (spring-forward gap) and some
+  AMBIGUOUS (the repeated fall-back hour); `from_zone` must resolve them by a
+  documented, selectable policy (Temporal's earlier/later/reject), never by a
+  silent guess. Serving story: rule + zone in the DB → occurrences computed
+  civil → `from_zone` per occurrence (each with its own offset, which is what
+  makes DST correct) → UTC on the wire → `to_zone` per user at render.
 - **Business-hours arithmetic** ("respond within 4 business hours") — wants
   `cal.hours` interval math; natural v2 on top of §5+§6.
 - **Multi-resource scheduling** (rooms, staff) — application logic over

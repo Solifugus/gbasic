@@ -30,6 +30,15 @@ program main(args)
         print "pay:   " + p
     end for
 
+    ' Standups Monday, Wednesday and Friday: when: WITHOUT nth means EVERY
+    ' matching day in the period, not the nth one.
+    mon17 (date)= "2026-08-17"
+    standup = { every: "week", when: { weekday: ["monday", "wednesday", "friday"] }, at: "9:15" }
+    print ""
+    for each s in dates.series(standup, { from: mon17, count: 5 }, cal)
+        print "standup: " + s
+    end for
+
     ' Month-end billing: multiplicative stepping means Jan 31 -> Feb 28 ->
     ' MAR 31 -- clamping applies per step, and never compounds.
     jan31 (date)= "2026-01-31"

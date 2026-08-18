@@ -733,6 +733,24 @@ library dates
         error "dates.series: every must be a duration or one of day, week, month, quarter, year, business day"
     end function
 
+    ' Every candidate day inside sub's scope around the anchor, in order.
+    ' This is what `when:` WITHOUT nth: means in a series: not "the nth such
+    ' day each period" but "EVERY such day" -- Mon/Wed/Fri standups, all
+    ' business days of the month, the 1st and 15th. (RRULE calls this BYDAY
+    ' with no BYSETPOS.)
+    function _candidates_in(sub, anchor, cal)
+        sc = _scope(anchor, sub.within)
+        found = []
+        cur = sc.first
+        while cur <= sc.last
+            if _candidate(cur, sub, cal) then
+                append(found, cur)
+            end if
+            cur = cur + 1 day
+        end while
+        return found
+    end function
+
     function _period(unit, k)
         if unit = "week" then
             return (7 days) * k
@@ -779,25 +797,32 @@ library dates
                 if has_through and anchor > stop_at then
                     return out
                 end if
-                d = select(sub, anchor, cal)
-                if not is_unknown(d) then
-                    dd (day)= d
-                    if dd >= start then
-                        emit = true
-                        if has_through and dd > stop_at then
-                            return out
-                        end if
-                        if _excepted(dd, spec) then
-                            emit = false               ' a gap, not a reschedule
-                        end if
-                        if emit then
-                            append(out, _finish(dd, spec, cal))
-                            if want > 0 and count(out) >= want then
+                if has(sub, "nth") then
+                    picked = [select(sub, anchor, cal)]
+                else
+                    ' No nth: EVERY candidate in the period, in order.
+                    picked = _candidates_in(sub, anchor, cal)
+                end if
+                for each d in picked
+                    if not is_unknown(d) then
+                        dd (day)= d
+                        if dd >= start then
+                            emit = true
+                            if has_through and dd > stop_at then
                                 return out
+                            end if
+                            if _excepted(dd, spec) then
+                                emit = false           ' a gap, not a reschedule
+                            end if
+                            if emit then
+                                append(out, _finish(dd, spec, cal))
+                                if want > 0 and count(out) >= want then
+                                    return out
+                                end if
                             end if
                         end if
                     end if
-                end if
+                end for
                 k = k + 1
             end while
             return out

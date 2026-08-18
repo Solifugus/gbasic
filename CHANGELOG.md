@@ -129,6 +129,17 @@ order, one that misses the day end moves **whole** to the next day, and one
 that fits nowhere is reported in `unplaced:` rather than dropped. With this,
 every planned v1 layer of the datetime redesign is built.
 
+### Recurrence extension
+
+`when:` without `nth:` in a series emits **every** matching day in the period
+— `{ every: "week", when: { weekday: ["monday","wednesday","friday"] } }` is
+the Mon/Wed/Fri standup as one rule. This closes the main expressiveness gap
+against iCalendar RRULE's `BYDAY` lists; gBASIC's `nth`-over-candidates
+already covered `BYSETPOS`. The timezone *position* is now recorded in the
+design doc's §9: UTC for the timeline, civil time for the calendar, zone
+names at the edges — intentions stored as rule + zone, never as future UTC
+instants.
+
 ### Documentation (datetime)
 
 `docs/datetime_cookbook.md` — 10 recipes covering the whole datetime surface

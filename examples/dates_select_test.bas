@@ -98,6 +98,24 @@ program main(args)
     x = check("no cumulative drift   ", string(ends[2]), "2026-03-31")
     x = check("clamps where it must  ", string(ends[1]), "2026-02-28")
 
+    ' when: WITHOUT nth emits EVERY candidate in the period -- the Mon/Wed/Fri
+    ' standup. RRULE's FREQ=WEEKLY;BYDAY=MO,WE,FR, without the grammar.
+    standup = { every: "week", when: { weekday: ["monday", "wednesday", "friday"] } }
+    stand = dates.series(standup, { from: aug, count: 6 }, cal)
+    x = check("MWF: six standups     ", count(stand), 6)
+    x = check("MWF starts Monday     ", string(stand[0]), "2026-08-17")
+    x = check("MWF wraps to next week", string(stand[3]), "2026-08-24")
+    mwf_ok = true
+    for each sd in stand
+        if sd.weekday != 1 and sd.weekday != 3 and sd.weekday != 5 then
+            mwf_ok = false
+        end if
+        if not dates.matches(sd, { weekday: ["monday", "wednesday", "friday"] }, cal) then
+            mwf_ok = false
+        end if
+    end for
+    x = check("MWF all match rule    ", mwf_ok, true)
+
     ' Business-day stepping over a holiday and a weekend.
     wed23 (date)= "2026-12-23"
     run = dates.series({ every: "business day" }, { from: wed23, count: 3 }, hcal)
