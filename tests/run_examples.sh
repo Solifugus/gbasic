@@ -99,6 +99,7 @@ examples=(
     datetime_lens_operator_test.bas
     datetime_modifier_test.bas
     dates_lib_test.bas
+    dates_calendar_test.bas
     keyword_stability_test.bas
     duration_test.gb
     now_test.bas

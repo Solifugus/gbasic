@@ -1,0 +1,25 @@
+ok Monday is business    
+ok Saturday is not       
+ok holiday normalised    
+ok next skips hol+wkend  
+ok previous does too     
+ok Fri + 1bd = Mon       
+ok Mon + 5bd = next Mon  
+ok Mon - 1bd = Fri       
+ok +0 stays put          
+ok Mon..Fri = 4          
+ok across weekend = 5    
+ok signed                
+ok same day = 0          
+ok merge law over 14 days
+ok merged open           
+ok merged close          
+ok first mutual day      
+ok mutual works for Alice
+ok mutual works for Bob  
+ok Jan31->Feb28 months   
+ok consistency with +    
+ok age in years          
+ok age in months         
+ok days                  
+ok signed months         

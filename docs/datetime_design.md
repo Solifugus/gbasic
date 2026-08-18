@@ -1,7 +1,7 @@
 # Dates, times, durations, and schedules — Design
 
-Status: **§3 (dot extraction) and §4 (the arithmetic floor) IMPLEMENTED
-2026-08-17** — §3 behind `examples/datetime_fields_test.bas` (31 self-checks)
+Status: **§3 (dot extraction), §4 (the arithmetic floor), and §5 (business
+calendars, `dates.merge`, `dates.between`) IMPLEMENTED 2026-08-17** — §3 behind `examples/datetime_fields_test.bas` (31 self-checks)
 with three pinned negatives; §4 — accountant's
 month rule, datetime subtraction, duration algebra, and the comparison respec,
 behind `examples/datetime_arithmetic_test.bas` (36 self-checks, proven red
@@ -150,7 +150,7 @@ months). The rules:
   currently *also* true for 31 days, which is the tell that today's answer is
   noise).
 
-## 5. Business calendars: data, not configuration
+## 5. Business calendars: data, not configuration — IMPLEMENTED 2026-08-17
 
 A calendar is an ordinary record the caller builds and passes — two teams can
 hold different calendars in one program, and holidays are data you can load
@@ -160,14 +160,23 @@ from a file or a database:
 cal = {
     weekend:  ["saturday", "sunday"],
     holidays: [ h1, h2, h3 ],          ' day-precision datetimes
-    hours:    { start: "9:00", end: "17:00" }   ' used by schedule.bas (§8)
+    hours:    { open: "9:00", close: "17:00" }  ' used by schedule.bas (§8)
 }
 ```
 
-Core surface (stdlib `dates.bas`, all taking `cal`; when omitted, the default
-is Sat/Sun weekend and no holidays):
+Hours are `open`/`close`, **not** `start`/`end` — changed at implementation
+time: `end` is a keyword that can be a record-literal key but cannot follow a
+dot, so `cal.hours.end` would be a parse error (the same trap consolidate.bas
+hit with `as`; see DOGFOOD 2026-08-15).
+
+gBASIC functions have fixed arity, so the "default calendar" lives in the
+constructor rather than an optional parameter — `dates.calendar({})` is
+Sat/Sun weekend with no holidays, and the constructor normalises supplied
+holidays to day precision once, so membership never hits the §2 precision
+rule. Core surface (stdlib `dates.bas`, all taking `cal`):
 
 ```basic
+cal = dates.calendar(spec)
 dates.is_business_day(d, cal)
 dates.next_business_day(d, cal)          ' strictly after d
 dates.previous_business_day(d, cal)
@@ -192,7 +201,7 @@ constraints* — and the merged result composes with every verb already designed
 
 ```basic
 both = dates.merge([cal_alice, cal_bob])
-' weekend: union · holidays: union · hours: latest start, earliest end
+' weekend: union · holidays: union · hours: latest open, earliest close
 day = dates.next_business_day(d, both)          ' first mutual working day
 slots = schedule.slots(day, spec, both)         ' mutual free slots that day
 ```

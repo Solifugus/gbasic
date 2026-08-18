@@ -89,6 +89,22 @@ their stored components and `total_seconds`, which is refused for
 month-bearing durations. Previously there was no way to get 2026 out of a
 datetime as a number short of slicing its string.
 
+### Business calendars (docs/datetime_design.md §5, `stdlib/dates.bas`)
+
+Calendars are data — `dates.calendar({ weekend:, holidays:, hours: })`, passed
+explicitly to `is_business_day`, `next`/`previous_business_day`,
+`add_business_days`, and `business_days_between` (counted over `(a, b]`,
+signed, convention stated because half-open intervals are where calendar bugs
+live). Holidays are normalised to day precision at construction, so a holiday
+supplied as a full timestamp still blocks the day. `dates.merge(cals)` unions
+constraints — weekend ∪, holidays ∪, hours intersected — with the tested law
+`is_business_day(d, merge([a,b])) = is_business_day(d,a) and
+is_business_day(d,b)`, which is why finding mutual meeting days needs no new
+search machinery. `dates.between(a, b, "days"|"months"|"years")` answers the
+calendar difference, consistent with clamping by construction (Jan 31 → Feb 28
+is 1 month, exactly as Jan 31 + 1 month is Feb 28). An empty calendar makes
+lookups fail fast rather than hang.
+
 ### Platform
 
 - `--tokens`, `--ast`, `--add-loads`, `--json-diagnostics`, `--line-buffered`.
