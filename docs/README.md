@@ -67,6 +67,7 @@ Task-oriented, with runnable examples.
 | [llm_design.md](llm_design.md) | Shipped | `stdlib/llm.bas` — chat completion over `webclient`. |
 | [gui_design.md](gui_design.md) | Partial | The GTK 3 `gui` module — an experimental proof of concept. Prefer `gi` for new work. |
 | [chart_design.md](chart_design.md) | **Proposal** | A charting library. **Nothing is built.** |
+| [datetime_design.md](datetime_design.md) | **Proposal** | The datetime/duration redesign: precision-aware datetimes, accountant's month arithmetic, business calendars as data, spec-record selectors (`dates.select`/`series`/`matches`), and `schedule.bas`. **Nothing is built**; supersedes the current (partly broken) duration comparison when it lands. |
 
 ## Statistics
 

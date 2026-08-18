@@ -1,0 +1,349 @@
+# Dates, times, durations, and schedules — Design
+
+Status: **proposal; nothing built.** Agreed in outline with Matthew 2026-08-17
+(dot extraction, accountant's month arithmetic, spec-record selectors, business
+calendars as data); the open questions are listed in §10 and nothing below is
+implemented until this line says so. Backward compatibility MAY be broken — the
+current behaviour this replaces is partly wrong (see §1), so compatibility with
+it would mean compatibility with bugs.
+
+The ambition, stated by the project owner: **no programming language does
+calendar-aware scheduling well, and gBASIC should be the first.** The target
+user is the person planning a convention, a quarterly meeting schedule, a
+physician's appointment book, a payroll run — business-calendar work, which is
+gBASIC's home ground.
+
+---
+
+## 1. Why a redesign and not a patch
+
+Measured against the current binary (2026-08-17):
+
+| Behaviour | Today | Verdict |
+|---|---|---|
+| `Jan 31 + 1 month` | `Mar 3` | **Wrong.** Adds "days in starting month". |
+| `(90 minutes) > (1 hour)` | `false` | **Broken.** Ordering returns false in *both* directions, always. |
+| `(1 month) = (30 days)` and `= (31 days)` | both `true` | **Incoherent.** Equality cannot be true for both. |
+| `datetime − datetime` | raises | Missing. |
+| `duration + duration`, `duration × n` | raises | Missing. |
+| `d.year` | raises | Missing — no component extraction at all. |
+| Day-precision `2026-12-25` = `2026-12-25 00:00:00` | `false` | Defensible, but it silently breaks holiday-membership checks (§5). |
+
+Duration comparison is unreliable in every direction, and month arithmetic is
+wrong exactly at month-end — the case business code cares about. That is the
+ground floor; everything above it (selectors, series, layout) is new.
+
+## 2. The model: one datetime kind, carrying its precision
+
+**Kept, and made load-bearing.** A gBASIC datetime is a calendar value at a
+declared precision: `2026` (year), `2026-03` (month), `2026-03-15` (day),
+`… 09:30` (minute), `… 09:30:45` (second). One kind; the precision decides how
+it renders, and truncation moves between precisions:
+
+```basic
+d (date)= "2026-03-15 09:30:45"
+m (month)= d          ' 2026-03  — still a datetime, at month precision
+```
+
+This replaces the type zoo other languages need (Java's `Year`/`YearMonth`/
+`LocalDate`/`LocalDateTime`) with one kind and a lens. It is the most
+distinctive thing in the design and the redesign builds on it:
+
+- **Lenses truncate** (produce a coarser datetime).
+- **Dot fields extract** (produce numbers) — §3.
+- **Equality requires equal precision and equal value.** No cross-precision
+  coercion: "equal at the coarser precision" is not transitive (a day equals two
+  different second-precision moments that do not equal each other), and a
+  non-transitive `=` poisons `contains`/`find`/`consider`. Cross-precision
+  comparison is done by truncating explicitly, and the calendar functions do it
+  internally so users rarely need to (§5).
+
+A **`time`** kind (time of day, no date) is added — §6. A **date literal is
+deliberately NOT added**: `d = 2026-03-15` already parses as arithmetic
+(`2026 − 03 − 15` = `2008`), so the literal would change the meaning of an
+existing expression, and the modifier form `(date)=` is established. (The
+arithmetic reading is a silent trap worth an UNLEARN entry regardless.)
+
+## 3. Component extraction: dot fields
+
+Numbers out of a datetime, no new global names:
+
+```basic
+d.year        ' 2026
+d.month       ' 3          (1-based)
+d.day         ' 15
+d.hour  d.minute  d.second
+d.weekday     ' 1..7, Monday = 1 (ISO)
+d.dayname     ' "Sunday"
+d.day_of_year ' 74
+d.precision   ' "day" — which fields below this are meaningful
+```
+
+Reading a field finer than the value's precision yields `unknown` (a month
+value has no `.day`), consistent with unknown-as-absent-information elsewhere.
+
+Durations get components too: `dur.years dur.months dur.weeks dur.days
+dur.hours dur.minutes dur.seconds` (as stored), plus `dur.total_seconds`, which
+**raises if the duration carries months or years** — those have no fixed length,
+and a plausible wrong number is worse than a refusal.
+
+## 4. Arithmetic, respecified
+
+### 4.1 datetime + duration — the accountant's rule
+
+Calendar parts first, then exact parts, with **clamping**:
+
+1. add years, then months, to the year/month fields;
+2. **clamp the day** to the last valid day of the resulting month;
+3. then add weeks/days/hours/minutes/seconds as exact elapsed time.
+
+```basic
+Jan 31 + 1 month           ' Feb 28  (clamped)
+Jan 31 + 1 month + 1 day   ' Mar 1   (clamp, THEN the exact day)
+Feb 29 + 1 year            ' Feb 28
+Mar 31 + 1 month           ' Apr 30
+```
+
+The order is normative and documented; it is the one Java, dateutil and JS
+Temporal converged on independently.
+
+### 4.2 Duration algebra
+
+Durations become **signed** and closed under the obvious operations:
+
+```basic
+(1 hour) + (30 minutes)    ' 1 hour 30 minutes
+(2 hours) - (30 minutes)   ' 1 hour 30 minutes
+(45 minutes) * 4           ' 3 hours
+(1 day) / 2                ' 12 hours
+b - a                      ' datetime − datetime → exact duration
+```
+
+`datetime − datetime` yields an **exact** duration (days/hours/minutes/
+seconds), never months — "how many months apart" is a calendar question with a
+calendar answer, served by `dates.between(a, b, "months")` in stdlib (which is
+also how ages are computed).
+
+Scaling a month/year-bearing duration by a non-integer raises (`2.5 months` has
+no meaning); scaling exact parts is fine.
+
+### 4.3 Duration comparison — exact vs calendar, never blurred
+
+A duration has an exact part (weeks/days/hours/minutes/seconds — exact because
+gBASIC has no timezone, so a day is 86 400 s) and a calendar part (years,
+months). The rules:
+
+- **Ordering** (`<` `>` `<=` `>=`): both operands must be purely exact;
+  compared by total seconds. If either carries months/years → **raise**:
+  `a month has no fixed length; compare exact durations, or use dates.between`.
+  `25 hours > 1 day` is true; `1 month > 30 days` is a refusal, not a guess.
+- **Equality**: compare the pair (total months, total exact seconds), with
+  canonicalisation `1 year = 12 months`, `1 week = 7 days`. So
+  `90 minutes = 1 hour 30 minutes` (true), `1 year = 12 months` (true),
+  `1 month = 30 days` (**false** — breaking change, currently true, and
+  currently *also* true for 31 days, which is the tell that today's answer is
+  noise).
+
+## 5. Business calendars: data, not configuration
+
+A calendar is an ordinary record the caller builds and passes — two teams can
+hold different calendars in one program, and holidays are data you can load
+from a file or a database:
+
+```basic
+cal = {
+    weekend:  ["saturday", "sunday"],
+    holidays: [ h1, h2, h3 ],          ' day-precision datetimes
+    hours:    { start: 9:00, end: 17:00 }   ' used by schedule.bas (§8)
+}
+```
+
+Core surface (stdlib `dates.bas`, all taking `cal`; when omitted, the default
+is Sat/Sun weekend and no holidays):
+
+```basic
+dates.is_business_day(d, cal)
+dates.next_business_day(d, cal)          ' strictly after d
+dates.previous_business_day(d, cal)
+dates.add_business_days(d, n, cal)       ' n may be negative
+dates.business_days_between(a, b, cal)
+```
+
+Membership against `holidays` is computed at **day precision internally** —
+the library truncates before comparing, so the §2 precision rule never bites
+the user here. (Manually, the idiom is `x (day)= session_start` then
+`contains(cal.holidays, x)`.)
+
+**Roll conventions**, because "lands on a weekend" is the normal case, not the
+edge: `roll: "forward"` (next business day), `"backward"`, or `"modified"`
+(forward unless that crosses into the next month, then backward — the finance
+standard). Selectors and series accept `roll:`; payment-date code needs it on
+day one.
+
+Deferred, recorded so they are decisions rather than gaps: observed-holiday
+shifting (Christmas-on-Saturday → Friday off), half days, per-weekday hours.
+
+## 6. Time of day
+
+New kind `time`: a wall-clock time with no date. Construction: `t (time)=
+"9:00"` — and, **pending the §10 decision**, a literal `9:00` / `14:30` /
+`9:05:30`, which the scheduling records below want badly (`start: 9:00` vs
+`start: 9 hours`). Lexically `DIGITS:DIGITS[:DIGITS]` collides with nothing
+current: record-literal colons follow identifiers, labels follow identifiers,
+and gBASIC has no slices and no ternary.
+
+`dates.at(day, t)` combines a day-precision datetime with a time into a full
+datetime. `d.time` extracts the time of day from a datetime.
+
+## 7. One vocabulary, three verbs
+
+Everything Matthew listed — third Thursday, first Tuesday after the 15th, last
+Wednesday of the month, first business day before a deadline — is one question
+family: *which day satisfies these constraints, relative to this anchor?* The
+design gives it **one spec vocabulary** (a record, following `grid.extract` and
+`consolidate.merge`) **shared by three verbs**:
+
+```basic
+dates.matches(d, spec, cal)          ' boolean: does d satisfy spec?
+dates.select(spec, anchor, cal)      ' the ONE day: datetime, or unknown
+dates.series(spec, bounds, cal)      ' ALL of them: array of datetimes
+```
+
+Spec fields (v1, deliberately small):
+
+| Field | Meaning |
+|---|---|
+| `weekday:` | `"thursday"`, or a list |
+| `nth:` | 1, 2, 3 … from the start; −1, −2 from the end; `"last"` = −1 |
+| `day:` | day of month (with `roll:` for short months: `day: 31, roll: "backward"`) |
+| `kind:` | `"business"` — constrains to business days under `cal` |
+| `within:` | `"month"` \| `"quarter"` \| `"year"` \| `"week"` — scope for `nth`, taken from the anchor |
+| `after:` / `on_or_after:` / `before:` / `on_or_before:` | anchor constraints — **strictness is in the name**, because the `(next friday)`-from-a-Friday trap must not be reproduced |
+| `at:` | a time of day to stamp on the result |
+| `every:` | series only — `"day"`, `"week"`, `"month"`, `"quarter"`, `"year"`, or a duration (`2 weeks` for payroll) |
+| `except:` | days to skip (a list, or `cal.holidays`) |
+| `roll:` | what to do when the computed day is not a business day |
+
+Worked, against Matthew's own scenarios:
+
+```basic
+' third Thursday of the month containing d
+dates.select({ nth: 3, weekday: "thursday", within: "month" }, d)
+
+' first Tuesday after the 15th
+dates.select({ nth: 1, weekday: "tuesday", after: { day: 15 } }, d)
+
+' last Wednesday of the month
+dates.select({ nth: "last", weekday: "wednesday", within: "month" }, d)
+
+' first available business day before a deadline
+dates.select({ nth: 1, kind: "business", before: deadline }, d, cal)
+
+' board meets every third Thursday at 14:00, all year
+meetings = dates.series(
+    { every: "month", on: { nth: 3, weekday: "thursday" }, at: 14:00 },
+    { from: jan1, to: dec31 }, cal)
+
+' payroll: every 2 weeks from an anchor payday, rolled OFF weekends/holidays
+paydays = dates.series(
+    { every: 2 weeks, roll: "backward" },
+    { from: first_payday, count: 26 }, cal)
+```
+
+`select` returns **`unknown`** when nothing satisfies the spec (a fifth Tuesday,
+a business day before Monday in a holiday week) — the established gBASIC answer
+for absent information, and kinder than raising in scheduling code that probes.
+
+Why records and not a string mini-language ("2nd tue after 15th"): no grammar
+to learn or misparse, `unknown field` errors instead of parse errors,
+composable (a spec can be built up in code), and it is the house pattern.
+iCalendar's RRULE is the cautionary tale — a string vocabulary that grew until
+nobody could write it unaided. The lenses (`(next friday)`, `(end of month)`)
+stay as sugar for the parameterless cases and gain nothing new.
+
+## 8. Scheduling: `stdlib/schedule.bas`
+
+Its own library (loading `dates`), because packing events is not date
+arithmetic. Two entry points:
+
+**`schedule.slots(day, spec, cal)`** — cut a day into appointment slots.
+Physician scenario directly:
+
+```basic
+slots = schedule.slots(day, { length: 20 minutes, gap: 10 minutes }, cal)
+' -> [ { starts:, ends: }, ... ] within cal.hours, skipping nothing booked yet;
+'    booking state is the application's, not the library's
+```
+
+**`schedule.layout(plan, days, cal)`** — pack ordered sessions into business
+days. The convention scenario:
+
+```basic
+plan = {
+    gap:    15 minutes,
+    breaks: [ { at: 12:00, length: 1 hour, name: "Lunch" } ],
+    sessions: [
+        { name: "Opening keynote", length: 90 minutes },
+        { name: "Workshop A",      length: 2 hours },
+        { name: "Panel",           length: 45 minutes },
+        ...
+    ]
+}
+sched = schedule.layout(plan, dates.series({ every: "business day" },
+                                           { from: start, count: 3 }, cal), cal)
+' -> [ { name:, starts:, ends:, day: }, ... ]
+```
+
+Layout rules, decided rather than discovered: sessions keep their order; a
+session that does not fit before day end **moves whole** to the next day (never
+split silently); anything that fits nowhere is reported in a `unplaced:` list
+rather than dropped. Breaks are immovable; gaps are not inserted around them
+twice.
+
+## 9. What this deliberately does not do (v1)
+
+- **Timezones.** Everything is naive local time. A decision, not a drift:
+  retrofitting zones is painful, but the target domain (one organisation's
+  calendar) mostly lives in one zone, and zones would double the design. The
+  door left open: the datetime representation must not preclude a zone field
+  later.
+- **Business-hours arithmetic** ("respond within 4 business hours") — wants
+  `cal.hours` interval math; natural v2 on top of §5+§6.
+- **Multi-resource scheduling** (rooms, staff) — application logic over
+  `slots`; revisit if a pattern hardens.
+- **Leap seconds, non-Gregorian calendars.** Out.
+
+## 10. Open questions for Matthew
+
+1. **The `9:00` time literal** — add it, or keep only `(time)= "9:00"`? The
+   scheduling records read far better with it, and no grammar conflict was
+   found; the cost is one more literal form in the lexer.
+2. **Calendar: separate argument or spec field?** Above it is a separate
+   argument (specs stay reusable across calendars); the alternative is
+   `calendar:` inside the spec (one record travels alone). Pick one, everywhere.
+3. **Signed durations** — `a - b` when b > a: signed duration (proposed), or
+   raise and force `abs`?
+4. **`d.weekday` numbering** — ISO Monday=1 proposed; Sunday=1 is the US
+   convention some spreadsheet users expect. One must win.
+
+## 11. Test strategy (before any code)
+
+Fixture-first, like messy.xlsx: each scenario is an example whose golden is
+checkable by arithmetic, not transcript:
+
+- **convention layout** — total scheduled time must equal the sum of session
+  lengths; no session crosses a break, a day end, or a holiday; order preserved.
+- **quarterly meetings** — every generated date must satisfy
+  `dates.matches`, land on a business day, and there must be exactly N.
+- **payroll** — 26 paydays, none on a weekend/holiday, gaps of exactly 14 days
+  except where rolled — and the roll never moves a payday across a month
+  boundary when `modified` is chosen.
+- **physician slots** — slot count × length + gaps fills `cal.hours` exactly;
+  no slot overlaps a break.
+- **month-end table** — the §4.1 examples pinned exactly; plus the round-trip
+  property `(d + 1 month) - 1 month = d` documented as NOT holding at month-end
+  (clamping is lossy), so nobody "fixes" it later.
+- **duration law checks** — ordering is a total order on exact durations;
+  equality is transitive (property-tested over generated values, the
+  PLAT-NUMFMT pattern); the removed behaviours (`1 month = 30 days`) pinned as
+  negatives.
