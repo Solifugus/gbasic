@@ -58,8 +58,8 @@ distinctive thing in the design and the redesign builds on it:
   comparison is done by truncating explicitly, and the calendar functions do it
   internally so users rarely need to (§5).
 
-A **`time`** kind (time of day, no date) is added — §6. A **date literal is
-deliberately NOT added**: `d = 2026-03-15` already parses as arithmetic
+Time of day needs **no new kind**: it is an exact duration since midnight — §6.
+A **date literal is deliberately NOT added**: `d = 2026-03-15` already parses as arithmetic
 (`2026 − 03 − 15` = `2008`), so the literal would change the meaning of an
 existing expression, and the modifier form `(date)=` is established. (The
 arithmetic reading is a silent trap worth an UNLEARN entry regardless.)
@@ -154,7 +154,7 @@ from a file or a database:
 cal = {
     weekend:  ["saturday", "sunday"],
     holidays: [ h1, h2, h3 ],          ' day-precision datetimes
-    hours:    { start: 9:00, end: 17:00 }   ' used by schedule.bas (§8)
+    hours:    { start: "9:00", end: "17:00" }   ' used by schedule.bas (§8)
 }
 ```
 
@@ -183,17 +183,36 @@ day one.
 Deferred, recorded so they are decisions rather than gaps: observed-holiday
 shifting (Christmas-on-Saturday → Friday off), half days, per-weekday hours.
 
-## 6. Time of day
+## 6. Time of day — an exact duration, not a new kind
 
-New kind `time`: a wall-clock time with no date. Construction: `t (time)=
-"9:00"` — and, **pending the §10 decision**, a literal `9:00` / `14:30` /
-`9:05:30`, which the scheduling records below want badly (`start: 9:00` vs
-`start: 9 hours`). Lexically `DIGITS:DIGITS[:DIGITS]` collides with nothing
-current: record-literal colons follow identifiers, labels follow identifiers,
-and gBASIC has no slices and no ternary.
+**Resolved 2026-08-17 (Matthew): no `9:00` literal, and no `time` kind.**
 
-`dates.at(day, t)` combines a day-precision datetime with a time into a full
-datetime. `d.time` extracts the time of day from a datetime.
+The literal fails the bigger picture: dates cannot be literals (`2026-12-25`
+already parses as `2026 − 12 − 25`), so bare times beside quoted dates would be
+incoherent, and the combined `2026-12-25 09:00` could not exist either way. It
+does not need to: `(date)= "2026-12-25 09:30"` already parses, at minute
+precision — the string form accepts every ISO prefix (`"2026"`, `"2026-03"`,
+`"2026-03-15"`, `"… 09:30"`, `"… 09:30:45"`), measured.
+
+A dedicated `time` kind also fails the earn-it test, because time-of-day
+already has a faithful representation: **an exact duration since midnight**.
+`9 hours 30 minutes` is 09:30, arithmetically and honestly — `day + 9 hours
+30 minutes` works today, durations order and compare (§4.3), and they sit in
+records. So:
+
+- `d.time` → exact duration since midnight (`9 hours 30 minutes`).
+- `dates.at(day, t)` → full datetime; `t` may be a duration **or** a string
+  (`"9:30"`), which the library parses.
+- In spec and calendar records, times are **strings** — `at: "14:00"`,
+  `hours: { start: "9:00", end: "17:00" }` — exactly as weekdays already are
+  (`weekday: "thursday"` is a string the library interprets). Consistent,
+  and the records stay serialisable data.
+
+One syntax explicitly rejected: `{ start(time): "9:00" }`. The `name (word):`
+slot in a record literal is **owned by PBI** — it errors today with `unknown
+field policy (expected copy, link, reset, or exclude)`, pinned by
+`negative_pbi_unknown_policy` — and opening that closed set to general
+modifiers would put two unrelated mechanisms in one grammar position.
 
 ## 7. One vocabulary, three verbs
 
@@ -219,7 +238,7 @@ Spec fields (v1, deliberately small):
 | `kind:` | `"business"` — constrains to business days under `cal` |
 | `within:` | `"month"` \| `"quarter"` \| `"year"` \| `"week"` — scope for `nth`, taken from the anchor |
 | `after:` / `on_or_after:` / `before:` / `on_or_before:` | anchor constraints — **strictness is in the name**, because the `(next friday)`-from-a-Friday trap must not be reproduced |
-| `at:` | a time of day to stamp on the result |
+| `at:` | a time of day to stamp on the result — a string (`"14:00"`) or an exact duration |
 | `every:` | series only — `"day"`, `"week"`, `"month"`, `"quarter"`, `"year"`, or a duration (`2 weeks` for payroll) |
 | `except:` | days to skip (a list, or `cal.holidays`) |
 | `roll:` | what to do when the computed day is not a business day |
@@ -241,7 +260,7 @@ dates.select({ nth: 1, kind: "business", before: deadline }, d, cal)
 
 ' board meets every third Thursday at 14:00, all year
 meetings = dates.series(
-    { every: "month", on: { nth: 3, weekday: "thursday" }, at: 14:00 },
+    { every: "month", on: { nth: 3, weekday: "thursday" }, at: "14:00" },
     { from: jan1, to: dec31 }, cal)
 
 ' payroll: every 2 weeks from an anchor payday, rolled OFF weekends/holidays
@@ -258,8 +277,21 @@ Why records and not a string mini-language ("2nd tue after 15th"): no grammar
 to learn or misparse, `unknown field` errors instead of parse errors,
 composable (a spec can be built up in code), and it is the house pattern.
 iCalendar's RRULE is the cautionary tale — a string vocabulary that grew until
-nobody could write it unaided. The lenses (`(next friday)`, `(end of month)`)
-stay as sugar for the parameterless cases and gain nothing new.
+nobody could write it unaided.
+
+Why records and not datejs-style chaining (`Date.today().next().friday()`),
+considered 2026-08-17: **a chain is code; a spec is data.** The target systems
+— physician scheduling, recurring meetings, company calendars — keep their
+recurrence rules in a database or a config file, build them from code or a UI,
+and inspect them when something goes wrong. A record does all of that natively
+(`encode` it, store it, `send` it to an actor, print it); a chain exists only
+in source, written in advance. A half-built chain (`.next()` of nothing) is a
+runtime state with no meaning, where a bad spec fails as `unknown field` with
+the whole record printable. And one vocabulary serves all three verbs, where a
+fluent surface would be rebuilt per verb. Chaining's real virtue — readability
+for one-offs — is what the lenses already provide: `(next friday)=` and
+`(end of month)=` are the fluent form, gBASIC-flavoured, and stay as sugar over
+this engine.
 
 ## 8. Scheduling: `stdlib/schedule.bas`
 
@@ -281,7 +313,7 @@ days. The convention scenario:
 ```basic
 plan = {
     gap:    15 minutes,
-    breaks: [ { at: 12:00, length: 1 hour, name: "Lunch" } ],
+    breaks: [ { at: "12:00", length: 1 hour, name: "Lunch" } ],
     sessions: [
         { name: "Opening keynote", length: 90 minutes },
         { name: "Workshop A",      length: 2 hours },
@@ -315,9 +347,9 @@ twice.
 
 ## 10. Open questions for Matthew
 
-1. **The `9:00` time literal** — add it, or keep only `(time)= "9:00"`? The
-   scheduling records read far better with it, and no grammar conflict was
-   found; the cost is one more literal form in the lexer.
+1. ~~The `9:00` time literal~~ — **resolved, rejected** (Matthew,
+   2026-08-17): dates cannot be literals, so a time-only literal is
+   incoherent in the bigger picture. See §6 for the resolution.
 2. **Calendar: separate argument or spec field?** Above it is a separate
    argument (specs stay reusable across calendars); the alternative is
    `calendar:` inside the spec (one record travels alone). Pick one, everywhere.
