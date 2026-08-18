@@ -129,6 +129,16 @@ order, one that misses the day end moves **whole** to the next day, and one
 that fits nowhere is reported in `unplaced:` rather than dropped. With this,
 every planned v1 layer of the datetime redesign is built.
 
+### Documentation (datetime)
+
+`docs/datetime_cookbook.md` — 10 recipes covering the whole datetime surface
+(precision, extraction, duration algebra, deadlines and ages, business
+calendars, date expressions, recurring schedules, mutual calendars, convention
+layout, appointment slots), enforced by `tests/run_datetime_cookbook.sh` with
+the same cannot-drift harness as the xlsx cookbook (one shared sync tool). The
+tutorial and reference gained the arithmetic rules and the calendar/selector
+surface, and the keyword-after-dot trap is recorded in UNLEARN.
+
 ### Platform
 
 - `--tokens`, `--ast`, `--add-loads`, `--json-diagnostics`, `--line-buffered`.

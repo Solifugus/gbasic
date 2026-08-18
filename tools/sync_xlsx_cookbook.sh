@@ -14,8 +14,10 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-DOC=docs/xlsx_cookbook.md
-DIR=examples/xlsx_cookbook
+# Parameterised so other cookbooks can share the harness (the datetime
+# cookbook does, via tools/sync_datetime_cookbook.sh). No args = xlsx.
+DOC="${1:-docs/xlsx_cookbook.md}"
+DIR="${2:-examples/xlsx_cookbook}"
 
 [ -f "$DOC" ] || { echo "sync_xlsx_cookbook: $DOC not found" >&2; exit 1; }
 

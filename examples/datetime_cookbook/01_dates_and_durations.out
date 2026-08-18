@@ -1,0 +1,11 @@
+year value : 2026
+month value: 2026-03
+date value : 2026-03-15
+minute prec: 2026-03-15 09:30
+
+durations  : 90 minutes / 2 days / 1 hour 20 minutes
+
+Jan 31 + 1 month  = 2026-02-28
+Jan 31 + 3 months = 2026-04-30
+Feb 29 + 1 year   = 2025-02-28
+back off month-end: 2026-02-27

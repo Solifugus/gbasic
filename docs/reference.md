@@ -2027,6 +2027,31 @@ C/JavaScript convention, Sunday=1 is Excel's; gBASIC follows ISO.
 `dur.total_seconds` returns the whole duration in seconds — raising if the
 duration carries months or years, which have no fixed length.
 
+**Datetime arithmetic follows the accountant's rule.** `d + duration` applies
+years and months first, **clamps the day** into the resulting month, then adds
+the exact parts as elapsed time:
+
+```basic
+jan31 (date)= "2026-01-31"
+jan31 + 1 month           ' 2026-02-28   (clamped)
+jan31 + 1 month + 1 day   ' 2026-03-01   (clamp first, THEN the day)
+```
+
+The round trip `(d + 1 month) - 1 month` does **not** hold at month-end —
+clamping is lossy by design. `a - b` between two datetimes yields a signed
+**exact** duration (days and smaller, never months); the calendar question
+"how many months apart" is `dates.between(a, b, "months")`.
+
+**Duration algebra and comparison.** Durations are signed and closed under
+`+`, `-`, `× number` and `/ number`, with canonical results
+(`(45 minutes) * 4` is `3 hours`). A duration has an exact part
+(weeks/days/hours/minutes/seconds) and a calendar part (years/months), and the
+two are never blurred: equality canonicalises within each family
+(`1 week = 7 days`, `1 year = 12 months`, but `1 month = 30 days` is
+**false**); ordering is defined only between exact durations — comparing a
+month-bearing duration with `<`/`>` raises, as does scaling its months by a
+non-integer. Refusals, not guesses: a month has no fixed length.
+
 **`epoch(datetime)`** converts a `datetime` to a number of seconds since the
 Unix epoch, and **`from_epoch(number)`** converts such a number back to a
 `datetime`. These bridge to systems that speak epoch seconds (for example JWT
@@ -2651,7 +2676,17 @@ what each is and where to read it.
 
 General-purpose:
 
-- `dates` — calendar/date-arithmetic helpers over the built-in date/time values.
+- `dates` — business calendars as data (`dates.calendar`, `is_business_day`,
+  `add_business_days`, `business_days_between` over `(a, b]`), calendar merging
+  as a union of constraints (`dates.merge`), calendar differences
+  (`dates.between`), and the date-expression verbs `matches`/`select`/`series`
+  over one spec-record vocabulary ("third Thursday of the month", "first
+  business day before a deadline", "every 2 weeks rolled off holidays").
+  Design: `docs/datetime_design.md`; worked recipes:
+  `docs/datetime_cookbook.md`.
+- `schedule` — packing events into working days: `schedule.slots` (appointment
+  grids) and `schedule.layout` (ordered sessions into business days around
+  immovable breaks, with the unplaceable reported by name). Same two documents.
 - `matrix` — minimal vector/matrix primitives (`docs/statistics_design.md` §8).
 - `frame` — a structural data-frame layer (`docs/statistics_design.md` §4).
 - `stats` — higher-level statistical compositions built on `matrix`/`frame`

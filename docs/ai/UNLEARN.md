@@ -19,18 +19,15 @@ the standing ones.
 
 ## Control flow
 
-- **There is no numeric `for`.** `for i = 1 to n` is a parse error
-  (`expecting IN`). The only loop-with-iterator is `for each`:
-
-  ```basic
-  for each x in [1, 2, 3]
-      print(x)
-  end for
-  ```
-
-  To count, use `while` with your own counter. (Older notes warn that indexing
-  in a `while` loop is O(n²); that has not been true since 2026-07-23 — see
-  Performance traps.)
+- **The counted `for` exists as of 2026-08-16, with BASIC semantics, not C's.**
+  `for i = 1 to 5 … end for`: `to` is INCLUSIVE, `step` may be negative or
+  fractional, bounds are read ONCE at entry, and afterwards the counter holds
+  the last value the body saw (3 after `1 to 3` — QBasic would say 4).
+  `for i = 5 to 1` with no step does not run; `step 0` raises. There is also a
+  post-test loop, `do … loop until c` / `loop while c` — but **no
+  `repeat … until`**, because `repeat` is a string builtin. `for each` iterates
+  arrays as before. (Older notes saying gBASIC has no numeric `for` predate
+  2026-08-16; older notes about O(n²) indexing predate 2026-07-23.)
 
 - **`goto`/`gosub` work only inside functions.** At the top level they raise.
 
@@ -312,6 +309,14 @@ day — so assume you will hit them too.
   a = 10
   print b                ' 20
   ```
+
+- **A keyword can be a record-literal KEY but cannot follow a DOT.**
+  `{ on: 1 }`, `{ to: 2 }`, `{ end: 3 }`, `{ as: 4 }` all construct fine — and
+  `r.on`, `r.to`, `r.end`, `r.as` are all PARSE errors, because dot access
+  takes a plain identifier. This has forced four renames in shipped designs
+  (`kind:` in consolidate, `open`/`close` for calendar hours, `when:` and
+  `through:` in date specs). Probe `r.yourname` before building an API on a
+  field name; dynamic access `r["on"]` works but reads worse.
 
 ## Error handling — the big one
 

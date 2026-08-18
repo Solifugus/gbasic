@@ -799,6 +799,42 @@ today(day)= now()                    # truncate to a date via the day lens
 > timestamp from a string, `(datetime)=` always yields a full second-precision
 > value, while `(date)=` infers precision from the string.)
 
+### Calendars, date expressions, and schedules
+
+Business-calendar work is a first-class concern. A calendar is **data** you
+build and pass, not global configuration:
+
+```basic
+load dates
+cal = dates.calendar({ holidays: [xmas], hours: { open: "9:00", close: "17:00" } })
+
+dates.is_business_day(d, cal)
+dates.add_business_days(d, 5, cal)
+dates.next_business_day(d, cal)
+```
+
+Date *expressions* — "third Thursday", "first Tuesday after the 15th", "first
+business day before the deadline" — are spec records shared by three verbs:
+
+```basic
+dates.select({ nth: 3, weekday: "thursday", within: "month" }, d, cal)
+dates.select({ nth: 1, kind: "business", before: deadline }, d, cal)
+dates.matches(d, rule, cal)
+board = { every: "month", when: { nth: 3, weekday: "thursday" }, at: "14:00" }
+meetings = dates.series(board, { from: jan1, through: dec31 }, cal)
+```
+
+Strictness lives in the anchor names (`after` excludes, `on_or_after`
+includes); a spec no day satisfies yields `unknown`, while a malformed spec
+raises. `dates.merge([a, b])` combines calendars as a union of constraints, so
+"a day that works for everyone" is just `next_business_day` over the merge.
+`schedule.slots` and `schedule.layout` (in `load schedule`) pack appointments
+and sessions into the working day.
+
+Every construct above is a runnable recipe in
+[`docs/datetime_cookbook.md`](datetime_cookbook.md), whose examples the test
+suite executes — start there.
+
 ## Files and locks
 
 A file reference is a typed path, created with the `(file)=` modifier:

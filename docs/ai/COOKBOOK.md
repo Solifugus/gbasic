@@ -14,8 +14,11 @@ for error handling, `ERRORS.md`.
 - **Dispatch on a value** — `consider` evaluates the subject once and runs the
   first matching `if <value> then` branch; `break` exits the consider, not an
   enclosing loop. → `examples/consider_test.bas`
-- **Loop** — `while` with `break`/`continue`. There is no numeric `for`.
-  → `examples/while_break_continue_test.bas`
+- **Loop** — counted `for i = a to b [step c]` (inclusive `to`, bounds read
+  once, counter keeps its last value), `while`, and post-test
+  `do … loop until/while` — all with `break`/`continue`. No `repeat … until`
+  (`repeat` is a builtin). → `examples/for_range_test.bas`,
+  `examples/do_loop_test.bas`, `examples/while_break_continue_test.bas`
 - **Iterate a collection** — `for each x in coll … end for`. Preferred for
   readability; indexing in a `while` loop is linear too, and has been since
   arrays became copy-on-write (cost pinned by `tests/run_arridx.sh`).
@@ -117,6 +120,30 @@ for error handling, `ERRORS.md`.
 - **Tolerate bad input** — do **not** catch with `on error resume next`;
   pre-validate and call the raising builtin only when it will succeed. See
   `ERRORS.md`. → `examples/on_error_resume_next_test.bas`
+
+## Dates, durations, calendars
+
+- **Month arithmetic clamps** — `jan31 + 1 month` is Feb 28 (accountant's
+  rule); the round trip does not hold at month-end. → `examples/datetime_arithmetic_test.bas`
+- **Extract with dot fields, truncate with lenses** — `d.year` is a number,
+  `(month)= d` is a coarser datetime; a field finer than the value's precision
+  is `unknown`, a misspelled field raises. ISO weekday, Monday=1. →
+  `examples/datetime_fields_test.bas`
+- **Durations: exact vs calendar, never blurred** — ordering month-bearing
+  durations raises; `1 month = 30 days` is false; algebra is signed and
+  canonical. → `examples/datetime_arithmetic_test.bas`
+- **Business calendars are data** — `dates.calendar(spec)`, pass `cal`
+  explicitly; `dates.merge` unions constraints for mutual availability. →
+  `examples/dates_calendar_test.bas`
+- **Date expressions** — one spec record, three verbs
+  (`matches`/`select`/`series`); miss → `unknown`, malformed → raise. NOTE the
+  keyword-after-dot renames: the sub-rule is `when:` not `on:`, bounds are
+  `{from:, through:}` not `to:`. → `examples/dates_select_test.bas`
+- **Scheduling** — `schedule.slots` / `schedule.layout`; unplaceable sessions
+  reported by name, never dropped. → `examples/schedule_test.bas`
+- Full tutorial: `docs/datetime_cookbook.md`, enforced over
+  `examples/datetime_cookbook/01_dates_and_durations.bas` and its siblings by
+  `tests/run_datetime_cookbook.sh`.
 
 ## Concurrency
 

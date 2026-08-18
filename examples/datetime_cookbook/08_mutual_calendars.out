@@ -1,0 +1,10 @@
+merged weekend : ["saturday","sunday","friday"]
+merged window  : 10:00 to 16:30
+mutual day     : 2026-12-24
+works for Alice: true
+works for Bob  : true
+
+slot day: 2026-12-23 (Wednesday)
+slot day: 2026-12-24 (Thursday)
+slot day: 2026-12-28 (Monday)
+slot day: 2026-12-29 (Tuesday)

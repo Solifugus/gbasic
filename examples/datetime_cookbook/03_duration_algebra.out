@@ -1,0 +1,15 @@
+1h + 30m        = 1 hour 30 minutes
+2h - 30m        = 1 hour 30 minutes
+45m * 4         = 3 hours
+1 day / 2       = 12 hours
+signed          = -1 hour -30 minutes
+
+90m > 1h        : true
+25h > 1 day     : true
+90m = 1h30m     : true
+1 week = 7 days : true
+1 month = 30d   : false
+
+refused: a month has no fixed length; compare exact durations or use dates.between
+total_seconds   = 5400
+refused: a month has no fixed length; total_seconds requires an exact duration
