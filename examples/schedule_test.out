@@ -1,0 +1,17 @@
+ok 5 placed              
+ok 1 unplaced            
+ok unplaced by name      
+ok opening at open       
+ok workshop bumped past lunch
+ok QA rolls to day 2     
+ok QA at day-2 open      
+ok order survives rollover
+ok closing after QA + gap
+ok every span = its length
+ok everything inside hours
+ok nothing overlaps lunch 
+ok 14 slots in the day   
+ok first at open         
+ok afternoon resumes 13:00
+ok last ends before close
+ok every slot exactly 20m

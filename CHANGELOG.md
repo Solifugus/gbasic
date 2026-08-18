@@ -120,6 +120,15 @@ Jan 31 → Feb 28 → **Mar 31**, not Feb-28-forever. The series sub-rule is
 `when:` and bounds are `{from:, through:|count:}` — `on` and `to` are keywords
 that cannot follow a dot.
 
+### Scheduling (`stdlib/schedule.bas`)
+
+`schedule.slots(day, spec, cal)` cuts a working day into appointment slots
+(the physician grid); `schedule.layout(plan, days, cal)` packs ordered
+sessions into business days around immovable breaks — sessions keep their
+order, one that misses the day end moves **whole** to the next day, and one
+that fits nowhere is reported in `unplaced:` rather than dropped. With this,
+every planned v1 layer of the datetime redesign is built.
+
 ### Platform
 
 - `--tokens`, `--ast`, `--add-loads`, `--json-diagnostics`, `--line-buffered`.

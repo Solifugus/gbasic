@@ -312,6 +312,7 @@ cases=(
     negative_dates_no_business
     negative_dates_select_no_nth
     negative_dates_series_zero
+    negative_schedule_no_hours
 )
 
 for name in "${cases[@]}"; do

@@ -15,7 +15,7 @@ Copyright 2026 Matthew C. Tedder.
 **If you are writing gBASIC programs, or embedding the interpreter, you are
 under Apache-2.0 and nothing here restricts you.** That covers the language, the
 `gbasic` binary, every C module compiled into it — including the whole xlsx
-engine — and 14 of the 24 standard libraries.
+engine — and 15 of the 25 standard libraries.
 
 **Ten standard libraries are AGPL.** If you build on those and distribute your
 work, or run it as a network service, the AGPL requires you to release your
@@ -31,7 +31,7 @@ suit you — contact matthewct@gmail.com.
   (the ZIP container, formula evaluator and recalculation engine),
   `src/modules/xml.c` and `src/modules/rowmodel.c`
 - `stdlib/`: `ari` `crypto` `datagrid` `dates` `filetree` `frame` `gtk` `gtkui`
-  `gui` `llm` `matrix` `persist` `sourceeditor` `stats`
+  `gui` `llm` `matrix` `persist` `schedule` `sourceeditor` `stats`
 
 ### AGPL-3.0-or-later
 

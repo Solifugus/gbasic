@@ -8,7 +8,7 @@ every source file declares its own licence with an SPDX identifier.
       The language, the interpreter and every C module compiled into it --
       including the xlsx engine -- and the standard libraries ari, crypto,
       datagrid, dates, filetree, frame, gtk, gtkui, gui, llm, matrix, persist,
-      sourceeditor and stats.
+      schedule, sourceeditor and stats.
 
   AGPL-3.0-or-later (see LICENSE.AGPL-3.0)
       The standard libraries consolidate, dbframe, edgar, forensics,

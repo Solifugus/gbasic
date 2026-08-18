@@ -1,6 +1,6 @@
 # Dates, times, durations, and schedules — Design
 
-Status: **§3, §4, §5 and §7 (matches/select/series) IMPLEMENTED 2026-08-17** — §3 behind `examples/datetime_fields_test.bas` (31 self-checks)
+Status: **§3, §4, §5, §7 and §8 IMPLEMENTED 2026-08-17 — every planned v1 layer is built.** Remaining: the §9 deferrals (timezones, business-hours arithmetic, observed holidays), each a recorded decision. — §3 behind `examples/datetime_fields_test.bas` (31 self-checks)
 with three pinned negatives; §4 — accountant's
 month rule, datetime subtraction, duration algebra, and the comparison respec,
 behind `examples/datetime_arithmetic_test.bas` (36 self-checks, proven red
@@ -335,7 +335,7 @@ for one-offs — is what the lenses already provide: `(next friday)=` and
 `(end of month)=` are the fluent form, gBASIC-flavoured, and stay as sugar over
 this engine.
 
-## 8. Scheduling: `stdlib/schedule.bas`
+## 8. Scheduling: `stdlib/schedule.bas` — IMPLEMENTED 2026-08-17
 
 Its own library (loading `dates`), because packing events is not date
 arithmetic. Two entry points:
@@ -365,7 +365,7 @@ plan = {
 }
 sched = schedule.layout(plan, dates.series({ every: "business day" },
                                            { from: start, count: 3 }, cal), cal)
-' -> [ { name:, starts:, ends:, day: }, ... ]
+' -> { scheduled: [ { name:, starts:, ends:, day: } ... ], unplaced: [names] }
 ```
 
 Layout rules, decided rather than discovered: sessions keep their order; a
