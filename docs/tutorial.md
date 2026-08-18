@@ -365,6 +365,19 @@ its last value after the loop. `for i = 5 to 1` — a limit already passed, with
 no negative step — simply does not run; and `step 0` raises rather than looping
 forever.
 
+When you want the body to run **at least once** and then decide, use `do`:
+
+```basic
+tries = 0
+do
+    tries = tries + 1
+loop until tries >= 3
+```
+
+`while` checks before the body, `do … loop` checks after — that is the whole
+difference, and it is why there is no pre-test `do while … loop`. Both
+`loop until c` (stop when true) and `loop while c` (continue while true) exist.
+
 `for each` iterates arrays (and `keys(...)`/`values(...)` of records). The
 `each` word is optional — `for v in xs` is the same as `for each v in xs`:
 

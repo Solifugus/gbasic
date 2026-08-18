@@ -205,6 +205,27 @@ end for
   non-numeric bounds raise rather than coercing.
 - `break` and `continue` work as they do in `while`.
 
+Post-test loop — the body always runs at least once:
+
+```basic
+do
+    line = input()
+loop until line != ""
+
+do
+    attempts = attempts + 1
+loop while attempts < 3
+```
+
+`while … end while` tests before the body, so `do … loop` exists only for the
+"run it once, then decide" shape; there is deliberately no pre-test
+`do while … loop`. `break` and `continue` behave as elsewhere.
+
+There is no `repeat … until`: `repeat` is a string builtin, and reserving it
+would break existing programs. `loop` and `until` never begin a statement, so
+they remain usable as ordinary variable names (as `end` and `next` are); `do`
+does begin one, so it is reserved, exactly like `while` and `for`.
+
 Consider:
 
 ```basic

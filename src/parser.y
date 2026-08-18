@@ -645,7 +645,7 @@ typedef struct {
  * before this it fell through to the token mapper's default arm and was
  * reported as an unexpected token rather than a keyword clash. */
 %token AS
-%token IF CONSIDER_IF THEN ELSE CONSIDER_ELSE END END_CONSIDER PRINT TRUE FALSE NOTHING UNKNOWN_VALUE AND OR NOT WITH NEW SPAWN FOR TO STEP IN EACH WHILE CONSIDER BREAK CONTINUE FUNCTION RETURN GOTO GOSUB WATCH WITHOUT WATCHERS ON RESUME NEXT STOP ERROR_VALUE MODIFIER PROGRAM LIBRARY LOAD USE EXPORT
+%token IF CONSIDER_IF THEN ELSE CONSIDER_ELSE END END_CONSIDER PRINT TRUE FALSE NOTHING UNKNOWN_VALUE AND OR NOT WITH NEW SPAWN FOR TO STEP DO LOOP UNTIL IN EACH WHILE CONSIDER BREAK CONTINUE FUNCTION RETURN GOTO GOSUB WATCH WITHOUT WATCHERS ON RESUME NEXT STOP ERROR_VALUE MODIFIER PROGRAM LIBRARY LOAD USE EXPORT
 %token OP_EQ OP_NE OP_GT OP_LT OP_GE OP_LE OP_NGT OP_NLT OP_NGE OP_NLE
 %token PLUS MINUS STAR SLASH LPAREN MOD_LPAREN RPAREN LBRACKET RBRACKET LBRACE RBRACE COMMA COLON NEWLINE
 %precedence IF_WITHOUT_ELSE
@@ -668,7 +668,7 @@ static void report_syntax_error(gb_parse_ctx *ctx, int line, int column,
 }
 
 %type <stmt_list> program statement_list consider_statement_list consider_else_opt if_block_tail if_inline_tail
-%type <stmt> statement assignment print_statement call_statement with_lock_statement for_each_statement while_statement consider_statement consider_body_statement function_statement modifier_statement program_statement library_statement use_statement return_statement label_statement goto_statement gosub_statement break_statement continue_statement watch_statement without_watchers_statement on_error_statement error_statement if_statement inline_statement
+%type <stmt> statement assignment print_statement call_statement with_lock_statement for_each_statement do_loop_statement while_statement consider_statement consider_body_statement function_statement modifier_statement program_statement library_statement use_statement return_statement label_statement goto_statement gosub_statement break_statement continue_statement watch_statement without_watchers_statement on_error_statement error_statement if_statement inline_statement
 %type <expr> expression or_expression and_expression comparison_expression
 %type <expr> additive_expression multiplicative_expression unary_expression postfix_expression primary lvalue record_literal
 %type <expr_list> argument_list argument_list_opt array_argument_list
@@ -734,6 +734,7 @@ statement
     | with_lock_statement { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
     | for_each_statement { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
     | while_statement { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
+    | do_loop_statement { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
     | consider_statement { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
     | function_statement { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
     | modifier_statement { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
@@ -776,6 +777,12 @@ variable_name
     : IDENT %prec NO_DOT { $$ = $1; }
     | END %prec NO_DOT { $$ = copy_const("end"); }
     | NEXT %prec NO_DOT { $$ = copy_const("next"); }
+    /* `loop` and `until` never START a statement -- they only close a
+     * do-loop -- so they stay usable as ordinary names, the way `end`
+     * and `next` do. `do` cannot join them: it is statement-initial,
+     * exactly like `while` and `for`, which are not here either. */
+    | LOOP %prec NO_DOT { $$ = copy_const("loop"); }
+    | UNTIL %prec NO_DOT { $$ = copy_const("until"); }
     ;
 
 modifier
@@ -877,6 +884,17 @@ for_each_statement
       }
     ;
 
+do_loop_statement
+    /* POST-test loop: the body always runs at least once. `while` already
+     * covers the pre-test case, so only this one was missing. */
+    : DO NEWLINE statement_list LOOP UNTIL expression NEWLINE {
+        $$ = ast_do_loop($3, $6, 1);
+      }
+    | DO NEWLINE statement_list LOOP WHILE expression NEWLINE {
+        $$ = ast_do_loop($3, $6, 0);
+      }
+    ;
+
 while_statement
     : WHILE expression NEWLINE statement_list END WHILE NEWLINE {
         $$ = ast_while($2, $4);
@@ -916,6 +934,7 @@ consider_body_statement
     | with_lock_statement { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
     | for_each_statement { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
     | while_statement { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
+    | do_loop_statement { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
     | consider_statement { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
     | function_statement { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
     | modifier_statement { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
@@ -1059,11 +1078,14 @@ label_statement
     ;
 
 goto_statement
-    : GOTO IDENT { $$ = ast_goto($2); }
+    /* `variable_name`, not IDENT, so a label may be any word a variable may be
+     * -- `end`, `next`, `loop`, `until`. `label_statement` already used it, so
+     * `loop:` parsed while `goto loop` did not, which stdlib/dates.bas found. */
+    : GOTO variable_name { $$ = ast_goto($2); }
     ;
 
 gosub_statement
-    : GOSUB IDENT { $$ = ast_gosub($2); }
+    : GOSUB variable_name { $$ = ast_gosub($2); }
     ;
 
 break_statement
@@ -1355,6 +1377,9 @@ field_name
     | FOR            { $$ = kw_name("for"); }
     | IF             { $$ = kw_name("if"); }
     | WHILE          { $$ = kw_name("while"); }
+    | DO             { $$ = kw_name("do"); }
+    | LOOP           { $$ = kw_name("loop"); }
+    | UNTIL          { $$ = kw_name("until"); }
     | PRINT          { $$ = kw_name("print"); }
     | RETURN         { $$ = kw_name("return"); }
     | LOAD           { $$ = kw_name("load"); }
@@ -1591,6 +1616,9 @@ static int yylex(YYSTYPE *lvalp, YYLTYPE *llocp, gb_parse_ctx *ctx) {
     case TOKEN_FOR: return FOR;
     case TOKEN_TO: return TO;
     case TOKEN_STEP: return STEP;
+    case TOKEN_DO: return DO;
+    case TOKEN_LOOP: return LOOP;
+    case TOKEN_UNTIL: return UNTIL;
     case TOKEN_IN: return IN;
     case TOKEN_EACH: return EACH;
     case TOKEN_WHILE: return WHILE;

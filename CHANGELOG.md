@@ -50,6 +50,12 @@ be exercised by someone else first.
   that idiom appeared 22 times in shipped code, including the standard library.
   `to` is inclusive, `step` defaults to 1 and may be negative or fractional,
   bounds are evaluated once at entry, and `step 0` raises rather than hanging.
+- **Post-test loop** — `do … loop until c` and `do … loop while c`, for the
+  "run at least once, then decide" shape `while` cannot express. There is no
+  pre-test `do while … loop`, because `while` already is one, and no
+  `repeat … until`, because `repeat` is a string builtin. `loop` and `until`
+  never begin a statement and so remain usable as variable names and as labels;
+  `do` does, and is reserved like `while` and `for`.
 
 ### Platform
 

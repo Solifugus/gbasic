@@ -27,6 +27,7 @@ typedef enum {
     AST_STMT_USE,
     AST_STMT_IF,
     AST_STMT_WHILE,
+    AST_STMT_DO_LOOP,
     AST_STMT_CONSIDER,
     AST_STMT_BREAK,
     AST_STMT_CONTINUE
@@ -198,6 +199,11 @@ struct AstStmt {
             AstStmtList body;
         } for_each;
         struct {
+            AstStmtList body;
+            AstExpr *condition;
+            int until;           /* 1 = `loop until c` (stop when true), 0 = `loop while c` */
+        } do_loop;
+        struct {
             char *name;          /* the counter variable */
             AstExpr *start;
             AstExpr *limit;      /* INCLUSIVE, as BASIC has always had it */
@@ -313,6 +319,7 @@ AstStmt *ast_with_lock(AstExpr *file, AstStmtList body);
 AstStmt *ast_for_each(char *name, AstExpr *iterable, AstStmtList body);
 AstStmt *ast_for_range(char *name, AstExpr *start, AstExpr *limit,
                        AstExpr *step, AstStmtList body);
+AstStmt *ast_do_loop(AstStmtList body, AstExpr *condition, int until);
 AstStmt *ast_function(char *name, AstNameList params, AstStmtList body);
 AstStmt *ast_return(AstExpr *expr);
 AstStmt *ast_label(char *name);

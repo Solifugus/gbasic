@@ -23823,6 +23823,46 @@ static EvalResult eval_stmt(AstStmt *stmt) {
         free(path);
         break;
     }
+    case AST_STMT_DO_LOOP: {
+        /* POST-test: the body runs, THEN the condition decides. `until` stops
+         * when the condition becomes true; `while` continues while it is true.
+         * `while ... end while` already covers the pre-test case, so this exists
+         * only for the "do it at least once" shape. */
+        loop_depth++;
+        for (;;) {
+            EvalResult result = eval_stmt_list(stmt->as.do_loop.body);
+            if (result.did_break) {
+                value_free(result.value);
+                break;
+            }
+            int stop_for_control = 0;
+            if (!result.did_continue && eval_result_exits_block(result)) {
+                loop_depth--;
+                current_line = previous_line;
+                current_column = previous_column;
+                return result;
+            }
+            value_free(result.value);
+            (void)stop_for_control;
+
+            int before_error = error_generation;
+            Value cond = eval_expr(stmt->as.do_loop.condition);
+            if (error_generation != before_error) {
+                value_free(cond);
+                loop_depth--;
+                current_line = previous_line;
+                current_column = previous_column;
+                return eval_error_result();
+            }
+            int truth = value_truthy(cond);
+            value_free(cond);
+            if (stmt->as.do_loop.until ? truth : !truth) {
+                break;
+            }
+        }
+        loop_depth--;
+        break;
+    }
     case AST_STMT_FOR_RANGE: {
         /* `for i = a to b [step c]`. Bounds and step are evaluated ONCE, at loop
          * entry, which is the classic BASIC rule and the one that makes the loop

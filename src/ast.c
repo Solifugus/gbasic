@@ -293,6 +293,15 @@ AstStmt *ast_for_each(char *name, AstExpr *iterable, AstStmtList body) {
     return stmt;
 }
 
+AstStmt *ast_do_loop(AstStmtList body, AstExpr *condition, int until) {
+    AstStmt *stmt = xmalloc(sizeof(*stmt));
+    stmt->kind = AST_STMT_DO_LOOP;
+    stmt->as.do_loop.body = body;
+    stmt->as.do_loop.condition = condition;
+    stmt->as.do_loop.until = until;
+    return stmt;
+}
+
 AstStmt *ast_for_range(char *name, AstExpr *start, AstExpr *limit,
                        AstExpr *step, AstStmtList body) {
     AstStmt *stmt = xmalloc(sizeof(*stmt));
@@ -679,6 +688,17 @@ static void dump_stmt(AstStmt *stmt, int indent) {
             dump_stmt(stmt->as.with_lock.body.items[i], indent + 2);
         }
         break;
+    case AST_STMT_DO_LOOP:
+        printf("DoLoop %s\n", stmt->as.do_loop.until ? "until" : "while");
+        dump_indent(indent + 1);
+        printf("Body\n");
+        for (size_t i = 0; i < stmt->as.do_loop.body.count; i++) {
+            dump_stmt(stmt->as.do_loop.body.items[i], indent + 2);
+        }
+        dump_indent(indent + 1);
+        printf("Condition\n");
+        dump_expr(stmt->as.do_loop.condition, indent + 2);
+        break;
     case AST_STMT_FOR_RANGE:
         printf("ForRange %s\n", stmt->as.for_range.name);
         dump_indent(indent + 1);
@@ -996,6 +1016,10 @@ static void free_stmt(AstStmt *stmt) {
     case AST_STMT_WITH_LOCK:
         free_expr(stmt->as.with_lock.file);
         ast_free_program(stmt->as.with_lock.body);
+        break;
+    case AST_STMT_DO_LOOP:
+        ast_free_program(stmt->as.do_loop.body);
+        free_expr(stmt->as.do_loop.condition);
         break;
     case AST_STMT_FOR_RANGE:
         free(stmt->as.for_range.name);
