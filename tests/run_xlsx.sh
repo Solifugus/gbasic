@@ -763,6 +763,75 @@ else
     status=1
 fi
 
+# --- Tier 2e6: RESIDUE -- deleted-ref literals + the empty-cell lookup key ------
+#
+# Two corpus classes sampled 2026-08-19 (§13.AC), one fixture:
+#
+# (1) Excel rewrites a reference whose target was DELETED into a literal
+# #REF! in the formula TEXT -- GRMSDetail!#REF! -- and the sheet-qualified
+# lexer path could not tokenise '#' after '!', so the whole formula answered
+# #VALUE! where Excel caches #REF!. ~6,900 cells per book across the
+# joe_parks Position-report family; the largest slice of #VALUE!->err.
+#
+# (2) An EMPTY-CELL lookup key is the number 0 in VLOOKUP/HLOOKUP/MATCH --
+# Excel's rule, and real workbooks lean on it: the DYNEGY-ICE family keeps a
+# sentinel row (0 -> "No Activity") precisely so unfilled keys resolve to
+# it. 39k cells answered #N/A where Excel cached that text. The PIN matters:
+# an empty STRING key is NOT 0 (Excel does not coerce "" here either), so
+# VLOOKUP("",...) must stay #N/A.
+printf -- '-- residue: Sheet!#REF! literals lex; empty-cell lookup keys are 0\n'
+rdir="$tmp/residue"
+rm -rf "$rdir"; mkdir -p "$rdir/_rels" "$rdir/xl/_rels" "$rdir/xl/worksheets"
+printf '%s' '<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>' >"$rdir/[Content_Types].xml"
+printf '%s' '<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>' >"$rdir/_rels/.rels"
+printf '%s' '<?xml version="1.0"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="R" sheetId="1" r:id="rId1"/></sheets></workbook>' >"$rdir/xl/workbook.xml"
+printf '%s' '<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>' >"$rdir/xl/_rels/workbook.xml.rels"
+{
+  printf '<?xml version="1.0"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>'
+  printf '<row r="1"><c r="E1" t="inlineStr"><is><t>AA</t></is></c><c r="F1" t="inlineStr"><is><t>a</t></is></c><c r="C1" t="inlineStr"><f>VLOOKUP(B9,E1:F3,2,FALSE)</f><is><t>No Activity</t></is></c></row>'
+  printf '<row r="2"><c r="E2"><v>0</v></c><c r="F2" t="inlineStr"><is><t>No Activity</t></is></c><c r="C2"><f>MATCH(B9,E1:E3,0)</f><v>2</v></c></row>'
+  printf '<row r="3"><c r="E3" t="inlineStr"><is><t>BB</t></is></c><c r="F3" t="inlineStr"><is><t>b</t></is></c><c r="C3" t="e"><f>R!#REF!</f><v>#REF!</v></c></row>'
+  printf '<row r="4"><c r="C4" t="e"><f>&#39;R&#39;!#REF!</f><v>#REF!</v></c></row>'
+  printf '<row r="5"><c r="C5" t="e"><f>SUM(R!#REF!,E2)</f><v>#REF!</v></c></row>'
+  printf '<row r="6"><c r="C6" t="e"><f>VLOOKUP("",E1:F3,2,FALSE)</f><v>#N/A</v></c></row>'
+  printf '</sheetData></worksheet>'
+} >"$rdir/xl/worksheets/sheet1.xml"
+( cd "$rdir" && zip -q -r -X ../residue.xlsx . )
+cat >"$tmp/residue.bas" <<'EOB'
+program main(args)
+  wb = xlsx.open(args[0])
+  print "empty key finds the 0 : " + xlsx.evaluate(wb, "R", "C1")
+  print "MATCH does too        : " + xlsx.evaluate(wb, "R", "C2")
+  print "Sheet!#REF! literal   : " + xlsx.evaluate(wb, "R", "C3")
+  print "quoted variant        : " + xlsx.evaluate(wb, "R", "C4")
+  print "propagates through SUM: " + xlsx.evaluate(wb, "R", "C5")
+  print "empty STRING is not 0 : " + xlsx.evaluate(wb, "R", "C6")
+end program
+EOB
+residue_want='empty key finds the 0 : No Activity
+MATCH does too        : 2
+Sheet!#REF! literal   : #REF!
+quoted variant        : #REF!
+propagates through SUM: #REF!
+empty STRING is not 0 : #N/A'
+residue_got=$(timeout 60 ./gbasic "$tmp/residue.bas" "$tmp/residue.xlsx" 2>&1)
+if [ "$residue_got" = "$residue_want" ]; then
+    printf 'PASS residue: deleted-ref literals answer #REF!, empty-cell keys find the 0 row\n'
+else
+    printf 'FAIL residue\n'
+    diff <(printf '%s\n' "$residue_want") <(printf '%s\n' "$residue_got") || true
+    status=1
+fi
+
+printf 'program main(args)\n  wb = xlsx.open("%s")\n  r = xlsx.check(wb, "R")\n  print r.disagree\n  print r.unsupported\nend program\n' "$tmp/residue.xlsx" >"$tmp/residuechk.bas"
+residuechk=$(timeout 60 ./gbasic "$tmp/residuechk.bas" 2>/dev/null | tr '\n' ' ')
+if [ "$residuechk" = "0 0 " ]; then
+    printf 'PASS residue check: zero disagreements, nothing unsupported\n'
+else
+    printf 'FAIL residue check: disagree/unsupported were "%s", want "0 0"\n' "$residuechk"
+    status=1
+fi
+
 # --- Tier 2f: post-2001 capabilities --------------------------------------------
 #
 # The corpus is 2001 and cannot contain one function added since, so everything

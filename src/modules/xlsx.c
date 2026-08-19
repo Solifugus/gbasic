@@ -1467,6 +1467,22 @@ static long xlsx_sheet_index(const XlsxWorkbook *wb, const char *name) {
  * a cell reference, so it is emitted as a REF with row 0 meaning "unbounded",
  * and the range logic fills in the sheet's actual extent later. */
 static void xlsx_lex_sheet_qualified(XlsxLex *lx) {
+    /* Excel rewrites a reference whose target was DELETED into a literal
+     * #REF! in the FORMULA TEXT -- GRMSDetail!#REF! -- so an error literal
+     * is a legal thing to find after the '!'. Refusing to tokenise it made
+     * the whole formula #VALUE! where Excel caches #REF! (measured: the
+     * joe_parks Position-report family, ~6,900 cells per book). The sheet
+     * qualifier contributes nothing; the error is the value. */
+    if (*lx->p == '#') {
+        size_t en = 0;
+        while (*lx->p && (isalnum((unsigned char)*lx->p) || strchr("#/!?_", *lx->p))) {
+            if (en + 1 < sizeof lx->cur.text) lx->cur.text[en++] = *lx->p;
+            lx->p++;
+        }
+        lx->cur.text[en] = '\0';
+        lx->cur.kind = XT_ERRLIT;
+        return;
+    }
     size_t n = 0;
     while (*lx->p && (isalnum((unsigned char)*lx->p) || *lx->p == '$' || *lx->p == '_' ||
                       *lx->p == '.')) {
@@ -3020,6 +3036,11 @@ static XlsxVal xlsx_call(XlsxEval *ev, const char *raw_name) {
         double wnum = 0;
         int want_num = ARG_AT(0, 0).kind == XV_NUM || ARG_AT(0, 0).kind == XV_BOOL;
         if (want_num) wnum = ARG_AT(0, 0).num;
+        /* An EMPTY-CELL key is the number 0 -- Excel's rule, and real
+         * workbooks lean on it: the corpus's DYNEGY-ICE family keeps a
+         * sentinel row (0 -> "No Activity") precisely so unfilled keys
+         * resolve to it. The empty STRING is NOT 0 and stays a text key. */
+        if (ARG_AT(0, 0).kind == XV_EMPTY) { want_num = 1; wnum = 0; }
         long hit = -1;
         for (long i = 0; i < span; i++) {
             XlsxVal key = vert ? RNG_AT(1, i, 0) : RNG_AT(1, 0, i);
@@ -3064,6 +3085,8 @@ static XlsxVal xlsx_call(XlsxEval *ev, const char *raw_name) {
         double wnum = 0;
         int want_num = ARG_AT(0, 0).kind == XV_NUM || ARG_AT(0, 0).kind == XV_BOOL;
         if (want_num) wnum = ARG_AT(0, 0).num;
+        /* Same empty-cell-is-0 rule as VLOOKUP above. */
+        if (ARG_AT(0, 0).kind == XV_EMPTY) { want_num = 1; wnum = 0; }
         long span = argrows[1] * argcols[1];
         long hit = -1;
         for (long i = 0; i < span; i++) {
