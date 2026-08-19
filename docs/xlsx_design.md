@@ -1620,6 +1620,43 @@ disagreements to zero. Session arc across §13.AA–AB: 446,733 cells /
 error) and `#N/A`→text (39,125 / 40 — an error where Excel cached text,
 likely a lookup-adjacent class).
 
+### 13.AC Deleted-ref literals, and the empty-cell lookup key (2026-08-19)
+
+§13.AB's two queued diagnoses, sampled and both one-cause:
+
+*`#VALUE!`→err was mostly `GRMSDetail!#REF!`* — Excel rewrites a reference
+whose target was DELETED into a literal `#REF!` in the formula TEXT, and
+the sheet-qualified lexer path could not tokenise `#` after `!`, so the
+whole formula answered `#VALUE!` where Excel caches `#REF!` (~6,900 cells
+per book across the joe_parks Position-report family). An error literal is
+now a legal thing to find after `!`: the sheet qualifier contributes
+nothing, the error is the value, and it propagates like any error.
+
+*`#N/A`→text was the empty-cell lookup key* — in VLOOKUP/HLOOKUP/MATCH an
+EMPTY-CELL key is the number 0, Excel's rule, and real workbooks lean on
+it: the DYNEGY-ICE family keeps a sentinel row (`0` → `"No Activity"`)
+precisely so unfilled keys resolve to it. The pin matters as much as the
+fix: the empty STRING is NOT 0 (Excel does not coerce `""` here either),
+so `VLOOKUP("",...)` stays `#N/A` — asserted on both binaries.
+
+| | §13.AB end | after |
+|---|---|---|
+| disagreeing cells | 273,789 | **156,618** |
+| workbooks with any disagreement | 941 | **836** |
+| `err`→err cells | 100,988 | **22,967** |
+| `err`→text | 39,593 | **552** |
+| `#VALUE!`→err | 92,887 | **14,796** |
+| workbooks fully agreeing | 94.1% | **94.7%** |
+
+Both verified live (`DD-ENA!A13` = "No Activity", `XL-OPT!P2` = `#REF!`,
+exactly as cached). Session arc across §13.AA–AC: **446,733 cells / 1,083
+books → 156,618 / 836** — a 65% cell reduction in one day's loop, all of
+it from five one-cause classes found by sampling, none by a test going
+red. *Remaining top buckets, unsampled:* `#REF!`→num (30,938 / 137),
+`#VALUE!`→num's residue (30,117 / 182), num→num (58,963 / 379 — wrong
+NUMBERS, likely several causes and the first bucket where sampling may
+not find a single dominant one).
+
 ## 14. Roadmap (phases)
 
 **Read this section as history, not as a plan.** Phases 1 through 3b are built,
@@ -1631,9 +1668,9 @@ useful thing in this document — but it is no longer what says what to do next.
 the instruments in `tools/xlsx_corpus_*.sh`: `blockers` ranks what the evaluator
 REFUSES by the name it actually refused, and `disagree` ranks wrong ANSWERS by
 the shape of the mismatch, both reporting distinct workbooks beside cell counts.
-Run them; act on the top of the list; re-run. §13.V through §13.AB are that
-loop; §13.AB's table is current as of the commit that added it, and the next
-diagnoses it names are `#VALUE!`→err and `#N/A`→text.
+Run them; act on the top of the list; re-run. §13.V through §13.AC are that
+loop; §13.AC's table is current as of the commit that added it, and the next
+diagnoses it names are `#REF!`→num, `#VALUE!`→num and num→num.
 
 *Why the change is not a preference.* The ordering below has now been contradicted
 by measurement three separate times. Phase 4 — the formula compiler's join and
