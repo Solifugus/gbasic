@@ -129,6 +129,17 @@ order, one that misses the day end moves **whole** to the next day, and one
 that fits nowhere is reported in `unplaced:` rather than dropped. With this,
 every planned v1 layer of the datetime redesign is built.
 
+### Two ergonomic debts cleared
+
+- The string modifiers accept both spellings: `(upper)=` beside `(uppered)=`,
+  likewise `lower`/`lowered` and `trim`/`trimmed`. The near-miss
+  (`assign modifier not found: upper`) was the most-hit trap in UNLEARN; the
+  modifier namespace is separate from builtins, so `(upper)=` and the function
+  `upper()` never collide.
+- `p = $19.99` now fails with a teaching error — `'$' is not a money literal;
+  write p(USD)= 19.99` — instead of `unexpected token`. Sigils privilege one
+  currency and change over time; money stays a modifier from a plain number.
+
 ### Observed holidays and month constraints (`stdlib/dates.bas`)
 
 `dates.calendar({ …, observe: "nearest" | "forward" })` moves a weekend

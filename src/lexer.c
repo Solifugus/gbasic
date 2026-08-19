@@ -468,6 +468,13 @@ Token lexer_next(Lexer *lexer) {
     case ',': return make_token(lexer, TOKEN_COMMA, start, line, column);
     case '.': return make_token(lexer, TOKEN_DOT, start, line, column);
     case ':': return make_token(lexer, TOKEN_COLON, start, line, column);
+    /* There is no money literal, and '$' is the guess everyone makes first.
+     * A targeted message teaches the modifier form instead of just refusing:
+     * sigils privilege one currency and change over time, so money is a
+     * modifier from a plain number -- p(USD)= 19.99 (see reference.md). */
+    case '$':
+        return error_token_message(lexer, start, line, column,
+                                   "'$' is not a money literal; write p(USD)= 19.99 -- money is a modifier from a plain number");
     }
 
     return error_token(lexer, start, line, column);

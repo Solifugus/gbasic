@@ -16,6 +16,14 @@ the standing ones.
 - **Top-level `goto`/`gosub` fails loudly.** They are supported only *inside
   functions*; at the top level they now raise a runtime error instead of silently
   doing nothing.
+- **`(upper)=`, `(lower)=` and `(trim)=` work** (2026-08-18). The string
+  modifiers accept both the builtin's name and the participle
+  (`uppered`/`lowered`/`trimmed`), so the near-miss that used to raise
+  `assign modifier not found: upper` — this file's most-hit trap — is gone.
+  Both spellings are the same modifier; existing code is untouched.
+- **`p = $19.99` now explains itself** (2026-08-18): the lexer error says
+  `'$' is not a money literal; write p(USD)= 19.99` instead of
+  `unexpected token`.
 
 ## Control flow
 
@@ -260,20 +268,11 @@ right* and fails on a detail. Four of the five were hit in one sitting writing
 five short sample programs, by someone who had been reading this codebase all
 day — so assume you will hit them too.
 
-- **The builtin is `upper`; the modifier is `uppered`.** They are different
-  things with deliberately different names, and the near-miss is easy. Same for
-  `lower`/`lowered` and `trim`/`trimmed`.
-
-  ```basic
-  print upper("ada")     ' ADA          — builtin, called
-  x (uppered)= "ada"     ' ADA          — modifier, applied at assignment
-  x (upper)= "ada"       ' assign modifier not found: upper
-  ```
-
 - **Money and dates are modifiers, not literals.** There is no `$19.99` syntax —
-  it is a lexer error (`unexpected token`). A modifier gives the value its kind
-  at the point of assignment, and the result is a real `money`/`datetime`, not a
-  number or a string.
+  the lexer error tells you the form (`'$' is not a money literal; write
+  p(USD)= 19.99`). A modifier gives the value its kind at the point of
+  assignment, and the result is a real `money`/`datetime`, not a number or a
+  string.
 
   ```basic
   price(USD)= 19.95

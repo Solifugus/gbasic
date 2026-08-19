@@ -25,8 +25,7 @@ obvious guess is close enough to look right and fails on a detail.
 
 | You'll probably write | It actually is | Why |
 |---|---|---|
-| `x (upper)= "ada"` | `x (uppered)= "ada"` | `upper` is a **builtin** you call; `uppered` is the **modifier** applied at assignment. Same for `lower`/`lowered`, `trim`/`trimmed`. → [Modifiers](#modifiers-and-lenses) |
-| `p = $19.99` | `p(USD)= 19.99` | There is no money *literal*; a modifier gives the value its kind. The result is a real `money`. → [Money & dates](#money-dates-times-and-durations) |
+| `p = $19.99` | `p(USD)= 19.99` | There is no money *literal* — and the error now says so, and shows this form. A modifier gives the value its kind; the result is a real `money`. → [Money & dates](#money-dates-times-and-durations) |
 | `d = today()` | `d(day)= now()` | There is deliberately no `today()`; derive a date from `now()` with the `(day)` lens. → [Money & dates](#money-dates-times-and-durations) |
 | `w = spawn worker` | `w = spawn worker(self())` | `spawn` needs the call form even when you pass nothing of your own — otherwise it is a *parse* error. → [Actors](#actors-and-concurrency) |
 | `watch(a)` before `a` exists | declare `a` first, then `watch(a)` | A watcher reads its variables immediately. Written first it raises `undefined variable`, **carries on**, and the value you expected reads as `nothing` later. → [Watchers](#watchers) |

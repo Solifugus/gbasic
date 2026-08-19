@@ -318,6 +318,7 @@ cases=(
     negative_dates_hours_months
     negative_dates_hours_nohours
     negative_dates_observe_bad
+    negative_money_dollar
 )
 
 for name in "${cases[@]}"; do

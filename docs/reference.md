@@ -785,7 +785,7 @@ Resolution:
 
 Built-in/core modifiers include:
 
-- Assignment: `USD`, `date`, `time`, `datetime`, `year`, `month`, `day`, `hour`, `minute`, `second`, `file`, `dir`, `trimmed`, `lowered`, `uppered`, `split`, `join`, `length`, `number`, `string`
+- Assignment: `USD`, `date`, `time`, `datetime`, `year`, `month`, `day`, `hour`, `minute`, `second`, `file`, `dir`, `trimmed`/`trim`, `lowered`/`lower`, `uppered`/`upper` (both spellings accepted), `split`, `join`, `length`, `number`, `string`
 - Comparison: `caseless`, date/time lens comparisons
 
 `date` infers precision from the string (`"2026-05-15"` is day-precise,

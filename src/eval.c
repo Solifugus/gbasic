@@ -23787,8 +23787,15 @@ static Value apply_assignment_modifier(AstModifierUse modifier, Value value) {
         return apply_datetime_lens_to_value(value, lens, modifier.name, &ok);
     }
     const char *builtin_args = NULL;
+    /* The string modifiers answer to BOTH spellings: `trimmed` (the original
+     * participle) and `trim` (what everyone types first, since the BUILTIN is
+     * `trim`). Matthew's call, 2026-08-17: `upper` is more intuitive and more
+     * common than `uppered`. The participles stay valid so no existing code
+     * moves; the modifier namespace is separate from builtins, so `(upper)=`
+     * and the function upper() never collide. */
     if (!modifier.library &&
-        (builtin_args = builtin_modifier_args_text(modifier.name, "trimmed")) != NULL) {
+        ((builtin_args = builtin_modifier_args_text(modifier.name, "trimmed")) != NULL ||
+         (builtin_args = builtin_modifier_args_text(modifier.name, "trim")) != NULL)) {
         if (!modifier_args_empty(builtin_args)) {
             runtime_error_raise("trimmed modifier expects no arguments", 1003, "modifier");
             value_free(value);
@@ -23797,7 +23804,8 @@ static Value apply_assignment_modifier(AstModifierUse modifier, Value value) {
         return builtin_trim_value(value);
     }
     if (!modifier.library &&
-        (builtin_args = builtin_modifier_args_text(modifier.name, "lowered")) != NULL) {
+        ((builtin_args = builtin_modifier_args_text(modifier.name, "lowered")) != NULL ||
+         (builtin_args = builtin_modifier_args_text(modifier.name, "lower")) != NULL)) {
         if (!modifier_args_empty(builtin_args)) {
             runtime_error_raise("lowered modifier expects no arguments", 1003, "modifier");
             value_free(value);
@@ -23806,7 +23814,8 @@ static Value apply_assignment_modifier(AstModifierUse modifier, Value value) {
         return builtin_lower_value(value);
     }
     if (!modifier.library &&
-        (builtin_args = builtin_modifier_args_text(modifier.name, "uppered")) != NULL) {
+        ((builtin_args = builtin_modifier_args_text(modifier.name, "uppered")) != NULL ||
+         (builtin_args = builtin_modifier_args_text(modifier.name, "upper")) != NULL)) {
         if (!modifier_args_empty(builtin_args)) {
             runtime_error_raise("uppered modifier expects no arguments", 1003, "modifier");
             value_free(value);
