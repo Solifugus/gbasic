@@ -1587,6 +1587,39 @@ the defined name `Date` was wrong for the bulk: 2 books left the bucket,
 the rest disagree for a reason not yet sampled. That is the next
 diagnosis.
 
+### 13.AB The empty string does not coerce (2026-08-19)
+
+The `FUNC DATE` diagnosis §13.AA queued, done the same day: the DATE
+bucket's bulk and the `#NUM!`→err monster (64,534 / 9 books) were **one
+cause**. The EOL_All_Swaps family fills down
+`DATE(LEFT(I4,4),MID(I4,5,2),MID(I4,7,2))` over rows whose source cell is
+empty; `LEFT("",4)` is `""`, and `xlsx_as_num` coerced the empty STRING to
+0 — so DATE range-checked 0/0/0 to `#NUM!` where Excel, which refuses to
+coerce non-numeric text (`""+1` is `#VALUE!`), cached `#VALUE!`. The right
+answer *shape* with the wrong error *name*, ~65k cells. One line, wide
+reach, so the pins in the COERCE tier matter as much as the fixes: the
+empty CELL still coerces to 0, numeric text still coerces, aggregates
+filter by KIND and never coerce (SUM over a range holding text is
+untouched), and IF's condition treats the failed coercion as falsy exactly
+as it treated the old 0. Implementation note: the case must FAIL
+explicitly — `strtod("")` also lands on `*end == '\0'`, so *deleting* the
+special case would have quietly kept the old behaviour.
+
+| | §13.AA end | after |
+|---|---|---|
+| disagreeing cells | 339,873 | **273,789** |
+| workbooks with any disagreement | 956 | **941** |
+| `err`→err cells | 165,522 | **100,988** |
+| `#NUM!`→err | 64,534 | **0** |
+| workbooks fully agreeing | 94.0% | **94.1%** |
+
+Verified live: EOL_All_Swaps' Results sheet went from ~10,880
+disagreements to zero. Session arc across §13.AA–AB: 446,733 cells /
+1,083 books → 273,789 / 941. *Next unsampled:* `#VALUE!`→err
+(92,887 / 309 — we refuse with `#VALUE!` where Excel cached a different
+error) and `#N/A`→text (39,125 / 40 — an error where Excel cached text,
+likely a lookup-adjacent class).
+
 ## 14. Roadmap (phases)
 
 **Read this section as history, not as a plan.** Phases 1 through 3b are built,
@@ -1598,9 +1631,9 @@ useful thing in this document — but it is no longer what says what to do next.
 the instruments in `tools/xlsx_corpus_*.sh`: `blockers` ranks what the evaluator
 REFUSES by the name it actually refused, and `disagree` ranks wrong ANSWERS by
 the shape of the mismatch, both reporting distinct workbooks beside cell counts.
-Run them; act on the top of the list; re-run. §13.V through §13.AA are that
-loop; §13.AA's table is current as of the commit that added it, and the next
-diagnoses it names are the `FUNC DATE` bucket and `err`→err.
+Run them; act on the top of the list; re-run. §13.V through §13.AB are that
+loop; §13.AB's table is current as of the commit that added it, and the next
+diagnoses it names are `#VALUE!`→err and `#N/A`→text.
 
 *Why the change is not a preference.* The ordering below has now been contradicted
 by measurement three separate times. Phase 4 — the formula compiler's join and
