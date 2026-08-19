@@ -190,6 +190,15 @@ the library truncates before comparing, so the §2 precision rule never bites
 the user here. (Manually, the idiom is `x (day)= session_start` then
 `contains(cal.holidays, x)`.)
 
+**Holiday DATA is user-supplied — decided 2026-08-20, Matthew's call.** gBASIC
+ships no national holiday packs. The reasons compound: observed-vs-actual
+rules differ per employer even inside one country (the `observe:` parameter
+exists precisely because there is no one answer); packs rot silently (a
+holiday moved by decree is a wrong `is_business_day` with no error); and the
+calendar-as-data design already makes loading a holidays file or table a
+one-liner. A wrong holiday from user data is the user's data bug; a wrong
+holiday from a shipped pack would be ours, forever.
+
 **Roll conventions**, because "lands on a weekend" is the normal case, not the
 edge: `roll: "forward"` (next business day), `"backward"`, or `"modified"`
 (forward unless that crosses into the next month, then backward — the finance

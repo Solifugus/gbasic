@@ -7,6 +7,104 @@ language surface may still change between releases.
 
 ---
 
+## 0.1.0-rc2 — 2026-08-20
+
+Five days after rc1: the datetime/duration redesign in full, two loop
+constructs, and an xlsx correctness campaign measured against 15,871 real
+Enron workbooks. Still a release **candidate** — the CLA question is open and
+0.1.0 final waits on it.
+
+### Language
+
+- **Counted `for`** — `for i = a to b [step c] … end for`. The counter keeps
+  its last value after the loop (this differs from QBasic).
+- **Post-test loops** — `do … loop until <expr>` and `do … loop while <expr>`.
+  `loop` and `until` remain usable as variable names and as `goto` labels.
+- Modifier verbs accept the base spelling alongside the participle:
+  `(upper)=`, `(lower)=`, `(trim)=` now work like `(uppered)=` and kin.
+- `p = $19.99` now fails with a teaching error — money is a modifier
+  (`p(USD)= 19.99`), not a literal, and the message says so.
+- A runtime error inside a `load`ed library now names that library and the
+  line inside it, instead of pointing at the caller's `load` line.
+
+### Datetime and duration (the redesign — breaking changes)
+
+The whole layer was redesigned; `docs/datetime_design.md` is the contract and
+`docs/datetime_cookbook.md` (12 executable, suite-enforced recipes) the tour.
+
+- **Month arithmetic uses the accountant's rule**: `jan31 + 1 month` is
+  Feb 28, not Mar 3 — years/months clamp the day, then exact parts apply.
+  Round-trips deliberately do not hold at month-end.
+- **Durations are a (months, seconds) pair, never blurred**: `1 month =
+  30 days` is now *false* (it was true — and simultaneously true for
+  31 days). Ordering month-bearing durations against exact ones refuses.
+  Signed durations; `datetime − datetime` yields a signed exact duration;
+  `×`/`÷` with canonical results.
+- **Dot extraction** — `d.year`, `d.month`, `d.day`, `d.weekday` (ISO:
+  Monday=1…Sunday=7), `d.time` (exact duration since midnight), and kin.
+  Reading a field finer than the value's declared precision yields `unknown`.
+- **Business calendars as data** (`stdlib/dates.bas`) — `dates.calendar(spec)`
+  with `weekend:`, `holidays:` (user-supplied data by design; gBASIC ships no
+  national packs), `hours:`, `observe: "nearest"|"forward"` for observed
+  holidays; `is_business_day`, `next/previous_business_day`,
+  `add_business_days`, `business_days_between`, `dates.merge` (mutual
+  working days obey the conjunction law), `dates.between`.
+- **Recurrence as data** — `dates.matches(d, rule)`, `dates.select(rule,
+  range)`, `dates.series(rule, bounds)`: `nth:`/`weekday:`/`day:`/`month:`/
+  `when:`/`except:`/`roll:` vocabulary ("every third Thursday", "first
+  Tuesday after the 15th", RRULE BYDAY/BYSETPOS/BYMONTH shapes). A miss is
+  `unknown`; a malformed rule raises.
+- **Business-hours arithmetic** — `add_business_hours` (an SLA clock that
+  pauses overnight, over weekends and holidays), `business_hours_between`,
+  `is_business_time`, with the round-trip law tested.
+- **Timezones at the edges** — `to_zone`/`from_zone`/`zone_offset`/
+  `zone_resolve` over IANA names; UTC timeline, civil calendar. DST policy
+  matches Temporal's "compatible"; unknown zones are refused rather than
+  silently UTC; all-day values are refused (no instant).
+- **Scheduling** (`stdlib/schedule.bas`) — `slots` (a physician-style
+  appointment grid) and `layout` (sessions packed into business days,
+  bumping over breaks; the oversized are reported by name in `unplaced:`).
+
+### xlsx
+
+Measured against the full 15,871-workbook Enron corpus, cells with formulas
+judged against Excel's own cached results: **disagreeing cells fell from
+461,578 to 64,227 and fully-agreeing workbooks rose from 91.1% to 95.7%**
+(`docs/xlsx_design.md` §13.Z–§13.AE record every step and its measurement).
+
+- **Defined names** — `<definedNames>` resolve by lexer-level splice,
+  including sheet-qualified scope (`Sheet!name`) and local-over-global
+  shadowing; names for ranges flatten correctly in argument positions.
+- **Implicit intersection** — a range in a scalar slot takes its element on
+  the formula's own row/column, per Excel's pre-dynamic-array rule.
+- **Coercion fixed to Excel's rules** — the empty *string* does not coerce
+  to a number (`""+1` is `#VALUE!`) while the empty *cell* is 0; text dates
+  in `DD-MMM-YYYY` coerce (English month names, deliberately locale-narrow).
+- **Lookup/criteria empty-cell rules** — an empty-cell lookup key and an
+  empty-cell criteria are 0 (`VLOOKUP`/`HLOOKUP`/`MATCH`, the IF-criteria
+  family); the empty *string* stays text in both places.
+- **Deleted-reference literals** — `Sheet!#REF!` in formula text evaluates
+  to `#REF!` instead of failing to tokenize.
+- **SUMIF-family error handling** — errors on non-matching rows are skipped;
+  a matched cell's error still propagates. Empty arguments (`SUM(1,,2)`,
+  trailing commas) contribute empty, not `#VALUE!`.
+- **Honest refusals, priced by name** — CSE array formulas (`t="array"`),
+  external-workbook references *and* external-workbook defined names
+  (`[1]!Name`) are reported unavailable rather than answered plausibly wrong;
+  recalc never overwrites a cached value it cannot recompute.
+- Corpus instruments committed: `tools/xlsx_corpus_*.sh` (check / report /
+  blockers / disagree), frozen-binary + per-worker-file methodology.
+
+### Documentation
+
+- `docs/datetime_cookbook.md` — 12 recipes, executable and suite-enforced
+  like the xlsx cookbook.
+- A first-twenty-minutes on-ramp for newcomers (tutorial + UNLEARN "names
+  that nearly work").
+- `docs/xlsx_design.md` §13.Z–AE — the corpus campaign, each fix measured.
+
+---
+
 ## 0.1.0-rc1 — 2026-08-15
 
 The first tagged release. gBASIC has been developed since 2026-05-02 (366
