@@ -1482,6 +1482,48 @@ because a number with no breakdown still reads as a fact.
 books) and the wrong-error-code class `err`→err (162,602 / 469). Within the
 first, `#VALUE!`→num is 171,981 cells across 652 workbooks.
 
+### 13.Z The err→num round, first cut (2026-08-18)
+
+A fresh full-ranker baseline reproduced §13.Y's numbers exactly before any
+change — 461,578 disagreeing cells in 1,416 workbooks, `err`→num at
+208,950/775. Per-cell sampling over the stride∩class books found three
+causes; two shipped, and the round moved the *workbook* metric hard:
+
+| | before | after |
+|---|---|---|
+| disagreeing cells | 461,578 | 446,733 |
+| workbooks with any disagreement | 1,416 | **1,083** |
+| `err`→num books | 775 | **428** |
+| workbooks fully agreeing | 91.1% | **93.2%** |
+
+*Shipped:* (1) the **SUMIF family vs error cells** — the blanket
+pre-dispatch rule (any error element in any argument propagates) is right
+for SUM and wrong for the criteria family, which must skip errors on
+non-matching rows and propagate only a MATCHED cell's error; measured live
+as `SUMIF` answering `#N/A` where Excel cached 92,800 because 478
+dead-lookup `#N/A`s sat on non-matching rows. (2) **Empty arguments** —
+`SUM(B18:B20,)`, the trailing comma a deleted template operand leaves,
+parsed `)` as an expression and answered `#VALUE!`; an empty argument
+position now contributes an empty value (`SUM(1,,2)` = 3). Both pinned by
+the in-test ERRAGG tier, both verified against the corpus workbooks they
+were found in.
+
+*Diagnosed, next:* **defined names** (`EffDt`, `+Date`, `Holidays`,
+`mrg_output`) dominate the remaining books-share — with the instrument
+lesson that explains their invisibility: a bare name falls into the call
+machinery and dies as `#VALUE!`, so names never appear in the `blockers`
+ranking, which counts refusals BY NAME. That is why the class fell off the
+§13.J roadmap. The ranker's `FUNC DATE 66,735 cells` bucket is the defined
+name `Date` upper-cased into the function's name. Fix requires
+`<definedNames>` parsing plus a lexer-level splice.
+
+*Instrument defect, fourth occurrence:* the first diagnosis sampler piped
+ten parallel workers into one shared non-append fd and lost all but 24
+lines, reporting 4 affected books where the truth was 60 — the exact
+failure the ranker's own comments warn about (it is why they use per-worker
+files). The warning was read and the mechanism skipped. Diagnose the
+instrument before the product.
+
 ## 14. Roadmap (phases)
 
 **Read this section as history, not as a plan.** Phases 1 through 3b are built,
@@ -1493,8 +1535,9 @@ useful thing in this document — but it is no longer what says what to do next.
 the instruments in `tools/xlsx_corpus_*.sh`: `blockers` ranks what the evaluator
 REFUSES by the name it actually refused, and `disagree` ranks wrong ANSWERS by
 the shape of the mismatch, both reporting distinct workbooks beside cell counts.
-Run them; act on the top of the list; re-run. §13.V through §13.Y are that loop,
-and the ranking at the end of §13.Y is current as of the commit that added it.
+Run them; act on the top of the list; re-run. §13.V through §13.Z are that
+loop; §13.Z's table is current as of the commit that added it, and the next
+target it names is defined names.
 
 *Why the change is not a preference.* The ordering below has now been contradicted
 by measurement three separate times. Phase 4 — the formula compiler's join and
