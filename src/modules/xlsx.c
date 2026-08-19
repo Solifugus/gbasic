@@ -1513,8 +1513,13 @@ static void xlsx_lex_sheet_qualified(XlsxLex *lx) {
      * Bare column/row endpoints (Data!A:B, Data!$3:$7) must keep passing
      * through, so anything range-shaped (letters <= 3, or digits) is never
      * treated as a name. */
-    if (*lx->cur.text && lx->names_wb &&
+    if (*lx->cur.text && lx->names_wb && !lx->cur.external &&
         lx->sp < (int)(sizeof lx->resume / sizeof lx->resume[0])) {
+        /* !external is a CORRECTNESS guard, not tidiness: [1]!Table names a
+         * defined name in a DIFFERENT workbook, and resolving it against our
+         * own names silently answered with the wrong workbook's value when a
+         * name happened to collide -- proven red by the fixture's shadow
+         * case before this line existed. */
         int letters = 1, digits = 1;
         for (const char *p = lx->cur.text; *p; p++) {
             if (!isalpha((unsigned char)*p)) letters = 0;
@@ -1872,6 +1877,22 @@ static XlsxVal xlsx_frame_cell(XlsxEval *ev, const char *ref, long col) {
 
 static XlsxVal xlsx_cell_value_in(XlsxEval *ev, const char *sheet, int external,
                                   const char *ref) {
+    /* The external check comes BEFORE ref parsing: [1]!Table names a DEFINED
+     * NAME in an external workbook, so `ref` is not ref-shaped at all, and
+     * parsing first bounced it to a bare #REF! that never set the unsupported
+     * flag -- which made the whole class count as wrong ANSWERS instead of
+     * priced refusals. [1]Book1!A1 parsed, took this branch, and was reported
+     * correctly, which is why the gap stayed invisible. */
+    if (external && !ev->fr) {
+        /* A different workbook, which is not open. Excel caches the last-known
+         * value in xl/externalLinks, but reading a stale copy of a file we do
+         * not have and presenting it as current would be exactly the confident
+         * wrong number this module refuses. Reported by name instead. */
+        ev->unsupported = 1;
+        snprintf(ev->unsupported_name, sizeof ev->unsupported_name,
+                 "external workbook reference %s!%s", sheet, ref);
+        return xv_err("#REF!");
+    }
     long col, row;
     if (!xlsx_parse_ref(ref, &col, &row)) return xv_err("#REF!");
     if (ev->fr) {
@@ -1879,16 +1900,6 @@ static XlsxVal xlsx_cell_value_in(XlsxEval *ev, const char *sheet, int external,
          * computed, so both are errors rather than something to guess at. */
         if (external || (sheet && *sheet)) return xv_err("#REF!");
         return xlsx_frame_cell(ev, ref, col);
-    }
-    if (external) {
-        /* A different workbook, which is not open. Excel caches the last-known
-         * value in xl/externalLinks, but reading a stale copy of a file we do
-         * not have and presenting it as current would be exactly the confident
-         * wrong number this module refuses. Reported by name instead. */
-        ev->unsupported = 1;
-        snprintf(ev->unsupported_name, sizeof ev->unsupported_name,
-                 "external workbook reference %s", sheet);
-        return xv_err("#REF!");
     }
     const XlsxSnap *snap = xlsx_eval_sheet(ev, sheet);
     if (!snap) return xv_err("#REF!");
@@ -2409,6 +2420,25 @@ static int xlsx_civil_from_serial(double serial, long *y, long *m, long *d) {
     return 1;
 }
 
+/* An English month name or its 3-letter abbreviation, case-insensitive.
+ * ENGLISH ONLY, deliberately: what Excel accepts here is locale-dependent,
+ * the measured corpus is US English, and guessing at other locales' names
+ * would trade a visible refusal for a silent wrong month. */
+static int xlsx_month_name(const char *s, long *m) {
+    static const char *names[12] = {
+        "JANUARY", "FEBRUARY", "MARCH", "APRIL", "MAY", "JUNE",
+        "JULY", "AUGUST", "SEPTEMBER", "OCTOBER", "NOVEMBER", "DECEMBER"
+    };
+    size_t len = strlen(s);
+    if (len < 3) return 0;
+    for (int i = 0; i < 12; i++) {
+        int abbrev = len == 3 && strncasecmp(s, names[i], 3) == 0;
+        int full = strcasecmp(s, names[i]) == 0;
+        if (abbrev || full) { *m = i + 1; return 1; }
+    }
+    return 0;
+}
+
 static int xlsx_as_serial(XlsxVal v, double *out) {
     if (v.kind == XV_NUM || v.kind == XV_BOOL || v.kind == XV_EMPTY) {
         return xlsx_as_num(v, out);
@@ -2418,6 +2448,21 @@ static int xlsx_as_serial(XlsxVal v, double *out) {
     if (sscanf(v.str, "%ld-%ld-%ld", &y, &m, &d) == 3 ||
         sscanf(v.str, "%ld/%ld/%ld", &m, &d, &y) == 3) {
         if (m < 1 || m > 12 || d < 1 || d > xlsx_days_in_month(y, (unsigned)m)) return 0;
+        double s = xlsx_serial_from_civil(y, (unsigned)m, (unsigned)d);
+        if (s < 0) return 0;
+        *out = s;
+        return 1;
+    }
+    /* The MONTH-NAME form -- "01-JAN-2001", "5-Dec-2001", "15-mar-99" --
+     * which the corpus's date functions receive as TEXT constantly (MONTH(E5)
+     * over a text column of DD-MMM-YYYY: 7,484 cells in one book). A
+     * two-digit year pivots the way Excel's does: 00-29 is 2000s, 30-99 is
+     * 1900s. */
+    char mon[16];
+    if (sscanf(v.str, "%ld-%15[A-Za-z]-%ld", &d, mon, &y) == 3 &&
+        xlsx_month_name(mon, &m)) {
+        if (y >= 0 && y < 100) y += (y < 30) ? 2000 : 1900;
+        if (d < 1 || d > xlsx_days_in_month(y, (unsigned)m)) return 0;
         double s = xlsx_serial_from_civil(y, (unsigned)m, (unsigned)d);
         if (s < 0) return 0;
         *out = s;

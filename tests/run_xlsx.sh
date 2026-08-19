@@ -908,6 +908,73 @@ else
     status=1
 fi
 
+# --- Tier 2e8: EXTD -- external workbook NAMES + month-name text dates ----------
+#
+# Two corpus classes sampled 2026-08-19 (§13.AE), one fixture:
+#
+# (1) [1]!Table names a DEFINED NAME in an EXTERNAL workbook. Two defects
+# stacked: xlsx_cell_value_in parsed the ref BEFORE its external check, so a
+# name-shaped ref bounced to a bare #REF! that never set the unsupported flag
+# (the class counted as wrong ANSWERS, not priced refusals -- [1]Book1!A1
+# parsed and was reported fine, which kept the gap invisible); and the
+# sheet-qualified name splice did not veto external qualifiers, so a COLLIDING
+# internal name answered with the WRONG WORKBOOK's value -- the fixture's
+# shadow case (internal Table = 42) proved that red before the guard existed.
+#
+# (2) Text dates with MONTH NAMES -- MONTH("01-JAN-2001") answered #VALUE!
+# where Excel coerces DD-MMM-YYYY (7,484 cells in one book). English only,
+# deliberately: the corpus is US English and other locales' names would trade
+# a visible refusal for a silent wrong month. Two-digit years pivot at 30.
+printf -- '-- extd: external names priced not judged; DD-MMM-YYYY coerces\n'
+edir2="$tmp/extd"
+rm -rf "$edir2"; mkdir -p "$edir2/_rels" "$edir2/xl/_rels" "$edir2/xl/worksheets"
+printf '%s' '<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>' >"$edir2/[Content_Types].xml"
+printf '%s' '<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>' >"$edir2/_rels/.rels"
+printf '%s' '<?xml version="1.0"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="X" sheetId="1" r:id="rId1"/></sheets><definedNames><definedName name="Table">X!$E$1</definedName></definedNames></workbook>' >"$edir2/xl/workbook.xml"
+printf '%s' '<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>' >"$edir2/xl/_rels/workbook.xml.rels"
+{
+  printf '<?xml version="1.0"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>'
+  printf '<row r="1"><c r="A1"><v>1</v></c><c r="E1"><v>42</v></c><c r="B1"><f>[1]!Table</f><v>6.158</v></c><c r="C1"><f>MONTH("01-JAN-2001")</f><v>1</v></c></row>'
+  printf '<row r="2"><c r="B2"><f>VLOOKUP($A1,[1]!Table,MATCH(A$1,[1]!Curves,0))</f><v>6.158</v></c><c r="C2"><f>YEAR("15-mar-99")</f><v>1999</v></c></row>'
+  printf '<row r="3"><c r="B3"><f>Table+1</f><v>43</v></c><c r="C3"><f>DAY("5-Dec-2001")</f><v>5</v></c></row>'
+  printf '<row r="4"><c r="C4"><f>MONTH("2001-03-15")</f><v>3</v></c></row>'
+  printf '<row r="5"><c r="C5" t="e"><f>MONTH("BANANA-1-2")</f><v>#VALUE!</v></c></row>'
+  printf '</sheetData></worksheet>'
+} >"$edir2/xl/worksheets/sheet1.xml"
+( cd "$edir2" && zip -q -r -X ../extd.xlsx . )
+cat >"$tmp/extd.bas" <<'EOB'
+program main(args)
+  wb = xlsx.open(args[0])
+  print "internal name works    : " + xlsx.evaluate(wb, "X", "B3")
+  print "external name refused  : " + xlsx.evaluate(wb, "X", "B1")
+  print "month-name date        : " + xlsx.evaluate(wb, "X", "C1")
+  print "lowercase, 2-digit year: " + xlsx.evaluate(wb, "X", "C2")
+  print "one-digit day          : " + xlsx.evaluate(wb, "X", "C3")
+  print "numeric form still ok  : " + xlsx.evaluate(wb, "X", "C4")
+  print "junk still refuses     : " + xlsx.evaluate(wb, "X", "C5")
+  r = xlsx.check(wb, "X")
+  print "check disagree         : " + string(r.disagree)
+  print "check unsupported      : " + string(r.unsupported)
+end program
+EOB
+extd_want='internal name works    : 43
+external name refused  : #REF!
+month-name date        : 1
+lowercase, 2-digit year: 1999
+one-digit day          : 5
+numeric form still ok  : 3
+junk still refuses     : #VALUE!
+check disagree         : 0
+check unsupported      : 2'
+extd_got=$(timeout 60 ./gbasic "$tmp/extd.bas" "$tmp/extd.xlsx" 2>&1)
+if [ "$extd_got" = "$extd_want" ]; then
+    printf 'PASS extd: external names never resolve internally, month names coerce\n'
+else
+    printf 'FAIL extd\n'
+    diff <(printf '%s\n' "$extd_want") <(printf '%s\n' "$extd_got") || true
+    status=1
+fi
+
 # --- Tier 2f: post-2001 capabilities --------------------------------------------
 #
 # The corpus is 2001 and cannot contain one function added since, so everything
