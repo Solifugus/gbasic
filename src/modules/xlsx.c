@@ -47,6 +47,17 @@ typedef struct {
     char *rel_id;        /* r:id linking workbook.xml to the rels */
 } XlsxSheet;
 
+/* A DEFINED NAME: `EffDt` standing for N!$B$1, `TaxRate` for 0.05, `Holidays`
+ * for a whole range. Stored as the refersTo TEXT, not a resolved value,
+ * because resolution must happen at the LEXER -- a name for a range has to
+ * arrive at an argument collector as REF COLON REF so it flattens in arg
+ * context, which no single value can express. */
+typedef struct {
+    char *name;
+    char *refers;        /* the refersTo text, any leading '=' stripped */
+    long local_sheet;    /* sheet index the name is scoped to; -1 = global */
+} XlsxDefinedName;
+
 struct XlsxWorkbook {
     size_t ref_count;
     char *path;
@@ -56,6 +67,8 @@ struct XlsxWorkbook {
     size_t sheet_count;
     char **shared;       /* the shared-string table, resolved */
     size_t shared_count;
+    XlsxDefinedName *defined;
+    size_t defined_count;
 };
 
 typedef struct XlsxWorkbook XlsxWorkbook;
@@ -397,6 +410,36 @@ static void xlsx_load_sheets(XlsxWorkbook *wb) {
 
     xmlNodePtr root = xmlDocGetRootElement(wdoc);
     for (xmlNodePtr n = root ? root->children : NULL; n; n = n->next) {
+        if (xlsx_is(n, "definedNames")) {
+            for (xmlNodePtr dn = n->children; dn; dn = dn->next) {
+                if (!xlsx_is(dn, "definedName")) {
+                    continue;
+                }
+                char *nm = xlsx_prop(dn, "name");
+                char *ls = xlsx_prop(dn, "localSheetId");
+                char *txt = xlsx_text_of(dn);
+                /* refersTo is stored without a leading '=', but a tolerant
+                 * skip costs nothing if a writer included one. */
+                const char *body = txt;
+                while (*body == '=' || *body == ' ') body++;
+                if (nm && *nm && *body) {
+                    wb->defined = realloc(wb->defined,
+                                          (wb->defined_count + 1) * sizeof *wb->defined);
+                    if (!wb->defined) {
+                        abort();
+                    }
+                    wb->defined[wb->defined_count].name = nm;
+                    wb->defined[wb->defined_count].refers = copy_string(body);
+                    wb->defined[wb->defined_count].local_sheet = ls ? strtol(ls, NULL, 10) : -1;
+                    wb->defined_count++;
+                } else {
+                    free(nm);
+                }
+                free(ls);
+                free(txt);
+            }
+            continue;
+        }
         if (!xlsx_is(n, "sheets")) {
             continue;
         }
@@ -1358,7 +1401,62 @@ typedef struct {
     const char *p;
     XlsxTok cur;
     int bad;
+    /* DEFINED-NAME SPLICE. When `names_wb` is set, a bare name (XT_NAME not
+     * followed by '(') that matches a defined name is replaced, AT THE LEXER,
+     * by the tokens of its refersTo text: the current position is pushed onto
+     * `resume` and `p` jumps into the definition (owned by the workbook, so
+     * no lifetime juggling). End of the definition pops back. Splicing text
+     * rather than evaluating a value is the point -- `Holidays` naming
+     * $A$1:$A$3 must reach an argument collector as REF COLON REF so it
+     * flattens as a range there.
+     *
+     * The stack cap is also the CYCLE GUARD: Loop1=Loop2, Loop2=Loop1 nests
+     * a level per splice without ever popping, hits the cap, and the raw
+     * name then flows through to die as #NAME? instead of hanging.
+     *
+     * NULL `names_wb` disables all of it, which keeps the SQL compiler and
+     * the frame-backed xlsx.apply path byte-for-byte unchanged. */
+    const XlsxWorkbook *names_wb;
+    long names_sheet;             /* current sheet's workbook index; -1 unknown */
+    const char *resume[16];
+    int sp;
 } XlsxLex;
+
+/* Is the next non-space character an open paren? Distinguishes SUM(A1) -- and
+ * SUM (A1), which Excel accepts -- from a bare name standing alone. */
+static int xlsx_next_is_lparen(const XlsxLex *lx) {
+    const char *q = lx->p;
+    while (*q == ' ' || *q == '\t' || *q == '\n' || *q == '\r') q++;
+    return *q == '(';
+}
+
+/* The refersTo text for `name` on sheet `sheet_idx`, or NULL. Excel treats
+ * defined names as case-insensitive; a sheet-local name shadows a global one
+ * of the same spelling. */
+static const char *xlsx_defined_lookup(const XlsxWorkbook *wb, long sheet_idx,
+                                       const char *name) {
+    if (!wb) return NULL;
+    const char *global = NULL;
+    for (size_t i = 0; i < wb->defined_count; i++) {
+        if (strcasecmp(wb->defined[i].name, name) != 0) continue;
+        if (wb->defined[i].local_sheet == sheet_idx && sheet_idx >= 0) {
+            return wb->defined[i].refers;
+        }
+        if (wb->defined[i].local_sheet < 0 && !global) {
+            global = wb->defined[i].refers;
+        }
+    }
+    return global;
+}
+
+/* The workbook index of the sheet called `name`, for local-name scoping. */
+static long xlsx_sheet_index(const XlsxWorkbook *wb, const char *name) {
+    if (!wb || !name) return -1;
+    for (size_t i = 0; i < wb->sheet_count; i++) {
+        if (strcmp(wb->sheets[i].name, name) == 0) return (long)i;
+    }
+    return -1;
+}
 
 /* Scan the reference that follows a sheet qualifier's `!`. The sheet name is
  * already in lx->cur.sheet.
@@ -1398,7 +1496,16 @@ static void xlsx_lex_next(XlsxLex *lx) {
     lx->cur.sheet[0] = '\0';
     lx->cur.external = 0;
     char c = *lx->p;
-    if (!c) { lx->cur.kind = XT_END; return; }
+    if (!c) {
+        /* End of a SPLICED definition: pop back to just after the name. */
+        if (lx->sp > 0) {
+            lx->p = lx->resume[--lx->sp];
+            xlsx_lex_next(lx);
+            return;
+        }
+        lx->cur.kind = XT_END;
+        return;
+    }
 
     if (c == '(') { lx->p++; lx->cur.kind = XT_LPAREN; return; }
     if (c == ')') { lx->p++; lx->cur.kind = XT_RPAREN; return; }
@@ -1509,6 +1616,21 @@ static void xlsx_lex_next(XlsxLex *lx) {
             lx->cur.kind = XT_REF;
         } else {
             lx->cur.kind = XT_NAME;
+            /* A bare name in a workbook context: try the DEFINED NAMES. Not
+             * when '(' follows (that is a function, even with a space), and
+             * not past the stack cap (the cycle guard). TRUE/FALSE cannot be
+             * defined names, so the failed lookup leaves them untouched. */
+            if (lx->names_wb && !xlsx_next_is_lparen(lx) &&
+                lx->sp < (int)(sizeof lx->resume / sizeof lx->resume[0])) {
+                const char *rt = xlsx_defined_lookup(lx->names_wb, lx->names_sheet,
+                                                     lx->cur.text);
+                if (rt) {
+                    lx->resume[lx->sp++] = lx->p;
+                    lx->p = rt;
+                    xlsx_lex_next(lx);
+                    return;
+                }
+            }
         }
         return;
     }
@@ -3726,6 +3848,21 @@ static XlsxVal xlsx_primary(XlsxEval *ev) {
         nm[i] = '\0';
         if (strcmp(nm, "TRUE") == 0) { v = xv_bool(1); xlsx_lex_next(&ev->lx); break; }
         if (strcmp(nm, "FALSE") == 0) { v = xv_bool(0); xlsx_lex_next(&ev->lx); break; }
+        /* A BARE name -- no '(' follows -- that the lexer did not splice: an
+         * unknown (or cycle-capped) defined name. Excel's answer is #NAME?.
+         * It must not fall into xlsx_call, which advances twice expecting a
+         * paren and eats the tokens after the name; and it is reported BY
+         * NAME, because dying anonymously as #VALUE! is what kept this whole
+         * class off the roadmap -- the blockers ranking counts refusals by
+         * the name refused, and this path never recorded one. */
+        if (!xlsx_next_is_lparen(&ev->lx)) {
+            ev->unsupported = 1;
+            snprintf(ev->unsupported_name, sizeof ev->unsupported_name,
+                     "defined name %s", ev->lx.cur.text);
+            v = xv_err("#NAME?");
+            xlsx_lex_next(&ev->lx);
+            break;
+        }
         v = xlsx_call(ev, nm);
         break;
     }
@@ -4387,6 +4524,8 @@ static XlsxVal xlsx_eval_formula_in(XlsxWorkbook *wb, const XlsxSnap *snap,
     ev.pool = pool;
     ev.lx.p = formula;
     ev.lx.bad = 0;
+    ev.lx.names_wb = wb;
+    ev.lx.names_sheet = xlsx_sheet_index(wb, sheet_name);
     xlsx_lex_next(&ev.lx);
     XlsxVal v = xlsx_expr(&ev);
     /* A formula that yields an EMPTY cell is ZERO, not empty. `=Z50` where Z50
@@ -4428,14 +4567,20 @@ typedef struct {
     long r1, c1, r2, c2;
 } XlsxRefRect;
 
-/* Every reference a formula makes, sheet-qualified and unexpanded. */
-static void xlsx_formula_rects(const char *formula, XlsxRefRect **out, size_t *n) {
+/* Every reference a formula makes, sheet-qualified and unexpanded. The
+ * workbook and sheet index feed the lexer's defined-name splice: a formula
+ * reading `Dbl` where Dbl names $A$6 DEPENDS on A6, and a graph that cannot
+ * see through the name hands it a stale value in the wrong order. */
+static void xlsx_formula_rects(const XlsxWorkbook *wb, long sheet_idx,
+                               const char *formula, XlsxRefRect **out, size_t *n) {
     size_t cap = 0;
     *out = NULL; *n = 0;
     XlsxLex lx;
     memset(&lx, 0, sizeof lx);
     lx.p = formula;
     lx.bad = 0;
+    lx.names_wb = wb;
+    lx.names_sheet = sheet_idx;
     xlsx_lex_next(&lx);
     while (lx.cur.kind != XT_END) {
         if (!xlsx_range_endpoint(&lx.cur)) { xlsx_lex_next(&lx); continue; }
@@ -4497,12 +4642,16 @@ static void xlsx_formula_rects(const char *formula, XlsxRefRect **out, size_t *n
     }
 }
 
-static void xlsx_formula_refs(const char *formula, long **rows, long **cols, size_t *n) {
+static void xlsx_formula_refs(const XlsxWorkbook *wb, long sheet_idx,
+                              const char *formula, long **rows, long **cols, size_t *n) {
     size_t cap = 0;
     *rows = NULL; *cols = NULL; *n = 0;
     XlsxLex lx;
+    memset(&lx, 0, sizeof lx);   /* the splice stack must start empty */
     lx.p = formula;
     lx.bad = 0;
+    lx.names_wb = wb;
+    lx.names_sheet = sheet_idx;
     xlsx_lex_next(&lx);
     while (lx.cur.kind != XT_END) {
         if (lx.cur.kind != XT_REF) {
@@ -4683,7 +4832,8 @@ static void xlsx_book_deps(const XlsxBook *bk, long si, const XlsxRefRect *rect,
  * 1 in-progress, 2 done; an edge back into an in-progress cell is a CIRCULAR
  * REFERENCE, which is reported rather than iterated toward a fixed point (Excel
  * only does that when the user opts in). */
-static void xlsx_topo_visit(const XlsxSnap *snap, size_t i, int *state,
+static void xlsx_topo_visit(const XlsxWorkbook *wb, long sheet_idx,
+                            const XlsxSnap *snap, size_t i, int *state,
                             size_t *order, size_t *on, int *circular) {
     if (state[i] == 2) return;
     if (state[i] == 1) { circular[i] = 1; return; }
@@ -4692,7 +4842,7 @@ static void xlsx_topo_visit(const XlsxSnap *snap, size_t i, int *state,
     if (c->formula) {
         long *rr = NULL, *cc = NULL;
         size_t rn = 0;
-        xlsx_formula_refs(c->formula, &rr, &cc, &rn);
+        xlsx_formula_refs(wb, sheet_idx, c->formula, &rr, &cc, &rn);
         for (size_t k = 0; k < rn; k++) {
             /* Indexed, not scanned. This loop is per-reference inside a
              * per-formula walk, so a linear scan here made building the
@@ -4700,7 +4850,7 @@ static void xlsx_topo_visit(const XlsxSnap *snap, size_t i, int *state,
              * xlsx_snap_at, and on the same workbooks. */
             size_t j = xlsx_snap_pos(snap, rr[k], cc[k]);
             if (j != (size_t)-1 && snap->cells[j].formula) {
-                xlsx_topo_visit(snap, j, state, order, on, circular);
+                xlsx_topo_visit(wb, sheet_idx, snap, j, state, order, on, circular);
                 if (circular[j]) circular[i] = 1;
             }
         }
@@ -4760,6 +4910,11 @@ static void xlsx_workbook_release(XlsxWorkbook *wb) {
         free(wb->shared[i]);
     }
     free(wb->shared);
+    for (size_t i = 0; i < wb->defined_count; i++) {
+        free(wb->defined[i].name);
+        free(wb->defined[i].refers);
+    }
+    free(wb->defined);
     free(wb->path);
     free(wb);
 }
@@ -5894,7 +6049,10 @@ static Value xlsx_eval_call(AstExpr *expr) {
                     const XlsxSnapCell *c = &s->cells[f->node - bk.base[si]];
                     XlsxRefRect *rects = NULL;
                     size_t rn = 0;
-                    if (c->formula) xlsx_formula_rects(c->formula, &rects, &rn);
+                    /* bk skips part-less (macro) sheets, so its index is not
+                     * the workbook's; local-name scope needs the real one. */
+                    if (c->formula) xlsx_formula_rects(wb, xlsx_sheet_index(wb, bk.names[si]),
+                                                       c->formula, &rects, &rn);
                     size_t dcap = 0;
                     for (size_t k = 0; k < rn; k++) {
                         if (rects[k].external) continue;
@@ -6019,7 +6177,8 @@ static Value xlsx_eval_call(AstExpr *expr) {
         size_t on = 0;
         for (size_t i = 0; i < snap.count; i++) {
             if (snap.cells[i].formula) {
-                xlsx_topo_visit(&snap, i, state, order, &on, circ);
+                xlsx_topo_visit(wb, xlsx_sheet_index(wb, shv.as.string),
+                                &snap, i, state, order, &on, circ);
             }
         }
 

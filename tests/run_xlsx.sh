@@ -514,6 +514,102 @@ else
     status=1
 fi
 
+# --- Tier 2e3: DEFNAMES -- defined names spliced at the lexer -------------------
+#
+# Found by corpus sampling (2026-08-18): a bare defined name (EffDt, Date,
+# mrg_output) fell into the function-call path, which consumed the tokens after
+# it and answered #VALUE!. Because that path never recorded a NAME it refused,
+# the whole class was invisible to the blockers ranking -- and the ranker's
+# "FUNC DATE, 66,735 cells" was the defined name `Date` upper-cased into the
+# DATE function's bucket. The dominant books-share of the remaining err->num
+# disagreements.
+#
+# The fix is a LEXER-LEVEL SPLICE of the name's refersTo text, not evaluation
+# to a value: `Holidays` naming $A$1:$A$3 must arrive at SUM's argument
+# collector as REF COLON REF so it flattens as a range, which a value-level
+# expansion cannot do. A resume-stack depth cap doubles as the cycle guard.
+#
+# CAVEAT, as with basic.xlsx: cached values here are hand-written, so check
+# measures self-consistency; the corpus re-measure afterward is the oracle.
+printf -- '-- defnames: defined names resolve by textual splice\n'
+ndir="$tmp/defnames"
+rm -rf "$ndir"; mkdir -p "$ndir/_rels" "$ndir/xl/_rels" "$ndir/xl/worksheets"
+printf '%s' '<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/worksheets/sheet2.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>' >"$ndir/[Content_Types].xml"
+printf '%s' '<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>' >"$ndir/_rels/.rels"
+# Two sheets so localSheetId scoping is real: `Scoped` is 10 globally and 20
+# local to sheet index 1 (Two). `Date` is a defined name that SPELLS a function.
+printf '%s' '<?xml version="1.0"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="N" sheetId="1" r:id="rId1"/><sheet name="Two" sheetId="2" r:id="rId2"/></sheets><definedNames><definedName name="TaxRate">0.05</definedName><definedName name="EffDt">N!$B$1</definedName><definedName name="Vals">N!$A$1:$A$3</definedName><definedName name="Gross">N!$B$2</definedName><definedName name="Fees">N!$B$3</definedName><definedName name="Net">Gross-Fees</definedName><definedName name="Loop1">Loop2</definedName><definedName name="Loop2">Loop1</definedName><definedName name="Date">N!$B$1</definedName><definedName name="Scoped">10</definedName><definedName name="Scoped" localSheetId="1">20</definedName><definedName name="Dbl">N!$A$6</definedName></definedNames></workbook>' >"$ndir/xl/workbook.xml"
+printf '%s' '<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet2.xml"/></Relationships>' >"$ndir/xl/_rels/workbook.xml.rels"
+{
+  printf '<?xml version="1.0"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>'
+  # D1 sits in ROW 1 and depends -- only through the name Dbl -- on A6, a
+  # formula in ROW 6. Cell-order evaluation hands D1 a stale A6, so after
+  # changing B6 the cached D1 says 15 where the only correct answer is 101.
+  # That is the assertion that fails if the dependency walker cannot see
+  # through a defined name.
+  printf '<row r="1"><c r="A1"><v>1</v></c><c r="B1"><v>44000</v></c><c r="C1"><f>TaxRate*100</f><v>5</v></c><c r="D1"><f>Dbl+1</f><v>15</v></c></row>'
+  printf '<row r="2"><c r="A2"><v>2</v></c><c r="B2"><v>100</v></c><c r="C2"><f>EffDt</f><v>44000</v></c></row>'
+  printf '<row r="3"><c r="A3"><v>3</v></c><c r="B3"><v>15</v></c><c r="C3"><f>SUM(Vals)</f><v>6</v></c></row>'
+  printf '<row r="4"><c r="C4"><f>Net</f><v>85</v></c></row>'
+  printf '<row r="5"><c r="C5"><f>Loop1+1</f><v>0</v></c></row>'
+  printf '<row r="6"><c r="A6"><f>B6*2</f><v>14</v></c><c r="B6"><v>7</v></c><c r="C6"><f>NoSuchName</f><v>0</v></c></row>'
+  printf '<row r="7"><c r="C7"><f>taxrate*200</f><v>10</v></c></row>'
+  printf '<row r="8"><c r="C8"><f>Date+1</f><v>44001</v></c><c r="C9"><f>Scoped</f><v>10</v></c></row>'
+  printf '</sheetData></worksheet>'
+} >"$ndir/xl/worksheets/sheet1.xml"
+printf '%s' '<?xml version="1.0"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row r="1"><c r="A1"><f>Scoped</f><v>20</v></c></row></sheetData></worksheet>' >"$ndir/xl/worksheets/sheet2.xml"
+( cd "$ndir" && zip -q -r -X ../defnames.xlsx . )
+cat >"$tmp/defnames.bas" <<'EOB'
+program main(args)
+  wb = xlsx.open(args[0])
+  print "constant name        : " + xlsx.evaluate(wb, "N", "C1")
+  print "cell name            : " + xlsx.evaluate(wb, "N", "C2")
+  print "range name in SUM    : " + xlsx.evaluate(wb, "N", "C3")
+  print "nested names         : " + xlsx.evaluate(wb, "N", "C4")
+  print "cycle is an error    : " + xlsx.evaluate(wb, "N", "C5")
+  print "unknown name         : " + xlsx.evaluate(wb, "N", "C6")
+  print "case-insensitive     : " + xlsx.evaluate(wb, "N", "C7")
+  print "name spelled Date    : " + xlsx.evaluate(wb, "N", "C8")
+  print "global scope         : " + xlsx.evaluate(wb, "N", "C9")
+  print "local scope wins     : " + xlsx.evaluate(wb, "Two", "A1")
+  xlsx.set(wb, "N", "B6", 50)
+  xlsx.recalc(wb, "N")
+  print "recalc through name  : " + xlsx.cell(wb, "N", "D1").value
+end program
+EOB
+defnames_want='constant name        : 5
+cell name            : 44000
+range name in SUM    : 6
+nested names         : 85
+cycle is an error    : #NAME?
+unknown name         : #NAME?
+case-insensitive     : 10
+name spelled Date    : 44001
+global scope         : 10
+local scope wins     : 20
+recalc through name  : 101'
+defnames_got=$(timeout 60 ./gbasic "$tmp/defnames.bas" "$tmp/defnames.xlsx" 2>&1)
+if [ "$defnames_got" = "$defnames_want" ]; then
+    printf 'PASS defnames splice: constants, cells, ranges, nesting, scope, cycle, recalc\n'
+else
+    printf 'FAIL defnames\n'
+    diff <(printf '%s\n' "$defnames_want") <(printf '%s\n' "$defnames_got") || true
+    status=1
+fi
+
+# check must skip the two cells only WE cannot answer (the cycle and the
+# unknown name -- both reported as unsupported BY NAME, which is what made
+# this class visible at last) and disagree on nothing it does judge. A fresh
+# open, because the recalc above legitimately moved cached values.
+printf 'program main(args)\n  wb = xlsx.open("%s")\n  r = xlsx.check(wb, "N")\n  print r.disagree\n  print r.unsupported\nend program\n' "$tmp/defnames.xlsx" >"$tmp/defchk.bas"
+defchk=$(timeout 60 ./gbasic "$tmp/defchk.bas" 2>/dev/null | tr '\n' ' ')
+if [ "$defchk" = "0 2 " ]; then
+    printf 'PASS defnames check: zero disagreements, cycle+unknown reported unsupported\n'
+else
+    printf 'FAIL defnames check: disagree/unsupported were "%s", want "0 2"\n' "$defchk"
+    status=1
+fi
+
 # --- Tier 2f: post-2001 capabilities --------------------------------------------
 #
 # The corpus is 2001 and cannot contain one function added since, so everything
