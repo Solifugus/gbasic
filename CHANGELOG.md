@@ -129,6 +129,18 @@ order, one that misses the day end moves **whole** to the next day, and one
 that fits nowhere is reported in `unplaced:` rather than dropped. With this,
 every planned v1 layer of the datetime redesign is built.
 
+### Timezones (docs/datetime_design.md §9)
+
+`to_zone` / `from_zone` / `zone_offset` / `zone_resolve`, core builtins in the
+epoch family over the system IANA database. UTC for the timeline, civil time
+for the calendar, zone names at the edges — no zone field on datetimes, no new
+kind. DST edges are named, never guessed: the compatible default (ambiguous →
+earlier, gap → shifted forward) with `zone_resolve` exposing both instants.
+Unknown zones and all-day values are refused — glibc's silent UTC fallback on
+a bad `TZ` is exactly the plausible-wrong-answer class this design refuses.
+Safe with actors (processes, not threads); `TZ` is saved and restored around
+every call.
+
 ### Recurrence extension
 
 `when:` without `nth:` in a series emits **every** matching day in the period

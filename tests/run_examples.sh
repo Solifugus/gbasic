@@ -63,6 +63,7 @@ examples=(
     cookbook_social_test.bas
     cookbook_econ_test.bas
     epoch_test.bas
+    zone_test.bas
     bitwise_test.bas
     monotonic_test.bas
     modifier_escape_test.bas

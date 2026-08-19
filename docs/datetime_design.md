@@ -379,8 +379,14 @@ twice.
 
 ## 9. What this deliberately does not do (v1)
 
-- **Timezones — position AGREED 2026-08-18 (Matthew), implementation still
-  deferred.** The doctrine: **UTC for the timeline, civil time for the
+- **Timezones — IMPLEMENTED 2026-08-18** as core builtins in the epoch family
+  (`to_zone`, `from_zone`, `zone_offset`, `zone_resolve`), exactly per the
+  position below; the DST policy landed as Temporal's "compatible" default
+  (ambiguous → earlier instant, nonexistent → shifted forward through the
+  gap) with `zone_resolve` exposing kind + both instants so callers can apply
+  their own. Unknown zones and all-day values are refused. Behind
+  `examples/zone_test.bas` (21 self-checks incl. both DST edges and a
+  half-hour zone) and cookbook recipe 11. The position, as agreed:** The doctrine: **UTC for the timeline, civil time for the
   calendar, zone names at the edges.** An enterprise server serves many zones
   at once, so *instants* (things that happened: logs, transactions) belong in
   UTC. But *future calendar intentions* must NOT be stored as UTC instants —

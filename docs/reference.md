@@ -2052,6 +2052,19 @@ two are never blurred: equality canonicalises within each family
 month-bearing duration with `<`/`>` raises, as does scaling its months by a
 non-integer. Refusals, not guesses: a month has no fixed length.
 
+**Timezone edges** — `to_zone(dt, zone)`, `from_zone(dt, zone)`,
+`zone_offset(dt, zone)`, `zone_resolve(dt, zone)`, with IANA names
+(`"America/Chicago"`, `"UTC"`). The doctrine (design §9): UTC for the
+timeline, civil time for the calendar, zone names at the edges — store future
+intentions as a rule plus a zone name, never as UTC instants. `from_zone`
+resolves DST edges by the "compatible" default (the repeated fall-back hour →
+the earlier instant; the spring-forward gap → shifted forward);
+`zone_resolve` returns `{kind, utc, earlier, later}` with `kind` one of
+`unique`/`ambiguous`/`nonexistent` so callers can choose their own policy.
+Unknown zones raise (a typo must not become quietly-UTC arithmetic), and
+all-day values raise (`… an all-day value has no instant`). Worked example:
+recipe 11 of `docs/datetime_cookbook.md`.
+
 **`epoch(datetime)`** converts a `datetime` to a number of seconds since the
 Unix epoch, and **`from_epoch(number)`** converts such a number back to a
 `datetime`. These bridge to systems that speak epoch seconds (for example JWT

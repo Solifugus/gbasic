@@ -1520,6 +1520,160 @@ static void format_number(char *buf, size_t bufsize, double v) {
  * yields the same instant epoch() reports. Missing calendar parts (year/month/
  * day-only precisions) default to the start of the period; a time-only value has
  * no date and cannot be placed on the timeline (*ok = 0). */
+/* ---------------------------------------------------------------------------
+ * Timezone edges (docs/datetime_design.md §9): UTC for the timeline, CIVIL
+ * time for the calendar, zone names at the edges. These builtins are the
+ * edges. There is deliberately no zone field on a datetime and no new kind --
+ * conversions take and return plain civil datetimes, and the zone name lives
+ * in the caller's data.
+ *
+ * Implementation: the system IANA database (/usr/share/zoneinfo) through the
+ * classic TZ + tzset technique. Not thread-safe in general; safe here because
+ * gBASIC's concurrency is processes (actors), never threads. The TZ variable
+ * is saved and restored around every call so the process's own zone is
+ * untouched.
+ *
+ * An UNKNOWN zone is REFUSED, and the check matters more than it looks:
+ * glibc's tzset falls back to UTC silently on a bad TZ, which would turn a
+ * typo like "America/Chigaco" into quietly-UTC arithmetic -- the exact class
+ * of plausible wrong answer this design refuses everywhere else. */
+
+static int zone_name_valid(const char *zone) {
+    if (!zone || !zone[0] || zone[0] == '/') {
+        return 0;
+    }
+    for (const char *p = zone; *p; p++) {
+        char c = *p;
+        int ok = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+                 (c >= '0' && c <= '9') || c == '/' || c == '_' ||
+                 c == '+' || c == '-' || c == '.';
+        if (!ok) {
+            return 0;
+        }
+    }
+    if (strstr(zone, "..")) {
+        return 0;
+    }
+    if (strcmp(zone, "UTC") == 0 || strcmp(zone, "GMT") == 0) {
+        return 1;
+    }
+    char path[512];
+    snprintf(path, sizeof(path), "/usr/share/zoneinfo/%s", zone);
+    struct stat st;
+    return stat(path, &st) == 0 && S_ISREG(st.st_mode);
+}
+
+static char *zone_push(const char *zone) {
+    const char *cur = getenv("TZ");
+    char *saved = cur ? copy_string(cur) : NULL;
+    setenv("TZ", zone, 1);
+    tzset();
+    return saved;
+}
+
+static void zone_pop(char *saved) {
+    if (saved) {
+        setenv("TZ", saved, 1);
+        free(saved);
+    } else {
+        unsetenv("TZ");
+    }
+    tzset();
+}
+
+static void zone_fill_tm(DateTime dt, struct tm *tm) {
+    memset(tm, 0, sizeof(*tm));
+    tm->tm_year = dt.year - 1900;
+    tm->tm_mon = (dt.month >= 1 ? dt.month : 1) - 1;
+    tm->tm_mday = dt.day >= 1 ? dt.day : 1;
+    tm->tm_hour = dt.hour;
+    tm->tm_min = dt.minute;
+    tm->tm_sec = dt.second;
+}
+
+static int zone_tm_matches(const struct tm *l, DateTime dt) {
+    return l->tm_year == dt.year - 1900 &&
+           l->tm_mon == dt.month - 1 &&
+           l->tm_mday == dt.day &&
+           l->tm_hour == dt.hour &&
+           l->tm_min == dt.minute &&
+           l->tm_sec == dt.second;
+}
+
+/* Resolve a civil time in a zone to instants. 0 = unique, 1 = ambiguous
+ * (the repeated fall-back hour), 2 = nonexistent (the spring-forward gap).
+ * The chosen default is Temporal's "compatible": ambiguous takes the EARLIER
+ * instant; nonexistent shifts FORWARD by the gap (i.e. the pre-transition
+ * offset's reading, which renders as the local time after the gap).
+ *
+ * Method: interpret the fields under both isdst hints and keep the epochs
+ * whose round trip reproduces the fields exactly. Two survivors = ambiguous,
+ * one = unique, none = the gap (where both interpretations are real instants
+ * on either side of it). */
+static int zone_resolve_instants(DateTime dt, const char *zone,
+                                 long long *chosen, long long *earlier,
+                                 long long *later) {
+    char *saved = zone_push(zone);
+    struct tm t0, t1, chk;
+    zone_fill_tm(dt, &t0);
+    t0.tm_isdst = 0;
+    zone_fill_tm(dt, &t1);
+    t1.tm_isdst = 1;
+    time_t e0 = mktime(&t0);
+    time_t e1 = mktime(&t1);
+    int ok0 = 0, ok1 = 0;
+    if (e0 != (time_t)-1 && localtime_r(&e0, &chk)) {
+        ok0 = zone_tm_matches(&chk, dt);
+    }
+    if (e1 != (time_t)-1 && localtime_r(&e1, &chk)) {
+        ok1 = zone_tm_matches(&chk, dt);
+    }
+    zone_pop(saved);
+
+    long long a = (long long)e0;
+    long long b = (long long)e1;
+    if (ok0 && ok1 && a != b) {
+        *earlier = a < b ? a : b;
+        *later = a < b ? b : a;
+        *chosen = *earlier;
+        return 1;
+    }
+    if (ok0 || ok1) {
+        *chosen = ok0 ? a : b;
+        *earlier = *chosen;
+        *later = *chosen;
+        return 0;
+    }
+    /* The gap: both interpretations are real instants either side of it.
+     * Forward shift = the LATER instant (02:30 EST reads back as 03:30 EDT). */
+    *earlier = a < b ? a : b;
+    *later = a < b ? b : a;
+    *chosen = *later;
+    return 2;
+}
+
+/* UTC epoch seconds from civil fields interpreted AS UTC. */
+static long long zone_timegm(DateTime dt) {
+    struct tm tm;
+    zone_fill_tm(dt, &tm);
+    return (long long)timegm(&tm);
+}
+
+static DateTime zone_civil_from_epoch_utc(long long epoch, DateTimePrecision prec) {
+    time_t raw = (time_t)epoch;
+    struct tm g;
+    gmtime_r(&raw, &g);
+    DateTime dt = {0};
+    dt.year = g.tm_year + 1900;
+    dt.month = g.tm_mon + 1;
+    dt.day = g.tm_mday;
+    dt.hour = g.tm_hour;
+    dt.minute = g.tm_min;
+    dt.second = g.tm_sec;
+    dt.precision = prec < PREC_HOUR ? PREC_SECOND : prec;
+    return dt;
+}
+
 static double datetime_to_epoch(DateTime dt, int *ok) {
     if (dt.time_only) {
         *ok = 0;
@@ -5053,6 +5207,109 @@ static Value datetime_field_value(DateTime dt, const char *name) {
     snprintf(message, sizeof(message), "datetime has no field '%s'", name);
     runtime_error_raise(message, 1003, "datetime");
     return value_null();
+}
+
+/* Dispatcher for the zone-edge builtins (docs/datetime_design.md §9). All
+ * four share the same shape: (datetime, zone-name) in, refusals for all-day
+ * values and unknown zones, and the compatible-default DST policy with
+ * zone_resolve exposing the full picture so nothing is a silent guess. */
+static Value zone_eval_call(AstExpr *expr) {
+    const char *name = expr->as.call.name;
+    char message[192];
+    if (expr->as.call.args.count != 2) {
+        snprintf(message, sizeof(message), "%s expects a datetime and a zone name", name);
+        runtime_error_raise(message, 1003, "invalid function call");
+        return value_null();
+    }
+    Value dv = eval_expr(expr->as.call.args.items[0]);
+    if (error_action_pending()) {
+        value_free(dv);
+        return value_null();
+    }
+    Value zv = eval_expr(expr->as.call.args.items[1]);
+    if (error_action_pending()) {
+        value_free(dv);
+        value_free(zv);
+        return value_null();
+    }
+    if (dv.kind != VALUE_DATETIME || zv.kind != VALUE_STRING) {
+        value_free(dv);
+        value_free(zv);
+        snprintf(message, sizeof(message), "%s expects a datetime and a zone name", name);
+        runtime_error_raise(message, 1003, "invalid argument type");
+        return value_null();
+    }
+    DateTime dt = dv.as.datetime;
+    char zone[256];
+    snprintf(zone, sizeof(zone), "%s", zv.as.string);
+    value_free(dv);
+    value_free(zv);
+
+    if (dt.time_only || dt.precision < PREC_HOUR) {
+        /* The all-day trap from §9: a due date has NO instant, and treating it
+         * as midnight is the classic off-by-one-day-across-zones bug. */
+        snprintf(message, sizeof(message),
+                 "%s requires a time of day (hour precision or finer); an all-day value has no instant",
+                 name);
+        runtime_error_raise(message, 1003, "datetime");
+        return value_null();
+    }
+    if (!zone_name_valid(zone)) {
+        snprintf(message, sizeof(message),
+                 "unknown timezone '%s' (expected an IANA name like America/New_York, or UTC)",
+                 zone);
+        runtime_error_raise(message, 1003, "datetime");
+        return value_null();
+    }
+
+    if (strcmp(name, "to_zone") == 0) {
+        long long epoch = zone_timegm(dt);
+        char *saved = zone_push(zone);
+        time_t raw = (time_t)epoch;
+        struct tm l;
+        localtime_r(&raw, &l);
+        zone_pop(saved);
+        DateTime out = {0};
+        out.year = l.tm_year + 1900;
+        out.month = l.tm_mon + 1;
+        out.day = l.tm_mday;
+        out.hour = l.tm_hour;
+        out.minute = l.tm_min;
+        out.second = l.tm_sec;
+        out.precision = dt.precision;
+        return value_datetime(out);
+    }
+
+    long long chosen, earlier, later;
+    int kind = zone_resolve_instants(dt, zone, &chosen, &earlier, &later);
+
+    if (strcmp(name, "from_zone") == 0) {
+        return value_datetime(zone_civil_from_epoch_utc(chosen, dt.precision));
+    }
+    if (strcmp(name, "zone_offset") == 0) {
+        long long naive = zone_timegm(dt);
+        return value_duration(duration_from_totals(0, naive - chosen));
+    }
+    /* zone_resolve: the full picture, so callers can implement their own
+     * policy instead of accepting the compatible default. */
+    RecordField *fields = calloc(4, sizeof(RecordField));
+    if (!fields) {
+        abort();
+    }
+    fields[0].name = copy_string("kind");
+    fields[0].value = cell_alloc();
+    *fields[0].value = value_string(kind == 0 ? "unique"
+                                   : kind == 1 ? "ambiguous" : "nonexistent");
+    fields[1].name = copy_string("utc");
+    fields[1].value = cell_alloc();
+    *fields[1].value = value_datetime(zone_civil_from_epoch_utc(chosen, dt.precision));
+    fields[2].name = copy_string("earlier");
+    fields[2].value = cell_alloc();
+    *fields[2].value = value_datetime(zone_civil_from_epoch_utc(earlier, dt.precision));
+    fields[3].name = copy_string("later");
+    fields[3].value = cell_alloc();
+    *fields[3].value = value_datetime(zone_civil_from_epoch_utc(later, dt.precision));
+    return value_record(fields, 4);
 }
 
 static Value duration_field_value(Duration d, const char *name) {
@@ -19009,6 +19266,13 @@ static Value eval_call(AstExpr *expr) {
             return value_null();
         }
         return value_number((double)ts.tv_sec + (double)ts.tv_nsec / 1000000000.0);
+    }
+
+    if (strcmp(expr->as.call.name, "to_zone") == 0 ||
+        strcmp(expr->as.call.name, "from_zone") == 0 ||
+        strcmp(expr->as.call.name, "zone_offset") == 0 ||
+        strcmp(expr->as.call.name, "zone_resolve") == 0) {
+        return zone_eval_call(expr);
     }
 
     if (strcmp(expr->as.call.name, "from_epoch") == 0) {

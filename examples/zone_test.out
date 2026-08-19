@@ -1,0 +1,21 @@
+ok NY in summer (EDT -4) 
+ok NY in winter (EST -5) 
+ok Berlin summer (+2)    
+ok Kolkata (+5:30)       
+ok UTC is identity       
+ok NY local -> UTC       
+ok round trip            
+ok NY offset in August   
+ok NY offset in January  
+ok Kolkata half-hour zone
+ok Oct meeting (CDT -5)  
+ok Nov meeting (CST -6)  
+ok gap is nonexistent    
+ok gap shifts FORWARD    
+ok repeat is ambiguous   
+ok earlier instant       
+ok later instant         
+ok default = earlier     
+ok normal time is unique 
+ok resolve = from_zone   
+ok minute in, minute out 
