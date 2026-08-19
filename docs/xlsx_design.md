@@ -1657,6 +1657,48 @@ red. *Remaining top buckets, unsampled:* `#REF!`→num (30,938 / 137),
 NUMBERS, likely several causes and the first bucket where sampling may
 not find a single dominant one).
 
+### 13.AD Qualified names, array refusal, and the empty criteria (2026-08-19)
+
+§13.AC's three queued diagnoses — including num→num, the bucket predicted
+to have no single dominant cause. It had one after all:
+
+*`#REF!`→num was the sheet-qualified defined name* — `EO9904.2!mthend`,
+where the qualifier is a SCOPE hint (that sheet's local name first, else
+global). It passed through the lexer as an unparseable REF and the read
+failed. Now spliced like any defined name; nothing range-shaped (letters
+≤ 3, or digits) is ever treated as one, so `Data!A:B` endpoints are
+untouched.
+
+*`#VALUE!`→num's bulk was CSE array formulas* — `<f t="array">` holding
+`SUM(IF(NG=C4,D4))`, the classic array-SUMIF idiom. Scalar evaluation
+gives a plausible WRONG NUMBER (implicit intersection turns the array
+comparison into a per-row one), so they are REFUSED by name ("array
+formula") until array semantics exist — and recalc leaves their cached
+values untouched, the shared-formula corruption hazard again, pinned by
+its own tier case. Their true cost is now priced in `blockers` for the
+day array evaluation is built.
+
+*num→num's top was the empty-cell criteria* — a criteria referencing an
+empty cell is 0 in the IF-criteria family, the same rule the lookup key
+follows; textified naively it was `""`, which matched every BLANK cell
+(COUNTIF counted 9,351 where Excel cached 0). A literal `""` criteria is
+untouched — that one does match blanks.
+
+| | §13.AC end | after |
+|---|---|---|
+| disagreeing cells | 156,618 | **86,575** |
+| workbooks with any disagreement | 836 | **745** |
+| num→num cells | 58,963 | **18,385** |
+| `err`→num | 68,860 | **42,323** |
+| `#REF!`→num | 30,938 | **19,500** |
+| workbooks fully agreeing | 94.7% | **95.3%** |
+
+Day's full arc, §13.AA–AD: **446,733 cells / 1,083 books → 86,575 / 745**
+— an 81% cell reduction in eight one-cause fixes plus one honest refusal.
+*Remaining top:* `err`→num 42,323 / 207 and `#REF!`→num's residue
+19,500 / 110 (likely names/refs we still cannot see — external-adjacent),
+`err`→err 20,593 / 226, num→num's residue 18,385 / 315.
+
 ## 14. Roadmap (phases)
 
 **Read this section as history, not as a plan.** Phases 1 through 3b are built,
@@ -1668,9 +1710,9 @@ useful thing in this document — but it is no longer what says what to do next.
 the instruments in `tools/xlsx_corpus_*.sh`: `blockers` ranks what the evaluator
 REFUSES by the name it actually refused, and `disagree` ranks wrong ANSWERS by
 the shape of the mismatch, both reporting distinct workbooks beside cell counts.
-Run them; act on the top of the list; re-run. §13.V through §13.AC are that
-loop; §13.AC's table is current as of the commit that added it, and the next
-diagnoses it names are `#REF!`→num, `#VALUE!`→num and num→num.
+Run them; act on the top of the list; re-run. §13.V through §13.AD are that
+loop; §13.AD's table is current as of the commit that added it, and the next
+diagnoses it names are `err`→num's and `#REF!`→num's residues.
 
 *Why the change is not a preference.* The ordering below has now been contradicted
 by measurement three separate times. Phase 4 — the formula compiler's join and
