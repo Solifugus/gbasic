@@ -692,6 +692,77 @@ else
     status=1
 fi
 
+# --- Tier 2e5: COERCE -- the empty STRING does not coerce to a number -----------
+#
+# Found by corpus sampling (2026-08-19, §13.AB): the EOL_All_Swaps family
+# fills down DATE(LEFT(I4,4),MID(I4,5,2),MID(I4,7,2)) over rows whose source
+# cell is empty. LEFT("",4) is "", and xlsx_as_num coerced "" to 0 -- so DATE
+# range-checked 0/0/0 to #NUM! where Excel, refusing to coerce non-numeric
+# text (""+1 is #VALUE!), cached #VALUE!. ~65k cells with the right answer
+# SHAPE and the wrong error name. The rule now: the empty STRING fails
+# numeric coercion; the empty CELL still coerces to 0; numeric text still
+# coerces. The pins matter as much as the fixes -- SUM over a range holding
+# a text cell must still skip it (aggregates filter by KIND and never
+# coerce), and a real date built from real text must still build.
+printf -- '-- coerce: "" refuses, empty cell is 0, numeric text still coerces\n'
+codir="$tmp/coerce"
+rm -rf "$codir"; mkdir -p "$codir/_rels" "$codir/xl/_rels" "$codir/xl/worksheets"
+printf '%s' '<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>' >"$codir/[Content_Types].xml"
+printf '%s' '<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>' >"$codir/_rels/.rels"
+printf '%s' '<?xml version="1.0"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="C" sheetId="1" r:id="rId1"/></sheets></workbook>' >"$codir/xl/workbook.xml"
+printf '%s' '<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>' >"$codir/xl/_rels/workbook.xml.rels"
+{
+  printf '<?xml version="1.0"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>'
+  printf '<row r="1"><c r="A1"><v>5</v></c><c r="D1"><v>1</v></c><c r="C1" t="e"><f>""+1</f><v>#VALUE!</v></c></row>'
+  printf '<row r="2"><c r="A2" t="inlineStr"><is><t>20011231</t></is></c><c r="D2" t="inlineStr"><is><t></t></is></c><c r="C2" t="e"><f>DATE(LEFT(A3,4),MID(A3,5,2),MID(A3,7,2))</f><v>#VALUE!</v></c></row>'
+  printf '<row r="3"><c r="A3" t="inlineStr"><is><t></t></is></c><c r="D3"><v>2</v></c><c r="C3"><f>B9+1</f><v>1</v></c></row>'
+  printf '<row r="4"><c r="C4"><f>"5"+1</f><v>6</v></c></row>'
+  printf '<row r="5"><c r="C5" t="e"><f>-""</f><v>#VALUE!</v></c></row>'
+  printf '<row r="6"><c r="C6"><f>DATE(LEFT(A2,4),MID(A2,5,2),MID(A2,7,2))</f><v>37256</v></c></row>'
+  printf '<row r="7"><c r="C7"><f>SUM(D1:D3)</f><v>3</v></c></row>'
+  printf '<row r="8"><c r="C8" t="e"><f>ROUND("",2)</f><v>#VALUE!</v></c></row>'
+  printf '</sheetData></worksheet>'
+} >"$codir/xl/worksheets/sheet1.xml"
+( cd "$codir" && zip -q -r -X ../coerce.xlsx . )
+cat >"$tmp/coerce.bas" <<'EOB'
+program main(args)
+  wb = xlsx.open(args[0])
+  print "empty string + 1      : " + xlsx.evaluate(wb, "C", "C1")
+  print "the corpus DATE shape : " + xlsx.evaluate(wb, "C", "C2")
+  print "empty CELL + 1        : " + xlsx.evaluate(wb, "C", "C3")
+  print "numeric text coerces  : " + xlsx.evaluate(wb, "C", "C4")
+  print "unary minus on empty  : " + xlsx.evaluate(wb, "C", "C5")
+  print "real date still works : " + xlsx.evaluate(wb, "C", "C6")
+  print "SUM skips text in rng : " + xlsx.evaluate(wb, "C", "C7")
+  print "ROUND refuses empty   : " + xlsx.evaluate(wb, "C", "C8")
+end program
+EOB
+coerce_want='empty string + 1      : #VALUE!
+the corpus DATE shape : #VALUE!
+empty CELL + 1        : 1
+numeric text coerces  : 6
+unary minus on empty  : #VALUE!
+real date still works : 37256
+SUM skips text in rng : 3
+ROUND refuses empty   : #VALUE!'
+coerce_got=$(timeout 60 ./gbasic "$tmp/coerce.bas" "$tmp/coerce.xlsx" 2>&1)
+if [ "$coerce_got" = "$coerce_want" ]; then
+    printf 'PASS coerce: "" refuses everywhere Excel refuses, the pins hold\n'
+else
+    printf 'FAIL coerce\n'
+    diff <(printf '%s\n' "$coerce_want") <(printf '%s\n' "$coerce_got") || true
+    status=1
+fi
+
+printf 'program main(args)\n  wb = xlsx.open("%s")\n  r = xlsx.check(wb, "C")\n  print r.disagree\n  print r.unsupported\nend program\n' "$tmp/coerce.xlsx" >"$tmp/coercechk.bas"
+coercechk=$(timeout 60 ./gbasic "$tmp/coercechk.bas" 2>/dev/null | tr '\n' ' ')
+if [ "$coercechk" = "0 0 " ]; then
+    printf 'PASS coerce check: zero disagreements, nothing unsupported\n'
+else
+    printf 'FAIL coerce check: disagree/unsupported were "%s", want "0 0"\n' "$coercechk"
+    status=1
+fi
+
 # --- Tier 2f: post-2001 capabilities --------------------------------------------
 #
 # The corpus is 2001 and cannot contain one function added since, so everything

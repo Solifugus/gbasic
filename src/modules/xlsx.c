@@ -1858,7 +1858,14 @@ static int xlsx_as_num(XlsxVal v, double *out) {
     case XV_BOOL: *out = v.num; return 1;
     case XV_EMPTY: *out = 0; return 1;
     case XV_STR: {
-        if (!v.str || !*v.str) { *out = 0; return 1; }
+        /* The empty STRING does not coerce: ""+1 is #VALUE! in Excel, and
+         * coercing it to 0 turned the corpus's DATE(LEFT("",4),...) into
+         * DATE(0,0,0) -> #NUM! where Excel cached #VALUE! -- 65k cells with
+         * the right answer SHAPE and the wrong error name (§13.AB). It must
+         * FAIL here explicitly: strtod("") also lands on *end == '\0', so
+         * deleting the case would quietly keep the old behaviour. The empty
+         * CELL (XV_EMPTY, above) still coerces to 0, which is Excel's rule. */
+        if (!v.str || !*v.str) return 0;
         char *end = NULL;
         double d = strtod(v.str, &end);
         while (end && *end == ' ') end++;
