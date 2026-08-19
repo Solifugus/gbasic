@@ -610,6 +610,88 @@ else
     status=1
 fi
 
+# --- Tier 2e4: INTERSECT -- implicit intersection for ranges in scalar slots ----
+#
+# Surfaced by the defined-names splice on the same corpus sweep that shipped
+# it: IF(REF_DT<=LastDay,...) where REF_DT names a whole column. That is not
+# an array formula -- Excel's pre-dynamic-array rule takes the element of the
+# range on the formula's OWN row (single-column range) or own column
+# (single-row range). We answered the comparison against the range's FIRST
+# endpoint: a plausible boolean where Excel cached a number, 144k cells in
+# one workbook family, invisible before the splice because these cells died
+# anonymously as unknown functions and were never judged at all.
+#
+# Two code paths carry it: a range reaching the expression parser directly
+# (a bare =ICol, and literal $A$1:$A$5*2), and the argument collector
+# noticing the token AFTER a consumed range is an OPERATOR -- meaning the
+# range was not a whole argument but the start of a scalar expression -- and
+# rewinding. The two IF rows assert intersection happens PER ROW: same
+# formula, different rows, different branches. Also pins SUM(I!$7:$7)=15:
+# the whole-row span started at column 1 in a zero-based column scheme,
+# silently skipping column A.
+printf -- '-- intersect: a range in a scalar slot takes the element on its own row\n'
+idir="$tmp/isect"
+rm -rf "$idir"; mkdir -p "$idir/_rels" "$idir/xl/_rels" "$idir/xl/worksheets"
+printf '%s' '<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>' >"$idir/[Content_Types].xml"
+printf '%s' '<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>' >"$idir/_rels/.rels"
+printf '%s' '<?xml version="1.0"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="I" sheetId="1" r:id="rId1"/></sheets><definedNames><definedName name="ICol">I!$A$1:$A$5</definedName><definedName name="IRow">I!$A$7:$E$7</definedName><definedName name="IRect">I!$A$1:$B$5</definedName></definedNames></workbook>' >"$idir/xl/workbook.xml"
+printf '%s' '<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>' >"$idir/xl/_rels/workbook.xml.rels"
+{
+  printf '<?xml version="1.0"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>'
+  printf '<row r="1"><c r="A1"><v>10</v></c><c r="B1"><v>1</v></c><c r="C1"><f>IF(ICol&lt;=25,111,222)</f><v>111</v></c></row>'
+  printf '<row r="2"><c r="A2"><v>20</v></c><c r="B2"><v>2</v></c><c r="C2"><f>ICol</f><v>20</v></c><c r="D2"><f>IRow+1</f><v>5</v></c><c r="E2"><f>$A$1:$A$5*2</f><v>40</v></c></row>'
+  printf '<row r="3"><c r="A3"><v>30</v></c><c r="C3"><f>ICol*10</f><v>300</v></c></row>'
+  printf '<row r="4"><c r="A4"><v>40</v></c><c r="C4"><f>IF(ICol&lt;=25,111,222)</f><v>222</v></c></row>'
+  printf '<row r="5"><c r="A5"><v>50</v></c></row>'
+  printf '<row r="6"><c r="C6" t="e"><f>ICol</f><v>#VALUE!</v></c></row>'
+  printf '<row r="7"><c r="A7"><v>1</v></c><c r="B7"><v>2</v></c><c r="C7"><v>3</v></c><c r="D7"><v>4</v></c><c r="E7"><v>5</v></c></row>'
+  printf '<row r="8"><c r="C8" t="e"><f>IRect</f><v>#VALUE!</v></c><c r="D8"><f>SUM(I!$7:$7)</f><v>15</v></c></row>'
+  printf '</sheetData></worksheet>'
+} >"$idir/xl/worksheets/sheet1.xml"
+( cd "$idir" && zip -q -r -X ../isect.xlsx . )
+cat >"$tmp/isect.bas" <<'EOB'
+program main(args)
+  wb = xlsx.open(args[0])
+  print "column name, bare     : " + xlsx.evaluate(wb, "I", "C2")
+  print "column name, in arith : " + xlsx.evaluate(wb, "I", "C3")
+  print "row name intersects   : " + xlsx.evaluate(wb, "I", "D2")
+  print "literal range, scalar : " + xlsx.evaluate(wb, "I", "E2")
+  print "IF arg, row 1 branch  : " + xlsx.evaluate(wb, "I", "C1")
+  print "IF arg, row 4 branch  : " + xlsx.evaluate(wb, "I", "C4")
+  print "row outside the range : " + xlsx.evaluate(wb, "I", "C6")
+  print "rectangle refuses     : " + xlsx.evaluate(wb, "I", "C8")
+  print "whole-row includes A  : " + xlsx.evaluate(wb, "I", "D8")
+end program
+EOB
+isect_want='column name, bare     : 20
+column name, in arith : 300
+row name intersects   : 5
+literal range, scalar : 40
+IF arg, row 1 branch  : 111
+IF arg, row 4 branch  : 222
+row outside the range : #VALUE!
+rectangle refuses     : #VALUE!
+whole-row includes A  : 15'
+isect_got=$(timeout 60 ./gbasic "$tmp/isect.bas" "$tmp/isect.xlsx" 2>&1)
+if [ "$isect_got" = "$isect_want" ]; then
+    printf 'PASS intersect: per-row collapse, both code paths, refusals, whole-row from A\n'
+else
+    printf 'FAIL intersect\n'
+    diff <(printf '%s\n' "$isect_want") <(printf '%s\n' "$isect_got") || true
+    status=1
+fi
+
+# Everything on the sheet -- including the two #VALUE! cells, which are
+# Excel's answer rather than a refusal -- must agree with the cached values.
+printf 'program main(args)\n  wb = xlsx.open("%s")\n  r = xlsx.check(wb, "I")\n  print r.disagree\n  print r.unsupported\nend program\n' "$tmp/isect.xlsx" >"$tmp/isectchk.bas"
+isectchk=$(timeout 60 ./gbasic "$tmp/isectchk.bas" 2>/dev/null | tr '\n' ' ')
+if [ "$isectchk" = "0 0 " ]; then
+    printf 'PASS intersect check: zero disagreements, nothing unsupported\n'
+else
+    printf 'FAIL intersect check: disagree/unsupported were "%s", want "0 0"\n' "$isectchk"
+    status=1
+fi
+
 # --- Tier 2f: post-2001 capabilities --------------------------------------------
 #
 # The corpus is 2001 and cannot contain one function added since, so everything

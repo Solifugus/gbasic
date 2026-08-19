@@ -1735,6 +1735,10 @@ typedef struct {
     const Value *fr;
     const Value *colmap;
     long row_index;
+    /* The CELL BEING EVALUATED (1-based row; 0 = no cell context). Implicit
+     * intersection is defined in terms of the formula's own position. */
+    long cur_row;
+    long cur_col;
     int depth;
     int unsupported;        /* set when a function is not implemented */
     char unsupported_name[64];
@@ -2024,13 +2028,67 @@ static int xlsx_range_bounds(const XlsxSnap *snap, const char *a, const char *b,
         *c1 = ca - 1; *c2 = cb - 1; *r1 = 1; *r2 = mr ? mr : 1;
         return 1;
     }
-    if (a_full_row && b_full_row) {          /* 3:7 -- whole rows */
+    if (a_full_row && b_full_row) {          /* $3:$7 -- whole rows */
         xlsx_snap_extent(snap, &mr, &mc);
         *r1 = strtol(a, NULL, 10); *r2 = strtol(b, NULL, 10);
-        *c1 = 1; *c2 = mc ? mc : 1;
+        /* Columns are ZERO-based (the comment above about A -> 0), so the
+         * whole-row span starts at 0. Starting at 1 skipped column A -- found
+         * red by SUM($7:$7) over a row whose first cell sits in A. */
+        *c1 = 0; *c2 = mc ? mc : 1;
         return 1;
     }
     return xlsx_parse_ref(a, c1, r1) && xlsx_parse_ref(b, c2, r2);
+}
+
+/* IMPLICIT INTERSECTION: a RANGE arriving where a single value is needed.
+ * IF(REF_DT<=LastDay,...) with REF_DT naming a whole column is not an array
+ * formula -- Excel's pre-dynamic-array rule takes the element of the range on
+ * the formula's OWN ROW (single-column range) or own column (single-row
+ * range). Surfaced by the defined-names splice: these cells used to die
+ * anonymously as unknown functions, and the moment names resolved, whole
+ * workbook families answered the comparison against the range's first
+ * endpoint instead -- a plausible boolean where Excel cached a number.
+ *
+ * A rectangle spanning both dimensions, and a formula sitting outside the
+ * range's band, are #VALUE! -- which is Excel's answer, not a refusal. */
+static XlsxVal xlsx_intersect_range(XlsxEval *ev, const char *sheet, int ext,
+                                    const char *first, const char *second) {
+    if (ev->fr) return xv_err("#REF!");
+    if (ext) {
+        ev->unsupported = 1;
+        snprintf(ev->unsupported_name, sizeof ev->unsupported_name,
+                 "external workbook reference %s", sheet);
+        return xv_err("#REF!");
+    }
+    const XlsxSnap *rs = xlsx_eval_sheet(ev, sheet);
+    long c1, r1, c2, r2;
+    if (!rs || !xlsx_range_bounds(rs, first, second, &c1, &r1, &c2, &r2)) {
+        return xv_err("#REF!");
+    }
+    if (c1 > c2) { long t = c1; c1 = c2; c2 = t; }
+    if (r1 > r2) { long t = r1; r1 = r2; r2 = t; }
+    /* cur_row is 0 only when no cell is being evaluated (rows are 1-based). */
+    if (ev->cur_row <= 0) return xv_err("#VALUE!");
+    long row, col;
+    if (c1 == c2) {
+        col = c1;
+        row = (r1 == r2) ? r1 : ev->cur_row;
+    } else if (r1 == r2) {
+        row = r1;
+        col = ev->cur_col;
+    } else {
+        return xv_err("#VALUE!");
+    }
+    if (row < r1 || row > r2 || col < c1 || col > c2) return xv_err("#VALUE!");
+    const XlsxSnapCell *sc = xlsx_snap_at(rs, row, col);
+    if (!sc) return xv_empty();
+    switch (sc->kind) {
+    case XV_NUM:  return xv_num(sc->num);
+    case XV_BOOL: return xv_bool((int)sc->num);
+    case XV_STR:  return xv_str(sc->str ? sc->str : "");
+    case XV_ERR:  return xv_err(sc->str ? sc->str : "#ERROR");
+    default:      return xv_empty();
+    }
 }
 
 /* Collect a function argument. A bare range (B2:B3) expands to its cells; every
@@ -2056,6 +2114,15 @@ static void xlsx_arg_values(XlsxEval *ev, XlsxVal **vals, const XlsxSnapCell ***
         if (ev->lx.cur.kind == XT_COLON) {
             xlsx_lex_next(&ev->lx);
             if (xlsx_range_endpoint(&ev->lx.cur)) {
+                char second[128];
+                snprintf(second, sizeof second, "%s", ev->lx.cur.text);
+                /* Look one token PAST the range before committing to it.
+                 * IF(REF_DT<=LastDay,...) is a range followed by an operator
+                 * -- not a whole-argument range but a scalar expression over
+                 * one -- so it rewinds and the expression parser applies
+                 * implicit intersection instead. */
+                xlsx_lex_next(&ev->lx);
+                if (ev->lx.cur.kind != XT_OP) {
                 long c1, r1, c2, r2;
                 /* FRAME MODE: a range is a row range over the mapped columns,
                  * and there is no snapshot to consult. A row-SPANNING range
@@ -2065,7 +2132,7 @@ static void xlsx_arg_values(XlsxEval *ev, XlsxVal **vals, const XlsxSnapCell ***
                  * have been. */
                 if (ev->fr) {
                     if (xlsx_parse_ref(first, &c1, &r1) &&
-                        xlsx_parse_ref(ev->lx.cur.text, &c2, &r2)) {
+                        xlsx_parse_ref(second, &c2, &r2)) {
                         if (c1 > c2) { long t = c1; c1 = c2; c2 = t; }
                         for (long c = c1; c <= c2; c++) {
                             XlsxVal v = (r1 == r2) ? xlsx_frame_cell(ev, "", c)
@@ -2086,7 +2153,6 @@ static void xlsx_arg_values(XlsxEval *ev, XlsxVal **vals, const XlsxSnapCell ***
                         }
                         if (out_rows) *out_rows = 1;
                         if (out_cols) *out_cols = c2 - c1 + 1;
-                        xlsx_lex_next(&ev->lx);
                         return;
                     }
                 }
@@ -2096,7 +2162,7 @@ static void xlsx_arg_values(XlsxEval *ev, XlsxVal **vals, const XlsxSnapCell ***
                     snprintf(ev->unsupported_name, sizeof ev->unsupported_name,
                              "external workbook reference %s", sheet);
                 }
-                if (rs && xlsx_range_bounds(rs, first, ev->lx.cur.text, &c1, &r1, &c2, &r2)) {
+                if (rs && xlsx_range_bounds(rs, first, second, &c1, &r1, &c2, &r2)) {
                     if (c1 > c2) { long t = c1; c1 = c2; c2 = t; }
                     if (r1 > r2) { long t = r1; r1 = r2; r2 = t; }
                     if (out_range) {
@@ -2107,7 +2173,6 @@ static void xlsx_arg_values(XlsxEval *ev, XlsxVal **vals, const XlsxSnapCell ***
                     if (out_rows) *out_rows = r2 - r1 + 1;
                     if (out_cols) *out_cols = c2 - c1 + 1;
                     if (lazy) {           /* the caller will read cells itself */
-                        xlsx_lex_next(&ev->lx);
                         return;
                     }
                     for (long r = r1; r <= r2; r++) {
@@ -2141,8 +2206,8 @@ static void xlsx_arg_values(XlsxEval *ev, XlsxVal **vals, const XlsxSnapCell ***
                     }
                     if (out_rows) *out_rows = r2 - r1 + 1;
                     if (out_cols) *out_cols = c2 - c1 + 1;
-                    xlsx_lex_next(&ev->lx);
                     return;
+                }
                 }
             }
         }
@@ -3837,8 +3902,22 @@ static XlsxVal xlsx_primary(XlsxEval *ev) {
         int ext = ev->lx.cur.external;
         snprintf(ref, sizeof ref, "%s", ev->lx.cur.text);
         snprintf(sheet, sizeof sheet, "%s", ev->lx.cur.sheet);
-        v = xlsx_cell_value_in(ev, sheet, ext, ref);
         xlsx_lex_next(&ev->lx);
+        /* A COLON here is a RANGE in a SCALAR position -- the argument
+         * collector consumes whole-argument ranges before expression parsing
+         * ever starts, so any range that reaches a primary is one being used
+         * as a value: implicit intersection. */
+        if (ev->lx.cur.kind == XT_COLON) {
+            xlsx_lex_next(&ev->lx);
+            if (xlsx_range_endpoint(&ev->lx.cur)) {
+                v = xlsx_intersect_range(ev, sheet, ext, ref, ev->lx.cur.text);
+                xlsx_lex_next(&ev->lx);
+            } else {
+                v = xv_err("#VALUE!");
+            }
+            break;
+        }
+        v = xlsx_cell_value_in(ev, sheet, ext, ref);
         break;
     }
     case XT_NAME: {
@@ -4514,7 +4593,8 @@ static void xsql_expr(XlsxSql *g) {
 /* Evaluate one formula's TEXT (without the leading '='). */
 static XlsxVal xlsx_eval_formula_in(XlsxWorkbook *wb, const XlsxSnap *snap,
                                  const char *sheet_name, XlsxSheetPool *pool,
-                                 const char *formula, int *unsupported,
+                                 const char *formula, long cur_row, long cur_col,
+                                 int *unsupported,
                                  char *unsupported_name, size_t un_len) {
     XlsxEval ev;
     memset(&ev, 0, sizeof ev);
@@ -4522,6 +4602,8 @@ static XlsxVal xlsx_eval_formula_in(XlsxWorkbook *wb, const XlsxSnap *snap,
     ev.snap = snap;
     ev.sheet_name = sheet_name;
     ev.pool = pool;
+    ev.cur_row = cur_row;
+    ev.cur_col = cur_col;
     ev.lx.p = formula;
     ev.lx.bad = 0;
     ev.lx.names_wb = wb;
@@ -5756,7 +5838,7 @@ static Value xlsx_eval_call(AstExpr *expr) {
                 int unsup = 0;
                 char un[64] = "";
                 XlsxVal v = xlsx_eval_formula_in(wbv.as.workbook, &snap, shv.as.string, &pool,
-                                                 c->formula, &unsup, un, sizeof un);
+                                                 c->formula, row, col, &unsup, un, sizeof un);
                 out = xlsx_val_to_gbasic(v);
                 xv_free(v);
             } else if (c) {
@@ -5842,7 +5924,7 @@ static Value xlsx_eval_call(AstExpr *expr) {
             XlsxVal got = is_vol
                 ? xv_str("(not evaluated: volatile)")
                 : xlsx_eval_formula_in(wbv.as.workbook, &snap, shv.as.string, &pool,
-                                        c->formula, &unsup, un, sizeof un);
+                                        c->formula, c->row, c->col, &unsup, un, sizeof un);
 
             const char *verdict;
             if (is_vol) { verdict = "volatile"; volatile_n++; }
@@ -6106,7 +6188,7 @@ static Value xlsx_eval_call(AstExpr *expr) {
             int unsup = 0;
             char un[64] = "";
             XlsxVal v = xlsx_eval_formula_in(wb, s, bk.names[si], &pool,
-                                             c->formula, &unsup, un, sizeof un);
+                                             c->formula, c->row, c->col, &unsup, un, sizeof un);
             evaluated++;
             if (unsup) { unsupported_n++; xv_free(v); continue; }
             int differs = 0;
@@ -6191,7 +6273,7 @@ static Value xlsx_eval_call(AstExpr *expr) {
             int unsup = 0;
             char un[64] = "";
             XlsxVal v = xlsx_eval_formula_in(wb, &snap, shv.as.string, &pool,
-                                             c->formula, &unsup, un, sizeof un);
+                                             c->formula, c->row, c->col, &unsup, un, sizeof un);
             evaluated++;
             if (unsup) { unsupported_n++; xv_free(v); continue; }
 
