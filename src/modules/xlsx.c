@@ -2395,9 +2395,30 @@ static XlsxVal xlsx_call(XlsxEval *ev, const char *raw_name) {
             argrows[argc] = 0; argcols[argc] = 0;
             memset(&argrange[argc], 0, sizeof argrange[argc]);
             argc++;
-            xlsx_arg_values(ev, &args, want_srcs ? &srcs : NULL, &n, &cap,
-                            &argrows[argc - 1], &argcols[argc - 1],
-                            &argrange[argc - 1], lazy);
+            if (ev->lx.cur.kind == XT_COMMA || ev->lx.cur.kind == XT_RPAREN) {
+                /* An EMPTY argument -- SUM(B18:B20,) or SUM(1,,2) -- is what
+                 * Excel produces when a template's last operand was deleted,
+                 * and it contributes an empty value, not an error. Found on
+                 * the corpus as a 13-workbook template idiom (2026-08-18);
+                 * parsing ')' as an expression answered #VALUE!. */
+                if (n == cap) {
+                    cap = cap ? cap * 2 : 8;
+                    XlsxVal *ga = realloc(args, cap * sizeof *ga);
+                    if (!ga) abort();
+                    args = ga;
+                    if (want_srcs) {
+                        const XlsxSnapCell **gs = realloc(srcs, cap * sizeof *gs);
+                        if (!gs) abort();
+                        srcs = gs;
+                    }
+                }
+                if (want_srcs) srcs[n] = NULL;
+                args[n++] = xv_empty();
+            } else {
+                xlsx_arg_values(ev, &args, want_srcs ? &srcs : NULL, &n, &cap,
+                                &argrows[argc - 1], &argcols[argc - 1],
+                                &argrange[argc - 1], lazy);
+            }
             if (ev->lx.cur.kind != XT_COMMA) break;
             xlsx_lex_next(&ev->lx);
         }
@@ -2454,7 +2475,20 @@ static XlsxVal xlsx_call(XlsxEval *ev, const char *raw_name) {
                           * propagated. Each of these still propagates an error
                           * in its own CONDITION, handled at each site. */
                          strcmp(name, "IF") == 0 || strcmp(name, "IFS") == 0 ||
-                         strcmp(name, "SWITCH") == 0;
+                         strcmp(name, "SWITCH") == 0 ||
+                         /* The IF-criteria family examines its ranges
+                          * ELEMENT-WISE: an error cell on a row whose criteria
+                          * do not match is never looked at, so it must not
+                          * poison the call. Found on the corpus (2026-08-18):
+                          * SUMIF over a sum range holding 478 dead-lookup
+                          * #N/A cells returned #N/A where Excel cached 92,800.
+                          * A MATCHED error still propagates, handled in each
+                          * body. SUM keeps the blanket rule -- Excel's SUM
+                          * over a range with an error is that error. */
+                         strcmp(name, "SUMIF") == 0 || strcmp(name, "AVERAGEIF") == 0 ||
+                         strcmp(name, "COUNTIF") == 0 || strcmp(name, "SUMIFS") == 0 ||
+                         strcmp(name, "AVERAGEIFS") == 0 || strcmp(name, "COUNTIFS") == 0 ||
+                         strcmp(name, "MAXIFS") == 0 || strcmp(name, "MINIFS") == 0;
     for (size_t i = 0; i < n && !catches_errors; i++) {
         if (args[i].kind == XV_ERR) {
             out = xv_err(args[i].str);
@@ -2570,6 +2604,9 @@ static XlsxVal xlsx_call(XlsxEval *ev, const char *raw_name) {
                  * which contributes nothing rather than erroring. */
                 a = (c < (size_t)sc && j < ARG_LEN(2)) ? ARG_AT(2, j) : xv_empty();
             }
+            /* A matched cell that IS an error is Excel's answer for the
+             * whole call; only unmatched errors are invisible. */
+            if (a.kind == XV_ERR) { out = xv_err(a.str); goto done; }
             if (a.kind == XV_NUM || a.kind == XV_BOOL) { total += a.num; cnt++; }
         }
         if (strcmp(name, "COUNTIF") == 0) out = xv_num((double)cnt);
@@ -2602,6 +2639,7 @@ static XlsxVal xlsx_call(XlsxEval *ev, const char *raw_name) {
             if (!all) continue;
             if (counting) { cnt++; continue; }
             XlsxVal a = i < ARG_LEN(0) ? ARG_AT(0, i) : xv_empty();
+            if (a.kind == XV_ERR) { out = xv_err(a.str); goto done; }
             if (a.kind != XV_NUM && a.kind != XV_BOOL) continue;
             total += a.num; cnt++;
             if (!seen || (is_min ? a.num < best : a.num > best)) { best = a.num; seen = 1; }

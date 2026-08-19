@@ -442,6 +442,78 @@ else
 fi
 
 
+# --- Tier 2e2: ERRAGG -- the IF-criteria family vs error cells in its ranges ----
+#
+# Found by corpus sampling (2026-08-18): SUMIF($H$9:$H$4991,A6,$D$9:$D$4991)
+# returned #N/A where Excel cached 92,800, because 478 dead-lookup #N/A cells
+# sat in the SUM RANGE on rows whose criteria did not match. The generic
+# pre-dispatch rule -- any error element in any argument propagates -- is
+# correct for SUM (Excel agrees) but wrong for the criteria family, which must
+# only propagate an error from a cell it actually MATCHED. Also covers the
+# other corpus template: a trailing empty argument, SUM(B18:B20,), which Excel
+# treats as contributing nothing and we answered with #VALUE!.
+#
+# The fixture is generated here (awk-free -- it is small) so nothing is
+# committed and the committed byte-exact fixtures stay untouched.
+printf -- '-- erragg: criteria functions skip unmatched error cells\n'
+edir="$tmp/erragg"
+rm -rf "$edir"; mkdir -p "$edir/_rels" "$edir/xl/_rels" "$edir/xl/worksheets"
+printf '%s' '<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>' >"$edir/[Content_Types].xml"
+printf '%s' '<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>' >"$edir/_rels/.rels"
+printf '%s' '<?xml version="1.0"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Agg" sheetId="1" r:id="rId1"/></sheets></workbook>' >"$edir/xl/workbook.xml"
+printf '%s' '<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>' >"$edir/xl/_rels/workbook.xml.rels"
+{
+  printf '<?xml version="1.0"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>'
+  # x rows carry numbers in B; y rows carry #N/A -- the dead-lookup shape.
+  # C1 (an x row) carries #N/A, so a MATCHED error exists in column C.
+  printf '<row r="1"><c r="A1" t="inlineStr"><is><t>x</t></is></c><c r="B1"><v>10</v></c><c r="C1" t="e"><v>#N/A</v></c></row>'
+  printf '<row r="2"><c r="A2" t="inlineStr"><is><t>y</t></is></c><c r="B2" t="e"><v>#N/A</v></c><c r="C2"><v>2</v></c></row>'
+  printf '<row r="3"><c r="A3" t="inlineStr"><is><t>x</t></is></c><c r="B3"><v>20</v></c><c r="C3"><v>5</v></c></row>'
+  printf '<row r="4"><c r="A4" t="inlineStr"><is><t>y</t></is></c><c r="B4" t="e"><v>#N/A</v></c><c r="C4"><v>4</v></c></row>'
+  printf '<row r="5"><c r="A5" t="inlineStr"><is><t>x</t></is></c><c r="B5"><v>30</v></c><c r="C5"><v>7</v></c></row>'
+  printf '<row r="6"><c r="A6" t="inlineStr"><is><t>y</t></is></c><c r="B6" t="e"><v>#N/A</v></c><c r="C6"><v>6</v></c></row>'
+  printf '<row r="7">'
+  printf '<c r="E1"><f>SUMIF(A1:A6,"x",B1:B6)</f><v>60</v></c>'
+  printf '<c r="F1"><f>SUMIF(A1:A6,"x",C1:C6)</f><v>0</v></c>'
+  printf '<c r="G1"><f>COUNTIF(A1:A6,"x")</f><v>3</v></c>'
+  printf '<c r="H1"><f>SUM(B1:B6)</f><v>0</v></c>'
+  printf '<c r="I1"><f>SUMIFS(B1:B6,A1:A6,"x")</f><v>60</v></c>'
+  printf '<c r="J1"><f>AVERAGEIF(A1:A6,"x",B1:B6)</f><v>20</v></c>'
+  printf '<c r="K1"><f>SUM(B1,B3,)</f><v>30</v></c>'
+  printf '<c r="L1"><f>SUM(1,,2)</f><v>3</v></c>'
+  printf '</row></sheetData></worksheet>'
+} >"$edir/xl/worksheets/sheet1.xml"
+( cd "$edir" && zip -q -r -X ../erragg.xlsx . )
+cat >"$tmp/erragg.bas" <<'EOB'
+program main(args)
+  wb = xlsx.open(args[0])
+  print "SUMIF skips unmatched errs : " + xlsx.evaluate(wb, "Agg", "E1")
+  print "SUMIF matched err spreads  : " + xlsx.evaluate(wb, "Agg", "F1")
+  print "COUNTIF unaffected         : " + xlsx.evaluate(wb, "Agg", "G1")
+  print "SUM still propagates       : " + xlsx.evaluate(wb, "Agg", "H1")
+  print "SUMIFS skips too           : " + xlsx.evaluate(wb, "Agg", "I1")
+  print "AVERAGEIF over matches     : " + xlsx.evaluate(wb, "Agg", "J1")
+  print "trailing empty argument    : " + xlsx.evaluate(wb, "Agg", "K1")
+  print "interior empty argument    : " + xlsx.evaluate(wb, "Agg", "L1")
+end program
+EOB
+erragg_want='SUMIF skips unmatched errs : 60
+SUMIF matched err spreads  : #N/A
+COUNTIF unaffected         : 3
+SUM still propagates       : #N/A
+SUMIFS skips too           : 60
+AVERAGEIF over matches     : 20
+trailing empty argument    : 30
+interior empty argument    : 3'
+erragg_got=$(timeout 60 ./gbasic "$tmp/erragg.bas" "$tmp/erragg.xlsx" 2>&1)
+if [ "$erragg_got" = "$erragg_want" ]; then
+    printf 'PASS erragg criteria family vs error cells (and empty arguments)\n'
+else
+    printf 'FAIL erragg\n'
+    diff <(printf '%s\n' "$erragg_want") <(printf '%s\n' "$erragg_got") || true
+    status=1
+fi
+
 # --- Tier 2f: post-2001 capabilities --------------------------------------------
 #
 # The corpus is 2001 and cannot contain one function added since, so everything
