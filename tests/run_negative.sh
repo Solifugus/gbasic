@@ -315,6 +315,8 @@ cases=(
     negative_schedule_no_hours
     negative_zone_unknown
     negative_zone_allday
+    negative_dates_hours_months
+    negative_dates_hours_nohours
 )
 
 for name in "${cases[@]}"; do

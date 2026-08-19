@@ -862,4 +862,138 @@ library dates
         end while
         return out
     end function
+
+    ' ------------------------------------------------------------------
+    ' Business-hours arithmetic (docs/datetime_design.md §9): working time
+    ' that pauses overnight, across weekends and holidays. "Respond within
+    ' 4 business hours" is add_business_hours; "how much working time
+    ' elapsed" is business_hours_between. Both need cal.hours.
+    '
+    ' The rules, decided and stated:
+    '  * a clock STARTING outside working hours starts at the next open
+    '    (and, going backward, at the previous close);
+    '  * a deadline that exhausts its time EXACTLY at close lands AT close --
+    '    rolling it to the next morning would silently extend an SLA, and
+    '    landing at close is what makes the round-trip law hold:
+    '    business_hours_between(a, add_business_hours(a, n, cal), cal) = n;
+    '  * durations must be exact -- a month of business hours has no meaning;
+    '  * negative durations walk backward (the honest algebra, as everywhere).
+
+    function _need_hours(cal)
+        if not has(cal, "hours") then
+            error "dates: business-hours arithmetic needs a calendar with hours: { open:, close: }"
+        end if
+        return cal.hours
+    end function
+
+    function _day_open(d, cal)
+        return at(d, cal.hours.open)
+    end function
+
+    function _day_close(d, cal)
+        return at(d, cal.hours.close)
+    end function
+
+    ' Is this instant inside working hours on a business day? The window is
+    ' half-open: the open instant is working time, the close instant is not.
+    function is_business_time(d, cal)
+        h = _need_hours(cal)
+        if not is_business_day(d, cal) then
+            return false
+        end if
+        return d >= _day_open(d, cal) and d < _day_close(d, cal)
+    end function
+
+    ' The nearest working instant at or after d.
+    function _clock_forward(d, cal)
+        if is_business_day(d, cal) then
+            if d < _day_open(d, cal) then
+                return _day_open(d, cal)
+            end if
+            if d < _day_close(d, cal) then
+                return d
+            end if
+        end if
+        return _day_open(next_business_day(d, cal), cal)
+    end function
+
+    ' The nearest working instant at or before d (for negative durations).
+    function _clock_backward(d, cal)
+        if is_business_day(d, cal) then
+            if d > _day_close(d, cal) then
+                return _day_close(d, cal)
+            end if
+            if d > _day_open(d, cal) then
+                return d
+            end if
+        end if
+        return _day_close(previous_business_day(d, cal), cal)
+    end function
+
+    function add_business_hours(d, dur, cal)
+        h = _need_hours(cal)
+        if dur.years != 0 or dur.months != 0 then
+            error "dates: business-hours arithmetic needs an exact duration; a month has no fixed length"
+        end if
+        remaining = dur.total_seconds
+        if remaining >= 0 then
+            cur = _clock_forward(d, cal)
+            guard = 0
+            while guard < 10000
+                guard = guard + 1
+                room = _day_close(cur, cal) - cur
+                if remaining <= room.total_seconds then
+                    return cur + (1 second) * remaining
+                end if
+                remaining = remaining - room.total_seconds
+                cur = _day_open(next_business_day(cur, cal), cal)
+            end while
+            error "dates: business-hours arithmetic exceeded 10000 working days"
+        end if
+        remaining = 0 - remaining
+        cur = _clock_backward(d, cal)
+        guard = 0
+        while guard < 10000
+            guard = guard + 1
+            room = cur - _day_open(cur, cal)
+            if remaining <= room.total_seconds then
+                return cur - (1 second) * remaining
+            end if
+            remaining = remaining - room.total_seconds
+            cur = _day_close(previous_business_day(cur, cal), cal)
+        end while
+        error "dates: business-hours arithmetic exceeded 10000 working days"
+    end function
+
+    ' Working time elapsed over (a, b), as an exact duration. Signed. Each
+    ' business day contributes the overlap of [a, b] with its working window.
+    function business_hours_between(a, b, cal)
+        h = _need_hours(cal)
+        if b < a then
+            return (0 seconds) - business_hours_between(b, a, cal)
+        end if
+        total = 0
+        dd (day)= a
+        last (day)= b
+        guard = 0
+        while dd <= last and guard < 10000
+            guard = guard + 1
+            if is_business_day(dd, cal) then
+                seg_start = _day_open(dd, cal)
+                if a > seg_start then
+                    seg_start = a
+                end if
+                seg_end = _day_close(dd, cal)
+                if b < seg_end then
+                    seg_end = b
+                end if
+                if seg_end > seg_start then
+                    piece = seg_end - seg_start
+                    total = total + piece.total_seconds
+                end if
+            end if
+            dd = dd + 1 day
+        end while
+        return (1 second) * total
+    end function
 end library

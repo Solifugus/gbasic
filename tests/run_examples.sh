@@ -101,6 +101,7 @@ examples=(
     datetime_modifier_test.bas
     dates_lib_test.bas
     dates_calendar_test.bas
+    dates_hours_test.bas
     dates_select_test.bas
     schedule_test.bas
     keyword_stability_test.bas

@@ -418,7 +418,14 @@ twice.
   silent guess. Serving story: rule + zone in the DB → occurrences computed
   civil → `from_zone` per occurrence (each with its own offset, which is what
   makes DST correct) → UTC on the wire → `to_zone` per user at render.
-- **Business-hours arithmetic** ("respond within 4 business hours") — wants
+- **Business-hours arithmetic — IMPLEMENTED 2026-08-18**:
+  `dates.add_business_hours` (signed; clock starts at next open / previous
+  close; exhausting exactly at close lands AT close, since rolling would
+  silently extend an SLA), `dates.business_hours_between` (signed, per-day
+  window overlap), `dates.is_business_time` (half-open window: open counts,
+  close does not). Round-trip law tested over mixed durations:
+  `between(a, add(a, n)) = n`. Exact durations only. The original note —
+  ("respond within 4 business hours") — wants
   `cal.hours` interval math; natural v2 on top of §5+§6.
 - **Multi-resource scheduling** (rooms, staff) — application logic over
   `slots`; revisit if a pattern hardens.

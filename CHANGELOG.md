@@ -129,6 +129,15 @@ order, one that misses the day end moves **whole** to the next day, and one
 that fits nowhere is reported in `unplaced:` rather than dropped. With this,
 every planned v1 layer of the datetime redesign is built.
 
+### Business-hours arithmetic (`stdlib/dates.bas`)
+
+`add_business_hours` (signed), `business_hours_between` (signed), and
+`is_business_time` — working time that pauses overnight, across weekends and
+holidays. The clock starts at the next open; a deadline exhausting exactly at
+close is due at close (rolling would silently extend an SLA); the window is
+half-open; only exact durations are accepted. The round-trip law
+`between(a, add(a, n)) = n` is tested over mixed durations.
+
 ### Timezones (docs/datetime_design.md §9)
 
 `to_zone` / `from_zone` / `zone_offset` / `zone_resolve`, core builtins in the

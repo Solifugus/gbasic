@@ -1,0 +1,21 @@
+ok 4h from 13:00 = close  
+ok 4h from 15:00 spans    
+ok 8h = one full day      
+ok 8h from 10:00          
+ok early start -> open+1h 
+ok weekend start -> Monday
+ok zero clamps to open    
+ok Fri 16:00 + 4h = Mon 12
+ok holiday+weekend paused 
+ok Mon 10:00 - 2h = Fri 16
+ok 13->17 same day        
+ok 15:00 -> Tue 11:00     
+ok across the weekend     
+ok same instant = zero    
+ok signed when reversed   
+ok weekend start counts 0 
+ok between(a, add(a,n))=n 
+ok 10:00 is working time  
+ok open instant counts    
+ok close instant does not 
+ok Saturday does not      

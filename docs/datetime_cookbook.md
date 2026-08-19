@@ -792,6 +792,70 @@ both candidate instants, while `from_zone`'s default takes the earlier instant
 for the repeated hour and shifts forward through the gap (Temporal's
 "compatible" policy).
 
+## 12. SLA clocks: arithmetic in working time
+
+<!--CODE:12_sla_clocks-->
+
+```basic
+' Recipe 12 — SLA clocks: working time that pauses nights, weekends, holidays.
+'
+' "Respond within 4 business hours" is a deadline computed in WORKING time.
+' The clock starts at the next open if the ticket arrives after hours; a
+' deadline that exhausts its time exactly at close is due AT close (rolling
+' it to next morning would silently extend the SLA); and the whole thing
+' round-trips: business_hours_between(a, add_business_hours(a, n, cal)) = n.
+
+program main(args)
+    load dates
+
+    cal = dates.calendar({ hours: { open: "9:00", close: "17:00" } })
+
+    ' Four tickets, one promise: respond within 4 business hours.
+    t1 (date)= "2026-08-17 09:30:00"
+    t2 (date)= "2026-08-17 15:00:00"
+    t3 (date)= "2026-08-14 16:00:00"
+    t4 (date)= "2026-08-15 11:00:00"
+    for each t in [t1, t2, t3, t4]
+        due = dates.add_business_hours(t, 4 hours, cal)
+        print "in " + t + " (" + t.dayname + ")  ->  due " + due + " (" + due.dayname + ")"
+    end for
+
+    ' How much working time did a resolution actually take?
+    opened (date)= "2026-08-14 15:00:00"
+    closed (date)= "2026-08-17 11:00:00"
+    print ""
+    print "opened Friday 15:00, closed Monday 11:00 = " + dates.business_hours_between(opened, closed, cal) + " of work time"
+
+    ' The clock respects holidays like every other calendar verb.
+    xmas (date)= "2026-12-25"
+    hcal = dates.calendar({ holidays: [xmas], hours: { open: "9:00", close: "17:00" } })
+    eve (date)= "2026-12-24 15:00:00"
+    print "Christmas Eve 15:00 + 4 business hours = " + dates.add_business_hours(eve, 4 hours, hcal)
+end program
+```
+
+<!--OUT:12_sla_clocks-->
+
+```
+in 2026-08-17 09:30:00 (Monday)  ->  due 2026-08-17 13:30:00 (Monday)
+in 2026-08-17 15:00:00 (Monday)  ->  due 2026-08-18 11:00:00 (Tuesday)
+in 2026-08-14 16:00:00 (Friday)  ->  due 2026-08-17 12:00:00 (Monday)
+in 2026-08-15 11:00:00 (Saturday)  ->  due 2026-08-17 13:00:00 (Monday)
+
+opened Friday 15:00, closed Monday 11:00 = 4 hours of work time
+Christmas Eve 15:00 + 4 business hours = 2026-12-28 11:00:00
+```
+
+The decided rules: the clock **starts** at the next open when a ticket arrives
+after hours (and, walking backward with a negative duration, at the previous
+close); a deadline exhausting its time exactly at close is due **at close** —
+rolling it to next morning would silently extend the SLA; the working window
+is half-open (the open instant counts, the close instant does not); and only
+exact durations are accepted — a month of business hours has no meaning.
+
+The property that holds it all together, tested over mixed durations:
+`business_hours_between(a, add_business_hours(a, n, cal), cal) = n`.
+
 ---
 
 ## Where to go next
