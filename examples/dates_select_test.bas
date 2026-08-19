@@ -116,6 +116,14 @@ program main(args)
     end for
     x = check("MWF all match rule    ", mwf_ok, true)
 
+    ' month: constrains to months -- "the 15th of January and July" (BYMONTH).
+    dec31b (date)= "2026-12-31"
+    mid = dates.series({ every: "month", when: { day: 15, month: [1, 7] } }, { from: jan1, through: dec31b }, cal)
+    x = check("BYMONTH: two hits      ", count(mid), 2)
+    x = check("BYMONTH: Jan 15        ", string(mid[0]), "2026-01-15")
+    x = check("BYMONTH: Jul 15        ", string(mid[1]), "2026-07-15")
+    x = check("month as number        ", dates.matches(mid[1], { day: 15, month: 7 }, cal), true)
+
     ' Business-day stepping over a holiday and a weekend.
     wed23 (date)= "2026-12-23"
     run = dates.series({ every: "business day" }, { from: wed23, count: 3 }, hcal)

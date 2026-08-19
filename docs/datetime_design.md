@@ -215,8 +215,11 @@ calendar ends before the other begins); the consumers already handle that —
 never raises. Intra-day busy-time (existing bookings) stays application state
 in v1; it folds in later with business-hours arithmetic (§9).
 
-Deferred, recorded so they are decisions rather than gaps: observed-holiday
-shifting (Christmas-on-Saturday → Friday off), half days, per-weekday hours.
+**Observed holidays — IMPLEMENTED 2026-08-18**: `observe: "nearest"` (closest
+free weekday, ties forward — the US federal rule, generalised to any weekend
+shape) or `"forward"` (the UK substitute-day style), computed once at
+construction so every downstream verb inherits it; chained weekend holidays
+take consecutive weekdays. Still deferred: half days, per-weekday hours.
 
 ## 6. Time of day — an exact duration, not a new kind
 
@@ -278,6 +281,7 @@ Spec fields (v1, deliberately small):
 | `weekday:` | `"thursday"`, or a list |
 | `nth:` | 1, 2, 3 … from the start; −1, −2 from the end; `"last"` = −1 |
 | `day:` | day of month (with `roll:` for short months: `day: 31, roll: "backward"`) |
+| `month:` | month number, or a list — `{ day: 15, month: [1, 7] }` is "the 15th of January and July" (RRULE's BYMONTH; added 2026-08-18) |
 | `kind:` | `"business"` — constrains to business days under `cal` |
 | `within:` | `"month"` \| `"quarter"` \| `"year"` \| `"week"` — scope for `nth`, taken from the anchor |
 | `after:` / `on_or_after:` / `before:` / `on_or_before:` | anchor constraints — **strictness is in the name**, because the `(next friday)`-from-a-Friday trap must not be reproduced |

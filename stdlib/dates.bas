@@ -250,6 +250,52 @@ library dates
             end for
         end if
         cal = { weekend: weekend, holidays: holidays }
+        if has(spec, "observe") then
+            ' Observed holidays: when a holiday lands on the weekend, the day
+            ' OFF moves to a working day. observe: "nearest" picks the closest
+            ' free weekday (ties break forward) -- the US federal rule: a
+            ' Saturday holiday is observed Friday, a Sunday one Monday, and it
+            ' generalises to any weekend shape. observe: "forward" always
+            ' shifts to the next free weekday (the UK substitute-day style).
+            ' Chains resolve: two weekend holidays observing forward take
+            ' consecutive weekdays rather than colliding. The original day
+            ' stays in the list (it is already non-working via the weekend);
+            ' the observed day is ADDED, computed once, at construction --
+            ' so every downstream verb inherits it with no further logic.
+            if spec.observe != "nearest" and spec.observe != "forward" then
+                error "dates: observe must be nearest or forward"
+            end if
+            observed = []
+            for each h in holidays
+                append(observed, h)
+            end for
+            for each h in holidays
+                if contains(weekend, lower(h.dayname)) then
+                    pick = h
+                    found_slot = false
+                    dist = 1
+                    while not found_slot and dist <= 30
+                        fwd = h + (1 day) * dist
+                        if not contains(weekend, lower(fwd.dayname)) and not contains(observed, fwd) then
+                            pick = fwd
+                            found_slot = true
+                        end if
+                        if not found_slot and spec.observe = "nearest" then
+                            back = h - (1 day) * dist
+                            if not contains(weekend, lower(back.dayname)) and not contains(observed, back) then
+                                pick = back
+                                found_slot = true
+                            end if
+                        end if
+                        dist = dist + 1
+                    end while
+                    if found_slot then
+                        append(observed, pick)
+                    end if
+                end if
+            end for
+            cal.holidays = observed
+        end if
         if has(spec, "hours") then
             cal.hours = { open: spec.hours.open, close: spec.hours.close }
         end if
@@ -512,6 +558,19 @@ library dates
         if has(spec, "day") then
             if dd.day != spec.day then
                 return false
+            end if
+        end if
+        if has(spec, "month") then
+            ' A number, or a list: { day: 15, month: [1, 7] } is "the 15th of
+            ' January and July" (RRULE's BYMONTH).
+            if type(spec.month) = "array" then
+                if not contains(spec.month, dd.month) then
+                    return false
+                end if
+            else
+                if dd.month != spec.month then
+                    return false
+                end if
             end if
         end if
         if has(spec, "kind") then

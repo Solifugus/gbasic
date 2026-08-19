@@ -17,6 +17,16 @@ ok merged close
 ok first mutual day      
 ok mutual works for Alice
 ok mutual works for Bob  
+ok nearest: Fri observed  
+ok nearest: Mon works     
+ok downstream inherits    
+ok forward: Mon observed  
+ok forward: Fri works     
+ok no observe: unchanged  
+ok Sunday observes Monday 
+ok chained: Mon taken     
+ok chained: Tue taken too 
+ok chained: Wed survives  
 ok Jan31->Feb28 months   
 ok consistency with +    
 ok age in years          

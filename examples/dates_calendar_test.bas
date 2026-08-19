@@ -85,6 +85,38 @@ program main(args)
     x = check("mutual works for Alice", dates.is_business_day(mutual, alice), true)
     x = check("mutual works for Bob  ", dates.is_business_day(mutual, bob), true)
 
+    ' --- observed holidays: the day OFF moves to a working day ---
+    ' July 4, 2026 is a real Saturday. Under observe: "nearest" the observed
+    ' day is Friday July 3 (US federal rule); under "forward" it is Monday
+    ' July 6 and the Friday stays a working day.
+    july4 (date)= "2026-07-04"
+    fri3 (date)= "2026-07-03"
+    mon6 (date)= "2026-07-06"
+    thu2 (date)= "2026-07-02"
+    near = dates.calendar({ holidays: [july4], observe: "nearest" })
+    x = check("nearest: Fri observed  ", dates.is_business_day(fri3, near), false)
+    x = check("nearest: Mon works     ", dates.is_business_day(mon6, near), true)
+    x = check("downstream inherits    ", dates.next_business_day(thu2, near), "2026-07-06")
+    fwd = dates.calendar({ holidays: [july4], observe: "forward" })
+    x = check("forward: Mon observed  ", dates.is_business_day(mon6, fwd), false)
+    x = check("forward: Fri works     ", dates.is_business_day(fri3, fwd), true)
+    plain = dates.calendar({ holidays: [july4] })
+    x = check("no observe: unchanged  ", dates.is_business_day(fri3, plain), true)
+
+    ' A Sunday holiday observes Monday under both policies; and two weekend
+    ' holidays observing forward take CONSECUTIVE weekdays, not one slot.
+    sun16 (date)= "2026-08-16"
+    nsun = dates.calendar({ holidays: [sun16], observe: "nearest" })
+    mon17 (date)= "2026-08-17"
+    x = check("Sunday observes Monday ", dates.is_business_day(mon17, nsun), false)
+    sat15 (date)= "2026-08-15"
+    chain = dates.calendar({ holidays: [sat15, sun16], observe: "forward" })
+    tue18 (date)= "2026-08-18"
+    x = check("chained: Mon taken     ", dates.is_business_day(mon17, chain), false)
+    x = check("chained: Tue taken too ", dates.is_business_day(tue18, chain), false)
+    wed19 (date)= "2026-08-19"
+    x = check("chained: Wed survives  ", dates.is_business_day(wed19, chain), true)
+
     ' --- dates.between: the calendar difference, consistent with clamping ---
     jan31 (date)= "2026-01-31"
     feb28 (date)= "2026-02-28"

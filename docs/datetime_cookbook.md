@@ -326,6 +326,16 @@ program main(args)
     ' is worth knowing -- half-open intervals are where calendar bugs live.
     fri (date)= "2026-08-21"
     print "Mon..Fri     : " + dates.business_days_between(mon, fri, cal) + " working days"
+
+    ' Observed holidays: July 4, 2026 is a Saturday, so under the US federal
+    ' rule the day OFF is Friday July 3. observe: "nearest" computes that at
+    ' construction, and every verb downstream simply inherits it.
+    july4 (date)= "2026-07-04"
+    us = dates.calendar({ holidays: [july4], observe: "nearest" })
+    fri3 (date)= "2026-07-03"
+    thu2 (date)= "2026-07-02"
+    print "Jul 3 off    : " + (not dates.is_business_day(fri3, us))
+    print "after Jul 2  : " + dates.next_business_day(thu2, us)
 end program
 ```
 
@@ -338,6 +348,8 @@ after Dec 24 : 2026-12-28
 5 bdays on   : 2026-08-24
 1 bday back  : 2026-08-14
 Mon..Fri     : 4 working days
+Jul 3 off    : true
+after Jul 2  : 2026-07-06
 ```
 
 `dates.calendar(spec)` supplies the defaults (Sat/Sun weekend, no holidays)

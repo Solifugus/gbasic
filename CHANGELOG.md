@@ -129,6 +129,16 @@ order, one that misses the day end moves **whole** to the next day, and one
 that fits nowhere is reported in `unplaced:` rather than dropped. With this,
 every planned v1 layer of the datetime redesign is built.
 
+### Observed holidays and month constraints (`stdlib/dates.bas`)
+
+`dates.calendar({ …, observe: "nearest" | "forward" })` moves a weekend
+holiday's day off to a working day — nearest free weekday with ties forward
+(the US federal rule; July 4 2026 is a Saturday, observed Friday July 3), or
+always forward (the UK substitute-day style). Chained weekend holidays take
+consecutive weekdays. Computed once at construction, so every downstream verb
+inherits it. Specs also gain `month:` (a number or list — RRULE's BYMONTH),
+so "the 15th of January and July" is one rule.
+
 ### Business-hours arithmetic (`stdlib/dates.bas`)
 
 `add_business_hours` (signed), `business_hours_between` (signed), and
