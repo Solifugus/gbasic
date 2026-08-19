@@ -1699,6 +1699,47 @@ Day's full arc, §13.AA–AD: **446,733 cells / 1,083 books → 86,575 / 745**
 19,500 / 110 (likely names/refs we still cannot see — external-adjacent),
 `err`→err 20,593 / 226, num→num's residue 18,385 / 315.
 
+### 13.AE External names priced, month names coerced (2026-08-19)
+
+§13.AD's two residues. The first was TWO defects stacked, and the second
+of them was put there by this same day's work — worth recording plainly:
+
+*`#REF!`→num residue = `[n]!Name`, a defined name in an EXTERNAL workbook.*
+`xlsx_cell_value_in` parsed the ref BEFORE its external check, so a
+name-shaped external ref bounced to a bare `#REF!` that never set the
+unsupported flag — the class counted as wrong ANSWERS instead of priced
+refusals, while `[1]Book1!A1` (ref-shaped) parsed, took the external
+branch, and was reported correctly, which is exactly why the gap stayed
+invisible. AND the §13.AD sheet-qualified name splice did not veto
+external qualifiers, so a COLLIDING internal name silently answered with
+the WRONG WORKBOOK's value — proven red by the fixture's shadow case
+(internal `Table` = 42; `[1]!Table` answered 42) before the guard
+existed. A one-day-old feature already needed a correctness guard its
+own tier hadn't imagined; the corpus found it because real books carry
+colliding names.
+
+*`err`→num's top = text dates with MONTH NAMES.* `MONTH(E5)` over a text
+column of `"01-JAN-2001"` answered `#VALUE!` where Excel coerces
+DD-MMM-YYYY — 7,484 cells in one book. `xlsx_as_serial` now takes
+D-MMM-YYYY (3-letter abbreviations or full names, case-insensitive,
+two-digit years pivoting at 30). ENGLISH ONLY, deliberately: the corpus
+is US English, and other locales' month names would trade a visible
+refusal for a silent wrong month.
+
+| | §13.AD end | after |
+|---|---|---|
+| disagreeing cells | 86,575 | **64,227** |
+| workbooks with any disagreement | 745 | **688** |
+| `err`→num | 42,323 | **20,235** |
+| workbooks fully agreeing | 95.3% | **95.7%** |
+
+Verified live: PGE_EXPOSURE's `MONTH(E5)` answers 1; Gas Swap's EO9904.1
+went from 1,441 disagreements to zero with 4,324 priced refusals. Day's
+arc, §13.AA–AE: **446,733 cells / 1,083 books → 64,227 / 688 (−86%)**.
+The three surviving buckets are now nearly level — `err`→err 20,396 / 221,
+`err`→num 20,235 / 141, num→num 18,353 / 310 — so the one-cause era may
+be over; the next sampling should expect fragmentation.
+
 ## 14. Roadmap (phases)
 
 **Read this section as history, not as a plan.** Phases 1 through 3b are built,
@@ -1710,9 +1751,10 @@ useful thing in this document — but it is no longer what says what to do next.
 the instruments in `tools/xlsx_corpus_*.sh`: `blockers` ranks what the evaluator
 REFUSES by the name it actually refused, and `disagree` ranks wrong ANSWERS by
 the shape of the mismatch, both reporting distinct workbooks beside cell counts.
-Run them; act on the top of the list; re-run. §13.V through §13.AD are that
-loop; §13.AD's table is current as of the commit that added it, and the next
-diagnoses it names are `err`→num's and `#REF!`→num's residues.
+Run them; act on the top of the list; re-run. §13.V through §13.AE are that
+loop; §13.AE's table is current as of the commit that added it, and it warns
+the next sampling to expect fragmentation — the three surviving buckets are
+nearly level.
 
 *Why the change is not a preference.* The ordering below has now been contradicted
 by measurement three separate times. Phase 4 — the formula compiler's join and
