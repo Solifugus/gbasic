@@ -963,6 +963,11 @@ typedef struct {
     char *str;
     char *formula;          /* NULL when the cell is a literal */
     int hidden;             /* the row's hidden="1" -- SUBTOTAL 101-111 needs it */
+    /* <f t="array">: a CSE array formula. Evaluating one with scalar
+     * semantics gives a plausible wrong number (implicit intersection turns
+     * SUM(IF(NG=C4,D4)) into a per-row comparison), so these are REFUSED by
+     * name until array semantics exist -- reported, never guessed. */
+    int array_formula;
 } XlsxSnapCell;
 
 /* A sheet snapshot, plus an INDEX from (row,col) to position.
@@ -1269,10 +1274,12 @@ static int xlsx_snapshot(XlsxWorkbook *wb, const char *sheet_name, XlsxSnap *out
                 char *formula = NULL, *vtext = NULL, *inl = NULL;
                 long shared_si = -1;
                 int shared_master = 0;
+                int is_array = 0;
                 for (xmlNodePtr k = c->children; k; k = k->next) {
                     if (xlsx_is(k, "f")) {
                         formula = xlsx_text_of(k);
                         char *ft = xlsx_prop(k, "t");
+                        if (ft && strcmp(ft, "array") == 0) is_array = 1;
                         if (ft && strcmp(ft, "shared") == 0) {
                             char *si = xlsx_prop(k, "si");
                             if (si) shared_si = strtol(si, NULL, 10);
@@ -1324,6 +1331,7 @@ static int xlsx_snapshot(XlsxWorkbook *wb, const char *sheet_name, XlsxSnap *out
                 sc->row = row; sc->col = col; sc->formula = formula;
                 sc->str = NULL; sc->num = 0; sc->kind = XV_EMPTY;
                 sc->hidden = row_hidden;
+                sc->array_formula = is_array;
                 if (type && strcmp(type, "s") == 0) {
                     long idx = vtext ? strtol(vtext, NULL, 10) : -1;
                     sc->kind = XV_STR;
@@ -1466,6 +1474,8 @@ static long xlsx_sheet_index(const XlsxWorkbook *wb, const char *name) {
  * author does not know how far the data will grow. A bare column letter is not
  * a cell reference, so it is emitted as a REF with row 0 meaning "unbounded",
  * and the range logic fills in the sheet's actual extent later. */
+static void xlsx_lex_next(XlsxLex *lx);   /* sheet-qualified names splice, then re-lex */
+
 static void xlsx_lex_sheet_qualified(XlsxLex *lx) {
     /* Excel rewrites a reference whose target was DELETED into a literal
      * #REF! in the FORMULA TEXT -- GRMSDetail!#REF! -- so an error literal
@@ -1494,6 +1504,33 @@ static void xlsx_lex_sheet_qualified(XlsxLex *lx) {
     if (xlsx_parse_ref(lx->cur.text, &col, &row)) {
         lx->cur.kind = XT_REF;
         return;
+    }
+    /* Not a cell reference. Before assuming it is one end of a range, try a
+     * SHEET-QUALIFIED DEFINED NAME -- EO9904.2!mthend, where the qualifier is
+     * a SCOPE hint: the sheet's local name first, else the global one. This
+     * was the largest slice of #REF!->num (30,938 cells / 137 books): the
+     * name passed through as an unparseable REF and the cell read failed.
+     * Bare column/row endpoints (Data!A:B, Data!$3:$7) must keep passing
+     * through, so anything range-shaped (letters <= 3, or digits) is never
+     * treated as a name. */
+    if (*lx->cur.text && lx->names_wb &&
+        lx->sp < (int)(sizeof lx->resume / sizeof lx->resume[0])) {
+        int letters = 1, digits = 1;
+        for (const char *p = lx->cur.text; *p; p++) {
+            if (!isalpha((unsigned char)*p)) letters = 0;
+            if (!isdigit((unsigned char)*p)) digits = 0;
+        }
+        if (!((letters && strlen(lx->cur.text) <= 3) || digits)) {
+            const char *rt = xlsx_defined_lookup(lx->names_wb,
+                                 xlsx_sheet_index(lx->names_wb, lx->cur.sheet),
+                                 lx->cur.text);
+            if (rt) {
+                lx->resume[lx->sp++] = lx->p;
+                lx->p = rt;
+                xlsx_lex_next(lx);
+                return;
+            }
+        }
     }
     /* A bare column ("A") or row ("3"): only valid as one end of a range, and
      * xlsx_parse_ref rejects it. Pass it through as a REF and let the range
@@ -2782,6 +2819,12 @@ static XlsxVal xlsx_call(XlsxEval *ev, const char *raw_name) {
         char crit[256];
         if (argc < 2) { out = xv_err("#VALUE!"); goto done; }
         xlsx_to_text(ARG_AT(1, 0), crit, sizeof crit);
+        /* A criteria that is a reference to an EMPTY CELL is 0 -- Excel's
+         * rule, the same one the lookup key follows. Textified naively it is
+         * "", which matched every BLANK cell in the range: measured 9,351
+         * counted where Excel cached 0 on one Broker-detail workbook. A
+         * literal "" criteria is untouched -- that one does match blanks. */
+        if (ARG_AT(1, 0).kind == XV_EMPTY) snprintf(crit, sizeof crit, "0");
         size_t rn = ARG_LEN(0);
         int have_agg = argc >= 3;
         double total = 0; long cnt = 0;
@@ -2844,6 +2887,8 @@ static XlsxVal xlsx_call(XlsxEval *ev, const char *raw_name) {
             for (size_t p = first_pair; p + 1 < argc && all; p += 2) {
                 char crit[256];
                 xlsx_to_text(ARG_AT(p + 1, 0), crit, sizeof crit);
+                /* Same empty-cell-criteria-is-0 rule as the SUMIF family. */
+                if (ARG_AT(p + 1, 0).kind == XV_EMPTY) snprintf(crit, sizeof crit, "0");
                 if (i >= ARG_LEN(p) || !xlsx_criteria_match(ARG_AT(p, i), crit)) all = 0;
             }
             if (!all) continue;
@@ -5864,7 +5909,9 @@ static Value xlsx_eval_call(AstExpr *expr) {
         Value out = value_unknown();
         if (xlsx_parse_ref(refv.as.string, &col, &row)) {
             const XlsxSnapCell *c = xlsx_snap_at(&snap, row, col);
-            if (c && c->formula) {
+            if (c && c->formula && c->array_formula) {
+                out = value_string("(not evaluated: array formula)");
+            } else if (c && c->formula) {
                 int unsup = 0;
                 char un[64] = "";
                 XlsxVal v = xlsx_eval_formula_in(wbv.as.workbook, &snap, shv.as.string, &pool,
@@ -5951,10 +5998,19 @@ static Value xlsx_eval_call(AstExpr *expr) {
 
             int unsup = 0;
             char un[64] = "";
-            XlsxVal got = is_vol
-                ? xv_str("(not evaluated: volatile)")
-                : xlsx_eval_formula_in(wbv.as.workbook, &snap, shv.as.string, &pool,
-                                        c->formula, c->row, c->col, &unsup, un, sizeof un);
+            XlsxVal got;
+            if (is_vol) {
+                got = xv_str("(not evaluated: volatile)");
+            } else if (c->array_formula) {
+                /* Scalar evaluation of a CSE formula yields a plausible wrong
+                 * number, so it is refused BY NAME rather than judged. */
+                unsup = 1;
+                snprintf(un, sizeof un, "array formula");
+                got = xv_str("(not evaluated: array formula)");
+            } else {
+                got = xlsx_eval_formula_in(wbv.as.workbook, &snap, shv.as.string, &pool,
+                                           c->formula, c->row, c->col, &unsup, un, sizeof un);
+            }
 
             const char *verdict;
             if (is_vol) { verdict = "volatile"; volatile_n++; }
@@ -6215,6 +6271,10 @@ static Value xlsx_eval_call(AstExpr *expr) {
             XlsxSnapCell *c = &s->cells[node - bk.base[si]];
             if (!c->formula) continue;
             if (circ[node]) { circular++; continue; }
+            /* An array formula is refused, and its CACHED value is left alone
+             * -- writing back a scalar mis-evaluation would corrupt it, the
+             * same hazard the shared-formula work measured at 171 cells. */
+            if (c->array_formula) { unsupported_n++; continue; }
             int unsup = 0;
             char un[64] = "";
             XlsxVal v = xlsx_eval_formula_in(wb, s, bk.names[si], &pool,
@@ -6300,6 +6360,8 @@ static Value xlsx_eval_call(AstExpr *expr) {
             XlsxSnapCell *c = &snap.cells[i];
             if (!c->formula) continue;
             if (circ[i]) { circular++; continue; }
+            /* Same rule as the workbook-wide walk: refused, cache untouched. */
+            if (c->array_formula) { unsupported_n++; continue; }
             int unsup = 0;
             char un[64] = "";
             XlsxVal v = xlsx_eval_formula_in(wb, &snap, shv.as.string, &pool,

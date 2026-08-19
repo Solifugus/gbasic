@@ -832,6 +832,82 @@ else
     status=1
 fi
 
+# --- Tier 2e7: TRI -- qualified names, array refusal, empty criteria ------------
+#
+# Three corpus classes sampled 2026-08-19 (§13.AD), one fixture:
+#
+# (1) A SHEET-QUALIFIED DEFINED NAME -- EO9904.2!mthend, the qualifier being a
+# SCOPE hint (that sheet's local name first, else global). It passed through
+# the lexer as an unparseable REF and the cell read failed: the largest slice
+# of #REF!->num. Range endpoints (Data!A:B) must keep passing through, so
+# nothing range-shaped (letters <= 3, or digits) is ever treated as a name.
+#
+# (2) A CSE ARRAY FORMULA (<f t="array">SUM(IF(NG=C4,D4))) evaluated with
+# scalar semantics gives a plausible WRONG NUMBER -- implicit intersection
+# turns the array comparison into a per-row one. Refused BY NAME ("array
+# formula"), cached values left untouched by recalc, until array semantics
+# exist. The bulk of #VALUE!->num came from exactly this idiom.
+#
+# (3) A criteria that is a reference to an EMPTY CELL is 0 -- the same rule
+# the lookup key follows. Textified naively it was "", which matched every
+# BLANK cell in the range: 9,351 counted where Excel cached 0.
+printf -- '-- tri: Sheet!name scope, array-formula refusal, empty criteria is 0\n'
+tdir="$tmp/tri"
+rm -rf "$tdir"; mkdir -p "$tdir/_rels" "$tdir/xl/_rels" "$tdir/xl/worksheets"
+printf '%s' '<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/worksheets/sheet2.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>' >"$tdir/[Content_Types].xml"
+printf '%s' '<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>' >"$tdir/_rels/.rels"
+printf '%s' '<?xml version="1.0"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Q" sheetId="1" r:id="rId1"/><sheet name="EO" sheetId="2" r:id="rId2"/></sheets><definedNames><definedName name="mthend">EO!$A$1</definedName><definedName name="loco" localSheetId="1">EO!$A$2</definedName></definedNames></workbook>' >"$tdir/xl/workbook.xml"
+printf '%s' '<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet2.xml"/></Relationships>' >"$tdir/xl/_rels/workbook.xml.rels"
+{
+  printf '<?xml version="1.0"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>'
+  printf '<row r="1"><c r="A1"><v>1</v></c><c r="B1"><v>3</v></c><c r="F1"><v>1</v></c><c r="G1"><v>0</v></c><c r="C1"><f>EO!mthend*2</f><v>200</v></c><c r="D1"><f t="array" ref="D1">SUM(IF(A1:A3=1,B1:B3))</f><v>10</v></c></row>'
+  printf '<row r="2"><c r="A2"><v>2</v></c><c r="B2"><v>5</v></c><c r="F2"><v>2</v></c><c r="C2"><f>EO!loco+1</f><v>8</v></c></row>'
+  printf '<row r="3"><c r="A3"><v>1</v></c><c r="B3"><v>7</v></c><c r="F3"><v>4</v></c><c r="G3" t="inlineStr"><is><t>x</t></is></c><c r="C3"><f>COUNTIF(G1:G4,H9)</f><v>2</v></c></row>'
+  printf '<row r="4"><c r="F4"><v>8</v></c><c r="G4"><v>0</v></c><c r="C4"><f>SUMIFS(F1:F4,G1:G4,H9)</f><v>9</v></c></row>'
+  printf '</sheetData></worksheet>'
+} >"$tdir/xl/worksheets/sheet1.xml"
+printf '%s' '<?xml version="1.0"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row r="1"><c r="A1"><v>100</v></c></row><row r="2"><c r="A2"><v>7</v></c></row></sheetData></worksheet>' >"$tdir/xl/worksheets/sheet2.xml"
+( cd "$tdir" && zip -q -r -X ../tri.xlsx . )
+cat >"$tmp/tri.bas" <<'EOB'
+program main(args)
+  wb = xlsx.open(args[0])
+  print "Sheet!name resolves    : " + xlsx.evaluate(wb, "Q", "C1")
+  print "qualifier finds local  : " + xlsx.evaluate(wb, "Q", "C2")
+  print "array formula refused  : " + xlsx.evaluate(wb, "Q", "D1")
+  print "empty criteria means 0 : " + xlsx.evaluate(wb, "Q", "C3")
+  print "SUMIFS agrees          : " + xlsx.evaluate(wb, "Q", "C4")
+  r = xlsx.check(wb, "Q")
+  print "check disagree         : " + string(r.disagree)
+  print "check unsupported      : " + string(r.unsupported)
+end program
+EOB
+tri_want='Sheet!name resolves    : 200
+qualifier finds local  : 8
+array formula refused  : (not evaluated: array formula)
+empty criteria means 0 : 2
+SUMIFS agrees          : 9
+check disagree         : 0
+check unsupported      : 1'
+tri_got=$(timeout 60 ./gbasic "$tmp/tri.bas" "$tmp/tri.xlsx" 2>&1)
+if [ "$tri_got" = "$tri_want" ]; then
+    printf 'PASS tri: qualified names splice, arrays refused by name, empty criteria is 0\n'
+else
+    printf 'FAIL tri\n'
+    diff <(printf '%s\n' "$tri_want") <(printf '%s\n' "$tri_got") || true
+    status=1
+fi
+
+# recalc must leave an array cell's CACHED value untouched -- writing back a
+# scalar mis-evaluation is the shared-formula corruption hazard again.
+printf 'program main(args)\n  wb = xlsx.open("%s")\n  xlsx.recalc(wb, "Q")\n  print xlsx.cell(wb, "Q", "D1").value\nend program\n' "$tmp/tri.xlsx" >"$tmp/trirc.bas"
+trirc=$(timeout 60 ./gbasic "$tmp/trirc.bas" 2>/dev/null)
+if [ "$trirc" = "10" ]; then
+    printf 'PASS tri recalc: the array cell keeps its cached value\n'
+else
+    printf 'FAIL tri recalc: array cell cached value became "%s", want 10\n' "$trirc"
+    status=1
+fi
+
 # --- Tier 2f: post-2001 capabilities --------------------------------------------
 #
 # The corpus is 2001 and cannot contain one function added since, so everything
