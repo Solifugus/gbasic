@@ -1524,6 +1524,69 @@ failure the ranker's own comments warn about (it is why they use per-worker
 files). The warning was read and the mechanism skipped. Diagnose the
 instrument before the product.
 
+### 13.AA Defined names, and what resolving them uncovered (2026-08-19)
+
+The fix §13.Z diagnosed, plus the one it exposed. Two commits, each with a
+proven-red in-test tier (DEFNAMES, INTERSECT) and a corpus re-measure after
+each — the middle measurement is the interesting one:
+
+| | §13.Z end | + defined names | + implicit intersection |
+|---|---|---|---|
+| disagreeing cells | 446,733 | 498,729 | **339,873** |
+| workbooks with any disagreement | 1,083 | 958 | **956** |
+| `err`→num cells | 197,387 | 75,435 | **68,896** |
+| `#VALUE!`→num | 164,741 | 36,282 | **30,126** |
+| workbooks fully agreeing | 93.2% | 94.0% | **94.0%** |
+
+*Defined names* (`<definedNames>` in xl/workbook.xml) resolve by a
+**lexer-level splice** of the refersTo text, not evaluation to a value:
+`Holidays` naming `$A$1:$A$3` must arrive at an argument collector as
+REF COLON REF so it flattens as a range there, which no single value can
+express. The splice stack's depth cap doubles as the cycle guard
+(`Loop1`=`Loop2`, `Loop2`=`Loop1` nests without popping and dies as
+`#NAME?` instead of hanging); local names shadow global (`localSheetId`);
+names are case-insensitive; the splice is gated on a workbook context so
+the SQL compiler and `xlsx.apply` lex exactly as before. A bare name that
+does NOT splice no longer falls into the call machinery (which advanced
+twice expecting a paren and ate the tokens after the name): it answers
+`#NAME?` and is reported unsupported BY NAME — closing the visibility hole
+§13.Z described, where this class died anonymously and never ranked. Both
+dependency walkers splice too, pinned by an ordering test (a row-1 formula
+depending through a name on a row-6 formula).
+
+*The middle column is the standing lesson about honest instruments:*
+resolving names made the cell count go UP by 52k while books fell, because
+cells that used to die unjudged (`unsupported`) were now being judged — and
+whole workbook families were judged WRONG. `IF(REF_DT<=LastDay,...)` with
+`REF_DT` naming a whole column answered the comparison against the range's
+first endpoint: a plausible boolean where Excel cached a number, ~144k
+cells. That is **implicit intersection** — Excel's pre-dynamic-array rule
+that a range in a scalar slot takes its element on the formula's OWN row
+(single-column range) or own column (single-row range), with rectangles
+and out-of-band rows answering `#VALUE!` as Excel does. Carried by two
+paths: the expression parser now consumes REF COLON REF (any range that
+reaches a primary is being used as a value, since the collector takes
+whole-argument ranges first), and the collector looks one token PAST a
+consumed range — an operator there means the range was the start of a
+scalar expression, so it rewinds. Needed the evaluating cell's (row, col)
+threaded into the evaluator, which nothing had needed before.
+
+*Also found red while pinning the tier:* the whole-row range form
+(`SUM(I!$7:$7)`) started its column span at 1 in a zero-based column
+scheme — silently skipping column A, the same class of off-by-one §13.L
+recorded for columns, on the other axis. And the bare-digit whole-row
+spelling (`SUM(7:7)`) does not form a range at all — `7` lexes as a
+number, so SUM sees one argument; known, unfixed, believed rare (the `$`
+and sheet-qualified spellings work).
+
+*What the ranker says now:* `err`→err is the top bucket (165,522 / 383
+books — both sides error, different error), then `err`→num's remainder,
+then `#NUM!`→err (64,534 / 9 books, one family) and `FUNC DATE`
+(66,733 / 24 books) — still unmoved, so §13.Z's guess that it was mostly
+the defined name `Date` was wrong for the bulk: 2 books left the bucket,
+the rest disagree for a reason not yet sampled. That is the next
+diagnosis.
+
 ## 14. Roadmap (phases)
 
 **Read this section as history, not as a plan.** Phases 1 through 3b are built,
@@ -1535,9 +1598,9 @@ useful thing in this document — but it is no longer what says what to do next.
 the instruments in `tools/xlsx_corpus_*.sh`: `blockers` ranks what the evaluator
 REFUSES by the name it actually refused, and `disagree` ranks wrong ANSWERS by
 the shape of the mismatch, both reporting distinct workbooks beside cell counts.
-Run them; act on the top of the list; re-run. §13.V through §13.Z are that
-loop; §13.Z's table is current as of the commit that added it, and the next
-target it names is defined names.
+Run them; act on the top of the list; re-run. §13.V through §13.AA are that
+loop; §13.AA's table is current as of the commit that added it, and the next
+diagnoses it names are the `FUNC DATE` bucket and `err`→err.
 
 *Why the change is not a preference.* The ordering below has now been contradicted
 by measurement three separate times. Phase 4 — the formula compiler's join and
