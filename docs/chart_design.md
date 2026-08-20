@@ -1,6 +1,8 @@
 # gBASIC charting library — design proposal
 
-Status: proposal (not yet implemented)
+Status: proposal (not yet implemented); design reviewed and amended 2026-08-20
+(text-layout policy §6b, refusal policies in §8, structural verification in §9,
+open questions resolved in §13)
 
 A pure-gBASIC library, `stdlib/chart.bas`, that turns a frame (or bare lists)
 into a chart. It is the visualization layer the statistics and EDGAR toolkits
@@ -135,9 +137,11 @@ that leave room for axes and labels.
   (m1 - m0) / (dmax - dmin)`.
 - **Category scale** for bar x-axes: evenly spaced bands, one per distinct
   category, with configurable inner/outer padding.
-- **Date scale**: gBASIC date values reduce to a numeric day count (the same
-  `_civil_days` trick `forensics.bas` uses), then plot on the linear scale; tick
-  labels format back to dates.
+- **Date scale**: since the datetime redesign, `d2 - d1` is a signed exact
+  duration, so a date reduces to a day count with core arithmetic —
+  `(d - anchor).total_seconds / 86400` — then plots on the linear scale; tick
+  labels format back to dates. (An earlier draft referenced forensics.bas's
+  private `_civil_days` trick; the language has since made it unnecessary.)
 
 Axis bounds default to the data range, extended to **"nice" round numbers** via a
 loose-labeling pass (the Wilkinson/Talbot style: pick a tick step from
@@ -146,6 +150,35 @@ the range). Bounds are overridable through options for fixed-scale comparisons
 across dossiers. Tick generation is fully deterministic — no floating-point
 formatting that varies by locale; numbers are rendered through a single
 in-library formatter with fixed precision rules.
+
+## 6b. Text layout: exact alignment, estimated reservation (2026-08-20)
+
+The library cannot measure text — SVG carries no font metrics, and the font
+that finally renders belongs to the viewer. The policy is two-layered, and the
+layers have different truth standards:
+
+- **Alignment is EXACT, because the renderer does it.** Every label is placed
+  with `text-anchor` (`end` to right-align y-axis labels against the axis,
+  `middle` to center titles and x-ticks) so the library never needs to know
+  where text ends — only where it is anchored. No estimate is involved in
+  where text visually sits.
+- **Space reservation is an ESTIMATE, with declared knobs.** Margins must be
+  sized before rendering (the left margin has to fit `1,500,000`), and for
+  that `estimated_width = len(label) * char_ratio * font_size` is sufficient:
+  over-reserving by 5% is invisible, and the knobs are in the options record —
+  `font_size` (default 12, used in both the SVG and the estimates) and
+  `char_ratio` (default 0.6). Auto-derived margins come from the LONGEST
+  formatted tick label; each margin is individually overridable
+  (`margin_left:` etc., `unknown` = derive) for when someone's font or taste
+  disagrees. This is stated as an approximation, not hidden as magic numbers.
+- **Density is bounded by DETERMINISTIC TICK THINNING**, never by collision: a
+  max-labels budget per axis, met by keeping every k-th tick. The thinning is a
+  pure function of the tick list and the budget, so it cannot flap between
+  runs.
+- **Belt-and-braces**: SVG's `textLength` attribute can force a label into its
+  reserved box (the renderer compresses glyph spacing). Offered as an option,
+  off by default — squished text is its own ugliness, but it guarantees
+  containment for pathological labels.
 
 ## 7. Options / styling (defaults chosen for the site + print)
 
@@ -164,23 +197,57 @@ An options record, merged over documented defaults:
 | `markers`         | `false` (line)               | draw point dots                      |
 | `bins`            | auto (Sturges/√n)            | histogram bin count                  |
 | `stacked`         | `false` (bar)                | stacked vs. grouped                  |
+| `font_size`       | 12                           | pt; used in the SVG and the estimates|
+| `char_ratio`      | 0.6                          | estimated glyph width / font_size    |
+| `margin_left` etc.| `unknown` (derive)           | explicit number = you take over      |
+| `max_ticks`       | per-axis budget              | deterministic thinning bound (§6b)   |
 
 Text is rendered as `<text>` with a generic `font-family: sans-serif`; the
 library never embeds a font (keeps output small and deterministic; the renderer
 supplies the glyphs). No inline JavaScript, no external references — a single
-self-contained `<svg>` element.
+self-contained `<svg>` element that carries a `viewBox` alongside
+`width`/`height`, so an embedded chart scales responsively for free.
 
-## 8. Missing data and edge cases
+**Escaping is a correctness AND a security property.** Every string of user
+origin — titles, axis labels, category names, legend entries — passes through
+one `_escape()` (`&`, `<`, `>`, `"`, `'`) at the point it enters the markup.
+This is what makes "no inline JavaScript" true rather than aspirational when
+the SVG is concatenated into a served page, and it is pinned by a golden whose
+title is hostile (`R&D <script> "q"`).
+
+## 8. Missing data, refusals, and edge cases
+
+The guiding rule is the house one: **a plausible wrong picture is worse than an
+error.** Where the input is ambiguous, the library refuses by name rather than
+guessing (2026-08-20).
 
 - **`unknown` in a line series** → the path is broken at that x (a genuine gap,
   not a drop to zero), matching how a reader expects a missing quarter to look.
 - **`unknown` in scatter/histogram** → the point/observation is skipped.
+- **`nan`/`inf`** → treated exactly like `unknown` (gap / skipped). Statistics
+  can legitimately produce them, and plotting an infinity is not a picture.
+  Detection is `x != x` for nan (IEEE) plus a finite-range check.
 - **All-NA or empty series** → renders axes and title with an explicit "no data"
   note rather than raising, so a dossier with a sparse concept still lays out.
 - **Single data point / zero range** → the nice-tick pass pads the range so a
   flat series still draws on a sane axis instead of dividing by zero.
 - **Non-numeric y** → raises with a clear message (charts plot numbers; category
-  data belongs on the x-axis of a bar chart).
+  data belongs on the x-axis of a bar chart). **`money` is accepted** and
+  plotted at face value — frames from the xlsx pipeline carry it, and forcing a
+  conversion dance would be ceremony; `datetime`/`duration` y-columns are
+  refused.
+- **Duplicate categories in a bar chart** (two rows both `"Q1"`) → REFUSED by
+  name: "category 'Q1' appears twice; aggregate before charting." Aggregation
+  belongs to the frame tooling; a chart inventing a sum is a wrong picture.
+- **Stacked bars with negative values** → REFUSED in v1, with the message
+  naming diverging stacks as the future answer. A naive stack draws
+  overlapping nonsense that looks fine at a glance.
+- **More series than the palette has colors** → REFUSED, stating the series
+  count and palette size; passing a longer custom `palette:` lifts the cap.
+  Silent color cycling puts two series in the same jersey.
+- **Unsorted x in a line chart** → plotted in ROW ORDER, documented: your
+  order is your statement. The library never sorts behind the caller's back.
+- **Unequal column lengths in a frame** → refused by column name.
 
 ## 9. Determinism and testing (the golden-file win)
 
@@ -198,12 +265,29 @@ A handful of golden cases (one per chart type, plus a multi-series and an
 all-NA case) pins the rendering. This is a large part of why SVG was chosen over
 raster: Adrian can validate a chart without ever looking at a picture.
 
+**A golden defends whatever it records** — this tree has learned that twice —
+so goldens are not the only tier (2026-08-20). Every rendered chart in the
+suite is also fed back through **our own `xml.parse`** for a structural pass:
+
+- the output is well-formed XML (which catches escaping bugs generically, on
+  inputs no golden thought of — the hostile-title case is the pinned example);
+- every plotted coordinate falls inside the declared `viewBox`;
+- the element census matches expectations (one `<path>` per line series, one
+  `<rect>` per bar, a `<text>` per surviving tick).
+
+The tier SKIPs cleanly when the build has no libxml2; the goldens still run
+everywhere. This is the same shape of check the xlsx work called the
+independent reader (§13.U there): not proof, but a second pair of eyes that is
+not our own renderer agreeing with itself.
+
 ## 10. Performance notes
 
-SVG assembly is string building, and gBASIC has two known O(n²) traps that
-matter here (see the project gotchas): repeated string concatenation and
-`append` both copy the whole accumulator each call. At realistic chart sizes
-(hundreds of points) this is irrelevant, but the implementation should still:
+SVG assembly is string building. One O(n²) trap still matters here: repeated
+string **concatenation** copies the whole accumulator each call. (`append` and
+`arr[i]` are LINEAR since the array copy-on-write work — an earlier draft of
+this note said otherwise, and PLAT-ARRIDX is what pins the current truth.) At
+realistic chart sizes (hundreds of points) even the string trap is irrelevant,
+but the implementation should still:
 
 - iterate rows with `for each`, never `while i < count()` with `arr[i]`
   indexing;
@@ -250,23 +334,26 @@ svg   = chart.render(chart.x(spec, "x"))
 **Site — inline in a served page**: the WebServer handler concatenates the SVG
 string into its HTML body; no file, no asset pipeline.
 
-## 13. Open questions for the user
+## 13. Open questions — RESOLVED with Matthew, 2026-08-20
 
-1. **Default palette** — a fixed, colorblind-safe ordered set (Okabe–Ito is the
-   usual choice: 8 distinguishable colors, good on screen and in print), or do
-   you want a house palette to match the eventual tedderland.com / site theme?
-2. **`render()` output** — return the bare `<svg>…</svg>` fragment (embeddable
-   anywhere), or also offer a `chart.page(spec)` that wraps it in a minimal
-   standalone HTML document for save-and-open? I lean bare fragment as the
-   primitive, with `page()` as a thin convenience.
-3. **Number formatting** — one global fixed-precision rule (e.g. ≤2 significant
-   fractional digits, thousands separators on axis labels), or per-axis format
-   options from v1? I lean one sane default now, options later.
-4. **Dark mode / theming** — ship a `theme` option (light/dark) in v1, or defer
-   until the unified-UI theming story exists? I lean defer; light-only for v1.
-5. **Scope of v1** — is line + scatter + bar + histogram the right first cut, or
-   would you rather Phase 1 ship line + scatter only and prove the engine before
-   adding categorical/binned axes?
+1. **Default palette** — Okabe–Ito: fixed, ordered, colorblind-safe, 8 colors,
+   good on screen and in print. A house palette can layer on later through the
+   `palette:` option.
+2. **`render()` output** — the bare `<svg>…</svg>` fragment is the primitive
+   (embeddable anywhere); `chart.page(spec)` wraps it in a minimal standalone
+   HTML document as a thin convenience.
+3. **Number formatting** — one sane fixed default now (fixed decimal rules,
+   thousands separators on axis labels); per-axis format options later.
+4. **Dark mode / theming** — deferred; light-only v1, until the unified-UI
+   theming story exists.
+5. **Scope of v1** — the roadmap's own phasing: Phase 1 is line + scatter only
+   (which alone unblocks the EDGAR trend and stats fit-plot cases); bar +
+   histogram are Phase 2.
+
+One implementation note: `chart.new(...)` PARSES (probed — qualified library
+calls do not hit the keyword-after-dot trap that record fields do), but verify
+it also RESOLVES against a real library exporting `new` before committing to
+the name; `chart.spec(...)` is the fallback spelling if it does not.
 
 ## 14. Roadmap (phases)
 
