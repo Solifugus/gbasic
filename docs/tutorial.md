@@ -41,6 +41,7 @@ Two more worth knowing before you start:
 - [Running programs](#running-programs)
 - [Variables](#variables)
 - [Strings, Unicode, and bytes](#strings-unicode-and-bytes)
+- [Regular expressions](#regular-expressions)
 - [Modifiers and lenses](#modifiers-and-lenses)
 - [Arrays and records](#arrays-and-records)
 - [Nothing and unknown](#nothing-and-unknown)
@@ -174,6 +175,43 @@ from_bytes([0, 255])   # a two-byte binary string
 > `{caseless}`) is **ASCII-only** by design in v0.1: `A–Z`↔`a–z` fold and every
 > other byte is left exactly as-is, so `upper("café")` is `"CAFÉ"` with `é`
 > unchanged. Full Unicode case folding and normalization are future work.
+
+## Regular expressions
+
+A regex is a **value**, made with `regex(pattern [, flags])`, and the string
+verbs you already know are overloaded to accept one — there is no parallel
+`re_*` family:
+
+```basic
+digits = regex("[0-9]+")
+
+print(contains("order 1500", digits))          # true
+print(replace("a1b22c", digits, "#"))          # a#b#c
+print(split("one, two,three", regex(", *")))   # ["one","two","three"]
+```
+
+A plain **string** second argument still means a **literal** — `contains(s,
+".")` looks for an actual dot; only a regex value switches the verb into
+pattern mode. Matching, which needs to return more than a yes/no, has its own
+verbs:
+
+```basic
+m = match("order 1500 shipped", digits)
+print(m.text)      # 1500
+print(m.start)     # 6      — a CODEPOINT offset, so mid(s, m.start, m.length) composes
+print(m.length)    # 4
+all = match_all("a1b22c", digits)
+print(count(all))  # 2
+```
+
+A miss returns `unknown` — not an error, not an empty string — so a
+non-matching line propagates as absence, the same policy misses follow
+everywhere else. Capture groups arrive in `m.groups`, where a group that did
+not participate is `unknown` while a group that matched the empty string is
+`""` (the two are different facts). Flags: `"i"` (caseless), `"s"` (dot
+matches newline), `"m"` (`^`/`$` per line). The engine is POSIX ERE, so
+Perl shorthands like `\d` are rejected with a clear message rather than
+silently matching something else.
 
 ## Modifiers and lenses
 
@@ -746,6 +784,23 @@ error.clear()
 Module errors carry a `source` (`"watcher"`, `"sqlite"`, `"postgres"`, `"actor"`,
 …) and a numeric `code` so you can branch on the origin.
 
+The practical consequence of this model: **prefer APIs that report failure as a
+value** over wrapping a raising call. The flagship is `try_decode`, the
+non-raising twin of `decode` for JSON you did not produce yourself:
+
+```basic
+r = try_decode(text_from_elsewhere)
+if r.ok then
+    use(r.value)
+else
+    print to error "bad JSON: " + r.message + " at line " + string(r.line)
+end if
+```
+
+It shares `decode`'s parser exactly — both accept the same dialect and
+diagnose an input identically — so checking first costs nothing and never
+disagrees with the real parse.
+
 ## Money, dates, times, and durations
 
 Money, dates, times, and durations are **first-class value types**, not just
@@ -849,6 +904,27 @@ raises. `dates.merge([a, b])` combines calendars as a union of constraints, so
 `schedule.slots` and `schedule.layout` (in `load schedule`) pack appointments
 and sessions into the working day.
 
+### Timezones at the edges
+
+Inside a program, work in one timeline (UTC is the good default). Zones enter
+only at the **edges** — where a human's wall-clock time comes in, or goes out —
+because a server routinely serves several zones at once:
+
+```basic
+meeting(date)= "2026-11-03 09:00:00"            ' what the Chicago calendar says
+utc = from_zone(meeting, "America/Chicago")     ' -> the instant, in UTC
+print(to_zone(utc, "Europe/Berlin"))            ' the same instant, Berlin wall clock
+print(zone_offset(utc, "America/Chicago"))      ' the offset in force, as a duration
+```
+
+Daylight-saving edges are handled the way you'd hope: a wall-clock time that
+occurs **twice** resolves to the earlier instant, and one that never occurs
+(the spring-forward gap) shifts forward — and `zone_resolve(d, zone)` hands
+back the whole story (`{kind, utc, earlier, later}`) when you need to detect
+the edge rather than accept the default. An unknown zone name is **refused**
+(never silently treated as UTC), and an all-day value is refused too — a
+date without a time names no instant to convert.
+
 Every construct above is a runnable recipe in
 [`docs/datetime_cookbook.md`](datetime_cookbook.md), whose examples the test
 suite executes — start there.
@@ -933,6 +1009,8 @@ the full catalog):
   `remove_value`, `find_by`, `first`, `rest`, `take_first`, `take_last`,
   `reverse`, `unique`, `sort`; aggregates `count`, `len`, `sum`, `mean`,
   `median`, `mode`, `min`, `max`
+- **Bitwise (32-bit unsigned):** `band`, `bor`, `bxor`, `bnot`, `shl`, `shr`,
+  `rotl`, `rotr`
 - **Misc:** `count`, `env`, `now`, `round`, `input`, `compare`
 
 ```basic
@@ -1111,6 +1189,11 @@ Further reading:
 
 - [`reference.md`](reference.md) — the complete language reference (every
   statement, expression, builtin, and module).
+- The two **cookbooks**, whose every example the test suite executes:
+  [`xlsx_cookbook.md`](xlsx_cookbook.md) (read, edit, recalculate and query
+  real spreadsheets — the messy-worksheet-to-database pipeline) and
+  [`datetime_cookbook.md`](datetime_cookbook.md) (calendars, recurrence,
+  SLA clocks, timezones).
 - `examples/` — runnable programs for each feature, including
   `first_class_function_test.bas`, `method_test.bas`, `constructor_test.bas`,
   the `spawn_*` actor tests, and the SQLite/PostgreSQL/WebClient/WebServer demos.
