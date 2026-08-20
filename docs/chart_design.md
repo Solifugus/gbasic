@@ -103,7 +103,7 @@ sensible defaults.
 it can be built up and inspected before rendering.
 
 ```
-spec = chart.new("line", df)
+spec = chart.spec("line", df)
 spec = chart.x(spec, "date")
 spec = chart.y(spec, ["revenue", "net_income"])
 spec = chart.title(spec, "Apple — top line vs. bottom line")
@@ -350,10 +350,10 @@ string into its HTML body; no file, no asset pipeline.
    (which alone unblocks the EDGAR trend and stats fit-plot cases); bar +
    histogram are Phase 2.
 
-One implementation note: `chart.new(...)` PARSES (probed — qualified library
-calls do not hit the keyword-after-dot trap that record fields do), but verify
-it also RESOLVES against a real library exporting `new` before committing to
-the name; `chart.spec(...)` is the fallback spelling if it does not.
+One implementation note, settled at build time: `chart.new(...)` PARSES at
+the call site (qualified library calls do not hit the keyword-after-dot trap
+that record fields do) — but a library CANNOT DEFINE a function named `new`
+(`unexpected NEW` at the declaration), so the constructor is `chart.spec`.
 
 ## 14. Roadmap (phases)
 
