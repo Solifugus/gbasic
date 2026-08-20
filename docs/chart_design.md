@@ -1,6 +1,6 @@
 # gBASIC charting library — design proposal
 
-Status: Phase 1 IMPLEMENTED 2026-08-20 (stdlib/chart.bas -- line + scatter, tests/run_chart.sh); design reviewed and amended the same day
+Status: Phases 1 AND 2 IMPLEMENTED 2026-08-20 (stdlib/chart.bas -- line, scatter, bar, histogram; tests/run_chart.sh); design reviewed and amended the same day
 (text-layout policy §6b, refusal policies in §8, structural verification in §9,
 open questions resolved in §13)
 

@@ -1,1 +1,1 @@
-runtime error at tests/../stdlib/chart.bas:229:13: chart: no column 'revenue' in the frame
+runtime error at tests/../stdlib/chart.bas:231:13: chart: no column 'revenue' in the frame

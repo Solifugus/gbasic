@@ -161,6 +161,7 @@ library chart
             palette: ["#000000", "#E69F00", "#56B4E9", "#009E73",
                       "#F0E442", "#0072B2", "#D55E00", "#CC79A7"],
             grid: true, legend: unknown, markers: false,
+            stacked: false, bins: unknown,
             x_min: unknown, x_max: unknown, y_min: unknown, y_max: unknown,
             font_size: 12, char_ratio: 0.6,
             margin_left: unknown, margin_right: unknown,
@@ -182,8 +183,9 @@ library chart
     ' The constructor. (Named `spec`, not `new`: a library cannot define a
     ' function called `new` — see the design doc.)
     function spec(kind, df)
-        if kind != "line" and kind != "scatter" then
-            error "chart: unsupported kind '" + kind + "' (Phase 1 has line and scatter)"
+        ok = kind = "line" or kind = "scatter" or kind = "bar" or kind = "histogram"
+        if not ok then
+            error "chart: unsupported kind '" + kind + "' (line, scatter, bar, histogram)"
         end if
         return { kind: kind, df: df, x: unknown, y: [], opts: {} }
     end function
@@ -245,6 +247,12 @@ library chart
 
         if is_unknown(s.x) then
             error "chart: no x column set"
+        end if
+        if s.kind = "bar" then
+            return _render_bar(s, opts)
+        end if
+        if s.kind = "histogram" then
+            return _render_hist(s, opts)
         end if
         if count(s.y) = 0 then
             error "chart: no y column set"
@@ -515,6 +523,389 @@ library chart
 
     ' ------------------------------------------------------------ one-liners
 
+    ' -------------------------------------------------------- bar (Phase 2)
+    '
+    ' Category x-axis: evenly spaced bands, one per category IN ROW ORDER.
+    ' Bars anchor at ZERO — the y range always includes 0, because a bar's
+    ' length is its statement and clipping the baseline lies. Grouped bars may
+    ' go negative (drawn downward); STACKED bars with negatives are refused —
+    ' a naive stack draws overlapping nonsense that looks fine at a glance.
+    ' A duplicate category is refused by name: a chart inventing a sum is a
+    ' wrong picture, and aggregation belongs to the frame tooling.
+    function _render_bar(s, opts)
+        if count(s.y) = 0 then
+            error "chart: no y column set"
+        end if
+        if count(s.y) > count(opts.palette) then
+            error "chart: " + string(count(s.y)) + " series but the palette has " + string(count(opts.palette)) + " colors; pass a longer palette: option"
+        end if
+        if not has(s.df, s.x) then
+            error "chart: no column '" + s.x + "' in the frame"
+        end if
+        xcol = s.df[s.x]
+        nrows = count(xcol)
+
+        cats = []
+        for each v in xcol
+            if is_unknown(v) then
+                error "chart: column '" + s.x + "' has an unknown category; a bar needs a name"
+            end if
+            key = string(v)
+            if contains(cats, key) then
+                error "chart: category '" + key + "' appears twice; aggregate before charting"
+            end if
+            append(cats, key)
+        end for
+        ncat = count(cats)
+
+        stacked = opts.stacked
+
+        series = []
+        for each name in s.y
+            col = _column(s.df, name, nrows)
+            vals = []
+            i = 0
+            while i < nrows
+                v = col[i]
+                if not is_unknown(v) then
+                    t = type(v)
+                    if t != "number" and t != "money" then
+                        error "chart: column '" + name + "' holds " + t + " values; charts plot numbers (categories belong on a bar chart's x axis)"
+                    end if
+                end if
+                pv = _plottable(v)
+                if stacked and not is_unknown(pv) then
+                    if pv < 0 then
+                        error "chart: stacked bars with negative values are refused (a naive stack overlaps); use grouped bars"
+                    end if
+                end if
+                append(vals, pv)
+                i = i + 1
+            end while
+            append(series, { name: name, vals: vals })
+        end for
+
+        ' Y range: always includes zero.
+        dylo = 0
+        dyhi = 0
+        if stacked then
+            i = 0
+            while i < nrows
+                total = 0
+                for each ser in series
+                    v = ser.vals[i]
+                    if not is_unknown(v) then total = total + v
+                end for
+                if total > dyhi then dyhi = total
+                i = i + 1
+            end while
+        else
+            for each ser in series
+                for each v in ser.vals
+                    if not is_unknown(v) then
+                        if v < dylo then dylo = v
+                        if v > dyhi then dyhi = v
+                    end if
+                end for
+            end for
+        end if
+        if not is_unknown(opts.y_min) then dylo = opts.y_min
+        if not is_unknown(opts.y_max) then dyhi = opts.y_max
+        if dylo = dyhi then dyhi = dylo + 1
+        ty = _ticks(dylo, dyhi, opts.max_ticks_y, false)
+
+        ylabels = []
+        for each t in ty.ticks
+            append(ylabels, _fmt(t, ty.decimals, true))
+        end for
+        ywmax = 0
+        for each lbl in ylabels
+            w = _estw(lbl, opts)
+            if w > ywmax then ywmax = w
+        end for
+        show_legend = count(series) > 1
+        if not is_unknown(opts.legend) then show_legend = opts.legend
+
+        mleft = opts.margin_left
+        if is_unknown(mleft) then
+            mleft = ywmax + 10
+            if not is_unknown(opts.y_label) then mleft = mleft + opts.font_size + 8
+        end if
+        mright = opts.margin_right
+        if is_unknown(mright) then mright = 14
+        mtop = opts.margin_top
+        if is_unknown(mtop) then
+            mtop = 12
+            if not is_unknown(opts.title) then mtop = mtop + round(opts.font_size * 1.5, 0) + 6
+            if show_legend then mtop = mtop + opts.font_size + 8
+        end if
+        mbottom = opts.margin_bottom
+        if is_unknown(mbottom) then
+            mbottom = opts.font_size + 12
+            if not is_unknown(opts.x_label) then mbottom = mbottom + opts.font_size + 8
+        end if
+
+        px0 = mleft
+        px1 = opts.width - mright
+        py0 = mtop
+        py1 = opts.height - mbottom
+
+        parts = []
+        append(parts, "<svg xmlns=" + chr(34) + "http://www.w3.org/2000/svg" + chr(34) + " width=" + chr(34) + _fmt(opts.width, 0, false) + chr(34) + " height=" + chr(34) + _fmt(opts.height, 0, false) + chr(34) + " viewBox=" + chr(34) + "0 0 " + _fmt(opts.width, 0, false) + " " + _fmt(opts.height, 0, false) + chr(34) + " font-family=" + chr(34) + "sans-serif" + chr(34) + " font-size=" + chr(34) + _fmt(opts.font_size, 0, false) + chr(34) + ">")
+
+        if opts.grid then
+            for each t in ty.ticks
+                gy = _scale_y(t, ty, py0, py1)
+                append(parts, "<line x1=" + chr(34) + _coord(px0) + chr(34) + " y1=" + chr(34) + gy + chr(34) + " x2=" + chr(34) + _coord(px1) + chr(34) + " y2=" + chr(34) + gy + chr(34) + " stroke=" + chr(34) + "#dddddd" + chr(34) + "/>")
+            end for
+        end if
+        append(parts, "<line x1=" + chr(34) + _coord(px0) + chr(34) + " y1=" + chr(34) + _coord(py1) + chr(34) + " x2=" + chr(34) + _coord(px1) + chr(34) + " y2=" + chr(34) + _coord(py1) + chr(34) + " stroke=" + chr(34) + "#333333" + chr(34) + "/>")
+        append(parts, "<line x1=" + chr(34) + _coord(px0) + chr(34) + " y1=" + chr(34) + _coord(py0) + chr(34) + " x2=" + chr(34) + _coord(px0) + chr(34) + " y2=" + chr(34) + _coord(py1) + chr(34) + " stroke=" + chr(34) + "#333333" + chr(34) + "/>")
+
+        i = 0
+        while i < count(ty.ticks)
+            gy = _scale_y(ty.ticks[i], ty, py0, py1)
+            append(parts, "<text x=" + chr(34) + _coord(px0 - 6) + chr(34) + " y=" + chr(34) + gy + chr(34) + " text-anchor=" + chr(34) + "end" + chr(34) + " dominant-baseline=" + chr(34) + "middle" + chr(34) + " fill=" + chr(34) + "#333333" + chr(34) + ">" + _escape(ylabels[i]) + "</text>")
+            i = i + 1
+        end while
+
+        ' Category labels, centered per band, deterministically thinned.
+        band = (px1 - px0) / ncat
+        keep = 1
+        if ncat > opts.max_ticks_x + 1 then keep = ceil(ncat / (opts.max_ticks_x + 1))
+        ci = 0
+        while ci < ncat
+            cx = px0 + (ci * band) + (band / 2)
+            append(parts, "<text x=" + chr(34) + _coord(cx) + chr(34) + " y=" + chr(34) + _coord(py1 + opts.font_size + 4) + chr(34) + " text-anchor=" + chr(34) + "middle" + chr(34) + " fill=" + chr(34) + "#333333" + chr(34) + ">" + _escape(cats[ci]) + "</text>")
+            ci = ci + keep
+        end while
+
+        ' Bars.
+        sy0 = _scale_y(0, ty, py0, py1)
+        inner = band * 0.8
+        pad = band * 0.1
+        nser = count(series)
+        ci = 0
+        while ci < ncat
+            if stacked then
+                cum = 0
+                si = 0
+                while si < nser
+                    v = series[si].vals[ci]
+                    if not is_unknown(v) then
+                        if v > 0 then
+                            ytop = _scale_y(cum + v, ty, py0, py1)
+                            ybase = _scale_y(cum, ty, py0, py1)
+                            bx = px0 + (ci * band) + pad
+                            append(parts, "<rect x=" + chr(34) + _coord(bx) + chr(34) + " y=" + chr(34) + ytop + chr(34) + " width=" + chr(34) + _coord(inner) + chr(34) + " height=" + chr(34) + _coord(number(ybase) - number(ytop)) + chr(34) + " fill=" + chr(34) + opts.palette[si] + chr(34) + "/>")
+                            cum = cum + v
+                        end if
+                    end if
+                    si = si + 1
+                end while
+            else
+                barw = inner / nser
+                si = 0
+                while si < nser
+                    v = series[si].vals[ci]
+                    if not is_unknown(v) then
+                        if v != 0 then
+                            yv = _scale_y(v, ty, py0, py1)
+                            ry = yv
+                            rh = number(sy0) - number(yv)
+                            if rh < 0 then
+                                ry = sy0
+                                rh = 0 - rh
+                            end if
+                            bx = px0 + (ci * band) + pad + (si * barw)
+                            append(parts, "<rect x=" + chr(34) + _coord(bx) + chr(34) + " y=" + chr(34) + string(ry) + chr(34) + " width=" + chr(34) + _coord(barw) + chr(34) + " height=" + chr(34) + _coord(rh) + chr(34) + " fill=" + chr(34) + opts.palette[si] + chr(34) + "/>")
+                        end if
+                    end if
+                    si = si + 1
+                end while
+            end if
+            ci = ci + 1
+        end while
+
+        ' Legend, title, axis labels — same chrome as line/scatter.
+        if show_legend then
+            lx = px0
+            lyy = mtop - opts.font_size + 2
+            li = 0
+            for each ser in series
+                color = opts.palette[li]
+                li = li + 1
+                append(parts, "<rect x=" + chr(34) + _coord(lx) + chr(34) + " y=" + chr(34) + _coord(lyy - 9) + chr(34) + " width=" + chr(34) + "10" + chr(34) + " height=" + chr(34) + "10" + chr(34) + " fill=" + chr(34) + color + chr(34) + "/>")
+                append(parts, "<text x=" + chr(34) + _coord(lx + 14) + chr(34) + " y=" + chr(34) + _coord(lyy) + chr(34) + " fill=" + chr(34) + "#333333" + chr(34) + ">" + _escape(ser.name) + "</text>")
+                lx = lx + 14 + _estw(ser.name, opts) + 16
+            end for
+        end if
+        if not is_unknown(opts.title) then
+            append(parts, "<text x=" + chr(34) + _coord(opts.width / 2) + chr(34) + " y=" + chr(34) + _coord(opts.font_size + 6) + chr(34) + " text-anchor=" + chr(34) + "middle" + chr(34) + " font-size=" + chr(34) + _fmt(round(opts.font_size * 1.2, 0), 0, false) + chr(34) + " fill=" + chr(34) + "#111111" + chr(34) + ">" + _escape(opts.title) + "</text>")
+        end if
+        if not is_unknown(opts.x_label) then
+            append(parts, "<text x=" + chr(34) + _coord((px0 + px1) / 2) + chr(34) + " y=" + chr(34) + _coord(opts.height - 6) + chr(34) + " text-anchor=" + chr(34) + "middle" + chr(34) + " fill=" + chr(34) + "#333333" + chr(34) + ">" + _escape(opts.x_label) + "</text>")
+        end if
+        if not is_unknown(opts.y_label) then
+            append(parts, "<text x=" + chr(34) + _coord(opts.font_size) + chr(34) + " y=" + chr(34) + _coord((py0 + py1) / 2) + chr(34) + " text-anchor=" + chr(34) + "middle" + chr(34) + " transform=" + chr(34) + "rotate(-90 " + _coord(opts.font_size) + " " + _coord((py0 + py1) / 2) + ")" + chr(34) + " fill=" + chr(34) + "#333333" + chr(34) + ">" + _escape(opts.y_label) + "</text>")
+        end if
+
+        append(parts, "</svg>")
+        return join(parts, "")
+    end function
+
+    ' -------------------------------------------------- histogram (Phase 2)
+    '
+    ' One value column binned into equal-width bins over the data range; the
+    ' count axis labels whole numbers only. Bin count is the option `bins:`
+    ' or ceil(sqrt(n)) — deterministic either way. unknown and nan skipped.
+    function _render_hist(s, opts)
+        if not has(s.df, s.x) then
+            error "chart: no column '" + s.x + "' in the frame"
+        end if
+        col = s.df[s.x]
+        vals = []
+        for each v in col
+            if not is_unknown(v) then
+                t = type(v)
+                if t != "number" and t != "money" then
+                    error "chart: column '" + s.x + "' holds " + t + " values; a histogram bins numbers"
+                end if
+            end if
+            pv = _plottable(v)
+            if not is_unknown(pv) then
+                append(vals, pv)
+            end if
+        end for
+        nv = count(vals)
+
+        lo = 0
+        hi = 1
+        if nv > 0 then
+            lo = min(vals)
+            hi = max(vals)
+        end if
+        if lo = hi then
+            lo = lo - 0.5
+            hi = hi + 0.5
+        end if
+        nbins = opts.bins
+        if is_unknown(nbins) then nbins = ceil(sqrt(nv))
+        if nbins < 1 then nbins = 1
+        bw = (hi - lo) / nbins
+
+        counts = []
+        k = 0
+        while k < nbins
+            append(counts, 0)
+            k = k + 1
+        end while
+        for each v in vals
+            k = floor((v - lo) / bw)
+            if k >= nbins then k = nbins - 1
+            if k < 0 then k = 0
+            counts[k] = counts[k] + 1
+        end for
+        cmax = 1
+        for each c in counts
+            if c > cmax then cmax = c
+        end for
+
+        tx = _ticks(lo, hi, opts.max_ticks_x, false)
+        ty = _ticks(0, cmax, opts.max_ticks_y, true)
+
+        xlabels = []
+        for each t in tx.ticks
+            append(xlabels, _fmt(t, tx.decimals, true))
+        end for
+        ylabels = []
+        for each t in ty.ticks
+            append(ylabels, _fmt(t, ty.decimals, true))
+        end for
+        ywmax = 0
+        for each lbl in ylabels
+            w = _estw(lbl, opts)
+            if w > ywmax then ywmax = w
+        end for
+
+        mleft = opts.margin_left
+        if is_unknown(mleft) then
+            mleft = ywmax + 10
+            if not is_unknown(opts.y_label) then mleft = mleft + opts.font_size + 8
+        end if
+        mright = opts.margin_right
+        if is_unknown(mright) then mright = 14
+        mtop = opts.margin_top
+        if is_unknown(mtop) then
+            mtop = 12
+            if not is_unknown(opts.title) then mtop = mtop + round(opts.font_size * 1.5, 0) + 6
+        end if
+        mbottom = opts.margin_bottom
+        if is_unknown(mbottom) then
+            mbottom = opts.font_size + 12
+            if not is_unknown(opts.x_label) then mbottom = mbottom + opts.font_size + 8
+        end if
+
+        px0 = mleft
+        px1 = opts.width - mright
+        py0 = mtop
+        py1 = opts.height - mbottom
+
+        parts = []
+        append(parts, "<svg xmlns=" + chr(34) + "http://www.w3.org/2000/svg" + chr(34) + " width=" + chr(34) + _fmt(opts.width, 0, false) + chr(34) + " height=" + chr(34) + _fmt(opts.height, 0, false) + chr(34) + " viewBox=" + chr(34) + "0 0 " + _fmt(opts.width, 0, false) + " " + _fmt(opts.height, 0, false) + chr(34) + " font-family=" + chr(34) + "sans-serif" + chr(34) + " font-size=" + chr(34) + _fmt(opts.font_size, 0, false) + chr(34) + ">")
+
+        if opts.grid then
+            for each t in ty.ticks
+                gy = _scale_y(t, ty, py0, py1)
+                append(parts, "<line x1=" + chr(34) + _coord(px0) + chr(34) + " y1=" + chr(34) + gy + chr(34) + " x2=" + chr(34) + _coord(px1) + chr(34) + " y2=" + chr(34) + gy + chr(34) + " stroke=" + chr(34) + "#dddddd" + chr(34) + "/>")
+            end for
+        end if
+        append(parts, "<line x1=" + chr(34) + _coord(px0) + chr(34) + " y1=" + chr(34) + _coord(py1) + chr(34) + " x2=" + chr(34) + _coord(px1) + chr(34) + " y2=" + chr(34) + _coord(py1) + chr(34) + " stroke=" + chr(34) + "#333333" + chr(34) + "/>")
+        append(parts, "<line x1=" + chr(34) + _coord(px0) + chr(34) + " y1=" + chr(34) + _coord(py0) + chr(34) + " x2=" + chr(34) + _coord(px0) + chr(34) + " y2=" + chr(34) + _coord(py1) + chr(34) + " stroke=" + chr(34) + "#333333" + chr(34) + "/>")
+
+        i = 0
+        while i < count(ty.ticks)
+            gy = _scale_y(ty.ticks[i], ty, py0, py1)
+            append(parts, "<text x=" + chr(34) + _coord(px0 - 6) + chr(34) + " y=" + chr(34) + gy + chr(34) + " text-anchor=" + chr(34) + "end" + chr(34) + " dominant-baseline=" + chr(34) + "middle" + chr(34) + " fill=" + chr(34) + "#333333" + chr(34) + ">" + _escape(ylabels[i]) + "</text>")
+            i = i + 1
+        end while
+        i = 0
+        while i < count(tx.ticks)
+            gx = _scale_x(tx.ticks[i], tx, px0, px1)
+            append(parts, "<text x=" + chr(34) + gx + chr(34) + " y=" + chr(34) + _coord(py1 + opts.font_size + 4) + chr(34) + " text-anchor=" + chr(34) + "middle" + chr(34) + " fill=" + chr(34) + "#333333" + chr(34) + ">" + _escape(xlabels[i]) + "</text>")
+            i = i + 1
+        end while
+
+        if nv > 0 then
+            k = 0
+            while k < nbins
+                c = counts[k]
+                if c > 0 then
+                    xleft = _scale_x(lo + (k * bw), tx, px0, px1)
+                    xright = _scale_x(lo + ((k + 1) * bw), tx, px0, px1)
+                    ytop = _scale_y(c, ty, py0, py1)
+                    append(parts, "<rect x=" + chr(34) + xleft + chr(34) + " y=" + chr(34) + ytop + chr(34) + " width=" + chr(34) + _coord(number(xright) - number(xleft)) + chr(34) + " height=" + chr(34) + _coord(py1 - number(ytop)) + chr(34) + " fill=" + chr(34) + opts.palette[0] + chr(34) + " stroke=" + chr(34) + "#ffffff" + chr(34) + " stroke-width=" + chr(34) + "1" + chr(34) + "/>")
+                end if
+                k = k + 1
+            end while
+        else
+            append(parts, "<text x=" + chr(34) + _coord((px0 + px1) / 2) + chr(34) + " y=" + chr(34) + _coord((py0 + py1) / 2) + chr(34) + " text-anchor=" + chr(34) + "middle" + chr(34) + " fill=" + chr(34) + "#888888" + chr(34) + ">no data</text>")
+        end if
+
+        if not is_unknown(opts.title) then
+            append(parts, "<text x=" + chr(34) + _coord(opts.width / 2) + chr(34) + " y=" + chr(34) + _coord(opts.font_size + 6) + chr(34) + " text-anchor=" + chr(34) + "middle" + chr(34) + " font-size=" + chr(34) + _fmt(round(opts.font_size * 1.2, 0), 0, false) + chr(34) + " fill=" + chr(34) + "#111111" + chr(34) + ">" + _escape(opts.title) + "</text>")
+        end if
+        if not is_unknown(opts.x_label) then
+            append(parts, "<text x=" + chr(34) + _coord((px0 + px1) / 2) + chr(34) + " y=" + chr(34) + _coord(opts.height - 6) + chr(34) + " text-anchor=" + chr(34) + "middle" + chr(34) + " fill=" + chr(34) + "#333333" + chr(34) + ">" + _escape(opts.x_label) + "</text>")
+        end if
+        if not is_unknown(opts.y_label) then
+            append(parts, "<text x=" + chr(34) + _coord(opts.font_size) + chr(34) + " y=" + chr(34) + _coord((py0 + py1) / 2) + chr(34) + " text-anchor=" + chr(34) + "middle" + chr(34) + " transform=" + chr(34) + "rotate(-90 " + _coord(opts.font_size) + " " + _coord((py0 + py1) / 2) + ")" + chr(34) + " fill=" + chr(34) + "#333333" + chr(34) + ">" + _escape(opts.y_label) + "</text>")
+        end if
+
+        append(parts, "</svg>")
+        return join(parts, "")
+    end function
+
     function line(df, xcol, ycols)
         return render(y(x(spec("line", df), xcol), ycols))
     end function
@@ -529,6 +920,22 @@ library chart
 
     function scatter_xy(xs, ys)
         return scatter({ x: xs, y: ys }, "x", "y")
+    end function
+
+    function bar(df, xcol, ycols)
+        return render(y(x(spec("bar", df), xcol), ycols))
+    end function
+
+    function histogram(df, xcol)
+        return render(x(spec("histogram", df), xcol))
+    end function
+
+    function bar_xy(categories, values)
+        return bar({ category: categories, value: values }, "category", "value")
+    end function
+
+    function histogram_xy(values)
+        return histogram({ value: values }, "value")
     end function
 
     ' A minimal standalone HTML document around the fragment, for

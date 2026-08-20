@@ -328,6 +328,9 @@ cases=(
     negative_chart_palette_overflow
     negative_chart_unequal_columns
     negative_chart_no_column
+    negative_chart_dup_category
+    negative_chart_stacked_negative
+    negative_chart_hist_text
 )
 
 for name in "${cases[@]}"; do
