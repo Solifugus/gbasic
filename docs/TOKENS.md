@@ -43,13 +43,14 @@ is a keyword, not an identifier.
 ```
 program   library   load      use       export
 if        then      else      end       for
-to        while     consider  break     continue
-function  return    print     watch     without
-watchers  modifier  goto      gosub     with
-new       spawn     on        resume    next
-stop      error     true      false     nothing
-unknown   and       or        not       in
-each
+to        step      do        loop      until
+while     consider  break     continue  each
+function  return    print     watch     unwatch
+without   watchers  modifier  goto      gosub
+with      new       spawn     on        resume
+next      stop      error     true      false
+nothing   unknown   and       or        not
+in        dim       as
 ```
 
 Notes:

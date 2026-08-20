@@ -249,6 +249,24 @@ Watcher path matching is symmetric at dot boundaries. `watch(state)` observes
 changes to `state.value`, and `watch(state.value)` observes wholesale
 replacement of `state`. Array indexes are tracked at the containing array path.
 
+A **named** watcher is a first-class value with an off-switch:
+
+```basic
+watch recalc(a, b)
+    c = a + b
+end watch
+
+unwatch recalc           ' turns it off
+print(recalc.name)       ' recalc
+print(recalc.targets)    ' ["a","b"]
+print(count(watchers())) ' the live handles
+```
+
+Re-declaring `watch recalc(...)` while `recalc` holds a live watcher replaces
+it rather than stacking a second one, so setup code is safe to re-run; and
+`watchers()` recovers any handle whose variable was lost, so nothing can fire
+with its off-switch out of reach.
+
 During one active watcher drain, a watcher already pending is not enqueued
 again; it runs once against the latest state. Cycles and runaway cascades raise
 runtime error code `1005` from source `watcher` after the execution cap is

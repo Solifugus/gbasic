@@ -373,6 +373,16 @@ when a watched path's stored value changes, the body runs.
 
 - Registered with `watch(path, …)`. Every watcher **runs once immediately at
   registration**.
+- The **named form** `watch name(path, …)` also binds `name` to a first-class
+  watcher value (2026-08-20, chosen over a string-keyed registry so there is
+  no global name namespace and handles compose like function values):
+  `unwatch <expr>` turns a registration off (quiet no-op on an already-off
+  handle), `watchers()` returns the live handles (the lost-handle recovery
+  path), `.name`/`.targets` identify one, and re-declaring a name bound to a
+  live watcher **replaces** it, so setup code is safe to re-run. Registrations
+  are tombstoned rather than deleted — the fire queue holds registry indices.
+  Handles compare by identity (`=`/`!=` only) and are refused by `encode` and
+  actor `send`. Named declaration is top-level only.
 - Triggering is **immediate and synchronous**: matching watchers run and complete
   before execution continues past the mutating statement. There is no batching,
   coalescing, or event-pump deferral.

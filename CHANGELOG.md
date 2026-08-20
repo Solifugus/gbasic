@@ -7,6 +7,19 @@ language surface may still change between releases.
 
 ---
 
+## Unreleased
+
+- **Named, first-class watchers** — `watch recalc(a, b) … end watch` registers
+  the watcher and binds `recalc` to a watcher value: `unwatch recalc` turns it
+  off (a quiet no-op on an already-off handle), `watchers()` returns the live
+  handles, `.name`/`.targets` identify one, and re-declaring a bound name
+  **replaces** the old registration so setup code is safe to re-run. Handles
+  compare by identity (`=`/`!=` only) and are refused by `encode` and actor
+  `send`; named declarations are top-level only. The anonymous `watch(...)`
+  form is unchanged. `unwatch` is a new reserved word.
+
+---
+
 ## 0.1.0-rc2 — 2026-08-20
 
 Five days after rc1: the datetime/duration redesign in full, two loop

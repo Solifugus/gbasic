@@ -309,6 +309,12 @@ day — so assume you will hit them too.
   print b                ' 20
   ```
 
+- **`unwatch` is a reserved word (2026-08-20).** It cannot be a variable or
+  label name. `watch`, `watchers`, and `without` already were; the named
+  watcher form `watch name(a, b)` binds `name` as an ordinary variable, and a
+  watcher body runs ONCE at registration — a `print` inside one prints
+  immediately, before any change.
+
 - **A keyword can be a record-literal KEY but cannot follow a DOT.**
   `{ on: 1 }`, `{ to: 2 }`, `{ end: 3 }`, `{ as: 4 }` all construct fine — and
   `r.on`, `r.to`, `r.end`, `r.as` are all PARSE errors, because dot access
