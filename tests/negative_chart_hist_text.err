@@ -1,1 +1,1 @@
-runtime error at tests/../stdlib/chart.bas:772:21: chart: column 'r' holds string values; a histogram bins numbers
+runtime error at tests/../stdlib/chart.bas:873:21: chart: column 'r' holds string values; a histogram bins numbers

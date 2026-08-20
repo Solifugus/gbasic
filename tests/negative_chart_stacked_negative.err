@@ -1,1 +1,1 @@
-runtime error at tests/../stdlib/chart.bas:579:25: chart: stacked bars with negative values are refused (a naive stack overlaps); use grouped bars
+runtime error at tests/../stdlib/chart.bas:680:25: chart: stacked bars with negative values are refused (a naive stack overlaps); use grouped bars

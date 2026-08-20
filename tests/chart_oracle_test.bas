@@ -91,4 +91,62 @@ program main(args)
     x = check("hist bin0 rect      ", contains(hs, "x=" + q + "40" + q + " y=" + q + "10" + q + " width=" + q + "125" + q + " height=" + q + "170" + q), true)
     x = check("hist bin1 rect      ", contains(hs, "x=" + q + "165" + q + " y=" + q + "10" + q + " width=" + q + "125" + q + " height=" + q + "170" + q), true)
     x = check("hist count axis 2   ", contains(hs, ">2</text>"), true)
+
+    ' --- PIE cardinals (Phase 4), no trig trusted ---------------------------
+    ' 300x200, margin_top fixed 20 -> cy = 20 + (200-20-12)/2 = 104, r =
+    ' 84*0.85 = 71.4 (fits: half-width 138). Four equal shares from 12
+    ' o'clock: the arc endpoints are the CARDINAL points -- top (150,32.6),
+    ' right (221.4,104), bottom (150,175.4), left (78.6,104) -- computable
+    ' with no trigonometry at all, so this asserts the Taylor sine from
+    ' outside it.
+    ps = chart.spec("pie", { k: ["a", "b", "c", "d"], v: [1, 1, 1, 1] })
+    ps = chart.x(ps, "k")
+    ps = chart.y(ps, "v")
+    ps = chart.options(ps, { width: 300, height: 200, margin_top: 20 })
+    pv = chart.render(ps)
+    x = check("pie top cardinal    ", contains(pv, "L150 32.6 "), true)
+    x = check("pie right cardinal  ", contains(pv, " 221.4 104 "), true)
+    x = check("pie bottom cardinal ", contains(pv, " 150 175.4 "), true)
+    x = check("pie left cardinal   ", contains(pv, " 78.6 104 "), true)
+    x = check("pie legend share    ", contains(pv, "a 25%"), true)
+
+    ' --- HEATMAP cells + colors (Phase 4), hand-lerped ----------------------
+    ' 300x200, margins l=40 r=10 t=20 b=10, 2x2 -> cells 125x85 at x 40/165,
+    ' y 20/105. Domain fixed 0..1: t=0 -> the exact lo stop #2166ac; t=1 ->
+    ' #b2182b; t=0.5 -> the exact mid #f7f7f7; t=0.25 -> halfway lo..mid,
+    ' hand-computed byte by byte: #8cafd2.
+    hm = chart.spec("heatmap", { rows: ["r1", "r2"], cols: ["c1", "c2"],
+                                 matrix: [[0, 0.5], [0.25, 1]] })
+    hm = chart.options(hm, { width: 300, height: 200, heat_min: 0, heat_max: 1,
+                             margin_left: 40, margin_right: 10,
+                             margin_top: 20, margin_bottom: 10 })
+    hv = chart.render(hm)
+    x = check("heat cell(0,0) rect ", contains(hv, "x=" + q + "40" + q + " y=" + q + "20" + q + " width=" + q + "125" + q + " height=" + q + "85" + q), true)
+    x = check("heat cell(1,1) rect ", contains(hv, "x=" + q + "165" + q + " y=" + q + "105" + q), true)
+    x = check("heat t=0 lo color   ", contains(hv, "#2166ac"), true)
+    x = check("heat t=1 hi color   ", contains(hv, "#b2182b"), true)
+    x = check("heat t=0.5 mid color", contains(hv, "#f7f7f7"), true)
+    x = check("heat t=0.25 lerped  ", contains(hv, "#8cafd2"), true)
+
+    ' --- SPARKLINE endpoints (Phase 4), two-point arithmetic ----------------
+    ' 120x24, pad 2: [0,10] -> M2 22 (v=0 at the bottom) to L118 2 (v=10 top).
+    sv = chart.sparkline([0, 10])
+    x = check("sparkline path      ", contains(sv, "M2 22 L118 2"), true)
+
+    ' --- AREA polygon (Phase 4), zero-anchored ------------------------------
+    ' Same fixed frame as the scatter oracle: x 0..10 -> 40..290, y 0..100 ->
+    ' 180..10. area_xy of (0,0) and (10,100): the fill polygon runs from the
+    ' baseline at (40,180) up to (290,10) and closes at (290,180).
+    af = { x: [0, 10], y: [0, 100] }
+    aspec = chart.spec("area", af)
+    aspec = chart.x(aspec, "x")
+    aspec = chart.y(aspec, "y")
+    aspec = chart.options(aspec, {
+        width: 300, height: 200,
+        margin_left: 40, margin_right: 10, margin_top: 10, margin_bottom: 20,
+        x_min: 0, x_max: 10, y_min: 0, y_max: 100, grid: false, legend: false
+    })
+    av = chart.render(aspec)
+    x = check("area polygon closes ", contains(av, "L290 10 L290 180 Z"), true)
+    x = check("area is translucent ", contains(av, "fill-opacity"), true)
 end program

@@ -98,6 +98,60 @@ library chart
         return v
     end function
 
+    ' -------------------------------------------------- trig + color (Phase 4)
+
+    function _pi()
+        return 3.141592653589793
+    end function
+
+    ' The interpreter has no trig builtins, so pie slices use a Taylor sine:
+    ' range-reduced to [-pi, pi], nine terms — beyond double precision there,
+    ' and DETERMINISTIC (same arithmetic every run, which is all a golden
+    ' needs). The oracle tier does not trust this: equal quarter-slices put
+    ' arc endpoints on exact cardinal points, hand-computable with no trig.
+    function _sin(v)
+        two_pi = 2 * _pi()
+        k = round(v / two_pi, 0)
+        v = v - (k * two_pi)
+        term = v
+        total = v
+        i = 1
+        while i <= 9
+            term = term * (0 - (v * v)) / ((2 * i) * ((2 * i) + 1))
+            total = total + term
+            i = i + 1
+        end while
+        return total
+    end function
+
+    function _cos(v)
+        return _sin(v + (_pi() / 2))
+    end function
+
+    ' "#rrggbb" -> [r, g, b]
+    function _rgb(c)
+        h = replace(string(c), "#", "")
+        b = hex_decode(h)
+        return [byte_at(b, 0), byte_at(b, 1), byte_at(b, 2)]
+    end function
+
+    ' Three-stop linear interpolation (lo -> mid -> hi) at t in [0,1],
+    ' returned as "#rrggbb". Integer rounding keeps it deterministic.
+    function _lerp3(lo, mid, hi, t)
+        a = _rgb(lo)
+        b = _rgb(mid)
+        tt = t * 2
+        if t > 0.5 then
+            a = _rgb(mid)
+            b = _rgb(hi)
+            tt = (t - 0.5) * 2
+        end if
+        r = round(a[0] + ((b[0] - a[0]) * tt), 0)
+        g = round(a[1] + ((b[1] - a[1]) * tt), 0)
+        bl = round(a[2] + ((b[2] - a[2]) * tt), 0)
+        return "#" + hex_encode(from_bytes([r, g, bl]))
+    end function
+
     ' ------------------------------------------------------------ nice ticks
 
     function _nice_step(raw)
@@ -162,6 +216,9 @@ library chart
                       "#F0E442", "#0072B2", "#D55E00", "#CC79A7"],
             grid: true, legend: unknown, markers: false,
             stacked: false, bins: unknown,
+            heat_min: unknown, heat_max: unknown,
+            heat_lo: "#2166ac", heat_mid: "#f7f7f7", heat_hi: "#b2182b",
+            cell_values: true,
             x_min: unknown, x_max: unknown, y_min: unknown, y_max: unknown,
             font_size: 12, char_ratio: 0.6,
             margin_left: unknown, margin_right: unknown,
@@ -184,8 +241,9 @@ library chart
     ' function called `new` — see the design doc.)
     function spec(kind, df)
         ok = kind = "line" or kind = "scatter" or kind = "bar" or kind = "histogram"
+        if kind = "area" or kind = "pie" or kind = "heatmap" or kind = "sparkline" then ok = true
         if not ok then
-            error "chart: unsupported kind '" + kind + "' (line, scatter, bar, histogram)"
+            error "chart: unsupported kind '" + kind + "' (line, scatter, area, bar, histogram, pie, heatmap, sparkline)"
         end if
         return { kind: kind, df: df, x: unknown, y: [], opts: {} }
     end function
@@ -245,8 +303,17 @@ library chart
     function render(s)
         opts = _merge(_defaults(), s.opts)
 
+        if s.kind = "heatmap" then
+            return _render_heatmap(s, opts)
+        end if
         if is_unknown(s.x) then
             error "chart: no x column set"
+        end if
+        if s.kind = "sparkline" then
+            return _render_sparkline(s, opts)
+        end if
+        if s.kind = "pie" then
+            return _render_pie(s, opts)
         end if
         if s.kind = "bar" then
             return _render_bar(s, opts)
@@ -354,6 +421,11 @@ library chart
             end while
         end for
 
+        if s.kind = "area" then
+            ' the fill anchors at zero, so the axis must include it
+            if dylo > 0 then dylo = 0
+            if dyhi < 0 then dyhi = 0
+        end if
         if not is_unknown(opts.x_min) then dxlo = opts.x_min
         if not is_unknown(opts.x_max) then dxhi = opts.x_max
         if not is_unknown(opts.y_min) then dylo = opts.y_min
@@ -446,7 +518,36 @@ library chart
             si = 0
             for each ser in series
                 color = opts.palette[si]
-                if s.kind = "line" then
+                if s.kind = "area" then
+                    ' one translucent polygon per gap-run, anchored at zero
+                    base = _scale_y(0, ty, py0, py1)
+                    runx = []
+                    runpts = []
+                    i = 0
+                    while i <= nrows
+                        flush = i = nrows
+                        if not flush then
+                            xv = xs[i]
+                            yv = ser.vals[i]
+                            if is_unknown(xv) or is_unknown(yv) then
+                                flush = true
+                            else
+                                append(runx, _scale_x(xv, tx, px0, px1))
+                                append(runpts, _scale_x(xv, tx, px0, px1) + " " + _scale_y(yv, ty, py0, py1))
+                            end if
+                        end if
+                        if flush and count(runpts) >= 2 then
+                            poly = "M" + runx[0] + " " + base + " L" + join(runpts, " L") + " L" + runx[count(runx) - 1] + " " + base + " Z"
+                            append(parts, "<path d=" + chr(34) + poly + chr(34) + " fill=" + chr(34) + color + chr(34) + " fill-opacity=" + chr(34) + "0.35" + chr(34) + " stroke=" + chr(34) + "none" + chr(34) + "/>")
+                        end if
+                        if flush then
+                            runx = []
+                            runpts = []
+                        end if
+                        i = i + 1
+                    end while
+                end if
+                if s.kind = "line" or s.kind = "area" then
                     d = []
                     pen = false
                     i = 0
@@ -906,6 +1007,328 @@ library chart
         return join(parts, "")
     end function
 
+    ' -------------------------------------------------------- pie (Phase 4)
+    '
+    ' A pie shows SHARES OF A WHOLE, which forces three refusals: a NEGATIVE
+    ' share is nonsense; an UNKNOWN share silently misstates every other
+    ' share, so it is refused rather than skipped (unlike a line's gap, where
+    ' absence is honest); a whole of zero has nothing to show. Slices start
+    ' at 12 o'clock and run clockwise, in row order.
+    function _render_pie(s, opts)
+        if count(s.y) != 1 then
+            error "chart: a pie takes exactly one value column"
+        end if
+        if not has(s.df, s.x) then
+            error "chart: no column '" + s.x + "' in the frame"
+        end if
+        labels_col = s.df[s.x]
+        nrows = count(labels_col)
+        vcol = _column(s.df, s.y[0], nrows)
+        if nrows > count(opts.palette) then
+            error "chart: " + string(nrows) + " slices but the palette has " + string(count(opts.palette)) + " colors; pass a longer palette: option"
+        end if
+
+        cats = []
+        vals = []
+        total = 0
+        i = 0
+        while i < nrows
+            lv = labels_col[i]
+            if is_unknown(lv) then
+                error "chart: column '" + s.x + "' has an unknown category; a slice needs a name"
+            end if
+            key = string(lv)
+            if contains(cats, key) then
+                error "chart: category '" + key + "' appears twice; aggregate before charting"
+            end if
+            append(cats, key)
+            v = vcol[i]
+            if not is_unknown(v) then
+                t = type(v)
+                if t != "number" and t != "money" then
+                    error "chart: column '" + s.y[0] + "' holds " + t + " values; charts plot numbers (categories belong on a bar chart's x axis)"
+                end if
+            end if
+            pv = _plottable(v)
+            if is_unknown(pv) then
+                error "chart: category '" + key + "' has an unknown value; a pie needs every share (a missing share misstates the others)"
+            end if
+            if pv < 0 then
+                error "chart: category '" + key + "' is negative; a pie cannot show a negative share"
+            end if
+            append(vals, pv)
+            total = total + pv
+            i = i + 1
+        end while
+        if total <= 0 then
+            error "chart: the shares sum to zero; there is nothing to divide"
+        end if
+
+        mtop = opts.margin_top
+        if is_unknown(mtop) then
+            mtop = 12
+            if not is_unknown(opts.title) then mtop = mtop + round(opts.font_size * 1.5, 0) + 6
+            mtop = mtop + opts.font_size + 8
+        end if
+        cx = opts.width / 2
+        cy = mtop + ((opts.height - mtop - 12) / 2)
+        r = (opts.height - mtop - 12) / 2 * 0.85
+        half = (opts.width - 24) / 2
+        if half < r then r = half
+
+        parts = []
+        append(parts, "<svg xmlns=" + chr(34) + "http://www.w3.org/2000/svg" + chr(34) + " width=" + chr(34) + _fmt(opts.width, 0, false) + chr(34) + " height=" + chr(34) + _fmt(opts.height, 0, false) + chr(34) + " viewBox=" + chr(34) + "0 0 " + _fmt(opts.width, 0, false) + " " + _fmt(opts.height, 0, false) + chr(34) + " font-family=" + chr(34) + "sans-serif" + chr(34) + " font-size=" + chr(34) + _fmt(opts.font_size, 0, false) + chr(34) + ">")
+
+        acc = 0
+        i = 0
+        while i < nrows
+            frac = vals[i] / total
+            if frac > 0 then
+                if frac >= 1 then
+                    append(parts, "<circle cx=" + chr(34) + _coord(cx) + chr(34) + " cy=" + chr(34) + _coord(cy) + chr(34) + " r=" + chr(34) + _coord(r) + chr(34) + " fill=" + chr(34) + opts.palette[i] + chr(34) + "/>")
+                else
+                    a0 = (0 - (_pi() / 2)) + (acc * 2 * _pi())
+                    a1 = (0 - (_pi() / 2)) + ((acc + frac) * 2 * _pi())
+                    x1 = cx + (r * _cos(a0))
+                    y1 = cy + (r * _sin(a0))
+                    x2 = cx + (r * _cos(a1))
+                    y2 = cy + (r * _sin(a1))
+                    large = 0
+                    if frac > 0.5 then large = 1
+                    d = "M" + _coord(cx) + " " + _coord(cy) + " L" + _coord(x1) + " " + _coord(y1) + " A" + _coord(r) + " " + _coord(r) + " 0 " + string(large) + " 1 " + _coord(x2) + " " + _coord(y2) + " Z"
+                    append(parts, "<path d=" + chr(34) + d + chr(34) + " fill=" + chr(34) + opts.palette[i] + chr(34) + " stroke=" + chr(34) + "#ffffff" + chr(34) + " stroke-width=" + chr(34) + "1" + chr(34) + "/>")
+                end if
+            end if
+            acc = acc + frac
+            i = i + 1
+        end while
+
+        ' Legend, always: name + share, since slices carry no labels.
+        lx = 12
+        lyy = mtop - opts.font_size + 2
+        i = 0
+        while i < nrows
+            pct = _fmt(vals[i] / total * 100, 1, false) + "%"
+            entry = cats[i] + " " + pct
+            append(parts, "<rect x=" + chr(34) + _coord(lx) + chr(34) + " y=" + chr(34) + _coord(lyy - 9) + chr(34) + " width=" + chr(34) + "10" + chr(34) + " height=" + chr(34) + "10" + chr(34) + " fill=" + chr(34) + opts.palette[i] + chr(34) + "/>")
+            append(parts, "<text x=" + chr(34) + _coord(lx + 14) + chr(34) + " y=" + chr(34) + _coord(lyy) + chr(34) + " fill=" + chr(34) + "#333333" + chr(34) + ">" + _escape(entry) + "</text>")
+            lx = lx + 14 + _estw(entry, opts) + 16
+            i = i + 1
+        end while
+
+        if not is_unknown(opts.title) then
+            append(parts, "<text x=" + chr(34) + _coord(opts.width / 2) + chr(34) + " y=" + chr(34) + _coord(opts.font_size + 6) + chr(34) + " text-anchor=" + chr(34) + "middle" + chr(34) + " font-size=" + chr(34) + _fmt(round(opts.font_size * 1.2, 0), 0, false) + chr(34) + " fill=" + chr(34) + "#111111" + chr(34) + ">" + _escape(opts.title) + "</text>")
+        end if
+        append(parts, "</svg>")
+        return join(parts, "")
+    end function
+
+    ' ---------------------------------------------------- heatmap (Phase 4)
+    '
+    ' A matrix of values as colored cells — the correlation-matrix picture.
+    ' The frame is { rows: [labels], cols: [labels], matrix: [[...], ...] }.
+    ' Color is a diverging three-stop scale (heat_lo/heat_mid/heat_hi) over
+    ' heat_min..heat_max (default: the data range). An unknown cell is GRAY
+    ' with no number — missing shown as missing, never as a value. A ragged
+    ' matrix is refused by row.
+    function _render_heatmap(s, opts)
+        ok = has(s.df, "rows") and has(s.df, "cols") and has(s.df, "matrix")
+        if not ok then
+            error "chart: a heatmap frame needs rows, cols, and matrix"
+        end if
+        rows = s.df["rows"]
+        cols = s.df["cols"]
+        m = s.df["matrix"]
+        nr = count(rows)
+        nc = count(cols)
+        if count(m) != nr then
+            error "chart: the matrix has " + string(count(m)) + " rows; the labels name " + string(nr)
+        end if
+        ri = 0
+        while ri < nr
+            if count(m[ri]) != nc then
+                error "chart: matrix row " + string(ri) + " has " + string(count(m[ri])) + " cells; the labels name " + string(nc)
+            end if
+            ri = ri + 1
+        end while
+
+        ' Domain.
+        lo = opts.heat_min
+        hi = opts.heat_max
+        if is_unknown(lo) or is_unknown(hi) then
+            seen = false
+            dlo = 0
+            dhi = 1
+            ri = 0
+            while ri < nr
+                ci = 0
+                while ci < nc
+                    v = m[ri][ci]
+                    if not is_unknown(v) then
+                        t = type(v)
+                        if t != "number" and t != "money" then
+                            error "chart: matrix cell (" + string(ri) + "," + string(ci) + ") holds " + t + " values; a heatmap colors numbers"
+                        end if
+                    end if
+                    pv = _plottable(v)
+                    if not is_unknown(pv) then
+                        if not seen then
+                            dlo = pv
+                            dhi = pv
+                            seen = true
+                        else
+                            if pv < dlo then dlo = pv
+                            if pv > dhi then dhi = pv
+                        end if
+                    end if
+                    ci = ci + 1
+                end while
+                ri = ri + 1
+            end while
+            if is_unknown(lo) then lo = dlo
+            if is_unknown(hi) then hi = dhi
+        end if
+        if lo = hi then
+            lo = lo - 0.5
+            hi = hi + 0.5
+        end if
+
+        ' Margins: left fits the longest row label, top fits column labels.
+        rwmax = 0
+        for each lbl in rows
+            w = _estw(string(lbl), opts)
+            if w > rwmax then rwmax = w
+        end for
+        mleft = opts.margin_left
+        if is_unknown(mleft) then mleft = rwmax + 10
+        mright = opts.margin_right
+        if is_unknown(mright) then mright = 14
+        mtop = opts.margin_top
+        if is_unknown(mtop) then
+            mtop = opts.font_size + 10
+            if not is_unknown(opts.title) then mtop = mtop + round(opts.font_size * 1.5, 0) + 6
+        end if
+        mbottom = opts.margin_bottom
+        if is_unknown(mbottom) then mbottom = 10
+
+        px0 = mleft
+        px1 = opts.width - mright
+        py0 = mtop
+        py1 = opts.height - mbottom
+        cw = (px1 - px0) / nc
+        chh = (py1 - py0) / nr
+
+        parts = []
+        append(parts, "<svg xmlns=" + chr(34) + "http://www.w3.org/2000/svg" + chr(34) + " width=" + chr(34) + _fmt(opts.width, 0, false) + chr(34) + " height=" + chr(34) + _fmt(opts.height, 0, false) + chr(34) + " viewBox=" + chr(34) + "0 0 " + _fmt(opts.width, 0, false) + " " + _fmt(opts.height, 0, false) + chr(34) + " font-family=" + chr(34) + "sans-serif" + chr(34) + " font-size=" + chr(34) + _fmt(opts.font_size, 0, false) + chr(34) + ">")
+
+        ' Column labels (middle over each column), row labels (end at left).
+        ci = 0
+        while ci < nc
+            append(parts, "<text x=" + chr(34) + _coord(px0 + (ci * cw) + (cw / 2)) + chr(34) + " y=" + chr(34) + _coord(py0 - 4) + chr(34) + " text-anchor=" + chr(34) + "middle" + chr(34) + " fill=" + chr(34) + "#333333" + chr(34) + ">" + _escape(cols[ci]) + "</text>")
+            ci = ci + 1
+        end while
+        ri = 0
+        while ri < nr
+            append(parts, "<text x=" + chr(34) + _coord(px0 - 6) + chr(34) + " y=" + chr(34) + _coord(py0 + (ri * chh) + (chh / 2)) + chr(34) + " text-anchor=" + chr(34) + "end" + chr(34) + " dominant-baseline=" + chr(34) + "middle" + chr(34) + " fill=" + chr(34) + "#333333" + chr(34) + ">" + _escape(rows[ri]) + "</text>")
+            ri = ri + 1
+        end while
+
+        ' Cells.
+        ri = 0
+        while ri < nr
+            ci = 0
+            while ci < nc
+                pv = _plottable(m[ri][ci])
+                cxp = px0 + (ci * cw)
+                cyp = py0 + (ri * chh)
+                if is_unknown(pv) then
+                    append(parts, "<rect x=" + chr(34) + _coord(cxp) + chr(34) + " y=" + chr(34) + _coord(cyp) + chr(34) + " width=" + chr(34) + _coord(cw) + chr(34) + " height=" + chr(34) + _coord(chh) + chr(34) + " fill=" + chr(34) + "#eeeeee" + chr(34) + " stroke=" + chr(34) + "#ffffff" + chr(34) + "/>")
+                else
+                    t = (pv - lo) / (hi - lo)
+                    if t < 0 then t = 0
+                    if t > 1 then t = 1
+                    fill = _lerp3(opts.heat_lo, opts.heat_mid, opts.heat_hi, t)
+                    append(parts, "<rect x=" + chr(34) + _coord(cxp) + chr(34) + " y=" + chr(34) + _coord(cyp) + chr(34) + " width=" + chr(34) + _coord(cw) + chr(34) + " height=" + chr(34) + _coord(chh) + chr(34) + " fill=" + chr(34) + fill + chr(34) + " stroke=" + chr(34) + "#ffffff" + chr(34) + "/>")
+                    if opts.cell_values then
+                        tcolor = "#111111"
+                        if t < 0.22 or t > 0.78 then tcolor = "#ffffff"
+                        append(parts, "<text x=" + chr(34) + _coord(cxp + (cw / 2)) + chr(34) + " y=" + chr(34) + _coord(cyp + (chh / 2)) + chr(34) + " text-anchor=" + chr(34) + "middle" + chr(34) + " dominant-baseline=" + chr(34) + "middle" + chr(34) + " fill=" + chr(34) + tcolor + chr(34) + ">" + _escape(_fmt(pv, 2, false)) + "</text>")
+                    end if
+                end if
+                ci = ci + 1
+            end while
+            ri = ri + 1
+        end while
+
+        if not is_unknown(opts.title) then
+            append(parts, "<text x=" + chr(34) + _coord(opts.width / 2) + chr(34) + " y=" + chr(34) + _coord(opts.font_size + 6) + chr(34) + " text-anchor=" + chr(34) + "middle" + chr(34) + " font-size=" + chr(34) + _fmt(round(opts.font_size * 1.2, 0), 0, false) + chr(34) + " fill=" + chr(34) + "#111111" + chr(34) + ">" + _escape(opts.title) + "</text>")
+        end if
+        append(parts, "</svg>")
+        return join(parts, "")
+    end function
+
+    ' -------------------------------------------------- sparkline (Phase 4)
+    '
+    ' A tiny axis-less line for inline use in tables: no margins, no labels,
+    ' no ticks — the shape alone, in a small box. Gaps behave as everywhere.
+    function _render_sparkline(s, opts)
+        col = s.df[s.x]
+        vals = []
+        for each v in col
+            append(vals, _plottable(v))
+        end for
+        n = count(vals)
+        lo = 0
+        hi = 1
+        seen = false
+        for each v in vals
+            if not is_unknown(v) then
+                if not seen then
+                    lo = v
+                    hi = v
+                    seen = true
+                else
+                    if v < lo then lo = v
+                    if v > hi then hi = v
+                end if
+            end if
+        end for
+        if lo = hi then
+            lo = lo - 0.5
+            hi = hi + 0.5
+        end if
+
+        w = opts.width
+        h = opts.height
+        pad = 2
+        parts = []
+        append(parts, "<svg xmlns=" + chr(34) + "http://www.w3.org/2000/svg" + chr(34) + " width=" + chr(34) + _fmt(w, 0, false) + chr(34) + " height=" + chr(34) + _fmt(h, 0, false) + chr(34) + " viewBox=" + chr(34) + "0 0 " + _fmt(w, 0, false) + " " + _fmt(h, 0, false) + chr(34) + ">")
+        if seen and n > 1 then
+            d = []
+            pen = false
+            i = 0
+            while i < n
+                v = vals[i]
+                if is_unknown(v) then
+                    pen = false
+                else
+                    sx = pad + (i * (w - (2 * pad)) / (n - 1))
+                    sy = (h - pad) - ((v - lo) * (h - (2 * pad)) / (hi - lo))
+                    cmd = "L"
+                    if not pen then cmd = "M"
+                    append(d, cmd + _coord(sx) + " " + _coord(sy))
+                    pen = true
+                end if
+                i = i + 1
+            end while
+            if count(d) > 0 then
+                append(parts, "<path d=" + chr(34) + join(d, " ") + chr(34) + " fill=" + chr(34) + "none" + chr(34) + " stroke=" + chr(34) + opts.palette[0] + chr(34) + " stroke-width=" + chr(34) + "1.5" + chr(34) + "/>")
+            end if
+        end if
+        append(parts, "</svg>")
+        return join(parts, "")
+    end function
+
     function line(df, xcol, ycols)
         return render(y(x(spec("line", df), xcol), ycols))
     end function
@@ -936,6 +1359,34 @@ library chart
 
     function histogram_xy(values)
         return histogram({ value: values }, "value")
+    end function
+
+    function area(df, xcol, ycols)
+        return render(y(x(spec("area", df), xcol), ycols))
+    end function
+
+    function area_xy(xs, ys)
+        return area({ x: xs, y: ys }, "x", "y")
+    end function
+
+    function pie(df, labelcol, valuecol)
+        return render(y(x(spec("pie", df), labelcol), valuecol))
+    end function
+
+    ' A square heatmap (one label list for both axes) — the correlation shape.
+    function heatmap(labels, matrix)
+        return render(spec("heatmap", { rows: labels, cols: labels, matrix: matrix }))
+    end function
+
+    ' The rectangular form.
+    function heatmap_grid(row_labels, col_labels, matrix)
+        return render(spec("heatmap", { rows: row_labels, cols: col_labels, matrix: matrix }))
+    end function
+
+    ' 120x24 by default; the full options record is reachable via the spec path.
+    function sparkline(values)
+        s = options(x(spec("sparkline", { v: values }), "v"), { width: 120, height: 24 })
+        return render(s)
     end function
 
     ' A minimal standalone HTML document around the fragment, for

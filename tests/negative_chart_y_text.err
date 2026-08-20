@@ -1,1 +1,1 @@
-runtime error at tests/../stdlib/chart.bas:319:25: chart: column 'name' holds string values; charts plot numbers (categories belong on a bar chart's x axis)
+runtime error at tests/../stdlib/chart.bas:386:25: chart: column 'name' holds string values; charts plot numbers (categories belong on a bar chart's x axis)

@@ -72,4 +72,16 @@ program main(args)
     print "legend swatches " + string(count_of(doc, "rect"))
     ' the hostile title survived INTO the document as text, not markup
     print "hostile title is TEXT " + string(has_text(doc, "<script>alert(1)</script>"))
+
+    ' --- Phase 4 census ------------------------------------------------------
+    pv = chart.pie({ k: ["a", "b", "c", "d"], v: [1, 1, 1, 1] }, "k", "v")
+    pdoc = xml.parse(pv)
+    print "pie slices " + string(count_of(pdoc, "path"))
+    print "pie swatches " + string(count_of(pdoc, "rect"))
+
+    hv = chart.heatmap(["x", "y"], [[0, 0.5], [unknown, 1]])
+    hdoc = xml.parse(hv)
+    print "heatmap cells " + string(count_of(hdoc, "rect"))
+    ' 4 label texts (2 rows + 2 cols) + one value text per KNOWN cell
+    print "heatmap cell texts " + string(count_of(hdoc, "text") - 4)
 end program

@@ -45,8 +45,8 @@ fi
 # a coverage floor: a tier that stops running its checks otherwise passes
 # by saying nothing.
 n=$(printf '%s\n' "$ora" | grep -c "^ok ")
-if [ "$n" -lt 19 ]; then
-    printf 'FAIL oracle coverage: %s checks ran, expected 19\n' "$n"
+if [ "$n" -lt 33 ]; then
+    printf 'FAIL oracle coverage: %s checks ran, expected 33\n' "$n"
     status=1
 fi
 
@@ -60,6 +60,17 @@ else
     status=1
 fi
 rm -f "$out2"
+
+printf -- '-- golden 3: area, pie, heatmap, sparkline (Phase 4)\n'
+out3=$(mktemp)
+if timeout 60 ./gbasic examples/chart_extra_test.bas >"$out3" 2>&1 && diff -q examples/chart_extra_test.out "$out3" >/dev/null; then
+    printf 'PASS examples/chart_extra_test.bas\n'
+else
+    printf 'FAIL examples/chart_extra_test.bas\n'
+    diff examples/chart_extra_test.out "$out3" | head -5 || true
+    status=1
+fi
+rm -f "$out3"
 
 printf -- '-- determinism: two runs, identical bytes\n'
 a=$(mktemp); b=$(mktemp)
@@ -83,7 +94,11 @@ paths 2
 circles 7
 circles inside viewBox 1
 legend swatches 2
-hostile title is TEXT 1'
+hostile title is TEXT 1
+pie slices 4
+pie swatches 4
+heatmap cells 4
+heatmap cell texts 3'
     if [ "$sout" = "$want" ]; then
         printf 'PASS structure: well-formed, census exact, hostile title stayed text\n'
     else

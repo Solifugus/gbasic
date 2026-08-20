@@ -101,6 +101,7 @@ examples=(
     datetime_modifier_test.bas
     chart_test.bas
     chart_bar_test.bas
+    chart_extra_test.bas
     dates_lib_test.bas
     dates_calendar_test.bas
     dates_hours_test.bas

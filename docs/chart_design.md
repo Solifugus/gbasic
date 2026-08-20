@@ -1,6 +1,6 @@
 # gBASIC charting library — design proposal
 
-Status: Phases 1 AND 2 IMPLEMENTED 2026-08-20 (stdlib/chart.bas -- line, scatter, bar, histogram; tests/run_chart.sh); design reviewed and amended the same day
+Status: Phases 1, 2 AND 4 IMPLEMENTED 2026-08-20 (stdlib/chart.bas -- line, scatter, area, bar, histogram, pie, heatmap, sparkline; tests/run_chart.sh). Phase 3 polish items (subtitles, marker/gridline styling) remain; legends, titles and axis labels shipped with Phase 1; design reviewed and amended the same day
 (text-layout policy §6b, refusal policies in §8, structural verification in §9,
 open questions resolved in §13)
 
