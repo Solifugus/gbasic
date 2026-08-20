@@ -33,6 +33,7 @@ Task-oriented, with runnable examples.
 
 | Document | Status | What it is |
 |---|---|---|
+| [chart_cookbook.md](chart_cookbook.md) | Shipped | 10 recipes for charts as deterministic SVG text — lines with honest gaps, date axes, money at face value, zero-anchored bars, histograms, pies that refuse to mislead, correlation heatmaps, sparklines, and the spec layer. Every code and output block verified against a real file by `tests/run_chart_cookbook.sh`. |
 | [datetime_cookbook.md](datetime_cookbook.md) | Shipped | 10 recipes for dates, durations, business calendars, date expressions and scheduling — month-end arithmetic, "third Thursday", payroll rolled off holidays, mutual meeting days, convention layout, appointment slots. Every code and output block verified against a real file by `tests/run_datetime_cookbook.sh`. |
 | [xlsx_cookbook.md](xlsx_cookbook.md) | Shipped | 12 recipes for spreadsheets: read, edit, save, evaluate formulas, check against Excel's own answers, turn sheets into queryable tables. Every code and output block is verified against a real file by `tests/run_xlsx_cookbook.sh`. |
 | [edgar_tutorial.md](edgar_tutorial.md) | Shipped | Build a forensic dossier on a filer, plus recipes per library. |
