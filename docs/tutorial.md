@@ -615,6 +615,25 @@ without watchers
 end without
 ```
 
+Give a watcher a **name** and it becomes a first-class value you can turn
+off, store, and find again:
+
+```basic
+watch recalc(a, b)
+    c = a + b
+end watch
+
+unwatch recalc           # off — assignments to a and b no longer re-run it
+print(recalc.name)       # recalc
+print(recalc.targets)    # ["a","b"]
+```
+
+Two properties are worth leaning on. Re-declaring `watch recalc(...)` while
+`recalc` holds a live watcher **replaces** it rather than stacking a second
+one, so setup code is safe to re-run. And `watchers()` returns every live
+handle, so a watcher whose variable you lost is still reachable — nothing
+can fire with its off-switch out of reach.
+
 > **Theory — reactivity built into storage.** A watcher is not an event callback
 > you wire up and tear down; it is a standing relationship over *storage paths*.
 > Triggering is **immediate and synchronous**: a mutation runs its matching

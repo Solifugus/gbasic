@@ -319,6 +319,11 @@ cases=(
     negative_dates_hours_nohours
     negative_dates_observe_bad
     negative_money_dollar
+    negative_unwatch_nonwatcher
+    negative_watch_named_scope
+    negative_encode_watcher
+    negative_watcher_ordering
+    negative_send_watcher
 )
 
 for name in "${cases[@]}"; do

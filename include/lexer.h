@@ -37,6 +37,7 @@ typedef enum {
     TOKEN_DIM,
     TOKEN_AS,
     TOKEN_WATCH,
+    TOKEN_UNWATCH,
     TOKEN_WITHOUT,
     TOKEN_WATCHERS,
     TOKEN_MODIFIER,

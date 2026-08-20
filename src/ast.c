@@ -373,11 +373,19 @@ AstStmt *ast_gosub(char *name) {
     return stmt;
 }
 
-AstStmt *ast_watch(AstNameList names, AstStmtList body) {
+AstStmt *ast_watch(char *name, AstNameList names, AstStmtList body) {
     AstStmt *stmt = xmalloc(sizeof(*stmt));
     stmt->kind = AST_STMT_WATCH;
+    stmt->as.watch.name = name;          /* NULL for the anonymous form */
     stmt->as.watch.names = names;
     stmt->as.watch.body = body;
+    return stmt;
+}
+
+AstStmt *ast_unwatch(AstExpr *expr) {
+    AstStmt *stmt = xmalloc(sizeof(*stmt));
+    stmt->kind = AST_STMT_UNWATCH;
+    stmt->as.unwatch_expr = expr;
     return stmt;
 }
 
@@ -765,6 +773,9 @@ static void dump_stmt(AstStmt *stmt, int indent) {
         break;
     case AST_STMT_WATCH:
         printf("Watch");
+        if (stmt->as.watch.name) {
+            printf(" \"%s\"", stmt->as.watch.name);
+        }
         for (size_t i = 0; i < stmt->as.watch.names.count; i++) {
             printf(" %s", stmt->as.watch.names.items[i]);
         }
@@ -1057,11 +1068,15 @@ static void free_stmt(AstStmt *stmt) {
         free(stmt->as.gosub_label);
         break;
     case AST_STMT_WATCH:
+        free(stmt->as.watch.name);
         for (size_t i = 0; i < stmt->as.watch.names.count; i++) {
             free(stmt->as.watch.names.items[i]);
         }
         free(stmt->as.watch.names.items);
         ast_free_program(stmt->as.watch.body);
+        break;
+    case AST_STMT_UNWATCH:
+        ast_free_expr(stmt->as.unwatch_expr);
         break;
     case AST_STMT_WITHOUT_WATCHERS:
         ast_free_program(stmt->as.without_watchers);

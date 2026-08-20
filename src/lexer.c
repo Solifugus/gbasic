@@ -288,6 +288,7 @@ static TokenType identifier_type(const char *start, int length) {
     if (keyword_equals(start, length, "dim")) return TOKEN_DIM;
     if (keyword_equals(start, length, "as")) return TOKEN_AS;
     if (keyword_equals(start, length, "watch")) return TOKEN_WATCH;
+    if (keyword_equals(start, length, "unwatch")) return TOKEN_UNWATCH;
     if (keyword_equals(start, length, "without")) return TOKEN_WITHOUT;
     if (keyword_equals(start, length, "watchers")) return TOKEN_WATCHERS;
     if (keyword_equals(start, length, "modifier")) return TOKEN_MODIFIER;
@@ -515,6 +516,7 @@ const char *token_type_name(TokenType type) {
     case TOKEN_DIM: return "DIM";
     case TOKEN_AS: return "AS";
     case TOKEN_WATCH: return "WATCH";
+    case TOKEN_UNWATCH: return "UNWATCH";
     case TOKEN_WITHOUT: return "WITHOUT";
     case TOKEN_WATCHERS: return "WATCHERS";
     case TOKEN_MODIFIER: return "MODIFIER";

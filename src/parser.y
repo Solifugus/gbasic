@@ -645,7 +645,7 @@ typedef struct {
  * before this it fell through to the token mapper's default arm and was
  * reported as an unexpected token rather than a keyword clash. */
 %token AS
-%token IF CONSIDER_IF THEN ELSE CONSIDER_ELSE END END_CONSIDER PRINT TRUE FALSE NOTHING UNKNOWN_VALUE AND OR NOT WITH NEW SPAWN FOR TO STEP DO LOOP UNTIL IN EACH WHILE CONSIDER BREAK CONTINUE FUNCTION RETURN GOTO GOSUB WATCH WITHOUT WATCHERS ON RESUME NEXT STOP ERROR_VALUE MODIFIER PROGRAM LIBRARY LOAD USE EXPORT
+%token IF CONSIDER_IF THEN ELSE CONSIDER_ELSE END END_CONSIDER PRINT TRUE FALSE NOTHING UNKNOWN_VALUE AND OR NOT WITH NEW SPAWN FOR TO STEP DO LOOP UNTIL IN EACH WHILE CONSIDER BREAK CONTINUE FUNCTION RETURN GOTO GOSUB WATCH UNWATCH WITHOUT WATCHERS ON RESUME NEXT STOP ERROR_VALUE MODIFIER PROGRAM LIBRARY LOAD USE EXPORT
 %token OP_EQ OP_NE OP_GT OP_LT OP_GE OP_LE OP_NGT OP_NLT OP_NGE OP_NLE
 %token PLUS MINUS STAR SLASH LPAREN MOD_LPAREN RPAREN LBRACKET RBRACKET LBRACE RBRACE COMMA COLON NEWLINE
 %precedence IF_WITHOUT_ELSE
@@ -668,7 +668,7 @@ static void report_syntax_error(gb_parse_ctx *ctx, int line, int column,
 }
 
 %type <stmt_list> program statement_list consider_statement_list consider_else_opt if_block_tail if_inline_tail
-%type <stmt> statement assignment print_statement call_statement with_lock_statement for_each_statement do_loop_statement while_statement consider_statement consider_body_statement function_statement modifier_statement program_statement library_statement use_statement return_statement label_statement goto_statement gosub_statement break_statement continue_statement watch_statement without_watchers_statement on_error_statement error_statement if_statement inline_statement
+%type <stmt> statement assignment print_statement call_statement with_lock_statement for_each_statement do_loop_statement while_statement consider_statement consider_body_statement function_statement modifier_statement program_statement library_statement use_statement return_statement label_statement goto_statement gosub_statement break_statement continue_statement watch_statement unwatch_statement without_watchers_statement on_error_statement error_statement if_statement inline_statement
 %type <expr> expression or_expression and_expression comparison_expression
 %type <expr> additive_expression multiplicative_expression unary_expression postfix_expression primary lvalue record_literal
 %type <expr_list> argument_list argument_list_opt array_argument_list
@@ -742,6 +742,7 @@ statement
     | library_statement { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
     | use_statement NEWLINE { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
     | watch_statement { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
+    | unwatch_statement NEWLINE { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
     | without_watchers_statement { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
     | on_error_statement NEWLINE { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
     | error_statement NEWLINE { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
@@ -942,6 +943,7 @@ consider_body_statement
     | library_statement { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
     | use_statement NEWLINE { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
     | watch_statement { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
+    | unwatch_statement NEWLINE { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
     | without_watchers_statement { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
     | on_error_statement NEWLINE { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
     | error_statement NEWLINE { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
@@ -1035,11 +1037,23 @@ modifier_context
 
 watch_statement
     : WATCH LPAREN watch_target_list RPAREN NEWLINE statement_list END WATCH NEWLINE {
-        $$ = ast_watch($3, $6);
+        $$ = ast_watch(NULL, $3, $6);
       }
     | WATCH watch_target_list NEWLINE statement_list END WATCH NEWLINE {
-        $$ = ast_watch($2, $4);
+        $$ = ast_watch(NULL, $2, $4);
       }
+    /* The NAMED form: `watch doubler(a, b)` registers the watcher AND binds
+     * `doubler` to a first-class watcher value. After `WATCH IDENT` the
+     * lookahead decides: '(' can only continue this form (a target path never
+     * contains one), so bison's default shift resolves the overlap with the
+     * paren-free anonymous form correctly. */
+    | WATCH IDENT LPAREN watch_target_list RPAREN NEWLINE statement_list END WATCH NEWLINE {
+        $$ = ast_watch($2, $4, $7);
+      }
+    ;
+
+unwatch_statement
+    : UNWATCH expression { $$ = ast_unwatch($2); }
     ;
 
 watch_target_list
@@ -1234,6 +1248,7 @@ comparison_operator
 
 primary
     : NUMBER { $$ = expr_at(ast_number($1), @1.first_line, @1.first_column); }
+    | WATCHERS LPAREN RPAREN { $$ = expr_at(ast_call(copy_const("watchers"), ast_expr_list_empty()), @1.first_line, @1.first_column); }
     | duration_terms { $$ = expr_at(ast_duration($1), @1.first_line, @1.first_column); }
     | STRING { $$ = expr_at(ast_string($1), @1.first_line, @1.first_column); }
     | variable_name ident_suffix {
@@ -1630,6 +1645,7 @@ static int yylex(YYSTYPE *lvalp, YYLTYPE *llocp, gb_parse_ctx *ctx) {
     case TOKEN_GOTO: return GOTO;
     case TOKEN_GOSUB: return GOSUB;
     case TOKEN_WATCH: return WATCH;
+    case TOKEN_UNWATCH: return UNWATCH;
     case TOKEN_WITHOUT: return WITHOUT;
     case TOKEN_WATCHERS: return WATCHERS;
     case TOKEN_ON: return ON;

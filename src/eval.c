@@ -194,6 +194,7 @@ typedef enum {
     VALUE_FUNCTION,
     VALUE_GBOXED,
     VALUE_REGEX,
+    VALUE_WATCHER,
     VALUE_WORKBOOK
 } ValueKind;
 
@@ -271,6 +272,11 @@ struct Value {
         PgConnectionValue *postgres_connection;
         SqliteConnectionValue *sqlite_connection;
         RegexValue *regex;
+        /* A first-class watcher value: an index into the global watcher
+         * registry. Indices are stable because unwatch TOMBSTONES an entry
+         * (active = 0) rather than removing it -- the fire queue holds
+         * indices, so physical removal would shift live ones. */
+        size_t watcher_id;
         XlsxWorkbook *workbook;
         XmlReaderValue *xml_reader;
         GObjectValue *gobject;
@@ -438,6 +444,8 @@ typedef struct {
 typedef struct {
     AstStmt *stmt;
     int pending;
+    int active;      /* 0 after unwatch or replace-on-redeclare: a tombstone */
+    char *name;      /* owned; NULL for the anonymous form */
 } WatcherDef;
 
 typedef enum {
@@ -660,6 +668,8 @@ static const char *value_kind_name(ValueKind kind) {
         return "function";
     case VALUE_REGEX:
         return "regex";
+    case VALUE_WATCHER:
+        return "watcher";
     case VALUE_WORKBOOK:
         return "workbook";
     }
@@ -2952,6 +2962,8 @@ static int value_truthy(Value value) {
         return 1;
     case VALUE_REGEX:
         return 1;
+    case VALUE_WATCHER:
+        return 1;
     case VALUE_WORKBOOK:
         return 1;
     case VALUE_NULL:
@@ -3518,6 +3530,10 @@ static int value_storage_equal(const Value *left, const Value *right) {
          * "si") equals regex(p, "is"). */
         return strcmp(left->as.regex->pattern, right->as.regex->pattern) == 0 &&
                strcmp(left->as.regex->flags, right->as.regex->flags) == 0;
+    case VALUE_WATCHER:
+        /* IDENTITY, not structure: two watchers with the same name and targets
+         * are still two registrations. Copies of one handle compare equal. */
+        return left->as.watcher_id == right->as.watcher_id;
     case VALUE_WORKBOOK:
         /* Identity by handle: copies of one workbook compare equal, two
          * separately opened files never do even from the same path. */
@@ -5412,7 +5428,9 @@ static int watcher_drain(void) {
             break;
         }
         size_t index = watcher_queue[cursor++];
-        if (index < watcher_count) {
+        /* An entry can be unwatched between enqueue and drain -- it must not
+         * fire one last time on the way out. */
+        if (index < watcher_count && watchers[index].active) {
             watchers[index].pending = 0;
             EvalResult result = eval_stmt_list(watchers[index].stmt->as.watch.body);
             if (result.did_return) {
@@ -5450,6 +5468,9 @@ static int watcher_trigger_change(const char *path) {
         watcher_drain_origin_column = current_column;
     }
     for (size_t i = 0; i < watcher_count; i++) {
+        if (!watchers[i].active) {
+            continue;      /* a tombstone: unwatched, or replaced by redeclare */
+        }
         if (watcher_matches_change(watchers[i].stmt, path)) {
             watcher_enqueue(i);
         }
@@ -5459,8 +5480,28 @@ static int watcher_trigger_change(const char *path) {
 
 static int watcher_register(AstStmt *stmt) {
     if (current_env != &global_env) {
+        if (stmt->as.watch.name) {
+            /* New surface, so a proper error rather than the anonymous form's
+             * historical stderr warning: the registry is global, and a named
+             * handle bound in a vanishing scope would be a watcher that fires
+             * forever with its off-switch out of reach. */
+            runtime_error_raise("a named watcher may only be declared at top level",
+                                1003, "watcher");
+            return 0;
+        }
         fprintf(stderr, "watch may only be registered at top level for now\n");
         return 1;
+    }
+
+    /* REPLACE-ON-REDECLARE: re-running setup code must not stack a second
+     * watcher doing the work twice. If the name is currently bound to a live
+     * watcher, that registration is tombstoned before the new one lands. */
+    if (stmt->as.watch.name) {
+        Symbol *existing = env_find_in_frame(&global_env, stmt->as.watch.name);
+        if (existing && existing->value.kind == VALUE_WATCHER &&
+            existing->value.as.watcher_id < watcher_count) {
+            watchers[existing->value.as.watcher_id].active = 0;
+        }
     }
 
     WatcherDef *next = realloc(watchers, sizeof(WatcherDef) * (watcher_count + 1));
@@ -5470,12 +5511,23 @@ static int watcher_register(AstStmt *stmt) {
     watchers = next;
     watchers[watcher_count].stmt = stmt;
     watchers[watcher_count].pending = 0;
+    watchers[watcher_count].active = 1;
+    watchers[watcher_count].name = stmt->as.watch.name ? copy_string(stmt->as.watch.name) : NULL;
+    if (stmt->as.watch.name) {
+        Value handle = {0};
+        handle.kind = VALUE_WATCHER;
+        handle.as.watcher_id = watcher_count;
+        env_set(stmt->as.watch.name, handle);
+    }
     watcher_enqueue(watcher_count);
     watcher_count++;
     return watcher_drain();
 }
 
 static void watcher_clear(void) {
+    for (size_t i = 0; i < watcher_count; i++) {
+        free(watchers[i].name);
+    }
     free(watchers);
     watchers = NULL;
     watcher_count = 0;
@@ -8415,6 +8467,8 @@ static const char *builtin_type_name(Value value) {
         return "function";
     case VALUE_REGEX:
         return "regex";
+    case VALUE_WATCHER:
+        return "watcher";
     case VALUE_WORKBOOK:
         return "workbook";
     }
@@ -8782,6 +8836,12 @@ static Value builtin_string_value(Value value) {
         snprintf(buffer, sizeof(buffer), "<function %s>", value.as.function.name);
         value_free(value);
         return value_string(buffer);
+    case VALUE_WATCHER:
+        snprintf(buffer, sizeof(buffer), "<watcher %s>",
+                 value.as.watcher_id < watcher_count && watchers[value.as.watcher_id].name
+                     ? watchers[value.as.watcher_id].name : "?");
+        value_free(value);
+        return value_string(buffer);
     case VALUE_REGEX:
         if (value.as.regex->flags[0]) {
             snprintf(buffer, sizeof(buffer), "<regex %s/%s>",
@@ -8904,6 +8964,7 @@ static int encode_value_to_builder(StringBuilder *builder, Value value, RenderMo
     case VALUE_PROCESS:
     case VALUE_FUNCTION:
     case VALUE_REGEX:
+    case VALUE_WATCHER:
     case VALUE_WORKBOOK:
         if (mode == RENDER_JSON) {
             runtime_error_raise("json_encode supports numbers, strings, booleans, "
@@ -9316,6 +9377,13 @@ static int serialize_value(SerBuf *b, Value v, int depth) {
             serbuf_u8(b, 0);
         }
         return 1;
+    case VALUE_WATCHER:
+        /* A watcher is an index into THIS process's registry; another actor
+         * has its own registry and its own watchers. Refused, like the other
+         * per-process handles. */
+        runtime_error_raise("serialize: watcher handles cannot be serialized",
+                            1003, "actor");
+        return 0;
     case VALUE_REGEX:
         /* Ship the SOURCE (pattern + flags), not the compiled program: a regex_t
          * is an opaque libc structure holding internal pointers and is
@@ -22123,6 +22191,32 @@ static Value eval_call(AstExpr *expr) {
         return eval_dir_call(expr);
     }
 
+    if (strcmp(expr->as.call.name, "watchers") == 0) {
+        if (expr->as.call.args.count != 0) {
+            runtime_error_raise("watchers expects no arguments", 1003,
+                                "invalid function call");
+            return value_null();
+        }
+        /* The LIVE handles, in registration order. This is also the recovery
+         * path for a lost handle: a watcher is reachable here even when no
+         * variable holds it any more. */
+        size_t live = 0;
+        for (size_t i = 0; i < watcher_count; i++) {
+            if (watchers[i].active) live++;
+        }
+        Value *items = live ? malloc(sizeof(Value) * live) : NULL;
+        if (live && !items) abort();
+        size_t n = 0;
+        for (size_t i = 0; i < watcher_count; i++) {
+            if (!watchers[i].active) continue;
+            Value handle = {0};
+            handle.kind = VALUE_WATCHER;
+            handle.as.watcher_id = i;
+            items[n++] = handle;
+        }
+        return value_array(items, live);
+    }
+
     if (strcmp(expr->as.call.name, "source_outline") == 0) {
         size_t n = expr->as.call.args.count;
         if (n != 1 && n != 2) {
@@ -22953,6 +23047,36 @@ static Value eval_comparison(AstExpr *expr, Value left, Value right) {
             value_free(right);
             return value_null();
         }
+    } else if (left.kind == VALUE_WATCHER && right.kind == VALUE_WATCHER) {
+        /* IDENTITY: copies of one handle are equal, two registrations never
+         * are -- even with the same name and targets (replace-on-redeclare
+         * mints a new registration). Without this branch both sides fell to
+         * the numeric coercion at the end of the chain and ANY two watchers
+         * compared equal -- the PLAT-EQ fallthrough, third occurrence. */
+        int equal = left.as.watcher_id == right.as.watcher_id;
+        if (strcmp(op, "=") == 0) {
+            result = equal;
+        } else if (strcmp(op, "!=") == 0) {
+            result = !equal;
+        } else {
+            runtime_error_raise("watcher values support only = and !=", 1003, "comparison");
+            value_free(left);
+            value_free(right);
+            return value_null();
+        }
+    } else if (left.kind == VALUE_WATCHER || right.kind == VALUE_WATCHER) {
+        /* A watcher compared against a non-watcher: unequal, matching the
+         * function/regex/gobject rules. */
+        if (strcmp(op, "=") == 0) {
+            result = 0;
+        } else if (strcmp(op, "!=") == 0) {
+            result = 1;
+        } else {
+            runtime_error_raise("watcher values support only = and !=", 1003, "comparison");
+            value_free(left);
+            value_free(right);
+            return value_null();
+        }
     } else if (left.kind == VALUE_REGEX && right.kind == VALUE_REGEX) {
         /* Structural, not by handle: a regex is fully determined by its pattern
          * and its (normalized) flags, so two separately compiled copies of the
@@ -23660,6 +23784,34 @@ static Value eval_expr(AstExpr *expr) {
             Duration dur = object.as.duration;
             value_free(object);
             return duration_field_value(dur, expr->as.field.field);
+        }
+        if (object.kind == VALUE_WATCHER) {
+            size_t id = object.as.watcher_id;
+            value_free(object);
+            if (id >= watcher_count) {
+                runtime_error_raise("watcher handle is not valid", 1003, "watcher");
+                return value_null();
+            }
+            if (strcmp(expr->as.field.field, "name") == 0) {
+                return value_string(watchers[id].name ? watchers[id].name : "");
+            }
+            if (strcmp(expr->as.field.field, "targets") == 0) {
+                AstNameList *names = &watchers[id].stmt->as.watch.names;
+                Value *items = names->count ? malloc(sizeof(Value) * names->count) : NULL;
+                if (names->count && !items) abort();
+                for (size_t i = 0; i < names->count; i++) {
+                    items[i] = value_string(names->items[i]);
+                }
+                return value_array(items, names->count);
+            }
+            {
+                char message[128];
+                snprintf(message, sizeof(message),
+                         "watcher has no field '%s' (it has name and targets)",
+                         expr->as.field.field);
+                runtime_error_raise(message, 1003, "watcher");
+                return value_null();
+            }
         }
         if (object.kind != VALUE_RECORD) {
             runtime_error_raise("field access expects a record", 1003, "field access");
@@ -24574,6 +24726,36 @@ static EvalResult eval_stmt(AstStmt *stmt) {
             return eval_error_result();
         }
         break;
+    case AST_STMT_UNWATCH: {
+        int before_error = error_generation;
+        Value value = eval_expr(stmt->as.unwatch_expr);
+        if (error_generation != before_error) {
+            value_free(value);
+            current_line = previous_line;
+            current_column = previous_column;
+            return eval_error_result();
+        }
+        if (value.kind != VALUE_WATCHER) {
+            char message[128];
+            snprintf(message, sizeof(message),
+                     "unwatch expects a watcher value but got %s",
+                     value_kind_name(value.kind));
+            value_free(value);
+            runtime_error_raise(message, 1003, "watcher");
+            current_line = previous_line;
+            current_column = previous_column;
+            return eval_error_result();
+        }
+        /* Unwatching an already-off handle is a QUIET NO-OP: the watcher is
+         * definitively off either way, so the caller's belief is true. The
+         * typo hazard that argues for raising does not exist here -- this
+         * takes a VALUE, not a name. */
+        if (value.as.watcher_id < watcher_count) {
+            watchers[value.as.watcher_id].active = 0;
+        }
+        value_free(value);
+        break;
+    }
     case AST_STMT_WITHOUT_WATCHERS: {
         watcher_suppressed++;
         EvalResult result = eval_stmt_list(stmt->as.without_watchers);

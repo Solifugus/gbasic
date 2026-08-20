@@ -65,6 +65,10 @@ for error handling, `ERRORS.md`.
   newline. → `examples/modifier_test.gb`, `examples/modifier_escape_test.bas`
 - **Watchers** — `watch(...)` runs once at registration, then synchronously on
   storage-changing mutations. → `examples/watch_test.gb`
+- **Named watchers** — `watch name(a, b)` binds `name` to a first-class handle:
+  `unwatch name` turns it off, re-declaring the same name REPLACES (setup is
+  safe to re-run), `watchers()` lists live handles, `.name`/`.targets`
+  identify one. Top-level only. → `examples/watch_named_test.bas`
 - **Persisting application state** — `load persist`; `write_atomic` swaps a
   temp file in with a single rename so a crash never truncates it, and
   `read_status` returns `missing`/`corrupt`/`loaded` as a value instead of

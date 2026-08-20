@@ -38,7 +38,7 @@ Keywords include:
 
 ```text
 if then else consider end print for to step while break continue function return dim as
-watch without watchers modifier goto gosub with and or not in
+watch unwatch without watchers modifier goto gosub with and or not in
 program library load use export on error resume next stop
 ```
 
@@ -307,6 +307,31 @@ Watcher path matching is symmetric at dot boundaries:
 
 Array indexes are tracked at the containing array path rather than as
 index-specific watcher identities.
+
+Named watchers are first-class values:
+
+```basic
+watch recalc(a, b)
+    c = a + b
+end watch
+
+print recalc.name        ' recalc
+print recalc.targets     ' ["a","b"]
+unwatch recalc           ' turns it off
+print count(watchers())  ' the live handles, in registration order
+```
+
+`watch name(...)` registers the watcher **and** binds `name` to a watcher
+value in scope — storable, passable, comparable by identity (`=`/`!=` only;
+copies of one handle are equal, two registrations never are). `unwatch`
+takes any expression yielding a watcher value and turns that registration
+off; unwatching an already-off handle is a quiet no-op. Re-declaring
+`watch name(...)` while `name` is bound to a live watcher **replaces** it —
+setup code is safe to re-run without stacking duplicate watchers.
+`watchers()` returns the live handles, so a watcher is recoverable even when
+no variable holds it any more. Named watchers may only be declared at top
+level; watcher values cannot be encoded or sent to another actor. The
+anonymous `watch(...)` form is unchanged.
 
 During one active watcher-drain cycle, a watcher that is already pending is
 not enqueued again. It executes once and reads the latest live state. Separate

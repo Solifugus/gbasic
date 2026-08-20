@@ -127,6 +127,7 @@ examples=(
     if_else_test.bas
     inline_if_test.bas
     watch_test.gb
+    watch_named_test.bas
     watch_path_test.bas
     watch_symmetric_path_test.bas
     watcher_value_change_guard_test.bas
@@ -336,11 +337,17 @@ rm -f "$help_file"
 version_file="$(mktemp)"
 if ./gbasic --version >"$version_file"; then
     version_text="$(cat "$version_file")"
-    if [[ "$version_text" == "gBASIC 0.1.0-rc1" ]]; then
+    # The expected version comes from README.md, where --version's output is
+    # documented -- ONE source of truth, so a release bump cannot leave this
+    # check pinned to the previous tag (it did: rc2 shipped while this line
+    # still said rc1, and the release gate's piped invocation masked the
+    # nonzero exit).
+    expected_version="$(grep -m1 -oE 'gBASIC [0-9]+\.[0-9]+\.[0-9]+[^ ]*' README.md)"
+    if [[ -n "$expected_version" && "$version_text" == "$expected_version" ]]; then
         printf 'PASS %s\n' "gbasic --version"
     else
         printf 'FAIL %s\n' "gbasic --version"
-        printf 'expected: gBASIC 0.1.0-rc1\n'
+        printf 'expected (from README.md): %s\n' "$expected_version"
         printf 'actual: %s\n' "$version_text"
         rm -f "$version_file"
         exit 1
