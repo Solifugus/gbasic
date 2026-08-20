@@ -324,6 +324,10 @@ cases=(
     negative_encode_watcher
     negative_watcher_ordering
     negative_send_watcher
+    negative_chart_y_text
+    negative_chart_palette_overflow
+    negative_chart_unequal_columns
+    negative_chart_no_column
 )
 
 for name in "${cases[@]}"; do

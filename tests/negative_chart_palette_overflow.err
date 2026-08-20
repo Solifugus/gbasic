@@ -1,0 +1,1 @@
+runtime error at tests/../stdlib/chart.bas:253:13: chart: 9 series but the palette has 8 colors; pass a longer palette: option

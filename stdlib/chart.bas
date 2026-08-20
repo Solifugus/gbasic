@@ -1,0 +1,544 @@
+' SPDX-License-Identifier: Apache-2.0
+' Copyright 2026 Matthew C. Tedder. See LICENSE and LICENSING.md.
+
+' chart.bas — charts as deterministic SVG text (chart_design.md, Phase 1).
+'
+' A chart is a STRING of SVG markup, produced by pure gBASIC arithmetic and
+' string assembly: no image library, no C, no timestamps, no randomness — the
+' same spec renders the identical string every run, so a chart is golden-file
+' testable like everything else in the tree.
+'
+' Phase 1 surface: line and scatter (single and multi-series), frames first
+' (a record of equal-length columns, unknown = missing) with *_xy list forms
+' as the escape hatch. The constructor is `chart.spec`, NOT `chart.new` —
+' a library cannot DEFINE a function named `new` (keyword), proven at design
+' review (chart_design.md §13).
+'
+' Layout policy (§6b): alignment is EXACT via text-anchor — the renderer
+' aligns, this library never needs to know where text ends. Space RESERVATION
+' is a declared estimate (len * char_ratio * font_size) with every knob in
+' the options record and every margin individually overridable.
+'
+' Refusals (§8): a plausible wrong picture is worse than an error. Non-numeric
+' y columns, more series than palette colors, and unequal column lengths are
+' refused BY NAME. unknown and nan break a line (a gap, never a zero) and are
+' skipped in scatter. Unsorted x plots in row order: your order is your
+' statement.
+library chart
+
+    ' ------------------------------------------------------------- utilities
+
+    ' Every string of user origin passes through here at the point it enters
+    ' the markup. This is what makes "no inline JavaScript" true rather than
+    ' aspirational when the SVG lands in a served page.
+    function _escape(text)
+        s = string(text)
+        s = replace(s, "&", "&amp;")
+        s = replace(s, "<", "&lt;")
+        s = replace(s, ">", "&gt;")
+        s = replace(s, chr(34), "&quot;")
+        s = replace(s, "'", "&apos;")
+        return s
+    end function
+
+    ' Fixed-rule number formatting: `d` decimal places (trailing zeros
+    ' trimmed), thousands separators only when `sep` is true. All numbers in
+    ' the SVG go through here — one formatter, no locale, no drift.
+    function _fmt(v, d, sep)
+        neg = v < 0
+        a = v
+        if neg then a = 0 - v
+        p = pow(10, d)
+        scaled = round(a * p, 0)
+        ip = floor(scaled / p)
+        fp = scaled - (ip * p)
+        s = string(ip)
+        if sep then
+            grouped = ""
+            while len(s) > 3
+                grouped = "," + right(s, 3) + grouped
+                s = left(s, len(s) - 3)
+            end while
+            s = s + grouped
+        end if
+        if d > 0 and fp > 0 then
+            fs = string(fp)
+            while len(fs) < d
+                fs = "0" + fs
+            end while
+            while ends_with(fs, "0")
+                fs = left(fs, len(fs) - 1)
+            end while
+            s = s + "." + fs
+        end if
+        if neg and scaled > 0 then s = "-" + s
+        return s
+    end function
+
+    ' SVG coordinates: two decimals, no separators.
+    function _coord(v)
+        return _fmt(v, 2, false)
+    end function
+
+    ' Estimated text width (§6b): reservation only — never used for alignment.
+    function _estw(text, opts)
+        return len(string(text)) * opts.char_ratio * opts.font_size
+    end function
+
+    ' A value that can be plotted: numbers and money plot at face value; a nan
+    ' or infinity is treated exactly like unknown (a gap is honest, a spike to
+    ' infinity is not a picture).
+    function _plottable(v)
+        if is_unknown(v) then return unknown
+        t = type(v)
+        if t = "money" then return number(string(v))
+        if t != "number" then return unknown
+        if v != v then return unknown
+        if v = number("inf") or v = 0 - number("inf") then return unknown
+        return v
+    end function
+
+    ' ------------------------------------------------------------ nice ticks
+
+    function _nice_step(raw)
+        mag = pow(10, floor(log10(raw)))
+        norm = raw / mag
+        stp = 10
+        if norm <= 1 then
+            stp = 1
+        else
+            if norm <= 2 then
+                stp = 2
+            else
+                if norm <= 2.5 then
+                    stp = 2.5
+                else
+                    if norm <= 5 then stp = 5
+                end if
+            end if
+        end if
+        return stp * mag
+    end function
+
+    ' Loose labeling over [lo, hi]: axis bounds extended to multiples of a
+    ' nice step, at most maxn+1 labels after deterministic thinning. When
+    ' whole is true the step is forced to an integer (date axes label whole
+    ' days). Ticks are computed multiplicatively (t0 + i*step), never by
+    ' accumulation, so there is no floating drift between runs.
+    function _ticks(lo, hi, maxn, whole)
+        if lo = hi then
+            lo = lo - 1
+            hi = hi + 1
+        end if
+        raw = (hi - lo) / maxn
+        stp = _nice_step(raw)
+        if whole and stp < 1 then stp = 1
+        axlo = floor(lo / stp) * stp
+        axhi = ceil(hi / stp) * stp
+        n = round((axhi - axlo) / stp, 0) + 1
+        keep = 1
+        if n > maxn + 1 then keep = ceil(n / (maxn + 1))
+        ticks = []
+        i = 0
+        while i < n
+            append(ticks, axlo + (i * stp))
+            i = i + keep
+        end while
+        decimals = 0
+        if stp != floor(stp) then
+            decimals = 1
+            if (stp * 10) != floor(stp * 10) then decimals = 2
+        end if
+        return { lo: axlo, hi: axhi, ticks: ticks, stp: stp, decimals: decimals }
+    end function
+
+    ' --------------------------------------------------------------- options
+
+    function _defaults()
+        return {
+            width: 640, height: 360,
+            title: unknown, x_label: unknown, y_label: unknown,
+            palette: ["#000000", "#E69F00", "#56B4E9", "#009E73",
+                      "#F0E442", "#0072B2", "#D55E00", "#CC79A7"],
+            grid: true, legend: unknown, markers: false,
+            x_min: unknown, x_max: unknown, y_min: unknown, y_max: unknown,
+            font_size: 12, char_ratio: 0.6,
+            margin_left: unknown, margin_right: unknown,
+            margin_top: unknown, margin_bottom: unknown,
+            max_ticks_x: 8, max_ticks_y: 6
+        }
+    end function
+
+    function _merge(base, over)
+        out = base
+        for each k in keys(over)
+            out[k] = over[k]
+        end for
+        return out
+    end function
+
+    ' ------------------------------------------------------------ spec layer
+
+    ' The constructor. (Named `spec`, not `new`: a library cannot define a
+    ' function called `new` — see the design doc.)
+    function spec(kind, df)
+        if kind != "line" and kind != "scatter" then
+            error "chart: unsupported kind '" + kind + "' (Phase 1 has line and scatter)"
+        end if
+        return { kind: kind, df: df, x: unknown, y: [], opts: {} }
+    end function
+
+    function x(s, name)
+        out = s
+        out.x = name
+        return out
+    end function
+
+    function y(s, names)
+        out = s
+        if is_array(names) then
+            out.y = names
+        else
+            out.y = [names]
+        end if
+        return out
+    end function
+
+    function title(s, text)
+        out = s
+        out.opts = _merge(out.opts, { title: text })
+        return out
+    end function
+
+    function size(s, w, h)
+        out = s
+        out.opts = _merge(out.opts, { width: w, height: h })
+        return out
+    end function
+
+    function options(s, rec)
+        out = s
+        out.opts = _merge(out.opts, rec)
+        return out
+    end function
+
+    ' ------------------------------------------------------------ validation
+
+    function _column(df, name, nrows)
+        if not has(df, name) then
+            error "chart: no column '" + name + "' in the frame"
+        end if
+        col = df[name]
+        if not is_array(col) then
+            error "chart: column '" + name + "' is not a list"
+        end if
+        if count(col) != nrows then
+            error "chart: column '" + name + "' has " + string(count(col)) + " rows; the x column has " + string(nrows)
+        end if
+        return col
+    end function
+
+    ' ---------------------------------------------------------------- render
+
+    function render(s)
+        opts = _merge(_defaults(), s.opts)
+
+        if is_unknown(s.x) then
+            error "chart: no x column set"
+        end if
+        if count(s.y) = 0 then
+            error "chart: no y column set"
+        end if
+        if count(s.y) > count(opts.palette) then
+            error "chart: " + string(count(s.y)) + " series but the palette has " + string(count(opts.palette)) + " colors; pass a longer palette: option"
+        end if
+
+        if not has(s.df, s.x) then
+            error "chart: no column '" + s.x + "' in the frame"
+        end if
+        xcol = s.df[s.x]
+        nrows = count(xcol)
+
+        ' X values: numeric, or datetimes reduced to day counts from the
+        ' earliest date (core duration arithmetic — no private tricks).
+        is_date = false
+        anchor = unknown
+        for each v in xcol
+            if not is_unknown(v) then
+                if type(v) = "datetime" then
+                    is_date = true
+                    ' Block form on purpose: an inline `if` immediately before
+                    ' an `else` line captures it (nearest-unmatched rule).
+                    if is_unknown(anchor) or v < anchor then
+                        anchor = v
+                    end if
+                else
+                    if is_date then
+                        error "chart: column '" + s.x + "' mixes dates and numbers"
+                    end if
+                end if
+            end if
+        end for
+
+        xs = []
+        for each v in xcol
+            if is_unknown(v) then
+                append(xs, unknown)
+            else
+                if is_date then
+                    if type(v) != "datetime" then
+                        error "chart: column '" + s.x + "' mixes dates and numbers"
+                    end if
+                    dur = v - anchor
+                    append(xs, dur.total_seconds / 86400)
+                else
+                    append(xs, _plottable(v))
+                end if
+            end if
+        end for
+
+        ' Y series, validated by name.
+        series = []
+        for each name in s.y
+            col = _column(s.df, name, nrows)
+            vals = []
+            i = 0
+            while i < nrows
+                v = col[i]
+                if not is_unknown(v) then
+                    t = type(v)
+                    if t != "number" and t != "money" then
+                        error "chart: column '" + name + "' holds " + t + " values; charts plot numbers (categories belong on a bar chart's x axis)"
+                    end if
+                end if
+                append(vals, _plottable(v))
+                i = i + 1
+            end while
+            append(series, { name: name, vals: vals })
+        end for
+
+        ' Data ranges over every finite point.
+        have_data = false
+        dxlo = 0
+        dxhi = 1
+        dylo = 0
+        dyhi = 1
+        for each ser in series
+            i = 0
+            while i < nrows
+                xv = xs[i]
+                yv = ser.vals[i]
+                if not is_unknown(xv) and not is_unknown(yv) then
+                    if not have_data then
+                        dxlo = xv
+                        dxhi = xv
+                        dylo = yv
+                        dyhi = yv
+                        have_data = true
+                    else
+                        if xv < dxlo then dxlo = xv
+                        if xv > dxhi then dxhi = xv
+                        if yv < dylo then dylo = yv
+                        if yv > dyhi then dyhi = yv
+                    end if
+                end if
+                i = i + 1
+            end while
+        end for
+
+        if not is_unknown(opts.x_min) then dxlo = opts.x_min
+        if not is_unknown(opts.x_max) then dxhi = opts.x_max
+        if not is_unknown(opts.y_min) then dylo = opts.y_min
+        if not is_unknown(opts.y_max) then dyhi = opts.y_max
+
+        tx = _ticks(dxlo, dxhi, opts.max_ticks_x, is_date)
+        ty = _ticks(dylo, dyhi, opts.max_ticks_y, false)
+
+        ' Tick label text (dates label as real dates via anchor + days).
+        xlabels = []
+        for each t in tx.ticks
+            if is_date then
+                append(xlabels, string(anchor + (1 day) * round(t, 0)))
+            else
+                append(xlabels, _fmt(t, tx.decimals, true))
+            end if
+        end for
+        ylabels = []
+        for each t in ty.ticks
+            append(ylabels, _fmt(t, ty.decimals, true))
+        end for
+
+        ' Margins (§6b): derived from the LONGEST formatted tick label unless
+        ' explicitly overridden. Estimation reserves space; text-anchor aligns.
+        ywmax = 0
+        for each lbl in ylabels
+            w = _estw(lbl, opts)
+            if w > ywmax then ywmax = w
+        end for
+        show_legend = count(series) > 1
+        if not is_unknown(opts.legend) then show_legend = opts.legend
+
+        mleft = opts.margin_left
+        if is_unknown(mleft) then
+            mleft = ywmax + 10
+            if not is_unknown(opts.y_label) then mleft = mleft + opts.font_size + 8
+        end if
+        mright = opts.margin_right
+        if is_unknown(mright) then mright = 14
+        mtop = opts.margin_top
+        if is_unknown(mtop) then
+            mtop = 12
+            if not is_unknown(opts.title) then mtop = mtop + round(opts.font_size * 1.5, 0) + 6
+            if show_legend then mtop = mtop + opts.font_size + 8
+        end if
+        mbottom = opts.margin_bottom
+        if is_unknown(mbottom) then
+            mbottom = opts.font_size + 12
+            if not is_unknown(opts.x_label) then mbottom = mbottom + opts.font_size + 8
+        end if
+
+        px0 = mleft
+        px1 = opts.width - mright
+        py0 = mtop
+        py1 = opts.height - mbottom
+
+        parts = []
+        append(parts, "<svg xmlns=" + chr(34) + "http://www.w3.org/2000/svg" + chr(34) + " width=" + chr(34) + _fmt(opts.width, 0, false) + chr(34) + " height=" + chr(34) + _fmt(opts.height, 0, false) + chr(34) + " viewBox=" + chr(34) + "0 0 " + _fmt(opts.width, 0, false) + " " + _fmt(opts.height, 0, false) + chr(34) + " font-family=" + chr(34) + "sans-serif" + chr(34) + " font-size=" + chr(34) + _fmt(opts.font_size, 0, false) + chr(34) + ">")
+
+        ' Grid (horizontal, at y ticks).
+        if opts.grid then
+            for each t in ty.ticks
+                gy = _scale_y(t, ty, py0, py1)
+                append(parts, "<line x1=" + chr(34) + _coord(px0) + chr(34) + " y1=" + chr(34) + gy + chr(34) + " x2=" + chr(34) + _coord(px1) + chr(34) + " y2=" + chr(34) + gy + chr(34) + " stroke=" + chr(34) + "#dddddd" + chr(34) + "/>")
+            end for
+        end if
+
+        ' Axes.
+        append(parts, "<line x1=" + chr(34) + _coord(px0) + chr(34) + " y1=" + chr(34) + _coord(py1) + chr(34) + " x2=" + chr(34) + _coord(px1) + chr(34) + " y2=" + chr(34) + _coord(py1) + chr(34) + " stroke=" + chr(34) + "#333333" + chr(34) + "/>")
+        append(parts, "<line x1=" + chr(34) + _coord(px0) + chr(34) + " y1=" + chr(34) + _coord(py0) + chr(34) + " x2=" + chr(34) + _coord(px0) + chr(34) + " y2=" + chr(34) + _coord(py1) + chr(34) + " stroke=" + chr(34) + "#333333" + chr(34) + "/>")
+
+        ' Tick labels: y right-aligned against the axis (text-anchor="end"),
+        ' x centered under the tick (text-anchor="middle") — exact alignment,
+        ' no measurement.
+        i = 0
+        while i < count(ty.ticks)
+            gy = _scale_y(ty.ticks[i], ty, py0, py1)
+            append(parts, "<text x=" + chr(34) + _coord(px0 - 6) + chr(34) + " y=" + chr(34) + gy + chr(34) + " text-anchor=" + chr(34) + "end" + chr(34) + " dominant-baseline=" + chr(34) + "middle" + chr(34) + " fill=" + chr(34) + "#333333" + chr(34) + ">" + _escape(ylabels[i]) + "</text>")
+            i = i + 1
+        end while
+        i = 0
+        while i < count(tx.ticks)
+            gx = _scale_x(tx.ticks[i], tx, px0, px1)
+            append(parts, "<text x=" + chr(34) + gx + chr(34) + " y=" + chr(34) + _coord(py1 + opts.font_size + 4) + chr(34) + " text-anchor=" + chr(34) + "middle" + chr(34) + " fill=" + chr(34) + "#333333" + chr(34) + ">" + _escape(xlabels[i]) + "</text>")
+            i = i + 1
+        end while
+
+        ' Series.
+        if have_data then
+            si = 0
+            for each ser in series
+                color = opts.palette[si]
+                if s.kind = "line" then
+                    d = []
+                    pen = false
+                    i = 0
+                    while i < nrows
+                        xv = xs[i]
+                        yv = ser.vals[i]
+                        if is_unknown(xv) or is_unknown(yv) then
+                            pen = false
+                        else
+                            cmd = "L"
+                            if not pen then cmd = "M"
+                            append(d, cmd + _scale_x(xv, tx, px0, px1) + " " + _scale_y(yv, ty, py0, py1))
+                            pen = true
+                        end if
+                        i = i + 1
+                    end while
+                    if count(d) > 0 then
+                        append(parts, "<path d=" + chr(34) + join(d, " ") + chr(34) + " fill=" + chr(34) + "none" + chr(34) + " stroke=" + chr(34) + color + chr(34) + " stroke-width=" + chr(34) + "1.5" + chr(34) + "/>")
+                    end if
+                end if
+                if s.kind = "scatter" or opts.markers then
+                    i = 0
+                    while i < nrows
+                        xv = xs[i]
+                        yv = ser.vals[i]
+                        if not is_unknown(xv) and not is_unknown(yv) then
+                            append(parts, "<circle cx=" + chr(34) + _scale_x(xv, tx, px0, px1) + chr(34) + " cy=" + chr(34) + _scale_y(yv, ty, py0, py1) + chr(34) + " r=" + chr(34) + "3" + chr(34) + " fill=" + chr(34) + color + chr(34) + "/>")
+                        end if
+                        i = i + 1
+                    end while
+                end if
+                si = si + 1
+            end for
+        else
+            append(parts, "<text x=" + chr(34) + _coord((px0 + px1) / 2) + chr(34) + " y=" + chr(34) + _coord((py0 + py1) / 2) + chr(34) + " text-anchor=" + chr(34) + "middle" + chr(34) + " fill=" + chr(34) + "#888888" + chr(34) + ">no data</text>")
+        end if
+
+        ' Legend: one row above the plot, a swatch and a name per series.
+        if show_legend and have_data then
+            lx = px0
+            lyy = mtop - opts.font_size + 2
+            li = 0
+            for each ser in series
+                color = opts.palette[li]
+                li = li + 1
+                append(parts, "<rect x=" + chr(34) + _coord(lx) + chr(34) + " y=" + chr(34) + _coord(lyy - 9) + chr(34) + " width=" + chr(34) + "10" + chr(34) + " height=" + chr(34) + "10" + chr(34) + " fill=" + chr(34) + color + chr(34) + "/>")
+                append(parts, "<text x=" + chr(34) + _coord(lx + 14) + chr(34) + " y=" + chr(34) + _coord(lyy) + chr(34) + " fill=" + chr(34) + "#333333" + chr(34) + ">" + _escape(ser.name) + "</text>")
+                lx = lx + 14 + _estw(ser.name, opts) + 16
+            end for
+        end if
+
+        ' Title and axis labels.
+        if not is_unknown(opts.title) then
+            append(parts, "<text x=" + chr(34) + _coord(opts.width / 2) + chr(34) + " y=" + chr(34) + _coord(opts.font_size + 6) + chr(34) + " text-anchor=" + chr(34) + "middle" + chr(34) + " font-size=" + chr(34) + _fmt(round(opts.font_size * 1.2, 0), 0, false) + chr(34) + " fill=" + chr(34) + "#111111" + chr(34) + ">" + _escape(opts.title) + "</text>")
+        end if
+        if not is_unknown(opts.x_label) then
+            append(parts, "<text x=" + chr(34) + _coord((px0 + px1) / 2) + chr(34) + " y=" + chr(34) + _coord(opts.height - 6) + chr(34) + " text-anchor=" + chr(34) + "middle" + chr(34) + " fill=" + chr(34) + "#333333" + chr(34) + ">" + _escape(opts.x_label) + "</text>")
+        end if
+        if not is_unknown(opts.y_label) then
+            append(parts, "<text x=" + chr(34) + _coord(opts.font_size) + chr(34) + " y=" + chr(34) + _coord((py0 + py1) / 2) + chr(34) + " text-anchor=" + chr(34) + "middle" + chr(34) + " transform=" + chr(34) + "rotate(-90 " + _coord(opts.font_size) + " " + _coord((py0 + py1) / 2) + ")" + chr(34) + " fill=" + chr(34) + "#333333" + chr(34) + ">" + _escape(opts.y_label) + "</text>")
+        end if
+
+        append(parts, "</svg>")
+        return join(parts, "")
+    end function
+
+    function _scale_x(v, tx, px0, px1)
+        return _coord(px0 + ((v - tx.lo) * (px1 - px0) / (tx.hi - tx.lo)))
+    end function
+
+    function _scale_y(v, ty, py0, py1)
+        return _coord(py1 - ((v - ty.lo) * (py1 - py0) / (ty.hi - ty.lo)))
+    end function
+
+    ' ------------------------------------------------------------ one-liners
+
+    function line(df, xcol, ycols)
+        return render(y(x(spec("line", df), xcol), ycols))
+    end function
+
+    function scatter(df, xcol, ycols)
+        return render(y(x(spec("scatter", df), xcol), ycols))
+    end function
+
+    function line_xy(xs, ys)
+        return line({ x: xs, y: ys }, "x", "y")
+    end function
+
+    function scatter_xy(xs, ys)
+        return scatter({ x: xs, y: ys }, "x", "y")
+    end function
+
+    ' A minimal standalone HTML document around the fragment, for
+    ' save-and-open. The fragment stays the primitive.
+    function page(s)
+        svg = render(s)
+        t = "chart"
+        opts = _merge(_defaults(), s.opts)
+        if not is_unknown(opts.title) then t = opts.title
+        return "<!DOCTYPE html><html><head><meta charset=" + chr(34) + "utf-8" + chr(34) + "><title>" + _escape(t) + "</title></head><body>" + svg + "</body></html>"
+    end function
+
+end library
