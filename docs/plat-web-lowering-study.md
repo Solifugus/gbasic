@@ -199,7 +199,7 @@ What cannot lower, and why:
 
 | Gap | What | Size | Phase (per the draft) |
 |---|---|---|---|
-| A | Bind address on `listen` (loopback-only today) | small C | WEB-1 — must come first; without it no example is reachable |
+| A | ~~Bind address on `listen` (loopback-only today)~~ **CLOSED 2026-08-21** — `webserver.listen(port, { address: "0.0.0.0" })`, default unchanged, `server.address` reported back from `getsockname`, IPv6 and dual-stack included, `tests/run_web_bind.sh` | small C | WEB-1 — done first, as planned |
 | B | Safe static serving: canonicalize-then-check, content types, non-slurping reads | small C (or a `webserver.static` handler in C) | WEB-1/3 |
 | C | Worker pool: socket value kind + spawn transfer, or `SO_REUSEPORT` | the §5 decision | WEB-2 |
 | D | TLS/SNI | subsystem | WEB-3 |
@@ -227,7 +227,14 @@ Per §10's own test: **the shape is right — the block can ship as a front
 end over code that already works**, once Gap A exists. The recommended
 build order inside PLAT-WEB-1 follows directly:
 
-1. **Gap A** (bind address) — smallest change, unblocks every real use.
+1. ~~**Gap A** (bind address) — smallest change, unblocks every real use.~~
+   **Done 2026-08-21.** `webserver.listen(port, { address: })`; the default
+   stays `127.0.0.1` and `tests/run_web_bind.sh` holds it there by probing
+   127.0.0.2, which a loopback-bound socket must not answer. Two things the
+   build produced beyond the gap as written: `server.address` (read back from
+   the socket, which is what makes the tests non-vacuous) and IPv6 —
+   `getaddrinfo` covers both families for the same code, and doing v6 later
+   would have meant touching the accept path twice.
 2. The **library-level route table**: `web.routes` / `web.dispatch` as
    plain data + a dispatcher function generated the way Section 2's
    lowering was written by hand. Everything testable with no socket.

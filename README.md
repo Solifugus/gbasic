@@ -44,7 +44,8 @@ Implemented runtime and module features include:
 - synchronous PostgreSQL access through the optional libpq-backed `pg` module
 - synchronous HTTP and HTTPS requests through the optional libcurl-backed
   `webclient` module
-- a built-in loopback HTTP server using live request and response queues
+- a built-in HTTP server using live request and response queues, listening on
+  loopback unless asked for a public address
 - an XML module (optional libxml2-backed) for tree parsing, navigation,
   encoding, lenient HTML, and constant-memory streaming
 - an **xlsx module** (optional, needs zlib and libxml2) that *edits existing*
@@ -613,9 +614,16 @@ webserver.close(server)
 server.running = false
 ```
 
-Phase 1 is a single-threaded, loopback-only HTTP/1.1 server. It does not
-provide public binding, TLS, routing, middleware, static files, streaming,
-chunked request bodies, or WebSockets.
+The server binds `127.0.0.1` unless an options record says otherwise:
+
+```basic
+server = webserver.listen(8080, { address: "0.0.0.0" })
+```
+
+`address` takes a numeric IPv4 or IPv6 address; omitting it keeps the listener
+private to the machine. It is otherwise a single-threaded HTTP/1.1 server,
+with no TLS, routing, middleware, static files, streaming, chunked request
+bodies, or WebSockets.
 
 ## GUI
 
@@ -687,6 +695,7 @@ Run module and application integration tests:
 ```sh
 ./tests/run_webclient.sh
 ./tests/run_webserver.sh
+./tests/run_web_bind.sh
 ./tests/run_sqlite.sh
 ./tests/run_gbasic_site.sh
 GBASIC_SITE_POSTGRES_TEST=1 ./tests/run_gbasic_site_postgres.sh

@@ -1195,8 +1195,8 @@ outgoing requests only. Incoming requests use the separate WebServer module.
 
 ## WebServer Module
 
-WebServer Phase 1 provides a loopback HTTP/1.1 server using live records,
-ordinary arrays, and watchers:
+WebServer provides an HTTP/1.1 server using live records, ordinary arrays, and
+watchers. It listens on loopback unless told otherwise:
 
 ```basic
 load webserver
@@ -1217,17 +1217,47 @@ end watch
 The module provides:
 
 - `webserver.listen(port)`
+- `webserver.listen(port, options)`
 - `webserver.close(server)`
 - `webserver.redirect(request, location)`
 - `webserver.redirect(request, location, status)`
 
-`port` must be an integer from 0 through 65535. Phase 1 binds to
-`127.0.0.1`. Port `0` requests an operating-system-assigned ephemeral port,
-which is exposed through `server.port`.
+`port` must be an integer from 0 through 65535. Port `0` requests an
+operating-system-assigned ephemeral port, which is exposed through
+`server.port`.
+
+`options` is a record. The only field it currently accepts is `address`, the
+local address to bind:
+
+```basic
+' loopback -- the default, reachable only from this machine
+server = webserver.listen(8080)
+
+' every IPv4 interface: reachable from the network
+server = webserver.listen(8080, { address: "0.0.0.0" })
+
+' one specific interface, or IPv6
+server = webserver.listen(8080, { address: "192.168.1.20" })
+server = webserver.listen(8080, { address: "::" })
+```
+
+Omitting `address` binds `127.0.0.1`, so a server is private until its author
+says otherwise. `address` must be a **numeric** IPv4 or IPv6 address: a
+hostname is refused rather than resolved, which keeps binding free of a name
+lookup that could block, vary between runs, or answer with several addresses
+and no rule for choosing among them. An unknown option field is refused by
+name, because a misspelling that was ignored would leave a server the author
+asked to publish sitting on loopback.
+
+A listener bound to `::` accepts IPv4 peers where the platform allows it. Those
+peers are reported in `request.remote_ip` as ordinary dotted quads
+(`127.0.0.1`), not in the `::ffff:127.0.0.1` mapped form, so comparisons
+against an address literal behave the same on either kind of listener.
 
 The returned live server record contains:
 
 - `port`: actual bound port
+- `address`: actual bound address, as reported by the socket
 - `running`: boolean listener state
 - `requests`: incoming request queue
 - `responses`: outgoing response queue

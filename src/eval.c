@@ -27,6 +27,7 @@
 #include <sys/wait.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <netdb.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -12015,6 +12016,7 @@ struct WebServer {
     unsigned long id;
     int listen_fd;
     int port;
+    char address[64];
     int running;
     int shutdown_requested;
     unsigned long next_request_id;
@@ -12723,9 +12725,50 @@ static void webserver_send_error(WebServer *server,
     webserver_client_close(server, client_index);
 }
 
+/* Render a socket address as text, for both ends: the peer of an accepted
+ * connection and the listener's own bound address.
+ *
+ * The v4-mapped case is the one with a decision in it. A dual-stack listener
+ * (bound `::`) receives an IPv4 peer as ::ffff:127.0.0.1, and reporting that
+ * spelling in `req.remote_ip` would break every literal comparison a program
+ * makes against it -- `trust_proxy "127.0.0.1"` in the design draft is exactly
+ * such a comparison, and it would fail silently, treating a trusted proxy as a
+ * stranger. So a v4 peer is reported as a v4 address whichever family the
+ * listener happens to be. */
+static void webserver_format_address(const struct sockaddr_storage *address,
+                                     char *out,
+                                     size_t out_size,
+                                     int *port_out) {
+    if (out_size > 0) {
+        out[0] = '\0';
+    }
+    if (port_out) {
+        *port_out = 0;
+    }
+    if (address->ss_family == AF_INET) {
+        const struct sockaddr_in *v4 = (const struct sockaddr_in *)address;
+        inet_ntop(AF_INET, &v4->sin_addr, out, (socklen_t)out_size);
+        if (port_out) {
+            *port_out = ntohs(v4->sin_port);
+        }
+    } else if (address->ss_family == AF_INET6) {
+        const struct sockaddr_in6 *v6 = (const struct sockaddr_in6 *)address;
+        if (IN6_IS_ADDR_V4MAPPED(&v6->sin6_addr)) {
+            struct in_addr mapped;
+            memcpy(&mapped, &v6->sin6_addr.s6_addr[12], sizeof(mapped));
+            inet_ntop(AF_INET, &mapped, out, (socklen_t)out_size);
+        } else {
+            inet_ntop(AF_INET6, &v6->sin6_addr, out, (socklen_t)out_size);
+        }
+        if (port_out) {
+            *port_out = ntohs(v6->sin6_port);
+        }
+    }
+}
+
 static void webserver_accept(WebServer *server) {
     for (;;) {
-        struct sockaddr_in address;
+        struct sockaddr_storage address;
         socklen_t length = sizeof(address);
         int fd = accept(server->listen_fd, (struct sockaddr *)&address, &length);
         if (fd < 0) {
@@ -12741,9 +12784,10 @@ static void webserver_accept(WebServer *server) {
         WebServerClient *client = &server->clients[server->client_count++];
         memset(client, 0, sizeof(*client));
         client->fd = fd;
-        const char *ip = inet_ntoa(address.sin_addr);
-        snprintf(client->remote_ip, sizeof(client->remote_ip), "%s", ip ? ip : "");
-        client->remote_port = ntohs(address.sin_port);
+        webserver_format_address(&address,
+                                 client->remote_ip,
+                                 sizeof(client->remote_ip),
+                                 &client->remote_port);
     }
 }
 
@@ -12904,9 +12948,68 @@ static int webserver_run_event_loop(void) {
     return error_action_pending() ? 1 : 0;
 }
 
+/* PLAT-WEB-1 Gap A: where to bind.
+ *
+ * The default is loopback and stays loopback. Reaching the network is a
+ * deliberate act a program has to write down, because the alternative -- a
+ * default that changed under existing programs -- would expose every gBASIC
+ * server already running on a machine, and nothing in any existing test prints
+ * a bind address, so nothing would have said so. tests/run_web_bind.sh probes
+ * 127.0.0.2 to hold that line.
+ *
+ * Only a NUMERIC address is accepted. A hostname would mean a name lookup at
+ * bind time: a blocking network call, an answer that can differ between runs,
+ * and a multi-address name with no rule for which one was meant. Refusing it
+ * keeps binding deterministic and offline, and is a restriction that can be
+ * lifted later far more easily than it could be imposed. */
+static int webserver_listen_options(AstExpr *expr, char *address, size_t address_size) {
+    if (expr->as.call.args.count < 2) {
+        return 1;
+    }
+    Value options = eval_expr(expr->as.call.args.items[1]);
+    if (error_action_pending()) {
+        value_free(options);
+        return 0;
+    }
+    if (options.kind != VALUE_RECORD) {
+        value_free(options);
+        webserver_raise("webserver.listen options must be a record");
+        return 0;
+    }
+    for (size_t i = 0; i < options.as.record.count; i++) {
+        const RecordField *field = &options.as.record.fields[i];
+        if (strcmp(field->name, "address") == 0) {
+            if (field->value->kind != VALUE_STRING) {
+                value_free(options);
+                webserver_raise("webserver.listen address must be a string");
+                return 0;
+            }
+            if (strlen(field->value->as.string) >= address_size) {
+                value_free(options);
+                webserver_raise("webserver.listen address must be a numeric IP address "
+                                "such as \"127.0.0.1\", \"0.0.0.0\" or \"::\"");
+                return 0;
+            }
+            snprintf(address, address_size, "%s", field->value->as.string);
+        } else {
+            /* Named, not ignored: a misspelled option that fell through would
+             * leave a server the author asked to publish sitting on loopback,
+             * and it would look like a networking problem hours later. */
+            char message[160];
+            snprintf(message, sizeof(message),
+                     "webserver.listen does not know the option '%s'", field->name);
+            value_free(options);
+            webserver_raise(message);
+            return 0;
+        }
+    }
+    value_free(options);
+    return 1;
+}
+
 static Value webserver_eval_listen(AstExpr *expr) {
-    if (expr->as.call.args.count != 1) {
-        webserver_raise("webserver.listen expects one argument");
+    if (expr->as.call.args.count < 1 || expr->as.call.args.count > 2) {
+        webserver_raise("webserver.listen expects a port and an optional options record");
         return value_null();
     }
     Value port_value = eval_expr(expr->as.call.args.items[0]);
@@ -12922,31 +13025,65 @@ static Value webserver_eval_listen(AstExpr *expr) {
     }
     value_free(port_value);
 
-    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    char bind_address[64] = "127.0.0.1";
+    if (!webserver_listen_options(expr, bind_address, sizeof(bind_address))) {
+        return value_null();
+    }
+
+    char port_text[16];
+    snprintf(port_text, sizeof(port_text), "%d", port);
+    struct addrinfo hints;
+    struct addrinfo *resolved = NULL;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_flags = AI_PASSIVE | AI_NUMERICHOST | AI_NUMERICSERV;
+    if (getaddrinfo(bind_address, port_text, &hints, &resolved) != 0 || !resolved) {
+        if (resolved) {
+            freeaddrinfo(resolved);
+        }
+        webserver_raise("webserver.listen address must be a numeric IP address "
+                        "such as \"127.0.0.1\", \"0.0.0.0\" or \"::\"");
+        return value_null();
+    }
+
+    int fd = socket(resolved->ai_family, SOCK_STREAM, 0);
     if (fd < 0) {
+        freeaddrinfo(resolved);
         webserver_raise("webserver could not create socket");
         return value_null();
     }
     int reuse = 1;
     setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
-    struct sockaddr_in address;
-    memset(&address, 0, sizeof(address));
-    address.sin_family = AF_INET;
-    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    address.sin_port = htons((uint16_t)port);
-    if (bind(fd, (struct sockaddr *)&address, sizeof(address)) != 0 ||
+    if (bind(fd, resolved->ai_addr, resolved->ai_addrlen) != 0 ||
         listen(fd, 16) != 0 ||
         !webserver_set_blocking_mode(fd, 0)) {
+        char message[160];
+        snprintf(message, sizeof(message),
+                 "webserver could not bind and listen on %s port %d", bind_address, port);
+        freeaddrinfo(resolved);
         close(fd);
-        webserver_raise("webserver could not bind and listen on loopback");
+        webserver_raise(message);
         return value_null();
     }
+    freeaddrinfo(resolved);
+
+    /* Read the bound address and port back from the socket rather than
+     * remembering what was asked for: with port 0 the port is only knowable
+     * this way, and reporting the address from the same source means
+     * `server.address` answers what the kernel did, which is also what makes
+     * it worth asserting in a test. */
+    struct sockaddr_storage address;
     socklen_t length = sizeof(address);
+    memset(&address, 0, sizeof(address));
     if (getsockname(fd, (struct sockaddr *)&address, &length) != 0) {
         close(fd);
         webserver_raise("webserver could not determine bound port");
         return value_null();
     }
+    char bound_address[64];
+    int bound_port = 0;
+    webserver_format_address(&address, bound_address, sizeof(bound_address), &bound_port);
 
     WebServer *servers = realloc(webservers, sizeof(WebServer) * (webserver_count + 1));
     if (!servers) {
@@ -12957,13 +13094,15 @@ static Value webserver_eval_listen(AstExpr *expr) {
     memset(server, 0, sizeof(*server));
     server->id = webserver_next_id++;
     server->listen_fd = fd;
-    server->port = ntohs(address.sin_port);
+    server->port = bound_port;
+    snprintf(server->address, sizeof(server->address), "%s", bound_address);
     server->running = 1;
     server->next_request_id = 1;
 
     Value record = value_record(NULL, 0);
     record_set(&record, "_webserver_id", value_number((double)server->id));
     record_set(&record, "port", value_number((double)server->port));
+    record_set(&record, "address", value_string(server->address));
     record_set(&record, "running", value_bool(1));
     record_set(&record, "requests", value_array(NULL, 0));
     record_set(&record, "responses", value_array(NULL, 0));

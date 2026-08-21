@@ -108,7 +108,10 @@ jobs:
       # no optional dependencies", which was true and unnoticed until 2026-08-15.
       - name: Suites must skip, not fail
         run: |
-          set -e
+          # pipefail, not just -e: a suite piped into `tail` reports TAIL's exit
+          # status, so a failing suite reads as a pass. That is how rc2 was
+          # tagged while run_examples.sh was red (2026-08-20).
+          set -eo pipefail
           bash tests/run_examples.sh | tail -5
           bash tests/run_negative.sh | tail -5
           bash tests/run_xlsx.sh

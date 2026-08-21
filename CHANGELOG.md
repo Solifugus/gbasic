@@ -9,6 +9,17 @@ language surface may still change between releases.
 
 ## Unreleased
 
+- **`webserver.listen` can bind an address** — `webserver.listen(8080,
+  { address: "0.0.0.0" })`. Omitting the option still binds `127.0.0.1`, so a
+  server stays private until its author publishes it deliberately. `address`
+  takes a numeric IPv4 or IPv6 address; a hostname is refused rather than
+  resolved (no name lookup at bind time), and an unknown option field is
+  refused by name rather than ignored. The returned record gains `address`,
+  reported by the socket itself the way `port` already is. A dual-stack
+  listener (`"::"`) reports IPv4 peers in `request.remote_ip` as ordinary
+  dotted quads rather than `::ffff:`-mapped, so address comparisons behave the
+  same on either kind of listener.
+
 - **Named, first-class watchers** — `watch recalc(a, b) … end watch` registers
   the watcher and binds `recalc` to a watcher value: `unwatch recalc` turns it
   off (a quiet no-op on an already-off handle), `watchers()` returns the live

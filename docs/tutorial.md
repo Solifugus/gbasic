@@ -1156,8 +1156,19 @@ Request records expose `method`, `path`, `query` (a record of decoded strings),
 a decoded `json` field when the body is JSON. In a response, only `id` is
 required; `status` defaults to 200, `headers` to `{}`, `body` to `""`. Build JSON
 replies with `encode(...)` and a content-type header. Stop with
-`webserver.close(server)` (or set `server.running = false`). v0.1 binds to
-`127.0.0.1` and handles one HTTP/1.1 request per connection.
+`webserver.close(server)` (or set `server.running = false`). It handles one
+HTTP/1.1 request per connection.
+
+`listen` binds `127.0.0.1` unless an options record says otherwise, so a server
+you write is private to your machine until you publish it deliberately:
+
+```basic
+server = webserver.listen(8080, { address: "0.0.0.0" })   # every interface
+```
+
+`address` takes a numeric IPv4 or IPv6 address — a hostname is refused rather
+than resolved. `server.address` reports what the socket actually bound, the way
+`server.port` already reports the port the OS assigned.
 
 > **Theory — the same reactivity, end to end.** Notice WebServer reuses watchers
 > rather than introducing a new callback mechanism. A request queue is just

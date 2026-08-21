@@ -81,9 +81,12 @@ response = webserver.redirect(request, location, status)
 - accept only `301`, `302`, `303`, `307`, and `308`,
 - return an ordinary response record with a `location` header and empty body.
 
-The Phase 1 bind address should be loopback only by default. Public network
-binding needs an explicit design because an accidental public listener is a
-security problem. A later options-record form can add a bind address.
+The bind address is loopback by default. Public network binding needs to be
+explicit because an accidental public listener is a security problem.
+**Implemented 2026-08-21 (PLAT-WEB-1 Gap A):** the options-record form is
+`webserver.listen(port, { address: "0.0.0.0" })`, the default is unchanged,
+and `tests/run_web_bind.sh` holds that default in place by probing a second
+loopback address that a `127.0.0.1`-bound socket must not answer on.
 
 The returned value should expose:
 
@@ -575,8 +578,11 @@ client connection churn.
 
 - Which C library best supports a small nonblocking HTTP event pump without
   imposing callback semantics on gBASIC application code?
-- Should loopback-only remain the default when a future options-record form is
-  added, with public binding always explicit?
+- ~~Should loopback-only remain the default when a future options-record form
+  is added, with public binding always explicit?~~ **Answered yes, 2026-08-21
+  (PLAT-WEB-1 Gap A).** `address` is the one option the record accepts; an
+  unknown field is refused by name rather than ignored, and a hostname is
+  refused rather than resolved.
 - Is 30 seconds the right fixed Phase 1 response timeout?
 - Is 8 MiB the right fixed Phase 1 request-body limit?
 - Should unsupported binary request bodies receive 400 or 415?

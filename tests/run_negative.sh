@@ -121,6 +121,11 @@ cases=(
     negative_webclient_request_body_type
     negative_webclient_malformed_url
     negative_webserver_listen_port
+    negative_webserver_listen_arity
+    negative_webserver_listen_options_type
+    negative_webserver_listen_option_unknown
+    negative_webserver_listen_address_type
+    negative_webserver_listen_address_invalid
     negative_webserver_response_missing_id
     negative_webserver_response_body_type
     negative_webserver_response_headers_type
