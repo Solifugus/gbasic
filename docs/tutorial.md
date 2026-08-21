@@ -1170,6 +1170,17 @@ server = webserver.listen(8080, { address: "0.0.0.0" })   # every interface
 than resolved. `server.address` reports what the socket actually bound, the way
 `server.port` already reports the port the OS assigned.
 
+For anything with more than a handful of URLs, `load web` turns the routing
+into data — `{ method, path, handler }` records checked when the table is
+built, `{id}` captures arriving as `req.params`, and one call answering the
+request:
+
+```basic
+append(server.responses, web.dispatch(routes, req))
+```
+
+See [`web_routing.md`](web_routing.md).
+
 > **Theory — the same reactivity, end to end.** Notice WebServer reuses watchers
 > rather than introducing a new callback mechanism. A request queue is just
 > watched storage; `take_first`/`append` notify watchers once after the mutation
