@@ -9,6 +9,19 @@ language surface may still change between releases.
 
 ## Unreleased
 
+- **`web` — a route table as data** (`stdlib/web.bas`, `docs/web_routing.md`).
+  Routes are `{ method, path, handler }` records validated when the table is
+  built, so an unknown verb, a malformed pattern, an uncallable handler or two
+  routes that can never be told apart raise at startup rather than becoming a
+  404 at 3am. `{id}` captures one segment and `{rest...}` the remainder, both
+  reaching the handler as `req.params`. Matching is decided by specificity —
+  static beats `{id}` beats `{rest...}` — so `/products/new` wins over
+  `/products/{id}` however the table is ordered. `web.dispatch` returns a
+  response record the WebServer takes verbatim, answering 404 for an unknown
+  path and **405 with an `allow` header** for a known path and the wrong verb.
+  `web.resolve` is the same matching with no handler called, and `web.paths`
+  reports the table as sorted `"METHOD /path"` lines.
+
 - **`webserver.listen` can bind an address** — `webserver.listen(8080,
   { address: "0.0.0.0" })`. Omitting the option still binds `127.0.0.1`, so a
   server stays private until its author publishes it deliberately. `address`

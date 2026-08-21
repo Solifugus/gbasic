@@ -67,10 +67,11 @@ Task-oriented, with runnable examples.
 | [plat-web-lowering-study.md](plat-web-lowering-study.md) | Done | PLAT-WEB-0: both design examples hand-lowered onto the existing web library. The shape is right; six runtime gaps named, mapped onto the planned phases; response-by-return resolved. |
 | [plat-web-design-draft.md](plat-web-design-draft.md) | Draft | PLAT-WEB — a declarative `server` block (named hosts, routes, TLS, worker pool, zero-downtime reload) as a possible replacement for the current web layer. Revised against the runtime 2026-08-20; nothing committed. |
 | [webclient_design.md](webclient_design.md) | Shipped | `webclient.*` — synchronous HTTP. |
-| [webserver_design.md](webserver_design.md) | Shipped | `webserver.*` — local development use only, by design. |
+| [webserver_design.md](webserver_design.md) | Shipped | `webserver.*` — the HTTP listener. Binds loopback unless an options record asks for an address. |
+| [web_routing.md](web_routing.md) | Shipped | `stdlib/web.bas` — a route table as data: patterns, order-independent specificity, `web.dispatch`. The library layer of PLAT-WEB. |
 | [llm_design.md](llm_design.md) | Shipped | `stdlib/llm.bas` — chat completion over `webclient`. |
 | [gui_design.md](gui_design.md) | Partial | The GTK 3 `gui` module — an experimental proof of concept. Prefer `gi` for new work. |
-| [chart_design.md](chart_design.md) | **Proposal** | A charting library. **Nothing is built.** |
+| [chart_design.md](chart_design.md) | Partial | The charting library — deterministic SVG as text. Phases 1, 2 and 4 are built (`stdlib/chart.bas`, `docs/chart_cookbook.md`); §13 records what is deferred. |
 | [datetime_design.md](datetime_design.md) | Shipped | The datetime/duration redesign — precision-aware datetimes, accountant's month arithmetic, duration algebra, business calendars, `matches`/`select`/`series`, `schedule.bas`. Every planned v1 layer is built; §9 lists what is deferred by decision (timezones, business-hours arithmetic). |
 
 ## Statistics

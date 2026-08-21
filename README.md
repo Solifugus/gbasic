@@ -696,6 +696,7 @@ Run module and application integration tests:
 ./tests/run_webclient.sh
 ./tests/run_webserver.sh
 ./tests/run_web_bind.sh
+GBASIC_PATH=stdlib ./tests/run_web_routes.sh
 ./tests/run_sqlite.sh
 ./tests/run_gbasic_site.sh
 GBASIC_SITE_POSTGRES_TEST=1 ./tests/run_gbasic_site_postgres.sh

@@ -1,0 +1,46 @@
+-- the table as data
+GET / | GET /files/{tail...} | GET /products/new | GET /products/{id} | GET /x/{a}/y/{b} | POST /products | PUT /products
+
+-- exact matches
+ok   GET / body
+ok   GET / status
+ok   POST /products body
+
+-- captures
+ok   a capture reaches the handler
+ok   two captures in one path
+ok   a capture is NOT percent-decoded
+ok   a greedy capture takes the remainder
+ok   a greedy capture takes a single segment too
+ok   a greedy capture needs at least one segment
+
+-- specificity, which is what decides -- not table order
+ok   a static segment beats a capture
+ok   and only for the exact word
+
+-- misses
+ok   an unknown path is 404
+ok   an extra segment does not match
+ok   a trailing slash is a different path
+ok   an empty segment never fills a capture
+
+-- a wrong verb is not a missing page
+ok   the status is 405
+ok   and Allow lists what is declared
+ok   but an unknown path stays 404
+
+-- resolve, with no handler called and no response built
+ok   resolve reports the winning path
+ok   resolve hands back the captures
+ok   resolve on a miss says so
+ok   method case does not matter
+
+-- the response record
+ok   the request id is carried onto the response
+ok   a request with no id yields a response with none
+
+-- a handler that does not return a response record
+ok   the status is 500
+
+checks: 25
+mismatches: 0

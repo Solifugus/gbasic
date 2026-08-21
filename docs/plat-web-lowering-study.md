@@ -235,9 +235,19 @@ build order inside PLAT-WEB-1 follows directly:
    the socket, which is what makes the tests non-vacuous) and IPv6 —
    `getaddrinfo` covers both families for the same code, and doing v6 later
    would have meant touching the accept path twice.
-2. The **library-level route table**: `web.routes` / `web.dispatch` as
+2. ~~The **library-level route table**: `web.routes` / `web.dispatch` as
    plain data + a dispatcher function generated the way Section 2's
-   lowering was written by hand. Everything testable with no socket.
+   lowering was written by hand. Everything testable with no socket.~~
+   **Done 2026-08-21** — `stdlib/web.bas`, `docs/web_routing.md`,
+   `tests/run_web_routes.sh`. It went further than the lowering in three
+   places, each for a reason the lowering exposed: patterns are matched by
+   **specificity rather than table order** (the hand lowering's `consider`
+   chain is first-match-wins, which makes `/products/new` depend on where it
+   was written); the table is **validated when built**, which is where the
+   block's load-time errors have to live in a library; and a wrong verb on a
+   real path answers **405 with `allow`** rather than 404, which the lowering
+   had no way to express because a `consider` on `method + " " + path` cannot
+   tell "no such page" from "not that verb".
 3. **Gap B** static serving, in C, with the canonicalization rule from the
    draft §6 pinned by hostile-path negatives from day one.
 

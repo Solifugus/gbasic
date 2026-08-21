@@ -496,7 +496,7 @@ Section 3, which was the preferred answer); pattern captures live on
 | Phase | Content |
 |---|---|
 | PLAT-WEB-0 | Lowering study (Section 10). **DONE 2026-08-20 — [`plat-web-lowering-study.md`](plat-web-lowering-study.md).** Verdict: the shape is right; six gaps (bind address, safe static, worker pool, TLS, streaming, LISTEN_FDS) map onto the phases below; everything else is sugar over what exists. |
-| PLAT-WEB-1 | Gap A **DONE 2026-08-21**: `webserver.listen(port, { address: })`, default still loopback, `server.address` read back from the socket, IPv6 + dual-stack, `tests/run_web_bind.sh`. Remaining: route table as data, `web.dispatch`, path patterns, load-time validation — all testable with no socket. |
+| PLAT-WEB-1 | **DONE 2026-08-21.** Gap A: `webserver.listen(port, { address: })`, default still loopback, `server.address` read back from the socket, IPv6 + dual-stack (`tests/run_web_bind.sh`). Route table as data: `stdlib/web.bas` — `web.routes` validating at build time, `{id}`/`{rest...}` patterns into `req.params`, specificity matching that does not depend on table order, `web.dispatch` returning a response record the server takes verbatim, `web.resolve` for the pure match, `web.paths` for introspection (`docs/web_routing.md`, `tests/run_web_routes.sh`). |
 | PLAT-WEB-2 | Worker pool + drain + rolling reload. Decide the Section 5 column (actor pool with a socket value kind is the current lean); `LISTEN_FDS` support. |
 | PLAT-WEB-3 | TLS/SNI, static root (canonicalize-then-check), `trust_proxy`, timeouts. |
 | PLAT-WEB-4 | `stream` / SSE with `emit`. |

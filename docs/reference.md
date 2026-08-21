@@ -2762,6 +2762,17 @@ General-purpose:
   `docs/cookbook_social_behavioral.md` and `docs/cookbook_econometrics_finance.md`).
 - `crypto` — ergonomic cryptography compositions over the crypto builtins
   (see [Cryptography](#cryptography) and `docs/crypto_design.md`).
+- `web` — a route table as data over the WebServer module: `{method, path,
+  handler}` records validated at build time, `{id}`/`{rest...}` patterns
+  captured into `req.params`, order-independent matching by specificity, and
+  `web.dispatch` returning a response record the server takes verbatim
+  (`docs/web_routing.md`).
+- `chart` — charts as deterministic SVG text, pure gBASIC: line, scatter, area,
+  bar, histogram, pie, heatmap and sparkline (`docs/chart_design.md`; worked
+  recipes in `docs/chart_cookbook.md`).
+- `persist` — crash-safe versioned persistence: an atomic temp-file-and-rename
+  write, and a read that reports missing/corrupt/loaded as a value rather than
+  raising (`docs/ai/COOKBOOK.md`).
 - `llm` — a chat-completion client (`docs/llm_design.md`).
 - `gui` — the declarative layer for the experimental GTK 3 `gui` module
   (`docs/gui_design.md`).

@@ -1,0 +1,10 @@
+-- probes: 42
+ok   every probe resolves the same in all four declaration orders
+ok   the oracle reads five route patterns from web.paths
+ok   the library matches nothing the oracle rejects
+ok   the library matches everything the oracle accepts
+ok   and picks the same winner every time
+ok   every capture holds the segment it stands for
+
+checks: 6
+mismatches: 0
