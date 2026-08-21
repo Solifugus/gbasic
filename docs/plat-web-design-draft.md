@@ -470,12 +470,10 @@ a plausible later directive; none should be designed in now.
 
 ## 13. Open questions
 
-1. Response by return value or by mutating a `res` record. Return is
-   cleaner and needs no new machinery; `res` is easier for a handler that
-   sets a header early and streams later, but functions cannot mutate caller
-   state, so `res` implies dispatcher-owned plumbing. Leaning: return a
-   record; `stream` handlers (which have `emit`) are the escape hatch for
-   the incremental case.
+1. **RESOLVED by the lowering study (2026-08-20): response by return
+   value.** The hand lowering needed no `res` plumbing anywhere — including
+   redirects and errors — and the one case that wants incremental output is
+   `stream`, which has `emit` and is its own kind.
 2. The socket handle value kind (Section 5): its lifecycle, its display
    form, its refusals (encode? send to a non-worker actor?) — the full
    new-value-kind checklist the watcher work just walked, including the
@@ -497,7 +495,7 @@ Section 3, which was the preferred answer); pattern captures live on
 
 | Phase | Content |
 |---|---|
-| PLAT-WEB-0 | Lowering study (Section 10). Output is a document, not code. |
+| PLAT-WEB-0 | Lowering study (Section 10). **DONE 2026-08-20 — [`plat-web-lowering-study.md`](plat-web-lowering-study.md).** Verdict: the shape is right; six gaps (bind address, safe static, worker pool, TLS, streaming, LISTEN_FDS) map onto the phases below; everything else is sugar over what exists. |
 | PLAT-WEB-1 | Library-level: route table as data, `web.dispatch`, path patterns, load-time validation — all testable with no socket. |
 | PLAT-WEB-2 | Worker pool + drain + rolling reload. Decide the Section 5 column (actor pool with a socket value kind is the current lean); `LISTEN_FDS` support. |
 | PLAT-WEB-3 | TLS/SNI, static root (canonicalize-then-check), `trust_proxy`, timeouts. |
