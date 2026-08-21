@@ -2727,6 +2727,37 @@ File metadata and atomic replacement:
     an all-or-nothing replacement matters; use `move` when you want a best-effort
     relocation that may cross filesystems.
 
+Path questions about what is really there:
+
+- `real_path(p)` — the canonical absolute path: `.` and `..` removed, every
+  symlink resolved by the kernel. Returns `unknown` when the path does not
+  exist (all components must exist, as for `realpath(3)`); to canonicalize a
+  path you are about to create, resolve `directory_name(p)` instead. A path
+  containing an interior NUL byte is refused rather than silently truncated,
+  since it would then be *checked* as one path and *opened* as another.
+  - This is the primitive a containment check needs. Testing whether a
+    client-supplied path "starts with" a root can be defeated by `..` and
+    cannot see a symlink at all; testing the **resolved** path cannot. Resolve
+    first, compare second, and compare on a separator boundary so a root of
+    `/srv/pub` does not match `/srv/public-secret`.
+- `file_type(p)` — `"file"`, `"folder"` or `"other"` (a device, socket, FIFO),
+  or `unknown` when nothing is there. Follows symlinks. This is the only way to
+  ask whether a path is a directory **without raising**: `file_size` on a
+  directory raises, and gBASIC cannot catch a raise, so code holding an
+  untrusted path had no safe way to ask.
+
+```basic
+root = real_path("public")
+target = real_path(root + "/" + supplied)
+if is_unknown(target) then
+    ' nothing there
+else if not starts_with(target, root + "/") then
+    ' it resolved outside the root -- refuse
+else if file_type(target) != "file" then
+    ' a directory or a device, not a page
+end if
+```
+
 Directory functions:
 
 - `list(folder)` / `files(folder)` / `folders(folder)` — directory entries.

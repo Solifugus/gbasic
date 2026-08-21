@@ -1,0 +1,1 @@
+runtime error at tests/negative_file_type_arity.bas:1:1: file_type expects one path argument

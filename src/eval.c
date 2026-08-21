@@ -6637,6 +6637,63 @@ static Value eval_path_call(AstExpr *expr) {
     }
 
     Value result = value_null();
+    if (strcmp(name, "real_path") == 0 || strcmp(name, "file_type") == 0) {
+        /* PLAT-WEB-1 Gap B. Both answer questions gBASIC could not ask at all,
+         * and both exist because a path check that is one step behind the
+         * filesystem is a security hole rather than a bug:
+         *
+         *   real_path -- the canonical absolute path, with `.`, `..` and every
+         *   symlink resolved by the kernel. A "does it start with the root"
+         *   test written on the path a client SENT can be walked out of with
+         *   `..` or a symlink; the same test on this answer cannot, which is
+         *   the canonicalize-then-check rule the design commits to.
+         *
+         *   file_type -- "file", "folder" or "other". Nothing in the language
+         *   could ask whether a path is a directory without RAISING
+         *   (`file_size` on a directory raises, and a raise cannot be caught),
+         *   so a program handling untrusted paths had no way to avoid the
+         *   question it most needed to ask.
+         *
+         * Both report a missing path as `unknown` rather than raising: the
+         * caller is by definition holding a path it does not trust, and being
+         * told "no" is the normal case, not an exceptional one. */
+        if (first.kind == VALUE_STRING &&
+            memchr(first.as.string, '\0', string_length(first.as.string)) != NULL) {
+            /* Refused rather than truncated: everything below this line works
+             * on a NUL-terminated C string, so a path with an interior NUL
+             * would be CHECKED as one path and could be OPENED as another. */
+            char message[128];
+            snprintf(message, sizeof(message),
+                     "%s: a path cannot contain an interior NUL byte", name);
+            runtime_error_raise(message, 1004, "path operation");
+            value_free(first);
+            value_free(second);
+            return value_null();
+        }
+        if (strcmp(name, "real_path") == 0) {
+            char *resolved = realpath(first_path, NULL);
+            if (!resolved) {
+                result = value_unknown();
+            } else {
+                result = value_string(resolved);
+                free(resolved);
+            }
+        } else {
+            struct stat info;
+            if (stat(first_path, &info) != 0) {
+                result = value_unknown();
+            } else if (S_ISREG(info.st_mode)) {
+                result = value_string("file");
+            } else if (S_ISDIR(info.st_mode)) {
+                result = value_string("folder");
+            } else {
+                result = value_string("other");
+            }
+        }
+        value_free(first);
+        value_free(second);
+        return result;
+    }
     if (strcmp(name, "join_path") == 0) {
         char *joined = join_path_utility(first_path, second_path);
         result = value_string(joined);
@@ -22298,6 +22355,8 @@ static Value eval_call(AstExpr *expr) {
     if (strcmp(expr->as.call.name, "join_path") == 0 ||
         strcmp(expr->as.call.name, "file_name") == 0 ||
         strcmp(expr->as.call.name, "directory_name") == 0 ||
+        strcmp(expr->as.call.name, "real_path") == 0 ||
+        strcmp(expr->as.call.name, "file_type") == 0 ||
         strcmp(expr->as.call.name, "extension") == 0) {
         return eval_path_call(expr);
     }

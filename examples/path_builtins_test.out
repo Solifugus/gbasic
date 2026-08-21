@@ -1,0 +1,15 @@
+ok   a regular file is a file
+ok   a directory is a folder
+ok   a missing path is unknown
+ok   and a device is neither
+ok   a .. in the middle resolves away
+ok   and so does a .
+ok   the answer is absolute
+ok   it ends at the file it names
+ok   a missing path is unknown
+ok   and so is a path under a missing directory
+ok   out and back is where you started
+ok   the probe cleaned up after itself
+
+checks: 12
+mismatches: 0

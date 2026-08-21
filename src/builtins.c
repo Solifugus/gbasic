@@ -125,6 +125,8 @@ int gbasic_builtin_function(const char *name) {
         "overwrite",
         "read_lines",
         "join_path",
+        "real_path",
+        "file_type",
         "file_name",
         "directory_name",
         "extension",

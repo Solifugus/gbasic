@@ -9,6 +9,26 @@ language surface may still change between releases.
 
 ## Unreleased
 
+- **`real_path(p)` and `file_type(p)`** — two filesystem questions gBASIC could
+  not ask. `real_path` returns the canonical absolute path with `.`, `..` and
+  every symlink resolved by the kernel, or `unknown` when the path does not
+  exist; a path containing an interior NUL is refused rather than truncated.
+  `file_type` returns `"file"`, `"folder"` or `"other"` (or `unknown`), and is
+  the only way to ask whether a path is a directory **without raising** —
+  `file_size` on a directory raises, and a raise cannot be caught, so code
+  holding an untrusted path had no safe way to ask. Together they are what a
+  containment check needs: a "starts with the root" test on the path a client
+  sent can be walked out of with `..` and cannot see a symlink at all; the same
+  test on the resolved path cannot.
+
+- **`web.static(relative, root)`** — serve one file from under a root, with
+  canonicalize-then-check: the path is resolved first and containment tested on
+  the answer, on a separator boundary so a root of `pub` does not match
+  `pub-secret`. A path resolving outside the root is 403 even when the file is
+  really there; a directory is 404 rather than a listing; unknown extensions
+  are served as `application/octet-stream` rather than guessed at. The body is
+  read whole, so this is for pages and assets, not large downloads.
+
 - **`web` — a route table as data** (`stdlib/web.bas`, `docs/web_routing.md`).
   Routes are `{ method, path, handler }` records validated when the table is
   built, so an unknown verb, a malformed pattern, an uncallable handler or two

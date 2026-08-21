@@ -477,6 +477,136 @@ library web
         return out
     end function
 
+    ' ---- static files ---------------------------------------------------
+
+    ' Extension -> content type. Deliberately a short list of what a site
+    ' actually serves; anything else is served as bytes rather than guessed at,
+    ' because a wrong content type is how a text file becomes a script.
+    function content_type(name)
+        ext = lower(extension(name))
+        types = {
+            html: "text/html; charset=utf-8",
+            htm: "text/html; charset=utf-8",
+            css: "text/css; charset=utf-8",
+            js: "text/javascript; charset=utf-8",
+            mjs: "text/javascript; charset=utf-8",
+            json: "application/json",
+            map: "application/json",
+            xml: "application/xml",
+            txt: "text/plain; charset=utf-8",
+            md: "text/plain; charset=utf-8",
+            csv: "text/csv; charset=utf-8",
+            svg: "image/svg+xml",
+            png: "image/png",
+            jpg: "image/jpeg",
+            jpeg: "image/jpeg",
+            gif: "image/gif",
+            webp: "image/webp",
+            avif: "image/avif",
+            ico: "image/vnd.microsoft.icon",
+            woff: "font/woff",
+            woff2: "font/woff2",
+            ttf: "font/ttf",
+            otf: "font/otf",
+            pdf: "application/pdf",
+            wasm: "application/wasm",
+            zip: "application/zip",
+            gz: "application/gzip"
+        }
+        known = has(types, ext)
+        if known then
+            return types[ext]
+        end if
+        return "application/octet-stream"
+    end function
+
+    ' Every answer web.static produces itself is plain text; the literal was
+    ' repeated eight times before this existed.
+    function _plain(status, body)
+        return {
+            status: status,
+            headers: { "content-type": "text/plain; charset=utf-8" },
+            body: body
+        }
+    end function
+
+    ' Serve one file from under `root`. Returns a response record; `id` is left
+    ' off, so `web.dispatch` fills it in from the request.
+    '
+    '   function assets(req)
+    '       return web.static(req.params.path, "public")
+    '   end function
+    '
+    '   { method: "get", path: "/assets/{path...}", handler: assets }
+    '
+    ' CANONICALIZE, THEN CHECK -- in that order, which is the whole point. A
+    ' "does it start with the root" test applied to the path a CLIENT SENT can
+    ' be walked out of with `..`, and cannot see a symlink at all. So the path
+    ' is resolved by the kernel first (`real_path` follows every symlink and
+    ' removes every `..`) and the containment test is applied to the answer.
+    ' A path that resolves outside the root is refused even though the file is
+    ' really there, and refused as 403 rather than 404: the request was
+    ' well-formed and understood, and answering "not found" about a file that
+    ' exists is a lie this layer would then have to keep telling.
+    function static(relative, root)
+        if not is_string(relative) then
+            return _plain(404, "Not Found")
+        end if
+
+        ' Pre-validated, because `real_path` RAISES on an interior NUL and a
+        ' raise cannot be caught: an untrusted path must never be able to end
+        ' the process.
+        if contains(relative, chr(0)) then
+            return _plain(404, "Not Found")
+        end if
+
+        root_abs = real_path(root)
+        if is_unknown(root_abs) then
+            print to error "web.static: the root '" + string(root) + "' does not exist"
+            return _plain(500, "Internal Server Error")
+        end if
+        root_kind = file_type(root_abs)
+        if root_kind != "folder" then
+            print to error "web.static: the root '" + string(root) + "' is a " + string(root_kind) + ", not a folder"
+            return _plain(500, "Internal Server Error")
+        end if
+
+        resolved = real_path(root_abs + "/" + relative)
+        if is_unknown(resolved) then
+            return _plain(404, "Not Found")
+        end if
+
+        ' Containment on SEGMENT boundaries: a plain prefix test would let a
+        ' root of /srv/pub match /srv/public-secret.
+        if root_abs = "/" then
+            prefix = "/"
+        else
+            prefix = root_abs + "/"
+        end if
+        inside = starts_with(resolved, prefix)
+        if resolved = root_abs then
+            inside = true
+        end if
+        if not inside then
+            return _plain(403, "Forbidden")
+        end if
+
+        ' A directory is 404, not a listing: an index of what is on the disk is
+        ' a disclosure, and choosing to publish one is the caller's decision to
+        ' make explicitly.
+        kind = file_type(resolved)
+        if kind != "file" then
+            return _plain(404, "Not Found")
+        end if
+
+        target (file)= resolved
+        return {
+            status: 200,
+            headers: { "content-type": content_type(resolved) },
+            body: read(target)
+        }
+    end function
+
     ' Introspection: the table as sorted "METHOD /path" lines. The static
     ' route list the design wants a tool to be able to show (§1), available
     ' now without running a request through anything.

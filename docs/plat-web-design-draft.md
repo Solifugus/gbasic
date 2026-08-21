@@ -275,7 +275,12 @@ dedicated; `setcap` only on a purpose-built binary.
 to canonicalize-then-check (no `..` escape, no symlink walking out of the
 root — the resolved path must be inside the resolved root), and routes win
 over files on overlap. Both stated now so no golden ever enshrines the
-accident.
+accident. **[built 2026-08-21]** The rule is implemented as `web.static` over
+the new `real_path`/`file_type` builtins, with a tier proven red on both the
+missing check and the check applied in the wrong order. "Routes win over files
+on overlap" is not yet enforced by anything, because at the library layer a
+static handler IS a route and the specificity rule already orders them; it
+becomes a real rule when `root` is a block directive.
 
 ---
 
@@ -496,7 +501,7 @@ Section 3, which was the preferred answer); pattern captures live on
 | Phase | Content |
 |---|---|
 | PLAT-WEB-0 | Lowering study (Section 10). **DONE 2026-08-20 — [`plat-web-lowering-study.md`](plat-web-lowering-study.md).** Verdict: the shape is right; six gaps (bind address, safe static, worker pool, TLS, streaming, LISTEN_FDS) map onto the phases below; everything else is sugar over what exists. |
-| PLAT-WEB-1 | **DONE 2026-08-21.** Gap A: `webserver.listen(port, { address: })`, default still loopback, `server.address` read back from the socket, IPv6 + dual-stack (`tests/run_web_bind.sh`). Route table as data: `stdlib/web.bas` — `web.routes` validating at build time, `{id}`/`{rest...}` patterns into `req.params`, specificity matching that does not depend on table order, `web.dispatch` returning a response record the server takes verbatim, `web.resolve` for the pure match, `web.paths` for introspection (`docs/web_routing.md`, `tests/run_web_routes.sh`). |
+| PLAT-WEB-1 | **DONE 2026-08-21.** Gap A: `webserver.listen(port, { address: })`, default still loopback, `server.address` read back from the socket, IPv6 + dual-stack (`tests/run_web_bind.sh`). Route table as data: `stdlib/web.bas` — `web.routes` validating at build time, `{id}`/`{rest...}` patterns into `req.params`, specificity matching that does not depend on table order, `web.dispatch` returning a response record the server takes verbatim, `web.resolve` for the pure match, `web.paths` for introspection. Gap B: `real_path`/`file_type` builtins and `web.static`, canonicalize-then-check with the hostile-path cases proven red first (`docs/web_routing.md`, `tests/run_web_routes.sh`). |
 | PLAT-WEB-2 | Worker pool + drain + rolling reload. Decide the Section 5 column (actor pool with a socket value kind is the current lean); `LISTEN_FDS` support. |
 | PLAT-WEB-3 | TLS/SNI, static root (canonicalize-then-check), `trust_proxy`, timeouts. |
 | PLAT-WEB-4 | `stream` / SSE with `emit`. |

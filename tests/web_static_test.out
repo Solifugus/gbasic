@@ -1,0 +1,27 @@
+-- what must be served
+ok   a file in the root is served
+ok   with its content
+ok   and a content type from its extension
+ok   a file in a subdirectory is served
+ok   with its content
+ok   a binary file survives the round trip
+ok   and is typed by extension
+ok   an unknown extension is bytes, not a guess
+ok   a symlink that stays inside the root is served
+ok   and resolves to its target
+
+-- what must not be
+ok   a symlink pointing out of the root is refused
+ok   a .. that reaches a real file is refused
+ok   and so is one that climbs out through a subdirectory
+ok   a sibling sharing the root's name prefix is refused
+ok   a directory is not a listing
+ok   a missing file is 404
+ok   an absolute path does not escape
+ok   an empty path is 404, not the root
+ok   a NUL byte is refused as a value, not a crash
+ok   a non-string is 404
+ok   a root that does not exist is the server's fault, not the client's
+
+checks: 21
+mismatches: 0

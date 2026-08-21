@@ -86,6 +86,7 @@ examples=(
     stats_frame_test.bas
     type_builtin_test.bas
     conversion_builtin_test.bas
+    path_builtins_test.bas
     count_builtin_test.bas
     string_concat_test.bas
     parse_test.gb

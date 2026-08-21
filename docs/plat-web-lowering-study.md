@@ -200,7 +200,7 @@ What cannot lower, and why:
 | Gap | What | Size | Phase (per the draft) |
 |---|---|---|---|
 | A | ~~Bind address on `listen` (loopback-only today)~~ **CLOSED 2026-08-21** — `webserver.listen(port, { address: "0.0.0.0" })`, default unchanged, `server.address` reported back from `getsockname`, IPv6 and dual-stack included, `tests/run_web_bind.sh` | small C | WEB-1 — done first, as planned |
-| B | Safe static serving: canonicalize-then-check, content types, non-slurping reads | small C (or a `webserver.static` handler in C) | WEB-1/3 |
+| B | ~~Safe static serving: canonicalize-then-check, content types, non-slurping reads~~ **MOSTLY CLOSED 2026-08-21** — `real_path`/`file_type` builtins + `web.static` (canonicalize-then-check, content types by extension). Non-slurping reads remain, and belong with E: the response model has no streaming. | small C | WEB-1 |
 | C | Worker pool: socket value kind + spawn transfer, or `SO_REUSEPORT` | the §5 decision | WEB-2 |
 | D | TLS/SNI | subsystem | WEB-3 |
 | E | Streaming: connection handle, `emit`, keep-alive | new response mode | WEB-4 |
@@ -248,8 +248,19 @@ build order inside PLAT-WEB-1 follows directly:
    real path answers **405 with `allow`** rather than 404, which the lowering
    had no way to express because a `consider` on `method + " " + path` cannot
    tell "no such page" from "not that verb".
-3. **Gap B** static serving, in C, with the canonicalization rule from the
-   draft §6 pinned by hostile-path negatives from day one.
+3. ~~**Gap B** static serving, in C, with the canonicalization rule from the
+   draft §6 pinned by hostile-path negatives from day one.~~ **Done
+   2026-08-21.** The split turned out to matter: only the part gBASIC
+   *cannot express* went into C, as two general filesystem primitives —
+   `real_path` (canonical absolute path; `.`, `..` and symlinks resolved by
+   the kernel) and `file_type` ("file"/"folder"/"other", the only non-raising
+   way to ask whether a path is a directory). The policy — containment,
+   403-versus-404, content types, no directory listing — is `web.static` in
+   gBASIC, where the owner of a site can read and change it. The hostile-path
+   cases were written first and the tier was proven red twice: once with the
+   containment check removed, and once with it applied BEFORE canonicalization,
+   which is the ordering mistake §6 warns about and which serves `/etc/passwd`
+   through a symlink while looking correct.
 
 And one design confirmation the study produced as a side effect: **Open
 Question 1 should resolve to response-by-return.** The lowering needed no

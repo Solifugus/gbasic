@@ -137,6 +137,51 @@ The 500 rather than a raise is deliberate *for now*: the design's error model
 is let-it-crash under a supervisor, but there is no worker pool yet, so raising
 would take the whole listener down over one bad handler.
 
+**`web.static(relative, root)`** → a response record serving one file from
+under `root`. `id` is left off, so `web.dispatch` fills it in.
+
+```basic
+function assets(req)
+    return web.static(req.params.path, "public")
+end function
+
+routes = web.routes([
+    { method: "get", path: "/assets/{path...}", handler: assets }
+])
+```
+
+It takes the relative path rather than the request because gBASIC has no
+closures: a handler cannot capture a root, so the root is named at the call
+site where it is visible anyway.
+
+**Canonicalize, then check — in that order, which is the whole point.** A
+"does it start with the root" test applied to the path a *client sent* can be
+walked out of with `..`, and cannot see a symlink at all. So the path is
+resolved by the kernel first (`real_path`) and containment is tested on the
+answer, on a separator boundary so a root of `pub` does not match
+`pub-secret`.
+
+| Situation | Response |
+|---|---|
+| a file under the root, including through a symlink that stays inside | `200`, content type from the extension |
+| a path that resolves outside the root (`..`, or a symlink pointing out) | `403` |
+| nothing there, a directory, a device, an empty path, a path with a NUL | `404` |
+| the root itself is missing or is not a directory | `500`, named on standard error |
+
+A directory is `404` rather than a listing: an index of what is on the disk is
+a disclosure, and publishing one should be a decision someone made on purpose.
+
+Unknown extensions are served as `application/octet-stream` rather than
+guessed at — a wrong content type is how a text file becomes a script. The
+root is served **as it is**, dotfiles included: hiding them would be a rule
+with a famous exception (`.well-known/acme-challenge`, which TLS provisioning
+needs), so put only public files under the root.
+
+**Known limit:** the body is read whole into the response record, because the
+response model has no streaming yet (that is Gap E in the lowering study). This
+is fine for pages, styles and images; it is not a file server for large
+downloads.
+
 **`web.paths(table)`** → the table as sorted `"METHOD /path"` strings. The
 static route list, available without running a request through anything.
 

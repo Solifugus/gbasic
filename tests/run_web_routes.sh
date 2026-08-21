@@ -137,6 +137,71 @@ else
     fail "at least 13 refusal cases ran (found $found_cases)"
 fi
 
+# ---------------------------------------------------------------- static
+
+printf 'TIER static\n'
+# The tree is built here rather than committed because it needs SYMLINKS --
+# one pointing inside the root and one pointing out of it -- which are the
+# whole reason canonicalize-then-check exists and which gBASIC cannot create.
+static_root="$(mktemp -d)"
+mkdir -p "$static_root/pub/sub" "$static_root/secret" "$static_root/pub-secret"
+printf '<h1>ok</h1>' > "$static_root/pub/index.html"
+printf 'deep' > "$static_root/pub/sub/deep.txt"
+printf 'opaque!' > "$static_root/pub/data.bin"
+printf '\211PNG\r\n\032\n' > "$static_root/pub/img.png"
+printf 'SECRET' > "$static_root/secret/key.txt"
+printf 'SIBLING' > "$static_root/pub-secret/x.txt"
+ln -s sub/deep.txt "$static_root/pub/inside"
+ln -s ../secret/key.txt "$static_root/pub/escape"
+
+if [[ "$(stat -c %s "$static_root/pub/img.png")" != "8" ]]; then
+    fail 'the png fixture is the 8 bytes the fixture asserts'
+else
+    pass 'the png fixture is the 8 bytes the fixture asserts'
+fi
+
+GBASIC_WEB_STATIC_ROOT="$static_root/pub" ./gbasic tests/web_static_test.bas \
+    >"$stdout_file" 2>"$stderr_file" || true
+if diff -u tests/web_static_test.out "$stdout_file" >/dev/null; then
+    pass 'web_static_test matches its golden'
+else
+    fail 'web_static_test matches its golden'
+    diff -u tests/web_static_test.out "$stdout_file" | head -40
+fi
+if command grep -q MISMATCH "$stdout_file"; then
+    fail 'web_static_test reports no mismatch'
+    command grep MISMATCH "$stdout_file" | head -10
+else
+    pass 'web_static_test reports no mismatch'
+fi
+reported="$(command grep '^checks: ' "$stdout_file" | sed 's/^checks: //')"
+if [[ -n "$reported" ]] && [[ "$reported" -ge 21 ]]; then
+    pass "web_static_test ran at least 21 checks (ran $reported)"
+else
+    fail "web_static_test ran at least 21 checks (ran '${reported:-none}')"
+fi
+
+# The 500 must say why on stderr; a misconfigured root that reported nothing
+# would look exactly like a missing file to whoever is reading the logs.
+if command grep -q "web.static: the root" "$stderr_file"; then
+    pass 'a bad root names itself on stderr'
+else
+    fail 'a bad root names itself on stderr'
+fi
+
+# Not a duplicate of the fixture's own check: this one proves the SECRET was
+# reachable all along, so the 403 came from the containment rule rather than
+# from the file not being there. Without it, a web.static that always returned
+# 403 would pass every refusal case above.
+if [[ "$(cat "$static_root/secret/key.txt")" == "SECRET" ]] && \
+   [[ -r "$static_root/secret/key.txt" ]]; then
+    pass 'the refused file was readable all along'
+else
+    fail 'the refused file was readable all along'
+fi
+
+rm -rf "$static_root"
+
 # ------------------------------------------------------------- live server
 
 printf 'TIER live\n'
@@ -229,7 +294,7 @@ else
     fi
 fi
 
-if [[ $checks -lt 30 ]]; then
+if [[ $checks -lt 38 ]]; then
     printf 'FAIL coverage floor: only %d checks ran\n' "$checks"
     exit 1
 fi
