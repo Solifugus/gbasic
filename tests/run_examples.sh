@@ -92,6 +92,7 @@ examples=(
     record_test.gb
     record_helpers_test.bas
     record_keyword_keys_test.bas
+    record_string_keys_test.bas
     datetime_test.gb
     datetime_exact_comparison_test.bas
     datetime_arithmetic_test.bas

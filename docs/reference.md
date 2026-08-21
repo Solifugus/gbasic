@@ -570,7 +570,7 @@ Runtime values:
 - File reference
 - Directory reference
 
-Arrays currently work best with numeric aggregate built-ins. Records hold string keys and values of normal runtime types.
+Arrays currently work best with numeric aggregate built-ins. Records hold string keys and values of normal runtime types. A record-literal key may be a plain identifier, a keyword, or a **quoted string** — the quoted form admits keys an identifier cannot spell (`{ "content-type": "text/html" }`), matching what `decode` produces from JSON; read them back with `r["content-type"]`.
 
 File and directory references are typed paths, not open handles.
 

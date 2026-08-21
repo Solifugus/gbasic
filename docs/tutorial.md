@@ -301,7 +301,12 @@ end if
 `rest(items)` split head and tail; `find_by(records, field, value)` returns the
 first matching index or `nothing`.
 
-Records use braces. Fields may be written `name = value` or `name: value`:
+Records use braces. Fields may be written `name = value` or `name: value` —
+and a key may be a **quoted string**, which admits names an identifier cannot
+spell (`{ "content-type": "text/html" }`, read back as
+`r["content-type"]`). That closes a real asymmetry: `decode` has always
+produced records with such keys from JSON; now the literal syntax can write
+them too.
 
 ```basic
 customer = {

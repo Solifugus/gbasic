@@ -1375,6 +1375,11 @@ parameter_list
  * meaning. See the 2026-08-12 DOGFOOD entry (c). */
 field_name
     : IDENT { $$ = $1; }
+    /* A QUOTED key admits names an identifier cannot spell -- "content-type",
+     * "x y" -- closing a real asymmetry: decode() has always produced records
+     * with such keys from JSON, but the literal syntax could not write them.
+     * Reading them back is the existing dynamic form, r["content-type"]. */
+    | STRING { $$ = $1; }
     | AS             { $$ = kw_name("as"); }
     | NEXT           { $$ = kw_name("next"); }
     | STOP           { $$ = kw_name("stop"); }
