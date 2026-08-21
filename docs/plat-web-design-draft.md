@@ -180,6 +180,17 @@ form can parse at the call site yet be undefinable at the declaration.
 - Route matching: exact segments beat pattern segments; longest static
   prefix wins; ties are a **load-time** error rather than a runtime coin
   flip.
+- **Route paths are string LITERALS, by design** (2026-08-20, Matthew's
+  question, answered deliberately): the grammar takes a STRING token, not an
+  expression. Everything Section 1 promises — the load-time route table,
+  duplicate detection, `web.routes`, LSP completion — exists because routes
+  are static facts of the source; an expression route melts them all into
+  "run it and see." Dynamic dispatch has two honest homes: a catch-all
+  pattern (`get "/x/{rest}"`) with `consider` inside the handler, or the
+  library layer beneath the sugar.
+- Response headers use their REAL names: quoted record-literal keys shipped
+  (`9e691bc`), so `headers: { "Content-Type": "image/svg+xml" }` is written
+  as-is — no underscore-mapping rule needed.
 
 ---
 
