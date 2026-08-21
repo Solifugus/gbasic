@@ -1,7 +1,10 @@
 # PLAT-WEB — Declarative Server Block for gBASIC
 
 **Status:** design draft, nothing committed. Written to be argued with.
-Revised 2026-08-20 against the actual runtime — the first draft was written
+Revised 2026-08-20 against the actual runtime; enterprise-readiness review
+folded in the same day (§7b–§7d: the let-it-crash error model, stream
+economics, observability, and the scale-out-now / LLVM-later performance
+posture) — the first draft was written
 without code access and several of its assumptions have been corrected below
 (each marked **[verified]** or **[corrected]**).
 
@@ -177,6 +180,13 @@ form can parse at the call site yet be undefinable at the declaration.
   meaning "actor message" or "HTTP chunk" by argument kind is exactly the
   double-meaning Section 12 rejects for `print`. Websockets, if added later,
   are the same kind.
+  **Stream economics, stated plainly:** in the worker-pool model every live
+  stream PINS a whole worker for the life of its connection. Eight SSE
+  clients on `workers: 4` is an outage. This is fine for a handful of admin
+  streams and structurally wrong for hundreds; the design accepts the former
+  and names an event-driven stream subsystem as the known later answer if
+  the latter is ever wanted. Budget workers accordingly, and say so in the
+  user documentation rather than letting the first dashboard discover it.
 - Route matching: exact segments beat pattern segments; longest static
   prefix wins; ties are a **load-time** error rather than a runtime coin
   flip.
@@ -300,6 +310,77 @@ Logging splits cleanly today: **access log on stdout, errors on stderr via
 `print to error`**. **[corrected]** The first draft believed gBASIC could
 not write to stderr; PLAT-STDERR shipped it, suite-enforced, before this
 design existed.
+
+---
+
+## 7b. When a handler fails: let it crash
+
+gBASIC **cannot catch a raise** — settled doctrine, proven and suite-pinned
+(`on error resume next` abandons the caller's statement; there is no
+middleware position from which to turn an unexpected raise into a 500). So
+this design does not pretend otherwise. The model is the Erlang one, forced
+by the language and adopted deliberately:
+
+- A handler that raises kills its worker. The request in flight is lost;
+  the proxy reports 502 for it. Nothing else is harmed, because workers are
+  shared-nothing and state lives in the store.
+- The supervisor restarts the worker under the same never-on-faith rules as
+  Section 7, with **restart-storm protection**: a budget of restarts per
+  window; exhausting it stops the pool from thrashing and surfaces the
+  failure loudly instead of burning CPU on a crash loop.
+- Handlers that want graceful degradation use the language's own doctrine:
+  **pre-validate, report failure as a value** — `try_decode` for hostile
+  bodies, `has()` before field access, refusal-shaped library calls. The
+  skeleton example already reads this way naturally; the design should show
+  it as the house handler style.
+
+This is a coherent enterprise posture — crash-only software with fast
+supervised restarts — but only if it is DESIGNED: the restart budget, the
+proxy behavior, and the handler style are all named here so none of them is
+discovered in production by the first null-field access.
+
+---
+
+## 7c. Observability
+
+An ops team's first question. Shared-nothing workers cannot increment a
+shared counter, so metrics need a designed path, not an assumption:
+
+- Each worker keeps its own counters (requests, status classes, latency
+  buckets) as plain in-process state — cheap, no coordination.
+- The supervisor aggregates: workers emit a stats line on a control channel
+  (the supervision plumbing already exists), and a `/-/metrics`-style
+  endpoint — served by the supervisor, not a worker — reports the merged
+  view. A health endpoint is just a route.
+- Logs are already right: access on stdout, errors on stderr
+  (`print to error`), one structured line per event via `encode()` if the
+  estate wants JSON logs.
+
+Deliberately not designed now: tracing propagation beyond passing
+`traceparent` headers through untouched (which costs nothing and should be
+the default).
+
+---
+
+## 7d. Performance posture
+
+Short term, the answer is **horizontal**: shared-nothing workers with state
+in the store make multi-machine scale-out the same operation as multi-worker
+scale-up — a load balancer in front of N hosts running the same program.
+That is Matthew's stated position and the architecture already earns it: the
+properties that make rolling restarts safe (no in-memory sessions, crash-safe
+state) are precisely the ones that make a second server free.
+
+Long term, Matthew's stated direction is an **LLVM backend** compiling
+gBASIC to machine code. That is a language-level project far beyond this
+document, but it is worth one observation here: the tree's test discipline
+is quietly compiler-enabling. Hundreds of byte-exact goldens, hundreds of
+pinned negatives, and an 18-million-cell external corpus are exactly the
+differential-testing oracle a second execution engine needs — the
+tree-walker's behavior IS the specification, and every golden is a
+conformance test the compiled backend must match. Nothing about this server
+design needs to change for that future; handlers are ordinary gBASIC and
+get faster for free.
 
 ---
 
