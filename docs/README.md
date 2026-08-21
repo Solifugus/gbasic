@@ -64,6 +64,7 @@ Task-oriented, with runnable examples.
 | [xml_design.md](xml_design.md) | Shipped | Tree parse, path navigation, and a streaming reader for large documents. |
 | [sqlite_design.md](sqlite_design.md) | Shipped | `sqlite.*` — parameterized query and exec. |
 | [postgres_design.md](postgres_design.md) | Shipped | `pg.*` — PostgreSQL. Its test suite is opt-in. |
+| [plat-web-design-draft.md](plat-web-design-draft.md) | Draft | PLAT-WEB — a declarative `server` block (named hosts, routes, TLS, worker pool, zero-downtime reload) as a possible replacement for the current web layer. Revised against the runtime 2026-08-20; nothing committed. |
 | [webclient_design.md](webclient_design.md) | Shipped | `webclient.*` — synchronous HTTP. |
 | [webserver_design.md](webserver_design.md) | Shipped | `webserver.*` — local development use only, by design. |
 | [llm_design.md](llm_design.md) | Shipped | `stdlib/llm.bas` — chat completion over `webclient`. |
