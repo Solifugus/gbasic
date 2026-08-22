@@ -35,6 +35,8 @@ cases=(
     negative_add_array
     negative_add_record
     negative_type_builtin_arity
+    negative_user_function_arity
+    negative_has_builtin_dotted
     negative_string_arithmetic
     negative_unary_string_arithmetic
     negative_unterminated_string

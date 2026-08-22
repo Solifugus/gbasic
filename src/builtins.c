@@ -6,6 +6,7 @@ int gbasic_builtin_function(const char *name) {
     static const char *builtins[] = {
         "compare",
         "env",
+        "has_builtin",
         "sleep",
         "password_hash",
         "password_verify",
@@ -180,3 +181,49 @@ int gbasic_builtin_function(const char *name) {
     }
     return 0;
 }
+
+/* The feature-probe answer, read by has_builtin().
+ *
+ * The registry above is what the PARSER consults, and it is deliberately not
+ * the whole callable surface: the file/dir call families (exists, read, write,
+ * list, ...) are dispatched by name inside eval.c and were never registered
+ * here. A probe that consulted only the registry answered false for `exists`
+ * -- a builtin that has worked since the beginning -- and a probe that can be
+ * wrong is worse than none.
+ *
+ * MAINTENANCE RULE: when adding a builtin to eval.c's top-level dispatch
+ * without registering it above, add its name here. Forgetting is the SAFE
+ * failure -- has_builtin answers false and a probing program takes its
+ * fallback path -- but it is still a wrong answer, so tests/has_builtin.bas
+ * pins every name in both lists.
+ *
+ * Module-scoped names (process.run, webserver.listen, gui.window ...) are
+ * deliberately absent: they are not callable unqualified, and has_builtin
+ * refuses dotted names rather than answering for them. */
+int gbasic_has_builtin(const char *name) {
+    static const char *dispatch_only[] = {
+        /* file calls (eval_file_call) */
+        "exists",
+        "read",
+        "write",
+        "bytes",
+        "lines",
+        "chars",
+        "lock",
+        "unlock",
+        /* directory calls (eval_dir_call) */
+        "list",
+        "files",
+        "folders",
+    };
+    if (gbasic_builtin_function(name)) {
+        return 1;
+    }
+    for (size_t i = 0; i < sizeof(dispatch_only) / sizeof(dispatch_only[0]); i++) {
+        if (strcmp(name, dispatch_only[i]) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+

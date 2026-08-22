@@ -7647,9 +7647,22 @@ static Value eval_user_function_with_receiver(AstExpr *expr,
                                               Value *receiver) {
     AstStmt *stmt = function->stmt;
     if (expr->as.call.args.count != stmt->as.function.params.count) {
-        fprintf(stderr, "%s expects %zu arguments\n",
-                expr->as.call.name,
-                stmt->as.function.params.count);
+        /* A real, located runtime error -- not a bare fprintf. The old behavior
+         * printed one unlocated line and KEPT RUNNING with a null result, so the
+         * caller's own return value looked fine and the failure surfaced frames
+         * away as "expected number but got nothing", pointing anywhere but here.
+         * Arity is the one call error that is knowable exactly, so it gets the
+         * same treatment as every other runtime error: file:line:col, and the
+         * program stops (or follows `on error`, like anything else raised). The
+         * spawn path a few thousand lines down has raised for this all along;
+         * plain calls were the outlier. */
+        char message[256];
+        snprintf(message, sizeof message, "%s expects %zu argument%s, got %zu",
+                 expr->as.call.name,
+                 stmt->as.function.params.count,
+                 stmt->as.function.params.count == 1 ? "" : "s",
+                 expr->as.call.args.count);
+        runtime_error_raise(message, 1003, "invalid function call");
         return value_null();
     }
 
@@ -17439,16 +17452,25 @@ static int process_str_no_nul(const Value *v) {
 }
 
 /* Build the returned record with a fixed field order:
- * exit_code, stdout, stderr, success, signal, timed_out. */
-static Value process_make_result(int exit_code, ProcBuf *out, ProcBuf *err,
-                                 int success, int signal_num, int timed_out) {
-    RecordField *fields = calloc(6, sizeof(RecordField));
+ * exit_code, stdout, stderr, success, signal, timed_out
+ * — and, ONLY when the caller opted into launch_failure:"result", two more:
+ * launch_failed, why. The base shape is unchanged for everyone else on
+ * purpose: existing programs print and encode these records, and growing the
+ * default record would move every one of their goldens for a feature they did
+ * not ask for. */
+static Value process_make_result_ex(int exit_code, ProcBuf *out, ProcBuf *err,
+                                    int success, int signal_num, int timed_out,
+                                    int with_launch, int launch_failed,
+                                    const char *why) {
+    size_t n = with_launch ? 8 : 6;
+    RecordField *fields = calloc(n, sizeof(RecordField));
     if (!fields) {
         abort();
     }
     const char *names[] = {"exit_code", "stdout", "stderr",
-                           "success", "signal", "timed_out"};
-    for (size_t i = 0; i < 6; i++) {
+                           "success", "signal", "timed_out",
+                           "launch_failed", "why"};
+    for (size_t i = 0; i < n; i++) {
         fields[i].name = copy_string(names[i]);
         fields[i].value = cell_alloc();
         if (!fields[i].value) {
@@ -17461,7 +17483,17 @@ static Value process_make_result(int exit_code, ProcBuf *out, ProcBuf *err,
     *fields[3].value = value_bool(success);
     *fields[4].value = value_number(signal_num);
     *fields[5].value = value_bool(timed_out);
-    return value_record(fields, 6);
+    if (with_launch) {
+        *fields[6].value = value_bool(launch_failed);
+        *fields[7].value = value_string(why ? why : "");
+    }
+    return value_record(fields, n);
+}
+
+static Value process_make_result(int exit_code, ProcBuf *out, ProcBuf *err,
+                                 int success, int signal_num, int timed_out) {
+    return process_make_result_ex(exit_code, out, err, success, signal_num,
+                                  timed_out, 0, 0, NULL);
 }
 
 /* Drain child_out/child_err into out/err until both hit EOF, using poll() so a
@@ -17605,6 +17637,30 @@ static Value process_do_run(AstExpr *expr) {
         }
     }
 
+    /* --- launch_failure (optional: "raise" (default) | "result") ---
+     * "result" turns a failed LAUNCH — missing executable, unenterable cwd —
+     * into a returned record (launch_failed: true, why: "...") instead of a
+     * raise. It exists because gBASIC cannot catch a raise, so under the
+     * default an optional external tool cannot be attempted safely at all;
+     * process.which answers "is it installed", and this closes the
+     * check-then-run race for the caller who wants to just run it. The
+     * default stays raising: a typo'd command in ordinary code should be an
+     * error, not a record someone has to remember to inspect. */
+    int launch_as_result = 0;
+    RecordField *lf_f = record_find(&opts, "launch_failure");
+    if (lf_f) {
+        if (lf_f->value->kind != VALUE_STRING) {
+            value_free(opts);
+            return process_raise("process.run: options.launch_failure must be \"raise\" or \"result\"");
+        }
+        if (strcmp(lf_f->value->as.string, "result") == 0) {
+            launch_as_result = 1;
+        } else if (strcmp(lf_f->value->as.string, "raise") != 0) {
+            value_free(opts);
+            return process_raise("process.run: options.launch_failure must be \"raise\" or \"result\"");
+        }
+    }
+
     /* argv borrows the record's NUL-terminated string buffers (valid until opts is
      * freed, which is after the child has been fully launched and drained). */
     char **argv = calloc(nargs + 2, sizeof(char *));
@@ -17695,7 +17751,11 @@ static Value process_do_run(AstExpr *expr) {
     if (child_errno != 0) {
         /* Launch failed. Reap the (already-exited) child, then raise — never a
          * normal result, so callers can tell this apart from a real nonzero exit.
-         * Build the message BEFORE freeing opts: cmd_f points into that record. */
+         * Build the message BEFORE freeing opts: cmd_f points into that record.
+         * Under launch_failure:"result" the same information comes back as a
+         * record instead, still unmistakable: launch_failed is true and
+         * exit_code is -1, which no child that actually ran can produce
+         * alongside an empty signal. */
         close(out_pipe[0]);
         close(err_pipe[0]);
         int st;
@@ -17704,6 +17764,11 @@ static Value process_do_run(AstExpr *expr) {
         snprintf(msg, sizeof(msg), "process.run: could not execute '%s': %s",
                  cmd_f->value->as.string, strerror(child_errno));
         value_free(opts);
+        if (launch_as_result) {
+            ProcBuf empty_out = {0}, empty_err = {0};
+            return process_make_result_ex(-1, &empty_out, &empty_err,
+                                          0, 0, 0, 1, 1, msg);
+        }
         return process_raise(msg);
     }
 
@@ -17731,8 +17796,11 @@ static Value process_do_run(AstExpr *expr) {
         exit_code = -1;
         success = 0;
     }
-    Value result = process_make_result(exit_code, &out, &err,
-                                       success, signal_num, timed_out);
+    Value result = launch_as_result
+        ? process_make_result_ex(exit_code, &out, &err, success, signal_num,
+                                 timed_out, 1, 0, "")
+        : process_make_result(exit_code, &out, &err,
+                              success, signal_num, timed_out);
     free(out.data);
     free(err.data);
     return result;
@@ -18355,9 +18423,112 @@ static Value process_do_release(AstExpr *expr) {
     return value_null();
 }
 
+/* Is `path` something exec could actually run: a REGULAR file with execute
+ * permission. Both halves matter — access(X_OK) alone answers yes for a
+ * directory, which is exactly the wrong answer for the question this exists
+ * to settle. */
+static int process_is_executable(const char *path) {
+    struct stat st;
+    if (stat(path, &st) != 0) {
+        return 0;
+    }
+    if (!S_ISREG(st.st_mode)) {
+        return 0;
+    }
+    return access(path, X_OK) == 0;
+}
+
+/* process.which(name) -> the path execvp would run, or `unknown`.
+ *
+ * This exists because process.run RAISES when the executable is missing (the
+ * right default — a typo'd command should not look like exit 127) and gBASIC
+ * has no way to catch a raise. Together those made "is this optional tool
+ * installed?" unanswerable: asking by running crashed exactly the users who
+ * did not have the tool. Every program with an optional external dependency
+ * (a formatter, a linter, git) needs this question, and each was hand-rolling
+ * a PATH walk with weaker checks than exec's own.
+ *
+ * MIRRORS EXECVP, deliberately: a name containing '/' is tried as a literal
+ * path with no search; otherwise $PATH is walked (falling back to confstr's
+ * default path when PATH is unset, as execvp does), an empty PATH component
+ * meaning the current directory. The answer is the first candidate that is a
+ * regular file with execute permission. Not found is `unknown`, never an
+ * error: absence is the ordinary state this function exists to report. */
+static Value process_do_which(AstExpr *expr) {
+    if (expr->as.call.args.count != 1) {
+        return process_raise("process.which expects a command name");
+    }
+    Value name_v = eval_expr(expr->as.call.args.items[0]);
+    if (error_action_pending()) { value_free(name_v); return value_null(); }
+    if (name_v.kind != VALUE_STRING) {
+        value_free(name_v);
+        return process_raise("process.which expects a string");
+    }
+    if (!process_str_no_nul(&name_v)) {
+        value_free(name_v);
+        return process_raise("process.which: name contains a NUL byte");
+    }
+    const char *name = name_v.as.string;
+    if (name[0] == '\0') {
+        value_free(name_v);
+        return value_unknown();
+    }
+
+    if (strchr(name, '/') != NULL) {
+        Value out = process_is_executable(name) ? value_string(name)
+                                                : value_unknown();
+        value_free(name_v);
+        return out;
+    }
+
+    const char *path_env = getenv("PATH");
+    char default_path[512];
+    if (!path_env) {
+        size_t n = confstr(_CS_PATH, default_path, sizeof(default_path));
+        path_env = (n > 0 && n <= sizeof(default_path)) ? default_path : "";
+    }
+
+    Value result = value_unknown();
+    const char *cursor = path_env;
+    size_t name_len = strlen(name);
+    for (;;) {
+        const char *sep = strchr(cursor, ':');
+        size_t dir_len = sep ? (size_t)(sep - cursor) : strlen(cursor);
+        char candidate[4096];
+        if (dir_len == 0) {
+            /* An empty PATH component means the current directory (POSIX),
+             * and execvp honors that, so this does too. */
+            if (name_len < sizeof(candidate)) {
+                memcpy(candidate, name, name_len + 1);
+            } else {
+                candidate[0] = '\0';
+            }
+        } else if (dir_len + 1 + name_len < sizeof(candidate)) {
+            memcpy(candidate, cursor, dir_len);
+            candidate[dir_len] = '/';
+            memcpy(candidate + dir_len + 1, name, name_len + 1);
+        } else {
+            candidate[0] = '\0';   /* an absurdly long component: skip it */
+        }
+        if (candidate[0] != '\0' && process_is_executable(candidate)) {
+            result = value_string(candidate);
+            break;
+        }
+        if (!sep) {
+            break;
+        }
+        cursor = sep + 1;
+    }
+    value_free(name_v);
+    return result;
+}
+
 static Value process_eval_call(AstExpr *expr) {
     if (strcmp(expr->as.call.name, "run") == 0) {
         return process_do_run(expr);
+    }
+    if (strcmp(expr->as.call.name, "which") == 0) {
+        return process_do_which(expr);
     }
     if (strcmp(expr->as.call.name, "start") == 0) {
         return process_do_start(expr);
@@ -19326,6 +19497,46 @@ static Value eval_call(AstExpr *expr) {
             return value_unknown();
         }
         return value_string(value);
+    }
+
+    if (strcmp(expr->as.call.name, "has_builtin") == 0) {
+        /* The feature probe. gBASIC programs run on whatever interpreter is
+         * installed, and nothing marks which builtins postdate a release — so
+         * code written against a newer build was CORRECT, fully tested, and
+         * crashed with "undefined variable: file_type" for everyone on the
+         * released one, with no way to degrade gracefully. This answers the
+         * question at run time, from the same registry the parser dispatches
+         * plain builtins through, so it cannot drift from what actually runs:
+         *
+         *     if has_builtin("file_type") then ... else ... end if
+         *
+         * UNQUALIFIED NAMES ONLY, and a dotted name is refused rather than
+         * answered: module functions (process.which, reflect.inspect) are
+         * dispatched inside each module's own code, there is no unified table
+         * of them, and a hand-maintained one would drift — and a probe that
+         * can answer WRONGLY is worse than one that says it cannot answer. */
+        if (expr->as.call.args.count != 1) {
+            runtime_error_raise("has_builtin expects one argument", 1003, "invalid function call");
+            return value_null();
+        }
+        Value name = eval_expr(expr->as.call.args.items[0]);
+        if (error_action_pending()) {
+            value_free(name);
+            return value_null();
+        }
+        if (name.kind != VALUE_STRING) {
+            value_free(name);
+            runtime_error_raise("has_builtin expects a string", 1003, "invalid function call");
+            return value_null();
+        }
+        if (strchr(name.as.string, '.') != NULL) {
+            value_free(name);
+            runtime_error_raise("has_builtin answers for unqualified builtins only, not module functions", 1003, "invalid function call");
+            return value_null();
+        }
+        int present = gbasic_has_builtin(name.as.string);
+        value_free(name);
+        return value_bool(present != 0);
     }
 
     if (strcmp(expr->as.call.name, "sleep") == 0) {
