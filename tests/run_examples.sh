@@ -240,6 +240,7 @@ examples=(
     builtin_override_test.bas
     program_test.bas
     args_test.bas
+    has_builtin_test.bas
     library_test.bas
     load_test.bas
     load_from_test.bas

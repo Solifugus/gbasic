@@ -1,0 +1,15 @@
+-- names from the parser registry
+true
+true
+true
+true
+-- the dispatch-only names (file and directory calls)
+all present
+-- module-scoped names are not unqualified builtins
+false
+false
+false
+-- an unknown name
+false
+-- the pattern this exists for
+new interpreter: precise checks available
