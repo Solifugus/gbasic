@@ -1,0 +1,9 @@
+sh found: true
+sh is absolute: true
+sh ends with /sh: true
+runs: ran
+missing: true
+empty: true
+literal hit: true
+literal miss: true
+a directory is not a tool: true

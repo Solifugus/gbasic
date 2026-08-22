@@ -33,6 +33,8 @@ positive_cases=(
     nap6_cwd
     nap6_timeout
     nap6_churn
+    nap6_which
+    nap6_launch_result
     # PLAT-PROC: live child control (process.start/poll/read/wait/stop/release).
     # Every case is deterministic by construction, not by timing: the fixtures that
     # need "output arrived while the child was still running" gate the child on a
@@ -78,6 +80,7 @@ negative_cases=(
     negative_nap6_no_command
     negative_nap6_command_type
     negative_nap6_arg_type
+    negative_nap6_launch_bad
     negative_plat_proc_unknown
     negative_plat_proc_handle
     negative_plat_proc_start_command

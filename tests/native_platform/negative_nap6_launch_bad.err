@@ -1,0 +1,1 @@
+runtime error at tests/native_platform/negative_nap6_launch_bad.bas:2:3: process.run: options.launch_failure must be "raise" or "result"

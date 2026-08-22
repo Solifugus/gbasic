@@ -1,0 +1,9 @@
+launch_failed: true
+success: false
+exit_code: -1
+why mentions the tool: true
+ran-and-127 launch_failed: false
+ran-and-127 exit_code: 127
+ok launch_failed: false
+ok stdout: ok
+default has launch_failed: false
