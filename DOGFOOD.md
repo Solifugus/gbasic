@@ -23,11 +23,90 @@ name a quirk, but the durable explanation belongs in those files.
 
 ---
 
+## The open ledger
+
+The log below is APPEND-ONLY and long on purpose — it is the record of what
+building on gBASIC actually cost, and the resolved entries are where the
+lessons live. This section is the part you act on: every currently-open item,
+one line each. Maintenance rule: filing a new OPEN entry adds a line here;
+resolving one strikes it and adds a RESOLVED note at the entry. Entries not
+listed here are resolved or absorbed into doctrine (UNLEARN/ERRORS/reference),
+and the stale-looking ones carry a Status line saying what overtook them.
+
+### Open — worth fixing (ranked)
+
+1. **Global rebind in a function silently makes a local** (2026-07-20 NAP-3,
+   2026-07-22 NAP-11, 2026-08-22 STU-10). high. Shape: a parse-time warning
+   when a bare assignment inside a function shadows a known top-level name —
+   the failure mode is "everything looks right and the world did not change".
+2. **No modulo** (2026-07-18 S6, 2026-08-12 d). medium. Shape: a `mod(a, b)`
+   builtin first (`%` is lexer work and a separate decision). Logged twice,
+   worked around by hand `a - floor(a/b)*b` in at least four libraries.
+3. **`encode` emits bare `nan`/`inf` that its own `decode` rejects**
+   (2026-07-24, deferred at 2026-08-14). medium. Shape: refuse like
+   `json_encode` does, or emit a token `decode` accepts — either ends the
+   round-trip hole. Verified still live against rc3.
+4. **No array concat** (2026-08-01 STU-2D). medium. Shape: `concat(a, b)`
+   builtin; array `+` is a semantics decision to take separately. Verified
+   still raising against rc3.
+5. **`process.start` children outlive a SIGKILLed parent** (2026-07-29).
+   medium. Shape: needs a DECISION on PDEATHSIG-by-default vs an opt-in,
+   because arming it changes deliberately-detached children. Evidence in the
+   entry; four stray interpreters found days later.
+6. **`xlsx.open` raises; batch tools cannot survive one bad workbook**
+   (2026-08-03). medium, xlsx track. Shape: `xlsx.try_open` returning
+   `{ok, workbook, message}`, the `try_decode` pattern. Same entry:
+   `list_files` does not recurse, so corpus walks live in shell.
+7. **Parse errors of the `dim x` class print to stderr and exit 0**
+   (2026-07-18 D3). low, but it lies to CI. Verified still live against rc3.
+8. **Doc-gaps, each cheap:** typed-value construction (`d(date)=`, `m(USD)=`)
+   is shown nowhere in reference.md (2026-08-01); the library-dependency-
+   inside-the-block rule is documented only by example (2026-08-11);
+   `gtk.application`'s single-instance default is unstated and bit Studio for
+   a day (2026-08-01).
+9. **No PBKDF2/scrypt in `crypto`** (2026-08-22). low. Passphrase-derived keys
+   stay unofferable; `password_hash` covers login flows already.
+10. **`crypto.json_encode` remains a separate flat encoder** (2026-07-24).
+    low. Fold into `json_encode` when convenient.
+
+### Open — accepted as documented limitations (no action planned)
+
+- A raise cannot be caught; `on error resume next` abandons the whole failing
+  statement. Doctrine: pre-validate, and grow `try_*`/probe builtins where a
+  failure must be a value (`try_decode`, `process.which`,
+  `launch_failure:"result"`, `has_builtin`). ERRORS.md is the model.
+- `call(args) = value` misparses as a modifier clause — bind the result first
+  (`docs/gbasic_clause_recognition.md` §9).
+- Keywords work as record-literal keys but not after a dot (`r.end`) — lexer
+  boundary, bracket access reaches them (2026-08-15).
+- `.file`/`.date` modifiers do not work postfix in expression position — use
+  the assignment form.
+- No `gi.emit` — the per-widget signal-synthesis catalogue (2026-07-31) covers
+  testing; Studio's display tiers run on it.
+- gi cannot call STATIC class functions (`Gtk.StyleContext.add_provider_for_display`)
+  — per-instance routes exist (2026-08-22).
+- No exponent literal — `1e20` lexes as a duration with a misleading message;
+  `number("1e20")` is the idiom.
+- `find` misses with `nothing`, `match` with `unknown` — changing `find` is
+  breaking; helpers check both.
+- `exists` rejects a dir reference; `make_dir` is not idempotent — the
+  `ensure_dir` ceremony stands.
+- `atomic_replace` gives dest the temp's inode (perms reset, symlinks
+  replaced); no `chmod`/`lstat` to compose the safe form — Studio writes
+  source files in place because of this.
+- No line continuation; multi-line array literals and `join` are the idioms.
+- A method call on a call-result receiver as a bare statement does not parse
+  (expression position works).
+- Library diagnostics print the load path unnormalized (`tests/../stdlib/...`)
+  — cosmetic.
+- valgrind does not exist for riscv64; ASan runs there with degraded
+  diagnostics. A platform fact, stated in release notes rather than fixed.
+
 ## Seed entries — D0 audit surprise harvest
 
-The first entries below come from the Phase D0 audit (2026-07-17/18). Status
-reflects **current truth**, not the audit snapshot: two were resolved in Phase
-D0.6, the rest remain open or are by-design.
+The first entries below come from the Phase D0 audit (2026-07-17/18). For
+CURRENT truth, the open ledger above supersedes any status line below; several
+of these were resolved long after their text was written.
 
 ## 2026-07-18 — CC — while: D0 audit (S2)
 - **Type:** missing-feature
@@ -125,6 +204,7 @@ D0.6, the rest remain open or are by-design.
   `docs/ai/ERRORS.md` and `examples/on_error_resume_next_test.bas`.
 
 ## 2026-07-19 — CC — while: NAP-2 (GI out/inout args) struct-out test design
+- **Status 2026-08-22:** RESOLVED by later work — bracket/string-key access (`r["end"]`) landed and reaches any reserved-word field; verified against rc3.
 - **Type:** language-surprise
 - **Severity:** low
 - **What:** GI out-parameters get packaged into a return record keyed by each
@@ -157,6 +237,7 @@ D0.6, the rest remain open or are by-design.
   person writing loop/actor code doesn't rediscover it.
 
 ## 2026-07-20 — CC — while: NAP-5 (LE-1 .property/.method sugar) writing a record-method regression test
+- **Status 2026-08-22:** the arity half is RESOLVED — a wrong-arity call is now a located, fatal runtime error (see the 2026-08-22 arity entry). The implicit-`this` half is doctrine (UNLEARN).
 - **Type:** language-surprise
 - **Severity:** low
 - **What:** Declaring the receiver explicitly in a method — `function greet(this)` —
@@ -305,6 +386,7 @@ D0.6, the rest remain open or are by-design.
   appears in an expression, not just inside `string(...)`.
 
 ## 2026-07-24 — CC — while: NAP-13 llm tools — `error` is reserved, so `{ error: ... }` will not parse
+- **Status 2026-08-22:** RESOLVED for record LITERALS by the 2026-08-12 `field_name` grammar change — `{ error: 1 }` parses; dot access still needs brackets (2026-08-15 entry). Verified against rc3.
 - **Type:** language-surprise
 - **Severity:** low
 - **What:** `error` is a statement keyword (token ERROR_VALUE), so it cannot be used as
@@ -402,6 +484,7 @@ D0.6, the rest remain open or are by-design.
   remove the ceremony. DEFERRED (not a blocker).
 
 ## 2026-07-25 — CC — while: STU-0 (corrupt-file recovery)
+- **Status 2026-08-22:** RESOLVED — `try_decode` is a core builtin; `studio_json.bas` and `llm`'s private validator were both retired by it.
 - **Type:** missing-feature
 - **Severity:** medium
 - **What:** Graceful recovery from a corrupt/truncated JSON store needs to detect
@@ -416,6 +499,7 @@ D0.6, the rest remain open or are by-design.
   non-raising `try_decode`) would retire both. SHOULD FIX.
 
 ## 2026-07-26 — CC — while: STU-2 (document manager, filesystem)
+- **Status 2026-08-22:** RESOLVED — `file_type(path)` exists (PLAT-WEB-1 Gap B) and answers file/folder/other without raising; `studio_docs._is_dir`'s parent scan is retired.
 - **Type:** missing-feature
 - **Severity:** medium
 - **What:** No way to test whether a path is a directory without risking an
@@ -429,6 +513,7 @@ D0.6, the rest remain open or are by-design.
   remove the parent scan. SHOULD FIX (companion to the earlier non-raising-JSON gap).
 
 ## 2026-07-26 — CC — while: STU-2 (record field names)
+- **Status 2026-08-22:** the key half is RESOLVED — `{ next: 1 }` parses since the 2026-08-12 grammar change; verified against rc3. `new` as a function name still refused.
 - **Type:** language-surprise
 - **Severity:** low
 - **What:** `next` is a reserved word (`resume next`), so `{ next: 1 }` is a parse
@@ -471,6 +556,7 @@ D0.6, the rest remain open or are by-design.
   §16.2. Not a bug — just a convention gap worth stating for any offset consumer.
 
 ## 2026-07-27 — CC — while: PLAT-PROC (writing the live-child-control test fixtures)
+- **Status 2026-08-22:** RESOLVED by later work — `contains("hello world", "lo w")` now works on strings; verified against rc3. The `find`-miss-is-`nothing` half still stands (see the accepted list).
 - **Type:** language-surprise
 - **Severity:** low
 - **What:** `contains(haystack, needle)` looks like the natural "does this string
@@ -552,6 +638,7 @@ D0.6, the rest remain open or are by-design.
   runtime's diagnostic is byte-comparable between the runs.
 
 ## 2026-07-29 — CC — while: PLAT-STRIDX/PLAT-ARRIDX (measuring cost curves)
+- **Status 2026-08-22:** RESOLVED — `monotonic()` exists and resolves sub-second; verified against rc3. The shell-side timing in run_stridx/arridx predates it and still works, so it was left alone.
 - **Type:** missing-feature
 - **Severity:** medium
 - **What:** gBASIC cannot time anything shorter than a second. `epoch()` returns
@@ -750,6 +837,7 @@ D0.6, the rest remain open or are by-design.
   change and would need its own phase.
 
 ## 2026-08-01 — CC — while: ARI Phase 2 (printing parsed money amounts)
+- **Status 2026-08-22:** RESOLVED by PLAT-NUMFMT (2026-08-14) — numbers print shortest-round-trip, so cents survive; money values were always exact. The integer-cents test device is gone.
 
 - **Type:** bug
 - **Severity:** high
@@ -882,6 +970,7 @@ D0.6, the rest remain open or are by-design.
   `docs/xlsx_design.md` §13.I.
 
 ## 2026-08-09 — CC — while: pinning NOW()/TODAY() in a golden test
+- **Status 2026-08-22:** the underlying limitation is RESOLVED by PLAT-NUMFMT — a serial now prints in full. The split-assertion technique in the fixture remains good practice and was left in place.
 
 - **Type:** language-surprise
 - **Severity:** low
@@ -2034,6 +2123,22 @@ a diagnostics fix.
   why in `studio_viewers._cell`. If the dev build's behaviour is the intended
   one, this is worth a release note: it changes the text of every program that
   prints a computed float.
+
+### RESOLVED 2026-08-22 — the `string(number)` precision skew, by decision
+
+The entry above asked for a decision before either build changed, and the
+decision is made: **full expansion stands** — precisely, the shortest decimal
+that reads back as the same double, which is what PLAT-NUMFMT implemented on
+2026-08-14 and what rc3 ships. The six-significant-digit rendering was the
+OLD release's `%g`; it is history, not an alternative. With rc3 now installed,
+the development and installed interpreters agree byte-for-byte, and Studio's
+five viewer goldens were already verified identical on both.
+
+What remains true and is worth keeping from the entry: any golden holding a
+computed float encodes the interpreter that recorded it, and the release check
+is what catches that class. Studio's bundled `stats.viewers` keeps `places: 4`
+on coefficient columns — that was always the better display, independent of
+the skew that prompted it.
 
 ## 2026-08-22 — CC — while: gBASIC Studio STU-10 (agent act tools) — a global rebind inside a function silently becomes a local, and the code still "works"
 - **Type:** language-surprise
