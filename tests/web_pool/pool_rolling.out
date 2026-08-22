@@ -1,0 +1,11 @@
+before roll: <hello v1>
+roll ok: true rolled=2
+10 requests after roll, answered: 10
+now serving: <hello v2>
+broken deploy ok: false rolled=0
+  why mentions exit: true
+  still serving: <hello v2>
+dying deploy ok: false
+  why names probation: true
+  still serving: <hello v2>
+done, workers=0

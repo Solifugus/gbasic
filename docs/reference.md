@@ -1246,6 +1246,7 @@ The module provides:
 
 - `webserver.listen(port)`
 - `webserver.listen(port, options)`
+- `webserver.inherited()` (*since 0.1.0-rc4*)
 - `webserver.close(server)`
 - `webserver.redirect(request, location)`
 - `webserver.redirect(request, location, status)`
@@ -1254,8 +1255,8 @@ The module provides:
 operating-system-assigned ephemeral port, which is exposed through
 `server.port`.
 
-`options` is a record. The only field it currently accepts is `address`, the
-local address to bind:
+`options` is a record accepting `address` (the local address to bind) and
+`hold` (*since 0.1.0-rc4*):
 
 ```basic
 ' loopback -- the default, reachable only from this machine
@@ -1267,6 +1268,12 @@ server = webserver.listen(8080, { address: "0.0.0.0" })
 ' one specific interface, or IPv6
 server = webserver.listen(8080, { address: "192.168.1.20" })
 server = webserver.listen(8080, { address: "::" })
+```
+
+```basic
+' bind and listen but NEVER accept: the supervisor's grip on a port whose
+' serving it delegates to workers (see the worker pool below)
+super = webserver.listen(8080, { hold: true })
 ```
 
 Omitting `address` binds `127.0.0.1`, so a server is private until its author
@@ -1330,6 +1337,50 @@ append(server.responses, {
 `webserver.redirect(req, location)` returns a normal response record with
 status `303`, a `location` header, and an empty body. The optional status must
 be one of `301`, `302`, `303`, `307`, or `308`.
+
+### Draining, inherited listeners, and the worker pool (*since 0.1.0-rc4*)
+
+**Soft stop.** Setting `server.draining = true` stops the listener accepting,
+lets every in-flight request finish, closes idle connections, and then stops
+the server — after which a program with nothing else to do exits. Setting
+`server.running = false` remains the hard stop: whatever is still in flight is
+answered `503`.
+
+**SIGTERM means drain.** Once a process has a live server, `SIGTERM` triggers
+the same soft stop on every server it holds, and the process exits by itself
+when the last response is delivered. This is exactly what
+`process.stop(handle)` sends, so a supervisor drains a worker with the polite
+form — and escalates with `process.stop(handle, {force_after: seconds})`
+**only if the grace period expires**, because the `force_after` form blocks
+until death-or-deadline and then SIGKILLs. The polite form returns at once;
+the point of a drain is that work continues after the signal.
+
+**Inherited listeners.** `webserver.inherited()` adopts listening sockets this
+process inherited under the `LISTEN_FDS` protocol (fds from 3 up, count in
+`LISTEN_FDS`, `LISTEN_PID` naming this process) and returns them as an array
+of ordinary server records. Nothing inherited is an empty array, never an
+error — a worker falls back to binding for itself, which is the
+local-development path. The same protocol serves systemd socket activation
+and a gBASIC supervisor with one piece of code. The variables are consumed on
+adoption, so this process's own children cannot mistake them for their own.
+
+**Sharing a listener.** `process.start({command, args, listen_fds: [server]})`
+hands the child the named servers' sockets at fds 3.., speaking that same
+protocol. The elements must be live server records — listeners are marked
+close-on-exec at creation, so the deliberate option is the *only* way one
+reaches a child. A supervisor binds once with `hold: true` (keeping the
+privilege of the port and none of the serving) and every worker accepts from
+the shared socket; the kernel distributes connections.
+
+**The pool, drain, and rolling reload** live in the `web` library:
+`web.pool(spec)` / `web.pool_start` / `web.pool_tick` (respawn dead workers)
+/ `web.pool_reload` (replace one at a time; a replacement must print its
+ready marker and survive a probation window before the old worker is drained
+— a deploy carrying a syntax error is a failed deploy and zero downtime) /
+`web.pool_stop`. Workers are separate processes on purpose: a rolling reload
+must **parse the new source**, which nothing inside an already-loaded image
+can do. Shared-nothing workers mean no cross-request in-memory state — keep
+state in SQLite or `persist`. `tests/run_web_pool.sh` holds all of it.
 
 Response fields:
 

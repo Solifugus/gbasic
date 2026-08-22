@@ -12174,6 +12174,14 @@ struct WebServer {
     char address[64];
     int running;
     int shutdown_requested;
+    /* PLAT-WEB-2. `held`: bound and listening but NEVER accepting — the
+     * supervisor's grip on a port it hands to workers, so the privilege of
+     * binding :443 and the work of serving it can live in different
+     * processes. `draining`: stop accepting, let in-flight requests FINISH,
+     * then stop — the soft half of shutdown, where shutdown_requested is the
+     * hard half that 503s whatever is left. */
+    int held;
+    int draining;
     unsigned long next_request_id;
     WebServerClient *clients;
     size_t client_count;
@@ -12181,6 +12189,39 @@ struct WebServer {
 
 static void webserver_raise(const char *message) {
     runtime_error_raise(message, WEBSERVER_ERROR_CODE, "webserver");
+}
+
+/* PLAT-WEB-2: SIGTERM means DRAIN, not die, once this process is a server.
+ *
+ * gBASIC has no signal handling at the language level, and a worker does not
+ * need any: the one signal a supervised worker receives is process.stop's
+ * SIGTERM, and the one correct response is always the same — stop accepting,
+ * finish what is in flight, exit. So the webserver module owns the handler.
+ * The handler only sets a flag; the event loop acts on it, which keeps every
+ * data structure signal-safe. A worker stuck past its grace period is ended
+ * by process.stop's own force_after SIGKILL — escalation lives with the
+ * supervisor, where the policy is. Installed without SA_RESTART on purpose:
+ * the pending poll() must return so the flag is seen now, not at the next
+ * request. */
+static volatile sig_atomic_t webserver_term_requested = 0;
+static int webserver_term_installed = 0;
+
+static void webserver_term_handler(int sig) {
+    (void)sig;
+    webserver_term_requested = 1;
+}
+
+static void webserver_install_term_handler(void) {
+    if (webserver_term_installed) {
+        return;
+    }
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = webserver_term_handler;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;
+    sigaction(SIGTERM, &sa, NULL);
+    webserver_term_installed = 1;
 }
 
 static double webserver_now(void) {
@@ -12990,6 +13031,42 @@ static void webserver_sync_shutdown(WebServer *server) {
     if (!record || (running && running->kind == VALUE_BOOL && !running->as.boolean)) {
         server->shutdown_requested = 1;
     }
+    /* The application-level soft stop: `server.draining = true` asks for the
+     * same behavior SIGTERM produces, from code — a single-process program
+     * can drain itself, and an HTTP "prepare for deploy" endpoint has a
+     * mechanism to call rather than being one. */
+    Value *draining = record ? webserver_field(record, "draining") : NULL;
+    if (draining && draining->kind == VALUE_BOOL && draining->as.boolean) {
+        server->draining = 1;
+    }
+}
+
+/* One drain step: close the listener the first time through (new connections
+ * stop landing HERE; workers sharing the fd keep accepting), shed clients
+ * that are idle between requests, and declare the stop once nothing is in
+ * flight. A client mid-request (bytes buffered or a response owed) is left
+ * strictly alone — finishing those is the entire point of draining, and the
+ * existing per-client deadline already bounds how long a stuck one can hold
+ * the process. */
+static void webserver_progress_drain(WebServer *server) {
+    if (!server->draining || !server->running) {
+        return;
+    }
+    if (server->listen_fd >= 0) {
+        close(server->listen_fd);
+        server->listen_fd = -1;
+    }
+    size_t i = 0;
+    while (i < server->client_count) {
+        if (!server->clients[i].waiting_response && server->clients[i].length == 0) {
+            webserver_client_close(server, i);
+        } else {
+            i++;
+        }
+    }
+    if (server->client_count == 0) {
+        webserver_set_running(server, 0);
+    }
 }
 
 static void webserver_finish_shutdown(WebServer *server) {
@@ -13020,8 +13097,14 @@ static void webserver_check_timeouts(WebServer *server) {
 
 static int webserver_run_event_loop(void) {
     while (webserver_any_active() && !runtime_stopped) {
+        if (webserver_term_requested) {
+            for (size_t i = 0; i < webserver_count; i++) {
+                webservers[i].draining = 1;
+            }
+        }
         for (size_t i = 0; i < webserver_count; i++) {
             webserver_sync_shutdown(&webservers[i]);
+            webserver_progress_drain(&webservers[i]);
             webserver_process_responses(&webservers[i]);
             if (error_action_pending()) {
                 return 1;
@@ -13031,7 +13114,8 @@ static int webserver_run_event_loop(void) {
 
         size_t descriptor_count = 0;
         for (size_t i = 0; i < webserver_count; i++) {
-            if (webservers[i].running && !webservers[i].shutdown_requested) {
+            if (webservers[i].running && !webservers[i].shutdown_requested &&
+                !webservers[i].held && !webservers[i].draining) {
                 descriptor_count++;
             }
             descriptor_count += webservers[i].client_count;
@@ -13045,7 +13129,8 @@ static int webserver_run_event_loop(void) {
         }
         size_t cursor = 0;
         for (size_t i = 0; i < webserver_count; i++) {
-            if (webservers[i].running && !webservers[i].shutdown_requested) {
+            if (webservers[i].running && !webservers[i].shutdown_requested &&
+                !webservers[i].held && !webservers[i].draining) {
                 pollfds[cursor].fd = webservers[i].listen_fd;
                 pollfds[cursor].events = POLLIN;
                 cursor++;
@@ -13066,7 +13151,8 @@ static int webserver_run_event_loop(void) {
         cursor = 0;
         for (size_t i = 0; i < webserver_count; i++) {
             size_t polled_client_count = webservers[i].client_count;
-            if (webservers[i].running && !webservers[i].shutdown_requested) {
+            if (webservers[i].running && !webservers[i].shutdown_requested &&
+                !webservers[i].held && !webservers[i].draining) {
                 if (pollfds[cursor].revents & POLLIN) {
                     webserver_accept(&webservers[i]);
                 }
@@ -13117,7 +13203,8 @@ static int webserver_run_event_loop(void) {
  * and a multi-address name with no rule for which one was meant. Refusing it
  * keeps binding deterministic and offline, and is a restriction that can be
  * lifted later far more easily than it could be imposed. */
-static int webserver_listen_options(AstExpr *expr, char *address, size_t address_size) {
+static int webserver_listen_options(AstExpr *expr, char *address, size_t address_size,
+                                    int *hold) {
     if (expr->as.call.args.count < 2) {
         return 1;
     }
@@ -13146,6 +13233,20 @@ static int webserver_listen_options(AstExpr *expr, char *address, size_t address
                 return 0;
             }
             snprintf(address, address_size, "%s", field->value->as.string);
+        } else if (strcmp(field->name, "hold") == 0) {
+            /* PLAT-WEB-2: bind and listen but never accept. This is the
+             * supervisor's option — it keeps the privilege of the port and
+             * hands the accepting to workers that inherit the fd. A held
+             * listener still fills the kernel backlog, so a client that
+             * connects while no worker exists hangs rather than being
+             * refused; the supervisor's job is to make sure that state is
+             * brief. */
+            if (field->value->kind != VALUE_BOOL) {
+                value_free(options);
+                webserver_raise("webserver.listen hold must be true or false");
+                return 0;
+            }
+            *hold = field->value->as.boolean ? 1 : 0;
         } else {
             /* Named, not ignored: a misspelled option that fell through would
              * leave a server the author asked to publish sitting on loopback,
@@ -13160,6 +13261,115 @@ static int webserver_listen_options(AstExpr *expr, char *address, size_t address
     }
     value_free(options);
     return 1;
+}
+
+/* Register an already-listening fd as a server and build its live record.
+ * Shared by listen (which made the socket) and inherited (which was handed
+ * one). The fd is marked close-on-exec HERE, unconditionally: a listener
+ * must reach a child only through the deliberate listen_fds: door on
+ * process.start, never by leaking through an unrelated process.run. */
+static Value webserver_register(int fd, const char *bound_address, int bound_port,
+                                int hold) {
+    fcntl(fd, F_SETFD, fcntl(fd, F_GETFD) | FD_CLOEXEC);
+    webserver_install_term_handler();
+
+    WebServer *servers = realloc(webservers, sizeof(WebServer) * (webserver_count + 1));
+    if (!servers) {
+        abort();
+    }
+    webservers = servers;
+    WebServer *server = &webservers[webserver_count++];
+    memset(server, 0, sizeof(*server));
+    server->id = webserver_next_id++;
+    server->listen_fd = fd;
+    server->port = bound_port;
+    snprintf(server->address, sizeof(server->address), "%s", bound_address);
+    server->running = 1;
+    server->held = hold;
+    server->next_request_id = 1;
+
+    Value record = value_record(NULL, 0);
+    record_set(&record, "_webserver_id", value_number((double)server->id));
+    record_set(&record, "port", value_number((double)server->port));
+    record_set(&record, "address", value_string(server->address));
+    record_set(&record, "running", value_bool(1));
+    record_set(&record, "held", value_bool(hold));
+    record_set(&record, "requests", value_array(NULL, 0));
+    record_set(&record, "responses", value_array(NULL, 0));
+    return record;
+}
+
+/* PLAT-WEB-2 Gap F: adopt listening sockets this process INHERITED, speaking
+ * the LISTEN_FDS protocol (fds start at 3, count in LISTEN_FDS, and
+ * LISTEN_PID must name this very process or the variables are someone
+ * else's). That one protocol serves two masters with the same code: systemd
+ * socket activation, where systemd is the privileged binder — and a gBASIC
+ * supervisor, whose process.start listen_fds: option speaks it to workers.
+ * The variables are consumed (unset) after adoption so a child of THIS
+ * process cannot mistake them for its own.
+ *
+ * Returns an array of server records, usually one. An empty array is the
+ * NORMAL answer when nothing was inherited — a worker falls back to binding
+ * for itself, which is the local-development path — so nothing raises. A fd
+ * that is claimed by the protocol but is not a listening stream socket DOES
+ * raise: that is a wiring error by whoever launched us, and serving nothing
+ * quietly would make it the hardest kind to find. */
+static Value webserver_eval_inherited(AstExpr *expr) {
+    if (expr->as.call.args.count != 0) {
+        webserver_raise("webserver.inherited expects no arguments");
+        return value_null();
+    }
+    const char *pid_text = getenv("LISTEN_PID");
+    const char *count_text = getenv("LISTEN_FDS");
+    if (!pid_text || !count_text) {
+        return value_array(NULL, 0);
+    }
+    char *end = NULL;
+    long claimed_pid = strtol(pid_text, &end, 10);
+    if (!end || *end != '\0' || claimed_pid != (long)getpid()) {
+        return value_array(NULL, 0);
+    }
+    long count = strtol(count_text, &end, 10);
+    if (!end || *end != '\0' || count <= 0 || count > 64) {
+        return value_array(NULL, 0);
+    }
+
+    Value *items = calloc((size_t)count, sizeof(Value));
+    if (!items) {
+        abort();
+    }
+    for (long i = 0; i < count; i++) {
+        int fd = 3 + (int)i;
+        int accepting = 0;
+        socklen_t opt_len = sizeof(accepting);
+        if (getsockopt(fd, SOL_SOCKET, SO_ACCEPTCONN, &accepting, &opt_len) != 0 ||
+            !accepting) {
+            for (long j = 0; j < i; j++) {
+                value_free(items[j]);
+            }
+            free(items);
+            char message[160];
+            snprintf(message, sizeof(message),
+                     "webserver.inherited: fd %d is not a listening socket", fd);
+            webserver_raise(message);
+            return value_null();
+        }
+        webserver_set_blocking_mode(fd, 0);
+
+        struct sockaddr_storage address;
+        socklen_t length = sizeof(address);
+        memset(&address, 0, sizeof(address));
+        char bound_address[64] = "";
+        int bound_port = 0;
+        if (getsockname(fd, (struct sockaddr *)&address, &length) == 0) {
+            webserver_format_address(&address, bound_address, sizeof(bound_address),
+                                     &bound_port);
+        }
+        items[i] = webserver_register(fd, bound_address, bound_port, 0);
+    }
+    unsetenv("LISTEN_FDS");
+    unsetenv("LISTEN_PID");
+    return value_array(items, (size_t)count);
 }
 
 static Value webserver_eval_listen(AstExpr *expr) {
@@ -13181,7 +13391,8 @@ static Value webserver_eval_listen(AstExpr *expr) {
     value_free(port_value);
 
     char bind_address[64] = "127.0.0.1";
-    if (!webserver_listen_options(expr, bind_address, sizeof(bind_address))) {
+    int hold = 0;
+    if (!webserver_listen_options(expr, bind_address, sizeof(bind_address), &hold)) {
         return value_null();
     }
 
@@ -13240,28 +13451,7 @@ static Value webserver_eval_listen(AstExpr *expr) {
     int bound_port = 0;
     webserver_format_address(&address, bound_address, sizeof(bound_address), &bound_port);
 
-    WebServer *servers = realloc(webservers, sizeof(WebServer) * (webserver_count + 1));
-    if (!servers) {
-        abort();
-    }
-    webservers = servers;
-    WebServer *server = &webservers[webserver_count++];
-    memset(server, 0, sizeof(*server));
-    server->id = webserver_next_id++;
-    server->listen_fd = fd;
-    server->port = bound_port;
-    snprintf(server->address, sizeof(server->address), "%s", bound_address);
-    server->running = 1;
-    server->next_request_id = 1;
-
-    Value record = value_record(NULL, 0);
-    record_set(&record, "_webserver_id", value_number((double)server->id));
-    record_set(&record, "port", value_number((double)server->port));
-    record_set(&record, "address", value_string(server->address));
-    record_set(&record, "running", value_bool(1));
-    record_set(&record, "requests", value_array(NULL, 0));
-    record_set(&record, "responses", value_array(NULL, 0));
-    return record;
+    return webserver_register(fd, bound_address, bound_port, hold);
 }
 
 static Value webserver_eval_close(AstExpr *expr) {
@@ -13377,6 +13567,9 @@ static Value webserver_eval_redirect(AstExpr *expr) {
 static Value webserver_eval_call(AstExpr *expr) {
     if (strcmp(expr->as.call.name, "listen") == 0) {
         return webserver_eval_listen(expr);
+    }
+    if (strcmp(expr->as.call.name, "inherited") == 0) {
+        return webserver_eval_inherited(expr);
     }
     if (strcmp(expr->as.call.name, "close") == 0) {
         return webserver_eval_close(expr);
@@ -17988,6 +18181,7 @@ static int process_parse_options(Value *opts, const char *label, ProcLaunch *out
  * fills the out_fd/err_fd outputs. Returns -1 and sets launch_errno on exec
  * failure, or -2 on a pipe/fork failure. */
 static pid_t process_launch(char **argv, const char *cwd,
+                            const int *share_fds, size_t share_count,
                             int *out_fd, int *err_fd, int *launch_errno) {
     int out_pipe[2] = {-1, -1}, err_pipe[2] = {-1, -1}, exec_pipe[2] = {-1, -1};
     *launch_errno = 0;
@@ -18018,6 +18212,48 @@ static pid_t process_launch(char **argv, const char *cwd,
         close(out_pipe[0]); close(out_pipe[1]);
         close(err_pipe[0]); close(err_pipe[1]);
         close(exec_pipe[0]);
+        if (share_count > 0) {
+            /* PLAT-WEB-2 Gap C: hand the child its inherited listeners at
+             * fds 3..3+n-1, speaking the LISTEN_FDS protocol the child's
+             * webserver.inherited() (or systemd-aware anything) reads.
+             *
+             * Two-phase dup, and the staging is not optional: a source might
+             * BE 3 (or any target slot), and a one-pass dup2 into 3.. would
+             * overwrite a source before it was copied. Stage every source
+             * above the target window first, then place them. dup2 clears
+             * close-on-exec on the copy, which is exactly the point — the
+             * originals carry FD_CLOEXEC so nothing leaks by accident, and
+             * the staged copies die at exec. */
+            int staged[64];
+            int stage_failed = 0;
+            for (size_t i = 0; i < share_count; i++) {
+                staged[i] = fcntl(share_fds[i], F_DUPFD, 100);
+                if (staged[i] < 0) {
+                    stage_failed = 1;
+                    break;
+                }
+            }
+            if (!stage_failed) {
+                for (size_t i = 0; i < share_count; i++) {
+                    if (dup2(staged[i], 3 + (int)i) < 0) {
+                        stage_failed = 1;
+                        break;
+                    }
+                    close(staged[i]);
+                }
+            }
+            if (stage_failed) {
+                int e = errno;
+                ssize_t w = write(exec_pipe[1], &e, sizeof(e)); (void)w;
+                _exit(127);
+            }
+            char env_count[16];
+            char env_pid[32];
+            snprintf(env_count, sizeof(env_count), "%zu", share_count);
+            snprintf(env_pid, sizeof(env_pid), "%ld", (long)getpid());
+            setenv("LISTEN_FDS", env_count, 1);
+            setenv("LISTEN_PID", env_pid, 1);
+        }
         if (cwd && chdir(cwd) != 0) {
             int e = errno;
             ssize_t w = write(exec_pipe[1], &e, sizeof(e)); (void)w;
@@ -18299,8 +18535,45 @@ static Value process_do_start(AstExpr *expr) {
         return value_null();
     }
 
+    /* PLAT-WEB-2: listen_fds — server records whose listening sockets the
+     * child inherits at fds 3.., with LISTEN_FDS/LISTEN_PID set for it. The
+     * values must be LIVE webserver records: passing a number would let any
+     * fd walk into a child, and the entire point of marking listeners
+     * close-on-exec was that sharing one is a deliberate, typed act. */
+    int share_fds[64];
+    size_t share_count = 0;
+    RecordField *lf = record_find(&opts, "listen_fds");
+    if (lf) {
+        if (lf->value->kind != VALUE_ARRAY) {
+            free(launch.argv);
+            value_free(opts);
+            return process_raise("process.start: options.listen_fds must be an array of server records");
+        }
+        Value *lf_items = lf->value->as.array.store->items;
+        size_t lf_count = lf->value->as.array.store->count;
+        if (lf_count > 64) {
+            free(launch.argv);
+            value_free(opts);
+            return process_raise("process.start: options.listen_fds supports at most 64 listeners");
+        }
+        for (size_t i = 0; i < lf_count; i++) {
+            unsigned long sid = 0;
+            WebServer *server = NULL;
+            if (webserver_record_id(&lf_items[i], &sid)) {
+                server = webserver_find(sid);
+            }
+            if (!server || server->listen_fd < 0) {
+                free(launch.argv);
+                value_free(opts);
+                return process_raise("process.start: every listen_fds element must be a live server record from webserver.listen");
+            }
+            share_fds[share_count++] = server->listen_fd;
+        }
+    }
+
     int out_fd = -1, err_fd = -1, launch_errno = 0;
-    pid_t pid = process_launch(launch.argv, launch.cwd, &out_fd, &err_fd, &launch_errno);
+    pid_t pid = process_launch(launch.argv, launch.cwd, share_fds, share_count,
+                               &out_fd, &err_fd, &launch_errno);
     if (pid == -2) {
         free(launch.argv);
         value_free(opts);

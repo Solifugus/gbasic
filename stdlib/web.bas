@@ -610,6 +610,209 @@ library web
     ' Introspection: the table as sorted "METHOD /path" lines. The static
     ' route list the design wants a tool to be able to show (§1), available
     ' now without running a request through anything.
+    ' ---- PLAT-WEB-2: the worker pool ---------------------------------------
+    '
+    ' A supervisor holds the listener (webserver.listen with hold: true) and
+    ' workers inherit it (process.start listen_fds: -> webserver.inherited() in
+    ' the worker). This section is the POLICY over those primitives: keep N
+    ' workers alive, replace them one at a time on reload, and never retire a
+    ' worker on faith.
+    '
+    ' THE ROLLING RULE (design §7): a replacement must parse its source, come
+    ' up, and print its ready marker before the old worker is drained — and it
+    ' must then SURVIVE A PROBATION window. A deploy carrying a syntax error is
+    ' a failed deploy and zero downtime, which is the actual guarantee wanted.
+    ' This is also why workers are PROCESSES and not actors: an actor is spawned
+    ' from the image already loaded, so it can never pick up edited source, and
+    ' "must parse its source" is the load-bearing half of the rule.
+    '
+    ' DRAIN is two different verbs on purpose:
+    '   process.stop(h)                    polite TERM; returns AT ONCE. The
+    '                                      worker stops accepting, finishes
+    '                                      in-flight requests, exits 0 itself.
+    '   process.stop(h, {force_after:...}) BLOCKS until death or deadline, then
+    '                                      SIGKILLs. Correct for "end this now",
+    '                                      wrong as the first move of a drain —
+    '                                      the point of draining is that work
+    '                                      continues after the signal.
+    ' The pool sends the polite form, grants drain_timeout through process.wait,
+    ' and only then escalates.
+
+    ' Build the pool spec, checked the way `routes` is checked: at build time,
+    ' where a mistake is a message naming itself.
+    '   { listener, command, args, count, ready, ready_timeout, probation,
+    '     drain_timeout }
+    function pool(spec)
+        if not is_record(spec) then
+            error "web.pool expects a spec record"
+        end if
+        if not has(spec, "listener") then
+            error "web.pool: spec.listener must be a held server from webserver.listen"
+        end if
+        if not has(spec, "command") then
+            error "web.pool: spec.command names the worker executable"
+        end if
+        out = { listener: spec.listener, command: spec.command,
+                args: [], count: 1, ready: "READY",
+                ready_timeout: 10, probation: 1, drain_timeout: 30,
+                workers: [], restarts: 0 }
+        if has(spec, "args") then
+            out.args = spec.args
+        end if
+        if has(spec, "count") then
+            if not is_number(spec.count) then
+                error "web.pool: count must be a number"
+            end if
+            if spec.count < 1 then
+                error "web.pool: count must be at least 1"
+            end if
+            out.count = spec.count
+        end if
+        for each k in ["ready", "ready_timeout", "probation", "drain_timeout"]
+            if has(spec, k) then
+                out[k] = spec[k]
+            end if
+        end for
+        return out
+    end function
+
+    ' Start one worker and wait for its ready marker on stdout. Returns
+    ' { ok, handle, why }. A worker that dies before the marker — a parse
+    ' error in freshly deployed source being the canonical case — reports its
+    ' stderr, which is where the interpreter put the reason.
+    function _spawn(p)
+        h = process.start({ command: p.command, args: p.args,
+                            listen_fds: [p.listener] })
+        waited = 0
+        seen = ""
+        errs = ""
+        while waited < p.ready_timeout
+            c = process.read(h)
+            seen = seen + c.stdout
+            errs = errs + c.stderr
+            if find(seen, p.ready) != nothing then
+                return { ok: true, handle: h, why: "" }
+            end if
+            st = process.poll(h)
+            if not st.running then
+                process.release(h)
+                return { ok: false, handle: nothing,
+                         why: "worker exited before ready (" + string(st.exit_code) + "): " + trim(errs) }
+            end if
+            sleep(0.05)
+            waited = waited + 0.05
+        end while
+        process.stop(h, { force_after: 1 })
+        process.release(h)
+        return { ok: false, handle: nothing,
+                 why: "worker did not report ready within " + string(p.ready_timeout) + "s" }
+    end function
+
+    ' Bring the pool to strength. Returns { ok, pool, why }; on failure the
+    ' workers that DID start keep running (a partial pool serves — the failure
+    ' is reported, not amplified).
+    function pool_start(p)
+        while count(p.workers) < p.count
+            r = web._spawn(p)
+            if not r.ok then
+                return { ok: false, pool: p, why: r.why }
+            end if
+            p.workers = append(p.workers, r.handle)
+        end while
+        return { ok: true, pool: p, why: "" }
+    end function
+
+    ' One supervision pass: respawn anything that died. Call it from the
+    ' supervisor's own loop; how often is the supervisor's business. Returns
+    ' { pool, respawned, failed }.
+    function pool_tick(p)
+        respawned = 0
+        failed = 0
+        kept = []
+        for each h in p.workers
+            st = process.poll(h)
+            if st.running then
+                kept = append(kept, h)
+            else
+                print to error "web.pool: worker died (exit " + string(st.exit_code) + ", signal " + string(st.signal) + "); restarting"
+                process.release(h)
+                r = web._spawn(p)
+                if r.ok then
+                    kept = append(kept, r.handle)
+                    respawned = respawned + 1
+                    p.restarts = p.restarts + 1
+                else
+                    print to error "web.pool: restart failed: " + r.why
+                    failed = failed + 1
+                end if
+            end if
+        end for
+        p.workers = kept
+        return { pool: p, respawned: respawned, failed: failed }
+    end function
+
+    ' Drain one worker: polite TERM, a bounded wait for it to finish what it
+    ' owes and exit itself, force only past the deadline.
+    function _drain(p, h)
+        process.stop(h)
+        st = process.wait(h, p.drain_timeout)
+        if st.running then
+            print to error "web.pool: worker did not drain within " + string(p.drain_timeout) + "s; forcing"
+            process.stop(h, { force_after: 1 })
+        end if
+        process.release(h)
+        return nothing
+    end function
+
+    ' Rolling reload: replace workers ONE AT A TIME, never retiring an old one
+    ' until its replacement is ready and has survived probation. On the first
+    ' failure the roll STOPS and what is serving keeps serving. Returns
+    ' { ok, pool, rolled, why }.
+    function pool_reload(p)
+        rolled = 0
+        i = 0
+        while i < count(p.workers)
+            r = web._spawn(p)
+            if not r.ok then
+                return { ok: false, pool: p, rolled: rolled,
+                         why: "deploy failed, old workers kept: " + r.why }
+            end if
+            ' Probation: a replacement that comes up and promptly dies must not
+            ' cost the worker it was replacing.
+            waited = 0
+            alive = true
+            while waited < p.probation
+                st = process.poll(r.handle)
+                if not st.running then
+                    alive = false
+                    break
+                end if
+                sleep(0.05)
+                waited = waited + 0.05
+            end while
+            if not alive then
+                process.release(r.handle)
+                return { ok: false, pool: p, rolled: rolled,
+                         why: "replacement died during probation; old workers kept" }
+            end if
+            web._drain(p, p.workers[i])
+            p.workers[i] = r.handle
+            rolled = rolled + 1
+            i = i + 1
+        end while
+        return { ok: true, pool: p, rolled: rolled, why: "" }
+    end function
+
+    ' Stop everything, draining each worker. The pool record comes back empty
+    ' rather than being a live thing that outlived its workers.
+    function pool_stop(p)
+        for each h in p.workers
+            web._drain(p, h)
+        end for
+        p.workers = []
+        return p
+    end function
+
     function paths(prepared)
         out = []
         n = count(prepared)

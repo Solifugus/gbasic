@@ -1,0 +1,6 @@
+held: true
+pool up: true workers=2
+request 1: <hello v1>
+request 2: <hello v1>
+stopped: workers=0
+after stop, answered: false

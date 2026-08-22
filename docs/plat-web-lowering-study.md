@@ -201,10 +201,10 @@ What cannot lower, and why:
 |---|---|---|---|
 | A | ~~Bind address on `listen` (loopback-only today)~~ **CLOSED 2026-08-21** — `webserver.listen(port, { address: "0.0.0.0" })`, default unchanged, `server.address` reported back from `getsockname`, IPv6 and dual-stack included, `tests/run_web_bind.sh` | small C | WEB-1 — done first, as planned |
 | B | ~~Safe static serving: canonicalize-then-check, content types, non-slurping reads~~ **MOSTLY CLOSED 2026-08-21** — `real_path`/`file_type` builtins + `web.static` (canonicalize-then-check, content types by extension). Non-slurping reads remain, and belong with E: the response model has no streaming. | small C | WEB-1 |
-| C | Worker pool: socket value kind + spawn transfer, or `SO_REUSEPORT` | the §5 decision | WEB-2 |
+| C | ~~Worker pool~~ **CLOSED 2026-08-22** — process workers; the supervisor holds (`hold: true`), workers adopt via `webserver.inherited()`, transfer is `process.start listen_fds:` speaking LISTEN_FDS. No socket value kind was needed: the live server record already names the listener, and the fd itself only ever moves at exec time. | the §5 decision | WEB-2 — done |
 | D | TLS/SNI | subsystem | WEB-3 |
 | E | Streaming: connection handle, `emit`, keep-alive | new response mode | WEB-4 |
-| F | `LISTEN_FDS` / inherited socket | small, with C | WEB-2 |
+| F | ~~`LISTEN_FDS` / inherited socket~~ **CLOSED 2026-08-22** — the same protocol IS the worker transfer, so one mechanism serves systemd and the supervisor. | small, with C | WEB-2 — done |
 
 Everything else in both examples — routing, patterns, handlers,
 return-value responses, host dispatch, proxy trust, redirect, drain

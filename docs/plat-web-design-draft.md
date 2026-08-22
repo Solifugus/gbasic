@@ -233,13 +233,22 @@ get the listener into workers:
 | Runtime work | a socket value kind; spawn transfer **already exists** | `fds:` option on `process.start` (does not exist today) | none |
 | Supervision | the actor model's own monitor/demonitor | PLAT-PROC poll/stop | external |
 
-The actor-pool column is new in this revision and is the architecturally
-consistent choice: the language already owns spawn, transfer, monitoring and
-death notification for exactly this shape. `SO_REUSEPORT` remains the
-acceptable v1 on high ports and behind a proxy. systemd socket activation is
-fd passing where systemd is the privileged binder — supporting `LISTEN_FDS`
-gets port 443 with no new privilege machinery at all, and composes with
-either pool design.
+**DECIDED (PLAT-WEB-2, 2026-08-22): process workers, over the `process.start
+fds:` column — with the transfer speaking the LISTEN_FDS protocol.** The
+actor column, though architecturally consistent, cannot deliver §7's actual
+guarantee: *"a replacement must parse its source"* — an actor is spawned from
+the image already loaded, so a rolling reload through actors can never pick
+up edited code. Process workers get supervision from PLAT-PROC
+(start/poll/read/stop), which was already suite-proven, and making the fd
+handoff speak LISTEN_FDS closed Gap F in the same stroke: systemd socket
+activation and a gBASIC supervisor are one protocol and one code path
+(`webserver.inherited()`). The supervisor binds with `listen(port,
+{hold: true})` — the privilege of the port with none of the serving — and
+`SO_REUSEPORT` was not needed at all. Shipped: drain-on-SIGTERM (in-flight
+finishes, worker exits itself; `process.stop`'s polite/escalated split maps
+onto it exactly), the `server.draining` soft stop, and
+`web.pool`/`pool_tick`/`pool_reload`/`pool_stop` with the §7 probation rule.
+`tests/run_web_pool.sh`.
 
 One consequence to embrace rather than paper over: shared-nothing workers
 mean **no cross-request in-memory state**. State lives in SQLite or
@@ -502,7 +511,7 @@ Section 3, which was the preferred answer); pattern captures live on
 |---|---|
 | PLAT-WEB-0 | Lowering study (Section 10). **DONE 2026-08-20 — [`plat-web-lowering-study.md`](plat-web-lowering-study.md).** Verdict: the shape is right; six gaps (bind address, safe static, worker pool, TLS, streaming, LISTEN_FDS) map onto the phases below; everything else is sugar over what exists. |
 | PLAT-WEB-1 | **DONE 2026-08-21.** Gap A: `webserver.listen(port, { address: })`, default still loopback, `server.address` read back from the socket, IPv6 + dual-stack (`tests/run_web_bind.sh`). Route table as data: `stdlib/web.bas` — `web.routes` validating at build time, `{id}`/`{rest...}` patterns into `req.params`, specificity matching that does not depend on table order, `web.dispatch` returning a response record the server takes verbatim, `web.resolve` for the pure match, `web.paths` for introspection. Gap B: `real_path`/`file_type` builtins and `web.static`, canonicalize-then-check with the hostile-path cases proven red first (`docs/web_routing.md`, `tests/run_web_routes.sh`). |
-| PLAT-WEB-2 | Worker pool + drain + rolling reload. Decide the Section 5 column (actor pool with a socket value kind is the current lean); `LISTEN_FDS` support. |
+| PLAT-WEB-2 | **DONE 2026-08-22.** The §5 decision went to PROCESS workers (§7's "must parse its source" rules actors out; see §5). `hold:` on listen, `listen_fds:` on process.start speaking LISTEN_FDS, `webserver.inherited()` (which is also Gap F, closed), drain on SIGTERM and via `server.draining`, and `web.pool` with tick / rolling-reload-with-probation / drain-stop. `tests/run_web_pool.sh`, deterministic throughout (gate files and printed markers, no timers). |
 | PLAT-WEB-3 | TLS/SNI, static root (canonicalize-then-check), `trust_proxy`, timeouts. |
 | PLAT-WEB-4 | `stream` / SSE with `emit`. |
 | PLAT-WEB-5 | Grammar. Last, and only if 0–4 proved the shape. |
