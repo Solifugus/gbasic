@@ -61,5 +61,45 @@ rm -f "$env_prog"
 [[ "$env_out" == $'present\ntrue' ]]
 check "env set -> value, unset -> unknown" $?
 
+# --- the read-then-shadow warning -------------------------------------------
+# A function that READS an enclosing variable and then assigns the same name is
+# almost always trying to write it back; gBASIC creates a silent local instead
+# (no closures). The warning must: appear on STDERR exactly once (deduplicated
+# across calls), carry file:line:col, and change nothing -- stdout and exit
+# status are those of the unwarned program. The fixture's stdout doubles as the
+# proof of the underlying semantics: the global stays 5 however often bump()
+# runs.
+sw_out="$(mktemp)"; sw_err="$(mktemp)"
+./gbasic tests/shadow_warning_test.bas >"$sw_out" 2>"$sw_err"
+sw_status=$?
+[[ "$sw_status" -eq 0 ]]
+check "shadow warning: program still exits 0" $?
+[[ "$(cat "$sw_out")" == $'first:  6\nsecond: 6\nglobal: 5' ]]
+check "shadow warning: behavior unchanged (silent shadow semantics)" $?
+[[ "$(grep -c "creates a new function-local" "$sw_err")" -eq 1 ]]
+check "shadow warning: warned exactly once, not per call" $?
+grep -q "shadow_warning_test.bas:5:3" "$sw_err"
+check "shadow warning: names the file, line and column" $?
+# ...and a local that merely SHARES a global's name, never read first, is silent.
+sq_prog="$(mktemp --suffix=.bas)"
+cat >"$sq_prog" <<'EOF'
+function quiet()
+    i = 0
+    while i < 3
+        i = i + 1
+    end while
+    return i
+end function
+program m(args)
+    i = 99
+    print(quiet())
+end program
+EOF
+sq_err="$(mktemp)"
+./gbasic "$sq_prog" >/dev/null 2>"$sq_err"
+[[ ! -s "$sq_err" ]]
+check "shadow warning: an unread same-name local stays silent" $?
+rm -f "$sw_out" "$sw_err" "$sq_prog" "$sq_err"
+
 printf 'core suite: %d passed / %d failed\n' "$pass" "$fail"
 [[ "$fail" -eq 0 ]]

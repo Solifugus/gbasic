@@ -35,38 +35,34 @@ and the stale-looking ones carry a Status line saying what overtook them.
 
 ### Open — worth fixing (ranked)
 
-1. **Global rebind in a function silently makes a local** (2026-07-20 NAP-3,
-   2026-07-22 NAP-11, 2026-08-22 STU-10). high. Shape: a parse-time warning
-   when a bare assignment inside a function shadows a known top-level name —
-   the failure mode is "everything looks right and the world did not change".
-2. **No modulo** (2026-07-18 S6, 2026-08-12 d). medium. Shape: a `mod(a, b)`
+1. **No modulo** (2026-07-18 S6, 2026-08-12 d). medium. Shape: a `mod(a, b)`
    builtin first (`%` is lexer work and a separate decision). Logged twice,
    worked around by hand `a - floor(a/b)*b` in at least four libraries.
-3. **`encode` emits bare `nan`/`inf` that its own `decode` rejects**
+2. **`encode` emits bare `nan`/`inf` that its own `decode` rejects**
    (2026-07-24, deferred at 2026-08-14). medium. Shape: refuse like
    `json_encode` does, or emit a token `decode` accepts — either ends the
    round-trip hole. Verified still live against rc3.
-4. **No array concat** (2026-08-01 STU-2D). medium. Shape: `concat(a, b)`
+3. **No array concat** (2026-08-01 STU-2D). medium. Shape: `concat(a, b)`
    builtin; array `+` is a semantics decision to take separately. Verified
    still raising against rc3.
-5. **`process.start` children outlive a SIGKILLed parent** (2026-07-29).
+4. **`process.start` children outlive a SIGKILLed parent** (2026-07-29).
    medium. Shape: needs a DECISION on PDEATHSIG-by-default vs an opt-in,
    because arming it changes deliberately-detached children. Evidence in the
    entry; four stray interpreters found days later.
-6. **`xlsx.open` raises; batch tools cannot survive one bad workbook**
+5. **`xlsx.open` raises; batch tools cannot survive one bad workbook**
    (2026-08-03). medium, xlsx track. Shape: `xlsx.try_open` returning
    `{ok, workbook, message}`, the `try_decode` pattern. Same entry:
    `list_files` does not recurse, so corpus walks live in shell.
-7. **Parse errors of the `dim x` class print to stderr and exit 0**
+6. **Parse errors of the `dim x` class print to stderr and exit 0**
    (2026-07-18 D3). low, but it lies to CI. Verified still live against rc3.
-8. **Doc-gaps, each cheap:** typed-value construction (`d(date)=`, `m(USD)=`)
+7. **Doc-gaps, each cheap:** typed-value construction (`d(date)=`, `m(USD)=`)
    is shown nowhere in reference.md (2026-08-01); the library-dependency-
    inside-the-block rule is documented only by example (2026-08-11);
    `gtk.application`'s single-instance default is unstated and bit Studio for
    a day (2026-08-01).
-9. **No PBKDF2/scrypt in `crypto`** (2026-08-22). low. Passphrase-derived keys
+8. **No PBKDF2/scrypt in `crypto`** (2026-08-22). low. Passphrase-derived keys
    stay unofferable; `password_hash` covers login flows already.
-10. **`crypto.json_encode` remains a separate flat encoder** (2026-07-24).
+9. **`crypto.json_encode` remains a separate flat encoder** (2026-07-24).
     low. Fold into `json_encode` when convenient.
 
 ### Open — accepted as documented limitations (no action planned)
@@ -2139,6 +2135,23 @@ computed float encodes the interpreter that recorded it, and the release check
 is what catches that class. Studio's bundled `stats.viewers` keeps `places: 4`
 on coefficient columns — that was always the better display, independent of
 the skew that prompted it.
+
+### RESOLVED 2026-08-22 — the read-then-shadow warning exists
+
+The entry above asked for "even a warning", and the warning is in — with a
+sharper trigger than the entry proposed. Warning on EVERY same-name shadow
+would be noise (a plain local counter named like a global is idiomatic), so it
+fires only when the frame READ the name from an enclosing scope and then
+assigned it: the read-compute-store-back shape, which is what the G_app bug
+was. Once per name per process; behavior unchanged; file:line:col named.
+
+The noise question was measured, not argued: zero warnings across gBASIC's 232
+examples and 333 negative cases (the latter compare stderr byte-exact), a
+direct stderr sweep of all 212 example files, and Studio's 163+29 — the
+largest gBASIC codebase there is, whose display drivers capture stderr into
+goldens and moved not one of them. Five run_core.sh checks pin the contract:
+warns once, names the site, exits 0, stdout unchanged, and an unread same-name
+local stays silent.
 
 ## 2026-08-22 — CC — while: gBASIC Studio STU-10 (agent act tools) — a global rebind inside a function silently becomes a local, and the code still "works"
 - **Type:** language-surprise

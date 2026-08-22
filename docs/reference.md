@@ -617,6 +617,28 @@ codepoint by hex value (`"\u{1F600}"` is `"😀"`); for a literal NUL use `chr(0
 
 ## First-Class Functions
 
+**Scope, stated plainly:** a function body reads enclosing variables but cannot
+rebind them — an assignment to a name that is not already local creates a **new
+function-local**, and the outer variable keeps its value. To share mutable
+state with a function or a handler, keep it in a record and mutate its fields
+(`state.count = state.count + 1`), which persists because records are reached
+by reference. Because the broken form *looks* right and fails silently, the
+interpreter warns when a function **reads a name from an enclosing scope and
+then assigns it** — the read-compute-store-back shape is almost always an
+attempt to write the outer variable:
+
+```
+warning: 'total' was read from an enclosing scope, but this assignment creates
+a new function-local of that name at prog.bas:5:3; the outer variable is
+unchanged (functions cannot rebind outer scalars -- mutate a field of a shared
+record instead)
+```
+
+The warning appears once per name, changes nothing about execution, and stays
+silent for an ordinary local that merely shares an outer name without reading
+it first. (Older interpreters simply do not warn; no program can or should
+depend on it.)
+
 A bare function name evaluates to a **function value** — a reference to the named
 function, not a closure over its defining scope:
 

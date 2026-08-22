@@ -481,6 +481,14 @@ typedef struct Env {
     Symbol *items;
     size_t count;
     struct Env *parent;
+    /* Names this frame READ from an enclosing scope, recorded so a later bare
+     * assignment to one of them can warn: gBASIC has no closures, so that
+     * assignment creates a NEW local and the outer variable silently keeps its
+     * old value — the "everything looks right and the world did not change"
+     * trap (DOGFOOD 2026-07-20, -07-22, -08-22). Only function frames record;
+     * the global frame never does. */
+    char **outer_reads;
+    size_t outer_reads_count;
 } Env;
 
 typedef struct {
@@ -3054,12 +3062,54 @@ static Symbol *env_find(const char *name) {
     return NULL;
 }
 
+/* Names already warned about, once per name per process: the trap fires inside
+ * loops and handlers, and a warning repeated ten thousand times is one nobody
+ * reads. */
+static char **shadow_warned;
+static size_t shadow_warned_count;
+
+static void env_warn_shadow(const char *name) {
+    for (size_t i = 0; i < shadow_warned_count; i++) {
+        if (strcmp(shadow_warned[i], name) == 0) {
+            return;
+        }
+    }
+    char **grown = realloc(shadow_warned, sizeof(char *) * (shadow_warned_count + 1));
+    if (!grown) {
+        return;
+    }
+    grown[shadow_warned_count] = copy_string(name);
+    shadow_warned = grown;
+    shadow_warned_count++;
+    fprintf(stderr,
+            "warning: '%s' was read from an enclosing scope, but this assignment "
+            "creates a new function-local of that name at %s:%d:%d; the outer "
+            "variable is unchanged (functions cannot rebind outer scalars -- "
+            "mutate a field of a shared record instead)\n",
+            name, runtime_error_path(), current_line, current_column);
+}
+
 static void env_set(const char *name, Value value) {
     Symbol *symbol = env_find_in_frame(current_env, name);
     if (symbol) {
         value_free(symbol->value);
         symbol->value = value;
         return;
+    }
+
+    /* Creating a NEW binding in a function frame. If this same frame already
+     * READ this name out of an enclosing scope, the odds are overwhelming that
+     * the intent was to write it back -- the pattern is read-global,
+     * compute, store -- and what actually happens is a silent shadow. Warn.
+     * A frame that never read the outer name (an ordinary local counter that
+     * happens to share a global's name) stays silent. */
+    if (current_env != &global_env) {
+        for (size_t i = 0; i < current_env->outer_reads_count; i++) {
+            if (strcmp(current_env->outer_reads[i], name) == 0) {
+                env_warn_shadow(name);
+                break;
+            }
+        }
     }
 
     Symbol *items = realloc(current_env->items, sizeof(Symbol) * (current_env->count + 1));
@@ -3086,7 +3136,36 @@ static Value env_get(const char *name) {
         }
         return value_copy(*current_this);
     }
-    Symbol *symbol = env_find(name);
+    Symbol *symbol = NULL;
+    for (Env *env = current_env; env; env = env->parent) {
+        symbol = env_find_in_frame(env, name);
+        if (symbol) {
+            /* Resolved in an ENCLOSING frame from inside a function: remember
+             * the name (deduplicated; the list stays tiny) so env_set can warn
+             * if this frame later shadows it. Reads that resolve locally, and
+             * every read at the top level, record nothing and cost one
+             * comparison. */
+            if (env != current_env && current_env != &global_env) {
+                int seen = 0;
+                for (size_t i = 0; i < current_env->outer_reads_count; i++) {
+                    if (strcmp(current_env->outer_reads[i], name) == 0) {
+                        seen = 1;
+                        break;
+                    }
+                }
+                if (!seen) {
+                    char **grown = realloc(current_env->outer_reads,
+                                           sizeof(char *) * (current_env->outer_reads_count + 1));
+                    if (grown) {
+                        grown[current_env->outer_reads_count] = copy_string(name);
+                        current_env->outer_reads = grown;
+                        current_env->outer_reads_count++;
+                    }
+                }
+            }
+            break;
+        }
+    }
     if (!symbol) {
         /* A bare function name (no parentheses) evaluates to a function value —
          * a reference to the registered function (first_class_functions_design
@@ -3104,6 +3183,12 @@ static Value env_get(const char *name) {
 }
 
 static void env_clear(Env *env) {
+    for (size_t i = 0; i < env->outer_reads_count; i++) {
+        free(env->outer_reads[i]);
+    }
+    free(env->outer_reads);
+    env->outer_reads = NULL;
+    env->outer_reads_count = 0;
     for (size_t i = 0; i < env->count; i++) {
         free(env->items[i].name);
         value_free(env->items[i].value);
