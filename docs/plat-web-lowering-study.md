@@ -165,10 +165,12 @@ What lowers cleanly:
   outer dispatch is one more `consider` level (strip an optional `:port`
   suffix first). Sites are just a two-level route table. **Lowers.**
 - **`trust_proxy "127.0.0.1"`**: pure record rewriting — if
-  `req.remote_ip` equals a trusted address, replace `remote_ip` with
-  `x-forwarded-for`'s first hop and note `x-forwarded-proto`. Ten lines of
-  gBASIC. **Lowers, cleanly** — which confirms it belongs in every phase
-  from the first.
+  `req.remote_ip` equals a trusted address, replace `remote_ip` from
+  `x-forwarded-for` and note `x-forwarded-proto`. Ten lines of gBASIC.
+  **Lowers, cleanly.** *(Correction, built 2026-08-22: the address taken is
+  the RIGHTMOST hop not itself trusted — the "first hop" this paragraph
+  originally named is the leftmost value, which the client controls: the
+  spoof the trust check exists to prevent.)*
 - **`on drain`, single-process**: `webserver.close(edge)` stops the
   listener, the queue drains through the existing watcher, the drain body
   runs after. **Lowers** for one process; the multi-worker version is part
@@ -189,9 +191,10 @@ What cannot lower, and why:
   one response record per request id, connection closed after it. Streaming
   needs a per-connection handle, an `emit` that writes without closing, and
   keep-alive. → **Gap E.**
-- **Minor, found along the way:** the 30-second response timeout is
-  hard-coded (should be an option once slow handlers are real), and
-  `listen` exposes no interface choice (folded into Gap A).
+- **Minor, found along the way:** ~~the 30-second response timeout is
+  hard-coded~~ (a per-listener `timeout:` option since WEB-3, covering the
+  idle-read slow-loris case too), and `listen` exposes no interface choice
+  (folded into Gap A, closed).
 
 ---
 
@@ -202,7 +205,7 @@ What cannot lower, and why:
 | A | ~~Bind address on `listen` (loopback-only today)~~ **CLOSED 2026-08-21** — `webserver.listen(port, { address: "0.0.0.0" })`, default unchanged, `server.address` reported back from `getsockname`, IPv6 and dual-stack included, `tests/run_web_bind.sh` | small C | WEB-1 — done first, as planned |
 | B | ~~Safe static serving: canonicalize-then-check, content types, non-slurping reads~~ **MOSTLY CLOSED 2026-08-21** — `real_path`/`file_type` builtins + `web.static` (canonicalize-then-check, content types by extension). Non-slurping reads remain, and belong with E: the response model has no streaming. | small C | WEB-1 |
 | C | ~~Worker pool~~ **CLOSED 2026-08-22** — process workers; the supervisor holds (`hold: true`), workers adopt via `webserver.inherited()`, transfer is `process.start listen_fds:` speaking LISTEN_FDS. No socket value kind was needed: the live server record already names the listener, and the fd itself only ever moves at exec time. | the §5 decision | WEB-2 — done |
-| D | TLS/SNI | subsystem | WEB-3 |
+| D | ~~TLS/SNI~~ **CLOSED 2026-08-22** — `tls:` on listen/inherited, SNI by hostname, refused at listen time; rotation = rolling reload of the pool. | subsystem | WEB-3 — done |
 | E | Streaming: connection handle, `emit`, keep-alive | new response mode | WEB-4 |
 | F | ~~`LISTEN_FDS` / inherited socket~~ **CLOSED 2026-08-22** — the same protocol IS the worker transfer, so one mechanism serves systemd and the supervisor. | small, with C | WEB-2 — done |
 

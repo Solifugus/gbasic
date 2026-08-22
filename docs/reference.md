@@ -1255,8 +1255,8 @@ The module provides:
 operating-system-assigned ephemeral port, which is exposed through
 `server.port`.
 
-`options` is a record accepting `address` (the local address to bind) and
-`hold` (*since 0.1.0-rc4*):
+`options` is a record accepting `address` (the local address to bind), `hold`,
+`timeout`, and `tls` (*all since 0.1.0-rc4*):
 
 ```basic
 ' loopback -- the default, reachable only from this machine
@@ -1274,7 +1274,36 @@ server = webserver.listen(8080, { address: "::" })
 ' bind and listen but NEVER accept: the supervisor's grip on a port whose
 ' serving it delegates to workers (see the worker pool below)
 super = webserver.listen(8080, { hold: true })
+
+' the request/idle budget in seconds (default 30): an unanswered request is
+' 504'd at the deadline, and a connection that never finishes SENDING a
+' request is shed with 408 on the same budget -- a byte-a-minute client
+' cannot hold a worker
+server = webserver.listen(8080, { timeout: 5 })
+
+' TLS termination: a default certificate, and per-hostname pairs selected by
+' SNI. A bad path or a key that does not match its certificate is refused AT
+' LISTEN TIME, naming the file -- not at the first handshake, hours later.
+server = webserver.listen(8443, { tls: {
+    cert: "site.crt", key: "site.key",
+    certs: [ { host: "api.example.com", cert: "api.crt", key: "api.key" } ] } })
 ```
+
+Requests carry `scheme` (`"https"` on a TLS listener, else `"http"`).
+Certificates are loaded when the listener is made and never re-read:
+**rotation is a rolling reload of the worker pool** — workers load their certs
+at start (`webserver.inherited({ tls: {...} })` over the supervisor's plain
+TCP socket), so replacing workers under the never-retire-on-faith rule
+replaces certificates with zero downtime, and there is no second reload
+mechanism to keep correct. TLS requires libssl at build time; without it the
+`tls` option raises the usual "not available in this build".
+
+The parser refuses what it cannot speak rather than guessing: a
+`Transfer-Encoding` header is answered `501` (this server does not implement
+chunked framing, and reading a chunked body as if it were length-framed
+leaves attacker-written bytes in the buffer to be parsed as the *next*
+request), and two `Content-Length` headers that disagree are answered `400`
+(the classic desync lever; agreeing duplicates still parse).
 
 Omitting `address` binds `127.0.0.1`, so a server is private until its author
 says otherwise. `address` must be a **numeric** IPv4 or IPv6 address: a
@@ -1371,6 +1400,15 @@ close-on-exec at creation, so the deliberate option is the *only* way one
 reaches a child. A supervisor binds once with `hold: true` (keeping the
 privilege of the port and none of the serving) and every worker accepts from
 the shared socket; the kernel distributes connections.
+
+**Behind a reverse proxy**, `web.trust_proxy(req, ["127.0.0.1"])` rewrites
+`remote_ip`/`scheme` from `X-Forwarded-For`/`-Proto` — only when the direct
+peer is one of the named proxies, and taking the **rightmost** forwarded
+address that is not itself trusted. The leftmost is whatever the client chose
+to write; each hop appends the peer it saw, so walking from the right stops
+at the first address vouched for by infrastructure you own. The original
+peer moves to `proxy_ip` and `forwarded: true` is set — evidence aside,
+never destroyed.
 
 **The pool, drain, and rolling reload** live in the `web` library:
 `web.pool(spec)` / `web.pool_start` / `web.pool_tick` (respawn dead workers)

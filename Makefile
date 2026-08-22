@@ -46,6 +46,13 @@ LIBXCRYPT_LIBS := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --
 LIBCRYPTO_AVAILABLE := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --exists libcrypto && printf 1 || printf 0)
 LIBCRYPTO_CFLAGS := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --cflags libcrypto 2>/dev/null)
 LIBCRYPTO_LIBS := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --libs libcrypto 2>/dev/null)
+# libssl (TLS for the webserver, PLAT-WEB-3) is detected separately from
+# libcrypto: the crypto builtins need only -lcrypto, and a machine can carry
+# one without the other. Compiled out, webserver.listen with a tls: option
+# raises the usual clean "not available in this build" error.
+LIBSSL_AVAILABLE := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --exists libssl && printf 1 || printf 0)
+LIBSSL_CFLAGS := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --cflags libssl 2>/dev/null)
+LIBSSL_LIBS := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --libs libssl 2>/dev/null)
 
 LIBXML2_AVAILABLE := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --exists libxml-2.0 && printf 1 || printf 0)
 LIBXML2_CFLAGS := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --cflags libxml-2.0 2>/dev/null)
@@ -128,6 +135,12 @@ else
 CFLAGS += -DHAVE_LIBXCRYPT=0
 endif
 
+ifeq ($(LIBSSL_AVAILABLE),1)
+CFLAGS += -DHAVE_LIBSSL=1 $(LIBSSL_CFLAGS)
+LDLIBS += $(LIBSSL_LIBS)
+else
+CFLAGS += -DHAVE_LIBSSL=0
+endif
 ifeq ($(LIBCRYPTO_AVAILABLE),1)
 CFLAGS += -DHAVE_LIBCRYPTO=1 $(LIBCRYPTO_CFLAGS)
 LDLIBS += $(LIBCRYPTO_LIBS)

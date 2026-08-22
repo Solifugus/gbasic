@@ -268,11 +268,18 @@ needs `on reload` or equivalent), and the hardened HTTP parsing that
 actually bites — header/body timeouts, request buffering so a slow client
 cannot hold a worker, smuggling-resistant parsing.
 
-That is exactly the "real native machinery" class that earns C — and it
-argues for sequencing, not for skipping: **v1 ships HTTP behind a reverse
-proxy** (`trust_proxy` plus `X-Forwarded-For`/`-Proto`, which is needed
-either way and is cheap), with the `cert:` syntax parsed and reserved.
-Direct TLS is its own hardening phase (PLAT-WEB-3).
+**[built 2026-08-22, PLAT-WEB-3]** Direct TLS shipped: default cert +
+SNI-per-host on `listen({tls:...})` and `inherited({tls:...})` (TLS 1.2
+floor; a bad pair refused at LISTEN time naming the file), request/idle
+timeouts as a per-listener `timeout:` option (504 on the response budget,
+408 for the slow-loris shape), and the smuggling guards (Transfer-Encoding
+→ 501 refused-not-guessed; disagreeing Content-Lengths → 400). Cert renewal
+is deliberately NOT a live re-read: workers load certs at start, so
+**rotation = a rolling reload of the pool** under §7's rule, and there is no
+second reload mechanism to keep correct. `trust_proxy` shipped as
+`web.trust_proxy`, taking the **rightmost untrusted** X-Forwarded-For hop —
+the lowering study's "first hop" phrasing was the spoof; see its correction.
+`tests/run_web_tls.sh`, `tests/run_web_hardening.sh`.
 
 `setcap cap_net_bind_service=+ep` on the `gbasic` binary is the option to
 **avoid**: it grants the capability to the interpreter, so any `.bas` file
@@ -512,6 +519,6 @@ Section 3, which was the preferred answer); pattern captures live on
 | PLAT-WEB-0 | Lowering study (Section 10). **DONE 2026-08-20 — [`plat-web-lowering-study.md`](plat-web-lowering-study.md).** Verdict: the shape is right; six gaps (bind address, safe static, worker pool, TLS, streaming, LISTEN_FDS) map onto the phases below; everything else is sugar over what exists. |
 | PLAT-WEB-1 | **DONE 2026-08-21.** Gap A: `webserver.listen(port, { address: })`, default still loopback, `server.address` read back from the socket, IPv6 + dual-stack (`tests/run_web_bind.sh`). Route table as data: `stdlib/web.bas` — `web.routes` validating at build time, `{id}`/`{rest...}` patterns into `req.params`, specificity matching that does not depend on table order, `web.dispatch` returning a response record the server takes verbatim, `web.resolve` for the pure match, `web.paths` for introspection. Gap B: `real_path`/`file_type` builtins and `web.static`, canonicalize-then-check with the hostile-path cases proven red first (`docs/web_routing.md`, `tests/run_web_routes.sh`). |
 | PLAT-WEB-2 | **DONE 2026-08-22.** The §5 decision went to PROCESS workers (§7's "must parse its source" rules actors out; see §5). `hold:` on listen, `listen_fds:` on process.start speaking LISTEN_FDS, `webserver.inherited()` (which is also Gap F, closed), drain on SIGTERM and via `server.draining`, and `web.pool` with tick / rolling-reload-with-probation / drain-stop. `tests/run_web_pool.sh`, deterministic throughout (gate files and printed markers, no timers). |
-| PLAT-WEB-3 | TLS/SNI, static root (canonicalize-then-check), `trust_proxy`, timeouts. |
+| PLAT-WEB-3 | **DONE 2026-08-22.** TLS/SNI (`tls:` on listen and inherited; refusal at listen time; rotation = roll the pool), per-listener `timeout:` (504 + slow-loris 408), smuggling guards (TE→501, disagreeing CL→400), `web.trust_proxy` (rightmost-untrusted). Static root had already shipped in WEB-1. `run_web_tls.sh`, `run_web_hardening.sh`. |
 | PLAT-WEB-4 | `stream` / SSE with `emit`. |
 | PLAT-WEB-5 | Grammar. Last, and only if 0–4 proved the shape. |

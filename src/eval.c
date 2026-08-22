@@ -16,6 +16,10 @@
 #include <poll.h>
 #include <regex.h>
 #include <signal.h>
+#if HAVE_LIBSSL
+#include <openssl/ssl.h>
+#include <openssl/err.h>
+#endif
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -12163,6 +12167,14 @@ struct WebServerClient {
     size_t capacity;
     int waiting_response;
     double deadline;
+    /* When the connection arrived: the idle-read deadline is measured from
+     * here until a complete request has been parsed. */
+    double connected_at;
+#if HAVE_LIBSSL
+    SSL *ssl;              /* NULL on a plain-HTTP listener */
+    int tls_handshaking;   /* 1 until SSL_accept completes */
+    int tls_want_write;    /* the handshake asked for POLLOUT, not POLLIN */
+#endif
     char remote_ip[64];
     int remote_port;
 };
@@ -12182,6 +12194,25 @@ struct WebServer {
      * hard half that 503s whatever is left. */
     int held;
     int draining;
+    /* PLAT-WEB-3: per-server response/idle timeout in seconds; 0 means the
+     * default (GBASIC_WEBSERVER_TIMEOUT or 30). One knob for both deadlines
+     * on purpose: "how long may a request take" and "how long may a client
+     * sit on a connection saying nothing" are the same budget to an
+     * operator, and a slow-loris client is exactly a request that is taking
+     * too long to arrive. */
+    double timeout_s;
+#if HAVE_LIBSSL
+    /* PLAT-WEB-3 Gap D. A default context, and per-hostname contexts chosen
+     * by SNI. Certificates are loaded when the listener is made and never
+     * re-read: rotation is a ROLLING RELOAD of the worker pool (§7), which
+     * re-parses everything a worker holds — certs included — under the
+     * never-retire-on-faith rule. A live re-read path would be a second
+     * reload mechanism to keep correct; the pool already is one. */
+    SSL_CTX *tls_ctx;
+    SSL_CTX **sni_ctxs;
+    char **sni_hosts;
+    size_t sni_count;
+#endif
     unsigned long next_request_id;
     WebServerClient *clients;
     size_t client_count;
@@ -12232,6 +12263,8 @@ static double webserver_now(void) {
     return (double)time(NULL);
 }
 
+static double webserver_effective_timeout(const WebServer *server);
+
 static double webserver_timeout_seconds(void) {
     const char *override = getenv("GBASIC_WEBSERVER_TIMEOUT");
     if (override && override[0]) {
@@ -12242,6 +12275,13 @@ static double webserver_timeout_seconds(void) {
         }
     }
     return WEBSERVER_DEFAULT_TIMEOUT_SECONDS;
+}
+
+static double webserver_effective_timeout(const WebServer *server) {
+    if (server && server->timeout_s > 0.0) {
+        return server->timeout_s;
+    }
+    return webserver_timeout_seconds();
 }
 
 static int webserver_set_blocking_mode(int fd, int blocking) {
@@ -12299,6 +12339,15 @@ static Value *webserver_field(Value *record, const char *name) {
 }
 
 static void webserver_client_close(WebServer *server, size_t index) {
+#if HAVE_LIBSSL
+    if (server->clients[index].ssl) {
+        /* Best-effort close_notify; the peer may already be gone and a second
+         * shutdown round-trip is not worth blocking for. */
+        SSL_shutdown(server->clients[index].ssl);
+        SSL_free(server->clients[index].ssl);
+        server->clients[index].ssl = NULL;
+    }
+#endif
     close(server->clients[index].fd);
     free(server->clients[index].buffer);
     server->clients[index] = server->clients[server->client_count - 1];
@@ -12315,6 +12364,26 @@ static void webserver_client_close(WebServer *server, size_t index) {
     }
 }
 
+static void webserver_tls_release(WebServer *server) {
+#if HAVE_LIBSSL
+    for (size_t i = 0; i < server->sni_count; i++) {
+        SSL_CTX_free(server->sni_ctxs[i]);
+        free(server->sni_hosts[i]);
+    }
+    free(server->sni_ctxs);
+    free(server->sni_hosts);
+    server->sni_ctxs = NULL;
+    server->sni_hosts = NULL;
+    server->sni_count = 0;
+    if (server->tls_ctx) {
+        SSL_CTX_free(server->tls_ctx);
+        server->tls_ctx = NULL;
+    }
+#else
+    (void)server;
+#endif
+}
+
 static void webserver_close_native(WebServer *server) {
     if (server->listen_fd >= 0) {
         close(server->listen_fd);
@@ -12323,6 +12392,7 @@ static void webserver_close_native(WebServer *server) {
     while (server->client_count > 0) {
         webserver_client_close(server, server->client_count - 1);
     }
+    webserver_tls_release(server);
     server->running = 0;
 }
 
@@ -12625,6 +12695,13 @@ static Value webserver_make_request(WebServerClient *client,
     record_set(&request, "headers", headers);
     record_set(&request, "cookies", webserver_cookie_record(webserver_field(&request, "headers")));
     record_set(&request, "body", value_string(body));
+    {
+        int over_tls = 0;
+#if HAVE_LIBSSL
+        over_tls = client->ssl != NULL;
+#endif
+        record_set(&request, "scheme", value_string(over_tls ? "https" : "http"));
+    }
     if (body[0]) {
         Value json;
         if (webserver_decode_json(body, &json)) {
@@ -12684,6 +12761,7 @@ static int webserver_parse_request(WebServer *server, WebServerClient *client) {
 
     Value headers = value_record(NULL, 0);
     size_t content_length = 0;
+    int saw_content_length = 0;
     char *cursor = first_end + 1;
     while (*cursor) {
         while (*cursor == '\r' || *cursor == '\n') {
@@ -12714,7 +12792,36 @@ static int webserver_parse_request(WebServer *server, WebServerClient *client) {
                     free(text);
                     return -400;
                 }
+                /* A SECOND Content-Length that disagrees is the classic
+                 * request-smuggling lever: two parsers in a chain each pick a
+                 * different one and disagree about where this request ends.
+                 * There is no correct choice to make, so refuse (RFC 9112
+                 * §6.3 says exactly this). Agreeing duplicates are tolerated
+                 * — some clients repeat the header — because they cannot
+                 * cause a desync. */
+                if (saw_content_length && parsed != (unsigned long)content_length) {
+                    free(name);
+                    free(value);
+                    value_free(headers);
+                    free(text);
+                    return -400;
+                }
+                saw_content_length = 1;
                 content_length = (size_t)parsed;
+            }
+            if (strcmp(name, "transfer-encoding") == 0) {
+                /* This server does not implement chunked transfer coding.
+                 * The dangerous response to that is the one this parser
+                 * previously gave: ignore the header, read the body as if it
+                 * were Content-Length-framed, and leave the chunk data in
+                 * the buffer to be parsed as the NEXT request — which is a
+                 * request an attacker wrote. A server that does not speak a
+                 * framing must REFUSE it, not guess (501). */
+                free(name);
+                free(value);
+                value_free(headers);
+                free(text);
+                return -501;
             }
             free(name);
             free(value);
@@ -12750,7 +12857,7 @@ static int webserver_parse_request(WebServer *server, WebServerClient *client) {
 
     client->id = server->next_request_id++;
     client->waiting_response = 1;
-    client->deadline = webserver_now() + webserver_timeout_seconds();
+    client->deadline = webserver_now() + webserver_effective_timeout(server);
     Value request = webserver_make_request(client, method, target, query, headers, body);
     free(body);
     free(text);
@@ -12779,6 +12886,8 @@ static const char *webserver_reason(int status) {
     case 400: return "Bad Request";
     case 413: return "Payload Too Large";
     case 415: return "Unsupported Media Type";
+    case 408: return "Request Timeout";
+    case 501: return "Not Implemented";
     case 500: return "Internal Server Error";
     case 503: return "Service Unavailable";
     case 504: return "Gateway Timeout";
@@ -12801,6 +12910,27 @@ static void webserver_write_all(int fd, const char *data, size_t length) {
     }
 }
 
+/* Every response byte funnels through here, so TLS is one branch in one
+ * place rather than a parallel send path that drifts. The fd is blocking by
+ * the time this runs (webserver_send flips it), so SSL_write completes or
+ * fails; the loop only covers a short write. */
+static void webserver_client_write(WebServerClient *client, const char *data, size_t length) {
+#if HAVE_LIBSSL
+    if (client->ssl) {
+        size_t offset = 0;
+        while (offset < length) {
+            int written = SSL_write(client->ssl, data + offset, (int)(length - offset));
+            if (written <= 0) {
+                return;
+            }
+            offset += (size_t)written;
+        }
+        return;
+    }
+#endif
+    webserver_write_all(client->fd, data, length);
+}
+
 static void webserver_send(WebServerClient *client,
                            int status,
                            Value *headers,
@@ -12816,7 +12946,7 @@ static void webserver_send(WebServerClient *client,
                                  webserver_reason(status),
                                  strlen(payload));
     if (prefix_length > 0) {
-        webserver_write_all(client->fd, prefix, (size_t)prefix_length);
+        webserver_client_write(client, prefix, (size_t)prefix_length);
     }
     int content_type = 0;
     if (headers && headers->kind == VALUE_RECORD) {
@@ -12837,12 +12967,12 @@ static void webserver_send(WebServerClient *client,
             }
             snprintf(line, line_length, "%s: %s\r\n",
                      field->name, field->value->as.string);
-            webserver_write_all(client->fd, line, strlen(line));
+            webserver_client_write(client, line, strlen(line));
             free(line);
         }
     }
     if (!content_type) {
-        webserver_write_all(client->fd,
+        webserver_client_write(client,
                             "Content-Type: text/plain\r\n",
                             strlen("Content-Type: text/plain\r\n"));
     }
@@ -12856,13 +12986,13 @@ static void webserver_send(WebServerClient *client,
                 abort();
             }
             snprintf(line, line_length, "Set-Cookie: %s\r\n", cookie->as.string);
-            webserver_write_all(client->fd, line, strlen(line));
+            webserver_client_write(client, line, strlen(line));
             free(line);
         }
     }
-    webserver_write_all(client->fd, "\r\n", 2);
+    webserver_client_write(client, "\r\n", 2);
     if (payload[0]) {
-        webserver_write_all(client->fd, payload, strlen(payload));
+        webserver_client_write(client, payload, strlen(payload));
     }
 }
 
@@ -12962,6 +13092,100 @@ static void webserver_format_address(const struct sockaddr_storage *address,
     }
 }
 
+#if HAVE_LIBSSL
+/* One certificate/key pair as a server context. TLS 1.2 is the floor — every
+ * client this decade speaks it, and the protocols below it are the ones the
+ * hardening literature is about. The error buffer carries the FILE name:
+ * "handshake failure" three weeks later is not a message anyone can act on,
+ * "could not load key mysite.key" today is. */
+static SSL_CTX *webserver_tls_make_ctx(const char *cert, const char *key,
+                                       char *err, size_t err_size) {
+    SSL_CTX *ctx = SSL_CTX_new(TLS_server_method());
+    if (!ctx) {
+        snprintf(err, err_size, "webserver: could not create a TLS context");
+        return NULL;
+    }
+    SSL_CTX_set_min_proto_version(ctx, TLS1_2_VERSION);
+    if (SSL_CTX_use_certificate_chain_file(ctx, cert) != 1) {
+        snprintf(err, err_size, "webserver: could not load certificate '%s'", cert);
+        SSL_CTX_free(ctx);
+        return NULL;
+    }
+    if (SSL_CTX_use_PrivateKey_file(ctx, key, SSL_FILETYPE_PEM) != 1) {
+        /* OpenSSL 3 already compares the key against the loaded certificate
+         * here, so this arm catches BOTH an unreadable file and a mismatched
+         * pair -- and "could not load" alone would send someone checking file
+         * permissions on a key that loads fine and belongs to a different
+         * certificate. Say both. */
+        snprintf(err, err_size,
+                 "webserver: could not use private key '%s' (unreadable, or it does not match the certificate)",
+                 key);
+        SSL_CTX_free(ctx);
+        return NULL;
+    }
+    if (SSL_CTX_check_private_key(ctx) != 1) {
+        snprintf(err, err_size,
+                 "webserver: key '%s' does not match certificate '%s'", key, cert);
+        SSL_CTX_free(ctx);
+        return NULL;
+    }
+    return ctx;
+}
+
+/* SNI: pick the context whose host matches the name the client asked for,
+ * case-insensitively and exactly — no wildcard logic here, a wildcard CERT
+ * simply matches at the TLS layer under the default context. An unknown name
+ * proceeds under the default rather than failing the handshake: answering
+ * with the wrong certificate is visible and debuggable, a refused handshake
+ * is a mystery. */
+static int webserver_sni_select(SSL *ssl, int *alert, void *arg) {
+    (void)alert;
+    /* arg carries the server's ID, not its address: `webservers` is a
+     * realloc'd array, so a pointer taken at listen time dangles the moment
+     * another listener registers. The id survives anything short of close. */
+    WebServer *server = webserver_find((unsigned long)(uintptr_t)arg);
+    if (!server) {
+        return SSL_TLSEXT_ERR_OK;
+    }
+    const char *name = SSL_get_servername(ssl, TLSEXT_NAMETYPE_host_name);
+    if (name) {
+        for (size_t i = 0; i < server->sni_count; i++) {
+            if (strcasecmp(server->sni_hosts[i], name) == 0) {
+                SSL_set_SSL_CTX(ssl, server->sni_ctxs[i]);
+                break;
+            }
+        }
+    }
+    return SSL_TLSEXT_ERR_OK;
+}
+
+/* Drive an in-progress handshake one step. Returns 0 if the client was
+ * closed. Nonblocking, so "not done yet" arrives as WANT_READ/WANT_WRITE and
+ * the pump polls for whichever direction the handshake is starved of. */
+static int webserver_tls_handshake(WebServer *server, size_t index) {
+    WebServerClient *client = &server->clients[index];
+    int r = SSL_accept(client->ssl);
+    if (r == 1) {
+        client->tls_handshaking = 0;
+        return 1;
+    }
+    int reason = SSL_get_error(client->ssl, r);
+    if (reason == SSL_ERROR_WANT_READ) {
+        client->tls_want_write = 0;
+        return 1;
+    }
+    if (reason == SSL_ERROR_WANT_WRITE) {
+        client->tls_want_write = 1;
+        return 1;
+    }
+    /* A plain-HTTP byte stream aimed at a TLS port lands here on its first
+     * record; so does any real handshake failure. Close without ceremony —
+     * there is no agreed way to say anything to this peer. */
+    webserver_client_close(server, index);
+    return 0;
+}
+#endif
+
 static void webserver_accept(WebServer *server) {
     for (;;) {
         struct sockaddr_storage address;
@@ -12980,6 +13204,20 @@ static void webserver_accept(WebServer *server) {
         WebServerClient *client = &server->clients[server->client_count++];
         memset(client, 0, sizeof(*client));
         client->fd = fd;
+        client->connected_at = webserver_now();
+#if HAVE_LIBSSL
+        if (server->tls_ctx) {
+            client->ssl = SSL_new(server->tls_ctx);
+            if (!client->ssl) {
+                close(fd);
+                server->client_count--;
+                continue;
+            }
+            SSL_set_fd(client->ssl, fd);
+            SSL_set_accept_state(client->ssl);
+            client->tls_handshaking = 1;
+        }
+#endif
         webserver_format_address(&address,
                                  client->remote_ip,
                                  sizeof(client->remote_ip),
@@ -12990,12 +13228,28 @@ static void webserver_accept(WebServer *server) {
 static void webserver_read_client(WebServer *server, size_t index) {
     WebServerClient *client = &server->clients[index];
     char chunk[4096];
-    ssize_t count = recv(client->fd, chunk, sizeof(chunk), 0);
-    if (count <= 0) {
-        if (count == 0 || (errno != EAGAIN && errno != EWOULDBLOCK)) {
-            webserver_client_close(server, index);
+    ssize_t count;
+#if HAVE_LIBSSL
+    if (client->ssl) {
+        int r = SSL_read(client->ssl, chunk, sizeof(chunk));
+        if (r <= 0) {
+            int reason = SSL_get_error(client->ssl, r);
+            if (reason != SSL_ERROR_WANT_READ && reason != SSL_ERROR_WANT_WRITE) {
+                webserver_client_close(server, index);
+            }
+            return;
         }
-        return;
+        count = r;
+    } else
+#endif
+    {
+        count = recv(client->fd, chunk, sizeof(chunk), 0);
+        if (count <= 0) {
+            if (count == 0 || (errno != EAGAIN && errno != EWOULDBLOCK)) {
+                webserver_client_close(server, index);
+            }
+            return;
+        }
     }
     if (client->length + (size_t)count >
         WEBSERVER_MAX_REQUEST_SIZE + WEBSERVER_MAX_HEADER_SIZE) {
@@ -13085,10 +13339,18 @@ static void webserver_finish_shutdown(WebServer *server) {
 
 static void webserver_check_timeouts(WebServer *server) {
     double now = webserver_now();
+    double budget = webserver_effective_timeout(server);
     size_t i = 0;
     while (i < server->client_count) {
         if (server->clients[i].waiting_response && now >= server->clients[i].deadline) {
             webserver_send_error(server, i, 504, "Gateway Timeout");
+        } else if (!server->clients[i].waiting_response &&
+                   now >= server->clients[i].connected_at + budget) {
+            /* Connected, never finished sending a request: the slow-loris
+             * shape. 408 and close — a byte-at-a-minute client must not be
+             * able to hold a slot forever (design §6's "a slow client cannot
+             * hold a worker"). */
+            webserver_send_error(server, i, 408, "Request Timeout");
         } else {
             i++;
         }
@@ -13137,8 +13399,13 @@ static int webserver_run_event_loop(void) {
             }
             for (size_t j = 0; j < webservers[i].client_count; j++) {
                 pollfds[cursor].fd = webservers[i].clients[j].fd;
-                pollfds[cursor].events =
-                    webservers[i].clients[j].waiting_response ? 0 : POLLIN;
+                short events = webservers[i].clients[j].waiting_response ? 0 : POLLIN;
+#if HAVE_LIBSSL
+                if (webservers[i].clients[j].tls_handshaking) {
+                    events = webservers[i].clients[j].tls_want_write ? POLLOUT : POLLIN;
+                }
+#endif
+                pollfds[cursor].events = events;
                 cursor++;
             }
         }
@@ -13172,6 +13439,12 @@ static int webserver_run_event_loop(void) {
                 }
                 if (events & (POLLERR | POLLHUP | POLLNVAL)) {
                     webserver_client_close(&webservers[i], current);
+#if HAVE_LIBSSL
+                } else if (webservers[i].clients[current].tls_handshaking) {
+                    if (events & (POLLIN | POLLOUT)) {
+                        webserver_tls_handshake(&webservers[i], current);
+                    }
+#endif
                 } else if ((events & POLLIN) &&
                            !webservers[i].clients[current].waiting_response) {
                     webserver_read_client(&webservers[i], current);
@@ -13204,7 +13477,7 @@ static int webserver_run_event_loop(void) {
  * keeps binding deterministic and offline, and is a restriction that can be
  * lifted later far more easily than it could be imposed. */
 static int webserver_listen_options(AstExpr *expr, char *address, size_t address_size,
-                                    int *hold) {
+                                    int *hold, double *timeout_s, Value *tls_out) {
     if (expr->as.call.args.count < 2) {
         return 1;
     }
@@ -13233,6 +13506,22 @@ static int webserver_listen_options(AstExpr *expr, char *address, size_t address
                 return 0;
             }
             snprintf(address, address_size, "%s", field->value->as.string);
+        } else if (strcmp(field->name, "timeout") == 0) {
+            if (field->value->kind != VALUE_NUMBER || field->value->as.number <= 0 ||
+                !isfinite(field->value->as.number)) {
+                value_free(options);
+                webserver_raise("webserver.listen timeout must be a positive number of seconds");
+                return 0;
+            }
+            *timeout_s = field->value->as.number;
+        } else if (strcmp(field->name, "tls") == 0) {
+            if (field->value->kind != VALUE_RECORD) {
+                value_free(options);
+                webserver_raise("webserver.listen tls must be a record: { cert, key } and optionally { certs: [...] }");
+                return 0;
+            }
+            value_free(*tls_out);
+            *tls_out = value_copy(*field->value);
         } else if (strcmp(field->name, "hold") == 0) {
             /* PLAT-WEB-2: bind and listen but never accept. This is the
              * supervisor's option — it keeps the privilege of the port and
@@ -13263,13 +13552,115 @@ static int webserver_listen_options(AstExpr *expr, char *address, size_t address
     return 1;
 }
 
+#if HAVE_LIBSSL
+/* Build every context a tls: option describes. On failure everything built so
+ * far is freed and the raise names the file that refused. The DEFAULT pair
+ * may be omitted when certs: is present -- the first entry then answers
+ * clients that send no SNI at all. */
+static int webserver_tls_build(Value *tls, SSL_CTX **out_default,
+                               char ***out_hosts, SSL_CTX ***out_ctxs,
+                               size_t *out_count) {
+    *out_default = NULL;
+    *out_hosts = NULL;
+    *out_ctxs = NULL;
+    *out_count = 0;
+    char err[512];
+
+    const char *cert = NULL;
+    const char *key = NULL;
+    RecordField *cert_f = record_find(tls, "cert");
+    RecordField *key_f = record_find(tls, "key");
+    if (cert_f && cert_f->value->kind == VALUE_STRING) cert = cert_f->value->as.string;
+    if (key_f && key_f->value->kind == VALUE_STRING) key = key_f->value->as.string;
+
+    RecordField *certs_f = record_find(tls, "certs");
+    size_t sni_total = 0;
+    Value *sni_items = NULL;
+    if (certs_f) {
+        if (certs_f->value->kind != VALUE_ARRAY) {
+            webserver_raise("webserver: tls.certs must be an array of { host, cert, key } records");
+            return 0;
+        }
+        sni_items = certs_f->value->as.array.store->items;
+        sni_total = certs_f->value->as.array.store->count;
+    }
+    if ((!cert || !key) && sni_total == 0) {
+        webserver_raise("webserver: tls needs cert and key (or a certs: list)");
+        return 0;
+    }
+
+    char **hosts = NULL;
+    SSL_CTX **ctxs = NULL;
+    size_t built = 0;
+    if (sni_total > 0) {
+        hosts = calloc(sni_total, sizeof(char *));
+        ctxs = calloc(sni_total, sizeof(SSL_CTX *));
+        if (!hosts || !ctxs) {
+            abort();
+        }
+        for (size_t i = 0; i < sni_total; i++) {
+            if (sni_items[i].kind != VALUE_RECORD) {
+                webserver_raise("webserver: every tls.certs entry must be a { host, cert, key } record");
+                goto fail;
+            }
+            RecordField *h = record_find(&sni_items[i], "host");
+            RecordField *c = record_find(&sni_items[i], "cert");
+            RecordField *k = record_find(&sni_items[i], "key");
+            if (!h || h->value->kind != VALUE_STRING ||
+                !c || c->value->kind != VALUE_STRING ||
+                !k || k->value->kind != VALUE_STRING) {
+                webserver_raise("webserver: every tls.certs entry must be a { host, cert, key } record");
+                goto fail;
+            }
+            ctxs[i] = webserver_tls_make_ctx(c->value->as.string, k->value->as.string,
+                                             err, sizeof(err));
+            if (!ctxs[i]) {
+                webserver_raise(err);
+                goto fail;
+            }
+            hosts[i] = copy_string(h->value->as.string);
+            built = i + 1;
+        }
+    }
+
+    SSL_CTX *dflt = NULL;
+    if (cert && key) {
+        dflt = webserver_tls_make_ctx(cert, key, err, sizeof(err));
+        if (!dflt) {
+            webserver_raise(err);
+            goto fail;
+        }
+    } else {
+        /* No explicit default: the first named host answers SNI-less clients.
+         * Its context is shared, not rebuilt, so the two cannot diverge. */
+        dflt = ctxs[0];
+        SSL_CTX_up_ref(dflt);
+    }
+
+    *out_default = dflt;
+    *out_hosts = hosts;
+    *out_ctxs = ctxs;
+    *out_count = sni_total;
+    return 1;
+
+fail:
+    for (size_t i = 0; i < built; i++) {
+        SSL_CTX_free(ctxs[i]);
+        free(hosts[i]);
+    }
+    free(ctxs);
+    free(hosts);
+    return 0;
+}
+#endif
+
 /* Register an already-listening fd as a server and build its live record.
  * Shared by listen (which made the socket) and inherited (which was handed
  * one). The fd is marked close-on-exec HERE, unconditionally: a listener
  * must reach a child only through the deliberate listen_fds: door on
  * process.start, never by leaking through an unrelated process.run. */
 static Value webserver_register(int fd, const char *bound_address, int bound_port,
-                                int hold) {
+                                int hold, double timeout_s) {
     fcntl(fd, F_SETFD, fcntl(fd, F_GETFD) | FD_CLOEXEC);
     webserver_install_term_handler();
 
@@ -13286,6 +13677,7 @@ static Value webserver_register(int fd, const char *bound_address, int bound_por
     snprintf(server->address, sizeof(server->address), "%s", bound_address);
     server->running = 1;
     server->held = hold;
+    server->timeout_s = timeout_s;
     server->next_request_id = 1;
 
     Value record = value_record(NULL, 0);
@@ -13315,10 +13707,59 @@ static Value webserver_register(int fd, const char *bound_address, int bound_por
  * raise: that is a wiring error by whoever launched us, and serving nothing
  * quietly would make it the hardest kind to find. */
 static Value webserver_eval_inherited(AstExpr *expr) {
-    if (expr->as.call.args.count != 0) {
-        webserver_raise("webserver.inherited expects no arguments");
+    if (expr->as.call.args.count > 1) {
+        webserver_raise("webserver.inherited expects at most an options record");
         return value_null();
     }
+    double timeout_s = 0.0;
+    Value tls_opts = value_null();
+    if (expr->as.call.args.count == 1) {
+        Value options = eval_expr(expr->as.call.args.items[0]);
+        if (error_action_pending()) {
+            value_free(options);
+            return value_null();
+        }
+        if (options.kind != VALUE_RECORD) {
+            value_free(options);
+            webserver_raise("webserver.inherited options must be a record");
+            return value_null();
+        }
+        for (size_t i = 0; i < options.as.record.count; i++) {
+            const RecordField *field = &options.as.record.fields[i];
+            if (strcmp(field->name, "timeout") == 0) {
+                if (field->value->kind != VALUE_NUMBER || field->value->as.number <= 0 ||
+                    !isfinite(field->value->as.number)) {
+                    value_free(options);
+                    webserver_raise("webserver.inherited timeout must be a positive number of seconds");
+                    return value_null();
+                }
+                timeout_s = field->value->as.number;
+            } else if (strcmp(field->name, "tls") == 0) {
+                if (field->value->kind != VALUE_RECORD) {
+                    value_free(options);
+                    webserver_raise("webserver.inherited tls must be a record");
+                    return value_null();
+                }
+                value_free(tls_opts);
+                tls_opts = value_copy(*field->value);
+            } else {
+                char message[160];
+                snprintf(message, sizeof(message),
+                         "webserver.inherited does not know the option '%s'", field->name);
+                value_free(options);
+                webserver_raise(message);
+                return value_null();
+            }
+        }
+        value_free(options);
+    }
+#if !HAVE_LIBSSL
+    if (tls_opts.kind == VALUE_RECORD) {
+        value_free(tls_opts);
+        webserver_raise("webserver: TLS support is not available in this build (install libssl development files and rebuild)");
+        return value_null();
+    }
+#endif
     const char *pid_text = getenv("LISTEN_PID");
     const char *count_text = getenv("LISTEN_FDS");
     if (!pid_text || !count_text) {
@@ -13365,8 +13806,32 @@ static Value webserver_eval_inherited(AstExpr *expr) {
             webserver_format_address(&address, bound_address, sizeof(bound_address),
                                      &bound_port);
         }
-        items[i] = webserver_register(fd, bound_address, bound_port, 0);
+        items[i] = webserver_register(fd, bound_address, bound_port, 0, timeout_s);
+#if HAVE_LIBSSL
+        if (tls_opts.kind == VALUE_RECORD) {
+            SSL_CTX *tls_default = NULL;
+            char **sni_hosts = NULL;
+            SSL_CTX **sni_ctxs = NULL;
+            size_t sni_count = 0;
+            if (!webserver_tls_build(&tls_opts, &tls_default, &sni_hosts, &sni_ctxs, &sni_count)) {
+                for (long j = 0; j <= i; j++) {
+                    value_free(items[j]);
+                }
+                free(items);
+                value_free(tls_opts);
+                return value_null();
+            }
+            WebServer *server = &webservers[webserver_count - 1];
+            server->tls_ctx = tls_default;
+            server->sni_hosts = sni_hosts;
+            server->sni_ctxs = sni_ctxs;
+            server->sni_count = sni_count;
+            SSL_CTX_set_tlsext_servername_callback(tls_default, webserver_sni_select);
+            SSL_CTX_set_tlsext_servername_arg(tls_default, (void *)(uintptr_t)server->id);
+        }
+#endif
     }
+    value_free(tls_opts);
     unsetenv("LISTEN_FDS");
     unsetenv("LISTEN_PID");
     return value_array(items, (size_t)count);
@@ -13392,9 +13857,18 @@ static Value webserver_eval_listen(AstExpr *expr) {
 
     char bind_address[64] = "127.0.0.1";
     int hold = 0;
-    if (!webserver_listen_options(expr, bind_address, sizeof(bind_address), &hold)) {
+    double timeout_s = 0.0;
+    Value tls_opts = value_null();
+    if (!webserver_listen_options(expr, bind_address, sizeof(bind_address), &hold, &timeout_s, &tls_opts)) {
         return value_null();
     }
+#if !HAVE_LIBSSL
+    if (tls_opts.kind == VALUE_RECORD) {
+        value_free(tls_opts);
+        webserver_raise("webserver: TLS support is not available in this build (install libssl development files and rebuild)");
+        return value_null();
+    }
+#endif
 
     char port_text[16];
     snprintf(port_text, sizeof(port_text), "%d", port);
@@ -13451,7 +13925,34 @@ static Value webserver_eval_listen(AstExpr *expr) {
     int bound_port = 0;
     webserver_format_address(&address, bound_address, sizeof(bound_address), &bound_port);
 
-    return webserver_register(fd, bound_address, bound_port, hold);
+#if HAVE_LIBSSL
+    SSL_CTX *tls_default = NULL;
+    char **sni_hosts = NULL;
+    SSL_CTX **sni_ctxs = NULL;
+    size_t sni_count = 0;
+    if (tls_opts.kind == VALUE_RECORD) {
+        if (!webserver_tls_build(&tls_opts, &tls_default, &sni_hosts, &sni_ctxs, &sni_count)) {
+            value_free(tls_opts);
+            close(fd);
+            return value_null();
+        }
+    }
+#endif
+    value_free(tls_opts);
+
+    Value record = webserver_register(fd, bound_address, bound_port, hold, timeout_s);
+#if HAVE_LIBSSL
+    if (tls_default) {
+        WebServer *server = &webservers[webserver_count - 1];
+        server->tls_ctx = tls_default;
+        server->sni_hosts = sni_hosts;
+        server->sni_ctxs = sni_ctxs;
+        server->sni_count = sni_count;
+        SSL_CTX_set_tlsext_servername_callback(tls_default, webserver_sni_select);
+        SSL_CTX_set_tlsext_servername_arg(tls_default, (void *)(uintptr_t)server->id);
+    }
+#endif
+    return record;
 }
 
 static Value webserver_eval_close(AstExpr *expr) {
@@ -18247,7 +18748,7 @@ static pid_t process_launch(char **argv, const char *cwd,
                 ssize_t w = write(exec_pipe[1], &e, sizeof(e)); (void)w;
                 _exit(127);
             }
-            char env_count[16];
+            char env_count[24];
             char env_pid[32];
             snprintf(env_count, sizeof(env_count), "%zu", share_count);
             snprintf(env_pid, sizeof(env_pid), "%ld", (long)getpid());

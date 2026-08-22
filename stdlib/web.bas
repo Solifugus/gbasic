@@ -610,6 +610,78 @@ library web
     ' Introspection: the table as sorted "METHOD /path" lines. The static
     ' route list the design wants a tool to be able to show (§1), available
     ' now without running a request through anything.
+    ' ---- PLAT-WEB-3: proxy trust --------------------------------------------
+    '
+    ' Behind a reverse proxy, req.remote_ip is the proxy, and the client is in
+    ' X-Forwarded-For. Rewriting blindly is an open invitation — ANY client can
+    ' send that header — so the rule has two halves:
+    '
+    '   1. Rewrite only when the DIRECT peer is one of the named proxies.
+    '   2. Take the RIGHTMOST address in X-Forwarded-For that is not itself a
+    '      trusted proxy.
+    '
+    ' The second half corrects the design draft, which said "first hop". The
+    ' header reads client, proxy1, proxy2 — each hop APPENDS the peer it saw —
+    ' so the leftmost value is whatever the CLIENT chose to write, and taking
+    ' it first hands spoofing back to the attacker the first rule just shut
+    ' out. Walking from the right, the first address that is not one of your
+    ' own proxies is the real peer of your outermost proxy: the client, as
+    ' seen by infrastructure you trust.
+    '
+    ' Returns the request with remote_ip (and scheme, from X-Forwarded-Proto)
+    ' rewritten, plus `forwarded: true` and the proxy's own address in
+    ' `proxy_ip` — the evidence is moved aside, never destroyed.
+    function trust_proxy(req, proxies)
+        if not is_array(proxies) then
+            error "web.trust_proxy expects an array of proxy addresses"
+        end if
+        if not contains(proxies, req.remote_ip) then
+            return req
+        end if
+        chain = ""
+        if has(req.headers, "x-forwarded-for") then
+            chain = req.headers["x-forwarded-for"]
+        end if
+        if trim(chain) = "" then
+            return req
+        end if
+        hops = []
+        for each hop in split(chain, ",")
+            t = trim(hop)
+            if t != "" then
+                hops = append(hops, t)
+            end if
+        end for
+        if count(hops) = 0 then
+            return req
+        end if
+        client = ""
+        i = count(hops) - 1
+        while i >= 0
+            if not contains(proxies, hops[i]) then
+                client = hops[i]
+                break
+            end if
+            i = i - 1
+        end while
+        if client = "" then
+            ' Every hop is one of our own proxies: header exhausted without an
+            ' outside address. Leave the request as the socket saw it rather
+            ' than inventing a peer.
+            return req
+        end if
+        req.proxy_ip = req.remote_ip
+        req.remote_ip = client
+        req.forwarded = true
+        if has(req.headers, "x-forwarded-proto") then
+            proto = lower(trim(req.headers["x-forwarded-proto"]))
+            if proto = "https" or proto = "http" then
+                req.scheme = proto
+            end if
+        end if
+        return req
+    end function
+
     ' ---- PLAT-WEB-2: the worker pool ---------------------------------------
     '
     ' A supervisor holds the listener (webserver.listen with hold: true) and
