@@ -259,6 +259,12 @@ function name(a, b)
 end function
 ```
 
+Calling a function with the wrong number of arguments is a **runtime error**
+(*since 0.1.0-rc3*) — located at the call, fatal like any other, and subject to
+`on error` like any other. (Earlier builds printed one unlocated line to stderr
+and kept running with a `nothing` result, so the failure surfaced later,
+somewhere else, as `expected number but got nothing`.)
+
 Return:
 
 ```basic
@@ -1785,6 +1791,17 @@ Options record:
 - `cwd` (string, optional) — a directory to switch into before running the child.
 - `timeout` (number, optional) — seconds; when the child outlives it, its whole
   process group is killed. Absent or `<= 0` means no limit.
+- `launch_failure` (string, optional; *since 0.1.0-rc3*) — `"raise"` (the
+  default) or `"result"`. Under `"result"`, a failed **launch** — a missing
+  executable, an unenterable `cwd` — returns a record instead of raising, with
+  two extra fields: `launch_failed` (boolean) and `why` (the message the raise
+  would have carried). A successful run under this option carries
+  `launch_failed: false`, so callers can branch without `has()`. The default
+  record shape is unchanged for everyone who does not opt in. This exists
+  because gBASIC cannot catch a raise, so under the default an *optional*
+  external tool could not safely be attempted at all; see also
+  `process.which`, and note a child that ran and exited `127` is still
+  distinguishable (`launch_failed: false, exit_code: 127`).
 
 Result record:
 
@@ -1805,6 +1822,28 @@ Semantics:
 - **Launch failure raises** — a missing/inaccessible executable, a `cwd` that cannot
   be entered, or an internal pipe/fork failure raises a runtime error
   (`error.source = "process"`), distinct from a child that ran and exited `127`.
+  Opt out per call with `launch_failure: "result"` (above).
+
+`process.which(name)` (*since 0.1.0-rc3*) answers "what would `execvp` run for
+this name?" — the resolved path, or `unknown` when nothing runnable is found.
+It mirrors exec's own rules: a name containing `/` is tried as a literal path
+with no search; otherwise `$PATH` is walked (falling back to the system default
+path when `PATH` is unset, as `execvp` does), an empty `PATH` component meaning
+the current directory. A candidate must be a **regular file with execute
+permission** — a directory named like the tool is not a hit, which is the
+mistake hand-rolled `exists`-based PATH walks make. Not-found is `unknown`,
+never an error: absence is the ordinary state this function exists to report.
+
+```basic
+git = process.which("git")
+if is_unknown(git) then
+    ' the optional feature stays quiet
+end if
+```
+
+Between a `which` and a `run` the file can still vanish (the classic
+check-then-use race); a caller who cares runs with `launch_failure: "result"`
+and reads `launch_failed` instead of checking first.
 - **Environment** is inherited from the interpreter (no per-call environment override
   in this version).
 - **Blocking** — `process.run` waits for the child to finish and captures its output
@@ -2005,6 +2044,23 @@ the variable is not set, it returns `unknown`.
 port = env("GBASIC_SITE_PORT")
 if is_unknown(port) then
     port = "8080"
+end if
+```
+
+**`has_builtin(name)`** (*since 0.1.0-rc3*) - Answers whether this interpreter
+has an unqualified builtin of that name, so a program can degrade gracefully on
+an older release instead of crashing with `undefined variable`. Names of module
+functions (`process.which`, `reflect.inspect`, …) are **refused** rather than
+answered: they dispatch inside each module and there is no unified table of
+them, and a probe that can answer wrongly is worse than one that says it
+cannot answer.
+
+```basic
+if has_builtin("file_type") then
+    kind = file_type(path)          ' the precise check (newer builds)
+else
+    f(file) = path
+    present = exists(f)             ' the portable fallback
 end if
 ```
 

@@ -1964,3 +1964,252 @@ a library loaded as `"../stdlib/edgar.bas"` from `tests/` prints as
 `tests/../stdlib/edgar.bas`. It resolves and editors open it, but it is not
 normalised. Left alone deliberately rather than adding path canonicalisation to
 a diagnostics fix.
+
+## 2026-08-22 — CC — while: gBASIC Studio STU-8 (rich viewers) — a wrong-arity call does not stop the program
+- **Type:** bug
+- **Severity:** high
+- **What:** calling a function with the wrong number of arguments prints a bare
+  message to stderr, **keeps running**, and yields `nothing`. There is no file or
+  line on the message, and the poisoned value flows on until it happens to be
+  used arithmetically — so the eventual error points somewhere else entirely.
+
+  ```basic
+  function two(a, b)
+    return a + b
+  end function
+
+  program main(args)
+    x = two(1, 2, 3)          ' <-- the actual mistake, line 6
+    print "still running, x = " + string(x)
+    y = x + 1
+  end program
+  ```
+  ```
+  two expects 2 arguments
+  runtime error at arity.bas:8:9: arithmetic operator '+' expected number but got nothing
+  still running, x = nothing
+  ```
+
+  Note the ordering, too: the arity message and the runtime error land on stderr
+  while `print` output is still buffered, so the transcript reads as though the
+  program failed before it printed.
+
+  This cost real time in Studio. I called `action_notice(app, action, detail)` on
+  a two-parameter function; `app` became `nothing`, and the failure surfaced
+  three frames away as `for in expects an array` inside `studio_docs`, plus
+  `field access expects a record` in a third file. Three cascading errors, none
+  of them at the mistake.
+- **Why it matters:** arity is known statically for a named function. This is the
+  one class of error a BASIC can catch before running a line, and instead it is
+  reported at run time, non-fatally, without a location.
+- **Workaround:** none. Read the FIRST stderr line and ignore the located errors
+  after it — the located ones are downstream damage. A wrong-arity call should
+  raise like any other runtime error (with file:line), and ideally be rejected at
+  parse time for a call to a function whose definition is in scope.
+
+## 2026-08-22 — CC — while: gBASIC Studio STU-8 — `string(number)` precision differs between releases
+- **Type:** language-surprise
+- **Severity:** medium
+- **What:** the installed 2026 build renders a number through `string()` at **6
+  significant digits**, trailing zeros stripped; the current development build
+  renders the full value. Same source, same input, different text:
+
+  ```
+                    installed          dev
+  1.2031044      -> 1.2031             1.2031044
+  0.1140233      -> 0.114023           0.1140233
+  10.55142       -> 10.5514            10.55142
+  round(v, 6)    -> already truncated  full 6 places
+  ```
+
+  `round(v, 4)` agrees on both, because four decimals of a small number is
+  inside six significant digits either way.
+- **Why it matters:** any golden holding a computed float silently encodes which
+  interpreter recorded it. Studio's release check (`GBASIC=/usr/local/bin/gbasic
+  tests/run_studio.sh`) is what caught this — a viewer golden passed on the dev
+  build and failed on the installed one, and the diff looked like a rounding bug
+  in my own code rather than a platform difference.
+- **Workaround:** keep displayed precision inside six significant digits. Studio's
+  bundled `stats.viewers` declares `places: 4` for coefficient columns and says
+  why in `studio_viewers._cell`. If the dev build's behaviour is the intended
+  one, this is worth a release note: it changes the text of every program that
+  prints a computed float.
+
+## 2026-08-22 — CC — while: gBASIC Studio STU-10 (agent act tools) — a global rebind inside a function silently becomes a local, and the code still "works"
+- **Type:** language-surprise
+- **Severity:** high
+- **What:** UNLEARN documents that a function cannot rebind a top-level scalar —
+  the assignment creates a local. What is worth adding is how that FAILS: not
+  with an error, and not obviously.
+
+  ```basic
+  function call_gated(name, a)
+    r = studio_tools.invoke(G_app, G_log, G_pol, name, a, "")
+    G_app = r.app          ' <-- silently a local
+    G_log = r.log          ' <-- so is this
+    return encode(r.value)
+  end function
+  ```
+
+  The tool reported success. The return value was correct. The test printed
+  `edit_document -> true`. And the edit had not happened: the buffer still held
+  its old text, `dirty` was false, and the audit log was empty — three symptoms,
+  one line, none of them pointing at it.
+
+  What made it hard was that the function's OWN result was right. Everything the
+  caller could see about the call succeeded; only the world had not changed. A
+  raise would have been far cheaper.
+- **Why it matters:** this is the shape of every callback in a GUI or agent
+  program — a function the framework calls, whose whole purpose is to update
+  state the caller holds. gBASIC's answer is to mutate FIELDS of a global record
+  (`G.app = ...`), which works; the trap is that the scalar form is not rejected.
+- **Workaround:** keep callback state in one global RECORD and write fields.
+  Studio does this everywhere (`G.redrawing`, `_DATAGRID`, `_STUDIO_TABLE`) —
+  this driver was the one place that used bare globals, and it took three
+  contradictory symptoms to find out.
+
+  A diagnostic would pay for itself: assigning a bare identifier inside a
+  function when a top-level variable of that name exists is, in practice, always
+  a mistake. Even a warning would have turned twenty minutes into ten seconds.
+
+## 2026-08-22 — CC — while: gBASIC Studio STU-10 (teaching, secrets) — three smaller platform edges
+- **Type:** missing-feature
+- **Severity:** low
+- **What:** three things Studio wanted and worked around, recorded together
+  because none is worth its own entry:
+  1. **No static-class calls through `gi`.** `gi.invoke("Gtk.StyleContext.add_provider_for_display", ...)`
+     and `gi.invoke("Gdk.Display.get_default")` both fail with "unknown
+     function". Instance methods resolve fine. Studio installs its CSS provider
+     per widget via `w.get_style_context().add_provider(...)` instead — which is
+     better scoping, but was not a choice.
+  2. **No `chmod`.** A credential store cannot be created 0600 from gBASIC. This
+     shaped Studio's design away from a key file entirely (the key now comes from
+     the environment and is never written), so the outcome is better — but a
+     program that must write a private file has no way to say so.
+  3. **No password-based key derivation.** `crypto` has sha256/hmac/aes-gcm but
+     no PBKDF2/scrypt/argon2, so there is no safe way to turn a passphrase into a
+     key. Studio declines to offer passphrases rather than ship a single-round
+     hash that looks like one.
+- **Workaround:** as above, all three. (1) is the only one where a platform fix
+  would clearly help; (3) would be a good addition to `crypto` if secrets become
+  common in gBASIC applications.
+
+## 2026-08-22 — CC — while: gBASIC Studio STU-11 (optional git) — `process.run` raises on a missing executable, so "is it installed?" cannot be asked by asking
+- **Type:** language-surprise
+- **Severity:** medium
+- **What:** `process.run` raises when the executable is missing (documented, and
+  correct as a default), and gBASIC cannot catch a raise. Together those mean a
+  program cannot discover whether an optional tool is present by trying to run
+  it — the attempt is fatal for exactly the users who do not have it.
+
+  ```basic
+  ' What you want to write, and cannot:
+  r = process.run({ command: "git", args: ["--version"] })   ' raises if absent
+  ```
+
+  Studio's git integration is OPTIONAL by design, so this shaped the whole
+  module: it finds git by walking `PATH` and asking `file_type` on each
+  candidate, because `file_type` answers `unknown` instead of raising.
+
+  ```basic
+  for each dir in split(env("PATH"), ":")
+      if file_type(dir + "/git") = "file" then ...
+  ```
+- **Why it matters:** every optional external tool has this shape — a formatter,
+  a linter, a language server, a version-control binary. The workaround is
+  correct but each program reinvents it, and one that forgets gets a crash rather
+  than a degraded feature.
+- **Workaround:** the PATH walk above. What would remove the need: either a
+  `process.which(name)` returning the resolved path or `unknown`, or an option on
+  `process.run` making a launch failure a RESULT (`success: false`, a distinct
+  `why`) rather than a raise. The second fits the existing result record, which
+  already distinguishes a child that exited 127 from one that never started.
+
+## 2026-08-22 — CC — while: gBASIC Studio STU-11 — `file_type` is newer than the released interpreter, and only the release check said so
+- **Type:** doc-gap
+- **Severity:** medium
+- **What:** `file_type(path)` exists in the development build and not in the
+  installed 2026 release. Studio's git support used it (it is the only way to ask
+  "is this a file" without raising) and worked perfectly against `../gbasic/gbasic`.
+  The same source, on `/usr/local/bin/gbasic`:
+
+  ```
+  runtime error at tests/drivers/git.bas:64:36: undefined variable: file_type
+  ```
+
+  Nothing in the reference marks which builtins are newer than the last release.
+  A program written against the development interpreter can therefore be
+  correct, fully tested, and broken for every user — with no signal until
+  somebody runs it on a released build.
+- **Why it matters:** this is the second version-skew defect this project hit in
+  one session. The other was `string(number)` rendering at 6 significant digits
+  on the release and in full on the development build, which silently made a
+  golden a golden about which interpreter recorded it. That one was cosmetic;
+  this one is a crash.
+- **Workaround:** Studio uses `exists` instead, which is in both, accepting a
+  narrower guarantee (it cannot tell a program from a directory) and saying so in
+  the source. The general workaround is the release check itself:
+
+  ```sh
+  GBASIC=/usr/local/bin/gbasic GBASIC_STDLIB=/usr/local/share/gbasic/stdlib tests/run_studio.sh
+  ```
+
+  What would help more than a workaround: a "since" note on builtins in
+  `docs/reference.md`, or a `--since` / feature-probe the way a program can ask
+  whether a capability is present. Right now the only way to find out is to run
+  on an old build and read the crash.
+
+### RESOLVED 2026-08-22 — three of the entries above, in one pass
+
+**Wrong-arity call keeps running** (STU-8 entry): a wrong-arity call to a user
+function is now a LOCATED runtime error that halts (or follows `on error`, like
+anything else raised):
+
+    runtime error at prog.bas:6:3: two expects 2 arguments, got 3
+
+The spawn path had raised for this all along; plain calls were the outlier and
+now match. Negative test: `tests/negative_user_function_arity`. No positive
+golden moved, which answers the question the fix raised — nothing in the suites
+relied on the old keep-running behaviour.
+
+**`process.run` raises on a missing executable** (STU-11 entry): both proposed
+solutions are in.
+
+  * `process.which(name)` — the path execvp would run, or `unknown`. Mirrors
+    exec's own rules (literal path when the name has a `/`, `$PATH` walk
+    otherwise, empty component = current directory), and requires a REGULAR
+    file with execute permission — a directory named like the tool is not a
+    hit, which is the mistake the hand-rolled `exists`-based walks make.
+    Studio's git module can drop its PATH walk for this.
+  * `process.run({..., launch_failure: "result"})` — a failed launch comes back
+    as a record (`launch_failed: true, why: "..."`) instead of a raise, closing
+    the check-then-run race for callers who want to just run it. The default
+    still raises, and the default record shape is unchanged — nobody who did
+    not opt in sees a new field, so no existing golden moves. A child that ran
+    and exited 127 stays distinguishable.
+
+    Tests: `nap6_which`, `nap6_launch_result`, `negative_nap6_launch_bad`.
+
+**No way to know which builtins postdate the release** (second STU-11 entry):
+
+  * `has_builtin(name)` — answers from the parser registry PLUS the
+    dispatch-only names (`exists`, `read`, `list`, ... — the file/dir call
+    families eval.c dispatches without registering; the first draft consulted
+    the registry alone and answered FALSE for `exists`, a builtin that has
+    worked forever, which is exactly the wrong-answer failure the entry warned
+    about). Dotted module names are REFUSED rather than answered: there is no
+    unified table of module functions and a probe that can be wrong is worse
+    than one that says it cannot answer.
+  * `docs/reference.md` now carries "*since 0.1.0-rc3*" notes on everything
+    added after the rc2 tag — the convention the entry asked for. The release
+    check itself (run the suite against the installed interpreter) remains the
+    standing advice and is now written into the process.run docs' neighborhood.
+
+Suites after the change: examples 232 PASS, negative 333 PASS (both grew by the
+new cases), process suite green, pre-registration tripwire green.
+
+Still open from the 2026-08-22 entries: the `string(number)` precision skew
+(needs a decision about which rendering is intended before either build
+changes), the global-rebind-becomes-local silence (a parse-time warning is the
+right shape; not attempted in this pass), the `gi` static-class-call gap, no
+`chmod`, and no PBKDF2.
