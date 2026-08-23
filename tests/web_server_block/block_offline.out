@@ -1,0 +1,20 @@
+-- routes as data
+GET /
+stream /events
+POST /orders @ api.example
+
+-- dispatch with no socket
+GET / -> 200 <home> id=7
+POST /orders @ api -> 201
+POST /orders @ default -> 404
+GET /events -> stream=true
+GET /page.txt -> 200 file=true
+POST / -> 405 allow=GET
+
+-- the outline sees the block
+server edge
+directive root
+handler get /
+handler stream /events
+web api
+handler post /orders

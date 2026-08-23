@@ -1,6 +1,9 @@
 # PLAT-WEB — Declarative Server Block for gBASIC
 
-**Status:** design draft, nothing committed. Written to be argued with.
+**Status:** BUILT — every phase in §14 shipped, PLAT-WEB-5 (the grammar)
+last on 2026-08-22. Kept as the design record; the per-section
+[corrected]/[built]/[overtaken] annotations are the history of what survived
+contact with the runtime.
 Revised 2026-08-20 against the actual runtime; enterprise-readiness review
 folded in the same day (§7b–§7d: the let-it-crash error model, stream
 economics, observability, and the scale-out-now / LLVM-later performance
@@ -108,6 +111,14 @@ is how a supervisor written in gBASIC would drain or stop it).
 
 `server` is the only reserved word this adds — checked against the tree:
 no stdlib or example uses `server` as an identifier today. **[verified]**
+**[overtaken 2026-08-22, in the best way]** — that check was true when
+written and FALSE by the time the grammar shipped: WEB-1..4 built the layer
+beneath the sugar, and `server = webserver.listen(...)` became load-bearing
+vocabulary in stdlib/web.bas and thirty-odd fixtures. Reserving the word
+would have broken the proven foundation, so the shipped grammar reserves
+NOTHING: the head is a generic `IDENT IDENT( record_fields )` production and
+"server" is validated semantically — the same treatment §3 below already
+gives the verbs. A verification that ages is why phases re-verify.
 
 Everything else — `web`, `root`, `get`, `post`, `stream`, `trust_proxy` — is
 an ordinary `IDENT` in one of three generic productions:
@@ -499,9 +510,9 @@ a plausible later directive; none should be designed in now.
    form, its refusals (encode? send to a non-worker actor?) — the full
    new-value-kind checklist the watcher work just walked, including the
    `eval_comparison` branch that three kinds in a row have forgotten.
-3. Whether `workers:` defaults to 1 (simplest possible story: the minimal
-   example serves without any pool machinery) or to a CPU-derived count.
-   Leaning: 1 — production explicitness over magic.
+3. **RESOLVED (PLAT-WEB-5, 2026-08-22): 1.** The minimal example serves with
+   no pool machinery; production worker counts are written down, not
+   inferred from whatever machine the deploy landed on.
 
 Resolved since the first draft: stderr exists (`print to error`); the
 current library has no TLS (Section 6); `serve` is a builtin (Section 2);
@@ -521,4 +532,4 @@ Section 3, which was the preferred answer); pattern captures live on
 | PLAT-WEB-2 | **DONE 2026-08-22.** The §5 decision went to PROCESS workers (§7's "must parse its source" rules actors out; see §5). `hold:` on listen, `listen_fds:` on process.start speaking LISTEN_FDS, `webserver.inherited()` (which is also Gap F, closed), drain on SIGTERM and via `server.draining`, and `web.pool` with tick / rolling-reload-with-probation / drain-stop. `tests/run_web_pool.sh`, deterministic throughout (gate files and printed markers, no timers). |
 | PLAT-WEB-3 | **DONE 2026-08-22.** TLS/SNI (`tls:` on listen and inherited; refusal at listen time; rotation = roll the pool), per-listener `timeout:` (504 + slow-loris 408), smuggling guards (TE→501, disagreeing CL→400), `web.trust_proxy` (rightmost-untrusted). Static root had already shipped in WEB-1. `run_web_tls.sh`, `run_web_hardening.sh`. |
 | PLAT-WEB-4 | **DONE 2026-08-22.** Gap E: `{ stream: true }` responses open an EOF-framed connection; `webserver.emit(server, id, text)` returns `false` for a gone client (which is reaped — that return value is the liveness protocol); `webserver.finish` closes deliberately. Streams are exempt from the `timeout:` budget and ENDED by drain. `web.sse` / `sse_event` / `sse_named` spell SSE. Also closed Gap B's remainder: `{ file: path }` responses stream 64K chunks with `Content-Length` from `fstat`, and `web.static` returns that shape instead of slurping. `tests/run_web_stream.sh`. |
-| PLAT-WEB-5 | Grammar. Last, and only if 0–4 proved the shape. |
+| PLAT-WEB-5 | **DONE 2026-08-22.** The grammar — with ZERO new reserved words, one better than §3's "exactly one": by the time this shipped, `server = webserver.listen(...)` was load-bearing vocabulary in stdlib/web.bas and thirty-odd fixtures, so the head is a generic `IDENT IDENT( record_fields )` production and "server" is validated semantically, exactly as §3 already treated the verbs. Declarations are inert, position-blind (pre-registered beside functions; the tripwire and Studio's hoisting rule moved together), and bind to plain data with handler FUNCTION VALUES. §8's checks all fire at load time with file:line (`GB_DIAG_SERVER_BLOCK` in --json-diagnostics) — made statically decidable by one added rule: head options are literals. `serve` is `web.serve` reachable unqualified (the block implies `load web`) — even less than the corrected "builtin", and the §10 verdict held to the end: the whole engine is library code over WEB-1..4. Serving needs no watcher and no binding (`webserver.on_request` native dispatch; response-by-return per resolved Q1); `workers: N` self-spawns via the new `process.self()` over `web.pool`. Q3 resolved: workers defaults to 1. Q2 was mooted by the §5 decision. `tests/run_web_server_block.sh`. |

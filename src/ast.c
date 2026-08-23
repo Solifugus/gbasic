@@ -382,6 +382,79 @@ AstStmt *ast_watch(char *name, AstNameList names, AstStmtList body) {
     return stmt;
 }
 
+AstServerItemList ast_server_item_list_empty(void) {
+    AstServerItemList list = {NULL, 0};
+    return list;
+}
+
+AstServerItemList ast_server_item_list_append(AstServerItemList list, AstServerItem *item) {
+    AstServerItem **items = realloc(list.items, sizeof(*items) * (list.count + 1));
+    if (!items) {
+        abort();
+    }
+    items[list.count] = item;
+    list.items = items;
+    list.count = list.count + 1;
+    return list;
+}
+
+static AstServerItem *server_item_new(AstServerItemKind kind, int line, int column) {
+    AstServerItem *item = xmalloc(sizeof(*item));
+    memset(item, 0, sizeof(*item));
+    item->kind = kind;
+    item->line = line;
+    item->column = column;
+    return item;
+}
+
+AstServerItem *ast_server_directive(char *word, AstNameList strings, int line, int column) {
+    AstServerItem *item = server_item_new(AST_SERVER_DIRECTIVE, line, column);
+    item->word = word;
+    item->strings = strings;
+    return item;
+}
+
+AstServerItem *ast_server_handler(char *word, char *path, AstNameList params,
+                                  AstStmtList body, char *close_word, int line, int column) {
+    AstServerItem *item = server_item_new(AST_SERVER_HANDLER, line, column);
+    item->word = word;
+    item->path = path;
+    item->params = params;
+    item->body = body;
+    item->close_word = close_word;
+    return item;
+}
+
+AstServerItem *ast_server_site(char *word, char *name, AstRecordFieldList options,
+                               AstServerItemList entries, char *close_word, int line, int column) {
+    AstServerItem *item = server_item_new(AST_SERVER_SITE, line, column);
+    item->word = word;
+    item->name = name;
+    item->options = options;
+    item->entries = entries;
+    item->close_word = close_word;
+    return item;
+}
+
+AstServerItem *ast_server_hook(char *word, AstStmtList body, int line, int column) {
+    AstServerItem *item = server_item_new(AST_SERVER_HOOK, line, column);
+    item->word = word;
+    item->body = body;
+    return item;
+}
+
+AstStmt *ast_server(char *word, char *name, AstRecordFieldList options,
+                    AstServerItemList items, char *close_word) {
+    AstStmt *stmt = xmalloc(sizeof(*stmt));
+    stmt->kind = AST_STMT_SERVER;
+    stmt->as.server.word = word;
+    stmt->as.server.name = name;
+    stmt->as.server.options = options;
+    stmt->as.server.items = items;
+    stmt->as.server.close_word = close_word;
+    return stmt;
+}
+
 AstStmt *ast_unwatch(AstExpr *expr) {
     AstStmt *stmt = xmalloc(sizeof(*stmt));
     stmt->kind = AST_STMT_UNWATCH;
@@ -651,6 +724,40 @@ static void dump_expr(AstExpr *expr, int indent) {
     }
 }
 
+static void dump_stmt(AstStmt *stmt, int indent);
+
+static void dump_server_items(AstServerItemList items, int indent) {
+    for (size_t i = 0; i < items.count; i++) {
+        AstServerItem *item = items.items[i];
+        dump_indent(indent);
+        switch (item->kind) {
+        case AST_SERVER_DIRECTIVE:
+            printf("Directive %s", item->word);
+            for (size_t j = 0; j < item->strings.count; j++) {
+                printf(" \"%s\"", item->strings.items[j]);
+            }
+            printf("\n");
+            break;
+        case AST_SERVER_HANDLER:
+            printf("Handler %s \"%s\"\n", item->word, item->path);
+            for (size_t j = 0; j < item->body.count; j++) {
+                dump_stmt(item->body.items[j], indent + 1);
+            }
+            break;
+        case AST_SERVER_SITE:
+            printf("Site %s \"%s\"\n", item->word, item->name);
+            dump_server_items(item->entries, indent + 1);
+            break;
+        case AST_SERVER_HOOK:
+            printf("Hook %s\n", item->word);
+            for (size_t j = 0; j < item->body.count; j++) {
+                dump_stmt(item->body.items[j], indent + 1);
+            }
+            break;
+        }
+    }
+}
+
 static void dump_stmt(AstStmt *stmt, int indent) {
     dump_indent(indent);
     switch (stmt->kind) {
@@ -793,6 +900,10 @@ static void dump_stmt(AstStmt *stmt, int indent) {
         for (size_t i = 0; i < stmt->as.without_watchers.count; i++) {
             dump_stmt(stmt->as.without_watchers.items[i], indent + 2);
         }
+        break;
+    case AST_STMT_SERVER:
+        printf("Server %s \"%s\"\n", stmt->as.server.word, stmt->as.server.name);
+        dump_server_items(stmt->as.server.items, indent + 1);
         break;
     case AST_STMT_ON_ERROR_GOTO:
         printf("OnErrorGoto %s\n", stmt->as.on_error_label);
@@ -1136,9 +1247,43 @@ static void free_stmt(AstStmt *stmt) {
     case AST_STMT_BREAK:
     case AST_STMT_CONTINUE:
         break;
+    case AST_STMT_SERVER:
+        free(stmt->as.server.word);
+        free(stmt->as.server.name);
+        free(stmt->as.server.close_word);
+        ast_free_record_field_list(stmt->as.server.options);
+        ast_free_server_item_list(stmt->as.server.items);
+        break;
     }
 
     free(stmt);
+}
+
+void ast_free_server_item_list(AstServerItemList list) {
+    for (size_t i = 0; i < list.count; i++) {
+        AstServerItem *item = list.items[i];
+        free(item->word);
+        free(item->path);
+        free(item->name);
+        free(item->close_word);
+        free(item->fn_name);
+        if (item->fn_stmt) {
+            /* the registration shell: its name (and stamped source path) are
+             * its own copies; params/body are THIS item's and are freed below.
+             * The AST outlives every call, so the registry's pointer is dead
+             * weight by the time this runs. */
+            free(item->fn_stmt->as.function.name);
+            free(item->fn_stmt->as.function.source_path);
+            free(item->fn_stmt);
+        }
+        ast_free_name_list(item->strings);
+        ast_free_record_field_list(item->options);
+        ast_free_name_list(item->params);
+        ast_free_program(item->body);
+        ast_free_server_item_list(item->entries);
+        free(item);
+    }
+    free(list.items);
 }
 
 void ast_free_program(AstStmtList program) {

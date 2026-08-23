@@ -2345,3 +2345,20 @@ right shape; not attempted in this pass), the `gi` static-class-call gap, no
 - **Workaround:** bind and assign: `r = web.static(rel, base)` then
   `r.id = req.id`. Three lines for one, fine in a fixture; a route handler
   composing headers onto a library response will hit this constantly.
+
+## 2026-08-22 — CC — while: PLAT-WEB-5, giving web.serve a dispatch loop
+- **Type:** language-surprise
+- **Severity:** medium
+- **What:** `watch` may only be registered at top level ("for now", says the
+  runtime's own message), so a LIBRARY FUNCTION cannot install a serving
+  loop: web.serve had no way to arrange "when a request arrives, dispatch
+  it" and return. Combined with the two known constraints — functions
+  cannot mutate caller state, and record copies do not alias — every
+  callback-flavored design inside the library was structurally impossible.
+- **Workaround:** a designed native capability rather than a dodge:
+  `webserver.on_request(server, fn, context)` registers a function VALUE
+  the event loop calls per finished request as fn(context, request), return
+  value delivered as the response. It also decoupled serving from the
+  global-binding convention (`serve(edge)` unassigned works), which the
+  watcher path never could. If `watch` in function scope ever ships, this
+  entry is the record of what grew around its absence.

@@ -1,11 +1,15 @@
 # PLAT-WEB-0 — The Lowering Study
 
-**Status:** complete, 2026-08-20. This is the deliverable §10 of
-`plat-web-design-draft.md` calls for: both §2 examples hand-lowered onto the
-web library that exists today, with the honest list of what could not be
-expressed. A document, not code — nothing here ran, everything here was
-checked against the real library surface (`docs/reference.md` §WebServer,
-`examples/gbasic_site/site.bas`, and the module source).
+**Status:** complete, 2026-08-20; every gap it named CLOSED by 2026-08-22
+(WEB-1..4), and the grammar the study existed to justify shipped the same
+day (PLAT-WEB-5, `tests/run_web_server_block.sh`) — as pure sugar over the
+library layer, which is the §10 verdict holding to the end. This is the
+deliverable §10 of `plat-web-design-draft.md` calls for: both §2 examples
+hand-lowered onto the web library that existed on the study's date, with the
+honest list of what could not be expressed. A document, not code — nothing
+here ran, everything here was checked against the real library surface
+(`docs/reference.md` §WebServer, `examples/gbasic_site/site.bas`, and the
+module source).
 
 **The verdict up front:** the lowering is clean where it matters. Routing,
 handlers, host dispatch, proxy trust, drain, and the serve loop all lower

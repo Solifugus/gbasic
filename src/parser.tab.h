@@ -188,8 +188,10 @@ union YYSTYPE
     AstDuration duration;
     AstIdentSuffix ident_suffix;
     FieldPolicySpec field_policy;
+    AstServerItem *server_item;
+    AstServerItemList server_item_list;
 
-#line 193 "src/parser.tab.h"
+#line 195 "src/parser.tab.h"
 
 };
 typedef union YYSTYPE YYSTYPE;

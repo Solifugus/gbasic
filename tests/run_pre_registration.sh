@@ -39,8 +39,11 @@ status=0
 # The expected set below is a copy of the contract, not its source of truth. If it
 # disagrees with the code, that is the signal -- do not reconcile by editing this
 # list alone.
-EXPECTED_KINDS='AST_STMT_FUNCTION AST_STMT_MODIFIER'
-EXPECTED_CALLS='function_register modifier_register register_method_bodies_in'
+# PLAT-WEB-5 added AST_STMT_SERVER: a server declaration binds its name to inert
+# data and registers hidden handler functions, position-blind like a function.
+# studio_session._hoistable_kind() gained "server" in the same change.
+EXPECTED_KINDS='AST_STMT_FUNCTION AST_STMT_MODIFIER AST_STMT_SERVER'
+EXPECTED_CALLS='function_register modifier_register register_method_bodies_in server_register'
 
 region=$(awk '/BEGIN PRE-REGISTRATION SET/,/END PRE-REGISTRATION SET/' src/eval.c)
 
@@ -111,9 +114,14 @@ expected_out='function=42
 modifier=QUIET
 library=helper-tag
 function-value=10
+server=late/1
+server-handler=hoisted
 top-level-ran=false'
 
-actual_out=$(timeout 60 ./gbasic tests/native_platform/plat_guard_prereg_child.bas 2>&1 </dev/null)
+# GBASIC_PATH: registering the fixture's server block imports `web` (the block
+# implies its library), and that must resolve against THIS TREE's stdlib, not
+# whatever happens to be installed.
+actual_out=$(GBASIC_PATH=stdlib timeout 60 ./gbasic tests/native_platform/plat_guard_prereg_child.bas 2>&1 </dev/null)
 if [ "$actual_out" = "$expected_out" ]; then
     printf 'PASS plat_guard_prereg_behaviour (each kind reachable from below the block)\n'
 else

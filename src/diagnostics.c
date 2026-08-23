@@ -80,6 +80,7 @@ const char *gb_diag_code_str(gb_diag_code code) {
     case GB_DIAG_LEX_DETAIL:     return "GB_DIAG_LEX_DETAIL";
     case GB_DIAG_PARSE_ERROR:    return "GB_DIAG_PARSE_ERROR";
     case GB_DIAG_STRING_LITERAL: return "GB_DIAG_STRING_LITERAL";
+    case GB_DIAG_SERVER_BLOCK:   return "GB_DIAG_SERVER_BLOCK";
     case GB_DIAG_RUNTIME_ERROR:  return "GB_DIAG_RUNTIME_ERROR";
     }
     return "GB_DIAG_UNKNOWN";
@@ -113,7 +114,8 @@ gb_diagnostics *gb_get_active_sink(void) {
 const char *gb_diag_kind_str(gb_diag_code code) {
     switch (code) {
     case GB_DIAG_LEX_ERROR:      return "lexer error";
-    case GB_DIAG_PARSE_ERROR:    return "parse error";
+    case GB_DIAG_PARSE_ERROR:
+    case GB_DIAG_SERVER_BLOCK:   return "parse error";
     case GB_DIAG_LEX_DETAIL:
     case GB_DIAG_STRING_LITERAL:
     case GB_DIAG_RUNTIME_ERROR:  return "runtime error";

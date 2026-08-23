@@ -1485,6 +1485,102 @@ for N concurrent emit loops. Park and poke where the data arrives from
 elsewhere; loop in the handler only when the handler itself is the source.
 `tests/run_web_stream.sh` holds all of it.
 
+### The `server` block (*since 0.1.0-rc4*, PLAT-WEB-5)
+
+A declarative front end over everything above — a listener, its sites and
+their handlers in one place, in source order:
+
+```basic
+server myapp( port: 8080 )
+
+    root "public"
+
+    get "/"( req )
+        return { body: "hello" }
+    end get
+
+    get "/products/{id}"( req )
+        return { body: "product " + req.params.id }
+    end get
+
+    stream "/events"( req )
+        e = emit(req, web.sse_event("hi"))
+        return 0
+    end stream
+
+end server
+
+program main( args )
+    serve(myapp)
+end program
+```
+
+**Zero new reserved words.** `server`, the verbs, `web`, `root`,
+`trust_proxy` and hook names are ordinary identifiers recognized by
+position and validated at load time — `server = webserver.listen(0)` keeps
+meaning what it always did. Adding a verb never touches the grammar.
+
+**The declaration is inert and position-blind.** It binds its name to a
+plain record — options, sites, route table, handler *function values* —
+before the program block runs, exactly like a function declaration
+(`tests/run_pre_registration.sh` pins the set; gBASIC Studio's hoisting rule
+moves with it). Nothing opens a socket or reads a certificate until
+`serve()`. Handlers are registered under internal names user code cannot
+spell: callable only through the values the record carries, polluting no
+scope. A server block implies `load web`.
+
+**Head options are literals** — number, string, `true`/`false` — and that
+restriction is what makes every load-time check statically decidable:
+duplicate `method+path`, patterns that can never be told apart, malformed
+`{captures}`, unknown verbs/directives/hooks, duplicate hosts, `root`
+twice, a computed option. All of it is refused at load with file:line
+through the same diagnostics as parse errors (`--json-diagnostics` code
+`GB_DIAG_SERVER_BLOCK`). Deliberately runtime instead: certificate file
+existence, port availability, static directory existence. Computed
+configuration belongs to `webserver.listen`.
+
+Options: `port` (required unless sockets are inherited), `address`,
+`timeout`, `workers`, `cert`/`key` (the default TLS pair), `inherit`.
+Multi-host sites nest as `web name( host: "...", cert: "..." )` blocks —
+the SNI table is derived from where the certs were written. Bare entries
+form the implicit default site. `root` serves files only when no route
+answered (routes win over files on overlap), scoped to the site that
+declared it. `trust_proxy "ip", ...` applies `web.trust_proxy` to every
+request. `on drain ... end on` runs once when draining begins.
+
+**`serve(sv)`** (a `web` function, reachable unqualified) binds and runs:
+
+- Inherited sockets (`LISTEN_FDS`) are adopted first and `READY` is printed
+  — a spawned worker and a systemd-activated process are the same path.
+- `workers: N` (default 1) makes the call the supervisor: it binds with
+  `hold:`, prints `PORT <n>`, spawns N copies of **this program** via
+  `process.self()` over `web.pool`, ticks until asked to stop, then drains.
+- Otherwise it listens and returns the live server record. Serving needs no
+  binding: `serve(myapp)` unassigned works — dispatch is installed natively
+  (`webserver.on_request`), not through a watcher.
+
+Handlers take `(req)` and **return** the response record; captures are on
+`req.params`. `stream` handlers write with `emit(req, text)` / close with
+`finish(req)` and are SSE-headed. A raise inside a handler kills the worker
+(let-it-crash, §7b of the design); a handler that returns a non-record is a
+500 named on stderr, and serving continues. Handlers cannot rebind caller
+state, so shared state (a broadcast list) lives in **fields of a program
+global** — the one mutation a function makes visible.
+
+**Testing with no socket** (`tests/run_web_server_block.sh` holds all of
+this): `web.routes(myapp)` returns the route table as flat data;
+`web.dispatch(myapp, req_record)` runs one request through host dispatch,
+routes and static fallback (a stream route answers with its opening head);
+`source_outline` shows the block, its sites and every route.
+
+Three primitives shipped with the block and are general:
+`process.self()` → `{ interpreter, script, args }` (how a program launches
+another copy of itself); `webserver.on_request(server, fn, context)` /
+`webserver.on_drain(server, fn, context)` (native per-request dispatch —
+`fn(context, request)`, return value delivered as the response); and
+`webserver.stopping()` (true once SIGTERM asked this process to stop
+serving — the supervisor loop's exit condition).
+
 Shutdown forms:
 
 ```basic

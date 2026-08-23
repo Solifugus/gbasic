@@ -31,7 +31,8 @@ typedef enum {
     AST_STMT_DO_LOOP,
     AST_STMT_CONSIDER,
     AST_STMT_BREAK,
-    AST_STMT_CONTINUE
+    AST_STMT_CONTINUE,
+    AST_STMT_SERVER
 } AstStmtKind;
 
 typedef enum {
@@ -101,6 +102,43 @@ typedef struct {
     char **items;
     size_t count;
 } AstNameList;
+
+/* PLAT-WEB-5: one entry in a `server` declarative block. The grammar is
+ * generic (IDENT-led productions, zero reserved words); which words are legal
+ * -- verbs, directives, sub-block kinds, hook names -- is decided by the
+ * load-time validation pass, exactly as the design draft's §3 asks. */
+typedef enum {
+    AST_SERVER_DIRECTIVE,   /* root "public" / trust_proxy "ip", ... */
+    AST_SERVER_HANDLER,     /* get "/path"( req ) ... end get  (stream too) */
+    AST_SERVER_SITE,        /* web name( host: ... ) ... end web */
+    AST_SERVER_HOOK         /* on drain ... end on */
+} AstServerItemKind;
+
+typedef struct AstServerItem AstServerItem;
+
+typedef struct {
+    AstServerItem **items;
+    size_t count;
+} AstServerItemList;
+
+struct AstServerItem {
+    AstServerItemKind kind;
+    char *word;              /* directive name / verb / site kind word / hook name */
+    char *path;              /* handler: the path string literal */
+    char *name;              /* site: the declared name */
+    char *close_word;        /* handler/site: the word after `end`, matched in validation */
+    AstNameList strings;     /* directive: string-literal arguments */
+    AstRecordFieldList options; /* site: head options */
+    AstNameList params;      /* handler: parameter names */
+    AstStmtList body;        /* handler/hook body */
+    AstServerItemList entries;  /* site: nested items */
+    char *fn_name;           /* handler/hook: minted internal function name (NULL until registration) */
+    AstStmt *fn_stmt;        /* handler/hook: the synthesized function node the registry
+                              * holds. A SHELL over this item's params/body (shared, not
+                              * copied), so the item frees those and nothing frees this. */
+    int line;
+    int column;
+};
 
 typedef struct {
     char *library;
@@ -276,6 +314,13 @@ struct AstStmt {
             AstConsiderBranchList branches;
             AstStmtList else_body;
         } consider;
+        struct {
+            char *word;          /* the block kind word; "server" is the only one today */
+            char *name;          /* the declared name bound in the enclosing scope */
+            char *close_word;    /* the word after the closing `end` */
+            AstRecordFieldList options;
+            AstServerItemList items;
+        } server;
     } as;
 };
 
@@ -290,6 +335,17 @@ AstConsiderBranchList ast_consider_branch_list_empty(void);
 AstConsiderBranchList ast_consider_branch_list_append(AstConsiderBranchList list, AstExpr *match, AstStmtList body);
 AstNameList ast_name_list_empty(void);
 AstNameList ast_name_list_append(AstNameList list, char *name);
+
+AstServerItemList ast_server_item_list_empty(void);
+AstServerItemList ast_server_item_list_append(AstServerItemList list, AstServerItem *item);
+AstServerItem *ast_server_directive(char *word, AstNameList strings, int line, int column);
+AstServerItem *ast_server_handler(char *word, char *path, AstNameList params,
+                                  AstStmtList body, char *close_word, int line, int column);
+AstServerItem *ast_server_site(char *word, char *name, AstRecordFieldList options,
+                               AstServerItemList entries, char *close_word, int line, int column);
+AstServerItem *ast_server_hook(char *word, AstStmtList body, int line, int column);
+AstStmt *ast_server(char *word, char *name, AstRecordFieldList options,
+                    AstServerItemList items, char *close_word);
 
 AstExpr *ast_number(double value);
 AstExpr *ast_string(char *value);
@@ -361,6 +417,7 @@ void ast_free_stmt(AstStmt *stmt);
 void ast_free_expr_list(AstExprList list);
 void ast_free_name_list(AstNameList list);
 void ast_free_record_field_list(AstRecordFieldList list);
+void ast_free_server_item_list(AstServerItemList list);
 void ast_free_consider_branch_list(AstConsiderBranchList list);
 void ast_free_modifier_use(AstModifierUse modifier);
 void ast_free_modifier_signature(AstModifierSignature sig);

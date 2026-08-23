@@ -30,7 +30,15 @@ program main()
     ref = doubled
     print "function-value=" + ref(5)
 
-    ' 5. The negative: nothing out there executed.
+    ' 5. A server block declared after the program block (PLAT-WEB-5): the
+    '    name is bound to its inert value and its handlers are callable as
+    '    function values, before anything below the block ever ran.
+    print "server=" + late.name + "/" + string(count(late.sites[0].routes))
+    h = late.sites[0].routes[0].handler
+    r = h({ id: 1, method: "GET", path: "/" })
+    print "server-handler=" + r.body
+
+    ' 6. The negative: nothing out there executed.
     print "top-level-ran=" + top_level_ran()
 end program
 
@@ -56,6 +64,13 @@ end function
 function top_level_ran()
     return false
 end function
+
+' PLAT-WEB-5: a server declaration below the block, reached from inside it.
+server late( port: 0 )
+    get "/"( req )
+        return { body: "hoisted" }
+    end get
+end server
 
 library helper
     function tag()

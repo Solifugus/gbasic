@@ -583,6 +583,7 @@ static void analyze_expr(AddUsesContext *ctx, AstExpr *expr) {
 }
 
 static void analyze_stmt_list(AddUsesContext *ctx, AstStmtList list);
+static void analyze_server_items(AddUsesContext *ctx, AstServerItemList items);
 
 static void analyze_stmt(AddUsesContext *ctx, AstStmt *stmt) {
     switch (stmt->kind) {
@@ -613,6 +614,11 @@ static void analyze_stmt(AddUsesContext *ctx, AstStmt *stmt) {
         break;
     case AST_STMT_WITHOUT_WATCHERS:
         analyze_stmt_list(ctx, stmt->as.without_watchers);
+        break;
+    case AST_STMT_SERVER:
+        /* PLAT-WEB-5: handler and hook bodies are ordinary statements and may
+         * call into libraries; the block itself implies `load web`. */
+        analyze_server_items(ctx, stmt->as.server.items);
         break;
     case AST_STMT_ERROR:
         analyze_expr(ctx, stmt->as.error_message);
@@ -650,6 +656,14 @@ static void analyze_stmt(AddUsesContext *ctx, AstStmt *stmt) {
     case AST_STMT_ON_ERROR_RESUME_NEXT:
     case AST_STMT_ON_ERROR_STOP:
         break;
+    }
+}
+
+static void analyze_server_items(AddUsesContext *ctx, AstServerItemList items) {
+    for (size_t i = 0; i < items.count; i++) {
+        AstServerItem *item = items.items[i];
+        analyze_stmt_list(ctx, item->body);
+        analyze_server_items(ctx, item->entries);
     }
 }
 
@@ -914,6 +928,10 @@ int main(int argc, char **argv) {
 
     AstStmtList program = ast_stmt_list_empty();
     if (gb_parse(source, path, &program, &diags) != 0) {
+        /* A failed LOAD-TIME VALIDATION (PLAT-WEB-5 server blocks) still hands
+         * back the parsed AST; a failed parse hands back an empty list. Free
+         * either, so a refused program is not also a leaked one. */
+        ast_free_program(program);
         drain_diagnostics(&diags, json_diagnostics);
         gb_diagnostics_free(&diags);
         free(source);

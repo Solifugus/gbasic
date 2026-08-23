@@ -1,0 +1,3 @@
+server up
+hook ran: true
+self-exited: code=0 signal=0

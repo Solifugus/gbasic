@@ -12222,11 +12222,34 @@ struct WebServer {
     unsigned long next_request_id;
     WebServerClient *clients;
     size_t client_count;
+    /* PLAT-WEB-5. A NATIVE request handler: a registered function name plus a
+     * context value, called as fn(context, request) the moment a request
+     * finishes arriving — instead of the requests-queue/watcher path. This
+     * exists because `watch` is top-level-only, so web.serve (a library
+     * function) could not otherwise install a dispatch loop; and because it
+     * bypasses the queue, `serve(edge)` works with the server record bound
+     * nowhere. The handler's return value IS the response (response-by-return,
+     * design draft Q1), delivered natively. `drain_*` is the block's `on
+     * drain` hook, fired once when draining begins. */
+    char *handler_fn;
+    char *handler_lib;
+    Value handler_ctx;
+    int handler_set;
+    char *drain_fn;
+    char *drain_lib;
+    Value drain_ctx;
+    int drain_set;
+    int drain_fired;
 };
 
 static void webserver_raise(const char *message) {
     runtime_error_raise(message, WEBSERVER_ERROR_CODE, "webserver");
 }
+
+/* PLAT-WEB-5 forward declarations: the request-parse path hands a finished
+ * request to the native handler, and both are defined further down. */
+static int webserver_deliver_response(WebServer *server, Value response);
+static int webserver_call_handler(WebServer *server, Value request);
 
 /* PLAT-WEB-2: SIGTERM means DRAIN, not die, once this process is a server.
  *
@@ -12404,6 +12427,22 @@ static void webserver_close_native(WebServer *server) {
         webserver_client_close(server, server->client_count - 1);
     }
     webserver_tls_release(server);
+    free(server->handler_fn);
+    server->handler_fn = NULL;
+    free(server->handler_lib);
+    server->handler_lib = NULL;
+    if (server->handler_set) {
+        value_free(server->handler_ctx);
+        server->handler_set = 0;
+    }
+    free(server->drain_fn);
+    server->drain_fn = NULL;
+    free(server->drain_lib);
+    server->drain_lib = NULL;
+    if (server->drain_set) {
+        value_free(server->drain_ctx);
+        server->drain_set = 0;
+    }
     server->running = 0;
 }
 
@@ -12892,6 +12931,13 @@ static int webserver_parse_request(WebServer *server, WebServerClient *client) {
     free(body);
     free(text);
 
+    if (server->handler_set) {
+        /* PLAT-WEB-5: a native handler owns dispatch; the queue and the
+         * watcher path are bypassed, so this works with the server record
+         * bound in no variable at all -- `serve(edge)` unassigned. */
+        return webserver_call_handler(server, request);
+    }
+
     const char *server_name = NULL;
     Value *server_record = webserver_find_record(server->id, &server_name);
     Value *requests = server_record ? webserver_field(server_record, "requests") : NULL;
@@ -13130,6 +13176,53 @@ static void webserver_send_file(WebServer *server, size_t client_index,
     webserver_client_close(server, client_index);
 }
 
+/* Deliver ONE response record to its client: validate, resolve the client by
+ * id, and send by kind (stream head / file / plain). The queue pump and the
+ * PLAT-WEB-5 native handler path both come through here, so the two response
+ * roads cannot drift. Returns 1 delivered, 0 after raising. */
+static int webserver_deliver_response(WebServer *server, Value response) {
+    if (!webserver_validate_response_value(server, response, 1)) {
+        return 0;
+    }
+    int id = 0;
+    webserver_integer(*record_find(&response, "id")->value, &id);
+    size_t client_index = 0;
+    WebServerClient *client = webserver_find_client(server,
+                                                    (unsigned long)id,
+                                                    &client_index);
+    if (!client) {
+        webserver_raise("webserver response id does not match a pending request");
+        return 0;
+    }
+    RecordField *status = record_find(&response, "status");
+    RecordField *headers = record_find(&response, "headers");
+    RecordField *cookies = record_find(&response, "cookies");
+    RecordField *body = record_find(&response, "body");
+    RecordField *stream_f = record_find(&response, "stream");
+    RecordField *file_f = record_find(&response, "file");
+    if (stream_f && stream_f->value->as.boolean) {
+        webserver_send_stream_head(client,
+                                   status ? (int)status->value->as.number : 200,
+                                   headers ? headers->value : NULL);
+        client->streaming = 1;
+        client->waiting_response = 0;
+        client->length = 0;
+    } else if (file_f) {
+        webserver_send_file(server, client_index, file_f->value->as.string,
+                            status ? (int)status->value->as.number : 200,
+                            headers ? headers->value : NULL,
+                            cookies ? cookies->value : NULL);
+    } else {
+        webserver_send(client,
+                       status ? (int)status->value->as.number : 200,
+                       headers ? headers->value : NULL,
+                       cookies ? cookies->value : NULL,
+                       body ? body->value->as.string : "");
+        webserver_client_close(server, client_index);
+    }
+    return 1;
+}
+
 static void webserver_process_responses(WebServer *server) {
     Value *record = webserver_find_record(server->id, NULL);
     Value *responses = record ? webserver_field(record, "responses") : NULL;
@@ -13138,47 +13231,105 @@ static void webserver_process_responses(WebServer *server) {
     }
     while (responses->as.array.store->count > 0) {
         Value response = responses->as.array.store->items[0];
-        if (!webserver_validate_response_value(server, response, 1)) {
+        if (!webserver_deliver_response(server, response)) {
             return;
-        }
-        int id = 0;
-        webserver_integer(*record_find(&response, "id")->value, &id);
-        size_t client_index = 0;
-        WebServerClient *client = webserver_find_client(server,
-                                                        (unsigned long)id,
-                                                        &client_index);
-        if (!client) {
-            webserver_raise("webserver response id does not match a pending request");
-            return;
-        }
-        RecordField *status = record_find(&response, "status");
-        RecordField *headers = record_find(&response, "headers");
-        RecordField *cookies = record_find(&response, "cookies");
-        RecordField *body = record_find(&response, "body");
-        RecordField *stream_f = record_find(&response, "stream");
-        RecordField *file_f = record_find(&response, "file");
-        if (stream_f && stream_f->value->as.boolean) {
-            webserver_send_stream_head(client,
-                                       status ? (int)status->value->as.number : 200,
-                                       headers ? headers->value : NULL);
-            client->streaming = 1;
-            client->waiting_response = 0;
-            client->length = 0;
-        } else if (file_f) {
-            webserver_send_file(server, client_index, file_f->value->as.string,
-                                status ? (int)status->value->as.number : 200,
-                                headers ? headers->value : NULL,
-                                cookies ? cookies->value : NULL);
-        } else {
-            webserver_send(client,
-                           status ? (int)status->value->as.number : 200,
-                           headers ? headers->value : NULL,
-                           cookies ? cookies->value : NULL,
-                           body ? body->value->as.string : "");
-            webserver_client_close(server, client_index);
         }
         webserver_array_remove(responses, 0);
     }
+}
+
+/* PLAT-WEB-5: run the registered handler for one finished request and deliver
+ * what it returns. The contract:
+ *
+ *   response record            -> delivered (stream heads and files included)
+ *   { stream_open, handler, req } -> the head is delivered FIRST, then the named
+ *                                 function runs with the stream already open --
+ *                                 the ordering that makes an in-handler emit
+ *                                 work at all (the WEB-4 lesson, kept)
+ *   anything else              -> 500, named on stderr; the worker keeps serving
+ *
+ * A RAISE inside the handler is let-it-crash (§7b): the pending error
+ * propagates out through the event loop and the worker dies for its supervisor
+ * to restart. Takes ownership of `request`. */
+static int webserver_call_handler(WebServer *server, Value request) {
+    unsigned long req_id = 0;
+    {
+        int id = 0;
+        RecordField *f = record_find(&request, "id");
+        if (f) {
+            webserver_integer(*f->value, &id);
+        }
+        req_id = (unsigned long)id;
+    }
+    /* All emit/finish need to find the server again is _webserver_id, so the
+     * request carries a minimal record rather than the live one -- handlers
+     * receive copies, and a copy of the full record would only invite appends
+     * that go nowhere. */
+    Value mini = value_record(NULL, 0);
+    record_set(&mini, "_webserver_id", value_number((double)server->id));
+    record_set(&request, "server", mini);
+
+    FunctionDef *fn = function_resolve(server->handler_lib, server->handler_fn);
+    if (!fn || fn->stmt->as.function.params.count != 2) {
+        value_free(request);
+        webserver_raise("webserver.on_request handler is gone or does not take (context, request)");
+        return -500;
+    }
+    Value *args = malloc(sizeof(Value) * 2);
+    if (!args) {
+        abort();
+    }
+    args[0] = value_copy(server->handler_ctx);
+    args[1] = request;
+    Value out = invoke_function(fn->stmt, args, 2, NULL);
+    if (error_action_pending()) {
+        value_free(out);
+        return -500;
+    }
+
+    if (out.kind == VALUE_RECORD) {
+        RecordField *open_f = record_find(&out, "stream_open");
+        if (open_f && open_f->value->kind == VALUE_RECORD) {
+            if (!webserver_deliver_response(server, *open_f->value)) {
+                value_free(out);
+                return -500;
+            }
+            RecordField *hf = record_find(&out, "handler");
+            RecordField *rf = record_find(&out, "req");
+            if (hf && hf->value->kind == VALUE_FUNCTION && rf) {
+                FunctionDef *handler = function_resolve(hf->value->as.function.library,
+                                                        hf->value->as.function.name);
+                if (handler && handler->stmt->as.function.params.count == 1) {
+                    Value *hargs = malloc(sizeof(Value));
+                    if (!hargs) {
+                        abort();
+                    }
+                    hargs[0] = value_copy(*rf->value);
+                    Value hres = invoke_function(handler->stmt, hargs, 1, NULL);
+                    value_free(hres);
+                    if (error_action_pending()) {
+                        value_free(out);
+                        return -500;
+                    }
+                }
+            }
+            value_free(out);
+            return 1;
+        }
+        int delivered = webserver_deliver_response(server, out);
+        value_free(out);
+        return delivered ? 1 : -500;
+    }
+
+    fprintf(stderr,
+            "webserver: the request handler returned a %s, not a response record\n",
+            builtin_type_name(out));
+    value_free(out);
+    size_t client_index = 0;
+    if (webserver_find_client(server, req_id, &client_index)) {
+        webserver_send_error(server, client_index, 500, "Internal Server Error");
+    }
+    return 1;
 }
 
 static void webserver_send_error(WebServer *server,
@@ -13443,7 +13594,16 @@ static void webserver_read_client(WebServer *server, size_t index) {
 static void webserver_sync_shutdown(WebServer *server) {
     Value *record = webserver_find_record(server->id, NULL);
     Value *running = record ? webserver_field(record, "running") : NULL;
-    if (!record || (running && running->kind == VALUE_BOOL && !running->as.boolean)) {
+    /* A record the program dropped used to MEAN shutdown: with only the
+     * queue/watcher path, nobody could ever answer another request. A
+     * PLAT-WEB-5 native handler serves without any binding (the draft's own
+     * example never keeps serve's return), so with one registered, a missing
+     * record is a server whose owner simply did not keep the handle. */
+    if (!record) {
+        if (!server->handler_set) {
+            server->shutdown_requested = 1;
+        }
+    } else if (running && running->kind == VALUE_BOOL && !running->as.boolean) {
         server->shutdown_requested = 1;
     }
     /* The application-level soft stop: `server.draining = true` asks for the
@@ -13466,6 +13626,32 @@ static void webserver_sync_shutdown(WebServer *server) {
 static void webserver_progress_drain(WebServer *server) {
     if (!server->draining || !server->running) {
         return;
+    }
+    if (server->drain_set && !server->drain_fired) {
+        /* PLAT-WEB-5: the block's `on drain` hook, once, when draining BEGINS
+         * -- before the listener closes and the streams are ended, so the hook
+         * observes the server it is saying goodbye to. Called from the pump
+         * (a safe point), never from the signal handler. */
+        server->drain_fired = 1;
+        FunctionDef *fn = function_resolve(server->drain_lib, server->drain_fn);
+        if (fn) {
+            size_t wanted = fn->stmt->as.function.params.count;
+            if (wanted <= 1) {
+                Value *args = NULL;
+                if (wanted == 1) {
+                    args = malloc(sizeof(Value));
+                    if (!args) {
+                        abort();
+                    }
+                    args[0] = value_copy(server->drain_ctx);
+                }
+                Value out = invoke_function(fn->stmt, args, wanted, NULL);
+                value_free(out);
+                if (error_action_pending()) {
+                    return;
+                }
+            }
+        }
     }
     if (server->listen_fd >= 0) {
         close(server->listen_fd);
@@ -14402,9 +14588,120 @@ static Value webserver_eval_redirect(AstExpr *expr) {
     return response;
 }
 
+/* PLAT-WEB-5: register the native request handler / drain hook on a server.
+ * `webserver.on_request(server, fn, context)` -- fn is called as fn(context,
+ * request) per finished request, its return delivered as the response;
+ * `webserver.on_drain(server, fn, context)` -- fn runs once when draining
+ * begins. Re-registration replaces (the watcher rule: setup code that runs
+ * twice must not do the work twice). These exist because `watch` is top-level
+ * -only, so a library function (web.serve) could not otherwise install a
+ * dispatch loop. */
+static Value webserver_eval_on_hook(AstExpr *expr, int drain) {
+    const char *name = drain ? "on_drain" : "on_request";
+    char message[160];
+    if (expr->as.call.args.count != 3) {
+        snprintf(message, sizeof(message),
+                 "webserver.%s expects a server record, a function and a context value",
+                 name);
+        webserver_raise(message);
+        return value_null();
+    }
+    Value server_value = eval_expr(expr->as.call.args.items[0]);
+    if (error_action_pending()) {
+        value_free(server_value);
+        return value_null();
+    }
+    unsigned long id = 0;
+    if (!webserver_record_id(&server_value, &id) || !webserver_find(id)) {
+        value_free(server_value);
+        snprintf(message, sizeof(message), "webserver.%s expects a server record", name);
+        webserver_raise(message);
+        return value_null();
+    }
+    value_free(server_value);
+    Value fn = eval_expr(expr->as.call.args.items[1]);
+    if (error_action_pending()) {
+        value_free(fn);
+        return value_null();
+    }
+    if (fn.kind != VALUE_FUNCTION) {
+        value_free(fn);
+        snprintf(message, sizeof(message), "webserver.%s expects a function value", name);
+        webserver_raise(message);
+        return value_null();
+    }
+    Value ctx = eval_expr(expr->as.call.args.items[2]);
+    if (error_action_pending()) {
+        value_free(fn);
+        value_free(ctx);
+        return value_null();
+    }
+    WebServer *server = webserver_find(id);
+    if (drain) {
+        free(server->drain_fn);
+        free(server->drain_lib);
+        if (server->drain_set) {
+            value_free(server->drain_ctx);
+        }
+        server->drain_fn = copy_string(fn.as.function.name);
+        server->drain_lib = fn.as.function.library ? copy_string(fn.as.function.library) : NULL;
+        server->drain_ctx = ctx;
+        server->drain_set = 1;
+        server->drain_fired = 0;
+    } else {
+        free(server->handler_fn);
+        free(server->handler_lib);
+        if (server->handler_set) {
+            value_free(server->handler_ctx);
+        }
+        server->handler_fn = copy_string(fn.as.function.name);
+        server->handler_lib = fn.as.function.library ? copy_string(fn.as.function.library) : NULL;
+        server->handler_ctx = ctx;
+        server->handler_set = 1;
+    }
+    value_free(fn);
+    return value_bool(1);
+}
+
+/* PLAT-WEB-5: `webserver.stopping()` -- true once this process has been asked
+ * to stop serving (SIGTERM arrived, or every live server is draining). The
+ * supervisor loop inside web.serve polls this between pool ticks: it never
+ * enters the event loop, so nothing else would ever translate the TERM flag
+ * into an observable fact for it. */
+static Value webserver_eval_stopping(AstExpr *expr) {
+    if (expr->as.call.args.count != 0) {
+        webserver_raise("webserver.stopping expects no arguments");
+        return value_null();
+    }
+    if (webserver_term_requested) {
+        return value_bool(1);
+    }
+    int any = 0;
+    int all_draining = 1;
+    for (size_t i = 0; i < webserver_count; i++) {
+        if (!webservers[i].running) {
+            continue;
+        }
+        any = 1;
+        if (!webservers[i].draining) {
+            all_draining = 0;
+        }
+    }
+    return value_bool(any && all_draining);
+}
+
 static Value webserver_eval_call(AstExpr *expr) {
     if (strcmp(expr->as.call.name, "listen") == 0) {
         return webserver_eval_listen(expr);
+    }
+    if (strcmp(expr->as.call.name, "on_request") == 0) {
+        return webserver_eval_on_hook(expr, 0);
+    }
+    if (strcmp(expr->as.call.name, "on_drain") == 0) {
+        return webserver_eval_on_hook(expr, 1);
+    }
+    if (strcmp(expr->as.call.name, "stopping") == 0) {
+        return webserver_eval_stopping(expr);
     }
     if (strcmp(expr->as.call.name, "inherited") == 0) {
         return webserver_eval_inherited(expr);
@@ -19656,6 +19953,46 @@ static int process_is_executable(const char *path) {
  * meaning the current directory. The answer is the first candidate that is a
  * regular file with execute permission. Not found is `unknown`, never an
  * error: absence is the ordinary state this function exists to report. */
+/* PLAT-WEB-5: `process.self()` -> { interpreter, script, args }.
+ *
+ * The one fact a program cannot otherwise learn: how to launch ANOTHER COPY OF
+ * ITSELF. web.serve's worker pool is the motivating caller (the supervisor
+ * re-runs its own script under LISTEN_FDS), but the capability is general --
+ * any gBASIC supervisor re-spawning its program wants exactly this triple.
+ * `interpreter` comes from /proc/self/exe (the running binary, wherever it was
+ * installed or built), `script` is the root source path made absolute, and
+ * `args` are the program arguments after the script path, in order. */
+static Value process_do_self(AstExpr *expr) {
+    if (expr->as.call.args.count != 0) {
+        return process_raise("process.self expects no arguments");
+    }
+    char exe[4096];
+    ssize_t n = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
+    if (n <= 0) {
+        return process_raise("process.self: could not read /proc/self/exe");
+    }
+    exe[n] = '\0';
+    if (!root_source_path) {
+        return process_raise("process.self: no script path (embedded evaluation)");
+    }
+    char script[4096];
+    if (!realpath(root_source_path, script)) {
+        snprintf(script, sizeof(script), "%s", root_source_path);
+    }
+    Value result = value_record(NULL, 0);
+    record_set(&result, "interpreter", value_string(exe));
+    record_set(&result, "script", value_string(script));
+    Value *items = program_arg_count ? malloc(sizeof(Value) * program_arg_count) : NULL;
+    if (program_arg_count && !items) {
+        abort();
+    }
+    for (size_t i = 0; i < program_arg_count; i++) {
+        items[i] = value_string(program_args[i]);
+    }
+    record_set(&result, "args", value_array(items, program_arg_count));
+    return result;
+}
+
 static Value process_do_which(AstExpr *expr) {
     if (expr->as.call.args.count != 1) {
         return process_raise("process.which expects a command name");
@@ -19731,6 +20068,9 @@ static Value process_eval_call(AstExpr *expr) {
     }
     if (strcmp(expr->as.call.name, "which") == 0) {
         return process_do_which(expr);
+    }
+    if (strcmp(expr->as.call.name, "self") == 0) {
+        return process_do_self(expr);
     }
     if (strcmp(expr->as.call.name, "start") == 0) {
         return process_do_start(expr);
@@ -20295,6 +20635,8 @@ static int outline_emit(OutlineCtx *c, AstStmt *stmt, const char *kind,
 }
 
 static void outline_walk_list(OutlineCtx *c, AstStmtList body, int parent_id);
+static void outline_walk_server_items(OutlineCtx *c, AstServerItemList items,
+                                      int parent_id);
 
 static void outline_walk_stmt(OutlineCtx *c, AstStmt *stmt, int parent_id) {
     if (!stmt) { return; }
@@ -20370,9 +20712,63 @@ static void outline_walk_stmt(OutlineCtx *c, AstStmt *stmt, int parent_id) {
         outline_walk_list(c, stmt->as.with_lock.body, id);
         break;
     }
+    case AST_STMT_SERVER: {
+        int id = outline_emit(c, stmt, "server", stmt->as.server.name, 1, 0, 0,
+                              parent_id);
+        outline_walk_server_items(c, stmt->as.server.items, id);
+        break;
+    }
     default:
         outline_emit(c, stmt, "statement", NULL, 0, 0, 0, parent_id);
         break;
+    }
+}
+
+/* PLAT-WEB-5: the block's items in the outline -- which is where "the static
+ * route table an LSP can show" (draft §1) becomes literal. Items are not
+ * AstStmts, so a shell node carries each one's span: start from the item, end
+ * from its last body statement (the closing `end <verb>` line is not tracked
+ * on items; the routes themselves are the point). */
+static void outline_walk_server_items(OutlineCtx *c, AstServerItemList items,
+                                      int parent_id) {
+    for (size_t i = 0; i < items.count; i++) {
+        AstServerItem *item = items.items[i];
+        AstStmt shell = {0};
+        shell.line = item->line;
+        shell.column = item->column;
+        if (item->body.count > 0) {
+            AstStmt *last = item->body.items[item->body.count - 1];
+            shell.end_line = last->end_line;
+            shell.end_column = last->end_column;
+        } else if (item->kind == AST_SERVER_SITE && item->entries.count > 0) {
+            AstServerItem *last = item->entries.items[item->entries.count - 1];
+            shell.end_line = last->line;
+            shell.end_column = last->column;
+        }
+        char name[600];
+        switch (item->kind) {
+        case AST_SERVER_HANDLER: {
+            snprintf(name, sizeof(name), "%s %s", item->word,
+                     item->path ? item->path : "");
+            int id = outline_emit(c, &shell, "handler", name, 1, 0, 0, parent_id);
+            outline_walk_list(c, item->body, id);
+            break;
+        }
+        case AST_SERVER_SITE: {
+            int id = outline_emit(c, &shell, "web", item->name, 1, 0, 0, parent_id);
+            outline_walk_server_items(c, item->entries, id);
+            break;
+        }
+        case AST_SERVER_HOOK: {
+            snprintf(name, sizeof(name), "on %s", item->word);
+            int id = outline_emit(c, &shell, "hook", name, 1, 0, 0, parent_id);
+            outline_walk_list(c, item->body, id);
+            break;
+        }
+        case AST_SERVER_DIRECTIVE:
+            outline_emit(c, &shell, "directive", item->word, 0, 0, 0, parent_id);
+            break;
+        }
     }
 }
 
@@ -26011,6 +26407,229 @@ static void register_method_bodies_in(AstStmtList list) {
     }
 }
 
+/* ---- PLAT-WEB-5: server declaration registration -------------------------
+ *
+ * A `server` block is an INERT DECLARATION: registering it mints and registers
+ * one hidden function per handler and hook (names like "edge.get /x@12:5" --
+ * the dotted-def internal-name pattern, unspellable by user code, so handlers
+ * are callable only through the function VALUES the server record carries and
+ * never pollute any scope), imports the `web` library the block is sugar for,
+ * and binds the declared name to a plain data record. Nothing opens a socket,
+ * reads a certificate, or touches the filesystem here (draft §4); web.serve is
+ * the binding act. Head options are literals (enforced at load time), so
+ * building the value runs no user code -- which is what makes it safe to do
+ * from the pre-registration walk, before the program body. */
+
+static void server_item_ensure_fn(const char *server_name, AstServerItem *item) {
+    if (item->fn_stmt) {
+        return;
+    }
+    char buffer[320];
+    if (item->kind == AST_SERVER_HOOK) {
+        snprintf(buffer, sizeof(buffer), "%s.on %s@%d:%d",
+                 server_name, item->word, item->line, item->column);
+    } else {
+        snprintf(buffer, sizeof(buffer), "%s.%s %s@%d:%d",
+                 server_name, item->word, item->path ? item->path : "",
+                 item->line, item->column);
+    }
+    item->fn_name = copy_string(buffer);
+    AstStmt *fn = calloc(1, sizeof(*fn));
+    if (!fn) {
+        abort();
+    }
+    fn->kind = AST_STMT_FUNCTION;
+    fn->line = item->line;
+    fn->column = item->column;
+    fn->as.function.name = copy_string(buffer);
+    fn->as.function.params = item->params;   /* shared with the item; see ast.h */
+    fn->as.function.body = item->body;
+    item->fn_stmt = fn;
+}
+
+static void server_register_scope(const char *server_name, AstServerItemList *items) {
+    for (size_t i = 0; i < items->count; i++) {
+        AstServerItem *item = items->items[i];
+        if (item->kind == AST_SERVER_HANDLER || item->kind == AST_SERVER_HOOK) {
+            server_item_ensure_fn(server_name, item);
+            function_register(item->fn_stmt);
+        } else if (item->kind == AST_SERVER_SITE) {
+            server_register_scope(server_name, &item->entries);
+        }
+    }
+}
+
+/* Build the routes array for one site scope. Each entry keeps the DECLARED
+ * verb; `stream` marks the connection-holding kind (an SSE endpoint is a GET
+ * on the wire -- web.bas maps it). */
+static Value server_scope_routes(AstServerItemList *items) {
+    size_t n = 0;
+    for (size_t i = 0; i < items->count; i++) {
+        if (items->items[i]->kind == AST_SERVER_HANDLER) {
+            n++;
+        }
+    }
+    Value *routes = n ? malloc(sizeof(Value) * n) : NULL;
+    if (n && !routes) {
+        abort();
+    }
+    size_t at = 0;
+    for (size_t i = 0; i < items->count; i++) {
+        AstServerItem *item = items->items[i];
+        if (item->kind != AST_SERVER_HANDLER) {
+            continue;
+        }
+        Value entry = value_record(NULL, 0);
+        int is_stream = strcmp(item->word, "stream") == 0;
+        record_set(&entry, "method", value_string(is_stream ? "get" : item->word));
+        record_set(&entry, "path", value_string(item->path));
+        record_set(&entry, "stream", value_bool(is_stream));
+        record_set(&entry, "handler", value_function(item->fn_name, NULL));
+        routes[at++] = entry;
+    }
+    return value_array(routes, n);
+}
+
+static const char *server_scope_directive(AstServerItemList *items, const char *word) {
+    for (size_t i = 0; i < items->count; i++) {
+        AstServerItem *item = items->items[i];
+        if (item->kind == AST_SERVER_DIRECTIVE && strcmp(item->word, word) == 0 &&
+            item->strings.count > 0) {
+            return item->strings.items[0];
+        }
+    }
+    return NULL;
+}
+
+static Value server_literal_value(AstExpr *expr) {
+    switch (expr->kind) {
+    case AST_EXPR_NUMBER: return value_number(expr->as.number);
+    case AST_EXPR_STRING: return value_string(expr->as.string);
+    case AST_EXPR_BOOL:   return value_bool(expr->as.boolean);
+    default:              return value_null();   /* refused at load time */
+    }
+}
+
+static Value server_site_value(const char *name, const char *host,
+                               AstRecordFieldList *options,
+                               AstServerItemList *items) {
+    Value site = value_record(NULL, 0);
+    record_set(&site, "name", value_string(name));
+    record_set(&site, "host", value_string(host ? host : ""));
+    const char *cert = NULL;
+    const char *key = NULL;
+    if (options) {
+        for (size_t i = 0; i < options->count; i++) {
+            if (strcmp(options->items[i].name, "cert") == 0 &&
+                options->items[i].value->kind == AST_EXPR_STRING) {
+                cert = options->items[i].value->as.string;
+            } else if (strcmp(options->items[i].name, "key") == 0 &&
+                       options->items[i].value->kind == AST_EXPR_STRING) {
+                key = options->items[i].value->as.string;
+            }
+        }
+    }
+    record_set(&site, "cert", value_string(cert ? cert : ""));
+    record_set(&site, "key", value_string(key ? key : (cert ? cert : "")));
+    const char *root = server_scope_directive(items, "root");
+    record_set(&site, "root", value_string(root ? root : ""));
+    record_set(&site, "routes", server_scope_routes(items));
+    return site;
+}
+
+static Value server_build_value(AstStmt *stmt) {
+    Value server = value_record(NULL, 0);
+    record_set(&server, "kind", value_string("server"));
+    record_set(&server, "name", value_string(stmt->as.server.name));
+
+    Value options = value_record(NULL, 0);
+    for (size_t i = 0; i < stmt->as.server.options.count; i++) {
+        AstRecordField *field = &stmt->as.server.options.items[i];
+        record_set(&options, field->name, server_literal_value(field->value));
+    }
+    record_set(&server, "options", options);
+
+    /* trust_proxy: every string from the server-level directive */
+    size_t proxy_count = 0;
+    AstServerItemList *items = &stmt->as.server.items;
+    for (size_t i = 0; i < items->count; i++) {
+        AstServerItem *item = items->items[i];
+        if (item->kind == AST_SERVER_DIRECTIVE &&
+            strcmp(item->word, "trust_proxy") == 0) {
+            proxy_count += item->strings.count;
+        }
+    }
+    Value *proxies = proxy_count ? malloc(sizeof(Value) * proxy_count) : NULL;
+    if (proxy_count && !proxies) {
+        abort();
+    }
+    size_t at = 0;
+    for (size_t i = 0; i < items->count; i++) {
+        AstServerItem *item = items->items[i];
+        if (item->kind == AST_SERVER_DIRECTIVE &&
+            strcmp(item->word, "trust_proxy") == 0) {
+            for (size_t j = 0; j < item->strings.count; j++) {
+                proxies[at++] = value_string(item->strings.items[j]);
+            }
+        }
+    }
+    record_set(&server, "trust_proxy", value_array(proxies, proxy_count));
+
+    Value hooks = value_record(NULL, 0);
+    for (size_t i = 0; i < items->count; i++) {
+        AstServerItem *item = items->items[i];
+        if (item->kind == AST_SERVER_HOOK) {
+            record_set(&hooks, item->word, value_function(item->fn_name, NULL));
+        }
+    }
+    record_set(&server, "hooks", hooks);
+
+    /* The implicit default site first (bare entries), then every `web` block
+     * in declaration order. Dispatch matches on host and falls back to the
+     * default, so order among the named sites never decides anything. */
+    size_t site_count = 1;
+    for (size_t i = 0; i < items->count; i++) {
+        if (items->items[i]->kind == AST_SERVER_SITE) {
+            site_count++;
+        }
+    }
+    Value *sites = malloc(sizeof(Value) * site_count);
+    if (!sites) {
+        abort();
+    }
+    sites[0] = server_site_value("", NULL, &stmt->as.server.options, items);
+    at = 1;
+    for (size_t i = 0; i < items->count; i++) {
+        AstServerItem *item = items->items[i];
+        if (item->kind != AST_SERVER_SITE) {
+            continue;
+        }
+        const char *host = NULL;
+        for (size_t j = 0; j < item->options.count; j++) {
+            if (strcmp(item->options.items[j].name, "host") == 0 &&
+                item->options.items[j].value->kind == AST_EXPR_STRING) {
+                host = item->options.items[j].value->as.string;
+            }
+        }
+        sites[at++] = server_site_value(item->name, host, &item->options,
+                                        &item->entries);
+    }
+    record_set(&server, "sites", value_array(sites, site_count));
+    return server;
+}
+
+/* Register one server declaration: hidden handler functions, the `web` import
+ * the sugar stands on, and the name binding in the global frame. Idempotent --
+ * the pre-registration walk and the on-reach walk may both get here. */
+static void server_register(AstStmt *stmt) {
+    server_register_scope(stmt->as.server.name, &stmt->as.server.items);
+    library_import("web", NULL);
+    if (error_action_pending()) {
+        return;
+    }
+    env_set(stmt->as.server.name, server_build_value(stmt));
+}
+
 /* Execute a define-and-attach statement: register the body under its internal
  * name, then store a function value referencing it in obj.field (ordinary field
  * assignment, so obj must be a record and PBI policies apply). Returns 1 on
@@ -26324,6 +26943,14 @@ static EvalResult eval_stmt(AstStmt *stmt) {
         break;
     case AST_STMT_USE:
         library_import(stmt->as.use_stmt.name, stmt->as.use_stmt.path);
+        if (error_action_pending()) {
+            current_line = previous_line;
+            current_column = previous_column;
+            return eval_error_result();
+        }
+        break;
+    case AST_STMT_SERVER:
+        server_register(stmt);
         if (error_action_pending()) {
             current_line = previous_line;
             current_column = previous_column;
@@ -26660,6 +27287,13 @@ int eval_program(AstStmtList program) {
                 function_register(stmt);
             } else if (stmt->kind == AST_STMT_MODIFIER) {
                 modifier_register(stmt);
+            } else if (stmt->kind == AST_STMT_SERVER) {
+                /* PLAT-WEB-5: a server declaration is position-blind too -- the
+                 * draft's own example puts the block beside `program main` and
+                 * calls serve(edge) from inside it. Head options are literals
+                 * (load-time enforced), so this runs no user code beyond the
+                 * `web` import the block is sugar for. */
+                server_register(stmt);
             }
         }
         /* Method bodies (dotted defs) may sit inside the program block; register

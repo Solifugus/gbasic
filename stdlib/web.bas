@@ -63,6 +63,11 @@
 '     Declare them if you want them.
 library web
 
+    ' PLAT-WEB-5: serve()/emit()/finish() call into the native webserver, and
+    ' a library that calls into another loads it (house rule) -- before this,
+    ' web.bas was pure data over tables and the caller loaded webserver.
+    load webserver
+
     ' ---- small helpers --------------------------------------------------
 
     ' Path -> segments, dropping the empty piece before the leading "/".
@@ -300,7 +305,35 @@ library web
 
     ' Validate a list of { method, path, handler } records and return the
     ' prepared table. Raises on anything a request could not later explain.
+    '
+    ' PLAT-WEB-5: given a server DECLARATION instead (the value a `server`
+    ' block binds), returns its route table as flat data -- one record per
+    ' route with site, host, method, path and the stream flag -- so a block's
+    ' routing is golden-testable with no socket (§9).
+    function _is_declaration(v)
+        shaped = is_record(v)
+        if shaped then
+            shaped = has(v, "kind")
+        end if
+        if shaped then
+            shaped = v.kind = "server"
+        end if
+        return shaped
+    end function
+
     function routes(list)
+        is_declaration = _is_declaration(list)
+        if is_declaration then
+            ctx = _prepare_server(list)
+            out = []
+            for each s in ctx.sites
+                for each r in s.routes
+                    append(out, { site: s.name, host: s.host, method: r.method,
+                                  path: r.path, stream: r.stream })
+                end for
+            end for
+            return out
+        end if
         if not is_array(list) then
             error "web.routes expects an array of route records"
         end if
@@ -422,7 +455,22 @@ library web
 
     ' Match, call, and shape the answer into a response record the webserver
     ' can take verbatim. Captures arrive as `req.params`.
+    '
+    ' PLAT-WEB-5: given a server DECLARATION as `prepared`, runs one request
+    ' through the block's whole pipeline -- host dispatch, routes, static
+    ' fallback -- with no socket (§9). A stream route answers with its opening
+    ' head ({ stream: true }); the handler body needs a live connection and is
+    ' not run here.
     function dispatch(prepared, req)
+        is_declaration = _is_declaration(prepared)
+        if is_declaration then
+            out = _serve_request(_prepare_server(prepared), req)
+            opens_stream = has(out, "stream_open")
+            if opens_stream then
+                return out.stream_open
+            end if
+            return out
+        end if
         found = resolve(prepared, req.method, req.path)
         plain = { "content-type": "text/plain; charset=utf-8" }
 
@@ -475,6 +523,256 @@ library web
             end if
         end if
         return out
+    end function
+
+    ' ---- PLAT-WEB-5: the server block's engine ---------------------------
+    '
+    ' A `server` declaration binds its name to a plain record (built by the
+    ' interpreter, no socket touched); `serve(edge)` is the binding act. The
+    ' whole dispatch pipeline below is ordinary library code over the WEB-1..4
+    ' runtime -- which is the §10 test passing in public: the block really is
+    ' sugar over what already works.
+
+    ' Shape-check + per-site route preparation. Every table goes through
+    ' routes(), so the block's routes are validated by the SAME code the
+    ' library path uses -- one validator, not two drifting ones.
+    function _prepare_server(sv)
+        sites = []
+        for each site in sv.sites
+            entries = []
+            i = 0
+            while i < count(site.routes)
+                r = site.routes[i]
+                append(entries, { method: r.method, path: r.path, handler: r.handler })
+                i = i + 1
+            end while
+            prepared = routes(entries)
+            i = 0
+            while i < count(prepared)
+                prepared[i].stream = site.routes[i].stream
+                i = i + 1
+            end while
+            append(sites, { name: site.name, host: site.host, root: site.root,
+                            cert: site.cert, key: site.key, routes: prepared })
+        end for
+        return { name: sv.name, sites: sites, proxies: sv.trust_proxy,
+                 options: sv.options, hooks: sv.hooks }
+    end function
+
+    ' The site a request lands on: exact host match wins, the default site
+    ' (host "") answers everything else. The Host header carries a port in
+    ' most requests; strip it, minding the bracketed IPv6 form.
+    function _site_host(req)
+        h = ""
+        carries = has(req.headers, "host")
+        if carries then
+            h = req.headers["host"]
+        end if
+        bracket = find(h, "]")
+        if bracket != nothing then
+            return left(h, bracket + 1)
+        end if
+        colon = find(h, ":")
+        if colon != nothing then
+            return left(h, colon)
+        end if
+        return h
+    end function
+
+    function _site_for(ctx, req)
+        h = _site_host(req)
+        for each s in ctx.sites
+            if s.host != "" then
+                if s.host = h then
+                    return s
+                end if
+            end if
+        end for
+        return ctx.sites[0]
+    end function
+
+    ' One request through the block: proxy trust, host dispatch, the route
+    ' table, and the static root as the 404 fallback -- so routes win over
+    ' files on overlap, which §6 states so no golden can enshrine the
+    ' accident. Called natively per finished request (webserver.on_request);
+    ' the return value IS the response. A stream route answers with the
+    ' three-part protocol the native side sequences: head first, then the
+    ' handler runs with the stream already open.
+    function _serve_request(ctx, req)
+        r = req
+        if count(ctx.proxies) > 0 then
+            r = trust_proxy(r, ctx.proxies)
+        end if
+        site = _site_for(ctx, r)
+        found = resolve(site.routes, r.method, r.path)
+        if found.ok then
+            if found.route.stream then
+                r.params = found.params
+                h = {}
+                h["content-type"] = "text/event-stream"
+                h["cache-control"] = "no-cache"
+                return { stream_open: { id: r.id, stream: true, headers: h },
+                         handler: found.route.handler, req: r }
+            end if
+        end if
+        out = dispatch(site.routes, r)
+        if out.status = 404 then
+            if site.root != "" then
+                serves_files = r.method = "GET" or r.method = "HEAD"
+                if serves_files then
+                    rel = ""
+                    if len(r.path) > 1 then
+                        rel = mid(r.path, 1, len(r.path) - 1)
+                    end if
+                    s = static(rel, site.root)
+                    s.id = r.id
+                    return s
+                end if
+            end if
+        end if
+        return out
+    end function
+
+    ' Stream-handler verbs, spelled the way the draft writes them: emit to
+    ' the request's own connection, finish it deliberately. The request
+    ' carries everything the native side needs to find the server again.
+    function emit(req, text)
+        return webserver.emit(req.server, req.id, text)
+    end function
+
+    function finish(req)
+        return webserver.finish(req.server, req.id)
+    end function
+
+    ' TLS derived from where the certs were WRITTEN: `cert:` beside each host
+    ' (the SNI table is derived, not authored), the head's own cert as the
+    ' default pair. Returns { enabled, options }.
+    function _tls_options(sv)
+        certs = []
+        for each site in sv.sites
+            if site.cert != "" then
+                if site.host != "" then
+                    append(certs, { host: site.host, cert: site.cert, key: site.key })
+                end if
+            end if
+        end for
+        out = {}
+        enabled = false
+        default_site = sv.sites[0]
+        if default_site.cert != "" then
+            out.cert = default_site.cert
+            out.key = default_site.key
+            enabled = true
+        end if
+        if count(certs) > 0 then
+            out.certs = certs
+            enabled = true
+        end if
+        return { enabled: enabled, options: out }
+    end function
+
+    ' Options for a socket THIS process binds (listen) versus one it adopted
+    ' (inherited): an inherited socket is already bound, so address stays out.
+    function _listen_options(sv, tls, adopting)
+        out = {}
+        if not adopting then
+            if has(sv.options, "address") then
+                out.address = sv.options.address
+            end if
+        end if
+        if has(sv.options, "timeout") then
+            out.timeout = sv.options.timeout
+        end if
+        if tls.enabled then
+            out.tls = tls.options
+        end if
+        return out
+    end function
+
+    function _attach(s, ctx, sv)
+        webserver.on_request(s, _serve_request, ctx)
+        wants_drain = has(sv.hooks, "drain")
+        if wants_drain then
+            webserver.on_drain(s, sv.hooks.drain, ctx)
+        end if
+        return s
+    end function
+
+    ' The supervisor path (`workers: N`, N > 1): bind once with hold:, spawn
+    ' N copies of THIS PROGRAM over the §7 pool, tick until asked to stop,
+    ' then drain the workers. The worker side is serve() itself: a spawned
+    ' copy finds inherited sockets, adopts them, prints the pool's READY
+    ' marker and serves -- one code path for systemd and the supervisor.
+    function _serve_pool(sv, ctx, tls)
+        lopts = { hold: true }
+        if has(sv.options, "address") then
+            lopts.address = sv.options.address
+        end if
+        super = webserver.listen(sv.options.port, lopts)
+        ' The supervisor serves nothing itself, so its stdout is free to
+        ' announce the bound port -- which is the only way a caller can learn
+        ' it when the declaration said `port: 0` (serve blocks here until the
+        ' pool drains, so the caller's own print never runs while serving).
+        print "PORT " + string(super.port)
+        me = process.self()
+        margs = ["--line-buffered", me.script]
+        for each a in me.args
+            append(margs, a)
+        end for
+        p = pool({ listener: super, command: me.interpreter, args: margs,
+                   count: sv.options.workers })
+        r = pool_start(p)
+        if not r.ok then
+            error "serve: worker pool failed to start: " + r.why
+        end if
+        while not webserver.stopping()
+            pool_tick(p)
+            sleep(0.5)
+        end while
+        pool_stop(p)
+        webserver.close(super)
+        return super
+    end function
+
+    ' Bind and run a declared server. Blocking-by-consequence, not by call:
+    ' serve() installs the native dispatch and returns the live server record
+    ' (port readable off it); the process then serves for as long as a
+    ' listener is active, and a drain (SIGTERM, or server.draining = true)
+    ' lets it finish and exit. With `workers: N` this call IS the supervisor
+    ' loop and returns after the pool drains.
+    function serve(sv)
+        shaped = _is_declaration(sv)
+        if not shaped then
+            error "serve expects a server declaration (a `server name(...)` block)"
+        end if
+        ctx = _prepare_server(sv)
+        tls = _tls_options(sv)
+
+        ' A spawned worker (or a systemd-activated process) adopts its
+        ' inherited sockets and serves; nothing inherited means this process
+        ' binds for itself -- the local-development path.
+        inherited = webserver.inherited(_listen_options(sv, tls, true))
+        if count(inherited) > 0 then
+            s = inherited[0]
+            print "READY"
+            return _attach(s, ctx, sv)
+        end if
+
+        wants_port = has(sv.options, "port")
+        if not wants_port then
+            error "serve: server '" + sv.name + "' declares no port"
+        end if
+
+        workers = 1
+        if has(sv.options, "workers") then
+            workers = sv.options.workers
+        end if
+        if workers > 1 then
+            return _serve_pool(sv, ctx, tls)
+        end if
+
+        s = webserver.listen(sv.options.port, _listen_options(sv, tls, false))
+        return _attach(s, ctx, sv)
     end function
 
     ' ---- static files ---------------------------------------------------

@@ -636,6 +636,8 @@ typedef struct {
     AstDuration duration;
     AstIdentSuffix ident_suffix;
     FieldPolicySpec field_policy;
+    AstServerItem *server_item;
+    AstServerItemList server_item_list;
 }
 
 %token <number> NUMBER
@@ -668,7 +670,10 @@ static void report_syntax_error(gb_parse_ctx *ctx, int line, int column,
 }
 
 %type <stmt_list> program statement_list consider_statement_list consider_else_opt if_block_tail if_inline_tail
-%type <stmt> statement assignment print_statement call_statement with_lock_statement for_each_statement do_loop_statement while_statement consider_statement consider_body_statement function_statement modifier_statement program_statement library_statement use_statement return_statement label_statement goto_statement gosub_statement break_statement continue_statement watch_statement unwatch_statement without_watchers_statement on_error_statement error_statement if_statement inline_statement
+%type <stmt> statement assignment print_statement call_statement with_lock_statement for_each_statement do_loop_statement while_statement consider_statement consider_body_statement function_statement modifier_statement program_statement library_statement use_statement return_statement label_statement goto_statement gosub_statement break_statement continue_statement watch_statement unwatch_statement without_watchers_statement on_error_statement error_statement if_statement inline_statement server_statement
+%type <server_item> server_item
+%type <server_item_list> server_item_list
+%type <name_list> server_string_list
 %type <expr> expression or_expression and_expression comparison_expression
 %type <expr> additive_expression multiplicative_expression unary_expression postfix_expression primary lvalue record_literal
 %type <expr_list> argument_list argument_list_opt array_argument_list
@@ -704,6 +709,8 @@ static void report_syntax_error(gb_parse_ctx *ctx, int line, int column,
 %destructor { ast_free_modifier_signature($$); }       <modifier_signature>
 %destructor { free($$.name); ast_free_expr_list($$.args); } <ident_suffix>
 %destructor { ast_free_expr($$.reset_expr); }          <field_policy>
+%destructor { AstServerItemList one = ast_server_item_list_append(ast_server_item_list_empty(), $$); ast_free_server_item_list(one); } <server_item>
+%destructor { ast_free_server_item_list($$); }         <server_item_list>
 
 /* Bison also treats THE START SYMBOL AS DISCARDED WHEN THE PARSE SUCCEEDS: on
  * YYACCEPT the cleanup loop pops the whole stack, `program` included. Its value
@@ -742,6 +749,7 @@ statement
     | library_statement { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
     | use_statement NEWLINE { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
     | watch_statement { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
+    | server_statement { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
     | unwatch_statement NEWLINE { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
     | without_watchers_statement { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
     | on_error_statement NEWLINE { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
@@ -1059,6 +1067,59 @@ unwatch_statement
 watch_target_list
     : watch_target_path { $$ = ast_name_list_append(ast_name_list_empty(), $1); }
     | watch_target_list COMMA watch_target_path { $$ = ast_name_list_append($1, $3); }
+    ;
+
+/* PLAT-WEB-5: the declarative server block (docs/plat-web-design-draft.md §2).
+ *
+ * ZERO reserved words -- one better than the draft's "exactly one". The head is
+ * a generic IDENT IDENT production ("server" is checked by the load-time
+ * validation pass, not the grammar), because by the time this grammar was
+ * written the layer beneath the sugar had made `server` load-bearing
+ * vocabulary: `server = webserver.listen(...)` appears in stdlib/web.bas and
+ * thirty-odd fixtures, and a reserved word would have broken all of it. The
+ * body words -- verbs, directives, `web`, hook names -- are ordinary IDENTs
+ * validated semantically (draft §3), so adding PUT or a websocket kind never
+ * touches this file. `on` rides the token the language already reserves.
+ *
+ * Head options are a record_field_list, and the validation pass restricts the
+ * VALUES to literals: that restriction is what makes every §8 load-time check
+ * (duplicate host, port collision, worker count) statically decidable. */
+server_statement
+    : IDENT IDENT LPAREN record_field_list RPAREN NEWLINE server_item_list END IDENT NEWLINE {
+        $$ = ast_server($1, $2, $4, $7, $9);
+      }
+    | IDENT IDENT LPAREN RPAREN NEWLINE server_item_list END IDENT NEWLINE {
+        $$ = ast_server($1, $2, ast_record_field_list_empty(), $6, $8);
+      }
+    ;
+
+server_item_list
+    : %empty { $$ = ast_server_item_list_empty(); }
+    | server_item_list NEWLINE { $$ = $1; }
+    | server_item_list server_item { $$ = ast_server_item_list_append($1, $2); }
+    ;
+
+server_item
+    : IDENT server_string_list NEWLINE {
+        $$ = ast_server_directive($1, $2, @1.first_line, @1.first_column);
+      }
+    | IDENT STRING LPAREN parameter_list_opt RPAREN NEWLINE statement_list END IDENT NEWLINE {
+        $$ = ast_server_handler($1, $2, $4, $7, $9, @1.first_line, @1.first_column);
+      }
+    | IDENT IDENT LPAREN record_field_list RPAREN NEWLINE server_item_list END IDENT NEWLINE {
+        $$ = ast_server_site($1, $2, $4, $7, $9, @1.first_line, @1.first_column);
+      }
+    | IDENT IDENT LPAREN RPAREN NEWLINE server_item_list END IDENT NEWLINE {
+        $$ = ast_server_site($1, $2, ast_record_field_list_empty(), $6, $8, @1.first_line, @1.first_column);
+      }
+    | ON IDENT NEWLINE statement_list END ON NEWLINE {
+        $$ = ast_server_hook($2, $4, @1.first_line, @1.first_column);
+      }
+    ;
+
+server_string_list
+    : STRING { $$ = ast_name_list_append(ast_name_list_empty(), $1); }
+    | server_string_list COMMA STRING { $$ = ast_name_list_append($1, $3); }
     ;
 
 watch_target_path
