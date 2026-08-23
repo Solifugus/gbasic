@@ -599,12 +599,51 @@ library web
             return _plain(404, "Not Found")
         end if
 
-        target (file)= resolved
+        ' PLAT-WEB-4: answered as a FILE response, which the native side streams
+        ' in bounded chunks with Content-Length from fstat -- so a gigabyte
+        ' download costs a 64K buffer, not a gigabyte gBASIC string. This was
+        ' the "non-slurping reads" half of the static-serving gap, parked here
+        ' until the response model could stream.
         return {
             status: 200,
             headers: { "content-type": content_type(resolved) },
-            body: read(target)
+            file: resolved
         }
+    end function
+
+    ' ---- PLAT-WEB-4: server-sent events -------------------------------------
+    '
+    ' The stream response and the wire format, so a handler reads as intent:
+    '
+    '     return web.sse(req)                      ' open the stream
+    '     webserver.emit(server, id, web.sse_event("tick"))
+    '     webserver.emit(server, id, web.sse_named("update", payload))
+    '
+    ' ECONOMICS, stated where the functions are: in the worker-pool model a
+    ' live stream PINS its worker between emits only if the handler loops; a
+    ' PARKED stream (opened, then emitted to from other requests' handlers)
+    ' costs nothing while quiet. But a worker emitting in a loop serves
+    ' nothing else, so eight looping streams on workers: 4 is an outage.
+    ' Budget workers for the streams you loop, and prefer the parked shape.
+    function sse(req)
+        h = {}
+        h["content-type"] = "text/event-stream"
+        h["cache-control"] = "no-cache"
+        return { id: req.id, stream: true, headers: h }
+    end function
+
+    ' One SSE data event. Multi-line payloads become one event of several
+    ' data: lines, which is the format's own spelling for them.
+    function sse_event(data)
+        out = ""
+        for each line in split(data, "\n")
+            out = out + "data: " + line + "\n"
+        end for
+        return out + "\n"
+    end function
+
+    function sse_named(name, data)
+        return "event: " + name + "\n" + web.sse_event(data)
     end function
 
     ' Introspection: the table as sorted "METHOD /path" lines. The static

@@ -203,10 +203,10 @@ What cannot lower, and why:
 | Gap | What | Size | Phase (per the draft) |
 |---|---|---|---|
 | A | ~~Bind address on `listen` (loopback-only today)~~ **CLOSED 2026-08-21** — `webserver.listen(port, { address: "0.0.0.0" })`, default unchanged, `server.address` reported back from `getsockname`, IPv6 and dual-stack included, `tests/run_web_bind.sh` | small C | WEB-1 — done first, as planned |
-| B | ~~Safe static serving: canonicalize-then-check, content types, non-slurping reads~~ **MOSTLY CLOSED 2026-08-21** — `real_path`/`file_type` builtins + `web.static` (canonicalize-then-check, content types by extension). Non-slurping reads remain, and belong with E: the response model has no streaming. | small C | WEB-1 |
+| B | ~~Safe static serving: canonicalize-then-check, content types, non-slurping reads~~ **MOSTLY CLOSED 2026-08-21** — `real_path`/`file_type` builtins + `web.static` (canonicalize-then-check, content types by extension). ~~Non-slurping reads remain, and belong with E~~ — closed with E on 2026-08-22: `{ file: path }` responses stream in 64K chunks and `web.static` returns that shape. | small C | WEB-1, remainder WEB-4 — done |
 | C | ~~Worker pool~~ **CLOSED 2026-08-22** — process workers; the supervisor holds (`hold: true`), workers adopt via `webserver.inherited()`, transfer is `process.start listen_fds:` speaking LISTEN_FDS. No socket value kind was needed: the live server record already names the listener, and the fd itself only ever moves at exec time. | the §5 decision | WEB-2 — done |
 | D | ~~TLS/SNI~~ **CLOSED 2026-08-22** — `tls:` on listen/inherited, SNI by hostname, refused at listen time; rotation = rolling reload of the pool. | subsystem | WEB-3 — done |
-| E | Streaming: connection handle, `emit`, keep-alive | new response mode | WEB-4 |
+| E | ~~Streaming: connection handle, `emit`, keep-alive~~ **CLOSED 2026-08-22** — the request `id` is the handle: `{ stream: true }` opens an EOF-framed connection, `webserver.emit` writes to it (`false` = client gone, reaped), `webserver.finish` closes it. No keep-alive was needed: close-after-response stays the rule, and a stream's close *is* its framing. `tests/run_web_stream.sh`. | new response mode | WEB-4 — done |
 | F | ~~`LISTEN_FDS` / inherited socket~~ **CLOSED 2026-08-22** — the same protocol IS the worker transfer, so one mechanism serves systemd and the supervisor. | small, with C | WEB-2 — done |
 
 Everything else in both examples — routing, patterns, handlers,

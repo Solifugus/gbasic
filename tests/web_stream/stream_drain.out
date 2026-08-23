@@ -1,0 +1,8 @@
+worker ready
+stream established at the client
+TERM sent (polite)
+client saw EOF: exit=0
+stream body: <data: open
+
+>
+worker self-exited: code=0 signal=0

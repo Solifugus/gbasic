@@ -1427,11 +1427,63 @@ Response fields:
 - `headers`: optional record of string values, default `{}`
 - `cookies`: optional array of `Set-Cookie` strings, default `[]`
 - `body`: optional string, default `""`
+- `file`: optional path — stream that file as the body (*since 0.1.0-rc4*)
+- `stream`: optional `true` — open the connection for `webserver.emit`
+  (*since 0.1.0-rc4*)
+
+`body`, `file` and `stream` are mutually exclusive; a response naming two of
+them is refused by name rather than guessed at.
 
 The server supplies `Content-Length`, closes the connection after the response,
 emits one `Set-Cookie` header per `cookies` item, and defaults the content type
 to `text/plain`. If no matching response is queued within 30 seconds, the
 client receives HTTP 504.
+
+### Streaming and file responses (*since 0.1.0-rc4*)
+
+**File responses.** `{ id: req.id, file: path }` sends the file's bytes in
+64K chunks with `Content-Length` taken from the file itself, so a download is
+never held in a gBASIC string. A path that does not name a readable regular
+file is answered `500` and reported on stderr. `web.static` returns this
+shape, which is what makes serving a large asset cost memory proportional to
+a chunk, not to the asset.
+
+**Streaming responses.** `{ id: req.id, stream: true, headers: {...} }`
+answers the request's *head* and keeps the connection open. The body is
+EOF-framed (no `Content-Length`; the connection closing *is* the end), and is
+written with:
+
+```basic
+ok = webserver.emit(server, req.id, "data: tick\n\n")
+webserver.finish(server, req.id)
+```
+
+`emit` returns `false` when the client is gone — the disconnected client is
+reaped at that moment, so a broadcast loop that drops IDs whose emit returned
+`false` is the whole liveness protocol. `finish` closes the stream
+deliberately; a stream never finishes on its own.
+
+A streaming connection is exempt from the listener's `timeout:` budget on
+both sides — it is not a response the server is late producing, and it is not
+an idle client stalling a request — so an SSE stream parked for an hour
+coexists with a 1-second timeout for everything else. Draining (SIGTERM, or
+`server.draining = true`) **ends** every parked stream: the client sees EOF
+and the worker exits by itself, because a connection that never finishes
+would otherwise hold the drain open forever.
+
+The `web` library carries the SSE spellings: `web.sse(req)` builds the
+stream-opening response with the `text/event-stream` headers,
+`web.sse_event(data)` formats a data-only event (multi-line data becomes
+multiple `data:` lines), and `web.sse_named(name, data)` adds the `event:`
+field.
+
+The economics worth knowing: a **parked** stream costs nothing while quiet —
+it is one file descriptor the poll loop watches for disconnect. An
+**in-handler emit loop** pins the worker for its whole duration, exactly like
+any long handler, so a pool sized for N concurrent requests is a pool sized
+for N concurrent emit loops. Park and poke where the data arrives from
+elsewhere; loop in the handler only when the handler itself is the source.
+`tests/run_web_stream.sh` holds all of it.
 
 Shutdown forms:
 

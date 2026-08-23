@@ -12166,6 +12166,12 @@ struct WebServerClient {
     size_t length;
     size_t capacity;
     int waiting_response;
+    /* PLAT-WEB-4: 1 once a stream:true response opened this connection for
+     * incremental output. A streaming client is exempt from both timeout
+     * deadlines (its whole point is to stay open), polled only to notice the
+     * peer leaving, and closed by drain rather than waited for -- a stream
+     * never "finishes" on its own, so draining one means ending it. */
+    int streaming;
     double deadline;
     /* When the connection arrived: the idle-read deadline is measured from
      * here until a complete request has been parsed. */
@@ -12252,6 +12258,11 @@ static void webserver_install_term_handler(void) {
     sigemptyset(&sa.sa_mask);
     sa.sa_flags = 0;
     sigaction(SIGTERM, &sa, NULL);
+    /* PLAT-WEB-4: writing to a client that already left must be an ERROR,
+     * never a process death. Plain sends pass MSG_NOSIGNAL, but SSL_write
+     * cannot, and with streaming, dead-peer writes stop being rare -- an
+     * emit loop discovers the disconnect BY the failed write. */
+    signal(SIGPIPE, SIG_IGN);
     webserver_term_installed = 1;
 }
 
@@ -12479,6 +12490,25 @@ static int webserver_validate_response_value(WebServer *server,
             webserver_raise("webserver response status must be an integer HTTP status");
             return 0;
         }
+    }
+    RecordField *stream_f = record_find(&response, "stream");
+    RecordField *file_f = record_find(&response, "file");
+    RecordField *body_f = record_find(&response, "body");
+    if (stream_f && stream_f->value->kind != VALUE_BOOL) {
+        webserver_raise("webserver response stream must be true or false");
+        return 0;
+    }
+    if (file_f && file_f->value->kind != VALUE_STRING) {
+        webserver_raise("webserver response file must be a path string");
+        return 0;
+    }
+    if (file_f && body_f) {
+        webserver_raise("webserver response cannot carry both body and file");
+        return 0;
+    }
+    if (stream_f && stream_f->value->as.boolean && (file_f || body_f)) {
+        webserver_raise("webserver: a stream:true response opens the connection; write with webserver.emit, not a body");
+        return 0;
     }
     RecordField *headers = record_find(&response, "headers");
     if (headers) {
@@ -13008,6 +13038,98 @@ static WebServerClient *webserver_find_client(WebServer *server,
     return NULL;
 }
 
+static void webserver_send_error(WebServer *server, size_t client_index,
+                                 int status, const char *body);
+
+/* Open a connection for incremental output: status line and headers, NO
+ * Content-Length -- the body is EOF-framed, which Connection: close makes
+ * legal HTTP/1.1 -- and the connection stays up until webserver.finish, the
+ * peer leaves, or the server drains. */
+static void webserver_send_stream_head(WebServerClient *client, int status,
+                                       Value *headers) {
+    webserver_set_blocking_mode(client->fd, 1);
+    char prefix[256];
+    int n = snprintf(prefix, sizeof(prefix),
+                     "HTTP/1.1 %d %s\r\nConnection: close\r\n",
+                     status, webserver_reason(status));
+    if (n > 0) {
+        webserver_client_write(client, prefix, (size_t)n);
+    }
+    if (headers && headers->kind == VALUE_RECORD) {
+        for (size_t i = 0; i < headers->as.record.count; i++) {
+            RecordField *field = &headers->as.record.fields[i];
+            if (string_equal_caseless(field->name, "content-length") ||
+                string_equal_caseless(field->name, "connection")) {
+                continue;
+            }
+            char line[1024];
+            int m = snprintf(line, sizeof(line), "%s: %s\r\n",
+                             field->name, field->value->as.string);
+            if (m > 0 && (size_t)m < sizeof(line)) {
+                webserver_client_write(client, line, (size_t)m);
+            }
+        }
+    }
+    webserver_client_write(client, "\r\n", 2);
+    webserver_set_blocking_mode(client->fd, 0);
+}
+
+/* Answer with a FILE, streamed in bounded chunks -- the non-slurping read the
+ * static-serving gap left open. Content-Length comes from fstat AFTER open,
+ * so the length always describes the very file being sent; a path that
+ * stopped being readable between routing and here is a plain 500. The worker
+ * is pinned for the duration of the transfer, which is the same economics as
+ * a stream and documented with them. */
+static void webserver_send_file(WebServer *server, size_t client_index,
+                                const char *path, int status, Value *headers,
+                                Value *cookies) {
+    WebServerClient *client = &server->clients[client_index];
+    int fd = open(path, O_RDONLY);
+    struct stat st;
+    if (fd < 0 || fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) {
+        if (fd >= 0) {
+            close(fd);
+        }
+        webserver_send_error(server, client_index, 500, "Internal Server Error");
+        return;
+    }
+    webserver_set_blocking_mode(client->fd, 1);
+    char prefix[320];
+    int n = snprintf(prefix, sizeof(prefix),
+                     "HTTP/1.1 %d %s\r\nContent-Length: %lld\r\nConnection: close\r\n",
+                     status, webserver_reason(status), (long long)st.st_size);
+    if (n > 0) {
+        webserver_client_write(client, prefix, (size_t)n);
+    }
+    if (headers && headers->kind == VALUE_RECORD) {
+        for (size_t i = 0; i < headers->as.record.count; i++) {
+            RecordField *field = &headers->as.record.fields[i];
+            if (string_equal_caseless(field->name, "content-length") ||
+                string_equal_caseless(field->name, "connection")) {
+                continue;
+            }
+            char line[1024];
+            int m = snprintf(line, sizeof(line), "%s: %s\r\n",
+                             field->name, field->value->as.string);
+            if (m > 0 && (size_t)m < sizeof(line)) {
+                webserver_client_write(client, line, (size_t)m);
+            }
+        }
+    }
+    (void)cookies;
+    webserver_client_write(client, "\r\n", 2);
+    char chunk[65536];
+    for (;;) {
+        ssize_t got = read(fd, chunk, sizeof(chunk));
+        if (got <= 0) {
+            break;
+        }
+        webserver_client_write(client, chunk, (size_t)got);
+    }
+    close(fd);
+    webserver_client_close(server, client_index);
+}
+
 static void webserver_process_responses(WebServer *server) {
     Value *record = webserver_find_record(server->id, NULL);
     Value *responses = record ? webserver_field(record, "responses") : NULL;
@@ -13033,12 +13155,28 @@ static void webserver_process_responses(WebServer *server) {
         RecordField *headers = record_find(&response, "headers");
         RecordField *cookies = record_find(&response, "cookies");
         RecordField *body = record_find(&response, "body");
-        webserver_send(client,
-                       status ? (int)status->value->as.number : 200,
-                       headers ? headers->value : NULL,
-                       cookies ? cookies->value : NULL,
-                       body ? body->value->as.string : "");
-        webserver_client_close(server, client_index);
+        RecordField *stream_f = record_find(&response, "stream");
+        RecordField *file_f = record_find(&response, "file");
+        if (stream_f && stream_f->value->as.boolean) {
+            webserver_send_stream_head(client,
+                                       status ? (int)status->value->as.number : 200,
+                                       headers ? headers->value : NULL);
+            client->streaming = 1;
+            client->waiting_response = 0;
+            client->length = 0;
+        } else if (file_f) {
+            webserver_send_file(server, client_index, file_f->value->as.string,
+                                status ? (int)status->value->as.number : 200,
+                                headers ? headers->value : NULL,
+                                cookies ? cookies->value : NULL);
+        } else {
+            webserver_send(client,
+                           status ? (int)status->value->as.number : 200,
+                           headers ? headers->value : NULL,
+                           cookies ? cookies->value : NULL,
+                           body ? body->value->as.string : "");
+            webserver_client_close(server, client_index);
+        }
         webserver_array_remove(responses, 0);
     }
 }
@@ -13229,6 +13367,29 @@ static void webserver_read_client(WebServer *server, size_t index) {
     WebServerClient *client = &server->clients[index];
     char chunk[4096];
     ssize_t count;
+    if (client->streaming) {
+        /* A streaming connection is polled only so the peer's departure is
+         * noticed between emits. Anything it SENDS is discarded: SSE clients
+         * do not speak, and buffering chatter forever would let a hostile
+         * one grow our memory at its leisure. */
+#if HAVE_LIBSSL
+        if (client->ssl) {
+            int r = SSL_read(client->ssl, chunk, sizeof(chunk));
+            if (r <= 0) {
+                int reason = SSL_get_error(client->ssl, r);
+                if (reason != SSL_ERROR_WANT_READ && reason != SSL_ERROR_WANT_WRITE) {
+                    webserver_client_close(server, index);
+                }
+            }
+            return;
+        }
+#endif
+        ssize_t r = recv(client->fd, chunk, sizeof(chunk), 0);
+        if (r == 0 || (r < 0 && errno != EAGAIN && errno != EWOULDBLOCK)) {
+            webserver_client_close(server, index);
+        }
+        return;
+    }
 #if HAVE_LIBSSL
     if (client->ssl) {
         int r = SSL_read(client->ssl, chunk, sizeof(chunk));
@@ -13312,7 +13473,11 @@ static void webserver_progress_drain(WebServer *server) {
     }
     size_t i = 0;
     while (i < server->client_count) {
-        if (!server->clients[i].waiting_response && server->clients[i].length == 0) {
+        if (server->clients[i].streaming ||
+            (!server->clients[i].waiting_response && server->clients[i].length == 0)) {
+            /* A stream never finishes by itself, so draining one MEANS ending
+             * it -- otherwise one dashboard tab would hold a worker's drain
+             * open forever and the §7 guarantee would be unbounded. */
             webserver_client_close(server, i);
         } else {
             i++;
@@ -13342,7 +13507,10 @@ static void webserver_check_timeouts(WebServer *server) {
     double budget = webserver_effective_timeout(server);
     size_t i = 0;
     while (i < server->client_count) {
-        if (server->clients[i].waiting_response && now >= server->clients[i].deadline) {
+        if (server->clients[i].streaming) {
+            /* Staying open is a stream's job; the deadlines are for requests. */
+            i++;
+        } else if (server->clients[i].waiting_response && now >= server->clients[i].deadline) {
             webserver_send_error(server, i, 504, "Gateway Timeout");
         } else if (!server->clients[i].waiting_response &&
                    now >= server->clients[i].connected_at + budget) {
@@ -13955,6 +14123,175 @@ static Value webserver_eval_listen(AstExpr *expr) {
     return record;
 }
 
+/* Resolve (server record, id) to a STREAMING client, shared by emit and
+ * finish. An id that is not a live stream answers NULL, and the verbs answer
+ * false -- a client that left mid-stream is an ordinary event the emit loop
+ * uses as its exit condition, not an error. */
+static WebServer *webserver_stream_target(AstExpr *expr, const char *verb,
+                                          size_t *client_index) {
+    char message[160];
+    if (expr->as.call.args.count != (strcmp(verb, "emit") == 0 ? 3u : 2u)) {
+        snprintf(message, sizeof(message),
+                 "webserver.%s expects a server record and a request id%s",
+                 verb, strcmp(verb, "emit") == 0 ? " and text" : "");
+        webserver_raise(message);
+        return NULL;
+    }
+    Value server_value = eval_expr(expr->as.call.args.items[0]);
+    unsigned long id = 0;
+    if (error_action_pending()) {
+        value_free(server_value);
+        return NULL;
+    }
+    if (!webserver_record_id(&server_value, &id) || !webserver_find(id)) {
+        value_free(server_value);
+        snprintf(message, sizeof(message), "webserver.%s expects a server record", verb);
+        webserver_raise(message);
+        return NULL;
+    }
+    value_free(server_value);
+    WebServer *server = webserver_find(id);
+
+    /* Flush the response queue first. The natural in-handler shape is
+     *
+     *     append(server.responses, { id: req.id, stream: true, ... })
+     *     while webserver.emit(server, req.id, ...)
+     *
+     * and at that point the stream-opening response is still QUEUED -- the
+     * pump only drains the queue after the handler returns. Without this
+     * flush the first emit would find no streaming client and report the
+     * peer gone, which is a lie about ordering dressed as a disconnect. */
+    webserver_process_responses(server);
+    if (error_action_pending()) {
+        return NULL;
+    }
+
+    Value id_value = eval_expr(expr->as.call.args.items[1]);
+    int request_id = 0;
+    if (error_action_pending()) {
+        value_free(id_value);
+        return NULL;
+    }
+    int ok = webserver_integer(id_value, &request_id) && request_id > 0;
+    value_free(id_value);
+    if (!ok) {
+        snprintf(message, sizeof(message),
+                 "webserver.%s request id must be a positive integer", verb);
+        webserver_raise(message);
+        return NULL;
+    }
+    for (size_t i = 0; i < server->client_count; i++) {
+        if (server->clients[i].id == (unsigned long)request_id &&
+            server->clients[i].streaming) {
+            *client_index = i;
+            return server;
+        }
+    }
+    *client_index = (size_t)-1;
+    return server;
+}
+
+/* webserver.emit(server, id, text) -> true while the client is still there.
+ * PLAT-WEB-4: the write that does not close the connection. False is the
+ * NORMAL end of an emit loop -- the client left -- and the dead connection
+ * is reaped here, so a loop that stops on false leaks nothing.
+ *
+ * Liveness is asked before writing: a TCP FIN sits readable on the socket
+ * long before enough emitted bytes pile up to make a write fail, so the
+ * peek turns "gone" from something discovered megabytes later into
+ * something the next emit reports. */
+static Value webserver_eval_emit(AstExpr *expr) {
+    size_t index = 0;
+    WebServer *server = webserver_stream_target(expr, "emit", &index);
+    if (!server) {
+        return value_null();
+    }
+    Value text = eval_expr(expr->as.call.args.items[2]);
+    if (error_action_pending()) {
+        value_free(text);
+        return value_null();
+    }
+    if (text.kind != VALUE_STRING) {
+        value_free(text);
+        webserver_raise("webserver.emit text must be a string");
+        return value_null();
+    }
+    if (index == (size_t)-1) {
+        value_free(text);
+        return value_bool(0);
+    }
+    WebServerClient *client = &server->clients[index];
+#if HAVE_LIBSSL
+    if (!client->ssl)
+#endif
+    {
+        char probe;
+        ssize_t r = recv(client->fd, &probe, 1, MSG_PEEK | MSG_DONTWAIT);
+        if (r == 0 || (r < 0 && errno != EAGAIN && errno != EWOULDBLOCK)) {
+            value_free(text);
+            webserver_client_close(server, index);
+            return value_bool(0);
+        }
+    }
+    size_t length = string_length(text.as.string);
+    webserver_set_blocking_mode(client->fd, 1);
+    int wrote_ok = 1;
+#if HAVE_LIBSSL
+    if (client->ssl) {
+        size_t offset = 0;
+        while (offset < length) {
+            int written = SSL_write(client->ssl, text.as.string + offset,
+                                    (int)(length - offset));
+            if (written <= 0) {
+                wrote_ok = 0;
+                break;
+            }
+            offset += (size_t)written;
+        }
+    } else
+#endif
+    {
+        size_t offset = 0;
+        while (offset < length) {
+#ifdef MSG_NOSIGNAL
+            ssize_t written = send(client->fd, text.as.string + offset,
+                                   length - offset, MSG_NOSIGNAL);
+#else
+            ssize_t written = send(client->fd, text.as.string + offset,
+                                   length - offset, 0);
+#endif
+            if (written <= 0) {
+                wrote_ok = 0;
+                break;
+            }
+            offset += (size_t)written;
+        }
+    }
+    value_free(text);
+    if (!wrote_ok) {
+        webserver_client_close(server, index);
+        return value_bool(0);
+    }
+    webserver_set_blocking_mode(client->fd, 0);
+    return value_bool(1);
+}
+
+/* webserver.finish(server, id) -> true if a live stream was ended. Ending a
+ * stream that already ended answers false and is not an error, for the same
+ * reason emit's false is not one. */
+static Value webserver_eval_finish(AstExpr *expr) {
+    size_t index = 0;
+    WebServer *server = webserver_stream_target(expr, "finish", &index);
+    if (!server) {
+        return value_null();
+    }
+    if (index == (size_t)-1) {
+        return value_bool(0);
+    }
+    webserver_client_close(server, index);
+    return value_bool(1);
+}
+
 static Value webserver_eval_close(AstExpr *expr) {
     if (expr->as.call.args.count != 1) {
         webserver_raise("webserver.close expects one argument");
@@ -14071,6 +14408,12 @@ static Value webserver_eval_call(AstExpr *expr) {
     }
     if (strcmp(expr->as.call.name, "inherited") == 0) {
         return webserver_eval_inherited(expr);
+    }
+    if (strcmp(expr->as.call.name, "emit") == 0) {
+        return webserver_eval_emit(expr);
+    }
+    if (strcmp(expr->as.call.name, "finish") == 0) {
+        return webserver_eval_finish(expr);
     }
     if (strcmp(expr->as.call.name, "close") == 0) {
         return webserver_eval_close(expr);

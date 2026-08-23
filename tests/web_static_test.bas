@@ -29,18 +29,29 @@ if is_unknown(root) then
     print "GBASIC_WEB_STATIC_ROOT is not set"
 end if
 
+' Since PLAT-WEB-4 a served response carries `file:` (the canonical path the
+' server will stream) instead of a slurped `body`, so content is verified by
+' reading the file the response points at.
+function served_text(r)
+    if not has(r, "file") then
+        return "(no file in response)"
+    end if
+    f(file) = r.file
+    return read(f)
+end function
+
 print "-- what must be served"
 r = web.static("index.html", root)
 append(results, check("a file in the root is served", 200, r.status))
-append(results, check("with its content", "<h1>ok</h1>", r.body))
+append(results, check("with its content", "<h1>ok</h1>", served_text(r)))
 append(results, check("and a content type from its extension", "text/html; charset=utf-8", r.headers["content-type"]))
 
 r = web.static("sub/deep.txt", root)
 append(results, check("a file in a subdirectory is served", 200, r.status))
-append(results, check("with its content", "deep", r.body))
+append(results, check("with its content", "deep", served_text(r)))
 
 r = web.static("img.png", root)
-append(results, check("a binary file survives the round trip", 8, byte_count(r.body)))
+append(results, check("a binary file survives the round trip", 8, byte_count(served_text(r))))
 append(results, check("and is typed by extension", "image/png", r.headers["content-type"]))
 
 r = web.static("data.bin", root)
@@ -48,7 +59,7 @@ append(results, check("an unknown extension is bytes, not a guess", "application
 
 r = web.static("inside", root)
 append(results, check("a symlink that stays inside the root is served", 200, r.status))
-append(results, check("and resolves to its target", "deep", r.body))
+append(results, check("and resolves to its target", "deep", served_text(r)))
 
 print ""
 print "-- what must not be"

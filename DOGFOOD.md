@@ -64,6 +64,8 @@ and the stale-looking ones carry a Status line saying what overtook them.
    stay unofferable; `password_hash` covers login flows already.
 9. **`crypto.json_encode` remains a separate flat encoder** (2026-07-24).
     low. Fold into `json_encode` when convenient.
+10. **No record merge** (2026-08-22). low. Shape: pairs with the array-concat
+    decision (item 3) — `merge(a, b)` or record `+`, decided together.
 
 ### Open — accepted as documented limitations (no action planned)
 
@@ -2331,3 +2333,15 @@ Still open from the 2026-08-22 entries: the `string(number)` precision skew
 changes), the global-rebind-becomes-local silence (a parse-time warning is the
 right shape; not attempted in this pass), the `gi` static-class-call gap, no
 `chmod`, and no PBKDF2.
+
+## 2026-08-22 — CC — while: PLAT-WEB-4, composing a `web.static` response with a request id
+- **Type:** language-surprise
+- **Severity:** low
+- **What:** `web.static(rel, base) + { id: req.id }` — the natural spelling for
+  "this record, plus one more field" — raises `arithmetic operator '+' expected
+  number but got record`. There is no record merge: not via `+`, and no
+  `merge(a, b)` builtin either (checked the eval dispatch). The same shape as
+  the no-array-concat item, one type over.
+- **Workaround:** bind and assign: `r = web.static(rel, base)` then
+  `r.id = req.id`. Three lines for one, fine in a fixture; a route handler
+  composing headers onto a library response will hit this constantly.
