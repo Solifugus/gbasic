@@ -12248,7 +12248,8 @@ static void webserver_raise(const char *message) {
 
 /* PLAT-WEB-5 forward declarations: the request-parse path hands a finished
  * request to the native handler, and both are defined further down. */
-static int webserver_deliver_response(WebServer *server, Value response);
+static int webserver_deliver_response(WebServer *server, Value response,
+                                      const char **err_out);
 static int webserver_call_handler(WebServer *server, Value request);
 
 /* PLAT-WEB-2: SIGTERM means DRAIN, not die, once this process is a server.
@@ -12501,100 +12502,114 @@ static int webserver_pending_request(WebServer *server, unsigned long id) {
     return 0;
 }
 
+/* One refusal, two meanings. Reached from `append(server.responses, {...})`
+ * the program made the mistake in its own frame, so raising is right and the
+ * error names that line. Reached from a request handler there is no such
+ * frame, and raising would end a listener the reference manual promises keeps
+ * serving -- so the caller passes err_out and gets the reason to report.
+ * Same checks, same words, either way. */
+static int webserver_response_invalid(const char **err_out, const char *message) {
+    if (err_out) {
+        *err_out = message;
+        return 0;
+    }
+    webserver_raise(message);
+    return 0;
+}
+
 static int webserver_validate_response_value(WebServer *server,
                                              Value response,
-                                             int require_pending) {
+                                             int require_pending,
+                                             const char **err_out) {
     if (response.kind != VALUE_RECORD) {
-        webserver_raise("webserver response must be a record");
-        return 0;
+        return webserver_response_invalid(err_out, "webserver response must be a record");
     }
     RecordField *id_field = record_find(&response, "id");
     int id = 0;
     if (!id_field) {
-        webserver_raise("webserver response requires an id field");
-        return 0;
+        return webserver_response_invalid(err_out, "webserver response requires an id field");
     }
     if (!webserver_integer(*id_field->value, &id) || id <= 0) {
-        webserver_raise("webserver response id must be a positive integer");
-        return 0;
+        return webserver_response_invalid(
+            err_out, "webserver response id must be a positive integer");
     }
     if (require_pending && !webserver_pending_request(server, (unsigned long)id)) {
-        webserver_raise("webserver response id does not match a pending request");
-        return 0;
+        return webserver_response_invalid(
+            err_out, "webserver response id does not match a pending request");
     }
     RecordField *status = record_find(&response, "status");
     if (status) {
         int code = 0;
         if (!webserver_integer(*status->value, &code) || code < 100 || code > 599) {
-            webserver_raise("webserver response status must be an integer HTTP status");
-            return 0;
+            return webserver_response_invalid(
+                err_out, "webserver response status must be an integer HTTP status");
         }
     }
     RecordField *stream_f = record_find(&response, "stream");
     RecordField *file_f = record_find(&response, "file");
     RecordField *body_f = record_find(&response, "body");
     if (stream_f && stream_f->value->kind != VALUE_BOOL) {
-        webserver_raise("webserver response stream must be true or false");
-        return 0;
+        return webserver_response_invalid(
+            err_out, "webserver response stream must be true or false");
     }
     if (file_f && file_f->value->kind != VALUE_STRING) {
-        webserver_raise("webserver response file must be a path string");
-        return 0;
+        return webserver_response_invalid(err_out, "webserver response file must be a path string");
     }
     if (file_f && body_f) {
-        webserver_raise("webserver response cannot carry both body and file");
-        return 0;
+        return webserver_response_invalid(
+            err_out, "webserver response cannot carry both body and file");
     }
     if (stream_f && stream_f->value->as.boolean && (file_f || body_f)) {
-        webserver_raise("webserver: a stream:true response opens the connection; write with webserver.emit, not a body");
-        return 0;
+        return webserver_response_invalid(
+            err_out,
+            "webserver: a stream:true response opens the connection; "
+            "write with webserver.emit, not a body");
     }
     RecordField *headers = record_find(&response, "headers");
     if (headers) {
         if (headers->value->kind != VALUE_RECORD) {
-            webserver_raise("webserver response headers must be a record");
-            return 0;
+            return webserver_response_invalid(
+                err_out, "webserver response headers must be a record");
         }
         for (size_t i = 0; i < headers->value->as.record.count; i++) {
             RecordField *field = &headers->value->as.record.fields[i];
             if (!webserver_valid_header_name(field->name)) {
-                webserver_raise("webserver response header name is invalid");
-                return 0;
+                return webserver_response_invalid(
+                    err_out, "webserver response header name is invalid");
             }
             if (field->value->kind != VALUE_STRING) {
-                webserver_raise("webserver response header values must be strings");
-                return 0;
+                return webserver_response_invalid(
+                    err_out, "webserver response header values must be strings");
             }
             if (strchr(field->value->as.string, '\r') ||
                 strchr(field->value->as.string, '\n')) {
-                webserver_raise("webserver response header value is invalid");
-                return 0;
+                return webserver_response_invalid(
+                    err_out, "webserver response header value is invalid");
             }
         }
     }
     RecordField *cookies = record_find(&response, "cookies");
     if (cookies) {
         if (cookies->value->kind != VALUE_ARRAY) {
-            webserver_raise("webserver response cookies must be an array");
-            return 0;
+            return webserver_response_invalid(
+                err_out, "webserver response cookies must be an array");
         }
         for (size_t i = 0; i < cookies->value->as.array.store->count; i++) {
             Value *cookie = &cookies->value->as.array.store->items[i];
             if (cookie->kind != VALUE_STRING) {
-                webserver_raise("webserver response cookie values must be strings");
-                return 0;
+                return webserver_response_invalid(
+                    err_out, "webserver response cookie values must be strings");
             }
             if (strchr(cookie->as.string, '\r') ||
                 strchr(cookie->as.string, '\n')) {
-                webserver_raise("webserver response cookie value is invalid");
-                return 0;
+                return webserver_response_invalid(
+                    err_out, "webserver response cookie value is invalid");
             }
         }
     }
     RecordField *body = record_find(&response, "body");
     if (body && body->value->kind != VALUE_STRING) {
-        webserver_raise("webserver response body must be a string");
-        return 0;
+        return webserver_response_invalid(err_out, "webserver response body must be a string");
     }
     return 1;
 }
@@ -12614,7 +12629,10 @@ static int webserver_validate_response_append(AstExpr *target, Value item) {
         webserver_raise("webserver response target is closed");
         return 0;
     }
-    return webserver_validate_response_value(server, item, server->client_count > 0);
+    /* The append path RAISES: the program wrote this record itself, and the
+     * error can name the line it wrote it on. */
+    return webserver_validate_response_value(server, item,
+                                             server->client_count > 0, NULL);
 }
 
 static void webserver_array_remove(Value *array, size_t index) {
@@ -13179,9 +13197,13 @@ static void webserver_send_file(WebServer *server, size_t client_index,
 /* Deliver ONE response record to its client: validate, resolve the client by
  * id, and send by kind (stream head / file / plain). The queue pump and the
  * PLAT-WEB-5 native handler path both come through here, so the two response
- * roads cannot drift. Returns 1 delivered, 0 after raising. */
-static int webserver_deliver_response(WebServer *server, Value response) {
-    if (!webserver_validate_response_value(server, response, 1)) {
+ * roads cannot drift. Returns 1 delivered, 0 refused -- and `err_out` is what
+ * separates the two roads' idea of refusal: NULL raises (the queue path, where
+ * the program's own line is at fault), non-NULL reports (the handler path,
+ * where there is no such line and the listener must survive). */
+static int webserver_deliver_response(WebServer *server, Value response,
+                                      const char **err_out) {
+    if (!webserver_validate_response_value(server, response, 1, err_out)) {
         return 0;
     }
     int id = 0;
@@ -13191,8 +13213,8 @@ static int webserver_deliver_response(WebServer *server, Value response) {
                                                     (unsigned long)id,
                                                     &client_index);
     if (!client) {
-        webserver_raise("webserver response id does not match a pending request");
-        return 0;
+        return webserver_response_invalid(
+            err_out, "webserver response id does not match a pending request");
     }
     RecordField *status = record_find(&response, "status");
     RecordField *headers = record_find(&response, "headers");
@@ -13231,11 +13253,29 @@ static void webserver_process_responses(WebServer *server) {
     }
     while (responses->as.array.store->count > 0) {
         Value response = responses->as.array.store->items[0];
-        if (!webserver_deliver_response(server, response)) {
+        /* NULL: the queue path raises, as it always has. */
+        if (!webserver_deliver_response(server, response, NULL)) {
             return;
         }
         webserver_array_remove(responses, 0);
     }
+}
+
+/* A handler's response was refused. web.bas already answers a handler that
+ * returned the wrong type this way -- name it on stderr, 500 the client, keep
+ * serving -- and a record of the wrong SHAPE is the same mistake one field
+ * further in, so it gets the same answer rather than the listener's death. */
+static int webserver_handler_refused(WebServer *server,
+                                     unsigned long req_id,
+                                     const char *reason) {
+    fprintf(stderr,
+            "webserver: refusing an invalid response from the request handler: %s\n",
+            reason ? reason : "malformed response record");
+    size_t client_index = 0;
+    if (webserver_find_client(server, req_id, &client_index)) {
+        webserver_send_error(server, client_index, 500, "Internal Server Error");
+    }
+    return 1;
 }
 
 /* PLAT-WEB-5: run the registered handler for one finished request and deliver
@@ -13246,6 +13286,7 @@ static void webserver_process_responses(WebServer *server) {
  *                                 function runs with the stream already open --
  *                                 the ordering that makes an in-handler emit
  *                                 work at all (the WEB-4 lesson, kept)
+ *   a MALFORMED record         -> 500, reason named on stderr; still serving
  *   anything else              -> 500, named on stderr; the worker keeps serving
  *
  * A RAISE inside the handler is let-it-crash (§7b): the pending error
@@ -13272,8 +13313,12 @@ static int webserver_call_handler(WebServer *server, Value request) {
     FunctionDef *fn = function_resolve(server->handler_lib, server->handler_fn);
     if (!fn || fn->stmt->as.function.params.count != 2) {
         value_free(request);
-        webserver_raise("webserver.on_request handler is gone or does not take (context, request)");
-        return -500;
+        /* Reported, not raised, for the same reason as a refused response: this
+         * runs from the event loop, where a raise has no statement to name and
+         * would surface as "file:0:0" before ending the listener. */
+        return webserver_handler_refused(
+            server, req_id,
+            "webserver.on_request handler is gone or does not take (context, request)");
     }
     Value *args = malloc(sizeof(Value) * 2);
     if (!args) {
@@ -13290,9 +13335,10 @@ static int webserver_call_handler(WebServer *server, Value request) {
     if (out.kind == VALUE_RECORD) {
         RecordField *open_f = record_find(&out, "stream_open");
         if (open_f && open_f->value->kind == VALUE_RECORD) {
-            if (!webserver_deliver_response(server, *open_f->value)) {
+            const char *why = NULL;
+            if (!webserver_deliver_response(server, *open_f->value, &why)) {
                 value_free(out);
-                return -500;
+                return webserver_handler_refused(server, req_id, why);
             }
             RecordField *hf = record_find(&out, "handler");
             RecordField *rf = record_find(&out, "req");
@@ -13316,9 +13362,13 @@ static int webserver_call_handler(WebServer *server, Value request) {
             value_free(out);
             return 1;
         }
-        int delivered = webserver_deliver_response(server, out);
+        const char *why = NULL;
+        int delivered = webserver_deliver_response(server, out, &why);
         value_free(out);
-        return delivered ? 1 : -500;
+        if (!delivered) {
+            return webserver_handler_refused(server, req_id, why);
+        }
+        return 1;
     }
 
     fprintf(stderr,

@@ -1562,10 +1562,22 @@ request. `on drain ... end on` runs once when draining begins.
 Handlers take `(req)` and **return** the response record; captures are on
 `req.params`. `stream` handlers write with `emit(req, text)` / close with
 `finish(req)` and are SSE-headed. A raise inside a handler kills the worker
-(let-it-crash, §7b of the design); a handler that returns a non-record is a
-500 named on stderr, and serving continues. Handlers cannot rebind caller
-state, so shared state (a broadcast list) lives in **fields of a program
-global** — the one mutation a function makes visible.
+(let-it-crash, §7b of the design). A handler that returns a **non-record**, or
+a record the response validator refuses (a non-string `body`, an out-of-range
+`status`, a CRLF in a header value, `body` and `file` together — the full list
+is below), is a 500 with the reason named on stderr, **and serving continues**:
+a wrong response is the handler's mistake, not the listener's death. The same
+refusals RAISE on the `append(server.responses, {...})` path, where the program
+made the mistake in its own frame and the error can name that line. Handlers
+cannot rebind caller state, so shared state (a broadcast list) lives in
+**fields of a program global** — the one mutation a function makes visible.
+
+That distinction matters most where it is least visible. Reflecting a query
+parameter into a response header is ordinary handler code; the CRLF refusal is
+what stops it becoming response splitting. While that refusal was fatal, any
+such handler was a remote kill switch on the default `workers: 1`.
+`tests/run_web_handler_errors.sh` holds every refusal, each asserting that the
+next request is still answered.
 
 **Testing with no socket** (`tests/run_web_server_block.sh` holds all of
 this): `web.routes(myapp)` returns the route table as flat data;

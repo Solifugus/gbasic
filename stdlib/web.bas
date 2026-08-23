@@ -725,8 +725,16 @@ library web
         if not r.ok then
             error "serve: worker pool failed to start: " + r.why
         end if
+        ' The pool is a VALUE, and a function cannot write back into its
+        ' caller's copy: pool_start and pool_tick RETURN the updated pool and
+        ' dropping either return leaves `p.workers` empty forever. A supervisor
+        ' holding an empty pool polls nothing, so it reports no death and
+        ' respawns no worker -- `workers: N` would start N processes and then
+        ' supervise none of them, which is the whole point of the pool.
+        p = r.pool
         while not webserver.stopping()
-            pool_tick(p)
+            t = pool_tick(p)
+            p = t.pool
             sleep(0.5)
         end while
         pool_stop(p)

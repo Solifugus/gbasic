@@ -66,6 +66,13 @@ and the stale-looking ones carry a Status line saying what overtook them.
     low. Fold into `json_encode` when convenient.
 10. **No record merge** (2026-08-22). low. Shape: pairs with the array-concat
     decision (item 3) — `merge(a, b)` or record `+`, decided together.
+11. **A discarded return value is silent** (2026-08-23). high — this one
+    already cost a working supervisor. Because functions cannot mutate their
+    caller, every "update" API returns the new value, and calling one for
+    effect compiles, runs, and does nothing. `web._serve_pool` dropped
+    `pool_start`/`pool_tick`'s returns and `workers: N` supervised nobody.
+    Shape: a parse-time warning for a discarded non-`nothing` return from a
+    user or library function, in the family of the read-then-shadow warning.
 
 ### Open — accepted as documented limitations (no action planned)
 
@@ -2362,3 +2369,43 @@ right shape; not attempted in this pass), the `gi` static-class-call gap, no
   global-binding convention (`serve(edge)` unassigned works), which the
   watcher path never could. If `watch` in function scope ever ships, this
   entry is the record of what grew around its absence.
+
+## 2026-08-23 — CC — while: auditing the `server` block's error surface — a dropped return value silently disables a supervisor
+- **Type:** language-surprise
+- **Severity:** high
+- **What:** functions cannot mutate caller state, so every gBASIC API that
+  "updates" a record RETURNS the new one. `web.pool_start(p)` and
+  `web.pool_tick(p)` both do. `web._serve_pool` called them for effect and
+  dropped both returns:
+
+  ```
+  r = pool_start(p)          ' r.pool has the worker handles; p does not
+  while not webserver.stopping()
+      pool_tick(p)           ' iterates p.workers -- still []
+      sleep(0.5)
+  end while
+  ```
+
+  `p.workers` stayed empty forever, so the supervisor polled nothing,
+  reported nothing and respawned nothing. `workers: N` started N workers and
+  then supervised none of them — and because the pool exists to make
+  let-it-crash survivable, a handler raise took a worker out permanently.
+  Every worker died in turn and the service went dark with the supervisor
+  still running and its stderr blank.
+
+  What makes this one worth logging is that it is **invisible at the call
+  site and silent at run time**. There is no unused-result diagnostic, and
+  the code reads exactly like the mutating version it resembles in every
+  other language. All four other callers in the tree
+  (`tests/web_pool/*.bas`, `tests/web_tls/tls_pool.bas`) bind the result
+  correctly, so the idiom was known — it was one function that forgot, and
+  no test noticed because none of them killed a worker.
+- **Workaround:** assign the returns (`p = r.pool`, `t = pool_tick(p)` then
+  `p = t.pool`). Resolved in this pass, with
+  `tests/run_web_handler_errors.sh` crashing more workers than the pool holds
+  so an unsupervised pool runs out and fails the tier.
+- **Shape of a real fix:** a warning for a discarded non-`nothing` return
+  from a user/library function would have caught this at parse time. It is
+  the same family as the read-then-shadow warning that already exists, and
+  the same family as the `r + {...}` and no-array-concat items: gBASIC's
+  value semantics are right, and the tooling around forgetting them is thin.
