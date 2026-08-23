@@ -1,13 +1,13 @@
 ' Recipe 5 — What writing refuses, and why each refusal is a feature.
 '
 ' Every refusal below exists to stop a SILENT wrong answer. Catching them needs
-' `on error resume next`, then read `error.message` and call `error.clear()`
+' `on error goto next`, then read `error.message` and call `error.clear()`
 ' before the next attempt.
 
 program main(args)
   wb = xlsx.open("examples/fixtures/xlsx/basic.xlsx")
 
-  on error resume next
+  on error goto next
 
   ' 1. Overwriting a FORMULA cell. The cell holds a formula and Excel's cached
   '    value. Writing a literal over it would leave the formula in place, so

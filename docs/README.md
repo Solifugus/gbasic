@@ -48,6 +48,7 @@ Task-oriented, with runnable examples.
 | [first_class_functions_design.md](first_class_functions_design.md) | Shipped | Function values, methods via `this`, `constructor`. Note: **no closures**. |
 | [unicode_design.md](unicode_design.md) | Shipped | Binary-safe, UTF-8-aware strings; codepoint and byte operations. |
 | [multiprocessing_design.md](multiprocessing_design.md) | Shipped | Shared-nothing actors over fork+exec; `spawn`/`send`/`receive`/`monitor`. |
+| [error_model_design.md](error_model_design.md) | Shipped | Frame-scoped `on error goto next`/`goto label`; catch-and-return, structured raises, traces. Replaces the deleted `on error resume next`. |
 | [text_design.md](text_design.md) | Partial | Layer 0 (regex as a value kind) ships. Layer 1 is `stdlib/ari.bas`. |
 | [ari_spec_language.md](ari_spec_language.md) | Shipped | The ARI spec language for parsing paginated print-image reports. |
 | [bitwise_design.md](bitwise_design.md) | Shipped | `band`/`bor`/`bxor`/`bnot`/`shl`/`shr`/`rotl`/`rotr`, 32-bit unsigned. |

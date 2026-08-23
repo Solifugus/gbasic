@@ -466,7 +466,7 @@ function main()
             print("Goodbye.")
             quit = true
         if "9" then
-            on error resume next
+            on error goto next
             save_project(title, areas, items, triggers)
             if error then
                 error.clear()
@@ -480,7 +480,7 @@ function main()
                 items = items,
                 triggers = triggers
             }
-            on error resume next
+            on error goto next
             loaded = load_project(title, areas, items, triggers)
             if error then
                 error.clear()

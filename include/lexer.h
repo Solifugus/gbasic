@@ -47,7 +47,6 @@ typedef enum {
     TOKEN_NEW,
     TOKEN_SPAWN,
     TOKEN_ON,
-    TOKEN_RESUME,
     TOKEN_NEXT,
     TOKEN_STOP,
     TOKEN_ERROR_VALUE,

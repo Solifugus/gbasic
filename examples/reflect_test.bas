@@ -70,8 +70,9 @@ print reflect.serializable(cyc)
 
 ' -- reflection is recoverable: an unknown variable raises, we continue --
 print "== recover =="
-on error resume next
+on error goto next
 bad = reflect.get("does_not_exist")
-print error
-error.clear()
+if error then
+    print "true"
+end if
 print "continued"

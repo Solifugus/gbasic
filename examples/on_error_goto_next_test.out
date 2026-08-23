@@ -1,0 +1,4 @@
+1: fell through; source=invalid conversion
+2: n still 5
+3b: r still initial
+4: armed() returned fallback

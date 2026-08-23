@@ -21,7 +21,7 @@ program main(args)
 
     ' Ordering a month-bearing duration is REFUSED, not guessed -- catch the
     ' refusal to see its message.
-    on error resume next
+    on error goto next
     x = (1 month) > (30 days)
     print ""
     print "refused: " + error.message
@@ -31,7 +31,7 @@ program main(args)
     t = 1 hour 30 minutes
     print "total_seconds   = " + t.total_seconds
     mth = 1 month
-    on error resume next
+    on error goto next
     x = mth.total_seconds
     print "refused: " + error.message
     error.clear()

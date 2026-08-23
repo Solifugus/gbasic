@@ -39,7 +39,7 @@ Keywords include:
 ```text
 if then else consider end print for to step while break continue function return dim as
 watch unwatch without watchers modifier goto gosub with and or not in
-program library load use export on error resume next stop
+program library load use export on error stop
 ```
 
 Keywords are matched case-insensitively by the lexer. Some keyword tokens may be accepted as identifiers in specific grammar positions, such as `end` and `next` variable names.
@@ -396,10 +396,11 @@ Compatibility note: `use` remains a temporary alias for `load`.
 Error handling:
 
 ```basic
-on error stop
-on error resume next
-on error goto label
+on error stop           ' propagate (the default), restorable mid-frame
+on error goto next      ' absorb: check with `if error then`
+on error goto label     ' absorb: disarm and jump
 error "message"
+error { message: "...", detail: x }
 ```
 
 ## Expressions
@@ -997,50 +998,93 @@ may travel in a single message.
 
 ## Errors
 
-Default mode:
+Error handling is **frame-scoped** (*since 0.1.0-rc5*; design:
+`docs/error_model_design.md`). `on error` governs the function that executed
+it — or the top level — and nothing else: every function starts in the default
+state whatever its caller set, and the setting dies with the frame. Nothing is
+caught unless the `on error` line is visible in the same function.
+
+**Default — propagate.** A raise in a frame with no active handler unwinds to
+the nearest ancestor frame that has one. Reaching the top unhandled is fatal
+with a nonzero exit. `on error stop` restores this state mid-frame.
+
+**`on error goto next` — the checked-statement style.** A raise abandons the
+statement, records the error, and execution continues at the next statement in
+the same list:
 
 ```basic
-on error stop
-```
-
-Unhandled runtime errors stop execution and produce a nonzero process exit status.
-
-Resume next:
-
-```basic
-on error resume next
-```
-
-Runtime errors set error state and execution continues at the next statement.
-
-Single-use goto:
-
-```basic
-on error goto failed
-```
-
-The handler clears itself after firing. Error state persists until `error.clear()`.
-
-Explicit error:
-
-```basic
-error "message"
-```
-
-Error state:
-
-```basic
+cfg_text = read(path)
 if error then
-    print(error.message)
-    print(error.line)
-    print(error.column)
-    print(error.code)
-    print(error.source)
-    error.clear()
+    print to error "config unreadable: " + error.message
+    cfg_text = "{}"
 end if
 ```
 
-Errors propagate out of functions. `with lock` unlocks on error, and `without watchers` restores watcher behavior after its block.
+The abandoned assignment does not write its target — it stays unbound or keeps
+its prior value — so assign the fallback **inside** the check block. Inside a
+loop body, fall-through is to the next statement of the body, so a per-item
+failure is checked per item and the loop continues.
+
+Because the handler is frame-scoped, a function can catch a raise and return a
+clean fallback — the caller never knows:
+
+```basic
+function safe_div(a, b)
+    on error goto next
+    q = a / b
+    if error then
+        return -1
+    end if
+    return q
+end function
+```
+
+Two rules keep deferral honest, and no raise can vanish under them:
+
+1. **One pending error at a time.** A raise arriving while an unacknowledged
+   error is pending is *not* absorbed — it escapes the frame as if unhandled.
+   Check promptly.
+2. **Pending errors do not survive the frame.** Returning (or ending the
+   program) with an unacknowledged error re-raises at the call site.
+
+**`on error goto <label>`** jumps instead. Firing **disarms** the frame, so a
+raise inside the handler propagates rather than looping; re-arm by executing
+`on error goto` again. The jump *is* the acknowledgment — inside the handler
+bare `error` is `false` while `error.message` still describes what happened, and
+rules 1 and 2 do not apply.
+
+**Reading `error`.** Bare `error` asks *"is there an unacknowledged error?"* and
+claims it: it yields the error object (a record, truthy) once per raise and
+`false` thereafter, so a second check is not a stale-state trap and
+`e = error` acknowledges-and-snapshots in one move. `error.field` reads the
+stored error **without** touching the flag — which is why `error.message` still
+works inside the block after the condition consumed it. Fields: `message`,
+`code`, `source`, `line`, `column`, `path`, `details`, `trace`.
+`error.clear()` clears both the error and the flag.
+
+**Raising.** `error "message"`, or a record for a structured raise:
+
+```basic
+error { message: "insufficient funds", balance: b, needed: amt }
+```
+
+`message` is required; `code` and `source` are honored if present; every other
+field lands in `error.details`, so a library can ship error *data* instead of a
+string for callers to match on. Because a snapshot carries `message`,
+**re-raising is just `error e`**, and it preserves the original trace and
+location — the interesting site is where it first went wrong, not the relay.
+
+**`error.trace`** is an array of `{name, path, line, column}` records, innermost
+first (the field is `name` because a keyword cannot follow a dot).
+
+`with lock` unlocks on error, and `without watchers` restores watcher behavior
+after its block.
+
+> **Removed in 0.1.0-rc5:** `on error resume next`. It was a process-global
+> mode, and that is what made a function unable to catch a raise and return a
+> fallback. Migrate to `on error goto next`, which is where the checks you
+> already wrote keep working — under semantics that no longer poison the caller.
+> `resume` is an ordinary identifier again.
 
 Diagnostic positions — `error.line`/`error.column` and the `line:column` in error text — are 1-based and counted in **bytes** (not Unicode codepoints or UTF-16 units): a multi-byte UTF-8 character advances the column by its byte count, a tab counts as one column, only `\n` starts a new line, and spans are inclusive-start/exclusive-end (the authoritative definition lives in `include/diagnostics.h`). For the diagnostic-code and error-domain catalog, see `docs/ai/ERRORS.md`.
 

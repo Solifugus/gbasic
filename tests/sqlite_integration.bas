@@ -31,7 +31,7 @@ sqlite.commit(db)
 committed = sqlite.query(db, "select count(*) as count from gbasic_sqlite_test where id = 3")
 print(committed[0].count)
 
-on error resume next
+on error goto next
 duplicate = sqlite.query(db, "select 1 as id, 2 as id")
 print(error.source)
 error.clear()

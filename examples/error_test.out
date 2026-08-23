@@ -7,7 +7,6 @@ division by zero
 invalid function call
 file operation
 explicit failure
-error still set
 function error propagated
 locked failure
 done

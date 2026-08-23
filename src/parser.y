@@ -647,7 +647,7 @@ typedef struct {
  * before this it fell through to the token mapper's default arm and was
  * reported as an unexpected token rather than a keyword clash. */
 %token AS
-%token IF CONSIDER_IF THEN ELSE CONSIDER_ELSE END END_CONSIDER PRINT TRUE FALSE NOTHING UNKNOWN_VALUE AND OR NOT WITH NEW SPAWN FOR TO STEP DO LOOP UNTIL IN EACH WHILE CONSIDER BREAK CONTINUE FUNCTION RETURN GOTO GOSUB WATCH UNWATCH WITHOUT WATCHERS ON RESUME NEXT STOP ERROR_VALUE MODIFIER PROGRAM LIBRARY LOAD USE EXPORT
+%token IF CONSIDER_IF THEN ELSE CONSIDER_ELSE END END_CONSIDER PRINT TRUE FALSE NOTHING UNKNOWN_VALUE AND OR NOT WITH NEW SPAWN FOR TO STEP DO LOOP UNTIL IN EACH WHILE CONSIDER BREAK CONTINUE FUNCTION RETURN GOTO GOSUB WATCH UNWATCH WITHOUT WATCHERS ON NEXT STOP ERROR_VALUE MODIFIER PROGRAM LIBRARY LOAD USE EXPORT
 %token OP_EQ OP_NE OP_GT OP_LT OP_GE OP_LE OP_NGT OP_NLT OP_NGE OP_NLE
 %token PLUS MINUS STAR SLASH LPAREN MOD_LPAREN RPAREN LBRACKET RBRACKET LBRACE RBRACE COMMA COLON NEWLINE
 %precedence IF_WITHOUT_ELSE
@@ -1135,7 +1135,7 @@ without_watchers_statement
 
 on_error_statement
     : ON ERROR_VALUE GOTO IDENT { $$ = ast_on_error_goto($4); }
-    | ON ERROR_VALUE RESUME NEXT { $$ = ast_on_error_resume_next(); }
+    | ON ERROR_VALUE GOTO NEXT { $$ = ast_on_error_goto_next(); }
     | ON ERROR_VALUE STOP { $$ = ast_on_error_stop(); }
     ;
 
@@ -1481,7 +1481,6 @@ field_name
     | FUNCTION       { $$ = kw_name("function"); }
     | MODIFIER       { $$ = kw_name("modifier"); }
     | PROGRAM        { $$ = kw_name("program"); }
-    | RESUME         { $$ = kw_name("resume"); }
     | WATCH          { $$ = kw_name("watch"); }
     | WATCHERS       { $$ = kw_name("watchers"); }
     | CONSIDER       { $$ = kw_name("consider"); }
@@ -1715,7 +1714,6 @@ static int yylex(YYSTYPE *lvalp, YYLTYPE *llocp, gb_parse_ctx *ctx) {
     case TOKEN_WITHOUT: return WITHOUT;
     case TOKEN_WATCHERS: return WATCHERS;
     case TOKEN_ON: return ON;
-    case TOKEN_RESUME: return RESUME;
     case TOKEN_NEXT: return NEXT;
     case TOKEN_STOP: return STOP;
     case TOKEN_ERROR_VALUE: return ERROR_VALUE;

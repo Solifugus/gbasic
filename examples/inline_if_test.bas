@@ -69,6 +69,6 @@ end while
 ' are accepted by the inline grammar.
 if false then load inline_if_unused_library
 if false then error "not reached"
-if false then on error resume next
+if false then on error goto next
 
 print("after inline if")

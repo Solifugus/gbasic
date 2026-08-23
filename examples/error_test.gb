@@ -1,4 +1,4 @@
-on error resume next
+on error goto next
 
 print missing_value
 if error then
@@ -34,9 +34,12 @@ error "explicit failure"
 print "not reached"
 
 failed:
+' Inside a `goto label` handler the details are still readable, but there is
+' nothing UNACKNOWLEDGED to check: the jump was the acknowledgment. So bare
+' `error` is false here while `error.message` still describes what happened.
 print error.message
 if error then
-    print "error still set"
+    print "NOT PRINTED -- the jump acknowledged it"
 end if
 error.clear()
 
@@ -45,7 +48,7 @@ function failer()
     return 99
 end function
 
-on error resume next
+on error goto next
 print failer()
 if error then
     print "function error propagated"

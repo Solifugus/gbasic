@@ -49,7 +49,7 @@ program demo(args)
     load text
     load stricttext
 
-    on error resume next
+    on error goto next
     hidden(whisper)= "HELLO"
     if error then
         print("private modifier unavailable")

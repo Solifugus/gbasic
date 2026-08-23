@@ -298,7 +298,6 @@ static TokenType identifier_type(const char *start, int length) {
     if (keyword_equals(start, length, "new")) return TOKEN_NEW;
     if (keyword_equals(start, length, "spawn")) return TOKEN_SPAWN;
     if (keyword_equals(start, length, "on")) return TOKEN_ON;
-    if (keyword_equals(start, length, "resume")) return TOKEN_RESUME;
     if (keyword_equals(start, length, "next")) return TOKEN_NEXT;
     if (keyword_equals(start, length, "stop")) return TOKEN_STOP;
     if (keyword_equals(start, length, "error")) return TOKEN_ERROR_VALUE;
@@ -526,7 +525,6 @@ const char *token_type_name(TokenType type) {
     case TOKEN_NEW: return "NEW";
     case TOKEN_SPAWN: return "SPAWN";
     case TOKEN_ON: return "ON";
-    case TOKEN_RESUME: return "RESUME";
     case TOKEN_NEXT: return "NEXT";
     case TOKEN_STOP: return "STOP";
     case TOKEN_ERROR_VALUE: return "ERROR_VALUE";

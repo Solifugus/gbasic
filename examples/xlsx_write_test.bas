@@ -67,9 +67,11 @@ program main(args)
 
   print ""
   print "== writing over a formula is refused, not guessed =="
-  ' No `on error resume next` here: gBASIC cannot catch a raise, so this is
-  ' asserted by the negative tier in tests/run_xlsx.sh instead. What is checked
-  ' here is that the formula cell is still a formula cell after everything else.
+  ' The refusal itself is asserted by the negative tier in tests/run_xlsx.sh,
+  ' where the message is the contract. What is checked HERE is the property that
+  ' outlives it: the formula cell is still a formula cell after everything else.
+  ' (Catching the raise inline is possible since PLAT-ERR, but a golden that
+  ' swallowed the refusal would stop pinning its wording.)
   print "B5 still has a formula = " + (not is_unknown(xlsx.cell(edited, "Ledger", "B5").formula))
 
   c(file) = copy_path

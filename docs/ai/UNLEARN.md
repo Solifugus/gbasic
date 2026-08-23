@@ -323,15 +323,41 @@ day — so assume you will hit them too.
   `through:` in date specs). Probe `r.yourname` before building an API on a
   field name; dynamic access `r["on"]` works but reads worse.
 
-## Error handling — the big one
+## Error handling — rebuilt in 0.1.0-rc5, so unlearn the old advice too
 
-`on error resume next` does **not** work like an exception catch. See
-`docs/ai/ERRORS.md` for the proven, precise model, but the rule you must
-internalize: **a function cannot use `on error resume next` to catch a raise and
-return a clean fallback to its caller** — the caller's statement is abandoned
-regardless of what the function returns, and `error.clear()` does not rescue it.
-**Pre-validate** with a non-raising check and only call the raising builtin when
-it will succeed. Proof: `examples/on_error_resume_next_test.bas`.
+**`on error resume next` is gone** (`resume` is an ordinary identifier again).
+The replacement is `on error goto next`, and it is **frame-scoped**: it governs
+the function that executed it and nothing else.
+
+The rule that used to matter most — *a function cannot catch a raise and return
+a fallback* — **is no longer true**, and neither is the pre-validate doctrine
+built on it:
+
+```basic
+function safe_div(a, b)
+    on error goto next
+    q = a / b
+    if error then
+        return -1        ' the caller never knows anything happened
+    end if
+    return q
+end function
+```
+
+Three things that surprise on the way in:
+
+- **Only bare `error` acknowledges.** `if error then` claims the error and is
+  true exactly once; `error.message` reads without claiming. Reading only
+  `error.message` leaves it pending — and the next raise then ESCAPES the frame
+  rather than being absorbed (one pending error at a time).
+- **A pending error survives nothing.** Return with one unacknowledged and it
+  re-raises at the call site; end the program with one and it is still reported.
+  Forgetting a check makes noise, never silence.
+- **A callee is not covered by your handler.** It arms its own frame or its
+  raise propagates through it.
+
+See `docs/error_model_design.md`; proof in `examples/on_error_goto_next_test.bas`
+and `tests/run_error_model.sh`.
 
 ## Performance traps (correctness-adjacent)
 
@@ -375,5 +401,5 @@ it will succeed. Proof: `examples/on_error_resume_next_test.bas`.
 Negative knowledge in one line each — feature you expect → gBASIC instead:
 numeric `for` → `for each`; `<>` → `!=`; `mod`/`%` → `a - floor(a/b)*b`;
 `&` → `+`; `rem`/`//` → `'`; `dim x` → just assign; `s[i]` → `mid(s,i,1)`;
-`print a, b` → `print(string(a)+" "+string(b))`; exception catch → pre-validate;
+`print a, b` → `print(string(a)+" "+string(b))`; exception catch → `on error goto next` + `if error then`;
 `print #f` / stderr redirect → `print to error x`.

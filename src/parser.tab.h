@@ -127,43 +127,42 @@ typedef struct {
     WITHOUT = 301,                 /* WITHOUT  */
     WATCHERS = 302,                /* WATCHERS  */
     ON = 303,                      /* ON  */
-    RESUME = 304,                  /* RESUME  */
-    NEXT = 305,                    /* NEXT  */
-    STOP = 306,                    /* STOP  */
-    ERROR_VALUE = 307,             /* ERROR_VALUE  */
-    MODIFIER = 308,                /* MODIFIER  */
-    PROGRAM = 309,                 /* PROGRAM  */
-    LIBRARY = 310,                 /* LIBRARY  */
-    LOAD = 311,                    /* LOAD  */
-    USE = 312,                     /* USE  */
-    EXPORT = 313,                  /* EXPORT  */
-    OP_EQ = 314,                   /* OP_EQ  */
-    OP_NE = 315,                   /* OP_NE  */
-    OP_GT = 316,                   /* OP_GT  */
-    OP_LT = 317,                   /* OP_LT  */
-    OP_GE = 318,                   /* OP_GE  */
-    OP_LE = 319,                   /* OP_LE  */
-    OP_NGT = 320,                  /* OP_NGT  */
-    OP_NLT = 321,                  /* OP_NLT  */
-    OP_NGE = 322,                  /* OP_NGE  */
-    OP_NLE = 323,                  /* OP_NLE  */
-    PLUS = 324,                    /* PLUS  */
-    MINUS = 325,                   /* MINUS  */
-    STAR = 326,                    /* STAR  */
-    SLASH = 327,                   /* SLASH  */
-    LPAREN = 328,                  /* LPAREN  */
-    MOD_LPAREN = 329,              /* MOD_LPAREN  */
-    RPAREN = 330,                  /* RPAREN  */
-    LBRACKET = 331,                /* LBRACKET  */
-    RBRACKET = 332,                /* RBRACKET  */
-    LBRACE = 333,                  /* LBRACE  */
-    RBRACE = 334,                  /* RBRACE  */
-    COMMA = 335,                   /* COMMA  */
-    COLON = 336,                   /* COLON  */
-    NEWLINE = 337,                 /* NEWLINE  */
-    IF_WITHOUT_ELSE = 338,         /* IF_WITHOUT_ELSE  */
-    NO_DOT = 339,                  /* NO_DOT  */
-    DOT = 340                      /* DOT  */
+    NEXT = 304,                    /* NEXT  */
+    STOP = 305,                    /* STOP  */
+    ERROR_VALUE = 306,             /* ERROR_VALUE  */
+    MODIFIER = 307,                /* MODIFIER  */
+    PROGRAM = 308,                 /* PROGRAM  */
+    LIBRARY = 309,                 /* LIBRARY  */
+    LOAD = 310,                    /* LOAD  */
+    USE = 311,                     /* USE  */
+    EXPORT = 312,                  /* EXPORT  */
+    OP_EQ = 313,                   /* OP_EQ  */
+    OP_NE = 314,                   /* OP_NE  */
+    OP_GT = 315,                   /* OP_GT  */
+    OP_LT = 316,                   /* OP_LT  */
+    OP_GE = 317,                   /* OP_GE  */
+    OP_LE = 318,                   /* OP_LE  */
+    OP_NGT = 319,                  /* OP_NGT  */
+    OP_NLT = 320,                  /* OP_NLT  */
+    OP_NGE = 321,                  /* OP_NGE  */
+    OP_NLE = 322,                  /* OP_NLE  */
+    PLUS = 323,                    /* PLUS  */
+    MINUS = 324,                   /* MINUS  */
+    STAR = 325,                    /* STAR  */
+    SLASH = 326,                   /* SLASH  */
+    LPAREN = 327,                  /* LPAREN  */
+    MOD_LPAREN = 328,              /* MOD_LPAREN  */
+    RPAREN = 329,                  /* RPAREN  */
+    LBRACKET = 330,                /* LBRACKET  */
+    RBRACKET = 331,                /* RBRACKET  */
+    LBRACE = 332,                  /* LBRACE  */
+    RBRACE = 333,                  /* RBRACE  */
+    COMMA = 334,                   /* COMMA  */
+    COLON = 335,                   /* COLON  */
+    NEWLINE = 336,                 /* NEWLINE  */
+    IF_WITHOUT_ELSE = 337,         /* IF_WITHOUT_ELSE  */
+    NO_DOT = 338,                  /* NO_DOT  */
+    DOT = 339                      /* DOT  */
   };
   typedef enum yytokentype yytoken_kind_t;
 #endif
@@ -191,7 +190,7 @@ union YYSTYPE
     AstServerItem *server_item;
     AstServerItemList server_item_list;
 
-#line 195 "src/parser.tab.h"
+#line 194 "src/parser.tab.h"
 
 };
 typedef union YYSTYPE YYSTYPE;

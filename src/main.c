@@ -653,7 +653,7 @@ static void analyze_stmt(AddUsesContext *ctx, AstStmt *stmt) {
     case AST_STMT_BREAK:
     case AST_STMT_CONTINUE:
     case AST_STMT_ON_ERROR_GOTO:
-    case AST_STMT_ON_ERROR_RESUME_NEXT:
+    case AST_STMT_ON_ERROR_GOTO_NEXT:
     case AST_STMT_ON_ERROR_STOP:
         break;
     }
@@ -871,7 +871,7 @@ int main(int argc, char **argv) {
         print_help(argv[0]);
         return 0;
     } else if (argc == 2 && strcmp(argv[1], "--version") == 0) {
-        printf("gBASIC 0.1.0-rc4\n");
+        printf("gBASIC 0.1.0-rc5\n");
         return 0;
     } else if (argc == 3 && strcmp(argv[1], "--ast") == 0) {
         ast_only = 1;

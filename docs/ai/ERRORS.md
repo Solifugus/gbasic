@@ -69,50 +69,60 @@ Because `1003` covers most runtime errors, **branch on `error.source`, not
 `serialization`, `source generation`, `datetime`, `clock`, `money`, `random`,
 `password_hash`, `system error`, `use`, `program`, `this`, `unknown`, `gui`.
 
-## 3. `on error` modes and the proven `resume next` model
+## 3. `on error` is frame-scoped (PLAT-ERR, 2026-08-23)
 
-Three modes; the mode is a **process-global** setting once executed:
+Full design and rationale: `docs/error_model_design.md`. Proven by
+`tests/run_error_model.sh` (17 cases) and `examples/on_error_goto_next_test.bas`.
 
-- `on error stop` (default) — an unhandled raise stops the program with a nonzero
-  exit and the diagnostic on stderr.
-- `on error goto label` — single-use jump to `label` on the next raise; the
-  handler clears itself after firing.
-- `on error resume next` — described precisely below.
+`on error` governs **the frame that executed it** — one function invocation, or
+the top level — and nothing else. A function starts in the default state
+whatever its caller set, and the setting dies with the frame.
 
-### `on error resume next` — verified semantics
+- `on error stop` (default) — propagate. The raise unwinds to the nearest
+  ancestor frame with a handler; reaching the top unhandled is fatal, nonzero
+  exit, one line on stderr.
+- `on error goto next` — absorb: abandon the statement, mark the error
+  **pending**, continue at the next statement of the same list.
+- `on error goto <label>` — absorb: **disarm** the frame and jump. The jump is
+  the acknowledgment, so bare `error` is false inside the handler (while
+  `error.message` still reads), and rules 1–2 below do not apply.
 
-Proven by `examples/on_error_resume_next_test.bas` (wired golden). A raise under
-this mode:
+### The consequence that matters
 
-1. **Does not stop the program.** It sets error state (`error`, `error.code`,
-   `error.source`, `error.line`/`column`) and bumps an internal generation
-   counter.
-2. **Statement-list resume.** Execution continues at the *next statement in the
-   same statement list* as the statement that raised — at every frame level (a
-   raise inside a called function resumes at that function's next statement).
-3. **Expression abandonment that propagates through calls.** The statement that
-   was executing does not complete its value: an assignment does not write its
-   target (it keeps its prior value, or stays unbound). This abandonment
-   propagates up through every enclosing expression **and through call
-   boundaries** — `x = f()` is abandoned if anything inside `f()` raised, even
-   though `f()` locally resumed and returned a value.
-4. **Therefore a function cannot catch-and-return a fallback.** `answer =
-   safe(bad)` is abandoned by the caller's generation check regardless of what
-   `safe` returns, and **`error.clear()` clears error *state* but not the
-   generation counter**, so it does not rescue the caller.
+**A function can now catch a raise and return a clean fallback.** This is the
+exact case the old process-global `resume next` could not do — the caller's
+statement was abandoned by a generation check no matter what the callee
+returned, and `error.clear()` did not rescue it. Absorption now restores the
+generation to the absorbing frame's entry value, which is what makes the raise
+invisible to outer frames.
 
-The consequence for library code: **pre-validate**. Ship a non-raising checker and
-call the raising builtin only on input that will succeed. Do not rely on `on error`
-inside a function to tolerate bad input.
+So the old **pre-validate doctrine is retired**: stdlib functions may raise
+freely, because callers can afford it. `try_decode` remains as a convenience
+(and because a scanner reports *where* the JSON is malformed), not as the only
+way to survive bad input.
 
-**For JSON, do not write that checker — use `try_decode(text)`.** It returns
-`{ok, value, message, offset, line, column}` and never raises, so the pre-validate
-pass disappears entirely. This matters beyond convenience: a hand-written scanner
-in gBASIC is **quadratic**, because `mid(s, i, 1)` is O(i) on codepoint-indexed
-strings. Measured on the validator this replaced — 64 KB: 16 s, 128 KB: 69 s,
-256 KB: 291 s, against well under a second for the C parser. If you find yourself
-scanning a string character by character in gBASIC, that curve is what you are
-signing up for.
+### Two anti-silence rules
+
+1. **One pending error at a time.** A raise while an unacknowledged error is
+   pending is not absorbed — it escapes the frame as if unhandled.
+2. **Pending errors do not survive the frame.** Returning, or ending the
+   program, with an unacknowledged error re-raises at the call site.
+
+Together: no raise can vanish. Forgetting a check produces noise, never
+silence — the inversion of the VB6 failure mode.
+
+### Reading and raising
+
+Bare `error` **acknowledges** and yields the error object (truthy) once per
+raise, `false` after; `error.field` reads without acknowledging, which is why
+`error.message` works inside the block. Only bare `error` clears the flag —
+reading `error.source` alone leaves it pending, and the next raise then escapes
+under rule 1.
+
+`error <record>` raises structurally (`message` required; extra fields become
+`error.details`), and since a snapshot carries `message`, `error e` re-raises
+one — preserving the original `trace` and location. `error.trace` is an array of
+`{name, path, line, column}`, innermost first.
 
 ## 4. How this file was derived / regenerating it
 
@@ -127,9 +137,9 @@ signing up for.
   grep -oE ', [0-9]{4}, "[^"]*"' src/eval.c | sort -u
   ```
 
-- Resume-next semantics: read the `error_generation` counter and
-  `runtime_error_raise` in `src/eval.c`, and confirmed by running
-  `examples/on_error_resume_next_test.bas`.
+- Frame semantics: `ErrorFrame` / `error_frame_absorb` / `raise_report_fatal`
+  in `src/eval.c`, and confirmed by running `tests/run_error_model.sh` and
+  `examples/on_error_goto_next_test.bas`.
 
 Numeric `error.code` values are stable in practice but, unlike `gb_diag_code`,
 are not annotated as frozen in a header; re-run the greps after evaluator changes.

@@ -453,11 +453,28 @@ typedef struct {
     char *name;      /* owned; NULL for the anonymous form */
 } WatcherDef;
 
+/* PLAT-ERR (docs/error_model_design.md): `on error` is FRAME-scoped. Every
+ * function invocation gets a frame in the default state regardless of its
+ * caller's mode; the top level is the base frame. A raise unwinds to the
+ * nearest armed frame, which absorbs it -- and absorption is what the old
+ * process-global model could not do without poisoning the caller. */
 typedef enum {
-    ERROR_MODE_STOP,
-    ERROR_MODE_GOTO,
-    ERROR_MODE_RESUME_NEXT
-} ErrorMode;
+    EFRAME_DEFAULT,     /* propagate (let-it-crash) */
+    EFRAME_GOTO_NEXT,   /* absorb: mark pending, fall through to the next stmt */
+    EFRAME_GOTO_LABEL   /* absorb: disarm and jump */
+} ErrorFrameMode;
+
+typedef struct ErrorFrame {
+    ErrorFrameMode mode;
+    char *label;             /* owned; EFRAME_GOTO_LABEL only */
+    int pending;             /* absorbed and not yet acknowledged by a check */
+    int entry_generation;    /* error_generation at frame entry; absorption
+                              * restores to this, which is the single move that
+                              * makes every OUTER frame's before/after check
+                              * pass -- i.e. what turns "poison the caller"
+                              * into "catch" */
+    struct ErrorFrame *parent;
+} ErrorFrame;
 
 typedef struct {
     int active;
@@ -466,6 +483,13 @@ typedef struct {
     int column;
     int code;
     char *source;
+    char *path;      /* the import path AT RAISE TIME: reporting is deferred to
+                      * the frame that declines, by which point unwinding has
+                      * restored current_import_path -- so the location must be
+                      * captured here or a library raise reports the caller's
+                      * file */
+    Value details;   /* record; empty when the raise carried none */
+    Value trace;     /* array of {name, path, line, column}, innermost first */
 } RuntimeError;
 
 typedef struct {
@@ -478,6 +502,8 @@ typedef struct {
     int did_stop;
     int did_break;
     int did_continue;
+    int did_raise;   /* PLAT-ERR: a raise unwinding toward an armed frame; rides
+                      * the same block-exit paths as did_stop */
     Value value;
 } EvalResult;
 
@@ -559,11 +585,23 @@ enum {
     WATCHER_CYCLE_ERROR_CODE = 1005
 };
 static RuntimeError current_error = {0};
-static ErrorMode error_mode = ERROR_MODE_STOP;
-static char *error_goto_label = NULL;
 static int runtime_stopped = 0;
 static int error_generation = 0;
-static char *pending_error_goto_label = NULL;
+static int raise_in_flight = 0;
+static ErrorFrame base_error_frame = {0};
+static ErrorFrame *current_error_frame = &base_error_frame;
+
+/* Shadow call stack for error traces: pushed in invoke_function beside
+ * current_env. Entries reference AST-owned strings, so no ownership here. */
+typedef struct {
+    const char *name;
+    const char *path;
+    int line;
+    int column;
+} CallFrameInfo;
+enum { CALL_STACK_MAX = 256, TRACE_MAX = 64 };
+static CallFrameInfo call_stack[CALL_STACK_MAX];
+static size_t call_stack_depth = 0;
 static int current_line = 0;
 static int current_column = 0;
 static AstStmtList active_root = {0};
@@ -2594,23 +2632,20 @@ static EvalResult eval_continue(void) {
 
 static int eval_result_exits_block(EvalResult result) {
     return result.did_return || result.did_goto || result.did_gosub ||
-           result.did_stop || result.did_break || result.did_continue;
+           result.did_stop || result.did_break || result.did_continue ||
+           result.did_raise;
 }
+
+static Value value_copy(Value value);
+static void value_free(Value value);
 
 static void error_clear_state(void) {
     free(current_error.message);
     free(current_error.source);
+    free(current_error.path);
+    value_free(current_error.details);
+    value_free(current_error.trace);
     memset(&current_error, 0, sizeof(current_error));
-}
-
-static void error_set_state(const char *message, int code, const char *source) {
-    error_clear_state();
-    current_error.active = 1;
-    current_error.message = copy_string(message);
-    current_error.line = current_line;
-    current_error.column = current_column;
-    current_error.code = code;
-    current_error.source = copy_string(source ? source : "runtime");
 }
 
 static const char *runtime_error_path(void) {
@@ -2623,69 +2658,181 @@ static const char *runtime_error_path(void) {
     return NULL;
 }
 
+/* The call stack at raise time, innermost first, as program-visible data.
+ * The field is `name`, not `function`: a keyword cannot follow a dot, so
+ * `fr.function` would never parse (the constraint that named the match
+ * record's `length`). */
+static Value error_capture_trace(void) {
+    size_t count = call_stack_depth < TRACE_MAX ? call_stack_depth : TRACE_MAX;
+    Value *items = count ? malloc(sizeof(Value) * count) : NULL;
+    if (count && !items) {
+        abort();
+    }
+    for (size_t i = 0; i < count; i++) {
+        CallFrameInfo *frame = &call_stack[call_stack_depth - 1 - i];
+        RecordField *fields = calloc(4, sizeof(RecordField));
+        if (!fields) {
+            abort();
+        }
+        const char *names[] = {"name", "path", "line", "column"};
+        for (size_t j = 0; j < 4; j++) {
+            fields[j].name = copy_string(names[j]);
+            fields[j].value = cell_alloc();
+            if (!fields[j].value) {
+                abort();
+            }
+        }
+        *fields[0].value = value_string(frame->name ? frame->name : "");
+        *fields[1].value = value_string(frame->path ? frame->path : "");
+        *fields[2].value = value_number(frame->line);
+        *fields[3].value = value_number(frame->column);
+        items[i] = value_record(fields, 4);
+    }
+    return value_array(items, count);
+}
+
+/* Takes ownership of `details` and `trace`; VALUE_NULL for either means
+ * "none carried": details materializes as an empty record in the error
+ * object, and the trace is captured fresh from the live call stack. Line and
+ * column of 0 mean "here" (the current statement). */
+static void error_set_state_full(const char *message, int code,
+                                 const char *source, Value details,
+                                 Value trace, int line, int column) {
+    error_clear_state();
+    current_error.active = 1;
+    current_error.message = copy_string(message);
+    current_error.line = line ? line : current_line;
+    current_error.column = column ? column : current_column;
+    current_error.code = code;
+    current_error.source = copy_string(source ? source : "runtime");
+    current_error.path = copy_string(runtime_error_path() ? runtime_error_path() : "");
+    current_error.details = details;
+    current_error.trace = trace.kind == VALUE_NULL ? error_capture_trace() : trace;
+}
+
+static void error_set_state(const char *message, int code, const char *source) {
+    error_set_state_full(message, code, source, value_null(), value_null(), 0, 0);
+}
+
+/* PLAT-ERR: a raise RECORDS and starts unwinding; nothing is decided here.
+ * Whether it is fatal is only known at the frame that declines it, so the
+ * report is deferred to raise_report_fatal -- with the location captured in
+ * current_error at raise time, the line is byte-identical. */
 static void runtime_error_raise(const char *message, int code, const char *source) {
     error_set_state(message, code, source);
     error_generation++;
+    raise_in_flight = 1;
+}
 
-    if (error_mode == ERROR_MODE_GOTO && error_goto_label) {
-        free(pending_error_goto_label);
-        pending_error_goto_label = error_goto_label;
-        error_goto_label = NULL;
-        error_mode = ERROR_MODE_STOP;
-        return;
-    }
+/* The raise found no armed frame: report it exactly as the old STOP mode did
+ * (same sink, same single line -- byte-exact against 333 negative goldens)
+ * and stop the run. */
+static void raise_report_fatal(void) {
+    gb_span span = { current_error.line, current_error.column,
+                     current_error.line, current_error.column };
+    gb_report(GB_DIAG_RUNTIME_ERROR, current_error.code,
+              current_error.path && current_error.path[0] ? current_error.path
+                                                          : runtime_error_path(),
+              span, current_error.message);
+    raise_in_flight = 0;
+    runtime_stopped = 1;
+}
 
-    if (error_mode == ERROR_MODE_STOP) {
-        /* Route through the diagnostic sink: pushed when the CLI has installed a
-         * sink (drained after eval), or emitted immediately in the legacy format
-         * when none is set (e.g. actor mode). A STOP-mode error is terminal, so
-         * either way it remains the last line on stderr — byte-exact. `code`
-         * rides along as the language-level subcode. */
-        gb_span span = { current_error.line, current_error.column,
-                         current_error.line, current_error.column };
-        gb_report(GB_DIAG_RUNTIME_ERROR, code, runtime_error_path(), span,
-                  current_error.message);
-        runtime_stopped = 1;
-    }
+/* A native boundary (a GUI signal handler, a gi callback) contains a raise
+ * instead of dying: report the diagnostic -- the old model reported at raise
+ * time, so silence here would be a regression -- then clear the flight so the
+ * loop that pumped the handler keeps running. */
+static void raise_report_contained(void) {
+    gb_span span = { current_error.line, current_error.column,
+                     current_error.line, current_error.column };
+    gb_report(GB_DIAG_RUNTIME_ERROR, current_error.code,
+              current_error.path && current_error.path[0] ? current_error.path
+                                                          : runtime_error_path(),
+              span, current_error.message);
+    raise_in_flight = 0;
+    error_clear_state();
+}
+
+static EvalResult eval_raise(void) {
+    EvalResult result = {0};
+    result.did_raise = 1;
+    result.value = value_null();
+    return result;
 }
 
 static EvalResult eval_error_result(void) {
-    if (pending_error_goto_label) {
-        char *label = pending_error_goto_label;
-        pending_error_goto_label = NULL;
-        EvalResult result = eval_goto(label);
-        free(label);
-        return result;
-    }
     if (runtime_stopped) {
         return eval_stop();
+    }
+    if (raise_in_flight) {
+        return eval_raise();
     }
     return eval_no_result();
 }
 
 static int error_action_pending(void) {
-    return pending_error_goto_label != NULL || runtime_stopped;
+    return raise_in_flight || runtime_stopped;
+}
+
+/* Consult the current frame about a raise that has just unwound to one of its
+ * statement lists. Returns 0 = decline (propagate: no handler, disarmed, or
+ * rule 1 -- an unacknowledged error is already pending, so the deferral
+ * privilege is spent); 1 = absorbed under goto-next (continue at the next
+ * statement); 2 = absorbed under goto-label (*jump_label, ownership passed,
+ * and the frame is DISARMED so a raise inside the handler propagates instead
+ * of looping). Absorption restores error_generation to the frame's entry
+ * snapshot -- the single move that makes every outer frame's before/after
+ * check pass, i.e. what turns "poison the caller" into "catch". */
+static int error_frame_absorb(char **jump_label) {
+    ErrorFrame *frame = current_error_frame;
+    if (frame->pending) {
+        return 0;
+    }
+    if (frame->mode == EFRAME_GOTO_NEXT) {
+        frame->pending = 1;
+        raise_in_flight = 0;
+        error_generation = frame->entry_generation;
+        return 1;
+    }
+    if (frame->mode == EFRAME_GOTO_LABEL) {
+        raise_in_flight = 0;
+        error_generation = frame->entry_generation;
+        frame->mode = EFRAME_DEFAULT;
+        *jump_label = frame->label;
+        frame->label = NULL;
+        return 2;
+    }
+    return 0;
 }
 
 static Value value_error_object(void) {
-    RecordField *fields = calloc(5, sizeof(RecordField));
+    RecordField *fields = calloc(8, sizeof(RecordField));
     if (!fields) {
         abort();
     }
-    const char *names[] = {"message", "line", "column", "code", "source"};
-    for (size_t i = 0; i < 5; i++) {
+    const char *names[] = {"message", "line", "column", "code", "source",
+                           "path", "details", "trace"};
+    for (size_t i = 0; i < 8; i++) {
         fields[i].name = copy_string(names[i]);
         fields[i].value = cell_alloc();
         if (!fields[i].value) {
             abort();
         }
     }
-    *fields[0].value = value_string(current_error.active ? current_error.message : "");
-    *fields[1].value = value_number(current_error.active ? current_error.line : 0);
-    *fields[2].value = value_number(current_error.active ? current_error.column : 0);
-    *fields[3].value = value_number(current_error.active ? current_error.code : 0);
-    *fields[4].value = value_string(current_error.active ? current_error.source : "");
-    return value_record(fields, 5);
+    int on = current_error.active;
+    *fields[0].value = value_string(on ? current_error.message : "");
+    *fields[1].value = value_number(on ? current_error.line : 0);
+    *fields[2].value = value_number(on ? current_error.column : 0);
+    *fields[3].value = value_number(on ? current_error.code : 0);
+    *fields[4].value = value_string(on ? current_error.source : "");
+    *fields[5].value = value_string(on && current_error.path ? current_error.path : "");
+    *fields[6].value = on && current_error.details.kind == VALUE_RECORD
+        ? value_copy(current_error.details)
+        : value_record(NULL, 0);
+    *fields[7].value = on && current_error.trace.kind == VALUE_ARRAY
+        ? value_copy(current_error.trace)
+        : value_array(NULL, 0);
+    return value_record(fields, 8);
 }
 
 /* Defined in modules/xlsx.c, declared here so value_copy/value_free can reach a
@@ -3128,7 +3275,18 @@ static void env_set(const char *name, Value value) {
 
 static Value env_get(const char *name) {
     if (strcmp(name, "error") == 0) {
-        return value_bool(current_error.active);
+        /* PLAT-ERR: bare `error` asks "is there an UNACKNOWLEDGED error?" and
+         * CLAIMS it -- true exactly once per raise, so a second `if error then`
+         * is false and there is no stale-state trap. `error.field` (handled at
+         * AST_EXPR_FIELD) reads the stored error WITHOUT touching the flag,
+         * which is what lets the block body describe what it caught after the
+         * condition consumed it. `e = error` acknowledges and snapshots in one
+         * move. */
+        if (!current_error_frame->pending) {
+            return value_bool(0);
+        }
+        current_error_frame->pending = 0;
+        return value_error_object();
     }
     if (strcmp(name, "this") == 0) {
         /* The receiver, bound at the call site (first_class_functions_design §4).
@@ -7655,6 +7813,23 @@ static Value invoke_function(AstStmt *stmt, Value *args, size_t argc, Value *rec
     }
     free(args);
 
+    /* PLAT-ERR: a fresh error frame per invocation, in the DEFAULT state
+     * whatever the caller armed -- the property the process-global model
+     * lacked, and the reason absorption here cannot corrupt the caller. */
+    ErrorFrame frame = {0};
+    frame.mode = EFRAME_DEFAULT;
+    frame.entry_generation = error_generation;
+    frame.parent = current_error_frame;
+    current_error_frame = &frame;
+
+    if (call_stack_depth < CALL_STACK_MAX) {
+        call_stack[call_stack_depth].name = stmt->as.function.name;
+        call_stack[call_stack_depth].path = stmt->as.function.source_path;
+        call_stack[call_stack_depth].line = current_line;
+        call_stack[call_stack_depth].column = current_column;
+    }
+    call_stack_depth++;
+
     function_depth++;
     size_t pc = 0;
     size_t *gosub_stack = NULL;
@@ -7662,6 +7837,28 @@ static Value invoke_function(AstStmt *stmt, Value *args, size_t argc, Value *rec
     EvalResult result = eval_no_result();
     while (pc < stmt->as.function.body.count) {
         result = eval_stmt(stmt->as.function.body.items[pc]);
+        if (result.did_raise) {
+            char *jump = NULL;
+            int absorbed = error_frame_absorb(&jump);
+            if (absorbed == 1) {
+                result = eval_no_result();
+                pc++;
+                continue;
+            }
+            if (absorbed == 2) {
+                size_t target = 0;
+                if (find_function_label(stmt->as.function.body, jump, &target)) {
+                    free(jump);
+                    result = eval_no_result();
+                    pc = target + 1;
+                    continue;
+                }
+                fprintf(stderr, "unknown label in function %s: %s\n",
+                        stmt->as.function.name, jump);
+                free(jump);
+            }
+            break;
+        }
         if (result.did_return) {
             if (!result.return_has_value && gosub_count > 0) {
                 pc = gosub_stack[--gosub_count];
@@ -7713,10 +7910,31 @@ static Value invoke_function(AstStmt *stmt, Value *args, size_t argc, Value *rec
     }
     free(gosub_stack);
     function_depth--;
+
+    /* PLAT-ERR rule 2: pending errors do not survive the frame. Returning with
+     * an unacknowledged error converts the return into a re-raise at the call
+     * site -- so between this and rule 1 (in error_frame_absorb) no raise can
+     * ever VANISH. Forgetting a check produces noise, never silence, which is
+     * the whole reason this model is not the VB6 one. */
+    int reraise = frame.pending;
+    free(frame.label);
+    current_error_frame = frame.parent;
+    if (call_stack_depth > 0) {
+        call_stack_depth--;
+    }
+    if (reraise) {
+        error_generation++;
+        raise_in_flight = 1;
+    }
+
     current_env = previous_env;
     current_this = previous_this;
     current_import_path = previous_import_path;
     env_clear(&local_env);
+    if (reraise) {
+        value_free(result.value);
+        return value_null();
+    }
     if (result.did_return) {
         return result.value;
     }
@@ -10968,6 +11186,15 @@ int eval_run_actor(AstStmtList program, const char *entry,
     free(arg_value.as.array.store->items);
 
     Value result = invoke_function(fn, args, argc, NULL);
+    /* PLAT-ERR: an actor's entry function is its outermost frame, so a raise
+     * that got this far found nothing armed anywhere -- report it and die
+     * nonzero, which is what makes `reason: error` reach a monitor. (Under the
+     * old model the raise reported itself at raise time and set
+     * runtime_stopped; reporting is now deferred to whoever declines, and here
+     * that is us.) */
+    if (raise_in_flight || base_error_frame.pending) {
+        raise_report_fatal();
+    }
     int exit_status = runtime_stopped ? 1 : 0;
     value_free(result);
 
@@ -17312,7 +17539,6 @@ static void gi_signal_marshal(GClosure *closure, GValue *return_gvalue,
     }
 
     int saved_stopped = runtime_stopped;
-    ErrorMode saved_mode = error_mode;
     int saved_line = current_line;
     int saved_column = current_column;
     int before_gen = error_generation;
@@ -17324,8 +17550,14 @@ static void gi_signal_marshal(GClosure *closure, GValue *return_gvalue,
          * the sink (surfaced at program end); here we contain it: restore the outer
          * error/stop state so the program that pumped the loop continues cleanly,
          * and end any running main loop. The return_gvalue is left at its default. */
+        /* PLAT-ERR: a raise that reached this native boundary found no armed
+         * gBASIC frame on its path. Report it (the old model reported at raise
+         * time, so silence here would be a regression), then clear the flight
+         * so the loop that pumped this handler keeps running. */
+        if (raise_in_flight) {
+            raise_report_contained();
+        }
         runtime_stopped = saved_stopped;
-        error_mode = saved_mode;
         error_clear_state();
         if (gi_main_loop) {
             g_main_loop_quit(gi_main_loop);
@@ -18256,7 +18488,6 @@ static gboolean gi_source_dispatch(GiClosureData *d, Value *args, size_t nargs) 
     }
 
     int saved_stopped = runtime_stopped;
-    ErrorMode saved_mode = error_mode;
     int saved_line = current_line;
     int saved_column = current_column;
     int before_gen = error_generation;
@@ -18264,8 +18495,14 @@ static gboolean gi_source_dispatch(GiClosureData *d, Value *args, size_t nargs) 
     Value result = invoke_function(def->stmt, pv, want, NULL);
     gboolean keep = G_SOURCE_CONTINUE;
     if (runtime_stopped || error_generation != before_gen) {
+        /* PLAT-ERR: a raise that reached this native boundary found no armed
+         * gBASIC frame on its path. Report it (the old model reported at raise
+         * time, so silence here would be a regression), then clear the flight
+         * so the loop that pumped this handler keeps running. */
+        if (raise_in_flight) {
+            raise_report_contained();
+        }
         runtime_stopped = saved_stopped;
-        error_mode = saved_mode;
         error_clear_state();
         if (gi_main_loop) {
             g_main_loop_quit(gi_main_loop);
@@ -21115,6 +21352,12 @@ static Value eval_call(AstExpr *expr) {
             runtime_error_raise("error.clear expects no arguments", 1003, "invalid function call");
             return value_null();
         }
+        /* Clears the stored error AND this frame's pending flag: acknowledging
+         * without reading. Rarely needed now that a check acknowledges by
+         * itself, but leaving the flag set would re-raise at frame exit under
+         * rule 2 -- clearing an error you deliberately discarded must not
+         * resurrect it. */
+        current_error_frame->pending = 0;
         error_clear_state();
         return value_null();
     }
@@ -27055,26 +27298,114 @@ static EvalResult eval_stmt(AstStmt *stmt) {
         }
         break;
     }
+    /* PLAT-ERR: these arm THIS FRAME and nothing else. A callee starts in the
+     * default state whatever its caller set, and the arming dies with the
+     * frame -- which is what makes absorption safe and is the whole difference
+     * from the process-global model. */
     case AST_STMT_ON_ERROR_GOTO:
-        free(error_goto_label);
-        error_goto_label = copy_string(stmt->as.on_error_label);
-        error_mode = ERROR_MODE_GOTO;
+        free(current_error_frame->label);
+        current_error_frame->label = copy_string(stmt->as.on_error_label);
+        current_error_frame->mode = EFRAME_GOTO_LABEL;
         break;
-    case AST_STMT_ON_ERROR_RESUME_NEXT:
-        free(error_goto_label);
-        error_goto_label = NULL;
-        error_mode = ERROR_MODE_RESUME_NEXT;
+    case AST_STMT_ON_ERROR_GOTO_NEXT:
+        free(current_error_frame->label);
+        current_error_frame->label = NULL;
+        current_error_frame->mode = EFRAME_GOTO_NEXT;
         break;
     case AST_STMT_ON_ERROR_STOP:
-        free(error_goto_label);
-        error_goto_label = NULL;
-        error_mode = ERROR_MODE_STOP;
+        free(current_error_frame->label);
+        current_error_frame->label = NULL;
+        current_error_frame->mode = EFRAME_DEFAULT;
         break;
     case AST_STMT_ERROR: {
         int before_error = error_generation;
         Value value = eval_expr(stmt->as.error_message);
         if (error_generation != before_error) {
             value_free(value);
+            current_line = previous_line;
+            current_column = previous_column;
+            return eval_error_result();
+        }
+        if (value.kind == VALUE_RECORD) {
+            /* PLAT-ERR: a structured raise, and -- because a snapshot carries
+             * `message` -- the re-raise form too. One rule covers both:
+             * `error { message: "...", balance: b }` and `error e`. */
+            RecordField *msg = record_find(&value, "message");
+            if (!msg || msg->value->kind != VALUE_STRING) {
+                value_free(value);
+                runtime_error_raise("error record requires a message field (a string)",
+                                    1003, "invalid argument");
+                current_line = previous_line;
+                current_column = previous_column;
+                return eval_error_result();
+            }
+            RecordField *code_f = record_find(&value, "code");
+            RecordField *source_f = record_find(&value, "source");
+            RecordField *details_f = record_find(&value, "details");
+            RecordField *trace_f = record_find(&value, "trace");
+            RecordField *line_f = record_find(&value, "line");
+            RecordField *column_f = record_find(&value, "column");
+            int code = code_f && code_f->value->kind == VALUE_NUMBER
+                ? (int)code_f->value->as.number : 2000;
+            const char *source = source_f && source_f->value->kind == VALUE_STRING
+                ? source_f->value->as.string : "explicit error";
+
+            /* Every field that is not part of the error's own shape becomes
+             * `details` -- so a library can ship real error DATA instead of a
+             * string for the caller to match on. An explicit `details` record
+             * wins; a re-raised snapshot carries its details through that way. */
+            Value details;
+            if (details_f && details_f->value->kind == VALUE_RECORD) {
+                details = value_copy(*details_f->value);
+            } else {
+                static const char *shape[] = {"message", "code", "source",
+                                              "details", "trace", "line",
+                                              "column", "path"};
+                RecordField *extra = calloc(value.as.record.count, sizeof(RecordField));
+                size_t extra_count = 0;
+                if (value.as.record.count && !extra) {
+                    abort();
+                }
+                for (size_t i = 0; i < value.as.record.count; i++) {
+                    RecordField *field = &value.as.record.fields[i];
+                    int reserved = 0;
+                    for (size_t j = 0; j < sizeof(shape) / sizeof(shape[0]); j++) {
+                        if (strcmp(field->name, shape[j]) == 0) {
+                            reserved = 1;
+                            break;
+                        }
+                    }
+                    if (reserved) {
+                        continue;
+                    }
+                    extra[extra_count].name = copy_string(field->name);
+                    extra[extra_count].value = cell_alloc();
+                    if (!extra[extra_count].value) {
+                        abort();
+                    }
+                    *extra[extra_count].value = value_copy(*field->value);
+                    extra_count++;
+                }
+                details = value_record(extra, extra_count);
+            }
+            /* A re-raise keeps the ORIGINAL trace and location: the interesting
+             * site is where it first went wrong, not the relay that passed it
+             * on. A fresh structured raise carries neither and gets both here. */
+            Value trace = trace_f && trace_f->value->kind == VALUE_ARRAY
+                ? value_copy(*trace_f->value) : value_null();
+            int line = line_f && line_f->value->kind == VALUE_NUMBER
+                ? (int)line_f->value->as.number : 0;
+            int column = column_f && column_f->value->kind == VALUE_NUMBER
+                ? (int)column_f->value->as.number : 0;
+            char *message = copy_string(msg->value->as.string);
+            char *source_copy = copy_string(source);
+            value_free(value);
+            error_set_state_full(message, code, source_copy, details, trace,
+                                 line, column);
+            free(message);
+            free(source_copy);
+            error_generation++;
+            raise_in_flight = 1;
             current_line = previous_line;
             current_column = previous_column;
             return eval_error_result();
@@ -27275,6 +27606,33 @@ static EvalResult eval_stmt_list(AstStmtList statements) {
     size_t pc = 0;
     while (pc < statements.count) {
         EvalResult result = eval_stmt(statements.items[pc]);
+        if (result.did_raise) {
+            /* PLAT-ERR: the raise has unwound to a statement list of the
+             * current frame. Ask the frame whether it absorbs. Fall-through is
+             * to the next statement OF THIS LIST, so inside a loop body a
+             * per-item failure is checked per item and the loop keeps going. */
+            char *jump = NULL;
+            int absorbed = error_frame_absorb(&jump);
+            if (absorbed == 1) {
+                pc++;
+                continue;
+            }
+            if (absorbed == 2) {
+                size_t target = 0;
+                if (find_function_label(statements, jump, &target)) {
+                    free(jump);
+                    pc = target + 1;
+                    continue;
+                }
+                /* The label is in an enclosing list of the same frame: hand
+                 * the jump outward, where the function-body loop resolves it
+                 * against the whole body. */
+                EvalResult jump_result = eval_goto(jump);
+                free(jump);
+                return jump_result;
+            }
+            return result;
+        }
         if (result.did_goto) {
             size_t target = 0;
             if (find_function_label(statements, result.goto_label, &target)) {
@@ -27375,7 +27733,17 @@ int eval_program(AstStmtList program) {
     EvalResult result = runtime_stopped
         ? eval_stop()
         : eval_stmt_list(program_block ? program_block->as.program.body : program);
-    int exit_status = result.did_stop ? 1 : 0;
+
+    /* PLAT-ERR: the outermost frame declined -- report it, in the same single
+     * line the old STOP mode wrote. Also rule 2 at the top: a program that
+     * ends with a pending unacknowledged error is reported and exits nonzero.
+     * Its last statements ran; the error still did not vanish. */
+    if (result.did_raise || raise_in_flight) {
+        raise_report_fatal();
+    } else if (base_error_frame.pending) {
+        raise_report_fatal();
+    }
+    int exit_status = (result.did_stop || runtime_stopped) ? 1 : 0;
     if (result.did_return) {
         value_free(result.value);
     }
@@ -27392,12 +27760,12 @@ int eval_program(AstStmtList program) {
     if (!exit_status && webserver_any_active()) {
         exit_status = webserver_run_event_loop();
     }
-    free(error_goto_label);
-    error_goto_label = NULL;
-    free(pending_error_goto_label);
-    pending_error_goto_label = NULL;
+    free(base_error_frame.label);
+    memset(&base_error_frame, 0, sizeof(base_error_frame));
+    current_error_frame = &base_error_frame;
+    call_stack_depth = 0;
     error_clear_state();
-    error_mode = ERROR_MODE_STOP;
+    raise_in_flight = 0;
     runtime_stopped = 0;
     loop_depth = 0;
     consider_depth = 0;

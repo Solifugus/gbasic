@@ -1,0 +1,4 @@
+caught: division by zero
+source: division
+second check false
+success leaves no error

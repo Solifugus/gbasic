@@ -19,7 +19,7 @@ typedef enum {
     AST_STMT_UNWATCH,
     AST_STMT_WITHOUT_WATCHERS,
     AST_STMT_ON_ERROR_GOTO,
-    AST_STMT_ON_ERROR_RESUME_NEXT,
+    AST_STMT_ON_ERROR_GOTO_NEXT,
     AST_STMT_ON_ERROR_STOP,
     AST_STMT_ERROR,
     AST_STMT_MODIFIER,
@@ -388,7 +388,7 @@ AstStmt *ast_watch(char *name, AstNameList names, AstStmtList body);
 AstStmt *ast_unwatch(AstExpr *expr);
 AstStmt *ast_without_watchers(AstStmtList body);
 AstStmt *ast_on_error_goto(char *label);
-AstStmt *ast_on_error_resume_next(void);
+AstStmt *ast_on_error_goto_next(void);
 AstStmt *ast_on_error_stop(void);
 AstStmt *ast_error(AstExpr *message);
 AstStmt *ast_modifier(char *name, AstNameList params, char *context, int exported, AstStmtList body);

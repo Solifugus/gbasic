@@ -1,4 +1,4 @@
-on error resume next
+on error goto next
 
 x = 0
 hits = 0

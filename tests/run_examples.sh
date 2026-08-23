@@ -145,7 +145,7 @@ examples=(
     for_range_test.bas
     do_loop_test.bas
     error_test.gb
-    on_error_resume_next_test.bas
+    on_error_goto_next_test.bas
     modifier_test.gb
     modifier_library_regression_test.bas
     modifier_string_helpers_test.bas

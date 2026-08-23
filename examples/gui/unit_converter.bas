@@ -1,6 +1,6 @@
 load "gui"
 
-on error resume next
+on error goto next
 
 ui = {
     id:"main",

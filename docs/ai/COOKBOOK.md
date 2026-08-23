@@ -121,9 +121,12 @@ for error handling, `ERRORS.md`.
   it out of a loop rather than passing the string each time. Flags belong to
   `regex(p, "ims")`: `i` ignore case, `m` `^`/`$` per line, `s` dot matches
   newline. → `tests/regex_test.bas`
-- **Tolerate bad input** — do **not** catch with `on error resume next`;
-  pre-validate and call the raising builtin only when it will succeed. See
-  `ERRORS.md`. → `examples/on_error_resume_next_test.bas`
+- **Tolerate bad input** — arm the frame with `on error goto next` and check
+  with `if error then`; a function may catch and return a fallback, so callers
+  never see it. Only bare `error` acknowledges (`error.message` reads without
+  claiming), and an unacknowledged error escapes the frame rather than being
+  shadowed by the next one. See `ERRORS.md`. →
+  `examples/on_error_goto_next_test.bas`
 
 ## Dates, durations, calendars
 

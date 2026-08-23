@@ -51,8 +51,10 @@ program main(args)
     print(json_encode(payload))
 
     ' ---- json_encodable preflight ----------------------------------------
-    ' A raising serializer cannot be caught from a library (on error resume next
-    ' unwinds past the callee), so callers preflight instead.
+    ' `json_encodable` answers the question WITHOUT raising. Since PLAT-ERR a
+    ' caller could also arm `on error goto next` around the encode and catch it;
+    ' the predicate stays because "can this be encoded?" is a question worth
+    ' asking on its own, not only a way to dodge a raise.
     print("encodable {a:1}      : " + string(json_encodable({ a: 1 })))
     print("encodable nested ok  : " + string(json_encodable({ a: [1, { b: nothing }] })))
     print("encodable unknown    : " + string(json_encodable(unknown)))

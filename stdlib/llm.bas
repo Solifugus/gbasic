@@ -397,13 +397,17 @@ library llm
     ' m.retries (which is the transport-level 429/5xx budget); §7.1 open question,
     ' resolved to "separate, always exactly one".
     '
-    ' WHY WE VALIDATE BEFORE decode: gBASIC's `decode` RAISES on malformed JSON,
-    ' and `on error resume next` unwinds to the top program frame — so a library
-    ' function cannot catch that raise and still return cleanly to its caller
-    ' (the caller's assignment gets skipped). We therefore check validity with a
-    ' non-raising scanner (_json_valid) and only call decode when it will succeed.
-    ' The scanner is standard-JSON strict, so at worst it is stricter than decode
-    ' (a spurious retry / unknown), never looser (which would crash).
+    ' WHY WE VALIDATE BEFORE decode: `decode` RAISES on malformed JSON, and when
+    ' this was written a library function could not catch that raise and still
+    ' return cleanly to its caller — `on error resume next` was process-global
+    ' and abandoned the caller's assignment regardless. PLAT-ERR (2026-08-23)
+    ' ended that: `on error goto next` is frame-scoped and catch-and-return works,
+    ' so this preflight is now a CHOICE rather than a workaround. It stays for
+    ' two reasons of its own: the scanner reports WHERE the payload is malformed,
+    ' which a caught raise would only describe, and a provider returning junk is
+    ' an expected condition on this path rather than an exceptional one. The
+    ' scanner is standard-JSON strict, so at worst it is stricter than decode (a
+    ' spurious retry / unknown), never looser (which would crash).
 
     function _ch(s, i, n)
         if i >= n then
@@ -711,10 +715,14 @@ library llm
     ' the decoded arguments, e.g. `function get_customer(args)` reading `args.id`.
     ' One stable rule, no positional translation.
     '
-    ' TOOLS MUST BE TOTAL — they must RETURN, never `error`. gBASIC's
-    ' `on error resume next` unwinds to the top program frame, so a library cannot
-    ' catch a raise from a function it calls: a raising tool aborts the program and
-    ' the loop cannot contain it. To report failure, RETURN a failure record built
+    ' TOOLS MUST BE TOTAL — they must RETURN, never `error`. This was once a
+    ' hard constraint (a raising tool aborted the whole program, because a library
+    ' could not catch a raise from a function it called); PLAT-ERR made it an API
+    ' RULE instead, and the loop could now contain a raising tool with
+    ' `on error goto next` around the dispatch. Keeping the rule is deliberate: a
+    ' tool result is data the MODEL reads, so a failure has to be describable in
+    ' that data, and a caught raise would have to be converted into exactly this
+    ' shape anyway. To report failure, RETURN a failure record built
     ' with `llm.tool_error("no such customer")` (a constructor because `error` is a
     ' reserved word, so `{ error: ... }` will not parse). That becomes a
     ' controlled is_error tool result the model can react to. Everything the
@@ -1003,8 +1011,11 @@ library llm
     ' faithful reading. `nothing` is deliberately left alone — it encodes as null,
     ' which is exactly what the openai assistant tool-call turn carries.
     '
-    ' PREFLIGHT, not catch: json_encode RAISES, and `on error resume next` unwinds
-    ' past a library frame, so a raise here could not be contained (docs/ai/ERRORS.md).
+    ' PREFLIGHT, not catch: json_encode RAISES on a value it cannot represent.
+    ' Containing that is possible since PLAT-ERR (docs/error_model_design.md), but
+    ' dropping the unknown field is not error handling — it is the faithful
+    ' reading of an absent value, and it is what keeps the payload valid rather
+    ' than merely reporting that it is not.
     function _drop_unknown(v)
         k = reflect.kind(v)
         if k = "record" then

@@ -476,9 +476,9 @@ AstStmt *ast_on_error_goto(char *label) {
     return stmt;
 }
 
-AstStmt *ast_on_error_resume_next(void) {
+AstStmt *ast_on_error_goto_next(void) {
     AstStmt *stmt = xmalloc(sizeof(*stmt));
-    stmt->kind = AST_STMT_ON_ERROR_RESUME_NEXT;
+    stmt->kind = AST_STMT_ON_ERROR_GOTO_NEXT;
     return stmt;
 }
 
@@ -908,8 +908,8 @@ static void dump_stmt(AstStmt *stmt, int indent) {
     case AST_STMT_ON_ERROR_GOTO:
         printf("OnErrorGoto %s\n", stmt->as.on_error_label);
         break;
-    case AST_STMT_ON_ERROR_RESUME_NEXT:
-        printf("OnErrorResumeNext\n");
+    case AST_STMT_ON_ERROR_GOTO_NEXT:
+        printf("OnErrorGotoNext\n");
         break;
     case AST_STMT_ON_ERROR_STOP:
         printf("OnErrorStop\n");
@@ -1195,7 +1195,7 @@ static void free_stmt(AstStmt *stmt) {
     case AST_STMT_ON_ERROR_GOTO:
         free(stmt->as.on_error_label);
         break;
-    case AST_STMT_ON_ERROR_RESUME_NEXT:
+    case AST_STMT_ON_ERROR_GOTO_NEXT:
     case AST_STMT_ON_ERROR_STOP:
         break;
     case AST_STMT_ERROR:

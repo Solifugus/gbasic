@@ -2409,3 +2409,60 @@ right shape; not attempted in this pass), the `gi` static-class-call gap, no
   the same family as the read-then-shadow warning that already exists, and
   the same family as the `r + {...}` and no-array-concat items: gBASIC's
   value semantics are right, and the tooling around forgetting them is thin.
+
+### RESOLVED 2026-08-23 — the error model, root and branch (PLAT-ERR)
+
+The single largest item in this log's history is closed, and it is worth
+recording what it actually cost before it was.
+
+**What was wrong.** `on error` was a PROCESS-GLOBAL mode. Everything broken
+followed from that one property: because any frame could be subject to a mode
+any other code had set, `resume next` needed generation-counter abandonment to
+stop a half-finished callee corrupting its caller — and that is exactly what
+made it useless. A function could not catch a raise and return a clean
+fallback; the caller's statement was abandoned regardless of what the callee
+returned, and `error.clear()` did not rescue it (proven in
+`examples/on_error_resume_next_test.bas`, now rewritten as the new model's
+proof).
+
+**What it cost.** The resulting doctrine — pre-validate, never rely on
+`on error` — is TOCTOU-broken for anything external: `exists(f)` then `read(f)`
+has a hole in the middle, and when the file loses the race the process dies.
+And it made the platform grow the same missing feature four times, each as a
+local emergency:
+
+- `try_decode` (2026-08-14) — because a hand-written JSON validator in gBASIC
+  is quadratic: 256 KB took 291 s.
+- `process.which` (STU-11) — because `process.run` raises on a missing binary
+  and "is git installed?" could not be asked by asking.
+- `web.pool`'s `{ok, pool, why}` records — a result convention, unblessed.
+- the webserver's `err_out` plumbing (2026-08-23, one day before this) —
+  because a handler's malformed response raised and killed the listener.
+
+Four independent inventions of a catchable-error convention the language never
+had. That is the shape of a missing feature: it does not announce itself, it
+shows up as unrelated workarounds that turn out to rhyme.
+
+**The fix.** `on error` is FRAME-scoped (`docs/error_model_design.md`). It
+governs the function that executed it and nothing else; a callee starts in the
+default state whatever its caller set. Absorption restores the generation to
+the absorbing frame's entry value, which is the single move that turns "poison
+the caller" into "catch". Two rules keep deferral honest — one pending error at
+a time, and pending errors do not survive the frame — so no raise can vanish:
+forgetting a check makes noise, never silence. `on error resume next` is
+deleted and `resume` is an identifier again (net keyword count: −1).
+
+**Evidence.** `tests/run_error_model.sh`, 17 cases, written from the design
+BEFORE the implementation. All 333 negative cases passed unchanged — the fatal
+stderr line stayed byte-identical, which was the compatibility hinge, since
+reporting moved from raise time to whichever frame declines. 232 examples pass.
+The migration touched 16 files and was mostly one substitution; the interesting
+part was the three doctrine comments in `stdlib/llm.bas` that had to stop
+asserting a limitation that no longer exists.
+
+**What is NOT resolved:** the workarounds above stay as they are. Each has a
+reason of its own now (a scanner reports WHERE the JSON is malformed; `which`
+answers a real question; a tool result is data the model reads). What changed
+is that they are choices rather than the only option. `stdlib/llm.bas`'s
+preflight architecture could now be simplified and deliberately was not — a
+separate decision, not fallout from this one.
