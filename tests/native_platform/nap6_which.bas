@@ -1,7 +1,9 @@
 ' process.which: the answer to "is this optional tool installed?", which could
 ' not previously be asked at all — process.run raises on a missing executable
-' and a raise cannot be caught, so the attempt was fatal for exactly the users
-' who did not have the tool. Deterministic: probes only things guaranteed by
+' and at the time a raise could not be caught, so the attempt was fatal for
+' exactly the users who did not have the tool. Catching is possible since
+' PLAT-ERR; asking remains the right shape, because "is it installed" is a fact
+' about the machine rather than an exceptional event. Deterministic: probes only things guaranteed by
 ' POSIX or constructed by the test itself.
 
 program main(args)

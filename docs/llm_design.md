@@ -216,11 +216,15 @@ end function
 
 ### Tools must be TOTAL
 
-A tool must RETURN, never `error`. gBASIC's `on error resume next` unwinds to the
-top program frame, so a library cannot catch a raise from a function it calls — a
-raising tool aborts the program and the loop cannot contain it. Report failure by
-returning `llm.tool_error("...")` (a constructor, because `error` is a reserved
-word and `{ error: ... }` will not parse). Everything the library *can* check —
+A tool must RETURN, never `error`. This began as a hard constraint — a library
+could not catch a raise from a function it called, so a raising tool aborted the
+whole program — and PLAT-ERR (`error_model_design.md`) turned it into an API
+rule: the loop *could* now contain a raising tool by arming its dispatch.
+Keeping the rule is deliberate. A tool result is data the MODEL reads, so a
+failure has to be expressible in that data, and a caught raise would have to be
+converted into exactly this shape anyway. Report failure by returning
+`llm.tool_error("...")` (a constructor, because `error` is a reserved word and
+`{ error: ... }` will not parse). Everything the library *can* check —
 arguments, required fields, result serializability — is pre-validated before the
 call, matching the `_json_valid`-before-`decode` rule used by `ask_json`.
 
@@ -283,8 +287,10 @@ express, and which reaches the message path only from `_field` on a key the
 provider omitted, so dropping the field is the faithful reading. Tool results are
 gated by `json_encodable` and fall back to `null`.
 
-This is PREFLIGHT, not catch: `json_encode` raises, and `on error resume next`
-unwinds past a library frame, so a raise here could not be contained.
+This is PREFLIGHT, not catch: `json_encode` raises on a value it cannot
+represent. Containing that is possible since PLAT-ERR, but dropping the unknown
+field is not error handling — it is the faithful reading of an absent value, and
+it keeps the payload valid rather than merely reporting that it is not.
 
 Every request body the tool path emits is parsed by an independent JSON parser in
 `tests/run_json_strict.sh` — gBASIC's own `decode` accepts the dialect and so

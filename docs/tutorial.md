@@ -756,42 +756,123 @@ arrives as an ordinary tagged message `["down", handle, reason]` — and
 
 ## Errors
 
-The default is `on error stop`: a runtime error stops execution with a nonzero
-exit status. Switch to inspect-and-continue with `on error resume next`:
+The default is **propagate**: a runtime error unwinds outward, and if nothing
+handles it the program stops with a nonzero exit status. Handling is
+**frame-scoped** — `on error` governs the function that executed it and nothing
+else, so nothing is caught unless you can see the `on error` line in the same
+function.
+
+`on error goto next` says "let raises here fall through, I will check":
 
 ```basic
-on error resume next
-print(missing_value)
+on error goto next
+text = read(config_path)
 if error then
-    print(error.message)
-    print(error.line)
-    print(error.column)
-    print(error.code)
-    print(error.source)
-    error.clear()
+    print to error "config unreadable: " + error.message
+    text = "{}"
 end if
-on error stop
 ```
 
-`on error goto label` installs a single-use handler; `error "message"` raises
-one explicitly:
+The raising statement is abandoned, so its target keeps its previous value (or
+stays unbound) — assign the fallback **inside** the check block, as above.
+Inside a loop, fall-through goes to the next statement of the loop body, so a
+per-item failure is handled per item and the loop carries on.
+
+Because the handler belongs to one frame, a function can absorb a failure and
+hand its caller a clean answer:
 
 ```basic
-on error goto failed
-error "explicit failure"
-print("not reached")
-
-failed:
-print(error.message)
-error.clear()
+function safe_div(a, b)
+    on error goto next
+    q = a / b
+    if error then
+        return -1
+    end if
+    return q
+end function
 ```
 
-Module errors carry a `source` (`"watcher"`, `"sqlite"`, `"postgres"`, `"actor"`,
-…) and a numeric `code` so you can branch on the origin.
+The caller of `safe_div` never learns anything went wrong — no mode leaks out,
+and a function you call is never covered by *your* handler unless it arms its
+own.
 
-The practical consequence of this model: **prefer APIs that report failure as a
-value** over wrapping a raising call. The flagship is `try_decode`, the
-non-raising twin of `decode` for JSON you did not produce yourself:
+### Checking is claiming
+
+Bare `error` asks *"is there an unacknowledged error?"* **and claims it**. It is
+true exactly once per raise, so a second `if error then` is false rather than a
+stale trap, and `e = error` acknowledges and snapshots in one move. Reading a
+field — `error.message`, `error.source`, `error.code`, `error.line` — does *not*
+claim, which is exactly why the block body above can still describe what it
+caught.
+
+That distinction has teeth, because of two rules that keep deferred checking
+honest:
+
+1. **One pending error at a time.** If a second raise arrives while one is still
+   unacknowledged, it is *not* absorbed — it escapes the frame as though you had
+   no handler. So reading only `error.message` and moving on is a mistake the
+   language will tell you about.
+2. **A pending error never dies quietly.** Return from a function — or end the
+   program — with one unacknowledged, and it re-raises at the call site.
+
+Together they mean **no raise can vanish**. Forgetting a check produces noise,
+never silence. That is the deliberate difference from the "resume next" style
+of older BASICs, where a forgotten check swallowed the error whole.
+
+### Jumping instead
+
+`on error goto <label>` jumps rather than falling through. Firing **disarms** the
+frame, so a raise inside the handler propagates instead of looping; re-arm by
+executing `on error goto` again. The jump is itself the acknowledgment, so inside
+the handler bare `error` is false while `error.message` still reads:
+
+```basic
+function risky(n)
+    on error goto failed
+    return "ok " + string(1 / n)
+failed:
+    print to error "recovering: " + error.message
+    return "fallback"
+end function
+```
+
+`on error stop` restores the default for the rest of the frame.
+
+### Raising
+
+`error "message"` raises explicitly, and a record raises **structurally**:
+
+```basic
+error { message: "insufficient funds", balance: b, needed: amt }
+```
+
+`message` is required; anything else you attach arrives on `error.details`, so a
+library can hand callers error *data* instead of a string to pattern-match. Since
+a snapshot carries its own `message`, **re-raising is just `error e`** — and it
+keeps the original location and `error.trace`, an array of `{name, path, line,
+column}` innermost first. Module errors also carry a `source` (`"watcher"`,
+`"sqlite"`, `"postgres"`, `"actor"`, …) and a numeric `code`, so you can branch
+on where a failure came from:
+
+```basic
+r = try charge(card)          ' any raising call
+if error then
+    consider error.source
+    if "postgres" then
+        retry_later()
+    else
+        error error            ' not ours -- pass it on
+    end consider
+end if
+```
+
+### Values instead of raises
+
+Handling a raise is cheap now, but an API that reports failure **as a value** is
+still often the better tool — when failure is an expected outcome rather than an
+exceptional one, or when you want detail a raise would only summarize. The
+flagship is `try_decode`, the non-raising twin of `decode` for JSON you did not
+produce yourself:
 
 ```basic
 r = try_decode(text_from_elsewhere)
@@ -804,7 +885,8 @@ end if
 
 It shares `decode`'s parser exactly — both accept the same dialect and
 diagnose an input identically — so checking first costs nothing and never
-disagrees with the real parse.
+disagrees with the real parse. It tells you *where* the JSON is malformed, which
+a caught raise would only describe.
 
 ## Money, dates, times, and durations
 

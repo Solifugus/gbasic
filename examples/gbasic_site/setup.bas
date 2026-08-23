@@ -2,13 +2,13 @@ load pg
 
 schema(file)= "examples/gbasic_site/sql/schema.sql"
 reset(file)= "examples/gbasic_site/sql/reset.sql"
-seed(file)= "examples/gbasic_site/sql/seed.sql"
+seed_sql(file)= "examples/gbasic_site/sql/seed.sql"
 
 db = pg.connect({})
 
 pg.exec(db, read(schema))
 pg.exec(db, read(reset))
-pg.exec(db, read(seed))
+pg.exec(db, read(seed_sql))
 
 admin_user = env("GBASIC_SITE_ADMIN_USER")
 admin_password = env("GBASIC_SITE_ADMIN_PASSWORD")

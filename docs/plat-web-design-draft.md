@@ -347,11 +347,17 @@ design existed.
 
 ## 7b. When a handler fails: let it crash
 
-gBASIC **cannot catch a raise** — settled doctrine, proven and suite-pinned
-(`on error resume next` abandons the caller's statement; there is no
-middleware position from which to turn an unexpected raise into a 500). So
-this design does not pretend otherwise. The model is the Erlang one, forced
-by the language and adopted deliberately:
+**[Premise overtaken 2026-08-23 by PLAT-ERR — conclusion unchanged.]** When
+this was written gBASIC could not catch a raise at all (`on error resume next`
+abandoned the caller's statement), so let-it-crash was *forced*. Frame-scoped
+`on error` (`error_model_design.md`) removes the force: a handler can arm
+itself, and a middleware position that turns an unexpected raise into a 500 is
+now constructible. The model below is kept anyway, now as a CHOICE — an
+unexpected raise means the handler's assumptions are wrong, and continuing to
+serve from a frame whose invariants just failed is how one bad request becomes
+a corrupted store. What did change is that a handler which *anticipates* a
+failure can handle it in place rather than dying. The model is the Erlang
+one:
 
 - A handler that raises kills its worker. The request in flight is lost;
   the proxy reports 502 for it. Nothing else is harmed, because workers are
@@ -360,11 +366,13 @@ by the language and adopted deliberately:
   Section 7, with **restart-storm protection**: a budget of restarts per
   window; exhausting it stops the pool from thrashing and surfaces the
   failure loudly instead of burning CPU on a crash loop.
-- Handlers that want graceful degradation use the language's own doctrine:
-  **pre-validate, report failure as a value** — `try_decode` for hostile
-  bodies, `has()` before field access, refusal-shaped library calls. The
-  skeleton example already reads this way naturally; the design should show
-  it as the house handler style.
+- Handlers that want graceful degradation now have two tools rather than one:
+  `on error goto next` around the risky statement (frame-scoped, so a handler
+  absorbs its own failure and still returns a response), and — still often
+  better where failure is expected rather than exceptional — **report failure
+  as a value**: `try_decode` for hostile bodies, `has()` before field access,
+  refusal-shaped library calls. The skeleton example reads this way naturally
+  and remains the house handler style.
 
 This is a coherent enterprise posture — crash-only software with fast
 supervised restarts — but only if it is DESIGNED: the restart budget, the

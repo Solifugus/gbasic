@@ -957,8 +957,11 @@ library llm
 
     ' ---- result serialization ---------------------------------------------
 
-    ' True iff `v` contains only values encode() accepts. Pre-checked because
-    ' encode RAISES on a function/handle, which a library cannot catch.
+    ' True iff `v` contains only values encode() accepts. Pre-checked rather
+    ' than caught: a tool result carrying a function or a handle is a PROGRAMMING
+    ' error in the tool, and naming it beats turning it into a caught raise the
+    ' model would then read as data. (A library can catch a raise since
+    ' PLAT-ERR; this stays a check on purpose.)
     function _serializable(v)
         k = reflect.kind(v)
         if k = "number" or k = "string" or k = "boolean" then return true

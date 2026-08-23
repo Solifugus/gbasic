@@ -67,7 +67,7 @@ program main(args)
 
     ' LIMIT, stated because the earlier comment here claimed a guard that was
     ' never in the code: `xlsx.open` RAISES on an unreadable workbook and
-    ' gBASIC cannot catch a raise, so ONE bad file aborts this whole scan and
+    ' A raise here would abort this whole scan mid-directory, so ONE bad file
     ' yields nothing. `list_files` also does not recurse (plain opendir), so a
     ' nested corpus is under-scanned rather than refused.
     '

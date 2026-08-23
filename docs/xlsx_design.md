@@ -493,9 +493,11 @@ OOXML files, re-saved through Excel by the researcher in 2014, plus 58 straggler
 still in legacy `.xls`. No conversion was needed, and because Excel wrote these
 files their cached values are genuine Excel output, so `xlsx.check` against them
 is a true oracle rather than the self-consistency check the hand-built fixture
-allows. Each workbook was scanned in its own process (see the DOGFOOD entry:
-`xlsx.open` raises and gBASIC cannot catch a raise, so an in-process directory
-walk would abort the whole scan on the first bad file). Result: **15,871 / 15,871
+allows. Each workbook was scanned in its own process (see the DOGFOOD entry: at the
+time `xlsx.open`'s raise could not be caught, so an in-process directory walk
+aborted the whole scan on the first bad file — process isolation was the only
+way to survive one. Frame-scoped `on error` would now let a single process
+absorb a bad file and continue). Result: **15,871 / 15,871
 read successfully**, 20.7M formula cells, 6.0M function calls, 231 distinct names.
 
 *The scan found exactly one reader defect,* and it was not in the ZIP, the XML or

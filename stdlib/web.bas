@@ -859,9 +859,11 @@ library web
             return _plain(404, "Not Found")
         end if
 
-        ' Pre-validated, because `real_path` RAISES on an interior NUL and a
-        ' raise cannot be caught: an untrusted path must never be able to end
-        ' the process.
+        ' Pre-validated, because `real_path` RAISES on an interior NUL. Catching
+        ' that is possible since PLAT-ERR, and this check stays anyway: a
+        ' REMOTE party controls this string, so the safe posture is that it can
+        ' never reach the raising builtin at all, rather than that we remember
+        ' to be armed when it does.
         if contains(relative, chr(0)) then
             return _plain(404, "Not Found")
         end if

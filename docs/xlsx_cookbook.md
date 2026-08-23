@@ -369,8 +369,9 @@ Each refusal prevents a specific silent wrong answer:
   but has no worksheet behind it — a macro sheet — reads as empty instead, since
   that is what it is.
 
-Catching these needs `on error resume next`, then `error.message` and
-`error.clear()`.
+To catch one, arm the frame with `on error goto next` and check with
+`if error then`; `error.message` says which refusal it was. The check itself
+acknowledges, so `error.clear()` is not needed.
 
 ---
 

@@ -763,10 +763,12 @@ Construction goes through gBASIC's **assign modifiers** — `m(USD) = 12.34`,
 undocumented in `docs/reference.md`, which is why an earlier note here claimed
 no runtime date constructor existed; corrected in /DOGFOOD.md.
 
-The `date` modifier RAISES on a malformed string and gBASIC cannot catch a
-raise, so `_date_in` range-checks month and day before returning and a bad value
-degrades to `unknown` with an `invalid-date` diagnostic rather than killing the
-import.
+The `date` modifier RAISES on a malformed string. When this was written a raise
+could not be caught at all; since PLAT-ERR it can (`error_model_design.md`), but
+`_date_in` still range-checks month and day before returning — a bad date in an
+import is an expected condition, not an exceptional one, and the check is what
+lets the value degrade to `unknown` with an `invalid-date` diagnostic while the
+rest of the import continues.
 
 Tested by `tests/run_ari.sh`, including a cross-check that the `/re/repl/`
 transform and the `-> dmy` dialect — two different mechanisms for one

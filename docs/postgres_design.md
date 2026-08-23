@@ -343,7 +343,7 @@ Disadvantages:
 
 - requires parser, AST, evaluator, and cleanup semantics
 - nested behavior must define savepoints versus rejection
-- interaction with `on error resume next` is subtle
+- interaction with a frame-scoped `on error` handler is subtle
 
 Therefore the block form should be deferred until explicit transaction
 functions are stable. A later block should roll back on any unhandled error and
@@ -355,13 +355,12 @@ designed.
 The recommended model is runtime errors, consistent with current gBASIC:
 
 ```basic
-on error resume next
+on error goto next
 rows = pg.query(db, sql, params)
 
 if error then
     print(error.message)
     print(error.source)
-    error.clear()
 end if
 ```
 
@@ -613,7 +612,7 @@ features must not be hidden merely because SQLite or MySQL lacks an equivalent.
   motivate a native binary value?
 - Should duplicate columns always be errors, or should a future raw mode expose
   positional values and column metadata?
-- What transaction behavior should follow `on error resume next` when a
+- What transaction behavior should follow an absorbed error when a
   statement leaves PostgreSQL's transaction in the failed state?
 - Should connection cleanup warnings be emitted when a live transaction is
   rolled back during `pg.close` or interpreter shutdown?

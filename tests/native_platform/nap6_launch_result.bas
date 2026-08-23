@@ -1,6 +1,7 @@
 ' launch_failure: "result" — a failed LAUNCH comes back as a record instead of
-' a raise. Exists because a raise cannot be caught, so under the default an
-' optional tool could not even be attempted; process.which answers "is it
+' a raise. Introduced when a raise could not be caught, which made attempting an
+' optional tool unsafe under the default; the reason still stands on its own --
+' why the launch failed arrives as DATA beside the rest of the result -- process.which answers "is it
 ' there", and this closes the check-then-run race for a caller who wants to
 ' just run it and read what happened.
 

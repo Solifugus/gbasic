@@ -256,9 +256,11 @@ library ari
         return m
     end function
 
-    ' The `date` modifier RAISES on a malformed string, and gBASIC cannot catch
-    ' a raise (docs/ai/ERRORS.md), so every caller must pre-validate. _date_in
-    ' below is the only producer and range-checks before returning.
+    ' The `date` modifier RAISES on a malformed string. Catching that is
+    ' possible since PLAT-ERR (docs/error_model_design.md); the range-check in
+    ' _date_in below -- the only producer -- stays because a bad date in an
+    ' imported report is an EXPECTED condition, and the check is what lets one
+    ' field degrade to `unknown` while the rest of the row still parses.
     function _to_date(iso)
         d(date) = iso
         return d

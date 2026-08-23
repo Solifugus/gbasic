@@ -1,7 +1,10 @@
 ' PLAT-JSON: try_decode(text) -- decode that reports failure as a VALUE.
 '
-' `decode` raises, and gBASIC cannot catch a raise (docs/ai/ERRORS.md), so any
-' caller reading a file it did not write has had to pre-validate in gBASIC first.
+' `decode` raises. When try_decode was built a raise could not be caught at all,
+' so every caller reading a file it did not write had to pre-validate in gBASIC
+' first -- and that hand-written scan is QUADRATIC. Catching is possible since
+' PLAT-ERR, but try_decode still wins here: it reports WHERE the JSON is
+' malformed (offset, line, column), which a caught raise only summarizes.
 ' That pre-validation is quadratic (every per-character scan is, because `mid` is
 ' O(i) on codepoint-indexed strings), which is what this builtin exists to remove.
 '

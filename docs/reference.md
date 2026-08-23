@@ -2112,10 +2112,12 @@ Options record:
   two extra fields: `launch_failed` (boolean) and `why` (the message the raise
   would have carried). A successful run under this option carries
   `launch_failed: false`, so callers can branch without `has()`. The default
-  record shape is unchanged for everyone who does not opt in. This exists
-  because gBASIC cannot catch a raise, so under the default an *optional*
-  external tool could not safely be attempted at all; see also
-  `process.which`, and note a child that ran and exited `127` is still
+  record shape is unchanged for everyone who does not opt in. This was
+  introduced when a raise could not be caught at all, which made attempting an
+  *optional* external tool unsafe under the default; frame-scoped `on error`
+  now offers a second route, and this option remains the direct one — the
+  reason a launch failed arrives as data beside the rest of the result. See
+  also `process.which`, and note a child that ran and exited `127` is still
   distinguishable (`launch_failed: false, exit_code: 127`).
 
 Result record:
@@ -3114,8 +3116,10 @@ Path questions about what is really there:
 - `file_type(p)` — `"file"`, `"folder"` or `"other"` (a device, socket, FIFO),
   or `unknown` when nothing is there. Follows symlinks. This is the only way to
   ask whether a path is a directory **without raising**: `file_size` on a
-  directory raises, and gBASIC cannot catch a raise, so code holding an
-  untrusted path had no safe way to ask.
+  directory raises, and when this was added a raise could not be caught, so
+  code holding an untrusted path had no safe way to ask at all. Catching is
+  possible now (see Errors), but asking remains the better shape — the answer
+  is a fact about the path, not an exception.
 
 ```basic
 root = real_path("public")

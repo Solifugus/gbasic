@@ -344,15 +344,18 @@ A caller-provided `User-Agent` header overrides it.
 The module should use the existing runtime error mechanism:
 
 ```basic
-on error resume next
+on error goto next
 response = webclient.get("https://unavailable.example")
 
 if error then
     print(error.message)
     print(error.source)
-    error.clear()
 end if
 ```
+
+The check itself acknowledges the error, so `error.clear()` is not needed. A
+wrapper may absorb the failure and return a value of its own — handling is
+frame-scoped, so its caller sees an ordinary return (`error_model_design.md`).
 
 Recommended error behavior:
 

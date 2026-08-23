@@ -9,6 +9,55 @@ language surface may still change between releases.
 
 ## Unreleased
 
+### Breaking: `on error` is frame-scoped, and `on error resume next` is gone
+
+- **`on error` now governs only the frame that executed it** — one function
+  invocation, or the top level. A function you call starts in the default state
+  whatever you armed, and your arming dies with your frame. The consequence is
+  the point: **a function can catch a raise and return a clean fallback**, which
+  the old process-global mode provably could not do (the caller's statement was
+  abandoned by a generation check regardless of what the callee returned, and
+  `error.clear()` did not rescue it).
+
+  ```basic
+  function safe_div(a, b)
+      on error goto next
+      q = a / b
+      if error then
+          return -1          ' the caller never knows
+      end if
+      return q
+  end function
+  ```
+
+- **`on error resume next` is removed**; `resume` is an ordinary identifier
+  again. Migrate to `on error goto next` — the checks you already wrote keep
+  working, under semantics that no longer poison the caller. `on error goto
+  <label>` and `on error stop` are unchanged in spelling, frame-scoped in
+  meaning. Net keyword count: −1.
+
+- **Two rules make deferred checking safe.** A second raise arriving while one
+  is still unacknowledged *escapes* the frame rather than shadowing the first;
+  and returning — or ending the program — with an unacknowledged error re-raises
+  at the call site. Together, no raise can vanish: forgetting a check produces
+  noise, never silence.
+
+- **Bare `error` acknowledges; `error.field` does not.** `if error then` is true
+  exactly once per raise (so no stale-state trap), and `e = error` acknowledges
+  and snapshots in one move, while `error.message` and friends read without
+  claiming — which is what lets the block body describe what it caught.
+
+- **Structured raises and traces.** `error { message: "...", balance: b }` raises
+  with the extra fields on `error.details`, so a library can ship error *data*
+  instead of a string to match on. `error e` re-raises a snapshot, preserving its
+  original location and `error.trace` — an array of `{name, path, line, column}`,
+  innermost first.
+
+- The fatal stderr line is **byte-identical** to before, which is why all 333
+  negative-suite cases pass this change unmodified. Design:
+  `docs/error_model_design.md`; proof: `tests/run_error_model.sh` (17 cases) and
+  `examples/on_error_goto_next_test.bas`.
+
 - **`real_path(p)` and `file_type(p)`** — two filesystem questions gBASIC could
   not ask. `real_path` returns the canonical absolute path with `.`, `..` and
   every symlink resolved by the kernel, or `unknown` when the path does not

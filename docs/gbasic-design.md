@@ -445,11 +445,20 @@ once a GUI-originated mutation reaches storage, ordinary watcher rules apply;
 
 ## 10. Error Handling
 
-Runtime errors carry a message, a numeric `code`, and a `source`. Control is
-provided by `on error goto <label>`, `on error resume next`, and
-`on error stop`. A catchable error value exposes `error.message`, `error.code`,
-`error.source`, and source line/column (there is no `error.name`). Filesystem,
-type, arity, and the watcher-cycle (1005) failures all flow through this model.
+Runtime errors carry a message, a numeric `code`, a `source`, optional
+`details`, and a `trace`. Control is **frame-scoped** (*since 0.1.0-rc5*;
+`error_model_design.md`): `on error goto next` absorbs raises in the executing
+frame and lets you check with `if error then`, `on error goto <label>` jumps
+instead, and `on error stop` restores the default of propagating outward to the
+nearest armed ancestor frame. Because the handler belongs to one frame, a
+function can catch a raise and return a clean fallback — the property the old
+process-global `on error resume next` could not provide, and the reason it was
+removed. Two rules keep deferred checking honest: one pending error at a time,
+and a pending error never survives its frame — so no raise can vanish
+unreported. The error value exposes `error.message`, `error.code`,
+`error.source`, `error.details`, `error.trace`, and source line/column (there is
+no `error.name`). Filesystem, type, arity, and the watcher-cycle (1005) failures
+all flow through this model.
 
 ---
 

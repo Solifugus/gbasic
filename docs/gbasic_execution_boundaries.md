@@ -702,9 +702,12 @@ and unserializable; children are reaped at program end.
 
 ## 17. Error behavior
 
-When a section errors before reaching its ending boundary (VERIFIED error propagation:
-`eval_error_result` unwinds; `error_mode` governs GOTO/RESUME-NEXT/STOP, 18312-18343;
-`on error resume next` unwinds to the top frame — see memory `gbasic_error_handling_gotcha`):
+When a section errors before reaching its ending boundary (error propagation
+re-verified 2026-08-23 after PLAT-ERR: a raise unwinds through `eval_error_result`
+to the nearest ARMED FRAME -- `on error` is frame-scoped now, not a process-global
+mode, so an unarmed run aborts the section exactly as before and the note below
+still holds. What changed is that a *handler* can absorb a raise and continue,
+which the old model could not do; see `error_model_design.md`):
 
 - **Failed-section state (PROPOSED):** Studio preserves the **last valid boundary**
   (`B_{i-1}`, fully replayable) and captures **partial console output** produced before
