@@ -3433,10 +3433,18 @@ static void env_set(const char *name, Value value) {
 
     /* Creating a NEW binding in a function frame. If this same frame already
      * READ this name out of an enclosing scope, the odds are overwhelming that
-     * the intent was to write it back -- the pattern is read-global,
-     * compute, store -- and what actually happens is a silent shadow. Warn.
-     * A frame that never read the outer name (an ordinary local counter that
-     * happens to share a global's name) stays silent. */
+     * the intent was to write it back -- the pattern is read-global, compute,
+     * store -- and what actually happens is a silent shadow.
+     *
+     * The BLIND case (never read, but an outer binding of that name exists)
+     * stays silent, and that was MEASURED rather than assumed: implemented on
+     * the PLAT-WARN channel 2026-08-23, it fired 287 times across 103 files,
+     * overwhelmingly on single-letter locals (`r`, `i`, `s`, `a`) that merely
+     * share a name with something further out. The original reasoning here --
+     * "an ordinary local counter that happens to share a global's name" -- was
+     * right, and an opt-out does not rescue a diagnostic that is wrong far
+     * more often than it is right. Reverted; see docs/warning_model_design.md
+     * §7 row 6. */
     if (current_env != &global_env) {
         for (size_t i = 0; i < current_env->outer_reads_count; i++) {
             if (strcmp(current_env->outer_reads[i], name) == 0) {
@@ -5883,6 +5891,15 @@ static int watcher_drain(void) {
         if (index < watcher_count && watchers[index].active) {
             watchers[index].pending = 0;
             EvalResult result = eval_stmt_list(watchers[index].stmt->as.watch.body);
+            if (result.did_raise) {
+                /* A raise in a watcher body used to be DROPPED here: draining
+                 * carried on, the program kept running with a watcher that had
+                 * not fired, and the diagnostic surfaced only at exit. It
+                 * unwinds like any other raise now -- stop the drain and leave
+                 * raise_in_flight for the caller. */
+                ok = 0;
+                break;
+            }
             if (result.did_return) {
                 value_free(result.value);
             }
@@ -25415,6 +25432,20 @@ static Value eval_compare_modifier(AstModifierUse use, const char *op, Value lef
 static Value eval_comparison(AstExpr *expr, Value left, Value right) {
     const char *op = expr->as.binary.op;
     int result = 0;
+
+    /* PLAT-WARN row 7 (`unknown-compare`) was built here and REVERTED
+     * 2026-08-23 after measurement. Comparing an index read that came back
+     * `unknown` against a value looked like a clean signal for a misspelled
+     * key, but the only real code that exercises it -- gBASIC Studio -- uses
+     * the shape twice and CORRECTLY both times:
+     *
+     *     if shell.marked[m.doc_id] != m.revision then      ' absent = needs marking
+     *     if stated(project_raw)[tier] = v then             ' absent = not stated
+     *
+     * "absent key therefore not equal" is a legitimate and common way to
+     * handle an optional key, and nothing distinguishes it from a typo without
+     * value provenance or a statement of intent. See
+     * docs/warning_model_design.md §7 row 7. */
 
     const char *modifier_args_text = "";
     if (expr->as.binary.modifier.name &&

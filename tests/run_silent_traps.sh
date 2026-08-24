@@ -45,9 +45,11 @@ fatal label_gosub.bas "unknown label in function f: nowhere"
 fatal index_read.bas "array index out of range"
 fatal modifier_date.bas "date modifier expects an ISO-like date string"
 fatal modifier_file.bas "file modifier expects a path string"
+fatal watch_undefined.bas "undefined variable: nope"
+fatal watch_body.bas "undefined variable: undefined_in_body"
 
 # --- catchable, which the printed line never was --------------------------
-for name in label_caught index_read_caught modifier_caught; do
+for name in label_caught index_read_caught modifier_caught watch_caught; do
     ./gbasic "tests/silent_traps/$name.bas" >"$scratch/got" 2>"$scratch/err" \
         || fail "$name (exited nonzero: $(cat "$scratch/err"))"
     diff -u "tests/silent_traps/$name.out" "$scratch/got" \
@@ -76,4 +78,4 @@ grep -qF "USD modifier expects a number" "$scratch/err" \
     || fail "USD (message changed: $(cat "$scratch/err"))"
 printf 'PASS usd_unchanged\n'
 
-printf 'run_silent_traps: 9 cases passed\n'
+printf 'run_silent_traps: 12 cases passed\n'

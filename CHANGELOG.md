@@ -29,6 +29,11 @@ language surface may still change between releases.
   `stdlib/ari.bas` had both *claimed* these raised for months; the claim was
   measured, found false, and made true rather than weakened.
 
+- **A raise inside a watcher body** now stops the drain instead of being
+  dropped. Previously the watcher never fired, draining continued, and the
+  program produced results built on a watcher that had not run — with the
+  diagnostic surfacing only at exit.
+
 All are now located, fatal by default, and catchable with `on error goto next`
 — which a printed line never was. `tests/run_silent_traps.sh`.
 

@@ -244,15 +244,15 @@ from a legitimate `nothing`, and CI sees success.
 | 1 | ~~`goto <unknown label>`~~ **SHIPPED 2026-08-23** | was: prints, then abandons the rest of the function; `nothing`, exit 0 | raises `invalid control flow`; `tests/run_silent_traps.sh` |
 | 2 | ~~the `date` / `datetime` / `time` / `file` / `dir` modifiers (5 sites)~~ **SHIPPED 2026-08-23** | was: prints, assigns `nothing`, exit 0 | raises `datetime` / `modifier`, matching `USD` four lines away in the same dispatch function; `tests/run_silent_traps.sh` |
 | 3 | ~~`a[99]` (read)~~ **SHIPPED 2026-08-23** | was: prints, yields `nothing`, exit 0 while assignment raised | raises `indexing`; `tests/run_silent_traps.sh` |
-| 4 | `watch` on an undefined variable | located error, continues, exit 1 — the watcher never registers and the value reads `nothing` later | fatal: a watcher that never ran is not a recoverable state |
+| 4 | ~~a raise inside a watcher body~~ **SHIPPED 2026-08-23** | was: the drain loop dropped `did_raise`, so draining carried on and the program ran with a watcher that had not fired; the diagnostic surfaced only at exit | propagates like any other raise; `tests/run_silent_traps.sh` |
 
 Tier 2 — behavioural silence, no output at all:
 
 | | what | today | belongs as |
 |---|---|---|---|
-| 5 | `contains(s, "b*")` | searches for the literal two characters | warning when a *literal* pattern contains regex metacharacters. Unshippable before this channel, because a genuine `b*` search would be nagged forever; `on warning ignore` is the out |
-| 6 | blind shadow — assigning a global's name inside a function without reading it first | silent; the existing read-then-shadow warning only fires if the name was READ | extend `shadow` (2104). Has a real false-positive cost, which is what the channel is for |
-| 7 | `r["typo"]` | `unknown`, which then compares not-equal silently and renders as `"unknown"` | arithmetic already raises; comparison and display are the leaks |
+| 5 | `contains(s, "b*")` | searches for the literal two characters | **DECLINED 2026-08-23, measured.** Across ~100k lines there are **zero** literal patterns containing unambiguous regex syntax (`\d`, `[…]`), so a precise rule would fire never. The 8 patterns carrying any other metacharacter are `"\n"`, `"\t"`, `"\""` and `"+"` — escape sequences and punctuation — so a rule loose enough to catch `"b*"` flags all of those instead. No evidence the trap occurs; the UNLEARN entry is the right treatment |
+| 6 | blind shadow — assigning an outer name inside a function without reading it first | silent; the read-then-shadow warning fires only if the name was READ | **BUILT, MEASURED, REVERTED 2026-08-23.** It fired **287 times across 103 files**, overwhelmingly on single-letter locals (`r`, `i`, `s`, `a`) that merely share a name with something further out. The original code comment predicted exactly this. An opt-out does not rescue a diagnostic that is wrong far more often than right — the channel lowers the bar for shipping a warning, it does not remove it |
+| 7 | `r["typo"]` compared to a value | `unknown`, which compares not-equal silently | **BUILT, MEASURED, REVERTED 2026-08-23.** Narrowed twice and still wrong. Firing on any computed `unknown` hit `file_type(p) = "folder"` and `env(V) = "1"`; narrowed to INDEX reads it was silent across gBASIC but fired twice in Studio, **correctly both times** — `shell.marked[doc] != rev` and `stated(cfg)[tier] = v`, where absent-therefore-not-equal is the intended reading. Nothing separates that from a typo without value provenance or a statement of intent |
 
 The through-line: gBASIC's runtime has a fail-loudly culture, and these are the
 places it quietly does not. Rows 1 and 3 were never warnings at all — they were
@@ -262,3 +262,45 @@ negative cases and 232 examples passed unchanged each time, which says nothing
 in either tree was relying on the old silence. Rows 4, 5, 6 and 7 remain open,
 and they are the ones that genuinely need the channel rather than a raise:
 each has a legitimate use that must not be nagged.
+
+
+## 8. What the backlog taught
+
+Four rows were worked in one pass and **one shipped**. That ratio is the useful
+part, and it is not a failure of the exercise — three candidate warnings were
+killed by evidence that would otherwise have reached users as noise.
+
+**A channel lowers the bar for shipping a warning; it does not remove it.** Row
+6 was implemented exactly as proposed, measured at 287 warnings across 103
+files, and reverted — because a diagnostic that is wrong far more often than it
+is right teaches people to reach for `on warning ignore` reflexively, which
+destroys the value of every *other* warning. The suppression mechanism is not a
+licence to guess.
+
+**Measure before shipping, and measure the FALSE POSITIVES specifically.** Row 5
+looked worth doing from the UNLEARN entry alone; measuring found zero instances
+of the pattern it targets in ~100k lines. Row 7 was narrowed twice and still
+flagged only correct code — and note where the evidence came from: it was
+silent across all of gBASIC and only revealed itself against Studio, a real
+application. A language's own test suite is not a representative sample of how
+the language gets used.
+
+**A "silent trap" and "a warning" are different claims.** Rows 1–4 were failures
+with no defensible reading, and all four became raises. Rows 5–7 were shapes
+that *look* like mistakes and usually are not: `absent key therefore not equal`
+is how optional keys are handled, and a local sharing a global's name is
+ordinary. Cataloguing something as a trap does not establish that the compiler
+can tell.
+
+**A NULL pointer found the same day.** Row 7's implementation dereferenced the
+comparison's operand expressions, which are NULL on the datetime-lens path
+where `eval_comparison` re-enters itself with a synthesized `AstExpr`. That
+segfaulted 16 suites. The gate caught it in one run; a narrower check would
+not have. The guard is documented in place so the next person adding a check
+there knows the operands are not always real.
+
+**A static estimate is not a measurement.** Row 6's static estimate said 3 sites;
+the runtime said 287, because the estimate only saw same-file top-level globals.
+The unused-result estimate said 173 and the runtime said 54, for the opposite
+reason: name collisions across files inflated it. Both numbers were wrong in
+different directions, and only running the code settled it.

@@ -3184,6 +3184,10 @@ Path questions about what is really there:
     cannot see a symlink at all; testing the **resolved** path cannot. Resolve
     first, compare second, and compare on a separator boundary so a root of
     `/srv/pub` does not match `/srv/public-secret`.
+**A raise inside a watcher body stops the drain** (*since 0.1.0-rc5*). It used
+to be dropped: draining continued, the program ran on with a watcher that had
+not fired, and the diagnostic surfaced only at exit.
+
 **A typed-value modifier raises when it cannot construct the value** (*since
 0.1.0-rc5*): `d(date) = "not-a-date"`, a `time` / `datetime` that will not
 parse, or a `file` / `dir` given something that is not a path string.

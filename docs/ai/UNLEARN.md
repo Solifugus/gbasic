@@ -133,6 +133,10 @@ the standing ones.
   defensible `<` between two records, and the old coercion silently answered one
   anyway. Pinned by `tests/run_equality.sh`.
 
+- **A raise inside a watcher body STOPS the program** (0.1.0-rc5). It used to
+  be dropped — the watcher never fired, execution continued, and the error only
+  surfaced at exit — so results were built on a watcher that had not run.
+
 - **A typed-value modifier RAISES when it cannot construct** (0.1.0-rc5):
   `d(date) = "not-a-date"`, and likewise `time`, `datetime`, `file`, `dir`.
   They used to print an unlocated line and assign `nothing` with exit 0, so a
