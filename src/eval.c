@@ -26515,8 +26515,9 @@ static Value apply_assignment_modifier(AstModifierUse modifier, Value value) {
     if (!modifier.library && strcmp(modifier.name, "date") == 0) {
         DateTime datetime;
         if (value.kind != VALUE_STRING || !parse_date_value(value.as.string, &datetime)) {
-            fprintf(stderr, "date modifier expects an ISO-like date string\n");
             value_free(value);
+            runtime_error_raise("date modifier expects an ISO-like date string",
+                                1003, "datetime");
             return value_null();
         }
         value_free(value);
@@ -26525,8 +26526,9 @@ static Value apply_assignment_modifier(AstModifierUse modifier, Value value) {
     if (!modifier.library && strcmp(modifier.name, "time") == 0) {
         DateTime datetime;
         if (value.kind != VALUE_STRING || !parse_time_value(value.as.string, &datetime)) {
-            fprintf(stderr, "time modifier expects an ISO-like time string\n");
             value_free(value);
+            runtime_error_raise("time modifier expects an ISO-like time string",
+                                1003, "datetime");
             return value_null();
         }
         value_free(value);
@@ -26539,8 +26541,9 @@ static Value apply_assignment_modifier(AstModifierUse modifier, Value value) {
          * `date`). Matches the value `now()` produces. */
         DateTime datetime;
         if (value.kind != VALUE_STRING || !parse_date_value(value.as.string, &datetime)) {
-            fprintf(stderr, "datetime modifier expects an ISO-like date-time string\n");
             value_free(value);
+            runtime_error_raise("datetime modifier expects an ISO-like date-time string",
+                                1003, "datetime");
             return value_null();
         }
         datetime.precision = PREC_SECOND;
@@ -26644,8 +26647,9 @@ static Value apply_assignment_modifier(AstModifierUse modifier, Value value) {
     }
     if (!modifier.library && strcmp(modifier.name, "file") == 0) {
         if (value.kind != VALUE_STRING) {
-            fprintf(stderr, "file modifier expects a path string\n");
             value_free(value);
+            runtime_error_raise("file modifier expects a path string",
+                                1003, "modifier");
             return value_null();
         }
         Value file_value = value_file(value.as.string);
@@ -26654,8 +26658,9 @@ static Value apply_assignment_modifier(AstModifierUse modifier, Value value) {
     }
     if (!modifier.library && strcmp(modifier.name, "dir") == 0) {
         if (value.kind != VALUE_STRING) {
-            fprintf(stderr, "dir modifier expects a path string\n");
             value_free(value);
+            runtime_error_raise("dir modifier expects a path string",
+                                1003, "modifier");
             return value_null();
         }
         Value dir_value = value_dir(value.as.string);

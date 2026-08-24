@@ -3184,6 +3184,14 @@ Path questions about what is really there:
     cannot see a symlink at all; testing the **resolved** path cannot. Resolve
     first, compare second, and compare on a separator boundary so a root of
     `/srv/pub` does not match `/srv/public-secret`.
+**A typed-value modifier raises when it cannot construct the value** (*since
+0.1.0-rc5*): `d(date) = "not-a-date"`, a `time` / `datetime` that will not
+parse, or a `file` / `dir` given something that is not a path string.
+`error.source` is `"datetime"` for the three temporal ones and `"modifier"` for
+the two path ones, matching `USD`, which always raised. Until 0.1.0-rc5 these
+five printed an unlocated line and assigned `nothing` with the process exiting
+0 — so a bad date silently became a `nothing` that flowed onward.
+
 **Indexing out of range raises**, on read as well as on write (*since
 0.1.0-rc5*; `error.source` is `"indexing"` for a read and `"assignment"` for a
 write). Until then a read printed an unlocated line and yielded `nothing` while

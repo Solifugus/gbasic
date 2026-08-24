@@ -133,6 +133,13 @@ the standing ones.
   defensible `<` between two records, and the old coercion silently answered one
   anyway. Pinned by `tests/run_equality.sh`.
 
+- **A typed-value modifier RAISES when it cannot construct** (0.1.0-rc5):
+  `d(date) = "not-a-date"`, and likewise `time`, `datetime`, `file`, `dir`.
+  They used to print an unlocated line and assign `nothing` with exit 0, so a
+  bad date became a `nothing` that flowed onward. Validate the string first if
+  a bad value is expected rather than exceptional (this is what
+  `stdlib/ari.bas` does for imported reports), or arm `on error goto next`.
+
 - **An out-of-range index RAISES, on read as well as write** (0.1.0-rc5). It
   used to print an unlocated line and hand back `nothing` with exit code 0, so
   the failure looked exactly like a legitimate `nothing`. Test with `count(a)`

@@ -9,7 +9,7 @@ language surface may still change between releases.
 
 ## Unreleased
 
-### Two silent failures promoted to raises
+### Silent failures promoted to raises
 
 - **An out-of-range array read** now raises (`error.source` `"indexing"`),
   matching the assignment path, which always did. It used to print an
@@ -21,7 +21,15 @@ language surface may still change between releases.
   (`"invalid control flow"`). It used to print and then abandon the rest of the
   function, so a typo'd label silently truncated it.
 
-Both are now located, fatal by default, and catchable with `on error goto next`
+- **The `date`, `datetime`, `time`, `file` and `dir` modifiers** now raise when
+  they cannot construct a value (`error.source` `"datetime"` or `"modifier"`),
+  matching `USD`, which raised four lines away in the same dispatch function.
+  They used to print and assign `nothing` — so `d(date) = user_input` silently
+  produced a `nothing` that flowed onward. `docs/text_design.md` and
+  `stdlib/ari.bas` had both *claimed* these raised for months; the claim was
+  measured, found false, and made true rather than weakened.
+
+All are now located, fatal by default, and catchable with `on error goto next`
 — which a printed line never was. `tests/run_silent_traps.sh`.
 
 ### The warning channel

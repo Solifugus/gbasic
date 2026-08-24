@@ -256,11 +256,15 @@ library ari
         return m
     end function
 
-    ' The `date` modifier does NOT raise on a malformed string (measured
-    ' 2026-08-23; this comment claimed otherwise for months). It prints an
-    ' unlocated line and yields `nothing`, exit code unchanged -- so the
-    ' range-check in _date_in below is not defending against a raise, it is
-    ' supplying the diagnosis the modifier does not give.
+    ' The `date` modifier RAISES on a malformed string -- true since
+    ' 0.1.0-rc5, and worth the history: this comment asserted it for months
+    ' while the modifier actually printed an unlocated line and yielded
+    ' `nothing` with exit 0. The claim was checked, found false, and then made
+    ' true rather than documented away.
+    ' _date_in below still range-checks month and day BEFORE calling the
+    ' modifier, and that is deliberate: an out-of-range date in an imported
+    ' report is an expected condition, so the field degrades to `unknown` with
+    ' an `invalid-date` diagnostic while the rest of the row parses.
     function _to_date(iso)
         d(date) = iso
         return d
