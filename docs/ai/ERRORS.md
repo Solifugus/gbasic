@@ -151,6 +151,13 @@ scope — so it is not a reserved word and `r.warning` still parses.
 |---|---|---|
 | 2100 | explicit `warning(...)` from a program or library | `explicit warning` |
 | 2101 | a discarded return value | `unused-result` |
+| 2102 | a function or modifier shadows another, or a built-in | `override` |
+| 2103 | more than one library matched a name; the extra was ignored | `library-match` |
+| 2104 | an assignment created a local shadowing an outer name that was read | `shadow` |
+
+The 2102–2104 diagnostics predate the channel and printed straight to stderr
+until 2026-08-23. Routing them through it means they can now be suppressed
+(`on warning ignore`) and made fatal (`on warning stop`) like any other.
 
 ## 4. How this file was derived / regenerating it
 

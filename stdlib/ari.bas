@@ -256,11 +256,11 @@ library ari
         return m
     end function
 
-    ' The `date` modifier RAISES on a malformed string. Catching that is
-    ' possible since PLAT-ERR (docs/error_model_design.md); the range-check in
-    ' _date_in below -- the only producer -- stays because a bad date in an
-    ' imported report is an EXPECTED condition, and the check is what lets one
-    ' field degrade to `unknown` while the rest of the row still parses.
+    ' The `date` modifier does NOT raise on a malformed string (measured
+    ' 2026-08-23; this comment claimed otherwise for months). It prints an
+    ' unlocated line and yields `nothing`, exit code unchanged -- so the
+    ' range-check in _date_in below is not defending against a raise, it is
+    ' supplying the diagnosis the modifier does not give.
     function _to_date(iso)
         d(date) = iso
         return d

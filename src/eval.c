@@ -2879,6 +2879,17 @@ static void runtime_warn(const char *message, int code, const char *source,
             current_line, current_column);
 }
 
+/* printf-style front end, so the pre-existing diagnostics can move onto the
+ * channel without reshaping their call sites. */
+static void warn_fmt(int code, const char *source, const char *fmt, ...) {
+    char buffer[512];
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(buffer, sizeof(buffer), fmt, args);
+    va_end(args);
+    runtime_warn(buffer, code, source, value_null());
+}
+
 /* Bare `warning` CLAIMS the pending warning: the object once, false after. */
 static Value value_pending_warning(void) {
     if (!current_error_frame->warn_pending) {
@@ -3401,12 +3412,15 @@ static void env_warn_shadow(const char *name) {
     grown[shadow_warned_count] = copy_string(name);
     shadow_warned = grown;
     shadow_warned_count++;
-    fprintf(stderr,
-            "warning: '%s' was read from an enclosing scope, but this assignment "
-            "creates a new function-local of that name at %s:%d:%d; the outer "
-            "variable is unchanged (functions cannot rebind outer scalars -- "
-            "mutate a field of a shared record instead)\n",
-            name, runtime_error_path(), current_line, current_column);
+    /* On the PLAT-WARN channel, so this can be suppressed where a shadow is
+     * deliberate and made fatal in CI. The location comes from the channel;
+     * the per-NAME dedup above stays, because this one is about the name. */
+    warn_fmt(2104, "shadow",
+             "'%s' was read from an enclosing scope, but this assignment "
+             "creates a new function-local of that name; the outer variable is "
+             "unchanged (functions cannot rebind outer scalars -- mutate a "
+             "field of a shared record instead)",
+             name);
 }
 
 static void env_set(const char *name, Value value) {
@@ -6038,8 +6052,8 @@ static FunctionDef *function_resolve(const char *library, const char *name) {
             if (strcmp(other->name, best->name) == 0 &&
                 other->library && best->library &&
                 strcmp(other->library, best->library) != 0) {
-                fprintf(stderr,
-                        "warning: function '%s' from library '%s' overrides function from library '%s'\n",
+                warn_fmt(2102, "override",
+                        "function '%s' from library '%s' overrides function from library '%s'",
                         best->name,
                         best->library,
                         other->library);
@@ -6055,13 +6069,13 @@ static FunctionDef *function_resolve(const char *library, const char *name) {
 static void function_register_def(AstStmt *stmt, int imported, const char *library) {
     if (gbasic_builtin_function(stmt->as.function.name)) {
         if (imported) {
-            fprintf(stderr,
-                    "warning: function '%s' from library '%s' has same name as a built-in; unqualified calls use the built-in\n",
+            warn_fmt(2102, "override",
+                    "function '%s' from library '%s' has same name as a built-in; unqualified calls use the built-in",
                     stmt->as.function.name,
                     library ? library : "");
         } else {
-            fprintf(stderr,
-                    "warning: local function '%s' overrides built-in function\n",
+            warn_fmt(2102, "override",
+                    "local function '%s' overrides built-in function",
                     stmt->as.function.name);
         }
     }
@@ -6187,8 +6201,8 @@ static ModifierDef *modifier_resolve(AstModifierUse use, const char *context, co
                     strcmp(other->name, best->name) == 0 &&
                     other->library && best->library &&
                     strcmp(other->library, best->library) != 0) {
-                    fprintf(stderr,
-                            "warning: modifier '%s' from library '%s' overrides modifier from library '%s'\n",
+                    warn_fmt(2102, "override",
+                            "modifier '%s' from library '%s' overrides modifier from library '%s'",
                             best->name,
                             best->library,
                             other->library);
@@ -6216,8 +6230,8 @@ static void modifier_register_def(AstStmt *stmt, int imported, const char *libra
         if (imported && existing->imported) {
             existing = NULL;
         } else if (!imported && existing->imported && existing->library) {
-            fprintf(stderr,
-                    "warning: local modifier '%s' overrides modifier from library '%s'\n",
+            warn_fmt(2102, "override",
+                    "local modifier '%s' overrides modifier from library '%s'",
                     stmt->as.modifier.name,
                     existing->library);
         }
@@ -6795,8 +6809,8 @@ static void library_import(const char *name, const char *path) {
     }
 
     for (size_t i = 1; i < match_count; i++) {
-        fprintf(stderr,
-                "warning: additional library '%s' match ignored: %s\n",
+        warn_fmt(2103, "library-match",
+                "additional library '%s' match ignored: %s",
                 name,
                 matches[i].path);
     }

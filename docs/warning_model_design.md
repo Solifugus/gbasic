@@ -226,3 +226,34 @@ gBASIC-defined function. Builtins and natives are exempt (which is what keeps
 `append`'s 1,101 sites quiet), and `return nothing` — the established void
 convention — is exempt by value. Measured: 173 sites today. Shipped in the same
 change, because a channel with nothing to carry proves nothing.
+
+
+## 7. Candidates the channel now makes possible
+
+Written 2026-08-23, from a survey of `src/eval.c` for paths that report without
+a diagnostic. Each was confirmed by running it. **None of these were shipped
+with the channel** — this is the backlog the channel exists to serve, in
+descending order of how badly the current behaviour misleads.
+
+Every Tier 1 entry has the same signature: an **unlocated** bare line on stderr,
+a result of `nothing`, and **exit code 0**. A caller cannot tell the failure
+from a legitimate `nothing`, and CI sees success.
+
+| | what | today | belongs as |
+|---|---|---|---|
+| 1 | `goto <unknown label>` | prints, then **abandons the rest of the function**; returns `nothing`, exit 0 | a RAISE — a typo'd label silently truncating a function has no defensible reading |
+| 2 | `d(date) = "not-a-date"` and the `datetime` / `time` / `file` / `dir` modifiers (5 sites) | prints, assigns `nothing`, exit 0 | warning at minimum; `stdlib/ari.bas` builds range checks on the belief these RAISE, and they do not |
+| 3 | `a[99]` (read) | prints, yields `nothing`, exit 0 — while out-of-range *assignment* raises properly two lines away in the source | a RAISE, matching the write path |
+| 4 | `watch` on an undefined variable | located error, continues, exit 1 — the watcher never registers and the value reads `nothing` later | fatal: a watcher that never ran is not a recoverable state |
+
+Tier 2 — behavioural silence, no output at all:
+
+| | what | today | belongs as |
+|---|---|---|---|
+| 5 | `contains(s, "b*")` | searches for the literal two characters | warning when a *literal* pattern contains regex metacharacters. Unshippable before this channel, because a genuine `b*` search would be nagged forever; `on warning ignore` is the out |
+| 6 | blind shadow — assigning a global's name inside a function without reading it first | silent; the existing read-then-shadow warning only fires if the name was READ | extend `shadow` (2104). Has a real false-positive cost, which is what the channel is for |
+| 7 | `r["typo"]` | `unknown`, which then compares not-equal silently and renders as `"unknown"` | arithmetic already raises; comparison and display are the leaks |
+
+The through-line: gBASIC's runtime has a fail-loudly culture, and these are the
+places it quietly does not. Tiers 1.1 and 1.3 are arguably not warnings at all —
+they are raises that were never written — and the channel does not excuse them.
