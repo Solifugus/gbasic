@@ -30,6 +30,38 @@ static void report_diag(gb_parse_ctx *ctx, gb_diag_code code, int line, int colu
     gb_report_to(ctx->diags, code, 0, ctx->active_parse_path, span, message);
 }
 
+
+/* PLAT-WARN: `on warning ...` and `warning <expr>` carry NO reserved word --
+ * the channel is an ordinary IDENT recognized by POSITION (the technique the
+ * server block proved) and validated here. A word that is not "warning" is
+ * named in the diagnostic rather than producing a bare syntax error, because
+ * `on wanring stop` should say so. */
+static int warn_channel_ok(gb_parse_ctx *ctx, const char *word,
+                           int line, int column) {
+    if (word && strcmp(word, "warning") == 0) {
+        return 1;
+    }
+    char message[192];
+    snprintf(message, sizeof(message),
+             "unknown diagnostic channel '%s'; `on` takes `error` or `warning`",
+             word ? word : "");
+    report_diag(ctx, GB_DIAG_PARSE_ERROR, line, column, line, column, message);
+    return 0;
+}
+
+static int warn_mode_word(gb_parse_ctx *ctx, const char *word,
+                          int line, int column) {
+    if (word && strcmp(word, "ignore") == 0) {
+        return WARN_MODE_IGNORE;
+    }
+    char message[192];
+    snprintf(message, sizeof(message),
+             "unknown warning mode '%s'; expected print, ignore, stop, or goto next",
+             word ? word : "");
+    report_diag(ctx, GB_DIAG_PARSE_ERROR, line, column, line, column, message);
+    return -1;
+}
+
 /* Same, computing the end position by walking `len` bytes of the lexeme exactly
  * as the lexer's advance() does (byte-based columns, '\n' resets to column 1). */
 static void report_diag_lexeme(gb_parse_ctx *ctx, gb_diag_code code, int line, int column,
@@ -1137,6 +1169,41 @@ on_error_statement
     : ON ERROR_VALUE GOTO IDENT { $$ = ast_on_error_goto($4); }
     | ON ERROR_VALUE GOTO NEXT { $$ = ast_on_error_goto_next(); }
     | ON ERROR_VALUE STOP { $$ = ast_on_error_stop(); }
+    | ON IDENT GOTO NEXT {
+        if (!warn_channel_ok(ctx, $2, @2.first_line, @2.first_column)) { YYERROR; }
+        free($2);
+        $$ = ast_on_warning(WARN_MODE_NEXT);
+      }
+    | ON IDENT GOTO IDENT {
+        /* A warning fires from a statement that SUCCEEDED, so a label jump
+         * would mean leaving successful code on an advisory signal. Refused
+         * BY NAME rather than as a bare syntax error. */
+        if (!warn_channel_ok(ctx, $2, @2.first_line, @2.first_column)) { YYERROR; }
+        report_diag(ctx, GB_DIAG_PARSE_ERROR, @3.first_line, @3.first_column,
+                    @3.first_line, @3.first_column,
+                    "on warning has no goto-label form: a warning does not abandon "
+                    "its statement, so there is nothing to jump away from "
+                    "(use goto next, stop, ignore or print)");
+        free($2); free($4);
+        YYERROR;
+      }
+    | ON IDENT STOP {
+        if (!warn_channel_ok(ctx, $2, @2.first_line, @2.first_column)) { YYERROR; }
+        free($2);
+        $$ = ast_on_warning(WARN_MODE_STOP);
+      }
+    | ON IDENT PRINT {
+        if (!warn_channel_ok(ctx, $2, @2.first_line, @2.first_column)) { YYERROR; }
+        free($2);
+        $$ = ast_on_warning(WARN_MODE_PRINT);
+      }
+    | ON IDENT IDENT {
+        if (!warn_channel_ok(ctx, $2, @2.first_line, @2.first_column)) { YYERROR; }
+        int mode = warn_mode_word(ctx, $3, @3.first_line, @3.first_column);
+        if (mode < 0) { free($2); free($3); YYERROR; }
+        free($2); free($3);
+        $$ = ast_on_warning(mode);
+      }
     ;
 
 error_statement

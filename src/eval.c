@@ -473,6 +473,15 @@ typedef struct ErrorFrame {
                               * makes every OUTER frame's before/after check
                               * pass -- i.e. what turns "poison the caller"
                               * into "catch" */
+    /* PLAT-WARN. warn_mode is UNSET by default, which is what makes the lookup
+     * DYNAMIC: a warning walks outward to the first frame with an explicit
+     * setting. Deliberately unlike error mode (frame-local) -- a failure is the
+     * callee's business, but the noise budget is the caller's.
+     * warn_pending is SEPARATE from `pending` on purpose: sharing it would put
+     * warnings under rule 2 and re-raise every unchecked one at frame exit,
+     * which is the one thing a warning must never do. */
+    int warn_mode;
+    int warn_pending;
     struct ErrorFrame *parent;
 } ErrorFrame;
 
@@ -490,6 +499,7 @@ typedef struct {
                       * file */
     Value details;   /* record; empty when the raise carried none */
     Value trace;     /* array of {name, path, line, column}, innermost first */
+    int severity_warning;  /* PLAT-WARN: began life as a warning, then escalated */
 } RuntimeError;
 
 typedef struct {
@@ -585,6 +595,7 @@ enum {
     WATCHER_CYCLE_ERROR_CODE = 1005
 };
 static RuntimeError current_error = {0};
+static RuntimeError current_warning = {0};   /* PLAT-WARN */
 static int runtime_stopped = 0;
 static int error_generation = 0;
 static int raise_in_flight = 0;
@@ -2753,6 +2764,130 @@ static void raise_report_contained(void) {
     error_clear_state();
 }
 
+
+static Value value_warning_object(void);
+
+/* ---- PLAT-WARN: the warning channel (docs/warning_model_design.md) --------
+ *
+ * The value of this channel is not any single warning: SUPPRESSION is what
+ * makes an aggressive warning affordable (before it, every warning gBASIC
+ * shipped had to be near-zero-false-positive, because a program had no way to
+ * say "I meant that here"), and ESCALATION is what makes one enforceable. */
+
+static void warning_clear_state(void) {
+    free(current_warning.message);
+    free(current_warning.source);
+    free(current_warning.path);
+    value_free(current_warning.details);
+    value_free(current_warning.trace);
+    memset(&current_warning, 0, sizeof(current_warning));
+}
+
+/* DYNAMIC lookup, deliberately unlike error mode: walk outward to the first
+ * frame with an explicit setting. A library's advice is the caller's noise to
+ * budget. */
+static ErrorFrame *warn_frame_effective(void) {
+    for (ErrorFrame *f = current_error_frame; f; f = f->parent) {
+        if (f->warn_mode != WARN_MODE_UNSET) {
+            return f;
+        }
+    }
+    return NULL;
+}
+
+static int warn_mode_effective(void) {
+    ErrorFrame *f = warn_frame_effective();
+    return f ? f->warn_mode : WARN_MODE_PRINT;
+}
+
+/* Warn-once per source site, so a loop cannot turn advice into a flood. The
+ * list stays tiny; sites are keyed by path:line:column. */
+static char **warn_sites = NULL;
+static size_t warn_site_count = 0;
+
+static int warn_site_first_time(int line, int column) {
+    char key[512];
+    snprintf(key, sizeof(key), "%s:%d:%d",
+             runtime_error_path() ? runtime_error_path() : "", line, column);
+    for (size_t i = 0; i < warn_site_count; i++) {
+        if (strcmp(warn_sites[i], key) == 0) {
+            return 0;
+        }
+    }
+    char **grown = realloc(warn_sites, sizeof(char *) * (warn_site_count + 1));
+    if (!grown) {
+        return 1;
+    }
+    grown[warn_site_count] = copy_string(key);
+    warn_sites = grown;
+    warn_site_count++;
+    return 1;
+}
+
+static void warn_sites_clear(void) {
+    for (size_t i = 0; i < warn_site_count; i++) {
+        free(warn_sites[i]);
+    }
+    free(warn_sites);
+    warn_sites = NULL;
+    warn_site_count = 0;
+}
+
+/* Takes ownership of `details` (VALUE_NULL for none). */
+static void runtime_warn(const char *message, int code, const char *source,
+                         Value details) {
+    int mode = warn_mode_effective();
+    if (mode == WARN_MODE_IGNORE) {
+        value_free(details);
+        return;
+    }
+    if (mode == WARN_MODE_STOP) {
+        /* Escalate AT THE WARNING'S OWN SITE, so error.line and error.trace
+         * point at the offending statement rather than wherever it was
+         * noticed. From here on it IS an error and PLAT-ERR governs it. */
+        value_free(details);
+        error_set_state(message, code, source);
+        current_error.severity_warning = 1;
+        error_generation++;
+        raise_in_flight = 1;
+        return;
+    }
+    if (mode == WARN_MODE_NEXT) {
+        warning_clear_state();
+        current_warning.active = 1;
+        current_warning.message = copy_string(message);
+        current_warning.line = current_line;
+        current_warning.column = current_column;
+        current_warning.code = code;
+        current_warning.source = copy_string(source ? source : "warning");
+        current_warning.path = copy_string(runtime_error_path() ? runtime_error_path() : "");
+        current_warning.details = details;
+        /* The pending flag belongs to the frame that ARMED goto-next, not to
+         * whatever frame happened to raise: that outer frame is the one whose
+         * `if warning then` will read it, and an inner frame's flag would die
+         * with the inner frame. */
+        ErrorFrame *owner = warn_frame_effective();
+        (owner ? owner : current_error_frame)->warn_pending = 1;
+        return;
+    }
+    value_free(details);
+    if (!warn_site_first_time(current_line, current_column)) {
+        return;
+    }
+    fprintf(stderr, "warning: %s at %s:%d:%d\n", message,
+            runtime_error_path() ? runtime_error_path() : "?",
+            current_line, current_column);
+}
+
+/* Bare `warning` CLAIMS the pending warning: the object once, false after. */
+static Value value_pending_warning(void) {
+    if (!current_error_frame->warn_pending) {
+        return value_bool(0);
+    }
+    current_error_frame->warn_pending = 0;
+    return value_warning_object();
+}
+
 static EvalResult eval_raise(void) {
     EvalResult result = {0};
     result.did_raise = 1;
@@ -2806,13 +2941,13 @@ static int error_frame_absorb(char **jump_label) {
 }
 
 static Value value_error_object(void) {
-    RecordField *fields = calloc(8, sizeof(RecordField));
+    RecordField *fields = calloc(9, sizeof(RecordField));
     if (!fields) {
         abort();
     }
     const char *names[] = {"message", "line", "column", "code", "source",
-                           "path", "details", "trace"};
-    for (size_t i = 0; i < 8; i++) {
+                           "path", "details", "trace", "severity"};
+    for (size_t i = 0; i < 9; i++) {
         fields[i].name = copy_string(names[i]);
         fields[i].value = cell_alloc();
         if (!fields[i].value) {
@@ -2832,7 +2967,41 @@ static Value value_error_object(void) {
     *fields[7].value = on && current_error.trace.kind == VALUE_ARRAY
         ? value_copy(current_error.trace)
         : value_array(NULL, 0);
-    return value_record(fields, 8);
+    /* PLAT-WARN: what this diagnostic STARTED as. A warning escalated by
+     * `on warning stop` is an error from that point on, and this is how a
+     * caught escalation can still say where it came from. */
+    *fields[8].value = value_string(on && current_error.severity_warning
+                                    ? "warning" : "error");
+    return value_record(fields, 9);
+}
+
+/* The pending WARNING as a record, shaped like the error object minus the
+ * fields that only make sense for a failure. */
+static Value value_warning_object(void) {
+    RecordField *fields = calloc(7, sizeof(RecordField));
+    if (!fields) {
+        abort();
+    }
+    const char *names[] = {"message", "line", "column", "code", "source",
+                           "path", "details"};
+    for (size_t i = 0; i < 7; i++) {
+        fields[i].name = copy_string(names[i]);
+        fields[i].value = cell_alloc();
+        if (!fields[i].value) {
+            abort();
+        }
+    }
+    int on = current_warning.active;
+    *fields[0].value = value_string(on ? current_warning.message : "");
+    *fields[1].value = value_number(on ? current_warning.line : 0);
+    *fields[2].value = value_number(on ? current_warning.column : 0);
+    *fields[3].value = value_number(on ? current_warning.code : 0);
+    *fields[4].value = value_string(on ? current_warning.source : "");
+    *fields[5].value = value_string(on && current_warning.path ? current_warning.path : "");
+    *fields[6].value = on && current_warning.details.kind == VALUE_RECORD
+        ? value_copy(current_warning.details)
+        : value_record(NULL, 0);
+    return value_record(fields, 7);
 }
 
 /* Defined in modules/xlsx.c, declared here so value_copy/value_free can reach a
@@ -3273,6 +3442,18 @@ static void env_set(const char *name, Value value) {
     current_env->count++;
 }
 
+/* Does an ordinary variable of this name resolve? Used by the PLAT-WARN soft
+ * name so that `warning` means the diagnostic only when nothing else claims
+ * the word. */
+static int env_lookup_exists(const char *name) {
+    for (Env *env = current_env; env; env = env->parent) {
+        if (env_find_in_frame(env, name)) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static Value env_get(const char *name) {
     if (strcmp(name, "error") == 0) {
         /* PLAT-ERR: bare `error` asks "is there an UNACKNOWLEDGED error?" and
@@ -3335,6 +3516,13 @@ static Value env_get(const char *name) {
         FunctionDef *function = function_resolve(NULL, name);
         if (function) {
             return value_function(function->name, function->library);
+        }
+        /* PLAT-WARN: `warning` is a SOFT name -- resolved HERE, after the
+         * environment walk, so a variable of that name shadows it and
+         * `r.warning` / `{ warning: ... }` are untouched. That placement is
+         * what lets the whole channel exist with no reserved word. */
+        if (strcmp(name, "warning") == 0) {
+            return value_pending_warning();
         }
         char message[256];
         snprintf(message, sizeof(message), "undefined variable: %s", name);
@@ -21347,6 +21535,83 @@ static Value eval_call(AstExpr *expr) {
         return value_null();
     }
 
+    /* PLAT-WARN: raising a warning is a BUILTIN CALL, not a statement form --
+     * `IDENT expression` as a statement production costs 4 shift/reduce
+     * conflicts, and the whole point of this design is adding no reserved
+     * word. Same shape rules as `error`: a string, or a record whose
+     * `message` is required and whose extra fields become `details`. */
+    if (strcmp(expr->as.call.name, "warning") == 0 &&
+        !env_lookup_exists("warning")) {
+        if (expr->as.call.args.count != 1) {
+            runtime_error_raise("warning expects one argument (a message or a record)",
+                                1003, "invalid function call");
+            return value_null();
+        }
+        Value arg = eval_expr(expr->as.call.args.items[0]);
+        if (error_action_pending()) {
+            value_free(arg);
+            return value_null();
+        }
+        if (arg.kind == VALUE_STRING) {
+            runtime_warn(arg.as.string, 2100, "explicit warning", value_null());
+            value_free(arg);
+            return value_null();
+        }
+        if (arg.kind != VALUE_RECORD) {
+            value_free(arg);
+            runtime_error_raise("warning expects a message string or a record",
+                                1003, "invalid argument type");
+            return value_null();
+        }
+        RecordField *msg = record_find(&arg, "message");
+        if (!msg || msg->value->kind != VALUE_STRING) {
+            value_free(arg);
+            runtime_error_raise("warning record requires a message field (a string)",
+                                1003, "invalid argument");
+            return value_null();
+        }
+        RecordField *code_f = record_find(&arg, "code");
+        RecordField *source_f = record_find(&arg, "source");
+        int code = code_f && code_f->value->kind == VALUE_NUMBER
+            ? (int)code_f->value->as.number : 2100;
+        const char *source = source_f && source_f->value->kind == VALUE_STRING
+            ? source_f->value->as.string : "explicit warning";
+        static const char *shape[] = {"message", "code", "source", "details",
+                                      "line", "column", "path"};
+        RecordField *extra = calloc(arg.as.record.count + 1, sizeof(RecordField));
+        size_t extra_count = 0;
+        if (!extra) {
+            abort();
+        }
+        RecordField *details_f = record_find(&arg, "details");
+        Value details;
+        if (details_f && details_f->value->kind == VALUE_RECORD) {
+            free(extra);
+            details = value_copy(*details_f->value);
+        } else {
+            for (size_t i = 0; i < arg.as.record.count; i++) {
+                RecordField *field = &arg.as.record.fields[i];
+                int reserved = 0;
+                for (size_t j = 0; j < sizeof(shape) / sizeof(shape[0]); j++) {
+                    if (strcmp(field->name, shape[j]) == 0) { reserved = 1; break; }
+                }
+                if (reserved) { continue; }
+                extra[extra_count].name = copy_string(field->name);
+                extra[extra_count].value = cell_alloc();
+                if (!extra[extra_count].value) { abort(); }
+                *extra[extra_count].value = value_copy(*field->value);
+                extra_count++;
+            }
+            details = value_record(extra, extra_count);
+        }
+        char *message = copy_string(msg->value->as.string);
+        char *source_copy = copy_string(source);
+        value_free(arg);
+        runtime_warn(message, code, source_copy, details);
+        free(message);
+        free(source_copy);
+        return value_null();
+    }
     if (strcmp(expr->as.call.name, "error.clear") == 0) {
         if (expr->as.call.args.count != 0) {
             runtime_error_raise("error.clear expects no arguments", 1003, "invalid function call");
@@ -26044,6 +26309,19 @@ static Value eval_expr(AstExpr *expr) {
         return value_null();
     }
     case AST_EXPR_FIELD: {
+        /* PLAT-WARN: `warning.field` reads the stored warning without claiming
+         * it, so a check block can describe what it caught after the condition
+         * consumed the flag. Guarded on the name NOT resolving as a variable,
+         * which keeps the soft-name shadowing rule intact. */
+        if (expr->as.field.object->kind == AST_EXPR_IDENT &&
+            strcmp(expr->as.field.object->as.ident, "warning") == 0 &&
+            !env_lookup_exists("warning")) {
+            Value object = value_warning_object();
+            RecordField *field = record_find(&object, expr->as.field.field);
+            Value result = field ? value_copy(*field->value) : value_null();
+            value_free(object);
+            return result;
+        }
         if (expr->as.field.object->kind == AST_EXPR_IDENT &&
             strcmp(expr->as.field.object->as.ident, "error") == 0) {
             Value object = value_error_object();
@@ -27040,6 +27318,37 @@ static EvalResult eval_stmt(AstStmt *stmt) {
             current_column = previous_column;
             return eval_error_result();
         }
+        /* PLAT-WARN's first diagnostic: a discarded return value. Because a
+         * function cannot mutate its caller, EVERY update API in gBASIC returns
+         * the new value -- so calling one for effect is always a bug that
+         * always compiles. This is what let web._serve_pool drop pool_tick's
+         * return and supervise nobody through a tagged release.
+         *
+         * Two exemptions keep it quiet enough to live with, and both are the
+         * language's own conventions rather than a curated list:
+         *   - only a call to a gBASIC-DEFINED function warns, so `append` (1101
+         *     bare calls in the tree, mutating in place by design) and every
+         *     native are exempt;
+         *   - `return nothing` is the established void convention, so a
+         *     function that returns it is exempt BY VALUE. */
+        if (value.kind != VALUE_NULL &&
+            stmt->as.expr_stmt->kind == AST_EXPR_CALL &&
+            function_resolve(stmt->as.expr_stmt->as.call.library,
+                             stmt->as.expr_stmt->as.call.name)) {
+            char message[320];
+            snprintf(message, sizeof(message),
+                     "the result of '%s' is discarded; a gBASIC function cannot "
+                     "change its caller, so an update returns the new value and "
+                     "dropping it does nothing (assign it, or return nothing)",
+                     stmt->as.expr_stmt->as.call.name);
+            runtime_warn(message, 2101, "unused-result", value_null());
+            if (error_action_pending()) {
+                value_free(value);
+                current_line = previous_line;
+                current_column = previous_column;
+                return eval_error_result();
+            }
+        }
         value_free(value);
         break;
     }
@@ -27317,6 +27626,15 @@ static EvalResult eval_stmt(AstStmt *stmt) {
         current_error_frame->label = NULL;
         current_error_frame->mode = EFRAME_DEFAULT;
         break;
+    case AST_STMT_ON_WARNING:
+        current_error_frame->warn_mode = stmt->as.warn_mode;
+        break;
+    case AST_STMT_WARNING: {
+        /* Unreachable via the grammar (the raise is the `warning(...)` builtin
+         * -- `IDENT expression` as a statement costs 4 shift/reduce conflicts),
+         * kept so the node has a home if a spelling is ever added. */
+        break;
+    }
     case AST_STMT_ERROR: {
         int before_error = error_generation;
         Value value = eval_expr(stmt->as.error_message);

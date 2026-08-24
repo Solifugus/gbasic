@@ -127,6 +127,15 @@ for error handling, `ERRORS.md`.
   claiming), and an unacknowledged error escapes the frame rather than being
   shadowed by the next one. See `ERRORS.md`. →
   `examples/on_error_goto_next_test.bas`
+- **Make advice enforceable** — `on warning stop` in `main` turns every warning
+  into a raise (the `-Werror` of a language with no build step); `on warning
+  ignore` in one function says "I meant that" without silencing anyone else.
+  Mode lookup runs OUTWARD, so a caller's setting governs its callees. →
+  `tests/warning_model/dynamic_scope.bas`
+- **Never call an update API for effect** — a gBASIC function cannot change its
+  caller, so `pool_tick(p)` discards the new pool and does nothing. Assign it.
+  Since 0.1.0-rc5 this warns (`unused-result`). →
+  `tests/warning_model/unused_result.bas`
 
 ## Dates, durations, calendars
 

@@ -3,6 +3,15 @@
 
 #include <stddef.h>
 
+/* PLAT-WARN warning-channel modes (docs/warning_model_design.md). */
+typedef enum {
+    WARN_MODE_UNSET = 0,   /* no explicit setting: look further out */
+    WARN_MODE_PRINT,
+    WARN_MODE_IGNORE,
+    WARN_MODE_NEXT,
+    WARN_MODE_STOP
+} WarnMode;
+
 typedef enum {
     AST_STMT_ASSIGN,
     AST_STMT_PRINT,
@@ -20,6 +29,8 @@ typedef enum {
     AST_STMT_WITHOUT_WATCHERS,
     AST_STMT_ON_ERROR_GOTO,
     AST_STMT_ON_ERROR_GOTO_NEXT,
+    AST_STMT_ON_WARNING,        /* PLAT-WARN: mode in as.warn_mode */
+    AST_STMT_WARNING,           /* PLAT-WARN: raise one; as.error_message */
     AST_STMT_ON_ERROR_STOP,
     AST_STMT_ERROR,
     AST_STMT_MODIFIER,
@@ -279,6 +290,7 @@ struct AstStmt {
         AstExpr *unwatch_expr;
         AstStmtList without_watchers;
         char *on_error_label;
+        int warn_mode;   /* WarnMode; PLAT-WARN */
         AstExpr *error_message;
         struct {
             char *name;
@@ -390,6 +402,8 @@ AstStmt *ast_without_watchers(AstStmtList body);
 AstStmt *ast_on_error_goto(char *label);
 AstStmt *ast_on_error_goto_next(void);
 AstStmt *ast_on_error_stop(void);
+AstStmt *ast_on_warning(int mode);
+AstStmt *ast_warning(AstExpr *message);
 AstStmt *ast_error(AstExpr *message);
 AstStmt *ast_modifier(char *name, AstNameList params, char *context, int exported, AstStmtList body);
 AstStmt *ast_program(char *name, AstNameList args, AstStmtList body);

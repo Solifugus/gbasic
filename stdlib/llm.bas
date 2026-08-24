@@ -776,7 +776,7 @@ library llm
         if k != "function" then
             error "llm: tool '" + t.name + "' needs a callable function value"
         end if
-        return true
+        return nothing
     end function
 
     ' How a tool reports failure: `return llm.tool_error("no such customer")`.

@@ -359,6 +359,25 @@ Three things that surprise on the way in:
 See `docs/error_model_design.md`; proof in `examples/on_error_goto_next_test.bas`
 and `tests/run_error_model.sh`.
 
+**Warnings are a second channel with the same shape and two differences.**
+`on warning print|ignore|goto next|stop`, read with `if warning then` and
+`warning.message`. The differences matter:
+
+- **The anti-silence rules do NOT apply.** An unacknowledged warning dies with
+  its frame. It is advice.
+- **Mode lookup is dynamic, not frame-local.** Your `on warning ignore`
+  silences warnings raised inside what you call — the noise budget is the
+  caller's, unlike error handling where a callee owns its failures.
+
+`warning` is a SOFT name: a variable of that name shadows it, and `r.warning`
+still parses. A typo'd variable called `warning` therefore reads `false` rather
+than raising. Raise one with `warning("msg")` — a builtin call, not a statement.
+
+**New in 0.1.0-rc5: `unused-result`.** Discarding a non-`nothing` return from a
+gBASIC function now warns, because a function cannot change its caller — so
+`pool_tick(p)` for effect does nothing at all. Builtins (`append`) and
+`return nothing` are exempt.
+
 ## Performance traps (correctness-adjacent)
 
 - **Building a string by repeated `+` is O(n²)** — each concatenation allocates

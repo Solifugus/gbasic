@@ -289,7 +289,7 @@ library web
             end while
             i = i + 1
         end while
-        return true
+        return nothing
     end function
 
     function _response(req, status, body, headers)
@@ -737,7 +737,7 @@ library web
             p = t.pool
             sleep(0.5)
         end while
-        pool_stop(p)
+        p = pool_stop(p)
         webserver.close(super)
         return super
     end function

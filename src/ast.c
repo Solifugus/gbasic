@@ -488,6 +488,20 @@ AstStmt *ast_on_error_stop(void) {
     return stmt;
 }
 
+AstStmt *ast_on_warning(int mode) {
+    AstStmt *stmt = xmalloc(sizeof(*stmt));
+    stmt->kind = AST_STMT_ON_WARNING;
+    stmt->as.warn_mode = mode;
+    return stmt;
+}
+
+AstStmt *ast_warning(AstExpr *message) {
+    AstStmt *stmt = xmalloc(sizeof(*stmt));
+    stmt->kind = AST_STMT_WARNING;
+    stmt->as.error_message = message;
+    return stmt;
+}
+
 AstStmt *ast_error(AstExpr *message) {
     AstStmt *stmt = xmalloc(sizeof(*stmt));
     stmt->kind = AST_STMT_ERROR;
@@ -911,6 +925,13 @@ static void dump_stmt(AstStmt *stmt, int indent) {
     case AST_STMT_ON_ERROR_GOTO_NEXT:
         printf("OnErrorGotoNext\n");
         break;
+    case AST_STMT_ON_WARNING:
+        printf("OnWarning %d\n", stmt->as.warn_mode);
+        break;
+    case AST_STMT_WARNING:
+        printf("Warning\n");
+        dump_expr(stmt->as.error_message, indent + 1);
+        break;
     case AST_STMT_ON_ERROR_STOP:
         printf("OnErrorStop\n");
         break;
@@ -1197,7 +1218,9 @@ static void free_stmt(AstStmt *stmt) {
         break;
     case AST_STMT_ON_ERROR_GOTO_NEXT:
     case AST_STMT_ON_ERROR_STOP:
+    case AST_STMT_ON_WARNING:
         break;
+    case AST_STMT_WARNING:
     case AST_STMT_ERROR:
         free_expr(stmt->as.error_message);
         break;

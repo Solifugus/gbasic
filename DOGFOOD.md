@@ -66,13 +66,12 @@ and the stale-looking ones carry a Status line saying what overtook them.
     low. Fold into `json_encode` when convenient.
 10. **No record merge** (2026-08-22). low. Shape: pairs with the array-concat
     decision (item 3) — `merge(a, b)` or record `+`, decided together.
-11. **A discarded return value is silent** (2026-08-23). high — this one
-    already cost a working supervisor. Because functions cannot mutate their
-    caller, every "update" API returns the new value, and calling one for
-    effect compiles, runs, and does nothing. `web._serve_pool` dropped
-    `pool_start`/`pool_tick`'s returns and `workers: N` supervised nobody.
-    Shape: a parse-time warning for a discarded non-`nothing` return from a
-    user or library function, in the family of the read-then-shadow warning.
+11. ~~**A discarded return value is silent**~~ **RESOLVED 2026-08-23** by
+    PLAT-WARN: `unused-result` warns when a bare call discards a non-`nothing`
+    return from a gBASIC function. Shipped as a runtime diagnostic rather than
+    the parse-time one proposed here, because the runtime knows the actual
+    returned VALUE — which is what lets `return nothing` (the void convention)
+    be exempt by value and keeps `append`'s 1101 bare calls quiet.
 
 ### Open — accepted as documented limitations (no action planned)
 
@@ -2466,3 +2465,45 @@ answers a real question; a tool result is data the model reads). What changed
 is that they are choices rather than the only option. `stdlib/llm.bas`'s
 preflight architecture could now be simplified and deliberately was not — a
 separate decision, not fallout from this one.
+
+
+### RESOLVED 2026-08-23 — the silent-trap class gets a channel (PLAT-WARN)
+
+Ledger item 11 is closed, and the way it closed is the point.
+
+**The blocker was never the warning; it was the absence of an opt-out.** Every
+warning gBASIC shipped had to be near-zero-false-positive, because a program had
+no way to say "I meant that here". That constraint is why the worst traps stayed
+silent: `contains(s, "b*")` searching for a literal asterisk could not warn
+without nagging anyone genuinely searching for `b*`, and a discarded-return
+warning firing at 173 sites would have been deleted within a day.
+
+Measured before building, across both repos: 2,215 bare call statements; 173
+discarding a non-`nothing` return from a gBASIC function; roughly 68 of those
+deliberate. At runtime — reachable code only — 54 fire.
+
+So the feature built was the CHANNEL: `on warning print | ignore | goto next |
+stop`, frame-scoped, read exactly like errors. `stop` is `-Werror` for a
+language with no build step; `ignore` is what makes an aggressive diagnostic
+survivable.
+
+**Two things worth recording for whoever extends this.**
+
+The warning pending flag is SEPARATE from the error's, not a severity tag on it.
+Sharing it would put warnings under PLAT-ERR rule 2 and re-raise every
+unacknowledged one at frame exit — turning all advice into failure. The test
+tier `no_rule2` exists to keep that from being "simplified" later.
+
+`warning` is a SOFT name — resolved after the environment walk, so a variable
+shadows it. That single placement is why the channel added ZERO reserved words
+and why `board.warning` in `examples/edgar/monitor_harness_test.bas` never
+noticed. The statement form `warning <expr>` was measured at 4 shift/reduce
+conflicts and rejected in favour of the `warning(...)` builtin; `error` gets a
+statement form only because it is a hard token, which is exactly the
+noun-squatting this project has been trying to stop doing.
+
+**What it found on day one:** three standard-library sites. `web._refuse_ties`
+and `llm._check_tool` were writing `return true` where the void convention
+(`return nothing`) was meant, and `web._serve_pool` was dropping `pool_stop`'s
+returned pool — the same shape, in the same function, as the bug that started
+this whole line of work.

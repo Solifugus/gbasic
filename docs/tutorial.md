@@ -866,6 +866,36 @@ if error then
 end if
 ```
 
+### Warnings
+
+Some things are not failures but are worth saying. A warning fires from a
+statement that **completed**, and the channel exists so you can suppress advice
+where you meant it and escalate it where it must not be ignored:
+
+```basic
+on warning stop        ' every warning becomes a raise -- put this in CI
+on warning ignore      ' ...or silence one you meant, in this function only
+```
+
+The default is `on warning print`: stderr, keep going. `on warning goto next`
+records it instead, and you check it exactly like an error, with the same
+claiming rule — bare `warning` claims, `warning.field` reads:
+
+```basic
+on warning goto next
+returns_a_value()          ' result discarded -- warns
+if warning then
+    print to error warning.message
+end if
+```
+
+Mode lookup runs *outward*: your `on warning ignore` also silences warnings
+raised inside functions you call. That is deliberate and the opposite of error
+handling — a failure is the callee's business, but the noise budget is yours.
+
+`warning` is not a keyword. A variable of that name shadows it, and
+`r.warning` is an ordinary field. Raise one with `warning("message")`.
+
 ### Values instead of raises
 
 Handling a raise is cheap now, but an API that reports failure **as a value** is

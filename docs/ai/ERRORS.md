@@ -124,6 +124,34 @@ under rule 1.
 one — preserving the original `trace` and location. `error.trace` is an array of
 `{name, path, line, column}`, innermost first.
 
+## 3b. The warning channel (PLAT-WARN, 2026-08-23)
+
+Design: `docs/warning_model_design.md`; proof: `tests/run_warning_model.sh`.
+
+A second, independent channel for advice. Same shape as errors —
+`on warning print|ignore|goto next|stop`, read with bare `warning` (claims) and
+`warning.field` (does not) — with two deliberate differences:
+
+- **Rules 1 and 2 do not apply.** An unacknowledged warning dies with its
+  frame. Warnings are advisory; advice that must be acknowledged is not advice.
+  The pending flag is SEPARATE from the error's for exactly this reason.
+- **Mode lookup is dynamic**, outward to the nearest explicit setting, unlike
+  frame-local error mode. A failure is the callee's business; the noise budget
+  is the caller's.
+
+`on warning stop` escalates at the warning's own site; from then on it is an
+error, and `error.severity` reads `"warning"`.
+
+`warning` is a **soft name** — resolved only when no variable of that name is in
+scope — so it is not a reserved word and `r.warning` still parses.
+
+### Warning codes
+
+| code | meaning | `source` |
+|---|---|---|
+| 2100 | explicit `warning(...)` from a program or library | `explicit warning` |
+| 2101 | a discarded return value | `unused-result` |
+
 ## 4. How this file was derived / regenerating it
 
 - Diagnostic kinds: the `gb_diag_code` enum and `gb_diag_code_str` in

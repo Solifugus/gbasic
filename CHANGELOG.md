@@ -9,6 +9,34 @@ language surface may still change between releases.
 
 ## Unreleased
 
+### The warning channel
+
+- **`on warning print | ignore | goto next | stop`** — a second diagnostic
+  channel for advice, read with `if warning then` and `warning.message` exactly
+  as errors are. `on warning stop` is the `-Werror` of a language with no build
+  step: put it in `main` and every warning becomes a raise. `on warning ignore`
+  is the opt-out that makes aggressive diagnostics possible at all.
+
+- **Two deliberate differences from errors.** The anti-silence rules do NOT
+  apply — an unacknowledged warning dies with its frame, because advice that
+  must be acknowledged is not advice. And mode lookup is **dynamic**, outward to
+  the nearest explicit setting, rather than frame-local: *a failure is the
+  callee's business; the noise budget is the caller's.*
+
+- **`warning` is not a reserved word.** It is a soft name, resolved only when no
+  variable of that name is in scope, so `warning = 1`, `r.warning` and
+  `{ warning: … }` keep working. Raise one with `warning("msg")` or
+  `warning({ message: "…", extra: x })`. Note a typo'd variable called
+  `warning` therefore reads `false` rather than raising.
+
+- **New diagnostic: `unused-result`.** Discarding a non-`nothing` return from a
+  gBASIC-defined function now warns. A function cannot change its caller, so
+  every update API returns the new value and calling one for effect does
+  nothing — the mechanism that let a worker pool supervise nobody through a
+  tagged release. Builtins are exempt (`append` mutates in place by design) and
+  `return nothing`, the void convention, is exempt by value. Turning it on
+  found three real sites in the standard library.
+
 ### Breaking: `on error` is frame-scoped, and `on error resume next` is gone
 
 - **`on error` now governs only the frame that executed it** — one function

@@ -1,0 +1,4 @@
+no warning pending: false
+shadowed by a local: 42
+record field: a field
+field array: kept

@@ -1080,6 +1080,77 @@ first (the field is `name` because a keyword cannot follow a dot).
 `with lock` unlocks on error, and `without watchers` restores watcher behavior
 after its block.
 
+## Warnings
+
+A warning is advice, not a failure: the statement **completed**. The channel
+exists so that advice can be *suppressed* where it is deliberate and
+*escalated* where it must not be ignored — which is what makes an aggressive
+diagnostic affordable at all (design: `docs/warning_model_design.md`).
+
+```basic
+on warning print       ' stderr, then continue -- the default
+on warning ignore      ' suppress here: "I meant that"
+on warning goto next   ' record it; check with `if warning then`
+on warning stop        ' escalate: it becomes a raise at its own site
+```
+
+```basic
+on warning goto next
+r = pool_tick(p)              ' completes normally; the warning is recorded
+if warning then
+    print to error warning.message
+end if
+```
+
+**Reading mirrors `error`.** Bare `warning` asks "is there an unacknowledged
+warning?" and claims it — the object once, `false` after, and `w = warning`
+snapshots. `warning.field` reads without claiming (`message`, `code`, `source`,
+`line`, `column`, `path`, `details`).
+
+**`warning` is not a reserved word.** It is a *soft name*: resolved only when no
+variable of that name is in scope, so `warning = 1`, `r.warning` and
+`{ warning: … }` all keep working — and a local of that name shadows the
+diagnostic, the same rule bare function names follow. One consequence worth
+knowing: a **typo'd** variable called `warning` reads `false` rather than
+raising `undefined variable`.
+
+**Rules 1 and 2 do not apply.** A warning may be replaced by a later one, and an
+unacknowledged warning dies quietly with its frame. The anti-silence rules are
+for failures; advice that must be acknowledged is not advice.
+
+**Mode lookup is dynamic** — outward to the nearest frame with an explicit
+setting, deliberately unlike error mode, which is frame-local. *A failure is the
+callee's business; the noise budget is the caller's.* So `on warning ignore` in
+your function silences a warning raised inside anything it calls, and
+`on warning stop` in `main` makes the whole program's warnings fatal — the
+`-Werror` of a language with no build step to put a flag on.
+
+**Escalation** raises at the warning's own site, so `error.line` and
+`error.trace` point at the offending statement; `error.severity` is `"warning"`
+so a caught escalation can say what it started as. There is **no
+`on warning goto <label>`**: a warning fires from a statement that succeeded, so
+there would be nothing to jump away from.
+
+**Raising one** is a builtin call, `warning("message")` or
+`warning({ message: "…", extra: x })` — message required, extras become
+`details`. (A call rather than a statement form because `IDENT expression` costs
+four grammar conflicts, and this design adds no reserved word.)
+
+### `unused-result`
+
+The first diagnostic the channel carries. A bare call statement that discards a
+non-`nothing` return from a **gBASIC-defined** function warns, because a
+function cannot change its caller — so every update API returns the new value,
+and calling one for effect is a bug that always compiles:
+
+```basic
+pool_tick(p)        ' warns: the updated pool is discarded
+p = pool_tick(p).pool
+```
+
+Builtins and natives are exempt (`append` mutates in place by design), and
+`return nothing` — the void convention — is exempt by value.
+
 > **Removed in 0.1.0-rc5:** `on error resume next`. It was a process-global
 > mode, and that is what made a function unable to catch a raise and return a
 > fallback. Migrate to `on error goto next`, which is where the checks you
