@@ -9,6 +9,20 @@ language surface may still change between releases.
 
 ## Unreleased
 
+_Nothing yet._
+
+## 0.1.0-rc5 — 2026-08-24
+
+Everything since **rc2**. The rc3 and rc4 tags were cut without CHANGELOG
+sections, so their content is folded in here rather than reconstructed from
+memory; `git log v0.1.0-rc2..v0.1.0-rc4` is the authority on which of the
+entries below shipped when.
+
+The theme of rc5 itself is **failures that were not saying so**: the error model
+was rebuilt so a function can catch one, a warning channel was added so advice
+can be suppressed or made fatal, and four failures that reported without a
+diagnostic became raises.
+
 ### Silent failures promoted to raises
 
 - **An out-of-range array read** now raises (`error.source` `"indexing"`),
