@@ -133,6 +133,15 @@ the standing ones.
   defensible `<` between two records, and the old coercion silently answered one
   anyway. Pinned by `tests/run_equality.sh`.
 
+- **An out-of-range index RAISES, on read as well as write** (0.1.0-rc5). It
+  used to print an unlocated line and hand back `nothing` with exit code 0, so
+  the failure looked exactly like a legitimate `nothing`. Test with `count(a)`
+  before indexing, or arm `on error goto next`.
+
+- **A `goto`/`gosub` to a label that does not exist RAISES** (0.1.0-rc5). It
+  used to print and then ABANDON THE REST OF THE FUNCTION, returning `nothing`
+  and exiting 0 — a typo'd label silently truncated the function.
+
 - **`find` answers `nothing` for a miss, not `-1`.** Test with `is_nothing`,
   not by comparing to an index — position `0` is a real hit.
 

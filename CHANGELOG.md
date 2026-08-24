@@ -9,6 +9,21 @@ language surface may still change between releases.
 
 ## Unreleased
 
+### Two silent failures promoted to raises
+
+- **An out-of-range array read** now raises (`error.source` `"indexing"`),
+  matching the assignment path, which always did. It used to print an
+  **unlocated** line, yield `nothing`, and leave the exit code at 0 — and since
+  `nothing` is a legitimate value, callers could not tell the failure from a
+  real one and CI saw success.
+
+- **`goto` / `gosub` to a label that does not exist** now raises
+  (`"invalid control flow"`). It used to print and then abandon the rest of the
+  function, so a typo'd label silently truncated it.
+
+Both are now located, fatal by default, and catchable with `on error goto next`
+— which a printed line never was. `tests/run_silent_traps.sh`.
+
 ### The warning channel
 
 - **`on warning print | ignore | goto next | stop`** — a second diagnostic

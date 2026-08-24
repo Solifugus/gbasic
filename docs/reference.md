@@ -3184,6 +3184,13 @@ Path questions about what is really there:
     cannot see a symlink at all; testing the **resolved** path cannot. Resolve
     first, compare second, and compare on a separator boundary so a root of
     `/srv/pub` does not match `/srv/public-secret`.
+**Indexing out of range raises**, on read as well as on write (*since
+0.1.0-rc5*; `error.source` is `"indexing"` for a read and `"assignment"` for a
+write). Until then a read printed an unlocated line and yielded `nothing` while
+the process still exited 0 — and since `nothing` is a legitimate value, the
+failure was indistinguishable from a real one. Use `count(a)` to test a bound,
+or catch it with `on error goto next`.
+
 - `file_type(p)` — `"file"`, `"folder"` or `"other"` (a device, socket, FIFO),
   or `unknown` when nothing is there. Follows symlinks. This is the only way to
   ask whether a path is a directory **without raising**: `file_size` on a

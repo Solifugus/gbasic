@@ -1,0 +1,3 @@
+high: array index out of range / indexing
+low: indexing
+in range still works: 2

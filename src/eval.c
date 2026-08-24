@@ -8055,9 +8055,18 @@ static Value invoke_function(AstStmt *stmt, Value *args, size_t argc, Value *rec
                     pc = target + 1;
                     continue;
                 }
-                fprintf(stderr, "unknown label in function %s: %s\n",
-                        stmt->as.function.name, jump);
-                free(jump);
+                {
+                    /* A raise, not a printed line: this ABANDONS THE REST OF
+                     * THE FUNCTION, so a typo'd label used to truncate it
+                     * silently and still exit 0. */
+                    char message[320];
+                    snprintf(message, sizeof(message),
+                             "unknown label in function %s: %s",
+                             stmt->as.function.name, jump);
+                    free(jump);
+                    runtime_error_raise(message, 1003, "invalid control flow");
+                    result = eval_error_result();
+                }
             }
             break;
         }
@@ -8072,11 +8081,15 @@ static Value invoke_function(AstStmt *stmt, Value *args, size_t argc, Value *rec
         if (result.did_goto) {
             size_t target = 0;
             if (!find_function_label(stmt->as.function.body, result.goto_label, &target)) {
-                fprintf(stderr, "unknown label in function %s: %s\n",
-                        stmt->as.function.name,
-                        result.goto_label);
-                free(result.goto_label);
-                result = eval_no_result();
+                {
+                    char message[320];
+                    snprintf(message, sizeof(message),
+                             "unknown label in function %s: %s",
+                             stmt->as.function.name, result.goto_label);
+                    free(result.goto_label);
+                    runtime_error_raise(message, 1003, "invalid control flow");
+                    result = eval_error_result();
+                }
                 break;
             }
             free(result.goto_label);
@@ -8087,11 +8100,15 @@ static Value invoke_function(AstStmt *stmt, Value *args, size_t argc, Value *rec
         if (result.did_gosub) {
             size_t target = 0;
             if (!find_function_label(stmt->as.function.body, result.gosub_label, &target)) {
-                fprintf(stderr, "unknown label in function %s: %s\n",
-                        stmt->as.function.name,
-                        result.gosub_label);
-                free(result.gosub_label);
-                result = eval_no_result();
+                {
+                    char message[320];
+                    snprintf(message, sizeof(message),
+                             "unknown label in function %s: %s",
+                             stmt->as.function.name, result.gosub_label);
+                    free(result.gosub_label);
+                    runtime_error_raise(message, 1003, "invalid control flow");
+                    result = eval_error_result();
+                }
                 break;
             }
             free(result.gosub_label);
@@ -26293,9 +26310,14 @@ static Value eval_expr(AstExpr *expr) {
         if (array.kind == VALUE_ARRAY && index.kind == VALUE_NUMBER) {
             int position = (int)index.as.number;
             if (position < 0 || (size_t)position >= array.as.array.store->count) {
-                fprintf(stderr, "array index out of range\n");
+                /* A RAISE, matching the assignment path, which has always
+                 * raised. Until 2026-08-23 this printed an unlocated line and
+                 * returned `nothing` with the process still exiting 0 -- and
+                 * `nothing` is a legitimate value, so the failure was
+                 * indistinguishable from a real one and CI saw success. */
                 value_free(array);
                 value_free(index);
+                runtime_error_raise("array index out of range", 1003, "indexing");
                 return value_null();
             }
             Value result = value_copy(array.as.array.store->items[position]);

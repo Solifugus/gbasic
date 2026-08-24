@@ -241,9 +241,9 @@ from a legitimate `nothing`, and CI sees success.
 
 | | what | today | belongs as |
 |---|---|---|---|
-| 1 | `goto <unknown label>` | prints, then **abandons the rest of the function**; returns `nothing`, exit 0 | a RAISE — a typo'd label silently truncating a function has no defensible reading |
+| 1 | ~~`goto <unknown label>`~~ **SHIPPED 2026-08-23** | was: prints, then abandons the rest of the function; `nothing`, exit 0 | raises `invalid control flow`; `tests/run_silent_traps.sh` |
 | 2 | `d(date) = "not-a-date"` and the `datetime` / `time` / `file` / `dir` modifiers (5 sites) | prints, assigns `nothing`, exit 0 | warning at minimum; `stdlib/ari.bas` builds range checks on the belief these RAISE, and they do not |
-| 3 | `a[99]` (read) | prints, yields `nothing`, exit 0 — while out-of-range *assignment* raises properly two lines away in the source | a RAISE, matching the write path |
+| 3 | ~~`a[99]` (read)~~ **SHIPPED 2026-08-23** | was: prints, yields `nothing`, exit 0 while assignment raised | raises `indexing`; `tests/run_silent_traps.sh` |
 | 4 | `watch` on an undefined variable | located error, continues, exit 1 — the watcher never registers and the value reads `nothing` later | fatal: a watcher that never ran is not a recoverable state |
 
 Tier 2 — behavioural silence, no output at all:
@@ -255,5 +255,8 @@ Tier 2 — behavioural silence, no output at all:
 | 7 | `r["typo"]` | `unknown`, which then compares not-equal silently and renders as `"unknown"` | arithmetic already raises; comparison and display are the leaks |
 
 The through-line: gBASIC's runtime has a fail-loudly culture, and these are the
-places it quietly does not. Tiers 1.1 and 1.3 are arguably not warnings at all —
-they are raises that were never written — and the channel does not excuse them.
+places it quietly does not. Rows 1 and 3 were never warnings at all — they were
+raises that had not been written, and they shipped as raises on 2026-08-23,
+independent of this channel. **Neither cost a single test**: 333 negative cases
+and 232 examples passed unchanged, which says nothing in the tree was relying on
+the old silence. Rows 2, 4, 5, 6 and 7 remain open.

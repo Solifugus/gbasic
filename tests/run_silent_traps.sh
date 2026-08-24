@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+# Failures that reported without a diagnostic, promoted to raises.
+#
+# Both cases here shared one signature, catalogued in
+# docs/warning_model_design.md §7: an UNLOCATED bare line on stderr, a result of
+# `nothing`, and EXIT CODE 0. `nothing` is a legitimate value, so a caller could
+# not tell the failure from a real one, and CI saw success. Neither is a warning
+# — they are raises that were never written:
+#
+#   goto <unknown label>   printed, then ABANDONED THE REST OF THE FUNCTION, so
+#                          a typo'd label silently truncated it
+#   a[99] (read)           printed and yielded `nothing` — while out-of-range
+#                          ASSIGNMENT called runtime_error_raise properly, two
+#                          lines away in the same source file
+#
+# Being raises, they are now located, fatal by default, and CATCHABLE, which a
+# printed line never was.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+make >/dev/null
+
+scratch="$(mktemp -d)"
+trap 'rm -rf "$scratch"' EXIT
+fail() { printf 'FAIL %s\n' "$1"; exit 1; }
+
+# --- fatal, located, nonzero ----------------------------------------------
+fatal() { # file expected-fragment
+    if ./gbasic "tests/silent_traps/$1" >"$scratch/out" 2>"$scratch/err"; then
+        fail "$1 (expected a NONZERO exit; a silent trap is one that exits 0)"
+    fi
+    grep -qF "$2" "$scratch/err" \
+        || fail "$1 (missing: $2; got: $(cat "$scratch/err"))"
+    # Located: the old bare line carried no file:line, which is what made these
+    # untraceable in a real program.
+    grep -qE "^runtime error at .+:[0-9]+:[0-9]+:" "$scratch/err" \
+        || fail "$1 (the diagnostic is not LOCATED: $(cat "$scratch/err"))"
+    grep -q "unreachable" "$scratch/out" \
+        && fail "$1 (execution continued past the failure)"
+    printf 'PASS %s\n' "${1%.bas}"
+}
+
+fatal label_goto.bas "unknown label in function f: nowhere"
+fatal label_gosub.bas "unknown label in function f: nowhere"
+fatal index_read.bas "array index out of range"
+
+# --- catchable, which the printed line never was --------------------------
+for name in label_caught index_read_caught; do
+    ./gbasic "tests/silent_traps/$name.bas" >"$scratch/got" 2>"$scratch/err" \
+        || fail "$name (exited nonzero: $(cat "$scratch/err"))"
+    diff -u "tests/silent_traps/$name.out" "$scratch/got" \
+        || fail "$name (output diverged)"
+    printf 'PASS %s\n' "$name"
+done
+
+# --- the write path was always right; it must stay that way ---------------
+printf 'program main( args )\n    a = [1]\n    a[9] = 2\nend program\n' >"$scratch/w.bas"
+if ./gbasic "$scratch/w.bas" >/dev/null 2>"$scratch/err"; then
+    fail "write path (out-of-range assignment must still raise)"
+fi
+grep -qF "array index out of range" "$scratch/err" \
+    || fail "write path (message changed: $(cat "$scratch/err"))"
+printf 'PASS write_path_unchanged\n'
+
+printf 'run_silent_traps: 6 cases passed\n'
