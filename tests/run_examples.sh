@@ -110,6 +110,7 @@ examples=(
     dates_select_test.bas
     schedule_test.bas
     keyword_stability_test.bas
+    keyword_field_test.bas
     duration_test.gb
     now_test.bas
     file_test.gb

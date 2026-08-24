@@ -709,7 +709,7 @@ static void report_syntax_error(gb_parse_ctx *ctx, int line, int column,
 %type <expr> expression or_expression and_expression comparison_expression
 %type <expr> additive_expression multiplicative_expression unary_expression postfix_expression primary lvalue record_literal
 %type <expr_list> argument_list argument_list_opt array_argument_list
-%type <text> field_name
+%type <text> field_name dot_field_name
 %type <record_field_list> record_field_list
 %type <field_policy> field_policy
 %type <consider_branch_list> consider_branch_list
@@ -811,7 +811,7 @@ assignment
 lvalue
     : variable_name %prec NO_DOT { $$ = expr_at(ast_ident($1), @1.first_line, @1.first_column); }
     | lvalue LBRACKET expression RBRACKET %prec NO_DOT { $$ = expr_at(ast_index($1, $3), @2.first_line, @2.first_column); }
-    | lvalue DOT IDENT %prec NO_DOT { $$ = expr_at(ast_field($1, $3), @2.first_line, @2.first_column); }
+    | lvalue DOT dot_field_name %prec NO_DOT { $$ = expr_at(ast_field($1, $3), @2.first_line, @2.first_column); }
     ;
 
 variable_name
@@ -1342,7 +1342,7 @@ unary_expression
 postfix_expression
     : primary { $$ = $1; }
     | postfix_expression LBRACKET expression RBRACKET { $$ = expr_at(ast_index($1, $3), @2.first_line, @2.first_column); }
-    | postfix_expression DOT IDENT { $$ = expr_at(ast_field($1, $3), @2.first_line, @2.first_column); }
+    | postfix_expression DOT dot_field_name { $$ = expr_at(ast_field($1, $3), @2.first_line, @2.first_column); }
     | postfix_expression DOT IDENT LPAREN argument_list_opt RPAREN {
         /* Method call on an expression receiver where the method name is a bare
          * IDENT (the receiver ends in ) or ], e.g. make().show(), a[0].show()). */
@@ -1429,7 +1429,9 @@ ident_suffix
         $$.name = NULL;
         $$.args = $2;
       }
-    | DOT IDENT ident_dot_suffix {
+    | DOT dot_field_name ident_dot_suffix {
+        /* dot_field_name, not IDENT: a keyword is a legal FIELD name after a
+         * dot, because nothing but a name can appear there. */
         $$ = $3;
         $$.name = $2;
       }
@@ -1502,12 +1504,23 @@ parameter_list
  * cannot say `from:` or `as:`, and ends up named by the grammar rather than by
  * meaning. See the 2026-08-12 DOGFOOD entry (c). */
 field_name
-    : IDENT { $$ = $1; }
+    : dot_field_name { $$ = $1; }
     /* A QUOTED key admits names an identifier cannot spell -- "content-type",
      * "x y" -- closing a real asymmetry: decode() has always produced records
      * with such keys from JSON, but the literal syntax could not write them.
-     * Reading them back is the existing dynamic form, r["content-type"]. */
+     * Reading them back is the existing dynamic form, r["content-type"].
+     * Deliberately NOT part of dot_field_name: `r."content-type"` would be new
+     * syntax nobody asked for, and the bracket form already reads it. */
     | STRING { $$ = $1; }
+    ;
+
+/* The keyword list itself, usable wherever a NAME is the only thing legal:
+ * a record-literal key, and after a DOT. Both are closed contexts -- nothing
+ * but a name can appear -- so admitting a keyword here costs no ambiguity and
+ * keeps the KEYWORD namespace out of the DATA namespace. Before this was wired
+ * into dot access, `{ end: 1 }` built a field that `r.end` could never read. */
+dot_field_name
+    : IDENT { $$ = $1; }
     | AS             { $$ = kw_name("as"); }
     | NEXT           { $$ = kw_name("next"); }
     | STOP           { $$ = kw_name("stop"); }
@@ -1551,6 +1564,9 @@ field_name
     | WATCH          { $$ = kw_name("watch"); }
     | WATCHERS       { $$ = kw_name("watchers"); }
     | CONSIDER       { $$ = kw_name("consider"); }
+    | STEP           { $$ = kw_name("step"); }
+    | UNWATCH        { $$ = kw_name("unwatch"); }
+    | UNKNOWN_VALUE  { $$ = kw_name("unknown"); }
     ;
 
 record_field_list

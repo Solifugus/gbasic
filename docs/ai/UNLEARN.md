@@ -335,13 +335,12 @@ day — so assume you will hit them too.
   watcher body runs ONCE at registration — a `print` inside one prints
   immediately, before any change.
 
-- **A keyword can be a record-literal KEY but cannot follow a DOT.**
-  `{ on: 1 }`, `{ to: 2 }`, `{ end: 3 }`, `{ as: 4 }` all construct fine — and
-  `r.on`, `r.to`, `r.end`, `r.as` are all PARSE errors, because dot access
-  takes a plain identifier. This has forced four renames in shipped designs
-  (`kind:` in consolidate, `open`/`close` for calendar hours, `when:` and
-  `through:` in date specs). Probe `r.yourname` before building an API on a
-  field name; dynamic access `r["on"]` works but reads worse.
+- **A keyword may now be a field name, both ways** (0.1.0-rc6). `{ on: 1 }`
+  constructs and `r.on` reads it. Until rc6 the literal worked and the dot did
+  not, which forced four renames in shipped designs (`kind:` in consolidate,
+  `open`/`close` for calendar hours, `when:` and `through:` in date specs).
+  Those renames are still in the code; nothing needs undoing, but new APIs no
+  longer have to dodge the keyword list.
 
 ## Error handling — rebuilt in 0.1.0-rc5, so unlearn the old advice too
 
