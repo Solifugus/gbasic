@@ -54,8 +54,14 @@ and the stale-looking ones carry a Status line saying what overtook them.
    (2026-08-03). medium, xlsx track. Shape: `xlsx.try_open` returning
    `{ok, workbook, message}`, the `try_decode` pattern. Same entry:
    `list_files` does not recurse, so corpus walks live in shell.
-6. **Parse errors of the `dim x` class print to stderr and exit 0**
-   (2026-07-18 D3). low, but it lies to CI. Verified still live against rc3.
+6. ~~**Parse errors of the `dim x` class print to stderr and exit 0**~~
+   **RESOLVED 2026-08-24.** Larger than filed: `yylex` hands bison a synthetic
+   end-of-file for a token it cannot map, and wherever the grammar allows a
+   program to end, bison ACCEPTS — so a top-level file was silently truncated
+   at the bad token, the statements before it RAN, and the exit was 0. Not
+   `dim`-specific (any unlexable byte did it) and not merely cosmetic (under
+   `--json-diagnostics` the bare line was non-JSON in a JSON stream).
+   `tests/run_parse_exit.sh`.
 7. **Doc-gaps, each cheap:** typed-value construction (`d(date)=`, `m(USD)=`)
    is shown nowhere in reference.md (2026-08-01); the library-dependency-
    inside-the-block rule is documented only by example (2026-08-11);
@@ -187,6 +193,19 @@ of these were resolved long after their text was written.
   when you don't need to keep the list.
 
 ## 2026-07-18 — CC — while: D3 UNLEARN verification
+- **Status 2026-08-24:** RESOLVED, and the severity here was too low because the
+  filed symptom was the small end of it. The cause is that `yylex` signals an
+  unmappable token by returning 0 — end of file — which bison cannot tell from a
+  real one. Inside a block that is a syntax error, which is why the entry only
+  ever saw the exit code; at TOP LEVEL the grammar accepts, so the file was
+  truncated at the bad token, everything before it ran, everything after it
+  disappeared and the exit was 0. Fixed on both halves: the token map reports
+  through the diagnostics sink (located, and `dim` now says to assign instead),
+  and `parse_source_reentrant` fails the parse when a diagnostic was reported
+  even if bison accepted. `tests/run_parse_exit.sh`. **Lesson:** a bug filed
+  from its exit code is filed from its least interesting symptom — the exit code
+  was inconsistent, but what it was inconsistent ABOUT was a silently truncated
+  program.
 - **Type:** bug
 - **Severity:** low
 - **What:** `dim x` (dim is unsupported) prints `unexpected token DIM at 1:1` to

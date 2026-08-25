@@ -9,6 +9,25 @@ language surface may still change between releases.
 
 ## Unreleased
 
+### Fixed: a reported parse error no longer exits 0
+
+A token the grammar has no place for — `dim x`, or any byte the lexer cannot
+read — was signalled to the parser as **end of file**, and the parser cannot
+tell a synthetic EOF from a real one. Inside a `program` block that produced a
+syntax error, so the defect was invisible there. At **top level** it did not:
+the grammar allows a program to end, so the file was accepted as whatever
+preceded the bad token. The statements before it ran, everything after it
+silently disappeared, and the process **exited 0**.
+
+Both halves are fixed. Every token diagnostic now goes through the diagnostics
+sink — located, and carried by `--json-diagnostics`, which previously received
+a bare non-JSON line in the middle of a JSON stream — and a parse that reported
+a diagnostic fails even when the parser accepted.
+
+`dim` keeps its reserved status for exactly one purpose: it is now a located
+parse error that says to assign instead, which is what a reader arriving from
+QBasic needs to be told. `tests/run_parse_exit.sh`.
+
 ### `mod`, `concat` and `merge`
 
 Three of the oldest DOGFOOD ledger items, closed together.

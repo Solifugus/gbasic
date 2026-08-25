@@ -105,8 +105,8 @@ the standing ones.
 ## Variables, records, arrays
 
 - **No `dim` / `redim`.** Variables are created by assignment; reading an
-  unassigned name raises `undefined variable`. (`dim x` is not a statement — it
-  prints `unexpected token DIM` to stderr.)
+  unassigned name raises `undefined variable`. `dim` is reserved for one purpose:
+  `dim x` is a located parse error that says to assign instead.
 - **Record-literal keys must be identifiers.** `{ "a": 1 }` is a parse error. Use
   `{ a: 1 }`, or bracket-assign for non-identifier keys:
 
@@ -138,6 +138,13 @@ the standing ones.
   `records support only = and !=`, and likewise for arrays. There is no
   defensible `<` between two records, and the old coercion silently answered one
   anyway. Pinned by `tests/run_equality.sh`.
+
+- **A reported parse error FAILS the parse** (0.1.0-rc7). At top level — a file
+  with no `program` block — a token the grammar has no place for used to
+  truncate the file silently: the statements before it ran, everything after it
+  vanished, and the process exited 0. `dim x` and any byte the lexer cannot read
+  both did it. If you have a script that seemed to stop halfway with no
+  complaint, this was why.
 
 - **A raise inside a watcher body STOPS the program** (0.1.0-rc5). It used to
   be dropped — the watcher never fired, execution continued, and the error only

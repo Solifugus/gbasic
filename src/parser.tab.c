@@ -5635,6 +5635,15 @@ int parse_source_reentrant(const char *source, const char *path,
     if (result != 0) {
         return result;
     }
+    /* A diagnostic reported from yylex must fail the parse even when bison
+     * ACCEPTED. yylex signals such a token by returning 0 -- end of file -- and
+     * bison cannot tell that from a real one, so wherever the grammar allows a
+     * program to end (top level, notably) it reduces the truncated prefix and
+     * reports success. The file then ran up to the bad token and exited 0.
+     * lexer_error_reported is the only evidence that the EOF was synthetic. */
+    if (ctx.lexer_error_reported) {
+        return 1;
+    }
 
     *out_program = ctx.parsed_program;
     return 0;
@@ -5817,9 +5826,27 @@ static int yylex(YYSTYPE *lvalp, YYLTYPE *llocp, gb_parse_ctx *ctx) {
         }
         ctx->lexer_error_reported = 1;
         return 0;
+    case TOKEN_DIM:
+        /* `dim` is lexed as a keyword for ONE reason: to be refused here with
+         * advice. There is no dim statement -- assignment creates a variable --
+         * and someone arriving from QBasic types it in their first ten minutes.
+         * Reserving the word to say so is worth more than freeing it, because
+         * as an ordinary identifier `dim x` would still fail, just less
+         * usefully. */
+        report_diag_lexeme(ctx, GB_DIAG_PARSE_ERROR, token.line, token.column,
+                           token.start, token.length,
+                           "`dim` is not a gBASIC statement; assign to create a variable (x = 0)");
+        ctx->lexer_error_reported = 1;
+        return 0;
     default:
-        fprintf(stderr, "unexpected token %s at %d:%d\n",
-                token_type_name(token.type), token.line, token.column);
+        /* Backstop for a token added to the lexer and not to the grammar. It
+         * used to fprintf straight to stderr: unlocated, absent from the
+         * diagnostics sink, and so under --json-diagnostics a bare line in the
+         * middle of a JSON stream. Every diagnostic goes through the sink. */
+        report_diag_lexeme(ctx, GB_DIAG_PARSE_ERROR, token.line, token.column,
+                           token.start, token.length,
+                           "token has no place in the grammar");
+        ctx->lexer_error_reported = 1;
         return 0;
     }
 }
