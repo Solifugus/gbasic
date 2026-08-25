@@ -9,6 +9,13 @@ language surface may still change between releases.
 
 ## Unreleased
 
+_Nothing yet._
+
+## 0.1.0-rc6 — 2026-08-24
+
+Two syntax changes, both aimed at the same thing: the language was spending
+ambiguity and vocabulary it did not need to spend.
+
 ### Breaking: modifier clauses are written in braces
 
 - **`x{USD} = 19.95`**, not `x(USD)= 19.95`. Every modifier position moves:
