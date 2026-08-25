@@ -22,12 +22,21 @@ program demo(args)
     print("csrf_ok " + string(csrf_check(t, secret, "sess-abc")))
     print("csrf_badsession " + string(csrf_check(t, secret, "sess-xyz")))
 
-    ' --- flat JSON round trip ---
+    ' --- JSON: the core builtin encodes, crypto's strict flat parser reads ---
+    ' `json_encode` here is the BUILTIN. crypto shipped its own flat encoder
+    ' until 0.1.0-rc8, and from the moment json_encode became a builtin this
+    ' very line reached the builtin instead -- the library's copy was
+    ' unreachable except when spelled `crypto.json_encode`, and the runtime
+    ' warned on every load that it was being shadowed. It is gone.
     j = json_encode({ sub: "1234567890", name: "John Doe", admin: true, age: 30 })
     print("json " + j)
     d = json_decode(j)
     print("json_rt " + d.sub + " | " + d.name + " | " + string(d.admin) + " | " + string(d.age))
     print("json_bad " + string(json_decode("{not json")))
+    ' The decoder is STRICT on purpose: it reads attacker-supplied token
+    ' payloads, so the gBASIC dialect tokens `try_decode` accepts are refused.
+    print("json_dialect " + string(json_decode("{\"a\":nothing}")))
+    print("json_inf " + string(json_decode("{\"a\":inf}")))
 
     ' --- JWT HS256 (matches PyJWT byte-for-byte) ---
     tok = jwt_encode({ sub: "1234567890", name: "John Doe", admin: true }, secret)
@@ -36,6 +45,16 @@ program demo(args)
     print("jwt_rt " + pv.sub + " | " + pv.name + " | " + string(pv.admin))
     print("jwt_badsecret " + string(jwt_verify(tok, "nope")))
     print("jwt_malformed " + string(jwt_verify("a.b", secret)))
+    ' The encoder is the core builtin and handles any depth; the DECODER here
+    ' is flat by design. So jwt_encode refuses a nested claim rather than
+    ' minting a token jwt_verify would answer `unknown` for -- a signer that can
+    ' produce what its own verifier cannot read is the round-trip hole rc7
+    ' closed one layer down, and it must not reappear here.
+    print("jwt_nested " + string(jwt_encode({ sub: "u1", scope: { read: true } }, secret)))
+    ' And a claim JSON cannot represent is REFUSED rather than quietly signed:
+    ' the old flat encoder wrote `unknown` out as null, conflating "not known"
+    ' with "no value" inside a signed token.
+    print("jwt_unrepresentable " + string(jwt_encode({ sub: "u1", na: unknown }, secret)))
 
     ' exp enforcement (round epoch values survive %g formatting exactly):
     ' 4000000000 = year 2096 (valid), 1000000000 = year 2001 (expired)

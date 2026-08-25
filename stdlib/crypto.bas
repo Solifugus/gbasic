@@ -9,9 +9,12 @@
 ' conveniences (hex digests, signed cookies, CSRF tokens, JWT/HS256, and
 ' nonce-managing symmetric encryption) that web apps reach for.
 '
-' A tiny JSON encoder/decoder for FLAT objects (string / number / bool / null
-' values) lives here so JWT needs no new C dependency. It is not a general JSON
-' library: nested objects and arrays are out of scope.
+' A tiny JSON DECODER for FLAT objects (string / number / bool / null values)
+' lives here so JWT needs no new C dependency. It is not a general JSON library:
+' nested objects and arrays are out of scope, and `jwt_encode` refuses a nested
+' payload rather than minting a token this decoder cannot read back. The matching
+' encoder was retired in 0.1.0-rc8 in favour of the core `json_encode` builtin --
+' see the note above the decoder for why the decoder did not go with it.
 '
 ' Out-of-domain inputs return `unknown` (bad signature, malformed token,
 ' tampered ciphertext), never a bogus value.
@@ -107,78 +110,22 @@ library crypto
         return aes_gcm_decrypt(key, nonce, body, "")
     end function
 
-    ' ---- minimal flat-JSON (string / number / bool / null) -----------------
-
-    function _json_escape(s)
-        out = ""
-        i = 0
-        while i < len(s)
-            ch = mid(s, i, 1)
-            if ch = "\"" then
-                out = out + "\\\""
-            else
-                if ch = "\\" then
-                    out = out + "\\\\"
-                else
-                    if ch = "\n" then
-                        out = out + "\\n"
-                    else
-                        if ch = "\t" then
-                            out = out + "\\t"
-                        else
-                            if ch = "\u{000d}" then
-                                out = out + "\\r"
-                            else
-                                out = out + ch
-                            end if
-                        end if
-                    end if
-                end if
-            end if
-            i = i + 1
-        end while
-        return out
-    end function
-
-    function json_encode(rec)
-        if not is_record(rec) then
-            return unknown
-        end if
-        ks = keys(rec)
-        out = "{"
-        i = 0
-        while i < len(ks)
-            k = ks[i]
-            v = rec[k]
-            if i > 0 then
-                out = out + ","
-            end if
-            out = out + "\"" + _json_escape(k) + "\":"
-            if is_string(v) then
-                out = out + "\"" + _json_escape(v) + "\""
-            else
-                if is_number(v) then
-                    out = out + string(v)
-                else
-                    if is_boolean(v) then
-                        if v then
-                            out = out + "true"
-                        else
-                            out = out + "false"
-                        end if
-                    else
-                        if is_unknown(v) or is_nothing(v) then
-                            out = out + "null"
-                        else
-                            return unknown
-                        end if
-                    end if
-                end if
-            end if
-            i = i + 1
-        end while
-        return out + "}"
-    end function
+    ' ---- flat-JSON DECODING, and why only decoding ------------------------
+    '
+    ' The encoder that lived here is gone (0.1.0-rc8): the core `json_encode`
+    ' builtin does the same job at any depth and to RFC 8259, and since it became
+    ' a builtin this library's version was not even reachable by the natural call
+    ' -- `json_encode(x)` resolved to the builtin, and the runtime warned on every
+    ' `load crypto` that it was doing so. Only `crypto.json_encode(x)`, spelled
+    ' qualified, reached the flat one, which then refused anything nested.
+    '
+    ' The DECODER stays, and is not the same question. It reads a JWT payload,
+    ' which is attacker-supplied: it accepts RFC 8259 and nothing else. The core's
+    ' non-raising decoder is `try_decode`, and that one deliberately speaks the
+    ' gBASIC DIALECT -- bare `nothing`, `unknown`, `inf`, `nan` -- so swapping it
+    ' in would let a crafted token carry values JSON has no syntax for. There is
+    ' no strict non-raising full-depth decoder in the core to fold into; until
+    ' there is, this one earns its place by being strict.
 
     function _json_is_ws(ch)
         return ch = " " or ch = "\n" or ch = "\t" or ch = "\u{000d}"
@@ -231,24 +178,101 @@ library crypto
         return { ok: false, value: "", pos: i }
     end function
 
-    function _json_is_num_char(ch)
+    function _json_is_digit(ch)
         c = code(ch)
-        if c >= code("0") and c <= code("9") then
-            return true
-        end if
-        return ch = "-" or ch = "+" or ch = "." or ch = "e" or ch = "E"
+        return c >= code("0") and c <= code("9")
     end function
 
-    function _json_parse_number(s, i)
-        start = i
-        while i < len(s)
-            if _json_is_num_char(mid(s, i, 1)) then
-                i = i + 1
+    function _json_digit_run(s, i)
+        n = 0
+        while i + n < len(s)
+            if _json_is_digit(mid(s, i + n, 1)) then
+                n = n + 1
             else
-                return { ok: true, value: number(mid(s, start, i - start)), pos: i }
+                return n
             end if
         end while
-        return { ok: true, value: number(mid(s, start, i - start)), pos: i }
+        return n
+    end function
+
+    ' RFC 8259 number, SCANNED AGAINST THE GRAMMAR:
+    '     -? ( 0 | [1-9][0-9]* ) ( . [0-9]+ )? ( [eE] [+-]? [0-9]+ )?
+    '
+    ' Not "collect the number-ish characters and convert them". `number()`
+    ' RAISES on a string it cannot read, gBASIC cannot catch a raise, and this
+    ' parser reads ATTACKER-SUPPLIED JWT payloads -- so a span it cannot convert
+    ' has to be a refusal and can never be a raise. It was one: _json_parse_value
+    ' falls through to a number for every character that is not `"`, `t`, `f` or
+    ' `n`, so `{"a":inf}` reached number("") and killed the program instead of
+    ' being rejected as the malformed token it is. The door was as wide as the
+    ' alphabet.
+    '
+    ' Scanning the real grammar also tightens what is accepted: the old
+    ' character-class test admitted a leading `+`, a bare `-`, `1.2.3` and `1e`,
+    ' none of which are JSON, and every one of which raised.
+    function _json_parse_number(s, i)
+        bad = { ok: false, value: unknown, pos: i }
+        j = i
+        if j < len(s) then
+            if mid(s, j, 1) = "-" then
+                j = j + 1
+            end if
+        end if
+        if j >= len(s) then
+            return bad
+        end if
+        c = mid(s, j, 1)
+        if c = "0" then
+            j = j + 1
+            ' A leading zero may not be followed by a digit (`01` is not JSON).
+            if j < len(s) then
+                if _json_is_digit(mid(s, j, 1)) then
+                    return bad
+                end if
+            end if
+        else
+            if not _json_is_digit(c) then
+                return bad
+            end if
+            j = j + _json_digit_run(s, j)
+        end if
+        if j < len(s) then
+            if mid(s, j, 1) = "." then
+                j = j + 1
+                d = _json_digit_run(s, j)
+                if d = 0 then
+                    return bad
+                end if
+                j = j + d
+            end if
+        end if
+        if j < len(s) then
+            e = mid(s, j, 1)
+            if e = "e" or e = "E" then
+                j = j + 1
+                if j < len(s) then
+                    sgn = mid(s, j, 1)
+                    if sgn = "+" or sgn = "-" then
+                        j = j + 1
+                    end if
+                end if
+                d = _json_digit_run(s, j)
+                if d = 0 then
+                    return bad
+                end if
+                j = j + d
+            end if
+        end if
+        v = number(mid(s, i, j - i))
+        ' A magnitude no double can hold (`1e400`) converts to infinity without
+        ' raising, which would smuggle a non-finite value into a token payload
+        ' through syntax RFC 8259 permits. `v - v` is 0 for every finite value
+        ' and NaN for infinity and NaN alike, so one test covers both -- and
+        ' gBASIC has no isfinite to ask instead.
+        if (v - v) != 0 then
+            return bad
+        end if
+        return { ok: true, value: v, pos: j }
     end function
 
     function _json_parse_value(s, i)
@@ -346,12 +370,41 @@ library crypto
     ' signature / malformed token / expired token. The header is fixed:
     ' {"alg":"HS256","typ":"JWT"}.
 
+    ' A payload every field of which this library's DECODER can read back.
+    '
+    ' The encoder is now the core builtin, which handles any depth; the decoder
+    ' is still flat by design. Widening one side would let jwt_encode mint a
+    ' token jwt_verify answers `unknown` for -- the same round-trip hole rc7
+    ' closed between `encode` and `decode`, reintroduced one layer up. The pair
+    ' is kept honest here, at the encoder, because refusing to sign is the safe
+    ' direction.
+    function _jwt_flat(payload)
+        for each k in keys(payload)
+            kind = reflect.kind(payload[k])
+            if kind = "record" or kind = "array" then
+                return false
+            end if
+        end for
+        return true
+    end function
+
     function jwt_encode(payload, secret)
         header = "{\"alg\":\"HS256\",\"typ\":\"JWT\"}"
-        body = json_encode(payload)
-        if is_unknown(body) then
+        ' PREFLIGHT, not catch: the core `json_encode` RAISES on a value JSON
+        ' cannot represent, and this function's contract is to answer `unknown`
+        ' rather than to end the program. `json_encodable` is the side-effect-free
+        ' twin that exists for exactly this position (the same pattern
+        ' stdlib/llm.bas uses on the wire path).
+        if not is_record(payload) then
             return unknown
         end if
+        if not json_encodable(payload) then
+            return unknown
+        end if
+        if not _jwt_flat(payload) then
+            return unknown
+        end if
+        body = json_encode(payload)
         signing_input = base64url_encode(header) + "." + base64url_encode(body)
         sig = base64url_encode(hmac_sha256(secret, signing_input))
         return signing_input + "." + sig

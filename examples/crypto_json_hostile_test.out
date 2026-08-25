@@ -1,0 +1,12 @@
+hostile inputs: 32, escaped: 0
+1e400:  true
+-1e400: true
+zero:     0
+negfrac:  -1.5
+exp:      2000
+signedexp:-0.005
+big:      1234567890
+string:   t
+true:     true
+false:    false
+null:     true
