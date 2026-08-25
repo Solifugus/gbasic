@@ -2341,6 +2341,20 @@ function must not be lethal. Such children are reaped opportunistically on later
 `process.*` calls, and **at program exit any still running are killed and reaped**,
 so nothing this interpreter started outlives it.
 
+**That holds under a kill, too.** The teardown pass above cannot run when the
+interpreter is `SIGKILL`ed, so it is not what the guarantee rests on: every child
+is launched with a **parent-death signal** armed in the kernel, and receives
+`SIGTERM` the moment the interpreter dies, however it dies. This is the same
+mechanism spawned actors have always used, and it cascades — a child that is
+itself a gBASIC program passes it to its own children.
+
+There is no opt-out, and `process.start` is therefore **not** a way to launch a
+daemon that outlives the program: a child that should survive belongs to a
+service manager, not to an interpreter that might be killed. (Two caveats, both
+kernel-level: a child that ignores `SIGTERM` still survives — the same bargain
+`process.stop` strikes before escalating — and a set-user-ID executable loses the
+armed signal at `exec`.)
+
 Handles are local capabilities, not data: `serialize`, `send`, and `json_encode`
 reject them, and `reflect.serializable` reports `false`. Each interpreter process —
 including each spawned actor — owns its own children; a handle is meaningful only in

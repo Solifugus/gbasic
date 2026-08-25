@@ -51,10 +51,14 @@ and the stale-looking ones carry a Status line saying what overtook them.
    this a bug and not a policy. `examples/encode_roundtrip_test.bas`.
 3. ~~**No array concat**~~ **RESOLVED 2026-08-24.** `concat(a, b, …)`,
    variadic. Array `+` remains a separate decision.
-4. **`process.start` children outlive a SIGKILLed parent** (2026-07-29).
-   medium. Shape: needs a DECISION on PDEATHSIG-by-default vs an opt-in,
-   because arming it changes deliberately-detached children. Evidence in the
-   entry; four stray interpreters found days later.
+4. ~~**`process.start` children outlive a SIGKILLed parent**~~ **RESOLVED
+   2026-08-24.** The decision this was waiting on had already been made and
+   written down: `docs/reference.md` says in bold that nothing the interpreter
+   starts outlives it. So there is no deliberately-detached child to protect —
+   an opt-in would have been a documented way to break a documented promise —
+   and the only question was that the promise was enforced in a userspace
+   teardown pass a SIGKILL skips. All three fork sites now arm PDEATHSIG between
+   fork and exec. `tests/run_process_lifetime.sh`.
 5. **`xlsx.open` raises; batch tools cannot survive one bad workbook**
    (2026-08-03). medium, xlsx track. Shape: `xlsx.try_open` returning
    `{ok, workbook, message}`, the `try_decode` pattern. Same entry:
@@ -702,6 +706,20 @@ of these were resolved long after their text was written.
   list; this is the concrete cost of not having one.
 
 ## 2026-07-29 — CC — while: cleaning up after STU-4/STU-4B test runs
+- **Status 2026-08-24:** RESOLVED. The decision this entry deferred ("arming it
+  changes the semantics of any deliberately detached child, so it wants its own
+  decision") turned out to be already made, in `docs/reference.md`: *"at program
+  exit any still running are killed and reaped, so nothing this interpreter
+  started outlives it"* — in bold, written before this entry. There is no
+  detached-child use case to weigh, because the language documents that it does
+  not have one; an opt-out would be a documented way to break a documented
+  promise. What remained was that the promise rested on a userspace teardown pass
+  that SIGKILL skips, and a guarantee about surviving a kill can only be made by
+  the kernel. All three fork sites now arm PDEATHSIG between fork and exec
+  (`proc_arm_parent_death`), which also closes the fork→exec→arm race exactly —
+  against a recorded pid rather than the actor path's `getppid() == 1`, which was
+  additionally wrong when gbasic is pid 1 in a container. **Lesson:** before
+  deferring a decision, check whether the docs already made it.
 - **Type:** bug
 - **Severity:** medium
 - **What:** A child started with `process.start` outlives its parent

@@ -2512,6 +2512,39 @@ static void proc_orphans_clear(void) {
     }
 }
 
+/* Called in a forked child, between fork and exec: ask the kernel to SIGTERM
+ * this process when its parent dies.
+ *
+ * proc_orphans_clear above is the userspace half of "nothing this interpreter
+ * started outlives it" (docs/reference.md states it in bold), and a userspace
+ * pass cannot keep that promise: it does not run when the interpreter is
+ * SIGKILLed, which is exactly the case the DOGFOOD ledger recorded — four
+ * gBASIC children found sleeping two days later, three of them with their
+ * working directory already deleted. A guarantee about surviving a kill can
+ * only be made by the kernel.
+ *
+ * There is no opt-out. `process.start` hands back a HANDLE, and the reference
+ * already says every child is the interpreter's to end; an opt-out would be a
+ * documented way to break a documented promise. A child that ignores SIGTERM
+ * still survives, which is the same bargain `process.stop` strikes before its
+ * force_after escalation.
+ *
+ * `parent_pid` closes the window between fork and this call: if the parent died
+ * in it, the signal has already been sent to nobody and would never come again.
+ * Compared against the recorded pid rather than against 1, because `getppid()
+ * == 1` also holds when the interpreter itself is pid 1 — a container entry
+ * point — where it would kill every child at birth.
+ *
+ * PDEATHSIG survives execve (except across a setuid binary, where the kernel
+ * clears it; such a child can outlive us and there is nothing portable to do
+ * about it). */
+static void proc_arm_parent_death(pid_t parent_pid) {
+    prctl(PR_SET_PDEATHSIG, SIGTERM);
+    if (getppid() != parent_pid) {
+        _exit(0);
+    }
+}
+
 /* Refcount release for a process handle. The last reference is the ABANDONMENT
  * point, and it must leave neither an open descriptor nor a zombie: the pipes are
  * closed here unconditionally, and the child is either reaped on the spot (if it
@@ -11223,6 +11256,7 @@ static Value eval_spawn(AstExpr *expr) {
         return value_null();
     }
 
+    pid_t spawner_pid = getpid();
     pid_t pid = fork();
     if (pid < 0) {
         for (size_t i = 0; i < xfer.count; i++) {
@@ -11240,6 +11274,11 @@ static Value eval_spawn(AstExpr *expr) {
 
     if (pid == 0) {
         /* ---- child, between fork and exec ---- */
+        /* Arm the death signal HERE rather than only in eval_run_actor after the
+         * exec: the window this closes is the one that function's getppid()
+         * check was approximating, and the check against a recorded pid is
+         * exact where `== 1` is not. */
+        proc_arm_parent_death(spawner_pid);
         /* Join the dedicated actor process group (0 => become its leader). */
         setpgid(0, actor_group_pgid);
 
@@ -11342,14 +11381,16 @@ int eval_run_actor(AstStmtList program, const char *entry,
      * reason -- normal exit, crash, or kill -- the kernel sends this process
      * SIGTERM (docs/multiprocessing_design.md §7). This cascades down a multi-level
      * actor tree and, unlike the parent's own cleanup pass, survives the parent
-     * being killed by an uncatchable signal. The window between fork and this call
-     * is covered by re-checking the parent below. */
+     * being killed by an uncatchable signal.
+     *
+     * Redundant since the spawner arms it between fork and exec (PDEATHSIG
+     * survives execve), and kept because an actor's lifetime should not depend
+     * on reading the spawn path to know it is protected. What is NOT kept is the
+     * `getppid() == 1` check that used to follow: the fork/arm window it
+     * approximated is now closed exactly, against a recorded pid, and `== 1`
+     * also holds when the interpreter itself is pid 1 -- a container entry point
+     * -- where it made every actor exit at startup. */
     prctl(PR_SET_PDEATHSIG, SIGTERM);
-    if (getppid() == 1) {
-        /* The spawning parent already exited before PDEATHSIG was armed; the
-         * signal would never come, so leave now rather than orphan-loop. */
-        return 0;
-    }
 
     /* Register top-level functions, modifiers, and imports so the entry and its
      * helpers resolve (the normal top-level walk does not run for an actor). */
@@ -19661,6 +19702,7 @@ static Value process_do_run(AstExpr *expr) {
      * child that ran and exited 127. */
     fcntl(exec_pipe[1], F_SETFD, fcntl(exec_pipe[1], F_GETFD) | FD_CLOEXEC);
 
+    pid_t launcher_pid = getpid();
     pid_t pid = fork();
     if (pid < 0) {
         close(out_pipe[0]); close(out_pipe[1]);
@@ -19673,6 +19715,7 @@ static Value process_do_run(AstExpr *expr) {
 
     if (pid == 0) {
         /* ---- child ---- */
+        proc_arm_parent_death(launcher_pid);
         setpgid(0, 0);   /* own process group, so a timeout can kill the whole tree */
         if (dup2(out_pipe[1], STDOUT_FILENO) < 0 || dup2(err_pipe[1], STDERR_FILENO) < 0) {
             int e = errno;
@@ -19888,6 +19931,7 @@ static pid_t process_launch(char **argv, const char *cwd,
     }
     fcntl(exec_pipe[1], F_SETFD, fcntl(exec_pipe[1], F_GETFD) | FD_CLOEXEC);
 
+    pid_t launcher_pid = getpid();
     pid_t pid = fork();
     if (pid < 0) {
         close(out_pipe[0]); close(out_pipe[1]);
@@ -19896,6 +19940,7 @@ static pid_t process_launch(char **argv, const char *cwd,
         return -2;
     }
     if (pid == 0) {
+        proc_arm_parent_death(launcher_pid);
         setpgid(0, 0);
         if (dup2(out_pipe[1], STDOUT_FILENO) < 0 || dup2(err_pipe[1], STDERR_FILENO) < 0) {
             int e = errno;

@@ -139,6 +139,12 @@ the standing ones.
   defensible `<` between two records, and the old coercion silently answered one
   anyway. Pinned by `tests/run_equality.sh`.
 
+- **A child dies with the interpreter, even under `kill -9`** (0.1.0-rc7).
+  `process.start` and `process.run` children arm a kernel parent-death signal, so
+  there is no way to launch a process that outlives the program. That was always
+  the documented intent; until rc7 it was enforced by an exit-time pass that a
+  SIGKILL skipped. A process that must survive belongs to a service manager.
+
 - **A reported parse error FAILS the parse** (0.1.0-rc7). At top level — a file
   with no `program` block — a token the grammar has no place for used to
   truncate the file silently: the statements before it ran, everything after it

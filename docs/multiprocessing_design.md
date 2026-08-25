@@ -387,13 +387,22 @@ The minimum honest story for v1, richer parts flagged as future:
   (§4.1), which v1 provides, so it adds one primitive (`monitor`) and no rework.
 - **Orphans (implemented):** two mechanisms, together robust to a tree of any
   depth and to abnormal death.
-  - *Parent-death signal (primary).* Each spawned actor arms
-    `PR_SET_PDEATHSIG(SIGTERM)` at startup, so the kernel terminates it when its
-    parent dies for **any** reason — normal exit, crash, or `kill -9`. This
-    cascades down a multi-level tree without the parent needing to run any code,
-    which is what a process-group sweep alone cannot guarantee (a signal-killed
-    root never runs its cleanup, and a grandchild lives in a different group). A
-    `getppid()` re-check right after arming closes the fork→exec→arm race.
+  - *Parent-death signal (primary).* Every child this interpreter forks arms
+    `PR_SET_PDEATHSIG(SIGTERM)`, so the kernel terminates it when its parent
+    dies for **any** reason — normal exit, crash, or `kill -9`. This cascades
+    down a multi-level tree without the parent needing to run any code, which is
+    what a process-group sweep alone cannot guarantee (a signal-killed root
+    never runs its cleanup, and a grandchild lives in a different group).
+
+    Armed **between fork and exec**, at all three fork sites, since 0.1.0-rc7.
+    Until then only the actor path armed it, and it did so *after* the exec, in
+    the child's own startup — which left `process.start` and `process.run`
+    children unprotected (DOGFOOD ledger item 4: four found sleeping two days
+    after the runs that started them) and covered the fork→exec→arm race with a
+    `getppid() == 1` re-check. Arming before the exec closes that race exactly,
+    against the spawner's recorded pid; `== 1` was also wrong when the
+    interpreter itself is pid 1, a container entry point, where it made every
+    actor exit at startup.
   - *Process group + reaping (backstop).* The spawning interpreter still places
     its direct children in a **dedicated** group it owns (never its inherited
     group, which may hold a parent shell pipeline) and, on normal exit,
@@ -715,6 +724,16 @@ Each phase merges green before the next; the first is an invisible foundation.
     (normal exit and `SIGKILL` both leave no survivors across a three-level tree;
     process-lifecycle behavior does not fit a stdout golden test, but every
     `spawn_*` example exercises normal-exit cleanup on each run).
+  - **Extended to `process.*` — DONE (2026-08-24, 0.1.0-rc7).** This section's
+    last sentence was true and was the gap: "does not fit a stdout golden test"
+    left it verified by hand, and what nobody re-checked by hand was the OTHER
+    two fork sites. `process.start` and `process.run` children were never armed
+    at all, and the reference's promise that nothing outlives the interpreter
+    rested on a userspace teardown pass that a `SIGKILL` skips. All three sites
+    now arm between fork and exec, and `tests/run_process_lifetime.sh` asserts it
+    the only way that means anything: start a child, `kill -9` the parent, look
+    for the child. **Lesson:** "does not fit a golden test" is a statement about
+    goldens, not about testability.
   - **Phase 2 is complete.**
 - **Phase 3 — fault model / supervision (designed, §7.1; 3a+3b+3c built — COMPLETE).**
   One new primitive; supervisors are then programs, not runtime features. Sub-steps,

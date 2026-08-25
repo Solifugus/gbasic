@@ -9,6 +9,32 @@ language surface may still change between releases.
 
 ## Unreleased
 
+### Fixed: a child no longer outlives a killed interpreter
+
+`docs/reference.md` promises in bold that nothing the interpreter starts
+outlives it, and that promise was kept by a teardown pass at the end of the
+program — which does not run when the interpreter is `SIGKILL`ed. The DOGFOOD
+ledger recorded the consequence: four gBASIC children found sleeping two days
+after the runs that started them, three with their working directory already
+deleted.
+
+Every child now arms a **parent-death signal** in the kernel between fork and
+exec, so it receives `SIGTERM` the moment the interpreter dies, however it dies.
+Spawned actors have always done this; `process.start` and `process.run` children
+never did.
+
+**Behaviour change:** `process.start` was never a documented way to launch a
+process that outlives the program, and it is now definitively not one. A child
+that should survive belongs to a service manager. (A child that ignores
+`SIGTERM` still survives, as with `process.stop`; a set-user-ID executable loses
+the armed signal at `exec`.)
+
+Also fixed by the same change: a spawned actor exited immediately at startup
+when the interpreter itself was pid 1 — a container entry point — because the
+race check it used, `getppid() == 1`, cannot tell "my parent is gone" from "my
+parent is init". Arming before the exec compares against the spawner's recorded
+pid instead. `tests/run_process_lifetime.sh`.
+
 ### Fixed: `encode`/`decode` round-trips non-finite numbers
 
 The `encode`/`decode` dialect has one promise — an exact gBASIC-to-gBASIC round
