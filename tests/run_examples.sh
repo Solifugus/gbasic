@@ -206,6 +206,7 @@ examples=(
     split_find_join_integration_test.bas
     split_join_test.bas
     serialization_test.bas
+    encode_roundtrip_test.bas
     serialize_roundtrip_test.bas
     actor_loopback_test.bas
     spawn_echo_test.bas

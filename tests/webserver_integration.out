@@ -19,6 +19,14 @@ true
 200
 true|{bad
 200
+true|{"a":inf}
+200
+true|{"a":nan}
+200
+true|{"a":-inf}
+200
+true|{"a":nothing}
+200
 text/plain
 0
 504

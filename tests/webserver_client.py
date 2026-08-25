@@ -82,6 +82,22 @@ def main():
     print(status)
     print(body)
 
+    # The wire parser is STRICT and must stay strict. `decode` gained the
+    # non-finite spellings in 0.1.0-rc7 so the gBASIC-to-gBASIC dialect
+    # round-trips, and that gate is what keeps an external document from
+    # injecting an infinity RFC 8259 has no syntax for. Sent raw, because
+    # json.dumps would refuse to produce it.
+    for hostile in ('{"a":inf}', '{"a":nan}', '{"a":-inf}', '{"a":nothing}'):
+        status, _, body = request(
+            port,
+            "POST",
+            "/invalid-json",
+            body=hostile,
+            headers={"Content-Type": "application/json"},
+        )
+        print(status)
+        print(body)
+
     status, headers, body = request(port, "GET", "/defaults")
     print(status)
     print(headers.get("content-type", ""))

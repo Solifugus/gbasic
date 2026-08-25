@@ -9,6 +9,29 @@ language surface may still change between releases.
 
 ## Unreleased
 
+### Fixed: `encode`/`decode` round-trips non-finite numbers
+
+The `encode`/`decode` dialect has one promise — an exact gBASIC-to-gBASIC round
+trip — and it did not hold for the values IEEE arithmetic produces. `encode`
+wrote bare `inf` / `nan`; its own `decode` refused them. A program could write a
+file it could not read back, with no diagnostic on either side, and ordinary
+overflow reaches that state quietly: `number("1e308") * 10` is infinity.
+
+`decode` now accepts the four spellings `encode` emits (`inf`, `-inf`, `nan`,
+`-nan`), which are the same text `print` and `string` show and the same values
+`serialize`/`deserialize` already round-tripped. `encode`'s output is byte-for-
+byte unchanged.
+
+**The wire parser is untouched and stays strict.** A JSON request or response
+body still cannot carry `inf`, `nan`, `nothing` or `unknown` — RFC 8259 has no
+syntax for them, and `json_encode` / `json_encodable` still refuse non-finite
+values. `tests/webserver_client.py` posts each of them to a live server to prove
+it.
+
+(`-inf` decoded correctly the whole time, by accident: `strtod` parses it and a
+leading `-` entered the number branch. One spelling of four working is what made
+this a bug rather than a policy.)
+
 ### Fixed: a reported parse error no longer exits 0
 
 A token the grammar has no place for — `dim x`, or any byte the lexer cannot

@@ -1,0 +1,27 @@
+-- what encode writes --
+{"a":inf}
+{"a":-inf}
+{"a":nan}
+{"a":inf}
+-- what decode reads back --
+inf
+-inf
+nan
+-- nested, and beside the other dialect values --
+inf
+-inf
+nan
+nothing
+unknown
+0.1
+-- all four spellings, because the formatter emits all four --
+{"a":-nan}
+-nan
+-- the property, stated --
+true
+true
+true
+-- the strict path is UNCHANGED --
+false
+false
+true

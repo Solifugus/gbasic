@@ -40,10 +40,15 @@ and the stale-looking ones carry a Status line saying what overtook them.
    written against that advice keep their meaning. Diverges from QBasic's
    truncating `MOD` deliberately and loudly (UNLEARN, reference). `%` remains
    a separate decision.
-2. **`encode` emits bare `nan`/`inf` that its own `decode` rejects**
-   (2026-07-24, deferred at 2026-08-14). medium. Shape: refuse like
-   `json_encode` does, or emit a token `decode` accepts — either ends the
-   round-trip hole. Verified still live against rc3.
+2. ~~**`encode` emits bare `nan`/`inf` that its own `decode` rejects**~~
+   **RESOLVED 2026-08-24.** `decode` accepts the four spellings `encode` emits
+   (`inf`, `-inf`, `nan`, `-nan`), gated on the DIALECT parser — the wire
+   parser stays RFC 8259 and refuses them, proved end to end by posting each to
+   a running server. Taking the "accept" branch over the "refuse" branch
+   because the dialect exists to round-trip and `serialize` already round-trips
+   these; the strict encoder is the one that must refuse. Also: `-inf` decoded
+   correctly the whole time by accident (strtod parses it), which is what makes
+   this a bug and not a policy. `examples/encode_roundtrip_test.bas`.
 3. ~~**No array concat**~~ **RESOLVED 2026-08-24.** `concat(a, b, …)`,
    variadic. Array `+` remains a separate decision.
 4. **`process.start` children outlive a SIGKILLed parent** (2026-07-29).
@@ -477,6 +482,15 @@ of these were resolved long after their text was written.
   `decode`. **Clears the SHOULD FIX BEFORE STUDIO flag from the NAP-13 entry.**
   Still open (DEFERRED, documented in docs/reference.md): `encode`'s bare `nan`/`inf`,
   and `crypto.json_encode` remaining a separate flat encoder.
+- **Status 2026-08-24:** the `nan`/`inf` half is RESOLVED, and this entry's own
+  framing is what decided which way. Once "round-trip serialization" and
+  "interchange serialization" are stated as different concerns, the fix follows:
+  the DIALECT exists to round-trip, so `decode` learns the spellings `encode`
+  already writes; the STRICT path exists to be standard, so it keeps refusing
+  them. The wire parser (`json_only` — webclient and webserver bodies) is on the
+  strict side of that line and is untouched, which
+  `tests/webserver_client.py` now proves by posting `{"a":inf}` and friends to a
+  live server. `crypto.json_encode` remains open (ledger item 9).
 
 ## 2026-07-25 — CC — while: STU-0 (Studio persistence backbone, pure gBASIC)
 - **Type:** language-surprise

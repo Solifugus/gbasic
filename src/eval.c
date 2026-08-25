@@ -11882,6 +11882,35 @@ static Value decode_parse_value(DecodeParser *parser) {
     if (!parser->json_only && decode_match_text(parser, "unknown")) {
         return value_unknown();
     }
+    /* The non-finite spellings `encode` emits, so the dialect round-trips every
+     * number a gBASIC program can hold. It did not: `encode` wrote bare `nan`
+     * and `inf` (whatever format_number produces, the same text `print` and
+     * `string` show) and `decode` refused them, so a program could write a file
+     * it could not read back — and overflow reaches that state quietly, with no
+     * diagnostic on either side. `-inf` worked the whole time by accident,
+     * because strtod parses it and a leading '-' enters the number branch
+     * below; one spelling of three working is what makes this a bug rather
+     * than a policy.
+     *
+     * Gated on !json_only, and that gate is load-bearing: json_only is the WIRE
+     * parser (webclient and webserver bodies), where RFC 8259 has no infinity
+     * and an external document must not be able to inject one. The strict
+     * ENCODER refuses non-finite for the same reason and is untouched. Checked
+     * ahead of the number branch because `-inf` and `-nan` start with '-'. */
+    if (!parser->json_only) {
+        if (decode_match_text(parser, "-inf")) {
+            return value_number(-INFINITY);
+        }
+        if (decode_match_text(parser, "inf")) {
+            return value_number(INFINITY);
+        }
+        if (decode_match_text(parser, "-nan")) {
+            return value_number(-NAN);
+        }
+        if (decode_match_text(parser, "nan")) {
+            return value_number(NAN);
+        }
+    }
     if (ch == '-' ||
         (!parser->json_only && (ch == '+' || ch == '.')) ||
         isdigit((unsigned char)ch)) {

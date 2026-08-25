@@ -2881,11 +2881,21 @@ count({})                      # 0
 | Exact typed/binary round-trip | `serialize` / `deserialize` | Dates, money, files, binary content |
 
 **`encode` is a dialect, not standard JSON.** It writes gBASIC's spellings for the
-empty values — `nothing` and `unknown` rather than `null` — so a value survives a
-gBASIC round-trip (`decode` accepts both). No other JSON parser does, so **never
-put `encode` output on the wire**; use `json_encode`. (`encode` also prints
-non-finite numbers as bare `nan`/`inf`, which not even `decode` accepts — see
-DOGFOOD.) Both behaviors are long-standing and deliberately left unchanged.
+empty values — `nothing` and `unknown` rather than `null` — and for the non-finite
+numbers — `inf`, `-inf`, `nan`, `-nan`, the same text `print` and `string` show.
+`decode` accepts all of them, so a value survives a gBASIC round-trip. No other
+JSON parser does, so **never put `encode` output on the wire**; use `json_encode`.
+
+Until 0.1.0-rc7 `decode` refused the non-finite spellings its own `encode`
+produced, so a program could write a file it could not read back — and ordinary
+overflow reaches that state quietly (`number("1e308") * 10` is infinity, with no
+diagnostic). The dialect's one promise is an exact gBASIC-to-gBASIC round trip,
+and it now holds for every number a program can hold.
+
+The **wire** parser is unaffected and stays strict: a JSON request or response
+body cannot carry `inf`, `nan`, `nothing` or `unknown`, because RFC 8259 has no
+syntax for them. `json_encode` refuses non-finite values for the same reason,
+and `json_encodable` answers `false` for them.
 
 **`try_decode(text)` — decode that cannot raise.** `decode` raises on malformed
 input, and gBASIC has no way to catch a raise, so any program reading a file it did
