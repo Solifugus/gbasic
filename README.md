@@ -8,7 +8,7 @@ watchers, files, dates, money, SQLite, PostgreSQL, HTTP clients, and a
 queue-based HTTP server.
 
 This repository contains the C implementation of gBASIC
-`0.1.0-rc7`. The language and runtime are under active development and are not
+`0.1.0-rc8`. The language and runtime are under active development and are not
 yet production-stable.
 
 ## Current Status
@@ -790,7 +790,7 @@ as an available feature.
 Current output:
 
 ```text
-gBASIC 0.1.0-rc7
+gBASIC 0.1.0-rc8
 ```
 
 ## Contributing
