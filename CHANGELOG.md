@@ -9,6 +9,15 @@ language surface may still change between releases.
 
 ## Unreleased
 
+_Nothing yet._
+
+## 0.1.0-rc7 — 2026-08-24
+
+Additive: no compatibility break. Four fixes, three of them from the DOGFOOD
+ledger, and each closes a failure that was **silent** — a wrong answer, a
+truncated program, or a file that could not be read back, with nothing on stderr
+and nothing in the exit code to say so.
+
 ### Fixed: a child no longer outlives a killed interpreter
 
 `docs/reference.md` promises in bold that nothing the interpreter starts
