@@ -5123,6 +5123,24 @@ static void xlsx_workbook_release(XlsxWorkbook *wb) {
 
 /* ------------------------------------------------------------ the gBASIC API */
 
+/* {ok, workbook, message} -- the try_decode shape, for the try_open twin. */
+static Value xlsx_try_result(int ok, Value workbook, const char *message) {
+    RecordField *fields = calloc(3, sizeof(RecordField));
+    if (!fields) {
+        abort();
+    }
+    fields[0].name = copy_string("ok");
+    fields[0].value = cell_alloc();
+    *fields[0].value = value_bool(ok);
+    fields[1].name = copy_string("workbook");
+    fields[1].value = cell_alloc();
+    *fields[1].value = workbook;
+    fields[2].name = copy_string("message");
+    fields[2].value = cell_alloc();
+    *fields[2].value = value_string(message);
+    return value_record(fields, 3);
+}
+
 static Value xlsx_eval_call(AstExpr *expr) {
     const char *name = expr->as.call.name;
 
@@ -5132,60 +5150,82 @@ static Value xlsx_eval_call(AstExpr *expr) {
                       "install zlib and libxml2 development files and rebuild");
 #else
 
-    if (strcmp(name, "open") == 0) {
+    /* `open` and `try_open` share ONE path, so the two can never disagree about
+     * what is readable -- the failure mode that makes a "try_" twin worse than
+     * useless is one that accepts a file its raising sibling rejects, or reports
+     * a different reason for the same file. `fname` is only for the message. */
+    if (strcmp(name, "open") == 0 || strcmp(name, "try_open") == 0) {
+        int trying = strcmp(name, "try_open") == 0;
+        const char *fname = trying ? "xlsx.try_open" : "xlsx.open";
+        char m[512];
         if (expr->as.call.args.count != 1) {
-            return xlsx_raise("xlsx.open expects one argument (a path)");
+            snprintf(m, sizeof m, "%s expects one argument (a path)", fname);
+            return xlsx_raise(m);
         }
         Value pathv = eval_expr(expr->as.call.args.items[0]);
         if (error_action_pending()) {
             value_free(pathv);
             return value_null();
         }
+        /* A non-path argument RAISES from both, exactly as try_decode raises on a
+         * non-string: that is a bug in the caller, not a bad workbook. The record
+         * reports on the CONTENT of a file, and there is no file here. */
         if (pathv.kind != VALUE_STRING && pathv.kind != VALUE_FILE) {
             value_free(pathv);
-            return xlsx_raise("xlsx.open expects a path string");
+            snprintf(m, sizeof m, "%s expects a path string", fname);
+            return xlsx_raise(m);
         }
         const char *path = pathv.kind == VALUE_FILE ? pathv.as.file_path : pathv.as.string;
 
+        const char *failure = NULL;
+        unsigned char *buf = NULL;
+        long size = 0;
         FILE *f = fopen(path, "rb");
         if (!f) {
-            char message[512];
-            snprintf(message, sizeof message, "xlsx.open: cannot read %s", path);
-            value_free(pathv);
-            return xlsx_raise(message);
-        }
-        if (fseek(f, 0, SEEK_END) != 0) {
-            fclose(f);
-            value_free(pathv);
-            return xlsx_raise("xlsx.open: file is not seekable");
-        }
-        long size = ftell(f);
-        rewind(f);
-        if (size < 0) {
-            fclose(f);
-            value_free(pathv);
-            return xlsx_raise("xlsx.open: cannot determine file size");
-        }
-        unsigned char *buf = malloc((size_t)size ? (size_t)size : 1);
-        if (!buf) {
-            abort();
-        }
-        size_t got = fread(buf, 1, (size_t)size, f);
-        fclose(f);
-        if (got != (size_t)size) {
-            free(buf);
-            value_free(pathv);
-            return xlsx_raise("xlsx.open: short read");
+            snprintf(m, sizeof m, "%s: cannot read %s", fname, path);
+            failure = m;
+        } else if (fseek(f, 0, SEEK_END) != 0) {
+            fclose(f); f = NULL;
+            snprintf(m, sizeof m, "%s: file is not seekable", fname);
+            failure = m;
+        } else if ((size = ftell(f)) < 0) {
+            fclose(f); f = NULL;
+            snprintf(m, sizeof m, "%s: cannot determine file size", fname);
+            failure = m;
+        } else {
+            rewind(f);
+            buf = malloc((size_t)size ? (size_t)size : 1);
+            if (!buf) {
+                abort();
+            }
+            size_t got = fread(buf, 1, (size_t)size, f);
+            fclose(f); f = NULL;
+            if (got != (size_t)size) {
+                free(buf); buf = NULL;
+                snprintf(m, sizeof m, "%s: short read", fname);
+                failure = m;
+            }
         }
 
         XlsxPart *parts = NULL;
         size_t part_count = 0;
-        const char *err = NULL;
-        int ok = xlsx_read_container(buf, (size_t)size, &parts, &part_count, &err);
-        free(buf);
-        if (!ok) {
+        if (!failure) {
+            const char *err = NULL;
+            int ok = xlsx_read_container(buf, (size_t)size, &parts, &part_count, &err);
+            free(buf);
+            buf = NULL;
+            if (!ok) {
+                snprintf(m, sizeof m, "%s", err ? err : "unreadable container");
+                failure = m;
+            }
+        }
+
+        if (failure) {
             value_free(pathv);
-            return xlsx_raise(err ? err : "xlsx.open: unreadable container");
+            if (!trying) {
+                return xlsx_raise(failure);
+            }
+            return xlsx_try_result(0, value_null(), failure);
         }
 
         XlsxWorkbook *wb = calloc(1, sizeof *wb);
@@ -5200,7 +5240,11 @@ static Value xlsx_eval_call(AstExpr *expr) {
 
         xlsx_load_shared(wb);
         xlsx_load_sheets(wb);
-        return value_workbook(wb);
+        Value book = value_workbook(wb);
+        if (!trying) {
+            return book;
+        }
+        return xlsx_try_result(1, book, "");
     }
 
     if (strcmp(name, "sheets") == 0) {

@@ -76,6 +76,26 @@ else
     status=1
 fi
 
+# --- Tier 1a2: try_open, the non-raising twin ---------------------------------
+# Needs a scratch directory because the corpus it walks is built at run time --
+# committing four deliberately-broken workbooks would put junk binaries in the
+# tree for no gain, and one of them is empty.
+printf -- '-- golden: try_open (batch survival + parity with open)\n'
+corpus="$tmp/corpus"
+mkdir -p "$corpus"
+if timeout 120 ./gbasic examples/xlsx_try_open_test.bas "$corpus" >"$out" 2>"$err" </dev/null; then
+    if diff -u examples/xlsx_try_open_test.out "$out"; then
+        printf 'PASS examples/xlsx_try_open_test.bas\n'
+    else
+        printf 'FAIL examples/xlsx_try_open_test.bas (output differs)\n'
+        status=1
+    fi
+else
+    printf 'FAIL examples/xlsx_try_open_test.bas (exit)\n'
+    cat "$err"
+    status=1
+fi
+
 # --- Tier 1b: write + round-trip ----------------------------------------------
 printf -- '-- golden: write + round-trip\n'
 if timeout 120 ./gbasic examples/xlsx_write_test.bas >"$out" 2>"$err" </dev/null; then

@@ -1,0 +1,15 @@
+unreadable empty.xlsx
+readable   good.xlsx  sheets=4
+unreadable notazip.xlsx
+unreadable truncated.xlsx
+batch finished: readable=1 unreadable=3
+ok field:       false
+workbook field: nothing
+message empty:  false
+success ok:     true
+success msg:    []
+empty.xlsx -> false | xlsx: not a ZIP container (no end-of-central-directory record)
+good.xlsx -> true | 
+notazip.xlsx -> false | xlsx: not a ZIP container (no end-of-central-directory record)
+truncated.xlsx -> false | xlsx: not a ZIP container (no end-of-central-directory record)
+walked 5 files across 2 levels, opened 2

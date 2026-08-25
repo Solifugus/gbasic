@@ -134,10 +134,20 @@ A1 reference. Each cell is plain, inspectable data:
 - The grid is the substrate every higher layer reads; it is deliberately dumb
   (no table semantics) so the smart part lives in one place (L2).
 
-Access surface: `xlsx.open(path)` → workbook; `xlsx.sheet(wb, name_or_index)` →
-grid; `xlsx.cell(grid, "C4")`; `xlsx.range(grid, "A1:D20")` → a sub-grid;
+Access surface: `xlsx.open(path)` → workbook; `xlsx.try_open(path)` →
+`{ok, workbook, message}`; `xlsx.sheet(wb, name_or_index)` → grid;
+`xlsx.cell(grid, "C4")`; `xlsx.range(grid, "A1:D20")` → a sub-grid;
 `xlsx.sheets(wb)` → names. Writing: `xlsx.new()`, `xlsx.put(grid, "C4", value)`,
 `xlsx.write_frame(grid, "A1", df)`, `xlsx.save(wb, path)`.
+
+**`xlsx.try_open` (0.1.0-rc8)** is the non-raising twin, the `try_decode` shape:
+a batch tool over untrusted inputs needs the failure as a VALUE, because one bad
+workbook in thousands otherwise ends the scan (§13's corpus note, and the DOGFOOD
+entry of 2026-08-03). The two share ONE code path, deliberately — a `try_` twin
+that accepts a file its raising sibling rejects, or reports a different reason
+for the same file, invites you to trust a verdict the real function does not
+share. A non-path ARGUMENT still raises from both: that is a bug in the caller,
+not a bad workbook. `examples/xlsx_try_open_test.bas` holds the parity.
 
 ## 5. Decision D — region extraction is ARI-for-grids (L2), spec-driven
 
@@ -496,8 +506,10 @@ is a true oracle rather than the self-consistency check the hand-built fixture
 allows. Each workbook was scanned in its own process (see the DOGFOOD entry: at the
 time `xlsx.open`'s raise could not be caught, so an in-process directory walk
 aborted the whole scan on the first bad file — process isolation was the only
-way to survive one. Frame-scoped `on error` would now let a single process
-absorb a bad file and continue). Result: **15,871 / 15,871
+way to survive one. `xlsx.try_open` now reports the failure as a value, so a
+single process absorbs a bad file and continues; the walk itself is written on
+`list` over a directory reference, since `list_files` reports no
+subdirectories). Result: **15,871 / 15,871
 read successfully**, 20.7M formula cells, 6.0M function calls, 231 distinct names.
 
 *The scan found exactly one reader defect,* and it was not in the ZIP, the XML or
