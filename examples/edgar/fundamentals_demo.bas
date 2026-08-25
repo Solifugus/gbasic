@@ -38,7 +38,7 @@ program main(args)
     load edgar from "../../stdlib/edgar.bas"
     load fundamentals from "../../stdlib/fundamentals.bas"
 
-    cachef(file)= "examples/tmp_edgar_demo.db"
+    cachef{file}= "examples/tmp_edgar_demo.db"
     if exists(cachef) then
         delete(cachef)
     end if

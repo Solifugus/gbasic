@@ -18,7 +18,7 @@ program main(args)
     load schedule from "../stdlib/schedule.bas"
 
     cal = dates.calendar({ hours: { open: "9:00", close: "17:00" } })
-    mon (date)= "2026-08-17"
+    mon {date}= "2026-08-17"
 
     ' --- the convention: 6 sessions, one impossible, into business days ---
     plan = {
@@ -60,7 +60,7 @@ program main(args)
         if (s.ends - s.starts) != want_len then
             spans_ok = false
         end if
-        sday (day)= s.starts
+        sday {day}= s.starts
         if s.starts < dates.at(sday, "9:00") or s.ends > dates.at(sday, "17:00") then
             inside_ok = false
         end if

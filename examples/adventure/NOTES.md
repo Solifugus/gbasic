@@ -38,8 +38,8 @@ Data-driven structure:
 
 Places where gBASIC felt clean:
 
-- `command(trimmed)= input(">")` followed by `command(lowered)= command` reads well.
-- `words(split)= command` is a compact parser for simple command text.
+- `command{trimmed}= input(">")` followed by `command{lowered}= command` reads well.
+- `words{split}= command` is a compact parser for simple command text.
 - `find(inventory, item) != nothing` is readable for inventory checks.
 - `append(inventory, item)` and `remove(inventory, index)` make simple inventory mutation direct.
 - Arrays of records are good enough to express a small room graph without compiler changes.

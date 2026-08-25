@@ -1,2 +1,2 @@
-d(file)= "tests"
+d{file}= "tests"
 file_size(d)

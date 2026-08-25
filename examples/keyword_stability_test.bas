@@ -1,14 +1,14 @@
 program demo(args)
     load dates from "../stdlib/dates.bas"
 
-    today(date)= "2026-05-15"
+    today{date}= "2026-05-15"
 
     end = 5
     next = 10
     print(end + next)
 
-    x(end of month)= today
-    y(next monday)= today
+    x{end of month}= today
+    y{next monday}= today
     print(x)
     print(y)
 

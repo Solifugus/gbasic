@@ -25,7 +25,7 @@ program main(args)
     load screener from "../stdlib/screener.bas"
     dir = "examples/fixtures/edgar/screener_universe"
 
-    db(file)= "examples/tmp_screener_scores.db"
+    db{file}= "examples/tmp_screener_scores.db"
     if exists(db) then
         delete(db)
     end if

@@ -1,4 +1,4 @@
-f (file)= "examples/tmp_lock_cleanup_test.txt"
+f {file}= "examples/tmp_lock_cleanup_test.txt"
 
 lock(f)
 print "locked"

@@ -9,7 +9,7 @@ program main(args)
     load xml
 
     ' --- (1) real 10-K/A ---
-    p(file)= "examples/fixtures/edgar/tenk_10ka_sample.htm"
+    p{file}= "examples/fixtures/edgar/tenk_10ka_sample.htm"
     src = join(read_lines(p), "\n")
     doc = xml.parse_html(src)
     print("root=" + doc["name"])

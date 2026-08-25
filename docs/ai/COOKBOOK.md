@@ -43,7 +43,7 @@ for error handling, `ERRORS.md`.
   the same value, so nothing is truncated and `number(string(x)) = x` always
   holds. That makes floating-point error visible (`0.1 + 0.2` shows
   `0.30000000000000004`): round for display with `round(x, 2)`, or use a money
-  value (`t(USD)= 265550.75`) for figures that must read exactly. Integers below
+  value (`t{USD}= 265550.75`) for figures that must read exactly. Integers below
   2^53 print plainly; there is no exponent *literal*, so build extremes with
   `number("1e20")`. → `tests/numfmt_test.bas`
 - **Functions** — definition, params, `return`. → `examples/function_test.gb`
@@ -61,7 +61,7 @@ for error handling, `ERRORS.md`.
   `insert`/`remove` shift. Cost story is the value-semantics entry above.
   → `examples/array_append_prepend_test.bas`
 - **Modifiers** — assignment/comparison modifier clauses. A string literal in a
-  clause means what it means anywhere else: `p(split "\n") = s` splits on a
+  clause means what it means anywhere else: `p{split "\n"} = s` splits on a
   newline. → `examples/modifier_test.gb`, `examples/modifier_escape_test.bas`
 - **Watchers** — `watch(...)` runs once at registration, then synchronously on
   storage-changing mutations. → `examples/watch_test.gb`
@@ -142,7 +142,7 @@ for error handling, `ERRORS.md`.
 - **Month arithmetic clamps** — `jan31 + 1 month` is Feb 28 (accountant's
   rule); the round trip does not hold at month-end. → `examples/datetime_arithmetic_test.bas`
 - **Extract with dot fields, truncate with lenses** — `d.year` is a number,
-  `(month)= d` is a coarser datetime; a field finer than the value's precision
+  `{month}= d` is a coarser datetime; a field finer than the value's precision
   is `unknown`, a misspelled field raises. ISO weekday, Monday=1. →
   `examples/datetime_fields_test.bas`
 - **Durations: exact vs calendar, never blurred** — ordering month-bearing

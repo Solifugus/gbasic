@@ -24,7 +24,7 @@ function latest_fy(s)
 end function
 
 function load_facts(path)
-    ref(file)= path
+    ref{file}= path
     return decode(join(read_lines(ref), "\n"))
 end function
 

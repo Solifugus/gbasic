@@ -27,5 +27,5 @@ field = "name"
 player.inventory[slot][field] = "silver key"
 print(player.inventory[0].name)
 
-player.inventory[slot].name(trimmed)= "  gold key  "
+player.inventory[slot].name{trimmed}= "  gold key  "
 print(player.inventory[0].name)

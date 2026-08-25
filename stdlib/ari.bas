@@ -252,7 +252,7 @@ library ari
     ' `d(date) = "2021-12-27"` — which is why a search for a `date(...)` builtin
     ' finds nothing (see /DOGFOOD.md 2026-08-01, correction entry).
     function _to_money(n)
-        m(USD) = n
+        m{USD} = n
         return m
     end function
 
@@ -266,7 +266,7 @@ library ari
     ' report is an expected condition, so the field degrades to `unknown` with
     ' an `invalid-date` diagnostic while the rest of the row parses.
     function _to_date(iso)
-        d(date) = iso
+        d{date} = iso
         return d
     end function
 
@@ -1320,7 +1320,7 @@ library ari
     ' Read a file and parse it. The read is deliberately plain: a missing file
     ' raises, matching file-builtin behaviour (§8).
     function import(path, spec_text)
-        p(file) = path
+        p{file} = path
         body = read_lines(p)
         return parse(join(body, "\n"), spec_text)
     end function

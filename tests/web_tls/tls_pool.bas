@@ -10,7 +10,7 @@ program main(args)
   print "PORT " + string(server.port)
   print "pool up: " + string(r.ok)
   ' stay alive while the runner probes; drain when it creates the stop flag
-  stopflag(file) = base + "/stop.flag"
+  stopflag{file} = base + "/stop.flag"
   while not exists(stopflag)
     t = web.pool_tick(p)
     p = t.pool

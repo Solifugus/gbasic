@@ -2,7 +2,7 @@
 ' has arrived since the last one, so concatenating every read in order must rebuild
 ' the child's output exactly -- nothing lost at a boundary, nothing seen twice.
 gate = "/tmp/gbasic_plat_proc_interleave.gate"
-g(file) = gate
+g{file} = gate
 if exists(g) then
   delete(g)
 end if

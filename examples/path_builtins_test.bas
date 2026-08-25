@@ -21,14 +21,14 @@ end function
 
 ' `exists` takes a FILE reference, so it cannot answer this; `file_type` can,
 ' which is the hole the builtin fills.
-home (dir)= "examples/tmp_pathprobe"
+home {dir}= "examples/tmp_pathprobe"
 if file_type("examples/tmp_pathprobe") = "folder" then
     remove_dir(home)
 end if
 make_dir(home)
-inner (dir)= "examples/tmp_pathprobe/sub"
+inner {dir}= "examples/tmp_pathprobe/sub"
 make_dir(inner)
-note (file)= "examples/tmp_pathprobe/note.txt"
+note {file}= "examples/tmp_pathprobe/note.txt"
 write(note, "hi")
 
 ' --- file_type ------------------------------------------------------------

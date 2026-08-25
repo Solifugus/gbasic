@@ -1,0 +1,13 @@
+money:   19.95
+date:    2026
+file:    true
+number:  43
+string:  [7]
+trimmed: [padded]
+lowered: mixed
+uppered: MIXED
+declared: HEY!
+compare:  caseless ok
+compare:  with arguments ok
+field:    5.50
+index:    10

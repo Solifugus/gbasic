@@ -23,7 +23,7 @@ program main(args)
       req = take_first(server.requests)
       if req.path = "/slow" then
         print to error "in-handler /slow"
-        gate(file) = gatepath
+        gate{file} = gatepath
         while not exists(gate)
           sleep(0.05)
         end while

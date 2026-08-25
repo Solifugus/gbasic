@@ -32,7 +32,7 @@ routes = web.routes([
     { method: "get",  path: "/quit",          handler: bye }
 ])
 
-port_file(file)= "tests/tmp_web_routes_port.txt"
+port_file{file}= "tests/tmp_web_routes_port.txt"
 if exists(port_file) then delete(port_file)
 
 server = webserver.listen(0)

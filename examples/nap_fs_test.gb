@@ -7,16 +7,16 @@
 
 folder = "examples/nap_fs_fixture"
 
-empty(file)= folder + "/empty.txt"
-known(file)= folder + "/known.txt"
-binary(file)= folder + "/binary.bin"
-large(file)= folder + "/large.txt"
-dest(file)= folder + "/dest.txt"
-temp(file)= folder + "/temp.txt"
-newdest(file)= folder + "/newdest.txt"
-spaced(file)= folder + "/name with spaces.txt"
-uni(file)= folder + "/greek_pi_π.txt"
-uni_temp(file)= folder + "/greek_pi_π.tmp"
+empty{file}= folder + "/empty.txt"
+known{file}= folder + "/known.txt"
+binary{file}= folder + "/binary.bin"
+large{file}= folder + "/large.txt"
+dest{file}= folder + "/dest.txt"
+temp{file}= folder + "/temp.txt"
+newdest{file}= folder + "/newdest.txt"
+spaced{file}= folder + "/name with spaces.txt"
+uni{file}= folder + "/greek_pi_π.txt"
+uni_temp{file}= folder + "/greek_pi_π.tmp"
 
 if exists(empty) then delete(empty)
 if exists(known) then delete(known)

@@ -1,4 +1,4 @@
-price(USD)= 19.95
+price{USD}= 19.95
 tax = price * 0.08
 total = price + tax
 

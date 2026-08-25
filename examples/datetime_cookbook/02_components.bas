@@ -4,7 +4,7 @@
 ' for grouping. Two mechanisms, two jobs, zero global names spent.
 
 program main(args)
-    d (date)= "2026-03-15 09:30:45"
+    d {date}= "2026-03-15 09:30:45"
 
     print "year " + d.year + ", month " + d.month + ", day " + d.day
     print "clock " + d.hour + ":" + d.minute + ":" + d.second
@@ -20,7 +20,7 @@ program main(args)
 
     ' THE PRECISION RULE: a field finer than the value's precision is absent
     ' information and reads as unknown -- never a plausible zero.
-    m (month)= d
+    m {month}= d
     print ""
     print "month value      : " + m + "  (precision " + m.precision + ")"
     print "its .day is known: " + (not is_unknown(m.day))

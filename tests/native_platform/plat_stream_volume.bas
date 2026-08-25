@@ -29,7 +29,7 @@ print "identical=" + (flagged = plain)
 ' The separator must come in as a variable: escapes are NOT processed inside a
 ' modifier clause, so a literal "\n" there splits on backslash-n (DOGFOOD.md).
 nl = "\n"
-parts(split nl) = flagged
+parts{split nl} = flagged
 ' The trailing newline yields one empty final element.
 print "parts=" + count(parts)
 

@@ -11,8 +11,8 @@
 program main(args)
     load forensics from "../stdlib/forensics.bas"
 
-    pf(file)= "examples/fixtures/edgar/flags_synthetic_facts.json"
-    ps(file)= "examples/fixtures/edgar/flags_synthetic_subs.json"
+    pf{file}= "examples/fixtures/edgar/flags_synthetic_facts.json"
+    ps{file}= "examples/fixtures/edgar/flags_synthetic_subs.json"
     facts = decode(join(read_lines(pf), "\n"))
     subs = decode(join(read_lines(ps), "\n"))
 
@@ -41,8 +41,8 @@ program main(args)
     print("officer_exodus rows: " + string(exodus))
 
     ' --- real filer: Apple, real companyfacts + real submissions -------------
-    pff(file)= "examples/fixtures/edgar/companyfacts_CIK0000320193.json"
-    psf(file)= "examples/fixtures/edgar/submissions_CIK0000320193.json"
+    pff{file}= "examples/fixtures/edgar/companyfacts_CIK0000320193.json"
+    psf{file}= "examples/fixtures/edgar/submissions_CIK0000320193.json"
     aapl = decode(join(read_lines(pff), "\n"))
     raw = decode(join(read_lines(psf), "\n"))
     r = raw.filings.recent

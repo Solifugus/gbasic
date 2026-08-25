@@ -10,8 +10,8 @@
 program main(args)
     ready = args[0]
     gate = args[1]
-    r(file)= ready
-    g(file)= gate
+    r{file}= ready
+    g{file}= gate
 
     print "OUT-EARLY"
     print to error "ERR-EARLY"

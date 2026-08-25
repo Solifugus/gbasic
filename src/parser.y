@@ -414,217 +414,6 @@ static AstDuration duration_add_unit(AstDuration duration, double amount, char *
     return duration;
 }
 
-static int modifier_lparen_ahead(gb_parse_ctx *ctx, const char *start) {
-    const char *p = start + 1;
-    int saw_term = 0;
-
-    while (*p == ' ' || *p == '\t' || *p == '\r') {
-        p++;
-    }
-    /* --- A clause body begins with a NAME (PLAT-CLAUSE-B, option B narrow) ---
-     *
-     * A clause always opens with the modifier's name, and a modifier name is a
-     * sequence of `modifier_word`, which the grammar defines as
-     * `IDENT | TO | END | NEXT` — always identifier-shaped. So a body whose
-     * first character starts a NUMBER or a STRING cannot be a clause, whatever
-     * follows it.
-     *
-     * That rejects `kind(1) = "record"` and `kind("q") = "record"`, calls to a
-     * `load`ed library's function which options A and F cannot reach: the
-     * preceding token is an ordinary identifier and there is no dot, and the
-     * function check cannot see across a file boundary. Those used to PARSE and
-     * then fail at run time with `compare modifier not found: 1`.
-     *
-     * It does NOT reject `kind(x) = "record"`. That is not an oversight and no
-     * refinement here can fix it: `name(caseless) = "joe"` and
-     * `kind(x) = "record"` are the same tokens in the same order —
-     * IDENT `(` IDENT `)` `=` STRING — and the first must be a clause while the
-     * second must be a call. Separating them needs to know whether `caseless`
-     * is a registered modifier or `kind` is callable, and neither fact exists
-     * until eval (docs/gbasic_clause_recognition.md §1, §8).
-     *
-     * Identifier-start is A-Z, a-z and `_`, matching the lexer's own test at
-     * src/lexer.c:428 (`isalpha(ch) || ch == '_'`). Nothing calls setlocale, so
-     * that runs in the C locale and is ASCII-only; a non-ASCII byte does not
-     * start an identifier there either. */
-    if (!((*p >= 'A' && *p <= 'Z') || (*p >= 'a' && *p <= 'z') || *p == '_')) {
-        return 0;
-    }
-    while (*p && *p != ')' && *p != '\n') {
-        if ((*p >= 'A' && *p <= 'Z') || (*p >= 'a' && *p <= 'z') || *p == '_') {
-            saw_term = 1;
-            while ((*p >= 'A' && *p <= 'Z') || (*p >= 'a' && *p <= 'z') ||
-                   (*p >= '0' && *p <= '9') || *p == '_') {
-                p++;
-            }
-        } else if ((*p >= '0' && *p <= '9') || *p == '"') {
-            saw_term = 1;
-            if (*p == '"') {
-                /* Skip the string. A backslash escapes the next character, so
-                 * that `"\""` is one string rather than two — without this, the
-                 * scan stops at the ESCAPED quote, reads the real closing quote
-                 * as the start of a second string, finds no terminator before
-                 * the newline and gives up, and the whole clause silently
-                 * degrades to an ordinary parenthesised expression. This is the
-                 * first of three string scanners a modifier clause passes
-                 * through; the others are modifier_content_token (src/lexer.c)
-                 * and modifier_string_literal (src/eval.c). */
-                p++;
-                while (*p && *p != '"' && *p != '\n') {
-                    if (*p == '\\' && p[1] && p[1] != '\n') {
-                        p += 2;
-                        continue;
-                    }
-                    p++;
-                }
-                if (*p != '"') {
-                    return 0;
-                }
-                p++;
-            } else {
-                while (*p >= '0' && *p <= '9') {
-                    p++;
-                }
-                if (*p == '.') {
-                    p++;
-                    while (*p >= '0' && *p <= '9') {
-                        p++;
-                    }
-                }
-            }
-        } else if (*p == ' ' || *p == '\t' || *p == '\r') {
-            p++;
-        } else if (*p == ',') {
-            return 0;
-        } else if (*p == '+' || *p == '-' || *p == '*' || *p == '/' ||
-                   *p == '.' || *p == '[' || *p == ']') {
-            p++;
-        } else {
-            return 0;
-        }
-    }
-    if (*p != ')' || !saw_term) {
-        return 0;
-    }
-    p++;
-    while (*p == ' ' || *p == '\t' || *p == '\r') {
-        p++;
-    }
-    int followed_by_comparison = *p == '=' || *p == '>' || *p == '<' ||
-        (*p == '!' && (p[1] == '=' || p[1] == '>' || p[1] == '<'));
-    if (!followed_by_comparison) {
-        return 0;
-    }
-
-    const char *name_end = start;
-    while (name_end > ctx->active_lexer->source &&
-           (name_end[-1] == ' ' || name_end[-1] == '\t' || name_end[-1] == '\r')) {
-        name_end--;
-    }
-    const char *name_start = name_end;
-    while (name_start > ctx->active_lexer->source &&
-           ((name_start[-1] >= 'A' && name_start[-1] <= 'Z') ||
-            (name_start[-1] >= 'a' && name_start[-1] <= 'z') ||
-            (name_start[-1] >= '0' && name_start[-1] <= '9') ||
-            name_start[-1] == '_')) {
-        name_start--;
-    }
-    /* --- What may precede a clause (PLAT-CLAUSE, option A) -------------------
-     *
-     * Only two grammar positions ever consume a clause, and both put a TARGET
-     * to its left: `lvalue modifier OP_EQ expression` and
-     * `additive_expression modifier comparison_operator additive_expression`.
-     * So the `(` must follow something that can END an expression. A keyword,
-     * an operator, `=`, `,`, `(`, `[`, `.`, or the start of a statement cannot,
-     * and a `(` after any of those is an ordinary parenthesis.
-     *
-     * Without this the lookahead consulted nothing to its left except a
-     * function name, so `if (a - b) > 0` — and the same shape after `while`,
-     * `return`, `print`, `=`, an operator, a comma, an opening paren, or at the
-     * start of a statement — was read as a clause and failed to parse.
-     *
-     * The permitted set is deliberately WIDER than the set of legal targets.
-     * `is_modifier_target_expr` accepts only an identifier, a field or an index,
-     * so a string, a number or a call result can never be a legal target — but
-     * they can end an expression, so they are allowed through here and rejected
-     * by that check instead, which reports "modifier target must be a variable,
-     * field, or index". Rejecting them here would replace a precise diagnostic
-     * with a generic syntax error. Deciding "could this be a clause" is this
-     * function's job; deciding "is this a legal target" is the grammar's. */
-    if (name_start < name_end) {
-        /* An identifier- or number-shaped run precedes the `(`. */
-        if (*name_start >= '0' && *name_start <= '9') {
-            /* A numeric literal. Cannot be a legal target, but ends an
-             * expression; the grammar action produces the error. */
-        } else {
-            char *name = copy_text(name_start, (int)(name_end - name_start));
-            int is_function = gbasic_builtin_function(name) || source_declares_function(ctx, name);
-            free(name);
-            if (is_function) {
-                return 0;
-            }
-            /* Option A: a reserved word cannot be a modifier target. `end` and
-             * `next` are exempt because `variable_name` admits them as ordinary
-             * variable names. */
-            TokenType word = lexer_identifier_type(name_start, (int)(name_end - name_start));
-            if (word != TOKEN_IDENT && word != TOKEN_END && word != TOKEN_NEXT) {
-                return 0;
-            }
-            /* --- A qualified name is a call (PLAT-CLAUSE, option F) ----------
-             *
-             * `helper.kind(1) = "record"` and `holder.m(1) = "record"` are
-             * calls, but the function check above cannot know it: it re-scans
-             * only the file being parsed, so a `load`ed library's functions are
-             * invisible, and the name run stops at the dot, so it tests `kind`
-             * or `m` rather than the qualified name.
-             *
-             * The shape settles it without needing to know any names — but only
-             * the EXACT shape the lexer turns into a QUALIFIED_IDENT, which is
-             * `IDENT . IDENT (`: one plain identifier, one dot, one identifier,
-             * then the paren (see identifier_token, src/lexer.c). For that shape
-             * the grammar has a call production and no clause production, so
-             * reading it as a clause could only ever be wrong.
-             *
-             * Anything else keeps its clause. In particular a FIELD target
-             * reaches here legitimately when the chain is broken by an index —
-             * `player.inventory[slot].name(trimmed) = v` is a working clause in
-             * examples/nested_lvalue_test.bas, and `]` before the dot means the
-             * lexer does not build a QUALIFIED_IDENT. Rejecting every dotted
-             * name, rather than this one shape, breaks it. */
-            if (name_start > ctx->active_lexer->source && name_start[-1] == '.') {
-                const char *dot = name_start - 1;
-                const char *seg = dot;
-                while (seg > ctx->active_lexer->source &&
-                       ((seg[-1] >= 'A' && seg[-1] <= 'Z') ||
-                        (seg[-1] >= 'a' && seg[-1] <= 'z') ||
-                        (seg[-1] >= '0' && seg[-1] <= '9') ||
-                        seg[-1] == '_')) {
-                    seg--;
-                }
-                int rooted_at_plain_ident =
-                    seg < dot &&
-                    !(seg[0] >= '0' && seg[0] <= '9') &&
-                    (seg == ctx->active_lexer->source ||
-                     (seg[-1] != '.' && seg[-1] != ']')) &&
-                    lexer_identifier_type(seg, (int)(dot - seg)) == TOKEN_IDENT;
-                if (rooted_at_plain_ident) {
-                    return 0;
-                }
-            }
-        }
-    } else {
-        /* No identifier or number run. Only these can still end an expression. */
-        if (name_end == ctx->active_lexer->source) {
-            return 0;
-        }
-        char prev = name_end[-1];
-        if (prev != ')' && prev != ']' && prev != '"') {
-            return 0;
-        }
-    }
-
-    return 1;
-}
 
 %}
 
@@ -673,7 +462,7 @@ typedef struct {
 }
 
 %token <number> NUMBER
-%token <text> IDENT STRING MOD_CONTENT LENS_CONTENT QUALIFIED_IDENT
+%token <text> IDENT STRING LENS_CONTENT QUALIFIED_IDENT
 /* `as` reaches the parser ONLY as a field name; everywhere else it is consumed
  * by the lexer's modifier/lens modes. Declared so it can join field_name --
  * before this it fell through to the token mapper's default arm and was
@@ -681,7 +470,7 @@ typedef struct {
 %token AS
 %token IF CONSIDER_IF THEN ELSE CONSIDER_ELSE END END_CONSIDER PRINT TRUE FALSE NOTHING UNKNOWN_VALUE AND OR NOT WITH NEW SPAWN FOR TO STEP DO LOOP UNTIL IN EACH WHILE CONSIDER BREAK CONTINUE FUNCTION RETURN GOTO GOSUB WATCH UNWATCH WITHOUT WATCHERS ON NEXT STOP ERROR_VALUE MODIFIER PROGRAM LIBRARY LOAD USE EXPORT
 %token OP_EQ OP_NE OP_GT OP_LT OP_GE OP_LE OP_NGT OP_NLT OP_NGE OP_NLE
-%token PLUS MINUS STAR SLASH LPAREN MOD_LPAREN RPAREN LBRACKET RBRACKET LBRACE RBRACE COMMA COLON NEWLINE
+%token PLUS MINUS STAR SLASH LPAREN RPAREN LBRACKET RBRACKET LBRACE RBRACE COMMA COLON NEWLINE
 %precedence IF_WITHOUT_ELSE
 %precedence ELSE
 %precedence NO_DOT
@@ -714,7 +503,7 @@ static void report_syntax_error(gb_parse_ctx *ctx, int line, int column,
 %type <field_policy> field_policy
 %type <consider_branch_list> consider_branch_list
 %type <name_list> parameter_list parameter_list_opt watch_target_list
-%type <modifier> modifier comparison_lens
+%type <modifier> comparison_lens
 %type <modifier_signature> modifier_signature
 %type <duration> duration_terms
 %type <ident_suffix> ident_suffix ident_dot_suffix
@@ -797,7 +586,10 @@ statement
 
 assignment
     : lvalue OP_EQ expression { $$ = ast_assign($1, ast_modifier_none(), $3); }
-    | lvalue modifier OP_EQ expression {
+    /* PLAT-BRACE: the assignment clause in braces. A brace cannot open a call,
+     * so unlike the paren spelling this needs no lookahead to recognize --
+     * which is the whole reason the paren form was retired. */
+    | lvalue comparison_lens OP_EQ expression {
         if (!is_modifier_target_expr($1)) {
             report_syntax_error(ctx, ctx->la_line, ctx->la_column,
                                 ctx->la_end_line, ctx->la_end_column,
@@ -824,10 +616,6 @@ variable_name
      * exactly like `while` and `for`, which are not here either. */
     | LOOP %prec NO_DOT { $$ = copy_const("loop"); }
     | UNTIL %prec NO_DOT { $$ = copy_const("until"); }
-    ;
-
-modifier
-    : MOD_LPAREN MOD_CONTENT { $$ = parse_modifier_use($2); }
     ;
 
 comparison_lens
@@ -1307,15 +1095,6 @@ comparison_expression
     | additive_expression comparison_lens comparison_operator additive_expression {
         $$ = expr_at(ast_binary($3, $2, $1, $4), @3.first_line, @3.first_column);
       }
-    | additive_expression modifier comparison_operator additive_expression {
-        if (!is_modifier_target_expr($1)) {
-            report_syntax_error(ctx, ctx->la_line, ctx->la_column,
-                                ctx->la_end_line, ctx->la_end_column,
-                                "modifier target must be a variable, field, or index");
-            YYERROR;
-        }
-        $$ = expr_at(ast_binary($3, $2, $1, $4), @3.first_line, @3.first_column);
-      }
     ;
 
 additive_expression
@@ -1752,9 +1531,6 @@ static int yylex(YYSTYPE *lvalp, YYLTYPE *llocp, gb_parse_ctx *ctx) {
         }
         return STRING;
     }
-    case TOKEN_MOD_CONTENT:
-        lvalp->text = copy_text(token.start, token.length);
-        return MOD_CONTENT;
     case TOKEN_LENS_CONTENT:
         lvalp->text = copy_text(token.start, token.length);
         return LENS_CONTENT;
@@ -1821,10 +1597,10 @@ static int yylex(YYSTYPE *lvalp, YYLTYPE *llocp, gb_parse_ctx *ctx) {
     case TOKEN_STAR: return STAR;
     case TOKEN_SLASH: return SLASH;
     case TOKEN_LPAREN:
-        if (modifier_lparen_ahead(ctx, token.start)) {
-            lexer_begin_modifier_content(ctx->active_lexer);
-            return MOD_LPAREN;
-        }
+        /* PLAT-BRACE: `(` means a call or grouping and NOTHING else. The
+         * ninety-line lookahead that used to decide between a call and a
+         * modifier clause is gone with the paren clause spelling, and with it
+         * the residual it could not close (docs/brace_modifier_design.md). */
         return LPAREN;
     case TOKEN_RPAREN: return RPAREN;
     case TOKEN_LBRACKET: return LBRACKET;

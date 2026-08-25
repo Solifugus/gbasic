@@ -74,8 +74,8 @@ program main(args)
   ' swallowed the refusal would stop pinning its wording.)
   print "B5 still has a formula = " + (not is_unknown(xlsx.cell(edited, "Ledger", "B5").formula))
 
-  c(file) = copy_path
+  c{file} = copy_path
   delete(c)
-  e(file) = edit_path
+  e{file} = edit_path
   delete(e)
 end program

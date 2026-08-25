@@ -138,28 +138,28 @@ program main(args)
 
   print "-- clauses that already worked, and must keep working"
 
-  f(file) = "/tmp/gbasic_clause_probe"
+  f{file} = "/tmp/gbasic_clause_probe"
   print "file ref     ok=" + is_string(file_name(f))
 
-  t(trimmed) = "  hi  "
+  t{trimmed} = "  hi  "
   print "trimmed      ok=[" + t + "]"
 
-  p(split ",") = "a,b,c"
+  p{split ","} = "a,b,c"
   print "split        ok=" + count(p)
 
   ' A separator containing an escape, which PLAT-DEBT 4 fixed and which must
   ' still decode here.
-  q(split "\n") = "one" + "\n" + "two"
+  q{split "\n"} = "one" + "\n" + "two"
   print "split esc    ok=" + count(q)
 
   name = "Joe Barnes"
-  if name(caseless) = "joe barnes" then
+  if name{caseless} = "joe barnes" then
     print "compare      ok"
   end if
 
   ' An index target: the `(` follows `]`, which CAN end an expression.
   arr = ["  x  "]
-  arr[0](trimmed) = arr[0]
+  arr[0]{trimmed} = arr[0]
   print "index target ok=[" + arr[0] + "]"
 
   print "-- the {...} lens form, including multiple arguments"

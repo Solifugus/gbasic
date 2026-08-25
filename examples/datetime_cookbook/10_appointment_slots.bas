@@ -10,7 +10,7 @@ program main(args)
     load schedule from "../../stdlib/schedule.bas"
 
     cal = dates.calendar({ hours: { open: "9:00", close: "17:00" } })
-    mon (date)= "2026-08-17"
+    mon {date}= "2026-08-17"
 
     grid = schedule.slots(mon, { length: 20 minutes, gap: 10 minutes, breaks: [ { at: "12:00", length: 1 hour } ] }, cal)
 

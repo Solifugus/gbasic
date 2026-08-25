@@ -4,7 +4,7 @@
 ' `unknown` is displayed verbatim so NA propagation is visible (never masked).
 
 function load_facts(path)
-    ref(file)= path
+    ref{file}= path
     return decode(join(read_lines(ref), "\n"))
 end function
 

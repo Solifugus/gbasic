@@ -9,7 +9,7 @@ program main(args)
     fixtures = ["tenk_crox_2025_sample.htm", "tenk_crox_2024_sample.htm"]
     y = 0
     while y < count(fixtures)
-        pref(file)= "examples/fixtures/edgar/" + fixtures[y]
+        pref{file}= "examples/fixtures/edgar/" + fixtures[y]
         html = join(read_lines(pref), "\n")
         sec = mdna.sections(html)
         print("== " + fixtures[y] + " ==")

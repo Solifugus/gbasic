@@ -10,8 +10,8 @@
 function probe(label, flagged)
     ready = "/tmp/gbasic_plat_stream_partial_" + label + ".ready"
     gate = "/tmp/gbasic_plat_stream_partial_" + label + ".gate"
-    r(file) = ready
-    g(file) = gate
+    r{file} = ready
+    g{file} = gate
     if exists(r) then
         delete(r)
     end if

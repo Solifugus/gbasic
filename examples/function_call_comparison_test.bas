@@ -28,7 +28,7 @@ x = foo(1)
 print(x)
 
 name = "Joe"
-if name(caseless) = "joe" then
+if name{caseless} = "joe" then
     print("modifier ok")
 end if
 
@@ -38,6 +38,6 @@ end modifier
 
 amount = 1.234
 expected = 1.23
-if amount(rounded 2) = expected then
+if amount{rounded 2} = expected then
     print("parameterized modifier ok")
 end if

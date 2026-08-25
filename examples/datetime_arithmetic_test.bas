@@ -19,10 +19,10 @@ end function
 
 program main(args)
     ' --- the accountant's rule: years/months first, CLAMP, then exact parts ---
-    jan31 (date)= "2026-01-31"
-    feb29 (date)= "2024-02-29"
-    mar31 (date)= "2026-03-31"
-    feb01 (date)= "2026-02-01"
+    jan31 {date}= "2026-01-31"
+    feb29 {date}= "2024-02-29"
+    mar31 {date}= "2026-03-31"
+    feb01 {date}= "2026-02-01"
 
     x = check("Jan31 + 1 month        ", jan31 + 1 month, "2026-02-28")
     x = check("Jan31 + 1 month + 1 day", jan31 + 1 month + 1 day, "2026-03-01")
@@ -37,8 +37,8 @@ program main(args)
     x = check("(Jan31+1mo)-1mo != Jan31", (jan31 + 1 month) - 1 month, "2026-01-28")
 
     ' --- datetime - datetime -> exact duration ---
-    a (date)= "2026-03-15 10:00:00"
-    b (date)= "2026-03-14 08:30:00"
+    a {date}= "2026-03-15 10:00:00"
+    b {date}= "2026-03-14 08:30:00"
     x = check("dt - dt                ", a - b, "1 day 1 hour 30 minutes")
     x = check("dt - dt (negative)     ", b - a, "-1 day -1 hour -30 minutes")
     x = check("dt - itself            ", a - a, "0 seconds")

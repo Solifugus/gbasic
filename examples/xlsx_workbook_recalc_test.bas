@@ -65,6 +65,6 @@ program main(args)
   print "Mid A1 value   = " + xlsx.cell(again, "Mid", "A1").value
   print "Mid A1 formula = " + xlsx.cell(again, "Mid", "A1").formula
 
-  f(file) = out
+  f{file} = out
   delete(f)
 end program

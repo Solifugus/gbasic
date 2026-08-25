@@ -155,7 +155,6 @@ cases=(
     negative_len_assignment
     negative_foo_assignment
     negative_getname_assignment
-    negative_function_result_modifier
     negative_call_lvalue_index
     negative_call_lvalue_field
     negative_call_lvalue_dynamic_index
@@ -308,7 +307,6 @@ cases=(
     negative_modifier_escape_invalid
     negative_modifier_escape_surrogate
     negative_modifier_escape_nul
-    negative_clause_residual
     negative_clause_stmt_start
     negative_try_decode_type
     negative_library_error_path

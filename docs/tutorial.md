@@ -25,8 +25,8 @@ obvious guess is close enough to look right and fails on a detail.
 
 | You'll probably write | It actually is | Why |
 |---|---|---|
-| `p = $19.99` | `p(USD)= 19.99` | There is no money *literal* — and the error now says so, and shows this form. A modifier gives the value its kind; the result is a real `money`. → [Money & dates](#money-dates-times-and-durations) |
-| `d = today()` | `d(day)= now()` | There is deliberately no `today()`; derive a date from `now()` with the `(day)` lens. → [Money & dates](#money-dates-times-and-durations) |
+| `p = $19.99` | `p{USD}= 19.99` | There is no money *literal* — and the error now says so, and shows this form. A modifier gives the value its kind; the result is a real `money`. → [Money & dates](#money-dates-times-and-durations) |
+| `d = today()` | `d{day}= now()` | There is deliberately no `today()`; derive a date from `now()` with the `(day)` lens. → [Money & dates](#money-dates-times-and-durations) |
 | `w = spawn worker` | `w = spawn worker(self())` | `spawn` needs the call form even when you pass nothing of your own — otherwise it is a *parse* error. → [Actors](#actors-and-concurrency) |
 | `watch(a)` before `a` exists | declare `a` first, then `watch(a)` | A watcher reads its variables immediately. Written first it raises `undefined variable`, **carries on**, and the value you expected reads as `nothing` later. → [Watchers](#watchers) |
 
@@ -221,16 +221,16 @@ is gBASIC's most distinctive everyday feature.
 Assignment modifiers transform the value being stored. They use parentheses:
 
 ```basic
-price(USD)= 19.95          # money value, stored as cents
-due(date)= "2026-05-15"    # a date value
-command(trimmed)= input(">")
-command(lowered)= command
-code(uppered)= "abc"
-words(split)= "apple banana orange"   # -> ["apple","banana","orange"]
-line(join ", ")= words                # -> "apple, banana, orange"
-n(length)= line
-age(number)= "42"
-text(string)= age
+price{USD}= 19.95          # money value, stored as cents
+due{date}= "2026-05-15"    # a date value
+command{trimmed}= input(">")
+command{lowered}= command
+code{uppered}= "abc"
+words{split}= "apple banana orange"   # -> ["apple","banana","orange"]
+line{join ", "}= words                # -> "apple, banana, orange"
+n{length}= line
+age{number}= "42"
+text{string}= age
 ```
 
 Comparison modifiers (also called **lenses**) transform or implement a
@@ -270,7 +270,7 @@ end if
 > `caseless`, the date/time lenses, …) cover common cases; libraries can export
 > more (`export modifier …`). Note the syntactic split: `(...)=` is **assignment**,
 > `{...}=` is **comparison**. The older parenthesized comparison form
-> (`name(caseless)= …`) still works but is deprecated in favor of braces.
+> (`name{caseless}= …`) still works but is deprecated in favor of braces.
 
 ## Arrays and records
 
@@ -934,25 +934,25 @@ length) and their stored components.
 `USD` creates money, stored internally as integer cents:
 
 ```basic
-price(USD)= 19.95
+price{USD}= 19.95
 tax = price * 0.08          # money × number
 total = price + tax         # money + money
 if total > price then print("greater")
 ```
 
-Dates and times come from the `(date)=` / `(time)=` modifiers; precision is
+Dates and times come from the `{date}=` / `{time}=` modifiers; precision is
 inferred from the string (a date-only string is day-precise, a full timestamp is
 second-precise):
 
 ```basic
-d(date)= "2026-05-15"
-t(date)= "2026-05-15 12:05:03"
+d{date}= "2026-05-15"
+t{date}= "2026-05-15 12:05:03"
 ```
 
 Durations are first-class and compose with date arithmetic:
 
 ```basic
-start(date)= "2026-05-15 13:10:00"
+start{date}= "2026-05-15 13:10:00"
 print(start + 1 hour 20 minutes)    # 2026-05-15 14:30:00
 print(start + 2 days)
 ```
@@ -962,7 +962,7 @@ too). Pull or truncate parts with **lenses** — `year month day hour minute
 second` — as assignment modifiers or comparison lenses:
 
 ```basic
-y(year)= t                 # 2026
+y{year}= t                 # 2026
 if d {day}= t then print("same day")     # compare at day precision
 ```
 
@@ -975,7 +975,7 @@ The `now()` builtin returns the current local time as a second-precision
 ```basic
 deadline = now() + 8 hours
 expired = now() > deadline           # false until the deadline passes
-today(day)= now()                    # truncate to a date via the day lens
+today{day}= now()                    # truncate to a date via the day lens
 ```
 
 > **Theory — domain types, not stringly-typed data.** Money as cents, dates with
@@ -985,9 +985,9 @@ today(day)= now()                    # truncate to a date via the day lens
 > `"2026-05-15 00:00:00"` as if they were the same fact. The modifier/lens system
 > is what makes these ergonomic — the type is chosen at the assignment, and parts
 > are read through lenses rather than string surgery. (There is intentionally no
-> `today()` builtin — derive a date from `now()` via the `(day)=` lens. To build a
-> timestamp from a string, `(datetime)=` always yields a full second-precision
-> value, while `(date)=` infers precision from the string.)
+> `today()` builtin — derive a date from `now()` via the `{day}=` lens. To build a
+> timestamp from a string, `{datetime}=` always yields a full second-precision
+> value, while `{date}=` infers precision from the string.)
 
 ### Calendars, date expressions, and schedules
 
@@ -1028,7 +1028,7 @@ only at the **edges** — where a human's wall-clock time comes in, or goes out 
 because a server routinely serves several zones at once:
 
 ```basic
-meeting(date)= "2026-11-03 09:00:00"            ' what the Chicago calendar says
+meeting{date}= "2026-11-03 09:00:00"            ' what the Chicago calendar says
 utc = from_zone(meeting, "America/Chicago")     ' -> the instant, in UTC
 print(to_zone(utc, "Europe/Berlin"))            ' the same instant, Berlin wall clock
 print(zone_offset(utc, "America/Chicago"))      ' the offset in force, as a duration
@@ -1048,10 +1048,10 @@ suite executes — start there.
 
 ## Files and locks
 
-A file reference is a typed path, created with the `(file)=` modifier:
+A file reference is a typed path, created with the `{file}=` modifier:
 
 ```basic
-f(file)= "examples/tmp_file_test.txt"
+f{file}= "examples/tmp_file_test.txt"
 
 write(f, "line one\nline two\n")
 print(exists(f))            # true
@@ -1099,7 +1099,7 @@ gBASIC has two ways to turn values into text/bytes and back, for different jobs:
   records, dates/times, durations, money, and file references:
 
   ```basic
-  cost(USD)= 9.99
+  cost{USD}= 9.99
   exact = deserialize(serialize({ when: now(), cost: cost }))   # money + datetime, types intact
   ```
 
@@ -1156,7 +1156,7 @@ end library
 program demo(args)
     load text
     print(add(2, 3))
-    msg(shout)= "hello"
+    msg{shout}= "hello"
     print(msg)              # "HELLO"
     print(text.add(2, 3))  # qualified call bypasses override lookup
 end program

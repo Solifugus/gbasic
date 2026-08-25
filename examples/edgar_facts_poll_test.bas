@@ -4,7 +4,7 @@
 program main(args)
     load edgar from "../stdlib/edgar.bas"
 
-    cachefile(file)= "examples/tmp_edgar_facts.db"
+    cachefile{file}= "examples/tmp_edgar_facts.db"
     if exists(cachefile) then
         delete(cachefile)
     end if

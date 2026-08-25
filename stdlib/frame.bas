@@ -598,7 +598,7 @@ library frame
     ' Empty cells become `unknown`. Simple comma splitting only: quoted fields
     ' and embedded commas/newlines are not yet handled.
     function read_csv(path)
-        source(file)= path
+        source{file}= path
         lines = read_lines(source)
         if len(lines) = 0 then
             return {}
@@ -714,7 +714,7 @@ library frame
             text = text + chr(10)
             i = i + 1
         end while
-        sink(file)= path
+        sink{file}= path
         write(sink, text)
         return path
     end function

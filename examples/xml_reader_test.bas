@@ -6,7 +6,7 @@ program main(args)
     load xml
 
     src = "<catalog>\n  <book id=\"b1\">\n    <title>XML</title>\n  </book>\n  <book id=\"b2\">\n    <title>Streaming</title>\n  </book>\n</catalog>\n"
-    f(file)= "examples/tmp_xml_reader.xml"
+    f{file}= "examples/tmp_xml_reader.xml"
     if exists(f) then
         delete(f)
     end if

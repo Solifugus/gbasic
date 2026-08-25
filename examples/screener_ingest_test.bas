@@ -8,7 +8,7 @@ program main(args)
     dir = "examples/fixtures/edgar/companyfacts_sample"
 
     ' --- idempotency: ingest twice == ingest once ---
-    dbA(file)= "examples/tmp_screener_a.db"
+    dbA{file}= "examples/tmp_screener_a.db"
     if exists(dbA) then
         delete(dbA)
     end if
@@ -22,7 +22,7 @@ program main(args)
     print("twice == once ? " + string(rows_twice = rows_once))
 
     ' --- resumability: simulate interruption with a cap of 1 new filer per run ---
-    dbB(file)= "examples/tmp_screener_b.db"
+    dbB{file}= "examples/tmp_screener_b.db"
     if exists(dbB) then
         delete(dbB)
     end if

@@ -54,23 +54,23 @@ both({ a: 1, b: "two" })
 both({})
 
 ' --- datetimes at every precision, and time-only -------------------------
-y(date)= "2027"
+y{date}= "2027"
 both(y)
-mo(date)= "2026-06"
+mo{date}= "2026-06"
 both(mo)
-d(date)= "2026-05-15"
+d{date}= "2026-05-15"
 both(d)
-dh(datetime)= "2026-05-15 14"
+dh{datetime}= "2026-05-15 14"
 both(dh)
-dm(datetime)= "2026-05-15 14:30"
+dm{datetime}= "2026-05-15 14:30"
 both(dm)
-ds(datetime)= "2026-05-15 14:30:20"
+ds{datetime}= "2026-05-15 14:30:20"
 both(ds)
-th(time)= "14"
+th{time}= "14"
 both(th)
-tm(time)= "14:30"
+tm{time}= "14:30"
 both(tm)
-ts(time)= "14:30:20"
+ts{time}= "14:30:20"
 both(ts)
 
 ' --- durations -----------------------------------------------------------
@@ -78,17 +78,17 @@ both(2 days 3 hours)
 both(45 seconds)
 
 ' --- money, including negative (the sign is rendered separately) ---------
-price(USD)= 19.95
+price{USD}= 19.95
 both(price)
-owed(USD)= -5.00
+owed{USD}= -5.00
 both(owed)
-zero(USD)= 0.00
+zero{USD}= 0.00
 both(zero)
 
 ' --- file / dir references ----------------------------------------------
-f(file)= "/tmp/gbasic-parity-does-not-exist.txt"
+f{file}= "/tmp/gbasic-parity-does-not-exist.txt"
 both(f)
-dir(dir)= "/tmp"
+dir{dir}= "/tmp"
 both(dir)
 
 ' --- function value ------------------------------------------------------

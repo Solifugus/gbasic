@@ -1,1 +1,1 @@
-x(lowered)= 123
+x{lowered}= 123

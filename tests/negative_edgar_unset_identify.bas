@@ -1,6 +1,6 @@
 program main(args)
     load edgar from "../stdlib/edgar.bas"
-    cachefile(file)= "examples/tmp_edgar_neg_identity.db"
+    cachefile{file}= "examples/tmp_edgar_neg_identity.db"
     if exists(cachefile) then
         delete(cachefile)
     end if

@@ -40,10 +40,10 @@ if larger {rounded to 2}!< amount then
     print("rounded not less")
 end if
 
-d(date)= "2026-05-15 14:30:20"
-later(date)= "2026-05-16"
-next_month(date)= "2026-06"
-next_year(date)= "2027"
+d{date}= "2026-05-15 14:30:20"
+later{date}= "2026-05-16"
+next_month{date}= "2026-06"
+next_year{date}= "2027"
 
 if d {day}= "2026-05-15" then
     print("same day")

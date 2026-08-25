@@ -1,8 +1,8 @@
 load pg
 
-schema(file)= "examples/gbasic_site/sql/schema.sql"
-reset(file)= "examples/gbasic_site/sql/reset.sql"
-seed_sql(file)= "examples/gbasic_site/sql/seed.sql"
+schema{file}= "examples/gbasic_site/sql/schema.sql"
+reset{file}= "examples/gbasic_site/sql/reset.sql"
+seed_sql{file}= "examples/gbasic_site/sql/seed.sql"
 
 db = pg.connect({})
 
@@ -15,7 +15,7 @@ admin_password = env("GBASIC_SITE_ADMIN_PASSWORD")
 if is_unknown(admin_user) or is_unknown(admin_password) then
     print("no admin user provisioned (set GBASIC_SITE_ADMIN_USER and GBASIC_SITE_ADMIN_PASSWORD)")
 else
-    admin_user(trimmed)= admin_user
+    admin_user{trimmed}= admin_user
     if admin_user = "" or admin_password = "" then
         print("no admin user provisioned (GBASIC_SITE_ADMIN_USER and GBASIC_SITE_ADMIN_PASSWORD must be non-empty)")
     else

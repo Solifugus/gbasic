@@ -36,7 +36,7 @@ library filetree
     function _entries(dir_path, expanded)
         folder_names = []
         file_names = []
-        d(dir) = dir_path
+        d{dir} = dir_path
         for each e in list(d)
             if e.type = "folder" then
                 folder_names = append(folder_names, e.name)

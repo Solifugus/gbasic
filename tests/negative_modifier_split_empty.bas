@@ -1,1 +1,1 @@
-bad(split "")= "abc"
+bad{split ""}= "abc"

@@ -50,31 +50,31 @@ program demo(args)
     load stricttext
 
     on error goto next
-    hidden(whisper)= "HELLO"
+    hidden{whisper}= "HELLO"
     if error then
         print("private modifier unavailable")
         error.clear()
     end if
     on error stop
 
-    loud(shout)= "hello"
+    loud{shout}= "hello"
     print(loud)
 
     modifier marker for assign
         return lower(value)
     end modifier
 
-    local(marker)= "LOCAL"
+    local{marker}= "LOCAL"
     print(local)
 
-    selected(pick)= "ignored"
+    selected{pick}= "ignored"
     print(selected)
 
     name = "Joe"
-    if name(text.caseless)= "joe" then
+    if name{text.caseless}= "joe" then
         print("qualified text match")
     end if
-    if name(stricttext.caseless)= "joe" then
+    if name{stricttext.caseless}= "joe" then
         print("qualified strict match")
     end if
 end program

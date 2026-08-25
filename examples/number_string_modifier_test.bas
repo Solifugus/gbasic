@@ -1,20 +1,20 @@
-age(number)= "42"
+age{number}= "42"
 print(age)
 
-price(number)= " 19.95 "
+price{number}= " 19.95 "
 print(price)
 
-same(number)= 7
+same{number}= 7
 print(same)
 
-s(string)= 123
+s{string}= 123
 print(s)
 
-b(string)= true
+b{string}= true
 print(b)
 
-u(string)= unknown
+u{string}= unknown
 print(u)
 
-n(string)= nothing
+n{string}= nothing
 print("[" + n + "]")

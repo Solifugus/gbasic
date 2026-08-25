@@ -48,6 +48,7 @@ Task-oriented, with runnable examples.
 | [first_class_functions_design.md](first_class_functions_design.md) | Shipped | Function values, methods via `this`, `constructor`. Note: **no closures**. |
 | [unicode_design.md](unicode_design.md) | Shipped | Binary-safe, UTF-8-aware strings; codepoint and byte operations. |
 | [multiprocessing_design.md](multiprocessing_design.md) | Shipped | Shared-nothing actors over fork+exec; `spawn`/`send`/`receive`/`monitor`. |
+| [brace_modifier_design.md](brace_modifier_design.md) | Shipped | Modifier clauses in braces — `x{USD} = 19.95`. Retires the paren spelling and, with it, the clause-recognition residual that could not be closed at token delivery. |
 | [warning_model_design.md](warning_model_design.md) | Shipped | The warning channel: `on warning print/ignore/goto next/stop`, `if warning then`, and the `unused-result` diagnostic it makes affordable. |
 | [error_model_design.md](error_model_design.md) | Shipped | Frame-scoped `on error goto next`/`goto label`; catch-and-return, structured raises, traces. Replaces the deleted `on error resume next`. |
 | [text_design.md](text_design.md) | Partial | Layer 0 (regex as a value kind) ships. Layer 1 is `stdlib/ari.bas`. |

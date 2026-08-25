@@ -12,7 +12,7 @@ program main(args)
     load schedule from "../../stdlib/schedule.bas"
 
     cal = dates.calendar({ hours: { open: "9:00", close: "17:00" } })
-    mon (date)= "2026-08-17"
+    mon {date}= "2026-08-17"
     days = dates.series({ every: "business day" }, { from: mon, count: 3 }, cal)
 
     plan = {

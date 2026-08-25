@@ -7,7 +7,7 @@
 program main(args)
     load chart from "../../stdlib/chart.bas"
 
-    d1 (date)= "2026-01-31"
+    d1 {date}= "2026-01-31"
     trend = {
         day: [d1, d1 + 14 days, d1 + 28 days, d1 + 42 days],
         users: [120, 180, 260, 410]

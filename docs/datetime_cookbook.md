@@ -23,7 +23,7 @@ Three ideas carry everything on this page:
 
 1. **One datetime kind, carrying its precision.** `2026`, `2026-03` and
    `2026-03-15` are the same kind at different precisions — what Java needs
-   four types for. Lenses (`(day)=`, `(month)=`) truncate; dot fields
+   four types for. Lenses (`{day}=`, `{month}=`) truncate; dot fields
    (`d.year`, `d.weekday`) extract numbers.
 2. **Exact and calendar time are never blurred.** Hours and days have fixed
    lengths; months do not. Month arithmetic clamps at month-end (the
@@ -47,10 +47,10 @@ Three ideas carry everything on this page:
 ' ISO string at any precision.
 
 program main(args)
-    y (date)= "2026"
-    m (date)= "2026-03"
-    d (date)= "2026-03-15"
-    t (date)= "2026-03-15 09:30"
+    y {date}= "2026"
+    m {date}= "2026-03"
+    d {date}= "2026-03-15"
+    t {date}= "2026-03-15 09:30"
 
     print "year value : " + y
     print "month value: " + m
@@ -64,11 +64,11 @@ program main(args)
     ' Adding a duration respects the calendar -- THE ACCOUNTANT'S RULE:
     ' years and months first, then the day is CLAMPED into the resulting
     ' month, then exact parts. Month-end behaves the way an invoice expects.
-    jan31 (date)= "2026-01-31"
+    jan31 {date}= "2026-01-31"
     print ""
     print "Jan 31 + 1 month  = " + (jan31 + 1 month)
     print "Jan 31 + 3 months = " + (jan31 + (1 month) * 3)
-    feb29 (date)= "2024-02-29"
+    feb29 {date}= "2024-02-29"
     print "Feb 29 + 1 year   = " + (feb29 + 1 year)
     print "back off month-end: " + (jan31 + 1 month - 1 day)
 end program
@@ -111,7 +111,7 @@ month-end; clamping is lossy, and pretending otherwise would be worse.
 ' for grouping. Two mechanisms, two jobs, zero global names spent.
 
 program main(args)
-    d (date)= "2026-03-15 09:30:45"
+    d {date}= "2026-03-15 09:30:45"
 
     print "year " + d.year + ", month " + d.month + ", day " + d.day
     print "clock " + d.hour + ":" + d.minute + ":" + d.second
@@ -127,7 +127,7 @@ program main(args)
 
     ' THE PRECISION RULE: a field finer than the value's precision is absent
     ' information and reads as unknown -- never a plausible zero.
-    m (month)= d
+    m {month}= d
     print ""
     print "month value      : " + m + "  (precision " + m.precision + ")"
     print "its .day is known: " + (not is_unknown(m.day))
@@ -246,27 +246,27 @@ returned true and *every* ordering returned false — both sides silently became
 program main(args)
     load dates from "../../stdlib/dates.bas"
 
-    a (date)= "2026-03-14 08:30:00"
-    b (date)= "2026-03-15 10:00:00"
+    a {date}= "2026-03-14 08:30:00"
+    b {date}= "2026-03-15 10:00:00"
     print "exact gap    : " + (b - a)
     print "backwards    : " + (a - b)
 
     ' Days until a deadline -- exact division of an exact duration.
-    today (date)= "2026-08-17"
-    deadline (date)= "2026-09-30"
+    today {date}= "2026-08-17"
+    deadline {date}= "2026-09-30"
     gap = deadline - today
     print "days left    : " + (gap.total_seconds / 86400)
     print "same, direct : " + dates.between(today, deadline, "days")
 
     ' Ages and anniversaries are calendar arithmetic.
-    born (date)= "1990-06-15"
+    born {date}= "1990-06-15"
     print "age in years : " + dates.between(born, today, "years")
     print "age in months: " + dates.between(born, today, "months")
 
     ' The month count agrees with the operator, clamping included: Jan 31 ->
     ' Feb 28 counts as one month exactly BECAUSE Jan 31 + 1 month is Feb 28.
-    jan31 (date)= "2026-01-31"
-    feb28 (date)= "2026-02-28"
+    jan31 {date}= "2026-01-31"
+    feb28 {date}= "2026-02-28"
     print "Jan31->Feb28 : " + dates.between(jan31, feb28, "months") + " month(s)"
 end program
 ```
@@ -306,16 +306,16 @@ program main(args)
     load dates from "../../stdlib/dates.bas"
 
     cal = dates.calendar({})
-    mon (date)= "2026-08-17"
-    sat (date)= "2026-08-15"
+    mon {date}= "2026-08-17"
+    sat {date}= "2026-08-15"
     print "Monday works : " + dates.is_business_day(mon, cal)
     print "Saturday not : " + dates.is_business_day(sat, cal)
 
     ' Christmas 2026 is a Friday. From Christmas Eve, the next business day
     ' steps over the holiday AND the weekend.
-    xmas_stamp (date)= "2026-12-25 09:30:00"
+    xmas_stamp {date}= "2026-12-25 09:30:00"
     hcal = dates.calendar({ holidays: [xmas_stamp] })
-    eve (date)= "2026-12-24"
+    eve {date}= "2026-12-24"
     print "after Dec 24 : " + dates.next_business_day(eve, hcal)
 
     ' Deadlines in working days, both directions.
@@ -324,16 +324,16 @@ program main(args)
 
     ' Working days until a date: counted over (a, b], signed. The convention
     ' is worth knowing -- half-open intervals are where calendar bugs live.
-    fri (date)= "2026-08-21"
+    fri {date}= "2026-08-21"
     print "Mon..Fri     : " + dates.business_days_between(mon, fri, cal) + " working days"
 
     ' Observed holidays: July 4, 2026 is a Saturday, so under the US federal
     ' rule the day OFF is Friday July 3. observe: "nearest" computes that at
     ' construction, and every verb downstream simply inherits it.
-    july4 (date)= "2026-07-04"
+    july4 {date}= "2026-07-04"
     us = dates.calendar({ holidays: [july4], observe: "nearest" })
-    fri3 (date)= "2026-07-03"
-    thu2 (date)= "2026-07-02"
+    fri3 {date}= "2026-07-03"
+    thu2 {date}= "2026-07-02"
     print "Jul 3 off    : " + (not dates.is_business_day(fri3, us))
     print "after Jul 2  : " + dates.next_business_day(thu2, us)
 end program
@@ -379,7 +379,7 @@ program main(args)
     load dates from "../../stdlib/dates.bas"
 
     cal = dates.calendar({})
-    d (date)= "2026-08-17"
+    d {date}= "2026-08-17"
 
     print "3rd Thursday      : " + dates.select({ nth: 3, weekday: "thursday", within: "month" }, d, cal)
     print "last Wednesday    : " + dates.select({ nth: "last", weekday: "wednesday", within: "month" }, d, cal)
@@ -392,9 +392,9 @@ program main(args)
     print "after Mon         : " + dates.select({ nth: 1, weekday: "monday", after: d }, d, cal)
 
     ' A business-day constraint composes with a calendar.
-    xmas (date)= "2026-12-25"
+    xmas {date}= "2026-12-25"
     hcal = dates.calendar({ holidays: [xmas] })
-    mon28 (date)= "2026-12-28"
+    mon28 {date}= "2026-12-28"
     print "last bday before  : " + dates.select({ nth: 1, kind: "business", before: mon28 }, mon28, hcal)
 
     ' A spec no day satisfies yields UNKNOWN -- a miss, not an error. (A
@@ -403,7 +403,7 @@ program main(args)
     print "5th Tuesday       : missing = " + is_unknown(fifth)
 
     ' The same vocabulary as a predicate:
-    thu (date)= "2026-08-20"
+    thu {date}= "2026-08-20"
     print "is 3rd Thursday?  : " + dates.matches(thu, { nth: 3, weekday: "thursday", within: "month" }, cal)
 end program
 ```
@@ -457,8 +457,8 @@ program main(args)
     load dates from "../../stdlib/dates.bas"
 
     cal = dates.calendar({})
-    jan1 (date)= "2026-01-01"
-    jun30 (date)= "2026-06-30"
+    jan1 {date}= "2026-01-01"
+    jun30 {date}= "2026-06-30"
 
     ' The board meets every third Thursday at 14:00.
     board = { every: "month", when: { nth: 3, weekday: "thursday" }, at: "14:00" }
@@ -469,9 +469,9 @@ program main(args)
     ' Payroll every two weeks from an anchor payday, rolled OFF holidays --
     ' backward, so pay is never late. Steps are start + step*k, never
     ' cumulative, so nothing drifts.
-    feb13 (date)= "2026-02-13"
+    feb13 {date}= "2026-02-13"
     pcal = dates.calendar({ holidays: [feb13] })
-    payday1 (date)= "2026-01-02"
+    payday1 {date}= "2026-01-02"
     print ""
     for each p in dates.series({ every: 2 weeks, roll: "backward" }, { from: payday1, count: 6 }, pcal)
         print "pay:   " + p
@@ -479,7 +479,7 @@ program main(args)
 
     ' Standups Monday, Wednesday and Friday: when: WITHOUT nth means EVERY
     ' matching day in the period, not the nth one.
-    mon17 (date)= "2026-08-17"
+    mon17 {date}= "2026-08-17"
     standup = { every: "week", when: { weekday: ["monday", "wednesday", "friday"] }, at: "9:15" }
     print ""
     for each s in dates.series(standup, { from: mon17, count: 5 }, cal)
@@ -488,7 +488,7 @@ program main(args)
 
     ' Month-end billing: multiplicative stepping means Jan 31 -> Feb 28 ->
     ' MAR 31 -- clamping applies per step, and never compounds.
-    jan31 (date)= "2026-01-31"
+    jan31 {date}= "2026-01-31"
     print ""
     for each b in dates.series({ every: "month" }, { from: jan31, count: 4 }, cal)
         print "bill:  " + b
@@ -560,7 +560,7 @@ library could never read `spec.on` back.)
 program main(args)
     load dates from "../../stdlib/dates.bas"
 
-    xmas (date)= "2026-12-25"
+    xmas {date}= "2026-12-25"
     alice = dates.calendar({ holidays: [xmas], hours: { open: "9:00", close: "17:00" } })
     bob = dates.calendar({ weekend: ["friday", "saturday", "sunday"], hours: { open: "10:00", close: "16:30" } })
 
@@ -569,7 +569,7 @@ program main(args)
     print "merged window  : " + both.hours.open + " to " + both.hours.close
 
     ' First day they can both meet, starting from Wed Dec 23.
-    wed (date)= "2026-12-23"
+    wed {date}= "2026-12-23"
     day = dates.next_business_day(wed, both)
     print "mutual day     : " + day
     print "works for Alice: " + dates.is_business_day(day, alice)
@@ -623,7 +623,7 @@ program main(args)
     load schedule from "../../stdlib/schedule.bas"
 
     cal = dates.calendar({ hours: { open: "9:00", close: "17:00" } })
-    mon (date)= "2026-08-17"
+    mon {date}= "2026-08-17"
     days = dates.series({ every: "business day" }, { from: mon, count: 3 }, cal)
 
     plan = {
@@ -684,7 +684,7 @@ program main(args)
     load schedule from "../../stdlib/schedule.bas"
 
     cal = dates.calendar({ hours: { open: "9:00", close: "17:00" } })
-    mon (date)= "2026-08-17"
+    mon {date}= "2026-08-17"
 
     grid = schedule.slots(mon, { length: 20 minutes, gap: 10 minutes, breaks: [ { at: "12:00", length: 1 hour } ] }, cal)
 
@@ -739,8 +739,8 @@ program main(args)
 
     cal = dates.calendar({})
     rule = { every: "month", when: { nth: 3, weekday: "thursday" }, at: "14:00" }
-    sep1 (date)= "2026-09-01"
-    dec31 (date)= "2026-12-31"
+    sep1 {date}= "2026-09-01"
+    dec31 {date}= "2026-12-31"
 
     print "Board meets every 3rd Thursday, 14:00 America/Chicago:"
     for each m in dates.series(rule, { from: sep1, through: dec31 }, cal)
@@ -754,18 +754,18 @@ program main(args)
     ' argument in four rows.
 
     print ""
-    off_oct (date)= "2026-10-15 12:00:00"
-    off_nov (date)= "2026-11-15 12:00:00"
+    off_oct {date}= "2026-10-15 12:00:00"
+    off_nov {date}= "2026-11-15 12:00:00"
     print "Chicago offset in Oct: " + zone_offset(off_oct, "America/Chicago")
     print "Chicago offset in Nov: " + zone_offset(off_nov, "America/Chicago")
 
     ' DST edge cases are NAMED, never guessed. 02:30 on the spring-forward
     ' night does not exist; the fall-back 01:30 happens twice.
     print ""
-    gap (date)= "2026-03-08 02:30:00"
+    gap {date}= "2026-03-08 02:30:00"
     r = zone_resolve(gap, "America/New_York")
     print "2026-03-08 02:30 New York is " + r.kind
-    twice (date)= "2026-11-01 01:30:00"
+    twice {date}= "2026-11-01 01:30:00"
     r2 = zone_resolve(twice, "America/New_York")
     print "2026-11-01 01:30 New York is " + r2.kind + " (earlier " + r2.earlier + "Z, later " + r2.later + "Z)"
 end program
@@ -823,25 +823,25 @@ program main(args)
     cal = dates.calendar({ hours: { open: "9:00", close: "17:00" } })
 
     ' Four tickets, one promise: respond within 4 business hours.
-    t1 (date)= "2026-08-17 09:30:00"
-    t2 (date)= "2026-08-17 15:00:00"
-    t3 (date)= "2026-08-14 16:00:00"
-    t4 (date)= "2026-08-15 11:00:00"
+    t1 {date}= "2026-08-17 09:30:00"
+    t2 {date}= "2026-08-17 15:00:00"
+    t3 {date}= "2026-08-14 16:00:00"
+    t4 {date}= "2026-08-15 11:00:00"
     for each t in [t1, t2, t3, t4]
         due = dates.add_business_hours(t, 4 hours, cal)
         print "in " + t + " (" + t.dayname + ")  ->  due " + due + " (" + due.dayname + ")"
     end for
 
     ' How much working time did a resolution actually take?
-    opened (date)= "2026-08-14 15:00:00"
-    closed (date)= "2026-08-17 11:00:00"
+    opened {date}= "2026-08-14 15:00:00"
+    closed {date}= "2026-08-17 11:00:00"
     print ""
     print "opened Friday 15:00, closed Monday 11:00 = " + dates.business_hours_between(opened, closed, cal) + " of work time"
 
     ' The clock respects holidays like every other calendar verb.
-    xmas (date)= "2026-12-25"
+    xmas {date}= "2026-12-25"
     hcal = dates.calendar({ holidays: [xmas], hours: { open: "9:00", close: "17:00" } })
-    eve (date)= "2026-12-24 15:00:00"
+    eve {date}= "2026-12-24 15:00:00"
     print "Christmas Eve 15:00 + 4 business hours = " + dates.add_business_hours(eve, 4 hours, hcal)
 end program
 ```

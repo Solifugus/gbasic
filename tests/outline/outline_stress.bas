@@ -9,7 +9,7 @@ program main(args)
   if count(args) > 1 then
     reps = number(args[1])
   end if
-  ref(file) = path
+  ref{file} = path
   src = read(ref)
   nodes = 0
   diags = 0

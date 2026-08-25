@@ -16,13 +16,13 @@ the standing ones.
 - **Top-level `goto`/`gosub` fails loudly.** They are supported only *inside
   functions*; at the top level they now raise a runtime error instead of silently
   doing nothing.
-- **`(upper)=`, `(lower)=` and `(trim)=` work** (2026-08-18). The string
+- **`{upper}=`, `{lower}=` and `{trim}=` work** (2026-08-18). The string
   modifiers accept both the builtin's name and the participle
   (`uppered`/`lowered`/`trimmed`), so the near-miss that used to raise
   `assign modifier not found: upper` — this file's most-hit trap — is gone.
   Both spellings are the same modifier; existing code is untouched.
 - **`p = $19.99` now explains itself** (2026-08-18): the lexer error says
-  `'$' is not a money literal; write p(USD)= 19.99` instead of
+  `'$' is not a money literal; write p{USD}= 19.99` instead of
   `unexpected token`.
 
 ## Control flow
@@ -70,7 +70,7 @@ the standing ones.
   It *parses*, then fails at run time with `compare modifier not found: x`, naming
   your own argument. A number or string argument (`kind(1)`, `kind("q")`) is fine:
   a modifier name is always identifier-shaped, so those cannot be clauses. The
-  identifier case is not fixable here — `name(caseless) = "joe"` is the same
+  identifier case is not fixable here — `name{caseless} = "joe"` is the same
   tokens in the same order and must mean a clause. Call it qualified
   (`lib.kind(x)`) or bind the result to a variable first. Pinned in
   `tests/negative_clause_residual.bas`; analysis in
@@ -138,7 +138,7 @@ the standing ones.
   surfaced at exit — so results were built on a watcher that had not run.
 
 - **A typed-value modifier RAISES when it cannot construct** (0.1.0-rc5):
-  `d(date) = "not-a-date"`, and likewise `time`, `datetime`, `file`, `dir`.
+  `d{date} = "not-a-date"`, and likewise `time`, `datetime`, `file`, `dir`.
   They used to print an unlocated line and assign `nothing` with exit 0, so a
   bad date became a `nothing` that flowed onward. Validate the string first if
   a bad value is expected rather than exceptional (this is what
@@ -225,10 +225,10 @@ the standing ones.
   currency modifier, which displays at fixed currency precision:
 
   ```basic
-  a(USD)= 0.1
-  b(USD)= 0.2
+  a{USD}= 0.1
+  b{USD}= 0.2
   print a + b           ' 0.30
-  t(USD)= 265550.75
+  t{USD}= 265550.75
   print t               ' 265550.75
   ```
 
@@ -290,15 +290,15 @@ day — so assume you will hit them too.
 
 - **Money and dates are modifiers, not literals.** There is no `$19.99` syntax —
   the lexer error tells you the form (`'$' is not a money literal; write
-  p(USD)= 19.99`). A modifier gives the value its kind at the point of
+  p{USD}= 19.99`). A modifier gives the value its kind at the point of
   assignment, and the result is a real `money`/`datetime`, not a number or a
   string.
 
   ```basic
-  price(USD)= 19.95
+  price{USD}= 19.95
   print type(price)              ' money
   print price * 3                ' 59.85
-  due (date)= "2026-03-01 09:00:00"
+  due {date}= "2026-03-01 09:00:00"
   print due + 45 days            ' 2026-04-15 09:00:00
   ```
 

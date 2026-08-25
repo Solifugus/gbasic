@@ -22,7 +22,7 @@ if error then
     error.clear()
 end if
 
-f (file)= "examples/no_such_error_file.txt"
+f {file}= "examples/no_such_error_file.txt"
 print read(f)
 if error then
     print error.source
@@ -55,7 +55,7 @@ if error then
     error.clear()
 end if
 
-lockfile (file)= "examples/tmp_error_lock_test.txt"
+lockfile {file}= "examples/tmp_error_lock_test.txt"
 with lock(lockfile)
     error "locked failure"
 end with

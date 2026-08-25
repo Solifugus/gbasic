@@ -29,10 +29,10 @@ end if
 n = 3
 m = 5
 
-if n(pass through)!>= 4 then
+if n{pass through}!>= 4 then
     print "modifier !>= true"
 end if
 
-if m(pass through)!<= 4 then
+if m{pass through}!<= 4 then
     print "modifier !<= true"
 end if

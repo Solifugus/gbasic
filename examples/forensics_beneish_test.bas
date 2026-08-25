@@ -7,7 +7,7 @@ program main(args)
     load forensics from "../stdlib/forensics.bas"
 
     ' --- primary golden: raw statements -> 8 indices -> M-Score (Boeing FY2023) ---
-    p(file)= "examples/fixtures/edgar/beneish_boeing_fixture.json"
+    p{file}= "examples/fixtures/edgar/beneish_boeing_fixture.json"
     facts = decode(join(read_lines(p), "\n"))
     b = forensics.beneish(facts)
     print("== Boeing FY2023 (published reference) ==")

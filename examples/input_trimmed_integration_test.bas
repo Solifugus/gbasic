@@ -1,2 +1,2 @@
-name(trimmed)= input("Name: ")
+name{trimmed}= input("Name: ")
 print("[" + name + "]")

@@ -747,3 +747,28 @@ intentional additions, since they add assertions rather than move any:
 The fifth, `dir_test.gb`, is deliberately left ungoldened: it lists the live
 `examples/` directory, so its output changes whenever a file is added there —
 including by this phase. That is why it has no golden, and it should not get one.
+
+
+---
+
+## 10. Closed 2026-08-24 — by retiring the spelling, not by out-thinking it
+
+Everything above analyses an ambiguity in the PAREN clause form:
+`name(caseless) = "joe"` and `kind(x) = "record"` are the same tokens in the
+same order, and §9 concludes the identifier-argument case cannot be separated
+at token delivery. That conclusion stands. It was never wrong.
+
+PLAT-BRACE (`brace_modifier_design.md`) removed the ambiguity by removing the
+construct: a modifier clause is written `name{caseless} = "joe"`, and a brace
+cannot open a call, so there is nothing to decide. `modifier_lparen_ahead` --
+the ninety-line lookahead this document exists to justify -- is deleted, along
+with the `MOD_LPAREN` / `MOD_CONTENT` token pair.
+
+`tests/negative_clause_residual.*` retired with it: the behaviour it pinned no
+longer exists, and `tests/brace_modifiers/residual.bas` now asserts the
+opposite -- that an unqualified call to a loaded library's function, with an
+identifier argument, in a comparison, parses as **a call**.
+
+The examples in the sections above are left in the paren spelling on purpose.
+Rewriting them would make the analysis incoherent: the whole argument is about
+two constructs that LOOK alike, and in the new spelling they do not.

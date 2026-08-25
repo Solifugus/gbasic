@@ -31,7 +31,7 @@ ui = {
 win = gui.window(420, 280, "Unit Converter", ui)
 
 function convert_from_celsius()
-    c(number)= win.celsius.value
+    c{number}= win.celsius.value
     if error then
         win.status.value = "Celsius input must be a number."
         error.clear()
@@ -41,8 +41,8 @@ function convert_from_celsius()
     f = c * 9 / 5 + 32
     k = c + 273.15
 
-    f_text(string)= f
-    k_text(string)= k
+    f_text{string}= f
+    k_text{string}= k
     win.fahrenheit.value = f_text
     win.kelvin.value = k_text
     win.result.value = k_text + " K"
@@ -50,7 +50,7 @@ function convert_from_celsius()
 end function
 
 function convert_from_fahrenheit()
-    f(number)= win.fahrenheit.value
+    f{number}= win.fahrenheit.value
     if error then
         win.status.value = "Fahrenheit input must be a number."
         error.clear()
@@ -59,8 +59,8 @@ function convert_from_fahrenheit()
 
     c = (f - 32) * 5 / 9
     k = c + 273.15
-    c_text(string)= c
-    k_text(string)= k
+    c_text{string}= c
+    k_text{string}= k
     win.celsius.value = c_text
     win.kelvin.value = k_text
     win.result.value = c_text + " C"
@@ -68,7 +68,7 @@ function convert_from_fahrenheit()
 end function
 
 function convert_celsius_to_kelvin()
-    c(number)= win.celsius.value
+    c{number}= win.celsius.value
     if error then
         win.status.value = "Celsius input must be a number."
         error.clear()
@@ -76,9 +76,9 @@ function convert_celsius_to_kelvin()
     end if
 
     k = c + 273.15
-    k_text(string)= k
+    k_text{string}= k
     f = c * 9 / 5 + 32
-    f_text(string)= f
+    f_text{string}= f
     win.fahrenheit.value = f_text
     win.kelvin.value = k_text
     win.result.value = k_text + " K"
@@ -86,7 +86,7 @@ function convert_celsius_to_kelvin()
 end function
 
 function convert_kelvin_to_celsius()
-    k(number)= win.kelvin.value
+    k{number}= win.kelvin.value
     if error then
         win.status.value = "Kelvin input must be a number."
         error.clear()
@@ -95,8 +95,8 @@ function convert_kelvin_to_celsius()
 
     c = k - 273.15
     f = c * 9 / 5 + 32
-    c_text(string)= c
-    f_text(string)= f
+    c_text{string}= c
+    f_text{string}= f
     win.celsius.value = c_text
     win.fahrenheit.value = f_text
     win.result.value = c_text + " C"

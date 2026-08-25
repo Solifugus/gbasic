@@ -86,7 +86,7 @@ end function
 program main(args)
   load ari from "../stdlib/ari.bas"
 
-  f(file) = "examples/fixtures/ari/delinquency.rpt"
+  f{file} = "examples/fixtures/ari/delinquency.rpt"
   report = join(read_lines(f), "\n")
 
   print "== undeclared dates: the ambiguous minority is refused, not guessed =="

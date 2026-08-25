@@ -8,9 +8,9 @@
 program main(args)
     load chart from "../../stdlib/chart.bas"
 
-    a(USD)= 1200.50
-    b(USD)= 1350.25
-    c(USD)= 1180.75
+    a{USD}= 1200.50
+    b{USD}= 1350.25
+    c{USD}= 1180.75
     balances = { month: [1, 2, 3], balance: [a, b, c] }
     svg = chart.line(balances, "month", "balance")
 

@@ -23,5 +23,5 @@ print "stdout-identical-before=" + (before.out = base.out)
 print "stdout=<" + base.out + ">"
 print "stderr-is-json=" + (left(base.err, 1) = "{")
 nl = "\n"
-errlines(split nl) = base.err
+errlines{split nl} = base.err
 print "stderr-lines=" + count(errlines)

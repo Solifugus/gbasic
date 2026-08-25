@@ -7,7 +7,7 @@
 program main(args)
     load chart from "../stdlib/chart.bas"
 
-    p(USD)= 1.75
+    p{USD}= 1.75
     df = {
         q: ["Q1", "Q2", "Q3", "Q4"],
         eps: [1.2, 1.5, -0.4, p],

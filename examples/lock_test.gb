@@ -1,4 +1,4 @@
-f (file)= "examples/tmp_lock_test.txt"
+f {file}= "examples/tmp_lock_test.txt"
 
 with lock(f)
     write(f, "locked write\n")

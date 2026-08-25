@@ -2,7 +2,7 @@
 ' MID-CODEPOINT (the two-byte e-acute straddles the two halves) and ends with no
 ' trailing newline. Reassembling the reads must reproduce every byte exactly.
 gate = "/tmp/gbasic_plat_proc_bytes.gate"
-g(file) = gate
+g{file} = gate
 if exists(g) then
   delete(g)
 end if

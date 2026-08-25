@@ -111,9 +111,9 @@ library edgar
         ' Create the cache directory if absent. exists() accepts only FILE
         ' references (not directory references), but a file reference to a
         ' directory path reports existence correctly, so probe with one.
-        pcheck(file)= parent
+        pcheck{file}= parent
         if not exists(pcheck) then
-            mkref(dir)= parent
+            mkref{dir}= parent
             make_dir(mkref)
         end if
         db = sqlite.connect(e.cache_path)
@@ -172,7 +172,7 @@ library edgar
         if not is_unknown(e.offline_dir) then
             fname = _url_to_fixture(url)
             path = e.offline_dir + "/" + fname
-            pref(file)= path
+            pref{file}= path
             if not exists(pref) then
                 error "edgar: offline fixture missing for " + url + " (expected " + path + ")"
             end if

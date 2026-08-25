@@ -19,7 +19,7 @@ program main()
     print "function=" + doubled(21)
 
     ' 2. A modifier declared after the block.
-    shouty(loud)= "quiet"
+    shouty{loud}= "quiet"
     print "modifier=" + shouty
 
     ' 3. A library declared after the block, resolved from the root AST.

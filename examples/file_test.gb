@@ -1,4 +1,4 @@
-f (file)= "examples/tmp_file_test.txt"
+f {file}= "examples/tmp_file_test.txt"
 
 write(f, "line one\nline two\n")
 print exists(f)

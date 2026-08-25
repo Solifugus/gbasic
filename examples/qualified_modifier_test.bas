@@ -16,11 +16,11 @@ program demo(args)
 
     name = "Joe"
 
-    if name(text.caseless)= "joe" then
+    if name{text.caseless}= "joe" then
         print("text match")
     end if
 
-    if name(stricttext.caseless)= "joe" then
+    if name{stricttext.caseless}= "joe" then
         print("strict match")
     end if
 end program

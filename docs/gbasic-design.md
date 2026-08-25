@@ -44,7 +44,7 @@ meaning is applied through context, not encoded in special literal glyphs
 ```
 
 So gBASIC has no special glyphs for money, dates, or files. Instead of
-`balance = $19.95` it uses an **operator modifier**: `balance(USD)= 19.95`.
+`balance = $19.95` it uses an **operator modifier**: `balance{USD}= 19.95`.
 
 ### Implementation architecture
 
@@ -91,7 +91,7 @@ Built-in value kinds:
 - **record** — named-field object with colon syntax: `{name:"Ada", active:true}`.
   Fields may be accessed statically (`customer.name`) or dynamically
   (`customer[field]`). A missing dynamic read yields `unknown`.
-- **money** — created by an assignment modifier (`balance(USD)= 19.95`); stored
+- **money** — created by an assignment modifier (`balance{USD}= 19.95`); stored
   as exact cents. v0.1 supports USD; other currencies are **(future)**.
 - **date/time** — first-class value carrying an explicit precision (see §6).
 - **duration** — first-class: `1 hour 20 minutes 2 seconds`; may carry years,
@@ -143,21 +143,21 @@ number) raises a runtime error rather than silently coercing.
 
 A **modifier** is a parenthesized term adjacent to an operator that changes the
 meaning of an assignment or comparison. Modifier terms live in their own
-namespace and do not collide with ordinary variables: in `name(caseless)= "joe"`
+namespace and do not collide with ordinary variables: in `name{caseless}= "joe"`
 the `caseless` token resolves as a modifier, while `caseless` elsewhere is an
 ordinary identifier.
 
 ### Assignment modifiers — parenthesized (permanent syntax)
 
 ```basic
-balance(USD)= 19.95
-dob(date)= "1970-06-11"
-config(file)= "data.txt"
-age(number)= input("Age: ")
+balance{USD}= 19.95
+dob{date}= "1970-06-11"
+config{file}= "data.txt"
+age{number}= input("Age: ")
 ```
 
-Spacing around the parentheses is not significant; all of `x(USD)=`,
-`x (USD)=`, `x(USD) =`, `x (USD) =` are equivalent.
+Spacing around the parentheses is not significant; all of `x{USD}=`,
+`x {USD}=`, `x{USD} =`, `x {USD} =` are equivalent.
 
 ### Comparison lenses — brace syntax (canonical)
 
@@ -171,7 +171,7 @@ if d {day}= t then ...
 ```
 
 The brace form is the **canonical** comparison-modifier syntax. The older
-parenthesized comparison form (`name(caseless)= "joe"`) still parses and runs but
+parenthesized comparison form (`name{caseless}= "joe"`) still parses and runs but
 is **deprecated**; removing it and emitting deprecation diagnostics is **(future)**.
 
 Lens content is captured as raw text by a dedicated lexer mode, so multi-word
@@ -224,7 +224,7 @@ therefore overlap and resolve by context.
 **Known limitation (recorded):** an lvalue whose name is also a builtin or
 declared function is biased toward call syntax, which can make its
 modifier-assignment form unparseable — e.g. once `code` became a builtin,
-`code(uppered)= "abc"` no longer parses (the `code(` binds as a call). The
+`code{uppered}= "abc"` no longer parses (the `code(` binds as a call). The
 declaration scan is also file-global, not program/library-scoped, and does not
 resolve externally loaded/qualified functions. This argues for a documented
 reserved-word policy or letting assignments shadow builtins; until decided, any
@@ -266,8 +266,8 @@ mechanism for same-period comparison; there is no "force exact" modifier because
 exact is the default.
 
 ```basic
-d(date)= "2026-05-15"
-t(date)= "2026-05-15 12:05:03"
+d{date}= "2026-05-15"
+t{date}= "2026-05-15 12:05:03"
 
 if d = t then ...        ' false (exact)
 if d {day}= t then ...   ' true

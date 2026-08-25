@@ -8,8 +8,8 @@
 '
 ' MUST be run with stdin at EOF (`< /dev/null`); `input` then returns "" at once.
 program main(args)
-    ready(file) = args[0]
-    gate(file) = args[1]
+    ready{file} = args[0]
+    gate{file} = args[1]
 
     print "LINE"
     answer = input("PROMPT>")

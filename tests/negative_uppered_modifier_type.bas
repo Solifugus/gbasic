@@ -1,1 +1,1 @@
-x(uppered)= 123
+x{uppered}= 123

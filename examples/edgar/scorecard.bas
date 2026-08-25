@@ -95,7 +95,7 @@ program main(args)
     ticker = "AAPL"
 
     ' --- wiring: offline by default, online when EDGAR_IDENT is set ----------
-    cache_ref(file)= "examples/tmp_scorecard_cache.db"
+    cache_ref{file}= "examples/tmp_scorecard_cache.db"
     if exists(cache_ref) then
         delete(cache_ref)
     end if

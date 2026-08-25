@@ -1,6 +1,6 @@
 load webserver
 
-port_file(file)= "tests/tmp_webserver_port.txt"
+port_file{file}= "tests/tmp_webserver_port.txt"
 if exists(port_file) then delete(port_file)
 
 server = webserver.listen(0)

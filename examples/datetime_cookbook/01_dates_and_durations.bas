@@ -7,10 +7,10 @@
 ' ISO string at any precision.
 
 program main(args)
-    y (date)= "2026"
-    m (date)= "2026-03"
-    d (date)= "2026-03-15"
-    t (date)= "2026-03-15 09:30"
+    y {date}= "2026"
+    m {date}= "2026-03"
+    d {date}= "2026-03-15"
+    t {date}= "2026-03-15 09:30"
 
     print "year value : " + y
     print "month value: " + m
@@ -24,11 +24,11 @@ program main(args)
     ' Adding a duration respects the calendar -- THE ACCOUNTANT'S RULE:
     ' years and months first, then the day is CLAMPED into the resulting
     ' month, then exact parts. Month-end behaves the way an invoice expects.
-    jan31 (date)= "2026-01-31"
+    jan31 {date}= "2026-01-31"
     print ""
     print "Jan 31 + 1 month  = " + (jan31 + 1 month)
     print "Jan 31 + 3 months = " + (jan31 + (1 month) * 3)
-    feb29 (date)= "2024-02-29"
+    feb29 {date}= "2024-02-29"
     print "Feb 29 + 1 year   = " + (feb29 + 1 year)
     print "back off month-end: " + (jan31 + 1 month - 1 day)
 end program

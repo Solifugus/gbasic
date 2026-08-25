@@ -12,22 +12,22 @@ end modifier
 
 name = "Joe Barnes"
 
-if name(caseless)= "joe barnes" then
+if name{caseless}= "joe barnes" then
     print "match"
 end if
 
 a = 1.234
 b = 1.234
 
-if a(rounded 2)= b then
+if a{rounded 2}= b then
     print "rounded match"
 end if
 
-if a(rounded to 2)= b then
+if a{rounded to 2}= b then
     print "rounded multi-word match"
 end if
 
 places = 2
-if a(rounded places)= b then
+if a{rounded places}= b then
     print "rounded expression match"
 end if

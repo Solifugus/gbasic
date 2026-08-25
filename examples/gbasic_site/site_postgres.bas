@@ -137,7 +137,7 @@ function configured_port()
         return port
     end if
 
-    config_file(file)= "examples/gbasic_site/server_port.txt"
+    config_file{file}= "examples/gbasic_site/server_port.txt"
     if not exists(config_file) then
         return 0
     end if
@@ -228,7 +228,7 @@ function shared_csrf_token()
     if not is_unknown(env_token) then
         return trim(env_token)
     end if
-    token_file(file)= "examples/gbasic_site/csrf_token.txt"
+    token_file{file}= "examples/gbasic_site/csrf_token.txt"
     if not exists(token_file) then
         return ""
     end if
@@ -328,7 +328,7 @@ function post_rate_limit()
     if is_unknown(limit_text) then
         return 0
     end if
-    limit_text(trimmed)= limit_text
+    limit_text{trimmed}= limit_text
     if limit_text = "" then
         return 0
     end if
@@ -343,7 +343,7 @@ function post_rate_window()
     if is_unknown(window_text) then
         return 60
     end if
-    window_text(trimmed)= window_text
+    window_text{trimmed}= window_text
     if window_text = "" then
         return 60
     end if
@@ -359,11 +359,11 @@ end function
 function client_ip(req)
     forwarded = req.headers["x-forwarded-for"]
     if not is_unknown(forwarded) then
-        forwarded(trimmed)= forwarded
+        forwarded{trimmed}= forwarded
         if forwarded != "" then
             hops = split(forwarded, ",")
             last = hops[count(hops) - 1]
-            last(trimmed)= last
+            last{trimmed}= last
             if last != "" then
                 return last
             end if
@@ -902,11 +902,11 @@ function route_request(db, req)
         return topic_page(db, req, path_after(req.path, "/topic/"))
     end if
     if req.path = "/static/site.css" then
-        css_file(file)= "examples/gbasic_site/static/site.css"
+        css_file{file}= "examples/gbasic_site/static/site.css"
         return file_response(req, "text/css; charset=utf-8", css_file)
     end if
     if req.path = "/static/site.js" then
-        js_file(file)= "examples/gbasic_site/static/site.js"
+        js_file{file}= "examples/gbasic_site/static/site.js"
         return file_response(req, "application/javascript; charset=utf-8", js_file)
     end if
     if req.path = "/health" then
@@ -915,7 +915,7 @@ function route_request(db, req)
     return not_found(req)
 end function
 
-port_file(file)= "examples/gbasic_site/tmp_port.txt"
+port_file{file}= "examples/gbasic_site/tmp_port.txt"
 if exists(port_file) then delete(port_file)
 
 db = pg.connect({})

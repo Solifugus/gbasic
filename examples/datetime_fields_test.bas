@@ -17,7 +17,7 @@ function check(label, got, want)
 end function
 
 program main(args)
-    d (date)= "2026-03-15 09:30:45"
+    d {date}= "2026-03-15 09:30:45"
 
     ' --- extraction at full precision ---
     x = check("year        ", d.year, 2026)
@@ -33,25 +33,25 @@ program main(args)
     ' dates.dayname which predates this feature.
     x = check("weekday Sun ", d.weekday, 7)
     x = check("dayname     ", d.dayname, "Sunday")
-    mon (date)= "2026-03-16"
+    mon {date}= "2026-03-16"
     x = check("weekday Mon ", mon.weekday, 1)
     x = check("workday test", mon.weekday <= 5, true)
 
     x = check("day_of_year ", d.day_of_year, 74)
-    leap (date)= "2024-12-31"
+    leap {date}= "2024-12-31"
     x = check("doy leap    ", leap.day_of_year, 366)
 
     ' Time of day is an EXACT DURATION since midnight (§6): no time kind.
     x = check("time        ", d.time, "9 hours 30 minutes 45 seconds")
 
     ' --- the precision rule: finer than declared -> unknown ---
-    m (month)= d
+    m {month}= d
     x = check("m.year      ", m.year, 2026)
     x = check("m.month     ", m.month, 3)
     x = check("m.day unk   ", is_unknown(m.day), true)
     x = check("m.precision ", m.precision, "month")
 
-    day_only (day)= d
+    day_only {day}= d
     x = check("d.hour unk  ", is_unknown(day_only.hour), true)
     x = check("d.time unk  ", is_unknown(day_only.time), true)
     x = check("d.weekday ok", day_only.weekday, 7)

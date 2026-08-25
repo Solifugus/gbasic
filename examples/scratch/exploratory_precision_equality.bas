@@ -1,6 +1,6 @@
-year_value(date)= "2026"
-may_value(date)= "2026-05-15"
-june_value(date)= "2026-06-20"
+year_value{date}= "2026"
+may_value{date}= "2026-05-15"
+june_value{date}= "2026-06-20"
 
 if year_value = may_value then
     print("year equals may")

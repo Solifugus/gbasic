@@ -163,9 +163,9 @@ function play(title, areas, items, triggers)
     print("")
     describe(location, areas, items)
     while true
-        command(trimmed)= input(">")
-        command(lowered)= command
-        words(split)= command
+        command{trimmed}= input(">")
+        command{lowered}= command
+        words{split}= command
         if len(words) = 0 then
             continue
         end if

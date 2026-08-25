@@ -1,2 +1,2 @@
-age(number)= input("Age: ")
+age{number}= input("Age: ")
 print(age + 1)

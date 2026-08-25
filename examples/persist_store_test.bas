@@ -26,7 +26,7 @@ function show(label, st)
 end function
 
 function put(path, text)
-  f(file) = path
+  f{file} = path
   write(f, text)
   return nothing
 end function
@@ -68,7 +68,7 @@ program main(args)
     ' A corrupt file must still be readable AS BYTES afterwards -- Studio's
     ' recovery policy keeps the file rather than deleting it, so nothing here may
     ' consume or truncate it.
-    f(file) = dir + "/c1.json"
+    f{file} = dir + "/c1.json"
     print "corrupt file still on disk bytes=" + file_size(f)
   end if
 
@@ -91,7 +91,7 @@ program main(args)
     ' pre-checks json_encodable, so a dialect-only value never reaches a store
     ' through persist's own writer.
     persist.write_atomic(dir + "/d4.json", { a: nothing, b: 1 })
-    fr(file) = dir + "/d4.json"
+    fr{file} = dir + "/d4.json"
     print "we write      " + read(fr)
     print "refuses unknown=" + (not json_encodable({ a: unknown_free() }))
   end if
@@ -152,7 +152,7 @@ program main(args)
     p = dir + "/big.json"
     persist.write_atomic(p, { schema_version: 1, doc_path: "/proj/big.bas",
                                    next_result: count(recs) + 1, results: recs })
-    f(file) = p
+    f{file} = p
     print "index_bytes_over_100k=" + (file_size(f) > 100000)
     print "records=" + count(recs)
 

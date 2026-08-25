@@ -1,4 +1,4 @@
-f(file)= "examples/tmp_file_overwrite_test.txt"
+f{file}= "examples/tmp_file_overwrite_test.txt"
 
 if exists(f) then
     delete(f)

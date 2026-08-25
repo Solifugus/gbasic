@@ -17,7 +17,7 @@ modifier lowered for compare
     return compare(lower(left), operator, lower(right))
 end modifier
 
-if name(lowered)= "bob" then
+if name{lowered}= "bob" then
     print("lowered modifier")
 end if
 
@@ -33,6 +33,6 @@ if overlap(name) = "Bob" then
     print("overlap function")
 end if
 
-if name(overlap)= "Bob" then
+if name{overlap}= "Bob" then
     print("overlap modifier")
 end if

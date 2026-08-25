@@ -24,7 +24,7 @@ function zombie_children()
 end function
 
 pidfile = "/tmp/gbasic_plat_proc_abandon.pids"
-pf(file) = pidfile
+pf{file} = pidfile
 if exists(pf) then
   delete(pf)
 end if

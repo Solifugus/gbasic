@@ -48,8 +48,8 @@ declared precision: `2026` (year), `2026-03` (month), `2026-03-15` (day),
 it renders, and truncation moves between precisions:
 
 ```basic
-d (date)= "2026-03-15 09:30:45"
-m (month)= d          ' 2026-03  — still a datetime, at month precision
+d {date}= "2026-03-15 09:30:45"
+m {month}= d          ' 2026-03  — still a datetime, at month precision
 ```
 
 This replaces the type zoo other languages need (Java's `Year`/`YearMonth`/
@@ -68,7 +68,7 @@ distinctive thing in the design and the redesign builds on it:
 Time of day needs **no new kind**: it is an exact duration since midnight — §6.
 A **date literal is deliberately NOT added**: `d = 2026-03-15` already parses as arithmetic
 (`2026 − 03 − 15` = `2008`), so the literal would change the meaning of an
-existing expression, and the modifier form `(date)=` is established. (The
+existing expression, and the modifier form `{date}=` is established. (The
 arithmetic reading is a silent trap worth an UNLEARN entry regardless.)
 
 ## 3. Component extraction: dot fields — IMPLEMENTED 2026-08-17
@@ -187,7 +187,7 @@ dates.business_days_between(a, b, cal)
 
 Membership against `holidays` is computed at **day precision internally** —
 the library truncates before comparing, so the §2 precision rule never bites
-the user here. (Manually, the idiom is `x (day)= session_start` then
+the user here. (Manually, the idiom is `x {day}= session_start` then
 `contains(cal.holidays, x)`.)
 
 **Holiday DATA is user-supplied — decided 2026-08-20, Matthew's call.** gBASIC
@@ -237,7 +237,7 @@ take consecutive weekdays. Still deferred: half days, per-weekday hours.
 The literal fails the bigger picture: dates cannot be literals (`2026-12-25`
 already parses as `2026 − 12 − 25`), so bare times beside quoted dates would be
 incoherent, and the combined `2026-12-25 09:00` could not exist either way. It
-does not need to: `(date)= "2026-12-25 09:30"` already parses, at minute
+does not need to: `{date}= "2026-12-25 09:30"` already parses, at minute
 precision — the string form accepts every ISO prefix (`"2026"`, `"2026-03"`,
 `"2026-03-15"`, `"… 09:30"`, `"… 09:30:45"`), measured.
 
@@ -347,8 +347,8 @@ in source, written in advance. A half-built chain (`.next()` of nothing) is a
 runtime state with no meaning, where a bad spec fails as `unknown field` with
 the whole record printable. And one vocabulary serves all three verbs, where a
 fluent surface would be rebuilt per verb. Chaining's real virtue — readability
-for one-offs — is what the lenses already provide: `(next friday)=` and
-`(end of month)=` are the fluent form, gBASIC-flavoured, and stay as sugar over
+for one-offs — is what the lenses already provide: `{next friday}=` and
+`{end of month}=` are the fluent form, gBASIC-flavoured, and stay as sugar over
 this engine.
 
 ## 8. Scheduling: `stdlib/schedule.bas` — IMPLEMENTED 2026-08-17

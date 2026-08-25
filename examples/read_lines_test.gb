@@ -1,7 +1,7 @@
-normal(file)= "examples/tmp_read_lines_normal.txt"
-empty(file)= "examples/tmp_read_lines_empty.txt"
-blank(file)= "examples/tmp_read_lines_blank.txt"
-final(file)= "examples/tmp_read_lines_final.txt"
+normal{file}= "examples/tmp_read_lines_normal.txt"
+empty{file}= "examples/tmp_read_lines_empty.txt"
+blank{file}= "examples/tmp_read_lines_blank.txt"
+final{file}= "examples/tmp_read_lines_final.txt"
 
 if exists(normal) then
     delete(normal)

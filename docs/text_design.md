@@ -340,7 +340,7 @@ report pairs it with that layout.
 result = ari.parse(report_text, spec_text)
 
 ' Convenience: read a file and parse it
-result = ari.import(path, spec_text)          ' p(file)= path under the hood
+result = ari.import(path, spec_text)          ' p{file}= path under the hood
 result = ari.import(path, spec_text, options)
 ```
 
@@ -758,8 +758,8 @@ money value, `as date` a datetime); regex-with-transform (`/re/repl/` with
 `$1`..`$9` group references); custom `type` blocks (delivered early in Phase 2,
 because the dialect problem forced them).
 
-Construction goes through gBASIC's **assign modifiers** — `m(USD) = 12.34`,
-`d(date) = "2021-12-27"` — not functions or literals. That surface is
+Construction goes through gBASIC's **assign modifiers** — `m{USD} = 12.34`,
+`d{date} = "2021-12-27"` — not functions or literals. That surface is
 undocumented in `docs/reference.md`, which is why an earlier note here claimed
 no runtime date constructor existed; corrected in /DOGFOOD.md.
 

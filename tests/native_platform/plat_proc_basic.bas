@@ -4,7 +4,7 @@
 ' cannot write CHUNK-TWO and cannot exit, so anything observed before that is
 ' provably mid-run no matter how slow the host (or valgrind) is.
 gate = "/tmp/gbasic_plat_proc_basic.gate"
-g(file) = gate
+g{file} = gate
 if exists(g) then
   delete(g)
 end if

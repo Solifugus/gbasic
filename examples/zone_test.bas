@@ -18,8 +18,8 @@ function check(label, got, want)
 end function
 
 program main(args)
-    summer (date)= "2026-08-17 12:00:00"
-    winter (date)= "2026-01-15 12:00:00"
+    summer {date}= "2026-08-17 12:00:00"
+    winter {date}= "2026-01-15 12:00:00"
 
     ' --- UTC -> zone ---
     x = check("NY in summer (EDT -4) ", to_zone(summer, "America/New_York"), "2026-08-17 08:00:00")
@@ -29,7 +29,7 @@ program main(args)
     x = check("UTC is identity       ", to_zone(summer, "UTC"), "2026-08-17 12:00:00")
 
     ' --- zone -> UTC, and the round trip ---
-    ny (date)= "2026-08-17 08:00:00"
+    ny {date}= "2026-08-17 08:00:00"
     x = check("NY local -> UTC       ", from_zone(ny, "America/New_York"), "2026-08-17 12:00:00")
     x = check("round trip            ", to_zone(from_zone(ny, "America/New_York"), "America/New_York"), ny)
 
@@ -42,20 +42,20 @@ program main(args)
     ' converts with ITS OWN offset. "Third Thursday 14:00 Chicago" straddling
     ' the November DST end lands on different UTC instants -- which is exactly
     ' why future intentions must never be stored as UTC.
-    oct_mtg (date)= "2026-10-15 14:00:00"
-    nov_mtg (date)= "2026-11-19 14:00:00"
+    oct_mtg {date}= "2026-10-15 14:00:00"
+    nov_mtg {date}= "2026-11-19 14:00:00"
     x = check("Oct meeting (CDT -5)  ", from_zone(oct_mtg, "America/Chicago"), "2026-10-15 19:00:00")
     x = check("Nov meeting (CST -6)  ", from_zone(nov_mtg, "America/Chicago"), "2026-11-19 20:00:00")
 
     ' --- DST edges are NAMED, never guessed ---
     ' Spring forward: 02:30 on 2026-03-08 does not exist in New York.
-    gap (date)= "2026-03-08 02:30:00"
+    gap {date}= "2026-03-08 02:30:00"
     r = zone_resolve(gap, "America/New_York")
     x = check("gap is nonexistent    ", r.kind, "nonexistent")
     x = check("gap shifts FORWARD    ", to_zone(from_zone(gap, "America/New_York"), "America/New_York"), "2026-03-08 03:30:00")
 
     ' Fall back: 01:30 on 2026-11-01 happens twice in New York.
-    twice (date)= "2026-11-01 01:30:00"
+    twice {date}= "2026-11-01 01:30:00"
     r2 = zone_resolve(twice, "America/New_York")
     x = check("repeat is ambiguous   ", r2.kind, "ambiguous")
     x = check("earlier instant       ", r2.earlier, "2026-11-01 05:30:00")
@@ -68,6 +68,6 @@ program main(args)
     x = check("resolve = from_zone   ", r3.utc, from_zone(ny, "America/New_York"))
 
     ' --- precision is preserved through conversion ---
-    m (date)= "2026-08-17 08:00"
+    m {date}= "2026-08-17 08:00"
     x = check("minute in, minute out ", from_zone(m, "America/New_York"), "2026-08-17 12:00")
 end program

@@ -1,15 +1,15 @@
-name(trimmed)= "  joe jones  "
+name{trimmed}= "  joe jones  "
 print(name)
 
-words(split)= "apple banana orange"
+words{split}= "apple banana orange"
 print(len(words))
 print(words[1])
 
-csv(split ",")= "apple,banana,orange"
+csv{split ","}= "apple,banana,orange"
 print(csv[2])
 
-line(join ", ")= words
+line{join ", "}= words
 print(line)
 
-n(length)= "abcdef"
+n{length}= "abcdef"
 print(n)

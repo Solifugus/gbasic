@@ -8,7 +8,7 @@ watchers, files, dates, money, SQLite, PostgreSQL, HTTP clients, and a
 queue-based HTTP server.
 
 This repository contains the C implementation of gBASIC
-`0.1.0-rc5`. The language and runtime are under active development and are not
+`0.1.0-rc6`. The language and runtime are under active development and are not
 yet production-stable.
 
 ## Current Status
@@ -329,12 +329,12 @@ See [docs/pbi_design.md](docs/pbi_design.md) for the full design and rationale.
 Modifiers validate or transform values during assignment and comparison:
 
 ```basic
-price(USD)= 19.95
-due(date)= "2026-05-15"
-command(trimmed)= input(">")
-age(number)= input("Age: ")
+price{USD}= 19.95
+due{date}= "2026-05-15"
+command{trimmed}= input(">")
+age{number}= input("Age: ")
 
-if command(caseless)= "quit" then print("Goodbye")
+if command{caseless}= "quit" then print("Goodbye")
 ```
 
 Arithmetic is strict. `-`, `*`, and `/` require numbers. `+` performs numeric
@@ -434,7 +434,7 @@ supervisor pattern (`docs/multiprocessing_design.md`).
 File and directory values use assignment modifiers:
 
 ```basic
-input_file(file)= "input.txt"
+input_file{file}= "input.txt"
 output_dir(directory)= "output"
 ```
 
@@ -450,7 +450,7 @@ Core file operations include:
 Example:
 
 ```basic
-log(file)= "app.log"
+log{file}= "app.log"
 write(log, "started\nready\n")
 
 for each line in read_lines(log)
@@ -788,7 +788,7 @@ as an available feature.
 Current output:
 
 ```text
-gBASIC 0.1.0-rc5
+gBASIC 0.1.0-rc6
 ```
 
 ## Contributing

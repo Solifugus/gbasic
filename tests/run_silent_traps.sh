@@ -70,7 +70,7 @@ printf 'PASS write_path_unchanged\n'
 # `USD` raised from the start, four lines from `date` in the same dispatch
 # function. That neighbouring inconsistency is what made this a bug rather
 # than a policy.
-printf 'program main( args )\n    m(USD) = "nope"\nend program\n' >"$scratch/m.bas"
+printf 'program main( args )\n    m{USD} = "nope"\nend program\n' >"$scratch/m.bas"
 if ./gbasic "$scratch/m.bas" >/dev/null 2>"$scratch/err"; then
     fail "USD (must still raise)"
 fi

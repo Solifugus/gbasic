@@ -117,13 +117,13 @@ function list_areas(areas)
     i = 0
     while i < len(areas)
         area = areas[i]
-        id_text(string)= area.id
-        north_text(string)= area.north
-        south_text(string)= area.south
-        east_text(string)= area.east
-        west_text(string)= area.west
-        up_text(string)= area.up
-        down_text(string)= area.down
+        id_text{string}= area.id
+        north_text{string}= area.north
+        south_text{string}= area.south
+        east_text{string}= area.east
+        west_text{string}= area.west
+        up_text{string}= area.up
+        down_text{string}= area.down
         print("[" + id_text + "] " + area.name)
         print("    " + area.description)
         print("    exits n/s/e/w/u/d: " + north_text + "/" + south_text + "/" + east_text + "/" + west_text + "/" + up_text + "/" + down_text)
@@ -140,8 +140,8 @@ function list_items(items)
     i = 0
     while i < len(items)
         item = items[i]
-        id_text(string)= item.id
-        location_text(string)= item.location
+        id_text{string}= item.id
+        location_text{string}= item.location
         print("[" + id_text + "] " + item.name + " in area " + location_text)
         print("    " + item.description)
         i = i + 1
@@ -157,11 +157,11 @@ function list_triggers(triggers)
     i = 0
     while i < len(triggers)
         trigger = triggers[i]
-        num_text(string)= i + 1
-        item_text(string)= trigger.item_id
-        area_text(string)= trigger.area_id
-        from_text(string)= trigger.from_area
-        to_text(string)= trigger.to_area
+        num_text{string}= i + 1
+        item_text{string}= trigger.item_id
+        area_text{string}= trigger.area_id
+        from_text{string}= trigger.from_area
+        to_text{string}= trigger.to_area
         print("[" + num_text + "] use item " + item_text + " in area " + area_text + " to " + trigger.action + " " + trigger.direction + " from " + from_text + " to " + to_text)
         print("    " + trigger.message)
         i = i + 1
@@ -171,16 +171,16 @@ end function
 
 function add_area(areas)
     id = len(areas) + 1
-    id_text(string)= id
+    id_text{string}= id
     print("Adding area " + id_text)
-    name(trimmed)= input("Name: ")
-    description(trimmed)= input("Description: ")
-    north(number)= input("North area id, 0 for none: ")
-    south(number)= input("South area id, 0 for none: ")
-    east(number)= input("East area id, 0 for none: ")
-    west(number)= input("West area id, 0 for none: ")
-    up(number)= input("Up area id, 0 for none: ")
-    down(number)= input("Down area id, 0 for none: ")
+    name{trimmed}= input("Name: ")
+    description{trimmed}= input("Description: ")
+    north{number}= input("North area id, 0 for none: ")
+    south{number}= input("South area id, 0 for none: ")
+    east{number}= input("East area id, 0 for none: ")
+    west{number}= input("West area id, 0 for none: ")
+    up{number}= input("Up area id, 0 for none: ")
+    down{number}= input("Down area id, 0 for none: ")
     append(areas, make_area(id, name, description, north, south, east, west, up, down))
     print("Area added.")
     return areas
@@ -188,19 +188,19 @@ end function
 
 function add_item(items)
     id = len(items) + 1
-    id_text(string)= id
+    id_text{string}= id
     print("Adding item " + id_text)
-    name(trimmed)= input("Name: ")
-    description(trimmed)= input("Room description: ")
-    location(number)= input("Starting area id, 0 for nowhere: ")
-    portable_text(trimmed)= input("Portable? y/n: ")
-    portable_text(lowered)= portable_text
+    name{trimmed}= input("Name: ")
+    description{trimmed}= input("Room description: ")
+    location{number}= input("Starting area id, 0 for nowhere: ")
+    portable_text{trimmed}= input("Portable? y/n: ")
+    portable_text{lowered}= portable_text
     portable = false
     if portable_text = "y" or portable_text = "yes" then
         portable = true
     end if
-    examine(trimmed)= input("Examine text: ")
-    use_text(trimmed)= input("Use text: ")
+    examine{trimmed}= input("Examine text: ")
+    use_text{trimmed}= input("Use text: ")
     append(items, make_item(id, name, description, location, portable, examine, use_text))
     print("Item added.")
     return items
@@ -208,15 +208,15 @@ end function
 
 function add_trigger(triggers)
     print("Adding trigger")
-    item_id(number)= input("Item id used: ")
-    area_id(number)= input("Area id where used: ")
-    action(trimmed)= input("Action, open or close: ")
-    action(lowered)= action
-    from_area(number)= input("Exit from area id: ")
-    direction(trimmed)= input("Direction opened/closed: ")
-    direction(lowered)= direction
-    to_area(number)= input("Destination area id, 0 for closed: ")
-    message(trimmed)= input("Message: ")
+    item_id{number}= input("Item id used: ")
+    area_id{number}= input("Area id where used: ")
+    action{trimmed}= input("Action, open or close: ")
+    action{lowered}= action
+    from_area{number}= input("Exit from area id: ")
+    direction{trimmed}= input("Direction opened/closed: ")
+    direction{lowered}= direction
+    to_area{number}= input("Destination area id, 0 for closed: ")
+    message{trimmed}= input("Message: ")
     append(triggers, make_trigger(item_id, area_id, action, from_area, direction, to_area, message))
     print("Trigger added.")
     return triggers
@@ -240,7 +240,7 @@ function emit_engine(out)
     append(out, "function set_item_location(items, id, location)\n    updated = []\n    i = 0\n    while i < len(items)\n        item = items[i]\n        if item.id = id then\n            append(updated, make_item(item.id, item.name, item.description, location, item.portable, item.examine, item.use_text))\n        else\n            append(updated, item)\n        end if\n        i = i + 1\n    end while\n    return updated\nend function\n\n")
     append(out, "function describe(area_id, areas, items)\n    area_index = find_area_index(areas, area_id)\n    if area_index = nothing then\n        print(\"You are nowhere.\")\n        return\n    end if\n    area = areas[area_index]\n    print(area.name)\n    print(area.description)\n    i = 0\n    while i < len(items)\n        item = items[i]\n        if item.location = area_id then\n            print(item.description)\n        end if\n        i = i + 1\n    end while\n    return\nend function\n\n")
     append(out, "function show_inventory(inventory, items)\n    if len(inventory) = 0 then\n        print(\"You are carrying nothing.\")\n    else\n        names = []\n        i = 0\n        while i < len(inventory)\n            j = 0\n            while j < len(items)\n                item = items[j]\n                if item.id = inventory[i] then\n                    append(names, item.name)\n                end if\n                j = j + 1\n            end while\n            i = i + 1\n        end while\n        print(\"You are carrying: \" + join(names, \", \"))\n    end if\n    return\nend function\n\n")
-    append(out, "function play(title, areas, items, triggers)\n    location = 1\n    inventory = []\n    print(title)\n    print(\"\")\n    describe(location, areas, items)\n    while true\n        command(trimmed)= input(\">\")\n        command(lowered)= command\n        words(split)= command\n        if len(words) = 0 then\n            continue\n        end if\n        verb = words[0]\n        noun = \"\"\n        if len(words) > 1 then\n            noun = words[1]\n        end if\n        if len(words) > 2 then\n            noun = noun + \" \" + words[2]\n        end if\n        direction = \"\"\n        if verb = \"go\" then\n            direction = noun\n        end if\n        if verb = \"north\" or verb = \"south\" or verb = \"east\" or verb = \"west\" or verb = \"up\" or verb = \"down\" then\n            direction = verb\n        end if\n        handled = false\n        if verb = \"help\" then\n            print(\"Commands: look, north, south, east, west, up, down, go DIR, take ITEM, drop ITEM, examine ITEM, use ITEM, inventory, help, quit\")\n            handled = true\n        end if\n        if verb = \"look\" then\n            describe(location, areas, items)\n            handled = true\n        end if\n        if verb = \"inventory\" then\n            show_inventory(inventory, items)\n            handled = true\n        end if\n")
+    append(out, "function play(title, areas, items, triggers)\n    location = 1\n    inventory = []\n    print(title)\n    print(\"\")\n    describe(location, areas, items)\n    while true\n        command{trimmed}= input(\">\")\n        command{lowered}= command\n        words{split}= command\n        if len(words) = 0 then\n            continue\n        end if\n        verb = words[0]\n        noun = \"\"\n        if len(words) > 1 then\n            noun = words[1]\n        end if\n        if len(words) > 2 then\n            noun = noun + \" \" + words[2]\n        end if\n        direction = \"\"\n        if verb = \"go\" then\n            direction = noun\n        end if\n        if verb = \"north\" or verb = \"south\" or verb = \"east\" or verb = \"west\" or verb = \"up\" or verb = \"down\" then\n            direction = verb\n        end if\n        handled = false\n        if verb = \"help\" then\n            print(\"Commands: look, north, south, east, west, up, down, go DIR, take ITEM, drop ITEM, examine ITEM, use ITEM, inventory, help, quit\")\n            handled = true\n        end if\n        if verb = \"look\" then\n            describe(location, areas, items)\n            handled = true\n        end if\n        if verb = \"inventory\" then\n            show_inventory(inventory, items)\n            handled = true\n        end if\n")
     append(out, "        if verb = \"take\" then\n            idx = find_item_index(items, noun)\n            if idx = nothing then\n                print(\"You cannot take that.\")\n            else\n                item = items[idx]\n                if item.location = location and item.portable then\n                    append(inventory, item.id)\n                    items = set_item_location(items, item.id, -1)\n                    print(\"Taken.\")\n                else\n                    print(\"You cannot take that.\")\n                end if\n            end if\n            handled = true\n        end if\n        if verb = \"drop\" then\n            idx = find_item_index(items, noun)\n            if idx = nothing then\n                print(\"You are not carrying that.\")\n            else\n                item = items[idx]\n                inv_idx = find(inventory, item.id)\n                if inv_idx = nothing then\n                    print(\"You are not carrying that.\")\n                else\n                    remove(inventory, inv_idx)\n                    items = set_item_location(items, item.id, location)\n                    print(\"Dropped.\")\n                end if\n            end if\n            handled = true\n        end if\n")
     append(out, "        if verb = \"examine\" then\n            idx = find_item_index(items, noun)\n            if idx = nothing then\n                print(\"You see nothing special.\")\n            else\n                item = items[idx]\n                if item.location = location or player_has(inventory, item.id) then\n                    if item.examine = \"\" then\n                        print(\"You see nothing special.\")\n                    else\n                        print(item.examine)\n                    end if\n                else\n                    print(\"You do not see that here.\")\n                end if\n            end if\n            handled = true\n        end if\n        if verb = \"use\" then\n            idx = find_item_index(items, noun)\n            if idx = nothing then\n                print(\"You cannot use that.\")\n            else\n                item = items[idx]\n                if player_has(inventory, item.id) = false then\n                    print(\"You are not carrying that.\")\n                else\n                    used = false\n                    i = 0\n                    while i < len(triggers)\n                        trigger = triggers[i]\n                        if trigger.item_id = item.id and trigger.area_id = location then\n                            areas = set_exit(areas, trigger.from_area, trigger.direction, trigger.to_area)\n                            print(trigger.message)\n                            used = true\n                        end if\n                        i = i + 1\n                    end while\n                    if used = false then\n                        if item.use_text = \"\" then\n                            print(\"Nothing happens.\")\n                        else\n                            print(item.use_text)\n                        end if\n                    end if\n                end if\n            end if\n            handled = true\n        end if\n")
     append(out, "        if direction != \"\" then\n            area = areas[find_area_index(areas, location)]\n            next = exit_for(area, direction)\n            if next = 0 then\n                print(\"You cannot go that way.\")\n            else\n                location = next\n                describe(location, areas, items)\n            end if\n            handled = true\n        end if\n        if verb = \"quit\" then\n            print(\"Goodbye.\")\n            break\n        end if\n        if handled = false then\n            print(\"I do not understand that command.\")\n        end if\n    end while\n    return\nend function\n\n")
@@ -252,13 +252,13 @@ function emit_data(out, title, areas, items, triggers)
     i = 0
     while i < len(areas)
         area = areas[i]
-        id_text(string)= area.id
-        north_text(string)= area.north
-        south_text(string)= area.south
-        east_text(string)= area.east
-        west_text(string)= area.west
-        up_text(string)= area.up
-        down_text(string)= area.down
+        id_text{string}= area.id
+        north_text{string}= area.north
+        south_text{string}= area.south
+        east_text{string}= area.east
+        west_text{string}= area.west
+        up_text{string}= area.up
+        down_text{string}= area.down
         append(out, "    append(areas, make_area(" + id_text + ", ")
         append(out, quote(area.name))
         append(out, ", ")
@@ -272,8 +272,8 @@ function emit_data(out, title, areas, items, triggers)
     i = 0
     while i < len(items)
         item = items[i]
-        id_text(string)= item.id
-        location_text(string)= item.location
+        id_text{string}= item.id
+        location_text{string}= item.location
         portable_text = "false"
         if item.portable then
             portable_text = "true"
@@ -295,10 +295,10 @@ function emit_data(out, title, areas, items, triggers)
     i = 0
     while i < len(triggers)
         trigger = triggers[i]
-        item_text(string)= trigger.item_id
-        area_text(string)= trigger.area_id
-        from_text(string)= trigger.from_area
-        to_text(string)= trigger.to_area
+        item_text{string}= trigger.item_id
+        area_text{string}= trigger.area_id
+        from_text{string}= trigger.from_area
+        to_text{string}= trigger.to_area
         append(out, "    append(triggers, make_trigger(" + item_text + ", " + area_text + ", ")
         append(out, quote(trigger.action))
         append(out, ", " + from_text + ", ")
@@ -316,7 +316,7 @@ function emit_data(out, title, areas, items, triggers)
 end function
 
 function generate_adventure(title, areas, items, triggers)
-    out(file)= "examples/bag/generated_adventure.bas"
+    out{file}= "examples/bag/generated_adventure.bas"
     emit_engine(out)
     emit_data(out, title, areas, items, triggers)
     print("Generated examples/bag/generated_adventure.bas")
@@ -325,7 +325,7 @@ function generate_adventure(title, areas, items, triggers)
 end function
 
 function save_project(title, areas, items, triggers)
-    filename(trimmed)= input("Save filename (.bag suggested): ")
+    filename{trimmed}= input("Save filename (.bag suggested): ")
     if filename = "" then
         print("Save cancelled.")
         return false
@@ -338,7 +338,7 @@ function save_project(title, areas, items, triggers)
         triggers = triggers
     }
 
-    out(file)= filename
+    out{file}= filename
     on error goto save_failed
     ok = write(out, encode(project))
     on error stop
@@ -358,7 +358,7 @@ save_failed:
 end function
 
 function load_project(title, areas, items, triggers)
-    filename(trimmed)= input("Load filename (.bag suggested): ")
+    filename{trimmed}= input("Load filename (.bag suggested): ")
     result = {
         ok = false,
         title = title,
@@ -372,7 +372,7 @@ function load_project(title, areas, items, triggers)
         return result
     end if
 
-    source(file)= filename
+    source{file}= filename
     on error goto load_failed
     text = read(source)
 
@@ -433,8 +433,8 @@ function main()
     items = []
     triggers = []
 
-    demo(trimmed)= input("Load tiny demo project? y/n: ")
-    demo(lowered)= demo
+    demo{trimmed}= input("Load tiny demo project? y/n: ")
+    demo{lowered}= demo
     if demo = "y" or demo = "yes" then
         seeded = seed_demo(areas, items, triggers)
         title = seeded.title
@@ -445,7 +445,7 @@ function main()
 
     while true
         print_menu(title)
-        choice(trimmed)= input("Choice: ")
+        choice{trimmed}= input("Choice: ")
         quit = false
         consider choice
         if "1" then

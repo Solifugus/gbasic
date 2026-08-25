@@ -1,5 +1,5 @@
-folder(dir)= "/home/matt/"
-file(file)= "/home/matt/archive.tar.gz"
+folder{dir}= "/home/matt/"
+file{file}= "/home/matt/archive.tar.gz"
 
 print join_path("/home/matt", "test.txt")
 print join_path(folder, "/test.txt")

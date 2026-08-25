@@ -5,8 +5,8 @@
 program main(args)
     load mdna from "../stdlib/mdna.bas"
 
-    p2024(file)= "examples/fixtures/edgar/tenk_crox_2024_sample.htm"
-    p2025(file)= "examples/fixtures/edgar/tenk_crox_2025_sample.htm"
+    p2024{file}= "examples/fixtures/edgar/tenk_crox_2024_sample.htm"
+    p2025{file}= "examples/fixtures/edgar/tenk_crox_2025_sample.htm"
     prior = mdna.sections(join(read_lines(p2024), "\n"))
     curr = mdna.sections(join(read_lines(p2025), "\n"))
 

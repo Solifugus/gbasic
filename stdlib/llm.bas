@@ -258,7 +258,7 @@ library llm
     ' Fixture transport mirroring the edgar seam: one response per wire format.
     function _offline_transport(m, req)
         path = m.offline_dir + "/" + m.format + "_response.json"
-        pref(file)= path
+        pref{file}= path
         if not exists(pref) then
             error "llm: offline fixture missing (expected " + path + ")"
         end if

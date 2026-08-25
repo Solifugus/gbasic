@@ -14,7 +14,7 @@ program main(args)
     print left(svg, 44)
     print string(len(svg)) + " chars of SVG in total"
 
-    f (file)= "examples/chart_cookbook/tmp_first.svg"
+    f {file}= "examples/chart_cookbook/tmp_first.svg"
     write(f, svg)
     print "saved: " + string(bytes(f)) + " bytes"
     delete(f)

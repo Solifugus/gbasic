@@ -2,6 +2,6 @@
 program main(args)
     load dates from "../stdlib/dates.bas"
     load schedule from "../stdlib/schedule.bas"
-    d (date)= "2026-08-17"
+    d {date}= "2026-08-17"
     print schedule.slots(d, { length: 20 minutes }, dates.calendar({}))
 end program

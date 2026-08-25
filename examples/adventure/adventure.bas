@@ -66,7 +66,7 @@ function set_item_location(items, item_name, location)
 end function
 
 function parse_command(command)
-    words(split)= command
+    words{split}= command
     verb = ""
     noun = ""
     direction = ""
@@ -313,8 +313,8 @@ function play()
     describe_room(location, rooms, items, inventory, gate_unlocked)
 
     while true
-        command(trimmed)= input(">")
-        command(lowered)= command
+        command{trimmed}= input(">")
+        command{lowered}= command
 
         if len(command) = 0 then
             continue

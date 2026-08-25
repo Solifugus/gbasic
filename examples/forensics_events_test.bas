@@ -6,7 +6,7 @@
 program main(args)
     load forensics from "../stdlib/forensics.bas"
 
-    ps(file)= "examples/fixtures/edgar/flags_synthetic_subs.json"
+    ps{file}= "examples/fixtures/edgar/flags_synthetic_subs.json"
     subs = decode(join(read_lines(ps), "\n"))
 
     ev = forensics.events(subs)

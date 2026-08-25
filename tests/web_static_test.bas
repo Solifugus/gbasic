@@ -36,7 +36,7 @@ function served_text(r)
     if not has(r, "file") then
         return "(no file in response)"
     end if
-    f(file) = r.file
+    f{file} = r.file
     return read(f)
 end function
 

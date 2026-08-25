@@ -11,7 +11,7 @@
 
 load webserver
 
-out_file(file)= "tests/tmp_web_bind.txt"
+out_file{file}= "tests/tmp_web_bind.txt"
 if exists(out_file) then delete(out_file)
 
 requested = env("GBASIC_WEB_BIND")

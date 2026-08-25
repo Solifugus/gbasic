@@ -53,7 +53,7 @@ program main( args )
 
     print ""
     print "-- the outline sees the block"
-    f(file) = "tests/web_server_block/block_offline.bas"
+    f{file} = "tests/web_server_block/block_offline.bas"
     src = read(f)
     o = source_outline(src)
     for each n in o.nodes

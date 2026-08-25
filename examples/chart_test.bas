@@ -24,10 +24,10 @@ program main(args)
 
     ' Dates on x: labels must come back as real dates, not day numbers.
     ' Money on y: plotted at face value, no conversion dance.
-    d1 (date)= "2026-01-31"
-    p1(USD)= 1200.50
-    p2(USD)= 1350.25
-    p3(USD)= 1180.75
+    d1 {date}= "2026-01-31"
+    p1{USD}= 1200.50
+    p2{USD}= 1350.25
+    p3{USD}= 1180.75
     df2 = {
         day: [d1, d1 + 14 days, d1 + 28 days],
         balance: [p1, p2, p3]

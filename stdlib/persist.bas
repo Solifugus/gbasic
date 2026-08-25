@@ -59,10 +59,10 @@ library persist
                         acc = acc + "/" + seg
                     end if
                 end if
-                probe(file) = acc
+                probe{file} = acc
                 present = exists(probe)
                 if not present then
-                    target(dir) = acc
+                    target{dir} = acc
                     make_dir(target)
                 end if
             end if
@@ -79,9 +79,9 @@ library persist
         end if
         text = json_encode(record)
         tmp = path + ".tmp"
-        scratch(file) = tmp
+        scratch{file} = tmp
         write(scratch, text)
-        dest(file) = path
+        dest{file} = path
         atomic_replace(scratch, dest)
     end function
 
@@ -93,9 +93,9 @@ library persist
     ' never a half-written one.
     function write_text_atomic(path, text)
         tmp = path + ".tmp"
-        scratch(file) = tmp
+        scratch{file} = tmp
         write(scratch, text)
-        dest(file) = path
+        dest{file} = path
         atomic_replace(scratch, dest)
     end function
 
@@ -123,7 +123,7 @@ library persist
     ' parser can read, it reads. Studio only ever WRITES strict JSON (json_encode),
     ' so this is reachable only by hand-editing a store.
     function read_status(path)
-        ref(file) = path
+        ref{file} = path
         present = exists(ref)
         if not present then
             return { status: "missing", value: nothing, message: "" }

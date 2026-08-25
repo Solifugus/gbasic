@@ -56,7 +56,7 @@ program main(args)
   append(sp, "        field bait_cash: right of \"Bait Cash\" as money")
   spec = join(sp, "\n")
 
-  f(file) = "examples/fixtures/ari/teller_totals.rpt"
+  f{file} = "examples/fixtures/ari/teller_totals.rpt"
   body = read_lines(f)
   report = join(body, "\n")
 
@@ -141,7 +141,7 @@ program main(args)
   append(gp, "            field ending_cash: right of \"Ending Cash\" as money")
   gspec = join(gp, "\n")
 
-  g(file) = "examples/fixtures/ari/teller_totals_generated.rpt"
+  g{file} = "examples/fixtures/ari/teller_totals_generated.rpt"
   gbody = read_lines(g)
   greport = join(gbody, "\n")
 

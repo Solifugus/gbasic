@@ -19,14 +19,14 @@ program main(args)
   print "absent status=" + missing.status
 
   ' Neither is a corrupt one. The parser's reason comes back with it.
-  bad(file) = home + "/broken.json"
+  bad{file} = home + "/broken.json"
   write(bad, "{ this is not json ]")
   corrupt = persist.read_status(home + "/broken.json")
   print "corrupt status=" + corrupt.status + " reported=" + (corrupt.message != "")
 
   ' Raw text, same atomic discipline, for artifacts that are not JSON.
   persist.write_text_atomic(home + "/notes.txt", "line one" + "\n")
-  nf(file) = home + "/notes.txt"
+  nf{file} = home + "/notes.txt"
   ' Bound first: `read(nf) = ...` inline is read as a modifier clause, because
   ' `read` is not in the builtin registry the clause lookahead consults.
   back = read(nf)

@@ -18,7 +18,7 @@ end function
 program main(args)
     load dates from "../stdlib/dates.bas"
     cal = dates.calendar({})
-    aug (date)= "2026-08-17"
+    aug {date}= "2026-08-17"
 
     ' --- select, scoped: nth within the anchor's period ---
     x = check("3rd Thursday          ", dates.select({ nth: 3, weekday: "thursday", within: "month" }, aug, cal), "2026-08-20")
@@ -27,36 +27,36 @@ program main(args)
     x = check("5th Tuesday -> unknown", is_unknown(dates.select({ nth: 5, weekday: "tuesday", within: "month" }, aug, cal)), true)
     x = check("1st Monday of quarter ", dates.select({ nth: 1, weekday: "monday", within: "quarter" }, aug, cal), "2026-07-06")
     x = check("1st Friday of year    ", dates.select({ nth: 1, weekday: "friday", within: "year" }, aug, cal), "2026-01-02")
-    wed (date)= "2026-08-19"
+    wed {date}= "2026-08-19"
     x = check("last bday of ISO week ", dates.select({ nth: 0 - 1, kind: "business", within: "week" }, wed, cal), "2026-08-21")
 
     ' --- select, anchored: strictness is in the name ---
     x = check("1st Tue after the 15th", dates.select({ nth: 1, weekday: "tuesday", after: { day: 15 } }, aug, cal), "2026-08-18")
-    xmas (date)= "2026-12-25"
+    xmas {date}= "2026-12-25"
     hcal = dates.calendar({ holidays: [xmas] })
-    mon28 (date)= "2026-12-28"
+    mon28 {date}= "2026-12-28"
     x = check("1st bday before a date", dates.select({ nth: 1, kind: "business", before: mon28 }, mon28, hcal), "2026-12-24")
     x = check("on_or_after includes  ", dates.select({ nth: 1, weekday: "monday", on_or_after: aug }, aug, cal), "2026-08-17")
     x = check("after excludes        ", dates.select({ weekday: "monday", after: aug }, aug, cal), "2026-08-24")
     x = check("bare spec = next-after", dates.select({ weekday: "friday" }, aug, cal), "2026-08-21")
 
     ' --- roll conventions, on the month-end payment date ---
-    oct (date)= "2026-10-15"
+    oct {date}= "2026-10-15"
     x = check("roll modified stays in month", dates.select({ nth: 1, day: 31, within: "month", roll: "modified" }, oct, cal), "2026-10-30")
     x = check("roll forward crosses  ", dates.select({ nth: 1, day: 31, within: "month", roll: "forward" }, oct, cal), "2026-11-02")
 
     ' --- matches: the same vocabulary as a predicate ---
-    thu20 (date)= "2026-08-20"
-    thu13 (date)= "2026-08-13"
-    sat (date)= "2026-08-15"
+    thu20 {date}= "2026-08-20"
+    thu13 {date}= "2026-08-13"
+    sat {date}= "2026-08-15"
     rule = { nth: 3, weekday: "thursday", within: "month" }
     x = check("matches 3rd Thursday  ", dates.matches(thu20, rule, cal), true)
     x = check("2nd Thursday does not ", dates.matches(thu13, rule, cal), false)
     x = check("matches kind business ", dates.matches(sat, { kind: "business" }, cal), false)
 
     ' --- series, period mode: board meets every 3rd Thursday at 14:00 ---
-    jan1 (date)= "2026-01-01"
-    jun30 (date)= "2026-06-30"
+    jan1 {date}= "2026-01-01"
+    jun30 {date}= "2026-06-30"
     board = { every: "month", when: { nth: 3, weekday: "thursday" }, at: "14:00" }
     meetings = dates.series(board, { from: jan1, through: jun30 }, cal)
     x = check("6 meetings Jan-Jun    ", count(meetings), 6)
@@ -70,15 +70,15 @@ program main(args)
     x = check("every one matches rule", all_good, true)
 
     ' except: removes the March meeting, leaving a gap -- not a reschedule.
-    mar19 (date)= "2026-03-19"
+    mar19 {date}= "2026-03-19"
     xrule = { every: "month", when: { nth: 3, weekday: "thursday" }, except: [mar19] }
     trimmed = dates.series(xrule, { from: jan1, through: jun30 }, cal)
     x = check("except leaves a gap   ", count(trimmed), 5)
 
     ' --- series, stepping mode: payroll every 2 weeks, rolled off holidays ---
-    feb13 (date)= "2026-02-13"
+    feb13 {date}= "2026-02-13"
     pcal = dates.calendar({ holidays: [feb13] })
-    payday1 (date)= "2026-01-02"
+    payday1 {date}= "2026-01-02"
     paydays = dates.series({ every: 2 weeks, roll: "backward" }, { from: payday1, count: 6 }, pcal)
     x = check("26 biweekly? 6 asked  ", count(paydays), 6)
     x = check("holiday payday rolled ", paydays[3], "2026-02-12")
@@ -93,7 +93,7 @@ program main(args)
 
     ' Monthly stepping is MULTIPLICATIVE from the start, so month-end does not
     ' drift: Jan 31 -> Feb 28 -> MAR 31, not Feb-28-forever.
-    jan31 (date)= "2026-01-31"
+    jan31 {date}= "2026-01-31"
     ends = dates.series({ every: "month" }, { from: jan31, count: 4 }, cal)
     x = check("no cumulative drift   ", string(ends[2]), "2026-03-31")
     x = check("clamps where it must  ", string(ends[1]), "2026-02-28")
@@ -117,7 +117,7 @@ program main(args)
     x = check("MWF all match rule    ", mwf_ok, true)
 
     ' month: constrains to months -- "the 15th of January and July" (BYMONTH).
-    dec31b (date)= "2026-12-31"
+    dec31b {date}= "2026-12-31"
     mid = dates.series({ every: "month", when: { day: 15, month: [1, 7] } }, { from: jan1, through: dec31b }, cal)
     x = check("BYMONTH: two hits      ", count(mid), 2)
     x = check("BYMONTH: Jan 15        ", string(mid[0]), "2026-01-15")
@@ -125,7 +125,7 @@ program main(args)
     x = check("month as number        ", dates.matches(mid[1], { day: 15, month: 7 }, cal), true)
 
     ' Business-day stepping over a holiday and a weekend.
-    wed23 (date)= "2026-12-23"
+    wed23 {date}= "2026-12-23"
     run = dates.series({ every: "business day" }, { from: wed23, count: 3 }, hcal)
     x = check("bday steps skip hol   ", string(run[2]), "2026-12-28")
 end program

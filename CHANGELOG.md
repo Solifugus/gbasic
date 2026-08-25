@@ -9,7 +9,39 @@ language surface may still change between releases.
 
 ## Unreleased
 
-_Nothing yet._
+### Breaking: modifier clauses are written in braces
+
+- **`x{USD} = 19.95`**, not `x(USD)= 19.95`. Every modifier position moves:
+  assignment, comparison, library-qualified (`name{text.caseless}`), and with
+  arguments (`s{join ", "}`). The brace form already existed for comparisons;
+  this finishes it and retires the paren spelling.
+
+- **Why.** `name(caseless) = "joe"` and `kind(x) = "record"` were the same
+  tokens in the same order, so the parser had to GUESS which was a clause and
+  which was a call — ninety lines of lookahead whose own comment admitted the
+  identifier-argument case could not be closed at token delivery
+  (`docs/gbasic_clause_recognition.md` §9). It did not fail cleanly: it parsed,
+  ran, and died with `compare modifier not found: x`, naming the caller's own
+  argument as a missing modifier. A brace cannot open a call, so there is
+  nothing to guess. The guesser and the `MOD_LPAREN`/`MOD_CONTENT` tokens are
+  deleted, and `(` means a call or grouping and nothing else.
+
+- **Also fixed by the move:** a modifier on a call result
+  (`getname(){caseless} = "joe"`) was refused by the paren form and is
+  meaningful in the brace form, matching the lens-on-any-operand rule that
+  always applied to literals. `tests/negative_function_result_modifier.*`
+  retired.
+
+- **Migration:** 699 clauses across both repositories, driven by the closed set
+  of modifier NAMES rather than by punctuation — an ordinary call comparison
+  must not be touched. `tests/run_brace_modifiers.sh`.
+
+### Keywords may be field names after a dot
+
+- `r = { end: 1, on: 2 }` and now `r.end`, `r.on`. A field name is a closed
+  context, so a keyword there is unambiguous. Until now the language could
+  build a field the dot form could not read, which had forced four renames in
+  shipped designs.
 
 ## 0.1.0-rc5 — 2026-08-24
 

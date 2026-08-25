@@ -7,9 +7,9 @@ print("unknown = " + unknown)
 print("array = " + [1, 2, 3])
 print("record = " + {name:"Grace", age:35})
 
-arr(string)= [1, 2, 3]
+arr{string}= [1, 2, 3]
 print(arr)
-rec(string)= {name:"Grace", age:35}
+rec{string}= {name:"Grace", age:35}
 print(rec)
 
 print(string("hello"))

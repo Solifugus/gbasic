@@ -317,7 +317,7 @@ here only because a renderer is concatenation-heavy by nature.
 load chart from "../../stdlib/chart.bas"
 ' trend is a FY-ascending frame with columns end, revenue, net_income, fcf
 svg = chart.line(trend, "end", ["revenue", "net_income", "fcf"])
-write_text(p, svg)     ' p(file)= "aapl_topline.svg"
+write_text(p, svg)     ' p{file}= "aapl_topline.svg"
 ```
 
 **Statistics — scatter with regression fit** (fit computed by `stats`, plotted

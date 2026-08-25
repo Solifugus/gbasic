@@ -93,23 +93,23 @@ program main(args)
     show(mode, { list: ["x", "y"] })
 
     ' --- datetimes at every precision, and time-only -------------------------
-    y(date)= "2027"
+    y{date}= "2027"
     show(mode, y)
-    mo(date)= "2026-06"
+    mo{date}= "2026-06"
     show(mode, mo)
-    d(date)= "2026-05-15"
+    d{date}= "2026-05-15"
     show(mode, d)
-    dh(datetime)= "2026-05-15 14"
+    dh{datetime}= "2026-05-15 14"
     show(mode, dh)
-    dm(datetime)= "2026-05-15 14:30"
+    dm{datetime}= "2026-05-15 14:30"
     show(mode, dm)
-    ds(datetime)= "2026-05-15 14:30:20"
+    ds{datetime}= "2026-05-15 14:30:20"
     show(mode, ds)
-    th(time)= "14"
+    th{time}= "14"
     show(mode, th)
-    tm(time)= "14:30"
+    tm{time}= "14:30"
     show(mode, tm)
-    ts(time)= "14:30:20"
+    ts{time}= "14:30:20"
     show(mode, ts)
 
     ' --- durations: used to render as the literal {duration} -----------------
@@ -121,17 +121,17 @@ program main(args)
     show(mode, 0 seconds)
 
     ' --- money, including negative and zero ----------------------------------
-    price(USD)= 19.95
+    price{USD}= 19.95
     show(mode, price)
-    owed(USD)= -5.00
+    owed{USD}= -5.00
     show(mode, owed)
-    zed(USD)= 0.00
+    zed{USD}= 0.00
     show(mode, zed)
 
     ' --- file / dir ----------------------------------------------------------
-    f(file)= "/tmp/gbasic-render-does-not-exist.txt"
+    f{file}= "/tmp/gbasic-render-does-not-exist.txt"
     show(mode, f)
-    dd(dir)= "/tmp"
+    dd{dir}= "/tmp"
     show(mode, dd)
 
     ' --- function and regex values -------------------------------------------

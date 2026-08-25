@@ -5,7 +5,7 @@ program main(args)
     load edgar from "../stdlib/edgar.bas"
 
     ' Fresh cache each run so counts are deterministic.
-    cachefile(file)= "examples/tmp_edgar_test.db"
+    cachefile{file}= "examples/tmp_edgar_test.db"
     if exists(cachefile) then
         delete(cachefile)
     end if

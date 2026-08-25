@@ -1,1 +1,1 @@
-bad(number)= "abc"
+bad{number}= "abc"

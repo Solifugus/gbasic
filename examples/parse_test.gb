@@ -1,7 +1,7 @@
 name = "Joe Barnes"
-balance(USD) = 19.95
+balance{USD} = 19.95
 
-if name(caseless) = "joe barnes" then
+if name{caseless} = "joe barnes" then
     print balance
 end if
 

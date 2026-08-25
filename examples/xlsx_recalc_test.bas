@@ -58,6 +58,6 @@ program main(args)
   print "evaluated=" + c.evaluated + " changed=" + c.changed + " circular=" + c.circular
   print "the healthy cell on that sheet = " + xlsx.evaluate(wb, "Circular", "B2")
 
-  f(file) = out
+  f{file} = out
   delete(f)
 end program

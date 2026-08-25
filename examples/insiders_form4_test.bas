@@ -11,7 +11,7 @@ program main(args)
     load xml
 
     ' --- Part 1: real fixture ------------------------------------------------
-    p(file)= "examples/fixtures/edgar/form4_sample.xml"
+    p{file}= "examples/fixtures/edgar/form4_sample.xml"
     doc = xml.parse(join(read_lines(p), "\n"))
     tx = insiders.from_form4(doc, "2026-06-17")
 

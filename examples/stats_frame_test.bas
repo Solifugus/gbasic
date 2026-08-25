@@ -67,7 +67,7 @@ program demo(args)
     csv = csv + "Ada,36,07030,9.5" + chr(10)
     csv = csv + "Grace,45,10001," + chr(10)
     csv = csv + "Alan,,90210,7.0" + chr(10)
-    w(file)= "examples/tmp_frame_in.csv"
+    w{file}= "examples/tmp_frame_in.csv"
     write(w, csv)
 
     df = frame.read_csv("examples/tmp_frame_in.csv")
@@ -85,8 +85,8 @@ program demo(args)
     frame.show(frame.select(df, ["name", "age", "score"]))
 
     ' clean up temp files
-    f1(file)= "examples/tmp_frame_in.csv"
-    f2(file)= "examples/tmp_frame_out.csv"
+    f1{file}= "examples/tmp_frame_in.csv"
+    f2{file}= "examples/tmp_frame_out.csv"
     delete(f1)
     delete(f2)
 end program

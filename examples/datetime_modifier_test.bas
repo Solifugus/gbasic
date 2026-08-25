@@ -3,8 +3,8 @@
 ' preserved. This matches the value now() produces, and is distinct from (date)=,
 ' which infers precision from the string.
 
-a (datetime)= "2026-05-15"
-b (datetime)= "2026-05-15 12:05:03"
+a {datetime}= "2026-05-15"
+b {datetime}= "2026-05-15 12:05:03"
 
 print string(a)
 print string(b)
@@ -19,7 +19,7 @@ if a != b then
 end if
 
 ' A bare (date)= of the same day is day-precise, so an exact compare differs.
-c (date)= "2026-05-15"
+c {date}= "2026-05-15"
 if a != c then
     print "datetime is second-precise, date-only is day-precise"
 end if

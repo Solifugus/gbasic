@@ -58,8 +58,8 @@ Assignment:
 
 ```basic
 x = expression
-x(modifier)= expression
-x(modifier args)= expression
+x{modifier}= expression
+x{modifier args}= expression
 ```
 
 Assignment targets may be variables, array elements, record fields, or nested paths combining indexes and fields:
@@ -455,8 +455,8 @@ their stored date/time fields and stored precision match. For precision-aware
 comparison, use an explicit comparison lens:
 
 ```basic
-d(date)= "2026-05-15"
-t(date)= "2026-05-15 12:05:03"
+d{date}= "2026-05-15"
+t{date}= "2026-05-15 12:05:03"
 
 if d != t then print("different precision")
 if d {day}= t then print("same day")
@@ -758,7 +758,7 @@ See [pbi_design.md](pbi_design.md) for the full design and rationale.
 Modifier use:
 
 ```basic
-x(USD)= 19.95
+x{USD}= 19.95
 name {caseless}= "joe"
 a {rounded 2}= b
 a {math.rounded to 2}= b
@@ -780,8 +780,8 @@ The older parenthesized comparison syntax remains temporarily supported during
 the migration:
 
 ```basic
-name(caseless)= "joe"
-a(rounded 2)= b
+name{caseless}= "joe"
+a{rounded 2}= b
 ```
 
 That comparison form is deprecated and will be removed in a later phase.
@@ -861,7 +861,7 @@ end library
 
 program demo(args)
     load text
-    msg(shout)= "hello"
+    msg{shout}= "hello"
     print(msg)
 end program
 ```
@@ -2447,7 +2447,7 @@ cannot answer.
 if has_builtin("file_type") then
     kind = file_type(path)          ' the precise check (newer builds)
 else
-    f(file) = path
+    f{file} = path
     present = exists(f)             ' the portable fallback
 end if
 ```
@@ -2492,18 +2492,18 @@ from it via durations and the date/time lenses.
 ```basic
 deadline = now() + 8 hours
 expired = now() > deadline          ' false until the deadline passes
-today(day)= now()                   ' truncate to date precision via the day lens
+today{day}= now()                   ' truncate to date precision via the day lens
 ```
 
 There is intentionally no `today()` builtin: `today` is too common an
-identifier to reserve, and the date is derivable from `now()` and the `(day)=`
+identifier to reserve, and the date is derivable from `now()` and the `{day}=`
 truncation lens as shown above.
 
 **Datetime fields.** Components come out as *numbers* via dot access — the
 lenses truncate, the fields extract, and no global names are spent on it:
 
 ```basic
-d (date)= "2026-03-15 09:30:45"
+d {date}= "2026-03-15 09:30:45"
 d.year          ' 2026        d.hour    ' 9
 d.month         ' 3           d.minute  ' 30
 d.day           ' 15          d.second  ' 45
@@ -2531,7 +2531,7 @@ years and months first, **clamps the day** into the resulting month, then adds
 the exact parts as elapsed time:
 
 ```basic
-jan31 (date)= "2026-01-31"
+jan31 {date}= "2026-01-31"
 jan31 + 1 month           ' 2026-02-28   (clamped)
 jan31 + 1 month + 1 day   ' 2026-03-01   (clamp first, THEN the day)
 ```
@@ -2963,7 +2963,7 @@ outright (a date or money raises, it does not degrade to a string or number).
 directory references:
 
 ```basic
-cost(USD)= 9.99
+cost{USD}= 9.99
 deserialize(serialize({when: now(), cost: cost}))   # exact copy, types intact
 ```
 
@@ -3088,7 +3088,7 @@ or out-of-range input:
 
 ```basic
 text = string(project)
-label(string)= count
+label{string}= count
 line = "You were born in " + birth_year + "."
 ```
 
@@ -3195,7 +3195,7 @@ to be dropped: draining continued, the program ran on with a watcher that had
 not fired, and the diagnostic surfaced only at exit.
 
 **A typed-value modifier raises when it cannot construct the value** (*since
-0.1.0-rc5*): `d(date) = "not-a-date"`, a `time` / `datetime` that will not
+0.1.0-rc5*): `d{date} = "not-a-date"`, a `time` / `datetime` that will not
 parse, or a `file` / `dir` given something that is not a path string.
 `error.source` is `"datetime"` for the three temporal ones and `"modifier"` for
 the two path ones, matching `USD`, which always raised. Until 0.1.0-rc5 these

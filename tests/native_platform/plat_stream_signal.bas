@@ -7,7 +7,7 @@
 ' not what was in flight.
 function probe(label, flagged)
     ready = "/tmp/gbasic_plat_stream_signal_" + label + ".ready"
-    r(file) = ready
+    r{file} = ready
     if exists(r) then
         delete(r)
     end if

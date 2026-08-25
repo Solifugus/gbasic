@@ -47,7 +47,7 @@ function configured_port()
         return port
     end if
 
-    config_file(file)= "examples/gbasic_site/server_port.txt"
+    config_file{file}= "examples/gbasic_site/server_port.txt"
     if not exists(config_file) then
         return 0
     end if
@@ -101,11 +101,11 @@ function route_request(req)
         return text_response(req, 200, "text/html; charset=utf-8", forum_page())
     end if
     if req.path = "/static/site.css" then
-        css_file(file)= "examples/gbasic_site/static/site.css"
+        css_file{file}= "examples/gbasic_site/static/site.css"
         return file_response(req, "text/css; charset=utf-8", css_file)
     end if
     if req.path = "/static/site.js" then
-        js_file(file)= "examples/gbasic_site/static/site.js"
+        js_file{file}= "examples/gbasic_site/static/site.js"
         return file_response(req, "application/javascript; charset=utf-8", js_file)
     end if
     if req.path = "/health" then
@@ -114,7 +114,7 @@ function route_request(req)
     return text_response(req, 404, "text/plain; charset=utf-8", "not found")
 end function
 
-port_file(file)= "examples/gbasic_site/tmp_port.txt"
+port_file{file}= "examples/gbasic_site/tmp_port.txt"
 if exists(port_file) then delete(port_file)
 
 server = webserver.listen(configured_port())

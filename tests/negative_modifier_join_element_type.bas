@@ -1,1 +1,1 @@
-bad(join)= [1, 2]
+bad{join}= [1, 2]

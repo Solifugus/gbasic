@@ -1,4 +1,4 @@
-folder (dir)= "examples"
+folder {dir}= "examples"
 
 items = list(folder)
 

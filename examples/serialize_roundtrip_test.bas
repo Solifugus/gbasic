@@ -21,9 +21,9 @@ print(n["tags"][1])
 print(n["inner"]["k"])
 
 ' typed values
-d(date)= "2026-06-25"
+d{date}= "2026-06-25"
 print(deserialize(serialize(d)) = d)
-m(USD)= 19.95
+m{USD}= 19.95
 print(deserialize(serialize(m)) = m)
 
 ' the serialized form is itself a binary-safe string

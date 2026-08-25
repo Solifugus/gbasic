@@ -3,6 +3,6 @@ program demo(args)
 
     print(double(21))
 
-    msg(loud)= "hello"
+    msg{loud}= "hello"
     print(msg)
 end program

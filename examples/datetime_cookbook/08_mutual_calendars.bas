@@ -9,7 +9,7 @@
 program main(args)
     load dates from "../../stdlib/dates.bas"
 
-    xmas (date)= "2026-12-25"
+    xmas {date}= "2026-12-25"
     alice = dates.calendar({ holidays: [xmas], hours: { open: "9:00", close: "17:00" } })
     bob = dates.calendar({ weekend: ["friday", "saturday", "sunday"], hours: { open: "10:00", close: "16:30" } })
 
@@ -18,7 +18,7 @@ program main(args)
     print "merged window  : " + both.hours.open + " to " + both.hours.close
 
     ' First day they can both meet, starting from Wed Dec 23.
-    wed (date)= "2026-12-23"
+    wed {date}= "2026-12-23"
     day = dates.next_business_day(wed, both)
     print "mutual day     : " + day
     print "works for Alice: " + dates.is_business_day(day, alice)

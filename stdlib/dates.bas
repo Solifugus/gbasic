@@ -47,7 +47,7 @@ library dates
     end function
 
     function dayname(d)
-        cursor(day)= "2026-05-11"
+        cursor{day}= "2026-05-11"
         name = "Monday"
 
     forward:
@@ -69,8 +69,8 @@ library dates
     end function
 
     function days_between(a, b)
-        start_date(day)= a
-        end_date(day)= b
+        start_date{day}= a
+        end_date{day}= b
         count = 0
 
         if start_date = end_date then
@@ -96,11 +96,11 @@ library dates
     end function
 
     function _end_of_month(d)
-        current(day)= d
+        current{day}= d
 
     loop:
         candidate = current + 1 day
-        if candidate(month)!= current then
+        if candidate{month}!= current then
             return current
         end if
         current = candidate
@@ -108,11 +108,11 @@ library dates
     end function
 
     function _start_of_month(d)
-        current(day)= d
+        current{day}= d
 
     loop:
         candidate = current - 1 day
-        if candidate(month)!= current then
+        if candidate{month}!= current then
             return current
         end if
         current = candidate
@@ -120,7 +120,7 @@ library dates
     end function
 
     function _next_weekday(d, target)
-        current(day)= d
+        current{day}= d
         current = current + 1 day
 
     loop:
@@ -133,7 +133,7 @@ library dates
     end function
 
     function _previous_weekday(d, target)
-        current(day)= d
+        current{day}= d
         current = current - 1 day
 
     loop:
@@ -245,7 +245,7 @@ library dates
             ' hit the precision rule: a holiday supplied as a full timestamp
             ' still blocks the whole day.
             for each h in spec.holidays
-                hd (day)= h
+                hd {day}= h
                 append(holidays, hd)
             end for
         end if
@@ -303,7 +303,7 @@ library dates
     end function
 
     function is_business_day(d, cal)
-        dd (day)= d
+        dd {day}= d
         if contains(cal.weekend, lower(dd.dayname)) then
             return false
         end if
@@ -314,7 +314,7 @@ library dates
     end function
 
     function _step_business(d, cal, direction)
-        dd (day)= d
+        dd {day}= d
         guard = 0
         do
             dd = dd + (1 day) * direction
@@ -338,7 +338,7 @@ library dates
     end function
 
     function add_business_days(d, n, cal)
-        dd (day)= d
+        dd {day}= d
         remaining = n
         while remaining > 0
             dd = next_business_day(dd, cal)
@@ -356,8 +356,8 @@ library dates
         ' days until the deadline" when a is today. Signed: b before a negates.
         ' The convention is stated because half-open intervals are where
         ' calendar bugs live.
-        aa (day)= a
-        bb (day)= b
+        aa {day}= a
+        bb {day}= b
         if bb < aa then
             return 0 - business_days_between(b, a, cal)
         end if
@@ -423,8 +423,8 @@ library dates
     ' (CLAMPED, via the core operator) still on or before b -- so
     ' Jan 31 -> Feb 28 is 1 month, exactly as Jan 31 + 1 month is Feb 28.
     function between(a, b, unit)
-        aa (day)= a
-        bb (day)= b
+        aa {day}= a
+        bb {day}= b
         if unit = "days" then
             diff = bb - aa
             return diff.total_seconds / 86400
@@ -467,7 +467,7 @@ library dates
 
     function _mkday(y, m, d)
         s = y + "-" + _pad2(m) + "-" + _pad2(d)
-        out (date)= s
+        out {date}= s
         return out
     end function
 
@@ -488,7 +488,7 @@ library dates
             return { first: _mkday(d.year, 1, 1), last: _mkday(d.year, 12, 31) }
         end if
         if within = "week" then
-            dd (day)= d
+            dd {day}= d
             first = dd - (1 day) * (dd.weekday - 1)   ' ISO week: Monday first
             return { first: first, last: first + 6 days }
         end if
@@ -511,7 +511,7 @@ library dates
     ' Note "0:00" adds a zero duration, which does not bump precision -- a
     ' midnight stamp keeps day precision, which renders without a time.
     function at(d, t)
-        dd (day)= d
+        dd {day}= d
         return dd + _tod(t)
     end function
 
@@ -540,7 +540,7 @@ library dates
             return false
         end if
         for each e in spec.except
-            ed (day)= e
+            ed {day}= e
             if ed = dd then
                 return true
             end if
@@ -592,7 +592,7 @@ library dates
         if type(b) = "record" then
             return _mkday(ref.year, ref.month, b.day)
         end if
-        bb (day)= b
+        bb {day}= b
         return bb
     end function
 
@@ -631,7 +631,7 @@ library dates
     end function
 
     function matches(d, spec, cal)
-        dd (day)= d
+        dd {day}= d
         if not _candidate(dd, spec, cal) then
             return false
         end if
@@ -688,7 +688,7 @@ library dates
     end function
 
     function select(spec, anchor, cal)
-        aa (day)= anchor
+        aa {day}= anchor
         n = 1
         if has(spec, "nth") then
             n = _nth_num(spec.nth)
@@ -824,7 +824,7 @@ library dates
     end function
 
     function series(spec, bounds, cal)
-        start (day)= bounds.from
+        start {day}= bounds.from
         want = 0 - 1
         if has(bounds, "count") then
             want = bounds.count
@@ -832,7 +832,7 @@ library dates
         has_through = has(bounds, "through")
         stop_at = start
         if has_through then
-            stop_at (day)= bounds.through
+            stop_at {day}= bounds.through
         end if
         if not has_through and want < 1 then
             error "dates.series: bounds need through: or count:"
@@ -864,7 +864,7 @@ library dates
                 end if
                 for each d in picked
                     if not is_unknown(d) then
-                        dd (day)= d
+                        dd {day}= d
                         if dd >= start then
                             emit = true
                             if has_through and dd > stop_at then
@@ -1032,8 +1032,8 @@ library dates
             return (0 seconds) - business_hours_between(b, a, cal)
         end if
         total = 0
-        dd (day)= a
-        last (day)= b
+        dd {day}= a
+        last {day}= b
         guard = 0
         while dd <= last and guard < 10000
             guard = guard + 1

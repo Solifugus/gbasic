@@ -280,7 +280,7 @@ program main(args)
   '
   ' Cleanup. `delete` needs a FILE REFERENCE, not a path string -- the `(file)`
   ' modifier is how a string becomes one.
-  tmp(file)= out
+  tmp{file}= out
   if exists(tmp) then
     delete(tmp)
   end if

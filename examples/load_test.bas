@@ -16,6 +16,6 @@ program demo(args)
 
     print(add(2, 3))
 
-    msg(shout)= "hello"
+    msg{shout}= "hello"
     print(msg)
 end program

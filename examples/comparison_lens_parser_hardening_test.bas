@@ -4,7 +4,7 @@ end modifier
 
 name = "Bob"
 age_text = "18"
-age(number)= age_text
+age{number}= age_text
 
 if number(age_text) >= 18 then
     print("number call")
@@ -18,7 +18,7 @@ if name {caseless}= "bob" then
     print("brace lens")
 end if
 
-if name(lowered)= "bob" then
+if name{lowered}= "bob" then
     print("old comparison modifier")
 end if
 

@@ -40,7 +40,7 @@ program main(args)
     print left(svg, 44)
     print string(len(svg)) + " chars of SVG in total"
 
-    f (file)= "examples/chart_cookbook/tmp_first.svg"
+    f {file}= "examples/chart_cookbook/tmp_first.svg"
     write(f, svg)
     print "saved: " + string(bytes(f)) + " bytes"
     delete(f)
@@ -117,7 +117,7 @@ dates. Mixing dates and numbers in one x column is refused.
 program main(args)
     load chart from "../../stdlib/chart.bas"
 
-    d1 (date)= "2026-01-31"
+    d1 {date}= "2026-01-31"
     trend = {
         day: [d1, d1 + 14 days, d1 + 28 days, d1 + 42 days],
         users: [120, 180, 260, 410]
@@ -155,9 +155,9 @@ deterministic number formatter.
 program main(args)
     load chart from "../../stdlib/chart.bas"
 
-    a(USD)= 1200.50
-    b(USD)= 1350.25
-    c(USD)= 1180.75
+    a{USD}= 1200.50
+    b{USD}= 1350.25
+    c{USD}= 1180.75
     balances = { month: [1, 2, 3], balance: [a, b, c] }
     svg = chart.line(balances, "month", "balance")
 

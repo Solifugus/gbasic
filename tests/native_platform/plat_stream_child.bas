@@ -10,8 +10,8 @@
 ' --line-buffered itself: if the flag leaked through to the program, args[0]
 ' would be the flag rather than the READY path and this fixture would misbehave.
 program main(args)
-    ready(file) = args[0]
-    gate(file) = args[1]
+    ready{file} = args[0]
+    gate{file} = args[1]
 
     print "CHUNK-ONE"
     write(ready, "")

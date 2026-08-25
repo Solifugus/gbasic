@@ -63,7 +63,7 @@ library schedule
 
     function slots(day, spec, cal)
         hours = _hours_or_error(cal)
-        dd (day)= day
+        dd {day}= day
         cur = dates.at(dd, hours.open)
         closing = dates.at(dd, hours.close)
         gap = 0 seconds
@@ -100,7 +100,7 @@ library schedule
             if si >= count(sessions) then
                 break
             end if
-            dd (day)= days[di - 1]
+            dd {day}= days[di - 1]
             opening = dates.at(dd, hours.open)
             closing = dates.at(dd, hours.close)
             dbs = _day_breaks(dd, plan)

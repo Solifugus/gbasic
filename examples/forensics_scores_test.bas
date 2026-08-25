@@ -3,7 +3,7 @@
 ' ingredient values) is the hand-check anchor Matthew verifies against the 10-K.
 
 function load_facts(path)
-    ref(file)= path
+    ref{file}= path
     return decode(join(read_lines(ref), "\n"))
 end function
 

@@ -1,6 +1,6 @@
-d (date)= "2026-05-15"
-m (date)= "2026-05-15 12:05:03"
-month (date)= "2026-05"
+d {date}= "2026-05-15"
+m {date}= "2026-05-15 12:05:03"
+month {date}= "2026-05"
 
 if d != m then
     print "different precision"
@@ -18,7 +18,7 @@ if month {month}= d then
     print "same month"
 end if
 
-later (date)= "2026-05-16"
+later {date}= "2026-05-16"
 
 if later > d then
     print "later"

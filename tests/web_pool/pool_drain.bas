@@ -7,7 +7,7 @@ program main(args)
   load web
   scratch = args[0]
   gatepath = scratch + "/gate.flag"
-  gate(file) = gatepath
+  gate{file} = gatepath
   if exists(gate) then
     delete(gate)
   end if

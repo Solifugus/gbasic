@@ -30,14 +30,14 @@ ui = {
 win = gui.window(360, 260, "Calculator", ui)
 
 function calculate(op)
-    lhs(number)= win.left.value
+    lhs{number}= win.left.value
     if error then
         win.status.value = "Left input must be a number."
         error.clear()
         return
     end if
 
-    rhs(number)= win.right.value
+    rhs{number}= win.right.value
     if error then
         win.status.value = "Right input must be a number."
         error.clear()
@@ -61,7 +61,7 @@ function calculate(op)
         answer = lhs / rhs
     end if
 
-    answer_text(string)= answer
+    answer_text{string}= answer
     win.result.value = answer_text
     win.status.value = "Computed " + op
 end function

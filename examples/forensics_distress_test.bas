@@ -4,7 +4,7 @@
 ' AAPL's large-buyback signal shape.
 
 function load_facts(path)
-    ref(file)= path
+    ref{file}= path
     return decode(join(read_lines(ref), "\n"))
 end function
 

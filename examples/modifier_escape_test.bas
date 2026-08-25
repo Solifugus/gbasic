@@ -48,54 +48,54 @@ program main(args)
 
   print "-- every escape, through a modifier clause and through a literal"
 
-  n1(join "\n") = pair
+  n1{join "\n"} = pair
   report("newline  ", n1, "a" + "\n" + "b")
 
-  t1(join "\t") = pair
+  t1{join "\t"} = pair
   report("tab      ", t1, "a" + "\t" + "b")
 
-  q1(join "\"") = pair
+  q1{join "\""} = pair
   report("quote    ", q1, "a" + "\"" + "b")
 
-  b1(join "\\") = pair
+  b1{join "\\"} = pair
   report("backslash", b1, "a" + "\\" + "b")
 
-  u1(join "\u{263A}") = pair
+  u1{join "\u{263A}"} = pair
   report("u+263A   ", u1, "a" + "\u{263A}" + "b")
 
-  u2(join "\u{1F600}") = pair
+  u2{join "\u{1F600}"} = pair
   report("u+1F600  ", u2, "a" + "\u{1F600}" + "b")
 
-  p1(join "plain") = pair
+  p1{join "plain"} = pair
   report("plain    ", p1, "a" + "plain" + "b")
 
-  m1(join "x\ny\tz") = pair
+  m1{join "x\ny\tz"} = pair
   report("mixed    ", m1, "a" + "x\ny\tz" + "b")
 
-  m2(join "q\"r\\s\nt") = pair
+  m2{join "q\"r\\s\nt"} = pair
   report("all four ", m2, "a" + "q\"r\\s\nt" + "b")
 
   print "-- the reported case: split on a real newline"
   ' The DOGFOOD entry that started this. Splitting on "\n" must find the three
   ' lines, not treat the separator as two literal characters and find one.
   text = "one" + "\n" + "two" + "\n" + "three"
-  s1(split "\n") = text
+  s1{split "\n"} = text
   print "clause split count=" + count(s1)
   sep = "\n"
-  s2(split sep) = text
+  s2{split sep} = text
   print "variable split count=" + count(s2)
   print "agree=" + (count(s1) = count(s2))
   print "first=" + s1[0] + " last=" + s1[2]
 
   print "-- a separator that is itself a quote or a backslash"
   qtext = "a" + "\"" + "b"
-  s3(split "\"") = qtext
+  s3{split "\""} = qtext
   print "quote sep count=" + count(s3)
   btext = "a" + "\\" + "b"
-  s4(split "\\") = btext
+  s4{split "\\"} = btext
   print "backslash sep count=" + count(s4)
 
   print "-- escapes still work in the trailing position and alone"
-  e1(join "\n\n") = pair
+  e1{join "\n\n"} = pair
   report("two nl   ", e1, "a" + "\n\n" + "b")
 end program
