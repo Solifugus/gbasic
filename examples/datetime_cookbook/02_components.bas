@@ -1,6 +1,6 @@
 ' Recipe 2 — Getting numbers OUT: dot fields extract, lenses truncate.
 '
-' d.year is a NUMBER you can compute with; (year)= gives a coarser DATETIME
+' d.year is a NUMBER you can compute with; {year} gives a coarser DATETIME
 ' for grouping. Two mechanisms, two jobs, zero global names spent.
 
 program main(args)

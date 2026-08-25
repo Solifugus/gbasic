@@ -132,6 +132,20 @@ reached a raw `fprintf` — which is how `TOKEN_MOD_CONTENT` turned up as a toke
 nothing could emit. `tests/run_brace_modifiers.sh` now names all of it, because
 dead code that still parses is how a retired construct comes back.
 
+**The migration in §6 was also incomplete, and it stayed that way for a
+release.** It drove off the modifier NAME list across `.bas` files, which was
+the right call for the risk it was avoiding — but three test scripts embed
+gBASIC in a **shell heredoc** (`tests/run_ari.sh`, `tests/run_nap_fs.sh`,
+`tests/run_render.sh`), and one cookbook carried the old spelling in prose
+directly above code already migrated. The three scripts failed from rc6 to rc7
+and nothing went red, because every gate anyone ran was a hand-maintained list
+that did not name them. `tests/run_all.sh` now discovers suites by glob, which
+is the actual repair: the migration was findable, the failure was not.
+
+Generalisation worth keeping: **a source-file sweep is a sweep of files that
+look like source.** Generated programs, heredocs, and documentation prose are
+the same language and are reached by none of it.
+
 ## 8. Test obligations
 
 `tests/run_brace_modifiers.sh`: the assignment form for every builtin modifier;

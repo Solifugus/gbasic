@@ -25,8 +25,8 @@ function vcell(row, col)
 end function
 
 vg = datagrid.create_virtual(vcount, vcell)
-datagrid.add_column(vg, { title: "Index", index: 0 })
-datagrid.add_column(vg, { title: "Label", index: 1 })
+vg = datagrid.add_column(vg, { title: "Index", index: 0 })
+vg = datagrid.add_column(vg, { title: "Label", index: 1 })
 
 ' Nothing here holds a factory: the grid's factories stay internal to the registry
 ' and rendering must work anyway (tests/datagrid/lifetime.bas is the dedicated
@@ -54,6 +54,6 @@ print "cells were bound: " + string(datagrid.accesses() > 0)
 print "cell(0,1): " + datagrid.cell(vg, 0, 1)
 print "cell(900000,1): " + datagrid.cell(vg, 900000, 1)
 print "selected: " + string(datagrid.selected(vg))
-datagrid.set_count(vg, 250000)
+vg = datagrid.set_count(vg, 250000)
 print "after set_count: " + string(datagrid.row_count(vg))
 print "DONE"

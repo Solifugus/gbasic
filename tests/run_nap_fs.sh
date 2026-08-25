@@ -22,7 +22,7 @@ f="$work/stamped.txt"
 : >"$f"
 touch -d "2020-01-01 00:00:00 UTC" "$f"
 cat >"$work/mtime_exact.bas" <<EOF
-target(file)= "$f"
+target{file}= "$f"
 print file_mtime(target)
 EOF
 got="$(TZ=UTC ./gbasic "$work/mtime_exact.bas")"
@@ -47,7 +47,7 @@ fi
 dest="$work/dest.txt"
 printf 'ORIGINAL' >"$dest"
 cat >"$work/replace_fail.bas" <<EOF
-src(file)= "$work/does-not-exist.tmp"
+src{file}= "$work/does-not-exist.tmp"
 atomic_replace(src, "$dest")
 EOF
 if ./gbasic "$work/replace_fail.bas" >/dev/null 2>"$work/err.txt"; then
@@ -77,7 +77,7 @@ if [[ -n "$shm_dev" && "$shm_dev" != "$work_dev" ]]; then
     xdest="$work/xdev_dest.txt"
     printf 'KEEP' >"$xdest"
     cat >"$work/replace_xdev.bas" <<EOF
-src(file)= "$xtmp"
+src{file}= "$xtmp"
 atomic_replace(src, "$xdest")
 EOF
     if ./gbasic "$work/replace_xdev.bas" >/dev/null 2>"$work/xerr.txt"; then
@@ -111,8 +111,8 @@ if [[ "${NAP_FS_STRESS:-0}" == "1" ]]; then
     payload_b="B"
     printf '%s' "$payload_a" >"$sdest"
     cat >"$work/stress_writer.bas" <<EOF
-sa(file)= "$work/sa.tmp"
-sb(file)= "$work/sb.tmp"
+sa{file}= "$work/sa.tmp"
+sb{file}= "$work/sb.tmp"
 i = 0
 while i < 2000
     write(sa, "$payload_a")
@@ -121,7 +121,7 @@ while i < 2000
     atomic_replace(sb, "$sdest")
     i = i + 1
 end while
-done_flag(file)= "$work/done.flag"
+done_flag{file}= "$work/done.flag"
 write(done_flag, "done")
 EOF
     ./gbasic "$work/stress_writer.bas" >/dev/null 2>&1 &

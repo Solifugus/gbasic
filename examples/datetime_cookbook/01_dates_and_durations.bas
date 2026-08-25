@@ -3,7 +3,7 @@
 ' One datetime kind covers what other languages need four types for: a year,
 ' a month, a date and a timestamp are the SAME kind at different precisions,
 ' and the precision decides how the value renders. There are no date literals
-' (2026-12-25 would parse as subtraction!) -- the (date)= modifier takes an
+' (2026-12-25 would parse as subtraction!) -- the {date} modifier takes an
 ' ISO string at any precision.
 
 program main(args)

@@ -43,7 +43,7 @@ Three ideas carry everything on this page:
 ' One datetime kind covers what other languages need four types for: a year,
 ' a month, a date and a timestamp are the SAME kind at different precisions,
 ' and the precision decides how the value renders. There are no date literals
-' (2026-12-25 would parse as subtraction!) -- the (date)= modifier takes an
+' (2026-12-25 would parse as subtraction!) -- the {date} modifier takes an
 ' ISO string at any precision.
 
 program main(args)
@@ -107,7 +107,7 @@ month-end; clamping is lossy, and pretending otherwise would be worse.
 ```basic
 ' Recipe 2 — Getting numbers OUT: dot fields extract, lenses truncate.
 '
-' d.year is a NUMBER you can compute with; (year)= gives a coarser DATETIME
+' d.year is a NUMBER you can compute with; {year} gives a coarser DATETIME
 ' for grouping. Two mechanisms, two jobs, zero global names spent.
 
 program main(args)

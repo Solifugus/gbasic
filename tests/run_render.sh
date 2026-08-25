@@ -144,7 +144,7 @@ fi
 # the JSON path, encode would emit a token that decode cannot read back, and
 # nothing else in the suite would notice.
 boundary() { # call expected-message-fragment
-    printf 'program main(args)\n  d(date)= "2026-05-15"\n  print(%s)\nend program\n' "$1" >"$work/b.bas"
+    printf 'program main(args)\n  d{date}= "2026-05-15"\n  print(%s)\nend program\n' "$1" >"$work/b.bas"
     if ./gbasic "$work/b.bas" >"$work/b.out" 2>"$work/b.err"; then
         printf 'FAIL boundary: %s did NOT refuse -- it emitted: %s\n' "$1" "$(cat "$work/b.out")"
         status=1

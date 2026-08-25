@@ -136,7 +136,7 @@ program main(args)
   append(sp, "            field ending_cash: right of \"Ending Cash\" as money")
   spec = join(sp, "\n")
 
-  f(file) = args[0]
+  f{file} = args[0]
   report = join(read_lines(f), "\n")
   r = ari.parse(report, spec)
   if not r.ok then

@@ -44,8 +44,8 @@ end function
 ' model all go out of scope here. This is the failing form from the NAP-12 report.
 function make_accounts(rows)
     h = datagrid.create(rows)
-    datagrid.add_column(h, { title: "Account", field: "name" })
-    datagrid.add_column(h, { title: "Balance", field: "balance", format: usd })
+    h = datagrid.add_column(h, { title: "Account", field: "name" })
+    h = datagrid.add_column(h, { title: "Balance", field: "balance", format: usd })
     return h
 end function
 
@@ -100,7 +100,7 @@ print "cell(3,0)=" + datagrid.cell(h, 3, 0) + " cell(3,1)=" + datagrid.cell(h, 3
 ' --- lifetime pressure: churn, then refresh must still bind ----------------
 churned2 = churn()
 before_refresh = datagrid.accesses()
-datagrid.refresh(h)
+h = datagrid.refresh(h)
 pump(250)
 after_refresh = datagrid.accesses()
 print "still binds after churn + refresh: " + string(after_refresh > before_refresh)
@@ -110,7 +110,7 @@ cycle_counts = []
 n = 0
 while n < 3
     b0 = datagrid.accesses()
-    datagrid.refresh(h)
+    h = datagrid.refresh(h)
     pump(200)
     b1 = datagrid.accesses()
     cycle_counts = append(cycle_counts, b1 - b0)
@@ -125,8 +125,8 @@ print "refresh cycles bind a constant amount (no duplicate handlers): " + string
 
 ' --- two independent grids -------------------------------------------------
 g2 = datagrid.create_virtual(vcount, vcell)
-datagrid.add_column(g2, { title: "Idx", index: 0 })
-datagrid.add_column(g2, { title: "Label", index: 1 })
+g2 = datagrid.add_column(g2, { title: "Idx", index: 0 })
+g2 = datagrid.add_column(g2, { title: "Label", index: 1 })
 w2 = show(g2, "Virtual")
 pump(250)
 print "grid2 binds independently: " + string(datagrid.setups() > setups_after_embed)
@@ -134,10 +134,10 @@ print "grid1 cell(2,0)=" + datagrid.cell(h, 2, 0) + " grid2 cell(2,1)=" + datagr
 
 ' Destroying the first window must not disturb the second.
 wh.destroy()
-datagrid.destroy(h)
+h = datagrid.destroy(h)
 pump(200)
 b_before = datagrid.accesses()
-datagrid.refresh(g2)
+g2 = datagrid.refresh(g2)
 pump(250)
 print "grid2 still binds after grid1 destroyed: " + string(datagrid.accesses() > b_before)
 print "grid2 cell(9,1)=" + datagrid.cell(g2, 9, 1)
@@ -148,11 +148,11 @@ before_slots = count(_DATAGRID.grids)
 k = 0
 while k < 5
     t = datagrid.create_virtual(vcount, vcell)
-    datagrid.add_column(t, { title: "T", index: 0 })
+    t = datagrid.add_column(t, { title: "T", index: 0 })
     tw = show(t, "T")
     pump(120)
     tw.destroy()
-    datagrid.destroy(t)
+    t = datagrid.destroy(t)
     k = k + 1
 end while
 after_slots = count(_DATAGRID.grids)
