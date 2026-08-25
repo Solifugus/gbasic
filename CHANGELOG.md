@@ -9,7 +9,32 @@ language surface may still change between releases.
 
 ## Unreleased
 
-_Nothing yet._
+### `mod`, `concat` and `merge`
+
+Three of the oldest DOGFOOD ledger items, closed together.
+
+- **`mod(a, b)`** — the remainder, **floored**: the result takes the sign of
+  the divisor, so `mod(-7, 3)` is `2`. **This differs from QBasic's `MOD`**,
+  which truncates, and the divergence is deliberate. gBASIC has had no modulo,
+  so the documented workaround was `a - floor(a/b)*b` — which is floored — and
+  the libraries written against that advice depend on it;
+  `stdlib/forensics.bas`'s civil-date algorithm is correct for negative years
+  only under floored semantics. Shipping truncated would have silently
+  disagreed with every workaround the builtin replaces. `mod(a, 0)` raises.
+
+- **`concat(a, b, …)`** — one new array with the elements of each, in order.
+  Variadic; sources untouched.
+
+- **`merge(a, b, …)`** — one new record with the fields of each, **later
+  winning** on a duplicate key, so `merge(defaults, overrides)` reads the way
+  it looks. Shallow; sources untouched. This is the answer to composing onto a
+  library's return value, which previously required binding and field-assigning
+  in three lines.
+
+All three are **builtins**. The infix `%`, array `+` and record `+` remain
+separate decisions: `%` is lexer work, and whether `+` on a container
+concatenates or adds element-wise should not be settled as a side effect of
+adding a convenience.
 
 ## 0.1.0-rc6 — 2026-08-24
 

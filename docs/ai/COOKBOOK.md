@@ -127,6 +127,11 @@ for error handling, `ERRORS.md`.
   claiming), and an unacknowledged error escapes the frame rather than being
   shadowed by the next one. See `ERRORS.md`. →
   `examples/on_error_goto_next_test.bas`
+- **Modulo, array join, record compose** — `mod(a, b)` (FLOORED: the sign
+  follows the divisor, unlike QBasic), `concat(a, b, …)` for arrays and
+  `merge(a, b, …)` for records, later winning on a duplicate key. All three are
+  builtins; `%`, array `+` and record `+` are separate decisions. →
+  `examples/mod_concat_merge_test.bas`
 - **Make advice enforceable** — `on warning stop` in `main` turns every warning
   into a raise (the `-Werror` of a language with no build step); `on warning
   ignore` in one function says "I meant that" without silencing anyone else.

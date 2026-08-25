@@ -1,0 +1,1 @@
+runtime error at tests/negative_merge_type.bas:1:1: merge expects records; argument 2 has type array

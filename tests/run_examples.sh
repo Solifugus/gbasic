@@ -111,6 +111,7 @@ examples=(
     schedule_test.bas
     keyword_stability_test.bas
     keyword_field_test.bas
+    mod_concat_merge_test.bas
     duration_test.gb
     now_test.bas
     file_test.gb

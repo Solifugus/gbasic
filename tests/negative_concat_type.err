@@ -1,0 +1,1 @@
+runtime error at tests/negative_concat_type.bas:1:1: concat expects arrays; argument 2 has type string

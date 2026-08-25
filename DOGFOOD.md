@@ -35,16 +35,17 @@ and the stale-looking ones carry a Status line saying what overtook them.
 
 ### Open — worth fixing (ranked)
 
-1. **No modulo** (2026-07-18 S6, 2026-08-12 d). medium. Shape: a `mod(a, b)`
-   builtin first (`%` is lexer work and a separate decision). Logged twice,
-   worked around by hand `a - floor(a/b)*b` in at least four libraries.
+1. ~~**No modulo**~~ **RESOLVED 2026-08-24.** `mod(a, b)`, FLOORED — which is
+   what the hand workaround `a - floor(a/b)*b` computed, so the four libraries
+   written against that advice keep their meaning. Diverges from QBasic's
+   truncating `MOD` deliberately and loudly (UNLEARN, reference). `%` remains
+   a separate decision.
 2. **`encode` emits bare `nan`/`inf` that its own `decode` rejects**
    (2026-07-24, deferred at 2026-08-14). medium. Shape: refuse like
    `json_encode` does, or emit a token `decode` accepts — either ends the
    round-trip hole. Verified still live against rc3.
-3. **No array concat** (2026-08-01 STU-2D). medium. Shape: `concat(a, b)`
-   builtin; array `+` is a semantics decision to take separately. Verified
-   still raising against rc3.
+3. ~~**No array concat**~~ **RESOLVED 2026-08-24.** `concat(a, b, …)`,
+   variadic. Array `+` remains a separate decision.
 4. **`process.start` children outlive a SIGKILLed parent** (2026-07-29).
    medium. Shape: needs a DECISION on PDEATHSIG-by-default vs an opt-in,
    because arming it changes deliberately-detached children. Evidence in the
@@ -64,8 +65,9 @@ and the stale-looking ones carry a Status line saying what overtook them.
    stay unofferable; `password_hash` covers login flows already.
 9. **`crypto.json_encode` remains a separate flat encoder** (2026-07-24).
     low. Fold into `json_encode` when convenient.
-10. **No record merge** (2026-08-22). low. Shape: pairs with the array-concat
-    decision (item 3) — `merge(a, b)` or record `+`, decided together.
+10. ~~**No record merge**~~ **RESOLVED 2026-08-24.** `merge(a, b, …)`,
+    variadic, later-wins, shallow. Decided together with item 3 as the ledger
+    asked: both are BUILTINS, and `+` on a container stays unanswered.
 11. ~~**A discarded return value is silent**~~ **RESOLVED 2026-08-23** by
     PLAT-WARN: `unused-result` warns when a bare call discards a non-`nothing`
     return from a gBASIC function. Shipped as a runtime diagnostic rather than
@@ -2507,3 +2509,26 @@ and `llm._check_tool` were writing `return true` where the void convention
 (`return nothing`) was meant, and `web._serve_pool` was dropping `pool_stop`'s
 returned pool — the same shape, in the same function, as the bug that started
 this whole line of work.
+
+
+### RESOLVED 2026-08-24 — mod, concat and merge
+
+Three of the oldest ledger items, closed together because the ledger itself
+said items 3 and 10 had to be decided together, and item 1 shared their
+question: builtin or operator?
+
+**Builtin, all three.** `%`, array `+` and record `+` stay unanswered. `%` is
+lexer work; `+` on a container is a real semantics question (concatenate, or
+add element-wise?) and settling it as a side effect of adding a convenience is
+how languages acquire regrets. The convenience was the urgent part.
+
+**The one decision with a wrong answer available: `mod`'s sign.** Truncated
+(QBasic, C, JavaScript) and floored (Python, Ruby) are both defensible, and
+BASIC tradition says truncated. Floored won on evidence rather than taste:
+`docs/ai/UNLEARN.md` has been telling people to write `a - floor(a/b)*b` for
+months, which IS floored, and `stdlib/forensics.bas`'s civil-date algorithm
+computes `yoe = y - floor(y/400)*400` and is correct for negative years only
+under floored semantics. Shipping truncated would have silently disagreed with
+every workaround written against the advice the builtin replaces. The
+divergence from QBasic is documented in UNLEARN and the reference rather than
+left to be discovered.

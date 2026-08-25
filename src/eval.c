@@ -23575,6 +23575,118 @@ static Value eval_call(AstExpr *expr) {
         return value_number((double)rounded / scale);
     }
 
+    /* ---- mod / concat / merge (DOGFOOD ledger items 1, 3 and 10) ---------
+     *
+     * BUILTINS, not operators. `%`, array `+` and record `+` are separate
+     * decisions the ledger kept apart on purpose: `%` is lexer work, and `+`
+     * on a container is a semantics question (concatenate, or add
+     * element-wise?) that should not be settled as a side effect of adding a
+     * convenience. */
+    if (strcmp(expr->as.call.name, "mod") == 0) {
+        if (expr->as.call.args.count != 2) {
+            runtime_error_raise("mod expects two arguments", 1003,
+                                "invalid function call");
+            return value_null();
+        }
+        Value a = eval_expr(expr->as.call.args.items[0]);
+        if (error_action_pending()) { value_free(a); return value_null(); }
+        Value b = eval_expr(expr->as.call.args.items[1]);
+        if (error_action_pending()) { value_free(a); value_free(b); return value_null(); }
+        if (a.kind != VALUE_NUMBER || b.kind != VALUE_NUMBER) {
+            value_free(a); value_free(b);
+            runtime_error_raise("mod expects two numbers", 1003,
+                                "invalid argument type");
+            return value_null();
+        }
+        if (b.as.number == 0.0) {
+            value_free(a); value_free(b);
+            runtime_error_raise("mod by zero", 1002, "division");
+            return value_null();
+        }
+        /* FLOORED, so the result takes the sign of the DIVISOR:
+         *   mod(-7, 3) = 2, not -1.
+         *
+         * This diverges from QBasic's MOD (truncated) and it is deliberate.
+         * gBASIC has had no modulo, so docs/ai/UNLEARN.md told people to write
+         * `a - floor(a/b)*b` -- which is floored -- and at least four
+         * libraries did. stdlib/forensics.bas's civil-date algorithm computes
+         * `yoe = y - floor(y/400)*400` and is CORRECT FOR NEGATIVE YEARS only
+         * under floored semantics. Matching the truncated convention would
+         * silently disagree with every workaround written against the advice
+         * this builtin replaces. */
+        double q = floor(a.as.number / b.as.number);
+        double r = a.as.number - q * b.as.number;
+        value_free(a); value_free(b);
+        return value_number(r);
+    }
+    if (strcmp(expr->as.call.name, "concat") == 0 ||
+        strcmp(expr->as.call.name, "merge") == 0) {
+        int is_concat = strcmp(expr->as.call.name, "concat") == 0;
+        const char *fn = expr->as.call.name;
+        if (expr->as.call.args.count < 1) {
+            char message[128];
+            snprintf(message, sizeof(message), "%s expects at least one %s",
+                     fn, is_concat ? "array" : "record");
+            runtime_error_raise(message, 1003, "invalid function call");
+            return value_null();
+        }
+        Value *parts = malloc(sizeof(Value) * expr->as.call.args.count);
+        if (!parts) { abort(); }
+        size_t got = 0;
+        for (size_t i = 0; i < expr->as.call.args.count; i++) {
+            parts[got] = eval_expr(expr->as.call.args.items[i]);
+            got++;
+            if (error_action_pending()) {
+                for (size_t j = 0; j < got; j++) { value_free(parts[j]); }
+                free(parts);
+                return value_null();
+            }
+            if ((is_concat && parts[got - 1].kind != VALUE_ARRAY) ||
+                (!is_concat && parts[got - 1].kind != VALUE_RECORD)) {
+                char message[160];
+                snprintf(message, sizeof(message),
+                         "%s expects %s; argument %zu has type %s",
+                         fn, is_concat ? "arrays" : "records", i + 1,
+                         value_kind_name(parts[got - 1].kind));
+                for (size_t j = 0; j < got; j++) { value_free(parts[j]); }
+                free(parts);
+                runtime_error_raise(message, 1003, "invalid argument type");
+                return value_null();
+            }
+        }
+        Value result;
+        if (is_concat) {
+            size_t total = 0;
+            for (size_t i = 0; i < got; i++) {
+                total += parts[i].as.array.store->count;
+            }
+            Value *items = total ? malloc(sizeof(Value) * total) : NULL;
+            if (total && !items) { abort(); }
+            size_t at = 0;
+            for (size_t i = 0; i < got; i++) {
+                ArrayStorage *st = parts[i].as.array.store;
+                for (size_t j = 0; j < st->count; j++) {
+                    items[at++] = value_copy(st->items[j]);
+                }
+            }
+            result = value_array(items, total);
+        } else {
+            /* LATER WINS on a duplicate key, which is what makes
+             * `merge(defaults, overrides)` read the way it looks. Shallow: a
+             * nested record is copied, not merged into. */
+            result = value_record(NULL, 0);
+            for (size_t i = 0; i < got; i++) {
+                for (size_t j = 0; j < parts[i].as.record.count; j++) {
+                    RecordField *f = &parts[i].as.record.fields[j];
+                    record_set(&result, f->name, value_copy(*f->value));
+                }
+            }
+        }
+        for (size_t i = 0; i < got; i++) { value_free(parts[i]); }
+        free(parts);
+        return result;
+    }
+
     /* Elementary scalar math (statistics_design.md §8 — the numeric foundation
      * the statistics library builds on). One-argument functions over a number. */
     if (strcmp(expr->as.call.name, "sqrt") == 0 ||

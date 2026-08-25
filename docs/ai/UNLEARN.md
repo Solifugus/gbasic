@@ -53,8 +53,14 @@ the standing ones.
 
 - **Not-equal is `!=`, not `<>`.** `<>` is a parse error. The family
   `!>`, `!<`, `!>=`, `!<=` also exists.
-- **No modulo.** `%` and `\` are lexer errors; `mod` collides with duration syntax
-  (`7 mod 2` → `unknown duration unit: mod`). Compute it: `a - floor(a / b) * b`.
+- **`mod(a, b)` exists** (0.1.0-rc7), and it is **FLOORED** — the result takes
+  the sign of the DIVISOR, so `mod(-7, 3)` is `2`, not `-1`. **That differs
+  from QBasic's `MOD`**, which truncates. Floored was chosen because it is what
+  the workaround this replaces computed (`a - floor(a/b)*b`) and what at least
+  four libraries already relied on — `stdlib/forensics.bas`'s civil-date
+  algorithm is only correct for negative years under floored semantics.
+  The infix `%` is still a lexer error, and `7 mod 2` is still duration syntax
+  (`unknown duration unit: mod`) — `mod` is a CALL.
 - **String concatenation is `+` only.** `&` is a lexer error. `+` concatenates
   when *either* operand is a string; `-`, `*`, `/` are strict numeric.
 - **Comments are `'` only.** `rem` and `//` are parse errors.
@@ -437,7 +443,7 @@ gBASIC function now warns, because a function cannot change its caller — so
 ---
 
 Negative knowledge in one line each — feature you expect → gBASIC instead:
-numeric `for` → `for each`; `<>` → `!=`; `mod`/`%` → `a - floor(a/b)*b`;
+numeric `for` → `for each`; `<>` → `!=`; `a % b` → `mod(a, b)` (floored);
 `&` → `+`; `rem`/`//` → `'`; `dim x` → just assign; `s[i]` → `mid(s,i,1)`;
 `print a, b` → `print(string(a)+" "+string(b))`; exception catch → `on error goto next` + `if error then`;
 `print #f` / stderr redirect → `print to error x`.

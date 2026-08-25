@@ -30,6 +30,11 @@ cases=(
     negative_sort_mixed
     negative_sort_nested_array
     negative_invalid_escape
+    negative_mod_zero
+    negative_mod_type
+    negative_mod_arity
+    negative_concat_type
+    negative_merge_type
     negative_add_bool
     negative_add_nothing
     negative_add_array

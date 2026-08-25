@@ -2804,6 +2804,18 @@ matching is binary-safe and searches the full byte length.
 
 ### Record Helpers
 
+**`merge(a, b, …)`** — one new record with the fields of each. Variadic, one
+argument or more; every argument must be a record; **later wins** on a
+duplicate key, so `merge(defaults, overrides)` reads the way it looks. Shallow:
+a nested record is copied, not merged into. The sources are untouched, which is
+what makes it the answer to composing onto a library's return value:
+
+```basic
+response = merge(web.static(rel, root), { id: req.id })
+```
+
+There is no record `+`, for the same reason there is no array `+`.
+
 **`keys(record)`** - Returns array of key strings:
 ```basic
 keys({x:1, y:2})               # ["x", "y"]
@@ -2996,6 +3008,12 @@ message transport is built on.
 
 ### Arrays
 
+- `concat(a, b, …)` — one new array with the elements of each, in order.
+  Variadic, one argument or more; every argument must be an array; the sources
+  are untouched. There is no array `+`: whether that should concatenate or add
+  element-wise is a separate decision, not one to settle by adding a
+  convenience.
+
 Access and search:
 
 - `contains(array, value)` — true when a matching element is present.
@@ -3072,6 +3090,14 @@ or out-of-range input:
 
 ### Numbers and Comparison
 
+- `mod(a, b)` — the remainder, **floored**: the result takes the sign of the
+  DIVISOR, so `mod(-7, 3)` is `2` and `mod(7, -3)` is `-2`. This differs from
+  QBasic's `MOD`, which truncates toward zero, and the divergence is
+  deliberate: gBASIC had no modulo, so the documented workaround was
+  `a - floor(a/b)*b` — floored — and the libraries written against that advice
+  depend on it (`stdlib/forensics.bas`'s civil-date algorithm is correct for
+  negative years only under floored semantics). `mod(a, 0)` raises. There is no
+  infix `%`; and `7 mod 2` is duration syntax, not modulo — `mod` is a call.
 - `round(number, places)` — round to a number of decimal places.
 - `compare(a, operator, b)` — compare two values using an operator named as a
   string (the general form behind the comparison operators and modifiers).

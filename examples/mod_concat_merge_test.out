@@ -1,0 +1,19 @@
+-- mod: FLOORED, so the result takes the sign of the DIVISOR
+1 2 -2 -1
+cyclic indexing is the point: 4
+reals: 1.5
+matches the hand-rolled idiom: true
+
+-- concat: arrays, variadic, a NEW array
+[1,2,3,4,5]
+sources untouched: [1,2][3]
+empty pieces are fine: [1]
+one argument is a copy: [1,2]
+
+-- merge: records, variadic, LATER WINS, a NEW record
+a=1 b=20 c=3
+sources untouched: b=2
+three-way: 3
+
+-- and the thing merge was logged for: composing onto a library result
+status=200 id=7
