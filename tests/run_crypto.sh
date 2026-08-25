@@ -18,6 +18,8 @@ positive_cases=(
     crypto_test
     crypto_cipher_test
     crypto_compose_test
+    crypto_json_hostile_test
+    crypto_kdf_test
 )
 
 for name in "${positive_cases[@]}"; do
@@ -38,6 +40,18 @@ done
 
 negative_cases=(
     negative_crypto_sha256_arity
+    negative_kdf_empty_salt
+    negative_kdf_zero_iterations
+    negative_kdf_fractional_iterations
+    negative_kdf_zero_length
+    negative_kdf_huge_length
+    negative_kdf_type
+    negative_kdf_arity
+    negative_scrypt_empty_salt
+    negative_scrypt_not_power_of_two
+    negative_scrypt_n_one
+    negative_scrypt_over_memory
+    negative_scrypt_arity
     negative_crypto_base64_type
     negative_crypto_random_bytes_range
     negative_crypto_bytes_equal_arity

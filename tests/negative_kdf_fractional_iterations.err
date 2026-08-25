@@ -1,0 +1,1 @@
+runtime error at tests/negative_kdf_fractional_iterations.bas:2:5: pbkdf2_sha256 iterations must be a whole number in [1, 100000000]

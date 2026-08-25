@@ -1,0 +1,1 @@
+runtime error at tests/negative_scrypt_arity.bas:2:5: scrypt expects six arguments (password, salt, n, r, p, length)

@@ -1,0 +1,12 @@
+pbkdf2_sha256 i=1     120fb6cffcf8b32c43e7225256c4f837a86548c92ccc35480805987cb70be17b
+pbkdf2_sha256 i=4096  c5e478d59288c841aa530db6845c4c8d962893a001ce4e11a4963873aa98134a
+pbkdf2_sha512 i=4096  d197b1b33db0143e018b12f3d1d1479e6cdebdcc97c5c0f87f6902e072f457b5143f30602641b3d55cd335988cb36b84376060ecd532e039b742a239434af2d5
+pbkdf2 prefix         true
+pbkdf2 length 1       1
+pbkdf2 length 64      64
+scrypt N=1024         fdbabe1c9d3472007856e7190d01e9fe7c6ad7cbc8237830e77376634b3731622eaf30d92e22a3886ff109279d9830dac727afb94a83ee6d8360cbdfa2cc0640
+scrypt N=16384        7023bdcb3afd7348461c06cd81fd38ebfda8fbba904f8e3ea9b543f6545da1f2d5432955613f0fcf62d49705242a9af9e61e85dc0d651e40dfcf017b45575887
+derived key bytes     32
+same passphrase       the launch code is 0000
+wrong passphrase      unknown
+same pass, new salt   unknown

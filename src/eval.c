@@ -22358,6 +22358,179 @@ static Value eval_call(AstExpr *expr) {
 #endif
     }
 
+    /* ----- Cryptography: password-based key derivation (libcrypto) -----
+     *
+     * The gap this closes (DOGFOOD 2026-08-22): `crypto` had sha256/hmac/aes-gcm
+     * but no KDF, so there was no safe way to turn a PASSPHRASE into a key, and
+     * gBASIC Studio declined to offer passphrase-protected secrets rather than
+     * ship a single-round hash that looks like one. `password_hash` is a
+     * different job -- it verifies a login and returns a hash STRING; these
+     * return raw key BYTES you can hand to aes_gcm_encrypt.
+     *
+     * The salt must be non-empty. RFC 8018 permits an empty one and it is always
+     * a mistake here: it silently turns a KDF into a plain iterated hash, with a
+     * rainbow table as the consequence and nothing observable to say so. The
+     * iteration/cost parameters are NOT floored, because RFC 6070 and RFC 7914
+     * test vectors use deliberately tiny ones and a floor would make the
+     * implementation untestable against them; the recommended values are in
+     * docs/reference.md instead, where a reader can see them. */
+    if (strcmp(expr->as.call.name, "pbkdf2_sha256") == 0 ||
+        strcmp(expr->as.call.name, "pbkdf2_sha512") == 0) {
+        const char *fname = expr->as.call.name;
+        char m[160];
+        if (expr->as.call.args.count != 4) {
+            snprintf(m, sizeof(m), "%s expects four arguments (password, salt, iterations, length)", fname);
+            runtime_error_raise(m, 1003, "invalid function call");
+            return value_null();
+        }
+        Value a[4];
+        for (int i = 0; i < 4; i++) {
+            a[i] = eval_expr(expr->as.call.args.items[i]);
+            if (error_action_pending()) {
+                for (int j = 0; j <= i; j++) value_free(a[j]);
+                return value_null();
+            }
+        }
+        int bad = 0;
+        if (a[0].kind != VALUE_STRING || a[1].kind != VALUE_STRING) {
+            snprintf(m, sizeof(m), "%s expects password and salt to be strings", fname);
+            bad = 1;
+        } else if (a[2].kind != VALUE_NUMBER || a[3].kind != VALUE_NUMBER) {
+            snprintf(m, sizeof(m), "%s expects iterations and length to be numbers", fname);
+            bad = 1;
+        } else if (string_length(a[1].as.string) == 0) {
+            snprintf(m, sizeof(m), "%s requires a non-empty salt", fname);
+            bad = 1;
+        } else if (!isfinite(a[2].as.number) || a[2].as.number != floor(a[2].as.number) ||
+                   a[2].as.number < 1 || a[2].as.number > 100000000.0) {
+            snprintf(m, sizeof(m), "%s iterations must be a whole number in [1, 100000000]", fname);
+            bad = 1;
+        } else if (!isfinite(a[3].as.number) || a[3].as.number != floor(a[3].as.number) ||
+                   a[3].as.number < 1 || a[3].as.number > 1024) {
+            snprintf(m, sizeof(m), "%s length must be a whole number of bytes in [1, 1024]", fname);
+            bad = 1;
+        }
+        if (bad) {
+            for (int j = 0; j < 4; j++) value_free(a[j]);
+            runtime_error_raise(m, 1003, "invalid argument type");
+            return value_null();
+        }
+#if HAVE_LIBCRYPTO
+        {
+            const EVP_MD *md = strcmp(fname, "pbkdf2_sha512") == 0 ? EVP_sha512() : EVP_sha256();
+            int iters = (int)a[2].as.number;
+            size_t outlen = (size_t)a[3].as.number;
+            unsigned char *out = malloc(outlen);
+            if (!out) abort();
+            int ok = PKCS5_PBKDF2_HMAC(a[0].as.string, (int)string_length(a[0].as.string),
+                                       (const unsigned char *)a[1].as.string,
+                                       (int)string_length(a[1].as.string),
+                                       iters, md, (int)outlen, out);
+            for (int j = 0; j < 4; j++) value_free(a[j]);
+            if (!ok) {
+                free(out);
+                runtime_error_raise("PBKDF2 derivation failed", 1003, "crypto");
+                return value_null();
+            }
+            Value r = value_string_n((const char *)out, outlen);
+            OPENSSL_cleanse(out, outlen);
+            free(out);
+            return r;
+        }
+#else
+        for (int j = 0; j < 4; j++) value_free(a[j]);
+        runtime_error_raise("PBKDF2 requires OpenSSL (libcrypto); rebuild with it installed",
+                            1003, "unsupported");
+        return value_null();
+#endif
+    }
+
+    if (strcmp(expr->as.call.name, "scrypt") == 0) {
+        const char *fname = "scrypt";
+        char m[176];
+        if (expr->as.call.args.count != 6) {
+            runtime_error_raise("scrypt expects six arguments (password, salt, n, r, p, length)",
+                                1003, "invalid function call");
+            return value_null();
+        }
+        Value a[6];
+        for (int i = 0; i < 6; i++) {
+            a[i] = eval_expr(expr->as.call.args.items[i]);
+            if (error_action_pending()) {
+                for (int j = 0; j <= i; j++) value_free(a[j]);
+                return value_null();
+            }
+        }
+        int bad = 0;
+        m[0] = '\0';
+        if (a[0].kind != VALUE_STRING || a[1].kind != VALUE_STRING) {
+            snprintf(m, sizeof(m), "%s expects password and salt to be strings", fname);
+            bad = 1;
+        } else if (string_length(a[1].as.string) == 0) {
+            snprintf(m, sizeof(m), "%s requires a non-empty salt", fname);
+            bad = 1;
+        }
+        for (int i = 2; !bad && i < 6; i++) {
+            if (a[i].kind != VALUE_NUMBER || !isfinite(a[i].as.number) ||
+                a[i].as.number != floor(a[i].as.number) || a[i].as.number < 1) {
+                snprintf(m, sizeof(m), "%s expects n, r, p and length to be whole numbers >= 1", fname);
+                bad = 1;
+            }
+        }
+        if (!bad) {
+            double n = a[2].as.number;
+            /* N must be a power of two greater than 1: scrypt's cost parameter is
+             * defined that way, and OpenSSL answers a bare failure otherwise --
+             * which would read as "derivation failed" rather than "that is not a
+             * cost". */
+            if (n < 2 || fmod(log2(n), 1.0) != 0.0) {
+                snprintf(m, sizeof(m), "%s n must be a power of two greater than 1", fname);
+                bad = 1;
+            } else if (a[5].as.number > 1024) {
+                snprintf(m, sizeof(m), "%s length must be a whole number of bytes in [1, 1024]", fname);
+                bad = 1;
+            }
+        }
+        if (bad) {
+            for (int j = 0; j < 6; j++) value_free(a[j]);
+            runtime_error_raise(m, 1003, "invalid argument type");
+            return value_null();
+        }
+#if HAVE_LIBCRYPTO && OPENSSL_VERSION_NUMBER >= 0x10100000L
+        {
+            uint64_t N = (uint64_t)a[2].as.number;
+            uint64_t r = (uint64_t)a[3].as.number;
+            uint64_t pp = (uint64_t)a[4].as.number;
+            size_t outlen = (size_t)a[5].as.number;
+            unsigned char *out = malloc(outlen);
+            if (!out) abort();
+            /* maxmem 0 means OpenSSL's own default ceiling (32 MB). A cost above
+             * it FAILS rather than silently deriving with less memory, which is
+             * the whole point of a memory-hard KDF. */
+            int ok = EVP_PBE_scrypt(a[0].as.string, string_length(a[0].as.string),
+                                    (const unsigned char *)a[1].as.string,
+                                    string_length(a[1].as.string),
+                                    N, r, pp, 0, out, outlen);
+            for (int j = 0; j < 6; j++) value_free(a[j]);
+            if (!ok) {
+                free(out);
+                runtime_error_raise("scrypt derivation failed (cost likely exceeds the memory limit)",
+                                    1003, "crypto");
+                return value_null();
+            }
+            Value v = value_string_n((const char *)out, outlen);
+            OPENSSL_cleanse(out, outlen);
+            free(out);
+            return v;
+        }
+#else
+        for (int j = 0; j < 6; j++) value_free(a[j]);
+        runtime_error_raise("scrypt requires OpenSSL 1.1.0 or newer (libcrypto); rebuild with it installed",
+                            1003, "unsupported");
+        return value_null();
+#endif
+    }
+
     /* ----- Cryptography: AES-GCM + Ed25519 (libcrypto) ----- */
     if (strcmp(expr->as.call.name, "aes_gcm_encrypt") == 0 ||
         strcmp(expr->as.call.name, "aes_gcm_decrypt") == 0) {

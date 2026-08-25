@@ -1,0 +1,1 @@
+runtime error at tests/negative_scrypt_not_power_of_two.bas:2:5: scrypt n must be a power of two greater than 1

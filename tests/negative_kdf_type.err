@@ -1,0 +1,1 @@
+runtime error at tests/negative_kdf_type.bas:2:5: pbkdf2_sha256 expects password and salt to be strings
