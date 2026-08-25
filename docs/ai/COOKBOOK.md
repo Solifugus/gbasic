@@ -87,8 +87,16 @@ for error handling, `ERRORS.md`.
 - **Date/time, duration, money** — the specialized value types and their
   comparisons. → `examples/datetime_test.gb`, `examples/duration_test.gb`,
   `examples/money_test.bas`
-- **Serialize/deserialize** — `encode`/`decode` round-trips values through text.
-  → `examples/serialization_test.bas`
+- **Serialize/deserialize** — `encode`/`decode` round-trips values through text,
+  including `nothing`, `unknown` and the non-finite numbers, which is what makes
+  it a gBASIC DIALECT and not JSON.
+  → `examples/serialization_test.bas`, `examples/encode_roundtrip_test.bas`
+- **JSON for anything leaving gBASIC** — `json_encode(value)`, strict RFC 8259;
+  `json_encodable(value)` asks the same question without raising. Reach for this
+  and NOT `encode` for an HTTP body, a file another program reads, or a queue
+  message: `encode` writes `nothing`/`unknown`/`inf`/`nan` as bare words that no
+  other parser accepts, and the receiving end is where you find out.
+  → `examples/json_strict_test.bas`
 - **Reading JSON you did not write** — `try_decode(text)` returns
   `{ok, value, message, offset, line, column}` and never raises, so there is no
   pre-validate pass. Use it rather than hand-writing a JSON scanner: the C parser
@@ -181,6 +189,11 @@ for error handling, `ERRORS.md`.
   escalation to SIGKILL requires `stop(h, {force_after: N})`. Dropping the last
   handle copy reaps the child, so `release` is optional.
   → `tests/native_platform/plat_proc_basic.bas`
+- **A child cannot outlive the interpreter** — every child arms a kernel
+  parent-death signal, so it gets SIGTERM the moment the parent dies, including
+  a `kill -9` no cleanup code survives. There is no opt-out: `process.start` is
+  not a way to launch a daemon, and a process that must survive belongs to a
+  service manager. → `tests/run_process_lifetime.sh`
 - **Supervising a child from a GUI loop** — compose the two: `process.start`,
   then a `gi.timeout` callback that polls and reads each tick. No actor and no
   mailbox are needed, because `start`/`poll`/`read` never block, so a GUI loop

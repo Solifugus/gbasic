@@ -33,8 +33,9 @@ Implemented language features include:
 - regular expressions as a **value kind**, overloading `contains`/`replace`/
   `split`, plus `match`/`match_all` (always available; no optional library)
 - bitwise builtins (`band`/`bor`/`bxor`/`bnot`/`shl`/`shr`/`rotl`/`rotr`)
-- JSON-like serialization with `encode` and `decode`, plus `try_decode`, which
-  reports a malformed document as a value instead of raising
+- strict RFC 8259 JSON with `json_encode` for anything leaving gBASIC, and a
+  round-tripping `encode`/`decode` dialect for gBASIC-to-gBASIC data, plus
+  `try_decode`, which reports a malformed document as a value instead of raising
 
 Implemented runtime and module features include:
 
@@ -59,7 +60,8 @@ Implemented runtime and module features include:
   [cookbook](docs/xlsx_cookbook.md).
 - a general process API — `process.run` for a child, and
   `process.start`/`poll`/`read`/`wait`/`stop` to drive a live one without
-  blocking
+  blocking; every child is tied to the interpreter's lifetime by the kernel, so
+  none of them survives it, even a `kill -9`
 - a cryptography library (optional libcrypto-backed): hashing, HMAC, AES-GCM,
   Ed25519, JWT/HS256, and signed cookies
 - an optional GTK 3 GUI proof of concept through Stage 6A

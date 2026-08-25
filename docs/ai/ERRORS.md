@@ -42,6 +42,17 @@ Positions are **1-based byte** offsets, inclusive-start / exclusive-end (see
 `include/diagnostics.h` and the reference's Errors section). `subcode` is the
 runtime `error.code` below (0 for non-runtime diagnostics).
 
+Two invariants a tool can rely on, both true only since 0.1.0-rc7:
+
+- **Every diagnostic goes through the sink.** Under `--json-diagnostics` the
+  stream is JSON objects and nothing else. Until rc7 an unmappable token —
+  `dim x`, or a byte the lexer could not read — printed a bare line straight to
+  stderr, in the middle of that stream.
+- **A reported diagnostic means a nonzero exit.** A parse whose lexer reported an
+  error fails even where the grammar would have accepted the truncated prefix.
+  Until rc7 a top-level file could report an error, run the statements before it,
+  drop everything after it, and exit 0.
+
 ## 2. Runtime `error.code` / `error.source`
 
 After a raise, a program reads `error` (truthy), `error.message`, `error.line`,

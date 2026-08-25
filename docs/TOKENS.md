@@ -59,8 +59,10 @@ Notes:
 - Boolean/nullish literals `true`, `false`, `nothing`, `unknown` are keywords.
 - **Reserved but not accepted by the current grammar:** `dim`, `as`, `step` are
   lexed as distinct keyword tokens (`DIM`, `AS`, `STEP`) but are not wired into
-  the parser, so using them is currently a parse error. A highlighter may still
-  color them as keywords; they are reserved words.
+  the parser, so using them is a parse error. A highlighter may still color them
+  as keywords; they are reserved words. `DIM` is reserved *deliberately*, and is
+  the one of the three with a message of its own: it reports that assignment
+  creates a variable, which is what a reader arriving from QBasic needs told.
 
 ### Column-sensitive keyword variants
 
@@ -133,9 +135,6 @@ These tokens carry raw inner text captured by a stateful lexer mode; the parser
 switches the mode on. Highlighters generally treat their content as a nested
 expression rather than a flat token.
 
-- `MOD_CONTENT` — the text inside a modifier clause `( … )=` (mode begun by
-  `lexer_begin_modifier_content`). Ends at the first unescaped `)` that is not
-  inside a string; a newline ends the span as an error.
 - `LENS_CONTENT` — the text inside a comparison lens `{ … }` (mode begun by
   `lexer_begin_lens_content`). Ends at the first `}` not inside a string; a
   newline ends the span as an error.

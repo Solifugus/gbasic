@@ -1080,11 +1080,27 @@ The lock releases when the block ends.
 
 ## Serialization
 
-gBASIC has two ways to turn values into text/bytes and back, for different jobs:
+gBASIC has three ways to turn values into text/bytes and back, and the difference
+between the first two is the one that bites:
 
-- **`encode(value)` / `decode(text)`** — JSON. Human-readable and portable, but
-  lossy for gBASIC's typed values (a date or money round-trips as a string or
-  number). Use it for APIs and config.
+- **`json_encode(value)`** — strict [RFC 8259](https://www.rfc-editor.org/rfc/rfc8259)
+  JSON. **This is the one for anything leaving gBASIC** — an HTTP body, a file
+  another program reads, a message queue. It writes `null` for `nothing`, and it
+  *refuses* what JSON cannot express (`unknown`, NaN, infinity, dates, money,
+  live handles) rather than inventing a token for it. `json_encodable(value)`
+  asks the same question without raising, so you can check before you commit.
+
+  ```basic
+  body = json_encode({ name = "launch", active = true })
+  ```
+
+- **`encode(value)` / `decode(text)`** — a gBASIC **dialect** of JSON, for
+  gBASIC-to-gBASIC round trips: config you wrote, a cache you will read back.
+  It writes gBASIC's own spellings for values JSON has no syntax for —
+  `nothing`, `unknown`, `inf`, `nan` — so a value survives the trip intact, and
+  `decode` accepts them. No other JSON parser does, so **do not put `encode`
+  output on the wire.** It is also lossy for typed values (a date or money comes
+  back as a string or number); use `serialize` when that matters.
 
   ```basic
   project = { title = "The Lantern Room", items = ["lamp", "key"] }
@@ -1108,6 +1124,11 @@ preserved — a deserialized value is plain `copy` — which is the same degrada
 a value undergoes when sent to another actor.) Two more helpers: `string(value)`
 gives canonical display text, and `quote(value)` produces a gBASIC source literal
 with escaping (handy for code generation).
+
+In one line: **leaving gBASIC → `json_encode`; coming back to gBASIC →
+`encode`/`decode`; keeping the types → `serialize`.** Choosing `encode` for the
+first job is the mistake this section exists to prevent: it produces something
+that looks like JSON, and the receiving parser is the one that finds out.
 
 ## Core builtin functions
 

@@ -1,14 +1,15 @@
 # gBASIC Project State
 
-Last updated: 2026-07-05
+Last updated: 2026-08-24 (0.1.0-rc7)
 
 This file is the compact source of truth for current implementation status.
-Detailed language behavior belongs in `docs/reference.md`; completed
-development phases are summarized in `docs/historical_development_archive.md`.
+Detailed language behavior belongs in `docs/reference.md`; completed development
+phases are summarized in `docs/historical_development_archive.md`; the full
+document list, with a status column, is `docs/README.md`.
 
 ## Current Version
 
-- Version: `0.1.0-rc1`
+- Version: `0.1.0-rc7`
 - Implementation: C11
 - Front end: hand-written lexer and Bison parser
 - Runtime: tree-walking evaluator
@@ -21,115 +22,127 @@ development phases are summarized in `docs/historical_development_archive.md`.
 - `consider`, `while`, `break`, and `continue`
 - array iteration with `for each` and compatible `for ... in`
 - arrays, records, dynamic record access, and nested lvalue assignment
+  (records are copy-on-write; a keyword may be a field name, in a literal and
+  after a dot)
 - functions, programs, libraries, `load`, labels, `goto`, and `gosub`
 - first-class function values (references) that can be stored, passed, and called
 - Policy-Based Inheritance object model (`new`, `constructor`, methods via `this`)
 - shared-nothing actors over `spawn`/`send`/`receive` with monitor/link
-- assignment and comparison modifiers
-- watchers, locks, and runtime error handling
+- assignment and comparison modifiers, written in braces (`p{USD} = 19.95`)
+- watchers, locks, and a **frame-scoped error model** — `on error goto next`,
+  `on error goto LABEL`, `if error then` (`docs/error_model_design.md`)
+- a **warning channel** beside it — `on warning print|ignore|stop|goto next`,
+  `if warning then`, `warning(…)` (`docs/warning_model_design.md`)
 - distinct `nothing` and `unknown` values
 - date/time, duration, money, file, and directory values
 - binary-safe, Unicode-aware strings, codepoint operations, and byte builtins
+- regular expressions as a **value kind**, overloading `contains`/`replace`/
+  `split`, plus `match`/`match_all`
 - bitwise builtins (`band`/`bor`/`bxor`/`bnot`/`shl`/`shr`/`rotl`/`rotr`)
-- JSON-like `encode` and `decode`
+- `mod` (floored), `concat`, `merge`
+- three serializers with stated jobs: `json_encode`/`json_encodable` (strict RFC
+  8259, for anything leaving gBASIC), `encode`/`decode` (+ non-raising
+  `try_decode`) for gBASIC-to-gBASIC round trips, and `serialize`/`deserialize`
+  for exact typed round trips
+- `server` blocks — a routed HTTP server as a declarative block
 
 ## Implemented Runtime Areas
 
 - core type, conversion, string, array, record, and counting helpers
 - file read/write/append/overwrite and file metadata
 - file copy/move/delete and deterministic directory listing
-- non-recursive directory creation/removal
+- non-recursive directory creation/removal, `atomic_replace`, `file_type`
 - path manipulation helpers
-- `read_lines`
+- `read_lines`, `monotonic()`, `reflect.*`, `source_outline`
+- process control — `process.run`, and `process.start`/`poll`/`read`/`wait`/
+  `stop`/`release`/`which` for a live child. Every child is bound to the
+  interpreter's lifetime by the kernel, so none survives it, even a `kill -9`
 - optional synchronous SQLite module backed by sqlite3
 - optional synchronous PostgreSQL module backed by libpq
 - optional synchronous WebClient module backed by libcurl
-- built-in loopback WebServer using watcher-driven request/response queues
+- a built-in WebServer: TLS, routing, streaming, hardening, and a process worker
+  pool with listener transfer over `LISTEN_FDS`
 - optional XML module backed by libxml2 (tree parse, navigation, encode,
   lenient HTML, constant-memory streaming reader)
 - optional cryptography builtins backed by libcrypto (hashing, HMAC, AES-GCM,
   Ed25519) plus a `crypto` stdlib library (JWT/HS256, signed cookies, CSRF)
-- optional GTK 3 GUI proof of concept through Stage 6A
+- optional GTK 3 GUI proof of concept through Stage 6A, and a generic
+  GObject-Introspection bridge (`gi`, libgirepository) with GTK 4 as the first
+  target — what gBASIC Studio is built on
+- diagnostics: `--json-diagnostics` emits one JSON object per diagnostic and
+  nothing else, and any reported diagnostic is a nonzero exit
 
 ## Standard-Library Toolkits (pure gBASIC)
 
 - **statistics** — descriptive/inferential statistics, regression and the GLM
   suite, mediation/moderation, time-series and econometric diagnostics, and
   finance metrics; verified against reference implementations.
+- **spreadsheets** — `xlsx` (read/write plus a formula engine measured against
+  15,871 real workbooks), `grid`, `frame`/`dbframe`, `consolidate`, `chart`.
 - **EDGAR securities-analysis suite** — `edgar` (acquisition), `fundamentals`,
   `forensics` (accruals/Beneish/Piotroski/Altman/dilution/flags/events),
   `insiders` and `ownership` (Form 4 / 13F / 13D-G), `mdna` (MD&A + LLM panel),
   `llm` (chat client), and `screener` (whole-market scoring). See
   `docs/edgar_tutorial.md` and `docs/edgar_reference.md`.
+- **application platform** — `web`, `gtk`/`gtkui`/`datagrid`/`sourceview`,
+  `filetree`, `persist`, `text`, `dates`, `ari`, `matrix`.
 
 ## Optional Dependencies
 
-- GTK 3 enables the GUI implementation.
+- GTK 3 enables the GUI implementation; libgirepository enables `gi` (GTK 4).
 - sqlite3 enables `load sqlite`.
 - libpq enables `load pg`.
 - libcurl enables `load webclient` (and the EDGAR/LLM network paths).
 - libxml2 enables `load xml`.
 - libcrypto enables the cryptographic builtins.
-- WebServer uses POSIX sockets and has no external HTTP dependency.
+- WebServer uses POSIX sockets and has no external HTTP dependency; TLS uses
+  libssl.
 
 The interpreter builds without optional dependencies and reports unavailable
 modules clearly at runtime.
 
 ## Verification
 
-Primary suites:
+`tests/` holds the suites; each `run_*.sh` is self-contained, builds first, and
+prints PASS/FAIL per case. There are 62 of them, so the useful thing to know is
+which to run rather than a list that goes stale:
 
 ```sh
 make clean && make
-./tests/run_examples.sh
-./tests/run_negative.sh
+./tests/run_core.sh ./tests/run_examples.sh ./tests/run_negative.sh   # the floor
 ```
 
-Integration suites:
+Everything else is topical — `run_error_model.sh`, `run_warning_model.sh`,
+`run_parse_exit.sh`, `run_process_lifetime.sh`, `run_web_*.sh`, `run_xlsx*.sh`,
+and so on. Suites needing a service or an optional dependency SKIP cleanly
+rather than fail. `tests/run_docs_gate.sh` checks the documentation index and
+the performance claims. GUI verification beyond `run_gui_parse.sh` is manual.
 
-```sh
-./tests/run_webclient.sh
-./tests/run_webserver.sh
-./tests/run_sqlite.sh
-./tests/run_gbasic_site.sh
-GBASIC_SITE_POSTGRES_TEST=1 ./tests/run_gbasic_site_postgres.sh
-GBASIC_POSTGRES_TEST=1 ./tests/run_postgres.sh
-bash tests/run_bag_smoke.sh
-```
-
-GUI verification remains manual.
+gBASIC Studio (`~/development/gbasic-studio`) is the largest dogfooding
+consumer; its `tests/run_studio.sh` runs against whatever interpreter `GBASIC`
+points at, so it doubles as an integration suite for this repository.
 
 ## Current Limitations
 
 - experimental, non-optimized interpreter
 - evolving diagnostics and module APIs
+- a raise cannot be caught: `on error goto next` abandons the whole failing
+  statement, so the doctrine is pre-validation plus non-raising `try_*` twins
+  (`try_decode`, `process.which`, `has_builtin`)
 - SQLite is synchronous and has no prepared-statement API exposed to gBASIC
 - PostgreSQL is synchronous and has no pooling or prepared-statement API
-- WebClient is synchronous and string-body only
-- WebServer is single-threaded, loopback-only, and intentionally minimal
-- GUI supports existing-widget synchronization but not dynamic tree mutation
+- WebClient is synchronous
+- GUI (GTK 3) supports existing-widget synchronization but not dynamic tree
+  mutation; the `gi`/GTK 4 path does not share that limit
+- records are an association list with linear field lookup, and there is no map
+  type
+- the open friction list is `DOGFOOD.md` — its "Open — worth fixing" section is
+  the live one
 
 ## Current Documents
 
-- `README.md`: project overview, quick start, and the documentation index
-- `docs/gbasic-design.md`: consolidated language and core-runtime design
-- `docs/reference.md`: implemented language and runtime behavior
-- `docs/tutorial.md`: guided usage
-- `docs/pbi_design.md`: Policy-Based Inheritance object model (implemented)
-- `docs/first_class_functions_design.md`: function values (implemented)
-- `docs/unicode_design.md`: string/Unicode model (implemented)
-- `docs/multiprocessing_design.md`: actors (implemented)
-- `docs/bitwise_design.md`: bitwise builtins (implemented)
-- `docs/crypto_design.md`: cryptography builtins + library (implemented)
-- `docs/sqlite_design.md`: SQLite API and future phases
-- `docs/postgres_design.md`: PostgreSQL API and future phases
-- `docs/webclient_design.md`: WebClient API and future phases
-- `docs/webserver_design.md`: WebServer API and future phases
-- `docs/xml_design.md`: XML module (implemented)
-- `docs/gui_design.md`: GUI model and remaining work
-- `docs/statistics_design.md` + `docs/cookbook_*.md`: statistics library and cookbooks
-- `docs/edgar_tutorial.md`, `docs/edgar_reference.md`, `docs/edgar_design.md`: EDGAR suite
-- `docs/PROGRESS.md`: per-work-package build ledger with evidence
-- `docs/gbasic_dogfood_notes.md`: language/runtime friction found while building examples
-- `docs/gbasic_site_plan.md`, `docs/gbasic_site_auth_plan.md`, `docs/gbasic_site_deployment.md`: Postgres-backed sample site
-- `docs/historical_development_archive.md`: completed phase history
+See `docs/README.md`. It lists every document with a **status** column
+(Shipped / Proposal / Partial / Record) and `tests/run_docs_gate.sh` fails if a
+document is missing from it — which is the protection this section used to lack:
+a second, hand-maintained index here went thirteen documents and seven weeks out
+of date without anything noticing.

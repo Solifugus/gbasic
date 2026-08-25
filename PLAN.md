@@ -544,6 +544,14 @@ go-ahead: (1) no modulo operator/builtin — `a - floor(a/b)*b` is the workaroun
 inconsistency); (3) the `on error resume next` model is powerful but surprising —
 documented in `docs/ai/ERRORS.md`, not changed.
 
+**All three closed (2026-08-24, 0.1.0-rc7).** (1) `mod(a, b)`, floored to match
+the workaround it replaces. (2) Bigger than an exit-code inconsistency: the
+synthetic end-of-file also truncated a top-level file silently — see the DOGFOOD
+entry. (3) Replaced rather than documented, by PLAT-ERR's frame-scoped error
+model (`on error goto next` / `goto LABEL`, `resume` retired); the current model
+is `docs/error_model_design.md`. The live ledger is DOGFOOD.md's "Open — worth
+fixing" section, not this paragraph.
+
 ## Deferred — NOT started this track (do not begin without a new go-ahead)
 
 ### Dynamic property get/set hook + native `.property` / `.method()` syntax
