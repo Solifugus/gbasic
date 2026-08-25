@@ -87,10 +87,23 @@ for error handling, `ERRORS.md`.
 - **Date/time, duration, money** — the specialized value types and their
   comparisons. → `examples/datetime_test.gb`, `examples/duration_test.gb`,
   `examples/money_test.bas`
+- **A library that depends on another library** — declare it INSIDE the
+  `library` block (`load frame from "frame.bas"`), never at file top level. The
+  top-level form works only while the CALLER also loads the dependency, so the
+  library passes its own tests and breaks for the first program that loads it
+  alone. → `stdlib/stats.bas` over `matrix.bas`
 - **Serialize/deserialize** — `encode`/`decode` round-trips values through text,
   including `nothing`, `unknown` and the non-finite numbers, which is what makes
   it a gBASIC DIALECT and not JSON.
   → `examples/serialization_test.bas`, `examples/encode_roundtrip_test.bas`
+- **Opening a workbook that might be bad** — `xlsx.try_open(path)` returns
+  `{ok, workbook, message}` and never raises on a bad FILE, so one malformed
+  workbook does not end a batch. `xlsx.open` still raises; both give the same
+  verdict for the same file. → `examples/xlsx_try_open_test.bas`
+- **Walking a directory tree** — `list_files` reports FILES ONLY and does not
+  recurse, so it cannot drive a walk: a subdirectory is invisible to it. Use
+  `list(d)` on a `{dir}` reference, which answers `{name, type}` for every entry
+  including folders, and keep your own worklist. → `stdlib/filetree.bas`
 - **JSON for anything leaving gBASIC** — `json_encode(value)`, strict RFC 8259;
   `json_encodable(value)` asks the same question without raising. Reach for this
   and NOT `encode` for an HTTP body, a file another program reads, or a queue

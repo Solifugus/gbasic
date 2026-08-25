@@ -9,7 +9,77 @@ language surface may still change between releases.
 
 ## Unreleased
 
-_Nothing yet._
+**The DOGFOOD ledger's "worth fixing" list is now empty.** The last four items,
+closed together.
+
+### Password-based key derivation
+
+`pbkdf2_sha256(password, salt, iterations, length)`, `pbkdf2_sha512(...)` and
+`scrypt(password, salt, n, r, p, length)` — RFC 8018 and RFC 7914, returning raw
+key bytes ready for `aes_gcm_encrypt`. `crypto` had hashing, HMAC and AEAD but no
+KDF, so a **passphrase** could not safely become a key, and gBASIC Studio
+declined to offer passphrase-protected secrets rather than ship a single-round
+hash that looks like one.
+
+Verified against INDEPENDENT implementations — python3 `hashlib.pbkdf2_hmac`, and
+RFC 7914 §12 — never against gBASIC itself. A KDF that agrees only with itself
+proves nothing: a shared bug still round-trips, and the derived key is simply
+weak.
+
+Two decisions worth knowing. **An empty salt is refused**, though RFC 8018
+permits one: it turns a KDF into a plain iterated hash and nothing about the
+result looks different. **The cost parameters are not floored**, because RFC 6070
+and RFC 7914 publish vectors with deliberately tiny costs and a floor would make
+the implementation untestable against the vectors that prove it right — so the
+recommended values are in `docs/reference.md` where a reader sees them.
+
+### `xlsx.try_open`
+
+`xlsx.try_open(path)` → `{ok, workbook, message}`, the `try_decode` shape. One
+malformed workbook used to end an entire corpus scan, which is why the
+15,871-workbook Enron scan ran one process per file.
+
+`open` and `try_open` share **one** code path. A `try_` twin that accepts a file
+its raising sibling rejects — or reports a different reason for the same file —
+invites you to trust a verdict the real function does not share. A non-path
+*argument* still raises from both: that is a bug in the caller, not a bad
+workbook.
+
+### Removed: `crypto.json_encode`
+
+Use the core `json_encode` — which is what an unqualified call already reached.
+Once `json_encode` became a builtin, the library's flat copy was unreachable
+except when spelled `crypto.json_encode`, and the runtime warned on every
+`load crypto` that it was being shadowed. `jwt_encode` now preflights with
+`json_encodable` and calls the builtin, so a claim JSON cannot represent is
+refused rather than quietly signed as `null`.
+
+`crypto.json_decode` **stays**, and not for symmetry: it reads attacker-supplied
+token payloads and accepts RFC 8259 only, where `try_decode` deliberately speaks
+the permissive gBASIC dialect.
+
+### Fixed: `crypto.json_decode` raised on malformed input
+
+Its contract is `unknown` for anything out of domain, and on attacker-supplied
+input a raise is a denial of service rather than a rejection. Value dispatch fell
+through to a number for every character that is not `"`, `t`, `f` or `n`, so
+`{"a":inf}` reached `number("")` and ended the program. It now scans RFC 8259's
+number grammar, which also refuses `+1`, `1.2.3`, `1e`, `01` and a magnitude no
+double can hold. 32 hostile payloads are pinned in
+`examples/crypto_json_hostile_test.bas`.
+
+### Documentation
+
+The three ledger doc-gaps — typed-value construction, the
+library-dependency-inside-the-block rule, and `gtk.application`'s single-instance
+default — are written into `docs/reference.md`, along with `list` / `list_files`
+and the recursive-walk idiom, none of which were documented at all.
+
+The first turned out to be the small part of a bigger problem: the **Modifiers**
+section was stale from rc6 in three ways. It described the paren spelling as
+merely deprecated, said parenthesized *assignment* modifiers were not deprecated
+(they were removed), and said modifiers do not apply to call results (they do).
+Every claim there is now checked against a running program.
 
 ## 0.1.0-rc7 — 2026-08-24
 

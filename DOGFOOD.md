@@ -59,10 +59,14 @@ and the stale-looking ones carry a Status line saying what overtook them.
    and the only question was that the promise was enforced in a userspace
    teardown pass a SIGKILL skips. All three fork sites now arm PDEATHSIG between
    fork and exec. `tests/run_process_lifetime.sh`.
-5. **`xlsx.open` raises; batch tools cannot survive one bad workbook**
-   (2026-08-03). medium, xlsx track. Shape: `xlsx.try_open` returning
-   `{ok, workbook, message}`, the `try_decode` pattern. Same entry:
-   `list_files` does not recurse, so corpus walks live in shell.
+5. ~~**`xlsx.open` raises; batch tools cannot survive one bad workbook**~~
+   **RESOLVED 2026-08-25.** `xlsx.try_open(path)` → `{ok, workbook, message}`,
+   sharing ONE code path with `open` so the two cannot disagree about what is
+   readable. The `list_files` half was a DOC gap, not a missing feature: the
+   walk was always writable, just not on `list_files` — that one reports files
+   only and cannot see a subdirectory at all, while `list(d)` on a `{dir}`
+   reference answers `{name, type}` for every entry. Neither was documented in
+   reference.md; both are now. `examples/xlsx_try_open_test.bas`.
 6. ~~**Parse errors of the `dim x` class print to stderr and exit 0**~~
    **RESOLVED 2026-08-24.** Larger than filed: `yylex` hands bison a synthetic
    end-of-file for a token it cannot map, and wherever the grammar allows a
@@ -71,15 +75,31 @@ and the stale-looking ones carry a Status line saying what overtook them.
    `dim`-specific (any unlexable byte did it) and not merely cosmetic (under
    `--json-diagnostics` the bare line was non-JSON in a JSON stream).
    `tests/run_parse_exit.sh`.
-7. **Doc-gaps, each cheap:** typed-value construction (`d(date)=`, `m(USD)=`)
-   is shown nowhere in reference.md (2026-08-01); the library-dependency-
-   inside-the-block rule is documented only by example (2026-08-11);
-   `gtk.application`'s single-instance default is unstated and bit Studio for
-   a day (2026-08-01).
-8. **No PBKDF2/scrypt in `crypto`** (2026-08-22). low. Passphrase-derived keys
-   stay unofferable; `password_hash` covers login flows already.
-9. **`crypto.json_encode` remains a separate flat encoder** (2026-07-24).
-    low. Fold into `json_encode` when convenient.
+7. ~~**Doc-gaps, each cheap:**~~ **RESOLVED 2026-08-25.** All three written
+   into `docs/reference.md`. The first turned out to be the smallest part of a
+   bigger problem: the Modifiers section was stale from rc6 in three separate
+   ways — it still described the paren spelling as merely deprecated, claimed
+   parenthesized ASSIGNMENT modifiers were not deprecated (they were removed),
+   and said modifiers do not apply to call results (they do). Every claim there
+   is now checked against a running program.
+8. ~~**No PBKDF2/scrypt in `crypto`**~~ **RESOLVED 2026-08-25.**
+   `pbkdf2_sha256` / `pbkdf2_sha512` (RFC 8018) and `scrypt` (RFC 7914),
+   returning raw key bytes. Verified against INDEPENDENT implementations
+   (python3 `hashlib`, RFC 7914 §12), never against gBASIC — a KDF that agrees
+   only with itself proves nothing, since a shared bug still round-trips and the
+   key is simply weak. An empty salt is REFUSED; the cost parameters are not
+   floored, because the published test vectors use deliberately tiny ones and a
+   floor would make the implementation untestable against the vectors that prove
+   it correct.
+9. ~~**`crypto.json_encode` remains a separate flat encoder**~~ **RESOLVED
+    2026-08-25.** Removed. Once `json_encode` became a builtin the library's copy
+    was unreachable by the natural call — `json_encode(x)` resolved to the
+    builtin, and the runtime warned on every `load crypto` that it was doing so.
+    The DECODER stays and the reason is not symmetry: it reads attacker-supplied
+    token payloads and accepts RFC 8259 only, where `try_decode` speaks the
+    permissive dialect. Found while folding: that decoder **raised** on malformed
+    input instead of refusing it — a denial of service on hostile input, not a
+    rejection. `examples/crypto_json_hostile_test.bas`.
 10. ~~**No record merge**~~ **RESOLVED 2026-08-24.** `merge(a, b, …)`,
     variadic, later-wins, shallow. Decided together with item 3 as the ledger
     asked: both are BUILTINS, and `+` on a container stays unanswered.

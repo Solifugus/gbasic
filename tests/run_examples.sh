@@ -206,6 +206,8 @@ examples=(
     split_find_join_integration_test.bas
     split_join_test.bas
     serialization_test.bas
+    crypto_json_hostile_test.bas
+    crypto_kdf_test.bas
     encode_roundtrip_test.bas
     serialize_roundtrip_test.bas
     actor_loopback_test.bas

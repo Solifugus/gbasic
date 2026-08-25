@@ -764,9 +764,24 @@ a {rounded 2}= b
 a {math.rounded to 2}= b
 ```
 
-Assignment modifiers transform assigned values. Comparison modifiers transform or implement comparisons.
+Assignment modifiers transform assigned values. Comparison modifiers transform or
+implement comparisons. Both are written in **braces**; the parenthesized spelling
+was removed in 0.1.0-rc6 and is now a parse error (see the CHANGELOG for the
+migration).
 
-Modifiers apply only in assignment and comparison contexts. In v0.1, modifiers apply to variables, record fields, and array elements, not to function-call results.
+Modifiers apply only in assignment and comparison contexts. An assignment
+modifier's target may be a variable, a record field, or an array element:
+
+```basic
+r.when {date}= "2026-01-01"
+a[0] {USD}= 5
+```
+
+A comparison lens applies to any operand, including a call result:
+
+```basic
+if getname(){caseless}= "joe" then      ' works
+```
 
 Comparison modifiers use brace lens syntax:
 
@@ -776,16 +791,27 @@ left {modifier args}< right
 left {modifier args}>= right
 ```
 
-The older parenthesized comparison syntax remains temporarily supported during
-the migration:
+### Constructing typed values
+
+This is the **only** way to build a date, a time, a money amount, a file or a
+directory value: there are no literals for them, and `2026-12-25` written bare
+parses as arithmetic. An assignment modifier takes a string (or, for `USD`, a
+number) and produces the typed value:
 
 ```basic
-name{caseless}= "joe"
-a{rounded 2}= b
+d {date}     = "2026-05-15"            ' a date
+t {datetime} = "2026-05-15 12:05:03"   ' a timestamp
+h {time}     = "12:05:03"              ' a time of day
+m {USD}      = 19.95                   ' money, exact
+f {file}     = "notes.txt"             ' a file reference
+p {dir}      = "/tmp"                  ' a directory reference
 ```
 
-That comparison form is deprecated and will be removed in a later phase.
-Parenthesized assignment modifiers are not deprecated.
+The precision you supply is the precision the value keeps, and it decides how the
+value renders and how bare comparisons behave — `{date}= "2026"` is a *year*, not
+January 1st. Each of these **raises** when the string cannot be read as the type
+asked for, rather than yielding `nothing`: validate first if a bad value is
+expected rather than exceptional.
 
 Define an assignment modifier:
 
@@ -892,6 +918,32 @@ function declarations, modifier declarations, `library` declarations, and
 dotted-def method bodies. That set is pinned by `tests/run_pre_registration.sh`.
 Snippets elsewhere in this reference show `load` at top level because they have
 no `program` block, where it is correct.
+
+**A library's own dependencies are declared INSIDE its `library` block.** A
+top-level `load` does not put the dependency in scope for the library's
+functions:
+
+```basic
+load frame                ' WRONG — does not reach grid's functions
+library grid
+    function f()
+        return frame.from_rows([])   ' invalid function call: frame.from_rows
+    end function
+end library
+
+library grid
+    load frame from "frame.bas"      ' RIGHT — the dependency is the library's
+    function f()
+        return frame.from_rows([])
+    end function
+end library
+```
+
+The wrong form is worth spelling out because of **how** it fails: it works
+whenever the CALLER also happens to load the dependency. A library written that
+way passes its own test suite — the tests load both — and breaks in the first
+program that loads it alone, which is how every real user calls it. Declare what
+you depend on; `stdlib/stats.bas` over `matrix.bas` is the pattern to copy.
 
 Same-file load:
 
@@ -1888,6 +1940,23 @@ Thin GTK 4 constructors, each returning the GTK GObject:
 
 - `gtk.init()` — initialize GTK (needed before building widgets; needs a display).
 - `gtk.application(app_id)` / `gtk.application_window(app)` / `gtk.window()`.
+  **`gtk.application` is SINGLE-INSTANCE**, because it builds a `Gtk.Application`
+  with GTK's default flags and that is GTK's default. A second run of your
+  program then does not open a second window: it registers as a remote, forwards
+  `activate` to the process already running, and exits. The running process gets
+  an *extra* `activate` — so if your handler builds a shell over globals, it
+  builds a second one and every signal handler is now doubled. Both halves of
+  that cost gBASIC Studio a day. If you want independent windows, build the
+  application object by hand with `NON_UNIQUE`:
+
+  ```basic
+  gi.require("Gio", "2.0")
+  solo = gi.enum("Gio.ApplicationFlags.NON_UNIQUE")
+  app = gi.new("Gtk.Application", "application-id", "com.example.App", "flags", solo)
+  ```
+
+  `gtk` has no flags parameter on purpose — it wraps GTK rather than replacing
+  it, so anything unwrapped is reached through `gi`.
 - `gtk.box(orientation, spacing)` / `gtk.paned(orientation)` — `orientation` is
   `"h"`/`"horizontal"` or `"v"`/`"vertical"`.
 - `gtk.scrolled(child)` / `gtk.stack()` / `gtk.notebook()` / `gtk.listbox()`.
@@ -2135,6 +2204,40 @@ Hashing and HMAC:
 - `sha256(s)`, `sha512(s)`, `sha1(s)` — message digests.
 - `hmac_sha256(key, message)`, `hmac_sha512(key, message)` — keyed MACs.
 
+Password-based key derivation — turning a **passphrase** into key bytes:
+
+- `pbkdf2_sha256(password, salt, iterations, length)` /
+  `pbkdf2_sha512(...)` — PBKDF2-HMAC (RFC 8018). Returns exactly `length` raw
+  bytes, ready for `aes_gcm_encrypt`.
+- `scrypt(password, salt, n, r, p, length)` — scrypt (RFC 7914). `n` is the CPU
+  and memory cost and must be a **power of two greater than 1**; `r` is the block
+  size and `p` the parallelisation. Memory-hard, so prefer it when you can afford
+  the memory.
+
+```basic
+salt = random_bytes(16)                                  ' store this beside the ciphertext
+key  = pbkdf2_sha256(passphrase, salt, 600000, 32)       ' 32 bytes = AES-256
+blob = aes_gcm_encrypt(key, random_bytes(12), secret, "")
+```
+
+**Choosing parameters.** As of 2026, OWASP suggests **600,000** iterations for
+PBKDF2-HMAC-SHA256 and **210,000** for SHA-512; for scrypt, `n = 65536, r = 8,
+p = 1`. gBASIC does **not** enforce a floor: RFC 6070 and RFC 7914 publish test
+vectors with deliberately tiny costs, and a floor would make an implementation
+untestable against the vectors that prove it correct. Choosing a cost is
+therefore yours, and a low one is silently weak — which is why the recommended
+values are written here rather than left implicit.
+
+**The salt must be non-empty**, and both functions raise if it is. RFC 8018
+permits an empty salt; it is always a mistake, because it turns a KDF into a
+plain iterated hash that a precomputed table defeats, with nothing observable to
+say so. Use `random_bytes(16)` and store it in the clear beside what it protects.
+
+These are **not** `password_hash`. That one verifies a login and returns a hash
+*string* with its parameters embedded; these return raw key *bytes* for
+encryption. Use `password_hash` to check a password, a KDF to derive a key from
+one.
+
 Authenticated encryption and signatures:
 
 - `aes_gcm_encrypt(key, nonce, plaintext, aad)` — AES-GCM; returns ciphertext with
@@ -2151,8 +2254,13 @@ structured errors — these builtins pre-validate rather than degrade.
 A higher-level pure-gBASIC layer ships as `load crypto` (`stdlib/crypto.bas`),
 built on the above: `sha256_hex`/`sha512_hex`, `random_hex`/`random_token`,
 `sign_cookie`/`verify_cookie`, `csrf_token`/`csrf_check`, `encrypt`/`decrypt`,
-a flat `json_encode`/`json_decode`, and `jwt_encode`/`jwt_verify` (HS256). See
+a flat `json_decode`, and `jwt_encode`/`jwt_verify` (HS256). See
 `docs/crypto_design.md`.
+
+`crypto.json_encode` was **removed in 0.1.0-rc8** — use the core `json_encode`,
+which is what an unqualified call already reached. `crypto.json_decode` stays:
+it reads attacker-supplied token payloads and accepts RFC 8259 and nothing else,
+where `try_decode` deliberately speaks the permissive gBASIC dialect.
 
 ## Process Module
 
@@ -3183,6 +3291,36 @@ File functions (see also the file/directory value types):
 - `read(f)` / `write(f, text)` / `append(f, text)` — whole-file text I/O.
 - `bytes(f)` / `lines(f)` / `chars(f)` — read as bytes, lines, or characters.
 - `lock(f)` / `unlock(f)` — advisory locks (see `with lock`).
+
+Listing a directory — two functions, and the difference matters:
+
+- `list_files(path)` — the **files** in one directory, as full paths. It does
+  **not** recurse, and it does **not** report subdirectories at all, so it cannot
+  by itself drive a walk: a directory is invisible to it.
+- `list(d)` — every entry of a **directory reference**, as `{name, type}` records
+  where `type` is `"file"` or `"folder"`. `name` is the bare entry name, not a
+  path. This is the one to build a recursive walk on, because it is the one that
+  can see a subdirectory:
+
+  ```basic
+  pending = [root]
+  files = []
+  while len(pending) > 0
+      here = take_last(pending)
+      d {dir} = here
+      for each e in list(d)
+          full = here + "/" + e.name
+          if e.type = "folder" then
+              pending = append(pending, full)
+          else
+              files = append(files, full)
+          end if
+      end for
+  end while
+  ```
+
+  Order is the filesystem's, not sorted — `sort` it if you need a stable one.
+  `stdlib/filetree.bas` is this walk with expand/collapse state on top.
 
 File metadata and atomic replacement:
 
