@@ -9,8 +9,15 @@ language surface may still change between releases.
 
 ## Unreleased
 
+_Nothing yet._
+
+## 0.1.0-rc8 — 2026-08-25
+
 **The DOGFOOD ledger's "worth fixing" list is now empty.** The last four items,
 closed together.
+
+One **breaking** change: `crypto.json_encode` is removed (see below). Everything
+else is additive.
 
 ### Password-based key derivation
 

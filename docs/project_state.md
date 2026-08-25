@@ -1,6 +1,6 @@
 # gBASIC Project State
 
-Last updated: 2026-08-24 (0.1.0-rc7)
+Last updated: 2026-08-25 (0.1.0-rc8)
 
 This file is the compact source of truth for current implementation status.
 Detailed language behavior belongs in `docs/reference.md`; completed development
@@ -9,7 +9,7 @@ document list, with a status column, is `docs/README.md`.
 
 ## Current Version
 
-- Version: `0.1.0-rc7`
+- Version: `0.1.0-rc8`
 - Implementation: C11
 - Front end: hand-written lexer and Bison parser
 - Runtime: tree-walking evaluator
@@ -65,7 +65,8 @@ document list, with a status column, is `docs/README.md`.
 - optional XML module backed by libxml2 (tree parse, navigation, encode,
   lenient HTML, constant-memory streaming reader)
 - optional cryptography builtins backed by libcrypto (hashing, HMAC, AES-GCM,
-  Ed25519) plus a `crypto` stdlib library (JWT/HS256, signed cookies, CSRF)
+  Ed25519, and the PBKDF2/scrypt key derivations that turn a passphrase into key
+  bytes) plus a `crypto` stdlib library (JWT/HS256, signed cookies, CSRF)
 - optional GTK 3 GUI proof of concept through Stage 6A, and a generic
   GObject-Introspection bridge (`gi`, libgirepository) with GTK 4 as the first
   target — what gBASIC Studio is built on
@@ -78,7 +79,8 @@ document list, with a status column, is `docs/README.md`.
   suite, mediation/moderation, time-series and econometric diagnostics, and
   finance metrics; verified against reference implementations.
 - **spreadsheets** — `xlsx` (read/write plus a formula engine measured against
-  15,871 real workbooks), `grid`, `frame`/`dbframe`, `consolidate`, `chart`.
+  15,871 real workbooks; `xlsx.try_open` reports a bad workbook as a value so a
+  batch survives one), `grid`, `frame`/`dbframe`, `consolidate`, `chart`.
 - **EDGAR securities-analysis suite** — `edgar` (acquisition), `fundamentals`,
   `forensics` (accruals/Beneish/Piotroski/Altman/dilution/flags/events),
   `insiders` and `ownership` (Form 4 / 13F / 13D-G), `mdna` (MD&A + LLM panel),
@@ -128,7 +130,7 @@ points at, so it doubles as an integration suite for this repository.
 - evolving diagnostics and module APIs
 - a raise cannot be caught: `on error goto next` abandons the whole failing
   statement, so the doctrine is pre-validation plus non-raising `try_*` twins
-  (`try_decode`, `process.which`, `has_builtin`)
+  (`try_decode`, `xlsx.try_open`, `process.which`, `has_builtin`)
 - SQLite is synchronous and has no prepared-statement API exposed to gBASIC
 - PostgreSQL is synchronous and has no pooling or prepared-statement API
 - WebClient is synchronous
@@ -136,8 +138,9 @@ points at, so it doubles as an integration suite for this repository.
   mutation; the `gi`/GTK 4 path does not share that limit
 - records are an association list with linear field lookup, and there is no map
   type
-- the open friction list is `DOGFOOD.md` — its "Open — worth fixing" section is
-  the live one
+- `DOGFOOD.md`'s "Open — worth fixing" list is **empty** as of 0.1.0-rc8; what
+  remains there is the "accepted as documented limitations" section, which is
+  doctrine rather than a to-do list
 
 ## Current Documents
 
