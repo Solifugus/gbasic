@@ -119,62 +119,6 @@ static Token string_token(Lexer *lexer, const char *start, int line, int column)
     return error_token_message(lexer, start, line, column, "unterminated string");
 }
 
-/* Scan a modifier clause `(...)` as one raw span, stopping at the `)` that is
- * not inside a string. The content is handed on verbatim; escapes are decoded
- * later, when an argument is turned into a value (`modifier_string_literal`,
- * src/eval.c), because the clause may hold a multi-word phrase like
- * `split ","` whose name and argument are only separated once the registered
- * modifiers are known.
- *
- * Escape tracking here is only about finding the right `)`. It used to test
- * `current[-1] != '\\'`, the usual broken approximation: it cannot tell `\"`
- * (an escaped quote, still inside the string) from `\\"` (an escaped backslash
- * followed by the real closing quote), so a clause containing either failed to
- * lex at all. `lens_content_token` below — the direct sibling of this function —
- * already tracked escapes properly, which is why this reads as an oversight
- * rather than a decision. It now matches. */
-static Token modifier_content_token(Lexer *lexer) {
-    const char *start = lexer->current;
-    int line = lexer->line;
-    int column = lexer->column;
-    int in_string = 0;
-    int escape = 0;
-
-    while (!is_at_end(lexer)) {
-        char ch = peek(lexer);
-        if (escape) {
-            escape = 0;
-            advance(lexer);
-            continue;
-        }
-        if (in_string && ch == '\\') {
-            escape = 1;
-            advance(lexer);
-            continue;
-        }
-        if (ch == '"') {
-            in_string = !in_string;
-        }
-        if (!in_string && ch == ')') {
-            Token token = make_token(lexer, TOKEN_MOD_CONTENT, start, line, column);
-            advance(lexer);
-            lexer->modifier_content_mode = 0;
-            return token;
-        }
-        if (ch == '\n') {
-            break;
-        }
-        advance(lexer);
-    }
-
-    lexer->modifier_content_mode = 0;
-    return error_token(lexer, start, line, column);
-}
-
-void lexer_begin_modifier_content(Lexer *lexer) {
-    lexer->modifier_content_mode = 1;
-}
-
 static Token lens_content_token(Lexer *lexer) {
     const char *start = lexer->current;
     int line = lexer->line;
@@ -402,15 +346,11 @@ void lexer_init(Lexer *lexer, const char *source) {
     lexer->error_message[0] = '\0';
     lexer->line = 1;
     lexer->column = 1;
-    lexer->modifier_content_mode = 0;
     lexer->lens_content_mode = 0;
     lexer->consider_depth = 0;
 }
 
 Token lexer_next(Lexer *lexer) {
-    if (lexer->modifier_content_mode) {
-        return modifier_content_token(lexer);
-    }
     if (lexer->lens_content_mode) {
         return lens_content_token(lexer);
     }
@@ -487,7 +427,6 @@ const char *token_type_name(TokenType type) {
     case TOKEN_QUALIFIED_IDENT: return "QUALIFIED_IDENT";
     case TOKEN_NUMBER: return "NUMBER";
     case TOKEN_STRING: return "STRING";
-    case TOKEN_MOD_CONTENT: return "MOD_CONTENT";
     case TOKEN_LENS_CONTENT: return "LENS_CONTENT";
     case TOKEN_PROGRAM: return "PROGRAM";
     case TOKEN_LIBRARY: return "LIBRARY";

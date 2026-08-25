@@ -117,6 +117,21 @@ Compatibility break: **0.1.0-rc6**. rc5 shipped one break already
 (`on error resume next`); this is the second, and the reference gains a
 migration note beside it.
 
+## 7a. Follow-up (2026-08-24): the machinery, not only the caller
+
+The rc6 change deleted `modifier_lparen_ahead` and the grammar's paren clause,
+which made two things unreachable without making them go away: the lexer's raw
+`(...)` span mode (`TOKEN_MOD_CONTENT`, `modifier_content_token`,
+`lexer_begin_modifier_content`) and the parser's source-wide `function NAME`
+pre-scan (`source_declares_function` with its four helpers). Both still compiled;
+one of them was §1's "one of three string scanners a clause passes through", so
+the cost argument this document makes was still half true in the source.
+
+Found by auditing the token map for a different defect — an unmapped token
+reached a raw `fprintf` — which is how `TOKEN_MOD_CONTENT` turned up as a token
+nothing could emit. `tests/run_brace_modifiers.sh` now names all of it, because
+dead code that still parses is how a retired construct comes back.
+
 ## 8. Test obligations
 
 `tests/run_brace_modifiers.sh`: the assignment form for every builtin modifier;

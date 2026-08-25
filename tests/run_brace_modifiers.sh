@@ -47,4 +47,18 @@ grep -q "modifier_lparen_ahead" src/parser.y \
     && fail "modifier_lparen_ahead still present: the guess is what this change removes"
 printf 'PASS guesser_removed\n'
 
-printf 'run_brace_modifiers: 4 cases passed\n'
+# --- so is the machinery it drove -----------------------------------------
+# The design doc's cost argument was that a clause passed through three separate
+# string scanners. Deleting the caller left two of them compiling but
+# unreachable: the lexer's raw `(...)` span mode (TOKEN_MOD_CONTENT) and the
+# parser's source-wide `function NAME` pre-scan. Dead code that still parses is
+# how a retired construct comes back.
+for symbol in TOKEN_MOD_CONTENT modifier_content_mode lexer_begin_modifier_content; do
+    grep -rq "$symbol" src/lexer.c include/lexer.h \
+        && fail "$symbol survives: the paren clause's lexer mode is unreachable, and must be gone"
+done
+grep -q "source_declares_function" src/parser.y \
+    && fail "source_declares_function survives: nothing calls it since the guesser went"
+printf 'PASS machinery_removed\n'
+
+printf 'run_brace_modifiers: 5 cases passed\n'
