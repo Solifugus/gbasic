@@ -18,4 +18,9 @@ tests/tmp_*.txt
 .stdlibdir-stamp
 examples/tmp_*.xlsx
 examples/tmp_*.db
+# Written by doc examples: the README and tutorial both open a SQLite database
+# called `app.db`. It was committed by accident in 05c54aa when `git add -A`
+# swept it up; tests/run_doc_examples.sh now runs blocks in a scratch
+# directory, so it should never reappear -- this is the belt to that braces.
+app.db
 examples/tmp_*.xml

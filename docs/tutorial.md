@@ -1106,7 +1106,7 @@ suite executes — start there.
 A file reference is a typed path, created with the `{file}=` modifier:
 
 ```basic
-f{file}= "examples/tmp_file_test.txt"
+f{file}= "notes.txt"
 
 write(f, "line one\nline two\n")
 print(exists(f))            ' true

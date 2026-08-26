@@ -44,10 +44,13 @@ set -euo pipefail
 # `load`-bearing examples resolve.
 
 cd "$(dirname "$0")/.."
+root="$PWD"
 
 make >/dev/null
 
-export GBASIC_PATH=stdlib
+# Absolute, because each block runs with its CWD in a scratch directory (see
+# below) and a relative stdlib path would not resolve from there.
+export GBASIC_PATH="$root/stdlib"
 
 # Every page whose ```basic blocks claim to be gBASIC, and how hard to press.
 #
@@ -119,7 +122,7 @@ while IFS=$'\t' read -r idx line marker; do
 
     # --- PARSE: --ast reaches the parser and stops, so it separates a parse
     # failure from a runtime one without executing anything.
-    if ! ./gbasic --ast "$src" >/dev/null 2>"$work/err"; then
+    if ! "$root/gbasic" --ast "$src" >/dev/null 2>"$work/err"; then
         if command grep -qE "parse error|lexer error" "$work/err"; then
             parse_bad+=("$DOC:$line  $(sed 's/^[a-z ]*error at [^ ]*: //' "$work/err" | head -1)")
             continue
@@ -136,10 +139,16 @@ while IFS=$'\t' read -r idx line marker; do
     # otherwise burn the full budget each. An unmarked block gets longer,
     # because a doc example that needs more than that is its own problem.
     set +e
+    # RUN IN A SCRATCH DIRECTORY, not the repo. Doc examples write files --
+    # the README and tutorial both open a SQLite database called `app.db` --
+    # and with the repo as CWD those land in the working tree. That is how
+    # `app.db` came to be committed by accident in 05c54aa: a test artifact
+    # swept up by `git add -A`. A suite must not modify the tree it is testing.
+    mkdir -p "$work/cwd"
     if [[ "$marker" == "needs-context" ]]; then
-        timeout 2 ./gbasic "$src" >/dev/null 2>"$work/rerr" </dev/null
+        ( cd "$work/cwd" && timeout 2 "$root/gbasic" "$src" ) >/dev/null 2>"$work/rerr" </dev/null
     else
-        timeout 10 ./gbasic "$src" >/dev/null 2>"$work/rerr" </dev/null
+        ( cd "$work/cwd" && timeout 10 "$root/gbasic" "$src" ) >/dev/null 2>"$work/rerr" </dev/null
     fi
     rc=$?
     set -e
