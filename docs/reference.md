@@ -668,10 +668,10 @@ String operations split into two families:
   work on raw bytes for binary and protocol work.
 
 ```basic
-len("café")                    # 4   codepoints
-byte_count("café")             # 5   UTF-8 bytes
-mid("café", 3, 1)              # "é" never splits a codepoint
-from_bytes([0, 255])           # a two-byte binary string
+len("café")                    ' 4   codepoints
+byte_count("café")             ' 5   UTF-8 bytes
+mid("café", 3, 1)              ' "é" never splits a codepoint
+from_bytes([0, 255])           ' a two-byte binary string
 ```
 
 **Comparison** is by byte sequence (binary-safe, and correct codepoint order for
@@ -1101,7 +1101,7 @@ program main(args)
     me = self()
     a = spawn worker("a", me)
     send(a, "ping")
-    print(receive())          # "pong from a"
+    print(receive())          ' "pong from a"
     send(a, "stop")
 end program
 ```
@@ -1850,8 +1850,8 @@ leniently, HTML) into an in-memory node tree and navigates it by path:
 load xml
 
 doc = xml.parse("<order id='A1'><item>Widget</item><item>Gadget</item></order>")
-print(xml.attr(doc, "id"))              # A1
-print(xml.text(xml.find(doc, "item")))  # Widget
+print(xml.attr(doc, "id"))              ' A1
+print(xml.text(xml.find(doc, "item")))  ' Widget
 ```
 
 Parsing:
@@ -2835,13 +2835,13 @@ end if
 
 **`type(value)`** - Returns the type of a value as a string:
 ```basic
-type(42)         # "number"  
-type("hello")    # "string"
-type(true)       # "boolean"
-type([1, 2])     # "array"
-type({x:1})      # "record"
-type(nothing)    # "nothing"
-type(unknown)    # "unknown"
+type(42)         ' "number"  
+type("hello")    ' "string"
+type(true)       ' "boolean"
+type([1, 2])     ' "array"
+type({x:1})      ' "record"
+type(nothing)    ' "nothing"
+type(unknown)    ' "unknown"
 ```
 
 **Type predicates** - Return `true` or `false`:
@@ -2859,28 +2859,28 @@ type(unknown)    # "unknown"
 
 **`number(value)`** - Converts strings to numbers:
 ```basic
-number("42")     # 42
-number("3.14")   # 3.14
-number("abc")    # runtime error
+number("42")     ' 42
+number("3.14")   ' 3.14
+number("abc")    ' runtime error
 ```
 
 **`boolean(value)`** - Converts strings to booleans:
 ```basic
-boolean("true")   # true
-boolean("false")  # false
-boolean("maybe")  # runtime error
+boolean("true")   ' true
+boolean("false")  ' false
+boolean("maybe")  ' runtime error
 ```
 
 **`array(value)`** - Decodes JSON strings to arrays, passes arrays unchanged:
 ```basic
-array("[1, 2, 3]")  # [1, 2, 3]
-array([4, 5, 6])    # [4, 5, 6]
+array("[1, 2, 3]")  ' [1, 2, 3]
+array([4, 5, 6])    ' [4, 5, 6]
 ```
 
 **`record(value)`** - Decodes JSON strings to records, passes records unchanged:
 ```basic
-record("{\"x\":1, \"y\":2}")  # {x:1, y:2}
-record({a:1, b:2})            # {a:1, b:2}
+record("{\"x\":1, \"y\":2}")  ' {x:1, y:2}
+record({a:1, b:2})            ' {a:1, b:2}
 ```
 
 ### String Helpers
@@ -2888,27 +2888,27 @@ record({a:1, b:2})            # {a:1, b:2}
 **`replace(text, from, to)`** - Replaces all occurrences of `from` with `to`.
 `from` may be a literal string or a `regex` value (see *Regular Expressions*):
 ```basic
-replace("hello", "l", "x")     # "hexxo"
-replace("hello world", "o", "0")  # "hell0 w0rld"
-replace("a1b2", regex("[0-9]"), "#")  # "a#b#"
+replace("hello", "l", "x")     ' "hexxo"
+replace("hello world", "o", "0")  ' "hell0 w0rld"
+replace("a1b2", regex("[0-9]"), "#")  ' "a#b#"
 ```
 
 **`starts_with(text, prefix)`** - Returns `true` if text starts with prefix:
 ```basic
-starts_with("hello", "he")     # true
-starts_with("hello", "lo")     # false
+starts_with("hello", "he")     ' true
+starts_with("hello", "lo")     ' false
 ```
 
 **`ends_with(text, suffix)`** - Returns `true` if text ends with suffix:
 ```basic
-ends_with("hello", "lo")       # true
-ends_with("hello", "he")       # false
+ends_with("hello", "lo")       ' true
+ends_with("hello", "he")       ' false
 ```
 
 **`repeat(text, count)`** - Repeats text count times:
 ```basic
-repeat("ha", 3)                # "hahaha"
-repeat("x", 0)                 # ""
+repeat("ha", 3)                ' "hahaha"
+repeat("x", 0)                 ' ""
 ```
 
 **`chr(code)`** - Returns the string for a Unicode **codepoint** in the range
@@ -2916,36 +2916,36 @@ repeat("x", 0)                 # ""
 `chr(0)` produces a one-byte binary-safe NUL string (gBASIC strings are
 binary-safe — see *Strings and Unicode*):
 ```basic
-chr(110)                       # "n"
-chr(233)                       # "é"  (one codepoint, 2 UTF-8 bytes)
-chr(128512)                    # "😀" (one codepoint, 4 UTF-8 bytes)
-chr(0)                         # a one-byte NUL string
+chr(110)                       ' "n"
+chr(233)                       ' "é"  (one codepoint, 2 UTF-8 bytes)
+chr(128512)                    ' "😀" (one codepoint, 4 UTF-8 bytes)
+chr(0)                         ' a one-byte NUL string
 ```
 
 **`code(text)`** - Returns the **codepoint** value of the first character of a
 non-empty string; the inverse of `chr`:
 ```basic
-code("n")                      # 110
-code("é")                      # 233
-code(chr(128512))             # 128512
+code("n")                      ' 110
+code("é")                      ' 233
+code(chr(128512))             ' 128512
 ```
 
 **`byte_count(text)`** - Number of raw bytes in a string (`len` counts
 codepoints):
 ```basic
-byte_count("café")             # 5   (len("café") is 4)
+byte_count("café")             ' 5   (len("café") is 4)
 ```
 
 **`byte_at(text, index)`** - The byte (0–255) at a 0-based byte index:
 ```basic
-byte_at("ABC", 0)              # 65
+byte_at("ABC", 0)              ' 65
 ```
 
 **`from_bytes(numbers)`** - Builds a binary-safe string from an array of byte
 values `0..255`:
 ```basic
-from_bytes([72, 105])          # "Hi"
-from_bytes([0, 255])           # a two-byte binary string
+from_bytes([72, 105])          ' "Hi"
+from_bytes([0, 255])           ' a two-byte binary string
 ```
 
 ### Regular Expressions
@@ -2958,7 +2958,7 @@ value. Compiling once and reusing it is how you keep a pattern out of a loop's
 inner cost:
 ```basic
 digits = regex("[0-9]+")
-print(contains("order 1500", digits))    # true
+print(contains("order 1500", digits))    ' true
 ```
 Flags are a short string: `"i"` ignore case, `"m"` `^`/`$` match at line
 boundaries, `"s"` `.` matches a newline. They are independent, and unknown
@@ -2969,9 +2969,9 @@ if there is none. **It scans** — it is Python's `re.search`, not `re.match`;
 anchor with `^` if you want the start of the string:
 ```basic
 m = match("order 1500 shipped", "[0-9]+")
-print(m.text)                            # "1500"
-print(mid("order 1500 shipped", m.start, m.length))   # "1500"
-print(is_unknown(match("none", "[0-9]+")))            # true
+print(m.text)                            ' "1500"
+print(mid("order 1500 shipped", m.start, m.length))   ' "1500"
+print(is_unknown(match("none", "[0-9]+")))            ' true
 ```
 The record is `{text, start, length, groups}`. `start` and `length` are
 **codepoint** measures, matching `find`, so they compose with `mid`/`left`/
@@ -2984,7 +2984,7 @@ empty string.
 right, as a list of the same records:
 ```basic
 for each m in match_all("a1 b22 c333", "[0-9]+")
-    print(m.text)                        # 1, 22, 333
+    print(m.text)                        ' 1, 22, 333
 end for
 ```
 
@@ -2992,10 +2992,10 @@ end for
 value, and mean the pattern version when given one. A plain string argument
 always stays **literal**:
 ```basic
-contains("hello", "ell")                 # true  (literal substring)
-contains("hello", regex("h.llo"))        # true  (pattern)
-contains("hello", "h.llo")               # false (literal — no dot in "hello")
-split("a1b22c", regex("[0-9]+"))         # ["a", "b", "c"]
+contains("hello", "ell")                 ' true  (literal substring)
+contains("hello", regex("h.llo"))        ' true  (pattern)
+contains("hello", "h.llo")               ' false (literal — no dot in "hello")
+split("a1b22c", regex("[0-9]+"))         ' ["a", "b", "c"]
 ```
 `find` is **not** overloaded: it returns a single index, which cannot carry a
 match record, so `match` exists under its own name instead.
@@ -3026,40 +3026,40 @@ There is no record `+`, for the same reason there is no array `+`.
 
 **`keys(record)`** - Returns array of key strings:
 ```basic
-keys({x:1, y:2})               # ["x", "y"]
-keys({})                       # []
+keys({x:1, y:2})               ' ["x", "y"]
+keys({})                       ' []
 ```
 
 **`values(record)`** - Returns array of record values:
 ```basic
-values({x:1, y:2})             # [1, 2]
-values({})                     # []
+values({x:1, y:2})             ' [1, 2]
+values({})                     ' []
 ```
 
 **`has(record, key)`** - Returns `true` if record contains key:
 ```basic
-has({x:1, y:2}, "x")           # true
-has({x:1, y:2}, "z")           # false
+has({x:1, y:2}, "x")           ' true
+has({x:1, y:2}, "z")           ' false
 ```
 
 **`remove_key(record, key)`** - Returns new record without the key (immutable):
 ```basic
 rec = {x:1, y:2}
-new_rec = remove_key(rec, "x")  # {y:2}
-# rec is unchanged: {x:1, y:2}
-remove_key(rec, "z")            # {x:1, y:2} (copy when key missing)
+new_rec = remove_key(rec, "x")  ' {y:2}
+' rec is unchanged: {x:1, y:2}
+remove_key(rec, "z")            ' {x:1, y:2} (copy when key missing)
 ```
 
 ### Counting
 
 **`count(value)`** - Returns count/length for strings, arrays, and records:
 ```basic
-count("hello")                 # 5 (string length)
-count([1, 2, 3])               # 3 (array elements)
-count({x:1, y:2})              # 2 (record fields)
-count("")                      # 0
-count([])                      # 0
-count({})                      # 0
+count("hello")                 ' 5 (string length)
+count([1, 2, 3])               ' 3 (array elements)
+count({x:1, y:2})              ' 2 (record fields)
+count("")                      ' 0
+count([])                      ' 0
+count({})                      ' 0
 ```
 
 ### Core vs Library Functions
@@ -3194,7 +3194,7 @@ directory references:
 
 ```basic
 cost{USD}= 9.99
-deserialize(serialize({when: now(), cost: cost}))   # exact copy, types intact
+deserialize(serialize({when: now(), cost: cost}))   ' exact copy, types intact
 ```
 
 (Build typed values before placing them in a record literal: inside a literal the

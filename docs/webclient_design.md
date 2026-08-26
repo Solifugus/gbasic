@@ -225,8 +225,8 @@ For repeated header names:
 Example:
 
 ```basic
-response.headers["content-type"]   # string
-response.headers["set-cookie"]     # array when repeated
+response.headers["content-type"]   ' string
+response.headers["set-cookie"]     ' array when repeated
 ```
 
 Arrays preserve information that would be lost with last-wins behavior.

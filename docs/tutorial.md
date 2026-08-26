@@ -165,22 +165,22 @@ String operations come in two families:
 never split a multibyte character:
 
 ```basic
-len("café")            # 4   codepoints
-mid("café", 3, 1)      # "é"  (0-based; never splits a codepoint)
-chr(233)               # "é"  one codepoint, 2 UTF-8 bytes
-chr(128512)            # "😀" one codepoint, 4 UTF-8 bytes
-code("é")              # 233
-"\u{1F600}"            # "😀"  codepoint escape by hex value
+len("café")            ' 4   codepoints
+mid("café", 3, 1)      ' "é"  (0-based; never splits a codepoint)
+chr(233)               ' "é"  one codepoint, 2 UTF-8 bytes
+chr(128512)            ' "😀" one codepoint, 4 UTF-8 bytes
+code("é")              ' 233
+"\u{1F600}"            ' "😀"  codepoint escape by hex value
 ```
 
 **Byte-oriented (raw).** `byte_count`, `byte_at` (0-based), and `from_bytes`
 work on raw bytes, for binary and protocol work:
 
 ```basic
-byte_count("café")     # 5   UTF-8 bytes (len is 4)
-byte_at("ABC", 0)      # 65
-from_bytes([72, 105])  # "Hi"
-from_bytes([0, 255])   # a two-byte binary string
+byte_count("café")     ' 5   UTF-8 bytes (len is 4)
+byte_at("ABC", 0)      ' 65
+from_bytes([72, 105])  ' "Hi"
+from_bytes([0, 255])   ' a two-byte binary string
 ```
 
 > **Theory — why two families.** Most languages force one model: either a string
@@ -202,9 +202,9 @@ verbs you already know are overloaded to accept one — there is no parallel
 ```basic
 digits = regex("[0-9]+")
 
-print(contains("order 1500", digits))          # true
-print(replace("a1b22c", digits, "#"))          # a#b#c
-print(split("one, two,three", regex(", *")))   # ["one","two","three"]
+print(contains("order 1500", digits))          ' true
+print(replace("a1b22c", digits, "#"))          ' a#b#c
+print(split("one, two,three", regex(", *")))   ' ["one","two","three"]
 ```
 
 A plain **string** second argument still means a **literal** — `contains(s,
@@ -214,11 +214,11 @@ verbs:
 
 ```basic
 m = match("order 1500 shipped", digits)
-print(m.text)      # 1500
-print(m.start)     # 6      — a CODEPOINT offset, so mid(s, m.start, m.length) composes
-print(m.length)    # 4
+print(m.text)      ' 1500
+print(m.start)     ' 6      — a CODEPOINT offset, so mid(s, m.start, m.length) composes
+print(m.length)    ' 4
 all = match_all("a1b22c", digits)
-print(count(all))  # 2
+print(count(all))  ' 2
 ```
 
 A miss returns `unknown` — not an error, not an empty string — so a
@@ -238,13 +238,13 @@ is gBASIC's most distinctive everyday feature.
 Assignment modifiers transform the value being stored. They use parentheses:
 
 ```basic
-price{USD}= 19.95          # money value, stored as cents
-due{date}= "2026-05-15"    # a date value
+price{USD}= 19.95          ' money value, stored as cents
+due{date}= "2026-05-15"    ' a date value
 command{trimmed}= input(">")
 command{lowered}= command
 code{uppered}= "abc"
-words{split}= "apple banana orange"   # -> ["apple","banana","orange"]
-line{join ", "}= words                # -> "apple, banana, orange"
+words{split}= "apple banana orange"   ' -> ["apple","banana","orange"]
+line{join ", "}= words                ' -> "apple, banana, orange"
 n{length}= line
 age{number}= "42"
 text{string}= age
@@ -337,9 +337,9 @@ print(customer.name)
 customer.name = "Grace"
 
 field = "age"
-print(customer[field])          # dynamic access; key must be a string
-print(customer["nickname"])     # missing dynamic field reads as unknown
-customer["nickname"] = "Amazing Grace"   # assignment creates it
+print(customer[field])          ' dynamic access; key must be a string
+print(customer["nickname"])     ' missing dynamic field reads as unknown
+customer["nickname"] = "Amazing Grace"   ' assignment creates it
 
 items = [{name = "lamp", location = "cellar"}]
 items[0].location = "inventory"
@@ -354,8 +354,8 @@ records take string keys.
 gBASIC has **two** absence values, and the distinction matters:
 
 ```basic
-x = nothing      # deliberate absence — "there is none"
-y = unknown      # exists, but the value is not known yet
+x = nothing      ' deliberate absence — "there is none"
+y = unknown      ' exists, but the value is not known yet
 
 if x != y then
     print("distinct")
@@ -519,17 +519,17 @@ function double(n)
     return n * 2
 end function
 
-g = greet                  # a function value
-print(type(g))             # "function"
-print(g("world"))          # "hello, world"
+g = greet                  ' a function value
+print(type(g))             ' "function"
+print(g("world"))          ' "hello, world"
 
 function apply_twice(f, x)
     return f(f(x))
 end function
-print(apply_twice(double, 5))   # 20
+print(apply_twice(double, 5))   ' 20
 
-print(g = greet)           # true  (same-reference equality)
-print(g != double)         # true
+print(g = greet)           ' true  (same-reference equality)
+print(g != double)         ' true
 ```
 
 A function value stored in a **record field** becomes a **method**. When you
@@ -545,10 +545,10 @@ function describe()
 end function
 
 account = { name: "checking", balance: 0, deposit: deposit, describe: describe }
-print(account.deposit(100))    # 100
-print(account.deposit(50))     # 150
-print(account.describe())      # "checking: 150"
-print(account.balance)         # 150  — the write persisted
+print(account.deposit(100))    ' 100
+print(account.deposit(50))     ' 150
+print(account.describe())      ' "checking: 150"
+print(account.balance)         ' 150  — the write persisted
 ```
 
 Dispatch falls out naturally: two records with the same field name holding
@@ -563,8 +563,8 @@ function soft()
 end function
 a = { text: "Hello", say: loud }
 b = { text: "Hello", say: soft }
-print(a.say())     # "HELLO"
-print(b.say())     # "hello"
+print(a.say())     ' "HELLO"
+print(b.say())     ' "hello"
 ```
 
 There is **define-and-attach** sugar for adding a method to an existing record.
@@ -579,8 +579,8 @@ function account.deposit(amount)
     return this.balance
 end function
 
-print(account.deposit(200))    # 200
-print(type(account.deposit))   # "function"
+print(account.deposit(200))    ' 200
+print(type(account.deposit))   ' "function"
 ```
 
 > **Theory — references, not closures (yet).** A gBASIC function value is a
@@ -601,7 +601,7 @@ derives an instance. An optional `with { … }` block customizes it.
 ```basic
 account = { owner: "unnamed", balance: 0 }
 a = new account with { owner: "Ada", balance: 100 }
-print(a.owner)     # "Ada"
+print(a.owner)     ' "Ada"
 ```
 
 What makes inheritance interesting in gBASIC is that each field can declare a
@@ -621,16 +621,16 @@ function next_id()
 end function
 
 widget = {
-    name   (copy):  "unnamed",   # private per instance
-    pool   (link):  "main",      # shared across instances
-    id     (reset next_id()): "",# fresh per instance
-    scratch (exclude): "tmp"     # not present on instances
+    name   (copy):  "unnamed",   ' private per instance
+    pool   (link):  "main",      ' shared across instances
+    id     (reset next_id()): "",' fresh per instance
+    scratch (exclude): "tmp"     ' not present on instances
 }
 
 a = new widget with { name: "A" }
 b = new widget with { name: "B" }
-print(a.id != b.id)          # true  — reset fired twice
-print(has(a, "scratch"))     # false — excluded
+print(a.id != b.id)          ' true  — reset fired twice
+print(has(a, "scratch"))     ' false — excluded
 ```
 
 A field named `constructor` is special: `new` calls it automatically after
@@ -645,8 +645,8 @@ end function
 
 Account = { name: "", opening: 0, balance: 0, label: "", constructor: constructor }
 a = new Account with { name: "alice", opening: 100 }
-print(a.balance)   # 100
-print(a.label)     # "acct:alice"
+print(a.balance)   ' 100
+print(a.label)     ' "acct:alice"
 ```
 
 > **Theory — inheritance as a per-field policy.** Classical OO bundles one
@@ -674,9 +674,9 @@ watch(a, b)
     c = a + b
 end watch
 
-print(c)     # 30
+print(c)     ' 30
 a = 15
-print(c)     # 35  — the watcher re-ran when `a` changed
+print(c)     ' 35  — the watcher re-ran when `a` changed
 ```
 
 Equal-value writes do not trigger watchers, so there are no redundant runs:
@@ -686,8 +686,8 @@ count = 0
 watch(count)
     print(count)
 end watch
-count = 0    # no run (unchanged)
-count = 1    # runs
+count = 0    ' no run (unchanged)
+count = 1    ' runs
 ```
 
 Suppress triggering for a region with `without watchers`:
@@ -706,9 +706,9 @@ watch recalc(a, b)
     c = a + b
 end watch
 
-unwatch recalc           # off — assignments to a and b no longer re-run it
-print(recalc.name)       # recalc
-print(recalc.targets)    # ["a","b"]
+unwatch recalc           ' off — assignments to a and b no longer re-run it
+print(recalc.name)       ' recalc
+print(recalc.targets)    ' ["a","b"]
 ```
 
 Two properties are worth leaning on. Re-declaring `watch recalc(...)` while
@@ -752,7 +752,7 @@ program main(args)
     me = self()
     a = spawn worker("a", me)
     send(a, "ping")
-    print(receive())          # "pong from a"
+    print(receive())          ' "pong from a"
     send(a, "stop")
 end program
 ```
@@ -772,10 +772,10 @@ end program
 
 ```basic
 send(me, ["data", 42])
-msg = receive("data")          # selective by tag
-print(msg[1])                  # 42
-t = receive(1 seconds)         # timeout
-print(is_nothing(t))           # true
+msg = receive("data")          ' selective by tag
+print(msg[1])                  ' 42
+t = receive(1 seconds)         ' timeout
+print(is_nothing(t))           ' true
 ```
 
 You can also `monitor(handle)` to be told when another actor dies — the death
@@ -895,13 +895,14 @@ column}` innermost first. Module errors also carry a `source` (`"watcher"`,
 on where a failure came from:
 
 ```basic
-r = try charge(card)          ' any raising call
+on error goto next
+r = charge(card)              ' any raising call
 if error then
     consider error.source
     if "postgres" then
         retry_later()
     else
-        error error            ' not ours -- pass it on
+        error error           ' not ours -- pass it on
     end consider
 end if
 ```
@@ -947,7 +948,7 @@ produce yourself:
 ```basic
 r = try_decode(text_from_elsewhere)
 if r.ok then
-    use(r.value)
+    handle(r.value)
 else
     print to error "bad JSON: " + r.message + " at line " + string(r.line)
 end if
@@ -975,8 +976,8 @@ length) and their stored components.
 
 ```basic
 price{USD}= 19.95
-tax = price * 0.08          # money × number
-total = price + tax         # money + money
+tax = price * 0.08          ' money × number
+total = price + tax         ' money + money
 if total > price then print("greater")
 ```
 
@@ -993,7 +994,7 @@ Durations are first-class and compose with date arithmetic:
 
 ```basic
 start{date}= "2026-05-15 13:10:00"
-print(start + 1 hour 20 minutes)    # 2026-05-15 14:30:00
+print(start + 1 hour 20 minutes)    ' 2026-05-15 14:30:00
 print(start + 2 days)
 ```
 
@@ -1002,8 +1003,8 @@ too). Pull or truncate parts with **lenses** — `year month day hour minute
 second` — as assignment modifiers or comparison lenses:
 
 ```basic
-y{year}= t                 # 2026
-if d {day}= t then print("same day")     # compare at day precision
+y{year}= t                 ' 2026
+if d {day}= t then print("same day")     ' compare at day precision
 ```
 
 Bare date/time `=`/`!=` is *exact* (values match only if their fields **and**
@@ -1014,8 +1015,8 @@ The `now()` builtin returns the current local time as a second-precision
 
 ```basic
 deadline = now() + 8 hours
-expired = now() > deadline           # false until the deadline passes
-today{day}= now()                    # truncate to a date via the day lens
+expired = now() > deadline           ' false until the deadline passes
+today{day}= now()                    ' truncate to a date via the day lens
 ```
 
 > **Theory — domain types, not stringly-typed data.** Money as cents, dates with
@@ -1094,10 +1095,10 @@ A file reference is a typed path, created with the `{file}=` modifier:
 f{file}= "examples/tmp_file_test.txt"
 
 write(f, "line one\nline two\n")
-print(exists(f))            # true
-print(bytes(f))             # byte length
-print(lines(f))             # line count
-print(read(f))              # whole file as a string
+print(exists(f))            ' true
+print(bytes(f))             ' byte length
+print(lines(f))             ' line count
+print(read(f))              ' whole file as a string
 append(f, "line three\n")
 
 for each line in read_lines(f)
@@ -1156,7 +1157,7 @@ between the first two is the one that bites:
 
   ```basic
   cost{USD}= 9.99
-  exact = deserialize(serialize({ when: now(), cost: cost }))   # money + datetime, types intact
+  exact = deserialize(serialize({ when: now(), cost: cost }))   ' money + datetime, types intact
   ```
 
 `serialize` is the foundation actor messages are built on. (PBI policies are not
@@ -1194,8 +1195,8 @@ the full catalog):
 ```basic
 person = {name: "Alice", age: 30}
 if has(person, "email") then print(person.email)
-print(count([1, 2, 3]))       # 3
-print(replace("hello", "l", "x"))   # "hexxo"
+print(count([1, 2, 3]))       ' 3
+print(replace("hello", "l", "x"))   ' "hexxo"
 ```
 
 ## Libraries and load
@@ -1218,8 +1219,8 @@ program demo(args)
     load text
     print(add(2, 3))
     msg{shout}= "hello"
-    print(msg)              # "HELLO"
-    print(text.add(2, 3))  # qualified call bypasses override lookup
+    print(msg)              ' "HELLO"
+    print(text.add(2, 3))  ' qualified call bypasses override lookup
 end program
 ```
 
@@ -1281,9 +1282,9 @@ With libcurl available, `load webclient` for synchronous outgoing HTTP/HTTPS.
 load webclient
 
 response = webclient.get("https://example.com")
-print(response.status)      # number
-print(response.reason)      # string
-print(response.body)        # string
+print(response.status)      ' number
+print(response.reason)      ' string
+print(response.body)        ' string
 ```
 
 The response record always has numeric `status`, string `reason`, record
@@ -1311,7 +1312,7 @@ watch its request queue, and append replies to its response queue.
 ```basic
 load webserver
 
-server = webserver.listen(8080)        # port 0 lets the OS choose
+server = webserver.listen(8080)        ' port 0 lets the OS choose
 
 watch(server.requests)
     while count(server.requests) > 0
@@ -1336,7 +1337,7 @@ HTTP/1.1 request per connection.
 you write is private to your machine until you publish it deliberately:
 
 ```basic
-server = webserver.listen(8080, { address: "0.0.0.0" })   # every interface
+server = webserver.listen(8080, { address: "0.0.0.0" })   ' every interface
 ```
 
 `address` takes a numeric IPv4 or IPv6 address — a hostname is refused rather
@@ -1364,12 +1365,12 @@ See [`web_routing.md`](web_routing.md).
 Two builtins cover the common application-security primitives:
 
 ```basic
-hash = password_hash("correct horse battery staple")   # store this
+hash = password_hash("correct horse battery staple")   ' store this
 if password_verify("candidate", hash) then
     print("ok")
 end if
 
-session_id = secure_token(43)   # cryptographically random, URL-safe
+session_id = secure_token(43)   ' cryptographically random, URL-safe
 csrf_token = secure_token(43)
 ```
 

@@ -88,7 +88,7 @@ function serve_static(req)
     if contains(req.path, "..") then
         return { id: req.id, status: 403, body: "no" }
     end if
-    f (file)= "public" + req.path
+    f{file}= "public" + req.path
     if not exists(f) then
         return { id: req.id, status: 404, body: "not found" }
     end if

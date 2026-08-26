@@ -364,13 +364,13 @@ Character operations are **codepoint-aware**; raw bytes are reachable through
 explicit builtins:
 
 ```basic
-len("café")                    # 4   codepoints (not bytes)
-byte_count("café")             # 5   UTF-8 bytes
-mid("café", 3, 1)              # "é" never splits a codepoint
-chr(128512)                    # "😀"  (codepoint U+1F600)
-code("é")                      # 233
-from_bytes([72, 105])          # "Hi"  (build from raw bytes 0..255)
-print("\u{1F600}")             # 😀   (\u{...} codepoint escape)
+len("café")                    ' 4   codepoints (not bytes)
+byte_count("café")             ' 5   UTF-8 bytes
+mid("café", 3, 1)              ' "é" never splits a codepoint
+chr(128512)                    ' "😀"  (codepoint U+1F600)
+code("é")                      ' 233
+from_bytes([72, 105])          ' "Hi"  (build from raw bytes 0..255)
+print("\u{1F600}")             ' 😀   (\u{...} codepoint escape)
 ```
 
 `upper`, `lower`, and the `{caseless}` comparison fold **ASCII only** — non-ASCII
@@ -418,7 +418,7 @@ program main(args)
     me = self()
     a = spawn squarer(me, 3)
     b = spawn squarer(me, 4)
-    print(receive() + receive())   # 25
+    print(receive() + receive())   ' 25
 end program
 ```
 
@@ -440,7 +440,7 @@ File and directory values use assignment modifiers:
 
 ```basic
 input_file{file}= "input.txt"
-output_dir(directory)= "output"
+output_dir{dir}= "output"
 ```
 
 Core file operations include:
