@@ -49,10 +49,23 @@
 ' Tests never touch the network. `market.offline(m, dir)` replays committed
 ' fixtures and `market.with_transport(m, fn)` injects a function, the two seams
 ' `llm.bas` and `edgar.bas` both use.
-load webclient
-load frame
-
+'
+' PROVIDER REALITY, checked live 2026-08-25 rather than assumed: keyless daily
+' equity data has largely disappeared. Stooq serves a JavaScript anti-bot
+' challenge to any HTTP client, and Yahoo's chart endpoint answered 429. A
+' provider with an API KEY is the reliable path; the keyless ones are kept
+' because the shape is right and endpoints change, and because `daily` now
+' names a challenge page or a rate limit for what it is instead of reporting
+' "no rows" and sending you to look for a bad symbol.
 library market
+
+    ' A library's dependencies belong INSIDE its block: a top-level `load` does
+    ' not put them in scope for the library's own functions (docs/reference.md,
+    ' "A library's own dependencies are declared INSIDE its `library` block").
+    ' Written the wrong way here at first, and the offline tests could never
+    ' catch it -- they never reach the transport, so `webclient` was never
+    ' called. Only the live path fails, and it fails at the first real fetch.
+    load webclient
 
     ' --- providers ----------------------------------------------------------
 
@@ -67,7 +80,15 @@ library market
         }
     end function
 
-    ' Stooq: free, no API key, daily OHLCV as CSV.
+    ' Stooq: daily OHLCV as CSV, no API key.
+    '
+    ' *** CHECKED LIVE 2026-08-25 AND CURRENTLY UNUSABLE. *** Stooq now answers
+    ' an unauthenticated client with a JavaScript proof-of-work interstitial --
+    ' HTTP 200, an HTML body, no data, regardless of user-agent. It needs a real
+    ' browser, so no HTTP client can reach it. Kept because the endpoint may
+    ' come back and the shape is right; `daily` names the challenge explicitly
+    ' rather than reporting an empty result. For working keyless data the
+    ' honest answer today is: there is not much. Use a keyed provider.
     '
     ' Declared UNADJUSTED because that is what the endpoint serves. Saying so
     ' is the whole point: a caller measuring returns across a split needs to
@@ -158,6 +179,22 @@ library market
     end function
 
     ' --- parsing ------------------------------------------------------------
+
+    function _looks_like_html(body)
+        head = lower(trim(left(string(body), 400)))
+        if starts_with(head, "<!doctype") or starts_with(head, "<html") then
+            return true
+        end if
+        return false
+    end function
+
+    function _challenge_hint(body)
+        low = lower(string(body))
+        if contains(low, "javascript") or contains(low, "verify your browser") then
+            return " (an anti-bot challenge that needs a real browser -- this provider is not usable from an HTTP client; use one with an API key)"
+        end if
+        return " (it may require an API key)"
+    end function
 
     function _fail(message)
         return { ok: false, frame: unknown, adjusted: false, message: message }
@@ -286,8 +323,21 @@ library market
         if resp.status = 404 then
             return _fail("market: no data for symbol '" + symbol + "' from " + m.provider)
         end if
+        if resp.status = 429 then
+            return _fail("market: " + m.provider + " rate-limited this request (HTTP 429) -- wait, or use a provider with an API key")
+        end if
         if resp.status != 200 then
             return _fail("market: " + m.provider + " returned status " + string(resp.status))
+        end if
+
+        ' A 200 that is a WEB PAGE, not data. Providers increasingly answer an
+        ' unauthenticated client with an anti-bot interstitial -- Stooq now
+        ' serves a JavaScript proof-of-work challenge -- and it arrives as a
+        ' perfectly successful 200. Parsed as CSV that yields nothing, and the
+        ' old message said "returned no rows", which sends the caller looking
+        ' for a bad symbol or a bad date range. Name what actually happened.
+        if _looks_like_html(resp.body) then
+            return _fail("market: " + m.provider + " returned a web page rather than data" + _challenge_hint(resp.body))
         end if
 
         if _wire(m) = "json" then

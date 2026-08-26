@@ -26,6 +26,13 @@ language surface may still change between releases.
   **`adjusted` reports what the provider supplies** rather than being assumed
   (returns across a split from unadjusted prices read as a −50% day).
 
+  **Provider reality, checked live rather than assumed:** keyless daily equity
+  data has largely gone. Stooq answers any HTTP client with a JavaScript
+  anti-bot challenge (HTTP 200, an HTML body, no data, regardless of
+  user-agent) and Yahoo's chart endpoint returned 429. A keyed provider is the
+  reliable path. `daily` names a challenge page and a rate limit for what they
+  are, instead of reporting "no rows" and sending you to look for a bad symbol.
+
 - **Fixed: `round` coerced where every other numeric builtin refuses.** It ran
   its arguments through a zero-defaulting conversion, so `round(record, 2)`,
   `round(array, 2)` and `round("3.14", 2)` all answered **0** — silently. Every

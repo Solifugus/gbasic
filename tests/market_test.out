@@ -43,10 +43,18 @@ ok   and are sorted ascending too
 ok   an adjusted provider uses adjClose, not close
 ok   numeric JSON values survive as numbers
 
+-- a 200 that is not data, which is how providers refuse now
+ok   a challenge page is a failure
+ok   and is NOT reported as an empty result
+ok   it says a web page came back
+ok   and names the cause
+ok   a 429 is a failure
+ok   and says rate-limited, not 'status 429'
+
 -- the convenience form
 ok   closes() gives the flat array
 ok   in the same order
 ok   and is unknown on failure
 
-checks: 34
+checks: 40
 mismatches: 0

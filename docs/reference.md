@@ -3567,7 +3567,11 @@ General-purpose:
   already wants: `forensics` indexes it by column, and `frame["close"]` is the
   flat array `stats.simple_returns` takes. Providers are pluggable (Stooq needs
   no key; Tiingo is adjusted), with the `offline`/`with_transport` seams
-  `llm` and `edgar` use, so tests never touch the network. Rows are always
+  `llm` and `edgar` use, so tests never touch the network. **Checked live
+  2026-08-25: keyless daily equity data has largely disappeared** — Stooq now
+  serves a JavaScript anti-bot challenge to any HTTP client and Yahoo's chart
+  endpoint answered 429, so a keyed provider is the reliable path. A challenge
+  page or a rate limit is reported as such rather than as an empty result. Rows are always
   sorted ascending by date — a reversed series yields **negated** returns, which
   looks like ordinary data — and `adjusted` reports what the provider actually
   supplies rather than being assumed, because returns computed across a split

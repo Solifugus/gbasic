@@ -118,6 +118,32 @@ append(results, check("an adjusted provider uses adjClose, not close", 185.44, t
 append(results, check("numeric JSON values survive as numbers", 373, tr.frame["open"][0]))
 
 print ""
+print "-- a 200 that is not data, which is how providers refuse now"
+' Found by running the live path on 2026-08-25: Stooq answers an
+' unauthenticated client with a JavaScript proof-of-work interstitial, and it
+' arrives as a perfectly successful 200. Parsed as CSV it yields nothing, and
+' the message used to say "returned no rows" -- which sends the caller looking
+' for a bad symbol or a bad date range. Injected here rather than fetched, so
+' the tier stays offline.
+function challenge_transport(mm, req)
+    return { status: 200, body: "<!DOCTYPE html><html><body><noscript>This site requires JavaScript to verify your browser.</noscript></body></html>" }
+end function
+ch = market.with_transport(market.stooq(), challenge_transport)
+cr = market.daily(ch, "AAPL", from_d, to_d)
+append(results, check("a challenge page is a failure", false, cr.ok))
+append(results, check("and is NOT reported as an empty result", false, contains(cr.message, "no rows")))
+append(results, check("it says a web page came back", true, contains(cr.message, "web page")))
+append(results, check("and names the cause", true, contains(cr.message, "anti-bot")))
+
+function limited_transport(mm, req)
+    return { status: 429, body: "Too Many Requests" }
+end function
+lm = market.with_transport(market.stooq(), limited_transport)
+lr = market.daily(lm, "AAPL", from_d, to_d)
+append(results, check("a 429 is a failure", false, lr.ok))
+append(results, check("and says rate-limited, not 'status 429'", true, contains(lr.message, "rate-limited")))
+
+print ""
 print "-- the convenience form"
 c = market.closes(m, "AAPL", from_d, to_d)
 append(results, check("closes() gives the flat array", 5, count(c)))
