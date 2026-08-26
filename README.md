@@ -213,6 +213,7 @@ if count(people) = 2 then print("Two people loaded")
 
 Multiline conditionals remain available:
 
+<!--needs-context-->
 ```basic
 if ready then
     print("ready")
@@ -223,6 +224,7 @@ end if
 
 Short conditionals omit `end if` when their final branch is inline:
 
+<!--needs-context-->
 ```basic
 if ready then print("ready")
 else print("waiting")
@@ -257,6 +259,7 @@ replacement of `state`. Array indexes are tracked at the containing array path.
 
 A **named** watcher is a first-class value with an off-switch:
 
+<!--needs-context-->
 ```basic
 watch recalc(a, b)
     c = a + b
@@ -333,6 +336,7 @@ See [docs/pbi_design.md](docs/pbi_design.md) for the full design and rationale.
 
 Modifiers validate or transform values during assignment and comparison:
 
+<!--needs-context-->
 ```basic
 price{USD}= 19.95
 due{date}= "2026-05-15"
@@ -385,6 +389,7 @@ does not do that: a string remembers its own codepoint count, and remembers wher
 it last looked, so scanning is O(n) whichever direction you go and whatever mix of
 ASCII and multibyte content the string holds.
 
+<!--needs-context-->
 ```basic
 i = 0
 while i < len(text)              ' len is O(1) after the first call
@@ -511,6 +516,7 @@ connection as a number.
 PostgreSQL support is synchronous and available when gBASIC is built with
 libpq:
 
+<!--needs-context-->
 ```basic
 load pg
 
@@ -557,6 +563,7 @@ The Phase 1 API is:
 
 Request bodies must be strings. Encode structured JSON explicitly:
 
+<!--needs-context-->
 ```basic
 headers = {}
 headers["Content-Type"] = "application/json"
@@ -573,6 +580,7 @@ response = webclient.request({
 Responses contain `status`, `reason`, lowercase `headers`, and string `body`.
 When JSON parsing succeeds, the response also contains `json`:
 
+<!--needs-context-->
 ```basic
 if not is_unknown(response["json"]) then print(response.json)
 ```
@@ -584,6 +592,7 @@ TLS, malformed-URL, and timeout failures are runtime errors.
 
 WebServer Phase 1 uses watchers and live queues instead of callback handlers:
 
+<!--needs-context-->
 ```basic
 load webserver
 
@@ -614,6 +623,7 @@ Unanswered requests receive HTTP 504 after 30 seconds.
 
 Shut down with either:
 
+<!--needs-context-->
 ```basic
 webserver.close(server)
 server.running = false
@@ -621,6 +631,7 @@ server.running = false
 
 The server binds `127.0.0.1` unless an options record says otherwise:
 
+<!--needs-context-->
 ```basic
 server = webserver.listen(8080, { address: "0.0.0.0" })
 ```
@@ -693,6 +704,7 @@ Build and run the baseline suites:
 make clean && make
 ./tests/run_examples.sh
 ./tests/run_negative.sh
+./tests/run_doc_examples.sh
 ```
 
 Run module and application integration tests:

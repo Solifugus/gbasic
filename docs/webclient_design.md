@@ -73,6 +73,7 @@ unnecessarily awkward.
 
 Example:
 
+<!--fragment: an API shape or a deliberately invalid form, not a program-->
 ```basic
 response = webclient.get(
     "https://api.example.com/users",
@@ -108,6 +109,7 @@ The body rules should be:
 The module should encode records and arrays automatically. This keeps ordinary
 API calls concise and preserves the language's record/array emphasis.
 
+<!--fragment: an API shape or a deliberately invalid form, not a program-->
 ```basic
 response = webclient.post(
     "https://api.example.com/users",
@@ -171,6 +173,7 @@ read-idle, or low-speed timeout controls belong in a later phase.
 
 Every completed HTTP exchange should return a record:
 
+<!--fragment: an API shape or a deliberately invalid form, not a program-->
 ```basic
 {
     status:200,
@@ -224,6 +227,7 @@ For repeated header names:
 
 Example:
 
+<!--fragment: an API shape or a deliberately invalid form, not a program-->
 ```basic
 response.headers["content-type"]   ' string
 response.headers["set-cookie"]     ' array when repeated

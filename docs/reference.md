@@ -161,6 +161,7 @@ working unchanged.
 
 If:
 
+<!--fragment: an API shape or a deliberately invalid form, not a program-->
 ```basic
 if expression then
     statement
@@ -201,6 +202,7 @@ unmatched inline `if`.
 
 While:
 
+<!--fragment: an API shape or a deliberately invalid form, not a program-->
 ```basic
 while condition
     statement
@@ -244,6 +246,7 @@ end for
 A `for` loop may close with **`end for`**, with **`next`**, or with **`next
 <name>`** — the three are the same statement:
 
+<!--fragment: an API shape or a deliberately invalid form, not a program-->
 ```basic
 for i = 1 to 3
     ...
@@ -486,6 +489,7 @@ Primary expressions:
 
 Arithmetic:
 
+<!--fragment: an API shape or a deliberately invalid form, not a program-->
 ```basic
 a + b
 a - b
@@ -505,6 +509,7 @@ are explicit (`string(...)`, `number(...)`). No f-string syntax is implemented.
 
 Comparisons:
 
+<!--fragment: an API shape or a deliberately invalid form, not a program-->
 ```basic
 a = b
 a != b
@@ -536,6 +541,7 @@ more precise values at the same start instant.
 
 Logical operators:
 
+<!--fragment: an API shape or a deliberately invalid form, not a program-->
 ```basic
 not ready
 a and b
@@ -555,12 +561,14 @@ Assignment is not an expression.
 
 Array indexing:
 
+<!--fragment: an API shape or a deliberately invalid form, not a program-->
 ```basic
 scores[0]
 ```
 
 Record field access:
 
+<!--fragment: an API shape or a deliberately invalid form, not a program-->
 ```basic
 customer.name
 customer[field]
@@ -593,6 +601,7 @@ end if
 
 Function calls are expressions, not lvalues. This is invalid:
 
+<!--fragment: an API shape or a deliberately invalid form, not a program-->
 ```basic
 len(words) = 0
 foo() = 1
@@ -609,6 +618,7 @@ world.rooms[i][direction] = 3
 
 Durations:
 
+<!--fragment: an API shape or a deliberately invalid form, not a program-->
 ```basic
 1 hour
 20 minutes
@@ -746,6 +756,7 @@ a function and attaches it to the record variable `account` in one step.
 The **receiver of a method call may be any expression**, not only a single
 variable — a field access, an index, or another call:
 
+<!--fragment: an API shape or a deliberately invalid form, not a program-->
 ```basic
 outer.inner.method()        ' field-access receiver
 widgets[0].present()        ' index receiver
@@ -847,12 +858,14 @@ a[0] {USD}= 5
 
 A comparison lens applies to any operand, including a call result:
 
+<!--fragment: an API shape or a deliberately invalid form, not a program-->
 ```basic
 if getname(){caseless}= "joe" then      ' works
 ```
 
 Comparison modifiers use brace lens syntax:
 
+<!--fragment: an API shape or a deliberately invalid form, not a program-->
 ```basic
 left {modifier}= right
 left {modifier args}< right
@@ -1404,6 +1417,7 @@ with a required string `url` and these optional fields:
 Records and arrays are not automatically converted to JSON request bodies.
 Call `json_encode(value)` explicitly:
 
+<!--fragment: an API shape or a deliberately invalid form, not a program-->
 ```basic
 response = webclient.post(
     "https://api.example.com/events",
@@ -1891,6 +1905,7 @@ gBASIC is built with GTK 3 development files. It renders a record-defined window
 tree, exposes widgets as addressable fields, and routes GTK-originated changes
 back through ordinary watchers:
 
+<!--fragment: an API shape or a deliberately invalid form, not a program-->
 ```basic
 GBASIC_PATH=stdlib ./gbasic examples/gui/demo.bas
 ```
@@ -2710,6 +2725,7 @@ truncation lens as shown above.
 **Datetime fields.** Components come out as *numbers* via dot access — the
 lenses truncate, the fields extract, and no global names are spent on it:
 
+<!--fragment: an API shape or a deliberately invalid form, not a program-->
 ```basic
 d {date}= "2026-03-15 09:30:45"
 d.year          ' 2026        d.hour    ' 9
@@ -2738,6 +2754,7 @@ duration carries months or years, which have no fixed length.
 years and months first, **clamps the day** into the resulting month, then adds
 the exact parts as elapsed time:
 
+<!--fragment: an API shape or a deliberately invalid form, not a program-->
 ```basic
 jan31 {date}= "2026-01-31"
 jan31 + 1 month           ' 2026-02-28   (clamped)
@@ -2789,6 +2806,7 @@ when = from_epoch(exp)           ' back to a datetime
 **unspecified origin**. Only the *difference* between two readings is meaningful:
 subtract them to get an elapsed interval.
 
+<!--fragment: an API shape or a deliberately invalid form, not a program-->
 ```basic
 t0 = monotonic()
 ... the work ...
@@ -3491,6 +3509,7 @@ or catch it with `on error goto next`.
   possible now (see Errors), but asking remains the better shape — the answer
   is a fact about the path, not an exception.
 
+<!--fragment: an API shape or a deliberately invalid form, not a program-->
 ```basic
 root = real_path("public")
 target = real_path(root + "/" + supplied)

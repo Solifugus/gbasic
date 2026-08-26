@@ -164,6 +164,7 @@ String operations come in two families:
 `reverse`, `find`, `chr`, and `code` count and slice by **codepoint**, so they
 never split a multibyte character:
 
+<!--fragment: expression/result annotations, not a program -- the last line is a bare literal-->
 ```basic
 len("café")            ' 4   codepoints
 mid("café", 3, 1)      ' "é"  (0-based; never splits a codepoint)
@@ -212,6 +213,7 @@ A plain **string** second argument still means a **literal** — `contains(s,
 pattern mode. Matching, which needs to return more than a yes/no, has its own
 verbs:
 
+<!--needs-context-->
 ```basic
 m = match("order 1500 shipped", digits)
 print(m.text)      ' 1500
@@ -375,6 +377,7 @@ end if
 
 `if`/`else`:
 
+<!--needs-context-->
 ```basic
 if ready then
     print("ready")
@@ -386,6 +389,7 @@ end if
 A single statement may follow `then`/`else` on the same line; an inline final
 branch ends the conditional without `end if`:
 
+<!--needs-context-->
 ```basic
 if ready then print("ready")
 else print("waiting")
@@ -476,6 +480,7 @@ match.
 
 `consider` is a clean multi-way dispatch on one subject:
 
+<!--needs-context-->
 ```basic
 consider command
 if "look" then
@@ -701,6 +706,7 @@ end without
 Give a watcher a **name** and it becomes a first-class value you can turn
 off, store, and find again:
 
+<!--needs-context-->
 ```basic
 watch recalc(a, b)
     c = a + b
@@ -770,6 +776,7 @@ end program
   none arrives in time (e.g. `receive(5 seconds)`).
 - `self()` is this actor's own handle.
 
+<!--needs-context-->
 ```basic
 send(me, ["data", 42])
 msg = receive("data")          ' selective by tag
@@ -882,6 +889,7 @@ end function
 
 `error "message"` raises explicitly, and a record raises **structurally**:
 
+<!--needs-context-->
 ```basic
 error { message: "insufficient funds", balance: b, needed: amt }
 ```
@@ -894,6 +902,7 @@ column}` innermost first. Module errors also carry a `source` (`"watcher"`,
 `"sqlite"`, `"postgres"`, `"actor"`, …) and a numeric `code`, so you can branch
 on where a failure came from:
 
+<!--needs-context-->
 ```basic
 on error goto next
 r = charge(card)              ' any raising call
@@ -922,6 +931,7 @@ The default is `on warning print`: stderr, keep going. `on warning goto next`
 records it instead, and you check it exactly like an error, with the same
 claiming rule — bare `warning` claims, `warning.field` reads:
 
+<!--needs-context-->
 ```basic
 on warning goto next
 returns_a_value()          ' result discarded -- warns
@@ -945,6 +955,7 @@ exceptional one, or when you want detail a raise would only summarize. The
 flagship is `try_decode`, the non-raising twin of `decode` for JSON you did not
 produce yourself:
 
+<!--needs-context-->
 ```basic
 r = try_decode(text_from_elsewhere)
 if r.ok then
@@ -1002,6 +1013,7 @@ Units: `years months weeks days hours minutes seconds` (singular spellings work
 too). Pull or truncate parts with **lenses** — `year month day hour minute
 second` — as assignment modifiers or comparison lenses:
 
+<!--needs-context-->
 ```basic
 y{year}= t                 ' 2026
 if d {day}= t then print("same day")     ' compare at day precision
@@ -1035,6 +1047,7 @@ today{day}= now()                    ' truncate to a date via the day lens
 Business-calendar work is a first-class concern. A calendar is **data** you
 build and pass, not global configuration:
 
+<!--needs-context-->
 ```basic
 load dates
 cal = dates.calendar({ holidays: [xmas], hours: { open: "9:00", close: "17:00" } })
@@ -1047,6 +1060,7 @@ dates.next_business_day(d, cal)
 Date *expressions* — "third Thursday", "first Tuesday after the 15th", "first
 business day before the deadline" — are spec records shared by three verbs:
 
+<!--needs-context-->
 ```basic
 dates.select({ nth: 3, weekday: "thursday", within: "month" }, d, cal)
 dates.select({ nth: 1, kind: "business", before: deadline }, d, cal)
@@ -1110,6 +1124,7 @@ end for
 `file_name`, `directory_name`, and `extension` handle paths. Advisory locking
 uses a block:
 
+<!--needs-context-->
 ```basic
 with lock(f)
     write(f, "locked write\n")
@@ -1226,6 +1241,7 @@ end program
 
 Load from another file with `load NAME from "path"`:
 
+<!--needs-context-->
 ```basic
 load tools from "libs/tools.bas"
 ```
@@ -1261,6 +1277,7 @@ positional `?`. Errors carry `error.source = "sqlite"`.
 
 **PostgreSQL** uses a connection record and `$1`-style placeholders:
 
+<!--needs-context-->
 ```basic
 load pg
 
@@ -1293,6 +1310,7 @@ The response record always has numeric `status`, string `reason`, record
 For full control use `webclient.request({method, url, headers, body, timeout})`.
 When a body is valid JSON, WebClient adds a decoded `json` field:
 
+<!--needs-context-->
 ```basic
 response = webclient.get("https://api.example.com/users/1")
 if not is_unknown(response["json"]) then
@@ -1309,6 +1327,7 @@ Network, DNS, TLS, and timeout failures are runtime errors.
 WebServer follows the **watcher** model rather than callbacks: start a server,
 watch its request queue, and append replies to its response queue.
 
+<!--needs-context-->
 ```basic
 load webserver
 
@@ -1336,6 +1355,7 @@ HTTP/1.1 request per connection.
 `listen` binds `127.0.0.1` unless an options record says otherwise, so a server
 you write is private to your machine until you publish it deliberately:
 
+<!--needs-context-->
 ```basic
 server = webserver.listen(8080, { address: "0.0.0.0" })   ' every interface
 ```
@@ -1349,6 +1369,7 @@ into data — `{ method, path, handler }` records checked when the table is
 built, `{id}` captures arriving as `req.params`, and one call answering the
 request:
 
+<!--needs-context-->
 ```basic
 append(server.responses, web.dispatch(routes, req))
 ```
