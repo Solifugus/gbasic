@@ -147,3 +147,81 @@ close enough to look right and fails on a detail. That is exactly the population
 Suggestion: a short "first twenty minutes" section in the tutorial covering the
 modifier-vs-builtin naming split (`upper` vs `uppered`), the money/date modifier
 forms, and the ordering requirement for `watch`.
+
+## 2026-08-25 — replacing devserver.py with a gBASIC server (PLAT-WEB dogfood)
+
+Rewrote tedderland's local preview server in gBASIC (`devserver.bas`), retiring
+the 41-line Python one. The site exists to dogfood gBASIC and previewing it was
+the one step that still needed something else. Two friction points, one of them
+a real trap.
+
+### `load` at top level is SILENTLY SKIPPED when a `program` block exists
+
+Written the obvious way:
+
+```basic
+load web
+load webserver
+
+program main(args)
+    sv = webserver.listen(port, { address: "127.0.0.1" })   ' line 48
+```
+
+the `load`s never run, because a `program` block runs *instead of* the
+top-level statements. Nothing complains at the `load` lines. The failure
+surfaces 40 lines later as
+
+    runtime error at devserver.bas:48:5: library not loaded: webserver
+
+which points at the first *use*, not at the mistake, and reads like the library
+is missing from `GBASIC_PATH` — the wrong thing to go and check. I lost a cycle
+confirming the path was right before suspecting the block.
+
+Both workarounds work: `load` inside the program block (verified: the library
+is then visible from ordinary functions declared at top level too), or no
+`program` block at all — which is what `examples/gbasic_site/site.bas` does, so
+the shipped example never exercises the combination.
+
+Suggestion: this is a **warning**, and PLAT-WARN now exists to carry it. A
+top-level statement that cannot run because a `program` block is present is
+almost never intentional, and `load` is the case where the consequence is
+furthest from the cause. Failing that, the runtime error text could say "no
+`load` for 'webserver' has run — note that top-level statements do not run when
+a `program` block is present", which turns a wrong-path hunt into a fix.
+
+### The `server` block cannot express a COMPUTED host set
+
+The declarative block was the obvious tool and is the wrong one here. Its sites
+take **literal** hosts (`web name( host: "..." )`), checked at load time — which
+is exactly what makes the route table statically decidable, and exactly what
+this site cannot provide: there is one subdomain per file in
+`content/projects/`, and `sync.sh` adds more from the GitHub API. There is no
+literal list to write, and generating one into source before each run would be
+worse than the loop it replaces.
+
+So the preview dispatches on `req.headers["host"]` at request time and hands the
+path to `web.static`, i.e. the library underneath the block. That is a *fine*
+outcome and the layering deserves credit — dropping down cost about fifteen
+lines and lost nothing, because `web.static` is the same canonicalize-then-check
+serving the block's own `root` uses.
+
+Recorded not as a defect but as a boundary worth knowing: **the block serves a
+known set of sites; a site whose host set is data does not fit it.** Multi-tenant
+and subdomain-per-record applications are the general shape of this. If the
+block ever wants them, the primitive is a site whose host is a *pattern* or a
+handler that maps host to root — but the current split (block for the static
+case, library for the computed one) is a defensible place to stop, and it should
+be stated in the reference so the next person does not discover it by writing
+the block first.
+
+### Small, no action needed
+
+- `webserver.on_request`'s handler must return a record carrying `id: req.id`,
+  and omitting it gives `webserver response requires an id field` — clear, but
+  worth noting the block path fills `id` in for you while the native path does
+  not, so code moved from one to the other needs the line added.
+- `web.static` answers **403** on a traversal that resolves to a real file
+  outside the root, where the old Python server happened to answer 404 (its
+  `normpath` collapsed the `..` before the join). gBASIC's is the better answer
+  and it is documented; noting it only because a byte-comparison of the two
+  servers shows a difference that is not a bug.
