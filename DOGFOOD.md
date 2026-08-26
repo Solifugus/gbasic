@@ -2603,3 +2603,35 @@ under floored semantics. Shipping truncated would have silently disagreed with
 every workaround written against the advice the builtin replaces. The
 divergence from QBasic is documented in UNLEARN and the reference rather than
 left to be discovered.
+
+## 2026-08-25 — `round` was the one numeric builtin that coerced instead of refusing
+
+**What I was doing.** Building `stdlib/market.bas` and checking that its price
+frame feeds the existing stats stack, with
+`round(stats.max_drawdown(prices), 6)`.
+
+**What was surprising.** It printed `0`. On a monotonically falling series that
+reads as "this never dropped", which is a plausible answer and a false one. The
+real cause was mine — `max_drawdown` returns a RECORD
+(`{max_drawdown, peak, trough}`), not a scalar — but the language turned my
+mistake into a wrong number instead of an error.
+
+**The actual defect.** `round` ran its arguments through
+`value_number_or_zero`, so a record, an array or a numeric string all became
+`0`. Every other numeric builtin refuses: sqrt, abs, floor, ceil, exp, log,
+log10, erf, erfc, lgamma, sign and pow all raise `<fn> expects a number`, and
+they refuse numeric strings and booleans too. Measured across all twelve —
+`round` was the sole outlier. Nothing chose that; it is the neighbouring
+inconsistency that makes it a bug rather than a policy, the same signature
+`tests/run_silent_traps.sh` was built around.
+
+**Fixed the same day** rather than worked around: `round` now raises
+`round expects a number` and `round places must be a number`, matching its
+neighbours exactly. Pinned as four negatives. Zero test movement across the
+examples and negative suites, which is the evidence that nothing in the tree
+depended on the coercion.
+
+**Worth generalising.** The bug class is "a builtin that coerces where its
+siblings refuse", and it is invisible until a caller believes the answer. A
+sweep of the remaining builtin families for the same shape would be cheap and
+is not done.

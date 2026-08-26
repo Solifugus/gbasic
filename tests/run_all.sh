@@ -11,6 +11,14 @@
 #
 # So: no list. A new tests/run_*.sh is in the gate the moment it exists.
 #
+# RUN ONE AT A TIME. Every suite calls `make`, and a few call `make clean &&
+# make`, so two gates -- or one gate beside a single suite you are iterating on
+# -- relink `./gbasic` underneath each other. The failures that produces look
+# exactly like real regressions and are not: observed 2026-08-25 as
+# `timeout: failed to execute process: No such file or directory` in run_stridx
+# and `./gbasic: Permission denied` in run_examples, both from the binary being
+# caught mid-link. Neither reproduced when the gate ran alone.
+#
 # Usage:
 #   tests/run_all.sh                 # every suite
 #   tests/run_all.sh web             # only suites whose name contains "web"

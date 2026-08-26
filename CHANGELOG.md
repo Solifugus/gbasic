@@ -9,6 +9,36 @@ language surface may still change between releases.
 
 ## Unreleased
 
+- **`market` — daily price history** (`stdlib/market.bas`). The finance stack
+  was complete except for its input: `stats.simple_returns`, `sharpe_ratio`,
+  `max_drawdown`, `value_at_risk`, `capm` and
+  `forensics.altman_classic(facts, prices)` all take prices as an *argument*,
+  and nothing produced them — EDGAR serves filings, not quotes. `market.daily`
+  returns `{ok, frame, adjusted, message}`, and the frame is the shape both
+  consumers already want (`forensics` indexes by column; `frame["close"]` is
+  the flat array `stats` takes). Providers are pluggable — Stooq needs no key,
+  Tiingo is adjusted — behind the `offline`/`with_transport` seams `llm` and
+  `edgar` use, so tests never reach the network.
+
+  Two guarantees, because both failures produce a plausible *number* rather
+  than an error: rows are always sorted **ascending by date** (a reversed
+  series yields negated returns, which looks like ordinary market data), and
+  **`adjusted` reports what the provider supplies** rather than being assumed
+  (returns across a split from unadjusted prices read as a −50% day).
+
+- **Fixed: `round` coerced where every other numeric builtin refuses.** It ran
+  its arguments through a zero-defaulting conversion, so `round(record, 2)`,
+  `round(array, 2)` and `round("3.14", 2)` all answered **0** — silently. Every
+  neighbour (`sqrt`, `abs`, `floor`, `ceil`, `exp`, `log`, `log10`, `erf`,
+  `erfc`, `lgamma`, `sign`, `pow`) raises `<fn> expects a number` and refuses
+  numeric strings and booleans too; measured across all twelve, `round` was the
+  sole outlier, which makes it a bug rather than a policy. Found by dogfooding:
+  `round(stats.max_drawdown(prices), 6)` printed `0`, reading as "this series
+  never fell" — `max_drawdown` returns a record. Now raises
+  `round expects a number` / `round places must be a number`; four pinned
+  negatives; no test in the tree depended on the coercion.
+
+
 - **Compound assignment — `+=`, `-=`, `*=`, `/=`.** `x op= e` means exactly
   `x = x op e`, so it inherits every type rule and every refusal the operator
   already has: it works on numbers, strings, `date + duration`, money and

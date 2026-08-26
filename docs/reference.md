@@ -3562,6 +3562,16 @@ General-purpose:
   captured into `req.params`, order-independent matching by specificity, and
   `web.dispatch` returning a response record the server takes verbatim
   (`docs/web_routing.md`).
+- `market` — daily price history as a frame (`market.daily(m, symbol, from, to)`
+  → `{ok, frame, adjusted, message}`), which is the shape the rest of the stack
+  already wants: `forensics` indexes it by column, and `frame["close"]` is the
+  flat array `stats.simple_returns` takes. Providers are pluggable (Stooq needs
+  no key; Tiingo is adjusted), with the `offline`/`with_transport` seams
+  `llm` and `edgar` use, so tests never touch the network. Rows are always
+  sorted ascending by date — a reversed series yields **negated** returns, which
+  looks like ordinary data — and `adjusted` reports what the provider actually
+  supplies rather than being assumed, because returns computed across a split
+  from unadjusted prices read as a −50% day.
 - `chart` — charts as deterministic SVG text, pure gBASIC: line, scatter, area,
   bar, histogram, pie, heatmap and sparkline (`docs/chart_design.md`; worked
   recipes in `docs/chart_cookbook.md`).

@@ -1,0 +1,52 @@
+-- the fetch
+ok   it succeeds
+ok   with no message
+ok   five rows
+
+-- ORDER: the fixture is scrambled on purpose (05, 03, 08, 04, 02)
+ok   row 0
+ok   row 1
+ok   row 2
+ok   row 3
+ok   row 4
+ok   four returns from five prices
+ok   the first return is negative, as the prices are
+
+-- the columns line up with their dates
+ok   close on the first day
+ok   open on the first day
+ok   volume on the last day
+ok   high on the last day
+
+-- ADJUSTMENT is reported, never assumed
+ok   stooq declares itself unadjusted
+ok   tiingo declares itself adjusted
+
+-- the frame is the shape the rest of the library already wants
+ok   indexable by column, as forensics does
+ok   max_drawdown reads it
+
+-- failure is a value, not a raise
+ok   an unknown symbol reports ok=false
+ok   and says which symbol
+ok   and hands back no frame
+ok   a header with no rows is a failure, not an empty frame
+ok   and says so
+ok   an empty symbol is refused
+ok   a reversed date range is refused
+
+-- a JSON provider, where BOTH wire formats have to converge
+ok   the JSON provider parses
+ok   two rows
+ok   ISO timestamps become dates
+ok   and are sorted ascending too
+ok   an adjusted provider uses adjClose, not close
+ok   numeric JSON values survive as numbers
+
+-- the convenience form
+ok   closes() gives the flat array
+ok   in the same order
+ok   and is unknown on failure
+
+checks: 34
+mismatches: 0

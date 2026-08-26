@@ -31,7 +31,8 @@ suit you — contact matthewct@gmail.com.
   (the ZIP container, formula evaluator and recalculation engine),
   `src/modules/xml.c` and `src/modules/rowmodel.c`
 - `stdlib/`: `ari` `chart` `crypto` `datagrid` `dates` `filetree` `frame` `gtk` `gtkui`
-  `gui` `llm` `matrix` `persist` `schedule` `sourceeditor` `stats` `web`
+  `gui` `llm` `market` `matrix` `persist` `schedule` `sourceeditor` `stats`
+  `web`
 
 ### AGPL-3.0-or-later
 

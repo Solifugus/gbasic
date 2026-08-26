@@ -127,6 +127,10 @@ cases=(
     negative_webclient_request_header_value
     negative_webclient_request_body_type
     negative_webclient_malformed_url
+    negative_round_record
+    negative_round_array
+    negative_round_string
+    negative_round_places
     negative_next_name_mismatch
     negative_break_unknown_loop
     negative_continue_unknown_loop

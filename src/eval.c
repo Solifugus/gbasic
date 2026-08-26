@@ -23889,7 +23889,34 @@ static Value eval_call(AstExpr *expr) {
             return value_null();
         }
         Value value = eval_expr(expr->as.call.args.items[0]);
+        if (error_action_pending()) { value_free(value); return value_null(); }
         Value places = eval_expr(expr->as.call.args.items[1]);
+        if (error_action_pending()) {
+            value_free(value); value_free(places); return value_null();
+        }
+        /* `round` was the ONE numeric builtin that coerced instead of
+         * refusing: every neighbour (sqrt, abs, floor, ceil, exp, log, log10,
+         * erf, erfc, lgamma, sign, pow) raises "<fn> expects a number" for
+         * anything that is not one, while round ran `value_number_or_zero` and
+         * so answered 0 for a record, an array or a numeric STRING.
+         *
+         * That is the silent-wrong-answer shape docs/warning_model_design.md
+         * catalogues, and it was found the way those always are -- by a caller
+         * believing the result. `round(stats.max_drawdown(p), 6)` printed 0,
+         * which reads as "this series never fell" rather than as "you passed a
+         * record"; max_drawdown returns {max_drawdown, peak, trough}. The
+         * neighbouring inconsistency is what makes this a bug and not a
+         * policy: nothing chose it. */
+        if (value.kind != VALUE_NUMBER) {
+            runtime_error_raise("round expects a number", 1003, "invalid function call");
+            value_free(value); value_free(places);
+            return value_null();
+        }
+        if (places.kind != VALUE_NUMBER) {
+            runtime_error_raise("round places must be a number", 1003, "invalid function call");
+            value_free(value); value_free(places);
+            return value_null();
+        }
         double scale = 1.0;
         int n = (int)value_number_or_zero(places);
         for (int i = 0; i < n; i++) {
