@@ -285,9 +285,10 @@ end if
 > applies — the assignment or the comparison — instead of wrapping everything in
 > classes or helper calls. Built-in modifiers (`USD`, `date`, `trimmed`,
 > `caseless`, the date/time lenses, …) cover common cases; libraries can export
-> more (`export modifier …`). Note the syntactic split: `(...)=` is **assignment**,
-> `{...}=` is **comparison**. The older parenthesized comparison form
-> (`name{caseless}= …`) still works but is deprecated in favor of braces.
+> more (`export modifier …`). Both forms are written in **braces** —
+> `total{USD} = 19.95` assigns, `if name{caseless} = "joe"` compares — and
+> position, not punctuation, is what tells them apart. The older parenthesized
+> spelling (`name (caseless)= …`) was retired in rc6 and is now a parse error.
 
 ## Arrays and records
 

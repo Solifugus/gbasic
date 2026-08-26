@@ -19,7 +19,8 @@ for error handling, `ERRORS.md`.
   `do … loop until/while` — all with `break`/`continue`. No `repeat … until`
   (`repeat` is a builtin). → `examples/for_range_test.bas`,
   `examples/do_loop_test.bas`, `examples/while_break_continue_test.bas`
-- **Iterate a collection** — `for each x in coll … end for`. Preferred for
+- **Iterate a collection** — `for each x in coll … end for` (or `next x`).
+  Preferred for
   readability; indexing in a `while` loop is linear too, and has been since
   arrays became copy-on-write (cost pinned by `tests/run_arridx.sh`).
   → `examples/for_each_test.bas`
@@ -129,7 +130,9 @@ for error handling, `ERRORS.md`.
 - **Bitwise** — `band`/`bor`/`bxor`/`bnot`/`shl`/`shr`/`rotl`/`rotr` on 32-bit
   unsigned integers. → `examples/bitwise_test.bas`
 - **Match a pattern** — `match(s, p)` for the first match, `match_all(s, p)` for
-  every one; a miss is `unknown`, so test with `is_unknown`. The record is
+  every one; a miss is `unknown`, so test with `is_unknown` — or take a
+  fallback with `default(v, fallback)`, which covers `unknown` and `nothing`
+  alike. The record is
   `{text, start, length, groups}` with `start`/`length` in codepoints, so
   `mid(s, m.start, m.length)` composes. `match` scans rather than anchoring —
   it is Python's `re.search`, not `re.match`. → `tests/regex_test.bas`

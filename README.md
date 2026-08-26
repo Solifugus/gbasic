@@ -16,10 +16,13 @@ yet production-stable.
 Implemented language features include:
 
 - a hand-written lexer, Bison parser, AST, and tree-walking evaluator
-- variables, strict expressions, assignment, `print`, `print to error`, and `input`
+- variables, strict expressions, assignment (with `+=`, `-=`, `*=`, `/=`),
+  `print`, `print to error`, and `input`
 - multiline and short inline `if`/`else`, `consider`, and `while`
-- array iteration with `for each item in items` and `for item in items`
-- `break` and `continue`
+- array iteration with `for each item in items` and `for item in items`;
+  loops close with `end for`, `next`, or `next <name>`
+- `break` and `continue`, each optionally naming the loop it means
+  (`break x`, `continue x`)
 - arrays, records, nested assignment, and dynamic record access
 - functions, programs, libraries, `load`, and labels with `goto`/`gosub`
   (supported inside functions; using them at the top level is a runtime error)

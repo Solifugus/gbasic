@@ -5,6 +5,7 @@
 program main(args)
   print "-- names from the parser registry"
   print string(has_builtin("file_type"))
+  print string(has_builtin("default"))
   print string(has_builtin("env"))
   print string(has_builtin("sha256"))
   print string(has_builtin("has_builtin"))

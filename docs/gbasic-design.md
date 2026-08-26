@@ -69,8 +69,9 @@ long-term goal **(future)**; nothing in the language design should preclude it.
   required for raw binary data and to let `chr` cover the full 0–255 range.
 - **Newlines are significant** as statement terminators.
 - **Keywords are context-sensitive where possible.** Notably `=` is assignment
-  or comparison depending on position, and a parenthesized term adjacent to an
-  assignment/comparison operator is a modifier rather than a call (see §5).
+  or comparison depending on position. A **brace-delimited** term adjacent to an
+  assignment/comparison operator is a modifier (see §5); braces were chosen
+  precisely because a brace cannot open a call, so nothing has to be guessed.
 
 Core token classes include identifiers, qualified identifiers
 (`library.name`), numbers, strings, the modifier/lens content tokens, the
@@ -141,13 +142,13 @@ number) raises a runtime error rather than silently coercing.
 
 ## 5. Operator Modifiers and Comparison Lenses
 
-A **modifier** is a parenthesized term adjacent to an operator that changes the
-meaning of an assignment or comparison. Modifier terms live in their own
+A **modifier** is a brace-delimited term adjacent to an operator that changes
+the meaning of an assignment or comparison. Modifier terms live in their own
 namespace and do not collide with ordinary variables: in `name{caseless}= "joe"`
 the `caseless` token resolves as a modifier, while `caseless` elsewhere is an
 ordinary identifier.
 
-### Assignment modifiers — parenthesized (permanent syntax)
+### Assignment modifiers — brace syntax
 
 ```basic
 balance{USD}= 19.95
@@ -156,10 +157,15 @@ config{file}= "data.txt"
 age{number}= input("Age: ")
 ```
 
-Spacing around the parentheses is not significant; all of `x{USD}=`,
+Spacing around the braces is not significant; all of `x{USD}=`,
 `x {USD}=`, `x{USD} =`, `x {USD} =` are equivalent.
 
-### Comparison lenses — brace syntax (canonical)
+(The heading above said "parenthesized (permanent syntax)" until 2026-08-25.
+PLAT-BRACE retired the paren spelling in rc6 and the samples here were
+rewritten then, but the prose around them was not — so this section described
+two syntaxes where the language has one.)
+
+### Comparison lenses — brace syntax
 
 A comparison modifier is written as a brace-delimited lens placed between the
 left operand and the operator:
@@ -170,9 +176,10 @@ if amount {rounded 2}= expected then ...
 if d {day}= t then ...
 ```
 
-The brace form is the **canonical** comparison-modifier syntax. The older
-parenthesized comparison form (`name{caseless}= "joe"`) still parses and runs but
-is **deprecated**; removing it and emitting deprecation diagnostics is **(future)**.
+The brace form is the **only** comparison-modifier syntax. The older
+parenthesized form (`name (caseless)= "joe"`) was retired by PLAT-BRACE in rc6
+and is now a parse error — see [brace_modifier_design.md](brace_modifier_design.md)
+for why the paren spelling could not be made unambiguous.
 
 Lens content is captured as raw text by a dedicated lexer mode, so multi-word
 and user-defined modifier names with textual arguments are preserved. The
@@ -331,7 +338,8 @@ while x < 10
 end while
 ```
 
-`break` and `continue` are valid inside loops.
+`break` and `continue` are valid inside loops, and each may name the loop it
+means (`break x`, `continue x`) to act on an enclosing one.
 
 ### consider
 
@@ -546,8 +554,9 @@ lookahead, §5, still exists).
 - An exact-integer numeric type (would resolve several module precision caveats).
 - Whether modifier chaining should ever be allowed.
 - Whether file and directory references should remain distinct types.
-- Removal of the deprecated parenthesized comparison-modifier form and addition
-  of deprecation diagnostics.
+- ~~Removal of the deprecated parenthesized comparison-modifier form and
+  addition of deprecation diagnostics.~~ **Done in rc6** (PLAT-BRACE): the paren
+  spelling is a parse error, and the guesser it required is deleted.
 - The C-emitter / GCC compilation path.
 
 ---

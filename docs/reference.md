@@ -266,7 +266,8 @@ ordinary variable, as do `loop` and `until`.
   loop — the last value the body actually saw, not one past it.
 - `step 0` raises (`for step cannot be zero`) rather than looping forever, and
   non-numeric bounds raise rather than coercing.
-- `break` and `continue` work as they do in `while`.
+- `break` and `continue` work as they do in `while`, and may name this loop's
+  variable to act on it from inside a nested loop (`break i`, `continue i`).
 
 Post-test loop — the body always runs at least once:
 
