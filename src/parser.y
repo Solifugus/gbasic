@@ -36,6 +36,35 @@ static void report_diag(gb_parse_ctx *ctx, gb_diag_code code, int line, int colu
  * server block proved) and validated here. A word that is not "warning" is
  * named in the diagnostic rather than producing a bare syntax error, because
  * `on wanring stop` should say so. */
+static void report_syntax_error(gb_parse_ctx *ctx, int line, int column,
+                                int end_line, int end_column, const char *message);
+
+/* PLAT-NEXT: `next NAME` must name the loop it closes.
+ *
+ * Classic BASIC let `next x` close an inner `y` loop by implicitly closing
+ * both, so a one-letter typo silently restructured the program. Refused here:
+ * either name this loop, or write `next` with no name at all. Consumes the
+ * closer's name either way. */
+static int for_end_matches(gb_parse_ctx *ctx, const char *loop_variable,
+                           char *closer, int line, int column) {
+    int ok;
+    if (!closer) {
+        return 1;
+    }
+    ok = loop_variable && strcmp(loop_variable, closer) == 0;
+    if (!ok) {
+        char message[256];
+        snprintf(message, sizeof(message),
+                 "next %s does not close this loop: it iterates %s "
+                 "(write `next %s`, `next`, or `end for`)",
+                 closer, loop_variable ? loop_variable : "another variable",
+                 loop_variable ? loop_variable : "");
+        report_syntax_error(ctx, line, column, line, column, message);
+    }
+    free(closer);
+    return ok;
+}
+
 static int warn_channel_ok(gb_parse_ctx *ctx, const char *word,
                            int line, int column) {
     if (word && strcmp(word, "warning") == 0) {
@@ -374,6 +403,7 @@ typedef struct {
     AstDuration duration;
     AstIdentSuffix ident_suffix;
     FieldPolicySpec field_policy;
+    char op_char;   /* compound-assignment operator: + - * / */
     AstServerItem *server_item;
     AstServerItemList server_item_list;
 }
@@ -385,6 +415,7 @@ typedef struct {
  * before this it fell through to the token mapper's default arm and was
  * reported as an unexpected token rather than a keyword clash. */
 %token AS
+%token PLUS_EQ MINUS_EQ STAR_EQ SLASH_EQ
 %token IF CONSIDER_IF THEN ELSE CONSIDER_ELSE END END_CONSIDER PRINT TRUE FALSE NOTHING UNKNOWN_VALUE AND OR NOT WITH NEW SPAWN FOR TO STEP DO LOOP UNTIL IN EACH WHILE CONSIDER BREAK CONTINUE FUNCTION RETURN GOTO GOSUB WATCH UNWATCH WITHOUT WATCHERS ON NEXT STOP ERROR_VALUE MODIFIER PROGRAM LIBRARY LOAD USE EXPORT
 %token OP_EQ OP_NE OP_GT OP_LT OP_GE OP_LE OP_NGT OP_NLT OP_NGE OP_NLE
 %token PLUS MINUS STAR SLASH LPAREN RPAREN LBRACKET RBRACKET LBRACE RBRACE COMMA COLON NEWLINE
@@ -408,6 +439,8 @@ static void report_syntax_error(gb_parse_ctx *ctx, int line, int column,
 }
 
 %type <stmt_list> program statement_list consider_statement_list consider_else_opt if_block_tail if_inline_tail
+%type <text> for_end
+%type <op_char> compound_op
 %type <stmt> statement assignment print_statement call_statement with_lock_statement for_each_statement do_loop_statement while_statement consider_statement consider_body_statement function_statement modifier_statement program_statement library_statement use_statement return_statement label_statement goto_statement gosub_statement break_statement continue_statement watch_statement unwatch_statement without_watchers_statement on_error_statement error_statement if_statement inline_statement server_statement
 %type <server_item> server_item
 %type <server_item_list> server_item_list
@@ -503,6 +536,20 @@ statement
 
 assignment
     : lvalue OP_EQ expression { $$ = ast_assign($1, ast_modifier_none(), $3); }
+    /* `x op= e` is exactly `x = x op e`, inheriting every type rule and every
+     * refusal the operator already has -- `a += [1]` fails the way
+     * `a = a + [1]` does. The operator rides the assign node rather than being
+     * desugared here, so the target is built once and evaluated once. */
+    | lvalue compound_op expression { $$ = ast_assign_op($1, ast_modifier_none(), $3, $2); }
+    | lvalue comparison_lens compound_op expression {
+        if (!is_modifier_target_expr($1)) {
+            report_syntax_error(ctx, ctx->la_line, ctx->la_column,
+                                ctx->la_end_line, ctx->la_end_column,
+                                "modifier target must be a variable, field, or index");
+            YYERROR;
+        }
+        $$ = ast_assign_op($1, $2, $4, $3);
+      }
     /* PLAT-BRACE: the assignment clause in braces. A brace cannot open a call,
      * so unlike the paren spelling this needs no lookahead to recognize --
      * which is the whole reason the paren form was retired. */
@@ -515,6 +562,13 @@ assignment
         }
         $$ = ast_assign($1, $2, $4);
       }
+    ;
+
+compound_op
+    : PLUS_EQ  { $$ = '+'; }
+    | MINUS_EQ { $$ = '-'; }
+    | STAR_EQ  { $$ = '*'; }
+    | SLASH_EQ { $$ = '/'; }
     ;
 
 lvalue
@@ -612,20 +666,38 @@ with_lock_statement
       }
     ;
 
+/* PLAT-NEXT: BASIC's own terminator, beside the house `end <opener>` form.
+ * Both spellings stay -- 410 `end for` sites do not move, and `next` costs
+ * nothing to admit: it is not statement-initial, so it stays usable as an
+ * ordinary variable name (see `variable_name`). Measured: 0 new conflicts.
+ *
+ * The optional name must MATCH the loop it closes. Classic BASIC let `next x`
+ * close an inner `y` loop by implicitly closing both, which turns a one-letter
+ * typo into a silent change of program structure; here it is refused. */
+for_end
+    : END FOR NEWLINE            { $$ = NULL; }
+    | NEXT NEWLINE               { $$ = NULL; }
+    | NEXT variable_name NEWLINE { $$ = $2; }
+    ;
+
 for_each_statement
-    : FOR IDENT IN expression NEWLINE statement_list END FOR NEWLINE {
+    : FOR IDENT IN expression NEWLINE statement_list for_end {
+        if (!for_end_matches(ctx, $2, $7, @7.first_line, @7.first_column)) { YYERROR; }
         $$ = ast_for_each($2, $4, $6);
       }
-    | FOR EACH IDENT IN expression NEWLINE statement_list END FOR NEWLINE {
+    | FOR EACH IDENT IN expression NEWLINE statement_list for_end {
+        if (!for_end_matches(ctx, $3, $8, @8.first_line, @8.first_column)) { YYERROR; }
         $$ = ast_for_each($3, $5, $7);
       }
     /* Counted loop. `to` is INCLUSIVE, as every BASIC has had it, and `step`
      * defaults to 1. Distinguished from `for each`/`for ... in` by the token
      * after the name -- OP_EQ here, IN there -- so one lookahead settles it. */
-    | FOR IDENT OP_EQ expression TO expression NEWLINE statement_list END FOR NEWLINE {
+    | FOR IDENT OP_EQ expression TO expression NEWLINE statement_list for_end {
+        if (!for_end_matches(ctx, $2, $9, @9.first_line, @9.first_column)) { YYERROR; }
         $$ = ast_for_range($2, $4, $6, NULL, $8);
       }
-    | FOR IDENT OP_EQ expression TO expression STEP expression NEWLINE statement_list END FOR NEWLINE {
+    | FOR IDENT OP_EQ expression TO expression STEP expression NEWLINE statement_list for_end {
+        if (!for_end_matches(ctx, $2, $11, @11.first_line, @11.first_column)) { YYERROR; }
         $$ = ast_for_range($2, $4, $6, $8, $10);
       }
     ;
@@ -935,12 +1007,19 @@ gosub_statement
     : GOSUB variable_name { $$ = ast_gosub($2); }
     ;
 
+/* An optional loop name: `break x` leaves the loop whose variable is x,
+ * `continue x` starts its next iteration. This is the capability classic
+ * BASIC got from `next x` popping a runtime FOR stack -- spelled on the two
+ * keywords that already exist, because `next x` would be ambiguous with the
+ * terminator above and cannot express `break` at all. */
 break_statement
-    : BREAK { $$ = ast_break(); }
+    : BREAK { $$ = ast_break(NULL); }
+    | BREAK IDENT { $$ = ast_break($2); }
     ;
 
 continue_statement
-    : CONTINUE { $$ = ast_continue(); }
+    : CONTINUE { $$ = ast_continue(NULL); }
+    | CONTINUE IDENT { $$ = ast_continue($2); }
     ;
 
 if_statement
@@ -1499,6 +1578,10 @@ static int yylex(YYSTYPE *lvalp, YYLTYPE *llocp, gb_parse_ctx *ctx) {
     case TOKEN_WITHOUT: return WITHOUT;
     case TOKEN_WATCHERS: return WATCHERS;
     case TOKEN_ON: return ON;
+    case TOKEN_PLUS_EQ: return PLUS_EQ;
+    case TOKEN_MINUS_EQ: return MINUS_EQ;
+    case TOKEN_STAR_EQ: return STAR_EQ;
+    case TOKEN_SLASH_EQ: return SLASH_EQ;
     case TOKEN_NEXT: return NEXT;
     case TOKEN_STOP: return STOP;
     case TOKEN_ERROR_VALUE: return ERROR_VALUE;

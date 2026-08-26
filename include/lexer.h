@@ -72,6 +72,13 @@ typedef enum {
     TOKEN_MINUS,
     TOKEN_STAR,
     TOKEN_SLASH,
+    /* Compound assignment. `x op= e` means exactly `x = x op e`, so these
+     * carry no semantics of their own -- they name which operator the
+     * assignment folds in. */
+    TOKEN_PLUS_EQ,
+    TOKEN_MINUS_EQ,
+    TOKEN_STAR_EQ,
+    TOKEN_SLASH_EQ,
     TOKEN_LPAREN,
     TOKEN_RPAREN,
     TOKEN_LBRACKET,

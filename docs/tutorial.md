@@ -35,6 +35,8 @@ Two more worth knowing before you start:
 - **`!=`, not `<>`**, for "not equal".
 - **`mid` is 0-based and strings are not indexable** — `s[0]` raises; use
   `mid(s, 0, 1)`.
+- **A missing value has two shapes**, `unknown` and `nothing`, and
+  `default(v, fallback)` covers both — `port = default(env("PORT"), "8080")`.
 
 ## Contents
 
@@ -122,6 +124,21 @@ print(name)
 print(age + 1)
 print(ready)
 ```
+
+To change a value using its own, the four compound forms save repeating the
+name — `x += e` means exactly `x = x + e`, and works wherever the operator
+does:
+
+```basic
+total = 0
+total += 5          ' numbers
+line  = "a"
+line += "b"         ' strings
+due{date}= "2026-08-25"
+due  += 3 days      ' dates and durations
+```
+
+`-=`, `*=` and `/=` follow the same rule.
 
 Identifiers are case-sensitive. Strings use double quotes and may contain literal
 newlines:
@@ -394,12 +411,17 @@ A counted `for` when you want a number rather than an element. `to` is
 ```basic
 for i = 1 to 5
     print(i)                ' 1 2 3 4 5
-end for
+next i
 
 for i = 10 to 0 step -2     ' 10 8 6 4 2 0
     print(i)
 end for
 ```
+
+A `for` closes with **`next`**, **`next <name>`**, or **`end for`** — the same
+statement, three spellings. If you name it, the name must be the loop's own
+variable; `next y` on a loop over `x` is refused rather than quietly closing
+something else, which is what classic BASIC did.
 
 The bounds are read **once**, at the start, so changing them inside the body
 does not move the finish line. The counter is an ordinary variable and keeps
@@ -412,7 +434,7 @@ When you want the body to run **at least once** and then decide, use `do`:
 ```basic
 tries = 0
 do
-    tries = tries + 1
+    tries += 1
 loop until tries >= 3
 ```
 
@@ -433,6 +455,23 @@ for each k in keys(player)
     print(k + ": " + string(player[k]))
 end for
 ```
+
+`break` leaves the nearest loop and `continue` starts its next iteration.
+Either can **name a loop**, which is how you escape an inner loop into an
+outer one:
+
+```basic
+for x = 1 to 4
+    for y = 4 to 1 step -1
+        if y = x then continue x    ' abandon y, take the next x
+        print(string(x) + "," + string(y))
+    next y
+next x
+```
+
+The name is a loop variable, so it always picks a `for`; a named flow passes
+straight through any `while` or `do` in between, because those have no name to
+match.
 
 `consider` is a clean multi-way dispatch on one subject:
 

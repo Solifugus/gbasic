@@ -228,6 +228,14 @@ struct AstStmt {
             AstExpr *target;
             AstModifierUse modifier;
             AstExpr *value;
+            /* Compound assignment: '+', '-', '*', '/', or 0 for a plain `=`.
+             *
+             * Carried as an OPERATOR rather than desugared in the grammar
+             * into `target = target op value`, which would need the target
+             * subtree DUPLICATED -- two owners of the same nodes, and a double
+             * free to go with them. The evaluator folds it instead, by handing
+             * the real operator a synthetic binary node. */
+            char op;
         } assign;
         /* PLAT-STDERR: `print` and `print to error` are one node kind with a
          * destination, not two kinds. They differ only in which stream the
@@ -282,6 +290,7 @@ struct AstStmt {
         char *label;
         char *goto_label;
         char *gosub_label;
+        char *loop_target;   /* `break x` / `continue x`: the named loop, or NULL */
         struct {
             char *name;          /* NULL for the anonymous form */
             AstNameList names;
@@ -383,6 +392,7 @@ AstExpr *ast_spawn(char *name, AstExprList args);
 AstExpr *ast_expr_position(AstExpr *expr, int line, int column);
 
 AstStmt *ast_assign(AstExpr *target, AstModifierUse modifier, AstExpr *value);
+AstStmt *ast_assign_op(AstExpr *target, AstModifierUse modifier, AstExpr *value, char op);
 AstStmt *ast_print(AstExpr *expr);
 AstStmt *ast_print_error(AstExpr *expr);
 AstStmt *ast_expr_stmt(AstExpr *expr);
@@ -412,8 +422,8 @@ AstStmt *ast_use(char *name, char *path);
 AstStmt *ast_if(AstExpr *condition, AstStmtList body);
 AstStmt *ast_while(AstExpr *condition, AstStmtList body);
 AstStmt *ast_consider(AstExpr *subject, AstConsiderBranchList branches, AstStmtList else_body);
-AstStmt *ast_break(void);
-AstStmt *ast_continue(void);
+AstStmt *ast_break(char *target);
+AstStmt *ast_continue(char *target);
 AstStmt *ast_stmt_position(AstStmt *stmt, int line, int column);
 /* Set both the start (line,column) and the exclusive end (end_line,end_column)
  * BYTE positions on a statement. end_* use the parser's yylloc last_* convention

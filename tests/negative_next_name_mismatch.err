@@ -1,0 +1,1 @@
+parse error at tests/negative_next_name_mismatch.bas:4:3: next x does not close this loop: it iterates y (write `next y`, `next`, or `end for`)

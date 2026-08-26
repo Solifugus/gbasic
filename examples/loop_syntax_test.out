@@ -1,0 +1,40 @@
+-- `next` closes a for loop, and `end for` still does
+ok   next NAME closes the loop
+ok   bare next closes it too
+ok   and end for is unchanged
+ok   for each takes the element name
+ok   `next` is still an ordinary variable name
+ok   so are `loop` and `until`
+
+-- break and continue can name the loop they mean
+ok   continue NAME resumes the named loop
+ok   break NAME leaves the named loop
+ok   bare break still means the innermost
+ok   a named flow passes through a while
+
+-- compound assignment is exactly `x = x op e`
+ok   += on a number
+ok   -= on a number
+ok   *= on a number
+ok   /= on a number
+ok   += concatenates strings
+ok   += adds a duration to a date
+ok   += adds money to money
+ok   *= scales a duration
+ok   += through a field
+ok   += through an index
+ok   a modifier transforms the folded result
+ok   repeated compound assignment accumulates
+
+-- default(value, fallback)
+ok   an unset variable falls back
+ok   a real value is kept
+ok   nothing falls back
+ok   a find miss falls back
+ok   a find hit is kept
+ok   false is a value
+ok   zero is a value
+ok   the empty string is a value
+
+checks: 30
+mismatches: 0

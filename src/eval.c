@@ -512,6 +512,13 @@ typedef struct {
     int did_stop;
     int did_break;
     int did_continue;
+    /* `break x` / `continue x`: the loop named by the statement, or NULL for
+     * the innermost. BORROWED from the AST, which outlives every evaluation --
+     * so unlike goto_label there is nothing here to free, and no ownership to
+     * get wrong on the propagation paths. */
+    const char *loop_target;
+    int flow_line;      /* where that break/continue was written, so a flow */
+    int flow_column;    /* that escapes every loop is reported AT ITS SOURCE */
     int did_raise;   /* PLAT-ERR: a raise unwinding toward an armed frame; rides
                       * the same block-exit paths as did_stop */
     Value value;
@@ -2660,18 +2667,54 @@ static EvalResult eval_stop(void) {
     return result;
 }
 
-static EvalResult eval_break(void) {
+static EvalResult eval_break(const char *target, int line, int column) {
     EvalResult result = {0};
     result.did_break = 1;
+    result.loop_target = target;
+    result.flow_line = line;
+    result.flow_column = column;
     result.value = value_null();
     return result;
 }
 
-static EvalResult eval_continue(void) {
+static EvalResult eval_continue(const char *target, int line, int column) {
     EvalResult result = {0};
     result.did_continue = 1;
+    result.loop_target = target;
+    result.flow_line = line;
+    result.flow_column = column;
     result.value = value_null();
     return result;
+}
+
+/* Does THIS loop answer the break/continue now travelling up, or does it keep
+ * going? An untargeted one is always the innermost loop's business. A targeted
+ * one belongs to the loop whose variable it names -- so it travels past `while`
+ * and `do` loops, which have no variable and can therefore never be named.
+ *
+ * A target naming no enclosing loop keeps propagating and is reported where an
+ * untargeted break already is: at the frame boundary, by name. */
+/* What to say when a break/continue reaches a frame boundary unclaimed. A
+ * TARGETED one is the more useful report: "no enclosing loop named 'x'" tells
+ * you the name was wrong, where the bare text would send you looking for a
+ * missing loop that is right there. */
+static void loop_flow_message(EvalResult result, char *out, size_t size) {
+    const char *verb = result.did_break ? "break" : "continue";
+    if (!result.loop_target) {
+        snprintf(out, size, "%s outside loop", verb);
+    } else {
+        snprintf(out, size, "%s: no enclosing loop named '%s'", verb, result.loop_target);
+    }
+}
+
+static int loop_claims_flow(EvalResult result, const char *loop_variable) {
+    if (!result.did_break && !result.did_continue) {
+        return 0;
+    }
+    if (!result.loop_target) {
+        return 1;
+    }
+    return loop_variable && strcmp(result.loop_target, loop_variable) == 0;
 }
 
 static int eval_result_exits_block(EvalResult result) {
@@ -8208,7 +8251,13 @@ static Value invoke_function(AstStmt *stmt, Value *args, size_t argc, Value *rec
         return result.value;
     }
     if (result.did_break || result.did_continue) {
-        runtime_error_raise(result.did_break ? "break outside loop" : "continue outside loop",
+        char flow_message[128];
+        loop_flow_message(result, flow_message, sizeof(flow_message));
+        if (result.flow_line > 0) {
+            current_line = result.flow_line;
+            current_column = result.flow_column;
+        }
+        runtime_error_raise(flow_message,
                             1003,
                             "invalid control flow");
         value_free(result.value);
@@ -23518,6 +23567,37 @@ static Value eval_call(AstExpr *expr) {
         return value_string(name);
     }
 
+    /* PLAT-DEFAULT: `default(value, fallback)` -- the value, unless there
+     * isn't one.
+     *
+     * Both `unknown` and `nothing` count as "no value here", and that is a
+     * decision rather than an oversight: the two commonest producers of an
+     * absent result split across them. `env("PORT")` yields UNKNOWN when the
+     * variable is unset, `find(...)` yields NOTHING on a miss, and a caller
+     * reaching for a fallback wants the same answer from both. Ask with
+     * `is_unknown`/`is_nothing` when the difference is the point.
+     *
+     * A builtin rather than an operator: it needs no grammar, no token and no
+     * keyword. The cost is that the fallback is evaluated eagerly, which for
+     * the literal defaults this replaces is nothing. */
+    if (strcmp(expr->as.call.name, "default") == 0) {
+        if (expr->as.call.args.count != 2) {
+            runtime_error_raise("default expects a value and a fallback",
+                                1003, "invalid function call");
+            return value_null();
+        }
+        Value value = eval_expr(expr->as.call.args.items[0]);
+        if (error_action_pending()) {
+            value_free(value);
+            return value_null();
+        }
+        if (value.kind != VALUE_UNKNOWN && value.kind != VALUE_NULL) {
+            return value;
+        }
+        value_free(value);
+        return eval_expr(expr->as.call.args.items[1]);
+    }
+
     if (strcmp(expr->as.call.name, "is_string") == 0 ||
         strcmp(expr->as.call.name, "is_number") == 0 ||
         strcmp(expr->as.call.name, "is_boolean") == 0 ||
@@ -25742,7 +25822,13 @@ static Value eval_assign_modifier(AstModifierUse use, Value value) {
         return result.value;
     }
     if (result.did_break || result.did_continue) {
-        runtime_error_raise(result.did_break ? "break outside loop" : "continue outside loop",
+        char flow_message[128];
+        loop_flow_message(result, flow_message, sizeof(flow_message));
+        if (result.flow_line > 0) {
+            current_line = result.flow_line;
+            current_column = result.flow_column;
+        }
+        runtime_error_raise(flow_message,
                             1003,
                             "invalid control flow");
         value_free(result.value);
@@ -25780,7 +25866,13 @@ static Value eval_compare_modifier(AstModifierUse use, const char *op, Value lef
         return result.value;
     }
     if (result.did_break || result.did_continue) {
-        runtime_error_raise(result.did_break ? "break outside loop" : "continue outside loop",
+        char flow_message[128];
+        loop_flow_message(result, flow_message, sizeof(flow_message));
+        if (result.flow_line > 0) {
+            current_line = result.flow_line;
+            current_column = result.flow_column;
+        }
+        runtime_error_raise(flow_message,
                             1003,
                             "invalid control flow");
         value_free(result.value);
@@ -27679,7 +27771,33 @@ static EvalResult eval_stmt(AstStmt *stmt) {
     switch (stmt->kind) {
     case AST_STMT_ASSIGN: {
         int before_error = error_generation;
-        Value value = eval_expr(stmt->as.assign.value);
+        Value value;
+        if (stmt->as.assign.op) {
+            /* `x op= e` is `x = x op e`, and the surest way to mean exactly
+             * that is to hand the real operator a real binary node -- the same
+             * synthetic-node idiom `values_equal` already uses. Every type
+             * rule, every coercion and every refusal then comes from one
+             * place, so `total += 5` and `total = total + 5` cannot drift, and
+             * `a += [1]` fails exactly as `a = a + [1]` does.
+             *
+             * It also means the target expression is evaluated twice, once to
+             * read and once to write -- which is not a wart but the definition:
+             * the hand-written form does the same. */
+            char op_text[2];
+            AstExpr fold = {0};
+            op_text[0] = stmt->as.assign.op;
+            op_text[1] = '\0';
+            fold.kind = AST_EXPR_BINARY;
+            fold.as.binary.op = op_text;
+            fold.as.binary.modifier = ast_modifier_none();
+            fold.as.binary.left = stmt->as.assign.target;
+            fold.as.binary.right = stmt->as.assign.value;
+            fold.line = stmt->line;
+            fold.column = stmt->column;
+            value = eval_binary(&fold);
+        } else {
+            value = eval_expr(stmt->as.assign.value);
+        }
         if (error_generation != before_error) {
             value_free(value);
             current_line = previous_line;
@@ -27822,6 +27940,14 @@ static EvalResult eval_stmt(AstStmt *stmt) {
         loop_depth++;
         for (;;) {
             EvalResult result = eval_stmt_list(stmt->as.do_loop.body);
+            /* A NAMED break/continue can never mean this loop: `while` and
+             * `do` have no variable to name. Let it travel outward. */
+            if ((result.did_break || result.did_continue) && result.loop_target) {
+                loop_depth--;
+                current_line = previous_line;
+                current_column = previous_column;
+                return result;
+            }
             if (result.did_break) {
                 value_free(result.value);
                 break;
@@ -27898,6 +28024,14 @@ static EvalResult eval_stmt(AstStmt *stmt) {
         for (double i = start; step > 0 ? i <= limit : i >= limit; i += step) {
             env_set(stmt->as.for_range.name, value_number(i));
             EvalResult result = eval_stmt_list(stmt->as.for_range.body);
+            if ((result.did_break || result.did_continue) &&
+                !loop_claims_flow(result, stmt->as.for_range.name)) {
+                /* Named a loop further out: keep travelling. */
+                loop_depth--;
+                current_line = previous_line;
+                current_column = previous_column;
+                return result;
+            }
             if (result.did_break) {
                 value_free(result.value);
                 break;
@@ -27936,6 +28070,14 @@ static EvalResult eval_stmt(AstStmt *stmt) {
         for (size_t i = 0; i < iterable.as.array.store->count; i++) {
             env_set(stmt->as.for_each.name, value_copy(iterable.as.array.store->items[i]));
             EvalResult result = eval_stmt_list(stmt->as.for_each.body);
+            if ((result.did_break || result.did_continue) &&
+                !loop_claims_flow(result, stmt->as.for_each.name)) {
+                /* Named a loop further out: keep travelling. */
+                loop_depth--;
+                current_line = previous_line;
+                current_column = previous_column;
+                return result;
+            }
             if (result.did_break) {
                 value_free(result.value);
                 break;
@@ -28213,7 +28355,7 @@ static EvalResult eval_stmt(AstStmt *stmt) {
         }
         current_line = previous_line;
         current_column = previous_column;
-        return eval_break();
+        return eval_break(stmt->as.loop_target, stmt->line, stmt->column);
     case AST_STMT_CONTINUE:
         if (loop_depth == 0) {
             runtime_error_raise("continue outside loop", 1003, "invalid control flow");
@@ -28223,7 +28365,7 @@ static EvalResult eval_stmt(AstStmt *stmt) {
         }
         current_line = previous_line;
         current_column = previous_column;
-        return eval_continue();
+        return eval_continue(stmt->as.loop_target, stmt->line, stmt->column);
     case AST_STMT_IF: {
         int before_error = error_generation;
         Value condition = eval_expr(stmt->as.if_stmt.condition);
@@ -28270,6 +28412,14 @@ static EvalResult eval_stmt(AstStmt *stmt) {
                 break;
             }
             EvalResult result = eval_stmt_list(stmt->as.while_stmt.body);
+            /* A NAMED break/continue can never mean this loop: `while` and
+             * `do` have no variable to name. Let it travel outward. */
+            if ((result.did_break || result.did_continue) && result.loop_target) {
+                loop_depth--;
+                current_line = previous_line;
+                current_column = previous_column;
+                return result;
+            }
             if (result.did_break) {
                 value_free(result.value);
                 break;
@@ -28487,6 +28637,21 @@ int eval_program(AstStmtList program) {
      * line the old STOP mode wrote. Also rule 2 at the top: a program that
      * ends with a pending unacknowledged error is reported and exits nonzero.
      * Its last statements ran; the error still did not vanish. */
+    /* A break/continue that escaped every enclosing loop. This used to set a
+     * nonzero exit and print NOTHING -- a silent failure of the kind
+     * docs/warning_model_design.md §7 catalogues, and one that was unreachable
+     * while every break belonged to the innermost loop. A NAMED one can escape
+     * them all, so it is raised here, ABOVE the report below, and comes out as
+     * an ordinary located runtime error naming the loop that does not exist. */
+    if (result.did_break || result.did_continue) {
+        char flow_message[128];
+        loop_flow_message(result, flow_message, sizeof(flow_message));
+        if (result.flow_line > 0) {
+            current_line = result.flow_line;
+            current_column = result.flow_column;
+        }
+        runtime_error_raise(flow_message, 1003, "invalid control flow");
+    }
     if (result.did_raise || raise_in_flight) {
         raise_report_fatal();
     } else if (base_error_frame.pending) {

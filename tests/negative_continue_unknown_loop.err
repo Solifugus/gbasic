@@ -1,0 +1,1 @@
+runtime error at tests/negative_continue_unknown_loop.bas:2:3: continue: no enclosing loop named 'zzz'

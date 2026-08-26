@@ -250,6 +250,13 @@ AstStmt *ast_assign(AstExpr *target, AstModifierUse modifier, AstExpr *value) {
     stmt->as.assign.target = target;
     stmt->as.assign.modifier = modifier;
     stmt->as.assign.value = value;
+    stmt->as.assign.op = 0;
+    return stmt;
+}
+
+AstStmt *ast_assign_op(AstExpr *target, AstModifierUse modifier, AstExpr *value, char op) {
+    AstStmt *stmt = ast_assign(target, modifier, value);
+    stmt->as.assign.op = op;
     return stmt;
 }
 
@@ -571,15 +578,17 @@ AstStmt *ast_consider(AstExpr *subject, AstConsiderBranchList branches, AstStmtL
     return stmt;
 }
 
-AstStmt *ast_break(void) {
+AstStmt *ast_break(char *target) {
     AstStmt *stmt = xmalloc(sizeof(*stmt));
     stmt->kind = AST_STMT_BREAK;
+    stmt->as.loop_target = target;
     return stmt;
 }
 
-AstStmt *ast_continue(void) {
+AstStmt *ast_continue(char *target) {
     AstStmt *stmt = xmalloc(sizeof(*stmt));
     stmt->kind = AST_STMT_CONTINUE;
+    stmt->as.loop_target = target;
     return stmt;
 }
 
@@ -1038,10 +1047,14 @@ static void dump_stmt(AstStmt *stmt, int indent) {
         }
         break;
     case AST_STMT_BREAK:
-        printf("Break\n");
+        printf("Break%s%s\n",
+               stmt->as.loop_target ? " " : "",
+               stmt->as.loop_target ? stmt->as.loop_target : "");
         break;
     case AST_STMT_CONTINUE:
-        printf("Continue\n");
+        printf("Continue%s%s\n",
+               stmt->as.loop_target ? " " : "",
+               stmt->as.loop_target ? stmt->as.loop_target : "");
         break;
     }
 }
@@ -1269,6 +1282,7 @@ static void free_stmt(AstStmt *stmt) {
         break;
     case AST_STMT_BREAK:
     case AST_STMT_CONTINUE:
+        free(stmt->as.loop_target);
         break;
     case AST_STMT_SERVER:
         free(stmt->as.server.word);

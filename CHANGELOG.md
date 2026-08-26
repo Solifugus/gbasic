@@ -9,7 +9,36 @@ language surface may still change between releases.
 
 ## Unreleased
 
-_Nothing yet._
+- **Compound assignment — `+=`, `-=`, `*=`, `/=`.** `x op= e` means exactly
+  `x = x op e`, so it inherits every type rule and every refusal the operator
+  already has: it works on numbers, strings, `date + duration`, money and
+  durations, through record fields and array indexes, and `list += [1]` raises
+  precisely as `list = list + [1]` does. With a modifier the modifier applies to
+  the folded result (`name{upper} += "cd"` on `"ab"` gives `"ABCD"`).
+  Statement-level only — there is no `y = (x += 1)`.
+
+- **`for` loops may close with `next`.** `next`, `next <name>` and `end for` are
+  the same statement; all existing `end for` code is untouched. A named
+  terminator must name the loop it closes — classic BASIC let `next x` close an
+  inner `y` loop by implicitly closing both, so a one-letter typo silently
+  restructured the program, and that is refused here at load time. Costs no
+  reserved word: `next` remains usable as an ordinary variable, as do `loop`
+  and `until`.
+
+- **`break` and `continue` may name a loop.** `continue x` abandons the inner
+  loop and takes the next iteration of the loop over `x`; `break x` leaves it
+  entirely. The name is a loop variable, so a named flow passes straight
+  through any `while` or `do` in between. Naming a loop that does not enclose
+  the statement is a located runtime error (`break: no enclosing loop named
+  'zzz'`) — previously a break reaching the top level set a nonzero exit and
+  printed **nothing**, a silent path that was unreachable before named flows
+  existed and is now closed.
+
+- **`default(value, fallback)`** — the value, unless there isn't one. Returns
+  `fallback` when `value` is `unknown` *or* `nothing`, because the two commonest
+  producers of an absent result split across them (`env` yields `unknown` when
+  unset, `find` yields `nothing` on a miss). Tests presence, not truthiness:
+  `false`, `0` and `""` are values and come back unchanged.
 
 ## 0.1.0-rc8 — 2026-08-25
 

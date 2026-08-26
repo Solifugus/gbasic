@@ -116,12 +116,18 @@ token. These are lexer-internal distinctions; highlighters can treat
 | `!<`   | `OP_NLT`     | | `]`    | `RBRACKET`  |
 | `!>=`  | `OP_NGE`     | | `{`    | `LBRACE`    |
 | `!<=`  | `OP_NLE`     | | `}`    | `RBRACE`    |
-|        |              | | `,`    | `COMMA`     |
-|        |              | | `.`    | `DOT`       |
-|        |              | | `:`    | `COLON`     |
+| `+=`   | `PLUS_EQ`    | | `,`    | `COMMA`     |
+| `-=`   | `MINUS_EQ`   | | `.`    | `DOT`       |
+| `*=`   | `STAR_EQ`    | | `:`    | `COLON`     |
+| `/=`   | `SLASH_EQ`   | |        |             |
 
 Notes:
 - `=` serves as both assignment and equality (`OP_EQ`).
+- The compound-assignment operators are **statement-level only** — `x += 1` is
+  an assignment, not an expression, so there is no `y = (x += 1)`. Each means
+  exactly `x = x op e`.
+- `/=` is division-assignment here. It means "not equal" in Ada, Haskell and
+  Fortran; gBASIC spells that `!=`.
 - There is **no** standalone `!` token: a `!` must begin one of `!=`, `!>`, `!<`,
   `!>=`, `!<=`. A lone `!` lexes as an error token.
 - The negated comparison operators (`!>` "not greater than", etc.) are a gBASIC

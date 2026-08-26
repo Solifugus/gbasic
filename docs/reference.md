@@ -62,6 +62,36 @@ x{modifier}= expression
 x{modifier args}= expression
 ```
 
+**Compound assignment** (*since 0.1.0-rc9*) — `+=`, `-=`, `*=`, `/=`:
+
+```basic
+count += 1
+total -= discount
+scale *= 2
+half  /= 2
+```
+
+`x op= e` means **exactly** `x = x op e`. It inherits every type rule and every
+refusal the operator already has — so it works wherever the operator does:
+
+```basic
+tally  += 1              ' number
+line   += "\n"           ' string
+due    += 3 days         ' date + duration
+owed   += payment        ' money + money
+window *= 2              ' duration * number
+rec.count += 1           ' through a field
+arr[0]    += 1           ' through an index
+```
+
+and fails where the operator does: `list += [1]` raises exactly as
+`list = list + [1]` does. With a modifier, the modifier applies to the folded
+result, as in a plain modified assignment — `name{upper} += "cd"` on `"ab"`
+gives `"ABCD"`.
+
+Because it is defined as the desugaring, the target is read and then written,
+the same two touches `x = x + 1` makes.
+
 Assignment targets may be variables, array elements, record fields, or nested paths combining indexes and fields:
 
 ```basic
@@ -177,7 +207,25 @@ while condition
 end while
 ```
 
-`break` exits the nearest enclosing `while`. `continue` skips to the next iteration.
+`break` exits the nearest enclosing loop. `continue` skips to the next
+iteration.
+
+Either may **name the loop it means**, which is how you leave or restart an
+outer loop from inside an inner one:
+
+```basic
+for x = 1 to 4
+    for y = 4 to 1 step -1
+        if y = x then continue x    ' abandon the y loop, take the next x
+        if y = 0 then break x       ' leave the x loop entirely
+    next y
+next x
+```
+
+The name is a loop **variable**, so it selects a `for` — `while` and `do`
+loops have no variable and a named flow travels straight past them. Naming a
+loop that does not enclose the statement is a runtime error that says so
+(`break: no enclosing loop named 'zzz'`) rather than failing silently.
 
 Counted `for`:
 
@@ -192,6 +240,21 @@ end for
 for i = 5 to 1 step -1  ' counts down
 end for
 ```
+
+A `for` loop may close with **`end for`**, with **`next`**, or with **`next
+<name>`** — the three are the same statement:
+
+```basic
+for i = 1 to 3
+    ...
+next i          ' or `next`, or `end for`
+```
+
+`next <name>` must name the loop it closes. Classic BASIC let `next x` close
+an inner `y` loop by implicitly closing both, so a one-letter typo silently
+restructured the program; here the mismatch is refused at load time. Spelling
+the terminator this way costs no reserved word — `next` remains usable as an
+ordinary variable, as do `loop` and `until`.
 
 - **`to` is inclusive**, as in every BASIC.
 - **`step` defaults to 1** and may be negative or fractional. A negative step
@@ -243,12 +306,16 @@ end consider
 
 Normal `if` blocks are separate boolean control flow outside a consider block. Inside consider, top-level `if expression then` starts a match branch.
 
-For-each:
+For-each (`next` closes it too, naming the element variable):
 
 ```basic
 for item in items
     print(item.name)
 end for
+
+for each item in items
+    print(item.name)
+next item
 ```
 
 Function:
@@ -2551,11 +2618,29 @@ be a string. If the variable is set, `env(name)` returns its string value. If
 the variable is not set, it returns `unknown`.
 
 ```basic
-port = env("GBASIC_SITE_PORT")
-if is_unknown(port) then
-    port = "8080"
-end if
+port = default(env("GBASIC_SITE_PORT"), "8080")
 ```
+
+**`default(value, fallback)`** (*since 0.1.0-rc9*) - `value`, unless there
+isn't one: returns `fallback` when `value` is `unknown` **or** `nothing`, and
+`value` otherwise.
+
+Both absences count, deliberately — the two commonest producers of "no result"
+split across them (`env(name)` yields `unknown` when unset, `find(...)` yields
+`nothing` on a miss), and a caller reaching for a fallback wants the same
+answer from each. Use `is_unknown`/`is_nothing` where the difference is the
+point.
+
+It tests **presence, not truthiness**: `false`, `0` and `""` are values and are
+returned unchanged.
+
+```basic
+port  = default(env("PORT"), "8080")
+where = default(find(names, "zed"), -1)
+flag  = default(false, true)              ' false — it is a value
+```
+
+`fallback` is evaluated eagerly, so keep it cheap (a literal, or a name).
 
 **`has_builtin(name)`** (*since 0.1.0-rc3*) - Answers whether this interpreter
 has an unqualified builtin of that name, so a program can degrade gracefully on

@@ -25,6 +25,20 @@ the standing ones.
   `'$' is not a money literal; write p{USD}= 19.99` instead of
   `unexpected token`.
 
+## Assignment
+
+- **Compound assignment exists: `+=`, `-=`, `*=`, `/=`.** `x op= e` is defined
+  as `x = x op e` and inherits every rule the operator has, so it covers
+  numbers, strings, `date + duration`, money, durations, record fields and
+  array indexes — and refuses what the operator refuses (`list += [1]` raises).
+  It is STATEMENT-LEVEL: there is no `y = (x += 1)`, and no `++`/`--` at all.
+
+- **`default(value, fallback)` covers a missing value**, and covers BOTH
+  shapes: `unknown` (what `env` gives for an unset variable) and `nothing`
+  (what `find` gives on a miss). It tests presence, not truthiness — `false`,
+  `0` and `""` are values and pass through. Prefer it to the
+  `if is_unknown(x) then x = ...` dance.
+
 ## Control flow
 
 - **The counted `for` exists as of 2026-08-16, with BASIC semantics, not C's.**
@@ -36,6 +50,19 @@ the standing ones.
   `repeat … until`**, because `repeat` is a string builtin. `for each` iterates
   arrays as before. (Older notes saying gBASIC has no numeric `for` predate
   2026-08-16; older notes about O(n²) indexing predate 2026-07-23.)
+
+- **A `for` closes with `end for`, `next`, or `next <name>`** — one statement,
+  three spellings, all current. A NAMED terminator must name that loop's own
+  variable: unlike classic BASIC, `next x` does NOT close an enclosing `y` loop
+  by implicitly closing both; the mismatch is a load-time error. `next` is not
+  a reserved word — `next = 5` is still an ordinary assignment.
+
+- **`break` and `continue` take an optional loop name.** `continue x` abandons
+  the inner loop and resumes the loop over `x`; `break x` leaves it. The name
+  is a loop VARIABLE, so it only ever selects a `for` — a named flow travels
+  straight through any `while` or `do` in between, which have no name to match.
+  Naming a loop that does not enclose the statement is a located runtime error,
+  not a silent exit.
 
 - **`goto`/`gosub` work only inside functions.** At the top level they raise.
 

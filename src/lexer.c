@@ -395,10 +395,18 @@ Token lexer_next(Lexer *lexer) {
     case '<':
         if (match(lexer, '=')) return make_token(lexer, TOKEN_OP_LE, start, line, column);
         return make_token(lexer, TOKEN_OP_LT, start, line, column);
-    case '+': return make_token(lexer, TOKEN_PLUS, start, line, column);
-    case '-': return make_token(lexer, TOKEN_MINUS, start, line, column);
-    case '*': return make_token(lexer, TOKEN_STAR, start, line, column);
-    case '/': return make_token(lexer, TOKEN_SLASH, start, line, column);
+    case '+':
+        if (match(lexer, '=')) return make_token(lexer, TOKEN_PLUS_EQ, start, line, column);
+        return make_token(lexer, TOKEN_PLUS, start, line, column);
+    case '-':
+        if (match(lexer, '=')) return make_token(lexer, TOKEN_MINUS_EQ, start, line, column);
+        return make_token(lexer, TOKEN_MINUS, start, line, column);
+    case '*':
+        if (match(lexer, '=')) return make_token(lexer, TOKEN_STAR_EQ, start, line, column);
+        return make_token(lexer, TOKEN_STAR, start, line, column);
+    case '/':
+        if (match(lexer, '=')) return make_token(lexer, TOKEN_SLASH_EQ, start, line, column);
+        return make_token(lexer, TOKEN_SLASH, start, line, column);
     case '(': return make_token(lexer, TOKEN_LPAREN, start, line, column);
     case ')': return make_token(lexer, TOKEN_RPAREN, start, line, column);
     case '[': return make_token(lexer, TOKEN_LBRACKET, start, line, column);
@@ -486,6 +494,10 @@ const char *token_type_name(TokenType type) {
     case TOKEN_OP_NGE: return "OP_NGE";
     case TOKEN_OP_NLE: return "OP_NLE";
     case TOKEN_PLUS: return "PLUS";
+    case TOKEN_PLUS_EQ: return "PLUS_EQ";
+    case TOKEN_MINUS_EQ: return "MINUS_EQ";
+    case TOKEN_STAR_EQ: return "STAR_EQ";
+    case TOKEN_SLASH_EQ: return "SLASH_EQ";
     case TOKEN_MINUS: return "MINUS";
     case TOKEN_STAR: return "STAR";
     case TOKEN_SLASH: return "SLASH";
