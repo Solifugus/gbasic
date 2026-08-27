@@ -1,0 +1,56 @@
+-- fixed effect, against an independent computation
+ok   it pools
+ok   estimate
+ok   standard error
+ok   weights are inverse-variance, in percent
+ok   weights sum to 100
+
+-- heterogeneity is reported whichever model is asked for
+ok   Cochran's Q
+ok   its df
+ok   I squared
+ok   tau squared
+
+-- random effects (DerSimonian-Laird)
+ok   estimate
+ok   standard error
+ok   it is never narrower than fixed
+ok   the same heterogeneity is reported
+
+-- identical studies: an invariant, not a recorded number
+ok   no heterogeneity
+ok   I squared is zero
+ok   random and fixed coincide
+ok   and so do their errors
+ok   the estimate is the common effect
+
+-- RATIO MEASURES POOL ON THE LOG SCALE
+ok   pooled as plain numbers it reads as an effect
+ok   pooled on the log scale it is exactly none
+ok   the interval is back-transformed too
+ok   and the log-scale estimate is kept
+
+-- refusals
+ok   a non-positive variance is infinite weight
+ok   a study with neither variance nor se
+ok   fewer than two studies
+ok   an unknown model is named
+ok   an unknown scale is named
+ok   a non-positive ratio cannot be logged
+ok   a non-record study
+
+-- se is accepted in place of variance
+ok   same answer as the equivalent variances
+ok   and it agrees to 8 places
+
+-- smd_variance, the bridge from a reported d
+ok   variance of a standardized mean difference
+ok   a zero group size is refused
+
+-- Egger's test says when it cannot say much
+ok   it runs
+ok   and warns that 3 studies is too few
+ok   fewer than three is refused
+
+checks: 36
+mismatches: 0

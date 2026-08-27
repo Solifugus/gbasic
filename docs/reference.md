@@ -3557,6 +3557,32 @@ General-purpose:
   `docs/cookbook_social_behavioral.md` and `docs/cookbook_econometrics_finance.md`).
 - `crypto` — ergonomic cryptography compositions over the crypto builtins
   (see [Cryptography](#cryptography) and `docs/crypto_design.md`).
+- `stats` also carries **survival analysis** — `kaplan_meier(times, events)`
+  with Greenwood standard errors and confidence bands, `survival_at(km, t)`,
+  and `logrank` for comparing two groups. Time-to-event where for some subjects
+  the event has not happened *yet*: medicine, reliability engineering, churn,
+  credit default. **Censoring is not optional and not inferable** — every
+  function takes durations *with* an event indicator, because dropping censored
+  subjects understates survival (only failures remain) and counting them as
+  events understates it differently (failures that never happened); on the
+  standard leukaemia trial those two shortcuts give medians of 10 and 16 where
+  the answer is 23. A subject censored at time *t* counts as at risk for the
+  event at *t*, which is a real convention and a stated one. `median` is
+  `unknown` when the curve never reaches 0.5, rather than the largest observed
+  time.
+
+- `stats` also carries **meta-analysis** — `meta_analysis(studies, spec)` with
+  fixed-effect (inverse-variance) and random-effects (DerSimonian–Laird)
+  pooling, always reported beside the heterogeneity (Cochran's Q, I², τ²),
+  plus `smd_variance` to turn a reported *d* into the variance pooling needs
+  and `eggers_test` for funnel asymmetry. **Ratio measures pool on the log
+  scale** — an odds, risk or hazard ratio is multiplicative, so 0.5 and 2.0 are
+  the same effect in opposite directions and averaging them as plain numbers
+  gives 1.25, which reads as a 25% harm where the truth is none. Pass
+  `scale: "ratio"` and the estimate and interval are back-transformed; nothing
+  guesses, because a set of ratios and a set of raw differences are both just
+  numbers.
+
 - `stats` also carries **event studies** — `event_window(dates, event, pre,
   post)`, `abnormal_returns(asset_r, market_r, spec)` and
   `event_study(studies)`. The standard tool of empirical finance, and what

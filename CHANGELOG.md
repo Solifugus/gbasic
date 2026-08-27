@@ -9,6 +9,30 @@ language surface may still change between releases.
 
 ## Unreleased
 
+- **Survival analysis in `stats`** — `kaplan_meier` (with Greenwood standard
+  errors and bands), `survival_at`, `logrank`. Verified against the *published*
+  results of the Freireich 1963 leukaemia trial rather than against itself:
+  median remission 23 weeks versus 8 on placebo, S(10) = 0.7529, S(23) =
+  0.4482, log-rank χ² = 16.79.
+
+  **Censoring is the subject.** Both ways of avoiding it are wrong and neither
+  announces itself — on that same trial, dropping censored subjects gives a
+  median of 10 and counting them as events gives 16, where the answer is 23.
+  The event indicator is therefore required, not inferred. A median that the
+  curve never reaches is `unknown`, not the largest observed time.
+
+- **Meta-analysis in `stats`** — `meta_analysis`, `smd_variance`,
+  `eggers_test`. Fixed-effect and random-effects (DerSimonian–Laird) pooling,
+  always reported beside Cochran's Q, I² and τ², because a pooled estimate over
+  wildly heterogeneous studies is a precise summary of nothing.
+
+  **Ratio measures pool on the log scale.** An odds, risk or hazard ratio is
+  multiplicative: 0.5 and 2.0 are the same effect in opposite directions, so
+  the true pooled effect is *none*, yet averaged as plain numbers they give
+  1.25 — a 25% apparent harm. Nothing can detect the mistake from the values,
+  so `scale: "ratio"` is explicit and back-transforms the estimate and its
+  interval.
+
 - **Event studies in `stats`** — `event_window`, `abnormal_returns` and
   `event_study`. The method that turns an EDGAR filing date into a testable
   claim: estimate a normal-return model (market, market-adjusted or mean)

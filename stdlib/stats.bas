@@ -7468,4 +7468,520 @@ library stats
                  message: "", note: note }
     end function
 
+    ' --- Meta-analysis -------------------------------------------------------
+    '
+    ' Combining findings ACROSS studies -- medicine's central quantitative tool
+    ' and increasingly social science's. It needs almost nothing new here: the
+    ' effect sizes it pools (`cohens_d`, `hedges_g`, `odds_ratio`) already
+    ' exist, and what was missing was the pooling itself and the heterogeneity
+    ' that decides whether pooling was defensible at all.
+    '
+    ' A study enters as an ESTIMATE and its VARIANCE. `odds_ratio` already
+    ' returns `log_or_se`, whose square is the variance on the log scale;
+    ' `smd_variance` below supplies it for a standardized mean difference,
+    ' which is what a paper reports as d or g.
+    '
+    ' THE TRAP THAT MATTERS MOST: RATIO MEASURES POOL ON THE LOG SCALE. An odds
+    ' ratio, a risk ratio and a hazard ratio are multiplicative -- 0.5 and 2.0
+    ' are the same size of effect in opposite directions, and their arithmetic
+    ' mean is 1.25, which reads as a modest harm where the truth is none at
+    ' all. Pooling raw ratios produces a number that is wrong and looks
+    ' entirely ordinary. There is no way to detect the mistake from the values
+    ' (a set of ratios and a set of raw differences are both just numbers), so
+    ' `scale: "ratio"` is offered explicitly: it pools the LOGS and
+    ' back-transforms the estimate and its interval.
+
+    ' Variance of a standardized mean difference (Cohen's d or Hedges' g), from
+    ' the effect and the two group sizes -- which is what a paper reports.
+    function smd_variance(d, n1, n2)
+        if n1 < 1 or n2 < 1 then
+            return unknown
+        end if
+        return (n1 + n2) / (n1 * n2) + (d * d) / (2 * (n1 + n2))
+    end function
+
+    ' `studies`: an array of records carrying `effect` and either `variance` or
+    ' `se`. `spec`: { model: "fixed" | "random", scale: "identity" | "ratio" }.
+    '
+    ' Returns the pooled estimate with its interval and test, ALWAYS beside the
+    ' heterogeneity statistics -- Q, its df, I-squared and tau-squared -- because
+    ' a pooled estimate over wildly heterogeneous studies is a precise summary
+    ' of nothing, and reporting it without them invites exactly that reading.
+    function meta_analysis(studies, spec)
+        if not is_array(studies) then
+            return { ok: false, message: "meta_analysis expects an array of study records" }
+        end if
+        model = "random"
+        if has(spec, "model") then
+            model = spec.model
+        end if
+        if model != "fixed" and model != "random" then
+            return { ok: false, message: "meta_analysis: unknown model '" + string(model) + "' (fixed, random)" }
+        end if
+        scale = "identity"
+        if has(spec, "scale") then
+            scale = spec.scale
+        end if
+        if scale != "identity" and scale != "ratio" then
+            return { ok: false, message: "meta_analysis: unknown scale '" + string(scale) + "' (identity, ratio)" }
+        end if
+
+        ys = []
+        vs = []
+        idx = 0
+        for each st in studies
+            if not is_record(st) then
+                return { ok: false, message: "meta_analysis: study " + string(idx) + " is not a record" }
+            end if
+            if not has(st, "effect") then
+                return { ok: false, message: "meta_analysis: study " + string(idx) + " has no effect" }
+            end if
+            v = unknown
+            if has(st, "variance") then
+                v = st.variance
+            else
+                if has(st, "se") then
+                    v = st.se * st.se
+                end if
+            end if
+            if is_unknown(v) then
+                return { ok: false, message: "meta_analysis: study " + string(idx) + " has neither variance nor se" }
+            end if
+            ' A zero or negative variance is infinite weight: that one study
+            ' would silently become the entire result.
+            if v <= 0 then
+                return { ok: false, message: "meta_analysis: study " + string(idx) + " has a variance of " + string(v) + "; a non-positive variance is infinite weight" }
+            end if
+            e = st.effect
+            if scale = "ratio" then
+                if e <= 0 then
+                    return { ok: false, message: "meta_analysis: study " + string(idx) + " has a ratio effect of " + string(e) + "; a ratio must be positive to be pooled on the log scale" }
+                end if
+                e = log(e)
+            end if
+            append(ys, e)
+            append(vs, v)
+            idx = idx + 1
+        next st
+
+        k = len(ys)
+        if k < 2 then
+            return { ok: false, message: "meta_analysis: needs at least 2 studies, got " + string(k) }
+        end if
+
+        ' --- fixed-effect (inverse variance), which the heterogeneity needs
+        sw = 0
+        swy = 0
+        sw2 = 0
+        i = 0
+        while i < k
+            w = 1 / vs[i]
+            sw = sw + w
+            swy = swy + w * ys[i]
+            sw2 = sw2 + w * w
+            i = i + 1
+        end while
+        fixed = swy / sw
+
+        ' --- heterogeneity: Cochran's Q, I-squared, DerSimonian-Laird tau-squared
+        q = 0
+        i = 0
+        while i < k
+            w = 1 / vs[i]
+            dlt = ys[i] - fixed
+            q = q + w * dlt * dlt
+            i = i + 1
+        end while
+        df = k - 1
+        isq = 0
+        if q > df and q > 0 then
+            isq = (q - df) / q * 100
+        end if
+        cc = sw - sw2 / sw
+        tau2 = 0
+        if cc > 0 and q > df then
+            tau2 = (q - df) / cc
+        end if
+
+        ' --- the requested model
+        if model = "fixed" then
+            est = fixed
+            se = sqrt(1 / sw)
+            weights = []
+            i = 0
+            while i < k
+                append(weights, (1 / vs[i]) / sw * 100)
+                i = i + 1
+            end while
+        else
+            rw = 0
+            rwy = 0
+            i = 0
+            while i < k
+                w = 1 / (vs[i] + tau2)
+                rw = rw + w
+                rwy = rwy + w * ys[i]
+                i = i + 1
+            end while
+            est = rwy / rw
+            se = sqrt(1 / rw)
+            weights = []
+            i = 0
+            while i < k
+                append(weights, (1 / (vs[i] + tau2)) / rw * 100)
+                i = i + 1
+            end while
+        end if
+
+        z = 1.959963984540054
+        lo = est - z * se
+        hi = est + z * se
+        zstat = est / se
+        pv = 2 * (1 - normal_cdf(abs(zstat), 0, 1))
+
+        ' Q is tested against chi-square on k-1 df. Reported, and deliberately
+        ' NOT used to pick the model: choosing fixed-versus-random after seeing
+        ' the heterogeneity is a decision about the data made from the data.
+        qp = 1 - chi2_cdf(q, df)
+
+        out_est = est
+        out_lo = lo
+        out_hi = hi
+        if scale = "ratio" then
+            out_est = exp(est)
+            out_lo = exp(lo)
+            out_hi = exp(hi)
+        end if
+
+        return { ok: true, model: model, scale: scale, k: k,
+                 estimate: out_est, ci_low: out_lo, ci_high: out_hi,
+                 log_estimate: est, se: se, z: zstat, p: pv,
+                 q: q, df: df, q_p: qp, i_squared: isq, tau_squared: tau2,
+                 weights: weights, message: "" }
+    end function
+
+    ' Egger's test for funnel-plot asymmetry -- the usual small-study /
+    ' publication-bias check. Regresses the standardized effect on its
+    ' precision; an intercept far from zero is the asymmetry.
+    '
+    ' Reported, never interpreted for you: asymmetry has several causes besides
+    ' publication bias (true small-study effects, poor methods in small trials),
+    ' and the test is weak below about ten studies -- which it says.
+    function eggers_test(studies)
+        ys = []
+        ses = []
+        for each st in studies
+            if is_record(st) then
+                v = unknown
+                if has(st, "variance") then
+                    v = st.variance
+                else
+                    if has(st, "se") then
+                        v = st.se * st.se
+                    end if
+                end if
+                if not is_unknown(v) and v > 0 then
+                    append(ys, st.effect)
+                    append(ses, sqrt(v))
+                end if
+            end if
+        next st
+        k = len(ys)
+        if k < 3 then
+            return { ok: false, message: "eggers_test: needs at least 3 studies, got " + string(k) }
+        end if
+        snd = []
+        prec = []
+        i = 0
+        while i < k
+            append(snd, ys[i] / ses[i])
+            append(prec, 1 / ses[i])
+            i = i + 1
+        end while
+        fit = ols(snd, prec)
+        if is_unknown(fit) then
+            return { ok: false, message: "eggers_test: the regression did not fit" }
+        end if
+        note = ""
+        if k < 10 then
+            note = "with " + string(k) + " studies this test has little power; below about 10 it is not informative"
+        end if
+        return { ok: true, k: k, intercept: fit.coefficients[0],
+                 se: fit.std_errors[0], t: fit.t_values[0], p: fit.p_values[0],
+                 slope: fit.coefficients[1], note: note, message: "" }
+    end function
+
+    ' --- Survival analysis ---------------------------------------------------
+    '
+    ' Time until something happens, when for some subjects it has not happened
+    ' YET. That last clause is the whole subject: medicine (death, relapse),
+    ' engineering (failure), business (churn, default) all share it, and none
+    ' of the ordinary tools handle it.
+    '
+    ' CENSORING IS THE POINT, AND BOTH WAYS OF IGNORING IT ARE WRONG. A subject
+    ' still alive at the end of the study has not survived "35 weeks and then
+    ' died" -- only "at least 35 weeks". Drop those subjects and the estimate
+    ' is pessimistic (you keep only the ones who failed); count them as events
+    ' and it is worse (you invent failures that never happened). Kaplan-Meier
+    ' exists to use exactly what is known: they were at risk up to their
+    ' censoring time and contribute nothing after it.
+    '
+    ' So `events` is not optional and not inferable. Every function here takes
+    ' durations WITH an event indicator -- 1 or true where the event happened,
+    ' 0 or false where the subject was censored -- and refuses a length
+    ' mismatch rather than assuming the tail is one or the other.
+    '
+    ' TIES BETWEEN AN EVENT AND A CENSORING AT THE SAME TIME follow the usual
+    ' convention: a subject censored at time t is counted as AT RISK for the
+    ' event at t. It is a real choice, it changes the estimate, and it is
+    ' stated rather than left in the code.
+
+    function _surv_check(times, events)
+        if not is_array(times) or not is_array(events) then
+            return "survival: times and events must be arrays"
+        end if
+        if len(times) != len(events) then
+            return "survival: " + string(len(times)) + " times but " + string(len(events)) + " event flags"
+        end if
+        if len(times) = 0 then
+            return "survival: no observations"
+        end if
+        i = 0
+        while i < len(times)
+            if times[i] < 0 then
+                return "survival: observation " + string(i) + " has a negative time"
+            end if
+            i = i + 1
+        end while
+        return ""
+    end function
+
+    function _is_event(v)
+        if is_boolean(v) then
+            return v
+        end if
+        return v != 0
+    end function
+
+    ' The distinct times at which an EVENT occurred, ascending.
+    function _event_times(times, events)
+        seen = []
+        i = 0
+        while i < len(times)
+            if _is_event(events[i]) then
+                if not contains(seen, times[i]) then
+                    append(seen, times[i])
+                end if
+            end if
+            i = i + 1
+        end while
+        return sort(seen)
+    end function
+
+    ' Kaplan-Meier product-limit estimator.
+    '
+    '   { ok, times[], survival[], at_risk[], events[], censored[], se[],
+    '     lower[], upper[], median, median_reached, n, n_events, message }
+    '
+    ' `median` is `unknown` when the curve never reaches 0.5, and
+    ' `median_reached` says so. Reporting the largest observed time instead --
+    ' which is what happens if you take the last row and call it the median --
+    ' understates survival by however long the study happened to run, and looks
+    ' like a perfectly ordinary number.
+    function kaplan_meier(times, events)
+        why = _surv_check(times, events)
+        if why != "" then
+            return { ok: false, message: why }
+        end if
+
+        n = len(times)
+        ets = _event_times(times, events)
+        surv = 1
+        out_t = []
+        out_s = []
+        out_risk = []
+        out_d = []
+        out_c = []
+        out_se = []
+        out_lo = []
+        out_hi = []
+        gw = 0
+        total_events = 0
+
+        for each t in ets
+            ' At risk: everyone whose time is >= t. A subject censored exactly
+            ' at t IS at risk for the event at t -- the stated convention.
+            at_risk = 0
+            d = 0
+            cens = 0
+            i = 0
+            while i < n
+                if times[i] >= t then
+                    at_risk = at_risk + 1
+                end if
+                if times[i] = t then
+                    if _is_event(events[i]) then
+                        d = d + 1
+                    else
+                        cens = cens + 1
+                    end if
+                end if
+                i = i + 1
+            end while
+
+            surv = surv * (1 - d / at_risk)
+            total_events = total_events + d
+
+            ' Greenwood's formula for the variance of the estimate.
+            if at_risk > d then
+                gw = gw + d / (at_risk * (at_risk - d))
+            end if
+            se = surv * sqrt(gw)
+
+            z = 1.959963984540054
+            lo = surv - z * se
+            hi = surv + z * se
+            if lo < 0 then
+                lo = 0
+            end if
+            if hi > 1 then
+                hi = 1
+            end if
+
+            append(out_t, t)
+            append(out_s, surv)
+            append(out_risk, at_risk)
+            append(out_d, d)
+            append(out_c, cens)
+            append(out_se, se)
+            append(out_lo, lo)
+            append(out_hi, hi)
+        next t
+
+        ' Median: the FIRST time at which survival drops to 0.5 or below. If
+        ' the curve never gets there the median does not exist, and saying so
+        ' is the only honest answer.
+        med = unknown
+        reached = false
+        i = 0
+        while i < len(out_s)
+            if out_s[i] <= 0.5 and not reached then
+                med = out_t[i]
+                reached = true
+            end if
+            i = i + 1
+        end while
+
+        return { ok: true, times: out_t, survival: out_s, at_risk: out_risk,
+                 events: out_d, censored: out_c, se: out_se,
+                 lower: out_lo, upper: out_hi,
+                 median: med, median_reached: reached,
+                 n: n, n_events: total_events, message: "" }
+    end function
+
+    ' Survival at an arbitrary time: the step function, read at t. Before the
+    ' first event it is 1; between events it holds its last value.
+    function survival_at(km, t)
+        if not km.ok then
+            return unknown
+        end if
+        s = 1
+        i = 0
+        while i < len(km.times)
+            if km.times[i] <= t then
+                s = km.survival[i]
+            end if
+            i = i + 1
+        end while
+        return s
+    end function
+
+    ' Log-rank test: do two groups have the same survival?
+    '
+    ' At each event time it compares the events OBSERVED in group A against
+    ' those EXPECTED under the null that both groups share one hazard, and
+    ' accumulates. The pooled risk sets are what make censored subjects count
+    ' for exactly as long as they were observed.
+    '
+    ' ASSUMES PROPORTIONAL HAZARDS. Where the curves CROSS -- one group better
+    ' early and worse later -- the differences cancel and the test can report
+    ' no difference between two survival experiences that are nothing alike.
+    ' That is a property of the test, not a bug, and it is the reason to look
+    ' at the curves as well as the p-value.
+    function logrank(times_a, events_a, times_b, events_b)
+        why = _surv_check(times_a, events_a)
+        if why != "" then
+            return { ok: false, message: "logrank group A: " + why }
+        end if
+        why = _surv_check(times_b, events_b)
+        if why != "" then
+            return { ok: false, message: "logrank group B: " + why }
+        end if
+
+        all_t = []
+        for each t in _event_times(times_a, events_a)
+            if not contains(all_t, t) then
+                append(all_t, t)
+            end if
+        next t
+        for each t in _event_times(times_b, events_b)
+            if not contains(all_t, t) then
+                append(all_t, t)
+            end if
+        next t
+        all_t = sort(all_t)
+
+        obs_a = 0
+        exp_a = 0
+        var_sum = 0
+        obs_b = 0
+
+        for each t in all_t
+            na = 0
+            da = 0
+            i = 0
+            while i < len(times_a)
+                if times_a[i] >= t then
+                    na = na + 1
+                end if
+                if times_a[i] = t and _is_event(events_a[i]) then
+                    da = da + 1
+                end if
+                i = i + 1
+            end while
+            nb = 0
+            db = 0
+            i = 0
+            while i < len(times_b)
+                if times_b[i] >= t then
+                    nb = nb + 1
+                end if
+                if times_b[i] = t and _is_event(events_b[i]) then
+                    db = db + 1
+                end if
+                i = i + 1
+            end while
+
+            nt = na + nb
+            dt = da + db
+            if nt > 1 and dt > 0 then
+                obs_a = obs_a + da
+                obs_b = obs_b + db
+                exp_a = exp_a + na * dt / nt
+                var_sum = var_sum + (na * nb * dt * (nt - dt)) / (nt * nt * (nt - 1))
+            end if
+        next t
+
+        if var_sum <= 0 then
+            return { ok: false, message: "logrank: no comparable event times in the two groups" }
+        end if
+
+        chi = (obs_a - exp_a) * (obs_a - exp_a) / var_sum
+        pv = 1 - chi2_cdf(chi, 1)
+        return { ok: true, chi_squared: chi, df: 1, p: pv,
+                 observed_a: obs_a, expected_a: exp_a,
+                 observed_b: obs_b, expected_b: obs_a + obs_b - exp_a,
+                 variance: var_sum, message: "" }
+    end function
+
 end library

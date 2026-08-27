@@ -1,0 +1,63 @@
+-- Kaplan-Meier against the published trial
+ok   it estimates
+ok   21 subjects
+ok   9 relapses, the rest censored
+ok   median remission is 23 weeks
+ok   and it was reached
+ok   S(10) matches the textbook
+ok   S(23) matches the textbook
+
+-- the curve's own structure
+ok   the first event time is week 6
+ok   all 21 are at risk then
+ok   3 relapse at week 6
+ok   1 is censored at week 6
+ok   so S(6) is 1 - 3/21
+ok   survival never increases
+ok   before the first event survival is 1
+
+-- the placebo arm
+ok   every placebo subject relapsed
+ok   median 8 weeks, as published
+
+-- log-rank against the published chi-square
+ok   it runs
+ok   chi-square 16.79 as published
+ok   on 1 degree of freedom
+ok   p is far below 0.0001
+ok   9 relapses observed on 6-MP
+ok   many more expected under the null
+ok   observed and expected totals agree
+ok   a group against itself gives chi-square 0
+
+-- CENSORING, done wrong on purpose
+ok   dropping censored subjects understates survival
+ok   counting them as events also understates it
+ok   only the correct handling gives 23
+
+-- a median that does not exist
+ok   the median is unknown, not the last time
+ok   and it says it was never reached
+ok   the curve is still returned
+
+-- Greenwood standard errors
+ok   an error accompanies every point
+ok   intervals are clamped into [0,1]
+ok   Greenwood SE at week 6
+ok   Greenwood SE at week 7
+ok   Greenwood SE at week 10
+ok   it accumulates, never shrinking
+
+-- the median when survival lands EXACTLY on 0.5
+ok   S is exactly one half at week 10
+ok   so the median is 10, not 20
+
+-- refusals
+ok   mismatched lengths
+ok   a negative time
+ok   no observations
+ok   log-rank checks both groups
+ok   no events at all
+
+checks: 43
+mismatches: 0
