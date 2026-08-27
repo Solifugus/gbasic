@@ -12,3 +12,8 @@ abtest lift 0.333 p 0.0287 sig true
 mediation indirect 0.671 direct 0.302
 moderation intr_p 0.3628 slope_hi 1.16
 power2 0.478 n_needed 64
+survival median 23 S(10) 0.7529
+logrank chi2 16.79 p 4.2e-05
+cox hr 0.221 p 0.00023
+meta pooled 0.3434 I2 28.7 Q p 0.2301
+factors ok true two clean blocks true variance explained 99.152

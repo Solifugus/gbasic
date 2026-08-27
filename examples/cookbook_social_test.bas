@@ -75,4 +75,83 @@ program demo(args)
 
     ' ---- Design: power and required sample size ----
     print("power2 " + string(round(power_ttest(0.5, 30, 0.05, 2), 3)) + " n_needed " + string(sample_size_ttest(0.5, 0.8, 0.05, 2)))
+
+    ' ---- Survival: time to event, with censoring carried explicitly ----
+    ' The Freireich 1963 leukaemia trial. The `+` cases in the paper are
+    ' censored -- still in remission when observation stopped -- and the event
+    ' indicator is what keeps them from being read as relapses.
+    tt = [6, 6, 6, 6, 7, 9, 10, 10, 11, 13, 16, 17, 19, 20, 22, 23, 25, 32, 32, 34, 35]
+    ee = [1, 1, 1, 0, 1, 0,  1,  0,  0,  1,  1,  0,  0,  0,  1,  1,  0,  0,  0,  0,  0]
+    ct = [1, 1, 2, 2, 3, 4, 4, 5, 5, 8, 8, 8, 8, 11, 11, 12, 12, 15, 17, 22, 23]
+    ce = [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,  1,  1,  1,  1,  1,  1,  1,  1]
+    km = kaplan_meier(tt, ee)
+    print("survival median " + string(km.median) + " S(10) " + string(round(survival_at(km, 10), 4)))
+    lr2 = logrank(tt, ee, ct, ce)
+    print("logrank chi2 " + string(round(lr2.chi_squared, 2)) + " p " + string(round(lr2.p, 6)))
+    grp = []
+    for each v in tt
+        append(grp, 1)
+    next v
+    for each v in ct
+        append(grp, 0)
+    next v
+    alltimes = []
+    allev = []
+    for each v in tt
+        append(alltimes, v)
+    next v
+    for each v in ct
+        append(alltimes, v)
+    next v
+    for each v in ee
+        append(allev, v)
+    next v
+    for each v in ce
+        append(allev, v)
+    next v
+    cx = cox_ph(alltimes, allev, [grp])
+    print("cox hr " + string(round(cx.hazard_ratios[0], 3)) + " p " + string(round(cx.p_values[0], 5)))
+
+    ' ---- Meta-analysis: pool studies, and report the heterogeneity beside it ----
+    studies = [{ effect: 0.30, variance: 0.010 }, { effect: 0.45, variance: 0.015 },
+               { effect: 0.20, variance: 0.008 }, { effect: 0.55, variance: 0.020 },
+               { effect: 0.35, variance: 0.012 }]
+    ma = meta_analysis(studies, { model: "random" })
+    print("meta pooled " + string(round(ma.estimate, 4)) + " I2 " + string(round(ma.i_squared, 1)) + " Q p " + string(round(ma.q_p, 4)))
+
+    ' ---- Factor analysis: latent structure, not a summary of the variables ----
+    ' Six items, the first three driven by one latent factor and the last three
+    ' by another; a correct fit recovers exactly that block pattern.
+    c1 = []
+    c2 = []
+    c3 = []
+    c4 = []
+    c5 = []
+    c6 = []
+    i = 0
+    while i < 120
+        fa1 = mod(i * 7, 11) - 5
+        fa2 = mod(i * 3, 13) - 6
+        append(c1, fa1 + 0.3 * (mod(i, 5) - 2))
+        append(c2, 0.9 * fa1 + 0.3 * (mod(i * 2, 5) - 2))
+        append(c3, 1.1 * fa1 + 0.3 * (mod(i * 4, 5) - 2))
+        append(c4, fa2 + 0.3 * (mod(i * 3, 5) - 2))
+        append(c5, 0.8 * fa2 + 0.3 * (mod(i * 5, 5) - 2))
+        append(c6, 1.2 * fa2 + 0.3 * (mod(i * 6, 5) - 2))
+        i += 1
+    end while
+    fa = factor_analysis([c1, c2, c3, c4, c5, c6], { factors: 2, rotate: "varimax" })
+    ' Which factor each item leads on. Rotation does not promise an ORDER, so
+    ' the property to check is the BLOCK PATTERN -- items 1-3 together, items
+    ' 4-6 together, and the two groups apart -- never "item 1 is on factor 1".
+    lead = []
+    for each row in fa.loadings
+        pick = 0
+        if abs(row[1]) > abs(row[0]) then
+            pick = 1
+        end if
+        append(lead, pick)
+    next row
+    block = lead[0] = lead[1] and lead[1] = lead[2] and lead[3] = lead[4] and lead[4] = lead[5] and lead[0] != lead[3]
+    print("factors ok " + string(fa.ok) + " two clean blocks " + string(block) + " variance explained " + string(round(fa.variance_explained[0] + fa.variance_explained[1], 3)))
 end program

@@ -151,7 +151,121 @@ the GARCH parameters. `alpha` is the reaction to shocks, `beta` the persistence
 of past variance; `alpha + beta` close to 1 means volatility shocks decay slowly.
 (GARCH is verified against the `arch` package.)
 
-## 9. A typical workflow
+## 9. Where the prices come from
+
+Everything above starts from a price series, and `market` is what produces one:
+
+```basic
+load market
+m = market.tiingo(env("TIINGO_KEY"))      ' or market.stooq() -- no key needed
+start{date}  = "2024-01-01"
+finish{date} = "2024-12-31"
+r = market.daily(m, "MSFT", start, finish)
+if r.ok then
+    prices = r.frame["close"]              ' the flat list every recipe above wants
+end if
+```
+`daily` returns `{ok, frame, adjusted, message}` — a **failure is a value, not a
+raise**, because an unknown symbol and a dead network are ordinary outcomes here.
+
+**Two traps, both of which produce ordinary-looking numbers rather than errors:**
+- **Order.** Providers disagree about oldest-first versus newest-first. On a
+  reversed series `simple_returns` returns the **negated** sequence — every sign
+  wrong, nothing else out of place. Rows are always sorted ascending by date.
+- **Adjustment.** A 2-for-1 split halves the raw close, so returns computed from
+  unadjusted prices read as a −50% day. `r.adjusted` reports what the provider
+  actually supplies; it is never assumed. Where an adjusted series exists it is
+  used for **every** price column, not just the close — mixing an adjusted close
+  with raw highs and lows puts the columns on different scales.
+
+For tests, `market.offline(m, dir)` replays committed fixtures so nothing
+touches the network.
+
+## 10. Event studies: did the announcement move the stock?
+
+Fit a normal-return model *before* an event, then measure the residual across
+it. This is what turns a filing date into a testable claim:
+
+```basic
+w  = event_window(dates, event_date, 5, 5)       ' 5 TRADING days either side
+ev = abnormal_returns(asset_r, market_r, { event: 150, pre: 1, post: 1, estimation: 120 })
+ev.alpha   ev.beta   ev.ar   ev.car              ' the model, and the abnormal return
+agg = event_study([ev1, ev2, ev3])               ' pool events -> CAAR + t-test
+agg.caar   agg.t   agg.p   agg.n   agg.contaminated
+```
+Windows count **trading days** — they index the dates the series actually has,
+so a weekend cannot shorten one. An event on a closed day moves to the next
+trading day and `shifted` says so. Three things are **refused** rather than
+answered: an estimation window overlapping its own event window, a CAAR over
+windows of unequal width, and an unknown model name. Clustered events whose
+baselines contain each other are **reported** (`contaminated`, `note`) rather
+than refused, because clustering is sometimes unavoidable.
+
+**Report:** the estimation window and model, CAR (or CAAR) with its *t* and *p*,
+the number of events, and any contamination.
+
+## 11. Causal inference: did X cause Y, or merely move with it?
+
+Two designs, and one warning that applies to both: **the coefficient can be
+right while the standard error is wrong**, and the wrong one is the flattering
+one. Nothing about the output looks off.
+
+**Difference-in-differences** — compare a treated group's before/after against
+an untreated group's:
+
+```basic
+d = did(y, treated, post, { cluster: unit_id })
+d.att   d.std_error   d.p_value   d.conf_low   d.conf_high
+d.means      ' the four cells: control_pre/post, treated_pre/post
+```
+With no covariates the coefficient **is** the four-cell arithmetic
+`(treated_post − treated_pre) − (control_post − control_pre)`, and `means`,
+`diff_in_means` and `saturated` let you check it by hand.
+
+**Cluster your standard errors.** On serially correlated panel data the
+conventional error is badly understated (Bertrand, Duflo & Mullainathan 2004) —
+in the library's own test panel it is 3.2× too small, reporting *p* < 0.001
+where clustering reports *p* > 0.10 on an identical estimate. Pass `cluster:`
+with one id per row.
+
+**Parallel trends is an assumption and `did` does not test it** — it cannot,
+since it is a claim about what the treated group *would* have done. What you
+can test is whether the groups moved together *before* treatment:
+
+```basic
+pt = pre_trends(y, treated, period, treat_start)
+pt.f_stat   pt.p_value   pt.leads   pt.periods
+```
+A large *p* here is the **absence of evidence against** parallel trends over
+however many pre-periods you happen to have — not evidence for it. The returned
+`note` says so.
+
+**Instrumental variables** — use a variable that moves X but not Y directly:
+
+```basic
+iv = iv_2sls(y, endog, instruments, { exog: controls })
+iv.estimate   iv.std_error   iv.p_value
+iv.first_stage[0].f_stat      ' below ~10 the instrument is weak
+iv.weak   iv.sargan   iv.wu_hausman
+```
+**Do not run this as two `ols` calls.** Fitting *x* on *z* and then *y* on *x̂*
+gives the identical point estimate and measures residuals against *x̂*; the
+model's residuals are against the **original** *x*. On two datasets differing
+only in the *sign* of the confounding, the naive standard error comes out 1.78×
+too large and 2.7× too small — it is not conservative, and which way it errs
+depends on something you cannot observe.
+
+Read the diagnostics: `first_stage` (a weak instrument biases 2SLS toward OLS
+and its interval under-covers), `sargan` (present only when there are more
+instruments than endogenous regressors — with exact identification there is
+nothing to test), and `wu_hausman` (whether the regressor was endogenous at all;
+if not, plain OLS was fine).
+
+**Report:** the design, the estimate with its *clustered* or 2SLS standard
+error, the first-stage F, and — for DiD — the pre-trend test with its honest
+caveat.
+
+## 12. A typical workflow
 
 1. **Prices → returns** (`log_returns`), describe with §2 metrics.
 2. **Stationarity** (`adf_test`); difference until stationary (§6).
@@ -162,7 +276,11 @@ of past variance; `alpha + beta` close to 1 means volatility shocks decay slowly
 6. If volatility clusters, **add `garch_fit`**; if you only need robust
    regression inference, use `newey_west` (§4).
 
-## 10. Reporting quick reference
+For a **causal** question rather than a descriptive one, the sequence is
+different: establish the design first (§11), then worry about the standard
+error, then report the diagnostics that say whether the design held.
+
+## 13. Reporting quick reference
 
 | You have | Recipe | Headline numbers |
 |---|---|---|
@@ -178,11 +296,21 @@ of past variance; `alpha + beta` close to 1 means volatility shocks decay slowly
 | Unit root / stationarity | `adf_test` | ADF stat, *p*, crit |
 | Series dynamics | `arima_fit` + `arima_forecast` | (p,d,q), AIC, forecast |
 | Volatility clustering | `arch_lm` + `garch_fit` | ARCH *p*, α+β |
+| No price data yet | `market.daily` | frame, `adjusted` flag |
+| Event vs. announcement | `abnormal_returns` + `event_study` | CAR/CAAR, *t*, *p* |
+| Policy on/off, two groups | `did` (+ `cluster:`) | ATT, clustered SE, *p* |
+| Parallel-trends check | `pre_trends` | joint *F*, *p*, leads |
+| Endogenous regressor | `iv_2sls` | estimate, first-stage *F*, Sargan |
 
 ---
 
-*All results are verified numerically against SciPy / statsmodels (GARCH against
-the `arch` package). See `docs/statistics_scientist_plan.md` for method notes and
+*Results in §1–§8 are verified numerically against SciPy / statsmodels (GARCH
+against the `arch` package). §10–§11 are verified differently and deliberately
+so: their suites (`tests/run_event_study.sh`, `tests/run_causal.sh`) derive
+nearly every number a second, independent way rather than recording it, because
+both methods can be right in the estimate and wrong in the uncertainty — a
+golden would enshrine the wrong standard error. See
+`docs/statistics_scientist_plan.md` for method notes and
 `examples/cookbook_econ_test.bas` for the runnable version of every recipe above.
 Predictive machine learning (train/test, cross-validation, classifiers) is a
 separate track, intentionally out of scope here.*

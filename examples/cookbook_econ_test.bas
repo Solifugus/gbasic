@@ -57,4 +57,48 @@ program demo(args)
     ' ---- Whiteness of residuals (Ljung-Box / Durbin-Watson) ----
     lb = ljung_box(fit.residuals, 4)
     print("resid ljung_box p " + string(round(lb.p_value, 3)) + " dw " + string(round(durbin_watson(fit.residuals), 3)))
+
+    ' ---- Event study: did the announcement move the stock? ----
+    ' Constructed so the answer is known: the asset is exactly 1.5x the market
+    ' with a clean +4% shock on day 150, so a correct market model returns it.
+    mkt_r = []
+    ast_r = []
+    i = 0
+    while i < 200
+        mm = 0.001 * (mod(i, 7) - 3)
+        append(mkt_r, mm)
+        append(ast_r, 1.5 * mm)
+        i += 1
+    end while
+    ast_r[150] = ast_r[150] + 0.04
+    ev = abnormal_returns(ast_r, mkt_r, { event: 150, pre: 1, post: 1, estimation: 120 })
+    print("event beta " + string(round(ev.beta, 3)) + " car " + string(round(ev.car, 4)) + " window " + string(ev.window))
+
+    ' ---- Difference-in-differences: the estimate IS a difference of differences ----
+    dy = [10, 11, 12, 13, 20, 21, 26, 27]
+    dt = [0, 0, 0, 0, 1, 1, 1, 1]
+    dp = [0, 0, 1, 1, 0, 0, 1, 1]
+    dd = did(dy, dt, dp, {})
+    print("did att " + string(round(dd.att, 4)) + " cells " + string(round(dd.diff_in_means, 4)) + " saturated " + string(dd.saturated))
+
+    ' ---- Instrumental variables: OLS is biased, 2SLS is not ----
+    ' A confounder w moves both x and y, so OLS overstates the slope; z moves
+    ' only x, so it identifies the true 1.5.
+    zc = []
+    xc = []
+    yc = []
+    i = 0
+    while i < 60
+        zi = mod(i, 2)
+        w = 0.1 * (mod(i, 7) - 3)
+        xi = 1 + 2 * zi + w + 0.05 * (mod(i, 5) - 2)
+        append(zc, zi)
+        append(xc, xi)
+        append(yc, 3 + 1.5 * xi + 2 * w)
+        i += 1
+    end while
+    iv = iv_2sls(yc, xc, zc, {})
+    ob = ols(yc, xc)
+    print("iv est " + string(round(iv.estimate, 4)) + " vs ols " + string(round(ob.coefficients[1], 4)) + " firstF " + string(round(iv.first_stage[0].f_stat, 1)) + " weak " + string(iv.weak))
+    print("iv endogeneity p " + string(round(iv.wu_hausman.p_value, 4)) + " overid " + string(iv.overidentified))
 end program

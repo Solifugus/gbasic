@@ -253,6 +253,29 @@ for error handling, `ERRORS.md`.
   not the first; a source missing a required column is rejected by name rather
   than filled with blanks. → `examples/xlsx_cookbook/09_messy_sheet.bas`,
   `examples/xlsx_cookbook/11_frame_to_sqlite.bas`
+- **Statistics (`load stats`)** — descriptive and inferential statistics,
+  regression and the GLM suite, time series, finance metrics, survival
+  (Kaplan-Meier / log-rank / Cox), meta-analysis, factor analysis, event
+  studies and causal inference. Every function returns a RECORD, or `ok: false`
+  with a `message`, or `unknown` on degenerate input — check before reading a
+  field. Task-first guides: `docs/cookbook_social_behavioral.md` and
+  `docs/cookbook_econometrics_finance.md`.
+  → `examples/cookbook_social_test.bas`, `examples/cookbook_econ_test.bas`
+- **Causal inference is where the trap is** — `did` and `iv_2sls` can be RIGHT
+  IN THE COEFFICIENT and wrong in the standard error, and the wrong one is the
+  flattering one. Never hand-roll 2SLS as two `ols` calls: same estimate,
+  residuals measured against the fitted x instead of the real one, error off by
+  up to 2.7x in the direction that manufactures significance. On panel data
+  pass `cluster:` — conventional DiD errors are understated. `pre_trends` does
+  NOT test parallel trends (nothing can); it tests whether the groups moved
+  together beforehand, and its `note` says so. → `tests/causal_test.bas`
+- **Market data (`load market`)** — daily price history as a frame:
+  `market.daily(m, symbol, from, to)` → `{ok, frame, adjusted, message}`.
+  Failure is a VALUE, not a raise. Rows are always ascending by date, because a
+  reversed series yields NEGATED returns that look like ordinary data; and
+  `adjusted` reports what the provider supplies rather than being assumed,
+  because unadjusted prices across a split read as a -50% day. Use
+  `market.offline(m, dir)` in tests — never the network. → `tests/market_test.bas`
 - **Cryptography (builtins)** — password hashing and random tokens.
   → `examples/password_hash_test.bas`, `examples/secure_token_test.bas`
 - **Cryptography (`load crypto`)** — signed cookies, CSRF, JWT/HS256, flat JSON.

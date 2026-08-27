@@ -9,6 +9,43 @@ language surface may still change between releases.
 
 ## Unreleased
 
+- **Documentation sweep (2026-08-26)** — the statistics field expansion and
+  `market` existed only in `reference.md` and this file. Now in the two
+  task-first stats cookbooks (event studies, causal inference and price history
+  in econometrics & finance; survival/Cox, meta-analysis and factor analysis in
+  social & behavioral), in `README.md`'s feature surface, in `docs/ai/COOKBOOK.md`,
+  and in `docs/project_state.md`. Every new recipe is executed by
+  `examples/cookbook_econ_test.bas` / `examples/cookbook_social_test.bas`.
+
+  **Reserved words are documented for the first time.** There was no list in any
+  document — they were named one at a time, scattered across pages. Measured
+  against the binary rather than read: 47 keywords, of which 43 cannot be a
+  variable name and exactly four (`end`, `loop`, `next`, `until`) can; `server`,
+  `warning`, `default`, `resume` and `from` are not reserved. `reference.md`'s
+  old list was explicitly partial and omitted eleven.
+
+  **Three stale claims retired**, each contradicting shipped behaviour: "a raise
+  cannot be caught" in `reference.md` (frame-scoped `on error` shipped in
+  PLAT-ERR, and the sentence cited `docs/ai/ERRORS.md`, which already said so);
+  "records are an association list with linear field lookup" in
+  `project_state.md` (hash-indexed since PLAT-RECIDX); and the same phrasing in
+  `xlsx_design.md`, kept as history but dated so it cannot be read as current.
+
+  Audited by execution, not by reading — the lesson of the three reading sweeps
+  that each missed 163 lines of `#` comments. Every function named in both stats
+  cookbooks exists, and every documented `record.field` exists on the record its
+  function actually returns, checked across both cookbooks and `reference.md`.
+  That audit found four wrong field names, all in the new text: `agg.p_value`
+  (it is `agg.p`) and `km.std_errors` / `km.ci_low` / `km.ci_high` (they are
+  `se` / `lower` / `upper`).
+
+  Also fixed: `tests/run_doc_examples.sh` was briefly pointed at both stats
+  cookbooks, which caught a reserved-word bug in the new `market` recipe (`to`
+  as a variable) before backing out — those pages are API catalogues whose
+  field-listing lines are not valid gBASIC, and gating them would take 61
+  exemption markers or a rewrite that damages them. Recorded rather than
+  papered over.
+
 - **Causal inference in `stats`** — `did` and `pre_trends`
   (difference-in-differences) and `iv_2sls` (instrumental variables), with
   cluster-robust (CR1) and HC0–HC3 covariance available to both.

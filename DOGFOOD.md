@@ -2635,3 +2635,54 @@ depended on the coercion.
 siblings refuse", and it is invisible until a caller believes the answer. A
 sweep of the remaining builtin families for the same shape would be cheap and
 is not done.
+
+## 2026-08-26 — CC — while: a documentation sweep — `dim` is the one keyword a record cannot use as a field, and there was no list of reserved words anywhere
+
+**What I was doing.** Sweeping the docs after the statistics field expansion,
+and writing a `market.daily` recipe into the econometrics cookbook with a date
+range spelled `from` / `to`.
+
+**What was surprising, twice.**
+
+*First:* `to{date} = "2024-12-31"` is a parse error — `to` is reserved. That is
+entirely reasonable, but there was **no list of reserved words in any document**.
+The docs named them one at a time and scattered: `end` in a match-record note,
+`unwatch` in a 2026-08-20 bullet, `on` in a webserver aside, `stop` nowhere. The
+only stated rule was `reference.md`'s "Keywords include:" — an explicitly
+partial list of 36 that omitted `do`, `each`, `loop`, `new`, `next`, `nothing`,
+`spawn`, `true`, `false`, `unknown` and `until` — followed by "Some keyword
+tokens may be accepted as identifiers in specific grammar positions, such as
+`end` and `next`", which is true but leaves a reader unable to tell which.
+
+Measured rather than read: there are **47** keywords, and exactly **four** —
+`end`, `loop`, `next`, `until` — can be ordinary names. `server`, `warning`,
+`default`, `resume` and `from` are NOT reserved, which is worth stating too,
+since `CLAUDE.md` describes the `server` block as adding "exactly ONE reserved
+word, `server`" while `reference.md` says "Zero new reserved words" — the
+second is the one that matches the binary.
+
+*Second, and the actual defect:* every keyword is legal as a record field, in a
+literal and after a dot — that is documented (UNLEARN, 0.1.0-rc6) and it holds
+for 46 of them. **`dim` is the exception.** `r = { dim: 7 }` fails at
+**1:7** — the position of `dim` inside the literal — with
+
+```
+`dim` is not a gBASIC statement; assign to create a variable (x = 0)
+```
+
+so does `r.dim`. That message exists to help someone arriving from QBasic, and
+it is a good message; it simply fires in a position where no statement is
+possible and the word is an ordinary field name. `r["dim"]` works, which is what
+makes this a leak rather than a policy: the field is perfectly constructible,
+just not by the two spellings every other keyword accepts.
+
+**Worked around** by documenting it (reference.md "Reserved words", UNLEARN)
+rather than fixing it, because this was a documentation pass and the fix is a
+parser/lexer change that deserves its own tested commit. The shape is the same
+one `round` had on 2026-08-25: a neighbouring inconsistency across a family
+where nothing chose the odd one out.
+
+**Worth generalising.** A helpful diagnostic keyed on a bare word is a lexical
+decision wearing a syntactic message. The check should ask where the word
+appeared, not only what it was — and the same question is worth asking of any
+other "did you mean" diagnostics that match on a token rather than a position.

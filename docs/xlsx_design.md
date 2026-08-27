@@ -1148,8 +1148,10 @@ then checked I could handle the mess I invented. This is L2 pointed at 15,839
 real workbooks instead.
 
 *It did not run at all at first.* `grid.of` indexed cells in a RECORD keyed
-`"r,c"`, and a gBASIC record is a **linear-scan association list, not a hash
-map**, so building N fields costs O(N²) — measured, 2,000 inserts take 28 ms
+`"r,c"`, and a gBASIC record was then a **linear-scan association list, not a
+hash map** (PLAT-RECIDX later gave records a hash index; this paragraph records
+what was true on 2026-08-12 and the rebuild it forced, not what is true now), so
+building N fields cost O(N²) — measured, 2,000 inserts take 28 ms
 and 16,000 take 744 ms. A real 182,000-cell sheet is roughly 1.6×10¹⁰
 comparisons; the first workbook tried timed out at 120 s. Rebuilt as sparse
 per-row arrays (`rownos` ascending, `rowdata[i]` the cells of that row) with a

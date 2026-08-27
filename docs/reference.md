@@ -34,15 +34,33 @@ Water drips from the ceiling.
 A passage leads north."
 ```
 
-Keywords include:
+### Reserved words
+
+Keywords are matched **case-insensitively**. There are 47, and 43 of them cannot
+be used as a variable, parameter or function name:
 
 ```text
-if then else consider end print for to step while break continue function return dim as
-watch unwatch without watchers modifier goto gosub with and or not in
-program library load use export on error stop
+and       as        break     consider  continue  dim       do        each
+else      error     export    false     for       function  gosub     goto
+if        in        library   load      modifier  new       not       nothing
+on        or        print     program   return    spawn     step      stop
+then      to        true      unknown   unwatch   use       watch     watchers
+while     with      without
 ```
 
-Keywords are matched case-insensitively by the lexer. Some keyword tokens may be accepted as identifiers in specific grammar positions, such as `end` and `next` variable names.
+The remaining four — **`end`, `loop`, `next`, `until`** — are recovered as
+identifiers by the grammar and *may* be used as ordinary names. That is why
+closing a `for` with `next` costs no reserved word (see Statements).
+
+Words you might expect here and that are **not** reserved: `server`, `warning`,
+`default`, `resume`, `from`, and the `server` block's verbs. They are resolved
+by position or after the environment walk, so `default(a, b)` is an ordinary
+builtin call and `board.warning` is an ordinary field.
+
+**Every keyword is legal as a record field**, both in a literal and after a dot
+— `{ error: "none" }` and `r.error` both work — with one exception: **`dim`**,
+which is rejected in both positions by the "not a gBASIC statement" diagnostic
+even where no statement is possible. Use `r["dim"]`, which works.
 
 Operators and punctuation:
 
@@ -3184,9 +3202,10 @@ not is worse than a clear failure. `nothing` and `unknown` are deliberately NOT
 merged — `null` means "no value", while `unknown` is gBASIC's NA, "value not
 known", which JSON cannot express. Omit the field or convert it explicitly.
 
-Because a raise cannot be caught from a library frame (see `docs/ai/ERRORS.md`),
-preflight with **`json_encodable(value)`** — a side-effect-free predicate with the
-same rules — rather than trying to recover afterwards:
+A raise here *is* catchable — `on error` has been frame-scoped since PLAT-ERR
+(see `docs/ai/ERRORS.md`) — but preflighting with **`json_encodable(value)`**,
+a side-effect-free predicate with the same rules, still reads better than
+recovering afterwards, because it lets you branch instead of unwind:
 
 ```basic
 if json_encodable(payload) then

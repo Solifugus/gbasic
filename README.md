@@ -80,7 +80,13 @@ The standard library also ships three large pure-gBASIC toolkits:
   from every value rather than the first
 - a **statistics** library — descriptive and inferential statistics,
   regression and the GLM suite, mediation/moderation, time-series and
-  econometric diagnostics, and finance metrics
+  econometric diagnostics, finance metrics, **survival analysis** (Kaplan-Meier,
+  log-rank, Cox proportional hazards), **meta-analysis**, **exploratory factor
+  analysis**, **event studies**, and **causal inference** (difference-in-
+  differences and IV/2SLS) — the last of which exists because both designs can
+  be right in the coefficient and wrong in the standard error
+- a **market data** library — daily price history as a frame, which is the
+  input the finance and event-study code always needed and nothing produced
 - an **EDGAR securities-analysis suite** — SEC data acquisition, fundamentals,
   the forensic scorecard (accruals, Beneish, Piotroski, Altman, dilution,
   composite flags), ownership and insider analysis, MD&A extraction with an

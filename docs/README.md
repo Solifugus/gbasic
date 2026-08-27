@@ -37,8 +37,8 @@ Task-oriented, with runnable examples.
 | [datetime_cookbook.md](datetime_cookbook.md) | Shipped | 10 recipes for dates, durations, business calendars, date expressions and scheduling — month-end arithmetic, "third Thursday", payroll rolled off holidays, mutual meeting days, convention layout, appointment slots. Every code and output block verified against a real file by `tests/run_datetime_cookbook.sh`. |
 | [xlsx_cookbook.md](xlsx_cookbook.md) | Shipped | 12 recipes for spreadsheets: read, edit, save, evaluate formulas, check against Excel's own answers, turn sheets into queryable tables. Every code and output block is verified against a real file by `tests/run_xlsx_cookbook.sh`. |
 | [edgar_tutorial.md](edgar_tutorial.md) | Shipped | Build a forensic dossier on a filer, plus recipes per library. |
-| [cookbook_social_behavioral.md](cookbook_social_behavioral.md) | Shipped | Statistics by method cluster: social and behavioral sciences. |
-| [cookbook_econometrics_finance.md](cookbook_econometrics_finance.md) | Shipped | Statistics by method cluster: econometrics and finance. |
+| [cookbook_social_behavioral.md](cookbook_social_behavioral.md) | Shipped | Statistics by method cluster: social and behavioral sciences, through survival, meta-analysis and factor analysis. |
+| [cookbook_econometrics_finance.md](cookbook_econometrics_finance.md) | Shipped | Statistics by method cluster: econometrics and finance, through event studies and causal inference. |
 
 ## Language features
 
@@ -82,7 +82,7 @@ Task-oriented, with runnable examples.
 | Document | Status | What it is |
 |---|---|---|
 | [statistics_design.md](statistics_design.md) | Shipped | Distributions, matrices, OLS, GLMs, clustering, time series through ARIMA/GARCH, data frames. |
-| [statistics_scientist_plan.md](statistics_scientist_plan.md) | Record | The plan that took the library to "usable by working scientists". |
+| [statistics_scientist_plan.md](statistics_scientist_plan.md) | Record | The plan that took the library to "usable by working scientists", and the field expansion past it (survival, meta-analysis, factor analysis, event studies, causal inference). |
 
 ## EDGAR securities-analysis suite
 

@@ -388,6 +388,22 @@ day — so assume you will hit them too.
   Those renames are still in the code; nothing needs undoing, but new APIs no
   longer have to dodge the keyword list.
 
+- **43 of the 47 keywords cannot be a variable name; the full list is in
+  `docs/reference.md` under Reserved words (2026-08-26).** Before that there was
+  no list anywhere — the docs named reserved words one at a time, scattered
+  across pages, so the only way to find out was to hit one. The four that ARE
+  usable as ordinary names are `end`, `loop`, `next` and `until`. The ones that
+  bite hardest are short and innocuous: **`to`, `in`, `on`, `as`, `step`,
+  `stop`, `error`, `new`, `each`, `do`** — `to = 5` and `from`/`to` date ranges
+  are the common trap (use `start`/`finish`, or `from_d`/`to_d` as the tests
+  do; `from` itself is fine).
+
+- **`dim` is the one keyword that cannot be a record field.** `{ dim: 1 }` and
+  `r.dim` are both rejected by the "`dim` is not a gBASIC statement" diagnostic
+  — a message written to help QBasic users that fires in a position where no
+  statement is possible. Every other keyword works both ways (previous bullet).
+  `r["dim"]` works.
+
 ## Error handling — rebuilt in 0.1.0-rc5, so unlearn the old advice too
 
 **`on error resume next` is gone** (`resume` is an ordinary identifier again).

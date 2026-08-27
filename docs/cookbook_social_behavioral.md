@@ -187,7 +187,105 @@ power_ttest_paired(effect_size, n, alpha, sided)
 **Report:** "To detect *d* = 0.5 at α = .05 with 80% power (two-tailed), we need
 *n* = `sample_size_ttest(0.5, 0.8, 0.05, 2)` per group."
 
-## 12. Reporting quick reference
+## 12. Time to an event (survival analysis)
+
+For outcomes where the question is *when*, not *whether* — relapse, dropout,
+churn, time to hire — and where for some people the event **has not happened
+yet** when observation stops:
+
+```basic
+km = kaplan_meier(times, events)     ' events: 1 = event, 0 = still censored
+km.times   km.survival   km.se   km.lower   km.upper
+km.median   km.median_reached   km.at_risk   km.n_events
+survival_at(km, 10)                  ' S(t) at a specific time
+logrank(t_a, e_a, t_b, e_b)          ' compare two groups
+```
+
+**Censoring is the whole subject and it is not optional.** Both shortcuts are
+wrong and neither announces itself: dropping censored people leaves only
+failures and understates survival; counting them as events understates it a
+different way. On the standard leukaemia trial those two give medians of 10 and
+16 where the answer is **23**. A person censored at time *t* still counts as at
+risk *at* t. A median the curve never reaches is `unknown`, not the largest
+observed time.
+
+To **model** it rather than describe it — covariates, not just curves:
+
+```basic
+cx = cox_ph(times, events, [treatment, age])
+cx.hazard_ratios   cx.std_errors   cx.p_values   cx.ci_low   cx.ci_high
+hr_per(cx, 1, 10)                    ' the ratio over a 10-unit change in age
+```
+A hazard ratio is **per unit**, so a covariate in dollars gives 1.0000-something
+and reads as nothing — `hr_per` restates it over an interval you choose, without
+re-fitting. Ties use Breslow's approximation (stated, not silent). The model
+assumes the ratio is **constant over time**: where hazards cross, one number
+describes neither period, which no *p*-value reveals and the Kaplan-Meier curves
+do.
+
+**Report:** median survival per group with CI, the log-rank χ² and *p*, and for
+Cox the HR with CI and *p* — plus a sentence on whether proportional hazards
+looked plausible.
+
+## 13. Pooling a literature (meta-analysis)
+
+```basic
+ma = meta_analysis(studies, { model: "random" })    ' or "fixed"
+ma.estimate   ma.ci_low   ma.ci_high   ma.p
+ma.q   ma.q_p   ma.i_squared   ma.tau_squared       ' heterogeneity, always
+smd_variance(d, n1, n2)                             ' reported d -> variance
+eggers_test(studies)                                ' funnel asymmetry
+```
+Each study is `{effect:, variance:}`. Random effects (DerSimonian–Laird) is the
+honest default when studies differ in population or protocol; the heterogeneity
+is reported **beside** the estimate because a pooled number over wildly
+heterogeneous studies is a precise summary of nothing.
+
+**Ratio measures pool on the log scale.** An odds, risk or hazard ratio is
+multiplicative: 0.5 and 2.0 are the same effect in opposite directions, so the
+true pooled effect is *none* — yet averaged as plain numbers they give 1.25, a
+25% apparent harm. Pass `scale: "ratio"` and the estimate and interval are
+back-transformed. Nothing guesses, because a set of ratios and a set of raw
+differences are both just numbers.
+
+**Report:** *k*, the model, the pooled estimate with CI, and *I²* with Q's *p*.
+
+## 14. Latent structure (exploratory factor analysis)
+
+When several items are thought to measure a smaller number of underlying
+constructs:
+
+```basic
+fa = factor_analysis(cols, { factors: 2, rotate: "varimax" })
+fa.loadings   fa.communalities   fa.uniquenesses
+fa.eigenvalues   fa.variance_explained   fa.heywood
+```
+
+**This is not PCA**, and the difference is the point. PCA summarises the
+observed variables and explains *total* variance; factor analysis posits latent
+causes and explains *common* variance only — in the arithmetic, 1s versus
+communalities down the diagonal. On half-noise data that gap is 0.40 against
+0.60, so using PCA where a latent construct is meant overstates what the factors
+explain by half. Rotation **cannot improve fit** — it reproduces the same
+communalities exactly and only relabels the axes — and it does not promise a
+factor *order*, so read the block pattern, never "item 1 is on factor 1". A
+communality reaching 1 is a **Heywood case**, reported rather than clamped.
+
+**Report:** the extraction and rotation used, the loading matrix (suppressing
+small loadings), communalities, and variance explained.
+
+## 15. Did the program work? (causal designs)
+
+Program evaluation, policy changes and natural experiments use
+difference-in-differences (`did`, `pre_trends`) and instrumental variables
+(`iv_2sls`). Those live in
+**[cookbook_econometrics_finance.md §11](cookbook_econometrics_finance.md)** —
+the methods are identical, and the warning that matters is the same in both
+fields: the coefficient can be right while the standard error is wrong, and the
+wrong one is the flattering one. If you have repeated measures on the same
+people or sites, **cluster**.
+
+## 16. Reporting quick reference
 
 | You have | Recipe | Headline numbers |
 |---|---|---|
@@ -204,11 +302,20 @@ power_ttest_paired(effect_size, n, alpha, sided)
 | Scale / coders | `cronbach_alpha` / `krippendorff_alpha` | α |
 | Two rates / A-B | `prop_test_2` / `ab_test` | *z*, *p*, lift |
 | Planning *N* | `sample_size_ttest` / `power_anova` | required *n*, power |
+| Time until an event | `kaplan_meier` + `logrank` | median, S(t), χ², *p* |
+| Event time + covariates | `cox_ph` (+ `hr_per`) | HR, CI, *p* |
+| Many studies, one question | `meta_analysis` | pooled est, CI, *I²* |
+| Items → latent constructs | `factor_analysis` | loadings, communalities |
+| Program on/off over time | `did` (+ `cluster:`) | ATT, clustered SE, *p* |
 
 ---
 
-*All results are verified numerically against SciPy / statsmodels (GARCH against
-the `arch` package). See `docs/statistics_scientist_plan.md` for method notes and
+*Results in §1–§11 are verified numerically against SciPy / statsmodels.
+§12–§14 are verified against *published* results and independent
+implementations instead: survival and Cox against the Freireich 1963 leukaemia
+trial (median 23 weeks, S(10) = 0.7529, log-rank χ² = 16.79, HR 4.523),
+meta-analysis against Python, factor analysis against a constructed known
+structure. See `docs/statistics_scientist_plan.md` for method notes and
 `examples/cookbook_social_test.bas` for the runnable version of every recipe
 above. Predictive machine learning (train/test, cross-validation, classifiers) is
 a separate track, intentionally out of scope here.*

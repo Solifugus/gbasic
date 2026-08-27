@@ -9,3 +9,7 @@ acf lag1 -0.817 pacf lag1 -0.817
 arima phi1 -0.821 aic 1.73 fcast1 14.47
 arch_lm p 0.0009 garch persistence 0.181
 resid ljung_box p 0.089 dw 1.454
+event beta 1.5 car 0.04 window 3
+did att 4 cells 4 saturated true
+iv est 1.5066 vs ols 1.5818 firstF 1305.6 weak false
+iv endogeneity p 0 overid 0

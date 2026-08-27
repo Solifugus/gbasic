@@ -352,3 +352,39 @@ statsmodels / scipy exactly (`examples/stats_econ_test.bas`).
 
 MacKinnon (1994 p-value, 2010 critical-value) coefficient tables ported directly
 from statsmodels' `adfvalues` for N=1.
+
+---
+
+## Field expansion beyond the scientist shortlist — DONE (2026-08-25/26)
+
+Five method families added after the shortlist above was complete, each with its
+own suite. What changed with them is the **standard of evidence**, and the
+reason is specific: the earlier phases could be verified by matching SciPy /
+statsmodels, because a wrong implementation there produces a wrong *number*.
+Three of these five have a failure mode that produces the RIGHT number and a
+wrong uncertainty, which no comparison-to-a-golden can catch — so their suites
+derive nearly every value a second, independent way instead.
+
+| Family | Functions | Verified against |
+|---|---|---|
+| Event studies | `event_window`, `abnormal_returns`, `event_study` | series CONSTRUCTED so the answer is known exactly (asset = 1.5× market, injected shock returned to the digit) |
+| Meta-analysis | `meta_analysis`, `smd_variance`, `eggers_test` | an independent Python implementation |
+| Survival | `kaplan_meier`, `survival_at`, `logrank`, `cox_ph`, `hr_per` | the **published** Freireich 1963 leukaemia trial — median 23 weeks, S(10) = 0.7529, log-rank χ² = 16.79, Cox β = 1.5092 / HR 4.523 |
+| Factor analysis | `factor_analysis` | a constructed known block structure, plus a half-noise fixture that separates FA from PCA (0.40 vs 0.60 communalities) |
+| Causal inference | `did`, `pre_trends`, `iv_2sls` | in-fixture second derivations: four cell means, the Wald ratio, σ²/Σ(x̂−x̄̂)², t² from `ols`, n·R², two residual sums of squares |
+
+Supporting input: **`market`** (daily price history as a frame) — the
+return-based half of the finance library took prices as an argument and nothing
+in the tree produced them.
+
+**The lesson worth carrying forward.** For a method whose mistake is a wrong
+number, a golden and a reference implementation are enough. For a method whose
+mistake is a wrong *confidence*, they are not: the golden records the wrong
+standard error as expected and defends it. Those need either a published result,
+an independent implementation, or a second derivation inside the fixture —
+`tests/run_causal.sh` uses the third, and `tests/run_factor_analysis.sh` exists
+in its present form only because a red proof came back green.
+
+Not built, and deliberately: predictive machine learning remains out of scope
+(above), and structural equation modeling / multilevel models were not attempted
+— both want a model-specification language rather than a function call.

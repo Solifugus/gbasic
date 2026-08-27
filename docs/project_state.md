@@ -1,6 +1,6 @@
 # gBASIC Project State
 
-Last updated: 2026-08-25 (0.1.0-rc8)
+Last updated: 2026-08-26 (0.1.0-rc8)
 
 This file is the compact source of truth for current implementation status.
 Detailed language behavior belongs in `docs/reference.md`; completed development
@@ -79,8 +79,14 @@ document list, with a status column, is `docs/README.md`.
 ## Standard-Library Toolkits (pure gBASIC)
 
 - **statistics** — descriptive/inferential statistics, regression and the GLM
-  suite, mediation/moderation, time-series and econometric diagnostics, and
-  finance metrics; verified against reference implementations.
+  suite, mediation/moderation, time-series and econometric diagnostics, finance
+  metrics, survival analysis (Kaplan-Meier, log-rank, Cox), meta-analysis,
+  exploratory factor analysis, event studies, and causal inference (DiD,
+  IV/2SLS); verified against reference implementations, published trial results,
+  or — where a method can be right in the estimate and wrong in the uncertainty
+  — against a second independent derivation rather than a golden.
+- **market data** — `market`, daily price history as a frame, with pluggable
+  providers and an offline fixture seam so tests never touch the network.
 - **spreadsheets** — `xlsx` (read/write plus a formula engine measured against
   15,871 real workbooks; `xlsx.try_open` reports a bad workbook as a value so a
   batch survives one), `grid`, `frame`/`dbframe`, `consolidate`, `chart`.
@@ -109,8 +115,9 @@ modules clearly at runtime.
 ## Verification
 
 `tests/` holds the suites; each `run_*.sh` is self-contained, builds first, and
-prints PASS/FAIL per case. There are 62 of them, so the useful thing to know is
-which to run rather than a list that goes stale:
+prints PASS/FAIL per case. `tests/run_all.sh` discovers every suite by glob and
+is the gate; the useful thing to know is which to run while working rather than
+a list that goes stale:
 
 ```sh
 make clean && make
@@ -131,16 +138,17 @@ points at, so it doubles as an integration suite for this repository.
 
 - experimental, non-optimized interpreter
 - evolving diagnostics and module APIs
-- a raise cannot be caught: `on error goto next` abandons the whole failing
-  statement, so the doctrine is pre-validation plus non-raising `try_*` twins
-  (`try_decode`, `xlsx.try_open`, `process.which`, `has_builtin`)
+- non-raising `try_*` twins (`try_decode`, `xlsx.try_open`, `process.which`,
+  `has_builtin`) predate the frame-scoped error model and remain, now as an
+  ergonomic choice rather than a necessity — they report *where* an input is
+  malformed, which a caught raise does not
 - SQLite is synchronous and has no prepared-statement API exposed to gBASIC
 - PostgreSQL is synchronous and has no pooling or prepared-statement API
 - WebClient is synchronous
 - GUI (GTK 3) supports existing-widget synchronization but not dynamic tree
   mutation; the `gi`/GTK 4 path does not share that limit
-- records are an association list with linear field lookup, and there is no map
-  type
+- there is no dedicated map type; a record serves as one (hash-indexed since
+  PLAT-RECIDX, so lookup is not linear, but the ergonomics are a record's)
 - `DOGFOOD.md`'s "Open — worth fixing" list is **empty** as of 0.1.0-rc8; what
   remains there is the "accepted as documented limitations" section, which is
   doctrine rather than a to-do list
