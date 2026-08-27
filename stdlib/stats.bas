@@ -8534,4 +8534,830 @@ library stats
         return lam
     end function
 
+    ' --- Causal inference ----------------------------------------------------
+    '
+    ' Difference-in-differences and instrumental variables. Both estimators are
+    ' easy to get right in the COEFFICIENT and wrong in the STANDARD ERROR, and
+    ' in both cases the wrong standard error is the flattering one.
+    '
+    ' 2SLS run as two ordinary regressions -- fit x on z, then y on x-hat --
+    ' produces the correct point estimate and a standard error computed from
+    ' the SECOND STAGE's residuals. Those are not the model's residuals: the
+    ' model is y = X*beta + u and u must be measured against the ORIGINAL X,
+    ' not the fitted one. The second-stage residuals are smaller, so every
+    ' standard error is too small, every t is too large, and nothing about the
+    ' output looks wrong. `iv_2sls` computes u from X and reports the
+    ' difference is real by construction; tests/causal_test.bas performs the
+    ' naive version alongside and pins that the two coefficients AGREE while
+    ' the two standard errors do not.
+    '
+    ' A difference-in-differences on panel data has the mirror problem: with
+    ' outcomes correlated within a unit over time, conventional standard errors
+    ' are badly understated (Bertrand, Duflo & Mullainathan 2004, "How Much
+    ' Should We Trust Differences-in-Differences Estimates?"), which
+    ' manufactures significance. `did` takes `cluster:` and computes CR1.
+
+    ' An optional spec field, with a default. `unknown` counts as absent, so a
+    ' caller can pass a field through without special-casing it.
+    function _causal_opt(spec, name, dflt)
+        if not is_record(spec) then
+            return dflt
+        end if
+        if not has(spec, name) then
+            return dflt
+        end if
+        v = spec[name]
+        if is_unknown(v) then
+            return dflt
+        end if
+        return v
+    end function
+
+    ' 0/1 from a number or a boolean; `unknown` for anything else. Deliberately
+    ' strict: an indicator column that quietly coerces from something else is a
+    ' design matrix nobody checked.
+    function _binary01(v)
+        if is_boolean(v) then
+            if v then
+                return 1
+            end if
+            return 0
+        end if
+        if not is_number(v) then
+            return unknown
+        end if
+        if v = 1 then
+            return 1
+        end if
+        if v = 0 then
+            return 0
+        end if
+        return unknown
+    end function
+
+    ' A whole indicator column as 0/1; `unknown` if any element is neither.
+    function _binary_col(xs, n)
+        out = []
+        i = 0
+        while i < n
+            b = _binary01(xs[i])
+            if is_unknown(b) then
+                return unknown
+            end if
+            append(out, b)
+            i = i + 1
+        end while
+        return out
+    end function
+
+    ' Concatenate two column lists into a new one.
+    function _cat_cols(a, b)
+        out = []
+        for each c in a
+            append(out, c)
+        next c
+        for each c in b
+            append(out, c)
+        next c
+        return out
+    end function
+
+    ' A p x p matrix of zeros.
+    function _zeros_sq(p)
+        m = []
+        a = 0
+        while a < p
+            row = []
+            b = 0
+            while b < p
+                append(row, 0)
+                b = b + 1
+            end while
+            append(m, row)
+            a = a + 1
+        end while
+        return m
+    end function
+
+    ' bread * meat * bread, both square p x p.
+    function _sandwich(bread, meat)
+        return mat_mul(mat_mul(bread, meat), bread)
+    end function
+
+    ' Heteroskedasticity-consistent meat: sum_i w_i x_i x_i'.
+    function _meat_weighted(bigx, w, p, n)
+        m = _zeros_sq(p)
+        i = 0
+        while i < n
+            a = 0
+            while a < p
+                b = 0
+                while b < p
+                    m[a][b] = m[a][b] + w[i] * bigx[i][a] * bigx[i][b]
+                    b = b + 1
+                end while
+                a = a + 1
+            end while
+            i = i + 1
+        end while
+        return m
+    end function
+
+    ' Per-observation weights for the HC0..HC3 sandwich variants.
+    function _hc_weights(bigx, e, xtxinv, p, n, hc)
+        if hc != "HC0" and hc != "HC1" and hc != "HC2" and hc != "HC3" then
+            return unknown
+        end if
+        w = []
+        i = 0
+        while i < n
+            ei2 = e[i] * e[i]
+            om = ei2
+            if hc = "HC1" then
+                om = ei2 * n / (n - p)
+            end if
+            if hc = "HC2" or hc = "HC3" then
+                v = mat_vec(xtxinv, bigx[i])
+                hi = 0
+                a = 0
+                while a < p
+                    hi = hi + bigx[i][a] * v[a]
+                    a = a + 1
+                end while
+                if hc = "HC2" then
+                    om = ei2 / (1 - hi)
+                else
+                    om = ei2 / ((1 - hi) * (1 - hi))
+                end if
+            end if
+            append(w, om)
+            i = i + 1
+        end while
+        return w
+    end function
+
+    ' Cluster-robust meat with the CR1 finite-sample correction:
+    '   (G/(G-1)) * ((n-1)/(n-p)) * sum_g (X_g' e_g)(X_g' e_g)'
+    ' With ONE OBSERVATION PER CLUSTER this reduces exactly to HC1 -- the
+    ' correction becomes (n/(n-1))*((n-1)/(n-p)) = n/(n-p) and each cluster
+    ' score is a single x_i e_i -- which is what tests/causal_test.bas checks
+    ' this path against `ols_robust(..., "HC1")` with. Two implementations
+    ' written from different formulas landing on the same digits is a stronger
+    ' statement than either one's golden.
+    function _meat_cluster(bigx, e, groups, p, n)
+        slot = {}
+        keys = []
+        i = 0
+        while i < n
+            k = "g" + string(groups[i])
+            if not has(slot, k) then
+                slot[k] = len(keys)
+                append(keys, k)
+            end if
+            i = i + 1
+        end while
+        g = len(keys)
+        if g < 2 then
+            return unknown
+        end if
+        scores = []
+        j = 0
+        while j < g
+            v = []
+            a = 0
+            while a < p
+                append(v, 0)
+                a = a + 1
+            end while
+            append(scores, v)
+            j = j + 1
+        end while
+        i = 0
+        while i < n
+            gi = slot["g" + string(groups[i])]
+            a = 0
+            while a < p
+                scores[gi][a] = scores[gi][a] + bigx[i][a] * e[i]
+                a = a + 1
+            end while
+            i = i + 1
+        end while
+        adj = (g / (g - 1)) * ((n - 1) / (n - p))
+        m = _zeros_sq(p)
+        j = 0
+        while j < g
+            a = 0
+            while a < p
+                b = 0
+                while b < p
+                    m[a][b] = m[a][b] + adj * scores[j][a] * scores[j][b]
+                    b = b + 1
+                end while
+                a = a + 1
+            end while
+            j = j + 1
+        end while
+        return { meat: m, groups: g }
+    end function
+
+    ' OLS point estimates with a choice of covariance:
+    '   groups given      CR1 cluster-robust, t on G-1 df
+    '   hc = "HC0".."HC3" White sandwich, NORMAL reference (as `ols_robust`)
+    '   otherwise         classic sigma^2 (X'X)^-1, t on n-p df
+    ' The two reference distributions are not a slip: they are the choices the
+    ' library already made in `ols` and `ols_robust`, and matching them beats
+    ' being internally tidy and externally surprising.
+    function _fit_cov(y, cols, n, hc, groups)
+        p = len(cols) + 1
+        if n <= p then
+            return { ok: false, message: "not enough observations (" + string(n) + ") for " + string(p) + " parameters" }
+        end if
+        bigx = _design(cols, n)
+        xt = mat_transpose(bigx)
+        xtxinv = mat_inverse(mat_mul(xt, bigx))
+        if is_unknown(xtxinv) then
+            return { ok: false, message: "design matrix is singular: a column is collinear with the others" }
+        end if
+        beta = mat_vec(xtxinv, mat_vec(xt, y))
+        fitted = mat_vec(bigx, beta)
+        e = []
+        rss = 0
+        i = 0
+        while i < n
+            r = y[i] - fitted[i]
+            append(e, r)
+            rss = rss + r * r
+            i = i + 1
+        end while
+        ybar = mean(y)
+        tss = 0
+        i = 0
+        while i < n
+            d = y[i] - ybar
+            tss = tss + d * d
+            i = i + 1
+        end while
+        r2 = unknown
+        if tss > 0 then
+            r2 = 1 - rss / tss
+        end if
+
+        dof = n - p
+        ctype = "classic"
+        ng = 0
+        normal = false
+        cov = unknown
+        if not is_unknown(groups) then
+            cm = _meat_cluster(bigx, e, groups, p, n)
+            if is_unknown(cm) then
+                return { ok: false, message: "clustering needs at least two clusters" }
+            end if
+            cov = _sandwich(xtxinv, cm.meat)
+            ctype = "cluster"
+            ng = cm.groups
+            dof = ng - 1
+        else
+            if hc = "" then
+                s2 = rss / (n - p)
+                cov = _zeros_sq(p)
+                a = 0
+                while a < p
+                    b = 0
+                    while b < p
+                        cov[a][b] = s2 * xtxinv[a][b]
+                        b = b + 1
+                    end while
+                    a = a + 1
+                end while
+            else
+                w = _hc_weights(bigx, e, xtxinv, p, n, hc)
+                if is_unknown(w) then
+                    return { ok: false, message: "unknown covariance option '" + string(hc) + "' (expected HC0, HC1, HC2 or HC3)" }
+                end if
+                cov = _sandwich(xtxinv, _meat_weighted(bigx, w, p, n))
+                ctype = hc
+                normal = true
+            end if
+        end if
+
+        ses = []
+        stats = []
+        pvals = []
+        j = 0
+        while j < p
+            v = cov[j][j]
+            se = unknown
+            sv = unknown
+            pv = unknown
+            if is_number(v) and v >= 0 then
+                se = sqrt(v)
+                if se > 0 then
+                    sv = beta[j] / se
+                    if normal then
+                        pv = 2 * (1 - _norm_cdf_std(abs(sv)))
+                    else
+                        pv = 2 * (1 - t_cdf(abs(sv), dof))
+                    end if
+                end if
+            end if
+            append(ses, se)
+            append(stats, sv)
+            append(pvals, pv)
+            j = j + 1
+        end while
+        return { ok: true, coefficients: beta, std_errors: ses, stat_values: stats, p_values: pvals, fitted: fitted, residuals: e, rss: rss, r_squared: r2, cov: cov, cov_type: ctype, normal: normal, groups: ng, n: n, df: dof, params: p, message: "" }
+    end function
+
+    ' Joint F test that the LAST q columns of `cols` are all zero, by refitting
+    ' without them. Both fits are classical -- an F built from two residual sums
+    ' of squares has no robust meaning, and pretending otherwise by feeding it
+    ' sandwich standard errors would be a Wald test wearing an F's name.
+    function _f_drop(y, cols, n, q)
+        full = _fit_cov(y, cols, n, "", unknown)
+        if not full.ok then
+            return full
+        end if
+        keep = []
+        i = 0
+        while i < len(cols) - q
+            append(keep, cols[i])
+            i = i + 1
+        end while
+        rest = _fit_cov(y, keep, n, "", unknown)
+        if not rest.ok then
+            return rest
+        end if
+        d2 = n - full.params
+        if full.rss <= 0 or d2 <= 0 then
+            return { ok: true, f_stat: unknown, df1: q, df2: d2, p_value: unknown, message: "the unrestricted fit has no residual variation" }
+        end if
+        f = ((rest.rss - full.rss) / q) / (full.rss / d2)
+        pv = unknown
+        if f >= 0 then
+            pv = 1 - f_cdf(f, q, d2)
+        end if
+        return { ok: true, f_stat: f, df1: q, df2: d2, p_value: pv, r_squared: full.r_squared, message: "" }
+    end function
+
+    ' Difference-in-differences. `treated` and `post` are 0/1 (or boolean)
+    ' indicators, one per observation; the estimate is the coefficient on their
+    ' interaction:
+    '   y = b0 + b1*treated + b2*post + ATT*(treated*post) + controls
+    ' With no controls that coefficient is EXACTLY the four-cell arithmetic
+    '   (treated_post - treated_pre) - (control_post - control_pre)
+    ' and `means` carries the four cells so the caller can see the estimate is
+    ' a difference of differences and not a black box. `saturated` says whether
+    ' the identity holds for this call.
+    '
+    ' spec, all fields optional:
+    '   covariates  extra control column(s)
+    '   cluster     one cluster id per row -> CR1 standard errors
+    '   hc          "HC0".."HC3" for heteroskedasticity-robust ones instead
+    '   level       confidence level for the interval (default 0.95)
+    '
+    ' PARALLEL TRENDS IS AN ASSUMPTION AND IS NOT TESTED HERE, because it
+    ' cannot be: it is a claim about what the treated group WOULD have done
+    ' after treatment, and no data records that. What can be tested is whether
+    ' the groups moved together BEFORE treatment -- a different and weaker
+    ' question -- which is `pre_trends`.
+    function did(y, treated, post, spec)
+        n = len(y)
+        if n = 0 then
+            return { ok: false, message: "no observations" }
+        end if
+        if len(treated) != n then
+            return { ok: false, message: "treated has " + string(len(treated)) + " rows, y has " + string(n) }
+        end if
+        if len(post) != n then
+            return { ok: false, message: "post has " + string(len(post)) + " rows, y has " + string(n) }
+        end if
+        tcol = _binary_col(treated, n)
+        if is_unknown(tcol) then
+            return { ok: false, message: "treated must be 0/1 or true/false" }
+        end if
+        pcol = _binary_col(post, n)
+        if is_unknown(pcol) then
+            return { ok: false, message: "post must be 0/1 or true/false" }
+        end if
+
+        ' The four cells, and the refusal that matters: a cell with nothing in
+        ' it is not a difference-in-differences at all, and the regression
+        ' would answer anyway (or go singular and answer nothing useful).
+        sums = [0, 0, 0, 0]
+        cnts = [0, 0, 0, 0]
+        inter = []
+        i = 0
+        while i < n
+            if not is_number(y[i]) then
+                return { ok: false, message: "y[" + string(i) + "] is not a number" }
+            end if
+            cell = tcol[i] * 2 + pcol[i]
+            sums[cell] = sums[cell] + y[i]
+            cnts[cell] = cnts[cell] + 1
+            append(inter, tcol[i] * pcol[i])
+            i = i + 1
+        end while
+        names = ["control_pre", "control_post", "treated_pre", "treated_post"]
+        i = 0
+        while i < 4
+            if cnts[i] = 0 then
+                return { ok: false, message: "no observations in the " + names[i] + " cell" }
+            end if
+            i = i + 1
+        end while
+        cells = {}
+        i = 0
+        while i < 4
+            cells[names[i]] = sums[i] / cnts[i]
+            i = i + 1
+        end while
+        raw = (cells.treated_post - cells.treated_pre) - (cells.control_post - cells.control_pre)
+
+        covs = []
+        cv = _causal_opt(spec, "covariates", unknown)
+        if not is_unknown(cv) then
+            covs = _norm_cols(cv, n)
+            if is_unknown(covs) then
+                return { ok: false, message: "a covariate column does not have " + string(n) + " rows" }
+            end if
+        end if
+        cols = _cat_cols([tcol, pcol, inter], covs)
+
+        groups = _causal_opt(spec, "cluster", unknown)
+        if not is_unknown(groups) then
+            if len(groups) != n then
+                return { ok: false, message: "cluster has " + string(len(groups)) + " rows, y has " + string(n) }
+            end if
+        end if
+        hc = _causal_opt(spec, "hc", "")
+        fit = _fit_cov(y, cols, n, hc, groups)
+        if not fit.ok then
+            return fit
+        end if
+
+        level = _causal_opt(spec, "level", 0.95)
+        att = fit.coefficients[3]
+        se = fit.std_errors[3]
+        lo = unknown
+        hi = unknown
+        if is_number(se) then
+            if fit.normal then
+                crit = normal_quantile(1 - (1 - level) / 2, 0, 1)
+            else
+                crit = t_quantile(1 - (1 - level) / 2, fit.df)
+            end if
+            lo = att - crit * se
+            hi = att + crit * se
+        end if
+        return { ok: true, att: att, std_error: se, t_value: fit.stat_values[3], p_value: fit.p_values[3], conf_low: lo, conf_high: hi, level: level, means: cells, counts: { control_pre: cnts[0], control_post: cnts[1], treated_pre: cnts[2], treated_post: cnts[3] }, diff_in_means: raw, saturated: len(covs) = 0, coefficients: fit.coefficients, std_errors: fit.std_errors, residuals: fit.residuals, cov_type: fit.cov_type, clusters: fit.groups, r_squared: fit.r_squared, n: n, df: fit.df, message: "" }
+    end function
+
+    ' The testable half of the parallel-trends assumption: did the two groups
+    ' move together BEFORE anyone was treated? Over the pre-treatment periods
+    ' only, fits
+    '   y = period effects + b*treated + sum_t lead_t * treated*1{period = t}
+    ' with the LAST pre-period as the omitted reference, and tests the lead
+    ' coefficients jointly with an F.
+    '
+    ' A LARGE p-VALUE HERE IS NOT EVIDENCE THAT PARALLEL TRENDS HOLDS. It is
+    ' the absence of evidence against it over the periods that happen to be in
+    ' the data, and the test is exactly as weak as the pre-period is short.
+    ' `periods` and `df1` are reported so that weakness is visible rather than
+    ' something the reader has to infer; `note` says it in words.
+    function pre_trends(y, treated, period, treat_start)
+        n = len(y)
+        if n = 0 then
+            return { ok: false, message: "no observations" }
+        end if
+        if len(treated) != n or len(period) != n then
+            return { ok: false, message: "treated and period must both have " + string(n) + " rows" }
+        end if
+        ys = []
+        ts = []
+        ps = []
+        seen = {}
+        pre = []
+        i = 0
+        while i < n
+            if not is_number(period[i]) then
+                return { ok: false, message: "period[" + string(i) + "] is not a number" }
+            end if
+            if period[i] < treat_start then
+                b = _binary01(treated[i])
+                if is_unknown(b) then
+                    return { ok: false, message: "treated must be 0/1 or true/false" }
+                end if
+                append(ys, y[i])
+                append(ts, b)
+                append(ps, period[i])
+                k = "p" + string(period[i])
+                if not has(seen, k) then
+                    seen[k] = true
+                    append(pre, period[i])
+                end if
+            end if
+            i = i + 1
+        end while
+        m = len(ys)
+        if m = 0 then
+            return { ok: false, message: "no observations before period " + string(treat_start) }
+        end if
+        pre = sort(pre)
+        np = len(pre)
+        if np < 2 then
+            return { ok: false, message: "a pre-trend test needs at least two pre-treatment periods, found " + string(np) }
+        end if
+        ref = pre[np - 1]
+
+        ' treated, then a dummy per non-reference pre-period, then the leads.
+        ' The leads go LAST so _f_drop can restrict them as a block.
+        dummies = []
+        leads = []
+        j = 0
+        while j < np - 1
+            dcol = []
+            lcol = []
+            i = 0
+            while i < m
+                d = 0
+                if ps[i] = pre[j] then
+                    d = 1
+                end if
+                append(dcol, d)
+                append(lcol, d * ts[i])
+                i = i + 1
+            end while
+            append(dummies, dcol)
+            append(leads, lcol)
+            j = j + 1
+        end while
+        cols = _cat_cols(_cat_cols([ts], dummies), leads)
+        q = len(leads)
+        test = _f_drop(ys, cols, m, q)
+        if not test.ok then
+            return test
+        end if
+        fit = _fit_cov(ys, cols, m, "", unknown)
+        if not fit.ok then
+            return fit
+        end if
+        base = 1 + q
+        out = []
+        j = 0
+        while j < q
+            append(out, { period: pre[j], coefficient: fit.coefficients[base + 1 + j], std_error: fit.std_errors[base + 1 + j], t_value: fit.stat_values[base + 1 + j], p_value: fit.p_values[base + 1 + j] })
+            j = j + 1
+        end while
+        note = "a large p-value is the absence of evidence against parallel trends over " + string(np) + " pre-period(s), not evidence for it"
+        return { ok: true, f_stat: test.f_stat, df1: test.df1, df2: test.df2, p_value: test.p_value, leads: out, reference: ref, periods: np, n: m, note: note, message: "" }
+    end function
+
+    ' Two-stage least squares. `endog` is the endogenous regressor(s),
+    ' `instruments` the EXCLUDED instruments; spec.exog holds any included
+    ' exogenous controls, which serve as their own instruments.
+    '
+    '   X = [1, endog, exog]      Z = [1, instruments, exog]
+    '   beta = (X' Pz X)^-1 X' Pz y      with Pz = Z (Z'Z)^-1 Z'
+    '   u    = y - X beta                     <- the ORIGINAL X, not X-hat
+    '
+    ' That last line is the whole point. Running the two stages as two calls to
+    ' `ols` gives the same beta and residuals from X-hat, which are smaller;
+    ' the resulting standard errors are too small by a factor that depends on
+    ' how weak the instrument is, and nothing in the output says so.
+    '
+    ' spec, all optional: exog, cluster, hc, level (as `did`).
+    '
+    ' The classical covariance uses sigma^2 = RSS/(n-p) and the t distribution
+    ' on n-p, which is R's `AER::ivreg` and Stata's `ivregress 2sls, small`.
+    ' Stata's DEFAULT is asymptotic -- RSS/n and a normal reference -- so the
+    ' standard errors there are slightly smaller. Named because a reader
+    ' comparing two tools over the same data deserves to know which convention
+    ' explains a difference in the third decimal.
+    '
+    ' Diagnostics, all reported rather than enforced:
+    '   first_stage   per endogenous regressor, the F on the EXCLUDED
+    '                 instruments. Below ~10 the instrument is weak and 2SLS is
+    '                 biased toward OLS with confidence intervals that do not
+    '                 cover; `weak` flags it.
+    '   sargan        overidentification (only when there are more instruments
+    '                 than endogenous regressors -- with exact identification
+    '                 there is nothing to test, and reporting a number there
+    '                 would be reporting a tautology)
+    '   wu_hausman    whether the regressor was endogenous at all; a small
+    '                 p-value says OLS is inconsistent and IV was needed
+    function iv_2sls(y, endog, instruments, spec)
+        n = len(y)
+        if n = 0 then
+            return { ok: false, message: "no observations" }
+        end if
+        ecols = _norm_cols(endog, n)
+        if is_unknown(ecols) then
+            return { ok: false, message: "an endogenous column does not have " + string(n) + " rows" }
+        end if
+        zcols = _norm_cols(instruments, n)
+        if is_unknown(zcols) then
+            return { ok: false, message: "an instrument column does not have " + string(n) + " rows" }
+        end if
+        xcols = []
+        ex = _causal_opt(spec, "exog", unknown)
+        if not is_unknown(ex) then
+            xcols = _norm_cols(ex, n)
+            if is_unknown(xcols) then
+                return { ok: false, message: "an exogenous column does not have " + string(n) + " rows" }
+            end if
+        end if
+        ke = len(ecols)
+        kz = len(zcols)
+        if ke = 0 then
+            return { ok: false, message: "no endogenous regressor given" }
+        end if
+        if kz < ke then
+            return { ok: false, message: "under-identified: " + string(kz) + " excluded instrument(s) for " + string(ke) + " endogenous regressor(s)" }
+        end if
+
+        p = 1 + ke + len(xcols)
+        if n <= p then
+            return { ok: false, message: "not enough observations (" + string(n) + ") for " + string(p) + " parameters" }
+        end if
+        bigx = _design(_cat_cols(ecols, xcols), n)
+        bigz = _design(_cat_cols(zcols, xcols), n)
+        zt = mat_transpose(bigz)
+        ztzinv = mat_inverse(mat_mul(zt, bigz))
+        if is_unknown(ztzinv) then
+            return { ok: false, message: "the instrument matrix is singular: two instruments carry the same information" }
+        end if
+        ' X-hat = Z (Z'Z)^-1 Z' X, the projection of every regressor onto the
+        ' instrument space. An exogenous control projects onto itself.
+        xhat = mat_mul(bigz, mat_mul(ztzinv, mat_mul(zt, bigx)))
+        xht = mat_transpose(xhat)
+        ainv = mat_inverse(mat_mul(xht, xhat))
+        if is_unknown(ainv) then
+            return { ok: false, message: "the instruments do not identify the endogenous regressor(s)" }
+        end if
+        beta = mat_vec(ainv, mat_vec(xht, y))
+
+        fitted = mat_vec(bigx, beta)
+        u = []
+        rss = 0
+        i = 0
+        while i < n
+            r = y[i] - fitted[i]
+            append(u, r)
+            rss = rss + r * r
+            i = i + 1
+        end while
+
+        groups = _causal_opt(spec, "cluster", unknown)
+        if not is_unknown(groups) then
+            if len(groups) != n then
+                return { ok: false, message: "cluster has " + string(len(groups)) + " rows, y has " + string(n) }
+            end if
+        end if
+        hc = _causal_opt(spec, "hc", "")
+        dof = n - p
+        ctype = "classic"
+        ng = 0
+        normal = false
+        cov = unknown
+        if not is_unknown(groups) then
+            cm = _meat_cluster(xhat, u, groups, p, n)
+            if is_unknown(cm) then
+                return { ok: false, message: "clustering needs at least two clusters" }
+            end if
+            cov = _sandwich(ainv, cm.meat)
+            ctype = "cluster"
+            ng = cm.groups
+            dof = ng - 1
+        else
+            if hc = "" then
+                s2 = rss / dof
+                cov = _zeros_sq(p)
+                a = 0
+                while a < p
+                    b = 0
+                    while b < p
+                        cov[a][b] = s2 * ainv[a][b]
+                        b = b + 1
+                    end while
+                    a = a + 1
+                end while
+            else
+                w = _hc_weights(xhat, u, ainv, p, n, hc)
+                if is_unknown(w) then
+                    return { ok: false, message: "unknown covariance option '" + string(hc) + "' (expected HC0, HC1, HC2 or HC3)" }
+                end if
+                cov = _sandwich(ainv, _meat_weighted(xhat, w, p, n))
+                ctype = hc
+                normal = true
+            end if
+        end if
+
+        ses = []
+        stats = []
+        pvals = []
+        j = 0
+        while j < p
+            v = cov[j][j]
+            se = unknown
+            sv = unknown
+            pv = unknown
+            if is_number(v) and v >= 0 then
+                se = sqrt(v)
+                if se > 0 then
+                    sv = beta[j] / se
+                    if normal then
+                        pv = 2 * (1 - _norm_cdf_std(abs(sv)))
+                    else
+                        pv = 2 * (1 - t_cdf(abs(sv), dof))
+                    end if
+                end if
+            end if
+            append(ses, se)
+            append(stats, sv)
+            append(pvals, pv)
+            j = j + 1
+        end while
+
+        ' First stage per endogenous regressor: exogenous controls first so the
+        ' excluded instruments are the trailing block _f_drop restricts.
+        fscols = _cat_cols(xcols, zcols)
+        stage1 = []
+        vhat = []
+        weak = false
+        minf = unknown
+        j = 0
+        while j < ke
+            t1 = _f_drop(ecols[j], fscols, n, kz)
+            if not t1.ok then
+                return t1
+            end if
+            s1 = _fit_cov(ecols[j], fscols, n, "", unknown)
+            if not s1.ok then
+                return s1
+            end if
+            append(vhat, s1.residuals)
+            isweak = true
+            if is_number(t1.f_stat) then
+                if t1.f_stat >= 10 then
+                    isweak = false
+                end if
+                if is_unknown(minf) then
+                    minf = t1.f_stat
+                else
+                    if t1.f_stat < minf then
+                        minf = t1.f_stat
+                    end if
+                end if
+            end if
+            if isweak then
+                weak = true
+            end if
+            append(stage1, { f_stat: t1.f_stat, df1: t1.df1, df2: t1.df2, p_value: t1.p_value, r_squared: s1.r_squared, weak: isweak })
+            j = j + 1
+        end while
+
+        ' Overidentification: with more instruments than endogenous regressors
+        ' the extra ones are testable. Sargan's J = n * R^2 from regressing the
+        ' structural residuals on every instrument.
+        sargan = unknown
+        if kz > ke then
+            sg = _fit_cov(u, _cat_cols(zcols, xcols), n, "", unknown)
+            if sg.ok then
+                if is_number(sg.r_squared) then
+                    jstat = n * sg.r_squared
+                    sdf = kz - ke
+                    sargan = { statistic: jstat, df: sdf, p_value: 1 - chi2_cdf(jstat, sdf) }
+                end if
+            end if
+        end if
+
+        ' Wu-Hausman: add the first-stage residuals to the structural equation
+        ' and test them jointly. Significant means the regressor really was
+        ' endogenous and OLS really was inconsistent.
+        hausman = unknown
+        hcols = _cat_cols(_cat_cols(ecols, xcols), vhat)
+        ht = _f_drop(y, hcols, n, ke)
+        if ht.ok then
+            hausman = { f_stat: ht.f_stat, df1: ht.df1, df2: ht.df2, p_value: ht.p_value }
+        end if
+
+        level = _causal_opt(spec, "level", 0.95)
+        lo = unknown
+        hi = unknown
+        if is_number(ses[1]) then
+            if normal then
+                crit = normal_quantile(1 - (1 - level) / 2, 0, 1)
+            else
+                crit = t_quantile(1 - (1 - level) / 2, dof)
+            end if
+            lo = beta[1] - crit * ses[1]
+            hi = beta[1] + crit * ses[1]
+        end if
+        note = ""
+        if weak then
+            note = "weak instrument: the first-stage F is below 10, so this estimate is biased toward OLS and its interval under-covers"
+        end if
+        return { ok: true, estimate: beta[1], std_error: ses[1], t_value: stats[1], p_value: pvals[1], conf_low: lo, conf_high: hi, level: level, coefficients: beta, std_errors: ses, t_values: stats, p_values: pvals, cov: cov, cov_type: ctype, normal: normal, clusters: ng, residuals: u, fitted: fitted, rss: rss, first_stage: stage1, weak: weak, min_first_stage_f: minf, sargan: sargan, wu_hausman: hausman, endogenous: ke, instruments: kz, exogenous: len(xcols), overidentified: kz - ke, n: n, df: dof, note: note, message: "" }
+    end function
+
 end library

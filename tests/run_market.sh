@@ -57,12 +57,12 @@ if diff -u tests/market_test.out "$work/out" >/dev/null; then
     pass 'market_test matches its golden'
 else
     fail 'market_test matches its golden'
-    diff -u tests/market_test.out "$work/out" | head -30
+    diff -u tests/market_test.out "$work/out" | head -30 || true
 fi
 
 if command grep -q MISMATCH "$work/out"; then
     fail 'market_test reports no mismatch'
-    command grep MISMATCH "$work/out" | head -10
+    command grep MISMATCH "$work/out" | head -10 || true
 else
     pass 'market_test reports no mismatch'
 fi

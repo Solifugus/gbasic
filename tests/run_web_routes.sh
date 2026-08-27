@@ -74,11 +74,11 @@ for name in web_routes_test web_routes_oracle_test; do
         pass "$name matches its golden"
     else
         fail "$name matches its golden"
-        diff -u "tests/$name.out" "$stdout_file" | head -40
+        diff -u "tests/$name.out" "$stdout_file" | head -40 || true
     fi
     if command grep -q MISMATCH "$stdout_file"; then
         fail "$name reports no mismatch"
-        command grep MISMATCH "$stdout_file" | head -10
+        command grep MISMATCH "$stdout_file" | head -10 || true
     else
         pass "$name reports no mismatch"
     fi
@@ -166,11 +166,11 @@ if diff -u tests/web_static_test.out "$stdout_file" >/dev/null; then
     pass 'web_static_test matches its golden'
 else
     fail 'web_static_test matches its golden'
-    diff -u tests/web_static_test.out "$stdout_file" | head -40
+    diff -u tests/web_static_test.out "$stdout_file" | head -40 || true
 fi
 if command grep -q MISMATCH "$stdout_file"; then
     fail 'web_static_test reports no mismatch'
-    command grep MISMATCH "$stdout_file" | head -10
+    command grep MISMATCH "$stdout_file" | head -10 || true
 else
     pass 'web_static_test reports no mismatch'
 fi

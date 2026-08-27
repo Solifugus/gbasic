@@ -52,12 +52,12 @@ if diff -u tests/meta_analysis_test.out "$work/out" >/dev/null; then
     pass 'meta_analysis_test matches its golden'
 else
     fail 'meta_analysis_test matches its golden'
-    diff -u tests/meta_analysis_test.out "$work/out" | head -30
+    diff -u tests/meta_analysis_test.out "$work/out" | head -30 || true
 fi
 
 if command grep -q MISMATCH "$work/out"; then
     fail 'meta_analysis_test reports no mismatch'
-    command grep MISMATCH "$work/out" | head -10
+    command grep MISMATCH "$work/out" | head -10 || true
 else
     pass 'meta_analysis_test reports no mismatch'
 fi

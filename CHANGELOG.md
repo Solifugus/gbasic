@@ -9,6 +9,54 @@ language surface may still change between releases.
 
 ## Unreleased
 
+- **Causal inference in `stats`** — `did` and `pre_trends`
+  (difference-in-differences) and `iv_2sls` (instrumental variables), with
+  cluster-robust (CR1) and HC0–HC3 covariance available to both.
+
+  **Both estimators can be right in the coefficient and wrong in the standard
+  error**, which is the reason the suite is shaped the way it is: nothing about
+  the output looks off, and a golden would record the wrong standard error as
+  the expected value and defend it forever.
+
+  2SLS run as two ordinary regressions — fit *x* on *z*, then *y* on *x̂* —
+  produces the identical point estimate and measures its residuals against
+  *x̂*. The model's residuals are `y - X*beta`, against the original *x*. The
+  fixture performs the naive version alongside and pins that the coefficients
+  agree to ten digits while the errors do not: on two datasets differing only
+  in the sign of the confounding, the naive error is 1.78× too large and 2.7×
+  too small. It is not conservative.
+
+  A DiD on serially correlated panel data understates its own uncertainty
+  (Bertrand, Duflo & Mullainathan 2004). In the test panel — thirty units,
+  twenty periods, a persistent post-period shift per unit — the conventional
+  error is 3.2× too small and reports *p* < 0.001 where clustering reports
+  *p* > 0.10, on an estimate identical to twelve digits.
+
+  So almost every numeric claim is derived a **second way inside the fixture**
+  rather than recorded: the DiD estimate against the four cell means; CR1
+  against `ols_robust`'s HC1, which it must equal exactly when every cluster
+  holds one observation; the 2SLS estimate against the Wald ratio (four means,
+  no matrix algebra); its standard error against σ²/Σ(x̂−x̄̂)²; the first-stage
+  F against t² from an ordinary `ols`; Sargan's J against *n*·R²; Wu-Hausman's
+  and the pre-trend F against two residual sums of squares.
+
+  Eleven red proofs; two came back green and drove real coverage. Both were
+  the same blind spot: the main IV fixture has no exogenous controls, so
+  restricting the wrong block in `_f_drop` — for the first-stage F and again
+  for Wu-Hausman — was a no-op there. Only a fixture *with* a control can tell
+  a test of the excluded instruments from a joint test over everything.
+
+  `pre_trends` reports what it is. Parallel trends cannot be tested — it is a
+  claim about what the treated group *would* have done — so a large *p*-value
+  is the absence of evidence against it over however many pre-periods exist,
+  and the returned `note` says that in words. One fixture check deliberately
+  asserts the *opposite* of the easy lesson: dropping an exogenous control
+  orthogonal to the instrument does not bias 2SLS, it only widens the interval.
+
+  Also fixed, in seven runners: a `diff … | head -N` under `set -euo pipefail`
+  aborts the script, so a failing suite reported only its first failure and
+  skipped every remaining tier.
+
 - **Exploratory factor analysis in `stats`** — `factor_analysis`, principal-axis
   factoring with iterated communalities and a varimax rotation implemented
   without trigonometry (gBASIC has none; the quarter-angle comes from two

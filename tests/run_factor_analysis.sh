@@ -53,12 +53,12 @@ if diff -u tests/factor_analysis_test.out "$work/out" >/dev/null; then
     pass 'factor_analysis_test matches its golden'
 else
     fail 'factor_analysis_test matches its golden'
-    diff -u tests/factor_analysis_test.out "$work/out" | head -30
+    diff -u tests/factor_analysis_test.out "$work/out" | head -30 || true
 fi
 
 if command grep -q MISMATCH "$work/out"; then
     fail 'factor_analysis_test reports no mismatch'
-    command grep MISMATCH "$work/out" | head -10
+    command grep MISMATCH "$work/out" | head -10 || true
 else
     pass 'factor_analysis_test reports no mismatch'
 fi

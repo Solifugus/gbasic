@@ -3616,6 +3616,41 @@ General-purpose:
   baselines contain each other are **reported** (`contaminated`, `note`) rather
   than refused, because clustering is sometimes unavoidable.
 
+- `stats` also carries **causal inference** — `did(y, treated, post, spec)` and
+  `pre_trends(y, treated, period, treat_start)` for difference-in-differences,
+  and `iv_2sls(y, endog, instruments, spec)` for instrumental variables. Both
+  estimators share a failure mode that no amount of eyeballing catches: the
+  **coefficient is right and the standard error is wrong**, so the output looks
+  like every other regression.
+  * 2SLS run as two ordinary regressions — fit *x* on *z*, then *y* on *x̂* —
+    gives the identical point estimate and measures its residuals against *x̂*.
+    The model's residuals are `y - X*beta`, against the **original** *x*. On two
+    datasets differing only in the *sign* of the confounding, the naive standard
+    error comes out 1.78× too large and 2.7× too small. It is not conservative,
+    and which way it errs depends on something unobservable.
+  * A difference-in-differences on serially correlated panel data understates
+    its own uncertainty (Bertrand, Duflo & Mullainathan 2004). Pass `cluster:`
+    — a cluster id per row — for CR1 errors on *G*−1 df. In the test panel the
+    conventional error is 3.2× too small: *p* < 0.001 becomes *p* > 0.10 on the
+    same estimate. `hc:` takes `"HC0"`..`"HC3"` instead.
+  * With no covariates the DiD coefficient **is** the four-cell arithmetic, and
+    `means` / `diff_in_means` / `saturated` say so, so the estimate can be
+    checked by hand. Indicators must be 0/1 or `true`/`false`; anything else is
+    refused rather than coerced, and an empty cell is named.
+  * `iv_2sls` reports `first_stage` (the F on the **excluded** instruments —
+    below ~10 the instrument is weak, the estimate is biased toward OLS, and
+    `weak` / `note` say so), `sargan` (only where there is something to test:
+    exact identification has no overidentifying restriction, and reporting one
+    would be reporting a tautology as evidence) and `wu_hausman` (whether the
+    regressor was endogenous at all). Too few instruments is refused **by
+    count**, not silently under-identified.
+  * **Parallel trends is an assumption and `did` does not test it**, because it
+    cannot be: it is a claim about what the treated group *would* have done.
+    `pre_trends` tests the different and weaker question of whether the groups
+    moved together *before* treatment, and its `note` says in words that a large
+    *p*-value there is the absence of evidence against parallel trends over
+    however many pre-periods the data happens to hold — not evidence for it.
+
 - `web` — a route table as data over the WebServer module: `{method, path,
   handler}` records validated at build time, `{id}`/`{rest...}` patterns
   captured into `req.params`, order-independent matching by specificity, and

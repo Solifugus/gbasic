@@ -1,0 +1,151 @@
+== DiD: the estimate IS a difference of differences ==
+ok   it fits
+ok   control_pre
+ok   control_post
+ok   treated_pre
+ok   treated_post
+ok   the regression coefficient equals the hand arithmetic
+ok   and so does diff_in_means
+ok   which is 4
+ok   the fit is saturated
+ok   each cell is counted
+ok   classic covariance by default
+ok   df is n - 4
+ok   the interval brackets the estimate
+
+-- booleans are accepted as indicators, and nothing else is
+ok   true/false give the same estimate
+ok   a string indicator is refused
+ok   and 2 is not an indicator
+
+-- a covariate breaks the identity, and `saturated` says so
+ok   it still fits
+ok   but is not saturated
+ok   and the coefficient has moved off the cell arithmetic
+ok   while diff_in_means still reports the cells
+
+== CLUSTERING: the standard error a panel actually earns ==
+ok   both fits succeed
+ok   the ESTIMATE is identical -- clustering changes uncertainty, not the answer
+ok   thirty clusters
+ok   and df is G - 1, not n - p
+ok   the estimate
+ok   the conventional standard error
+ok   the clustered one
+ok   understated by a factor of about three
+ok   conventionally this is a discovery
+ok   clustered, the data cannot tell it from zero
+ok   the covariance is labelled
+ok   one cluster is refused
+
+-- CR1 with one observation per cluster IS HC1
+ok   both paths fit
+ok   every standard error agrees to 1e-12
+ok   and they are not all zero
+
+== IV/2SLS: the estimate equals the Wald ratio ==
+ok   it fits
+ok   the 2SLS estimate IS the Wald ratio
+ok   which is 1.5066445183
+ok   exactly identified
+ok   one endogenous regressor, one instrument
+ok   df is n - p
+ok   OLS is biased away from it
+ok   and the two do not agree
+
+-- the standard error, derived here from the structural residuals
+ok   the reported standard error matches it
+ok   which is 0.051883171606
+
+-- TRAP: two ordinary regressions give the same estimate and the wrong error
+ok   naive and correct COEFFICIENTS agree to ten digits
+ok   the standard errors do not
+ok   here the naive one is 1.78x too LARGE
+ok   with the confounding reversed the estimate still agrees
+ok   but now the naive error is 2.7x too SMALL
+ok   which is the direction that manufactures significance
+ok   the two datasets have the SAME correct standard error
+ok   so the naive answer is not merely conservative
+
+== diagnostics ==
+ok   the first-stage F is the instrument's t squared
+ok   this instrument is strong
+ok   so nothing is flagged
+ok   and there is no note
+ok   a weak instrument still produces an estimate
+ok   its first-stage F is below ten
+ok   it is flagged weak
+ok   and says why
+
+-- Wu-Hausman: was the regressor endogenous at all?
+ok   the reported F matches the augmented regression
+ok   and it rejects exogeneity
+ok   an exogenous regressor is not flagged endogenous
+ok   and OLS and IV then agree closely
+
+-- Sargan: only where there is something to test
+ok   exactly identified reports no Sargan statistic
+ok   two instruments for one regressor is overidentified by one
+ok   so a Sargan statistic exists
+ok   J is n times that regression's R-squared
+ok   valid instruments are not rejected
+ok   an invalid instrument IS rejected
+ok   and its estimate is badly wrong
+ok   while the valid pair is close
+
+-- an included exogenous control instruments itself
+ok   it fits with a control
+ok   one exogenous column
+ok   the endogenous coefficient is recovered
+ok   and so is the control's
+ok   df counts all three parameters
+ok   the first-stage F excludes the control
+ok   which is not the joint F over both columns
+ok   and it tests one restriction
+ok   Wu-Hausman restricts only the first-stage residuals
+ok   on one and 56 degrees of freedom
+ok   and this regressor really is endogenous
+ok   OLS does not recover it
+ok   dropping an orthogonal control leaves the estimate alone
+ok   but the standard error grows
+
+== pre-trends: the testable half of parallel trends ==
+ok   it fits
+ok   four pre-periods
+ok   the last is the omitted reference
+ok   so three leads are tested
+ok   and three are reported
+ok   the first lead is period 1
+ok   parallel trends are not rejected
+ok   only the pre-period rows are used
+ok   and the result refuses to be read as proof
+ok   a diverging treated group is caught
+ok   and the leads carry the drift
+ok   the ESTIMATE is untouched by any of this
+ok   the reported F is that F
+ok   on 3 and 88 degrees of freedom
+
+== refusals: each one names what is wrong ==
+ok   under-identification is named by count
+ok   an empty cell is refused
+ok   and named
+ok   a length mismatch is named
+ok   a bad covariance option is named
+ok   an empty y is refused
+ok   too few observations is refused
+ok   a single pre-period cannot be tested
+ok   no pre-periods at all is refused
+ok   a cluster column of the wrong length is refused
+ok   an instrument column of the wrong length is refused
+ok   a duplicated instrument is refused
+
+== robust covariance options still work here ==
+ok   HC3 fits
+ok   labelled
+ok   same estimate
+ok   different standard error
+ok   2SLS takes them too
+ok   with the same estimate
+
+checks: 119
+mismatches: 0
