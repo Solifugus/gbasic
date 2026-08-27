@@ -3570,6 +3570,15 @@ General-purpose:
   event at *t*, which is a real convention and a stated one. `median` is
   `unknown` when the curve never reaches 0.5, rather than the largest observed
   time.
+  **`cox_ph(times, events, covars)`** models it rather than describing it,
+  fitting the partial likelihood so the baseline hazard never has to be
+  estimated, and returning hazard ratios with errors, z, p and intervals.
+  A hazard ratio is **per unit**, so a covariate in dollars yields 1.0000-something
+  and reads as nothing — `hr_per(fit, i, delta)` gives the ratio over a stated
+  interval without re-fitting. Ties use Breslow's approximation, stated rather
+  than silent. And the model assumes the ratio is **constant over time**: where
+  hazards cross, one number describes neither period, which no p-value reveals
+  and the Kaplan-Meier curves do.
 
 - `stats` also carries **meta-analysis** — `meta_analysis(studies, spec)` with
   fixed-effect (inverse-variance) and random-effects (DerSimonian–Laird)

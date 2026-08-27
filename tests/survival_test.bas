@@ -151,6 +151,69 @@ append(results, check("no observations", false, stats.kaplan_meier([], []).ok))
 append(results, check("log-rank checks both groups", false, stats.logrank([1,2],[1,1],[3],[1,1]).ok))
 append(results, check("no events at all", false, stats.logrank([1,2],[0,0],[3,4],[0,0]).ok))
 
+print ""
+print "-- Cox proportional hazards, against the PUBLISHED fit of this trial"
+' Both arms pooled, treatment as the covariate (0 = 6-MP, 1 = placebo).
+' Published: beta = 1.5092, hazard ratio 4.523, se 0.4096, z 3.68, p 0.00023.
+' The fit is a derivative-free partial-likelihood maximisation with numerically
+' differentiated standard errors, so agreeing to four decimals with the
+' textbook is a claim about the method, not about this run.
+ct = [6,6,6,6,7,9,10,10,11,13,16,17,19,20,22,23,25,32,32,34,35,
+      1,1,2,2,3,4,4,5,5,8,8,8,8,11,11,12,12,15,17,22,23]
+ce = [1,1,1,0,1,0,1,0,0,1, 1, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0,
+      1,1,1,1,1,1,1,1,1,1,1,1,1, 1, 1, 1, 1, 1, 1, 1, 1]
+cg = [0,0,0,0,0,0,0,0,0,0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+      1,1,1,1,1,1,1,1,1,1,1,1,1, 1, 1, 1, 1, 1, 1, 1, 1]
+fit = stats.cox_ph(ct, ce, cg)
+append(results, check("it fits", true, fit.ok))
+append(results, check("and converges", true, fit.converged))
+append(results, check("beta as published", 1.5092, round(fit.coefficients[0], 4)))
+append(results, check("hazard ratio as published", 4.523, round(fit.hazard_ratios[0], 3)))
+append(results, check("standard error as published", 0.4096, round(fit.std_errors[0], 4)))
+append(results, check("z as published", 3.685, round(fit.z_values[0], 3)))
+append(results, check("p as published", 0.00023, round(fit.p_values[0], 5)))
+append(results, check("42 subjects, 30 events", true, fit.n = 42 and fit.n_events = 30))
+append(results, check("the tie handling is stated", "breslow", fit.ties))
+' The hazard ratio must be exp(beta) -- an identity, not an observation.
+append(results, check("the hazard ratio is exp(beta)", round(exp(fit.coefficients[0]), 9), round(fit.hazard_ratios[0], 9)))
+' The interval must bracket the point estimate and exclude 1 at this p.
+append(results, check("the interval brackets the estimate", true, fit.ci_low[0] < fit.hazard_ratios[0] and fit.hazard_ratios[0] < fit.ci_high[0]))
+append(results, check("and excludes 1", true, fit.ci_low[0] > 1))
+
+print ""
+print "-- the SCALING trap: a hazard ratio is PER UNIT"
+' The identical grouping measured in a unit 10000x smaller, as a covariate in
+' dollars would be. The effect is unchanged; the per-unit number is 1.00015,
+' which reads as nothing at all.
+tiny = []
+for each v in cg
+    append(tiny, v * 10000)
+next v
+big = stats.cox_ph(ct, ce, tiny)
+append(results, check("per unit it reads as no effect", 1.000151, round(big.hazard_ratios[0], 6)))
+append(results, check("over a stated interval it is the same effect", 4.523, round(stats.hr_per(big, 0, 10000), 3)))
+append(results, check("hr_per refuses a covariate that is not there", true, is_unknown(stats.hr_per(big, 5, 1))))
+
+print ""
+print "-- two covariates"
+noise = []
+i = 0
+while i < len(ct)
+    append(noise, mod(i, 3))
+    i += 1
+end while
+mfit = stats.cox_ph(ct, ce, [cg, noise])
+append(results, check("both coefficients come back", 2, len(mfit.coefficients)))
+append(results, check("the treatment effect survives", true, mfit.p_values[0] < 0.001))
+append(results, check("an uninformative covariate does not", true, mfit.p_values[1] > 0.05))
+
+print ""
+print "-- Cox refusals"
+append(results, check("mismatched event flags", false, stats.cox_ph([1,2,3], [1,1], cg).ok))
+append(results, check("a covariate of the wrong length", false, stats.cox_ph([1,2], [1,1], [[1]]).ok))
+append(results, check("no events at all", false, stats.cox_ph([1,2], [0,0], [1,2]).ok))
+append(results, check("no covariates", false, stats.cox_ph([1,2], [1,1], []).ok))
+
 bad_count = 0
 for each verdict in results
     if not verdict then

@@ -59,5 +59,35 @@ ok   no observations
 ok   log-rank checks both groups
 ok   no events at all
 
-checks: 43
+-- Cox proportional hazards, against the PUBLISHED fit of this trial
+ok   it fits
+ok   and converges
+ok   beta as published
+ok   hazard ratio as published
+ok   standard error as published
+ok   z as published
+ok   p as published
+ok   42 subjects, 30 events
+ok   the tie handling is stated
+ok   the hazard ratio is exp(beta)
+ok   the interval brackets the estimate
+ok   and excludes 1
+
+-- the SCALING trap: a hazard ratio is PER UNIT
+ok   per unit it reads as no effect
+ok   over a stated interval it is the same effect
+ok   hr_per refuses a covariate that is not there
+
+-- two covariates
+ok   both coefficients come back
+ok   the treatment effect survives
+ok   an uninformative covariate does not
+
+-- Cox refusals
+ok   mismatched event flags
+ok   a covariate of the wrong length
+ok   no events at all
+ok   no covariates
+
+checks: 65
 mismatches: 0

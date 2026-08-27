@@ -21,6 +21,13 @@ language surface may still change between releases.
   The event indicator is therefore required, not inferred. A median that the
   curve never reaches is `unknown`, not the largest observed time.
 
+  **`cox_ph`** completes it: the proportional-hazards model, fitted through the
+  partial likelihood so the baseline hazard cancels, reproducing the published
+  fit of that same trial to four decimals (β = 1.5092, HR = 4.523, SE = 0.4096,
+  p = 0.00023). `hr_per` reports the ratio over a stated interval, because a
+  hazard ratio is per unit and a covariate in dollars otherwise reads as no
+  effect.
+
 - **Meta-analysis in `stats`** — `meta_analysis`, `smd_variance`,
   `eggers_test`. Fixed-effect and random-effects (DerSimonian–Laird) pooling,
   always reported beside Cochran's Q, I² and τ², because a pooled estimate over

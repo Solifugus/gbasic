@@ -7984,4 +7984,187 @@ library stats
                  variance: var_sum, message: "" }
     end function
 
+    ' --- Cox proportional hazards --------------------------------------------
+    '
+    ' Kaplan-Meier DESCRIBES survival; Cox MODELS it. `h(t|x) = h0(t)exp(b'x)`
+    ' asks how a covariate multiplies the hazard, and the trick that makes it
+    ' famous is that the baseline hazard h0 never has to be estimated: the
+    ' PARTIAL likelihood compares, at each event time, the subject who failed
+    ' against everyone still at risk, and h0 cancels out of that ratio.
+    '
+    ' So the answer is a HAZARD RATIO -- exp(beta) -- meaning "this covariate
+    ' multiplies the instantaneous risk by this much, per unit". Two things
+    ' about that sentence carry the traps:
+    '
+    '   PER UNIT. A covariate measured in dollars gives a hazard ratio per
+    '   dollar, which for any realistic income is 1.0000-something and reads as
+    '   no effect at all. Nothing is wrong with the arithmetic; the covariate is
+    '   scaled wrongly. `hr_per` reports the ratio over a stated interval so
+    '   the number can be made legible without re-fitting.
+    '
+    '   PROPORTIONAL. The whole model assumes the ratio is CONSTANT over time.
+    '   Where hazards cross -- a treatment that helps early and harms later --
+    '   a single hazard ratio averages them into a number describing neither.
+    '   Cox cannot detect this for you and neither can any single p-value; it
+    '   is why the Kaplan-Meier curves are always looked at as well.
+    '
+    ' Ties are handled by BRESLOW's approximation, which is stated rather than
+    ' silent: it is the simplest and it degrades when many events share a time.
+    ' Efron's is more accurate under heavy ties and is not implemented.
+
+    function _cox_negll(params, ctx)
+        ' Partial log-likelihood, negated for the minimiser.
+        total = 0
+        ei = 0
+        while ei < len(ctx.etimes)
+            t = ctx.etimes[ei]
+            ' Sum of covariates over the subjects failing at t, and the log of
+            ' the risk set's summed exp(b'x).
+            dsum = 0
+            d = 0
+            rsum = 0
+            i = 0
+            while i < len(ctx.times)
+                lp = 0
+                k = 0
+                while k < len(params)
+                    lp = lp + params[k] * ctx.covars[k][i]
+                    k = k + 1
+                end while
+                if ctx.times[i] >= t then
+                    rsum = rsum + exp(lp)
+                end if
+                if ctx.times[i] = t and ctx.events[i] then
+                    dsum = dsum + lp
+                    d = d + 1
+                end if
+                i = i + 1
+            end while
+            if rsum > 0 then
+                total = total + dsum - d * log(rsum)
+            end if
+            ei = ei + 1
+        end while
+        return 0 - total
+    end function
+
+    ' `covars` is an array of columns (one array per covariate), each the same
+    ' length as `times`. A single covariate may be passed as a bare array.
+    function cox_ph(times, events, covars)
+        why = _surv_check(times, events)
+        if why != "" then
+            return { ok: false, message: "cox_ph: " + why }
+        end if
+
+        cols = covars
+        if len(covars) > 0 then
+            if not is_array(covars[0]) then
+                cols = [covars]
+            end if
+        end if
+        if len(cols) = 0 then
+            return { ok: false, message: "cox_ph: no covariates" }
+        end if
+        for each c in cols
+            if len(c) != len(times) then
+                return { ok: false, message: "cox_ph: a covariate has " + string(len(c)) + " values but there are " + string(len(times)) + " subjects" }
+            end if
+        next c
+
+        flags = []
+        for each e in events
+            append(flags, _is_event(e))
+        next e
+        ets = _event_times(times, events)
+        if len(ets) = 0 then
+            return { ok: false, message: "cox_ph: no events; a partial likelihood needs at least one failure" }
+        end if
+
+        ctx = { times: times, events: flags, etimes: ets, covars: cols }
+        init = []
+        i = 0
+        while i < len(cols)
+            append(init, 0)
+            i = i + 1
+        end while
+
+        res = optimize(_cox_negll, init, { max_iter: 20000, tol: pow(10, -12) }, ctx)
+        if is_unknown(res) then
+            return { ok: false, message: "cox_ph: the optimiser failed" }
+        end if
+        beta = res.params
+
+        ' Standard errors from the observed information -- the second
+        ' derivative of the partial log-likelihood, taken numerically because
+        ' the optimiser is derivative-free. Diagonal only: this reports each
+        ' coefficient's own error, not the full covariance.
+        ses = []
+        hrs = []
+        zs = []
+        ps = []
+        los = []
+        his = []
+        i = 0
+        while i < len(beta)
+            h = 0.0001
+            up = beta
+            dn = beta
+            up[i] = beta[i] + h
+            dn[i] = beta[i] - h
+            f0 = _cox_negll(beta, ctx)
+            fu = _cox_negll(up, ctx)
+            fd = _cox_negll(dn, ctx)
+            ' negll is the NEGATIVE log-likelihood, so its second difference is
+            ' already the observed information.
+            info = (fu - 2 * f0 + fd) / (h * h)
+            se = unknown
+            z = unknown
+            pv = unknown
+            lo = unknown
+            hi = unknown
+            if info > 0 then
+                se = sqrt(1 / info)
+                z = beta[i] / se
+                pv = 2 * (1 - normal_cdf(abs(z), 0, 1))
+                lo = exp(beta[i] - 1.959963984540054 * se)
+                hi = exp(beta[i] + 1.959963984540054 * se)
+            end if
+            append(ses, se)
+            append(zs, z)
+            append(ps, pv)
+            append(los, lo)
+            append(his, hi)
+            append(hrs, exp(beta[i]))
+            i = i + 1
+        end while
+
+        n_ev = 0
+        for each f in flags
+            if f then
+                n_ev = n_ev + 1
+            end if
+        next f
+
+        return { ok: true, coefficients: beta, hazard_ratios: hrs,
+                 std_errors: ses, z_values: zs, p_values: ps,
+                 ci_low: los, ci_high: his,
+                 log_likelihood: 0 - res.value, n: len(times), n_events: n_ev,
+                 converged: res.converged, iterations: res.iterations,
+                 ties: "breslow", message: "" }
+    end function
+
+    ' The hazard ratio for a stated CHANGE in a covariate, rather than per
+    ' unit. A model fitted on dollars reports a ratio per dollar -- 1.00002,
+    ' which reads as nothing; over $10,000 the same coefficient may be 1.22.
+    ' Same fit, legible number, no re-scaling and re-fitting.
+    function hr_per(fit, index, delta)
+        if not fit.ok then
+            return unknown
+        end if
+        if index < 0 or index >= len(fit.coefficients) then
+            return unknown
+        end if
+        return exp(fit.coefficients[index] * delta)
+    end function
+
 end library

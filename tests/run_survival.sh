@@ -32,6 +32,20 @@ set -euo pipefail
 # fixture whose survival lands exactly on one half. All four defects fail now:
 # risk set (5 tiers), Greenwood (3), median boundary (1), log-rank variance (1).
 #
+# COX is here too: `cox_ph` fits the partial likelihood through the
+# derivative-free optimiser with numerically differentiated standard errors,
+# and reproduces the PUBLISHED fit of the same trial to four decimals --
+# beta 1.5092, hazard ratio 4.523, se 0.4096, z 3.685, p 0.00023.
+#
+# A note on the red proofs, because one of them lied. Removing Breslow's tie
+# correction first reported ZERO mismatches, which read as a tier that asserts
+# nothing. It is not: the change makes the likelihood degenerate and the
+# program DIES on a division by zero, so no MISMATCH line is ever printed.
+# Counting mismatches alone cannot tell a pass from a crash. The proof now
+# requires the fixture's own summary line to exist, and the runner catches that
+# defect three ways -- the golden diff, the check-count floor, and the tier
+# asserting stderr is empty.
+#
 # Headless, no network, no optional dependency. Never skips.
 
 cd "$(dirname "$0")/.."
@@ -64,10 +78,10 @@ else
 fi
 
 reported="$(command grep '^checks: ' "$work/out" | sed 's/^checks: //')"
-if [[ -n "$reported" ]] && [[ "$reported" -ge 43 ]]; then
-    pass "survival_test ran at least 43 checks (ran $reported)"
+if [[ -n "$reported" ]] && [[ "$reported" -ge 65 ]]; then
+    pass "survival_test ran at least 65 checks (ran $reported)"
 else
-    fail "survival_test ran at least 43 checks (ran '${reported:-none}')"
+    fail "survival_test ran at least 65 checks (ran '${reported:-none}')"
 fi
 
 if [[ -s "$work/err" ]]; then
