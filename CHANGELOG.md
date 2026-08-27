@@ -26,8 +26,17 @@ language surface may still change between releases.
   **`adjusted` reports what the provider supplies** rather than being assumed
   (returns across a split from unadjusted prices read as a −50% day).
 
-  **Provider reality, checked live rather than assumed:** keyless daily equity
-  data has largely gone. Stooq answers any HTTP client with a JavaScript
+  **An adjusted provider's adjustment applies to every price column**, not just
+  the close. Tiingo serves `adjOpen`/`adjHigh`/`adjLow`/`adjVolume` beside
+  `adjClose`; taking the adjusted close while leaving the rest raw puts the
+  columns on different scales either side of a split or dividend. Measured
+  against six months of real AAPL data, that produced a close **below its own
+  low on 89 of 124 rows** — and no single number looks wrong, which is why it
+  survived until the live wire format was read.
+
+  **Provider reality, checked live rather than assumed:** Tiingo is **verified
+  working** (2026-08-26, real free-tier key). Keyless daily equity data has
+  largely gone. Stooq answers any HTTP client with a JavaScript
   anti-bot challenge (HTTP 200, an HTML body, no data, regardless of
   user-agent) and Yahoo's chart endpoint returned 429. A keyed provider is the
   reliable path. `daily` names a challenge page and a rate limit for what they

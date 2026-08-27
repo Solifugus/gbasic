@@ -68,10 +68,10 @@ else
 fi
 
 reported="$(command grep '^checks: ' "$work/out" | sed 's/^checks: //')"
-if [[ -n "$reported" ]] && [[ "$reported" -ge 40 ]]; then
-    pass "market_test ran at least 40 checks (ran $reported)"
+if [[ -n "$reported" ]] && [[ "$reported" -ge 44 ]]; then
+    pass "market_test ran at least 44 checks (ran $reported)"
 else
-    fail "market_test ran at least 40 checks (ran '${reported:-none}')"
+    fail "market_test ran at least 44 checks (ran '${reported:-none}')"
 fi
 
 if [[ -s "$work/err" ]]; then

@@ -41,7 +41,11 @@ ok   two rows
 ok   ISO timestamps become dates
 ok   and are sorted ascending too
 ok   an adjusted provider uses adjClose, not close
-ok   numeric JSON values survive as numbers
+ok   open is adjusted too
+ok   high is adjusted too
+ok   low is adjusted too
+ok   volume is adjusted too
+ok   high >= open/close >= low on every row
 
 -- a 200 that is not data, which is how providers refuse now
 ok   a challenge page is a failure
@@ -56,5 +60,5 @@ ok   closes() gives the flat array
 ok   in the same order
 ok   and is unknown on failure
 
-checks: 40
+checks: 44
 mismatches: 0

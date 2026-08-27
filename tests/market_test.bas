@@ -115,7 +115,33 @@ append(results, check("and are sorted ascending too", "2024-01-03", string(tr.fr
 ' would report adjusted:true while handing back prices that halve overnight,
 ' which is precisely the -50% phantom day this library exists to prevent.
 append(results, check("an adjusted provider uses adjClose, not close", 185.44, tr.frame["close"][0]))
-append(results, check("numeric JSON values survive as numbers", 373, tr.frame["open"][0]))
+
+' EVERY price column must come from the adjusted series, not just the close.
+' Taking adjClose while leaving open/high/low/volume RAW makes a frame whose
+' columns sit on different scales either side of a split or dividend -- and
+' measured against six months of real AAPL data on 2024-01-02..06-28, that
+' produced a close BELOW its own low on 89 of 124 rows. No single number looks
+' wrong, which is why it survived until the live wire format was read.
+' The fixture is a 2:1 split, so raw and adjusted differ on every column.
+append(results, check("open is adjusted too", 186.5, tr.frame["open"][0]))
+append(results, check("high is adjusted too", 187.5, tr.frame["high"][0]))
+append(results, check("low is adjusted too", 185, tr.frame["low"][0]))
+append(results, check("volume is adjusted too", 4000, tr.frame["volume"][0]))
+
+' The invariant that catches a mixed frame generically, whatever the columns.
+coherent = true
+ci = 0
+while ci < count(tr.frame["date"])
+    hh = tr.frame["high"][ci]
+    ll = tr.frame["low"][ci]
+    cc = tr.frame["close"][ci]
+    oo = tr.frame["open"][ci]
+    if not (hh >= cc and cc >= ll and hh >= oo and oo >= ll) then
+        coherent = false
+    end if
+    ci += 1
+end while
+append(results, check("high >= open/close >= low on every row", true, coherent))
 
 print ""
 print "-- a 200 that is not data, which is how providers refuse now"

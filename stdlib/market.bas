@@ -50,10 +50,13 @@
 ' fixtures and `market.with_transport(m, fn)` injects a function, the two seams
 ' `llm.bas` and `edgar.bas` both use.
 '
-' PROVIDER REALITY, checked live 2026-08-25 rather than assumed: keyless daily
-' equity data has largely disappeared. Stooq serves a JavaScript anti-bot
-' challenge to any HTTP client, and Yahoo's chart endpoint answered 429. A
-' provider with an API KEY is the reliable path; the keyless ones are kept
+' PROVIDER REALITY, checked live rather than assumed. **Tiingo is VERIFIED
+' WORKING (2026-08-26)** against a real free-tier key: 21 trading days of AAPL
+' for January 2024, adjusted, every column populated, and OHLC coherent across
+' 124 rows spanning six months. Keyless data is the problem -- Stooq serves a
+' JavaScript anti-bot challenge to any HTTP client (checked 2026-08-25) and
+' Yahoo's chart endpoint answered 429. A provider with an API KEY is the
+' reliable path; the keyless ones are kept
 ' because the shape is right and endpoints change, and because `daily` now
 ' names a challenge page or a rate limit for what it is instead of reporting
 ' "no rows" and sending you to look for a bad symbol.
@@ -323,6 +326,9 @@ library market
         if resp.status = 404 then
             return _fail("market: no data for symbol '" + symbol + "' from " + m.provider)
         end if
+        if resp.status = 401 or resp.status = 403 then
+            return _fail("market: " + m.provider + " refused the request (HTTP " + string(resp.status) + ") -- check the API key")
+        end if
         if resp.status = 429 then
             return _fail("market: " + m.provider + " rate-limited this request (HTTP 429) -- wait, or use a provider with an API key")
         end if
@@ -360,20 +366,11 @@ library market
             if has(row, "date") then
                 d{date}= _date_part(row.date)
                 append(dates, d)
-                append(opens,  _num_or_unknown(_pick(row, "open")))
-                append(highs,  _num_or_unknown(_pick(row, "high")))
-                append(lows,   _num_or_unknown(_pick(row, "low")))
-                ' An adjusted provider serves BOTH: `close` is the raw
-                ' print and `adjClose` is split/dividend adjusted. Reporting
-                ' adjusted:true while handing back the raw close would be the
-                ' exact lie this library exists to avoid, so the adjusted
-                ' column wins wherever the provider supplies one.
-                if m.adjusted and has(row, "adjclose") then
-                    append(closes, _num_or_unknown(_pick(row, "adjclose")))
-                else
-                    append(closes, _num_or_unknown(_pick(row, "close")))
-                end if
-                append(vols,   _num_or_unknown(_pick(row, "volume")))
+                append(opens,  _num_or_unknown(_col(m, row, "open")))
+                append(highs,  _num_or_unknown(_col(m, row, "high")))
+                append(lows,   _num_or_unknown(_col(m, row, "low")))
+                append(closes, _num_or_unknown(_col(m, row, "close")))
+                append(vols,   _num_or_unknown(_col(m, row, "volume")))
             end if
         next row
 
@@ -388,6 +385,28 @@ library market
         out = _sort_ascending(out)
 
         return { ok: true, frame: out, adjusted: m.adjusted, message: "" }
+    end function
+
+    ' Pick a column, preferring the ADJUSTED series when the handle says the
+    ' provider is adjusted and supplies one.
+    '
+    ' This must be applied to EVERY price column, not just the close. Tiingo
+    ' serves adjOpen/adjHigh/adjLow/adjClose/adjVolume beside the raw prints,
+    ' and taking the adjusted close while leaving open, high, low and volume
+    ' raw produces a frame whose columns are on DIFFERENT SCALES either side of
+    ' a split -- a high below its own close, a range computed from mixed
+    ' prices. Nothing about that looks wrong in isolation, which is exactly the
+    ' failure this library exists to refuse. Found by reading the real wire
+    ' response on 2026-08-26; the fixture only carried adjClose, so no offline
+    ' test could have seen it.
+    function _col(m, row, name)
+        if m.adjusted then
+            adj = "adj" + name
+            if has(row, adj) then
+                return row[adj]
+            end if
+        end if
+        return _pick(row, name)
     end function
 
     function _pick(row, name)

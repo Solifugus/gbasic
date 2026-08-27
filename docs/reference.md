@@ -3567,10 +3567,14 @@ General-purpose:
   already wants: `forensics` indexes it by column, and `frame["close"]` is the
   flat array `stats.simple_returns` takes. Providers are pluggable (Stooq needs
   no key; Tiingo is adjusted), with the `offline`/`with_transport` seams
-  `llm` and `edgar` use, so tests never touch the network. **Checked live
-  2026-08-25: keyless daily equity data has largely disappeared** — Stooq now
-  serves a JavaScript anti-bot challenge to any HTTP client and Yahoo's chart
-  endpoint answered 429, so a keyed provider is the reliable path. A challenge
+  `llm` and `edgar` use, so tests never touch the network. **Tiingo is verified live (2026-08-26)** against a real
+  free-tier key. **Keyless data is the problem**: Stooq now serves a JavaScript
+  anti-bot challenge to any HTTP client and Yahoo's chart endpoint answered
+  429, so a keyed provider is the reliable path. Where a provider serves an
+  adjusted series it is used for **every** price column, not just the close —
+  mixing an adjusted close with raw highs and lows puts the columns on
+  different scales, which on real data made the close fall below its own low on
+  89 of 124 rows. A challenge
   page or a rate limit is reported as such rather than as an empty result. Rows are always
   sorted ascending by date — a reversed series yields **negated** returns, which
   looks like ordinary data — and `adjusted` reports what the provider actually

@@ -1,2 +1,4 @@
-[{"date":"2024-01-03T00:00:00.000Z","open":370.0,"high":373.0,"low":368.0,"close":370.60,"volume":1000,"adjClose":185.30},
- {"date":"2024-01-02T00:00:00.000Z","open":373.0,"high":375.0,"low":370.0,"close":370.87,"volume":2000,"adjClose":185.44}]
+[{"date":"2024-01-03T00:00:00.000Z","open":370.00,"high":373.00,"low":368.00,"close":370.60,"volume":1000,
+  "adjOpen":185.00,"adjHigh":186.50,"adjLow":184.00,"adjClose":185.30,"adjVolume":2000},
+ {"date":"2024-01-02T00:00:00.000Z","open":373.00,"high":375.00,"low":370.00,"close":370.87,"volume":2000,
+  "adjOpen":186.50,"adjHigh":187.50,"adjLow":185.00,"adjClose":185.44,"adjVolume":4000}]
