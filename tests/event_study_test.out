@@ -1,0 +1,54 @@
+-- the market model recovers what was put in
+ok   it fits
+ok   alpha is 0
+ok   beta is 1.5
+ok   the abnormal return IS the injected shock
+ok   CAR over a one-day window equals it
+ok   the window is one observation
+ok   and the estimation window is the size asked for
+ok   estimation ends before the event window starts
+
+-- a wider window sums the days it covers
+ok   five observations
+ok   CAR still equals the single shock
+ok   a non-event day has no abnormal return
+
+-- the other two normal-return models
+ok   market_adjusted subtracts the market itself
+ok   its beta is fixed at 1
+ok   the mean model ignores the market
+
+-- TRAP 1: trading days, not calendar days
+ok   the window starts two TRADING days back
+ok   the event index is the day itself
+
+-- TRAP 2: an event on a day the market was closed
+ok   it resolves rather than failing
+ok   to the NEXT trading day
+ok   and says it moved
+ok   a real trading day is not marked shifted
+ok   a window before the series is refused
+ok   an event after the series is refused
+
+-- TRAP 3: too little history, and a model fitted on noise
+ok   not enough observations before the event
+ok   an estimation window too short for a market model
+ok   an event window running past the data
+ok   an unknown model is named, not defaulted
+
+-- TRAP 4: a CAAR over unequal windows has no meaning
+ok   mixing widths is refused
+ok   two events aggregate
+ok   CAAR is the mean of the two CARs
+ok   with the right count
+ok   and the shared window width
+ok   one event is not a study
+
+-- CONTAMINATION is reported, not hidden
+ok   clean events report no contamination
+ok   clustered events do
+ok   and say so in words
+ok   but the study still runs
+
+checks: 36
+mismatches: 0

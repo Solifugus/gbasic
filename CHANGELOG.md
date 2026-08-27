@@ -9,6 +9,22 @@ language surface may still change between releases.
 
 ## Unreleased
 
+- **Event studies in `stats`** — `event_window`, `abnormal_returns` and
+  `event_study`. The method that turns an EDGAR filing date into a testable
+  claim: estimate a normal-return model (market, market-adjusted or mean)
+  before an event, take the residuals across the event window as abnormal
+  returns, cumulate to CAR, and aggregate across events to CAAR with a t-test.
+
+  Four traps are refused rather than left to the caller, each of which yields a
+  plausible *number* rather than an error: windows count **trading days**, not
+  calendar days; an event on a day the market was shut moves to the next
+  trading day and reports that it moved; an estimation window overlapping its
+  own event window is refused (look-ahead); and a CAAR over unequal windows is
+  refused. A fifth — **contaminated estimation windows**, where clustered
+  events sit inside each other's baselines — is *reported* rather than refused,
+  since clustering is sometimes unavoidable; on a constructed pair whose true
+  CAAR is exactly 0.025 it produces 0.02455, close enough to read as noise.
+
 - **`market` — daily price history** (`stdlib/market.bas`). The finance stack
   was complete except for its input: `stats.simple_returns`, `sharpe_ratio`,
   `max_drawdown`, `value_at_risk`, `capm` and

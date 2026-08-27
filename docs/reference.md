@@ -3557,6 +3557,18 @@ General-purpose:
   `docs/cookbook_social_behavioral.md` and `docs/cookbook_econometrics_finance.md`).
 - `crypto` — ergonomic cryptography compositions over the crypto builtins
   (see [Cryptography](#cryptography) and `docs/crypto_design.md`).
+- `stats` also carries **event studies** — `event_window(dates, event, pre,
+  post)`, `abnormal_returns(asset_r, market_r, spec)` and
+  `event_study(studies)`. The standard tool of empirical finance, and what
+  turns an EDGAR filing date into a testable claim: fit a normal-return model
+  before an event, measure the residual across it, aggregate to CAAR and test
+  it. Windows count **trading days** (they index the dates the series has, so a
+  weekend cannot shorten one); an event on a closed day moves to the next
+  trading day and says so; an estimation window overlapping its event window is
+  refused, as is a CAAR over unequal windows; and clustered events whose
+  baselines contain each other are **reported** (`contaminated`, `note`) rather
+  than refused, because clustering is sometimes unavoidable.
+
 - `web` — a route table as data over the WebServer module: `{method, path,
   handler}` records validated at build time, `{id}`/`{rest...}` patterns
   captured into `req.params`, order-independent matching by specificity, and

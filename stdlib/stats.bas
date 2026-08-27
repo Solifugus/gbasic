@@ -7181,4 +7181,291 @@ library stats
         end if
         return { alpha: fit.coefficients[0], beta: fit.coefficients[1], alpha_se: fit.std_errors[0], beta_se: fit.std_errors[1], alpha_t: fit.t_values[0], beta_t: fit.t_values[1], alpha_p: fit.p_values[0], beta_p: fit.p_values[1], r_squared: fit.r_squared, n: n }
     end function
+
+    ' --- Event studies -------------------------------------------------------
+    '
+    ' "Did something happen to this stock when that happened to this company?"
+    ' -- the standard tool of empirical finance, and the one that turns EDGAR's
+    ' filing dates into a testable claim: Form 4 insider purchases, earnings
+    ' dates, 8-K events. The method is old and settled (Fama, Fisher, Jensen &
+    ' Roll 1969); what follows is the textbook procedure with its traps refused
+    ' rather than left to the caller.
+    '
+    ' The shape:
+    '
+    '   1. estimate a NORMAL-RETURN model over a window that ends BEFORE the
+    '      event -- the market model R_i = alpha + beta*R_m + e is the default;
+    '   2. an ABNORMAL return is the residual over the event window,
+    '      AR_t = R_it - (alpha + beta*R_mt);
+    '   3. CAR is their sum over that window, one number per event;
+    '   4. across many events, CAAR is the mean CAR and a t-test asks whether
+    '      it differs from zero.
+    '
+    ' FOUR TRAPS, each of which yields a plausible NUMBER rather than an error,
+    ' and each refused here by name:
+    '
+    '   * TRADING DAYS, NOT CALENDAR DAYS. A "5-day window" counted in calendar
+    '     days spans a different number of observations depending on which
+    '     weekday the event fell on, and silently includes fewer returns over a
+    '     holiday. `event_window` indexes into the dates the series ACTUALLY
+    '     has, so a window is always the requested number of observations.
+    '   * AN EVENT ON A NON-TRADING DAY. News breaks on Saturdays. The event is
+    '     mapped to the NEXT available trading day and the result says which,
+    '     rather than silently missing or picking the day before.
+    '   * LOOK-AHEAD. The estimation window must end before the event window
+    '     starts. Overlap them and the "normal" return is fitted partly on the
+    '     event being measured, which biases the abnormal return toward zero.
+    '     Refused, with a `gap` between them that defaults to 0 but is there to
+    '     be used.
+    '   * AGGREGATING UNEQUAL WINDOWS. Averaging a 5-day CAR with an 11-day CAR
+    '     produces a number with no interpretation. `event_study` refuses a set
+    '     whose windows differ.
+
+    ' Locate an event in a date series, on TRADING-DAY terms.
+    '
+    ' `dates` must be ascending (market.daily guarantees this). Returns the
+    ' index of the event day and the inclusive window bounds:
+    '
+    '   { ok, index, actual, shifted, start, last_ix, message }
+    '
+    ' `shifted` is true when `event_date` was not itself in the series and the
+    ' next trading day was used -- the caller can then report how many events
+    ' moved, which is a normal thing to disclose in this method.
+    function event_window(dates, event_date, pre, post)
+        n = len(dates)
+        if n = 0 then
+            return { ok: false, message: "event_window: no dates" }
+        end if
+        if pre < 0 or post < 0 then
+            return { ok: false, message: "event_window: pre and post must be >= 0" }
+        end if
+
+        ' First trading day on or after the event. A linear scan: event sets
+        ' are small beside the price series, and a wrong binary search here
+        ' would be a silent off-by-one in the thing being measured.
+        idx = unknown
+        i = 0
+        while i < n
+            if dates[i] >= event_date then
+                idx = i
+                i = n
+            end if
+            i = i + 1
+        end while
+        if is_unknown(idx) then
+            return { ok: false, message: "event_window: the event is after the last date in the series" }
+        end if
+
+        shifted = dates[idx] != event_date
+        start = idx - pre
+        last_ix = idx + post
+        if start < 0 then
+            return { ok: false, message: "event_window: the series starts too late for a " + string(pre) + "-day pre-window" }
+        end if
+        if last_ix > n - 1 then
+            return { ok: false, message: "event_window: the series ends too early for a " + string(post) + "-day post-window" }
+        end if
+        return { ok: true, index: idx, actual: dates[idx], shifted: shifted,
+                 start: start, last_ix: last_ix, message: "" }
+    end function
+
+    ' Abnormal returns for one event.
+    '
+    ' `spec` fields: event (index), pre, post, estimation (observations),
+    ' gap (observations between the estimation and event windows, default 0),
+    ' model ("market" | "market_adjusted" | "mean", default "market").
+    function abnormal_returns(asset_r, market_r, spec)
+        n = len(asset_r)
+        if n != len(market_r) then
+            return { ok: false, message: "abnormal_returns: asset and market series differ in length" }
+        end if
+
+        evt = spec.event
+        pre = 0
+        if has(spec, "pre") then
+            pre = spec.pre
+        end if
+        post = 0
+        if has(spec, "post") then
+            post = spec.post
+        end if
+        gap = 0
+        if has(spec, "gap") then
+            gap = spec.gap
+        end if
+        est = 120
+        if has(spec, "estimation") then
+            est = spec.estimation
+        end if
+        model = "market"
+        if has(spec, "model") then
+            model = spec.model
+        end if
+
+        evt_start = evt - pre
+        evt_stop = evt + post
+        if evt_start < 0 or evt_stop > n - 1 then
+            return { ok: false, message: "abnormal_returns: the event window falls outside the series" }
+        end if
+
+        est_stop = evt_start - gap - 1
+        est_start = est_stop - est + 1
+        if est_start < 0 then
+            return { ok: false, message: "abnormal_returns: only " + string(est_stop + 1) + " observations before the event window, need " + string(est) + " for estimation" }
+        end if
+
+        ' Refused rather than shrugged at: a market model fitted on a handful
+        ' of points produces a beta that is noise, and every abnormal return
+        ' downstream inherits it while looking perfectly ordinary.
+        if model = "market" and est < 30 then
+            return { ok: false, message: "abnormal_returns: an estimation window of " + string(est) + " is too short to fit a market model (30 minimum)" }
+        end if
+
+        ' Slice the estimation window.
+        ey = []
+        ex = []
+        i = est_start
+        while i <= est_stop
+            append(ey, asset_r[i])
+            append(ex, market_r[i])
+            i = i + 1
+        end while
+
+        alpha = 0
+        beta = 1
+        if model = "market" then
+            fit = ols(ey, ex)
+            if is_unknown(fit) then
+                return { ok: false, message: "abnormal_returns: the market model did not fit" }
+            end if
+            alpha = fit.coefficients[0]
+            beta = fit.coefficients[1]
+        else
+            if model = "mean" then
+                alpha = mean(ey)
+                beta = 0
+            else
+                if model = "market_adjusted" then
+                    alpha = 0
+                    beta = 1
+                else
+                    return { ok: false, message: "abnormal_returns: unknown model '" + string(model) + "' (market, market_adjusted, mean)" }
+                end if
+            end if
+        end if
+
+        ' Residual standard deviation over the ESTIMATION window is what the
+        ' single-event t-statistic is scaled by -- not the event window, whose
+        ' whole point is that it may be unusual.
+        resid = []
+        i = 0
+        while i < len(ey)
+            append(resid, ey[i] - (alpha + beta * ex[i]))
+            i = i + 1
+        end while
+        sigma = stdev(resid)
+
+        ar = []
+        i = evt_start
+        while i <= evt_stop
+            append(ar, asset_r[i] - (alpha + beta * market_r[i]))
+            i = i + 1
+        end while
+
+        car = 0
+        for each a in ar
+            car = car + a
+        next a
+
+        t = unknown
+        if sigma > 0 then
+            t = car / (sigma * sqrt(len(ar)))
+        end if
+
+        return { ok: true, ar: ar, car: car, alpha: alpha, beta: beta,
+                 sigma: sigma, t: t, window: len(ar), model: model,
+                 estimation: len(ey), est_from: est_start, est_to: est_stop,
+                 evt_from: evt_start, evt_to: evt_stop, event: evt, message: "" }
+    end function
+
+    ' Aggregate a set of `abnormal_returns` results into CAAR and its test.
+    function event_study(studies)
+        if not is_array(studies) then
+            return { ok: false, message: "event_study expects an array of abnormal_returns results" }
+        end if
+        cars = []
+        width = unknown
+        for each st in studies
+            if is_record(st) then
+                if st.ok then
+                    if is_unknown(width) then
+                        width = st.window
+                    end if
+                    ' Averaging a 5-day CAR with an 11-day CAR yields a number
+                    ' with no interpretation, and nothing about it looks wrong.
+                    if st.window != width then
+                        return { ok: false, message: "event_study: event windows differ (" + string(width) + " and " + string(st.window) + "); a CAAR over unequal windows has no meaning" }
+                    end if
+                    append(cars, st.car)
+                end if
+            end if
+        next st
+
+        k = len(cars)
+        if k < 2 then
+            return { ok: false, message: "event_study: needs at least 2 successful events, got " + string(k) }
+        end if
+
+        ' CONTAMINATED ESTIMATION WINDOWS. When events cluster, one event's
+        ' estimation window can contain ANOTHER event -- so the "normal"
+        ' return it fits is partly the abnormal behaviour of its neighbour, and
+        ' every abnormal return computed from it is biased. Measured on a
+        ' constructed pair whose true CAAR is exactly 0.025, contamination
+        ' produced 0.02455: close enough to read as ordinary noise, which is
+        ' precisely why it is reported rather than left to be noticed.
+        '
+        ' Reported, not refused: clustering is sometimes unavoidable (an
+        ' industry-wide event), and the literature's answer is to disclose it
+        ' and consider a portfolio approach, not to discard the study.
+        contaminated = 0
+        oi = 0
+        while oi < len(studies)
+            a = studies[oi]
+            if is_record(a) then
+                if a.ok then
+                    oj = 0
+                    while oj < len(studies)
+                        b = studies[oj]
+                        if oj != oi and is_record(b) then
+                            if b.ok then
+                                if b.event >= a.est_from and b.event <= a.est_to then
+                                    contaminated = contaminated + 1
+                                    oj = len(studies)
+                                end if
+                            end if
+                        end if
+                        oj = oj + 1
+                    end while
+                end if
+            end if
+            oi = oi + 1
+        end while
+
+        caar = mean(cars)
+        sd = stdev(cars)
+        t = unknown
+        p = unknown
+        if sd > 0 then
+            t = caar / (sd / sqrt(k))
+            p = 2 * (1 - t_cdf(abs(t), k - 1))
+        end if
+        note = ""
+        if contaminated > 0 then
+            note = string(contaminated) + " of " + string(k) + " events have another event inside their estimation window; their normal-return models are fitted on contaminated data"
+        end if
+        return { ok: true, n: k, caar: caar, cars: cars, sd: sd, t: t, p: p,
+                 window: width, df: k - 1, contaminated: contaminated,
+                 message: "", note: note }
+    end function
+
 end library
