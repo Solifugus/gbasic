@@ -8005,16 +8005,29 @@ static Value make_dir_entry(const char *folder, const char *name, const char *ty
     return value_record(fields, 3);
 }
 
+/* `list`, `files` and `folders`. Both refusals below used to be a bare
+ * fprintf followed by `return value_null()`, which is the silent-trap
+ * signature docs/warning_model_design.md §7 names and tests/run_silent_traps.sh
+ * exists for: an UNLOCATED line on stderr, a result of `nothing`, EXIT CODE 0,
+ * and nothing catchable by `on error`. Since `nothing` is a legitimate value a
+ * caller could not tell the failure from a real empty answer, and CI saw
+ * success. The 2026-08-23 sweep promoted goto/gosub and out-of-range reads;
+ * this family was missed, and an audit of all 176 builtins for the same
+ * signature on 2026-08-27 found these three and only these three. */
 static Value eval_dir_call(AstExpr *expr) {
     const char *name = expr->as.call.name;
     if (expr->as.call.args.count != 1) {
-        fprintf(stderr, "%s expects one directory argument\n", name);
+        char message[128];
+        snprintf(message, sizeof(message), "%s expects one directory argument", name);
+        runtime_error_raise(message, 1003, "invalid function call");
         return value_null();
     }
 
     Value dir_value = eval_expr(expr->as.call.args.items[0]);
     if (dir_value.kind != VALUE_DIR) {
-        fprintf(stderr, "%s expects a directory reference\n", name);
+        char message[128];
+        snprintf(message, sizeof(message), "%s expects a directory reference", name);
+        runtime_error_raise(message, 1003, "invalid function call");
         value_free(dir_value);
         return value_null();
     }

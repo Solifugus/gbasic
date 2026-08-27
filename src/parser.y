@@ -415,6 +415,7 @@ typedef struct {
  * before this it fell through to the token mapper's default arm and was
  * reported as an unexpected token rather than a keyword clash. */
 %token AS
+%token DIM
 %token PLUS_EQ MINUS_EQ STAR_EQ SLASH_EQ
 %token IF CONSIDER_IF THEN ELSE CONSIDER_ELSE END END_CONSIDER PRINT TRUE FALSE NOTHING UNKNOWN_VALUE AND OR NOT WITH NEW SPAWN FOR TO STEP DO LOOP UNTIL IN EACH WHILE CONSIDER BREAK CONTINUE FUNCTION RETURN GOTO GOSUB WATCH UNWATCH WITHOUT WATCHERS ON NEXT STOP ERROR_VALUE MODIFIER PROGRAM LIBRARY LOAD USE EXPORT
 %token OP_EQ OP_NE OP_GT OP_LT OP_GE OP_LE OP_NGT OP_NLT OP_NGE OP_NLE
@@ -532,6 +533,19 @@ statement
     | break_statement NEWLINE { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
     | continue_statement NEWLINE { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
     | if_statement { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
+    /* The QBasic refusal, now sited where it MEANS something: `dim` starting a
+     * statement. Message byte-identical to the one yylex used to emit, so the
+     * negative goldens do not move. Stated in both statement positions -- a
+     * `dim` inside a `consider` body used to get this advice too, and losing
+     * it there would be a regression dressed as a fix. */
+    | DIM {
+        $$ = NULL;      /* never read: YYERROR unwinds. Set so bison does not
+                         * report an unset value and grow the warning list. */
+        report_syntax_error(ctx, @1.first_line, @1.first_column,
+                            @1.last_line, @1.last_column,
+                            "`dim` is not a gBASIC statement; assign to create a variable (x = 0)");
+        YYERROR;
+      }
     ;
 
 assignment
@@ -771,6 +785,19 @@ consider_body_statement
     | break_statement NEWLINE { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
     | continue_statement NEWLINE { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
     | if_statement { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
+    /* The QBasic refusal, now sited where it MEANS something: `dim` starting a
+     * statement. Message byte-identical to the one yylex used to emit, so the
+     * negative goldens do not move. Stated in both statement positions -- a
+     * `dim` inside a `consider` body used to get this advice too, and losing
+     * it there would be a regression dressed as a fix. */
+    | DIM {
+        $$ = NULL;      /* never read: YYERROR unwinds. Set so bison does not
+                         * report an unset value and grow the warning list. */
+        report_syntax_error(ctx, @1.first_line, @1.first_column,
+                            @1.last_line, @1.last_column,
+                            "`dim` is not a gBASIC statement; assign to create a variable (x = 0)");
+        YYERROR;
+      }
     ;
 
 function_statement
@@ -1342,6 +1369,7 @@ dot_field_name
     | STEP           { $$ = kw_name("step"); }
     | UNWATCH        { $$ = kw_name("unwatch"); }
     | UNKNOWN_VALUE  { $$ = kw_name("unknown"); }
+    | DIM            { $$ = kw_name("dim"); }
     ;
 
 record_field_list
@@ -1631,17 +1659,21 @@ static int yylex(YYSTYPE *lvalp, YYLTYPE *llocp, gb_parse_ctx *ctx) {
         ctx->lexer_error_reported = 1;
         return 0;
     case TOKEN_DIM:
-        /* `dim` is lexed as a keyword for ONE reason: to be refused here with
-         * advice. There is no dim statement -- assignment creates a variable --
-         * and someone arriving from QBasic types it in their first ten minutes.
-         * Reserving the word to say so is worth more than freeing it, because
-         * as an ordinary identifier `dim x` would still fail, just less
-         * usefully. */
-        report_diag_lexeme(ctx, GB_DIAG_PARSE_ERROR, token.line, token.column,
-                           token.start, token.length,
-                           "`dim` is not a gBASIC statement; assign to create a variable (x = 0)");
-        ctx->lexer_error_reported = 1;
-        return 0;
+        /* `dim` is lexed as a keyword for ONE reason: to be refused with advice
+         * where someone arriving from QBasic would type it. There is no dim
+         * statement -- assignment creates a variable -- and reserving the word
+         * to say so is worth more than freeing it, because as an ordinary
+         * identifier `dim x` would still fail, just less usefully.
+         *
+         * THE REFUSAL USED TO HAPPEN HERE, at token delivery, which fired it in
+         * every position rather than the one it was written for: `{ dim: 7 }`
+         * and `r.dim` were both rejected as "not a gBASIC statement" at a
+         * position where no statement is possible. Every other keyword is a
+         * legal field name (see dot_field_name) and `dim` was the sole
+         * exception -- nothing chose that. The token is delivered now and the
+         * grammar decides, which is the difference between asking WHAT the
+         * word was and asking WHERE it appeared. */
+        return DIM;
     default:
         /* Backstop for a token added to the lexer and not to the grammar. It
          * used to fprintf straight to stderr: unlocated, absent from the

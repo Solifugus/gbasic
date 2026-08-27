@@ -23,6 +23,11 @@ make >/dev/null
 scratch="$(mktemp -d)"
 trap 'rm -rf "$scratch"' EXIT
 fail() { printf 'FAIL %s\n' "$1"; exit 1; }
+# Counted, not hardcoded. The summary carried a literal 12 that happened to be
+# right only because whoever last added a case remembered to bump it -- and a
+# gate reporting a number it does not measure can shrink without saying so.
+cases=0
+ok() { cases=$((cases + 1)); printf 'PASS %s\n' "$1"; }
 
 # --- fatal, located, nonzero ----------------------------------------------
 fatal() { # file expected-fragment
@@ -37,7 +42,7 @@ fatal() { # file expected-fragment
         || fail "$1 (the diagnostic is not LOCATED: $(cat "$scratch/err"))"
     grep -q "unreachable" "$scratch/out" \
         && fail "$1 (execution continued past the failure)"
-    printf 'PASS %s\n' "${1%.bas}"
+    ok "${1%.bas}"
 }
 
 fatal label_goto.bas "unknown label in function f: nowhere"
@@ -47,14 +52,22 @@ fatal modifier_date.bas "date modifier expects an ISO-like date string"
 fatal modifier_file.bas "file modifier expects a path string"
 fatal watch_undefined.bas "undefined variable: nope"
 fatal watch_body.bas "undefined variable: undefined_in_body"
+# The directory family, found 2026-08-27 by auditing all 176 builtins for this
+# exact signature rather than by reading for it. `list`, `files` and `folders`
+# each had TWO bare fprintf refusals -- wrong arity, and a non-directory
+# argument -- and both returned `nothing` with exit 0. They were the ONLY three
+# builtins left with the shape; the sweep is what makes that a measurement
+# rather than a hope.
+fatal dir_arity.bas "list expects one directory argument"
+fatal dir_type.bas  "files expects a directory reference"
 
 # --- catchable, which the printed line never was --------------------------
-for name in label_caught index_read_caught modifier_caught watch_caught; do
+for name in label_caught index_read_caught modifier_caught watch_caught dir_caught; do
     ./gbasic "tests/silent_traps/$name.bas" >"$scratch/got" 2>"$scratch/err" \
         || fail "$name (exited nonzero: $(cat "$scratch/err"))"
     diff -u "tests/silent_traps/$name.out" "$scratch/got" \
         || fail "$name (output diverged)"
-    printf 'PASS %s\n' "$name"
+    ok "$name"
 done
 
 # --- the write path was always right; it must stay that way ---------------
@@ -64,7 +77,7 @@ if ./gbasic "$scratch/w.bas" >/dev/null 2>"$scratch/err"; then
 fi
 grep -qF "array index out of range" "$scratch/err" \
     || fail "write path (message changed: $(cat "$scratch/err"))"
-printf 'PASS write_path_unchanged\n'
+ok write_path_unchanged
 
 # --- the modifier that was ALWAYS right must stay that way ----------------
 # `USD` raised from the start, four lines from `date` in the same dispatch
@@ -76,6 +89,6 @@ if ./gbasic "$scratch/m.bas" >/dev/null 2>"$scratch/err"; then
 fi
 grep -qF "USD modifier expects a number" "$scratch/err" \
     || fail "USD (message changed: $(cat "$scratch/err"))"
-printf 'PASS usd_unchanged\n'
+ok usd_unchanged
 
-printf 'run_silent_traps: 12 cases passed\n'
+printf 'run_silent_traps: %d cases passed\n' "$cases"

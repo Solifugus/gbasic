@@ -398,11 +398,12 @@ day — so assume you will hit them too.
   are the common trap (use `start`/`finish`, or `from_d`/`to_d` as the tests
   do; `from` itself is fine).
 
-- **`dim` is the one keyword that cannot be a record field.** `{ dim: 1 }` and
-  `r.dim` are both rejected by the "`dim` is not a gBASIC statement" diagnostic
-  — a message written to help QBasic users that fires in a position where no
-  statement is possible. Every other keyword works both ways (previous bullet).
-  `r["dim"]` works.
+- **`dim` is refused as a STATEMENT, and only there** (fixed 2026-08-27). It is
+  an ordinary record field like every other keyword — `{ dim: 1 }` and `r.dim`
+  both work. Until that date the refusal happened at token delivery, so it
+  fired in every position: a record literal was rejected as "not a gBASIC
+  statement" at a column where no statement is possible. Writing `dim x` still
+  gets the advice it was always meant to give.
 
 ## Error handling — rebuilt in 0.1.0-rc5, so unlearn the old advice too
 

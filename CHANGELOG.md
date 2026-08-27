@@ -9,6 +9,40 @@ language surface may still change between releases.
 
 ## Unreleased
 
+- **Two loose ends closed, and the second was found by measuring rather than
+  reading.**
+
+  **`dim` is refused as a statement, and only there.** It was refused in
+  `yylex` at token delivery, so the refusal fired in every position rather than
+  the one it was written for: `{ dim: 7 }` and `r.dim` were both rejected with
+  "`dim` is not a gBASIC statement" at a column where no statement is possible.
+  Every other keyword is a legal field name — `dim` was the sole exception and
+  nothing chose that. The token is delivered now and the grammar decides, which
+  is the difference between asking *what* the word was and asking *where* it
+  appeared. Zero new grammar conflicts, measured. The message is byte-identical
+  and stated in **both** statement positions, because a `dim` inside a
+  `consider` body used to get the advice too and losing it there would be a
+  regression dressed as a fix.
+
+  **The directory family was still failing silently.** `DOGFOOD.md`'s `round`
+  entry named an undone follow-up — sweep the remaining builtins for the same
+  "coerces where its siblings refuse" shape. Done by *probing all 176 builtins*
+  with wrong-typed arguments in the first and second positions rather than by
+  reading for the pattern. The coercion class came back **clean**: `round` was
+  genuinely the sole outlier. But the probe surfaced a different and worse
+  one — `list`, `files` and `folders` each carried two bare `fprintf` refusals
+  (wrong arity, non-directory argument) that returned `nothing` with **exit
+  code 0** and nothing catchable by `on error`. That is exactly the signature
+  `tests/run_silent_traps.sh` exists for; the 2026-08-23 sweep promoted
+  `goto`/`gosub` and out-of-range reads and missed this family. All three now
+  raise: located, fatal, catchable. They were the only three left, which the
+  sweep makes a measurement rather than a hope.
+
+  **Two hardcoded test counts made real.** `run_parse_exit.sh` printed a
+  literal `7` and `run_silent_traps.sh` a literal `12` — the latter was
+  *already wrong*, running 13 cases while claiming 12. A gate that reports a
+  number it does not measure can shrink without saying so.
+
 - **Documentation sweep (2026-08-26)** — the statistics field expansion and
   `market` existed only in `reference.md` and this file. Now in the two
   task-first stats cookbooks (event studies, causal inference and price history

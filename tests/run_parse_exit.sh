@@ -38,6 +38,13 @@ located_only() { # label errfile
     done <"$2"
 }
 
+# Counted, not hardcoded. The summary line used to carry a literal 7 while the
+# script ran seven cases, which held exactly until someone added an eighth --
+# a gate that reports a number it does not measure is a gate that can shrink
+# without saying so.
+cases=0
+ok() { cases=$((cases + 1)); printf 'PASS %s\n' "$1"; }
+
 refused() { # label file expect-fragment expect-empty-stdout
     if ./gbasic "tests/parse_exit/$2" >"$scratch/out" 2>"$scratch/err"; then
         fail "$1 (expected a NONZERO exit; exiting 0 is what lies to CI)"
@@ -50,7 +57,7 @@ refused() { # label file expect-fragment expect-empty-stdout
     if [ "$4" = "empty" ] && [ -s "$scratch/out" ]; then
         fail "$1 (a refused parse still executed: $(cat "$scratch/out"))"
     fi
-    printf 'PASS %s\n' "$1"
+    ok "$1"
 }
 
 # `dim` is reserved for exactly one purpose -- saying it is not a statement --
@@ -58,6 +65,26 @@ refused() { # label file expect-fragment expect-empty-stdout
 refused dim_toplevel      dim_toplevel.bas      "assign to create a variable" empty
 refused dim_in_program    dim_in_program.bas    "assign to create a variable" empty
 refused bad_char_toplevel bad_char_toplevel.bas "unexpected token"            empty
+# ...and in a `consider` body, which is the OTHER statement position. Until
+# 2026-08-27 `dim` was refused by yylex at token delivery, so this case came
+# free; now the grammar states the refusal and it has to be stated TWICE, once
+# per statement nonterminal. A test per position is what stops the second one
+# being dropped.
+refused dim_consider      dim_consider.bas      "assign to create a variable" empty
+
+# THE CASE THE OLD REFUSAL GOT WRONG. `dim` is refused where a STATEMENT was
+# expected -- that is what its advice is about -- and nowhere else. Every other
+# keyword is a legal record field, in a literal and after a dot; `dim` was the
+# sole exception, rejected at 1:7 INSIDE a record literal with "not a gBASIC
+# statement" at a position where no statement is possible. This is the positive
+# half, and it must keep passing or the refusal has crept back out of position.
+printf 'TIER dim is an ordinary field name\n'
+if out="$(./gbasic tests/parse_exit/dim_as_field.bas 2>"$scratch/err")" \
+   && [ "$out" = "$(printf '7\n7\n9\n1')" ] && [ ! -s "$scratch/err" ]; then
+    ok dim_as_field
+else
+    fail "dim_as_field (got '$out'; stderr: $(cat "$scratch/err"))"
+fi
 
 # The library path always refused to LOAD; it is the diagnostic that was wrong.
 refused dim_library dim_library.bas "could not parse library file" empty
@@ -74,14 +101,14 @@ while IFS= read -r line; do
 done <"$scratch/err"
 grep -q '"code":"GB_DIAG_PARSE_ERROR"' "$scratch/err" \
     || fail "json (the diagnostic never reached the sink: $(cat "$scratch/err"))"
-printf 'PASS json_diagnostics\n'
+ok json_diagnostics
 
 # --- the control: rejecting a REPORTED error, not an accepted end of file ----
 ./gbasic tests/parse_exit/clean.bas >"$scratch/out" 2>"$scratch/err" \
     || fail "clean (a valid top-level program must still run: $(cat "$scratch/err"))"
 printf 'before\nafter\n' >"$scratch/want"
 diff -u "$scratch/want" "$scratch/out" || fail "clean (output diverged)"
-printf 'PASS clean\n'
+ok clean
 
 # --- no token may reach the unlocated fallback ------------------------------
 # The `default:` arm of the token map is what printed the bare line. It stays as
@@ -89,6 +116,6 @@ printf 'PASS clean\n'
 # report like everything else, so this asserts the raw fprintf is gone.
 grep -n 'fprintf(stderr, "unexpected token' src/parser.y \
     && fail "parser.y still prints a token diagnostic outside the sink"
-printf 'PASS no_raw_stderr\n'
+ok no_raw_stderr
 
-printf 'run_parse_exit: 7 cases passed\n'
+printf 'run_parse_exit: %d cases passed\n' "$cases"

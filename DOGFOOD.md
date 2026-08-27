@@ -2636,6 +2636,32 @@ siblings refuse", and it is invisible until a caller believes the answer. A
 sweep of the remaining builtin families for the same shape would be cheap and
 is not done.
 
+**SWEEP DONE 2026-08-27, and it found something else.** All 176 builtins were
+probed with wrong-typed arguments — a record, a numeric string, a boolean and a
+plain number in the first position, then the same four in the second — and the
+result was classified by whether the call RETURNED or raised. On the coercion
+question the surface is **clean**: every builtin that accepted a wrong-looking
+type legitimately takes it (`len("5")`, `number("5")`, `type(x)`, the `is_*`
+family), and no numeric builtin accepts a string or a boolean. `round` really
+was the sole outlier.
+
+But the probe was written to detect *any* call that succeeded when it should
+not have, and that caught a different defect the reading-based search would not
+have looked for: `list`, `files` and `folders` each had TWO bare
+`fprintf(stderr, ...)` refusals — wrong arity, and a non-directory argument —
+followed by `return value_null()`. Unlocated line, result `nothing`, **exit
+code 0**, not catchable. That is the silent-trap signature of
+docs/warning_model_design.md §7, which the 2026-08-23 sweep promoted for
+`goto`/`gosub` and out-of-range reads and which this family was missed by.
+Promoted to raises; `tests/run_silent_traps.sh` covers them.
+
+**The lesson is about the search, not the bug.** The follow-up was written as
+"sweep the builtin FAMILIES for the same shape", which is a reading task and
+would have found nothing, because the coercion class was already clean. Probing
+every builtin for *any* wrong success found a defect in a different class in
+the same afternoon. Ask the binary what it does; do not ask the source what it
+looks like.
+
 ## 2026-08-26 — CC — while: a documentation sweep — `dim` is the one keyword a record cannot use as a field, and there was no list of reserved words anywhere
 
 **What I was doing.** Sweeping the docs after the statistics field expansion,
@@ -2676,9 +2702,17 @@ possible and the word is an ordinary field name. `r["dim"]` works, which is what
 makes this a leak rather than a policy: the field is perfectly constructible,
 just not by the two spellings every other keyword accepts.
 
-**Worked around** by documenting it (reference.md "Reserved words", UNLEARN)
-rather than fixing it, because this was a documentation pass and the fix is a
-parser/lexer change that deserves its own tested commit. The shape is the same
+**RESOLVED 2026-08-27.** `dim` is delivered as a token now and the grammar
+decides: a statement-position `DIM` reports the same byte-identical message,
+and `dim` joins the other 46 keywords in `dot_field_name`, so `{ dim: 7 }` and
+`r.dim` work. Zero new grammar conflicts, measured. Covered by
+`tests/parse_exit/dim_as_field.bas` (the positive half) and `dim_consider.bas`
+(the refusal in the second statement position, which the lexer-side check used
+to get for free).
+
+**Worked around at the time** by documenting it (reference.md "Reserved words",
+UNLEARN) rather than fixing it, because that was a documentation pass and the
+fix is a parser change that deserves its own tested commit. The shape is the same
 one `round` had on 2026-08-25: a neighbouring inconsistency across a family
 where nothing chose the odd one out.
 

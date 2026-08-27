@@ -58,9 +58,13 @@ by position or after the environment walk, so `default(a, b)` is an ordinary
 builtin call and `board.warning` is an ordinary field.
 
 **Every keyword is legal as a record field**, both in a literal and after a dot
-— `{ error: "none" }` and `r.error` both work — with one exception: **`dim`**,
-which is rejected in both positions by the "not a gBASIC statement" diagnostic
-even where no statement is possible. Use `r["dim"]`, which works.
+— `{ error: "none" }` and `r.error` both work, and since 2026-08-27 that
+includes `dim`. `dim` is still refused where a *statement* was expected, which
+is what its advice is about:
+
+```
+`dim` is not a gBASIC statement; assign to create a variable (x = 0)
+```
 
 Operators and punctuation:
 
