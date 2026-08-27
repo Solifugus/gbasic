@@ -1,0 +1,40 @@
+-- it fits the constructed structure
+ok   it fits
+ok   and converges
+ok   with no Heywood case
+ok   two factors
+ok   six variables' loadings
+ok   and it rotated
+
+-- THE BLOCK STRUCTURE IS RECOVERED
+ok   every variable loads >0.9 on one factor and <0.15 on the other
+ok   v0, v1, v2 share a factor
+ok   v3, v4, v5 share the other
+ok   and the two blocks differ
+
+-- ROTATION CANNOT CHANGE FIT
+ok   the unrotated fit succeeds
+ok   it is marked unrotated
+ok   communalities are identical to 9 places
+ok   unrotated, v0 loads on both factors
+
+-- communality and uniqueness
+ok   communality plus uniqueness is 1, and h2 is in (0,1)
+ok   communalities are high, as constructed
+
+-- FA IS NOT PCA, and this is the tier that can tell
+ok   it fits noisy data
+ok   common variance only: communalities near 0.40, not 0.60
+ok   the block structure survives the noise
+
+-- refusals
+ok   fewer than three variables
+ok   more factors than variables
+ok   zero factors
+ok   columns of different lengths
+ok   not an array of columns
+ok   no variables at all
+ok   too few observations
+
+checks: 26
+mismatches: 0

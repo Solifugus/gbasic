@@ -3557,6 +3557,18 @@ General-purpose:
   `docs/cookbook_social_behavioral.md` and `docs/cookbook_econometrics_finance.md`).
 - `crypto` — ergonomic cryptography compositions over the crypto builtins
   (see [Cryptography](#cryptography) and `docs/crypto_design.md`).
+- `stats` also carries **exploratory factor analysis** —
+  `factor_analysis(cols, spec)`, principal-axis factoring with iterated
+  communalities and an optional varimax rotation. **It is not PCA**, and the
+  difference is the point: PCA summarises the observed variables and explains
+  *total* variance, while factor analysis posits latent causes and explains
+  *common* variance only — in the arithmetic, 1s versus communalities down the
+  diagonal. On half-noise data that gap is 0.40 against 0.60, so using PCA
+  where a latent construct is meant overstates by half. Rotation **cannot
+  improve fit** (it reproduces the same communalities exactly; it only relabels
+  the axes), and a communality reaching 1 is a Heywood case, reported rather
+  than clamped.
+
 - `stats` also carries **survival analysis** — `kaplan_meier(times, events)`
   with Greenwood standard errors and confidence bands, `survival_at(km, t)`,
   and `logrank` for comparing two groups. Time-to-event where for some subjects

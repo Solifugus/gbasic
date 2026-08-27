@@ -8167,4 +8167,371 @@ library stats
         return exp(fit.coefficients[index] * delta)
     end function
 
+    ' --- Exploratory factor analysis -----------------------------------------
+    '
+    ' FACTOR ANALYSIS IS NOT PCA, AND THE DIFFERENCE IS THE POINT. Both hand
+    ' back a small number of dimensions from many correlated variables, both
+    ' come out of an eigen-decomposition, and they are routinely used as
+    ' though interchangeable. They answer opposite questions:
+    '
+    '   PCA asks "what combinations of these variables capture the most
+    '   variance?" A component is a SUMMARY of the observed variables --
+    '   defined by them, caused by nothing. It explains TOTAL variance,
+    '   including whatever is unique to each variable and whatever is
+    '   measurement error.
+    '
+    '   FACTOR ANALYSIS asks "what unobserved thing could have CAUSED these
+    '   variables to correlate?" A factor is a latent cause, and the model
+    '   explicitly sets aside the part of each variable that is unique or
+    '   error. It explains COMMON variance only.
+    '
+    ' In the arithmetic that whole distinction is one diagonal: PCA decomposes
+    ' a correlation matrix with 1s down the diagonal, factor analysis replaces
+    ' them with COMMUNALITIES -- the share of each variable the factors
+    ' account for -- and iterates until they settle. Everything else is shared,
+    ' which is exactly why the two get confused.
+    '
+    ' If you want a composite score, PCA is right and this is not. If you
+    ' believe an unmeasured construct is producing the correlations -- an
+    ' ability, an attitude, a latent risk -- this is right and PCA overstates
+    ' the loadings by folding each variable's own noise into the factor.
+
+    ' Correlation matrix of a list of columns.
+    function _corr_matrix(cols)
+        k = len(cols)
+        m = []
+        i = 0
+        while i < k
+            row = []
+            j = 0
+            while j < k
+                if i = j then
+                    append(row, 1)
+                else
+                    append(row, correlation(cols[i], cols[j]))
+                end if
+                j = j + 1
+            end while
+            append(m, row)
+            i = i + 1
+        end while
+        return m
+    end function
+
+    ' Principal-axis factoring with iterated communalities, then an optional
+    ' varimax rotation.
+    '
+    '   { ok, loadings[][], communalities[], uniquenesses[], eigenvalues[],
+    '     variance_explained[], n_factors, iterations, converged, rotated,
+    '     heywood, message }
+    '
+    ' `loadings[v][f]` is variable v's loading on factor f.
+    function factor_analysis(cols, spec)
+        if not is_array(cols) or len(cols) = 0 then
+            return { ok: false, message: "factor_analysis: no variables" }
+        end if
+        if not is_array(cols[0]) then
+            return { ok: false, message: "factor_analysis expects an array of columns" }
+        end if
+        k = len(cols)
+        n = len(cols[0])
+        for each c in cols
+            if len(c) != n then
+                return { ok: false, message: "factor_analysis: columns differ in length" }
+            end if
+        next c
+        if k < 3 then
+            return { ok: false, message: "factor_analysis: needs at least 3 variables, got " + string(k) }
+        end if
+        if n < k then
+            return { ok: false, message: "factor_analysis: " + string(n) + " observations for " + string(k) + " variables; a correlation matrix that size is not estimable" }
+        end if
+
+        nf = 1
+        if has(spec, "factors") then
+            nf = spec.factors
+        end if
+        if nf < 1 or nf >= k then
+            return { ok: false, message: "factor_analysis: asked for " + string(nf) + " factors from " + string(k) + " variables; a factor model needs fewer factors than variables" }
+        end if
+        maxit = 50
+        if has(spec, "max_iter") then
+            maxit = spec.max_iter
+        end if
+        rotate = true
+        if has(spec, "rotate") then
+            rotate = spec.rotate
+        end if
+
+        r = _corr_matrix(cols)
+
+        ' Initial communality estimate: the largest absolute correlation in the
+        ' row. Crude but standard, and the iteration is what matters.
+        comm = []
+        i = 0
+        while i < k
+            best = 0
+            j = 0
+            while j < k
+                if i != j then
+                    a = abs(r[i][j])
+                    if a > best then
+                        best = a
+                    end if
+                end if
+                j = j + 1
+            end while
+            append(comm, best)
+            i = i + 1
+        end while
+
+        loadings = []
+        evals = []
+        it = 0
+        converged = false
+        while it < maxit and not converged
+            ' The reduced correlation matrix: communalities on the diagonal.
+            ' THIS LINE IS THE WHOLE DIFFERENCE FROM PCA.
+            rr = []
+            i = 0
+            while i < k
+                row = []
+                j = 0
+                while j < k
+                    if i = j then
+                        append(row, comm[i])
+                    else
+                        append(row, r[i][j])
+                    end if
+                    j = j + 1
+                end while
+                append(rr, row)
+                i = i + 1
+            end while
+
+            eig = _jacobi_eigen(rr)
+            ' Order by descending eigenvalue.
+            order = []
+            i = 0
+            while i < k
+                append(order, i)
+                i = i + 1
+            end while
+            i = 1
+            while i < k
+                key = order[i]
+                kv = eig.values[key]
+                j = i - 1
+                while j >= 0 and eig.values[order[j]] < kv
+                    order[j + 1] = order[j]
+                    j = j - 1
+                end while
+                order[j + 1] = key
+                i = i + 1
+            end while
+
+            loadings = []
+            evals = []
+            i = 0
+            while i < k
+                append(loadings, [])
+                i = i + 1
+            end while
+            f = 0
+            while f < nf
+                ev = eig.values[order[f]]
+                append(evals, ev)
+                sc = 0
+                if ev > 0 then
+                    sc = sqrt(ev)
+                end if
+                v = 0
+                while v < k
+                    loadings[v] = loadings[v]
+                    ' vectors is indexed EIGENVECTOR-FIRST: eig.vectors[j] is
+                    ' the whole j-th eigenvector, as `pca` reads it. Indexing
+                    ' it the other way transposes the solution, which still
+                    ' produces loadings and communalities -- they are simply
+                    ' wrong, with Heywood cases everywhere.
+                    append(loadings[v], eig.vectors[order[f]][v] * sc)
+                    v = v + 1
+                end while
+                f = f + 1
+            end while
+
+            ' New communalities: how much of each variable the factors carry.
+            newc = []
+            delta = 0
+            v = 0
+            while v < k
+                h = 0
+                f = 0
+                while f < nf
+                    h = h + loadings[v][f] * loadings[v][f]
+                    f = f + 1
+                end while
+                append(newc, h)
+                d = abs(h - comm[v])
+                if d > delta then
+                    delta = d
+                end if
+                v = v + 1
+            end while
+            comm = newc
+            if delta < 0.0001 then
+                converged = true
+            end if
+            it = it + 1
+        end while
+
+        ' A HEYWOOD CASE: a communality at or above 1 means a variable has NO
+        ' unique variance, which is impossible -- the model is misspecified,
+        ' usually too many factors for too few variables. Reported rather than
+        ' clamped, because a silently clamped solution still prints loadings
+        ' that look fine.
+        heywood = 0
+        for each h in comm
+            if h >= 1 then
+                heywood = heywood + 1
+            end if
+        next h
+
+        rotated = false
+        if rotate and nf > 1 then
+            loadings = _varimax(loadings, nf)
+            rotated = true
+        end if
+
+        uniq = []
+        varexp = []
+        f = 0
+        while f < nf
+            ss = 0
+            v = 0
+            while v < k
+                ss = ss + loadings[v][f] * loadings[v][f]
+                v = v + 1
+            end while
+            append(varexp, ss / k * 100)
+            f = f + 1
+        end while
+        v = 0
+        while v < k
+            append(uniq, 1 - comm[v])
+            v = v + 1
+        end while
+
+        note = ""
+        if heywood > 0 then
+            note = string(heywood) + " variable(s) have a communality of 1 or more (a Heywood case): the model is misspecified, usually too many factors for too few variables"
+        end if
+
+        return { ok: true, loadings: loadings, communalities: comm,
+                 uniquenesses: uniq, eigenvalues: evals,
+                 variance_explained: varexp, n_factors: nf,
+                 iterations: it, converged: converged, rotated: rotated,
+                 heywood: heywood, note: note, message: "" }
+    end function
+
+    ' Varimax: rotate the factors so each variable loads strongly on few of
+    ' them, which is easier to read.
+    '
+    ' ROTATION DOES NOT IMPROVE FIT. It cannot: any rotation reproduces the
+    ' same correlation matrix and the same communalities. It changes only which
+    ' arbitrary axes the same subspace is described by. A rotated solution that
+    ' "looks better" is not a better model, and reporting the rotation as
+    ' though it found something is the standard misreading.
+    '
+    ' NO TRIGONOMETRY IS USED, because gBASIC has none -- chart.bas had to
+    ' write a Taylor sine for its pie slices. The rotation angle is
+    ' `atan2(a, b) / 4`, and the pair (cos, sin) of a quarter-angle follows
+    ' from (a, b) by applying the half-angle identities TWICE:
+    '
+    '     cos(t)   = b / sqrt(a^2 + b^2)
+    '     cos(t/2) = sqrt((1 + cos t) / 2)        sin(t/2) = ±sqrt((1 - cos t) / 2)
+    '
+    ' t = atan2(a, b) lies in (-pi, pi], so t/4 lies in (-pi/4, pi/4]: its
+    ' cosine is positive and its sine takes the sign of `a`. Exact, and only
+    ' square roots.
+    function _quarter_angle(a, b)
+        r = sqrt(a * a + b * b)
+        if r = 0 then
+            return { c: 1, s: 0 }
+        end if
+        ct = b / r
+        if ct > 1 then
+            ct = 1
+        end if
+        if ct < -1 then
+            ct = -1
+        end if
+        sgn = 1
+        if a < 0 then
+            sgn = -1
+        end if
+        c2 = sqrt((1 + ct) / 2)
+        c4 = sqrt((1 + c2) / 2)
+        s4 = sgn * sqrt((1 - c2) / 2)
+        return { c: c4, s: s4 }
+    end function
+
+    function _varimax(loadings, nf)
+        k = len(loadings)
+        lam = loadings
+        sweep = 0
+        while sweep < 100
+            moved = 0
+            p = 0
+            while p < nf - 1
+                q = p + 1
+                while q < nf
+                    ' The varimax criterion for one pair of factors. With
+                    ' u = x^2 - y^2 and t = 2xy per variable, FOUR sums are
+                    ' needed and they are easy to conflate -- an earlier
+                    ' version used A and B in place of C and D, which left
+                    ' every loading at 0.7 (the least simple structure there
+                    ' is) while still converging and reporting sane
+                    ' communalities.
+                    sa = 0
+                    sb = 0
+                    sc = 0
+                    sd = 0
+                    v = 0
+                    while v < k
+                        x = lam[v][p]
+                        y = lam[v][q]
+                        u = x * x - y * y
+                        t = 2 * x * y
+                        sa = sa + u
+                        sb = sb + t
+                        sc = sc + u * u - t * t
+                        sd = sd + 2 * u * t
+                        v = v + 1
+                    end while
+                    aa = sd - 2 * sa * sb / k
+                    bb = sc - (sa * sa - sb * sb) / k
+                    ang = _quarter_angle(aa, bb)
+                    if abs(ang.s) > 0.000001 then
+                        moved = moved + 1
+                        v = 0
+                        while v < k
+                            x = lam[v][p]
+                            y = lam[v][q]
+                            lam[v][p] = x * ang.c + y * ang.s
+                            lam[v][q] = 0 - x * ang.s + y * ang.c
+                            v = v + 1
+                        end while
+                    end if
+                    q = q + 1
+                end while
+                p = p + 1
+            end while
+            if moved = 0 then
+                sweep = 100
+            end if
+            sweep = sweep + 1
+        end while
+        return lam
+    end function
+
 end library

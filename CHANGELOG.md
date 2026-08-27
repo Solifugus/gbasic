@@ -9,6 +9,18 @@ language surface may still change between releases.
 
 ## Unreleased
 
+- **Exploratory factor analysis in `stats`** — `factor_analysis`, principal-axis
+  factoring with iterated communalities and a varimax rotation implemented
+  without trigonometry (gBASIC has none; the quarter-angle comes from two
+  half-angle identities and a square root).
+
+  **It is not PCA.** PCA explains total variance, factor analysis explains
+  common variance, and the whole difference is 1s versus communalities on the
+  diagonal. On half-noise data that is 0.60 against 0.40 — using PCA where a
+  latent construct is meant overstates what the factors explain by half.
+  Rotation cannot improve fit, and Heywood cases are reported rather than
+  clamped.
+
 - **Survival analysis in `stats`** — `kaplan_meier` (with Greenwood standard
   errors and bands), `survival_at`, `logrank`. Verified against the *published*
   results of the Freireich 1963 leukaemia trial rather than against itself:
