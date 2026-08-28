@@ -9,6 +9,50 @@ language surface may still change between releases.
 
 ## Unreleased
 
+- **Every public stdlib function is documented, and a gate keeps it that way.**
+  64 were not, across 14 libraries, and nothing could tell. The design documents
+  explain *why* each library exists and the cookbooks show recipes; neither is a
+  per-function reference, so a function could ship, be tested, be correct, and
+  be undiscoverable. `matrix` was the extreme — eight public functions, the
+  primitives every regression in `stats` is built on, and **zero** mentions in
+  any document. `stats` had 32 undocumented distribution functions.
+
+  New: `docs/statistics_design.md` §8b, an API reference for the distribution
+  families (pdf/pmf, cdf, quantile for ten continuous and three discrete) and
+  for `matrix`. Every signature in it was checked against the source rather than
+  written from memory. It also states two things that would otherwise surprise:
+  gamma and exponential take a **rate** while Weibull takes a **scale**, and the
+  discrete quantiles spell one of their two `p` arguments differently because
+  the probability being inverted and the distribution's own success probability
+  collide.
+
+  `tests/run_stdlib_docs.sh` now fails when a public function is undocumented.
+  "Public" is the only thing gBASIC enforces — a name without a leading
+  underscore — so a helper that should not be called is not an exception, it is
+  a function that wants renaming, and doing that is the other way to pass.
+
+  **The second tier caught three documentation bugs that would fail if copied:**
+  `chart.new(...)` in a `chart_design.md` example, in the same document whose
+  next paragraph explains a library *cannot define* `new` (it is `chart.spec`);
+  `dates.from_zone` / `to_zone` / `zone_offset` in `datetime_design.md`, which
+  are **core builtins**, not `dates` calls; and `stats.mean(...)` in
+  `text_design.md`, where `mean` is a builtin. All four verified failing before
+  the fix. Three remaining named-but-absent mentions are allowlisted with a
+  stated reason each, because an allowlist without one is where a real defect
+  goes to be forgotten.
+
+- **`dates.dayname` is O(1) instead of O(days).** It walked one day at a time
+  from a hardcoded Monday — 45 ms for a date twenty thousand days out, behind a
+  name that reads as constant time. It predated `d.dayname`, a core field on
+  every date value, and now delegates to it. Same answers, and the two
+  day-name-stepping helpers went with the loop. Found while documenting it:
+  writing down what a function does is a good way to notice it should not exist.
+
+  Rebaseline: six `negative_dates_*.err` goldens, all by the same 53 lines and
+  none by a single character of message — they pin `stdlib/dates.bas` LINE
+  NUMBERS, the hazard `CLAUDE.md` already records for `chart`. Removing two
+  helper functions moved every diagnostic below them.
+
 - **BREAKING: the post-test loop is `do … until c`.** `loop` is gone from the
   syntax, and the continue-condition form `do … loop while c` is removed.
 

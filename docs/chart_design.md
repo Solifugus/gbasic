@@ -326,7 +326,7 @@ by `chart`):
 ```
 model = stats.ols(df, "y", ["x"])
 df2   = frame.with_column(df, "yhat", predict_fn)   ' fitted values as a column
-spec  = chart.new("scatter", df2)
+spec  = chart.spec("scatter", df2)
 spec  = chart.y(spec, ["y", "yhat"])                ' raw points + fit series
 svg   = chart.render(chart.x(spec, "x"))
 ```

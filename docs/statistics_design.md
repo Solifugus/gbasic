@@ -456,6 +456,80 @@ computed reference values (R/numpy/scipy) into `.out` fixtures.
 
 ---
 
+## 8b. API reference: distributions and matrices
+
+The sections above are *design* — why these pieces exist and how they were
+built. This one is *reference*: the calls themselves. It exists because the
+functions below were shipped and verified but never written down anywhere a
+reader could find them, which `tests/run_stdlib_docs.sh` now prevents.
+
+### Distributions
+
+Every family follows the same three-way shape, and the argument order is always
+**value first, parameters after**:
+
+| | meaning |
+|---|---|
+| `*_pdf(x, …)` / `*_pmf(k, …)` | density at `x` (continuous) or probability of exactly `k` (discrete) |
+| `*_cdf(x, …)` | P(X ≤ x) |
+| `*_quantile(p, …)` | the inverse CDF — the smallest `x` with P(X ≤ x) ≥ `p` |
+
+Out-of-domain input returns **`unknown`, never a plausible number** — a
+negative σ, a `p` outside (0, 1), a negative shape. That is the house rule for
+this whole library: a wrong number is worse than no number.
+
+| Continuous | pdf | cdf | quantile |
+|---|---|---|---|
+| Normal | `normal_pdf(x, mu, sigma)` | `normal_cdf(x, mu, sigma)` | `normal_quantile(p, mu, sigma)` |
+| Student's t | `t_pdf(x, df)` | `t_cdf(x, df)` | `t_quantile(p, df)` |
+| Chi-squared | `chi2_pdf(x, k)` | `chi2_cdf(x, k)` | `chi2_quantile(p, k)` |
+| F | `f_pdf(x, d1, d2)` | `f_cdf(x, d1, d2)` | `f_quantile(p, d1, d2)` |
+| Beta | `beta_pdf(x, a, b)` | `beta_cdf(x, a, b)` | `beta_quantile(p, a, b)` |
+| Gamma | `gamma_pdf(x, shape, rate)` | `gamma_cdf(x, shape, rate)` | `gamma_quantile(p, shape, rate)` |
+| Exponential | `expon_pdf(x, rate)` | `expon_cdf(x, rate)` | `expon_quantile(p, rate)` |
+| Log-normal | `lognormal_pdf(x, mu, sigma)` | `lognormal_cdf(x, mu, sigma)` | `lognormal_quantile(p, mu, sigma)` |
+| Uniform | `uniform_pdf(x, a, b)` | `uniform_cdf(x, a, b)` | `uniform_quantile(p, a, b)` |
+| Weibull | `weibull_pdf(x, shape, scale)` | `weibull_cdf(x, shape, scale)` | `weibull_quantile(p, shape, scale)` |
+
+Gamma and exponential take a **rate** (1/scale), not a scale; Weibull takes a
+**scale**. That inconsistency is inherited from the conventions each
+distribution is usually written in, and is stated here rather than silently
+surprising you.
+
+| Discrete | pmf | cdf | quantile |
+|---|---|---|---|
+| Binomial | `binom_pmf(k, n, p)` | `binom_cdf(k, n, p)` | `binom_quantile(p, n, prob)` |
+| Poisson | `pois_pmf(k, lambda)` | `pois_cdf(k, lambda)` | `pois_quantile(p, lambda)` |
+| Negative binomial | `negbinom_pmf(k, r, p)` | `negbinom_cdf(k, r, p)` | `negbinom_quantile(prob, r, p)` |
+
+Note the quantile signatures for the discrete families: the probability being
+inverted and the distribution's own success probability are both conventionally
+`p`, so `binom_quantile` and `negbinom_quantile` spell one of them differently
+rather than shadowing. `zscore(x, mu, sigma)` completes the normal family.
+
+### `matrix` — vector and matrix primitives
+
+`load matrix`. A matrix is an **array of row arrays**; a vector is a flat
+array. Nothing is validated beyond what the operation needs, and a shape
+mismatch returns `unknown` rather than a truncated result.
+
+| Call | Returns |
+|---|---|
+| `mat_rows(a)` | number of rows |
+| `mat_cols(a)` | number of columns (0 for an empty matrix) |
+| `mat_identity(n)` | the n×n identity |
+| `mat_transpose(a)` | a with rows and columns exchanged |
+| `mat_mul(a, b)` | matrix product; `unknown` if `mat_cols(a) != mat_rows(b)` |
+| `mat_vec(a, v)` | matrix–vector product, a flat array |
+| `mat_inverse(a)` | inverse by Gauss-Jordan with partial pivoting; **`unknown` if singular**, which is how `ols` and friends detect a rank-deficient design |
+| `vec_dot(u, v)` | dot product; `unknown` on a length mismatch |
+
+`mat_inverse` returning `unknown` rather than raising is load-bearing: every
+regression in `stats` tests it to decide whether a model is estimable, so a
+singular design is an ordinary answer rather than an error.
+
+---
+
 ## 9. Industry lenses (appendix)
 
 Thin vocabulary packs composed over the core; build any order once the relevant

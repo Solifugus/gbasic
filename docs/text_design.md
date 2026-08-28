@@ -399,7 +399,7 @@ section bank_report:
 }
 ```
 
-`result.transactions` is now directly usable: `stats.mean(result.transactions.amount)`,
+`result.transactions` is now directly usable: `mean(result.transactions.amount)`,
 `chart.bar(result.transactions, "transaction_type", "amount")`,
 `frame.summarize(...)`.
 

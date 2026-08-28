@@ -2,70 +2,17 @@
 ' Copyright 2026 Matthew C. Tedder. See LICENSE and LICENSING.md.
 
 library dates
-    function _next_day_name(name)
-        if name = "Monday" then
-            return "Tuesday"
-        end if
-        if name = "Tuesday" then
-            return "Wednesday"
-        end if
-        if name = "Wednesday" then
-            return "Thursday"
-        end if
-        if name = "Thursday" then
-            return "Friday"
-        end if
-        if name = "Friday" then
-            return "Saturday"
-        end if
-        if name = "Saturday" then
-            return "Sunday"
-        end if
-        return "Monday"
-    end function
 
-    function _previous_day_name(name)
-        if name = "Monday" then
-            return "Sunday"
-        end if
-        if name = "Tuesday" then
-            return "Monday"
-        end if
-        if name = "Wednesday" then
-            return "Tuesday"
-        end if
-        if name = "Thursday" then
-            return "Wednesday"
-        end if
-        if name = "Friday" then
-            return "Thursday"
-        end if
-        if name = "Saturday" then
-            return "Friday"
-        end if
-        return "Saturday"
-    end function
-
+    ' The weekday name. This walks nothing: `d.dayname` is a core field on
+    ' every date value and answers in constant time.
+    '
+    ' It used to walk day by day from a known Monday, which predated that field
+    ' and cost 45 ms for a date twenty thousand days out -- an O(days) loop
+    ' behind a name that reads O(1). Kept as a function because callers exist
+    ' and the spelling is a reasonable one; the two helpers it needed
+    ' (_next_day_name / _previous_day_name) went with the loop.
     function dayname(d)
-        cursor{day}= "2026-05-11"
-        name = "Monday"
-
-    forward:
-        if cursor = d then
-            return name
-        end if
-        if cursor > d then goto backward
-        cursor = cursor + 1 day
-        name = _next_day_name(name)
-        goto forward
-
-    backward:
-        if cursor = d then
-            return name
-        end if
-        cursor = cursor - 1 day
-        name = _previous_day_name(name)
-        goto backward
+        return d.dayname
     end function
 
     function days_between(a, b)

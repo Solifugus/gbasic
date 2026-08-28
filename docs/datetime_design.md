@@ -414,9 +414,9 @@ twice.
   civil time; nothing in §2–§8 changes. What v2 adds is only the edge:
 
   ```basic
-  utc = dates.from_zone(local_dt, "America/Chicago")   ' civil-in-zone -> UTC
-  loc = dates.to_zone(utc_dt, "Europe/Berlin")         ' UTC -> civil-in-zone
-  off = dates.zone_offset(dt, zone)                    ' offset in force AT dt
+  utc = from_zone(local_dt, "America/Chicago")   ' civil-in-zone -> UTC
+  loc = to_zone(utc_dt, "Europe/Berlin")         ' UTC -> civil-in-zone
+  off = zone_offset(dt, zone)                    ' offset in force AT dt
   ```
 
   No new value kind and no zone field on datetime — conversions take and

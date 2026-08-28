@@ -1,1 +1,1 @@
-runtime error at tests/../stdlib/dates.bas:266:17: dates: observe must be nearest or forward
+runtime error at tests/../stdlib/dates.bas:213:17: dates: observe must be nearest or forward

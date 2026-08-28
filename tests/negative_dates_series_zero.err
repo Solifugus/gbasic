@@ -1,1 +1,1 @@
-runtime error at tests/../stdlib/dates.bas:897:17: dates.series: every cannot be zero
+runtime error at tests/../stdlib/dates.bas:844:17: dates.series: every cannot be zero

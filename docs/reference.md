@@ -2088,6 +2088,9 @@ Thin GTK 4 constructors, each returning the GTK GObject:
 - `gtk.connect(widget, signal, handler)` — alias for `gi.connect` (named
   `connect`, not `on`, because `on` is a reserved keyword).
 - `gtk.enum("Gtk.Orientation.VERTICAL")` — resolve an enum/flags member to its int.
+- `gtk.require()` — ensure the GTK 4 namespace is loaded. Safe to call
+  repeatedly; every other `gtk.*` constructor calls it, so you only need it
+  directly when reaching for `gi.*` before any `gtk.*` call.
 
 This is a thin convenience layer, **not** a new widget framework and not the
 declarative reconciler planned for a later phase.
@@ -2275,6 +2278,10 @@ program-global registry `_DATAGRID`. It must be created at program scope.
   - Tombstones are constant-size records holding no factories or callbacks, so
     create/destroy cycles retain nothing; the `grids` array itself still grows by
     the create count (deferred).
+- `datagrid.model(handle)` — the native `GbRowModel` (a `GListModel`) behind the
+  grid. Mainly for instrumentation: `rowmodel.item_requests(datagrid.model(h))`
+  reports how many rows GTK actually realized, which is how the 1M-row
+  virtualization claim is measured rather than asserted.
 - `datagrid.accesses()` / `datagrid.setups()` / `datagrid.reset_accesses()` —
   bind and setup counters (instrumentation; `reset_accesses` zeroes both).
 
@@ -3587,6 +3594,8 @@ General-purpose:
   (`dates.between`), and the date-expression verbs `matches`/`select`/`series`
   over one spec-record vocabulary ("third Thursday of the month", "first
   business day before a deadline", "every 2 weeks rolled off holidays").
+  `dates.dayname(d)` returns a weekday name, but prefer the core field
+  `d.dayname`, which is what it now delegates to.
   Design: `docs/datetime_design.md`; worked recipes:
   `docs/datetime_cookbook.md`.
 - `schedule` — packing events into working days: `schedule.slots` (appointment
@@ -3697,7 +3706,9 @@ General-purpose:
   handler}` records validated at build time, `{id}`/`{rest...}` patterns
   captured into `req.params`, order-independent matching by specificity, and
   `web.dispatch` returning a response record the server takes verbatim
-  (`docs/web_routing.md`).
+  (`docs/web_routing.md`). `web.content_type(name)` maps a filename extension
+  to a content type — deliberately a short list of what a site actually serves
+  rather than an exhaustive MIME table.
 - `market` — daily price history as a frame (`market.daily(m, symbol, from, to)`
   → `{ok, frame, adjusted, message}`), which is the shape the rest of the stack
   already wants: `forensics` indexes it by column, and `frame["close"]` is the
@@ -3716,12 +3727,58 @@ General-purpose:
   looks like ordinary data — and `adjusted` reports what the provider actually
   supplies rather than being assumed, because returns computed across a split
   from unadjusted prices read as a −50% day.
+  `market.closes(m, symbol, from, to)` is the convenience the stats verbs
+  actually want — just the closing prices as a flat array — and
+  `market.with_timeout(m, seconds)` sets the request timeout, alongside the
+  `with_transport`/`offline` seams.
 - `chart` — charts as deterministic SVG text, pure gBASIC: line, scatter, area,
   bar, histogram, pie, heatmap and sparkline (`docs/chart_design.md`; worked
-  recipes in `docs/chart_cookbook.md`).
+  recipes in `docs/chart_cookbook.md`). `chart.area_xy(xs, ys)` and
+  `chart.bar_xy(categories, values)` are the escape hatch from the frame API —
+  plot two plain arrays without building a frame first.
 - `persist` — crash-safe versioned persistence: an atomic temp-file-and-rename
   write, and a read that reports missing/corrupt/loaded as a value rather than
-  raising (`docs/ai/COOKBOOK.md`).
+  raising (`docs/ai/COOKBOOK.md`). Also `persist.write_text_atomic(path, text)`
+  for raw text through the same temp-then-rename dance (source files rather than
+  records), and `persist.ensure_dir(path)`, which creates a path and its missing
+  parents and is **idempotent** — bare `make_dir` raises on a directory that
+  already exists.
+- `filetree` — a directory as a value tree, with expand/collapse state carried
+  in the nodes. `filetree.visible_count(nodes)` counts currently-visible rows,
+  and `filetree.dump(nodes)` renders the visible tree as deterministic,
+  **path-free** text (`v ` expanded dir, `> ` collapsed, two spaces per depth) —
+  path-free so a golden does not encode the machine it ran on.
+- `matrix` — vector and matrix primitives over arrays of row arrays:
+  `mat_rows`, `mat_cols`, `mat_identity`, `mat_transpose`, `mat_mul`,
+  `mat_vec`, `mat_inverse`, `vec_dot`. Shape mismatches and singular matrices
+  return `unknown` rather than a truncated result — which is how every
+  regression in `stats` decides whether a design is estimable. Full table:
+  `docs/statistics_design.md` §8b.
+- `grid` — a messy worksheet turned into clean frames: `grid.tables` guesses and
+  reports a confidence with its reasons, `grid.extract` follows a spec record
+  whose anchors match by CONTENT so inserting rows cannot break it.
+  `grid.total_pattern()` returns the regex used to recognise a totals row —
+  exposed rather than hidden precisely so a caller can see and change what is
+  being trusted — and `grid.row_is_blank(g, r)` is the emptiness test the
+  detector uses. Design: `docs/xlsx_design.md` §5.
+- `consolidate` — many differently-shaped sources merged onto one schema
+  (`docs/xlsx_design.md` §6). The value coercions are public because a caller
+  often needs them alone: `to_money(v)` accepts the union a report actually
+  uses (`$1,500.00`, `(1,200.00)`, `1,200.00-`, `9,000`) and yields `unknown`
+  rather than 0 for anything else; `to_number(v)`, `to_text(v)`, and
+  `to_percent(v, scale)`, which returns a **fraction** (0.0525 for 5.25%).
+  `infer_percent_scale(values)` judges a whole column at once, because a single
+  cell cannot distinguish 5.25 from 0.0525 and a column can.
+  `normalize_name(s)` is the fuzzy header matcher (case, whitespace and
+  punctuation removed), exposed so an alias list can be checked by hand.
+- `dbframe` — a frame becomes a database table (`docs/xlsx_design.md` §7).
+  `column_type(values)` decides one column's SQL type from EVERY value, never
+  the first, and `safe_name(s)` is the identifier validator — identifiers cannot
+  be bound as parameters, so they are **refused rather than escaped**.
+- `ari` — the anchor-relative report parser (`docs/ari_spec_language.md`).
+  `ari_parse_spec(spec_text)` parses a spec on its own, and
+  `clean_grid(report_text, spec_text)` exposes the page-furniture pass
+  independently of any spec — useful, and testable, without parsing anything.
 - `llm` — a chat-completion client (`docs/llm_design.md`).
 - `gui` — the declarative layer for the experimental GTK 3 `gui` module
   (`docs/gui_design.md`).
