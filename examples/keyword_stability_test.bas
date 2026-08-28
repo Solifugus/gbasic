@@ -20,15 +20,21 @@ end:
         print("works")
     end if
 
-    ' `loop` and `until` became keywords when `do ... loop` landed, but neither
-    ' can START a statement, so both stay usable as ordinary names -- as
-    ' variables, and as LABELS. The label case is not hypothetical: four
-    ' `loop:`/`goto loop` pairs in stdlib/dates.bas stopped parsing when the
-    ' keywords were added, because `label_statement` accepted the wider name set
-    ' and `goto`/`gosub` still demanded a bare IDENT.
+    ' `loop` and `until` both became keywords when `do ... loop` landed, and
+    ' both stayed usable as ordinary names because neither could START a
+    ' statement. On 2026-08-27 `do ... loop while c` was removed and the
+    ' surviving form spelled `do ... until c`, which split them: `loop` stopped
+    ' being a keyword at ALL and is a plain identifier again, while `until`
+    ' became statement-initial and therefore reserved.
+    '
+    ' The LABEL case is what this fixture is really for, and it is not
+    ' hypothetical: four `loop:`/`goto loop` pairs in stdlib/dates.bas stopped
+    ' parsing when the keywords were first added, because `label_statement`
+    ' accepted the wider name set while `goto`/`gosub` still demanded a bare
+    ' IDENT. `loop` is an ordinary identifier now, so that pair is safe by
+    ' construction -- and the test below still proves it end to end.
     loop = 3
-    until = 4
-    print(loop + until)
+    print(loop)
     print(counts_to_two())
 end program
 

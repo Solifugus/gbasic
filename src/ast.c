@@ -300,12 +300,11 @@ AstStmt *ast_for_each(char *name, AstExpr *iterable, AstStmtList body) {
     return stmt;
 }
 
-AstStmt *ast_do_loop(AstStmtList body, AstExpr *condition, int until) {
+AstStmt *ast_do_loop(AstStmtList body, AstExpr *condition) {
     AstStmt *stmt = xmalloc(sizeof(*stmt));
     stmt->kind = AST_STMT_DO_LOOP;
     stmt->as.do_loop.body = body;
     stmt->as.do_loop.condition = condition;
-    stmt->as.do_loop.until = until;
     return stmt;
 }
 
@@ -827,7 +826,7 @@ static void dump_stmt(AstStmt *stmt, int indent) {
         }
         break;
     case AST_STMT_DO_LOOP:
-        printf("DoLoop %s\n", stmt->as.do_loop.until ? "until" : "while");
+        printf("DoLoop until\n");
         dump_indent(indent + 1);
         printf("Body\n");
         for (size_t i = 0; i < stmt->as.do_loop.body.count; i++) {

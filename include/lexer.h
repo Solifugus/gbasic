@@ -24,7 +24,6 @@ typedef enum {
     TOKEN_TO,
     TOKEN_STEP,
     TOKEN_DO,
-    TOKEN_LOOP,
     TOKEN_UNTIL,
     TOKEN_WHILE,
     TOKEN_CONSIDER,

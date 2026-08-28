@@ -16,7 +16,8 @@ for error handling, `ERRORS.md`.
   enclosing loop. → `examples/consider_test.bas`
 - **Loop** — counted `for i = a to b [step c]` (inclusive `to`, bounds read
   once, counter keeps its last value), `while`, and post-test
-  `do … loop until/while` — all with `break`/`continue`. No `repeat … until`
+  `do … until c` (a STOP condition; there is no continue-condition form,
+  because it is `until not c`) — all with `break`/`continue`. No `repeat … until`
   (`repeat` is a builtin). → `examples/for_range_test.bas`,
   `examples/do_loop_test.bas`, `examples/while_break_continue_test.bas`
 - **Iterate a collection** — `for each x in coll … end for` (or `next x`).

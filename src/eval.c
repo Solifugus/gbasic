@@ -27974,9 +27974,11 @@ static EvalResult eval_stmt(AstStmt *stmt) {
     }
     case AST_STMT_DO_LOOP: {
         /* POST-test: the body runs, THEN the condition decides. `until` stops
-         * when the condition becomes true; `while` continues while it is true.
-         * `while ... end while` already covers the pre-test case, so this exists
-         * only for the "do it at least once" shape. */
+         * when the condition becomes true. `while ... end while` already covers
+         * the pre-test case, so this exists only for the "do it at least once"
+         * shape -- and it is the ONLY post-test form: a continue-condition
+         * spelling was removed on 2026-08-27 because it is `until not c` and
+         * because keeping it forced the redundant `loop` keyword (parser.y). */
         loop_depth++;
         for (;;) {
             EvalResult result = eval_stmt_list(stmt->as.do_loop.body);
@@ -28013,7 +28015,7 @@ static EvalResult eval_stmt(AstStmt *stmt) {
             }
             int truth = value_truthy(cond);
             value_free(cond);
-            if (stmt->as.do_loop.until ? truth : !truth) {
+            if (truth) {
                 break;
             }
         }

@@ -50,9 +50,12 @@ append(results, check("for each takes the element name", "abc", seen))
 next = 41
 next += 1
 append(results, check("`next` is still an ordinary variable name", 42, next))
+' `loop` too -- and since 2026-08-27 it is not a keyword in ANY position,
+' because dropping the `do ... loop while c` form is what freed it. `until`
+' went the other way in the same change: `do ... until c` makes it
+' statement-initial, so it is reserved and cannot appear here.
 loop = "loop"
-until = "until"
-append(results, check("so are `loop` and `until`", "loopuntil", loop + until))
+append(results, check("`loop` is an ordinary variable name too", "loop", loop))
 
 print ""
 print "-- break and continue can name the loop they mean"

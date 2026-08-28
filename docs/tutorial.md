@@ -440,12 +440,23 @@ When you want the body to run **at least once** and then decide, use `do`:
 tries = 0
 do
     tries += 1
-loop until tries >= 3
+until tries >= 3
 ```
 
-`while` checks before the body, `do … loop` checks after — that is the whole
-difference, and it is why there is no pre-test `do while … loop`. Both
-`loop until c` (stop when true) and `loop while c` (continue while true) exist.
+`while` checks before the body, `do … until` checks after — that is the whole
+difference, and it is why there is no pre-test `do while … loop`. `until` is a
+**stop** condition: the body repeats until it becomes true. There is no
+continue-condition form, because it would just be `until not c` — and `!<`/`!>`
+usually save you the `not`:
+
+```basic
+' "keep going while attempts < 3"
+attempts = 0
+do
+    attempts += 1
+until attempts !< 3
+print(attempts)
+```
 
 `for each` iterates arrays (and `keys(...)`/`values(...)` of records). The
 `each` word is optional — `for v in xs` is the same as `for each v in xs`:

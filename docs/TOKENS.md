@@ -43,7 +43,7 @@ is a keyword, not an identifier.
 ```
 program   library   load      use       export
 if        then      else      end       for
-to        step      do        loop      until
+to        step      do        until
 while     consider  break     continue  each
 function  return    print     watch     unwatch
 without   watchers  modifier  goto      gosub

@@ -417,7 +417,7 @@ typedef struct {
 %token AS
 %token DIM
 %token PLUS_EQ MINUS_EQ STAR_EQ SLASH_EQ
-%token IF CONSIDER_IF THEN ELSE CONSIDER_ELSE END END_CONSIDER PRINT TRUE FALSE NOTHING UNKNOWN_VALUE AND OR NOT WITH NEW SPAWN FOR TO STEP DO LOOP UNTIL IN EACH WHILE CONSIDER BREAK CONTINUE FUNCTION RETURN GOTO GOSUB WATCH UNWATCH WITHOUT WATCHERS ON NEXT STOP ERROR_VALUE MODIFIER PROGRAM LIBRARY LOAD USE EXPORT
+%token IF CONSIDER_IF THEN ELSE CONSIDER_ELSE END END_CONSIDER PRINT TRUE FALSE NOTHING UNKNOWN_VALUE AND OR NOT WITH NEW SPAWN FOR TO STEP DO UNTIL IN EACH WHILE CONSIDER BREAK CONTINUE FUNCTION RETURN GOTO GOSUB WATCH UNWATCH WITHOUT WATCHERS ON NEXT STOP ERROR_VALUE MODIFIER PROGRAM LIBRARY LOAD USE EXPORT
 %token OP_EQ OP_NE OP_GT OP_LT OP_GE OP_LE OP_NGT OP_NLT OP_NGE OP_NLE
 %token PLUS MINUS STAR SLASH LPAREN RPAREN LBRACKET RBRACKET LBRACE RBRACE COMMA COLON NEWLINE
 %precedence IF_WITHOUT_ELSE
@@ -595,12 +595,13 @@ variable_name
     : IDENT %prec NO_DOT { $$ = $1; }
     | END %prec NO_DOT { $$ = copy_const("end"); }
     | NEXT %prec NO_DOT { $$ = copy_const("next"); }
-    /* `loop` and `until` never START a statement -- they only close a
-     * do-loop -- so they stay usable as ordinary names, the way `end`
-     * and `next` do. `do` cannot join them: it is statement-initial,
-     * exactly like `while` and `for`, which are not here either. */
-    | LOOP %prec NO_DOT { $$ = copy_const("loop"); }
-    | UNTIL %prec NO_DOT { $$ = copy_const("until"); }
+    /* `end` and `next` never START a statement -- they only close one -- so
+     * they stay usable as ordinary names. `until` was here too until
+     * 2026-08-27, and could not stay: once `do ... until c` closes the loop
+     * without `loop` in front, `until` IS statement-initial, and it collides
+     * with `until[0] = 5` and `until{USD} = 9.95` on the `[`/`{` lookahead.
+     * That is the price of dropping `loop`, and it was paid deliberately.
+     * `loop` itself is no longer a keyword in any position -- see lexer.c. */
     ;
 
 comparison_lens
@@ -717,13 +718,22 @@ for_each_statement
     ;
 
 do_loop_statement
-    /* POST-test loop: the body always runs at least once. `while` already
-     * covers the pre-test case, so only this one was missing. */
-    : DO NEWLINE statement_list LOOP UNTIL expression NEWLINE {
-        $$ = ast_do_loop($3, $6, 1);
-      }
-    | DO NEWLINE statement_list LOOP WHILE expression NEWLINE {
-        $$ = ast_do_loop($3, $6, 0);
+    /* POST-test loop: the body always runs at least once. `while ... end while`
+     * already covers the pre-test case, so only this one was missing.
+     *
+     * ONE FORM, and `until` is a STOP condition. A continue-condition spelling
+     * was carried until 2026-08-27 and removed, for two reasons that turned out
+     * to be the same reason. It is redundant -- `loop while c` is `until not c`,
+     * and gBASIC has `!<`/`!>` for the single-comparison case. And it FORCED THE
+     * `loop` KEYWORD: `do ... while c` is ambiguous with a body whose next
+     * statement is a nested `while c ... end while`, because both readings are
+     * complete programs and the `end while` that separates them can be
+     * arbitrarily far ahead. Measured: 32 reduce/reduce conflicts, and dropping
+     * the until form does not help -- the ambiguity is with the nested
+     * statement, not with the other terminator. `until` never begins a
+     * statement, so it needs no opening keyword and `loop` is gone. */
+    : DO NEWLINE statement_list UNTIL expression NEWLINE {
+        $$ = ast_do_loop($3, $5);
       }
     ;
 
@@ -1341,7 +1351,6 @@ dot_field_name
     | IF             { $$ = kw_name("if"); }
     | WHILE          { $$ = kw_name("while"); }
     | DO             { $$ = kw_name("do"); }
-    | LOOP           { $$ = kw_name("loop"); }
     | UNTIL          { $$ = kw_name("until"); }
     | PRINT          { $$ = kw_name("print"); }
     | RETURN         { $$ = kw_name("return"); }
@@ -1589,7 +1598,6 @@ static int yylex(YYSTYPE *lvalp, YYLTYPE *llocp, gb_parse_ctx *ctx) {
     case TOKEN_TO: return TO;
     case TOKEN_STEP: return STEP;
     case TOKEN_DO: return DO;
-    case TOKEN_LOOP: return LOOP;
     case TOKEN_UNTIL: return UNTIL;
     case TOKEN_IN: return IN;
     case TOKEN_EACH: return EACH;

@@ -220,7 +220,6 @@ static TokenType identifier_type(const char *start, int length) {
     if (keyword_equals(start, length, "to")) return TOKEN_TO;
     if (keyword_equals(start, length, "step")) return TOKEN_STEP;
     if (keyword_equals(start, length, "do")) return TOKEN_DO;
-    if (keyword_equals(start, length, "loop")) return TOKEN_LOOP;
     if (keyword_equals(start, length, "until")) return TOKEN_UNTIL;
     if (keyword_equals(start, length, "while")) return TOKEN_WHILE;
     if (keyword_equals(start, length, "consider")) return TOKEN_CONSIDER;

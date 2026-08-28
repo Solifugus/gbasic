@@ -258,8 +258,9 @@ struct AstStmt {
         } for_each;
         struct {
             AstStmtList body;
-            AstExpr *condition;
-            int until;           /* 1 = `loop until c` (stop when true), 0 = `loop while c` */
+            AstExpr *condition;  /* post-test STOP condition: the body repeats
+                                  * until this becomes true. There is no
+                                  * continue-condition form -- see parser.y. */
         } do_loop;
         struct {
             char *name;          /* the counter variable */
@@ -400,7 +401,7 @@ AstStmt *ast_with_lock(AstExpr *file, AstStmtList body);
 AstStmt *ast_for_each(char *name, AstExpr *iterable, AstStmtList body);
 AstStmt *ast_for_range(char *name, AstExpr *start, AstExpr *limit,
                        AstExpr *step, AstStmtList body);
-AstStmt *ast_do_loop(AstStmtList body, AstExpr *condition, int until);
+AstStmt *ast_do_loop(AstStmtList body, AstExpr *condition);
 AstStmt *ast_function(char *name, AstNameList params, AstStmtList body);
 AstStmt *ast_return(AstExpr *expr);
 AstStmt *ast_label(char *name);

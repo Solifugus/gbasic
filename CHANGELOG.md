@@ -9,6 +9,49 @@ language surface may still change between releases.
 
 ## Unreleased
 
+- **BREAKING: the post-test loop is `do … until c`.** `loop` is gone from the
+  syntax, and the continue-condition form `do … loop while c` is removed.
+
+  ```basic
+  do                          do
+      tries += 1     →            tries += 1
+  loop until tries >= 3       until tries >= 3
+  ```
+
+  Two objections to `loop` turned out to be one answer. It *reads* redundant —
+  and it was, on the `until` side. But it was **load-bearing on the `while`
+  side**, and not removably so: `do … while c` cannot be distinguished from a
+  body whose next statement is a nested `while c … end while`, because both
+  readings are complete programs and the `end while` that separates them can be
+  arbitrarily far ahead. Measured at **32 reduce/reduce conflicts**, and —
+  the part worth recording — *dropping the `until` form does not help*, because
+  the ambiguity is with the nested statement, not with the other terminator.
+
+  So `loop` could only be deleted by keeping `until` and dropping `while`.
+  Which is fine, because the `while` form was always redundant: it means
+  `until not c`, and `!<`/`!>` cover the single-comparison case without a `not`
+  (`loop while j < 3` is now `until j !< 3`). For a compound condition, negate
+  the whole thing rather than applying De Morgan by hand. Evidence it was not
+  wanted: outside its own test, `loop while` had **zero** uses in the tree, and
+  `loop until` had one.
+
+  **The keyword ledger, verified against the binary rather than counted by
+  hand:** 47 keywords → **46**. `loop` stops being a keyword in *any* position
+  and is an ordinary identifier again (it is a label in `stdlib/dates.bas`).
+  `until` goes the other way: `do … until c` makes it statement-initial, so it
+  can no longer be a variable — it collided with `until[0] = 5` and
+  `until{USD} = 9.95` on the `[`/`{` lookahead, which is exactly where the two
+  shift/reduce conflicts landed when this was measured. Words usable as
+  ordinary names go from four to two: `end` and `next`.
+
+  Zero grammar conflicts. The `until` flag is removed from the AST node rather
+  than left always-true, because dead machinery that still parses is how a
+  retired construct comes back.
+
+  Rebaselined: `examples/do_loop_test`, `loop_syntax_test`,
+  `keyword_stability_test`. New negatives pin both retirements —
+  `negative_until_as_name`, `negative_do_loop_until`.
+
 - **Two loose ends closed, and the second was found by measuring rather than
   reading.**
 

@@ -46,7 +46,7 @@ the standing ones.
   fractional, bounds are read ONCE at entry, and afterwards the counter holds
   the last value the body saw (3 after `1 to 3` — QBasic would say 4).
   `for i = 5 to 1` with no step does not run; `step 0` raises. There is also a
-  post-test loop, `do … loop until c` / `loop while c` — but **no
+  post-test loop, `do … until c` (a STOP condition) — but **no
   `repeat … until`**, because `repeat` is a string builtin. `for each` iterates
   arrays as before. (Older notes saying gBASIC has no numeric `for` predate
   2026-08-16; older notes about O(n²) indexing predate 2026-07-23.)

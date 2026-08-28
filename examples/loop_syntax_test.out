@@ -4,7 +4,7 @@ ok   bare next closes it too
 ok   and end for is unchanged
 ok   for each takes the element name
 ok   `next` is still an ordinary variable name
-ok   so are `loop` and `until`
+ok   `loop` is an ordinary variable name too
 
 -- break and continue can name the loop they mean
 ok   continue NAME resumes the named loop

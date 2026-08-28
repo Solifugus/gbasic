@@ -20,8 +20,8 @@ document list, with a status column, is `docs/README.md`.
 - variables, strict expressions, assignment (including the compound forms
   `+=`, `-=`, `*=`, `/=`), input, and output
 - multiline and inline `if`/`else`
-- `consider`, `while`, and `break`/`continue` — each optionally naming the
-  loop it means (`break x`, `continue x`)
+- `consider`, `while`, the post-test `do ... until c`, and `break`/`continue` —
+  each optionally naming the loop it means (`break x`, `continue x`)
 - array iteration with `for each` and compatible `for ... in`; a counted `for`
   closing with `end for`, `next`, or `next <name>`
 - arrays, records, dynamic record access, and nested lvalue assignment

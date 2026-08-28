@@ -325,7 +325,7 @@ library dates
                 ' turns a lookup into a hang, the least debuggable outcome.
                 error "dates: no business day within 10 years; is the calendar empty?"
             end if
-        loop until is_business_day(dd, cal)
+        until is_business_day(dd, cal)
         return dd
     end function
 

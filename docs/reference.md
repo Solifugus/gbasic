@@ -36,21 +36,23 @@ A passage leads north."
 
 ### Reserved words
 
-Keywords are matched **case-insensitively**. There are 47, and 43 of them cannot
-be used as a variable, parameter or function name:
+Keywords are matched **case-insensitively**. There are 46, and 44 of them
+cannot be used as a variable, parameter or function name:
 
 ```text
 and       as        break     consider  continue  dim       do        each
 else      error     export    false     for       function  gosub     goto
 if        in        library   load      modifier  new       not       nothing
 on        or        print     program   return    spawn     step      stop
-then      to        true      unknown   unwatch   use       watch     watchers
-while     with      without
+then      to        true      unknown   until     unwatch   use       watch
+watchers  while     with      without
 ```
 
-The remaining four — **`end`, `loop`, `next`, `until`** — are recovered as
-identifiers by the grammar and *may* be used as ordinary names. That is why
-closing a `for` with `next` costs no reserved word (see Statements).
+The remaining two — **`end` and `next`** — are recovered as identifiers by the
+grammar and *may* be used as ordinary names. That is why closing a `for` with
+`next` costs no reserved word (see Statements). `loop` is not in either list:
+it stopped being a keyword entirely when `do … loop while` was removed, and is
+now an ordinary identifier.
 
 Words you might expect here and that are **not** reserved: `server`, `warning`,
 `default`, `resume`, `from`, and the `server` block's verbs. They are resolved
@@ -299,21 +301,38 @@ Post-test loop — the body always runs at least once:
 ```basic
 do
     line = input()
-loop until line != ""
+until line != ""
 
 do
     attempts = attempts + 1
-loop while attempts < 3
+until attempts !< 3
 ```
 
-`while … end while` tests before the body, so `do … loop` exists only for the
+`while … end while` tests before the body, so `do … until` exists only for the
 "run it once, then decide" shape; there is deliberately no pre-test
 `do while … loop`. `break` and `continue` behave as elsewhere.
 
+**`until` is a stop condition, and it is the only form.** A continue-condition
+spelling (`do … loop while c`) existed until 0.1.0-rc8 and was removed, for two
+reasons that are one reason. It is redundant — it means `until not c`, and
+`!<` / `!>` cover the single-comparison case without a `not` (the second
+example above is the old `loop while attempts < 3`). And it *required* the
+`loop` keyword: `do … while c` cannot be distinguished from a body whose next
+statement is a nested `while c … end while`, because both readings are complete
+programs and the `end while` that separates them can be arbitrarily far ahead —
+measured at 32 reduce/reduce conflicts, and dropping the `until` form does not
+help, because the ambiguity is with the nested statement rather than with the
+other terminator. `until` never begins anything else, so it needs no opening
+keyword.
+
+For a compound condition, negate the whole thing rather than applying De Morgan
+by hand — `until not (a < 10 and b < 10)` is the old `loop while a < 10 and
+b < 10`, and flipping `and` to `or` yourself is where the bugs are.
+
 There is no `repeat … until`: `repeat` is a string builtin, and reserving it
-would break existing programs. `loop` and `until` never begin a statement, so
-they remain usable as ordinary variable names (as `end` and `next` are); `do`
-does begin one, so it is reserved, exactly like `while` and `for`.
+would break existing programs. `until` begins a statement now, so unlike `end`
+and `next` it is reserved; `loop` is no longer a keyword in any position and is
+an ordinary name again.
 
 Consider:
 
