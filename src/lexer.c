@@ -452,6 +452,8 @@ const char *token_type_name(TokenType type) {
     case TOKEN_TO: return "TO";
     case TOKEN_STEP: return "STEP";
     case TOKEN_WHILE: return "WHILE";
+    case TOKEN_DO: return "DO";
+    case TOKEN_UNTIL: return "UNTIL";
     case TOKEN_CONSIDER: return "CONSIDER";
     case TOKEN_BREAK: return "BREAK";
     case TOKEN_CONTINUE: return "CONTINUE";

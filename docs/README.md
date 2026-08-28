@@ -126,6 +126,7 @@ Read in this order. gBASIC diverges from QBasic/VB intuition in ways that fail
 | Document | Status | What it is |
 |---|---|---|
 | [project_state.md](project_state.md) | Record | Where the project stands. |
+| [shipping_applications.md](shipping_applications.md) | Shipped | Turning a .bas program into a .deb a customer installs: lean builds, layout, the library-search hazard, systemd hardening. |
 | [historical_development_archive.md](historical_development_archive.md) | Record | Completed phases, so retired trackers need not stay active. |
 | [future_library_ideas.md](future_library_ideas.md) | **Proposal** | Directions not committed to. |
 | [TOKENS.md](TOKENS.md) | Record | Token inventory. |

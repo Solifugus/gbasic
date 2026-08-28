@@ -1,0 +1,2 @@
+# Build artifacts. A .deb is reproducible from the sources beside it.
+*.deb

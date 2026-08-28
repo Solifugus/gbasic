@@ -1,0 +1,44 @@
+[Unit]
+Description=@NAME@ (gBASIC application)
+Documentation=file:///usr/share/doc/@NAME@
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=@NAME@
+Group=@NAME@
+ExecStart=@RUNTIME@/gbasic --line-buffered @RUNTIME@/app/@ENTRY@
+Restart=on-failure
+RestartSec=5
+
+# --line-buffered above is not cosmetic: a gBASIC child's stdout is BLOCK
+# buffered on a pipe, so without it the journal shows nothing until the
+# service exits -- and output still buffered when a service is killed is lost.
+StandardOutput=journal
+StandardError=journal
+
+# The service writes to exactly one place and reads its config. Everything
+# else is closed. A file-transfer or notes daemon has no business reaching
+# /home, loading kernel modules, or writing anywhere but its own state dir.
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+StateDirectory=@NAME@
+ReadWritePaths=/var/lib/@NAME@
+
+# Loopback plus outbound only. Remove AF_INET6 if the app binds v4 only; add
+# nothing here to expose the service -- that is the reverse proxy's job.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

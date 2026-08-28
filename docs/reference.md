@@ -3558,18 +3558,27 @@ or catch it with `on error goto next`.
   possible now (see Errors), but asking remains the better shape — the answer
   is a fact about the path, not an exception.
 
-<!--fragment: an API shape or a deliberately invalid form, not a program-->
+<!--needs-context-->
 ```basic
 root = real_path("public")
 target = real_path(root + "/" + supplied)
+consider true
 if is_unknown(target) then
     ' nothing there
-else if not starts_with(target, root + "/") then
+if not starts_with(target, root + "/") then
     ' it resolved outside the root -- refuse
-else if file_type(target) != "file" then
+if file_type(target) != "file" then
     ' a directory or a device, not a page
-end if
+else
+    ' safe to serve
+end consider
 ```
+
+**gBASIC has no `else if`.** A chain of conditions is written as `consider true`
+with an `if` per branch, as above: the first branch whose condition is true
+runs, `else` catches the rest, and no nesting is needed. That is the idiom, and
+it reads closer to the decision table it is than a staircase of `else if` does.
+This example previously used `else if` and would not have parsed.
 
 Directory functions:
 

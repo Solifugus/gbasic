@@ -399,6 +399,26 @@ When the final branch starts on the next line, keep `end if`. Inline branches
 hold one simple statement (assignment, `print`, a call, `return`, `goto`,
 `break`, `continue`); use the multiline form for nested blocks.
 
+**There is no `else if`.** Writing one is a syntax error, not a slow path. A
+chain of conditions is `consider true` with an `if` per branch — the first true
+branch runs, `else` catches the rest, and nothing nests:
+
+```basic
+score = 72
+consider true
+if score < 50 then
+    print("fail")
+if score < 80 then
+    print("pass")
+else
+    print("distinction")
+end consider
+```
+
+That is the same `consider` used for matching a value (below); giving it `true`
+matches against conditions instead. It reads as the decision table it is, which
+a staircase of `else if` does not.
+
 `while` with `break`/`continue`:
 
 ```basic

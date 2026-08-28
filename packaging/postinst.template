@@ -1,0 +1,25 @@
+#!/bin/sh
+set -e
+NAME=@NAME@
+case "$1" in
+  configure)
+    # A system user with no login and no home. The service never needs either,
+    # and an account that cannot be logged into cannot be logged into.
+    if ! getent passwd "$NAME" >/dev/null; then
+        adduser --system --group --no-create-home \
+                --home "/var/lib/$NAME" --shell /usr/sbin/nologin "$NAME" >/dev/null
+    fi
+    chown -R "$NAME:$NAME" "/var/lib/$NAME"
+    chmod 0750 "/var/lib/$NAME"
+    if [ -f "/etc/$NAME/$NAME.conf" ]; then
+        chown root:"$NAME" "/etc/$NAME/$NAME.conf"
+        chmod 0640 "/etc/$NAME/$NAME.conf"
+    fi
+    if [ -d /run/systemd/system ]; then
+        systemctl daemon-reload
+        systemctl enable "$NAME.service" >/dev/null 2>&1 || true
+        systemctl restart "$NAME.service" || true
+    fi
+    ;;
+esac
+exit 0

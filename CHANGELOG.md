@@ -9,6 +9,48 @@ language surface may still change between releases.
 
 ## Unreleased
 
+- **A gBASIC application can be shipped as a `.deb`.** `packaging/build-deb.sh`
+  turns an application directory into an installable package;
+  `packaging/example-app` is a working loopback service that proves the path,
+  and `docs/shipping_applications.md` is the guide. Built, extracted and RUN
+  end to end: health endpoint, a POST, the value read back.
+
+  **The model is a vendored runtime with system libraries.** The package
+  carries its own interpreter and stdlib under `/usr/lib/<app>/` and does not
+  depend on a system `gbasic`. gBASIC's optional modules are compile-time
+  gated, so a server build drops GTK, GObject-introspection, PostgreSQL,
+  libxml2 and libcurl — measured, **48 shared libraries to 10**, 1.7 MB to
+  1.1 MB — while `libssl`, `libcrypto`, `libsqlite3` and `zlib` stay the
+  distribution's, patched by the distribution. That is why "one static binary"
+  is the wrong answer for a security product: an auditor can see there is no
+  frozen OpenSSL inside. No Makefile change was needed; the `*_AVAILABLE=0`
+  overrides already worked.
+
+  **Documented for the first time: how `load NAME` actually resolves, and the
+  hazard in it.** A bare `load` searches the source file's own directory
+  **recursively, and first** — ahead of `GBASIC_PATH` and the compiled-in
+  stdlib. A three-line fake `stats.bas` buried three directories under an
+  application silently replaced the real one and returned a wrong number, and
+  the warning emitted says the *correct* library was "ignored". Two defences
+  are stated and both are used by the example: load stdlib libraries by
+  absolute path via an `@RUNTIME@` token the packager substitutes (and fails
+  the build if any survives), and keep the application directory root-owned
+  and containing only the application. Native modules — `sqlite`, `pg`,
+  `webclient`, `webserver`, `xml`, `gui`, `gi` — are compiled in and exempt.
+
+- **`--tokens` printed `UNKNOWN` for `do` and `until`.** They were the only two
+  token kinds missing from `token_type_name`, in an interface `docs/TOKENS.md`
+  calls the source of truth for external syntax highlighters. Both named; no
+  "not handled in switch" warnings remain for tokens.
+
+- **gBASIC has no `else if`, and now says so.** `docs/reference.md` used one in
+  its **path-containment security example**, excused by a `fragment` marker
+  claiming the block was "an API shape" when it was a program teaching a
+  construct that does not parse. The idiom is `consider true` with an `if` per
+  branch — which appeared in **zero** files, documentation or code, anywhere in
+  the tree. Now documented in the reference and taught in the tutorial, and the
+  example is a real, checked block rather than an exempted one.
+
 - **Every public stdlib function is documented, and a gate keeps it that way.**
   64 were not, across 14 libraries, and nothing could tell. The design documents
   explain *why* each library exists and the cookbooks show recipes; neither is a
