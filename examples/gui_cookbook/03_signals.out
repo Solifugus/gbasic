@@ -1,0 +1,5 @@
+connected, handler id is a number : true
+id is non-zero                    : true
+gtk.connect works the same        : true
+disconnected without error        : true
+a handler stores in a record      : function

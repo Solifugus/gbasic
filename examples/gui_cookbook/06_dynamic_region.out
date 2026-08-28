@@ -1,0 +1,8 @@
+mounted    : alpha, beta
+updated    : ALPHA
+reused     : true
+inserted   : gamma
+still same : true
+b removed  : true
+a survives : ALPHA
+unmounted  : true

@@ -1,0 +1,7 @@
+outer is a box        : true
+split is a paned      : true
+left of the split     : GtkListBox
+right of the split    : GtkNotebook
+notebook pages        : 1
+scrolled child        : GtkViewport
+vertical enum value   : 1

@@ -2067,6 +2067,9 @@ structured error. Errors from the module use `error.source = "gi"`.
 
 ## GTK 4 helpers and SourceEditor
 
+> Guided introduction: [`docs/gui_tutorial.md`](gui_tutorial.md). Task-by-task
+> recipes, all executed by the suite: [`docs/gui_cookbook.md`](gui_cookbook.md).
+
 Two **pure-gBASIC** stdlib libraries make native GTK 4 code readable over the raw
 `gi` bridge. They add no native code and hide no GTK semantics — every wrapper
 returns the underlying GObject, so you drop to `gi` (`obj.method(...)`,

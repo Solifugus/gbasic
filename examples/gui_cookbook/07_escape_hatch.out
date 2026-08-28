@@ -1,0 +1,7 @@
+entry placeholder : search...
+check label       : recursive
+spinner type      : GtkSpinner
+changed via method: filter…
+changed via gi.set: case sensitive
+Gio action name   : save
+box holds them    : GtkEntry

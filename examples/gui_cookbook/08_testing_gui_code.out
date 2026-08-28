@@ -1,0 +1,5 @@
+buttons built : 3
+in order      : New Open Save
+all buttons   : true
+container is  : GtkBox
+empty toolbar : true

@@ -115,8 +115,13 @@ library gtk
     ' application code reads `gtk.connect(button, "clicked", handler)`. (Named
     ' `connect`, not `on`, because `on` is a reserved keyword — `on error` — and
     ' cannot be a function name.)
+    ' Documented as an alias for `gi.connect`, and now actually one: it used to
+    ' call through without RETURNING the handler id, so anything wired with
+    ' `gtk.connect` could never be disconnected -- `gi.disconnect` needs that id
+    ' and the only copy was thrown away. Found while writing the GUI cookbook,
+    ' by asserting that the two calls behave the same.
     function connect(widget, signal, handler)
-        gi.connect(widget, signal, handler)
+        return gi.connect(widget, signal, handler)
     end function
 
     ' Resolve any GTK enum/flags member to its integer, e.g.

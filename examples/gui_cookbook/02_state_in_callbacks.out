@@ -1,0 +1,9 @@
+running a real event loop:
+  tick 1
+  tick 2
+  tick 3
+ticks after the loop : 3
+done flag            : true
+
+A plain `ticks = ticks + 1` inside that handler would have left
+ticks at 0 and the loop would never have quit.

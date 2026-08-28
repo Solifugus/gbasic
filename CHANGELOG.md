@@ -9,6 +9,42 @@ language surface may still change between releases.
 
 ## Unreleased
 
+- **GUI documentation: a tutorial and a cookbook, neither of which can lie.**
+  `docs/gui_tutorial.md` is the guided version; `docs/gui_cookbook.md` is eight
+  recipes on the same harness as the xlsx/chart/datetime cookbooks —
+  `tests/run_gui_cookbook.sh`, 24 checks, all three tiers red-proofed in
+  isolation. It skips honestly without a display or the GTK 4 typelib.
+
+  **What makes a GUI cookbook checkable at all:** `gtk.init()` needs a display
+  but *showing* a window does not, so every recipe builds real widgets and
+  interrogates them with nothing on screen — the technique `run_gtkui.sh` and
+  `run_datagrid.sh` already use.
+
+  **The order is evidence-led, and it is not the order I first proposed.**
+  gBASIC Studio — the largest application written in gBASIC — uses `gtk` + `gi`
+  imperatively: 86 `gtk.` calls, 72 `gi.`, and **zero** `gtkui`, despite its own
+  plan naming the reconciler. So the tutorial teaches `gtk` constructors and
+  `gi.connect` first, presents `gtkui` for changing keyed lists rather than as
+  the front door, and treats `gi.new` as the ordinary escape hatch it is.
+
+  The centrepiece is recipe 2: **state in a callback must live in a record.**
+  gBASIC has no closures, GUI code is nothing but callbacks, and an outer scalar
+  assigned inside a handler silently becomes a function-local — a counter stuck
+  at 1, a loop that never quits. Hit while writing the recipe, which is why it
+  is second and has its own tutorial section.
+
+  Writing the recipes by running them produced four corrections to what I had
+  assumed: `gi.new` takes flat name/value pairs rather than a record; every
+  `datagrid` update returns the new handle and must be reassigned (the
+  unused-result warning is what says so); a missing `gtkui` key is `nothing`,
+  not `unknown`; and `gtk.scrolled(x).get_child()` is a `GtkViewport`, not `x`.
+
+- **`gtk.connect` is now the alias it was documented to be.** It called
+  `gi.connect` without **returning** the handler id, so anything wired through
+  it could never be disconnected — `gi.disconnect` needs that id and the only
+  copy was discarded. Found by a cookbook recipe asserting that the two calls
+  behave the same.
+
 - **`tests/run_packaging.sh` — the shipping path is now tested, not just
   demonstrated.** The packaging work was verified by hand and nothing re-ran
   it; a build script that has produced a working service exactly once, on the

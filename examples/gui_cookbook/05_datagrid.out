@@ -1,0 +1,7 @@
+rows            : 3
+cell 0,0        : ari.bas
+cell 1,1        : 88104
+widget type     : GtkColumnView
+after set_rows  : 1 row, cell 0,0 = one.bas
+original intact : 3 rows
+destroyed       : true

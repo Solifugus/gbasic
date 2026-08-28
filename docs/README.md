@@ -74,6 +74,8 @@ Task-oriented, with runnable examples.
 | [web_routing.md](web_routing.md) | Shipped | `stdlib/web.bas` — a route table as data: patterns, order-independent specificity, `web.dispatch`. The library layer of PLAT-WEB. |
 | [llm_design.md](llm_design.md) | Shipped | `stdlib/llm.bas` — chat completion over `webclient`. |
 | [gui_design.md](gui_design.md) | Partial | The GTK 3 `gui` module — an experimental proof of concept. Prefer `gi` for new work. |
+| [gui_tutorial.md](gui_tutorial.md) | Shipped | Desktop applications with GTK 4: the four layers, the no-closures rule, signals, the event loop, testing without a display. |
+| [gui_cookbook.md](gui_cookbook.md) | Shipped | GUI by task; every recipe executed by tests/run_gui_cookbook.sh. |
 | [chart_design.md](chart_design.md) | Partial | The charting library — deterministic SVG as text. Phases 1, 2 and 4 are built (`stdlib/chart.bas`, `docs/chart_cookbook.md`); §13 records what is deferred. |
 | [datetime_design.md](datetime_design.md) | Shipped | The datetime/duration redesign — precision-aware datetimes, accountant's month arithmetic, duration algebra, business calendars, `matches`/`select`/`series`, `schedule.bas`. Every planned v1 layer is built; §9 lists what is deferred by decision (timezones, business-hours arithmetic). |
 

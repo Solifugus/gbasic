@@ -307,6 +307,23 @@ for error handling, `ERRORS.md`.
   → `examples/password_hash_test.bas`, `examples/secure_token_test.bas`
 - **Cryptography (`load crypto`)** — signed cookies, CSRF, JWT/HS256, flat JSON.
   → `examples/crypto_compose_test.bas`
+- **Desktop UI, where to start** — `gtk` constructors + `gi.connect`, which is
+  what gBASIC Studio is built from (86 `gtk.` calls, 72 `gi.`, zero `gtkui`).
+  `gtkui` is for a CHANGING KEYED LIST, not for the frame around it; `gi.new`
+  is the escape hatch for the ~90% of GTK `gtk.bas` does not wrap. Tutorial:
+  `docs/gui_tutorial.md`; recipes: `docs/gui_cookbook.md`.
+  → `examples/gui_cookbook/01_first_window.bas`
+- **STATE IN A GUI CALLBACK MUST LIVE IN A RECORD** — gBASIC has no closures,
+  so a handler assigning to an outer scalar silently makes a function-local and
+  the outer value never changes: a counter stuck at 1, a loop that never quits.
+  Mutate a field of a shared record instead. This is the single most common way
+  gBASIC GUI code fails, and it fails silently.
+  → `examples/gui_cookbook/02_state_in_callbacks.bas`
+- **Testing GUI code** — `gtk.init()` needs a display but SHOWING does not, so
+  a suite builds real widgets and interrogates them with nothing on screen.
+  Run under `G_DEBUG=fatal-criticals`. No signal can be emitted from gBASIC, so
+  drive behaviour with `gi.timeout` or verify by hand.
+  → `examples/gui_cookbook/08_testing_gui_code.bas`
 - **GObject-Introspection (`gi`, GTK 4)** — the canonical `GtkApplication` idiom:
   construct-time properties via `gi.new`, the app drives its own `run` loop, the
   window is built in the `activate` handler. Manual (needs a display); guarded by

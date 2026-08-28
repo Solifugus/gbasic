@@ -1,0 +1,4 @@
+window holds a box : true
+title text         : Notes
+button text        : Add
+box type name      : GtkBox
