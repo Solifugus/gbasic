@@ -2795,6 +2795,42 @@ There is intentionally no `today()` builtin: `today` is too common an
 identifier to reserve, and the date is derivable from `now()` and the `{day}=`
 truncation lens as shown above.
 
+**`now(zone)`** returns the current civil time in a named IANA zone —
+`now("UTC")`, `now("Asia/Tokyo")`. An unknown name is refused.
+
+**A gBASIC datetime carries no zone.** It is civil wall-clock text, and every
+conversion to an instant has to get a zone from somewhere. That makes one
+mistake very easy to write and impossible to see:
+`stamp = to_zone(now(), "UTC")` is **wrong** — it returns local time unchanged.
+`to_zone` reads its input as *already UTC* and renders it in the target zone,
+so handing it a local value gives that value straight back: a no-op that reads
+like a conversion and is wrong by your offset. Use `now("UTC")`.
+
+The same asymmetry bites the other way. `number(dt)` and `epoch(dt)` read a
+datetime as **local**, so `number(from_zone(now(), zone))` — the documented
+route to UTC — is wrong by the offset too, because a UTC civil value is being
+read as local. State the zone: `epoch(dt, zone)`.
+
+**`epoch()`** returns the current instant as Unix seconds. **`epoch(dt)`**
+places a civil datetime on the timeline by reading it as **local**;
+**`epoch(dt, zone)`** reads it as civil in that zone, which is the only correct
+way to get an instant from a value that is not local:
+
+```basic
+utc   = now("UTC")
+stamp = epoch(utc, "UTC")           ' == epoch(), the real instant
+wrong = number(utc)                 ' off by your UTC offset
+```
+
+DST gaps and repeats resolve by the same policy `from_zone` uses, so both doors
+give the same answer.
+
+**`exit(code)`** ends the program with an exit status, unwinding out of any
+function, loop or block — `stop` that also names a status. The code must be a
+whole number 0–255; a wider value is **refused** rather than truncated, because
+the kernel keeps only the low byte and `exit(256)` would silently report
+success from a program that meant to fail.
+
 **Datetime fields.** Components come out as *numbers* via dot access — the
 lenses truncate, the fields extract, and no global names are spent on it:
 

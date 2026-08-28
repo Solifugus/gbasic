@@ -9,6 +9,57 @@ language surface may still change between releases.
 
 ## Unreleased
 
+- **`exit(code)` — a program can set its own exit status.** There was no way
+  at all: a gBASIC program could report 0, or 1 by failing, and nothing else.
+  That put its most externally-visible contract out of reach, since anything
+  branching on a tool's result — a scheduler, CI, a shell — reads `$?`; the
+  workaround was printing a sentinel line for a wrapper script to exit with,
+  which moves the contract into the shell.
+
+  It unwinds through `runtime_stopped`, the path `stop` already uses, so every
+  frame, watcher and lock tears down exactly as before — `exit` is `stop` that
+  also names a status. **0–255, and wider is refused rather than truncated**,
+  because the kernel keeps only the low byte and `exit(256)` would report
+  success from a program that meant to fail.
+
+  The first implementation set the right status and **did not stop** — the
+  statement after `exit` still ran. `runtime_stopped` was only consulted on
+  paths that already produced a stop result, and a bare call is not one. The
+  check now sits once in `eval_stmt_list`, so it holds for every statement kind.
+
+- **`now(zone)` and `epoch(dt, zone)` — UTC is reachable, and correct.**
+  Reported from another session building on gBASIC, reproduced here, and worse
+  than reported.
+
+  `to_zone(now(), "UTC")` is a **no-op**: `to_zone` reads its input as *already
+  UTC* and renders it in the target, so a local value comes back unchanged —
+  measured at 06:56 local while UTC was 10:56, a four-hour error wearing a UTC
+  label. And the two halves of the API take their zone from different places:
+  `number(dt)` / `epoch(dt)` read a datetime as **local**, so the *documented*
+  route to UTC — `from_zone(now(), yourzone)` — yields a value whose epoch is
+  wrong by the offset. Verified 14400 seconds out. An audit trail built that
+  way stores timestamps hours in the future and nothing reports it.
+
+  **Fixed by addition, not by changing either contract** — both are
+  self-consistent, and moving either would silently change every existing
+  program's answers. What was missing was any way to say which zone a value is
+  *in*: `now(zone)` gives the current civil time in a named zone, and
+  `epoch(dt, zone)` places a civil value on the timeline as civil-in-that-zone.
+  `epoch(dt)` keeps the local reading. `epoch()`, `epoch(now())` and
+  `epoch(now("UTC"), "UTC")` now agree to the second and match `date +%s`.
+
+  Tested in `run_core.sh`, whose remit is checks a golden cannot express: the
+  assertions are against the **system clock**, because only the world can tell
+  a conversion from a no-op. `Asia/Tokyo` is the non-local zone, since it has
+  no DST and so cannot pass by accident half the year. Both tiers red-proofed.
+
+- **`run_core.sh` could not report a failure.** Under `set -e` a failing
+  assertion aborted the script before `check` ran, so a real regression
+  truncated the suite and the summary line never printed. Found because a
+  deliberately broken binary produced no `FAIL` output at all. Errexit is off;
+  the exit status comes from the fail counter, which is what a test suite's
+  status should mean.
+
 - **GUI documentation: a tutorial and a cookbook, neither of which can lie.**
   `docs/gui_tutorial.md` is the guided version; `docs/gui_cookbook.md` is eight
   recipes on the same harness as the xlsx/chart/datetime cookbooks —

@@ -604,6 +604,11 @@ enum {
 static RuntimeError current_error = {0};
 static RuntimeError current_warning = {0};   /* PLAT-WARN */
 static int runtime_stopped = 0;
+/* PLAT-EXIT: the status a program asked for with `exit(n)`. -1 means it never
+ * did, and the ordinary rules decide. Kept separate from runtime_stopped
+ * because that flag means "stopped", not "failed" -- `exit(0)` stops and
+ * succeeds, which no existing flag could express. */
+static int exit_code_requested = -1;
 static int error_generation = 0;
 static int raise_in_flight = 0;
 static ErrorFrame base_error_frame = {0};
@@ -21816,6 +21821,50 @@ static Value eval_call(AstExpr *expr) {
         return eval_user_function(expr, local_function);
     }
 
+    /* PLAT-EXIT: end the program with a status. A gBASIC program had no way to
+     * set its own exit code at all, which put its most externally-visible
+     * contract out of reach: anything that branches on results -- a scheduler,
+     * CI, a shell -- reads $?, and a gBASIC tool could only ever say 0 or,
+     * by failing, 1. The workaround was printing a sentinel line and having a
+     * wrapper script exit with it, which puts the contract in the shell.
+     *
+     * Unwinds through runtime_stopped, the same path the `stop` statement
+     * uses, so every frame, watcher and lock tears down exactly as it already
+     * does -- `exit` is `stop` that also names a status. */
+    if (strcmp(expr->as.call.name, "exit") == 0) {
+        if (expr->as.call.args.count != 1) {
+            runtime_error_raise("exit expects one argument, the status code", 1003, "invalid function call");
+            return value_null();
+        }
+        Value code = eval_expr(expr->as.call.args.items[0]);
+        if (error_action_pending()) {
+            value_free(code);
+            return value_null();
+        }
+        if (code.kind != VALUE_NUMBER) {
+            value_free(code);
+            runtime_error_raise("exit expects a number", 1003, "invalid function call");
+            return value_null();
+        }
+        double raw = code.as.number;
+        value_free(code);
+        if (raw != (double)(long long)raw) {
+            runtime_error_raise("exit expects a whole number", 1003, "invalid function call");
+            return value_null();
+        }
+        /* 0..255. A wider value is truncated to its low byte by the kernel, so
+         * `exit(256)` would silently become 0 -- success, from a program that
+         * meant to fail. Refused rather than truncated. */
+        if (raw < 0 || raw > 255) {
+            runtime_error_raise("exit status must be 0..255 (the shell sees only the low byte)",
+                                1003, "invalid function call");
+            return value_null();
+        }
+        exit_code_requested = (int)raw;
+        runtime_stopped = 1;
+        return value_null();
+    }
+
     if (strcmp(expr->as.call.name, "env") == 0) {
         if (expr->as.call.args.count != 1) {
             runtime_error_raise("env expects one argument", 1003, "invalid function call");
@@ -22011,18 +22060,61 @@ static Value eval_call(AstExpr *expr) {
 #endif
     }
 
+    /* `now()` is LOCAL civil time; `now(zone)` is civil time in a named zone.
+     *
+     * The zone form exists because there was no way to obtain UTC at all. The
+     * obvious-looking `to_zone(now(), "UTC")` is a NO-OP -- `to_zone` reads its
+     * input as already-UTC and renders it in the target, so handing it a local
+     * value returns that value unchanged, silently wrong by the offset. And the
+     * documented route, `from_zone(now(), <your zone>)`, requires naming the
+     * zone you are already in. `now("UTC")` is the primitive both were standing
+     * in for. */
     if (strcmp(expr->as.call.name, "now") == 0) {
-        if (expr->as.call.args.count != 0) {
-            runtime_error_raise("now expects no arguments", 1003, "invalid function call");
+        if (expr->as.call.args.count > 1) {
+            runtime_error_raise("now expects no arguments, or one zone name", 1003, "invalid function call");
             return value_null();
+        }
+        char *zone_arg = NULL;
+        if (expr->as.call.args.count == 1) {
+            Value z = eval_expr(expr->as.call.args.items[0]);
+            if (error_action_pending()) {
+                value_free(z);
+                return value_null();
+            }
+            if (z.kind != VALUE_STRING) {
+                value_free(z);
+                runtime_error_raise("now expects a zone name as a string", 1003, "invalid function call");
+                return value_null();
+            }
+            zone_arg = copy_string(z.as.string ? z.as.string : "");
+            value_free(z);
+            if (!zone_name_valid(zone_arg)) {
+                char message[256];
+                snprintf(message, sizeof(message),
+                         "unknown timezone '%s' (expected an IANA name like America/New_York, or UTC)",
+                         zone_arg);
+                free(zone_arg);
+                runtime_error_raise(message, 1003, "datetime");
+                return value_null();
+            }
         }
         time_t raw = time(NULL);
         if (raw == (time_t)-1) {
+            free(zone_arg);
             runtime_error_raise("could not read the current time", 1003, "clock");
             return value_null();
         }
         struct tm local;
-        if (!localtime_r(&raw, &local)) {
+        int converted;
+        if (zone_arg) {
+            char *saved = zone_push(zone_arg);
+            converted = localtime_r(&raw, &local) != NULL;
+            zone_pop(saved);
+            free(zone_arg);
+        } else {
+            converted = localtime_r(&raw, &local) != NULL;
+        }
+        if (!converted) {
             runtime_error_raise("could not convert the current time", 1003, "clock");
             return value_null();
         }
@@ -22038,17 +22130,86 @@ static Value eval_call(AstExpr *expr) {
         return value_datetime(dt);
     }
 
+    /* `epoch()` is the current instant. `epoch(dt)` places a civil datetime on
+     * the timeline reading it as LOCAL, and `epoch(dt, zone)` reads it as civil
+     * in that zone.
+     *
+     * The zone form closes a real trap. A gBASIC datetime carries no zone, so
+     * turning one into an instant needs one from somewhere -- and `number(dt)`
+     * silently supplies LOCAL. That is right for `now()` and wrong for anything
+     * converted: `number(from_zone(now(), here))` is the documented way to get
+     * UTC and its epoch is off by the offset, because the value is UTC civil
+     * text being read as local. An audit trail built that way stores timestamps
+     * hours in the future and nothing says so. `epoch(dt, "UTC")` states the
+     * zone the value is in, which is the only thing that can make it correct. */
     if (strcmp(expr->as.call.name, "epoch") == 0) {
-        if (expr->as.call.args.count != 0) {
-            runtime_error_raise("epoch expects no arguments", 1003, "invalid function call");
+        if (expr->as.call.args.count > 2) {
+            runtime_error_raise("epoch expects no arguments, a datetime, or a datetime and a zone name",
+                                1003, "invalid function call");
             return value_null();
         }
-        time_t raw = time(NULL);
-        if (raw == (time_t)-1) {
-            runtime_error_raise("could not read the current time", 1003, "clock");
+        if (expr->as.call.args.count == 0) {
+            time_t raw = time(NULL);
+            if (raw == (time_t)-1) {
+                runtime_error_raise("could not read the current time", 1003, "clock");
+                return value_null();
+            }
+            return value_number((double)raw);
+        }
+        Value when = eval_expr(expr->as.call.args.items[0]);
+        if (error_action_pending()) {
+            value_free(when);
             return value_null();
         }
-        return value_number((double)raw);
+        if (when.kind != VALUE_DATETIME) {
+            value_free(when);
+            runtime_error_raise("epoch expects a datetime", 1003, "invalid function call");
+            return value_null();
+        }
+        DateTime dt = when.as.datetime;
+        value_free(when);
+        if (dt.time_only) {
+            runtime_error_raise("epoch: a time-only value has no date and cannot be placed on the timeline",
+                                1003, "datetime");
+            return value_null();
+        }
+        if (expr->as.call.args.count == 1) {
+            int ok = 1;
+            long long e = datetime_to_epoch(dt, &ok);
+            if (!ok) {
+                runtime_error_raise("epoch: this datetime cannot be placed on the timeline",
+                                    1003, "datetime");
+                return value_null();
+            }
+            return value_number((double)e);
+        }
+        Value zv = eval_expr(expr->as.call.args.items[1]);
+        if (error_action_pending()) {
+            value_free(zv);
+            return value_null();
+        }
+        if (zv.kind != VALUE_STRING) {
+            value_free(zv);
+            runtime_error_raise("epoch expects a zone name as a string", 1003, "invalid function call");
+            return value_null();
+        }
+        char *zone = copy_string(zv.as.string ? zv.as.string : "");
+        value_free(zv);
+        if (!zone_name_valid(zone)) {
+            char message[256];
+            snprintf(message, sizeof(message),
+                     "unknown timezone '%s' (expected an IANA name like America/New_York, or UTC)",
+                     zone);
+            free(zone);
+            runtime_error_raise(message, 1003, "datetime");
+            return value_null();
+        }
+        long long chosen, earlier, later;
+        /* Same resolver, and the same default policy, `from_zone` uses -- so a
+         * DST gap or repeat resolves identically whichever door you came in. */
+        zone_resolve_instants(dt, zone, &chosen, &earlier, &later);
+        free(zone);
+        return value_number((double)chosen);
     }
 
     /* Elapsed-interval clock. Seconds as a floating-point number, from an
@@ -28547,6 +28708,16 @@ static EvalResult eval_stmt_list(AstStmtList statements) {
     size_t pc = 0;
     while (pc < statements.count) {
         EvalResult result = eval_stmt(statements.items[pc]);
+        /* PLAT-EXIT: `runtime_stopped` always means STOP -- it is set by a
+         * fatal raise and by `exit(n)`. A statement kind that does not itself
+         * produce a stop result (a bare call, which is how `exit` is spelled)
+         * would otherwise set the flag and let the NEXT statement run: the
+         * status was right and the program kept going. Checked here, once, so
+         * it holds for every statement kind rather than per kind. */
+        if (runtime_stopped && !eval_result_exits_block(result)) {
+            value_free(result.value);
+            return eval_stop();
+        }
         if (result.did_raise) {
             /* PLAT-ERR: the raise has unwound to a statement list of the
              * current frame. Ask the frame whether it absorbs. Fall-through is
@@ -28755,5 +28926,11 @@ int eval_program(AstStmtList program) {
     root_source_path = NULL;
     env_clear(&global_env);
     active_root = ast_stmt_list_empty();
+    /* An explicit `exit(n)` wins over everything above, including the
+     * webserver loop's status: the program said what it meant. */
+    if (exit_code_requested >= 0) {
+        exit_status = exit_code_requested;
+        exit_code_requested = -1;
+    }
     return exit_status;
 }

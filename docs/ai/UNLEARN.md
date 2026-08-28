@@ -405,6 +405,27 @@ day — so assume you will hit them too.
   statement" at a column where no statement is possible. Writing `dim x` still
   gets the advice it was always meant to give.
 
+- **`to_zone(now(), "UTC")` is a NO-OP, not a conversion (fixed by addition
+  2026-08-28).** A gBASIC datetime carries no zone; it is civil wall-clock
+  text. `to_zone` reads its input as ALREADY UTC and renders it in the target,
+  so handing it a local value returns that value unchanged — silently wrong by
+  your offset, with a UTC label on it. Use **`now("UTC")`**.
+
+- **`number(dt)` and `epoch(dt)` read a datetime as LOCAL.** That is right for
+  `now()` and wrong for anything you converted: `number(from_zone(now(), zone))`
+  — the documented route to UTC — is off by the offset, because a UTC civil
+  value is being read as local. Use **`epoch(dt, zone)`** and say which zone the
+  value is in. An audit trail built the other way stores timestamps hours out
+  and nothing reports it.
+
+- **A program can set its own exit status: `exit(code)`** (2026-08-28). It
+  unwinds out of any function, loop or block — `stop` that names a status.
+  0–255; anything wider is refused rather than truncated, because the kernel
+  keeps only the low byte and `exit(256)` would report success. Before this
+  there was no way at all, and the workaround was printing a sentinel line for
+  a wrapper script to exit with — which put the program's most
+  externally-visible contract in the shell.
+
 ## Error handling — rebuilt in 0.1.0-rc5, so unlearn the old advice too
 
 **`on error resume next` is gone** (`resume` is an ordinary identifier again).

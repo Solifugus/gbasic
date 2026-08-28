@@ -5,7 +5,14 @@
 # The deterministic surface (return values, arity/type errors) is covered by the
 # golden suites: examples/sleep_test.* + tests/negative_sleep_* (run_negative.sh)
 # and examples/env_builtin_test.* + tests/negative_env_* .
-set -euo pipefail
+# NOT `set -e`. Every assertion here is `<condition>` followed by
+# `check "..." $?`, and under errexit a FAILING condition aborts the script
+# before `check` ever runs -- so a real regression truncated the suite instead
+# of reporting FAIL, and the summary line simply never printed. A test suite
+# must survive its own failures; the exit status comes from the fail counter at
+# the bottom. (Found while red-proving the timezone tier: the deliberately
+# broken binary produced no FAIL line at all.)
+set -uo pipefail
 
 cd "$(dirname "$0")/.."
 
@@ -100,6 +107,88 @@ sq_err="$(mktemp)"
 [[ ! -s "$sq_err" ]]
 check "shadow warning: an unread same-name local stays silent" $?
 rm -f "$sw_out" "$sw_err" "$sq_prog" "$sq_err"
+
+# --- exit(n): the process really exits with that status ---------------------
+# A golden cannot express an exit code, and the code IS the contract: anything
+# that branches on a gBASIC tool's result -- a scheduler, CI, a shell -- reads
+# $?. Before `exit`, a program could only ever say 0, or 1 by failing.
+for want in 0 1 60 255; do
+    ex_prog="$(mktemp --suffix=.bas)"
+    printf 'print "ran"\nexit(%s)\nprint "UNREACHABLE"\n' "$want" > "$ex_prog"
+    ex_out="$(./gbasic "$ex_prog" 2>/dev/null)"; got=$?
+    [[ "$got" -eq "$want" ]]
+    check "exit($want) leaves status $want" $?
+    # ...and STOPS. The first implementation set the status and let the next
+    # statement run, which is worse than not having exit at all: right code,
+    # wrong work done.
+    [[ "$ex_out" == "ran" ]]
+    check "exit($want) stops execution" $?
+    rm -f "$ex_prog"
+done
+
+# exit from inside a function inside a loop must unwind everything.
+ex_deep="$(mktemp --suffix=.bas)"
+cat > "$ex_deep" <<'EOF'
+function bail()
+    exit(7)
+end function
+for i = 1 to 3
+    print "i=" + string(i)
+    if i = 2 then
+        x = bail()
+    end if
+next i
+print "UNREACHABLE"
+EOF
+deep_out="$(./gbasic "$ex_deep" 2>/dev/null)"; deep_rc=$?
+[[ "$deep_rc" -eq 7 && "$deep_out" == "i=1
+i=2" ]]
+check "exit unwinds out of a function inside a loop" $?
+rm -f "$ex_deep"
+
+# --- now(zone) and epoch(dt, zone) against the SYSTEM clock -----------------
+# Facts about the world, which is why they live here: the assertion is against
+# `date`, not against a string gBASIC printed. This is the check that would
+# have caught the trap that prompted it -- `to_zone(now(), "UTC")` is a no-op,
+# so a program could ask for UTC, be handed local time, and print it with a
+# UTC label. On this machine that is a four-hour error in an audit trail.
+tz_prog="$(mktemp --suffix=.bas)"
+cat > "$tz_prog" <<'EOF'
+print string(now("UTC"))
+print string(epoch())
+print string(epoch(now("UTC"), "UTC"))
+print string(epoch(now()))
+EOF
+tz_out="$(./gbasic "$tz_prog" 2>/dev/null)"
+gb_utc="$(printf '%s\n' "$tz_out" | sed -n 1p | cut -c1-16)"
+sys_utc="$(date -u +'%Y-%m-%d %H:%M')"
+[[ "$gb_utc" == "$sys_utc" ]]
+check "now(\"UTC\") matches the system UTC clock ($gb_utc vs $sys_utc)" $?
+
+# The three instants must agree: epoch() now, the UTC civil value read back as
+# UTC, and the local civil value read back as local. Disagreement means one of
+# them is silently applying an offset.
+e_now="$(printf '%s\n' "$tz_out" | sed -n 2p)"
+e_utc="$(printf '%s\n' "$tz_out" | sed -n 3p)"
+e_loc="$(printf '%s\n' "$tz_out" | sed -n 4p)"
+[[ "$e_now" == "$e_utc" && "$e_now" == "$e_loc" ]]
+check "epoch(), epoch(utc,\"UTC\") and epoch(local) are the same instant" $?
+
+# And that instant is the real one.
+sys_epoch="$(date +%s)"
+drift=$(( e_now > sys_epoch ? e_now - sys_epoch : sys_epoch - e_now ))
+[[ "$drift" -le 2 ]]
+check "epoch() matches date +%s (drift ${drift}s)" $?
+
+# A named zone that is NOT the local one, so a no-op cannot pass: Asia/Tokyo
+# has no DST and is never equal to a US local time.
+tk_prog="$(mktemp --suffix=.bas)"
+printf 'print string(now("Asia/Tokyo"))\n' > "$tk_prog"
+gb_tokyo="$(./gbasic "$tk_prog" 2>/dev/null | cut -c1-16)"
+sys_tokyo="$(TZ=Asia/Tokyo date +'%Y-%m-%d %H:%M')"
+[[ "$gb_tokyo" == "$sys_tokyo" ]]
+check "now(\"Asia/Tokyo\") matches that zone, not the local clock" $?
+rm -f "$tz_prog" "$tk_prog"
 
 printf 'core suite: %d passed / %d failed\n' "$pass" "$fail"
 [[ "$fail" -eq 0 ]]

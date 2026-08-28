@@ -173,6 +173,16 @@ for error handling, `ERRORS.md`.
 
 ## Dates, durations, calendars
 
+- **UTC** — `now("UTC")`. NOT `to_zone(now(), "UTC")`, which is a no-op that
+  returns local time unchanged: `to_zone` reads its input as already-UTC.
+  → `examples/datetime_zone_test.bas`
+- **An instant from a datetime** — `epoch(dt, zone)`. Bare `epoch(dt)` and
+  `number(dt)` read the value as LOCAL, so they are wrong for anything
+  converted; `epoch()` with no argument is the current instant.
+  → `examples/datetime_zone_test.bas`
+- **Exit status** — `exit(code)`, 0-255, unwinds out of everything. Wider
+  values are refused, not truncated. → `tests/run_core.sh`
+
 - **Month arithmetic clamps** — `jan31 + 1 month` is Feb 28 (accountant's
   rule); the round trip does not hold at month-end. → `examples/datetime_arithmetic_test.bas`
 - **Extract with dot fields, truncate with lenses** — `d.year` is a number,

@@ -1,0 +1,11 @@
+ok   epoch(local) is the current instant
+ok   epoch(utc, UTC) is the SAME instant
+ok   number(dt) and epoch(dt) read a value the same way
+ok   ...and both are off by the local offset
+ok   to_zone(local, UTC) returns the input unchanged
+ok   Tokyo civil read as UTC is 9 hours later
+ok   an unknown zone is refused
+ok   exit(256) is refused, not truncated to 0
+
+checks: 8
+mismatches: 0

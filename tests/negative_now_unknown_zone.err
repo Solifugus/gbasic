@@ -1,0 +1,1 @@
+runtime error at tests/negative_now_unknown_zone.bas:4:1: unknown timezone 'Mars/Olympus' (expected an IANA name like America/New_York, or UTC)

@@ -1,0 +1,1 @@
+runtime error at tests/negative_now_too_many.bas:4:1: now expects no arguments, or one zone name

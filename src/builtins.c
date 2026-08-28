@@ -46,6 +46,7 @@ int gbasic_builtin_function(const char *name) {
         "ed25519_keypair",
         "ed25519_sign",
         "ed25519_verify",
+        "exit",
         "now",
         "string",
         "number",

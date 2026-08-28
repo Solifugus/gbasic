@@ -2720,3 +2720,209 @@ where nothing chose the odd one out.
 decision wearing a syntactic message. The check should ask where the word
 appeared, not only what it was — and the same question is worth asking of any
 other "did you mean" diagnostics that match on a token rather than a position.
+
+## 2026-08-27 — CC — while: starting Transward (secure file transfer manager) M0
+- **Type:** missing-feature
+- **Severity:** high
+- **What:** There is no way for a gBASIC program to set its own process exit
+  status. No `exit(code)`/`quit(code)` builtin exists (`exit(3)` →
+  `invalid function call: exit`), and nothing in the reference offers another
+  route. A program ends 0 on normal completion or 1 on an unhandled raise, so
+  those are the only two statuses it can produce — and raising to get a nonzero
+  status also prints a runtime error to stderr, which is not what a CLI wants.
+
+  This matters beyond convenience for anything meant to be *called by other
+  software*. Transward's CLI contract is a stable exit-code family (0 success,
+  20 auth failure, 21 host-key failure, 41 verification failure, 51 policy
+  violation, …) that enterprise schedulers such as OpCon branch on; that is the
+  integration surface of the product. `process.run` already models a child's
+  status richly (`exit_code`, `signal`, `success`), so gBASIC can *read* an exit
+  status it cannot *write* — a program cannot be the child in a pipeline it can
+  itself orchestrate.
+- **Workaround:** a shell wrapper (`bin/transward`) runs the interpreter,
+  reads a machine-readable final line (`TRANSWARD_EXIT=<n>`) from the program's
+  output, and exits with that code. Tolerable because a launcher script is a
+  packaging artifact anyway, but it puts the product's most externally-visible
+  contract in shell rather than in the language, and any gBASIC program invoked
+  by a scheduler, a Makefile, CI, or `set -e` has the same problem.
+- **Would have been better:** `exit(n)` (0–255), flushing and running normal
+  cleanup — or, if the objection is an abrupt jump out of the middle of a
+  program, allowing `program main(args)` to `return` a number that becomes the
+  status.
+
+## 2026-08-27 — CC — while: designing the Transward SQLite schema (M0)
+- **Type:** missing-feature
+- **Severity:** medium
+- **What:** The SQLite module does not support BLOB in either direction —
+  binding a blob parameter is unsupported and reading a BLOB column is a
+  runtime error (reference, SQLite type mapping). But gBASIC strings are
+  explicitly binary-safe, and the crypto builtins *return raw binary strings*
+  (`aes_gcm_encrypt`, `random_bytes`, `sha256`). So the natural pipeline —
+  encrypt a credential, store the ciphertext — has no direct storage form,
+  even though both halves of it are first-class.
+- **Workaround:** every binary column is stored as text: ciphertext, nonce and
+  salt `base64_encode`d, digests `hex_encode`d. Correct and readable in
+  `sqlite3`, at ~33% size overhead plus an encode/decode on every access, and
+  it puts an encoding convention between the crypto layer and the database that
+  a blob column would not need.
+
+## 2026-08-27 — CC — while: choosing Transward's timestamp storage (M0)
+- **Type:** bug + missing-feature
+- **Severity:** high
+- **What:** A program cannot obtain a UTC civil timestamp, and the function
+  that looks like it does gives a wrong answer silently. Measured on a machine
+  in `America/New_York` (EDT, UTC-4) at instant `1787885025`
+  (`2026-08-27 22:43:45` local, `2026-08-28 02:43:45` UTC):
+
+  ```
+  now()                              -> 2026-08-27 22:43:45   epoch 1787885025
+  to_zone(now(), "UTC")              -> 2026-08-27 22:43:45   epoch 1787885025   ' WRONG
+  to_zone(now(), "America/Chicago")  -> 2026-08-27 17:43:45                      ' WRONG (true CDT is 21:43:45)
+  from_zone(now(), "America/New_York")-> 2026-08-28 02:43:45  epoch 1787899425   ' right wall clock, wrong instant
+  ```
+
+  The two halves of the datetime API disagree about what a value *is*.
+  `epoch()`/`number(dt)` treat it as an **absolute instant** (they match
+  `date +%s` exactly), while `to_zone` treats the same value's rendered wall
+  clock as **naive civil time already in UTC** — so it shifts a value that was
+  never in UTC, and `to_zone(x, "UTC")` on a local value is a no-op that looks
+  like a conversion. `from_zone(now(), <local zone>)` is the only route to the
+  right UTC wall clock, and it returns it attached to the wrong instant.
+
+  There is also no way to learn the local zone from within gBASIC (no
+  `local_zone()`; `env("TZ")` is routinely empty, as here), and
+  `zone_offset` requires the zone name you are trying to discover — so even the
+  working route is unreachable without reading `/etc/timezone` through
+  `process.run`. Separately, `d{datetime} = "2026-08-27 22:43:45"` parses naive
+  text as **local**, so text round-trips are local-flavored too.
+
+  This is load-bearing for anything auditable. Transward records evidence a
+  bank's examiner may read years later; "22:43:45" with no zone and no offset,
+  written by a service whose host may since have moved zones, is not evidence.
+- **Workaround:** store **epoch seconds** (INTEGER) as the canonical value for
+  every timestamp column — absolute, unambiguous, correctly sortable, and immune
+  to the above. Civil-time rendering is confined to display edges, where a
+  display zone is applied deliberately. Costs human readability in `sqlite3`
+  (`1787885025` rather than a date), which for an audit database is a real loss.
+- **Doc gap found alongside:** the reference documents **`epoch(datetime)`** as
+  a conversion taking an argument, but the binary implements `epoch()` with
+  **no arguments** (`epoch expects no arguments`); `number(dt)` is the actual
+  datetime→epoch conversion. `from_epoch(n)` exists as documented.
+- **Would have been better:** a `utc_now()` (or `now("UTC")`), a
+  `local_zone()`, and `to_zone`/`from_zone` defined against the instant the
+  value already carries — so that `to_zone(x, "UTC")` converts rather than
+  reinterprets.
+
+## 2026-08-27 — CC — while: writing Transward's SQL schema in gBASIC (M0)
+- **Type:** missing-feature
+- **Severity:** medium
+- **What:** gBASIC has **no line continuation in any form**. An expression must
+  fit on one physical line. All four candidate spellings fail:
+
+  ```basic
+  s = "hello " +          ' parse error: unexpected NEWLINE
+      "world"
+  s = "a" + \             ' lexer error: unexpected token
+      "b"
+  s = "a" + _             ' parse error: unexpected STRING
+      "b"
+  a = [ "x" +             ' parse error: unexpected NEWLINE
+          "y" ]           '   -- brackets do not suspend it either
+  ```
+
+  Most languages that end statements at a newline suspend that rule inside
+  brackets (Python), or offer a marker (VB's `_`, C's `\`). gBASIC does
+  neither, so the newline is absolute. It bites hardest exactly where gBASIC is
+  strongest on paper: a schema migration, an HTML template, a long
+  `webserver` response — anything built from text that a human must also read.
+  A `create table` with fifteen columns is one 900-character line.
+- **Workaround:** build long text as an array of lines and `join` it, which a
+  multi-line array literal makes tolerable (those DO span lines, and accept
+  `'` comments between elements):
+
+  ```basic
+  ddl = join([
+      "create table vendors (",
+      "  id integer primary key,",
+      "  name text not null unique)"
+  ], " ")
+  ```
+
+  It reads well enough for SQL and is what Transward's migrations use, but it
+  is a workaround: every long string pays an array literal, a `join` call, and
+  the reader's awareness that the quotes are not the string's real shape. It
+  also cannot help a long *condition* or a long call argument list, where
+  there is nothing to join.
+- **Would have been better:** suspend the newline inside unclosed `(`/`[`/`{`,
+  the rule that needs no new syntax and no marker to forget.
+
+## 2026-08-28 — CC — while: the Secure File Transfer Manager (another session) — no way to set an exit status, and no way to get UTC
+
+Two gaps reported from the SFTM build, both reproduced here before being
+fixed, and both now closed.
+
+### 1. A program could not set its own exit status
+
+**What was surprising.** There was no `exit` at all. A gBASIC program could
+report 0, or 1 by failing, and nothing else. SFTM's design §15 defines an
+exit-code family precisely because that is how OpCon branches on a transfer's
+result, so this hit the product's main integration surface. The workaround was
+to print a final `TRANSWARD_EXIT=<n>` line and have a wrapper script exit with
+it — which works, and which puts the most externally-visible contract of the
+program in the shell rather than in the language.
+
+**RESOLVED.** `exit(code)` unwinds through `runtime_stopped`, the same path the
+`stop` statement already uses, so every frame, watcher and lock tears down
+exactly as it did — `exit` is `stop` that also names a status. 0..255, and a
+wider value is REFUSED rather than truncated, because the kernel keeps only the
+low byte and `exit(256)` would report success from a program that meant to fail.
+
+**The first version was wrong in a way worth recording.** Setting the flag gave
+the right status but did not stop execution: the statement after `exit` still
+ran. `runtime_stopped` was only ever consulted on paths that already produced a
+stop result, and a bare call — which is how `exit` is spelled — is not one. The
+check now sits once in `eval_stmt_list`, so it holds for every statement kind
+rather than per kind. Right code, wrong work done, is worse than no `exit` at
+all.
+
+### 2. `to_zone(now(), "UTC")` is a no-op that reads like a conversion
+
+**What was surprising.** `now()` renders local. `to_zone(dt, "UTC")` reads its
+input as ALREADY UTC and renders it in the target — so on a local value it
+returns that value unchanged. Measured here at 06:56 EDT while UTC was 10:56: a
+four-hour error, labelled UTC, with nothing to see. For an audit product that
+was disqualifying, and SFTM switched to storing epoch seconds.
+
+**And it is sharper than reported.** The two halves of the datetime API get
+their zone from different places: `number(dt)`/`epoch(dt)` read a datetime as
+LOCAL, while `to_zone` reads it as UTC. So the DOCUMENTED route to UTC —
+`from_zone(now(), <your zone>)` — produces a value whose `number()` is wrong by
+the offset, because UTC civil text is being read as local. Verified: 14400
+seconds out. An audit trail built that way stores timestamps hours in the
+future.
+
+**RESOLVED by addition, not by changing either contract.** Both functions are
+self-consistent; what was missing was any way to say which zone a value is in.
+
+  * `now(zone)` — the current civil time in a named zone. `now("UTC")` is the
+    primitive both broken idioms were standing in for.
+  * `epoch(dt, zone)` — a datetime placed on the timeline as civil-in-that-zone.
+    `epoch(dt)` keeps the local reading, so nothing existing moves.
+
+`epoch()`, `epoch(now())` and `epoch(now("UTC"), "UTC")` now agree to the
+second and match `date +%s`. `tests/run_core.sh` asserts all of it against the
+SYSTEM clock rather than against a string gBASIC printed, because that is the
+only oracle that can tell a real conversion from a no-op; `Asia/Tokyo` is used
+as the non-local zone because it has no DST, so the check cannot pass by
+accident half the year.
+
+**Not changed: `to_zone` and `number` still read their input the way they
+always did.** Changing either would silently move every existing program's
+answers. The trap is now documented at each site instead — reference.md under
+`now`, and UNLEARN, which is where an agent meets it.
+
+**Worth generalising.** A value that carries no zone but is routinely converted
+needs the zone stated at every boundary, or two boundaries will each pick a
+different default and the disagreement will be invisible. gBASIC datetimes are
+zoneless by design (docs/datetime_design.md §9 argues that well); the defect
+was not the design, it was that one of the boundaries did not let you say.

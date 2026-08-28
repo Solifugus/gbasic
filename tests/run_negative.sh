@@ -49,6 +49,10 @@ cases=(
     negative_multiline_string_line_tracking
     negative_datetime_string_comparison
     negative_now_arity
+    negative_now_too_many
+    negative_now_unknown_zone
+    negative_exit_range
+    negative_epoch_type
     negative_unknown_order
     negative_env_arity
     negative_env_type
