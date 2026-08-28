@@ -20,7 +20,11 @@ fi
 # Runners to search, excluding this gate itself.
 runners=$(ls tests/*.sh tests/lsp/*.sh 2>/dev/null | grep -v 'run_docs_gate.sh')
 
-refs=$(grep -oE '(examples|tests)/[A-Za-z0-9_./-]+\.(bas|gb)' "$COOK" | sort -u)
+# `packaging/` joined this list when the shipping guide landed: COOKBOOK
+# referenced packaging/example-app/app/notesd.bas and the gate could not see
+# it, so a cookbook entry pointed at a file nothing checked -- the exact hole
+# this gate exists to close.
+refs=$(grep -oE '(examples|tests|packaging)/[A-Za-z0-9_./-]+\.(bas|gb)' "$COOK" | sort -u)
 if [ -z "$refs" ]; then
     echo "FAIL run_docs_gate: no file references found in $COOK"
     exit 1

@@ -11,6 +11,10 @@ for error handling, `ERRORS.md`.
 
 - **Branch** — `if/else` blocks; one inline statement may follow `then`/`else`.
   → `examples/if_else_test.bas`, `examples/inline_if_test.bas`
+- **Chain conditions** — `else if`, closed by a SINGLE `end if` however many
+  rungs. Rungs may be inline or blocks; a trailing `else` is optional. Prefer
+  `consider` when every branch tests the same subject — it names the subject
+  once. → `examples/else_if_test.bas`
 - **Dispatch on a value** — `consider` evaluates the subject once and runs the
   first matching `if <value> then` branch; `break` exits the consider, not an
   enclosing loop. → `examples/consider_test.bas`
@@ -195,6 +199,28 @@ for error handling, `ERRORS.md`.
 
 - **Actors** — `spawn`/`send`/`receive`/`self`; shared-nothing, message-copying.
   Pair `receive()` with `consider` for dispatch. → `examples/actor_loopback_test.bas`
+
+## Shipping
+
+- **Turning a program into an installable package** — `packaging/build-deb.sh
+  <app-dir>` builds a .deb carrying its OWN interpreter and stdlib under
+  `/usr/lib/<app>/`, built lean (optional modules are compile-time gated: a
+  server build drops GTK, GObject-introspection, PostgreSQL, libxml2 and
+  libcurl — 48 shared libraries down to 10). System libssl/libcrypto/sqlite3
+  are used, NOT vendored. Full guide: `docs/shipping_applications.md`.
+  → `packaging/example-app/app/notesd.bas`
+- **A shipped app must load stdlib by ABSOLUTE PATH** — bare `load NAME`
+  searches the source file's own directory tree RECURSIVELY and FIRST, ahead of
+  GBASIC_PATH and the compiled-in stdlib, so any `NAME.bas` beneath the app
+  silently replaces the shipped library. Write `load stats from
+  "@RUNTIME@/stdlib/stats.bas"`; the packager substitutes the token and fails
+  the build if one survives. Native modules (`sqlite`, `pg`, `webclient`,
+  `webserver`, `xml`, `gui`, `gi`) are compiled in and exempt.
+  → `docs/shipping_applications.md`
+- **Bind the result of `serve`** — `h = serve(app)`. A bare call discards a
+  non-`nothing` return, so unused-result warns on every service start; and
+  `h.port` is how you learn the port after binding `port: 0`.
+  → `packaging/example-app/app/notesd.bas`
 
 ## Modules
 

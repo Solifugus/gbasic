@@ -1827,8 +1827,25 @@ duplicate `method+path`, patterns that can never be told apart, malformed
 twice, a computed option. All of it is refused at load with file:line
 through the same diagnostics as parse errors (`--json-diagnostics` code
 `GB_DIAG_SERVER_BLOCK`). Deliberately runtime instead: certificate file
-existence, port availability, static directory existence. Computed
-configuration belongs to `webserver.listen`.
+existence, port availability, static directory existence.
+
+**A computed option does not require abandoning the block.** The declaration
+binds a plain record and `serve` reads `options` off it, so a value known only
+at run time — a port from `/etc`, an address from the environment — is applied
+by overriding that record before serving:
+
+```basic
+app.options.port = number(conf.port)
+h = serve(app)
+print "listening on " + string(h.port)
+```
+
+Report the port from the **live** record (`h.port`), never from the
+configuration: with `port: 0` the kernel chooses. A service that prints the
+configured port while listening on the declared one is worse than either, and
+is what `tests/run_packaging.sh` exists to catch. Configuration that changes
+the *shape* of the server — routes, hosts — still belongs to
+`webserver.listen` and `web.dispatch`.
 
 Options: `port` (required unless sockets are inherited), `address`,
 `timeout`, `workers`, `cert`/`key` (the default TLS pair), `inherit`.

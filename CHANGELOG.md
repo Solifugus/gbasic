@@ -9,6 +9,54 @@ language surface may still change between releases.
 
 ## Unreleased
 
+- **`tests/run_packaging.sh` — the shipping path is now tested, not just
+  demonstrated.** The packaging work was verified by hand and nothing re-ran
+  it; a build script that has produced a working service exactly once, on the
+  machine where it was written, is a hypothesis. Six tiers, no root needed
+  (`build-deb.sh` takes a `RUNTIME` override so the package can be built
+  rooted somewhere writable and actually run): BUILD (and that the lean build
+  really is lean — under 20 shared libraries against ~48 full), STRUCTURE
+  (control, conffiles, a world-traversable package root), SUBSTITUTE (no
+  `@RUNTIME@` survives), RUN (the service starts, `/health` answers, a POST is
+  stored and read back), QUIET (no warning on startup), and SHADOW — which
+  asserts **both halves** of the library hazard: a stray `stats.bas` under an
+  app really does beat the shipped one, *and* loading by absolute path is
+  immune. A defence nobody proves is a comment.
+
+  **It caught a real bug on its first run.** The example printed
+  `listening on 8399` and listened on `8099`: a `server` block's head takes
+  literals only, so the configured port was read and silently ignored. The
+  service looked correct in its own log and answered on the wrong port.
+
+  **And then the suite exposed a defect in itself.** It used a FIXED port, so
+  a previous run's process still holding that port answered `/health` while
+  its database had already been deleted — the suite was talking to a stranger
+  and reporting a 500 that had nothing to do with the package. It now binds
+  `port: 0` and reads the assigned port back from the service's own startup
+  line, which is the lesson `run_web_pool` already recorded, and waits for the
+  process to actually exit rather than assuming `kill` is synchronous. Three
+  consecutive runs pass; before the fix, every second run failed.
+
+- **A `server` block can take a computed option after all.** The fix for the
+  above is worth stating because the reference implied the opposite
+  ("computed configuration belongs to `webserver.listen`"): the declaration
+  binds a plain record and `serve` reads `options` off it, so
+  `app.options.port = number(conf.port)` before `serve(app)` applies a
+  run-time value **and keeps the declarative block**. Verified end to end —
+  the overridden port answers and the declared one does not. Report the port
+  from the live record (`h.port`), never from the configuration, because with
+  `port: 0` the kernel chooses. Documented in `reference.md` and
+  `shipping_applications.md`.
+
+- **`run_docs_gate.sh` now sees `packaging/` paths.** Its reference regex
+  matched only `examples/` and `tests/`, so the new COOKBOOK entry pointed at
+  a file the gate could not check — the exact hole that gate exists to close.
+
+- Packaging and `else if` reached the docs that were still silent on them:
+  `README.md` (feature list and a Shipping section) and `docs/ai/COOKBOOK.md`
+  (a Shipping group, the `else if` entry, and the two rules a shipped app must
+  follow — absolute-path loads and binding `serve`).
+
 - **`else if`.** A condition chain closed by a **single** `end if`:
 
   ```basic

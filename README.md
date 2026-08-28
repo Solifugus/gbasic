@@ -18,7 +18,7 @@ Implemented language features include:
 - a hand-written lexer, Bison parser, AST, and tree-walking evaluator
 - variables, strict expressions, assignment (with `+=`, `-=`, `*=`, `/=`),
   `print`, `print to error`, and `input`
-- multiline and short inline `if`/`else`, `consider`, and `while`
+- multiline and short inline `if`/`else`, `else if` chains, `consider`, and `while`
 - array iteration with `for each item in items` and `for item in items`;
   loops close with `end for`, `next`, or `next <name>`
 - `break` and `continue`, each optionally naming the loop it means
@@ -154,6 +154,16 @@ still works and takes precedence when you want to point at a different stdlib
 (e.g. during development: `GBASIC_PATH=stdlib ./gbasic program.bas`). `LICENSE`
 and `NOTICE` are installed alongside, under `$PREFIX/share/doc/gbasic`. Remove
 with `sudo make uninstall`.
+
+### Shipping an application
+
+`make install` is for a developer. To hand an application to someone else,
+`packaging/build-deb.sh <app-dir>` builds a `.deb` that carries **its own**
+interpreter and standard library, built lean — a server application drops GTK,
+GObject-introspection, PostgreSQL, libxml2 and libcurl, taking the interpreter
+from 48 shared libraries to 10 — while using the system's OpenSSL, SQLite and
+zlib rather than vendoring them. `packaging/example-app` is a working loopback
+service you can build and run; `docs/shipping_applications.md` is the guide.
 
 The interpreter still builds when an optional dependency is unavailable.
 Loading or calling the affected feature then produces a clear runtime error.

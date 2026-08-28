@@ -41,13 +41,22 @@ program main( args )
     db = sqlite.connect(store)
     sqlite.exec(db, "create table if not exists notes (id integer primary key autoincrement, body text not null, created text not null)", [])
 
-    print to error "notesd: listening on 127.0.0.1:" + string(port) + ", store " + store
+    ' A `server` block's head takes LITERALS only -- that restriction is what
+    ' makes every load-time check decidable -- so the configured port cannot be
+    ' written there. It CAN be applied here: the block binds a plain record and
+    ' `serve` reads `options`, so overriding one before serving is enough, and
+    ' the declarative block is kept. Without this the service prints the
+    ' configured port and listens on the declared one, which is worse than
+    ' either, and is what tests/run_packaging.sh caught.
+    notesd.options.port = port
     ' Bound, not bare. A bare call discards a non-nothing return, so the
     ' unused-result warning would fire on every service start and land in the
     ' journal -- and `running.port` is how a caller learns the port when the
     ' block binds `port: 0`.
     running = serve(notesd)
-    print to error "notesd: ready on port " + string(running.port)
+    ' Reported from the LIVE server, never from the configuration: with
+    ' `port: 0` the kernel chooses, and an operator needs the real number.
+    print to error "notesd: listening on 127.0.0.1:" + string(running.port) + ", store " + store
 end program
 
 ' Configuration is `key = value`, one per line, `#` comments. Deliberately not

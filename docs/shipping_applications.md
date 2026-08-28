@@ -174,6 +174,22 @@ Make the configuration path come from argv or an environment variable, as the
 example does. A service whose config path is hardcoded cannot be smoke-tested
 before install and cannot run twice on one host.
 
+**Apply configured options to the server record.** A `server` block's head
+takes literals only — that is what makes its load-time checks decidable — so a
+port from `/etc` cannot be written there. Override the record instead, which
+keeps the declarative block:
+
+```basic
+app.options.port = number(conf.port)
+h = serve(app)
+print to error "listening on " + string(h.port)
+```
+
+Report the port from `h`, not from the config. The first version of the example
+printed the configured port and listened on the declared one — it looked
+correct in the log and answered on the wrong port. `tests/run_packaging.sh`
+caught it on its first run.
+
 **Start-up must be silent.** Bind the result of `serve` — `h = serve(myapp)`.
 A bare call discards a non-`nothing` return, so the `unused-result` warning
 fires on every start and lands in the operator's journal; and `h.port` is how
