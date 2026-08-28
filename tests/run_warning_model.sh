@@ -76,4 +76,51 @@ neg neg_label.bas "on warning has no goto-label form"
 neg neg_typo.bas "wanring"
 neg neg_no_message.bas "warning record requires a message field"
 
-printf 'run_warning_model: %d cases passed\n' "$(( ${#positive[@]} + 4 ))"
+# --- collision coverage: the warning must know EVERY reachable builtin -------
+#
+# The `override` warning is the ONLY thing standing between a library author
+# and a silent shadow: an unqualified call to a library function whose name
+# matches a builtin reaches the BUILTIN, and the failure that follows carries
+# the builtin's own message, naming neither the library nor the collision.
+# A real session hit this with `audit.record` and was saved by the warning.
+#
+# It was consulting the WRONG LIST. builtins.c holds two -- the 166 registered
+# names, and `dispatch_only` for the file/directory families (`exists`, `read`,
+# `write`, `bytes`, `lines`, `chars`, `lock`, `unlock`, `list`, `files`,
+# `folders`) that eval.c dispatches at top level without registering. Those
+# eleven are every bit as reachable, and shadowing one warned NOTHING.
+#
+# So this tier does not check a list; it asks the interpreter which names it
+# considers builtins (`has_builtin`) and requires each to be un-shadowable in
+# silence. A twelfth entry added to either list is covered the day it lands,
+# which is the property the two-list arrangement could not offer.
+probe_dir="$scratch/collide"
+mkdir -p "$probe_dir"
+silent=0
+checked=0
+for name in $(grep -o '"[a-z_][a-z0-9_]*"' src/builtins.c | tr -d '"' | sort -u); do
+    printf 'print(has_builtin("%s"))\n' "$name" > "$probe_dir/probe.bas"
+    probe_says="$(./gbasic "$probe_dir/probe.bas" 2>/dev/null)" || true
+    [ "$probe_says" = "true" ] || continue
+    checked=$((checked + 1))
+    printf 'library shadow\n    function %s(a)\n        return 1\n    end function\nend library\n' \
+        "$name" > "$probe_dir/shadow.bas"
+    printf 'load shadow\nprint "loaded"\n' > "$probe_dir/use.bas"
+    # `|| true`: several of these deliberately exit nonzero (a keyword name is
+    # a parse error), and under errexit the capture alone would end the suite.
+    out="$(./gbasic "$probe_dir/use.bas" 2>&1)" || true
+    # Either outcome is safe: a warning, or a parse refusal because the name is
+    # a KEYWORD and cannot be a function name at all (`watchers`). What must
+    # never happen is a clean load, which means a silent shadow.
+    case "$out" in
+        *"same name as a built-in"*) ;;
+        *"syntax error"*|*"could not parse library file"*) ;;
+        *) printf "  SILENT SHADOW: %s\n" "$name"; silent=$((silent + 1)) ;;
+    esac
+done
+if [ "$silent" -ne 0 ]; then
+    fail "collision coverage ($silent of $checked builtin names shadow silently)"
+fi
+printf 'PASS collision_coverage (%d builtin names, none shadows silently)\n' "$checked"
+
+printf 'run_warning_model: %d cases passed\n' "$(( ${#positive[@]} + 5 ))"

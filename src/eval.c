@@ -6165,7 +6165,20 @@ static FunctionDef *function_resolve(const char *library, const char *name) {
 }
 
 static void function_register_def(AstStmt *stmt, int imported, const char *library) {
-    if (gbasic_builtin_function(stmt->as.function.name)) {
+    /* gbasic_HAS_builtin, not gbasic_builtin_FUNCTION. The second list --
+     * `exists`, `read`, `write`, `bytes`, `lines`, `chars`, `lock`, `unlock`,
+     * `list`, `files`, `folders`, the file and directory families -- is
+     * dispatched at top level without being registered, so those names are
+     * every bit as reachable as the other 166. Checking only the registered
+     * list meant a library function called `files` shadowed a real builtin
+     * with NO WARNING AT ALL, and the unqualified call reached the builtin --
+     * which then failed with the builtin's own message ("exists expects a file
+     * reference"), naming neither the library nor the collision.
+     *
+     * The maintenance rule is now the same for both: a name callable without
+     * qualification belongs in gbasic_has_builtin, and this warning follows
+     * it. */
+    if (gbasic_has_builtin(stmt->as.function.name)) {
         if (imported) {
             warn_fmt(2102, "override",
                     "function '%s' from library '%s' has same name as a built-in; unqualified calls use the built-in",

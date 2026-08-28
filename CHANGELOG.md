@@ -9,6 +9,34 @@ language surface may still change between releases.
 
 ## Unreleased
 
+- **The builtin-collision warning was consulting the wrong list.** A library
+  function whose name matches a builtin is a silent trap: an *unqualified* call
+  reaches the **builtin**, and whatever fails next carries the builtin's own
+  message, naming neither the library nor the collision. The `override` warning
+  is the only thing standing between an author and that — and it did not know
+  about eleven reachable builtins.
+
+  `builtins.c` holds two lists: the 166 registered names, and `dispatch_only`
+  for the file and directory families (`exists`, `read`, `write`, `bytes`,
+  `lines`, `chars`, `lock`, `unlock`, `list`, `files`, `folders`) that `eval.c`
+  dispatches at top level without registering. Those eleven are every bit as
+  callable, and shadowing one warned **nothing**: a library defining `exists`
+  then failed with `exists expects a file reference` — the builtin's message,
+  from a call the author believed was theirs.
+
+  The check now uses `gbasic_has_builtin`, the same predicate `has_builtin()`
+  answers with, so one maintenance rule covers both lists.
+
+  Pinned by a new tier in `run_warning_model.sh` that does not check a list —
+  it **asks the interpreter** which names it considers builtins and requires
+  each to be un-shadowable in silence, accepting either a warning or a parse
+  refusal (a keyword like `watchers` cannot be a function name at all, which is
+  stronger). 177 names covered, so a twelfth entry in either list is covered
+  the day it lands. Red-proofed: reverting the predicate names all eleven.
+
+  Prompted by a session that hit this with `audit.record` and was saved by the
+  warning — `record` happening to be in the list that was checked.
+
 - **`exit(code)` — a program can set its own exit status.** There was no way
   at all: a gBASIC program could report 0, or 1 by failing, and nothing else.
   That put its most externally-visible contract out of reach, since anything
