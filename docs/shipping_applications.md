@@ -174,10 +174,10 @@ Make the configuration path come from argv or an environment variable, as the
 example does. A service whose config path is hardcoded cannot be smoke-tested
 before install and cannot run twice on one host.
 
-**Start-up must be silent.** `serve(myapp)` unassigned is documented as
-working, and it does — but it discards a non-`nothing` return from a gBASIC
-function, so the `unused-result` warning fires on every start and lands in the
-journal. Bind it: `running = serve(myapp)`.
+**Start-up must be silent.** Bind the result of `serve` — `h = serve(myapp)`.
+A bare call discards a non-`nothing` return, so the `unused-result` warning
+fires on every start and lands in the operator's journal; and `h.port` is how
+you learn the port when you bound `port: 0`.
 
 ---
 

@@ -1801,7 +1801,8 @@ server myapp( port: 8080 )
 end server
 
 program main( args )
-    serve(myapp)
+    h = serve(myapp)
+    print "listening on " + string(h.port)
 end program
 ```
 
@@ -1845,9 +1846,13 @@ request. `on drain ... end on` runs once when draining begins.
 - `workers: N` (default 1) makes the call the supervisor: it binds with
   `hold:`, prints `PORT <n>`, spawns N copies of **this program** via
   `process.self()` over `web.pool`, ticks until asked to stop, then drains.
-- Otherwise it listens and returns the live server record. Serving needs no
-  binding: `serve(myapp)` unassigned works — dispatch is installed natively
-  (`webserver.on_request`), not through a watcher.
+- Otherwise it listens and returns the live server record. **Bind it** —
+  `h = serve(myapp)` — for two reasons: `h.port` is how you learn the port when
+  you bound `port: 0`, and a bare call discards a non-`nothing` return, so the
+  `unused-result` warning fires on every start and lands in an operator's
+  journal. Dispatch is installed natively (`webserver.on_request`) rather than
+  through a watcher, so an unassigned call does still serve; it is just noisy
+  and throws away the port.
 
 Handlers take `(req)` and **return** the response record; captures are on
 `req.params`. `stream` handlers write with `emit(req, text)` / close with
@@ -3562,23 +3567,31 @@ or catch it with `on error goto next`.
 ```basic
 root = real_path("public")
 target = real_path(root + "/" + supplied)
-consider true
 if is_unknown(target) then
     ' nothing there
-if not starts_with(target, root + "/") then
+else if not starts_with(target, root + "/") then
     ' it resolved outside the root -- refuse
-if file_type(target) != "file" then
+else if file_type(target) != "file" then
     ' a directory or a device, not a page
 else
     ' safe to serve
-end consider
+end if
 ```
 
-**gBASIC has no `else if`.** A chain of conditions is written as `consider true`
-with an `if` per branch, as above: the first branch whose condition is true
-runs, `else` catches the rest, and no nesting is needed. That is the idiom, and
-it reads closer to the decision table it is than a staircase of `else if` does.
-This example previously used `else if` and would not have parsed.
+`else if` chains close with a **single** `end if`, and are exactly the nested
+form desugared — `--ast` shows the nesting. When every branch tests the *same
+subject*, `consider` says so once instead of repeating it:
+
+```basic
+consider file_type(target)
+if "file" then
+    ' serve it
+if "folder" then
+    ' a directory listing, maybe
+else
+    ' a device or a socket -- refuse
+end consider
+```
 
 Directory functions:
 

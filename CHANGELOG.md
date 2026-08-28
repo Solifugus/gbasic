@@ -9,6 +9,48 @@ language surface may still change between releases.
 
 ## Unreleased
 
+- **`else if`.** A condition chain closed by a **single** `end if`:
+
+  ```basic
+  if esc = "n" then
+      out = out + "\n"
+  else if esc = "t" then
+      out = out + "\t"
+  else
+      out = out + esc
+  end if
+  ```
+
+  gBASIC had none, and nothing said so — `docs/reference.md` used one in its
+  path-containment **security** example, excused by a `fragment` marker
+  claiming the block was "an API shape" when it was a program teaching a
+  construct that did not parse. The alternative the language already had,
+  `consider true` with an `if` per branch, appeared in **zero** files anywhere
+  in the tree, which is why 50 sites in `stdlib` are nested staircases.
+
+  **0 new grammar conflicts**, measured, for the block and inline forms both.
+  It desugars to the nested form rather than adding an AST node, so `--ast`
+  shows the nesting that is really there and the evaluator is untouched; the
+  tail *recurses* instead of nesting a whole `if_statement`, which is what
+  makes one `end if` close the whole chain rather than one per rung. Rungs may
+  be inline or blocks and the two mix; a trailing `else` is optional; chains
+  nest inside chains.
+
+  **The old nested form is untouched** — this is an addition, not a migration,
+  and none of those 50 sites were rewritten. `consider` remains the better tool
+  when every branch tests the same subject, because it names the subject once;
+  `examples/else_if_test.bas` pins that alongside the 18 chain cases.
+
+- **`serve` is documented as bound, not bare.** `serve(myapp)` unassigned was
+  promised to work, and does — but it discards a non-`nothing` return, so the
+  `unused-result` warning fired on **every service start** and landed in an
+  operator's journal. Checked before changing anything: all ten call sites in
+  the tree already assign it, and they assign it because they *use* it —
+  `h.port` is how you learn the port after binding `port: 0`. So the return is
+  load-bearing (returning `nothing` would be wrong) and the documented bare
+  form was a shape nothing in the tree uses. Fixed in the documentation rather
+  than by exempting a name or inventing a discard marker.
+
 - **A gBASIC application can be shipped as a `.deb`.** `packaging/build-deb.sh`
   turns an application directory into an installable package;
   `packaging/example-app` is a working loopback service that proves the path,

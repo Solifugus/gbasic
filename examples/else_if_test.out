@@ -1,0 +1,21 @@
+ok   first rung
+ok   middle rung
+ok   last rung
+ok   final else
+ok   no trailing else, matched
+ok   no trailing else, unmatched
+ok   inline chain 1
+ok   inline chain 2
+ok   inline chain fallback
+ok   inline start, block rung
+ok   inline start, falls through
+ok   nested form still works
+ok   nested form fallback
+ok   consider on a value
+ok   consider fallback
+ok   nested chain inner
+ok   nested chain inner fallthrough
+ok   nested chain outer
+
+checks: 18
+mismatches: 0

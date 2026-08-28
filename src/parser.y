@@ -1080,6 +1080,19 @@ if_block_tail
     | ELSE NEWLINE statement_list END IF NEWLINE {
         $$ = $3;
       }
+    /* `else if` -- a chain closed by ONE `end if`, because the tail recurses
+     * rather than nesting a whole if_statement (which would demand an `end if`
+     * per rung). Desugars to exactly the nested form a reader would otherwise
+     * write by hand, so the evaluator needs no new node and `--ast` shows the
+     * nesting that is really there. `inline_statement` does not include `if`,
+     * so `ELSE IF` cannot be confused with `ELSE inline_statement`. */
+    | ELSE IF expression THEN NEWLINE statement_list if_block_tail {
+        AstStmt *inner = ast_if($3, $6);
+        inner->as.if_stmt.else_body = $7;
+        $$ = ast_stmt_list_append(ast_stmt_list_empty(),
+                 ast_stmt_span(inner, @2.first_line, @2.first_column,
+                                      @2.last_line, @2.last_column));
+      }
     ;
 
 if_inline_tail
@@ -1091,6 +1104,23 @@ if_inline_tail
       }
     | ELSE NEWLINE statement_list END IF NEWLINE {
         $$ = $3;
+      }
+    /* `else if` after an INLINE consequent, so a chain that began inline can
+     * continue that way. The rung itself may be inline or a block; the two
+     * productions differ only in which tail closes them. */
+    | ELSE IF expression THEN inline_statement NEWLINE if_inline_tail {
+        AstStmt *inner = ast_if($3, ast_stmt_list_append(ast_stmt_list_empty(), $5));
+        inner->as.if_stmt.else_body = $7;
+        $$ = ast_stmt_list_append(ast_stmt_list_empty(),
+                 ast_stmt_span(inner, @2.first_line, @2.first_column,
+                                      @2.last_line, @2.last_column));
+      }
+    | ELSE IF expression THEN NEWLINE statement_list if_block_tail {
+        AstStmt *inner = ast_if($3, $6);
+        inner->as.if_stmt.else_body = $7;
+        $$ = ast_stmt_list_append(ast_stmt_list_empty(),
+                 ast_stmt_span(inner, @2.first_line, @2.first_column,
+                                      @2.last_line, @2.last_column));
       }
     ;
 

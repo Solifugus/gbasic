@@ -42,11 +42,12 @@ program main( args )
     sqlite.exec(db, "create table if not exists notes (id integer primary key autoincrement, body text not null, created text not null)", [])
 
     print to error "notesd: listening on 127.0.0.1:" + string(port) + ", store " + store
-    ' Assigned, not bare. `serve(myapp)` unassigned is documented as working
-    ' and it does -- but it discards a non-nothing return from a gBASIC
-    ' function, so the unused-result warning fires on EVERY service start and
-    ' lands in the journal. Binding it costs nothing and keeps the log clean.
+    ' Bound, not bare. A bare call discards a non-nothing return, so the
+    ' unused-result warning would fire on every service start and land in the
+    ' journal -- and `running.port` is how a caller learns the port when the
+    ' block binds `port: 0`.
     running = serve(notesd)
+    print to error "notesd: ready on port " + string(running.port)
 end program
 
 ' Configuration is `key = value`, one per line, `#` comments. Deliberately not
