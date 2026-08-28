@@ -1,0 +1,11 @@
+ok   qualified call
+ok   qualified name is a function value
+ok   the value calls
+ok   passes as a callback
+ok   stores in a record
+ok   a second one, no arguments
+ok   stores in an array
+ok   a variable shadows the library
+
+checks: 8
+mismatches: 0

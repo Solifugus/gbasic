@@ -90,6 +90,7 @@ examples=(
     loop_syntax_test.bas
     else_if_test.bas
     datetime_zone_test.bas
+    qualified_function_value_test.bas
     count_builtin_test.bas
     string_concat_test.bas
     parse_test.gb

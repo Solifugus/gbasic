@@ -53,6 +53,7 @@ cases=(
     negative_now_unknown_zone
     negative_exit_range
     negative_epoch_type
+    negative_qualified_missing_function
     negative_unknown_order
     negative_env_arity
     negative_env_type

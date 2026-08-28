@@ -772,6 +772,24 @@ print type(d)     ' function
 print d(21)       ' 42
 ```
 
+**A qualified name works the same way**: `lib.fn` is a function value, so a
+library function can be passed as a callback directly.
+
+```basic
+load heartbeat
+beat = heartbeat.tick        ' a function value
+monitor(heartbeat.tick)      ' passed straight in
+```
+
+A variable of the library's name still shadows it — this is a fallback
+consulted only when the receiver is not a variable, exactly as `warning` and
+`error` are. A loaded library with no such function says so by name
+(`library 'heartbeat' has no function 'nosuch'`) rather than blaming the
+receiver.
+
+Calling a function value straight out of a **subscript** does not parse —
+`table[0](7)` — so bind it first. A field call (`reg.beat(3)`) is fine.
+
 Function values can be stored in variables, records, and arrays, passed as
 arguments, returned, and called. Equality is same-reference (`d = double` is
 `true`); a function value is truthy; `string(d)` gives a debug representation.

@@ -9,6 +9,31 @@ language surface may still change between releases.
 
 ## Unreleased
 
+- **`lib.fn` is a function value.** It worked only in call position:
+  `lib.fn(x)` ran, `f = lib.fn` raised `undefined variable: lib`. So passing a
+  library function as a callback had no direct form, and the workaround — a
+  record carrying state and function together, invoked as a method — drags
+  otherwise-private wiring into the caller purely for reachability.
+
+  The machinery was already complete: a bare name has evaluated to a function
+  value since first-class functions landed, and `value_function` has carried a
+  library all along. The qualified spelling simply never reached it. Field
+  evaluation now falls back to resolving `receiver.field` as a library function
+  when the receiver is **not** a variable — the same shape the soft names
+  `warning` and `error` use one branch above — so a variable named `heartbeat`
+  still shadows the library. It adds a fallback and takes nothing.
+
+  Also fixed the diagnostic, which blamed the receiver for the field's mistake:
+  a loaded library with no such function said `undefined variable: heartbeat`,
+  sending the reader to look for a variable they never wrote. Now
+  `library 'heartbeat' has no function 'nosuch'`, matching what the call
+  position always said.
+
+  Two adjacent limits found while testing and deliberately left: `table[0](7)`
+  does not parse (bind it first; a field call is fine), and a variable holding a
+  function value cannot be called if its name matches a builtin — the same
+  collision hazard fixed for library functions above, in its variable form.
+
 - **The builtin-collision warning was consulting the wrong list.** A library
   function whose name matches a builtin is a silent trap: an *unqualified* call
   reaches the **builtin**, and whatever fails next carries the builtin's own

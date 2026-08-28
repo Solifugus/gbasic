@@ -27062,6 +27062,39 @@ static Value eval_expr(AstExpr *expr) {
             value_free(object);
             return result;
         }
+        /* `lib.fn` AS A VALUE. A bare `fn` already evaluates to a function
+         * value (first_class_functions_design §3) and value_function has
+         * carried a library all along -- but the qualified spelling was
+         * recognised only in CALL position, so `lib.fn(x)` worked while
+         * `f = lib.fn` died with "undefined variable: lib". Passing a library
+         * function as a callback therefore had no direct form at all.
+         *
+         * Guarded on the receiver NOT being a variable, exactly as `warning`
+         * and `error` above are: a variable named `beat` still shadows the
+         * library `beat`, so this adds a fallback and shadows nothing. */
+        if (expr->as.field.object->kind == AST_EXPR_IDENT &&
+            !env_lookup_exists(expr->as.field.object->as.ident)) {
+            const char *lib = expr->as.field.object->as.ident;
+            FunctionDef *qualified = function_resolve(lib, expr->as.field.field);
+            if (qualified) {
+                return value_function(qualified->name, qualified->library);
+            }
+            /* The library IS loaded but has no such function. Saying
+             * "undefined variable: beat" there blames the receiver for the
+             * field's mistake and sends the reader looking for a variable they
+             * never wrote; the CALL position has always named both. */
+            for (size_t fi = 0; fi < function_count; fi++) {
+                if (functions[fi].imported && functions[fi].library &&
+                    strcmp(functions[fi].library, lib) == 0) {
+                    char message[256];
+                    snprintf(message, sizeof(message),
+                             "library '%s' has no function '%s'",
+                             lib, expr->as.field.field);
+                    runtime_error_raise(message, 1001, "undefined variable");
+                    return value_null();
+                }
+            }
+        }
         Value object = eval_expr(expr->as.field.object);
         if (error_action_pending()) {
             value_free(object);

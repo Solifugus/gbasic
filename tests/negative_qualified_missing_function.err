@@ -1,0 +1,1 @@
+runtime error at tests/negative_qualified_missing_function.bas:5:1: library 'heartbeat' has no function 'nosuch'

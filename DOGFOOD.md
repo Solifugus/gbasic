@@ -2926,3 +2926,75 @@ needs the zone stated at every boundary, or two boundaries will each pick a
 different default and the disagreement will be invisible. gBASIC datetimes are
 zoneless by design (docs/datetime_design.md §9 argues that well); the defect
 was not the design, it was that one of the boundaries did not let you say.
+
+## 2026-08-28 — CC — while: giving a Transward runner a liveness callback (M4)
+- **Type:** missing-feature
+- **Severity:** medium
+- **What:** A **qualified** function cannot be used as a value. `lib.fn(x)`
+  calls fine, but `f = lib.fn` raises `undefined variable: lib` — the
+  qualified name is recognised only in call position, so a library's functions
+  are not first-class outside their own module. Bare top-level function names
+  *are* values, as documented, and so are functions in a record field, which is
+  what makes the gap visible: everything about first-class functions works
+  except reaching one through the module qualifier that the reference otherwise
+  requires you to use.
+
+  Hit while passing a heartbeat callback down two layers (supervisor → runner →
+  process supervision loop) so a long transfer can prove it is still alive.
+  Since gBASIC function values are references rather than closures, a callback
+  cannot capture the database handle it needs either, so the natural spelling —
+  hand the callee `runs.heartbeat` and let it call it — fails twice over.
+- **Workaround:** pass a record carrying both the state and the function, and
+  have the callee invoke it as a **method** so `this` supplies the captured
+  values:
+
+  ```basic
+  ' in the program (a bare name IS a value)
+  function beat()
+      runs.heartbeat(this.db, this.run_id)
+  end function
+  ' ...
+  ticker = { db: db, run_id: run_id, tick: beat }
+  ' the library calls ticker.tick(), and `this` carries the state
+  ```
+
+  This works and reads acceptably, but the callback must live in the *program*
+  rather than in the library that conceptually owns it, which puts a piece of
+  the runner's logic in main.bas purely for reachability.
+- **Would have been better:** let `lib.fn` evaluate to a function value in
+  non-call position, matching how bare names already behave.
+
+### 2026-08-28 — `lib.fn` could not be used as a value
+
+**What was surprising.** `lib.fn(x)` calls fine; `f = lib.fn` raised
+`undefined variable: lib`. A qualified name was recognised only in CALL
+position, so passing a library function as a callback had no direct form at
+all. Combined with function values being references rather than closures, the
+natural way to hand a heartbeat callback to a runner fails twice over — and the
+workaround, a record carrying state and function together invoked as a method
+so `this` supplies the state, forces a piece of runner logic to live in the
+caller purely for reachability.
+
+**RESOLVED.** A bare name has evaluated to a function value since first-class
+functions landed, and `value_function` has carried a LIBRARY all along — the
+machinery was complete, the qualified spelling simply never reached it. Field
+evaluation now falls back to `function_resolve(receiver, field)` when the
+receiver is not a variable, which is the same shape the soft names `warning`
+and `error` already use one branch above. So a variable named `heartbeat`
+still shadows the library `heartbeat`: this adds a fallback and takes nothing.
+
+**And the diagnostic was blaming the wrong thing.** A loaded library with no
+such function reported `undefined variable: heartbeat` — the receiver, for the
+field's mistake, sending the reader to look for a variable they never wrote.
+The call position had always named both. It now says
+`library 'heartbeat' has no function 'nosuch'`.
+
+**Two limits found while testing and left alone**, because both are separate
+from this and neither is silent:
+  * `table[0](7)` does not parse — calling a function value straight out of a
+    SUBSCRIPT. Bind it first; a FIELD call (`reg.beat(3)`) works directly.
+  * A variable holding a function value cannot be called if its name matches a
+    builtin: `first = table[0]` then `first(7)` reaches the BUILTIN `first`.
+    That is the collision hazard fixed for library functions earlier the same
+    day, in its variable form — and it was met by walking into it while writing
+    this fixture.

@@ -405,6 +405,13 @@ day — so assume you will hit them too.
   statement" at a column where no statement is possible. Writing `dim x` still
   gets the advice it was always meant to give.
 
+- **`lib.fn` is a function value (2026-08-28).** It used to work only in CALL
+  position: `lib.fn(x)` ran, `f = lib.fn` died with "undefined variable: lib",
+  so passing a library function as a callback had no direct form. The
+  workaround people reached for -- a record carrying state and function
+  together, invoked as a method -- drags otherwise-private wiring into the
+  caller purely for reachability. Not needed now.
+
 - **`to_zone(now(), "UTC")` is a NO-OP, not a conversion (fixed by addition
   2026-08-28).** A gBASIC datetime carries no zone; it is civil wall-clock
   text. `to_zone` reads its input as ALREADY UTC and renders it in the target,
