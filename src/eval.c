@@ -16765,6 +16765,28 @@ static void odbc_raise_diag(SQLSMALLINT handle_type,
     }
 
     char *message = sb_take(&builder);
+
+    /* HINT ON A CHARACTER-SET FAILURE. gBASIC strings are UTF-8, and a driver
+     * that has not been told so converts parameters through a single-byte
+     * charset -- with FreeTDS and SQL Server that either raises this error or,
+     * worse, silently drops every character outside the charset's repertoire.
+     * The driver names the problem but not the cure, and the cure is one
+     * connection-string option the author has no reason to have heard of. */
+    if (message &&
+        (strstr(message, "character set") || strstr(message, "could not be converted") ||
+         strstr(message, "Invalid character value"))) {
+        StringBuilder hinted;
+        sb_init(&hinted);
+        sb_append_text(&hinted, message);
+        sb_append_text(&hinted,
+                       " -- gBASIC strings are UTF-8; add ClientCharset=UTF-8 "
+                       "to the connection string so the driver converts them "
+                       "correctly");
+        char *full = sb_take(&hinted);
+        free(message);
+        message = full;
+    }
+
     odbc_raise_message(message ? message : prefix);
     free(message);
 }
@@ -16780,6 +16802,21 @@ static OdbcConnectionValue *odbc_connection_from_value(Value value) {
         return NULL;
     }
     return connection;
+}
+
+/* Is `option` named anywhere in a connection string? Case-insensitively,
+ * because ODBC keywords are. */
+static int odbc_conn_has_option(const char *conn, const char *option) {
+    size_t olen = strlen(option);
+    for (const char *p = conn; *p; p++) {
+        size_t i = 0;
+        while (i < olen && p[i] &&
+               tolower((unsigned char)p[i]) == tolower((unsigned char)option[i])) {
+            i++;
+        }
+        if (i == olen) return 1;
+    }
+    return 0;
 }
 
 static Value odbc_eval_connect(AstExpr *expr) {
@@ -16838,7 +16875,34 @@ static Value odbc_eval_connect(AstExpr *expr) {
         value_free(target);
         return value_null();
     }
-    value_free(target);
+    const char *target_text = target.as.string;
+
+    /* WARN ABOUT THE SILENT CHARSET TRAP AT CONNECT TIME.
+     *
+     * gBASIC strings are UTF-8. FreeTDS, told nothing, converts parameters
+     * through a single-byte charset -- and the failure is SILENT, not an
+     * error: `日本語` reaches SQL Server as UTF-8 bytes stored one per
+     * character, so `len()` on the server says 13 where the text is 5. It
+     * round-trips through gBASIC, because our reader reverses the same
+     * mangling, and is mojibake to every other client.
+     *
+     * Nothing raises, so there is no error to attach a hint to -- which is
+     * why this is checked up front. It is a WARNING rather than a refusal
+     * because a program storing only ASCII is unaffected and correct, and the
+     * channel is suppressible for exactly that case. */
+    {
+        SQLCHAR driver_name[128] = {0};
+        SQLSMALLINT dn_len = 0;
+        if (SQL_SUCCEEDED(SQLGetInfo(dbc, SQL_DRIVER_NAME, driver_name,
+                                     (SQLSMALLINT)sizeof(driver_name), &dn_len)) &&
+            strstr((const char *)driver_name, "tdsodbc") &&
+            !odbc_conn_has_option(target_text, "ClientCharset")) {
+            runtime_warn("this driver was not told the client character set, so "
+                         "non-ASCII text will be stored wrongly and without an "
+                         "error; add ClientCharset=UTF-8 to the connection string",
+                         ODBC_ERROR_CODE, "odbc", value_null());
+        }
+    }
 
     OdbcConnectionValue *connection = calloc(1, sizeof(OdbcConnectionValue));
     if (!connection) {
@@ -16847,6 +16911,7 @@ static Value odbc_eval_connect(AstExpr *expr) {
     connection->env = env;
     connection->dbc = dbc;
     connection->ref_count = 1;
+    value_free(target);
     return value_odbc_connection(connection);
 }
 
@@ -16930,6 +16995,7 @@ static int odbc_bind_value(SQLHSTMT statement,
     SQLSMALLINT decimal_digits = 0;
     SQLPOINTER buffer = NULL;
     SQLLEN buffer_length = 0;
+    SQLRETURN rc_bind = SQL_SUCCESS;
     /* The BYTE length, tracked separately from the text because a gBASIC
      * string is binary-safe and may hold interior NULs. Binding with SQL_NTS
      * would hand the driver strlen() and silently send the prefix. */
@@ -16942,8 +17008,27 @@ static int odbc_bind_value(SQLHSTMT statement,
         buffer_length = 0;
         break;
     case VALUE_BOOL:
-        *owned_text = copy_string(value.as.boolean ? "1" : "0");
-        break;
+        /* SQL_C_BIT, not the CHARACTER "1". Sending text into a real BIT
+         * column fails -- MariaDB answers "Data too long for column" because
+         * BIT(1) holds one BIT and it was handed a one-character string. It
+         * worked against SQLite only because SQLite is dynamically typed and
+         * accepts anything, which is exactly the class of defect a
+         * single-backend test suite cannot see. */
+        *owned_text = malloc(1);
+        if (!*owned_text) abort();
+        (*owned_text)[0] = value.as.boolean ? 1 : 0;
+        buffer = (SQLPOINTER)*owned_text;
+        buffer_length = 1;
+        *indicator = 0;
+        rc_bind = SQLBindParameter(statement, index, SQL_PARAM_INPUT,
+                                   SQL_C_BIT, SQL_BIT, 1, 0,
+                                   buffer, buffer_length, indicator);
+        if (!SQL_SUCCEEDED(rc_bind)) {
+            odbc_raise_diag(SQL_HANDLE_STMT, statement,
+                            "could not bind odbc parameter");
+            return 0;
+        }
+        return 1;
     case VALUE_NUMBER:
         if (!isfinite(value.as.number)) {
             odbc_raise_message("odbc number parameters must be finite");
@@ -16970,7 +17055,21 @@ static int odbc_bind_value(SQLHSTMT statement,
         }
         break;
     case VALUE_STRING: {
+        /* Declared SQL_WVARCHAR so the driver converts our bytes to the
+         * server's Unicode type. Bound as SQL_VARCHAR, FreeTDS routes the
+         * parameter through a single-byte charset and characters outside it
+         * are DROPPED WITHOUT ERROR -- `日本語` and `☃` reached SQL Server as
+         * an empty string while `é` and an em-dash survived, which is the
+         * CP1252 repertoire exactly. */
         text_length = string_length(value.as.string);
+        /* SQL_WVARCHAR maps to `nvarchar`, whose non-max limit is 4000
+         * CHARACTERS -- past that SQL Server truncates silently, which the
+         * first version of this fix did: it cured the Unicode loss and
+         * introduced a 5000-character value coming back as 4000. Anything
+         * longer is declared SQL_WLONGVARCHAR, which maps to `nvarchar(max)`.
+         * The threshold is on BYTES, which is conservative: a UTF-8 string of
+         * 4000 bytes is at most 4000 characters. */
+        sql_type = (text_length > 4000) ? SQL_WLONGVARCHAR : SQL_WVARCHAR;
         char *copy = malloc(text_length + 1);
         if (!copy) {
             abort();
@@ -17157,6 +17256,25 @@ static Value odbc_column_value(SQLHSTMT statement,
         break;
     }
 
+    /* A BIT column is read as SQL_C_BIT, not as text. MariaDB returns the raw
+     * byte 0x01, which is not the CHARACTER '1' (0x31), so reading it as text
+     * and testing for '1' answered FALSE for a true value -- silently. SQLite
+     * hid this too, by storing and returning the character. */
+    if (sql_type == SQL_BIT) {
+        unsigned char bit = 0;
+        SQLLEN ind = 0;
+        SQLRETURN brc = SQLGetData(statement, column, SQL_C_BIT,
+                                   &bit, sizeof(bit), &ind);
+        if (!SQL_SUCCEEDED(brc)) {
+            odbc_raise_diag(SQL_HANDLE_STMT, statement, "could not read odbc column");
+            return value_null();
+        }
+        if (ind == SQL_NULL_DATA) {
+            return value_null();
+        }
+        return value_bool(bit != 0);
+    }
+
     char *text = NULL;
     size_t text_length = 0;
     int is_null = 0;
@@ -17172,9 +17290,6 @@ static Value odbc_column_value(SQLHSTMT statement,
 
     Value result = value_null();
     switch (sql_type) {
-    case SQL_BIT:
-        result = value_bool(text[0] == '1' || text[0] == 't' || text[0] == 'T');
-        break;
     case SQL_TINYINT:
     case SQL_SMALLINT:
     case SQL_INTEGER:

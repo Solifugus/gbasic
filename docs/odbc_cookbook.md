@@ -15,11 +15,34 @@ The recipes use the SQLite3 ODBC driver so they can run anywhere, but nothing
 about their shape is SQLite-specific: point `odbc.connect` at a different
 connection string and the same code runs against a different database.
 
-**A caution about scope.** As of this writing the module has been exercised
-against the SQLite3 ODBC driver only. The design is driver-neutral and the
-fixtures are parameterised (`GBASIC_ODBC_CONNECTION`) so they can be pointed
-at a commercial backend, but that has not yet been done — treat behaviour
-against SQL Server, MySQL, Oracle and DB2 as expected rather than verified.
+**Verified against three engines.** The suite runs unchanged against
+**SQL Server 2025**, **MariaDB 11.8** and **SQLite** — the same fixtures, one
+connection string apart:
+
+```
+Driver=SQLite3;Database=/path/to/file.db
+Driver=MariaDB Unicode;Server=127.0.0.1;Port=3306;UID=..;PWD=..;Database=..
+Driver=FreeTDS;Server=host;Port=1433;UID=..;PWD=..;Database=..;TDS_Version=7.4;ClientCharset=UTF-8
+```
+
+**`ClientCharset=UTF-8` is not optional for SQL Server.** gBASIC strings are
+UTF-8, and FreeTDS without that option stores their bytes one per character —
+`LEN()` on the server reports 13 where the text is 5. It *round-trips*
+correctly through gBASIC, because the reader reverses the same mangling, so a
+write-then-read check passes while the database holds mojibake. Nothing raises,
+which is why `odbc.connect` warns about it at connect time instead.
+
+Oracle and DB2 remain untested — treat those as expected rather than verified.
+
+**Three portability traps**, all found by running against real engines:
+
+- SQL Server's `timestamp` is a **rowversion**, not a date and time.
+  `datetime` is the portable spelling.
+- Bad SQL is rejected at **prepare** by SQLite and MariaDB, at **execute** by
+  SQL Server, so the message differs. Both carry the driver's diagnostic.
+- **SQLite is dynamically typed** and will accept a boolean written as text, or
+  5000 characters into `varchar(200)`. A real engine will not — so a recipe
+  that works against SQLite is not thereby portable.
 
 ---
 

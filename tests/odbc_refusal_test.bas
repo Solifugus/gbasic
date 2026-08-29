@@ -79,9 +79,23 @@ error.clear()
 ' SQL the server rejects arrives with the driver's own diagnostic attached,
 ' state code and all -- a bare "query failed" would send the author to read
 ' the server log instead of the message.
+' WHICH PHASE reports bad SQL is the engine's choice, not ours: SQLite and
+' MariaDB reject it at PREPARE, SQL Server at EXECUTE. The contract is that it
+' is refused and says so -- pinning one phase would make the suite fail on a
+' backend that is behaving correctly.
 x = odbc.query(db, "select nope from gb_odbc_r")
-check("bad SQL is refused", left(error.message, 19), "odbc prepare failed")
-check("bad SQL carries the driver's diagnostic", contains(error.message, "["), true)
+refused = contains(error.message, "odbc prepare failed") or contains(error.message, "odbc query failed")
+check("bad SQL is refused, at prepare or at execute", refused, true)
+' The driver's own diagnostic must survive: a bare "query failed" sends the
+' author to read the server log instead of the message. What is asserted is a
+' bracketed SQLSTATE and the OFFENDING NAME, not a particular state code --
+' SQLite's driver says HY000 where MariaDB and SQL Server say 42S22, so
+' pinning the code would fail a backend that is behaving correctly:
+'   SQLite      [HY000] [SQLite]no such column: nope (1)
+'   MariaDB     [42S22] [ma-3.2.6]...Unknown column 'nope' in 'SELECT'
+'   SQL Server  [42S22] [FreeTDS][SQL Server]Invalid column name 'nope'.
+check("bad SQL carries a SQLSTATE", contains(error.message, "["), true)
+check("and names the column it could not find", contains(error.message, "nope"), true)
 error.clear()
 
 on error stop

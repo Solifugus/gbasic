@@ -9,6 +9,42 @@ language surface may still change between releases.
 
 ## Unreleased
 
+- **ODBC verified against SQL Server and MariaDB — four fixes.** The module
+  shipped with tests against the SQLite3 ODBC driver only. Pointed at MariaDB
+  11.8 and SQL Server 2025 — the same fixtures, one connection string apart —
+  it turned up three defects **invisible to SQLite**, plus one introduced while
+  fixing them.
+
+  **Booleans were bound as the character `"1"`.** A real `BIT` column refuses
+  it; MariaDB answered *"Data too long for column"*. Now `SQL_C_BIT`.
+
+  **Booleans were read as text and compared to `'1'`.** MariaDB returns the
+  byte `0x01`, so **a column holding `true` read back as `false`** — no error,
+  just the wrong answer. Now read as `SQL_C_BIT`.
+
+  **Non-Latin-1 text vanished into SQL Server, silently.** Parameters were
+  declared `SQL_VARCHAR`, so FreeTDS routed them through a single-byte charset:
+  `é` and an em-dash survived while `日本語` and `☃` arrived as an empty
+  string — the CP1252 repertoire exactly. Now `SQL_WVARCHAR`, and
+  `SQL_WLONGVARCHAR` past 4000 bytes, because `nvarchar`'s non-max limit is
+  4000 characters and the first version of the fix truncated a 5000-character
+  value to 4000.
+
+  **`odbc.connect` now warns about a driver that needs `ClientCharset=UTF-8`.**
+  That failure has no error to hang a hint on: FreeTDS without it stores UTF-8
+  bytes one per character, and it *round-trips* through gBASIC because our
+  reader reverses the same mangling — correct to us, mojibake to every other
+  client. The warning asks the driver its own name, and a control tier asserts
+  it goes silent once the option is supplied.
+
+  `tests/odbc.supp` carries driver-internal valgrind defects, each isolated
+  first by reproducing it from plain C with no gBASIC in the stack.
+
+  The standing lesson is in `DOGFOOD.md`: **SQLite is dynamically typed, so a
+  suite that runs only against it cannot see a type error at all.** It accepted
+  a boolean written as text and a 5000-character value in `varchar(200)`, and
+  has no wide character types to exercise.
+
 - **A money cookbook, and the defect it found on its first day.**
   `docs/money_cookbook.md` is nine worked recipes over `money` and `finance`,
   on the same cannot-lie harness as the xlsx and chart cookbooks: the page owns

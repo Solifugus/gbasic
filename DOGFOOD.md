@@ -115,12 +115,12 @@ and the stale-looking ones carry a Status line saying what overtook them.
     written and silently read back short. One word: `value_string` ->
     `value_string_n` with the length already in hand.
 
-12. **`money` is exact in storage and lossy at every boundary.** The int64
-    cents core is right (0.01 accumulated 1000 times is exactly 10.00, which a
-    double cannot do), but nothing can put an exact value INTO it and `*`/`/`
-    take it back out through a double. Reported by the gdash session with
-    evidence; verified here. See the 2026-08-29 entry for the three defects,
-    the guard-digit proposal, and the ruling still needed on currency identity.
+12. ~~**`money` is exact in storage and lossy at every boundary**~~
+    **RESOLVED 2026-08-29** across five phases (PLAT-MONEY 0-4): exact
+    construction, integer-preserving arithmetic with checked overflow, currency
+    identity with guard digits, dated FX, and allocation plus a `finance`
+    library. Four defects were reported and nine were fixed — each phase made
+    the next one reachable, which is the pattern worth remembering.
 
 ### Open — accepted as documented limitations (no action planned)
 
@@ -3401,3 +3401,69 @@ from this and neither is silent:
   source reverted but the test kept -- the round trip fails while the
   on-disk-length control passes, which is what locates the fault in `read`
   rather than `write`.
+
+## 2026-08-29 — CC — while: running the odbc suite against SQL Server and MariaDB for the first time
+- **Type:** bug
+- **Severity:** high
+- **What:** The `odbc` module shipped this morning tested only against the
+  SQLite3 ODBC driver. Pointed at MariaDB 11.8 and SQL Server 2025 — the same
+  fixtures, one connection string apart — it turned up **three defects, every
+  one of them invisible to SQLite**, plus one I introduced fixing them.
+
+  **1. Booleans were bound as the CHARACTER `"1"`.** A real `BIT` column
+  refuses it: MariaDB answered *"Data too long for column 'flag'"*. Now bound
+  as `SQL_C_BIT`.
+
+  **2. Booleans were READ as text and compared to `'1'`.** MariaDB returns the
+  byte `0x01`, which is not the character `'1'` (`0x31`), so **a column holding
+  `true` read back as `false`** — no error, no crash, just the wrong answer.
+  Now read as `SQL_C_BIT`.
+
+  **3. Non-Latin-1 text vanished into SQL Server, silently.** Parameters were
+  declared `SQL_VARCHAR`, so FreeTDS routed them through a single-byte charset:
+  `é` and an em-dash survived, `日本語` and `☃` arrived as an EMPTY STRING.
+  That is the CP1252 repertoire exactly. Now declared `SQL_WVARCHAR`.
+
+  **4. Mine, introduced by fixing 3:** `SQL_WVARCHAR` maps to `nvarchar`, whose
+  non-max limit is 4000 characters, so a 5000-character value came back as
+  4000. Anything longer is now `SQL_WLONGVARCHAR` (`nvarchar(max)`). The
+  fixture caught it in the same run that proved the Unicode fix.
+
+  **THE ONE THAT HAS NO ERROR TO ATTACH A HINT TO.** Even with
+  `SQL_WVARCHAR`, FreeTDS needs `ClientCharset=UTF-8` or it stores UTF-8 bytes
+  one per character: `LEN()` on the server says 13 where the text is 5. It
+  ROUND-TRIPS through gBASIC, because our reader reverses the same mangling, so
+  a test that writes and reads back through us passes while the database holds
+  mojibake. Nothing raises. `odbc.connect` now asks the driver its own name via
+  `SQL_DRIVER_NAME` and WARNS when the option is missing.
+
+- **Workaround:** none needed; all fixed in the same session. The general
+  lesson is the one worth keeping: **SQLite is dynamically typed, so a suite
+  that only runs against it cannot see a type error at all.** It accepted a
+  boolean as text, a 5000-character value in `varchar(200)`, and had no wide
+  character types to exercise. Three of the four defects were in code that had
+  been green for a day.
+
+## 2026-08-29 — CC — while: reading a valgrind failure from the MariaDB ODBC driver
+- **Type:** bug
+- **Severity:** low
+- **What:** The valgrind tier reddened on MariaDB with *"Conditional jump or
+  move depends on uninitialised value(s)"* inside `libmaodbc.so`, reached
+  through our `SQLPrepare` call — which reads like our bug, since our frame is
+  in the stack.
+
+  It is not. Reproduced by a **plain C program passing a string literal**:
+
+  ```c
+  SQLPrepare(stmt, (SQLCHAR *)"select 1", SQL_NTS);
+  ```
+
+  with no gBASIC anywhere in the stack. It is a defect in MariaDB
+  Connector/ODBC 3.2.6.
+- **Workaround:** `tests/odbc.supp`, wired into the valgrind tier. The
+  suppression is NARROW on purpose — it names the object and entry point,
+  rather than "anything inside a driver", because a blanket rule would also
+  hide uninitialised data that WE passed in, which is the defect class the tier
+  exists to catch. **The isolation step is the point:** a suppression added on
+  suspicion is indistinguishable from hiding your own bug, so the reproduction
+  method is recorded in the file beside the entry.

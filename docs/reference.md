@@ -1619,6 +1619,10 @@ result = odbc.exec(db, "update users set active = ? where id = ?", [false, 10])
 odbc.close(db)
 ```
 
+**Verified against SQL Server 2025, MariaDB 11.8 and SQLite** (2026-08-29) —
+the same fixtures, one connection string apart. See *Driver notes* below for
+what each backend needs.
+
 The connection string is passed to the driver manager unchanged. It may name a
 DSN (`DSN=warehouse`) or a driver and its own options
 (`Driver=ODBC Driver 18 for SQL Server;Server=host;Database=db;UID=..;PWD=..`).
@@ -1658,11 +1662,11 @@ ODBC type mapping:
 | SQL type | gBASIC value | Notes |
 | --- | --- | --- |
 | `NULL` (any column) | `nothing` | Database null is absence |
-| `BIT` | boolean | |
+| `BIT` | boolean | Transferred as `SQL_C_BIT`, not as the character `'1'` — a real `BIT` column rejects the latter, and MariaDB returns the byte `0x01`, which is not `'1'` |
 | `TINYINT`, `SMALLINT`, `INTEGER` | number | |
 | `REAL`, `FLOAT`, `DOUBLE` | number | |
 | `BIGINT`, `DECIMAL`, `NUMERIC` | **string** | See below |
-| `CHAR`, `VARCHAR`, `LONGVARCHAR` (and the `W` forms) | string | |
+| `CHAR`, `VARCHAR`, `LONGVARCHAR` (and the `W` forms) | string | Parameters are declared `SQL_WVARCHAR` so Unicode survives; over 4000 bytes they become `SQL_WLONGVARCHAR`, since `nvarchar`'s non-max limit is 4000 characters |
 | `DATE` | datetime, day precision | |
 | `TIME` | datetime, time only | |
 | `TIMESTAMP` | datetime, second precision | Fractional seconds are dropped |
@@ -1689,6 +1693,41 @@ interior NUL is sent whole. Whether it comes *back* whole is the driver's
 business: the ANSI ODBC interface is NUL-terminated, and a driver that
 computes result lengths with `strlen` (the SQLite3 one does) returns the
 prefix. Binary columns, the right home for such data, are not yet supported.
+
+#### Driver notes
+
+**SQL Server via FreeTDS needs `ClientCharset=UTF-8`.** gBASIC strings are
+UTF-8; a driver that has not been told so converts parameters through a
+single-byte charset. The failure is **silent, not an error** — `日本語`
+reaches the server as UTF-8 bytes stored one per character, so `LEN()` on the
+server reports 13 where the text is 5. It round-trips correctly through gBASIC,
+because the reader reverses the same mangling, and is mojibake to every other
+client.
+
+Because nothing raises, there is no error to hang a hint on, so `odbc.connect`
+**warns at connect time**: it asks the driver its own name and, if it is one
+that needs the option and the connection string does not supply it, says so.
+The warning is suppressible — a program storing only ASCII is unaffected.
+
+```
+Driver=FreeTDS;Server=host;Port=1433;UID=..;PWD=..;Database=..;TDS_Version=7.4;ClientCharset=UTF-8
+Driver=MariaDB Unicode;Server=127.0.0.1;Port=3306;UID=..;PWD=..;Database=..
+Driver=SQLite3;Database=/path/to/file.db
+```
+
+**Portability facts worth knowing before you write portable SQL:**
+
+- SQL Server's `timestamp` is a **rowversion** — an auto-generated binary value
+  you cannot insert into — not a date and time. `datetime` is the portable
+  spelling.
+- Bad SQL is rejected at **prepare** by SQLite and MariaDB, and at **execute**
+  by SQL Server, so the message differs (`odbc prepare failed` versus
+  `odbc query failed`). Both carry the driver's own diagnostic.
+- SQLSTATE for an unknown column is `42S22` on MariaDB and SQL Server but
+  `HY000` on the SQLite driver, so branch on `error.source` and the text
+  rather than on a state code.
+- SQLite is **dynamically typed** and will accept a 5000-character value into
+  `varchar(200)`, or a boolean written as text. A real engine will not.
 
 Transactions are `begin` / `commit` / `rollback`, spelled the same as
 `sqlite`'s and `pg`'s so the three are interchangeable. Underneath, `begin`

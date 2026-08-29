@@ -1,0 +1,28 @@
+# Valgrind suppressions for ODBC DRIVER-INTERNAL defects.
+#
+# The valgrind tier in run_odbc.sh asserts that WE make no invalid access. A
+# driver manager dlopens third-party libraries, and what those do inside
+# themselves is not gBASIC's to fix or to fail on.
+#
+# Each entry below was ISOLATED before being suppressed -- reproduced by a
+# plain C program that calls the ODBC API directly with string literals, with
+# no gBASIC code in the stack at all. A suppression added without that step
+# would be indistinguishable from hiding our own bug.
+#
+# The suppressions are NARROW on purpose: they name the specific driver object
+# and entry point. A blanket "anything inside a driver .so" rule would also
+# hide uninitialised data that WE passed in, which is precisely the defect
+# class this tier exists to catch.
+
+# MariaDB Connector/ODBC 3.2.6 (libmaodbc.so) reads an uninitialised value in
+# its own SQLPrepare path. Reproduced standalone with:
+#   SQLPrepare(stmt, (SQLCHAR *)"select 1", SQL_NTS)
+# on a literal, in C, outside gBASIC entirely.
+{
+   mariadb-odbc-sqlprepare-uninitialised
+   Memcheck:Cond
+   obj:*/odbc/libmaodbc.so
+   fun:SQLPrepare
+   fun:SQLPrepare
+   ...
+}

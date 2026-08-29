@@ -50,10 +50,14 @@ sources = odbc.sources()
 check("odbc.sources returns an array", type(sources), "array")
 
 ' ---------------------------------------------------------------- schema
+' PORTABLE COLUMN TYPES ONLY, and that is not fussiness: `timestamp` means a
+' ROWVERSION on SQL Server -- an auto-generated binary value you cannot insert
+' into -- so the obvious spelling for "a date and a time" silently means
+' something else on one of the three backends this suite runs against.
 odbc.exec(db, "drop table if exists gb_odbc_t")
 odbc.exec(db, "drop table if exists gb_odbc_keep")
 
-r = odbc.exec(db, "create table gb_odbc_t (id integer, name varchar(40), note varchar(200), flag bit, when_on date, at_time timestamp, big bigint, exact varchar(40))")
+r = odbc.exec(db, "create table gb_odbc_t (id integer, name varchar(40), note varchar(6000), flag bit, when_on date, at_time datetime, big bigint, exact varchar(40))")
 check("create reports its command", r.command, "CREATE")
 
 r = odbc.exec(db, "create table gb_odbc_keep (id integer)")

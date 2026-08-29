@@ -146,7 +146,7 @@ do
 done
 
 printf 'TIER refusals (live connection)\n'
-run_fixture tests/odbc_refusal_test.bas 12 'odbc_refusal_test'
+run_fixture tests/odbc_refusal_test.bas 13 'odbc_refusal_test'
 
 printf 'TIER refusals (pinned messages)\n'
 # These need no connection, so their exact wording is pinned as a golden.
@@ -225,7 +225,9 @@ printf 'TIER binary-safe parameters\n'
 # query shows (length() reports 1 over three stored bytes). The write is ours
 # to get right and now is; the read is the driver's, and this tier records
 # which is which rather than pretending both are solved.
-if [[ "$driver" == "SQLite3" ]]; then
+# Gated on the CONNECTION actually in use, not on the default driver name:
+# the probe SQL is SQLite's `hex()`, so it must not run against another engine.
+if [[ "$GBASIC_ODBC_CONNECTION" == *"Driver=SQLite3"* ]]; then
     cat >"$work/nul.bas" <<'EOF'
 load odbc
 db = odbc.connect(env("GBASIC_ODBC_CONNECTION"))
@@ -246,6 +248,40 @@ EOF
     fi
 fi
 
+printf 'TIER the character-set trap (FreeTDS only)\n'
+# The worst failure this module has had was SILENT: gBASIC strings are UTF-8,
+# and FreeTDS told nothing converts parameters through a single-byte charset.
+# Non-ASCII text reached SQL Server as UTF-8 bytes stored one per character --
+# `len()` on the server said 13 where the text was 5 -- and it ROUND-TRIPPED
+# through gBASIC, because our reader reverses the same mangling. Correct to
+# us, mojibake to every other client, and nothing raised.
+#
+# Nothing raises, so there is no error to hang a hint on; the warning is
+# emitted at CONNECT time instead, after asking the driver its own name.
+if [[ "$GBASIC_ODBC_CONNECTION" == *"tdsodbc"* ]] ||
+   [[ "$GBASIC_ODBC_CONNECTION" == *"FreeTDS"* ]]; then
+    bare="${GBASIC_ODBC_CONNECTION//;ClientCharset=UTF-8/}"
+    cat >"$work/cs.bas" <<'CSEOF'
+load odbc
+db = odbc.connect(env("GBASIC_ODBC_CONNECTION"))
+odbc.close(db)
+CSEOF
+    if GBASIC_ODBC_CONNECTION="$bare" ./gbasic "$work/cs.bas" 2>&1 >/dev/null |
+            command grep -q "ClientCharset=UTF-8"; then
+        pass 'a driver that needs ClientCharset is warned about, by name'
+    else
+        fail 'a driver that needs ClientCharset is warned about, by name'
+    fi
+    # The control: the warning must go away when the option IS supplied, or it
+    # is noise that authors will learn to ignore.
+    if GBASIC_ODBC_CONNECTION="$bare;ClientCharset=UTF-8" ./gbasic "$work/cs.bas" 2>&1 >/dev/null |
+            command grep -q "ClientCharset"; then
+        fail 'and is silent once the option is supplied'
+    else
+        pass 'and is silent once the option is supplied'
+    fi
+fi
+
 printf 'TIER valgrind\n'
 if command -v valgrind >/dev/null 2>&1; then
     for fixture in tests/odbc_test.bas tests/odbc_refusal_test.bas; do
@@ -254,8 +290,13 @@ if command -v valgrind >/dev/null 2>&1; then
         # ACCESS rather than no leak: every real defect in this module so far
         # was a use-after-free or a walk over an array that was never
         # allocated, and neither produced a wrong value.
+        # tests/odbc.supp carries DRIVER-INTERNAL defects only, each isolated
+        # first by reproducing it from plain C with no gBASIC in the stack.
+        # The entries are narrow (a named object and entry point) rather than
+        # "anything inside a driver", because a blanket rule would also hide
+        # uninitialised data WE passed in -- the very thing this tier is for.
         if valgrind --error-exitcode=99 --errors-for-leak-kinds=none \
-                    --leak-check=no -q \
+                    --leak-check=no -q --suppressions=tests/odbc.supp \
                     ./gbasic "$fixture" >/dev/null 2>"$work/vg"; then
             pass "valgrind clean: $fixture"
         else
