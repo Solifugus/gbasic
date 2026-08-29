@@ -9,6 +9,27 @@ language surface may still change between releases.
 
 ## Unreleased
 
+- **The variable form of the builtin collision warns too.** Precedence is
+  builtin → user function → function-valued variable, and the last step was
+  silent: `first = my_fn` then `first(xs)` ran the **builtin** `first` and
+  returned an element of `xs` — a plausible value from the wrong function, no
+  error, nothing to see. The library form has warned for a long time; the
+  variable form had nothing.
+
+  **It warns at the CALL, not at the assignment.** `list = [1, 2]` is a
+  perfectly good variable and only *calling* it is the mistake, so warning on
+  assignment would have fired constantly on innocent code — which is how a
+  warning channel dies. Firing on the call cannot false-positive on the common
+  case. Verified silent on all four harmless shapes: a builtin-named variable
+  holding a non-function, an ordinary builtin call while one exists, a function
+  value under a non-builtin name, and a record field (`r.first(2)` is not a
+  bare name, so it cannot collide). Once per call site, since the trap lives in
+  loops and handlers.
+
+  `tests/warning_model/builtin_shadow_value.bas` *claims* the warning rather
+  than observing that stderr was non-empty, so it asserts **which** warning
+  fired. Red-proofed.
+
 - **`lib.fn` is a function value.** It worked only in call position:
   `lib.fn(x)` ran, `f = lib.fn` raised `undefined variable: lib`. So passing a
   library function as a callback had no direct form, and the workaround — a

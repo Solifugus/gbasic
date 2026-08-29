@@ -790,6 +790,14 @@ receiver.
 Calling a function value straight out of a **subscript** does not parse —
 `table[0](7)` — so bind it first. A field call (`reg.beat(3)`) is fine.
 
+**Do not name such a variable after a builtin.** Precedence is builtin → user
+function → function-valued variable, so `first = my_fn` followed by `first(xs)`
+runs the **builtin** `first` and returns an element of `xs` — a plausible value
+from the wrong function. That warns now, at the call site, once per site.
+Holding a builtin-named variable is fine (`list = [1, 2]`); only *calling* it
+is the mistake, which is why the warning fires on the call and not on the
+assignment. A record field is immune — `r.first(2)` is not a bare name.
+
 Function values can be stored in variables, records, and arrays, passed as
 arguments, returned, and called. Equality is same-reference (`d = double` is
 `true`); a function value is truthy; `string(d)` gives a debug representation.

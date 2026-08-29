@@ -405,6 +405,13 @@ day — so assume you will hit them too.
   statement" at a column where no statement is possible. Writing `dim x` still
   gets the advice it was always meant to give.
 
+- **A function value in a variable named after a builtin is unreachable
+  (warned since 2026-08-28).** Precedence is builtin → user function →
+  function-valued variable, so `first = my_fn` then `first(xs)` runs the
+  BUILTIN and returns an element of `xs`: a plausible value from the wrong
+  function. It warns at the call site now. Holding such a variable is fine
+  (`list = [1,2]`); only calling it is the mistake. A record field is immune.
+
 - **`lib.fn` is a function value (2026-08-28).** It used to work only in CALL
   position: `lib.fn(x)` ran, `f = lib.fn` died with "undefined variable: lib",
   so passing a library function as a callback had no direct form. The

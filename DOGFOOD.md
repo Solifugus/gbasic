@@ -2997,4 +2997,80 @@ from this and neither is silent:
     builtin: `first = table[0]` then `first(7)` reaches the BUILTIN `first`.
     That is the collision hazard fixed for library functions earlier the same
     day, in its variable form — and it was met by walking into it while writing
-    this fixture.
+    this fixture. **RESOLVED the same day**: it warns at the CALL site, not at
+    the assignment, because `list = [1, 2]` is a perfectly good variable and
+    only calling it is the mistake — which also means the warning cannot fire
+    on the common harmless case. Once per site, since the trap lives in loops.
+
+## 2026-08-28 — CC — while: bringing up Transward's web interface (M5)
+- **Type:** language-surprise
+- **Severity:** high
+- **What:** Keeping a `serve()`d program alive with the obvious loop **stops it
+  serving**, silently and in the worst possible shape:
+
+  ```basic
+  h = serve(app)
+  print "listening on " + string(h.port)
+  while h.running          ' <- looks like every service main() ever written
+      sleep(0.25)
+  end while
+  ```
+
+  The listener binds, the banner prints, `h.running` is true, and the port
+  ACCEPTS connections — `curl` connects and then hangs forever with no
+  response, no error, and nothing on stderr. Removing the loop entirely fixes
+  it: `serve()` keeps the process alive itself, and the shipped
+  `examples/notes_server/notes.bas` ends its program block right after the
+  `print`.
+
+  What makes this expensive is the failure mode rather than the rule. Every
+  other language's server needs the main thread parked, so the loop is what a
+  developer writes by reflex; and because the socket is open and the process is
+  up, every external check short of an actual request says the service is
+  healthy. I lost the diagnosis to my own handlers twice before reducing it to
+  a four-line program.
+
+  The reference says dispatch "is installed natively (`webserver.on_request`)
+  rather than through a watcher, so an unassigned call does still serve" — true,
+  and it explains the mechanism, but it never says that gBASIC code running
+  afterwards **prevents** it. `h.running` existing as a readable field actively
+  invites the loop.
+- **Workaround:** end the program block after `serve()`. The service exits on
+  SIGTERM by the documented drain path, so nothing is lost.
+- **Would have been better:** either document the rule where `h.running` is
+  documented ("do not loop after serve; the runtime owns the process"), or make
+  the native loop run during `sleep` so the reflexive spelling works. A warning
+  when a program loops on a live server's `running` field would also have
+  caught it instantly.
+
+## 2026-08-28 — CC — while: testing Transward's login flow over HTTP (M5)
+- **Type:** missing-feature
+- **Severity:** medium
+- **What:** `webclient` **always follows redirects** and offers no way to turn
+  that off. `webclient.request` documents `method`, `headers`, `body` and
+  `timeout` — there is no `follow`/`max_redirects` option — and the effect is
+  that a redirect becomes invisible to the caller. Measured against a local
+  service, same URL, same instant:
+
+  ```
+  webclient.request({url: ".../login"})  -> status 200, no location header,
+                                            body of the FOLLOWED page
+  curl -s -o /dev/null -w '%{http_code}' -> 303, location: .../setup
+  ```
+
+  Two consequences beyond tidiness. A caller cannot assert on a redirect at
+  all, which is most of an authentication flow (`303 -> /login` when
+  unauthenticated is the security property worth testing). And the intermediate
+  response's headers are lost with it, so the **`Set-Cookie` that accompanies a
+  login redirect never reaches the caller** — the session cookie is dropped on
+  the floor and the client cannot stay signed in. Note libcurl's own default is
+  the opposite (`CURLOPT_FOLLOWLOCATION` is off), so this is a deliberate choice
+  in the binding rather than an inherited one.
+- **Workaround:** drive the HTTP tests with `curl` through `process.run` and
+  parse `-i` output. It works and tests the real wire, but a gBASIC program
+  cannot be an HTTP client for any protocol where a redirect carries meaning —
+  OAuth, POST-redirect-GET, or any API that answers 302 — and the project's own
+  web tests now shell out rather than dogfood the module.
+- **Would have been better:** a `follow` option (default whatever preserves
+  today's behavior), plus `redirects` on the response so a caller can see what
+  was followed.

@@ -21524,6 +21524,30 @@ static Value eval_call(AstExpr *expr) {
     if (expr->as.call.receiver) {
         return eval_method_call(expr);
     }
+    /* A VARIABLE holding a function value, whose name is also a builtin. The
+     * precedence is deliberate and documented -- builtins win, and the
+     * function-valued variable is the last fallback -- but it was SILENT, so
+     * `first = my_fn` followed by `first(xs)` quietly ran the builtin `first`
+     * and returned an element of xs. No error, a plausible value, and nothing
+     * to see.
+     *
+     * The library form of this has warned for a long time ("has same name as a
+     * built-in"); the variable form had nothing. Warned HERE rather than at
+     * assignment, because `list = [1, 2]` is a perfectly good variable and only
+     * CALLING it is the mistake -- which also means this cannot fire on the
+     * common harmless case. Once per call site: the trap lives in loops and
+     * handlers, and advice repeated ten thousand times is advice nobody reads. */
+    if (!expr->as.call.library) {
+        Symbol *shadowed = env_find(expr->as.call.name);
+        if (shadowed && shadowed->value.kind == VALUE_FUNCTION &&
+            gbasic_has_builtin(expr->as.call.name) &&
+            warn_site_first_time(expr->line, expr->column)) {
+            warn_fmt(2102, "override",
+                     "'%s' holds a function value, but the call reaches the BUILT-IN of that name; "
+                     "rename the variable to call the function value",
+                     expr->as.call.name);
+        }
+    }
     if (expr->as.call.library) {
         /* Resolve the receiver of X.method(args). Normally X is a variable bound
          * to a record or native value; the special name `this` resolves to the

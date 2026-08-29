@@ -1,0 +1,5 @@
+warned: true
+and the builtin answered: 9
+non-function variable silent: true, count=3
+non-colliding silent: true, MINE
+record field silent: true, MINE

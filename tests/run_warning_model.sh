@@ -39,6 +39,7 @@ positive=(
     soft_name
     raise_warning
     unused_result
+    builtin_shadow_value
 )
 
 for name in "${positive[@]}"; do
