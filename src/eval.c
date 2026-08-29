@@ -6845,10 +6845,32 @@ static void function_register_def(AstStmt *stmt, int imported, const char *libra
     }
 
     FunctionDef *function = function_find_local(stmt->as.function.name);
-    if (function) {
-        if (imported && !function->imported) {
-            return;
+    if (function && imported && !function->imported) {
+        /* A LOCAL of this name already exists. The local keeps UNQUALIFIED
+         * calls -- that precedence is deliberate and unchanged -- but the
+         * library function must still be REGISTERED, so that the QUALIFIED
+         * call can reach it.
+         *
+         * It used to `return` here, and the effect was that `httpc.start()`
+         * failed with "invalid function call" whenever a local `start` existed:
+         * the qualifier is precisely what one reaches for when a name
+         * collides, and it did not escape the collision. Worse, the diagnostic
+         * pointed at the CALL, so the reader went looking in the library for a
+         * function that was there all along. Reported by the Transward build.
+         *
+         * Warn as well, because the unqualified call silently gets the local:
+         * the library-versus-builtin case has warned for a long time, and this
+         * is the same shape one level over. */
+        if (library) {
+            warn_fmt(2102, "override",
+                    "local function '%s' shadows '%s' from library '%s'; "
+                    "unqualified calls use the local, and '%s.%s' reaches the library one",
+                    stmt->as.function.name, stmt->as.function.name, library,
+                    library, stmt->as.function.name);
         }
+        function = NULL;   /* fall through and add a separate entry */
+    }
+    if (function) {
         function->stmt = stmt;
         function->imported = imported;
         free(function->library);
@@ -12879,6 +12901,7 @@ typedef struct {
     char *body;
     int has_body;
     double timeout;
+    int follow;                    /* follow 3xx redirects; default 1 */
     struct curl_slist *headers;
 } WebclientRequest;
 
@@ -13188,7 +13211,7 @@ static Value webclient_perform(WebclientRequest *request) {
     curl_easy_setopt(curl, CURLOPT_URL, request->url);
     curl_easy_setopt(curl, CURLOPT_PROTOCOLS_STR, "http,https");
     curl_easy_setopt(curl, CURLOPT_REDIR_PROTOCOLS_STR, "http,https");
-    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, request->follow ? 1L : 0L);
     curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 10L);
     long timeout_ms = (long)ceil(request->timeout * 1000.0);
     if (timeout_ms < 1) {
@@ -13265,7 +13288,7 @@ static Value webclient_perform(WebclientRequest *request) {
 
 static int webclient_request_from_record(Value record, WebclientRequest *request) {
     static const char *allowed[] = {
-        "method", "url", "headers", "body", "timeout"
+        "method", "url", "headers", "body", "timeout", "follow"
     };
     for (size_t i = 0; i < record.as.record.count; i++) {
         int known = 0;
@@ -13339,6 +13362,31 @@ static int webclient_request_from_record(Value record, WebclientRequest *request
         }
         request->timeout = timeout->value->as.number;
     }
+
+    /* REDIRECTS ARE NOT ALWAYS PLUMBING. `follow: false` returns the 3xx
+     * itself -- its status, its `location` header, and crucially its
+     * `set-cookie`, which following discards along with the rest of the
+     * intermediate response.
+     *
+     * Without this a gBASIC program could not be a client for anything where a
+     * redirect CARRIES MEANING: OAuth, POST-redirect-GET, or any API that
+     * answers 302 and expects the caller to look. It could not hold a session
+     * either, because the cookie that establishes one usually arrives on the
+     * response being redirected away from. Reported by the Transward build,
+     * whose web tests shell out to curl rather than dogfood this module.
+     *
+     * The default stays `true` -- libcurl's own default is not to follow, but
+     * gBASIC has followed since the module shipped, and silently changing that
+     * would break every caller that relies on it. */
+    request->follow = 1;
+    RecordField *follow = record_find(&record, "follow");
+    if (follow) {
+        if (follow->value->kind != VALUE_BOOL) {
+            webclient_raise("webclient request follow must be true or false");
+            return 0;
+        }
+        request->follow = follow->value->as.boolean ? 1 : 0;
+    }
     return 1;
 }
 
@@ -13366,6 +13414,10 @@ static Value webclient_eval_get(AstExpr *expr) {
     request.method = copy_string("GET");
     request.url = copy_string(url.as.string);
     request.timeout = WEBCLIENT_DEFAULT_TIMEOUT_SECONDS;
+    /* The convenience verbs have no options record, so the default is set
+     * here. Without it a zeroed struct means "do not follow", which would
+     * silently reverse behaviour that has shipped since the module did. */
+    request.follow = 1;
     value_free(url);
     Value response = webclient_perform(&request);
     webclient_request_free(&request);
@@ -13408,6 +13460,7 @@ static Value webclient_eval_post(AstExpr *expr) {
     request.body = copy_string(body.as.string);
     request.has_body = 1;
     request.timeout = WEBCLIENT_DEFAULT_TIMEOUT_SECONDS;
+    request.follow = 1;
     value_free(url);
     value_free(body);
     Value response = webclient_perform(&request);
@@ -30317,6 +30370,21 @@ static Value apply_assignment_modifier(AstModifierUse modifier, Value value) {
         return builtin_string_modifier_value(value);
     }
     if (!modifier.library && strcmp(modifier.name, "file") == 0) {
+        /* A file value passes through unchanged. `{file}` is how one ASSERTS
+         * that a path is a file, and asserting it of something already a file
+         * should be a no-op rather than an error -- the same reasoning that
+         * makes `{USD}` idempotent on money.
+         *
+         * It matters most where the value came from a listing: `list_files`
+         * yields file values, so `f {file}= entry` raised, and the error
+         * surfaced AT THE MODIFIER -- reading as "the modifier is broken"
+         * rather than "the listing returned a type you did not expect".
+         * Reported by the Transward build, and it is also what de-risks any
+         * later change to what a listing returns: code holding entries keeps
+         * working either way. */
+        if (value.kind == VALUE_FILE) {
+            return value;
+        }
         if (value.kind != VALUE_STRING) {
             value_free(value);
             runtime_error_raise("file modifier expects a path string",
@@ -30328,6 +30396,10 @@ static Value apply_assignment_modifier(AstModifierUse modifier, Value value) {
         return file_value;
     }
     if (!modifier.library && strcmp(modifier.name, "dir") == 0) {
+        /* Idempotent for the same reason as `{file}` above. */
+        if (value.kind == VALUE_DIR) {
+            return value;
+        }
         if (value.kind != VALUE_STRING) {
             value_free(value);
             runtime_error_raise("dir modifier expects a path string",
@@ -31809,6 +31881,29 @@ int eval_program(AstStmtList program) {
          * (the internal name is deterministic across the program). */
         register_method_bodies_in(program);
         /* END PRE-REGISTRATION SET */
+
+        /* A TOP-LEVEL `load` NEVER RUNS when there is a program block, because
+         * `load` is an EXECUTABLE statement and the statements outside the
+         * block are not walked. It is documented, and it is still the most
+         * confusing way to lose an import: for a native module the symptom is
+         * at least "library not loaded: xml", but for a .bas library it is
+         * `invalid function call: httpc.start_server` -- which sends the reader
+         * to look inside a library that was never loaded at all.
+         *
+         * Deliberately NOT added to the pre-registration set above: making
+         * `load` position-blind would change what gBASIC Studio's hoisting rule
+         * must hoist, and running arbitrary library top-level code before the
+         * program block is a different decision from this one. Warning names
+         * the mistake without making that decision. */
+        for (size_t i = 0; i < program.count; i++) {
+            if (program.items[i]->kind == AST_STMT_USE) {
+                current_line = program.items[i]->line;
+                current_column = program.items[i]->column;
+                warn_fmt(2102, "override",
+                        "this `load` is outside the program block, so it never runs "
+                        "-- move it inside `program`");
+            }
+        }
 
         /* Bind the program block's declared parameter (conventionally `args`) to
          * the command-line arguments after the script path: a 0-based array of

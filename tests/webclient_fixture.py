@@ -47,8 +47,12 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path == "/status/404":
             self.send_payload(404, "missing")
         elif self.path == "/redirect":
+            # Set-Cookie on the INTERMEDIATE response: following discards it
+            # along with the rest of that response, which is why a client that
+            # cannot decline to follow cannot hold a session.
             self.send_response(302)
             self.send_header("Location", "/get")
+            self.send_header("Set-Cookie", "session=abc123; Path=/")
             self.send_header("Content-Length", "0")
             self.end_headers()
         else:

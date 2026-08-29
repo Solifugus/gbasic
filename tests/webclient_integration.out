@@ -19,3 +19,7 @@ true
 missing
 200
 hello
+302
+/get
+session=abc123; Path=/
+200

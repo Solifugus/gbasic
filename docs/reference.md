@@ -944,6 +944,15 @@ left {modifier args}>= right
 
 ### Constructing typed values
 
+`{file}` and `{dir}` are **idempotent** (*since 0.1.0-rc9*): applying one to a
+value that already has that type passes it through unchanged, rather than
+raising. Asserting that a file is a file should be a no-op — and it matters
+most straight out of a listing, since `list_files` yields file values, so
+`f {file}= entry` used to raise with the error surfacing *at the modifier*,
+reading as "the modifier is broken" rather than "the listing returned a type
+you did not expect". Crossing the two is still refused: a directory is not a
+file.
+
 This is the **only** way to build a date, a time, a money amount, a file or a
 directory value: there are no literals for them, and `2026-12-25` written bare
 parses as arithmetic. An assignment modifier takes a string (or, for `USD`,
@@ -1013,6 +1022,20 @@ Resolution:
 - Local modifiers override imported modifiers with a warning.
 - Later `load` imports can override earlier imported modifiers with a warning.
 - Private library modifiers are not imported.
+
+**Functions resolve the same way, and a qualified call always reaches the
+library** (*fixed in 0.1.0-rc9*). A local function of the same name keeps
+*unqualified* calls and warns that it does so, while `lib.name(...)` reaches
+the library's. Until rc9 the import skipped registering a function whose name
+matched a local, so the qualified call — the very thing one reaches for when a
+name collides — failed with `invalid function call`.
+
+**A `load` outside a `program` block never runs**, because `load` is an
+executable statement and the top-level statements in such a file are not
+walked. This now warns, because the symptom is otherwise misdirecting: for a
+native module it is `library not loaded: xml`, but for a `.bas` library it is
+`invalid function call: lib.name`, which points at the call rather than at the
+import that never happened. Put the `load` inside the block.
 
 Built-in/core modifiers include:
 
@@ -1811,6 +1834,24 @@ Invalid JSON does not raise an error; `body` remains available and `json` is
 omitted. HTTP statuses such as 404 and 500 also return normal response records.
 Network, DNS, connection, TLS, malformed-URL, and timeout failures are runtime
 errors with `error.source = "webclient"`.
+
+**Redirects are followed by default; `follow: false` declines** (*since
+0.1.0-rc9*). A redirect is not always plumbing — declining returns the 3xx
+itself, including its `location` and its `set-cookie`, which following discards
+along with the rest of the intermediate response:
+
+<!--needs-context-->
+```basic
+r = webclient.request({ method: "GET", url: start, follow: false })
+print r.status                      ' 302
+print r.headers["set-cookie"]       ' the session cookie, kept
+```
+
+Without it a program cannot be a client for OAuth, POST-redirect-GET or any API
+that answers 302 and expects the caller to look, and cannot hold a session,
+since the cookie establishing one usually arrives on the response being
+redirected away from. libcurl's own default is *not* to follow; gBASIC's is,
+and stays so, because changing it silently would break every existing caller.
 
 libcurl is optional at build time. A build without it remains usable, but
 `load webclient` reports that the module is unavailable. WebClient is for

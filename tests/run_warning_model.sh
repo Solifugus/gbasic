@@ -125,3 +125,47 @@ fi
 printf 'PASS collision_coverage (%d builtin names, none shadows silently)\n' "$checked"
 
 printf 'run_warning_model: %d cases passed\n' "$(( ${#positive[@]} + 5 ))"
+
+# --- local shadows a LIBRARY function (Transward report, item 5) ------------
+#
+# Two defects in one scenario, and the first is a BEHAVIOUR bug rather than a
+# missing warning: importing a library function whose name matched an existing
+# local RETURNED WITHOUT REGISTERING IT, so `lib.name(...)` failed with
+# "invalid function call". The qualifier is precisely what one reaches for when
+# a name collides, and it did not escape the collision -- while the diagnostic
+# pointed at the CALL, sending the reader to look inside a library for a
+# function that was there all along.
+#
+# The second is the missing warning: library-versus-builtin has warned for a
+# long time; local-versus-library is the same shape one level over.
+out="$(GBASIC_PATH=stdlib ./gbasic tests/warning_model/local_shadows_library.bas 2>&1)"
+
+# THE BEHAVIOUR, which matters more than the warning: unqualified reaches the
+# LOCAL (unchanged precedence) and qualified reaches the LIBRARY (the fix).
+printf '%s' "$out" | grep -qx 'local:1' \
+    || { printf 'FAIL local_shadows_library (unqualified must reach the local)\n'; exit 1; }
+printf '%s' "$out" | grep -qx 'library:2' \
+    || { printf 'FAIL local_shadows_library (QUALIFIED must reach the library)\n'; exit 1; }
+printf '%s' "$out" | grep -q "shadows 'start_server' from library 'shadowlib'" \
+    || { printf 'FAIL local_shadows_library (no shadow warning)\n'; exit 1; }
+printf 'PASS local_shadows_library (qualified call escapes the collision, and it warns)\n'
+
+# --- a top-level `load` never runs -----------------------------------------
+#
+# `load` is executable and the statements outside a program block are not
+# walked. Documented, and still the most confusing way to lose an import: for a
+# .bas library the symptom is `invalid function call: lib.name`, which points
+# at the call rather than the import.
+out="$(GBASIC_PATH=stdlib ./gbasic tests/warning_model/top_level_load.bas 2>&1)"
+printf '%s' "$out" | grep -q 'is outside the program block, so it never runs' \
+    || { printf 'FAIL top_level_load (no warning)\n'; exit 1; }
+printf 'PASS top_level_load (a load outside the program block is named as dead)\n'
+
+# THE CONTROL: a load INSIDE the block must stay silent, or the warning is
+# noise on every correctly-written program.
+out="$(GBASIC_PATH=stdlib ./gbasic tests/warning_model/local_shadows_library.bas 2>&1)"
+if printf '%s' "$out" | grep -q 'never runs'; then
+    printf 'FAIL top_level_load control (a load INSIDE the block must not warn)\n'
+    exit 1
+fi
+printf 'PASS top_level_load control (a load inside the block is silent)\n'

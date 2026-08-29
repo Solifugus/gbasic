@@ -219,5 +219,16 @@ check "read is binary-safe: interior NULs survive a file round trip" $?
 check "read is binary-safe: the file on disk is the full length" $?
 rm -f "$bin_prog" "$bin_path"
 
+# --- {file} and {dir} are idempotent ---------------------------------------
+#
+# `{file}` is how one ASSERTS a path is a file, and asserting it of something
+# already a file should be a no-op. It matters most straight out of a listing:
+# `list_files` yields FILE values, so `f {file}= entry` raised, and the error
+# surfaced AT THE MODIFIER -- reading as "the modifier is broken" rather than
+# "the listing returned a type you did not expect".
+idem_out="$(GBASIC_PATH=stdlib ./gbasic tests/file_modifier_idempotent.bas 2>&1)"
+printf '%s' "$idem_out" | grep -qx 'mismatches: 0'
+check "{file}/{dir} idempotent, and still refuse a wrong type" $?
+
 printf 'core suite: %d passed / %d failed\n' "$pass" "$fail"
 [[ "$fail" -eq 0 ]]
