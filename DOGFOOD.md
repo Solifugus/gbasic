@@ -3125,6 +3125,16 @@ from this and neither is silent:
   is the same wound as defect 1 — a double sitting at the entrance to an exact
   type — and an exact decimal-text constructor closes both at once.
 
+  **Defect 2 does not reproduce on a casual probe.** `x {USD}= 1000000000.01`
+  then `x * 3` gives `3000000000.03`, exactly right — the double has enough
+  precision at ordinary magnitudes, and an implementer whose first probe passes
+  may conclude the finding is wrong. The threshold is 2^53 *units*, so it moves
+  with the scale: at cents that is $90,071,992,547,409.92 (unreachable), but at
+  the proposed guard scale it is **$9,007,199,254.74** — reachable by any
+  program aggregating a mortgage book or a fund. Guard digits cost 10,000x of
+  headroom, which is what makes fixing the arithmetic a prerequisite for the
+  representation change rather than a tidy-up after it.
+
   **Interlock worth knowing before sequencing:** defect 1 blocks the *test* for
   defect 2. The double path only diverges above 2^53 cents
   ($90,071,992,547,409.92), and no exact value that large can be constructed

@@ -51,6 +51,35 @@ is half-away-from-zero, and `0.145` as a double is `0.14499999999999999001`.
 the author wrote.** This is the same wound as defect 1 — a double at the
 entrance to an exact type — and an exact decimal-text constructor closes both.
 
+### Defect 2 will not reproduce on a casual probe — and gets far worse in phase 2
+
+Raised by the gdash session and confirmed independently here: `x {USD}=
+1000000000.01` then `x * 3` gives `3000000000.03`, exactly right. The double
+simply has enough precision at ordinary magnitudes. An implementer whose first
+probe passes may conclude the finding is wrong. **It is not** — the code path
+is `(double)cents * number` and it is lossy; it just needs enough magnitude to
+show.
+
+The threshold is **2^53 units**, so it moves with the scale — and that is the
+part which turns a theoretical defect into a live one:
+
+| Scale | Where `*` and `/` stop being exact |
+|---|---|
+| USD at 2 (cents, today) | $90,071,992,547,409.92 — beyond world GDP, effectively unreachable |
+| **USD at 6 (after guard digits)** | **$9,007,199,254.74 — routinely reachable** |
+| JPY at 0 → 4 | ¥9,007,199,254,740,992 → ¥900,719,925,474 |
+| KWD at 3 → 7 | 9,007,199,254,740.992 → 900,719,925.474 |
+
+**Guard digits cost 10,000× of headroom.** A defect nobody could hit becomes one
+that any program aggregating a mortgage book, a fund, or a mid-sized company's
+balances will hit. So the phase order below is a **constraint, not a
+preference**: shipping guard digits before integer-preserving arithmetic would
+introduce silent corruption into the range where real money actually lives.
+
+The testing consequence follows the house rule on negative controls: the phase-1
+fixture must be **proven red against the pre-fix binary**, and gdash's warning is
+precisely that a naively-chosen magnitude will pass on both.
+
 ### The interlock, which decides the order
 
 **Defect 1 blocks the test for defect 2.** The double path only diverges above
@@ -164,7 +193,7 @@ Each phase is shippable alone and each has a test that fails without it.
 | Phase | Work | Why here |
 |---|---|---|
 | **0** | Exact construction from decimal text; excess digits rejected | Unblocks the test for phase 1. Small, and alone it makes the existing range reachable. |
-| **1** | `*` and `/` stay in integer arithmetic; overflow raises | The silent-corruption fix. Write it **parameterized on scale** even though scale is still 2, so phase 2 does not rewrite it. |
+| **1** | `*` and `/` stay in integer arithmetic; overflow raises | The silent-corruption fix, and **it must precede phase 2** — guard digits cut the range where the double path is safe by 10,000×, from $90tn to $9bn. Write it **parameterized on scale** even though scale is still 2, so phase 2 does not rewrite it. |
 | **2** | Currency tag, per-currency exponent, guard digits, `SER_VERSION` 2 | The representation change. Needed this ruling first. |
 | **3** | FX: dated rates, `convert` | Depends on the tag. A rate is a *dated* fact — converting without an as-of date gives an unreproducible number, which is an audit problem, not an arithmetic one. |
 | **4** | `finance` library: NPV, IRR, XIRR, PMT, PV, FV, RATE, NPER, amortization, depreciation | The actual business-operations gap. See §8. |
@@ -191,8 +220,10 @@ is a phase-4 requirement, not a nicety.
 
 - exact construction at the top of the int64 range, per currency;
 - excess decimals **refused**, with the message pinned;
-- no precision loss through `*` and `/`, including above 2^53 units — the case
-  phase 0 exists to make testable;
+- no precision loss through `*` and `/`, **above 2^53 units** — the case phase 0
+  exists to make testable, and the one a casually-chosen magnitude will miss:
+  the fixture must be proven red against the pre-fix binary, or it is asserting
+  nothing;
 - guard digits **retained across a multi-step calculation**, rounded to
   presentation only at the end, compared against the exact expected result;
 - the display rounding rule at the `.5` boundary, from decimal *text* so the
