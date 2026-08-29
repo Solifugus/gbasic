@@ -1841,7 +1841,14 @@ static XlsxVal xlsx_from_gbasic(const Value *v) {
         /* Money, dates and the rest arrive as their numeric or text form
          * rather than being refused: a frame built from a spreadsheet legitimately
          * holds them, and a formula over them should see what the cell held. */
-        if (v->kind == VALUE_MONEY) return xv_num((double)v->as.cents / 100.0);
+        if (v->kind == VALUE_MONEY) {
+            /* Money is a scaled integer; a spreadsheet cell is a double, so
+             * this is the one place the conversion is deliberate and lossy. */
+            double div = 1.0;
+            int scale = (int)v->as.money.exponent + 4;   /* MONEY_GUARD_DIGITS */
+            for (int i = 0; i < scale; i++) div *= 10.0;
+            return xv_num((double)v->as.money.units / div);
+        }
         return xv_empty();
     }
     }

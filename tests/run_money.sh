@@ -39,6 +39,8 @@ checks=0
 pass() { checks=$((checks + 1)); printf '  ok   %s\n' "$1"; }
 fail() { checks=$((checks + 1)); failures=$((failures + 1)); printf '  FAIL %s\n' "$1"; }
 
+export GBASIC_MONEY_V1=tests/money/v1_payload.hex
+
 run_fixture() {
     local fixture="$1" floor="$2" label="$3"
     ./gbasic "$fixture" >"$work/out" 2>"$work/err"
@@ -78,10 +80,10 @@ run_fixture tests/money_construct_test.bas 30 'money_construct'
 # Named individually so deleting one shrinks the suite loudly rather than
 # quietly. These are the claims that make this more than a smoke test.
 for label in \
-    "gdash's value survives from text" \
+    'a large value survives from text' \
     'the same value survives from a literal' \
-    'int64 max, exactly' \
-    'int64 min, exactly -- one greater in magnitude' \
+    'the largest authorable USD value' \
+    'and the smallest' \
     '0.125 ties to even (0.12)' \
     '0.145 ties to even (0.14)' \
     'a negative tie goes to even too' \
@@ -100,10 +102,10 @@ run_fixture tests/money_refusal_test.bas 17 'money_refusal'
 
 for label in \
     'sub-cent authored text is refused' \
-    'one cent past int64 max is refused' \
+    "past USD's ceiling is refused" \
     'a non-finite number is refused' \
     'the SAME excess precision, COMPUTED, is accepted' \
-    'int64 max itself is accepted'
+    'just inside the ceiling is accepted'
 do
     if command grep -Fq "ok   $label" "$work/out"; then
         pass "asserted: $label"
@@ -149,7 +151,72 @@ for label in \
     'division by zero raises' \
     'max - 0.01 succeeds' \
     'min \+ 0.01 succeeds' \
-    'max / 2 succeeds'
+    'max / 2 succeeds .*' \
+    'max \* 0.5 succeeds .*'
+do
+    if command grep -Eq "^ok   $label\$" "$work/out"; then
+        pass "asserted: $label"
+    else
+        fail "asserted: $label"
+    fi
+done
+
+printf 'TIER currency identity and guard digits (phase 2)\n'
+run_fixture tests/money_currency_test.bas 26 'money_currency'
+
+# The guard-digit tier is the one phase 2 exists for: at cents scale every one
+# of these lost money. And the equality/ordering split is the PLAT-EQ idiom --
+# "is USD 19.95 equal to EUR 19.95" is a real question answered no, while
+# ordering them is not a question at all without a rate.
+for label in \
+    '100 / 3 \* 3 comes back whole' \
+    'but is retained: x3 gives the cent back' \
+    'JPY 100 / 3 \* 3 comes back whole' \
+    'JPY has no decimal places' \
+    'KWD has three' \
+    'adding different currencies raises' \
+    'ordering different currencies raises' \
+    'equality across currencies answers false' \
+    'relabelling refuses rather than inventing a rate'
+do
+    if command grep -Eq "^ok   $label\$" "$work/out"; then
+        pass "asserted: $label"
+    else
+        fail "asserted: $label"
+    fi
+done
+
+printf 'TIER the currency registry (phase 2)\n'
+run_fixture tests/money_registry_test.bas 20 'money_registry'
+
+for label in \
+    'a withdrawn currency is not built in' \
+    'registering it makes historical data expressible' \
+    'an existing value still computes after retirement' \
+    'but a new value is refused' \
+    're-registering revives a retired currency'
+do
+    if command grep -Eq "^ok   $label\$" "$work/out"; then
+        pass "asserted: $label"
+    else
+        fail "asserted: $label"
+    fi
+done
+
+printf 'TIER serialization and the v1 migration (phase 2)\n'
+# THE V1 PAYLOAD IS REAL: tests/money/v1_payload.hex was written by the
+# phase-1 binary, before money carried a currency. Testing migration against
+# bytes this version generated to look old would prove nothing -- a migration
+# nobody tested is a migration that does not work. It is hex because gBASIC's
+# write/read truncate at the first NUL and cannot carry binary intact.
+GBASIC_MONEY_V1=tests/money/v1_payload.hex \
+    run_fixture tests/money_serialize_test.bas 13 'money_serialize'
+
+for label in \
+    'a v1 payload still deserializes' \
+    'its money is rescaled into guard digits' \
+    'a deserialized JPY still refuses USD' \
+    'guard digits survive serialization'
 do
     if command grep -Eq "^ok   $label\$" "$work/out"; then
         pass "asserted: $label"
@@ -178,7 +245,8 @@ fi
 printf 'TIER valgrind\n'
 if command -v valgrind >/dev/null 2>&1; then
     for fixture in tests/money_construct_test.bas tests/money_refusal_test.bas \
-                   tests/money_arithmetic_test.bas tests/money_overflow_test.bas; do
+                   tests/money_arithmetic_test.bas tests/money_overflow_test.bas \
+                   tests/money_currency_test.bas tests/money_registry_test.bas; do
         if valgrind --error-exitcode=99 --leak-check=full --errors-for-leak-kinds=definite -q \
                     ./gbasic "$fixture" >/dev/null 2>"$work/vg"; then
             pass "valgrind clean: $fixture"

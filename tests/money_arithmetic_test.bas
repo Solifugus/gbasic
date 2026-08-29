@@ -27,28 +27,29 @@ function check(label, got, want)
 end function
 
 ' ------------------------------------ integral scalars, ABOVE 2^53 units
-' 9223372036854775 cents is past 2^53 (9007199254740992), so the double path
-' is provably lossy here. Expected values are 9223372036854775 x n, done in
-' integer arithmetic:  x2 = 18446744073709550,  x3 = 27670116110564325.
-big {USD}= "92233720368547.75"
-check("x2 above 2^53 is exact", big * 2, "184467440737095.50")
-check("x3 above 2^53 is exact", big * 3, "276701161105643.25")
-check("x10 above 2^53 is exact", big * 10, "922337203685477.50")
+' At guard scale, $50,000,000,000.01 is 50000000000010000 units -- past 2^53
+' (9007199254740992), where the old double path was provably lossy, and well
+' inside USD's int64 ceiling of about $9.22 trillion. Expected values are
+' 50000000000010000 x n, done in integer arithmetic outside gBASIC.
+big {USD}= "50000000000.01"
+check("x2 above 2^53 is exact", big * 2, "100000000000.02")
+check("x3 above 2^53 is exact", big * 3, "150000000000.03")
+check("x10 above 2^53 is exact", big * 10, "500000000000.10")
 
 ' The CONTROL: identical on both binaries. Without it the tier above could be
 ' mistaken for a general claim about multiplication.
-mid {USD}= "45000000000000.01"
-check("a magnitude where the defect does NOT show", mid * 2, "90000000000000.02")
+mid {USD}= "45000.01"
+check("a magnitude where the defect does NOT show", mid * 2, "90000.02")
 
 ' ---------------------------------------------------------- exact addition
 ' +/- were always integer, but were UNCHECKED -- undefined behaviour at the
 ' boundary rather than a wrap. These confirm the arithmetic still works.
-a {USD}= "92233720368547.75"
+a {USD}= "50000000000.01"
 b {USD}= "0.25"
-check("addition at scale", a + b, "92233720368548.00")
-check("subtraction at scale", a - b, "92233720368547.50")
+check("addition at scale", a + b, "50000000000.26")
+check("subtraction at scale", a - b, "49999999999.76")
 neg {USD}= "-1.50"
-check("adding a negative", a + neg, "92233720368546.25")
+check("adding a negative", a + neg, "49999999998.51")
 
 ' -------------------------------------------------- fractional scalars
 ' A fractional scalar rounds HALF-EVEN at the scale, and the ties are the
@@ -70,12 +71,16 @@ check("100 / 3 rounds", d / 3, "33.33")
 check("100 / 7 rounds", d / 7, "14.29")
 check("dividing by a fraction multiplies", d / 0.5, "200.00")
 
-' Division still cannot split a hundred into three whole cents -- that is
-' ALLOCATION, and it is phase 4, not a defect in the operator.
-check("the penny problem is still open (phase 4)", (d / 3) * 3, "99.99")
+' PHASE 2 CHANGED THIS ANSWER, and the change is the guard digits earning
+' their place: at cents scale (100/3)*3 was 99.99, because a third of a dollar
+' had nowhere to live. With four digits below the cent it round-trips whole.
+' What remains for phase 4 is ALLOCATION -- splitting 100.00 into three
+' PAYABLE amounts of 33.33 / 33.33 / 33.34 that sum back exactly -- which is a
+' different problem from arithmetic not losing money.
+check("guard digits close the round-trip gap", (d / 3) * 3, "100.00")
 
 ' ------------------------------------------------------- scalar on the left
-check("number * money works too", 3 * big, "276701161105643.25")
+check("number * money works too", 3 * big, "150000000000.03")
 check("and rounds the same way", 0.5 * q, "0.08")
 
 ' ----------------------------------------------------------- zero and sign

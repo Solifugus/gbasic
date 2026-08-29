@@ -219,6 +219,33 @@ typedef enum {
     PREC_SECOND
 } DateTimePrecision;
 
+/* --- PLAT-MONEY phase 2: currency identity and guard digits ---------------
+ *
+ * A money value carries its currency and its minor-unit exponent, and stores
+ * an integer at `exponent + MONEY_GUARD_DIGITS`. Four guard digits below the
+ * minor unit because interest, allocation, unit costs and FX all produce
+ * intermediates below the cent, and rounding each to the cent as it is
+ * produced loses money across a multi-step calculation.
+ *
+ * THE EXPONENT RIDES IN THE VALUE, not only in the currency table, and that is
+ * deliberate: `serialize`/`deserialize` are public builtins so values persist
+ * on disk, and actors are fork+exec so a currency registered in the parent is
+ * not registered in the child. A self-describing value computes and displays
+ * correctly anywhere; only the display NAME needs the table.
+ *
+ * Costs nothing: the Value union already holds a 32-byte DateTime, so this
+ * 16-byte struct fits inside the existing footprint.
+ */
+#define MONEY_GUARD_DIGITS 4
+#define MONEY_CURRENCY_USD 840
+#define MONEY_REGISTERED_BASE 1000   /* registered codes sit above ISO's range */
+
+typedef struct {
+    long long units;           /* scaled integer at (exponent + guard digits) */
+    unsigned short currency;   /* ISO 4217 numeric, or >= 1000 if registered */
+    unsigned char exponent;    /* minor-unit digits */
+} MoneyValue;
+
 typedef struct {
     int year;
     int month;
@@ -278,7 +305,7 @@ struct Value {
         } record;
         DateTime datetime;
         Duration duration;
-        long long cents;
+        MoneyValue money;
         char *file_path;
         char *dir_path;
         PgConnectionValue *postgres_connection;
@@ -1812,11 +1839,27 @@ static Value value_duration(Duration duration) {
     return value;
 }
 
-static Value value_money(long long cents) {
+static Value value_money(MoneyValue money) {
     Value value = {0};
     value.kind = VALUE_MONEY;
-    value.as.cents = cents;
+    value.as.money = money;
     return value;
+}
+
+/* Build USD from a count of CENTS, rescaling into the guard digits. For the
+ * paths that predate per-currency scale and genuinely mean "US cents" -- the
+ * xlsx reader and the v1 deserializer. */
+static Value value_money_cents(long long cents) {
+    MoneyValue m;
+    m.currency = MONEY_CURRENCY_USD;
+    m.exponent = 2;
+    /* 10^MONEY_GUARD_DIGITS; overflow here means the stored value cannot be
+     * represented with guard digits, which is a real limit worth raising on
+     * rather than truncating. */
+    if (__builtin_mul_overflow(cents, 10000LL, &m.units)) {
+        m.units = cents > 0 ? LLONG_MAX : LLONG_MIN;
+    }
+    return value_money(m);
 }
 
 static Value value_file(const char *path) {
@@ -3399,7 +3442,7 @@ static int value_truthy(Value value) {
             value.as.duration.hours || value.as.duration.minutes ||
             value.as.duration.seconds;
     case VALUE_MONEY:
-        return value.as.cents != 0;
+        return value.as.money.units != 0;
     case VALUE_FILE:
         return value.as.file_path[0] != '\0';
     case VALUE_DIR:
@@ -3510,6 +3553,134 @@ static int value_number_for_arithmetic(Value value, const char *op, double *out_
 /* Phase 0 stores cents. Phase 2 replaces this with a per-currency exponent
  * plus four guard digits (docs/money_design.md §3); every use is already
  * routed through the constant so that change has one site here. */
+#include "currency_table.h"
+
+/* Currencies registered at run time, above ISO's numeric range. A program may
+ * add an internal scrip, loyalty points, or a redenomination that outpaces the
+ * release cycle. REMOVAL IS NOT OFFERED -- removing a currency does not unmake
+ * the values that already exist, and archived data is precisely what money is
+ * for. A currency is marked HISTORICAL instead: new values refused, old ones
+ * still read. */
+typedef struct {
+    char alpha[8];
+    unsigned short numeric;
+    unsigned char exponent;
+    int historical;
+} CurrencyReg;
+
+static CurrencyReg *currency_registered = NULL;
+static size_t currency_registered_count = 0;
+static unsigned short currency_next_code = MONEY_REGISTERED_BASE;
+
+/* Look a currency up by its alphabetic code. Registered entries are consulted
+ * FIRST so a program can shadow a built-in exponent if a redenomination lands
+ * before the next gBASIC release. */
+static int currency_find_alpha(const char *alpha,
+                               unsigned short *numeric,
+                               unsigned char *exponent,
+                               int *historical) {
+    for (size_t i = 0; i < currency_registered_count; i++) {
+        if (strcmp(currency_registered[i].alpha, alpha) == 0) {
+            if (numeric) *numeric = currency_registered[i].numeric;
+            if (exponent) *exponent = currency_registered[i].exponent;
+            if (historical) *historical = currency_registered[i].historical;
+            return 1;
+        }
+    }
+    for (size_t i = 0; i < CURRENCY_TABLE_COUNT; i++) {
+        if (strcmp(currency_table[i].alpha, alpha) == 0) {
+            if (numeric) *numeric = currency_table[i].numeric;
+            if (exponent) *exponent = currency_table[i].exponent;
+            if (historical) *historical = 0;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* The display name for a numeric code. A value whose code is unknown locally
+ * -- deserialized from a program that registered it, say -- still computes and
+ * displays correctly; only its NAME falls back to the number. */
+static const char *currency_alpha_of(unsigned short numeric) {
+    for (size_t i = 0; i < currency_registered_count; i++) {
+        if (currency_registered[i].numeric == numeric) {
+            return currency_registered[i].alpha;
+        }
+    }
+    for (size_t i = 0; i < CURRENCY_TABLE_COUNT; i++) {
+        if (currency_table[i].numeric == numeric) {
+            return currency_table[i].alpha;
+        }
+    }
+    return NULL;
+}
+
+/* Storage scale: minor-unit digits plus the guard digits. */
+static int money_scale_of(MoneyValue m) {
+    return (int)m.exponent + MONEY_GUARD_DIGITS;
+}
+
+/* Render money as decimal text.
+ *
+ * `digits` is how many decimal places to show. Display uses the currency's
+ * MINOR UNIT (so USD shows two places, JPY none) and rounds half-even from the
+ * guard scale -- the guard digits exist to carry intermediates, not to be
+ * shown. Passing the full storage scale renders losslessly instead, which is
+ * what a round-trip through text needs.
+ *
+ * Works on the unsigned magnitude throughout, because int64 is asymmetric and
+ * negating LLONG_MIN is undefined -- the bug that printed a legitimate value
+ * as "--92233720368547758.-8" before phase 0 made it constructible.
+ */
+static void money_render(MoneyValue m, int digits, char *buf, size_t buflen) {
+    int scale = money_scale_of(m);
+    long long units = m.units;
+    int negative = units < 0;
+    unsigned long long mag = negative
+        ? (unsigned long long)(-(units + 1)) + 1ULL
+        : (unsigned long long)units;
+
+    /* Drop to the requested precision in ONE step, half-even.
+     *
+     * Digit by digit would be wrong: rounding 0.1251 to two places a digit at
+     * a time gives 125 (the 1 vanishes) and then a tie that resolves to 0.12,
+     * where the answer is 0.13. The discarded remainder has to be compared
+     * whole. */
+    if (scale > digits) {
+        unsigned long long drop = 1ULL;
+        for (int i = digits; i < scale; i++) drop *= 10ULL;
+        unsigned long long q = mag / drop;
+        unsigned long long r = mag % drop;
+        if (r * 2ULL > drop || (r * 2ULL == drop && (q & 1ULL) != 0ULL)) {
+            q++;
+        }
+        mag = q;
+    } else {
+        for (int i = scale; i < digits; i++) mag *= 10ULL;
+    }
+
+    unsigned long long div = 1ULL;
+    for (int i = 0; i < digits; i++) div *= 10ULL;
+    unsigned long long whole = mag / div;
+    unsigned long long frac = mag % div;
+
+    if (digits == 0) {
+        snprintf(buf, buflen, negative ? "-%llu" : "%llu", whole);
+    } else {
+        snprintf(buf, buflen, negative ? "-%llu.%0*llu" : "%llu.%0*llu",
+                 whole, digits, frac);
+    }
+}
+
+static MoneyValue money_make(long long units, unsigned short currency,
+                             unsigned char exponent) {
+    MoneyValue m;
+    m.units = units;
+    m.currency = currency;
+    m.exponent = exponent;
+    return m;
+}
+
 #define MONEY_SCALE_DEFAULT 2
 #define MONEY_MAX_DIGITS 40
 
@@ -4474,7 +4645,9 @@ static int value_storage_equal(const Value *left, const Value *right) {
             left->as.duration.minutes == right->as.duration.minutes &&
             left->as.duration.seconds == right->as.duration.seconds;
     case VALUE_MONEY:
-        return left->as.cents == right->as.cents;
+        return left->as.money.units == right->as.money.units &&
+               left->as.money.currency == right->as.money.currency &&
+               left->as.money.exponent == right->as.money.exponent;
     case VALUE_FILE:
         return strcmp(left->as.file_path, right->as.file_path) == 0;
     case VALUE_DIR:
@@ -9971,19 +10144,11 @@ static Value builtin_string_value(Value value) {
         return value_string(buffer);
     }
     case VALUE_MONEY: {
-        /* The magnitude is taken UNSIGNED because int64 is asymmetric: negating
-         * LLONG_MIN overflows, and it is a value money can legitimately hold
-         * (-92233720368547758.08). Before exact construction landed there was
-         * no way to build it, so this rendered as "--92233720368547758.-8". */
-        long long cents = value.as.cents;
-        unsigned long long abs_cents = cents < 0
-            ? (unsigned long long)(-(cents + 1)) + 1ULL
-            : (unsigned long long)cents;
-        snprintf(buffer,
-                 sizeof(buffer),
-                 cents < 0 ? "-%llu.%02llu" : "%llu.%02llu",
-                 abs_cents / 100ULL,
-                 abs_cents % 100ULL);
+        /* Displayed at the CURRENCY's precision -- two places for USD, none
+         * for JPY, three for KWD -- rounding half-even out of the guard
+         * digits, which exist to carry intermediates rather than to be shown. */
+        money_render(value.as.money, (int)value.as.money.exponent,
+                     buffer, sizeof(buffer));
         value_free(value);
         return value_string(buffer);
     }
@@ -10270,7 +10435,12 @@ static Value builtin_encode_value(Value value) {
 #define SER_MAGIC0 'g'
 #define SER_MAGIC1 'B'
 #define SER_MAGIC2 'S'
-#define SER_VERSION 1
+/* Bumped to 2 when money gained its currency and guard digits. THE READER
+ * ACCEPTS BOTH: v1 payloads hold a bare int64 of cents and are rescaled, never
+ * refused, because `serialize` is a public builtin and those payloads are in
+ * files right now. */
+#define SER_VERSION 2
+#define SER_VERSION_MIN 1
 #define SER_MAX_DEPTH 256
 
 typedef enum {
@@ -10475,8 +10645,15 @@ static int serialize_value(SerBuf *b, Value v, int depth) {
         serbuf_append(b, &v.as.duration, sizeof v.as.duration);
         return 1;
     case VALUE_MONEY:
+        /* Self-describing: units, currency AND exponent. Without the exponent
+         * a value would be meaningful only to a program holding the same
+         * currency table -- and `serialize` is a public builtin, so values
+         * persist on disk, while actors are fork+exec, so a currency
+         * registered in the parent is not registered in the child. */
         serbuf_u8(b, SER_MONEY);
-        serbuf_append(b, &v.as.cents, sizeof v.as.cents);
+        serbuf_append(b, &v.as.money.units, sizeof v.as.money.units);
+        serbuf_append(b, &v.as.money.currency, sizeof v.as.money.currency);
+        serbuf_append(b, &v.as.money.exponent, sizeof v.as.money.exponent);
         return 1;
     case VALUE_FILE:
         serbuf_u8(b, SER_FILE);
@@ -10629,6 +10806,7 @@ typedef struct {
     size_t len;
     size_t pos;
     int ok;
+    int version;   /* the payload's version, so readers can migrate v1 shapes */
 } SerReader;
 
 static int serread_bytes(SerReader *r, void *out, size_t n) {
@@ -10781,7 +10959,19 @@ static Value deserialize_value(SerReader *r, int depth) {
     case SER_MONEY: {
         Value v = {0};
         v.kind = VALUE_MONEY;
-        serread_bytes(r, &v.as.cents, sizeof v.as.cents);
+        if (r->version >= 2) {
+            serread_bytes(r, &v.as.money.units, sizeof v.as.money.units);
+            serread_bytes(r, &v.as.money.currency, sizeof v.as.money.currency);
+            serread_bytes(r, &v.as.money.exponent, sizeof v.as.money.exponent);
+        } else {
+            /* VERSION 1 WAS A BARE int64 OF CENTS. It is migrated rather than
+             * rejected: `serialize` is public, so v1 payloads are sitting in
+             * files right now, and a version bump that refused them would
+             * destroy exactly the archived data money exists to protect. */
+            long long cents = 0;
+            serread_bytes(r, &cents, sizeof cents);
+            v = value_money_cents(cents);
+        }
         return v;
     }
     case SER_ACTOR: {
@@ -10894,14 +11084,17 @@ static Value builtin_deserialize_value(Value value) {
         runtime_error_raise("deserialize: argument must be a string", 1003, "actor");
         return value_null();
     }
-    SerReader r = { value.as.string, string_length(value.as.string), 0, 1 };
+    SerReader r = { value.as.string, string_length(value.as.string), 0, 1, 0 };
+    int ver = 0;
     if (r.len < 4 ||
         serread_u8(&r) != SER_MAGIC0 || serread_u8(&r) != SER_MAGIC1 ||
-        serread_u8(&r) != SER_MAGIC2 || serread_u8(&r) != SER_VERSION) {
+        serread_u8(&r) != SER_MAGIC2 ||
+        (ver = serread_u8(&r)) < SER_VERSION_MIN || ver > SER_VERSION) {
         value_free(value);
         runtime_error_raise("deserialize: not a valid serialized value", 1003, "actor");
         return value_null();
     }
+    r.version = ver;
     Value result = deserialize_value(&r, 0);
     /* A clean frame consumes exactly its bytes; trailing data is corruption. */
     if (!r.ok || r.pos != r.len) {
@@ -10919,13 +11112,16 @@ static Value builtin_deserialize_value(Value value) {
  * on failure). Raises nothing — the caller chooses the message. Shared by the
  * actor receive() path with the deserialize() builtin's format. */
 static Value deserialize_from_buffer(const char *data, size_t len, int *ok) {
-    SerReader r = { data, len, 0, 1 };
+    SerReader r = { data, len, 0, 1, 0 };
+    int ver = 0;
     if (r.len < 4 ||
         serread_u8(&r) != SER_MAGIC0 || serread_u8(&r) != SER_MAGIC1 ||
-        serread_u8(&r) != SER_MAGIC2 || serread_u8(&r) != SER_VERSION) {
+        serread_u8(&r) != SER_MAGIC2 ||
+        (ver = serread_u8(&r)) < SER_VERSION_MIN || ver > SER_VERSION) {
         *ok = 0;
         return value_null();
     }
+    r.version = ver;
     Value result = deserialize_value(&r, 0);
     if (!r.ok || r.pos != r.len) {
         value_free(result);
@@ -16651,21 +16847,6 @@ static Value odbc_eval_close(AstExpr *expr) {
     return value_bool(1);
 }
 
-/* Exact decimal text for a money value. Money is integer cents, so this is
- * lossless -- which is the whole reason it is bound as text rather than
- * pushed through a double the way `number(m)` would. */
-static char *odbc_money_text(long long cents) {
-    char buffer[48];
-    long long whole = cents / 100;
-    int fraction = (int)llabs(cents % 100);
-    if (cents < 0 && whole == 0) {
-        snprintf(buffer, sizeof(buffer), "-0.%02d", fraction);
-    } else {
-        snprintf(buffer, sizeof(buffer), "%lld.%02d", whole, fraction);
-    }
-    return copy_string(buffer);
-}
-
 static char *odbc_datetime_text(DateTime datetime) {
     char buffer[64];
     if (datetime.time_only) {
@@ -16745,9 +16926,14 @@ static int odbc_bind_value(SQLHSTMT statement,
          * DecimalDigits 0 tells the driver the value has no fractional part,
          * and SQL Server duly rounds $12.34 to 12 -- which is the whole loss
          * this module refuses on the read side, reintroduced on the write. */
-        *owned_text = odbc_money_text(value.as.cents);
-        sql_type = SQL_DECIMAL;
-        decimal_digits = 2;
+        {
+            char mbuf[48];
+            money_render(value.as.money, (int)value.as.money.exponent,
+                         mbuf, sizeof(mbuf));
+            *owned_text = copy_string(mbuf);
+            sql_type = SQL_DECIMAL;
+            decimal_digits = (SQLSMALLINT)value.as.money.exponent;
+        }
         break;
     case VALUE_STRING: {
         text_length = string_length(value.as.string);
@@ -23062,6 +23248,180 @@ static Value builtin_source_outline_value(Value text, const char *path) {
     return result;
 }
 
+
+/* --- money.* : the currency table (docs/money_design.md section 10) --------
+ *
+ * ISO 4217 is built in, and a program may REGISTER a currency on top of it:
+ * an internal scrip, loyalty points, a redenomination that outpaces the
+ * release cycle.
+ *
+ * REMOVAL IS NOT OFFERED. Removing a currency does not unmake the values that
+ * already exist, and archived data is precisely what money is for -- DEM and
+ * ITL must still deserialize in 2040. `money.retire` marks a currency
+ * HISTORICAL instead: new values are refused, old ones still read, compute and
+ * display.
+ */
+static Value money_eval_call(AstExpr *expr) {
+    const char *name = expr->as.call.name;
+
+    if (strcmp(name, "currencies") == 0) {
+        if (expr->as.call.args.count != 0) {
+            runtime_error_raise("money.currencies expects no arguments", 1003, "money");
+            return value_null();
+        }
+        size_t total = CURRENCY_TABLE_COUNT + currency_registered_count;
+        Value *items = calloc(total, sizeof(Value));
+        if (!items) abort();
+        size_t n = 0;
+        for (size_t i = 0; i < CURRENCY_TABLE_COUNT; i++) {
+            RecordField *f = calloc(4, sizeof(RecordField));
+            if (!f) abort();
+            f[0].name = copy_string("code");      f[0].value = cell_alloc();
+            f[1].name = copy_string("numeric");   f[1].value = cell_alloc();
+            f[2].name = copy_string("exponent");  f[2].value = cell_alloc();
+            f[3].name = copy_string("historical");f[3].value = cell_alloc();
+            *f[0].value = value_string(currency_table[i].alpha);
+            *f[1].value = value_number((double)currency_table[i].numeric);
+            *f[2].value = value_number((double)currency_table[i].exponent);
+            *f[3].value = value_bool(0);
+            items[n++] = value_record(f, 4);
+        }
+        for (size_t i = 0; i < currency_registered_count; i++) {
+            RecordField *f = calloc(4, sizeof(RecordField));
+            if (!f) abort();
+            f[0].name = copy_string("code");      f[0].value = cell_alloc();
+            f[1].name = copy_string("numeric");   f[1].value = cell_alloc();
+            f[2].name = copy_string("exponent");  f[2].value = cell_alloc();
+            f[3].name = copy_string("historical");f[3].value = cell_alloc();
+            *f[0].value = value_string(currency_registered[i].alpha);
+            *f[1].value = value_number((double)currency_registered[i].numeric);
+            *f[2].value = value_number((double)currency_registered[i].exponent);
+            *f[3].value = value_bool(currency_registered[i].historical);
+            items[n++] = value_record(f, 4);
+        }
+        return value_array(items, n);
+    }
+
+    if (strcmp(name, "register") == 0) {
+        if (expr->as.call.args.count != 2) {
+            runtime_error_raise("money.register expects a code and an exponent",
+                                1003, "money");
+            return value_null();
+        }
+        Value code = eval_expr(expr->as.call.args.items[0]);
+        if (error_action_pending()) { value_free(code); return value_null(); }
+        Value expv = eval_expr(expr->as.call.args.items[1]);
+        if (error_action_pending()) { value_free(code); value_free(expv); return value_null(); }
+
+        if (code.kind != VALUE_STRING || expv.kind != VALUE_NUMBER) {
+            value_free(code); value_free(expv);
+            runtime_error_raise("money.register expects a code string and a number",
+                                1003, "money");
+            return value_null();
+        }
+        const char *alpha = code.as.string;
+        size_t len = strlen(alpha);
+        if (len < 2 || len > 6) {
+            value_free(code); value_free(expv);
+            runtime_error_raise("a currency code is 2 to 6 characters", 1003, "money");
+            return value_null();
+        }
+        for (size_t i = 0; i < len; i++) {
+            if (alpha[i] < 'A' || alpha[i] > 'Z') {
+                value_free(code); value_free(expv);
+                runtime_error_raise("a currency code must be upper-case letters",
+                                    1003, "money");
+                return value_null();
+            }
+        }
+        double e = expv.as.number;
+        if (!(e >= 0 && e <= 8) || e != (double)(long long)e) {
+            value_free(code); value_free(expv);
+            runtime_error_raise("a currency exponent is a whole number from 0 to 8",
+                                1003, "money");
+            return value_null();
+        }
+        /* Re-registering an existing code UPDATES its exponent rather than
+         * duplicating it, so setup code is safe to re-run -- the rule watchers
+         * already follow for re-declaration. */
+        for (size_t i = 0; i < currency_registered_count; i++) {
+            if (strcmp(currency_registered[i].alpha, alpha) == 0) {
+                currency_registered[i].exponent = (unsigned char)e;
+                currency_registered[i].historical = 0;
+                unsigned short num = currency_registered[i].numeric;
+                value_free(code); value_free(expv);
+                return value_number((double)num);
+            }
+        }
+        CurrencyReg *grown = realloc(currency_registered,
+                                     sizeof(CurrencyReg) * (currency_registered_count + 1));
+        if (!grown) abort();
+        currency_registered = grown;
+        CurrencyReg *slot = &currency_registered[currency_registered_count++];
+        memset(slot, 0, sizeof(*slot));
+        snprintf(slot->alpha, sizeof(slot->alpha), "%s", alpha);
+        slot->exponent = (unsigned char)e;
+        slot->historical = 0;
+        /* Registered codes sit ABOVE ISO's numeric range so they can never be
+         * mistaken for a standard one on the wire. */
+        slot->numeric = currency_next_code++;
+        unsigned short assigned = slot->numeric;
+        value_free(code); value_free(expv);
+        return value_number((double)assigned);
+    }
+
+    if (strcmp(name, "retire") == 0) {
+        if (expr->as.call.args.count != 1) {
+            runtime_error_raise("money.retire expects a currency code", 1003, "money");
+            return value_null();
+        }
+        Value code = eval_expr(expr->as.call.args.items[0]);
+        if (error_action_pending()) { value_free(code); return value_null(); }
+        if (code.kind != VALUE_STRING) {
+            value_free(code);
+            runtime_error_raise("money.retire expects a currency code string",
+                                1003, "money");
+            return value_null();
+        }
+        unsigned short num = 0;
+        unsigned char exp = 0;
+        if (!currency_find_alpha(code.as.string, &num, &exp, NULL)) {
+            char message[128];
+            snprintf(message, sizeof(message), "no such currency: %s", code.as.string);
+            value_free(code);
+            runtime_error_raise(message, 1003, "money");
+            return value_null();
+        }
+        for (size_t i = 0; i < currency_registered_count; i++) {
+            if (strcmp(currency_registered[i].alpha, code.as.string) == 0) {
+                currency_registered[i].historical = 1;
+                value_free(code);
+                return value_bool(1);
+            }
+        }
+        /* Retiring a BUILT-IN currency shadows it with a historical entry --
+         * the table itself is const, and a program marking ITL historical
+         * should not need a new interpreter. */
+        CurrencyReg *grown = realloc(currency_registered,
+                                     sizeof(CurrencyReg) * (currency_registered_count + 1));
+        if (!grown) abort();
+        currency_registered = grown;
+        CurrencyReg *slot = &currency_registered[currency_registered_count++];
+        memset(slot, 0, sizeof(*slot));
+        snprintf(slot->alpha, sizeof(slot->alpha), "%s", code.as.string);
+        slot->numeric = num;
+        slot->exponent = exp;
+        slot->historical = 1;
+        value_free(code);
+        return value_bool(1);
+    }
+
+    char message[128];
+    snprintf(message, sizeof(message), "invalid function call: money.%s", name);
+    runtime_error_raise(message, 1003, "money");
+    return value_null();
+}
+
 static Value eval_call(AstExpr *expr) {
     if (expr->as.call.receiver) {
         return eval_method_call(expr);
@@ -23155,6 +23515,13 @@ static Value eval_call(AstExpr *expr) {
          * value is handled above, so this only fires for the module itself. */
         if (strcmp(expr->as.call.library, "process") == 0) {
             return process_eval_call(expr);
+        }
+
+        /* money.* -- the currency table, unconditional like process and
+         * reflect (no `load`). A `money` variable bound to a record is handled
+         * above, so this only fires for the module itself. */
+        if (strcmp(expr->as.call.library, "money") == 0) {
+            return money_eval_call(expr);
         }
 
         /* NAP-9: reflect.* is an unconditional runtime reflection module (no
@@ -27814,10 +28181,29 @@ static Value eval_comparison(AstExpr *expr, Value left, Value right) {
         else if (strcmp(op, "!>=") == 0) result = cmp < 0;
         else if (strcmp(op, "!<=") == 0) result = cmp > 0;
     } else if (left.kind == VALUE_MONEY && right.kind == VALUE_MONEY) {
-        long long a = left.as.cents;
-        long long b = right.as.cents;
-        if (strcmp(op, "=") == 0) result = a == b;
-        else if (strcmp(op, "!=") == 0) result = a != b;
+        /* The equality/ordering split follows PLAT-EQ: equality answers a
+         * question about the values, ordering refuses where no order exists.
+         * "Is USD 10 equal to EUR 10?" is a real question with the answer no;
+         * "is USD 10 less than EUR 10?" is not a question at all without a
+         * rate, and answering it would be inventing one. */
+        int same_currency = left.as.money.currency == right.as.money.currency &&
+                            left.as.money.exponent == right.as.money.exponent;
+        long long a = left.as.money.units;
+        long long b = right.as.money.units;
+        if (!same_currency && strcmp(op, "=") != 0 && strcmp(op, "!=") != 0) {
+            char message[160];
+            const char *la = currency_alpha_of(left.as.money.currency);
+            const char *ra = currency_alpha_of(right.as.money.currency);
+            snprintf(message, sizeof(message),
+                     "cannot order money in different currencies (%s and %s)",
+                     la ? la : "?", ra ? ra : "?");
+            value_free(left);
+            value_free(right);
+            runtime_error_raise(message, 1003, "money");
+            return value_null();
+        }
+        if (strcmp(op, "=") == 0) result = same_currency && a == b;
+        else if (strcmp(op, "!=") == 0) result = !(same_currency && a == b);
         else if (strcmp(op, ">") == 0) result = a > b;
         else if (strcmp(op, "<") == 0) result = a < b;
         else if (strcmp(op, ">=") == 0) result = a >= b;
@@ -28282,14 +28668,34 @@ static Value eval_binary(AstExpr *expr) {
     if (left.kind == VALUE_MONEY || right.kind == VALUE_MONEY) {
         if (left.kind == VALUE_MONEY && right.kind == VALUE_MONEY &&
             (strcmp(op, "+") == 0 || strcmp(op, "-") == 0)) {
+            /* Adding dollars to euros is not an arithmetic question, it is a
+             * missing exchange rate -- so it raises rather than producing a
+             * number that looks like an answer. */
+            if (left.as.money.currency != right.as.money.currency ||
+                left.as.money.exponent != right.as.money.exponent) {
+                char message[160];
+                const char *la = currency_alpha_of(left.as.money.currency);
+                const char *ra = currency_alpha_of(right.as.money.currency);
+                snprintf(message, sizeof(message),
+                         "cannot %s money in different currencies (%s and %s)",
+                         strcmp(op, "+") == 0 ? "add" : "subtract",
+                         la ? la : "?", ra ? ra : "?");
+                value_free(left);
+                value_free(right);
+                runtime_error_raise(message, 1003, "money");
+                current_line = previous_line;
+                current_column = previous_column;
+                return value_null();
+            }
             /* Checked: signed overflow is undefined behaviour, not a wrap,
-             * and at cents scale `int64max + 0.01` returned the most NEGATIVE
-             * money value. Unreachable until phase 0 made such a value
-             * constructible; a raise is the only safe answer. */
-            long long cents = 0;
+             * and `int64max + one unit` returned the most NEGATIVE money
+             * value. A raise is the only safe answer. */
+            MoneyValue sum = left.as.money;
             int overflowed = strcmp(op, "+") == 0
-                ? __builtin_add_overflow(left.as.cents, right.as.cents, &cents)
-                : __builtin_sub_overflow(left.as.cents, right.as.cents, &cents);
+                ? __builtin_add_overflow(left.as.money.units,
+                                         right.as.money.units, &sum.units)
+                : __builtin_sub_overflow(left.as.money.units,
+                                         right.as.money.units, &sum.units);
             value_free(left);
             value_free(right);
             if (overflowed) {
@@ -28300,7 +28706,7 @@ static Value eval_binary(AstExpr *expr) {
             }
             current_line = previous_line;
             current_column = previous_column;
-            return value_money(cents);
+            return value_money(sum);
         }
         if (left.kind == VALUE_MONEY && right.kind == VALUE_NUMBER &&
             (strcmp(op, "*") == 0 || strcmp(op, "/") == 0)) {
@@ -28315,8 +28721,10 @@ static Value eval_binary(AstExpr *expr) {
             }
             const char *merr = NULL;
             long long scaled = 0;
-            int ok = money_scale_by(left.as.cents, number,
+            MoneyValue result_money = left.as.money;
+            int ok = money_scale_by(left.as.money.units, number,
                                     strcmp(op, "*") != 0, &scaled, &merr);
+            result_money.units = scaled;
             value_free(left);
             value_free(right);
             if (!ok) {
@@ -28328,13 +28736,15 @@ static Value eval_binary(AstExpr *expr) {
             }
             current_line = previous_line;
             current_column = previous_column;
-            return value_money(scaled);
+            return value_money(result_money);
         }
         if (left.kind == VALUE_NUMBER && right.kind == VALUE_MONEY && strcmp(op, "*") == 0) {
             const char *merr = NULL;
             long long scaled = 0;
-            int ok = money_scale_by(right.as.cents, left.as.number, 0,
+            MoneyValue result_money = right.as.money;
+            int ok = money_scale_by(right.as.money.units, left.as.number, 0,
                                     &scaled, &merr);
+            result_money.units = scaled;
             value_free(left);
             value_free(right);
             if (!ok) {
@@ -28346,7 +28756,7 @@ static Value eval_binary(AstExpr *expr) {
             }
             current_line = previous_line;
             current_column = previous_column;
-            return value_money(scaled);
+            return value_money(result_money);
         }
         value_free(left);
         value_free(right);
@@ -28841,7 +29251,24 @@ static Value apply_assignment_modifier(AstModifierUse modifier, Value value) {
         return eval_assign_modifier(modifier, value);
     }
 
-    if (!modifier.library && strcmp(modifier.name, "USD") == 0) {
+    unsigned short mod_ccy = 0;
+    unsigned char mod_exp = 0;
+    int mod_historical = 0;
+    if (!modifier.library &&
+        currency_find_alpha(modifier.name, &mod_ccy, &mod_exp, &mod_historical)) {
+        /* EVERY ISO 4217 code is a modifier, and so is anything registered.
+         * `USD` used to be a single hardcoded strcmp here; it is now one table
+         * lookup, and {EUR}, {JPY}, {KWD} arrived with it. modifier_resolve
+         * runs BEFORE this, so a program that defines its own {CHF} keeps it. */
+        if (mod_historical) {
+            char message[128];
+            snprintf(message, sizeof(message),
+                     "%s is a historical currency: existing values still read, "
+                     "but new ones cannot be created", modifier.name);
+            value_free(value);
+            runtime_error_raise(message, 1003, "money");
+            return value_null();
+        }
         /* PLAT-MONEY §11: REFLECTIVE construction. The modifier takes whatever
          * it is given and does the most accurate conversion available for that
          * type, rather than accepting one type and refusing the rest. Both
@@ -28862,28 +29289,57 @@ static Value apply_assignment_modifier(AstModifierUse modifier, Value value) {
         long long units = 0;
         int ok = 0;
 
+        int scale = (int)mod_exp + MONEY_GUARD_DIGITS;
         if (value.kind == VALUE_STRING) {
-            ok = money_parse_decimal(value.as.string, MONEY_SCALE_DEFAULT,
+            /* Authored text is rejected past the MINOR UNIT, not past the
+             * guard digits: the guard digits are internal headroom for
+             * intermediates, not precision an author may claim to have. */
+            ok = money_parse_decimal(value.as.string, (int)mod_exp,
                                      MONEY_EXCESS_REJECT, &units, &err);
+            if (ok) {
+                for (int g = 0; g < MONEY_GUARD_DIGITS; g++) {
+                    if (__builtin_mul_overflow(units, 10LL, &units)) {
+                        ok = 0; err = "money value is out of range"; break;
+                    }
+                }
+            }
         } else if (value.kind == VALUE_NUMBER) {
             if (!isfinite(value.as.number)) {
+                char message[128];
+                snprintf(message, sizeof(message),
+                         "%s modifier expects a finite number", modifier.name);
                 value_free(value);
-                runtime_error_raise("USD modifier expects a finite number",
-                                    1003, "money");
+                runtime_error_raise(message, 1003, "money");
                 return value_null();
             }
             char rendered[64];
             format_number(rendered, sizeof(rendered), value.as.number);
-            ok = money_parse_decimal(rendered, MONEY_SCALE_DEFAULT,
+            ok = money_parse_decimal(rendered, scale,
                                      MONEY_EXCESS_ROUND, &units, &err);
         } else if (value.kind == VALUE_MONEY) {
-            /* Already money at this scale: idempotent, so re-applying the
-             * modifier to a value that has it cannot change or lose anything. */
-            return value;
-        } else {
+            /* Money already. Same currency is idempotent. A DIFFERENT currency
+             * is refused rather than guessed at: re-tagging (asserting the
+             * units were always euros) and converting (applying a rate) are
+             * different operations with different consequences, and silently
+             * picking one would be inventing an exchange rate of 1. */
+            if (value.as.money.currency == mod_ccy) {
+                return value;
+            }
+            char message[160];
+            const char *had = currency_alpha_of(value.as.money.currency);
+            snprintf(message, sizeof(message),
+                     "cannot relabel %s as %s: converting needs an exchange rate",
+                     had ? had : "?", modifier.name);
             value_free(value);
-            runtime_error_raise("USD modifier expects a number or decimal text",
-                                1003, "money");
+            runtime_error_raise(message, 1003, "money");
+            return value_null();
+        } else {
+            char message[128];
+            snprintf(message, sizeof(message),
+                     "%s modifier expects a number or decimal text",
+                     modifier.name);
+            value_free(value);
+            runtime_error_raise(message, 1003, "money");
             return value_null();
         }
 
@@ -28892,7 +29348,7 @@ static Value apply_assignment_modifier(AstModifierUse modifier, Value value) {
             runtime_error_raise(err ? err : "invalid money value", 1003, "money");
             return value_null();
         }
-        return value_money(units);
+        return value_money(money_make(units, mod_ccy, mod_exp));
     }
     if (!modifier.library && strcmp(modifier.name, "date") == 0) {
         DateTime datetime;

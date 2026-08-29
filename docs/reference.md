@@ -1016,6 +1016,55 @@ Resolution:
 
 Built-in/core modifiers include:
 
+#### Currencies (*since 0.1.0-rc9*)
+
+**Every ISO 4217 code is an assignment modifier** — `{USD}`, `{EUR}`, `{JPY}`,
+`{KWD}` — and each carries its own minor-unit exponent, so JPY has no decimal
+places and KWD has three. A money value knows its currency:
+
+```basic
+u {USD}= "19.95"
+e {EUR}= "19.95"
+
+total = u + e          ' raises: cannot add money in different currencies
+if u < e then          ' raises: no order exists without a rate
+    print "unreachable"
+end if
+print u = e            ' false -- a real question, answered
+```
+
+Equality *answers* while ordering *refuses*, following the same idiom as
+compound values: "is USD 19.95 equal to EUR 19.95" is a question whose answer
+is no; "is it less than" is not a question at all without an exchange rate.
+Applying a different currency's modifier to existing money is refused for the
+same reason — re-tagging and converting are different operations, and picking
+one silently would invent a rate of 1.
+
+**Storage carries four guard digits below the minor unit**, so intermediates
+below the cent survive a multi-step calculation and are rounded once, at
+display: `(100.00 / 3) * 3` is `100.00`, where a cents-only representation
+gives `99.99`. The cost is range — USD spans about ±$9.22 trillion, JPY about
+±¥922 trillion, KWD about ±922 billion. Beyond that, arithmetic **raises**
+rather than wrapping.
+
+The built-in table is the **current** ISO 4217 list, so withdrawn currencies
+(ITL, DEM, FRF) are not in it. Register what you need:
+
+- `money.currencies()` → array of `{code, numeric, exponent, historical}`
+- `money.register(code, exponent)` → the assigned numeric code. Codes are 2–6
+  upper-case letters and exponents 0–8; registered codes sit above ISO's
+  numeric range. Re-registering updates rather than duplicating, so setup code
+  is safe to re-run.
+- `money.retire(code)` → marks a currency **historical**: new values are
+  refused, existing ones still read, compute and display. There is no removal,
+  because removing a currency does not unmake the values that already exist
+  and archived data is what money is for. Re-registering revives it.
+
+A serialized money value carries its currency **and its exponent**, so it is
+self-describing: actors are separate processes and a currency registered in
+the parent is not registered in the child. `SER_VERSION` 1 payloads (a bare
+integer of cents) still deserialize, rescaled and assumed USD.
+
 #### `USD` conversion and rounding (*since 0.1.0-rc9*)
 
 `USD` is **reflective**: it takes whatever it is given and does the most
@@ -1024,7 +1073,7 @@ integer parse of decimal text, and differ only in what an excess decimal means.
 
 | Given | Converted by | Excess decimals |
 |---|---|---|
-| decimal text (`"19.95"`) | parsed directly to cents | **refused** — the author wrote a value money cannot hold |
+| decimal text (`"19.95"`) | parsed directly to scaled units | **refused** — the author wrote a value money cannot hold |
 | a number (`19.95`, or computed) | rendered to its shortest round-trip decimal, then parsed | **rounded**, half-even |
 | money | returned unchanged (idempotent) | — |
 | anything else | refused | — |
@@ -1044,9 +1093,11 @@ becomes `0.12` and `0.155` becomes `0.16`. Before rc9 the rule depended on the
 *binary* representation of the literal rather than on the text — `0.125` gave
 `0.13` while `0.145` gave `0.14` — which looked like half-even and was not.
 
-Range is int64 cents: `-92233720368547758.08` to `92233720368547758.07`
-inclusive. Beyond that, and on a non-finite number, `USD` raises rather than
-wrapping or saturating.
+Range is int64 at the storage scale, so it depends on the currency: about
+±$9.22 trillion for USD, ±¥922 trillion for JPY. Beyond that, and on a
+non-finite number, a currency modifier raises rather than wrapping or
+saturating. Authored text is capped at the **minor unit** — the guard digits
+are internal headroom for intermediates, not precision an author may claim.
 
 - Assignment: `USD`, `date`, `time`, `datetime`, `year`, `month`, `day`, `hour`, `minute`, `second`, `file`, `dir`, `trimmed`/`trim`, `lowered`/`lower`, `uppered`/`upper` (both spellings accepted), `split`, `join`, `length`, `number`, `string`
 - Comparison: `caseless`, date/time lens comparisons

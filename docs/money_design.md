@@ -1,6 +1,6 @@
 # The money type (PLAT-MONEY)
 
-Status: **ruled 2026-08-29. Phases 0 and 1 shipped; phases 2-4 outstanding.** The governing requirement,
+Status: **ruled 2026-08-29. Phases 0, 1 and 2 shipped; phases 3-4 outstanding.** The governing requirement,
 stated by the project owner: money must be **highly accurate and highly safe**.
 Every ruling below resolves toward refusing an operation rather than returning
 a number that might be wrong. This document records the
@@ -168,10 +168,18 @@ selectable.
 
 ## 6. Compatibility
 
-Two facts, both verified:
+Two facts, both verified — and **one of them turned out to be wrong**, which
+is recorded rather than quietly corrected:
 
-- **`serialize`/`deserialize` are public builtins**, not internal actor
-  plumbing, so serialized payloads persist on disk across binary versions.
+- `serialize`/`deserialize` are public builtins, so it looked as though
+  payloads would be sitting on disk. **They cannot be.** `write`/`read`
+  truncate at the first NUL, and `bytes()` returns a file's *size*, not its
+  content — gBASIC has no binary-safe file read at all, so a serialized value
+  can only travel in memory (actors) or hex-encoded. The v1 migration is
+  therefore *defensive* rather than load-bearing, which is a smaller exposure
+  than this document originally claimed. It is still implemented and tested,
+  because it costs nothing and the claim it guards against would be expensive
+  to get wrong.
 - **The reader requires an exact `SER_VERSION` match.** A version bump would
   make v1 payloads fail with "not a valid serialized value" rather than
   migrate. So the reader must **accept v1 and rescale** (×10^4, currency = USD,
@@ -194,7 +202,7 @@ Each phase is shippable alone and each has a test that fails without it.
 |---|---|---|
 | **0** | Exact construction from decimal text; excess digits rejected | **SHIPPED 0.1.0-rc9.** Unblocks the test for phase 1. Small, and alone it makes the existing range reachable. |
 | **1** | `*` and `/` stay in integer arithmetic; overflow raises | **SHIPPED 0.1.0-rc9.** The silent-corruption fix, and **it must precede phase 2** — guard digits cut the range where the double path is safe by 10,000×, from $90tn to $9bn. Write it **parameterized on scale** even though scale is still 2, so phase 2 does not rewrite it. |
-| **2** | Currency tag, per-currency exponent, guard digits, `SER_VERSION` 2 | The representation change. Needed this ruling first. |
+| **2** | Currency tag, per-currency exponent, guard digits, `SER_VERSION` 2 | **SHIPPED 0.1.0-rc9.** The representation change. Needed this ruling first. |
 | **3** | FX: dated rates, `convert` | Depends on the tag. A rate is a *dated* fact — converting without an as-of date gives an unreproducible number, which is an audit problem, not an arithmetic one. |
 | **4** | `finance` library: NPV, IRR, XIRR, PMT, PV, FV, RATE, NPER, amortization, depreciation | The actual business-operations gap. See §8. |
 
@@ -272,6 +280,34 @@ The red proof is the one phase 0 existed to enable: against the phase-0 binary,
 `276701161105643.28`; phase 1 gives `...095.50` and `...643.25`, matching
 integer arithmetic done outside gBASIC. `45000000000000.01 * 2` is identical on
 both, which is the control proving a naively-chosen magnitude asserts nothing.
+
+## 8c. What phase 2 found (shipped 2026-08-29)
+
+**The range change is real and it broke the phase 0 and 1 fixtures**, which is
+the most concrete demonstration of the cost available. Guard digits store four
+extra decimal places, so USD's int64 ceiling fell 10,000× — from about
+$92 quadrillion at cents scale to **$9.22 trillion**. Every fixture written
+against the old boundary overflowed and was rebaselined.
+
+**The built-in table is CURRENT currencies only.** `iso-codes` ships the live
+ISO 4217 list, so ITL, DEM, FRF, HRK and every other withdrawn currency is
+simply absent. Working with historical data means registering them — which is
+the clearest justification the registry has, and was found by writing a test
+that assumed otherwise.
+
+**`money.retire` shadows built-ins** rather than editing the table, so a
+program can mark a currency historical without a new interpreter, and
+re-registering revives it. Retirement is a policy, not a one-way door.
+
+**Guard digits closed a gap phase 1 had pinned as open.** `(100/3)*3` was
+`99.99` and is now `100.00`; the phase-1 fixture asserted the old answer and
+was updated. What remains for phase 4 is *allocation* — splitting 100.00 into
+three payable amounts that sum back exactly — which is a different problem
+from arithmetic not losing money.
+
+**`odbc_money_text` is gone**, superseded by the scale-aware renderer. ODBC
+writes at the currency's minor unit, rounded by gBASIC's half-even rule rather
+than by whatever the driver would do with excess digits.
 
 ## 9. Tests to pin
 

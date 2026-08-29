@@ -9,6 +9,52 @@ language surface may still change between releases.
 
 ## Unreleased
 
+- **`money` carries its currency, with guard digits (PLAT-MONEY phase 2).**
+  `{USD}` was a single hardcoded `strcmp` in the modifier dispatch and cents
+  were hardcoded everywhere else, so JPY (no minor unit) and KWD (three) had no
+  correct representation at all. `{USD}` is now one table lookup, and **all 178
+  ISO 4217 currencies arrived with it**, each with its own minor-unit exponent.
+
+  A money value knows its currency. `USD + EUR` raises, ordering them raises,
+  and `USD 19.95 = EUR 19.95` answers **false** — equality is a real question,
+  ordering is not one without a rate. Applying a different currency's modifier
+  to existing money is refused rather than treated as a re-tag, because
+  re-tagging and converting are different operations and picking one silently
+  would invent a rate of 1.
+
+  **Storage carries four guard digits below the minor unit**, so intermediates
+  survive a multi-step calculation and round once at display: `(100.00/3)*3` is
+  `100.00`, where cents gave `99.99`. That closed a gap phase 1 had pinned as
+  open. **The cost is range, and it is real**: USD's ceiling fell 10,000×, from
+  ~$92 quadrillion to ~$9.22 trillion. It broke the phase 0 and 1 fixtures,
+  which is the most concrete demonstration of the trade available.
+
+  `money.register(code, exponent)`, `money.retire(code)` and
+  `money.currencies()` extend the table at run time — an internal scrip,
+  loyalty points, or a withdrawn currency, since **the built-in table is the
+  *current* ISO list** and ITL, DEM and FRF are simply not in it. There is no
+  removal: `retire` marks a currency historical (new values refused, existing
+  ones still read), because removing one does not unmake the values that exist
+  and archived data is what money is for.
+
+  `SER_VERSION` is 2, carrying units, currency **and** exponent so a value is
+  self-describing — actors are fork+exec, so a currency registered in the
+  parent is not registered in the child. v1 payloads still deserialize,
+  rescaled and assumed USD; the test reads a payload the phase-1 binary
+  actually wrote.
+
+  **A claim in the design doc turned out to be wrong and is corrected rather
+  than quietly dropped.** It justified the migration partly on payloads
+  "sitting in files right now" — they cannot be: `read()` truncates at the
+  first NUL and `bytes()` returns a file's size, so gBASIC has **no
+  binary-safe file read at all** and a serialized value can only travel in
+  memory or hex-encoded. Recorded in `DOGFOOD.md` as a missing capability.
+
+  The currency table is generated from the system's `iso-codes` by
+  `tools/make_currency_table.py` into a **committed** `src/currency_table.h`,
+  so a build never depends on that package — a currency appearing or vanishing
+  with the build machine would be a correctness problem, not a packaging one.
+
 - **`money` arithmetic stays in integers (PLAT-MONEY phase 1).** `money * n`
   and `money / n` computed `(double)cents * n` and then `round_to_cents(amount
   / 100.0)` — a divide and a multiply by 100 in floating point, for an

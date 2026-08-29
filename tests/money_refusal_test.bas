@@ -28,12 +28,12 @@ check("sub-cent authored text is refused", error.message, "money text has more d
 error.clear()
 
 b {USD}= "0.125"
-check("even a single excess digit is refused", error.message, "money text has more decimal places than the currency allows")
+check("a sub-cent authored digit is refused", error.message, "money text has more decimal places than the currency allows")
 error.clear()
 
 ' ------------------------------------------------------------- range
-c {USD}= "92233720368547758.08"
-check("one cent past int64 max is refused", error.message, "money value is out of range")
+c {USD}= "9223372036854.78"
+check("past USD's ceiling is refused", error.message, "money value is out of range")
 error.clear()
 
 d {USD}= "999999999999999999999"
@@ -87,8 +87,8 @@ n {USD}= 1.234
 check("the SAME excess precision, COMPUTED, is accepted", n, "1.23")
 error.clear()
 
-o {USD}= "92233720368547758.07"
-check("int64 max itself is accepted", o, "92233720368547758.07")
+o {USD}= "9223372036854.77"
+check("just inside the ceiling is accepted", o, "9223372036854.77")
 error.clear()
 
 p {USD}= "12"

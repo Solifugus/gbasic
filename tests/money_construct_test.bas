@@ -21,30 +21,34 @@ function check(label, got, want)
 end function
 
 ' ------------------------------------------------- the range, from text
-' The value gdash reported becoming ...76, which is the case the whole phase
-' exists for. NOTE it is not actually the top of the range -- int64 max is
-' 9223372036854775807 CENTS, so the real limit is a thousand times higher, and
-' both are tested because the double path fails well below the type's limit.
-gd {USD}= "92233720368547.75"
-check("gdash's value survives from text", gd, "92233720368547.75")
+' THE RANGE MOVED IN PHASE 2 and this is where it shows. Guard digits store
+' four extra decimal places, so USD's int64 limit fell by 10,000x -- from
+' about $92 quadrillion at cents scale to $9.22 TRILLION. That is the
+' documented cost of carrying intermediates below the minor unit, and it broke
+' these very fixtures, which is the most concrete demonstration available.
+gd {USD}= "92233720368.75"
+check("a large value survives from text", gd, "92233720368.75")
 
 ' int64's range is ASYMMETRIC: the most negative value is one greater in
 ' magnitude than the most positive. Building the magnitude signed and negating
 ' at the end would refuse a value the type can hold -- a bug this fixture
 ' caught in the first version of the parser, and a second one in the renderer,
 ' which printed "--92233720368547758.-8" because negating LLONG_MIN overflows.
-top {USD}= "92233720368547758.07"
-check("int64 max, exactly", top, "92233720368547758.07")
+' NOTE these are written to CENT precision, not to the guard digits: authored
+' text is capped at the minor unit, because the guard digits are internal
+' headroom for intermediates rather than precision an author may claim.
+top {USD}= "9223372036854.77"
+check("the largest authorable USD value", top, "9223372036854.77")
 
-bottom {USD}= "-92233720368547758.08"
-check("int64 min, exactly -- one greater in magnitude", bottom, "-92233720368547758.08")
+bottom {USD}= "-9223372036854.77"
+check("and the smallest", bottom, "-9223372036854.77")
 
 ' ------------------------------------------- the range, from a literal
 ' The double for this value renders back to the same decimal under
 ' shortest-round-trip (PLAT-NUMFMT), so the literal route recovers it too.
 ' This is what makes the fix reach ordinary code and not only quoted text.
-lit {USD}= 92233720368547.75
-check("the same value survives from a literal", lit, "92233720368547.75")
+lit {USD}= 92233720368.75
+check("the same value survives from a literal", lit, "92233720368.75")
 check("both routes agree", string(lit) = string(gd), true)
 
 ' ------------------------------------------------------ ordinary values

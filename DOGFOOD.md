@@ -3361,3 +3361,29 @@ from this and neither is silent:
 - **Workaround:** none applied; re-running passed. Recorded so the next person
   who sees a red `run_stridx` in an otherwise-green gate checks the ratio
   before hunting a regression.
+
+## 2026-08-29 — CC — while: testing the money v1 serialization migration
+- **Type:** missing-feature
+- **Severity:** medium
+- **What:** **gBASIC has no binary-safe file read.** `read(path)` truncates at
+  the first NUL, and `bytes(path)` returns the file's SIZE rather than its
+  content, so there is no way to get arbitrary bytes off disk intact:
+
+  ```basic
+  s = "a" + from_bytes([0]) + "b"
+  write(p, s)
+  print byte_count(read(p))      ' 1, not 3
+  ```
+
+  Verified pre-existing (identical on the phase-0 binary), and it has a
+  consequence worth naming: `serialize` produces binary, so **a serialized
+  value cannot be persisted to a file and read back**. It can only travel in
+  memory between actors, or hex-encoded by hand. That corrected a claim in
+  `docs/money_design.md`, which had justified the v1 migration partly on
+  payloads "sitting in files right now" — they cannot be.
+
+  `write` is binary-safe (the three bytes reach the file); only the read side
+  is lossy.
+- **Workaround:** `hex_encode`/`hex_decode` around the payload, which is what
+  `tests/money/v1_payload.hex` does. A `read_bytes` builtin returning an array
+  of byte values, or making `read` binary-safe, would close this properly.
