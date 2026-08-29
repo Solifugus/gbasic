@@ -83,12 +83,29 @@ ok write_path_unchanged
 # `USD` raised from the start, four lines from `date` in the same dispatch
 # function. That neighbouring inconsistency is what made this a bug rather
 # than a policy.
+#
+# THE MESSAGE MOVED IN rc9 AND THE MOVE IS THE POINT. PLAT-MONEY phase 0 made
+# `USD` reflective: it now accepts decimal TEXT as well as a number, so "nope"
+# is no longer a type error -- it reaches the parser and fails there, with a
+# message that says what is actually wrong. Both spellings are still a raise,
+# which is what this tier exists to protect, so the two cases below assert the
+# type refusal and the parse refusal SEPARATELY rather than loosening the
+# match to whatever comes out.
 printf 'program main( args )\n    m{USD} = "nope"\nend program\n' >"$scratch/m.bas"
 if ./gbasic "$scratch/m.bas" >/dev/null 2>"$scratch/err"; then
-    fail "USD (must still raise)"
+    fail "USD (unparseable text must still raise)"
 fi
-grep -qF "USD modifier expects a number" "$scratch/err" \
+grep -qF "money text is not a number" "$scratch/err" \
     || fail "USD (message changed: $(cat "$scratch/err"))"
+
+# A value that is not text and not a number is still a TYPE refusal -- the
+# reflective modifier widened what it accepts, it did not stop refusing.
+printf 'program main( args )\n    m{USD} = [1, 2]\nend program\n' >"$scratch/m2.bas"
+if ./gbasic "$scratch/m2.bas" >/dev/null 2>"$scratch/err"; then
+    fail "USD (a wrong type must still raise)"
+fi
+grep -qF "USD modifier expects a number or decimal text" "$scratch/err" \
+    || fail "USD type refusal (message changed: $(cat "$scratch/err"))"
 ok usd_unchanged
 
 printf 'run_silent_traps: %d cases passed\n' "$cases"

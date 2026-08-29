@@ -3475,6 +3475,200 @@ static int value_number_for_arithmetic(Value value, const char *op, double *out_
     return 0;
 }
 
+/* --- PLAT-MONEY phase 0: exact construction (docs/money_design.md) ---------
+ *
+ * A money value is an exact int64 of scaled units, and until this landed there
+ * was NO WAY TO PUT AN EXACT VALUE IN: the `{USD}` modifier took a number,
+ * which is already a double, so `92233720368547.75` became ...76 and the
+ * type's own int64 range was unreachable through its own constructor.
+ *
+ * Everything now converges on ONE operation -- exact integer parse of decimal
+ * text -- and the reflective modifier's job is only to get text for whatever
+ * it was handed (§11 of the design):
+ *
+ *   a string           parsed directly
+ *   a computed number  rendered by format_number FIRST, which emits the
+ *                      SHORTEST decimal that reads back as the same double
+ *                      (PLAT-NUMFMT), then parsed
+ *
+ * The second route is what makes a literal exact without touching the parser:
+ * `92233720368547.75` is a distinguishable double whose shortest rendering is
+ * that same text, so parsing the text recovers the authored value. Measured,
+ * not assumed -- see tests/money_construct_test.bas.
+ *
+ * IT ALSO DISSOLVES THE OLD ROUNDING AMBIGUITY. `round_to_cents` was
+ * half-away-from-zero applied to a BINARY value, so `0.125 -> 0.13` while
+ * `0.145 -> 0.14` -- the rule depended on the literal's binary representation
+ * rather than on the text the author wrote. Parsing decimal text has no binary
+ * representation left to be ambiguous about.
+ *
+ * SCALE IS A PARAMETER even though every caller passes 2 today. Phase 2 gives
+ * each currency its own exponent plus four guard digits, and this function
+ * must not need rewriting when it does.
+ */
+
+/* Phase 0 stores cents. Phase 2 replaces this with a per-currency exponent
+ * plus four guard digits (docs/money_design.md §3); every use is already
+ * routed through the constant so that change has one site here. */
+#define MONEY_SCALE_DEFAULT 2
+#define MONEY_MAX_DIGITS 40
+
+typedef enum {
+    MONEY_EXCESS_REJECT,   /* authored text: the author wrote what money cannot hold */
+    MONEY_EXCESS_ROUND     /* a computed value: rounding below the scale is harmless */
+} MoneyExcess;
+
+/* Round-half-even on a decision digit plus whether anything nonzero follows.
+ * Half-even is the financial default (§5): it is unbiased across many
+ * roundings, where half-up drifts upward. */
+static int money_round_half_even(long long units, int decision, int sticky) {
+    if (decision < 5) return 0;
+    if (decision > 5 || sticky) return 1;
+    return (units & 1) != 0;          /* exactly half: round to even */
+}
+
+/* Parse decimal text to an exact int64 count of units at `scale`.
+ * Returns 1 on success. On failure fills `*err` with a stable message.
+ * Accepts leading/trailing space, an optional sign, digits with an optional
+ * fraction, and an optional exponent -- the last because format_number emits
+ * `1e-05` for small values, so refusing exponents would break ordinary small
+ * amounts arriving by the computed route. */
+static int money_parse_decimal(const char *text,
+                               int scale,
+                               MoneyExcess excess,
+                               long long *out,
+                               const char **err) {
+    *err = NULL;
+    const char *p = text;
+    while (*p == ' ' || *p == '\t') p++;
+
+    int negative = 0;
+    if (*p == '+' || *p == '-') {
+        negative = (*p == '-');
+        p++;
+    }
+
+    /* Collect significant digits and the decimal exponent that goes with them,
+     * without evaluating anything -- this stage is pure bookkeeping so no
+     * rounding decision is made before we know the full picture. */
+    char digits[MONEY_MAX_DIGITS];
+    int ndigits = 0;
+    int seen_digit = 0;
+    int point_exp = 0;          /* digits seen after the decimal point */
+    int after_point = 0;
+    int dropped_nonzero = 0;    /* significant digits past the buffer */
+
+    for (; *p; p++) {
+        if (*p == '.') {
+            if (after_point) { *err = "money text has more than one decimal point"; return 0; }
+            after_point = 1;
+            continue;
+        }
+        if (*p < '0' || *p > '9') break;
+        seen_digit = 1;
+        if (after_point) point_exp++;
+        if (ndigits == 0 && *p == '0') continue;      /* skip leading zeros */
+        if (ndigits < MONEY_MAX_DIGITS) {
+            digits[ndigits++] = *p;
+        } else {
+            if (*p != '0') dropped_nonzero = 1;
+            if (!after_point) point_exp--;            /* keep magnitude */
+        }
+    }
+    if (!seen_digit) { *err = "money text is not a number"; return 0; }
+
+    int exponent = 0;
+    if (*p == 'e' || *p == 'E') {
+        p++;
+        int esign = 1;
+        if (*p == '+' || *p == '-') { esign = (*p == '-') ? -1 : 1; p++; }
+        if (*p < '0' || *p > '9') { *err = "money text has a malformed exponent"; return 0; }
+        int e = 0;
+        for (; *p >= '0' && *p <= '9'; p++) {
+            if (e < 100000) e = e * 10 + (*p - '0');   /* clamp; overflow caught below */
+        }
+        exponent = esign * e;
+    }
+    while (*p == ' ' || *p == '\t') p++;
+    if (*p != '\0') { *err = "money text has trailing characters"; return 0; }
+
+    /* Where the decimal point sits relative to the collected digits, once the
+     * requested scale is applied. Positive => append zeros; negative => that
+     * many digits fall below the scale. */
+    int shift = scale - point_exp + exponent;
+
+    /* Accumulate the MAGNITUDE unsigned, because int64's range is asymmetric:
+     * the most negative value is one greater in magnitude than the most
+     * positive, so -92233720368547758.08 is representable while its positive
+     * twin is not. Accumulating signed and negating at the end would refuse a
+     * value the type can hold. */
+    unsigned long long mag = 0;
+    const unsigned long long limit = negative
+        ? 9223372036854775808ULL      /* |LLONG_MIN| */
+        : 9223372036854775807ULL;     /* LLONG_MAX */
+    int i = 0;
+    int keep = ndigits + shift;          /* digits that survive at this scale */
+
+    if (keep <= 0) {
+        /* Everything is below the scale. Still a rounding decision: 0.6 cents
+         * at scale 2 is 0.01, not 0. */
+        if (excess == MONEY_EXCESS_REJECT && (ndigits > 0 || dropped_nonzero)) {
+            *err = "money text has more decimal places than the currency allows";
+            return 0;
+        }
+        int decision = (keep == 0 && ndigits > 0) ? digits[0] - '0' : 0;
+        int sticky = dropped_nonzero || ndigits > (keep == 0 ? 1 : 0);
+        mag = money_round_half_even(0, decision, sticky) ? 1u : 0u;
+        *out = negative ? -(long long)mag : (long long)mag;
+        return 1;
+    }
+
+    for (i = 0; i < keep; i++) {
+        unsigned d = (unsigned)((i < ndigits) ? digits[i] - '0' : 0);
+        if (mag > (limit - d) / 10ULL) {
+            *err = "money value is out of range";
+            return 0;
+        }
+        mag = mag * 10ULL + d;
+    }
+
+    if (keep < ndigits) {
+        /* Digits fall below the scale. */
+        if (excess == MONEY_EXCESS_REJECT) {
+            *err = "money text has more decimal places than the currency allows";
+            return 0;
+        }
+        int decision = digits[keep] - '0';
+        int sticky = dropped_nonzero;
+        for (i = keep + 1; !sticky && i < ndigits; i++) {
+            if (digits[i] != '0') sticky = 1;
+        }
+        if (money_round_half_even((long long)(mag & 1ULL), decision, sticky)) {
+            if (mag >= limit) {
+                *err = "money value is out of range";
+                return 0;
+            }
+            mag++;
+        }
+    } else if (dropped_nonzero) {
+        /* Significant digits were past the buffer AND above the scale: the
+         * value is far larger than int64 can hold. */
+        *err = "money value is out of range";
+        return 0;
+    }
+
+    if (negative) {
+        /* Build the negative directly rather than negating, so |LLONG_MIN|
+         * never has to exist as a positive long long. */
+        *out = (mag == 9223372036854775808ULL)
+            ? LLONG_MIN
+            : -(long long)mag;
+    } else {
+        *out = (long long)mag;
+    }
+    return 1;
+}
+
 static long long round_to_cents(double amount) {
     double scaled = amount * 100.0;
     return scaled >= 0 ? (long long)(scaled + 0.5) : (long long)(scaled - 0.5);
@@ -9584,13 +9778,19 @@ static Value builtin_string_value(Value value) {
         return value_string(buffer);
     }
     case VALUE_MONEY: {
+        /* The magnitude is taken UNSIGNED because int64 is asymmetric: negating
+         * LLONG_MIN overflows, and it is a value money can legitimately hold
+         * (-92233720368547758.08). Before exact construction landed there was
+         * no way to build it, so this rendered as "--92233720368547758.-8". */
         long long cents = value.as.cents;
-        long long abs_cents = cents < 0 ? -cents : cents;
+        unsigned long long abs_cents = cents < 0
+            ? (unsigned long long)(-(cents + 1)) + 1ULL
+            : (unsigned long long)cents;
         snprintf(buffer,
                  sizeof(buffer),
-                 cents < 0 ? "-%lld.%02lld" : "%lld.%02lld",
-                 abs_cents / 100,
-                 abs_cents % 100);
+                 cents < 0 ? "-%llu.%02llu" : "%llu.%02llu",
+                 abs_cents / 100ULL,
+                 abs_cents % 100ULL);
         value_free(value);
         return value_string(buffer);
     }
@@ -28420,14 +28620,57 @@ static Value apply_assignment_modifier(AstModifierUse modifier, Value value) {
     }
 
     if (!modifier.library && strcmp(modifier.name, "USD") == 0) {
-        if (value.kind != VALUE_NUMBER) {
-            runtime_error_raise("USD modifier expects a number", 1003, "money");
+        /* PLAT-MONEY §11: REFLECTIVE construction. The modifier takes whatever
+         * it is given and does the most accurate conversion available for that
+         * type, rather than accepting one type and refusing the rest. Both
+         * routes end in the same exact integer parse; they differ only in how
+         * the text is obtained, and in what an excess decimal MEANS:
+         *
+         *   text      the author wrote it, so more precision than the currency
+         *             holds is a bug in their input -> REJECT
+         *   number    computed values carry seventeen digits as a matter of
+         *             course (price * 1.08 always will), so refusing them would
+         *             make the type unusable -> ROUND, half-even
+         *
+         * A number is rendered by format_number first, which emits the SHORTEST
+         * decimal that reads back as the same double (PLAT-NUMFMT). That is what
+         * makes an ordinary literal exact without touching the parser: the double
+         * for 92233720368547.75 renders back to that same text. */
+        const char *err = NULL;
+        long long units = 0;
+        int ok = 0;
+
+        if (value.kind == VALUE_STRING) {
+            ok = money_parse_decimal(value.as.string, MONEY_SCALE_DEFAULT,
+                                     MONEY_EXCESS_REJECT, &units, &err);
+        } else if (value.kind == VALUE_NUMBER) {
+            if (!isfinite(value.as.number)) {
+                value_free(value);
+                runtime_error_raise("USD modifier expects a finite number",
+                                    1003, "money");
+                return value_null();
+            }
+            char rendered[64];
+            format_number(rendered, sizeof(rendered), value.as.number);
+            ok = money_parse_decimal(rendered, MONEY_SCALE_DEFAULT,
+                                     MONEY_EXCESS_ROUND, &units, &err);
+        } else if (value.kind == VALUE_MONEY) {
+            /* Already money at this scale: idempotent, so re-applying the
+             * modifier to a value that has it cannot change or lose anything. */
+            return value;
+        } else {
             value_free(value);
+            runtime_error_raise("USD modifier expects a number or decimal text",
+                                1003, "money");
             return value_null();
         }
-        long long cents = round_to_cents(value.as.number);
+
         value_free(value);
-        return value_money(cents);
+        if (!ok) {
+            runtime_error_raise(err ? err : "invalid money value", 1003, "money");
+            return value_null();
+        }
+        return value_money(units);
     }
     if (!modifier.library && strcmp(modifier.name, "date") == 0) {
         DateTime datetime;

@@ -1,6 +1,6 @@
 # The money type (PLAT-MONEY)
 
-Status: **ruled 2026-08-29, not yet implemented.** The governing requirement,
+Status: **ruled 2026-08-29. Phase 0 shipped; phases 1-4 outstanding.** The governing requirement,
 stated by the project owner: money must be **highly accurate and highly safe**.
 Every ruling below resolves toward refusing an operation rather than returning
 a number that might be wrong. This document records the
@@ -192,7 +192,7 @@ Each phase is shippable alone and each has a test that fails without it.
 
 | Phase | Work | Why here |
 |---|---|---|
-| **0** | Exact construction from decimal text; excess digits rejected | Unblocks the test for phase 1. Small, and alone it makes the existing range reachable. |
+| **0** | Exact construction from decimal text; excess digits rejected | **SHIPPED 0.1.0-rc9.** Unblocks the test for phase 1. Small, and alone it makes the existing range reachable. |
 | **1** | `*` and `/` stay in integer arithmetic; overflow raises | The silent-corruption fix, and **it must precede phase 2** — guard digits cut the range where the double path is safe by 10,000×, from $90tn to $9bn. Write it **parameterized on scale** even though scale is still 2, so phase 2 does not rewrite it. |
 | **2** | Currency tag, per-currency exponent, guard digits, `SER_VERSION` 2 | The representation change. Needed this ruling first. |
 | **3** | FX: dated rates, `convert` | Depends on the tag. A rate is a *dated* fact — converting without an as-of date gives an unreproducible number, which is an audit problem, not an arithmetic one. |
@@ -215,6 +215,33 @@ payments do not sum to the principal is wrong in a way a customer notices.
 Allocation belongs here too — `100.00 / 3` currently gives `33.33`, and `× 3`
 gives `99.99`. A splitting primitive whose parts provably sum back to the whole
 is a phase-4 requirement, not a nicety.
+
+## 8a. What phase 0 found (shipped 2026-08-29)
+
+Two bugs the fixtures caught that reading had not, both from the same cause:
+**int64's range is asymmetric** — the most negative value is one greater in
+magnitude than the most positive.
+
+- The first parser accumulated the magnitude *signed* and negated at the end,
+  which refused `-92233720368547758.08` — a value the type can hold.
+- `format_money` rendered that same value as `--92233720368547758.-8`, because
+  negating `LLONG_MIN` overflows. **Pre-existing**, and unreachable until exact
+  construction made the value constructible.
+
+Both now build the magnitude unsigned and construct the sign explicitly.
+`odbc_money_text` was checked against the same boundary and was already
+correct, since dividing `LLONG_MIN` by 100 does not overflow.
+
+Also corrected: gdash's example value, `92233720368547.75`, is **not** the top
+of the range — int64 max is that many *cents*, so the real limit is a thousand
+times higher at `92233720368547758.07`. The example is still a valid
+demonstration of defect 1 (the double loses it well below the type's limit),
+and the suite now pins both.
+
+**The one golden that moved** was `run_silent_traps.sh`, which pinned "USD
+modifier expects a number" for `m{USD} = "nope"`. Text is now accepted, so that
+input reaches the parser and fails there instead. The suite asserts the type
+refusal and the parse refusal separately rather than loosening the match.
 
 ## 9. Tests to pin
 

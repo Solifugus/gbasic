@@ -700,7 +700,10 @@ Arrays currently work best with numeric aggregate built-ins. Records hold string
 
 File and directory references are typed paths, not open handles.
 
-Money created by `USD` is stored as integer cents.
+Money created by `USD` is stored as **exact integer cents** — never a
+floating-point value, so accumulating `0.01` a thousand times is exactly
+`10.00`. See [money_design.md](money_design.md) for the representation and the
+work still planned (per-currency scale, guard digits, currency identity).
 
 ### Strings and Unicode
 
@@ -943,8 +946,8 @@ left {modifier args}>= right
 
 This is the **only** way to build a date, a time, a money amount, a file or a
 directory value: there are no literals for them, and `2026-12-25` written bare
-parses as arithmetic. An assignment modifier takes a string (or, for `USD`, a
-number) and produces the typed value:
+parses as arithmetic. An assignment modifier takes a string (or, for `USD`,
+either a number or decimal text) and produces the typed value:
 
 ```basic
 d {date}     = "2026-05-15"            ' a date
@@ -1012,6 +1015,38 @@ Resolution:
 - Private library modifiers are not imported.
 
 Built-in/core modifiers include:
+
+#### `USD` conversion and rounding (*since 0.1.0-rc9*)
+
+`USD` is **reflective**: it takes whatever it is given and does the most
+accurate conversion available for that type. Both routes end in the same exact
+integer parse of decimal text, and differ only in what an excess decimal means.
+
+| Given | Converted by | Excess decimals |
+|---|---|---|
+| decimal text (`"19.95"`) | parsed directly to cents | **refused** — the author wrote a value money cannot hold |
+| a number (`19.95`, or computed) | rendered to its shortest round-trip decimal, then parsed | **rounded**, half-even |
+| money | returned unchanged (idempotent) | — |
+| anything else | refused | — |
+
+The split is what keeps the type both exact and usable: `price * 1.08` carries
+seventeen digits as a matter of course, so refusing computed precision would
+make money unusable for arithmetic, while `"1.23456789"` written by hand is a
+bug in the input.
+
+Because a number is rendered to text *before* parsing, an ordinary literal is
+exact: the double for `92233720368547.75` renders back to that same decimal, so
+the value survives. Before rc9 it became `...76`.
+
+**Rounding is half-even** ("banker's rounding"): a tie goes to the even digit,
+which is unbiased across many roundings where half-up drifts upward. So `0.125`
+becomes `0.12` and `0.155` becomes `0.16`. Before rc9 the rule depended on the
+*binary* representation of the literal rather than on the text — `0.125` gave
+`0.13` while `0.145` gave `0.14` — which looked like half-even and was not.
+
+Range is int64 cents: `-92233720368547758.08` to `92233720368547758.07`
+inclusive. Beyond that, and on a non-finite number, `USD` raises rather than
+wrapping or saturating.
 
 - Assignment: `USD`, `date`, `time`, `datetime`, `year`, `month`, `day`, `hour`, `minute`, `second`, `file`, `dir`, `trimmed`/`trim`, `lowered`/`lower`, `uppered`/`upper` (both spellings accepted), `split`, `join`, `length`, `number`, `string`
 - Comparison: `caseless`, date/time lens comparisons

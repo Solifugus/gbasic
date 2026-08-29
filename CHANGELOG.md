@@ -9,6 +9,54 @@ language surface may still change between releases.
 
 ## Unreleased
 
+- **`money` can finally hold an exact value (PLAT-MONEY phase 0).** The
+  storage was always right — an exact int64 of cents, so `0.01` accumulated a
+  thousand times is exactly `10.00`, which a double cannot do. What was wrong
+  was that **nothing could put an exact value in**: `{USD}` took a number,
+  already a double by the time the modifier saw it, and refused text outright.
+  So `92233720368547.75` became `...76`, silently, and the type's own int64
+  range was unreachable through its own constructor. Reported by the gdash
+  session, the type's first real consumer; re-verified here against the source.
+
+  `{USD}` is now **reflective** — it takes whatever it is given and does the
+  most accurate conversion available. Both routes end in the same exact integer
+  parse of decimal text and differ only in what excess precision *means*:
+  authored text (`"1.23456789"`) is **refused**, because the author wrote a
+  value money cannot hold, while a computed number is **rounded**, because
+  `price * 1.08` carries seventeen digits as a matter of course and refusing
+  that would make the type unusable for arithmetic.
+
+  A number is rendered to its shortest round-trip decimal (PLAT-NUMFMT) *before*
+  parsing, which is what makes an ordinary literal exact without touching the
+  parser: the double for `92233720368547.75` renders back to that same text.
+
+  **This dissolved a fourth defect nobody had filed.** Rounding at the `.5`
+  boundary was not well defined — `0.125` gave `0.13` while `0.145` gave `0.14`,
+  which looks like banker's rounding and was not: `round_to_cents` was
+  half-away-from-zero applied to a *double*, and `0.145` as a double is
+  `0.14499999999999999001`. The rule depended on the binary representation of
+  the literal rather than the text the author wrote. Parsing decimal text leaves
+  no binary representation to be ambiguous about, so ties now resolve
+  **half-even** every time: `0.125` → `0.12`, `0.155` → `0.16`.
+
+  Two bugs found by the fixtures rather than by reading, both from int64's
+  **asymmetric range** (the most negative value is one greater in magnitude than
+  the most positive): the first parser built the magnitude signed and negated at
+  the end, refusing `-92233720368547758.08`, a value the type can hold; and the
+  renderer printed it as `--92233720368547758.-8`, because negating `LLONG_MIN`
+  overflows. That second one was pre-existing and simply unreachable until
+  exact construction made the value constructible.
+
+  Red-proofed against the pre-change binary on the number path, where the
+  difference is a wrong *answer* rather than a crash: same source, `...76` vs
+  `...75` and `0.13` vs `0.12`. Zero goldens moved.
+
+  Phases 1–4 (integer-preserving `*` and `/`, currency identity with guard
+  digits, dated FX, and a `finance` library) are specified in
+  `docs/money_design.md`. Note the ordering there is a **constraint**: guard
+  digits cut the range where the double path is safe by 10,000×, from $90tn to
+  $9bn, so the arithmetic fix must land first.
+
 - **ODBC: one module, every database with a driver.** gBASIC could reach
   PostgreSQL and SQLite and nothing else. The gap was not four missing
   modules, it was one — SQL Server, Oracle and DB2 have no free, packaged C
