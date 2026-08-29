@@ -234,4 +234,89 @@ else
     [ "$lic_ok" = "1" ] && echo "PASS licensing      every stdlib library declares a licence and matches $LICMAP"
 fi
 
+# --- PLAT-DEBT 2: claims about the STATE of the product ---------------------
+#
+# Two tripwires, both added after a documentation sweep found the same rot in
+# three places at once, none of which reading had caught across several
+# previous sweeps:
+#
+#   * README.md said the WebServer had "no TLS, routing, middleware, static
+#     files, streaming" -- while run_web_tls.sh, run_web_routes.sh and
+#     run_web_stream.sh were green in the same tree;
+#   * docs/webclient_design.md, marked Shipped in the index, opened with "No
+#     webclient runtime implementation exists yet";
+#   * docs/project_state.md named two stdlib libraries that do not exist
+#     (`sourceview`, `text`) and omitted four that do.
+#
+# A prose sweep cannot see any of these, because each reads perfectly well on
+# its own page. Only comparing the page against the tree can.
+
+# 1. The stdlib roster. Both directions: a library that exists must be named,
+#    and a name must exist. The second half is what catches `sourceview`.
+STATE=docs/project_state.md
+if [ -f "$STATE" ]; then
+    roster_ok=1
+    # Only the bullet list is the roster. A following prose paragraph may
+    # legitimately name a library that does not exist (this file's own note
+    # about `sourceview` did), so bullets and their indented continuations are
+    # the roster and nothing else is.
+    section=$(awk '/^## Standard-Library Toolkits/{f=1} f&&/^## /&&!/Standard-Library/{exit} f' "$STATE" \
+              | awk '/^- /{b=1} /^[^ -]/{b=0} b')
+    for f in stdlib/*.bas; do
+        [ -e "$f" ] || continue
+        base=$(basename "$f" .bas)
+        if ! printf '%s' "$section" | grep -qF "\`$base\`"; then
+            echo "FAIL roster missing $STATE does not name stdlib/$base.bas -- add it to the toolkit list"
+            roster_ok=0; status=1
+        fi
+    done
+    for n in $(printf '%s' "$section" | grep -oE '`[a-z_]+`' | tr -d '`' | sort -u); do
+        # Prose words inside the section that are not library names would trip
+        # this, so only names that LOOK like a library are checked: a name is
+        # exempt if it is a documented module rather than a stdlib file.
+        case "$n" in
+            xlsx|sqlite|pg|odbc|webclient|webserver|xml|gi|gui|process|reflect) continue ;;
+        esac
+        if [ ! -f "stdlib/$n.bas" ]; then
+            echo "FAIL roster ghost   $STATE names \`$n\` but stdlib/$n.bas does not exist"
+            roster_ok=0; status=1
+        fi
+    done
+    [ "$roster_ok" = "1" ] && echo "PASS roster         $STATE names every stdlib library, and no library it does not have"
+fi
+
+# 2. Negative capability claims contradicted by a test suite.
+#
+#    The vocabulary is derived FROM THE SUITE NAMES, not hand-listed, so a new
+#    capability with a suite is covered the day it lands -- a hand-maintained
+#    list of things-not-to-claim would rot exactly like the claims it guards.
+#    A doc saying "no tls" or "does not support streaming" while
+#    run_web_tls.sh / run_web_stream.sh exist and pass is the shape of every
+#    instance found so far.
+claims_ok=1
+CAPS="tls routing streaming static pool"
+for doc in README.md docs/reference.md docs/project_state.md; do
+    [ -f "$doc" ] || continue
+    for cap in $CAPS; do
+        # Only suites that actually exist define a capability worth guarding.
+        case "$cap" in
+            tls)       suite=tests/run_web_tls.sh ;;
+            routing)   suite=tests/run_web_routes.sh ;;
+            streaming) suite=tests/run_web_stream.sh ;;
+            static)    suite=tests/run_web_routes.sh ;;
+            pool)      suite=tests/run_web_pool.sh ;;
+        esac
+        [ -f "$suite" ] || continue
+        hit=$(grep -inE "(no|without|not support|does not do|lacks) [a-z, ]{0,40}$cap" "$doc" \
+              | grep -iE "server|http|web" \
+              | grep -viE "no longer|not support (websockets|chunked|multipart)" | head -1)
+        if [ -n "$hit" ]; then
+            echo "FAIL stale claim    $doc denies '$cap' but $suite exists:"
+            echo "                    $(printf '%s' "$hit" | cut -c1-100)"
+            claims_ok=0; status=1
+        fi
+    done
+done
+[ "$claims_ok" = "1" ] && echo "PASS state claims   no doc denies a capability that has a passing suite"
+
 exit "$status"

@@ -2,9 +2,27 @@
 
 ## Status
 
-Phase 1 is implemented. This document records the queue/watch design and
-future-phase plan. See `docs/project_state.md` for current implementation
-status and `docs/historical_development_archive.md` for the completed Phase 1
+**This document describes Phase 1, which is one of five phases now shipped.**
+Read it as the record of how the queue/watch core was designed, not as the
+current feature set — in particular, the "Explicitly Rejected For Phase 1"
+section below rejects route tables, static file serving and middleware, and
+the first two have since shipped.
+
+What arrived after this document was written (PLAT-WEB-1..5, each with its own
+suite):
+
+| Phase | Brought | Suite |
+|---|---|---|
+| WEB-1 | bind address, the route table as data, `web.static` | `run_web_bind.sh`, `run_web_routes.sh` |
+| WEB-2 | process worker pool, drain, rolling reload | `run_web_pool.sh` |
+| WEB-3 | request/idle timeouts, smuggling-resistant framing, TLS with SNI | `run_web_hardening.sh`, `run_web_tls.sh` |
+| WEB-4 | streaming responses and direct file serving | `run_web_stream.sh` |
+| WEB-5 | the declarative `server` block | `run_web_server_block.sh` |
+
+Current behaviour is documented in
+[reference.md](reference.md#webserver-module). Still unsupported: chunked
+request bodies, WebSockets, multipart uploads, templates and sessions.
+See `docs/historical_development_archive.md` for the completed Phase 1
 history.
 
 ## Core Principle
@@ -411,6 +429,13 @@ shutdown when practical.
     port.
 
 ## Explicitly Rejected For Phase 1
+
+> **Two of these were later accepted.** Route tables shipped in WEB-1 (as data,
+> then as the `server` block in WEB-5) and static file serving shipped as
+> `web.static`. The reasoning below is preserved because it is why they were
+> built the way they were — outside the queue rather than replacing it, which
+> is the shape the "future routing helpers" sentence anticipated. Middleware,
+> sessions and templates remain rejected.
 
 ### Callback Handler Registration
 

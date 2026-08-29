@@ -82,7 +82,7 @@ document list, with a status column, is `docs/README.md`.
 
 ## Standard-Library Toolkits (pure gBASIC)
 
-- **statistics** — descriptive/inferential statistics, regression and the GLM
+- **statistics** (`stats`) — descriptive/inferential statistics, regression and the GLM
   suite, mediation/moderation, time-series and econometric diagnostics, finance
   metrics, survival analysis (Kaplan-Meier, log-rank, Cox), meta-analysis,
   exploratory factor analysis, event studies, and causal inference (DiD,
@@ -99,8 +99,15 @@ document list, with a status column, is `docs/README.md`.
   `insiders` and `ownership` (Form 4 / 13F / 13D-G), `mdna` (MD&A + LLM panel),
   `llm` (chat client), and `screener` (whole-market scoring). See
   `docs/edgar_tutorial.md` and `docs/edgar_reference.md`.
-- **application platform** — `web`, `gtk`/`gtkui`/`datagrid`/`sourceview`,
-  `filetree`, `persist`, `text`, `dates`, `ari`, `matrix`.
+- **application platform** — `web` (routing), `gtk`/`gtkui`/`datagrid`/
+  `sourceeditor` (GTK 4 over `gi`), `filetree`, `persist` (crash-safe versioned
+  storage), `dates`/`schedule` (business calendars, appointment slots), `ari`
+  (anchor-relative report parsing), `matrix`, `crypto` (JWT, CSRF, signed
+  cookies), and the GTK 3 `gui` proof of concept.
+
+Loadable names are exactly the filenames in `stdlib/`; `tests/run_docs_gate.sh`
+checks this list against that directory, because it previously named two
+libraries that do not exist (`sourceview`, `text`) and omitted four that do.
 
 ## Optional Dependencies
 

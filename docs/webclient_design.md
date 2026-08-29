@@ -2,8 +2,13 @@
 
 ## Status
 
-Design and development plan only. No webclient runtime implementation exists
-yet.
+**Implemented and shipped.** This document is the design record; the status
+line below it said "no webclient runtime implementation exists yet" long after
+one did, which is the failure this note replaces.
+
+The module is documented in [reference.md](reference.md#webclient-module) and
+exercised by `tests/run_webclient.sh` against a loopback fixture. What follows
+is the reasoning behind the design, not a plan.
 
 ## Goals
 
