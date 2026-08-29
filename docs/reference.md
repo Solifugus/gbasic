@@ -3718,8 +3718,13 @@ the output is decode-compatible, `decode(quote(text))` round-trips strings.
 File functions (see also the file/directory value types):
 
 - `exists(f)` — whether the path exists.
-- `read(f)` / `write(f, text)` / `append(f, text)` — whole-file text I/O.
-- `bytes(f)` / `lines(f)` / `chars(f)` — read as bytes, lines, or characters.
+- `read(f)` / `write(f, text)` / `append(f, text)` — whole-file I/O.
+  **Binary-safe in both directions** (*since 0.1.0-rc9*): a gBASIC string may
+  hold any byte including NUL, and `read` returns the file's full length rather
+  than stopping at the first one. Before rc9 `write` was binary-safe and `read`
+  was not, so a file holding binary — a `serialize` payload, an image — could
+  be written and silently read back short.
+- `bytes(f)` / `lines(f)` / `chars(f)` — the file's **size** in bytes, its line count, its character count. These are counts, not content; use `read` for the content.
 - `lock(f)` / `unlock(f)` — advisory locks (see `with lock`).
 
 Listing a directory — two functions, and the difference matters:

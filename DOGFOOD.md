@@ -110,6 +110,11 @@ and the stale-looking ones carry a Status line saying what overtook them.
     returned VALUE — which is what lets `return nothing` (the void convention)
     be exempt by value and keeps `append`'s 1101 bare calls quiet.
 
+13. ~~**`read` truncates binary at the first NUL**~~ **RESOLVED 2026-08-29.**
+    `write` was always binary-safe, so anything holding binary could be
+    written and silently read back short. One word: `value_string` ->
+    `value_string_n` with the length already in hand.
+
 12. **`money` is exact in storage and lossy at every boundary.** The int64
     cents core is right (0.01 accumulated 1000 times is exactly 10.00, which a
     double cannot do), but nothing can put an exact value INTO it and `*`/`/`
@@ -3385,5 +3390,14 @@ from this and neither is silent:
   `write` is binary-safe (the three bytes reach the file); only the read side
   is lossy.
 - **Workaround:** `hex_encode`/`hex_decode` around the payload, which is what
-  `tests/money/v1_payload.hex` does. A `read_bytes` builtin returning an array
-  of byte values, or making `read` binary-safe, would close this properly.
+  `tests/money/v1_payload.hex` does.
+- **Status: RESOLVED 2026-08-29, same day.** The fix was ONE WORD --
+  `value_string(text)` became `value_string_n(text, size)`; the file's length
+  was already known two lines above, and only that call was using `strlen`.
+  Worth recording because the finding *looked* like a missing feature (a
+  `read_bytes` builtin, a new API) and was actually an inconsistency: `write`
+  was already binary-safe, so the pair was asymmetric rather than deliberately
+  text-only. Pinned by two checks in `run_core.sh`, red-proofed with the
+  source reverted but the test kept -- the round trip fails while the
+  on-disk-length control passes, which is what locates the fault in `read`
+  rather than `write`.

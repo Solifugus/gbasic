@@ -8078,7 +8078,13 @@ static Value eval_file_call(AstExpr *expr) {
         }
 
         if (strcmp(name, "read") == 0) {
-            Value result = value_string(text);
+            /* By LENGTH, not as a C string. gBASIC strings are binary-safe and
+             * `write` already was, so `read` truncating at the first NUL made
+             * the pair asymmetric: anything holding binary -- a `serialize`
+             * payload, an image, a compiled artifact -- could be written and
+             * then silently read back short. The size is already known here;
+             * only this call was using strlen. */
+            Value result = value_string_n(text, (size_t)size);
             free(text);
             value_free(file_value);
             return result;

@@ -190,5 +190,34 @@ sys_tokyo="$(TZ=Asia/Tokyo date +'%Y-%m-%d %H:%M')"
 check "now(\"Asia/Tokyo\") matches that zone, not the local clock" $?
 rm -f "$tz_prog" "$tk_prog"
 
+# --- read is binary-safe ----------------------------------------------------
+# `write` always was; `read` used strlen and stopped at the first NUL, so the
+# pair was asymmetric and anything holding binary -- a `serialize` payload, an
+# image, a compiled artifact -- could be written and then silently read back
+# SHORT. No error, no short-write, just less data than went in.
+#
+# This lives in run_core because the assertion is about BYTES ON DISK rather
+# than about anything the interpreter says: the fixture writes a known length,
+# reads it back, and compares. A golden of the printed number would pass just
+# as happily on the broken build, since 1 is a perfectly plausible length.
+bin_prog="$(mktemp --suffix=.bas)"
+cat >"$bin_prog" <<'BINEOF'
+p {file}= env("GBASIC_BIN_PATH")
+s = "a" + from_bytes([0]) + "b" + from_bytes([0, 255]) + "z"
+write(p, s)
+back = read(p)
+print string(byte_count(s)) + " " + string(byte_count(back)) + " " + string(back = s)
+BINEOF
+bin_path="$(mktemp)"
+bin_out="$(GBASIC_BIN_PATH="$bin_path" ./gbasic "$bin_prog" 2>/dev/null)"
+[[ "$bin_out" == "6 6 true" ]]
+check "read is binary-safe: interior NULs survive a file round trip" $?
+
+# The control: the file really does hold those bytes, checked from OUTSIDE the
+# interpreter, so a `read` that echoed its own `write` buffer could not pass.
+[[ "$(wc -c <"$bin_path")" == "6" ]]
+check "read is binary-safe: the file on disk is the full length" $?
+rm -f "$bin_prog" "$bin_path"
+
 printf 'core suite: %d passed / %d failed\n' "$pass" "$fail"
 [[ "$fail" -eq 0 ]]
