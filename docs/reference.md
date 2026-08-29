@@ -2033,11 +2033,20 @@ webserver.close(server)
 server.running = false
 ```
 
-WebServer is single-threaded in Phase 1. It supports one request per connection
-with `Content-Length` request bodies and explicit cookie parsing/emission. It
-does not support chunked requests, public binding, routing APIs, middleware,
-static files, templates, sessions, multipart uploads, streaming, WebSockets,
-TLS, or asynchronous application code.
+**The paragraph that used to sit here described "Phase 1" and was left behind
+by the four phases after it** — it denied TLS, routing, static files, streaming
+and public binding, all of which the sections above document and the
+`tests/run_web_*.sh` suites exercise. What follows is the current shape.
+
+The queue API above is single-threaded and handles one request per connection,
+with `Content-Length` request bodies and explicit cookie parsing/emission. The
+worker pool, streaming, TLS, static files and the `server` block are documented
+in the sections above and build on the same listener.
+
+Still unsupported anywhere in the WebServer: **chunked request bodies**
+(refused with 501 rather than guessed at — see §6 hardening), **WebSockets**,
+multipart uploads, templates, and sessions. Public binding requires an explicit
+`address` option; the default stays loopback.
 
 ## XML Module
 
