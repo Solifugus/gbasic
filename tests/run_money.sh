@@ -40,6 +40,7 @@ pass() { checks=$((checks + 1)); printf '  ok   %s\n' "$1"; }
 fail() { checks=$((checks + 1)); failures=$((failures + 1)); printf '  FAIL %s\n' "$1"; }
 
 export GBASIC_MONEY_V1=tests/money/v1_payload.hex
+export GBASIC_PATH=stdlib
 
 run_fixture() {
     local fixture="$1" floor="$2" label="$3"
@@ -252,6 +253,55 @@ do
     fi
 done
 
+printf 'TIER allocation (phase 4)\n'
+run_fixture tests/money_allocate_test.bas 25 'money_allocate'
+
+# Division and allocation are DIFFERENT problems and guard digits only solve
+# the first. Three payments cannot each be 33.3333 -- an invoice or a payroll
+# line has to be a whole number of minor units -- so allocation works at the
+# minor unit and distributes the remainder one unit at a time. Never three of
+# 33.33 (loses a cent) and never three of 33.34 (invents one); both would look
+# perfectly reasonable.
+for label in \
+    'THE POINT: they sum back exactly' \
+    'weights split proportionally' \
+    'a zero weight gets nothing' \
+    'JPY splits into whole yen' \
+    'KWD splits at three places' \
+    'a negative amount allocates'
+do
+    if command grep -Eq "^ok   $label\$" "$work/out"; then
+        pass "asserted: $label"
+    else
+        fail "asserted: $label"
+    fi
+done
+
+printf 'TIER the time value of money (phase 4)\n'
+GBASIC_PATH=stdlib run_fixture tests/finance_test.bas 28 'finance'
+
+# Expected values are EXTERNAL: a spreadsheet's answer for the same inputs
+# (PMT 250,000 at 0.5%/month over 360 is -1498.88 in Excel and LibreOffice) or
+# computed in Python. A TVM function wrong in the second decimal returns a
+# number a finance person would act on.
+for label in \
+    'pmt: a 250k mortgage at 6%/yr over 30 years' \
+    'pv: 1000/month for 30 years at 6%/yr' \
+    'fv: 10000 at 5% for 10 years' \
+    'npv: three years of 1000 at 10%' \
+    'irr: recovers the rate npv used' \
+    'the final balance is EXACTLY zero' \
+    'the principal parts sum to the loan EXACTLY' \
+    'interest falls over the term' \
+    'a single flow breaks even at a negative rate'
+do
+    if command grep -Eq "^ok   $label\$" "$work/out"; then
+        pass "asserted: $label"
+    else
+        fail "asserted: $label"
+    fi
+done
+
 printf 'TIER the defect is gone from the source\n'
 # `round_to_cents` WAS the defect -- a divide and a multiply by 100 in floating
 # point on a value that was already exact. Dead code that still compiles is how
@@ -274,7 +324,7 @@ if command -v valgrind >/dev/null 2>&1; then
     for fixture in tests/money_construct_test.bas tests/money_refusal_test.bas \
                    tests/money_arithmetic_test.bas tests/money_overflow_test.bas \
                    tests/money_currency_test.bas tests/money_registry_test.bas \
-                   tests/money_fx_test.bas; do
+                   tests/money_fx_test.bas tests/money_allocate_test.bas; do
         if valgrind --error-exitcode=99 --leak-check=full --errors-for-leak-kinds=definite -q \
                     ./gbasic "$fixture" >/dev/null 2>"$work/vg"; then
             pass "valgrind clean: $fixture"

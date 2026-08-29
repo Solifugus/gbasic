@@ -89,6 +89,13 @@ document list, with a status column, is `docs/README.md`.
   IV/2SLS); verified against reference implementations, published trial results,
   or — where a method can be right in the estimate and wrong in the uncertainty
   — against a second independent derivation rather than a golden.
+- **the time value of money** — `finance`: payment, present value, future
+  value and term for loans and leases; net present value and internal rate of
+  return for project appraisal; an amortization schedule whose payments sum to
+  the principal exactly; and straight-line, sum-of-years and declining-balance
+  depreciation. Amounts are money values and rates are plain numbers, per
+  PERIOD rather than per year, so the compounding convention stays the
+  caller's to state.
 - **market data** — `market`, daily price history as a frame, with pluggable
   providers and an offline fixture seam so tests never touch the network.
 - **spreadsheets** — `xlsx` (read/write plus a formula engine measured against

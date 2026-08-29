@@ -9,6 +9,46 @@ language surface may still change between releases.
 
 ## Unreleased
 
+- **Allocation, and the time value of money (PLAT-MONEY phase 4).** Two
+  additions that finish the money work and answer what a line-of-business
+  application actually computes.
+
+  `money.allocate(amount, parts)` splits money into **payable** amounts —
+  `[33.34, 33.33, 33.33]` for 100.00 into three — taking either a count or an
+  array of whole-number weights. Division and allocation are different problems
+  and guard digits only solved the first: `(100.00/3)*3` comes back whole
+  because a third of a dollar has somewhere to live, but three *payments*
+  cannot each be 33.3333, since an invoice or a payroll line has to be a whole
+  number of minor units. Allocation works at the minor unit and distributes the
+  remainder one unit at a time, so **the parts sum back exactly** — never three
+  of 33.33, which loses a cent, nor three of 33.34, which invents one.
+
+  **`stdlib/finance.bas`** is the time value of money, which gBASIC had never
+  had: `pmt`, `pv`, `fv`, `nper`, `npv`, `irr`, an amortization `schedule`, and
+  `sln`/`syd`/`ddb` depreciation. The statistics library covers *securities
+  analytics*; this is the other half — what a loan payment is, what a lease is
+  worth today, whether a project earns its cost of capital.
+
+  Amounts are money and rates are plain numbers **per period**: `0.06 / 12` is
+  the caller's arithmetic, because compounding conventions vary by product and
+  jurisdiction and a library that guessed would be wrong somewhere without
+  saying so. Sign follows the spreadsheet convention, since that is what the
+  answer gets checked against.
+
+  The schedule's **final payment is adjusted so the balance lands exactly on
+  zero**, which is what lenders do — every payment is whole minor units, those
+  roundings accumulate, and one figure throughout would end owing a few cents.
+  Asserted arithmetically (principal parts sum to the loan; final balance is
+  zero), not as a golden. Expected values are external: `pmt` of 250,000 at
+  0.5%/month over 360 is `-1498.88` in Excel and LibreOffice too.
+
+  Two bugs the fixtures caught: `irr` overflowed the money type, because
+  bisection visits rates near −100% where the discount factor is ~1e-12 and
+  dividing money by it exceeds the range — the rate search now works in plain
+  numbers, which is right anyway since a rate is a ratio. And a test of mine
+  assumed a single cash flow cannot break even; it can, at −59.8%, so that is
+  now a control beside the genuine refusal.
+
 - **Exchange rates, and they are dated (PLAT-MONEY phase 3).** Converting
   without an as-of date produces a number nobody can reproduce: re-run last
   quarter's report and you silently get today's rate, and the figure that comes

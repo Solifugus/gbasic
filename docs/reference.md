@@ -1065,6 +1065,29 @@ self-describing: actors are separate processes and a currency registered in
 the parent is not registered in the child. `SER_VERSION` 1 payloads (a bare
 integer of cents) still deserialize, rescaled and assumed USD.
 
+#### Allocation (*since 0.1.0-rc9*)
+
+`money.allocate(amount, parts)` splits money into **payable** amounts —
+`parts` is either a count or an array of whole-number weights.
+
+```basic
+h {USD}= "100.00"
+print money.allocate(h, 3)          ' [33.34, 33.33, 33.33]
+print money.allocate(h, [1, 1, 2])  ' [25.00, 25.00, 50.00]
+```
+
+Division and allocation are different problems, and guard digits only solve
+the first. `(100.00 / 3) * 3` comes back whole because a third of a dollar has
+somewhere to live — but three *payments* cannot each be 33.3333: an invoice, a
+payroll line or a dividend has to be a whole number of minor units. So
+allocation works at the minor unit and distributes the remainder one unit at a
+time, which is the only way **the parts sum back to the original exactly**.
+Never three of 33.33, which loses a cent, and never three of 33.34, which
+invents one — both would look perfectly reasonable.
+
+A zero weight receives nothing, including no remainder unit. Currency is
+respected: JPY splits into whole yen, KWD into thousandths.
+
 #### Exchange rates (*since 0.1.0-rc9*)
 
 **A rate is a dated fact.** Converting without an as-of date gives a number
@@ -4066,6 +4089,30 @@ General-purpose:
   actually want — just the closing prices as a flat array — and
   `market.with_timeout(m, seconds)` sets the request timeout, alongside the
   `with_transport`/`offline` seams.
+- `finance` — the time value of money, pure gBASIC. Amounts are `money` values
+  and rates are plain numbers **per period**: a 6% annual loan paid monthly is
+  `0.06 / 12`, and making that the caller's arithmetic rather than a hidden
+  convention is deliberate, since compounding conventions vary by product and
+  jurisdiction and a library that guessed would be wrong somewhere without
+  saying so. Sign follows the spreadsheet convention — money received is
+  positive, money paid is negative — because that is what the answer will be
+  checked against.
+  `finance.pmt(principal, rate, periods)` is the payment that repays a loan,
+  `finance.pv(payment, rate, periods)` what a stream is worth today,
+  `finance.fv(amount, rate, periods)` what an amount grows to, and
+  `finance.nper(principal, payment, rate)` how many periods clear it.
+  `finance.npv(rate, flows)` discounts an array of money one period apart, and
+  `finance.irr(outlay, flows)` finds the rate that breaks even — by bisection,
+  which cannot diverge, because a wrong IRR is a plausible percentage someone
+  would act on. `finance.schedule(principal, rate, periods)` returns one record
+  per period (`period`, `payment`, `interest`, `principal`, `balance`) whose
+  **final payment is adjusted so the balance lands exactly on zero**: every
+  payment is whole minor units, those roundings accumulate, and a schedule
+  using one figure throughout would end owing a few cents. Depreciation is
+  `finance.sln(cost, salvage, life)` straight-line,
+  `finance.syd(cost, salvage, life, period)` sum-of-years-digits, and
+  `finance.ddb(cost, salvage, life, period)` double-declining balance, floored
+  at salvage so an asset is never written below what it is worth.
 - `chart` — charts as deterministic SVG text, pure gBASIC: line, scatter, area,
   bar, histogram, pie, heatmap and sparkline (`docs/chart_design.md`; worked
   recipes in `docs/chart_cookbook.md`). `chart.area_xy(xs, ys)` and

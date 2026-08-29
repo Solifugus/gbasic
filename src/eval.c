@@ -23528,6 +23528,151 @@ static Value money_eval_call(AstExpr *expr) {
         return value_number((double)assigned);
     }
 
+    if (strcmp(name, "allocate") == 0) {
+        /* --- PLAT-MONEY phase 4: splitting money into PAYABLE parts --------
+         *
+         * Division and allocation are different problems and guard digits only
+         * solve the first. `(100.00 / 3) * 3` comes back whole because a third
+         * of a dollar has somewhere to live -- but three PAYMENTS cannot each
+         * be 33.3333: an invoice, a payroll line or a dividend has to be a
+         * whole number of minor units.
+         *
+         * So allocation works at the MINOR UNIT and distributes the remainder
+         * one unit at a time, which is the only way the parts can sum back to
+         * the original exactly. 100.00 into three is 33.34 / 33.33 / 33.33 --
+         * never three of 33.33, which loses a cent, and never three of 33.34,
+         * which invents one.
+         */
+        if (expr->as.call.args.count != 2) {
+            runtime_error_raise("money.allocate expects an amount and a count or weights",
+                                1003, "money");
+            return value_null();
+        }
+        Value amount = eval_expr(expr->as.call.args.items[0]);
+        if (error_action_pending()) { value_free(amount); return value_null(); }
+        Value spec = eval_expr(expr->as.call.args.items[1]);
+        if (error_action_pending()) { value_free(amount); value_free(spec); return value_null(); }
+
+        if (amount.kind != VALUE_MONEY) {
+            value_free(amount); value_free(spec);
+            runtime_error_raise("money.allocate expects money", 1003, "money");
+            return value_null();
+        }
+
+        /* Weights, either from a count or from an array. */
+        long long *weights = NULL;
+        size_t parts = 0;
+        if (spec.kind == VALUE_NUMBER) {
+            double n = spec.as.number;
+            if (!(n >= 1 && n <= 1000000) || n != (double)(long long)n) {
+                value_free(amount); value_free(spec);
+                runtime_error_raise("money.allocate expects a whole part count of 1 or more",
+                                    1003, "money");
+                return value_null();
+            }
+            parts = (size_t)n;
+            weights = calloc(parts, sizeof(long long));
+            if (!weights) abort();
+            for (size_t i = 0; i < parts; i++) weights[i] = 1;
+        } else if (spec.kind == VALUE_ARRAY) {
+            parts = spec.as.array.store->count;
+            if (parts == 0) {
+                value_free(amount); value_free(spec);
+                runtime_error_raise("money.allocate needs at least one weight", 1003, "money");
+                return value_null();
+            }
+            weights = calloc(parts, sizeof(long long));
+            if (!weights) abort();
+            for (size_t i = 0; i < parts; i++) {
+                Value w = spec.as.array.store->items[i];
+                if (w.kind != VALUE_NUMBER || w.as.number < 0 ||
+                    w.as.number != (double)(long long)w.as.number) {
+                    free(weights);
+                    value_free(amount); value_free(spec);
+                    runtime_error_raise("money.allocate weights must be whole numbers of 0 or more",
+                                        1003, "money");
+                    return value_null();
+                }
+                weights[i] = (long long)w.as.number;
+            }
+        } else {
+            value_free(amount); value_free(spec);
+            runtime_error_raise("money.allocate expects a part count or an array of weights",
+                                1003, "money");
+            return value_null();
+        }
+
+        long long total_weight = 0;
+        for (size_t i = 0; i < parts; i++) {
+            if (__builtin_add_overflow(total_weight, weights[i], &total_weight)) {
+                free(weights); value_free(amount); value_free(spec);
+                runtime_error_raise("money.allocate weights are too large", 1003, "money");
+                return value_null();
+            }
+        }
+        if (total_weight <= 0) {
+            free(weights); value_free(amount); value_free(spec);
+            runtime_error_raise("money.allocate weights must not all be zero", 1003, "money");
+            return value_null();
+        }
+
+        /* Work in whole MINOR UNITS: drop the guard digits first, so the parts
+         * are payable amounts rather than fractions of a cent. */
+        MoneyValue m = amount.as.money;
+        long long guard = money_pow10(MONEY_GUARD_DIGITS);
+        long long minor = m.units / guard;
+        long long frac = m.units % guard;
+        /* A fraction of a minor unit cannot be paid, so it joins the first
+         * part rather than vanishing -- the sum must still be the original. */
+
+        int negative = minor < 0 || (minor == 0 && frac < 0);
+        unsigned long long mag = negative
+            ? (unsigned long long)(-(minor + 1)) + 1ULL
+            : (unsigned long long)minor;
+
+        Value *items = calloc(parts, sizeof(Value));
+        if (!items) abort();
+        unsigned long long assigned = 0;
+        for (size_t i = 0; i < parts; i++) {
+            unsigned long long share = (unsigned long long)
+                ((money_uwide)mag * (money_uwide)weights[i] / (money_uwide)total_weight);
+            items[i] = value_number(0);   /* placeholder, replaced below */
+            assigned += share;
+            /* stash the share in the placeholder's number slot */
+            items[i].as.number = (double)share;
+        }
+        unsigned long long remainder = mag - assigned;
+
+        /* Distribute the remainder one minor unit at a time, largest weight
+         * first among equals, so the extra unit lands somewhere defensible
+         * rather than always on the last part. */
+        for (size_t i = 0; i < parts && remainder > 0; i++) {
+            if (weights[i] == 0) continue;
+            items[i].as.number += 1.0;
+            remainder--;
+        }
+
+        for (size_t i = 0; i < parts; i++) {
+            unsigned long long share = (unsigned long long)items[i].as.number;
+            long long units = 0;
+            if (__builtin_mul_overflow((long long)share, guard, &units)) {
+                for (size_t j = 0; j < i; j++) value_free(items[j]);
+                free(items); free(weights);
+                value_free(amount); value_free(spec);
+                runtime_error_raise("money value is out of range", 1003, "money");
+                return value_null();
+            }
+            if (negative) units = -units;
+            if (i == 0) units += frac;   /* the unpayable fraction rides along */
+            items[i] = value_money(money_make(units, m.currency, m.exponent));
+        }
+
+        free(weights);
+        value_free(amount);
+        value_free(spec);
+        return value_array(items, parts);
+    }
+
     if (strcmp(name, "rate") == 0) {
         if (expr->as.call.args.count != 4) {
             runtime_error_raise("money.rate expects from, to, rate and an as-of date",

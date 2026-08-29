@@ -1,6 +1,6 @@
 # The money type (PLAT-MONEY)
 
-Status: **ruled 2026-08-29. Phases 0-3 shipped; phase 4 outstanding.** The governing requirement,
+Status: **ruled 2026-08-29. All five phases (0-4) shipped.** The governing requirement,
 stated by the project owner: money must be **highly accurate and highly safe**.
 Every ruling below resolves toward refusing an operation rather than returning
 a number that might be wrong. This document records the
@@ -204,7 +204,7 @@ Each phase is shippable alone and each has a test that fails without it.
 | **1** | `*` and `/` stay in integer arithmetic; overflow raises | **SHIPPED 0.1.0-rc9.** The silent-corruption fix, and **it must precede phase 2** — guard digits cut the range where the double path is safe by 10,000×, from $90tn to $9bn. Write it **parameterized on scale** even though scale is still 2, so phase 2 does not rewrite it. |
 | **2** | Currency tag, per-currency exponent, guard digits, `SER_VERSION` 2 | **SHIPPED 0.1.0-rc9.** The representation change. Needed this ruling first. |
 | **3** | FX: dated rates, `convert` | **SHIPPED 0.1.0-rc9.** Depends on the tag. A rate is a *dated* fact — converting without an as-of date gives an unreproducible number, which is an audit problem, not an arithmetic one. |
-| **4** | `finance` library: NPV, IRR, XIRR, PMT, PV, FV, RATE, NPER, amortization, depreciation | The actual business-operations gap. See §8. |
+| **4** | Allocation, and the `finance` library | **SHIPPED 0.1.0-rc9.** The actual business-operations gap. See §8. |
 
 ## 8. What this unlocks
 
@@ -330,6 +330,38 @@ author decides rather than the runtime guessing.
 Converting to the same currency is identity and needs no registered rate —
 without that, generic code converting a mixed list into one reporting currency
 would fail on the entries already in it.
+
+## 8e. What phase 4 added (shipped 2026-08-29)
+
+**Allocation is a separate problem from division, and guard digits only solved
+the latter.** `money.allocate(amount, parts)` splits at the MINOR UNIT and
+distributes the remainder one unit at a time, so the parts sum back exactly:
+`100.00` into three is `33.34 / 33.33 / 33.33`. Never three of 33.33, which
+loses a cent, nor three of 33.34, which invents one — both perfectly plausible.
+
+`stdlib/finance.bas` is the time value of money: `pmt`, `pv`, `fv`, `nper`,
+`npv`, `irr`, an amortization `schedule`, and `sln`/`syd`/`ddb` depreciation.
+Amounts are money and rates are plain numbers **per period** — `0.06 / 12` is
+the caller's arithmetic, because compounding conventions vary by product and
+jurisdiction and a library that guessed would be wrong somewhere silently.
+
+The schedule's **final payment is adjusted so the balance lands exactly on
+zero**, which is what lenders do: every payment is whole minor units, those
+roundings accumulate, and one figure throughout would end owing a few cents.
+Asserted arithmetically — principal parts sum to the loan, final balance is
+zero — not as a golden.
+
+**Two bugs the fixtures caught.** `irr` overflowed the money type: bisection
+visits rates near −100%, where the discount factor is ~1e-12 and dividing
+money by it exceeds the range. The rate search now works in plain numbers,
+which is right anyway — a rate is a ratio, and only the endpoints are money.
+And a test of mine assumed a single cash flow cannot break even; it can, at
+−59.8%, so that is now a *control* beside the genuine refusal.
+
+**The roster tripwire caught its author.** Documenting this phase, I wrote
+function names in backticks in `project_state.md`'s toolkit list, where
+backticks mean library names — and PLAT-DEBT 2's roster check reported seven
+libraries that do not exist. The prose was wrong, not the check.
 
 ## 9. Tests to pin
 
