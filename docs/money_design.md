@@ -1,6 +1,6 @@
 # The money type (PLAT-MONEY)
 
-Status: **ruled 2026-08-29. Phases 0, 1 and 2 shipped; phases 3-4 outstanding.** The governing requirement,
+Status: **ruled 2026-08-29. Phases 0-3 shipped; phase 4 outstanding.** The governing requirement,
 stated by the project owner: money must be **highly accurate and highly safe**.
 Every ruling below resolves toward refusing an operation rather than returning
 a number that might be wrong. This document records the
@@ -203,7 +203,7 @@ Each phase is shippable alone and each has a test that fails without it.
 | **0** | Exact construction from decimal text; excess digits rejected | **SHIPPED 0.1.0-rc9.** Unblocks the test for phase 1. Small, and alone it makes the existing range reachable. |
 | **1** | `*` and `/` stay in integer arithmetic; overflow raises | **SHIPPED 0.1.0-rc9.** The silent-corruption fix, and **it must precede phase 2** — guard digits cut the range where the double path is safe by 10,000×, from $90tn to $9bn. Write it **parameterized on scale** even though scale is still 2, so phase 2 does not rewrite it. |
 | **2** | Currency tag, per-currency exponent, guard digits, `SER_VERSION` 2 | **SHIPPED 0.1.0-rc9.** The representation change. Needed this ruling first. |
-| **3** | FX: dated rates, `convert` | Depends on the tag. A rate is a *dated* fact — converting without an as-of date gives an unreproducible number, which is an audit problem, not an arithmetic one. |
+| **3** | FX: dated rates, `convert` | **SHIPPED 0.1.0-rc9.** Depends on the tag. A rate is a *dated* fact — converting without an as-of date gives an unreproducible number, which is an audit problem, not an arithmetic one. |
 | **4** | `finance` library: NPV, IRR, XIRR, PMT, PV, FV, RATE, NPER, amortization, depreciation | The actual business-operations gap. See §8. |
 
 ## 8. What this unlocks
@@ -309,6 +309,28 @@ from arithmetic not losing money.
 writes at the currency's minor unit, rounded by gBASIC's half-even rule rather
 than by whatever the driver would do with excess digits.
 
+## 8d. What phase 3 added (shipped 2026-08-29)
+
+`money.rate(from, to, rate, as_of)` records a dated rate; `money.convert(m,
+to, on)` applies the one **effective** on a date — the latest whose as-of is on
+or before it, so a report run for March sees March. `money.rate_on(from, to,
+on)` reports the rate *and the date it came from*, which is the whole point of
+dating them.
+
+**A rate is given as decimal TEXT**, not a number: FX rates routinely carry six
+or more significant figures and a double would quietly round them. The
+conversion moves between storage scales in one integer operation, so nothing
+passes through a double — USD (2 places) to JPY (0) or KWD (3) is exact.
+
+**Inversion is refused.** Given a USD→EUR rate, the EUR→USD rate is *not* its
+reciprocal: the two sides of a quote differ by a spread, and inverting would
+invent money. The refusal says a rate exists in the other direction, so the
+author decides rather than the runtime guessing.
+
+Converting to the same currency is identity and needs no registered rate —
+without that, generic code converting a mixed list into one reporting currency
+would fail on the entries already in it.
+
 ## 9. Tests to pin
 
 - exact construction at the top of the int64 range, per currency;
@@ -401,7 +423,8 @@ distinction that keeps the type usable:
 
 - Registration syntax, and whether a registered currency needs a numeric code
   at all or can be identified by its alphabetic code alone.
-- What `{EUR}` applied to an existing USD *money* value means: re-tagging
-  (asserting the units were always euros) versus converting (needs a dated
-  rate, §7 phase 3). These are different operations and should probably not
-  share a spelling.
+- ~~What `{EUR}` applied to an existing USD *money* value means~~ **settled in
+  phase 2**: it is refused, naming the exchange rate as what is missing. The
+  two operations do not share a spelling — conversion is `money.convert`, and
+  there is deliberately no re-tag, because asserting that units "were always
+  euros" is a claim no runtime can check.

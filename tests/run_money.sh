@@ -225,6 +225,33 @@ do
     fi
 done
 
+printf 'TIER exchange rates (phase 3)\n'
+run_fixture tests/money_fx_test.bas 30 'money_fx'
+
+# A rate is a DATED fact: converting without an as-of date gives a number
+# nobody can reproduce, which is an audit problem rather than an arithmetic
+# one. Expected values are computed in exact decimal arithmetic OUTSIDE gBASIC
+# rather than recorded from a run -- a conversion wrong in its last digit is
+# exactly what a golden would enshrine.
+for label in \
+    "March uses January's rate" \
+    "July uses June's rate" \
+    'an eight-figure rate is applied exactly' \
+    'USD to JPY, no minor unit' \
+    'USD to KWD, three places' \
+    'and is in the target currency' \
+    'rate_on reports the date it came from' \
+    'the inverse is refused, and says so' \
+    'a date-shaped STRING is not a date' \
+    'converting to the same currency is identity'
+do
+    if command grep -Eq "^ok   $label\$" "$work/out"; then
+        pass "asserted: $label"
+    else
+        fail "asserted: $label"
+    fi
+done
+
 printf 'TIER the defect is gone from the source\n'
 # `round_to_cents` WAS the defect -- a divide and a multiply by 100 in floating
 # point on a value that was already exact. Dead code that still compiles is how
@@ -246,7 +273,8 @@ printf 'TIER valgrind\n'
 if command -v valgrind >/dev/null 2>&1; then
     for fixture in tests/money_construct_test.bas tests/money_refusal_test.bas \
                    tests/money_arithmetic_test.bas tests/money_overflow_test.bas \
-                   tests/money_currency_test.bas tests/money_registry_test.bas; do
+                   tests/money_currency_test.bas tests/money_registry_test.bas \
+                   tests/money_fx_test.bas; do
         if valgrind --error-exitcode=99 --leak-check=full --errors-for-leak-kinds=definite -q \
                     ./gbasic "$fixture" >/dev/null 2>"$work/vg"; then
             pass "valgrind clean: $fixture"

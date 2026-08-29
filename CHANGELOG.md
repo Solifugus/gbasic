@@ -9,6 +9,36 @@ language surface may still change between releases.
 
 ## Unreleased
 
+- **Exchange rates, and they are dated (PLAT-MONEY phase 3).** Converting
+  without an as-of date produces a number nobody can reproduce: re-run last
+  quarter's report and you silently get today's rate, and the figure that comes
+  out looks perfectly defensible. That is an audit problem rather than an
+  arithmetic one, so the date is required rather than defaulted.
+
+  `money.rate(from, to, rate, as_of)` records one; `money.convert(m, to, on)`
+  applies the rate **effective** on a date — the latest whose as-of is on or
+  before it, so a report run for March sees March's rate;
+  `money.rate_on(from, to, on)` reports the rate *and the date it came from*,
+  which is the point of dating them. Registering the same pair and date again
+  corrects it.
+
+  **A rate is decimal text, not a number** — FX rates routinely carry eight
+  significant figures and a double would round them, the same reasoning that
+  drove exact construction in phase 0. Conversion moves between storage scales
+  in one integer operation, so USD (two places) to JPY (none) or KWD (three)
+  loses nothing.
+
+  **Inversion is refused.** Given USD→EUR, the EUR→USD rate is not its
+  reciprocal — the two sides of a quote differ by a spread, and inverting would
+  invent money. The refusal names the rate that *does* exist so the author can
+  decide. Converting to the same currency is identity and needs no rate, which
+  is the control tier: without it, generic code converting a mixed list into
+  one reporting currency would fail on the entries already in it.
+
+  Expected values are computed in exact decimal arithmetic outside gBASIC, not
+  recorded from a run — a conversion wrong in its last digit is exactly what a
+  golden would enshrine.
+
 - **`money` carries its currency, with guard digits (PLAT-MONEY phase 2).**
   `{USD}` was a single hardcoded `strcmp` in the modifier dispatch and cents
   were hardcoded everywhere else, so JPY (no minor unit) and KWD (three) had no

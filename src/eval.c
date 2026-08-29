@@ -23255,6 +23255,158 @@ static Value builtin_source_outline_value(Value text, const char *path) {
 }
 
 
+/* --- PLAT-MONEY phase 3: exchange rates, which are DATED facts -------------
+ *
+ * Converting without an as-of date produces a number nobody can reproduce.
+ * Re-run last quarter's report and you get today's rate, silently, and the
+ * figure that comes out is defensible-looking and wrong. That is an AUDIT
+ * problem rather than an arithmetic one, so the date is not optional here.
+ *
+ * A rate is stored as EXACT DECIMAL TEXT decomposed into num / 10^dexp, for
+ * the same reason money is: FX rates routinely carry six or more significant
+ * figures and a double would quietly round them.
+ *
+ * `effective on D` means the LATEST rate whose as-of date is on or before D.
+ * That is how a rate table is actually consulted, and it means a report run
+ * for a past date sees what was true then.
+ *
+ * INVERSION IS REFUSED. Given a EUR->USD rate, the USD->EUR rate is NOT its
+ * reciprocal: the two sides of a quote differ by a spread, and inventing one
+ * would be inventing money. The refusal says a rate exists in the other
+ * direction, so the author can decide rather than guess.
+ */
+/* An exchange rate as num / 10^dexp, parsed EXACTLY from decimal text. Shares
+ * the shape of money_scalar_parts but reads text rather than a double, because
+ * here the caller states the value and must not have it rounded first. */
+static int money_rate_parts(const char *text, long long *num, int *dexp,
+                            const char **err) {
+    const char *p = text;
+    while (*p == ' ' || *p == '\t') p++;
+    int negative = 0;
+    if (*p == '+' || *p == '-') { negative = (*p == '-'); p++; }
+
+    unsigned long long mag = 0;
+    int frac = 0, after = 0, seen = 0;
+    for (; *p; p++) {
+        if (*p == '.') {
+            if (after) { *err = "an exchange rate has one decimal point"; return 0; }
+            after = 1; continue;
+        }
+        if (*p < '0' || *p > '9') break;
+        seen = 1;
+        if (mag > (9223372036854775807ULL - 9) / 10ULL) {
+            *err = "exchange rate has too many digits"; return 0;
+        }
+        mag = mag * 10ULL + (unsigned)(*p - '0');
+        if (after) frac++;
+    }
+    if (!seen) { *err = "an exchange rate must be a decimal number"; return 0; }
+    int exponent = 0;
+    if (*p == 'e' || *p == 'E') {
+        p++;
+        int es = 1;
+        if (*p == '+' || *p == '-') { es = (*p == '-') ? -1 : 1; p++; }
+        if (*p < '0' || *p > '9') { *err = "malformed exponent in exchange rate"; return 0; }
+        int e = 0;
+        for (; *p >= '0' && *p <= '9'; p++) if (e < 1000) e = e * 10 + (*p - '0');
+        exponent = es * e;
+    }
+    while (*p == ' ' || *p == '\t') p++;
+    if (*p != '\0') { *err = "trailing characters in exchange rate"; return 0; }
+
+    *num = negative ? -(long long)mag : (long long)mag;
+    *dexp = frac - exponent;
+    return 1;
+}
+
+/* Render a rate back to the decimal text it was given as. */
+static void money_rate_render(long long num, int dexp, char *buf, size_t buflen) {
+    int negative = num < 0;
+    unsigned long long mag = negative
+        ? (unsigned long long)(-(num + 1)) + 1ULL
+        : (unsigned long long)num;
+    if (dexp <= 0) {
+        for (int i = 0; i < -dexp; i++) mag *= 10ULL;
+        snprintf(buf, buflen, negative ? "-%llu" : "%llu", mag);
+        return;
+    }
+    unsigned long long div = 1ULL;
+    for (int i = 0; i < dexp; i++) div *= 10ULL;
+    snprintf(buf, buflen, negative ? "-%llu.%0*llu" : "%llu.%0*llu",
+             mag / div, dexp, mag % div);
+}
+
+typedef struct {
+    unsigned short from;
+    unsigned short to;
+    long long num;      /* rate = num / 10^dexp */
+    int dexp;
+    DateTime as_of;
+} FxRate;
+
+static FxRate *fx_rates = NULL;
+static size_t fx_rate_count = 0;
+
+/* The rate effective on `when`, or NULL. Ties on the same date take the most
+ * recently registered, so correcting a rate is a matter of registering it
+ * again rather than editing anything. */
+static const FxRate *fx_lookup(unsigned short from, unsigned short to,
+                               DateTime when) {
+    const FxRate *best = NULL;
+    for (size_t i = 0; i < fx_rate_count; i++) {
+        const FxRate *r = &fx_rates[i];
+        if (r->from != from || r->to != to) continue;
+        if (datetime_compare_exact(r->as_of, when) > 0) continue;
+        if (!best || datetime_compare_exact(r->as_of, best->as_of) >= 0) {
+            best = r;
+        }
+    }
+    return best;
+}
+
+/* Apply a rate, moving between storage scales in the same integer operation so
+ * nothing passes through a double:
+ *
+ *   units_to = units_from * num * 10^(scale_to - scale_from) / 10^dexp
+ */
+static int fx_apply(long long units_from, int scale_from, int scale_to,
+                    long long num, int dexp,
+                    long long *out, const char **err) {
+    long long mul = num;
+    long long den = 1;
+    int shift = scale_to - scale_from;
+
+    if (shift > 0) {
+        long long boost = money_pow10(shift);
+        if (!boost || __builtin_mul_overflow(mul, boost, &mul)) {
+            *err = "money value is out of range";
+            return 0;
+        }
+    } else if (shift < 0) {
+        long long shrink = money_pow10(-shift);
+        if (!shrink) { *err = "money value is out of range"; return 0; }
+        den = shrink;
+    }
+    if (dexp > 0) {
+        long long d = money_pow10(dexp);
+        if (!d || __builtin_mul_overflow(den, d, &den)) {
+            *err = "money value is out of range";
+            return 0;
+        }
+    } else if (dexp < 0) {
+        long long b = money_pow10(-dexp);
+        if (!b || __builtin_mul_overflow(mul, b, &mul)) {
+            *err = "money value is out of range";
+            return 0;
+        }
+    }
+    int negate = 0;
+    if (mul < 0) { mul = -mul; negate = 1; }
+    if (!money_muldiv(units_from, mul, den, out, err)) return 0;
+    if (negate) *out = -*out;
+    return 1;
+}
+
 /* --- money.* : the currency table (docs/money_design.md section 10) --------
  *
  * ISO 4217 is built in, and a program may REGISTER a currency on top of it:
@@ -23374,6 +23526,178 @@ static Value money_eval_call(AstExpr *expr) {
         unsigned short assigned = slot->numeric;
         value_free(code); value_free(expv);
         return value_number((double)assigned);
+    }
+
+    if (strcmp(name, "rate") == 0) {
+        if (expr->as.call.args.count != 4) {
+            runtime_error_raise("money.rate expects from, to, rate and an as-of date",
+                                1003, "money");
+            return value_null();
+        }
+        Value a[4];
+        for (int i = 0; i < 4; i++) {
+            a[i] = eval_expr(expr->as.call.args.items[i]);
+            if (error_action_pending()) {
+                for (int j = 0; j <= i; j++) value_free(a[j]);
+                return value_null();
+            }
+        }
+        unsigned short from = 0, to = 0;
+        unsigned char fe = 0, te = 0;
+        const char *bad = NULL;
+        if (a[0].kind != VALUE_STRING || a[1].kind != VALUE_STRING) {
+            bad = "money.rate expects currency codes as strings";
+        } else if (!currency_find_alpha(a[0].as.string, &from, &fe, NULL)) {
+            bad = "no such currency in money.rate (first argument)";
+        } else if (!currency_find_alpha(a[1].as.string, &to, &te, NULL)) {
+            bad = "no such currency in money.rate (second argument)";
+        } else if (a[2].kind != VALUE_STRING) {
+            /* Decimal TEXT, not a number: an FX rate carries more significant
+             * figures than a double reliably holds, and this is the one place
+             * the value's exactness is the caller's to state. */
+            bad = "money.rate expects the rate as decimal text";
+        } else if (a[3].kind != VALUE_DATETIME) {
+            bad = "money.rate expects an as-of date";
+        } else if (from == to) {
+            bad = "a currency needs no rate against itself";
+        }
+        if (bad) {
+            for (int i = 0; i < 4; i++) value_free(a[i]);
+            runtime_error_raise(bad, 1003, "money");
+            return value_null();
+        }
+
+        long long num = 0;
+        int dexp = 0;
+        const char *err = NULL;
+        if (!money_rate_parts(a[2].as.string, &num, &dexp, &err)) {
+            for (int i = 0; i < 4; i++) value_free(a[i]);
+            runtime_error_raise(err ? err : "invalid exchange rate", 1003, "money");
+            return value_null();
+        }
+        if (num <= 0) {
+            for (int i = 0; i < 4; i++) value_free(a[i]);
+            runtime_error_raise("an exchange rate must be positive", 1003, "money");
+            return value_null();
+        }
+
+        FxRate *grown = realloc(fx_rates, sizeof(FxRate) * (fx_rate_count + 1));
+        if (!grown) abort();
+        fx_rates = grown;
+        FxRate *slot = &fx_rates[fx_rate_count++];
+        slot->from = from; slot->to = to;
+        slot->num = num; slot->dexp = dexp;
+        slot->as_of = a[3].as.datetime;
+        for (int i = 0; i < 4; i++) value_free(a[i]);
+        return value_bool(1);
+    }
+
+    if (strcmp(name, "rate_on") == 0 || strcmp(name, "convert") == 0) {
+        int converting = strcmp(name, "convert") == 0;
+        if (expr->as.call.args.count != 3) {
+            runtime_error_raise(converting
+                ? "money.convert expects an amount, a currency and a date"
+                : "money.rate_on expects from, to and a date",
+                1003, "money");
+            return value_null();
+        }
+        Value a[3];
+        for (int i = 0; i < 3; i++) {
+            a[i] = eval_expr(expr->as.call.args.items[i]);
+            if (error_action_pending()) {
+                for (int j = 0; j <= i; j++) value_free(a[j]);
+                return value_null();
+            }
+        }
+
+        unsigned short from = 0, to = 0;
+        unsigned char fe = 0, te = 0;
+        const char *bad = NULL;
+        if (converting) {
+            if (a[0].kind != VALUE_MONEY) bad = "money.convert expects money";
+            else { from = a[0].as.money.currency; fe = a[0].as.money.exponent; }
+        } else if (a[0].kind != VALUE_STRING ||
+                   !currency_find_alpha(a[0].as.string, &from, &fe, NULL)) {
+            bad = "no such currency in money.rate_on (first argument)";
+        }
+        if (!bad) {
+            if (a[1].kind != VALUE_STRING ||
+                !currency_find_alpha(a[1].as.string, &to, &te, NULL)) {
+                bad = converting
+                    ? "money.convert expects a target currency code"
+                    : "no such currency in money.rate_on (second argument)";
+            } else if (a[2].kind != VALUE_DATETIME) {
+                bad = converting
+                    ? "money.convert expects a date -- a rate is a dated fact"
+                    : "money.rate_on expects a date";
+            }
+        }
+        if (bad) {
+            for (int i = 0; i < 3; i++) value_free(a[i]);
+            runtime_error_raise(bad, 1003, "money");
+            return value_null();
+        }
+
+        /* Converting to the same currency needs no rate and must not require
+         * one -- otherwise generic code that converts a mixed list to a
+         * reporting currency would fail on the entries already in it. */
+        if (from == to) {
+            Value out = converting ? value_copy(a[0]) : value_number(1);
+            for (int i = 0; i < 3; i++) value_free(a[i]);
+            return out;
+        }
+
+        const FxRate *r = fx_lookup(from, to, a[2].as.datetime);
+        if (!r) {
+            const char *fa = currency_alpha_of(from);
+            const char *ta = currency_alpha_of(to);
+            char message[256];
+            /* Say whether the OPPOSITE direction is known, because that is the
+             * near-miss an author is most likely to have made -- and it names
+             * why we will not just invert it. */
+            if (fx_lookup(to, from, a[2].as.datetime)) {
+                snprintf(message, sizeof(message),
+                         "no %s to %s rate on that date; a %s to %s rate exists, "
+                         "but inverting it would invent a spread",
+                         fa ? fa : "?", ta ? ta : "?", ta ? ta : "?", fa ? fa : "?");
+            } else {
+                snprintf(message, sizeof(message),
+                         "no %s to %s rate known on that date",
+                         fa ? fa : "?", ta ? ta : "?");
+            }
+            for (int i = 0; i < 3; i++) value_free(a[i]);
+            runtime_error_raise(message, 1003, "money");
+            return value_null();
+        }
+
+        if (!converting) {
+            /* Report the rate AND the date it came from: knowing which rate was
+             * applied is the whole point of dating them. */
+            RecordField *f = calloc(2, sizeof(RecordField));
+            if (!f) abort();
+            f[0].name = copy_string("rate");   f[0].value = cell_alloc();
+            f[1].name = copy_string("as_of");  f[1].value = cell_alloc();
+            char rbuf[64];
+            money_rate_render(r->num, r->dexp, rbuf, sizeof(rbuf));
+            *f[0].value = value_string(rbuf);
+            *f[1].value = value_datetime(r->as_of);
+            for (int i = 0; i < 3; i++) value_free(a[i]);
+            return value_record(f, 2);
+        }
+
+        long long units = 0;
+        const char *err = NULL;
+        if (!fx_apply(a[0].as.money.units,
+                      (int)fe + MONEY_GUARD_DIGITS,
+                      (int)te + MONEY_GUARD_DIGITS,
+                      r->num, r->dexp, &units, &err)) {
+            for (int i = 0; i < 3; i++) value_free(a[i]);
+            runtime_error_raise(err ? err : "money value is out of range",
+                                1003, "money");
+            return value_null();
+        }
+        for (int i = 0; i < 3; i++) value_free(a[i]);
+        return value_money(money_make(units, to, te));
     }
 
     if (strcmp(name, "retire") == 0) {

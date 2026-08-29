@@ -1065,6 +1065,42 @@ self-describing: actors are separate processes and a currency registered in
 the parent is not registered in the child. `SER_VERSION` 1 payloads (a bare
 integer of cents) still deserialize, rescaled and assumed USD.
 
+#### Exchange rates (*since 0.1.0-rc9*)
+
+**A rate is a dated fact.** Converting without an as-of date gives a number
+nobody can reproduce — re-run last quarter's report and you silently get
+today's rate. So the date is required, not defaulted.
+
+```basic
+jan {date}= "2026-01-01"
+jun {date}= "2026-06-01"
+money.rate("USD", "EUR", "0.92", jan)
+money.rate("USD", "EUR", "0.95", jun)
+
+u {USD}= "100.00"
+print money.convert(u, "EUR", jan)      ' 92.00
+print money.convert(u, "EUR", jun)      ' 95.00
+```
+
+- `money.rate(from, to, rate, as_of)` — record a rate. The rate is **decimal
+  text**, not a number: FX rates routinely carry six or more significant
+  figures and a double would round them. Registering the same pair and date
+  again corrects it; the later registration wins.
+- `money.convert(amount, to, on)` → money in the target currency, using the
+  rate **effective** on that date — the latest whose as-of is on or before it,
+  so a report run for March sees March's rate. Converting to the same currency
+  is identity and needs no rate.
+- `money.rate_on(from, to, on)` → `{rate, as_of}` — which rate *would* be
+  applied, and the date it came from. Knowing that is the point of dating them.
+
+The conversion moves between storage scales in one integer operation, so USD
+(two places) to JPY (none) or KWD (three) loses nothing to a double.
+
+**Inversion is refused.** Given a USD→EUR rate, the EUR→USD rate is not its
+reciprocal — the two sides of a quote differ by a spread, and inverting would
+invent money. The refusal says a rate exists in the other direction so the
+author can decide.
+
 #### `USD` conversion and rounding (*since 0.1.0-rc9*)
 
 `USD` is **reflective**: it takes whatever it is given and does the most
