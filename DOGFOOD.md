@@ -3307,3 +3307,57 @@ from this and neither is silent:
   deliberate, the reference must say so loudly and the value should be
   `nothing` rather than `unknown` — but raising is the right answer for a
   primitive whose contract is authentication.
+
+## 2026-08-29 — CC — while: implementing PLAT-MONEY phases 0 and 1
+- **Type:** bug
+- **Severity:** high
+- **What:** A fifth money defect, found while fixing the four already filed and
+  not in gdash's report: **`money + money` and `money - money` were unchecked
+  signed overflow.** That is undefined behaviour in C, not a defined wrap. At
+  cents scale:
+
+  ```basic
+  a {USD}= "92233720368547758.07"   ' int64 max
+  b {USD}= "0.01"
+  print a + b                        ' -92233720368547758.08  -- a SIGN FLIP
+  ```
+
+  It had been unreachable for the type's whole life, because until phase 0
+  landed there was no way to construct a value that large. Fixing exact
+  construction is what exposed it — which is the general shape worth
+  remembering: **closing one defect can make a second one reachable**, and the
+  fixtures for the first are where the second shows up.
+
+  A second instance of the same pattern in the same afternoon: `format_money`
+  rendered `LLONG_MIN` as `--92233720368547758.-8` because negating it
+  overflows. Also pre-existing, also unreachable until exact construction
+  existed. Both came from int64's asymmetric range — the most negative value is
+  one greater in magnitude than the most positive — which is worth treating as
+  a standing hazard anywhere money is negated or its magnitude taken.
+
+- **Workaround:** resolved in the phase 1 commit. `+`/`-` are now
+  `__builtin_*_overflow`-checked and raise `money value is out of range`;
+  `format_money` builds the magnitude unsigned. `odbc_money_text` was checked
+  against the same boundary and was already correct, since dividing `LLONG_MIN`
+  by 100 does not overflow.
+
+## 2026-08-29 — CC — while: running the full gate during PLAT-MONEY phase 1
+- **Type:** perf
+- **Severity:** low
+- **What:** `run_stridx.sh`'s `byte_at loop` shape tier is **load-sensitive
+  enough to flake**. Its normal ratio on this machine is ~3x against an 8x
+  gate, but during a full `run_all.sh` — where suites run back to back and the
+  machine is busy — it measured **8.57x and failed**. Standalone immediately
+  afterwards: 3.58x.
+
+  Verified as pre-existing rather than a regression: three runs on the phase-0
+  binary gave 2.96x / 2.94x / 3.19x and three on phase 1 gave 3.20x / 2.57x /
+  2.77x — indistinguishable.
+
+  The tier is doing its job (it is a ratio, not an absolute time, which is the
+  right design) but ~2.5x of headroom is thin for something whose denominator
+  is a 0.4s measurement. A longer baseline run, or a repeat-best-of-N, would
+  make it robust without weakening the gate.
+- **Workaround:** none applied; re-running passed. Recorded so the next person
+  who sees a red `run_stridx` in an otherwise-green gate checks the ratio
+  before hunting a regression.

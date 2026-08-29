@@ -9,6 +9,40 @@ language surface may still change between releases.
 
 ## Unreleased
 
+- **`money` arithmetic stays in integers (PLAT-MONEY phase 1).** `money * n`
+  and `money / n` computed `(double)cents * n` and then `round_to_cents(amount
+  / 100.0)` — a divide and a multiply by 100 in floating point, for an
+  operation needing neither. It corrupted a value the caller had already got
+  right, with no error.
+
+  **The defect does not reproduce at ordinary magnitudes**, which is why it
+  survived: below 2^53 units a double has precision to spare, so `x * 3` on a
+  few billion dollars is exactly right. Above that it is silently wrong. Every
+  expected value in the new fixtures is therefore above 2^53 units and computed
+  by integer arithmetic outside gBASIC — against the phase-0 binary,
+  `92233720368547.75 * 2` returns `184467440737095.52` where the answer is
+  `...095.50`.
+
+  A scalar is now decomposed into `num × 10^-dexp` through the same
+  shortest-round-trip decimal that construction uses, then applied as
+  `units × mul / den` over a 128-bit intermediate with half-even rounding. An
+  **integral** scalar takes the exact path with no rounding decision at all.
+
+  **A fifth defect, found while doing this and not in the original report:
+  `+` and `-` were unchecked signed overflow** — undefined behaviour rather
+  than a wrap. `int64max + 0.01` returned the most *negative* money value, a
+  sign flip. Unreachable until phase 0 made such a value constructible. Both
+  now raise.
+
+  `round_to_cents`, which *was* the defect, is deleted, and the suite asserts
+  its absence — dead code that still compiles is how a retired construct comes
+  back.
+
+  This had to land **before** guard digits (phase 2), not after: guard digits
+  multiply the unit count by 10^4, dropping the range where the double path is
+  safe from ~$90tn to ~$9bn, which would have moved a defect nobody could reach
+  into the range where real money lives.
+
 - **`money` can finally hold an exact value (PLAT-MONEY phase 0).** The
   storage was always right — an exact int64 of cents, so `0.01` accumulated a
   thousand times is exactly `10.00`, which a double cannot do. What was wrong

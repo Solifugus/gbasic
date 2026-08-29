@@ -112,9 +112,73 @@ do
     fi
 done
 
+printf 'TIER arithmetic (phase 1)\n'
+run_fixture tests/money_arithmetic_test.bas 24 'money_arithmetic'
+
+# THE MULTIPLY TIER IS THE ONE THAT NEEDED PHASE 0 TO EXIST. `money * n` went
+# through a double, and the double has precision to spare below 2^53 units --
+# so the defect does NOT reproduce at ordinary magnitudes, and gdash warned
+# that an implementer whose first probe passes may conclude the finding is
+# wrong. Every expected value here is above 2^53 units and was computed by
+# integer arithmetic OUTSIDE gBASIC; against the phase-0 binary the first two
+# come back 184467440737095.52 and 276701161105643.28.
+for label in \
+    'x2 above 2\^53 is exact' \
+    'x3 above 2\^53 is exact' \
+    'a magnitude where the defect does NOT show' \
+    '0.05 \* 0.5 = 0.025 ties to even' \
+    '0.15 \* 0.5 = 0.075 ties to even' \
+    'number \* money works too'
+do
+    if command grep -Eq "^ok   $label\$" "$work/out"; then
+        pass "asserted: $label"
+    else
+        fail "asserted: $label"
+    fi
+done
+
+printf 'TIER overflow (phase 1)\n'
+run_fixture tests/money_overflow_test.bas 12 'money_overflow'
+
+# Overflow was UNDEFINED BEHAVIOUR, not a wrap: max + 0.01 returned the most
+# NEGATIVE money value. The control half is what keeps this tier from being
+# satisfiable by an implementation that raises on everything.
+for label in \
+    'max \+ 0.01 raises' \
+    'min - 0.01 raises' \
+    'division by zero raises' \
+    'max - 0.01 succeeds' \
+    'min \+ 0.01 succeeds' \
+    'max / 2 succeeds'
+do
+    if command grep -Eq "^ok   $label\$" "$work/out"; then
+        pass "asserted: $label"
+    else
+        fail "asserted: $label"
+    fi
+done
+
+printf 'TIER the defect is gone from the source\n'
+# `round_to_cents` WAS the defect -- a divide and a multiply by 100 in floating
+# point on a value that was already exact. Dead code that still compiles is how
+# a retired construct comes back (the PLAT-BRACE lesson), so its absence is
+# asserted rather than assumed.
+# Match CODE, not mentions: the comments above the replacement name the old
+# function to explain what it did wrong, and a check that greps for the bare
+# word reddens on its own documentation. (The first version of this tier did
+# exactly that -- the same false positive the docs-gate tripwire hit when its
+# own note named a library that no longer exists.)
+if command grep -nE "round_to_cents *\(" src/eval.c | command grep -vE "^[0-9]+: *\*" >/dev/null; then
+    fail 'round_to_cents is gone from src/eval.c'
+    command grep -nE "round_to_cents *\(" src/eval.c | command grep -vE "^[0-9]+: *\*" | head -3
+else
+    pass 'round_to_cents is gone from src/eval.c (mentions in comments are fine)'
+fi
+
 printf 'TIER valgrind\n'
 if command -v valgrind >/dev/null 2>&1; then
-    for fixture in tests/money_construct_test.bas tests/money_refusal_test.bas; do
+    for fixture in tests/money_construct_test.bas tests/money_refusal_test.bas \
+                   tests/money_arithmetic_test.bas tests/money_overflow_test.bas; do
         if valgrind --error-exitcode=99 --leak-check=full --errors-for-leak-kinds=definite -q \
                     ./gbasic "$fixture" >/dev/null 2>"$work/vg"; then
             pass "valgrind clean: $fixture"

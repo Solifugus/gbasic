@@ -1,6 +1,6 @@
 # The money type (PLAT-MONEY)
 
-Status: **ruled 2026-08-29. Phase 0 shipped; phases 1-4 outstanding.** The governing requirement,
+Status: **ruled 2026-08-29. Phases 0 and 1 shipped; phases 2-4 outstanding.** The governing requirement,
 stated by the project owner: money must be **highly accurate and highly safe**.
 Every ruling below resolves toward refusing an operation rather than returning
 a number that might be wrong. This document records the
@@ -193,7 +193,7 @@ Each phase is shippable alone and each has a test that fails without it.
 | Phase | Work | Why here |
 |---|---|---|
 | **0** | Exact construction from decimal text; excess digits rejected | **SHIPPED 0.1.0-rc9.** Unblocks the test for phase 1. Small, and alone it makes the existing range reachable. |
-| **1** | `*` and `/` stay in integer arithmetic; overflow raises | The silent-corruption fix, and **it must precede phase 2** — guard digits cut the range where the double path is safe by 10,000×, from $90tn to $9bn. Write it **parameterized on scale** even though scale is still 2, so phase 2 does not rewrite it. |
+| **1** | `*` and `/` stay in integer arithmetic; overflow raises | **SHIPPED 0.1.0-rc9.** The silent-corruption fix, and **it must precede phase 2** — guard digits cut the range where the double path is safe by 10,000×, from $90tn to $9bn. Write it **parameterized on scale** even though scale is still 2, so phase 2 does not rewrite it. |
 | **2** | Currency tag, per-currency exponent, guard digits, `SER_VERSION` 2 | The representation change. Needed this ruling first. |
 | **3** | FX: dated rates, `convert` | Depends on the tag. A rate is a *dated* fact — converting without an as-of date gives an unreproducible number, which is an audit problem, not an arithmetic one. |
 | **4** | `finance` library: NPV, IRR, XIRR, PMT, PV, FV, RATE, NPER, amortization, depreciation | The actual business-operations gap. See §8. |
@@ -242,6 +242,36 @@ and the suite now pins both.
 modifier expects a number" for `m{USD} = "nope"`. Text is now accepted, so that
 input reaches the parser and fails there instead. The suite asserts the type
 refusal and the parse refusal separately rather than loosening the match.
+
+## 8b. What phase 1 found (shipped 2026-08-29)
+
+**A fifth defect, not in the original list: `+` and `-` were unchecked signed
+overflow** — undefined behaviour rather than a wrap. At cents scale
+`int64max + 0.01` returned the most *negative* money value, a sign flip.
+Nothing had reached it because until phase 0 no value that large could be
+constructed. Both are now `__builtin_*_overflow`-checked and raise.
+
+The arithmetic is now: a scalar is decomposed into `num × 10^-dexp` through
+the same shortest-round-trip decimal construction uses, and applied as
+`units × mul / den` over a 128-bit intermediate with half-even rounding. An
+**integral** scalar takes the exact path with no rounding decision at all,
+which is what makes `m * 2` exact where the old code was not.
+
+`round_to_cents` — the function that *was* the defect — is deleted, and its
+absence is asserted by the suite: dead code that still compiles is how a
+retired construct comes back (the PLAT-BRACE lesson).
+
+**Portability.** The 128-bit intermediate uses `__int128` where the compiler
+has it, which is every 64-bit target gBASIC builds on. A build without it
+falls back to a checked 64-bit path that *refuses* what it cannot prove —
+safe (a raise, never a wrong number), at the cost of refusing a few products
+that would in fact fit.
+
+The red proof is the one phase 0 existed to enable: against the phase-0 binary,
+`92233720368547.75 * 2` gives `184467440737095.52` and `* 3` gives
+`276701161105643.28`; phase 1 gives `...095.50` and `...643.25`, matching
+integer arithmetic done outside gBASIC. `45000000000000.01 * 2` is identical on
+both, which is the control proving a naively-chosen magnitude asserts nothing.
 
 ## 9. Tests to pin
 

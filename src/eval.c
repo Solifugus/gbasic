@@ -3669,9 +3669,202 @@ static int money_parse_decimal(const char *text,
     return 1;
 }
 
-static long long round_to_cents(double amount) {
-    double scaled = amount * 100.0;
-    return scaled >= 0 ? (long long)(scaled + 0.5) : (long long)(scaled - 0.5);
+/* --- PLAT-MONEY phase 1: arithmetic that stays in integers ----------------
+ *
+ * `money * n` and `money / n` used to compute `(double)cents * n` and then
+ * `round_to_cents(amount / 100.0)` -- a divide and a multiply by 100 in
+ * floating point, for an operation needing neither. It corrupted a value the
+ * caller had already got right, with no error, and even `money * 2` was not
+ * exact once the unit count passed 2^53.
+ *
+ * THE DEFECT HIDES AT ORDINARY MAGNITUDES, which is why it survived: the
+ * double has precision to spare below 2^53 units, so `x * 3` on a few billion
+ * dollars is exactly right and a casual probe concludes there is no bug.
+ * Above that it is silently wrong. Phase 2 makes this far worse -- guard
+ * digits multiply the unit count by 10^4, so the safe range falls from ~$90
+ * trillion to ~$9 billion -- which is why this lands FIRST.
+ *
+ * +/- were unchecked signed overflow, which is undefined behaviour rather
+ * than a wrap: at cents scale `int64max + 0.01` returned the most NEGATIVE
+ * money value. Nothing had reached it before, because until phase 0 no value
+ * that large could be constructed.
+ */
+
+#if defined(__SIZEOF_INT128__)
+__extension__ typedef __int128 money_wide;
+__extension__ typedef unsigned __int128 money_uwide;
+#define MONEY_HAVE_WIDE 1
+#else
+/* No 128-bit type: the checked 64-bit path below refuses operations it cannot
+ * prove, which is safe (a raise, never a wrong number) but refuses a few
+ * products that would in fact fit. Every 64-bit target gBASIC builds on has
+ * __int128; this exists so a 32-bit build still behaves correctly. */
+typedef long long money_wide;
+#define MONEY_HAVE_WIDE 0
+#endif
+
+/* 10^e as a long long, or 0 if it does not fit. */
+static long long money_pow10(int e) {
+    if (e < 0 || e > 18) return 0;
+    long long r = 1;
+    while (e-- > 0) r *= 10;
+    return r;
+}
+
+/* units * mul / den, rounded HALF-EVEN, with `den` strictly positive.
+ * The intermediate product needs more than 64 bits in general -- that is the
+ * whole reason the old code reached for a double -- so it is computed wide and
+ * range-checked on the way back down. */
+static int money_muldiv(long long units, long long mul, long long den,
+                        long long *out, const char **err) {
+    if (den <= 0) { *err = "money value is out of range"; return 0; }
+    if (units == 0 || mul == 0) { *out = 0; return 1; }
+
+#if MONEY_HAVE_WIDE
+    money_wide p = (money_wide)units * (money_wide)mul;
+    int negative = p < 0;
+    money_uwide mag = negative
+        ? (money_uwide)(-(p + 1)) + 1u
+        : (money_uwide)p;
+    money_uwide d = (money_uwide)den;
+    money_uwide q = mag / d;
+    money_uwide r = mag % d;
+    /* half-even: past the tie rounds away from zero, exactly at the tie the
+     * quotient goes to even. Unbiased across many roundings, where half-up
+     * drifts upward -- §5 of the design. */
+    if (r * 2u > d || (r * 2u == d && (q & 1u) != 0u)) {
+        q++;
+    }
+    money_uwide limit = negative
+        ? (money_uwide)9223372036854775808ULL
+        : (money_uwide)9223372036854775807ULL;
+    if (q > limit) { *err = "money value is out of range"; return 0; }
+    if (negative) {
+        *out = (q == (money_uwide)9223372036854775808ULL)
+            ? LLONG_MIN : -(long long)q;
+    } else {
+        *out = (long long)q;
+    }
+    return 1;
+#else
+    long long p;
+    if (__builtin_mul_overflow(units, mul, &p)) {
+        *err = "money value is out of range";
+        return 0;
+    }
+    long long q = p / den;
+    long long r = p % den;
+    long long ar = r < 0 ? -r : r;
+    if (ar * 2 > den || (ar * 2 == den && (q & 1) != 0)) {
+        q += (p < 0) ? -1 : 1;
+    }
+    *out = q;
+    return 1;
+#endif
+}
+
+/* Decompose a finite double EXACTLY into `num * 10^-dexp`, by way of its
+ * shortest round-trip decimal (PLAT-NUMFMT) -- the same route construction
+ * uses, so a scalar means the same thing wherever it appears. dexp may be
+ * negative, which is the `1e+20` case and means multiply rather than divide. */
+static int money_scalar_parts(double v, long long *num, int *dexp,
+                              const char **err) {
+    char text[64];
+    format_number(text, sizeof(text), v);
+
+    const char *p = text;
+    int negative = 0;
+    if (*p == '+' || *p == '-') { negative = (*p == '-'); p++; }
+
+    unsigned long long mag = 0;
+    int frac = 0, after = 0, seen = 0;
+    for (; *p; p++) {
+        if (*p == '.') { after = 1; continue; }
+        if (*p < '0' || *p > '9') break;
+        seen = 1;
+        if (mag > (9223372036854775807ULL - 9) / 10ULL) {
+            *err = "money scale factor is out of range";
+            return 0;
+        }
+        mag = mag * 10ULL + (unsigned)(*p - '0');
+        if (after) frac++;
+    }
+    if (!seen) { *err = "money scale factor is not a number"; return 0; }
+
+    int exponent = 0;
+    if (*p == 'e' || *p == 'E') {
+        p++;
+        int esign = 1;
+        if (*p == '+' || *p == '-') { esign = (*p == '-') ? -1 : 1; p++; }
+        int e = 0;
+        for (; *p >= '0' && *p <= '9'; p++) {
+            if (e < 10000) e = e * 10 + (*p - '0');
+        }
+        exponent = esign * e;
+    }
+
+    *num = negative ? -(long long)mag : (long long)mag;
+    *dexp = frac - exponent;
+    return 1;
+}
+
+/* money * scalar and money / scalar, both as integer arithmetic.
+ * An INTEGRAL scalar takes the exact path with no rounding decision at all,
+ * which is what makes `m * 2` exact where the old code was not. */
+static int money_scale_by(long long units, double scalar, int divide,
+                          long long *out, const char **err) {
+    long long num = 0;
+    int dexp = 0;
+    if (!money_scalar_parts(scalar, &num, &dexp, err)) return 0;
+
+    if (num == 0) {
+        if (divide) { *err = "division by zero"; return 0; }
+        *out = 0;
+        return 1;
+    }
+
+    /* multiply: units * num / 10^dexp     divide: units * 10^dexp / num */
+    long long mul, den;
+    if (!divide) {
+        mul = num;
+        if (dexp >= 0) {
+            den = money_pow10(dexp);
+            if (!den) { *out = 0; return 1; }   /* scalar far below one unit */
+        } else {
+            long long boost = money_pow10(-dexp);
+            if (!boost) { *err = "money value is out of range"; return 0; }
+            if (__builtin_mul_overflow(mul, boost, &mul)) {
+                *err = "money value is out of range";
+                return 0;
+            }
+            den = 1;
+        }
+    } else {
+        den = num;
+        if (dexp >= 0) {
+            mul = money_pow10(dexp);
+            if (!mul) { *err = "money value is out of range"; return 0; }
+        } else {
+            long long shrink = money_pow10(-dexp);
+            if (!shrink) { *out = 0; return 1; }
+            if (__builtin_mul_overflow(den, shrink, &den)) {
+                *err = "money value is out of range";
+                return 0;
+            }
+            mul = 1;
+        }
+    }
+
+    int negate = 0;
+    if (den < 0) { den = -den; negate = 1; }
+    long long result;
+    if (!money_muldiv(units, mul, den, &result, err)) return 0;
+    if (negate) {
+        if (result == LLONG_MIN) { *err = "money value is out of range"; return 0; }
+        result = -result;
+    }
+    *out = result;
+    return 1;
 }
 
 /* PLAT-STDERR: `print` and `print to error` differ in one thing -- the destination
@@ -28089,11 +28282,22 @@ static Value eval_binary(AstExpr *expr) {
     if (left.kind == VALUE_MONEY || right.kind == VALUE_MONEY) {
         if (left.kind == VALUE_MONEY && right.kind == VALUE_MONEY &&
             (strcmp(op, "+") == 0 || strcmp(op, "-") == 0)) {
-            long long cents = strcmp(op, "+") == 0
-                ? left.as.cents + right.as.cents
-                : left.as.cents - right.as.cents;
+            /* Checked: signed overflow is undefined behaviour, not a wrap,
+             * and at cents scale `int64max + 0.01` returned the most NEGATIVE
+             * money value. Unreachable until phase 0 made such a value
+             * constructible; a raise is the only safe answer. */
+            long long cents = 0;
+            int overflowed = strcmp(op, "+") == 0
+                ? __builtin_add_overflow(left.as.cents, right.as.cents, &cents)
+                : __builtin_sub_overflow(left.as.cents, right.as.cents, &cents);
             value_free(left);
             value_free(right);
+            if (overflowed) {
+                runtime_error_raise("money value is out of range", 1003, "money");
+                current_line = previous_line;
+                current_column = previous_column;
+                return value_null();
+            }
             current_line = previous_line;
             current_column = previous_column;
             return value_money(cents);
@@ -28109,22 +28313,40 @@ static Value eval_binary(AstExpr *expr) {
                 current_column = previous_column;
                 return value_null();
             }
-            double amount = strcmp(op, "*") == 0
-                ? (double)left.as.cents * number
-                : (double)left.as.cents / number;
+            const char *merr = NULL;
+            long long scaled = 0;
+            int ok = money_scale_by(left.as.cents, number,
+                                    strcmp(op, "*") != 0, &scaled, &merr);
             value_free(left);
             value_free(right);
+            if (!ok) {
+                runtime_error_raise(merr ? merr : "invalid money operation",
+                                    1003, "money");
+                current_line = previous_line;
+                current_column = previous_column;
+                return value_null();
+            }
             current_line = previous_line;
             current_column = previous_column;
-            return value_money(round_to_cents(amount / 100.0));
+            return value_money(scaled);
         }
         if (left.kind == VALUE_NUMBER && right.kind == VALUE_MONEY && strcmp(op, "*") == 0) {
-            double amount = left.as.number * (double)right.as.cents;
+            const char *merr = NULL;
+            long long scaled = 0;
+            int ok = money_scale_by(right.as.cents, left.as.number, 0,
+                                    &scaled, &merr);
             value_free(left);
             value_free(right);
+            if (!ok) {
+                runtime_error_raise(merr ? merr : "invalid money operation",
+                                    1003, "money");
+                current_line = previous_line;
+                current_column = previous_column;
+                return value_null();
+            }
             current_line = previous_line;
             current_column = previous_column;
-            return value_money(round_to_cents(amount / 100.0));
+            return value_money(scaled);
         }
         value_free(left);
         value_free(right);
