@@ -1,0 +1,13 @@
+ticket 1
+  note is nothing : false
+  note = ""       : false
+ticket 2
+  note is nothing : true
+  note = ""       : false
+
+closed_on type  : datetime
+closed_on       : 2026-03-05
+  year          : 2026
+  dayname       : Thursday
+
+timestamp -> datetime 2026-03-05 13:45:01

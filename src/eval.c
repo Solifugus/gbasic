@@ -43,6 +43,11 @@
 #include <libpq-fe.h>
 #endif
 
+#if HAVE_ODBC
+#include <sql.h>
+#include <sqlext.h>
+#endif
+
 #if HAVE_SQLITE3
 #include <sqlite3.h>
 #endif
@@ -167,6 +172,7 @@ void parse_set_source_path(const char *path);
 
 typedef struct PgConnectionValue PgConnectionValue;
 typedef struct SqliteConnectionValue SqliteConnectionValue;
+typedef struct OdbcConnectionValue OdbcConnectionValue;
 typedef struct RegexValue RegexValue;
 typedef struct XlsxWorkbook XlsxWorkbook;
 typedef struct XmlReaderValue XmlReaderValue;
@@ -192,6 +198,7 @@ typedef enum {
     VALUE_DIR,
     VALUE_POSTGRES_CONNECTION,
     VALUE_SQLITE_CONNECTION,
+    VALUE_ODBC_CONNECTION,
     VALUE_XML_READER,
     VALUE_PROCESS,
     VALUE_GOBJECT,
@@ -276,6 +283,7 @@ struct Value {
         char *dir_path;
         PgConnectionValue *postgres_connection;
         SqliteConnectionValue *sqlite_connection;
+        OdbcConnectionValue *odbc_connection;
         RegexValue *regex;
         /* A first-class watcher value: an index into the global watcher
          * registry. Indices are stable because unwatch TOMBSTONES an entry
@@ -310,6 +318,20 @@ struct PgConnectionValue {
 struct SqliteConnectionValue {
 #if HAVE_SQLITE3
     sqlite3 *connection;
+#endif
+    size_t ref_count;
+    int closed;
+};
+
+/* An ODBC connection. Two handles rather than one: the environment is
+ * per-connection so a close tears down everything it owns, which keeps the
+ * lifetime rule identical to sqlite's and pg's -- refcounted, closed
+ * explicitly or at interpreter teardown, never shared across actors (they are
+ * separate processes and a driver handle is meaningless in another). */
+struct OdbcConnectionValue {
+#if HAVE_ODBC
+    SQLHENV env;
+    SQLHDBC dbc;
 #endif
     size_t ref_count;
     int closed;
@@ -639,6 +661,7 @@ static size_t use_stack_count = 0;
 static int gui_library_loaded = 0;
 static int pg_library_loaded = 0;
 static int sqlite_library_loaded = 0;
+static int odbc_library_loaded = 0;
 static int webclient_library_loaded = 0;
 static int webclient_curl_initialized = 0;
 static int webserver_library_loaded = 0;
@@ -728,6 +751,8 @@ static const char *value_kind_name(ValueKind kind) {
         return "postgres_connection";
     case VALUE_SQLITE_CONNECTION:
         return "sqlite_connection";
+    case VALUE_ODBC_CONNECTION:
+        return "odbc_connection";
     case VALUE_XML_READER:
         return "xml_reader";
     case VALUE_GOBJECT:
@@ -1819,6 +1844,13 @@ static Value value_sqlite_connection(SqliteConnectionValue *connection) {
     Value value = {0};
     value.kind = VALUE_SQLITE_CONNECTION;
     value.as.sqlite_connection = connection;
+    return value;
+}
+
+static Value value_odbc_connection(OdbcConnectionValue *connection) {
+    Value value = {0};
+    value.kind = VALUE_ODBC_CONNECTION;
+    value.as.odbc_connection = connection;
     return value;
 }
 
@@ -3127,6 +3159,10 @@ static Value value_copy(Value value) {
         value.as.sqlite_connection->ref_count++;
         return value_sqlite_connection(value.as.sqlite_connection);
     }
+    if (value.kind == VALUE_ODBC_CONNECTION) {
+        value.as.odbc_connection->ref_count++;
+        return value_odbc_connection(value.as.odbc_connection);
+    }
     if (value.kind == VALUE_XML_READER) {
         value.as.xml_reader->ref_count++;
         return value_xml_reader(value.as.xml_reader);
@@ -3222,6 +3258,18 @@ static void value_free(Value value) {
 #if HAVE_SQLITE3
             if (!connection->closed && connection->connection) {
                 sqlite3_close(connection->connection);
+            }
+#endif
+            free(connection);
+        }
+    } else if (value.kind == VALUE_ODBC_CONNECTION) {
+        OdbcConnectionValue *connection = value.as.odbc_connection;
+        if (connection && --connection->ref_count == 0) {
+#if HAVE_ODBC
+            if (!connection->closed) {
+                SQLDisconnect(connection->dbc);
+                SQLFreeHandle(SQL_HANDLE_DBC, connection->dbc);
+                SQLFreeHandle(SQL_HANDLE_ENV, connection->env);
             }
 #endif
             free(connection);
@@ -3365,6 +3413,11 @@ static int value_truthy(Value value) {
         runtime_error_raise("xml reader cannot be used as a condition",
                             5001,
                             "xml");
+        return 0;
+    case VALUE_ODBC_CONNECTION:
+        runtime_error_raise("odbc connection cannot be used as a condition",
+                            2002,
+                            "odbc");
         return 0;
     case VALUE_SQLITE_CONNECTION:
         runtime_error_raise("sqlite connection cannot be used as a condition",
@@ -4043,6 +4096,8 @@ static int value_storage_equal(const Value *left, const Value *right) {
         return left->as.postgres_connection == right->as.postgres_connection;
     case VALUE_SQLITE_CONNECTION:
         return left->as.sqlite_connection == right->as.sqlite_connection;
+    case VALUE_ODBC_CONNECTION:
+        return left->as.odbc_connection == right->as.odbc_connection;
     case VALUE_XML_READER:
         return left->as.xml_reader == right->as.xml_reader;
     case VALUE_GOBJECT:
@@ -6759,6 +6814,17 @@ static void library_import(const char *name, const char *path) {
         return;
     }
 
+    if (!path && strcmp(name, "odbc") == 0) {
+#if HAVE_ODBC
+        odbc_library_loaded = 1;
+#else
+        runtime_error_raise("ODBC support is not available in this build",
+                            2003,
+                            "odbc");
+#endif
+        return;
+    }
+
     if (!path && strcmp(name, "webclient") == 0) {
 #if HAVE_LIBCURL
         if (!webclient_curl_initialized) {
@@ -9173,6 +9239,8 @@ static const char *builtin_type_name(Value value) {
         return "postgres_connection";
     case VALUE_SQLITE_CONNECTION:
         return "sqlite_connection";
+    case VALUE_ODBC_CONNECTION:
+        return "odbc_connection";
     case VALUE_XML_READER:
         return "xml_reader";
     case VALUE_GOBJECT:
@@ -9544,6 +9612,9 @@ static Value builtin_string_value(Value value) {
     case VALUE_SQLITE_CONNECTION:
         value_free(value);
         return value_string("<sqlite_connection>");
+    case VALUE_ODBC_CONNECTION:
+        value_free(value);
+        return value_string("<odbc_connection>");
     case VALUE_XML_READER:
         value_free(value);
         return value_string("<xml_reader>");
@@ -9684,6 +9755,7 @@ static int encode_value_to_builder(StringBuilder *builder, Value value, RenderMo
     case VALUE_DIR:
     case VALUE_POSTGRES_CONNECTION:
     case VALUE_SQLITE_CONNECTION:
+    case VALUE_ODBC_CONNECTION:
     case VALUE_XML_READER:
     case VALUE_GOBJECT:
     case VALUE_GBOXED:
@@ -10023,6 +10095,7 @@ static int serialize_value(SerBuf *b, Value v, int depth) {
         return 1;
     case VALUE_POSTGRES_CONNECTION:
     case VALUE_SQLITE_CONNECTION:
+    case VALUE_ODBC_CONNECTION:
     case VALUE_XML_READER:
         runtime_error_raise("serialize: database connections cannot be serialized",
                             1003, "actor");
@@ -15997,6 +16070,1081 @@ static Value sqlite_eval_call(AstExpr *expr) {
 }
 #endif
 
+#if HAVE_ODBC
+#define ODBC_ERROR_CODE 2003
+
+/* ODBC (docs/reference.md, the `odbc` module).
+ *
+ * The module is deliberately DUMB: it takes a driver-manager connection
+ * string and passes it through. It knows nothing about DSN profiles,
+ * credential storage or dialect differences -- those belong to the program,
+ * because every one of them is a policy an application has an opinion about
+ * and a language runtime does not.
+ *
+ * Two rules shape everything below, and both are the sqlite/pg precedent:
+ *
+ *   1. Parameters are BOUND, never interpolated. There is no code path in
+ *      this file that pastes a value into SQL text.
+ *   2. A value we cannot represent faithfully is REFUSED, not coerced. That
+ *      is why DECIMAL/NUMERIC/BIGINT come back as STRINGS: a DECIMAL(19,4)
+ *      narrowed to a double loses cents silently, and a silent wrong number
+ *      is worse than an inconvenient right one. `pg` already answers NUMERIC
+ *      and BIGINT the same way (oids 1700 and 20), so a program moving
+ *      between the two backends sees one convention.
+ */
+
+typedef struct {
+    SQLHSTMT statement;
+    char **values;      /* owned text for bound SQL_C_CHAR parameters */
+    SQLLEN *indicators; /* must outlive SQLExecute, so one slot per parameter */
+    int count;
+} OdbcParameterList;
+
+static void odbc_raise_message(const char *message) {
+    runtime_error_raise(message, ODBC_ERROR_CODE, "odbc");
+}
+
+/* Build "prefix: [STATE] message" from the driver's own diagnostic record.
+ * Walking every record rather than only the first matters: drivers routinely
+ * put the useful sentence in record 2 behind a generic one in record 1. */
+static void odbc_raise_diag(SQLSMALLINT handle_type,
+                            SQLHANDLE handle,
+                            const char *prefix) {
+    StringBuilder builder;
+    sb_init(&builder);
+    sb_append_text(&builder, prefix);
+
+    int appended = 0;
+    for (SQLSMALLINT record = 1; record <= 8; record++) {
+        SQLCHAR state[8] = {0};
+        SQLCHAR text[1024] = {0};
+        SQLINTEGER native = 0;
+        SQLSMALLINT length = 0;
+        SQLRETURN rc = SQLGetDiagRec(handle_type,
+                                     handle,
+                                     record,
+                                     state,
+                                     &native,
+                                     text,
+                                     (SQLSMALLINT)sizeof(text),
+                                     &length);
+        if (!SQL_SUCCEEDED(rc)) {
+            break;
+        }
+        sb_append_text(&builder, appended ? "; [" : ": [");
+        sb_append_text(&builder, (const char *)state);
+        sb_append_text(&builder, "] ");
+        /* Driver text often carries embedded newlines; keep the message one line. */
+        for (const char *p = (const char *)text; *p; p++) {
+            sb_append_char(&builder, (*p == '\n' || *p == '\r') ? ' ' : *p);
+        }
+        appended = 1;
+    }
+
+    char *message = sb_take(&builder);
+    odbc_raise_message(message ? message : prefix);
+    free(message);
+}
+
+static OdbcConnectionValue *odbc_connection_from_value(Value value) {
+    if (value.kind != VALUE_ODBC_CONNECTION) {
+        odbc_raise_message("odbc operation expects an odbc_connection");
+        return NULL;
+    }
+    OdbcConnectionValue *connection = value.as.odbc_connection;
+    if (!connection || connection->closed) {
+        odbc_raise_message("odbc connection is closed");
+        return NULL;
+    }
+    return connection;
+}
+
+static Value odbc_eval_connect(AstExpr *expr) {
+    if (expr->as.call.args.count != 1) {
+        odbc_raise_message("odbc.connect expects one argument");
+        return value_null();
+    }
+
+    Value target = eval_expr(expr->as.call.args.items[0]);
+    if (error_action_pending()) {
+        value_free(target);
+        return value_null();
+    }
+    if (target.kind != VALUE_STRING) {
+        value_free(target);
+        odbc_raise_message("odbc.connect expects a connection string");
+        return value_null();
+    }
+
+    SQLHENV env = SQL_NULL_HENV;
+    SQLRETURN rc = SQLAllocHandle(SQL_HANDLE_ENV, SQL_NULL_HANDLE, &env);
+    if (!SQL_SUCCEEDED(rc)) {
+        value_free(target);
+        odbc_raise_message("could not allocate an ODBC environment");
+        return value_null();
+    }
+    rc = SQLSetEnvAttr(env, SQL_ATTR_ODBC_VERSION, (SQLPOINTER)SQL_OV_ODBC3, 0);
+    if (!SQL_SUCCEEDED(rc)) {
+        odbc_raise_diag(SQL_HANDLE_ENV, env, "could not select ODBC 3.x");
+        SQLFreeHandle(SQL_HANDLE_ENV, env);
+        value_free(target);
+        return value_null();
+    }
+
+    SQLHDBC dbc = SQL_NULL_HDBC;
+    rc = SQLAllocHandle(SQL_HANDLE_DBC, env, &dbc);
+    if (!SQL_SUCCEEDED(rc)) {
+        odbc_raise_diag(SQL_HANDLE_ENV, env, "could not allocate an ODBC connection");
+        SQLFreeHandle(SQL_HANDLE_ENV, env);
+        value_free(target);
+        return value_null();
+    }
+
+    rc = SQLDriverConnect(dbc,
+                          NULL,
+                          (SQLCHAR *)target.as.string,
+                          SQL_NTS,
+                          NULL,
+                          0,
+                          NULL,
+                          SQL_DRIVER_NOPROMPT);
+    if (!SQL_SUCCEEDED(rc)) {
+        odbc_raise_diag(SQL_HANDLE_DBC, dbc, "odbc connection failed");
+        SQLFreeHandle(SQL_HANDLE_DBC, dbc);
+        SQLFreeHandle(SQL_HANDLE_ENV, env);
+        value_free(target);
+        return value_null();
+    }
+    value_free(target);
+
+    OdbcConnectionValue *connection = calloc(1, sizeof(OdbcConnectionValue));
+    if (!connection) {
+        abort();
+    }
+    connection->env = env;
+    connection->dbc = dbc;
+    connection->ref_count = 1;
+    return value_odbc_connection(connection);
+}
+
+static Value odbc_eval_close(AstExpr *expr) {
+    if (expr->as.call.args.count != 1) {
+        odbc_raise_message("odbc.close expects one argument");
+        return value_null();
+    }
+    Value value = eval_expr(expr->as.call.args.items[0]);
+    if (error_action_pending()) {
+        value_free(value);
+        return value_null();
+    }
+    if (value.kind != VALUE_ODBC_CONNECTION) {
+        value_free(value);
+        odbc_raise_message("odbc.close expects an odbc_connection");
+        return value_null();
+    }
+    OdbcConnectionValue *connection = value.as.odbc_connection;
+    if (!connection || connection->closed) {
+        value_free(value);
+        odbc_raise_message("odbc connection is already closed");
+        return value_null();
+    }
+    SQLDisconnect(connection->dbc);
+    SQLFreeHandle(SQL_HANDLE_DBC, connection->dbc);
+    SQLFreeHandle(SQL_HANDLE_ENV, connection->env);
+    connection->dbc = SQL_NULL_HDBC;
+    connection->env = SQL_NULL_HENV;
+    connection->closed = 1;
+    value_free(value);
+    return value_bool(1);
+}
+
+/* Exact decimal text for a money value. Money is integer cents, so this is
+ * lossless -- which is the whole reason it is bound as text rather than
+ * pushed through a double the way `number(m)` would. */
+static char *odbc_money_text(long long cents) {
+    char buffer[48];
+    long long whole = cents / 100;
+    int fraction = (int)llabs(cents % 100);
+    if (cents < 0 && whole == 0) {
+        snprintf(buffer, sizeof(buffer), "-0.%02d", fraction);
+    } else {
+        snprintf(buffer, sizeof(buffer), "%lld.%02d", whole, fraction);
+    }
+    return copy_string(buffer);
+}
+
+static char *odbc_datetime_text(DateTime datetime) {
+    char buffer[64];
+    if (datetime.time_only) {
+        snprintf(buffer,
+                 sizeof(buffer),
+                 "%02d:%02d:%02d",
+                 datetime.hour,
+                 datetime.precision >= PREC_MINUTE ? datetime.minute : 0,
+                 datetime.precision >= PREC_SECOND ? datetime.second : 0);
+    } else if (datetime.precision < PREC_DAY) {
+        odbc_raise_message("odbc date parameters require day precision");
+        return NULL;
+    } else if (datetime.precision == PREC_DAY) {
+        snprintf(buffer,
+                 sizeof(buffer),
+                 "%04d-%02d-%02d",
+                 datetime.year,
+                 datetime.month,
+                 datetime.day);
+    } else {
+        snprintf(buffer,
+                 sizeof(buffer),
+                 "%04d-%02d-%02d %02d:%02d:%02d",
+                 datetime.year,
+                 datetime.month,
+                 datetime.day,
+                 datetime.hour,
+                 datetime.precision >= PREC_MINUTE ? datetime.minute : 0,
+                 datetime.precision >= PREC_SECOND ? datetime.second : 0);
+    }
+    return copy_string(buffer);
+}
+
+/* Bind one parameter. Everything travels as SQL_C_CHAR except numbers and
+ * booleans: a driver converts text to the column's own type, which is how the
+ * exactness of money and datetimes survives the trip. */
+static int odbc_bind_value(SQLHSTMT statement,
+                           SQLUSMALLINT index,
+                           Value value,
+                           char **owned_text,
+                           SQLLEN *indicator) {
+    *owned_text = NULL;
+    *indicator = 0;
+
+    SQLSMALLINT c_type = SQL_C_CHAR;
+    SQLSMALLINT sql_type = SQL_VARCHAR;
+    SQLSMALLINT decimal_digits = 0;
+    SQLPOINTER buffer = NULL;
+    SQLLEN buffer_length = 0;
+    /* The BYTE length, tracked separately from the text because a gBASIC
+     * string is binary-safe and may hold interior NULs. Binding with SQL_NTS
+     * would hand the driver strlen() and silently send the prefix. */
+    size_t text_length = 0;
+
+    switch (value.kind) {
+    case VALUE_NULL:
+        *indicator = SQL_NULL_DATA;
+        buffer = (SQLPOINTER)"";
+        buffer_length = 0;
+        break;
+    case VALUE_BOOL:
+        *owned_text = copy_string(value.as.boolean ? "1" : "0");
+        break;
+    case VALUE_NUMBER:
+        if (!isfinite(value.as.number)) {
+            odbc_raise_message("odbc number parameters must be finite");
+            return 0;
+        } else {
+            char text[64];
+            format_number(text, sizeof(text), value.as.number);
+            *owned_text = copy_string(text);
+            sql_type = SQL_DOUBLE;
+        }
+        break;
+    case VALUE_MONEY:
+        /* Scale must be DECLARED. A SQL_DECIMAL parameter bound with
+         * DecimalDigits 0 tells the driver the value has no fractional part,
+         * and SQL Server duly rounds $12.34 to 12 -- which is the whole loss
+         * this module refuses on the read side, reintroduced on the write. */
+        *owned_text = odbc_money_text(value.as.cents);
+        sql_type = SQL_DECIMAL;
+        decimal_digits = 2;
+        break;
+    case VALUE_STRING: {
+        text_length = string_length(value.as.string);
+        char *copy = malloc(text_length + 1);
+        if (!copy) {
+            abort();
+        }
+        memcpy(copy, value.as.string, text_length);
+        copy[text_length] = '\0';
+        *owned_text = copy;
+        break;
+    }
+    case VALUE_DATETIME:
+        *owned_text = odbc_datetime_text(value.as.datetime);
+        if (!*owned_text) {
+            return 0;
+        }
+        break;
+    default:
+        odbc_raise_message("unsupported odbc parameter type");
+        return 0;
+    }
+
+    if (*owned_text) {
+        if (value.kind != VALUE_STRING) {
+            text_length = strlen(*owned_text);
+        }
+        buffer = (SQLPOINTER)*owned_text;
+        buffer_length = (SQLLEN)text_length + 1;
+        *indicator = (SQLLEN)text_length;
+    }
+
+    SQLRETURN rc = SQLBindParameter(statement,
+                                    index,
+                                    SQL_PARAM_INPUT,
+                                    c_type,
+                                    sql_type,
+                                    /* Column size: the value's own length, but
+                                     * never 0 -- drivers reject a zero-sized
+                                     * parameter, and the empty string is an
+                                     * ordinary thing to bind. */
+                                    buffer_length > 1 ? (SQLULEN)(buffer_length - 1) : 1,
+                                    decimal_digits,
+                                    buffer,
+                                    buffer_length,
+                                    indicator);
+    if (!SQL_SUCCEEDED(rc)) {
+        odbc_raise_diag(SQL_HANDLE_STMT, statement, "could not bind odbc parameter");
+        return 0;
+    }
+    return 1;
+}
+
+static void odbc_parameter_list_clear(OdbcParameterList *params) {
+    if (params->statement) {
+        SQLFreeHandle(SQL_HANDLE_STMT, params->statement);
+    }
+    for (int i = 0; i < params->count; i++) {
+        free(params->values[i]);
+    }
+    free(params->values);
+    free(params->indicators);
+    memset(params, 0, sizeof(*params));
+}
+
+/* Read one column as text, looping because SQLGetData returns long values in
+ * buffer-sized pieces. A driver signals "there is more" with
+ * SQL_SUCCESS_WITH_INFO, so the loop ends only on plain SQL_SUCCESS. */
+static int odbc_column_text(SQLHSTMT statement,
+                            SQLUSMALLINT column,
+                            char **out,
+                            size_t *out_length,
+                            int *is_null) {
+    *out = NULL;
+    *out_length = 0;
+    *is_null = 0;
+    StringBuilder builder;
+    sb_init(&builder);
+    for (;;) {
+        char chunk[1024];
+        SQLLEN indicator = 0;
+        SQLRETURN rc = SQLGetData(statement,
+                                  column,
+                                  SQL_C_CHAR,
+                                  chunk,
+                                  (SQLLEN)sizeof(chunk),
+                                  &indicator);
+        if (rc == SQL_NO_DATA) {
+            break;
+        }
+        if (!SQL_SUCCEEDED(rc)) {
+            odbc_raise_diag(SQL_HANDLE_STMT, statement, "could not read odbc column");
+            free(builder.items);
+            return 0;
+        }
+        if (indicator == SQL_NULL_DATA) {
+            *is_null = 1;
+            free(builder.items);
+            return 1;
+        }
+        /* Append by LENGTH, never as a C string: gBASIC strings are
+         * binary-safe, so a column holding an interior NUL must arrive whole
+         * rather than as its prefix. On truncation (SQL_SUCCESS_WITH_INFO)
+         * the indicator reports the bytes still to come, not the bytes in
+         * hand, so the chunk is full. */
+        size_t available = (size_t)(sizeof(chunk) - 1);
+        size_t taken = available;
+        if (rc == SQL_SUCCESS && indicator >= 0 && (size_t)indicator < available) {
+            taken = (size_t)indicator;
+        }
+        for (size_t i = 0; i < taken; i++) {
+            sb_append_char(&builder, chunk[i]);
+        }
+        if (rc == SQL_SUCCESS) {
+            break;
+        }
+    }
+    *out_length = builder.length;
+    *out = sb_take(&builder);
+    return 1;
+}
+
+static int odbc_parse_number(const char *text, double *out) {
+    errno = 0;
+    char *end = NULL;
+    double number = strtod(text, &end);
+    if (errno == ERANGE || end == text) {
+        return 0;
+    }
+    while (*end && isspace((unsigned char)*end)) {
+        end++;
+    }
+    if (*end != '\0') {
+        return 0;
+    }
+    *out = number;
+    return 1;
+}
+
+/* shape: ODBC_DT_DATE / ODBC_DT_TIME / ODBC_DT_TIMESTAMP.
+ *
+ * A driver returns more than we asked for -- SQLite's hands back a full
+ * timestamp for a DATE column, and fractional seconds for a TIMESTAMP -- so
+ * the prefix is taken to the width the DECLARED type calls for. Truncating to
+ * the declared shape rather than parsing whatever arrived is what keeps a DATE
+ * column a date instead of a midnight datetime. */
+#define ODBC_DT_DATE 0
+#define ODBC_DT_TIME 1
+#define ODBC_DT_TIMESTAMP 2
+
+static int odbc_parse_datetime(const char *text, int shape, Value *out) {
+    char normalized[20];
+    size_t required = shape == ODBC_DT_TIME ? 8 : (shape == ODBC_DT_DATE ? 10 : 19);
+    size_t length = strlen(text);
+    if (length < required) {
+        return 0;
+    }
+    memcpy(normalized, text, required);
+    normalized[required] = '\0';
+    if (shape == ODBC_DT_TIMESTAMP && normalized[10] == 'T') {
+        normalized[10] = ' ';
+    }
+    DateTime datetime;
+    int ok = shape == ODBC_DT_TIME
+        ? parse_time_value(normalized, &datetime)
+        : parse_date_value(normalized, &datetime);
+    if (!ok) {
+        return 0;
+    }
+    *out = value_datetime(datetime);
+    return 1;
+}
+
+/* Turn one column of the current row into a gBASIC value, keyed on the type
+ * the driver DECLARED rather than on what the text happens to look like --
+ * "0001" out of a CHAR column is a string, not the number one. */
+static Value odbc_column_value(SQLHSTMT statement,
+                               SQLUSMALLINT column,
+                               SQLSMALLINT sql_type) {
+    switch (sql_type) {
+    case SQL_BINARY:
+    case SQL_VARBINARY:
+    case SQL_LONGVARBINARY:
+        odbc_raise_message("odbc binary results are not supported");
+        return value_null();
+    default:
+        break;
+    }
+
+    char *text = NULL;
+    size_t text_length = 0;
+    int is_null = 0;
+    if (!odbc_column_text(statement, column, &text, &text_length, &is_null)) {
+        return value_null();
+    }
+    if (is_null) {
+        return value_null();
+    }
+    if (!text) {
+        return value_string("");
+    }
+
+    Value result = value_null();
+    switch (sql_type) {
+    case SQL_BIT:
+        result = value_bool(text[0] == '1' || text[0] == 't' || text[0] == 'T');
+        break;
+    case SQL_TINYINT:
+    case SQL_SMALLINT:
+    case SQL_INTEGER:
+    case SQL_REAL:
+    case SQL_FLOAT:
+    case SQL_DOUBLE: {
+        double number = 0.0;
+        if (!odbc_parse_number(text, &number)) {
+            free(text);
+            odbc_raise_message("invalid odbc numeric result");
+            return value_null();
+        }
+        result = value_number(number);
+        break;
+    }
+    case SQL_TYPE_DATE:
+        if (!odbc_parse_datetime(text, ODBC_DT_DATE, &result)) {
+            free(text);
+            odbc_raise_message("invalid odbc date result");
+            return value_null();
+        }
+        break;
+    case SQL_TYPE_TIME:
+        if (!odbc_parse_datetime(text, ODBC_DT_TIME, &result)) {
+            free(text);
+            odbc_raise_message("invalid odbc time result");
+            return value_null();
+        }
+        break;
+    case SQL_TYPE_TIMESTAMP:
+        if (!odbc_parse_datetime(text, ODBC_DT_TIMESTAMP, &result)) {
+            free(text);
+            odbc_raise_message("invalid odbc timestamp result");
+            return value_null();
+        }
+        break;
+    default:
+        /* DECIMAL, NUMERIC, BIGINT, CHAR, VARCHAR, GUID and anything a driver
+         * invents: the exact text the driver produced. See the header note --
+         * narrowing a DECIMAL to a double is the one failure this module is
+         * most concerned to avoid. */
+        result = value_string_n(text, text_length);
+        break;
+    }
+    free(text);
+    return result;
+}
+
+static Value odbc_rows_from_statement(SQLHSTMT statement) {
+    SQLSMALLINT columns = 0;
+    SQLRETURN rc = SQLNumResultCols(statement, &columns);
+    if (!SQL_SUCCEEDED(rc)) {
+        odbc_raise_diag(SQL_HANDLE_STMT, statement, "could not describe odbc results");
+        return value_null();
+    }
+
+    char **names = columns > 0 ? calloc((size_t)columns, sizeof(char *)) : NULL;
+    SQLSMALLINT *types = columns > 0
+        ? calloc((size_t)columns, sizeof(SQLSMALLINT))
+        : NULL;
+    if (columns > 0 && (!names || !types)) {
+        abort();
+    }
+
+    for (SQLSMALLINT i = 0; i < columns; i++) {
+        SQLCHAR name[256] = {0};
+        SQLSMALLINT name_length = 0;
+        SQLULEN size = 0;
+        SQLSMALLINT digits = 0;
+        SQLSMALLINT nullable = 0;
+        rc = SQLDescribeCol(statement,
+                            (SQLUSMALLINT)(i + 1),
+                            name,
+                            (SQLSMALLINT)sizeof(name),
+                            &name_length,
+                            &types[i],
+                            &size,
+                            &digits,
+                            &nullable);
+        if (!SQL_SUCCEEDED(rc)) {
+            odbc_raise_diag(SQL_HANDLE_STMT, statement, "could not describe odbc column");
+            goto fail;
+        }
+        names[i] = copy_string((const char *)name);
+        for (SQLSMALLINT j = 0; j < i; j++) {
+            if (strcmp(names[i], names[j]) == 0) {
+                char message[320];
+                snprintf(message,
+                         sizeof(message),
+                         "duplicate odbc result column: %s",
+                         names[i]);
+                odbc_raise_message(message);
+                goto fail;
+            }
+        }
+    }
+
+    Value *items = NULL;
+    size_t count = 0;
+    size_t capacity = 0;
+    for (;;) {
+        rc = SQLFetch(statement);
+        if (rc == SQL_NO_DATA) {
+            break;
+        }
+        if (!SQL_SUCCEEDED(rc)) {
+            odbc_raise_diag(SQL_HANDLE_STMT, statement, "odbc query failed");
+            for (size_t i = 0; i < count; i++) {
+                value_free(items[i]);
+            }
+            free(items);
+            goto fail;
+        }
+
+        RecordField *fields = columns > 0
+            ? calloc((size_t)columns, sizeof(RecordField))
+            : NULL;
+        if (columns > 0 && !fields) {
+            abort();
+        }
+        int completed = 0;
+        for (SQLSMALLINT column = 0; column < columns; column++) {
+            int before_error = error_generation;
+            fields[column].name = copy_string(names[column]);
+            fields[column].value = cell_alloc();
+            if (!fields[column].value) {
+                abort();
+            }
+            *fields[column].value =
+                odbc_column_value(statement, (SQLUSMALLINT)(column + 1), types[column]);
+            completed++;
+            if (error_generation != before_error) {
+                for (int i = 0; i < completed; i++) {
+                    free(fields[i].name);
+                    cell_release(fields[i].value);
+                }
+                free(fields);
+                for (size_t i = 0; i < count; i++) {
+                    value_free(items[i]);
+                }
+                free(items);
+                goto fail;
+            }
+        }
+
+        if (count == capacity) {
+            size_t next = capacity == 0 ? 8 : capacity * 2;
+            Value *resized = realloc(items, sizeof(Value) * next);
+            if (!resized) {
+                abort();
+            }
+            items = resized;
+            capacity = next;
+        }
+        items[count++] = value_record(fields, (size_t)columns);
+    }
+
+    for (SQLSMALLINT i = 0; i < columns; i++) {
+        free(names[i]);
+    }
+    free(names);
+    free(types);
+    return value_array(items, count);
+
+fail:
+    if (names) {
+        for (SQLSMALLINT i = 0; i < columns; i++) {
+            free(names[i]);
+        }
+    }
+    free(names);
+    free(types);
+    return value_null();
+}
+
+static char *odbc_command_name(const char *sql) {
+    while (*sql && isspace((unsigned char)*sql)) {
+        sql++;
+    }
+    size_t length = 0;
+    while (sql[length] && (isalpha((unsigned char)sql[length]) || sql[length] == '_')) {
+        length++;
+    }
+    if (length == 0) {
+        return copy_string("SQL");
+    }
+    char *name = malloc(length + 1);
+    if (!name) {
+        abort();
+    }
+    for (size_t i = 0; i < length; i++) {
+        name[i] = (char)toupper((unsigned char)sql[i]);
+    }
+    name[length] = '\0';
+    return name;
+}
+
+static Value odbc_command_result(SQLHSTMT statement, const char *sql) {
+    SQLLEN affected = 0;
+    if (!SQL_SUCCEEDED(SQLRowCount(statement, &affected))) {
+        affected = 0;
+    }
+    if (affected < 0) {
+        /* A driver that cannot count says -1; report 0 rather than a negative
+         * count no caller could act on. */
+        affected = 0;
+    }
+    RecordField *fields = calloc(2, sizeof(RecordField));
+    if (!fields) {
+        abort();
+    }
+    fields[0].name = copy_string("command");
+    fields[0].value = cell_alloc();
+    fields[1].name = copy_string("rows_affected");
+    fields[1].value = cell_alloc();
+    if (!fields[0].value || !fields[1].value) {
+        abort();
+    }
+    char *command = odbc_command_name(sql);
+    *fields[0].value = value_string(command);
+    free(command);
+    *fields[1].value = value_number((double)affected);
+    return value_record(fields, 2);
+}
+
+static Value odbc_eval_sql(AstExpr *expr, int query_mode) {
+    if (expr->as.call.args.count != 2 && expr->as.call.args.count != 3) {
+        odbc_raise_message(query_mode
+            ? "odbc.query expects two or three arguments"
+            : "odbc.exec expects two or three arguments");
+        return value_null();
+    }
+
+    Value connection_value = eval_expr(expr->as.call.args.items[0]);
+    if (error_action_pending()) {
+        value_free(connection_value);
+        return value_null();
+    }
+    OdbcConnectionValue *connection = odbc_connection_from_value(connection_value);
+    if (!connection) {
+        value_free(connection_value);
+        return value_null();
+    }
+
+    Value sql = eval_expr(expr->as.call.args.items[1]);
+    if (error_action_pending()) {
+        value_free(sql);
+        value_free(connection_value);
+        return value_null();
+    }
+    if (sql.kind != VALUE_STRING) {
+        value_free(sql);
+        value_free(connection_value);
+        odbc_raise_message(query_mode
+            ? "odbc.query SQL must be a string"
+            : "odbc.exec SQL must be a string");
+        return value_null();
+    }
+
+    Value params_value = value_null();
+    int have_params = 0;
+    if (expr->as.call.args.count == 3) {
+        params_value = eval_expr(expr->as.call.args.items[2]);
+        if (error_action_pending()) {
+            value_free(params_value);
+            value_free(sql);
+            value_free(connection_value);
+            return value_null();
+        }
+        if (params_value.kind != VALUE_ARRAY) {
+            value_free(params_value);
+            value_free(sql);
+            value_free(connection_value);
+            odbc_raise_message("odbc query parameters must be an array");
+            return value_null();
+        }
+        have_params = 1;
+    }
+
+    OdbcParameterList params = {0};
+    SQLRETURN rc = SQLAllocHandle(SQL_HANDLE_STMT, connection->dbc, &params.statement);
+    if (!SQL_SUCCEEDED(rc)) {
+        odbc_raise_diag(SQL_HANDLE_DBC, connection->dbc, "could not allocate an odbc statement");
+        params.statement = NULL;
+        goto done;
+    }
+
+    rc = SQLPrepare(params.statement, (SQLCHAR *)sql.as.string, SQL_NTS);
+    if (!SQL_SUCCEEDED(rc)) {
+        odbc_raise_diag(SQL_HANDLE_STMT, params.statement, "odbc prepare failed");
+        goto done;
+    }
+
+    SQLSMALLINT expected = 0;
+    if (!SQL_SUCCEEDED(SQLNumParams(params.statement, &expected))) {
+        expected = have_params ? (SQLSMALLINT)params_value.as.array.store->count : 0;
+    }
+    /* `params.count` is what odbc_parameter_list_clear frees, so it is set
+     * only once the arrays behind it exist -- a mismatch below leaves it at
+     * zero and the cleanup path walks nothing. */
+    int provided = have_params ? (int)params_value.as.array.store->count : 0;
+    if (provided != (int)expected) {
+        char message[192];
+        snprintf(message,
+                 sizeof(message),
+                 "odbc statement expects %d parameters but got %d",
+                 (int)expected,
+                 provided);
+        odbc_raise_message(message);
+        goto done;
+    }
+    if (provided > 0) {
+        params.count = provided;
+        params.values = calloc((size_t)params.count, sizeof(char *));
+        params.indicators = calloc((size_t)params.count, sizeof(SQLLEN));
+        if (!params.values || !params.indicators) {
+            abort();
+        }
+        for (int i = 0; i < params.count; i++) {
+            if (!odbc_bind_value(params.statement,
+                                 (SQLUSMALLINT)(i + 1),
+                                 params_value.as.array.store->items[i],
+                                 &params.values[i],
+                                 &params.indicators[i])) {
+                goto done;
+            }
+        }
+    }
+
+    /* Ask BEFORE executing where the driver can answer: `odbc.exec` over a
+     * `select` is a caller who wrote a query and meant a command, and it is
+     * better not to have run it. Not every driver knows its result shape
+     * until execution, so the same check is repeated after. */
+    SQLSMALLINT columns = 0;
+    if (!query_mode) {
+        if (SQL_SUCCEEDED(SQLNumResultCols(params.statement, &columns)) && columns > 0) {
+            odbc_raise_message("odbc.exec cannot discard row results; use odbc.query");
+            goto done;
+        }
+    }
+
+    rc = SQLExecute(params.statement);
+    if (!SQL_SUCCEEDED(rc) && rc != SQL_NO_DATA) {
+        odbc_raise_diag(SQL_HANDLE_STMT,
+                        params.statement,
+                        query_mode ? "odbc query failed" : "odbc exec failed");
+        goto done;
+    }
+
+    columns = 0;
+    if (!SQL_SUCCEEDED(SQLNumResultCols(params.statement, &columns))) {
+        columns = 0;
+    }
+
+    Value converted = value_null();
+    if (query_mode) {
+        converted = odbc_rows_from_statement(params.statement);
+    } else if (columns > 0) {
+        odbc_raise_message("odbc.exec cannot discard row results; use odbc.query");
+    } else {
+        converted = odbc_command_result(params.statement, sql.as.string);
+    }
+
+    odbc_parameter_list_clear(&params);
+    if (have_params) {
+        value_free(params_value);
+    }
+    value_free(sql);
+    value_free(connection_value);
+    return converted;
+
+done:
+    odbc_parameter_list_clear(&params);
+    if (have_params) {
+        value_free(params_value);
+    }
+    value_free(sql);
+    value_free(connection_value);
+    return value_null();
+}
+
+/* ODBC has no BEGIN statement: a transaction starts when autocommit is turned
+ * OFF and ends at SQLEndTran, after which autocommit goes back on. Spelling it
+ * as begin/commit/rollback keeps the three backends interchangeable. */
+static Value odbc_eval_transaction(AstExpr *expr, int mode, const char *name) {
+    if (expr->as.call.args.count != 1) {
+        char message[128];
+        snprintf(message, sizeof(message), "odbc.%s expects one argument", name);
+        odbc_raise_message(message);
+        return value_null();
+    }
+    Value connection_value = eval_expr(expr->as.call.args.items[0]);
+    if (error_action_pending()) {
+        value_free(connection_value);
+        return value_null();
+    }
+    OdbcConnectionValue *connection = odbc_connection_from_value(connection_value);
+    if (!connection) {
+        value_free(connection_value);
+        return value_null();
+    }
+
+    SQLRETURN rc;
+    if (mode < 0) {
+        rc = SQLSetConnectAttr(connection->dbc,
+                               SQL_ATTR_AUTOCOMMIT,
+                               (SQLPOINTER)SQL_AUTOCOMMIT_OFF,
+                               0);
+        if (!SQL_SUCCEEDED(rc)) {
+            odbc_raise_diag(SQL_HANDLE_DBC, connection->dbc, "odbc begin failed");
+            value_free(connection_value);
+            return value_null();
+        }
+    } else {
+        rc = SQLEndTran(SQL_HANDLE_DBC, connection->dbc, (SQLSMALLINT)mode);
+        if (!SQL_SUCCEEDED(rc)) {
+            char prefix[64];
+            snprintf(prefix, sizeof(prefix), "odbc %s failed", name);
+            odbc_raise_diag(SQL_HANDLE_DBC, connection->dbc, prefix);
+            value_free(connection_value);
+            return value_null();
+        }
+        rc = SQLSetConnectAttr(connection->dbc,
+                               SQL_ATTR_AUTOCOMMIT,
+                               (SQLPOINTER)SQL_AUTOCOMMIT_ON,
+                               0);
+        if (!SQL_SUCCEEDED(rc)) {
+            odbc_raise_diag(SQL_HANDLE_DBC,
+                            connection->dbc,
+                            "odbc could not restore autocommit");
+            value_free(connection_value);
+            return value_null();
+        }
+    }
+    value_free(connection_value);
+    return value_bool(1);
+}
+
+/* What the driver manager can see. A dashboard has to tell its user why a
+ * connection string did not work, and "no driver of that name is installed"
+ * is a different answer from "the server refused you". */
+static Value odbc_eval_catalog(AstExpr *expr, int drivers_mode) {
+    if (expr->as.call.args.count != 0) {
+        odbc_raise_message(drivers_mode
+            ? "odbc.drivers expects no arguments"
+            : "odbc.sources expects no arguments");
+        return value_null();
+    }
+
+    SQLHENV env = SQL_NULL_HENV;
+    if (!SQL_SUCCEEDED(SQLAllocHandle(SQL_HANDLE_ENV, SQL_NULL_HANDLE, &env))) {
+        odbc_raise_message("could not allocate an ODBC environment");
+        return value_null();
+    }
+    if (!SQL_SUCCEEDED(SQLSetEnvAttr(env,
+                                     SQL_ATTR_ODBC_VERSION,
+                                     (SQLPOINTER)SQL_OV_ODBC3,
+                                     0))) {
+        SQLFreeHandle(SQL_HANDLE_ENV, env);
+        odbc_raise_message("could not select ODBC 3.x");
+        return value_null();
+    }
+
+    Value *items = NULL;
+    size_t count = 0;
+    size_t capacity = 0;
+    SQLUSMALLINT direction = SQL_FETCH_FIRST;
+    for (;;) {
+        SQLCHAR first[512] = {0};
+        SQLCHAR second[1024] = {0};
+        SQLSMALLINT first_length = 0;
+        SQLSMALLINT second_length = 0;
+        SQLRETURN rc = drivers_mode
+            ? SQLDrivers(env,
+                         direction,
+                         first,
+                         (SQLSMALLINT)sizeof(first),
+                         &first_length,
+                         second,
+                         (SQLSMALLINT)sizeof(second),
+                         &second_length)
+            : SQLDataSources(env,
+                             direction,
+                             first,
+                             (SQLSMALLINT)sizeof(first),
+                             &first_length,
+                             second,
+                             (SQLSMALLINT)sizeof(second),
+                             &second_length);
+        if (rc == SQL_NO_DATA) {
+            break;
+        }
+        if (!SQL_SUCCEEDED(rc)) {
+            break;
+        }
+        direction = SQL_FETCH_NEXT;
+
+        RecordField *fields = calloc(2, sizeof(RecordField));
+        if (!fields) {
+            abort();
+        }
+        fields[0].name = copy_string("name");
+        fields[0].value = cell_alloc();
+        fields[1].name = copy_string(drivers_mode ? "attributes" : "description");
+        fields[1].value = cell_alloc();
+        if (!fields[0].value || !fields[1].value) {
+            abort();
+        }
+        *fields[0].value = value_string((const char *)first);
+        /* SQLDrivers returns attributes as a NUL-separated, double-NUL
+         * terminated list; join with "; " so it is one readable string. */
+        if (drivers_mode) {
+            StringBuilder builder;
+            sb_init(&builder);
+            const char *p = (const char *)second;
+            int first_pair = 1;
+            while (*p) {
+                if (!first_pair) {
+                    sb_append_text(&builder, "; ");
+                }
+                sb_append_text(&builder, p);
+                first_pair = 0;
+                p += strlen(p) + 1;
+            }
+            char *joined = sb_take(&builder);
+            *fields[1].value = value_string(joined ? joined : "");
+            free(joined);
+        } else {
+            *fields[1].value = value_string((const char *)second);
+        }
+
+        if (count == capacity) {
+            size_t next = capacity == 0 ? 8 : capacity * 2;
+            Value *resized = realloc(items, sizeof(Value) * next);
+            if (!resized) {
+                abort();
+            }
+            items = resized;
+            capacity = next;
+        }
+        items[count++] = value_record(fields, 2);
+    }
+
+    SQLFreeHandle(SQL_HANDLE_ENV, env);
+    return value_array(items, count);
+}
+
+static Value odbc_eval_call(AstExpr *expr) {
+    const char *name = expr->as.call.name;
+    if (strcmp(name, "connect") == 0) {
+        return odbc_eval_connect(expr);
+    }
+    if (strcmp(name, "close") == 0) {
+        return odbc_eval_close(expr);
+    }
+    if (strcmp(name, "query") == 0) {
+        return odbc_eval_sql(expr, 1);
+    }
+    if (strcmp(name, "exec") == 0) {
+        return odbc_eval_sql(expr, 0);
+    }
+    if (strcmp(name, "begin") == 0) {
+        return odbc_eval_transaction(expr, -1, "begin");
+    }
+    if (strcmp(name, "commit") == 0) {
+        return odbc_eval_transaction(expr, SQL_COMMIT, "commit");
+    }
+    if (strcmp(name, "rollback") == 0) {
+        return odbc_eval_transaction(expr, SQL_ROLLBACK, "rollback");
+    }
+    if (strcmp(name, "drivers") == 0) {
+        return odbc_eval_catalog(expr, 1);
+    }
+    if (strcmp(name, "sources") == 0) {
+        return odbc_eval_catalog(expr, 0);
+    }
+    char message[256];
+    snprintf(message, sizeof(message), "invalid function call: odbc.%s", name);
+    odbc_raise_message(message);
+    return value_null();
+}
+#endif
+
 #if HAVE_LIBPQ
 #define PG_ERROR_CODE 2001
 
@@ -20802,6 +21950,7 @@ static const char *reflect_category(Value v) {
     case VALUE_PROCESS:
     case VALUE_POSTGRES_CONNECTION:
     case VALUE_SQLITE_CONNECTION:
+    case VALUE_ODBC_CONNECTION:
     case VALUE_XML_READER:
     case VALUE_WORKBOOK:
         return "foreign";
@@ -21713,6 +22862,21 @@ static Value eval_call(AstExpr *expr) {
             runtime_error_raise("SQLite support is not available in this build",
                                 2002,
                                 "sqlite");
+            return value_null();
+#endif
+        }
+
+        if (strcmp(expr->as.call.library, "odbc") == 0) {
+            if (!odbc_library_loaded) {
+                runtime_error_raise("library not loaded: odbc", 2003, "odbc");
+                return value_null();
+            }
+#if HAVE_ODBC
+            return odbc_eval_call(expr);
+#else
+            runtime_error_raise("ODBC support is not available in this build",
+                                2003,
+                                "odbc");
             return value_null();
 #endif
         }

@@ -1,0 +1,1 @@
+runtime error at tests/negative_odbc_close_type.bas:2:1: odbc.close expects an odbc_connection

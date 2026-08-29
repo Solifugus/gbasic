@@ -1454,6 +1454,101 @@ loss. JSON results decode to normal arrays, records, and scalar values.
 PostgreSQL errors use `error.source = "postgres"` and include SQLSTATE when
 available.
 
+## ODBC Module
+
+ODBC support is available when gBASIC is built with unixODBC (or iODBC). A
+task-oriented tour with runnable recipes is in
+[odbc_cookbook.md](odbc_cookbook.md). It
+reaches any database with an ODBC driver installed — SQL Server, MySQL,
+MariaDB, Oracle, DB2, Snowflake, Access, and SQLite among others — through one
+API. Load the compiled standard module before using its qualified API:
+
+```basic
+load odbc
+
+db = odbc.connect("DSN=warehouse;UID=app;PWD=secret")
+
+rows = odbc.query(db, "select id, name from users where active = ?", [true])
+result = odbc.exec(db, "update users set active = ? where id = ?", [false, 10])
+
+odbc.close(db)
+```
+
+The connection string is passed to the driver manager unchanged. It may name a
+DSN (`DSN=warehouse`) or a driver and its own options
+(`Driver=ODBC Driver 18 for SQL Server;Server=host;Database=db;UID=..;PWD=..`).
+The module deliberately knows nothing about DSN profiles or credential
+storage: where connection details come from is an application's policy, not
+the language's.
+
+Connections are opaque `odbc_connection` values. They close explicitly with
+`odbc.close` and automatically during interpreter cleanup.
+
+The module provides:
+
+- `odbc.connect(connection_string)`
+- `odbc.close(connection)`
+- `odbc.query(connection, sql[, params])` → array of records
+- `odbc.exec(connection, sql[, params])` → `{command, rows_affected}`
+- `odbc.begin(connection)`
+- `odbc.commit(connection)`
+- `odbc.rollback(connection)`
+- `odbc.drivers()` → array of `{name, attributes}` — the drivers the driver
+  manager can load
+- `odbc.sources()` → array of `{name, description}` — the configured DSNs
+
+Parameters are arrays and are bound through `SQLBindParameter`; use the ODBC
+positional placeholder `?`. SQL `NULL` maps to `nothing`. Query results are
+arrays of records; duplicate column names are errors, because a record would
+silently keep only the last of them. `odbc.exec` refuses a statement that
+returns rows — use `odbc.query`. ODBC errors use `error.source = "odbc"` and
+carry the driver's own SQLSTATE and message.
+
+`odbc.drivers()` and `odbc.sources()` exist so a program can tell "no driver
+of that name is installed" apart from "the server refused you" — two failures
+that otherwise both surface as a connection that did not open.
+
+ODBC type mapping:
+
+| SQL type | gBASIC value | Notes |
+| --- | --- | --- |
+| `NULL` (any column) | `nothing` | Database null is absence |
+| `BIT` | boolean | |
+| `TINYINT`, `SMALLINT`, `INTEGER` | number | |
+| `REAL`, `FLOAT`, `DOUBLE` | number | |
+| `BIGINT`, `DECIMAL`, `NUMERIC` | **string** | See below |
+| `CHAR`, `VARCHAR`, `LONGVARCHAR` (and the `W` forms) | string | |
+| `DATE` | datetime, day precision | |
+| `TIME` | datetime, time only | |
+| `TIMESTAMP` | datetime, second precision | Fractional seconds are dropped |
+| `GUID` and anything else | string | The driver's own text |
+| `BINARY`, `VARBINARY`, `LONGVARBINARY` | runtime error | Binary results are future work |
+
+**Why `BIGINT`, `DECIMAL` and `NUMERIC` are strings.** A gBASIC number is a
+double. `DECIMAL(19,4)` narrowed to a double loses the cents it exists to
+protect, and any integer past 2^53 comes back off by one — both silently, both
+producing a value that looks perfectly ordinary. Answering with the driver's
+exact text refuses to make that trade on the program's behalf; call `number()`
+on it where the loss is acceptable. `pg` already answers `bigint` and
+`numeric` the same way.
+
+Parameters accept `nothing`, booleans, numbers, strings, money and date/time
+values. Money binds as exact decimal text (integer cents rendered as
+`1234.56`), so the value that reaches the column is the value the program
+held — routing it through a double would reintroduce exactly the loss the read
+side avoids. Booleans bind as `1` or `0`. Date/time values bind as ISO-like
+text, which every driver converts to its own column type.
+
+Text parameters carry their real byte length, so a gBASIC string holding an
+interior NUL is sent whole. Whether it comes *back* whole is the driver's
+business: the ANSI ODBC interface is NUL-terminated, and a driver that
+computes result lengths with `strlen` (the SQLite3 one does) returns the
+prefix. Binary columns, the right home for such data, are not yet supported.
+
+Transactions are `begin` / `commit` / `rollback`, spelled the same as
+`sqlite`'s and `pg`'s so the three are interchangeable. Underneath, `begin`
+turns the connection's autocommit off and `commit`/`rollback` turn it back on.
+
 ## WebClient Module
 
 WebClient support is available when gBASIC is built with libcurl. It performs

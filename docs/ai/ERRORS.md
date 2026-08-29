@@ -68,6 +68,7 @@ After a raise, a program reads `error` (truthy), `error.message`, `error.line`,
 | 2000 | Explicit `error "…"` statement | `explicit error` |
 | 2001 | PostgreSQL module error | `postgres` |
 | 2002 | SQLite module error | `sqlite` |
+| 2003 | ODBC module error | `odbc` |
 | 5001 | XML module not loaded / XML error | `xml` |
 | 6001 | GObject-Introspection (`gi`) error | `gi` |
 

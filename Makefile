@@ -36,6 +36,9 @@ LIBPQ_LIBS := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --libs
 SQLITE3_AVAILABLE := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --exists sqlite3 && printf 1 || printf 0)
 SQLITE3_CFLAGS := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --cflags sqlite3 2>/dev/null)
 SQLITE3_LIBS := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --libs sqlite3 2>/dev/null)
+ODBC_AVAILABLE := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --exists odbc && printf 1 || printf 0)
+ODBC_CFLAGS := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --cflags odbc 2>/dev/null)
+ODBC_LIBS := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --libs odbc 2>/dev/null)
 LIBCURL_AVAILABLE := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --exists libcurl && printf 1 || printf 0)
 LIBCURL_CFLAGS := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --cflags libcurl 2>/dev/null)
 LIBCURL_LIBS := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --libs libcurl 2>/dev/null)
@@ -119,6 +122,16 @@ CFLAGS += -DHAVE_SQLITE3=1 $(SQLITE3_CFLAGS)
 LDLIBS += $(SQLITE3_LIBS)
 else
 CFLAGS += -DHAVE_SQLITE3=0
+endif
+
+# ODBC reaches the databases that have no free, packaged C client -- SQL
+# Server, Oracle, DB2 -- through the driver the OPERATOR installs, so gBASIC
+# never has to ship a proprietary library. One module instead of four.
+ifeq ($(ODBC_AVAILABLE),1)
+CFLAGS += -DHAVE_ODBC=1 $(ODBC_CFLAGS)
+LDLIBS += $(ODBC_LIBS)
+else
+CFLAGS += -DHAVE_ODBC=0
 endif
 
 ifeq ($(LIBCURL_AVAILABLE),1)

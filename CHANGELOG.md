@@ -9,6 +9,61 @@ language surface may still change between releases.
 
 ## Unreleased
 
+- **ODBC: one module, every database with a driver.** gBASIC could reach
+  PostgreSQL and SQLite and nothing else. The gap was not four missing
+  modules, it was one — SQL Server, Oracle and DB2 have no free, packaged C
+  client, so shipping a native module for each would mean shipping (or
+  requiring) a proprietary library per backend. ODBC moves that to where it
+  belongs: the *operator* installs the driver, and `odbc` speaks to whatever
+  they installed. `load odbc`, then `connect`/`close`/`query`/`exec`/
+  `begin`/`commit`/`rollback`, spelled exactly as `sqlite`'s and `pg`'s are so
+  the three are interchangeable, plus `odbc.drivers()` and `odbc.sources()` so
+  a program can tell "no driver of that name is installed" from "the server
+  refused you".
+
+  **`BIGINT`, `DECIMAL` and `NUMERIC` come back as STRINGS.** A gBASIC number
+  is a double: `DECIMAL(19,4)` narrowed to one loses the cents it exists to
+  protect, and any integer past 2^53 comes back off by one — silently, as a
+  value nobody would look at twice. `pg` already answers oids 20 and 1700 this
+  way; `odbc` follows it. Money *parameters* bind as exact decimal text for
+  the same reason, so the write side does not reintroduce the loss the read
+  side avoids.
+
+  Parameters are bound through `SQLBindParameter`, never interpolated. The
+  suite proves that by **executing** the claim rather than asserting it — and
+  proves the proof non-vacuous, which matters more than it sounds: the obvious
+  payload (`'); drop table x;--`) passes against a module that pastes every
+  parameter, because the SQLite3 ODBC driver refuses multiple statements
+  anyway. Measured, not assumed. So the load-bearing payload is a tautology
+  that subverts a *single* statement, run both ways: pasted it matches every
+  row, bound it matches only the row whose value really is that text.
+
+  Text parameters carry their real byte length rather than `SQL_NTS`. Bound
+  the obvious way, a gBASIC string holding an interior NUL was handed to the
+  driver as `strlen()` and the prefix went silently to the database — no
+  error, no short write. The tier that pins it asserts from the *database's*
+  side (`hex()` over the stored bytes), so a reader that guesses cannot
+  satisfy it, and it records honestly that the round trip still does not
+  recover the value: the SQLite3 driver returns text `strlen`-truncated, which
+  is the driver's limit, not ours.
+
+  `docs/odbc_cookbook.md` is the task-oriented tour, on the same cannot-lie
+  harness as the xlsx and chart cookbooks: the page owns neither the code nor
+  the output it shows, `tests/run_odbc_cookbook.sh` fails while any of them
+  disagree, and its CODE and OUTPUT tiers were proven red in isolation. It
+  states plainly, at the top, that the module has been exercised against the
+  SQLite3 driver only.
+
+  `tests/run_odbc.sh` is hermetic by default over the SQLite3 ODBC driver — a
+  real driver-manager round trip, not a stub — and the same fixtures run
+  against SQL Server or MySQL by setting `GBASIC_ODBC_CONNECTION`. Fixtures
+  are self-checking rather than golden, because the failure this module exists
+  to prevent is an ordinary-looking number wrong in its last digits and a
+  golden would record the damaged value as expected. Red-proofed on the
+  exactness and duplicate-column tiers; valgrind caught the one real defect
+  (a cleanup walk over an array the parameter-count refusal never allocated),
+  which produced no wrong value, only a segfault.
+
 - **The variable form of the builtin collision warns too.** Precedence is
   builtin → user function → function-valued variable, and the last step was
   silent: `first = my_fn` then `first(xs)` ran the **builtin** `first` and

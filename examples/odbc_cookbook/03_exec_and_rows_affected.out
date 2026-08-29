@@ -1,0 +1,7 @@
+CREATE
+INSERT 1
+UPDATE 2
+UPDATE 0   (no such row)
+DELETE 1
+
+refused: odbc.exec cannot discard row results; use odbc.query

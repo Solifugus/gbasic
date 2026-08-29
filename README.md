@@ -46,6 +46,8 @@ Implemented runtime and module features include:
   `read_lines`
 - synchronous SQLite access through the optional sqlite3-backed `sqlite` module
 - synchronous PostgreSQL access through the optional libpq-backed `pg` module
+- synchronous access to any ODBC-reachable database (SQL Server, MySQL,
+  Oracle, DB2, ...) through the optional unixODBC-backed `odbc` module
 - synchronous HTTP and HTTPS requests through the optional libcurl-backed
   `webclient` module
 - a built-in HTTP server using live request and response queues, listening on
@@ -557,6 +559,38 @@ PostgreSQL errors include SQLSTATE information when available.
 `bigint` and `numeric` results currently remain strings to avoid silent
 floating-point precision loss. Prepared statements, pooling, asynchronous
 queries, `COPY`, and `LISTEN`/`NOTIFY` are not implemented.
+
+## ODBC
+
+ODBC reaches any database with a driver installed — SQL Server, MySQL,
+MariaDB, Oracle, DB2, Snowflake, Access, SQLite — through one API, when
+gBASIC is built with unixODBC:
+
+<!--needs-context-->
+```basic
+load odbc
+
+db = odbc.connect("DSN=warehouse;UID=app;PWD=secret")
+
+rows = odbc.query(db, "select id, name from users where active = ?", [true])
+result = odbc.exec(db, "update users set active = ? where id = ?", [false, 10])
+
+odbc.close(db)
+```
+
+`docs/odbc_cookbook.md` is the task-oriented tour. The module provides
+`odbc.connect`, `odbc.close`, `odbc.query`, `odbc.exec`,
+`odbc.begin`, `odbc.commit`, `odbc.rollback`, and the two catalog calls
+`odbc.drivers` and `odbc.sources`. The connection string reaches the driver
+manager unchanged, so it may name a DSN or a driver and its own options.
+Parameters are arrays bound through `SQLBindParameter` with `?` placeholders;
+query results are arrays of records; SQL `NULL` maps to `nothing`.
+
+`bigint`, `decimal` and `numeric` results are **strings**, for the same reason
+they are under `pg`: a gBASIC number is a double, and `DECIMAL(19,4)` narrowed
+to one loses the cents it exists to protect. Money parameters bind as exact
+decimal text so the write side does not reintroduce the loss the read side
+avoids. Binary columns are not yet supported.
 
 ## WebClient
 

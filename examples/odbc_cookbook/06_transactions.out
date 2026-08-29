@@ -1,0 +1,3 @@
+after commit:   alice=60 bob=40
+after rollback: alice=60 bob=40
+plain write:    alice=60 bob=7

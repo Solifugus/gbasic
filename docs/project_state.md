@@ -62,6 +62,10 @@ document list, with a status column, is `docs/README.md`.
   interpreter's lifetime by the kernel, so none survives it, even a `kill -9`
 - optional synchronous SQLite module backed by sqlite3
 - optional synchronous PostgreSQL module backed by libpq
+- optional synchronous ODBC module backed by unixODBC — one connection string
+  reaches SQL Server, MySQL, Oracle, DB2 and anything else with a driver
+  installed; `bigint`/`decimal`/`numeric` answer as strings so a double cannot
+  quietly eat the cents
 - optional synchronous WebClient module backed by libcurl
 - a built-in WebServer: TLS, routing, streaming, hardening, and a process worker
   pool with listener transfer over `LISTEN_FDS`
@@ -103,6 +107,8 @@ document list, with a status column, is `docs/README.md`.
 - GTK 3 enables the GUI implementation; libgirepository enables `gi` (GTK 4).
 - sqlite3 enables `load sqlite`.
 - libpq enables `load pg`.
+- unixODBC (or iODBC) enables `load odbc`; the database driver itself is the
+  operator's to install.
 - libcurl enables `load webclient` (and the EDGAR/LLM network paths).
 - libxml2 enables `load xml`.
 - libcrypto enables the cryptographic builtins.

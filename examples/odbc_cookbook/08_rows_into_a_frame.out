@@ -1,0 +1,8 @@
+columns: ["region","units"]
+shape  : [3,2]
+units  : [45,120,80]
+total  : 245
+mean   : 81.66666666666667
+
+north: 165
+south: 80

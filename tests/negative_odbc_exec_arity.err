@@ -1,0 +1,1 @@
+runtime error at tests/negative_odbc_exec_arity.bas:2:1: odbc.exec expects two or three arguments

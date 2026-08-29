@@ -1,0 +1,10 @@
+connect failed
+  source : odbc
+  code   : 2003
+  message: odbc connection failed ...
+
+odbc.drivers() gives   : array
+is NoSuchDriver one?   : false
+configured DSNs        : array
+
+bad column: odbc prepare failed (plus the driver's own text)

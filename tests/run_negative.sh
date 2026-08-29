@@ -110,6 +110,7 @@ cases=(
     negative_secure_token_zero
     negative_secure_token_large
     negative_sqlite_not_loaded
+    negative_odbc_not_loaded
     negative_pg_not_loaded
     negative_pg_connect_type
     negative_pg_connect_field

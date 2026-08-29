@@ -224,7 +224,7 @@ for error handling, `ERRORS.md`.
   GBASIC_PATH and the compiled-in stdlib, so any `NAME.bas` beneath the app
   silently replaces the shipped library. Write `load stats from
   "@RUNTIME@/stdlib/stats.bas"`; the packager substitutes the token and fails
-  the build if one survives. Native modules (`sqlite`, `pg`, `webclient`,
+  the build if one survives. Native modules (`sqlite`, `pg`, `odbc`, `webclient`,
   `webserver`, `xml`, `gui`, `gi`) are compiled in and exempt.
   → `docs/shipping_applications.md`
 - **Bind the result of `serve`** — `h = serve(app)`. A bare call discards a
@@ -267,6 +267,10 @@ for error handling, `ERRORS.md`.
   `tests/native_platform/plat_stderr_parity.bas`
 - **SQLite** — `load sqlite`; parameterized query/exec. → `examples/sqlite_module_test.bas`
 - **PostgreSQL** — `load pg`; opt-in suite. → `tests/postgres_integration.bas`
+- **ODBC** — `load odbc`; one connection string reaches SQL Server, MySQL,
+  Oracle, DB2 and the rest. `BIGINT`/`DECIMAL`/`NUMERIC` come back as STRINGS
+  (a double loses the cents), and money binds as exact decimal text.
+  → `tests/odbc_test.bas`, `docs/odbc_cookbook.md`
 - **WebClient** — `load webclient`; synchronous HTTP against a loopback fixture.
   → `tests/webclient_integration.bas`
 - **WebServer** — `load webserver`; single request/connection.

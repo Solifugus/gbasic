@@ -50,9 +50,16 @@ Start from nothing and add what the application actually loads:
 | `LIBXML2_AVAILABLE=0` | `xml`, and `xlsx` | XML or spreadsheets |
 | `LIBCURL_AVAILABLE=0` | `webclient`, and the EDGAR/LLM network paths | outbound HTTP |
 | `SQLITE3_AVAILABLE=0` | `sqlite` | SQLite |
+| `ODBC_AVAILABLE=0` | `odbc` | SQL Server, MySQL, Oracle, DB2 or any other ODBC-reachable database |
 | `LIBCRYPTO_AVAILABLE=0` | the crypto builtins, `crypto` | hashing, HMAC, JWT, signed cookies |
 | `LIBSSL_AVAILABLE=0` | TLS in `webserver` | serving HTTPS directly |
 | `ZLIB_AVAILABLE=0` | `xlsx` | spreadsheets |
+
+`ODBC_AVAILABLE=1` is the one entry that changes what the *operator* must
+install rather than what the package carries: the app links `libodbc`, but the
+driver for the database it talks to (`msodbcsql18`, `libmyodbc`, …) is the
+operator's to install and configure, exactly as a DSN is. Name it in
+`DEPENDS` if the app cannot work without one.
 
 A module compiled out is a **clean runtime error**, never a build failure, so
 getting this wrong fails loudly the first time the app loads that module —

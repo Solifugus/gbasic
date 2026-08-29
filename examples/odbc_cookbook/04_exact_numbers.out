@@ -1,0 +1,10 @@
+id type   : string
+id exact  : 9007199254740993
+id doubled: 9007199254740992   <- one less, silently
+
+amount    : 12345678901234.5678 (string)
+
+money in, text out: 1234.56
+
+integer -> number 42
+real    -> number 0.5

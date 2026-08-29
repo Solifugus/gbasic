@@ -1,0 +1,5 @@
+pasted matched: 3 rows
+bound matched:  1 rows
+and it is row:  3
+
+refused: odbc statement expects 1 parameters but got 2
