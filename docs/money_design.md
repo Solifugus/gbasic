@@ -202,11 +202,82 @@ is a phase-4 requirement, not a nicety.
 - `SER_VERSION` 1 payloads still deserialize, rescaled, with a committed v1
   fixture — a migration nobody tested is a migration that does not work.
 
-## 10. Open
+## 10. The currency table (ruled 2026-08-29)
 
-- The currency table's source and size: full ISO 4217 (~180) versus a common
-  subset with a documented way to add one.
-- Whether `{USD}` on a *number* stays permitted at all, or becomes a
-  deprecation warning steering to decimal text. Permitting it keeps every
-  existing program working and keeps defect 1 reachable; refusing it is a
-  breaking change to shipped code. Not ruled.
+**Built in, and extensible at run time.** ISO 4217 ships in the binary — all of
+it, about 180 entries of `{code, numeric, exponent}`, a couple of KB. A short
+list plus "a documented way to add one" is *more* design work, not less, and it
+fails anyone outside the majors for no benefit.
+
+On top of that, a program may **register** a currency: an internal scrip,
+loyalty points, a historical currency, a redenomination that outpaces the
+release cycle.
+
+**Removal is not offered. Currencies become HISTORICAL instead.** Removing one
+does not unmake the values that already exist, and archived data is precisely
+what money is for — DEM and ITL must still deserialize in 2040. A historical
+currency refuses *new* values and reads old ones.
+
+### The decision that makes registration safe
+
+**A serialized money value carries its exponent, not only its currency code.**
+
+Without this, a value is only meaningful to a program holding the same table,
+and gBASIC has two places where that bites:
+
+- `serialize`/`deserialize` are **public builtins**, so values persist on disk.
+  An archived value whose currency was registered by a program that no longer
+  exists would be a numeric code at an unknown scale.
+- **Actors are fork+exec — separate processes.** A currency registered in the
+  parent is *not* registered in the child, so money sent to an actor would
+  arrive uninterpretable.
+
+Carrying the exponent makes the value self-describing: arithmetic and display
+work anywhere, and only the display *name* needs the table. A value whose code
+is unknown locally still computes correctly and renders as its code.
+
+## 11. Construction is reflective (ruled 2026-08-29)
+
+`{USD}` takes whatever it is given and does the most accurate conversion
+available for that type, rather than accepting one type and refusing the rest.
+Every path converges on the same operation — **exact integer parse of decimal
+text**:
+
+| Given | Path |
+|---|---|
+| string | parsed directly |
+| number **literal** | the token's source text, which the lexer already retains |
+| computed number | shortest-round-trip render (PLAT-NUMFMT), then parsed |
+| integer | exact |
+| money | a re-tag needs no rate; a *conversion* does — see §7 phase 3 |
+
+**This dissolves defect 4.** The `0.145 -> 0.14` ambiguity existed because a
+*binary* value was being rounded. `string(0.145)` is already `"0.145"` — the
+shortest decimal that reads back identically — and parsing that text has no
+binary representation left to be ambiguous about. Half-even then applies at
+display, explicitly, where it can be seen and tested.
+
+It also means **no breaking change**: `price {USD}= 19.95` keeps working and
+becomes exact, so the phase-0 question of whether to deprecate the number form
+does not arise.
+
+### Excess decimals: the rule splits by origin
+
+gdash's §4 asks that excess decimals be rejected. Confirmed, with a
+distinction that keeps the type usable:
+
+- **Authored text** — reject. `"1.23456789"` as USD is a value the author
+  wrote that money cannot hold, and that is a bug in their input.
+- **Computed** — round at the guard scale. `price * 1.08` produces seventeen
+  digits and always will; refusing it would make money unusable for
+  arithmetic. The guard digits exist so this rounding sits four places below
+  the minor unit, where it cannot move a reported figure.
+
+## 12. Open
+
+- Registration syntax, and whether a registered currency needs a numeric code
+  at all or can be identified by its alphabetic code alone.
+- What `{EUR}` applied to an existing USD *money* value means: re-tagging
+  (asserting the units were always euros) versus converting (needs a dated
+  rate, §7 phase 3). These are different operations and should probably not
+  share a spelling.
