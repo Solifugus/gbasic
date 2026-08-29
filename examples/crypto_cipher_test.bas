@@ -18,10 +18,24 @@ program demo(args)
     ' line in the Ed25519 block below is NOT safe, because a signature is
     ' random -- see the note there before making the two match.
     tampered = from_bytes([byte_at(blob, 0) + 1]) + mid(blob, 1, byte_count(blob) - 1)
-    print("aes_tamper " + string(aes_gcm_decrypt(key, nonce, tampered, aad)))
-    print("aes_badaad " + string(aes_gcm_decrypt(key, nonce, blob, "wrong")))
-    print("aes_badkey " + string(aes_gcm_encrypt("short", nonce, pt, aad)))
-    print("aes_badnonce " + string(aes_gcm_encrypt(key, "bad", pt, aad)))
+    ' These RAISE. They used to return `unknown`, and this fixture asserted
+    ' that -- which is how a golden defends a defect: `string(unknown)` is the
+    ' word "unknown", so a caller that trusted the documented contract (which
+    ' always said these raise) would treat a failed decryption as a value.
+    on error goto next
+    x = aes_gcm_decrypt(key, nonce, tampered, aad)
+    print("aes_tamper " + error.message)
+    error.clear()
+    x = aes_gcm_decrypt(key, nonce, blob, "wrong")
+    print("aes_badaad " + error.message)
+    error.clear()
+    x = aes_gcm_encrypt("short", nonce, pt, aad)
+    print("aes_badkey " + error.message)
+    error.clear()
+    x = aes_gcm_encrypt(key, "bad", pt, aad)
+    print("aes_badnonce " + error.message)
+    error.clear()
+    on error stop
 
     ' empty plaintext is valid (tag-only blob, 16 bytes)
     eblob = aes_gcm_encrypt(key, nonce, "", "")
@@ -46,6 +60,14 @@ program demo(args)
     ' teaches you to re-run instead of to look.
     badsig = from_bytes([mod(byte_at(sig, 0) + 1, 256)]) + mid(sig, 1, byte_count(sig) - 1)
     print("ed_badsig " + string(ed25519_verify(kp.public, msg, badsig)))
-    ' wrong key length rejected
-    print("ed_badkey " + string(ed25519_sign("short", msg)))
+    ' wrong key length rejected -- RAISES now, where it used to answer
+    ' `unknown`. Note the contrast with ed25519_verify directly above: verify
+    ' returns a BOOLEAN because "this signature does not match" is a real
+    ' answer to a real question, while sign has no answer to give when the key
+    ' is unusable.
+    on error goto next
+    x = ed25519_sign("short", msg)
+    print("ed_badkey " + error.message)
+    error.clear()
+    on error stop
 end program

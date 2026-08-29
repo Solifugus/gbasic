@@ -1,9 +1,9 @@
 aes_ct 1c8aec772aa21ad2be556c7c7817fc1f0bb65a0c0770492d24f535aa617b
 aes_rt attack at dawn
-aes_tamper unknown
-aes_badaad unknown
-aes_badkey unknown
-aes_badnonce unknown
+aes_tamper aes_gcm_decrypt: authentication failed -- wrong key, nonce or aad, or the data was tampered with
+aes_badaad aes_gcm_decrypt: authentication failed -- wrong key, nonce or aad, or the data was tampered with
+aes_badkey aes_gcm_encrypt failed -- check the key is 32 bytes and the nonce 12
+aes_badnonce aes_gcm_encrypt failed -- check the key is 32 bytes and the nonce 12
 aes_empty_len 16 rt []
 aes128_rt attack at dawn
 ed_keylen 32 32
@@ -11,4 +11,4 @@ ed_siglen 64
 ed_ok true
 ed_badmsg false
 ed_badsig false
-ed_badkey unknown
+ed_badkey ed25519_sign failed -- the private key must be 32 bytes

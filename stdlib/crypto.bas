@@ -59,10 +59,21 @@ library crypto
         if not bytes_equal(expected, parts[1]) then
             return unknown
         end if
+        ' The BUILTIN raises on malformed base64, and rightly: a decode that
+        ' quietly yields `unknown` is how a credential ends up being the word
+        ' "unknown". But THIS function's contract is different -- an attacker
+        ' can put anything in a cookie, so an unreadable one is an expected
+        ' outcome rather than a programming error, and the answer is "not
+        ' valid" rather than a raise. Catching it here is what keeps both
+        ' contracts intact.
+        on error goto next
         value = base64url_decode(parts[0])
-        if is_unknown(value) then
+        if error then
+            error.clear()
+            on error stop
             return unknown
         end if
+        on error stop
         return value
     end function
 
@@ -93,10 +104,14 @@ library crypto
 
     function encrypt(key, plaintext)
         nonce = random_bytes(12)
+        on error goto next
         body = aes_gcm_encrypt(key, nonce, plaintext, "")
-        if is_unknown(body) then
+        if error then
+            error.clear()
+            on error stop
             return unknown
         end if
+        on error stop
         return nonce + body
     end function
 
@@ -107,7 +122,20 @@ library crypto
         end if
         nonce = _byte_slice(blob, 0, 12)
         body = _byte_slice(blob, 12, n - 12)
-        return aes_gcm_decrypt(key, nonce, body, "")
+        ' Documented to answer `unknown` on any failure, because a blob that
+        ' does not authenticate is an expected input here -- a wrong key or a
+        ' tampered payload, not a bug in the caller. The builtin now RAISES on
+        ' exactly that, which is right for a builtin and wrong for this
+        ' function's contract, so it is caught.
+        on error goto next
+        out = aes_gcm_decrypt(key, nonce, body, "")
+        if error then
+            error.clear()
+            on error stop
+            return unknown
+        end if
+        on error stop
+        return out
     end function
 
     ' ---- flat-JSON DECODING, and why only decoding ------------------------
@@ -420,10 +448,17 @@ library crypto
         if not bytes_equal(expected, parts[2]) then
             return unknown
         end if
+        ' As in `unsign`: a malformed JWT is attacker input, so this answers
+        ' "not valid" rather than raising, and catches what the builtin now
+        ' raises to do it.
+        on error goto next
         body = base64url_decode(parts[1])
-        if is_unknown(body) then
+        if error then
+            error.clear()
+            on error stop
             return unknown
         end if
+        on error stop
         payload = json_decode(body)
         if is_unknown(payload) then
             return unknown

@@ -43,11 +43,20 @@ program main(args)
     same = pbkdf2_sha256("correct horse battery staple", salt, 100000, 32)
     print "same passphrase       " + aes_gcm_decrypt(same, nonce, blob, "")
     ' A different passphrase derives a different key, so the tag fails and the
-    ' plaintext is never returned -- `unknown`, not garbage.
+    ' plaintext is never returned -- it RAISES, where it once answered
+    ' `unknown`. That change is the point: `string(unknown)` is the word
+    ' "unknown", so a vault reading a passphrase-protected secret would have
+    ' stored that literal text as though it were the secret.
+    on error goto next
     other = pbkdf2_sha256("correct horse battery stapler", salt, 100000, 32)
-    print "wrong passphrase      " + string(aes_gcm_decrypt(other, nonce, blob, ""))
+    x = aes_gcm_decrypt(other, nonce, blob, "")
+    print "wrong passphrase      " + error.message
+    error.clear()
     ' ...and so does the same passphrase with a different salt, which is what
     ' makes the salt worth storing beside the ciphertext.
     resalted = pbkdf2_sha256("correct horse battery staple", "another-salt", 100000, 32)
-    print "same pass, new salt   " + string(aes_gcm_decrypt(resalted, nonce, blob, ""))
+    x = aes_gcm_decrypt(resalted, nonce, blob, "")
+    print "same pass, new salt   " + error.message
+    error.clear()
+    on error stop
 end program

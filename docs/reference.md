@@ -2719,7 +2719,26 @@ Authenticated encryption and signatures:
 - `ed25519_verify(public, message, signature)` — `true` / `false`.
 
 Bad argument types, wrong key/nonce sizes, and failed authentication raise
-structured errors — these builtins pre-validate rather than degrade.
+structured errors — these builtins pre-validate rather than degrade. So do
+`base64_decode` and `hex_decode` on malformed input.
+
+> **This page was right and the implementation was not, until 0.1.0-rc9.**
+> `aes_gcm_encrypt`/`decrypt`, `base64_decode`, `hex_decode` and
+> `ed25519_sign` returned `unknown` on failure instead of raising, while the
+> KDFs in the same family raised as documented. That inconsistency is what
+> marked it an oversight rather than a policy — and it was the most dangerous
+> shape available, because a caller reading this page writes no check, and
+> `string(unknown)` is the *word* `"unknown"`: a credential vault would hand
+> its consumer that literal text and store it as though it were a secret.
+> Reported by the Transward build, which trusted the "refuses rather than
+> guesses" doctrine and therefore wrote no check.
+
+**The library layer answers differently, on purpose.** `crypto.decrypt`,
+`crypto.verify_cookie` and `crypto.jwt_verify` return `unknown` rather than
+raising, because a blob that does not authenticate is *expected input* there —
+an attacker can put anything in a cookie — rather than a bug in the caller.
+The builtins raise; the verification layer catches and answers. Both contracts
+are deliberate, and the distinction is which of the two you are calling.
 
 A higher-level pure-gBASIC layer ships as `load crypto` (`stdlib/crypto.bas`),
 built on the above: `sha256_hex`/`sha512_hex`, `random_hex`/`random_token`,

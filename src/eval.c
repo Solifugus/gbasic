@@ -25026,7 +25026,18 @@ static Value eval_call(AstExpr *expr) {
                                                   string_length(s.as.string), &out_len);
         value_free(s);
         if (!dec) {
-            return value_unknown();
+        /* RAISES rather than returning `unknown`. The reference always said
+         * these raise; they did not, and the gap is the most dangerous shape
+         * a defect can take here: `string(unknown)` is the WORD "unknown", so
+         * a credential vault written to the documented contract -- and
+         * therefore checking nothing -- hands its consumer the literal text
+         * `unknown` and stores it as though it were a secret. Reported by the
+         * Transward build, which trusted the "refuses rather than guesses"
+         * doctrine and so wrote no check. The KDFs in this same family
+         * pre-validated and raised all along, which is what marks this an
+         * oversight rather than a policy. */
+            runtime_error_raise("base64_decode: not valid base64", 1003, "crypto");
+            return value_null();
         }
         Value r = value_string_n((char *)dec, out_len);
         free(dec);
@@ -25047,7 +25058,8 @@ static Value eval_call(AstExpr *expr) {
                                                string_length(s.as.string), &out_len);
         value_free(s);
         if (!dec) {
-            return value_unknown();
+            runtime_error_raise("hex_decode: not valid hexadecimal", 1003, "crypto");
+            return value_null();
         }
         Value r = value_string_n((char *)dec, out_len);
         free(dec);
@@ -25357,9 +25369,17 @@ static Value eval_call(AstExpr *expr) {
                                          data, string_length(a[2].as.string),
                                          aad, string_length(a[3].as.string), &out_len);
         }
+        int decrypting = strcmp(expr->as.call.name, "aes_gcm_decrypt") == 0;
         for (int i = 0; i < 4; i++) value_free(a[i]);
         if (!out) {
-            return value_unknown();
+            /* Decryption failing is AUTHENTICATION failing -- a wrong key,
+             * nonce or aad, or a tampered blob. Saying so matters: it is the
+             * one outcome a caller must never mistake for a value. */
+            runtime_error_raise(decrypting
+                ? "aes_gcm_decrypt: authentication failed -- wrong key, nonce or aad, or the data was tampered with"
+                : "aes_gcm_encrypt failed -- check the key is 32 bytes and the nonce 12",
+                1003, "crypto");
+            return value_null();
         }
         Value r = value_string_n((char *)out, out_len);
         free(out);
@@ -25379,7 +25399,9 @@ static Value eval_call(AstExpr *expr) {
 #if HAVE_LIBCRYPTO
         unsigned char pub[32], priv[32];
         if (!crypto_ed25519_keypair(pub, priv)) {
-            return value_unknown();
+            runtime_error_raise("ed25519_keypair: could not generate a key pair",
+                                1003, "crypto");
+            return value_null();
         }
         RecordField *fields = calloc(2, sizeof(RecordField));
         if (!fields) {
@@ -25414,7 +25436,9 @@ static Value eval_call(AstExpr *expr) {
         value_free(a[0]);
         value_free(a[1]);
         if (!sig) {
-            return value_unknown();
+            runtime_error_raise("ed25519_sign failed -- the private key must be 32 bytes",
+                                1003, "crypto");
+            return value_null();
         }
         Value r = value_string_n((char *)sig, out_len);
         free(sig);

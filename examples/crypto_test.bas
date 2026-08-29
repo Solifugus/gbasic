@@ -44,8 +44,29 @@ program demo(args)
     print("rb16 " + string(byte_count(random_bytes(16))))
     print("rb1 " + string(byte_count(random_bytes(1))))
 
-    ' --- malformed input returns unknown ---
-    print("bad_b64 " + string(base64_decode("@@@@")))
-    print("bad_hex_odd " + string(hex_decode("abc")))
-    print("bad_hex_char " + string(hex_decode("zz")))
+    ' --- malformed input RAISES ---
+    '
+    ' It used to return `unknown`, and this fixture asserted that -- a golden
+    ' defending the defect. The reference always said these raise, so a caller
+    ' written to the documented contract checked nothing, and `string(unknown)`
+    ' is the WORD "unknown": a credential vault would hand its consumer the
+    ' literal text `unknown` and store it as though it were a secret. Reported
+    ' by the Transward build, which trusted the "refuses rather than guesses"
+    ' doctrine and therefore wrote no check.
+    on error goto next
+    x = base64_decode("@@@@")
+    print("bad_b64 " + error.message)
+    error.clear()
+    x = hex_decode("abc")
+    print("bad_hex_odd " + error.message)
+    error.clear()
+    x = hex_decode("zz")
+    print("bad_hex_char " + error.message)
+    error.clear()
+    on error stop
+
+    ' The controls: valid input must still decode, or "raise on everything"
+    ' would satisfy the three checks above.
+    print("good_b64 " + base64_decode(base64_encode("hi")))
+    print("good_hex " + hex_decode(hex_encode("hi")))
 end program

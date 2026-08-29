@@ -20,6 +20,8 @@ eq_len false
 eq_dig true
 rb16 16
 rb1 1
-bad_b64 unknown
-bad_hex_odd unknown
-bad_hex_char unknown
+bad_b64 base64_decode: not valid base64
+bad_hex_odd hex_decode: not valid hexadecimal
+bad_hex_char hex_decode: not valid hexadecimal
+good_b64 hi
+good_hex hi
