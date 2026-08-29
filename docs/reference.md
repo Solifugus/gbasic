@@ -14,7 +14,8 @@ Tokens:
 - Numbers: decimal numeric literals.
 - Strings: double-quoted string literals. Literal newlines may appear inside strings.
 - Booleans: `true`, `false`.
-- Newlines terminate most statements.
+- Newlines terminate most statements, EXCEPT inside an unclosed `(`, `[` or
+  `{` -- see Line continuation below.
 - Apostrophe comments start with `'` and continue to end of line.
 
 Supported string escapes:
@@ -27,6 +28,50 @@ Supported string escapes:
   `1..0x10FFFF`, excluding surrogates; for a literal NUL use `chr(0)`)
 
 Unknown escapes and unterminated strings are lexer errors and exit nonzero.
+
+### Line continuation
+
+A statement continues across a line break whenever a `(`, `[` or `{` is still
+open. There is no continuation character: the brackets already written decide
+where the statement ends, so there is no trailing marker to forget and no way
+for the marker and the brackets to disagree.
+
+```basic
+sql = join([
+    "create table loans (",
+    "  id integer primary key,",
+    "  balance real",
+    ")"
+], " ")
+
+person = {
+    name: "ada",
+    tags: [
+        "one",
+        "two"
+    ]
+}
+
+function add(a,
+             b,
+             c)
+    return a + b + c
+end function
+```
+
+Blank lines and end-of-line comments inside the brackets are ignored the same
+way, so a long argument list can be annotated per line. Continuation is purely
+lexical: the token stream a continued statement produces is identical to the
+one-line form, so nothing downstream -- the grammar, the evaluator, the outline
+-- sees a difference.
+
+A bracket inside a string or a comment is text, not depth. If a bracket is
+still open at end of file the error names which one and the line it opened on:
+
+```
+runtime error at report.bas:41:1: unclosed '[' opened on line 12 --
+a line break inside brackets continues the statement
+```
 
 ```basic
 description = "You are in a stone hall.

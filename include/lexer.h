@@ -91,6 +91,8 @@ typedef enum {
     TOKEN_ERROR
 } TokenType;
 
+#define GBASIC_BRACKET_STACK 64
+
 typedef struct {
     TokenType type;
     const char *start;
@@ -108,6 +110,15 @@ typedef struct {
     int lens_content_mode;
     int consider_depth;
     int consider_columns[64];
+    /* Line continuation: a newline inside an unclosed (, [ or { is not a
+     * statement terminator. No new syntax and no trailing marker to forget --
+     * the brackets the author already wrote say where the statement ends.
+     * Only the depth decides; matching ')' to '(' is the grammar's job. The
+     * stack records where each opener was so an unclosed one can be named at
+     * end of file rather than reported as a puzzling EOF. */
+    int bracket_depth;
+    int bracket_lines[GBASIC_BRACKET_STACK];
+    char bracket_chars[GBASIC_BRACKET_STACK];
 } Lexer;
 
 void lexer_init(Lexer *lexer, const char *source);

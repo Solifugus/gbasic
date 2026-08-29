@@ -1,1 +1,1 @@
-parse error at tests/negative_malformed_lvalue.bas:1:21: syntax error, unexpected NEWLINE, expecting RBRACKET
+runtime error at tests/negative_malformed_lvalue.bas:2:1: unclosed '[' opened on line 1 -- a line break inside brackets continues the statement

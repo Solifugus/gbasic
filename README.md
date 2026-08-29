@@ -71,7 +71,8 @@ The [tutorial](docs/tutorial.md) covers the language properly; the
 
 Implemented: a hand-written lexer, Bison parser, AST and tree-walking
 evaluator; strict expressions; compound assignment (`+=` `-=` `*=` `/=`);
-`if`/`else if`/`else`, `consider`, `while`, `do…until`; `for each` with
+`if`/`else if`/`else`, `consider`, `while`, `do…until`; statements that
+continue across a line break inside an unclosed `(`, `[` or `{`; `for each` with
 `break`/`continue` that may name their loop; arrays, records and nested
 assignment; functions, programs, libraries and `load`; first-class function
 values; **prototypal objects** with per-property inheritance policies;

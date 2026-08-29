@@ -347,6 +347,21 @@ void lexer_init(Lexer *lexer, const char *source) {
     lexer->column = 1;
     lexer->lens_content_mode = 0;
     lexer->consider_depth = 0;
+    lexer->bracket_depth = 0;
+}
+
+static void bracket_open(Lexer *lexer, char ch, int line) {
+    if (lexer->bracket_depth < GBASIC_BRACKET_STACK) {
+        lexer->bracket_chars[lexer->bracket_depth] = ch;
+        lexer->bracket_lines[lexer->bracket_depth] = line;
+    }
+    lexer->bracket_depth++;
+}
+
+static void bracket_close(Lexer *lexer) {
+    if (lexer->bracket_depth > 0) {
+        lexer->bracket_depth--;
+    }
 }
 
 Token lexer_next(Lexer *lexer) {
@@ -355,11 +370,33 @@ Token lexer_next(Lexer *lexer) {
     }
 
     skip_spaces_and_comments(lexer);
+    /* Inside brackets the statement is unfinished, so a line break is
+     * whitespace rather than a terminator. Iterative, not recursive: a blank
+     * line costs nothing and a thousand of them must not cost a stack. */
+    while (lexer->bracket_depth > 0 && !is_at_end(lexer) && peek(lexer) == '\n') {
+        advance(lexer);
+        skip_spaces_and_comments(lexer);
+    }
 
     const char *start = lexer->current;
     int line = lexer->line;
     int column = lexer->column;
     if (is_at_end(lexer)) {
+        /* An unclosed bracket has swallowed every newline to here. Say which
+         * one and where it opened: without this the parser reports an
+         * unexpected end of file, which points at the wrong end of the file. */
+        if (lexer->bracket_depth > 0) {
+            int index = lexer->bracket_depth - 1;
+            if (index >= GBASIC_BRACKET_STACK) {
+                index = GBASIC_BRACKET_STACK - 1;
+            }
+            char message[96];
+            snprintf(message, sizeof(message),
+                     "unclosed '%c' opened on line %d -- a line break inside brackets continues the statement",
+                     lexer->bracket_chars[index], lexer->bracket_lines[index]);
+            lexer->bracket_depth = 0;
+            return error_token_message(lexer, start, line, column, message);
+        }
         return make_token(lexer, TOKEN_EOF, start, line, column);
     }
 
@@ -406,12 +443,12 @@ Token lexer_next(Lexer *lexer) {
     case '/':
         if (match(lexer, '=')) return make_token(lexer, TOKEN_SLASH_EQ, start, line, column);
         return make_token(lexer, TOKEN_SLASH, start, line, column);
-    case '(': return make_token(lexer, TOKEN_LPAREN, start, line, column);
-    case ')': return make_token(lexer, TOKEN_RPAREN, start, line, column);
-    case '[': return make_token(lexer, TOKEN_LBRACKET, start, line, column);
-    case ']': return make_token(lexer, TOKEN_RBRACKET, start, line, column);
-    case '{': return make_token(lexer, TOKEN_LBRACE, start, line, column);
-    case '}': return make_token(lexer, TOKEN_RBRACE, start, line, column);
+    case '(': bracket_open(lexer, '(', line); return make_token(lexer, TOKEN_LPAREN, start, line, column);
+    case ')': bracket_close(lexer); return make_token(lexer, TOKEN_RPAREN, start, line, column);
+    case '[': bracket_open(lexer, '[', line); return make_token(lexer, TOKEN_LBRACKET, start, line, column);
+    case ']': bracket_close(lexer); return make_token(lexer, TOKEN_RBRACKET, start, line, column);
+    case '{': bracket_open(lexer, '{', line); return make_token(lexer, TOKEN_LBRACE, start, line, column);
+    case '}': bracket_close(lexer); return make_token(lexer, TOKEN_RBRACE, start, line, column);
     case ',': return make_token(lexer, TOKEN_COMMA, start, line, column);
     case '.': return make_token(lexer, TOKEN_DOT, start, line, column);
     case ':': return make_token(lexer, TOKEN_COLON, start, line, column);
