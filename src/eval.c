@@ -13773,6 +13773,25 @@ static int webserver_any_active(void) {
     return 0;
 }
 
+/* Is a server bound here that THIS process will serve? A `held` listener is
+ * bound and deliberately never accepted -- the supervisor in the worker-pool
+ * pattern hands it to children over LISTEN_FDS -- so a supervisor polling its
+ * children is doing the right thing and must not be warned at. That case is
+ * what separated a useful warning from a false positive: the first version
+ * reddened `run_web_stream`'s drain driver, which holds a listener precisely
+ * so a worker can serve it. */
+static int webserver_serving_here(void) {
+    for (size_t i = 0; i < webserver_count; i++) {
+        if (webservers[i].held) {
+            continue;
+        }
+        if (webservers[i].running || webservers[i].client_count > 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static int webserver_token_char(unsigned char ch) {
     return isalnum(ch) ||
         ch == '!' || ch == '#' || ch == '$' || ch == '%' || ch == '&' ||
@@ -15070,7 +15089,10 @@ static void webserver_check_timeouts(WebServer *server) {
     }
 }
 
+static int webserver_event_loop_running = 0;
+
 static int webserver_run_event_loop(void) {
+    webserver_event_loop_running = 1;
     while (webserver_any_active() && !runtime_stopped) {
         if (webserver_term_requested) {
             for (size_t i = 0; i < webserver_count; i++) {
@@ -21419,6 +21441,104 @@ static int process_str_no_nul(const Value *v) {
     return memchr(v->as.string, '\0', string_length(v->as.string)) == NULL;
 }
 
+/* --- process options: `env`, and refusing what we do not understand --------
+ *
+ * `env` is a record of NAME -> value, MERGED over the inherited environment,
+ * with `nothing` meaning unset. Merged rather than replacing, because a child
+ * that loses PATH and HOME to gain one variable is almost never what was
+ * meant.
+ *
+ * Without this there was no way to set a child's environment at all, and the
+ * Transward build had to generate a shell wrapper script per run to pass
+ * SSH_ASKPASS to OpenSSH -- putting a shell back into the exact code path
+ * whose stated principle is that nothing is ever parsed as shell syntax. The
+ * same block applies to GIT_SSH_COMMAND, SSL_CERT_FILE, TZ and DOCKER_HOST.
+ */
+static int process_validate_env(Value *opts, const char *label, Value **out) {
+    char msg[200];
+    *out = NULL;
+    RecordField *f = record_find(opts, "env");
+    if (!f) {
+        return 1;
+    }
+    if (f->value->kind != VALUE_RECORD) {
+        snprintf(msg, sizeof(msg), "%s: options.env must be a record of name to value", label);
+        process_raise(msg);
+        return 0;
+    }
+    RecordField *fields = f->value->as.record.fields;
+    size_t n = f->value->as.record.count;
+    for (size_t i = 0; i < n; i++) {
+        const char *name = fields[i].name;
+        if (!name || !name[0] || strchr(name, '=')) {
+            snprintf(msg, sizeof(msg),
+                     "%s: an env name must be non-empty and contain no '='", label);
+            process_raise(msg);
+            return 0;
+        }
+        Value *v = fields[i].value;
+        if (v->kind == VALUE_NULL) {
+            continue;              /* `nothing` unsets */
+        }
+        if (v->kind != VALUE_STRING || !process_str_no_nul(v)) {
+            snprintf(msg, sizeof(msg),
+                     "%s: options.env.%s must be a string without NUL, or nothing to unset",
+                     label, name);
+            process_raise(msg);
+            return 0;
+        }
+    }
+    *out = f->value;
+    return 1;
+}
+
+/* Applied in the CHILD, after fork and before exec, so the parent's own
+ * environment is never disturbed. */
+static void process_apply_env(Value *env_rec) {
+    if (!env_rec) {
+        return;
+    }
+    RecordField *fields = env_rec->as.record.fields;
+    size_t n = env_rec->as.record.count;
+    for (size_t i = 0; i < n; i++) {
+        if (fields[i].value->kind == VALUE_NULL) {
+            unsetenv(fields[i].name);
+        } else {
+            setenv(fields[i].name, fields[i].value->as.string, 1);
+        }
+    }
+}
+
+/* REFUSE AN OPTION WE DO NOT UNDERSTAND, by name.
+ *
+ * `process.run` silently dropped unknown keys, so a misspelling -- or `env`
+ * before it existed -- looked exactly like the feature working until the child
+ * reported an empty variable. That is the inverse of what `webserver.listen`
+ * does, and its reasoning applies here with a sharper edge: an ignored option
+ * there leaves a server on loopback, and here it leaves a credential unset. */
+static int process_reject_unknown(Value *opts, const char *label,
+                                  const char *const *allowed, size_t nallowed) {
+    if (opts->kind != VALUE_RECORD) {
+        return 1;
+    }
+    RecordField *fields = opts->as.record.fields;
+    size_t n = opts->as.record.count;
+    for (size_t i = 0; i < n; i++) {
+        int ok = 0;
+        for (size_t j = 0; j < nallowed; j++) {
+            if (strcmp(fields[i].name, allowed[j]) == 0) { ok = 1; break; }
+        }
+        if (!ok) {
+            char msg[220];
+            snprintf(msg, sizeof(msg), "%s: unknown option '%s'", label, fields[i].name);
+            process_raise(msg);
+            return 0;
+        }
+    }
+    return 1;
+}
+
+
 /* Build the returned record with a fixed field order:
  * exit_code, stdout, stderr, success, signal, timed_out
  * — and, ONLY when the caller opted into launch_failure:"result", two more:
@@ -21579,6 +21699,27 @@ static Value process_do_run(AstExpr *expr) {
         }
     }
 
+    /* Refuse an option we do not understand, BY NAME. A dropped `env` looks
+     * exactly like the feature working until the child reports an empty
+     * variable -- the inverse of webserver.listen, whose reasoning applies
+     * here with a sharper edge. */
+    {
+        static const char *const allowed[] = {
+            "command", "args", "cwd", "timeout", "env", "launch_failure"
+        };
+        if (!process_reject_unknown(&opts, "process.run", allowed,
+                                    sizeof(allowed) / sizeof(allowed[0]))) {
+            value_free(opts);
+            return value_null();
+        }
+    }
+
+    Value *run_env = NULL;
+    if (!process_validate_env(&opts, "process.run", &run_env)) {
+        value_free(opts);
+        return value_null();
+    }
+
     /* --- cwd (optional string) --- */
     const char *cwd = NULL;
     RecordField *cwd_f = record_find(&opts, "cwd");
@@ -21681,6 +21822,7 @@ static Value process_do_run(AstExpr *expr) {
         close(out_pipe[0]); close(out_pipe[1]);
         close(err_pipe[0]); close(err_pipe[1]);
         close(exec_pipe[0]);
+        process_apply_env(run_env);
         if (cwd && chdir(cwd) != 0) {
             int e = errno;
             ssize_t w = write(exec_pipe[1], &e, sizeof(e)); (void)w;
@@ -21792,11 +21934,13 @@ static Value value_process(ProcessHandle *handle) {
     return v;
 }
 
+
 /* The validated launch inputs, borrowed from the caller's options record (valid
  * until that record is freed). */
 typedef struct {
     char **argv;          /* owned by the caller of process_parse_options */
     const char *cwd;      /* borrowed, or NULL */
+    Value *env;           /* borrowed record, or NULL */
 } ProcLaunch;
 
 /* Validate the shared `{command, args, cwd}` options and build argv. `label` names
@@ -21807,6 +21951,7 @@ static int process_parse_options(Value *opts, const char *label, ProcLaunch *out
     char msg[200];
     out->argv = NULL;
     out->cwd = NULL;
+    out->env = NULL;
 
     RecordField *cmd_f = record_find(opts, "command");
     if (!cmd_f || cmd_f->value->kind != VALUE_STRING) {
@@ -21855,6 +22000,10 @@ static int process_parse_options(Value *opts, const char *label, ProcLaunch *out
         out->cwd = cwd_f->value->as.string;
     }
 
+    if (!process_validate_env(opts, label, &out->env)) {
+        return 0;
+    }
+
     out->argv = calloc(nargs + 2, sizeof(char *));
     if (!out->argv) {
         abort();
@@ -21872,7 +22021,7 @@ static int process_parse_options(Value *opts, const char *label, ProcLaunch *out
  * exec is distinguishable from a real exit 127). On success returns the pid and
  * fills the out_fd/err_fd outputs. Returns -1 and sets launch_errno on exec
  * failure, or -2 on a pipe/fork failure. */
-static pid_t process_launch(char **argv, const char *cwd,
+static pid_t process_launch(char **argv, const char *cwd, Value *launch_env,
                             const int *share_fds, size_t share_count,
                             int *out_fd, int *err_fd, int *launch_errno) {
     int out_pipe[2] = {-1, -1}, err_pipe[2] = {-1, -1}, exec_pipe[2] = {-1, -1};
@@ -21948,6 +22097,9 @@ static pid_t process_launch(char **argv, const char *cwd,
             setenv("LISTEN_FDS", env_count, 1);
             setenv("LISTEN_PID", env_pid, 1);
         }
+        /* After LISTEN_FDS so a caller could deliberately override it, and
+         * before chdir so an env error cannot be confused with a cwd one. */
+        process_apply_env(launch_env);
         if (cwd && chdir(cwd) != 0) {
             int e = errno;
             ssize_t w = write(exec_pipe[1], &e, sizeof(e)); (void)w;
@@ -22236,6 +22388,17 @@ static Value process_do_start(AstExpr *expr) {
      * close-on-exec was that sharing one is a deliberate, typed act. */
     int share_fds[64];
     size_t share_count = 0;
+    {
+        static const char *const allowed[] = {
+            "command", "args", "cwd", "env", "listen_fds", "timeout"
+        };
+        if (!process_reject_unknown(&opts, "process.start", allowed,
+                                    sizeof(allowed) / sizeof(allowed[0]))) {
+            value_free(opts);
+            return value_null();
+        }
+    }
+
     RecordField *lf = record_find(&opts, "listen_fds");
     if (lf) {
         if (lf->value->kind != VALUE_ARRAY) {
@@ -22266,7 +22429,7 @@ static Value process_do_start(AstExpr *expr) {
     }
 
     int out_fd = -1, err_fd = -1, launch_errno = 0;
-    pid_t pid = process_launch(launch.argv, launch.cwd, share_fds, share_count,
+    pid_t pid = process_launch(launch.argv, launch.cwd, launch.env, share_fds, share_count,
                                &out_fd, &err_fd, &launch_errno);
     if (pid == -2) {
         free(launch.argv);
@@ -24539,6 +24702,34 @@ static Value eval_call(AstExpr *expr) {
         } else if (req.tv_nsec > 999999999L) {
             req.tv_nsec = 999999999L;
         }
+        /* THE POST-SERVE LOOP TRAP.
+         *
+         * A single-process server serves from the event loop that runs AFTER
+         * `main` returns, so the shape every service author reaches for --
+         *
+         *     h = serve(app)
+         *     while h.running
+         *         sleep(0.25)
+         *     end while
+         *
+         * -- never reaches it. The listener binds, the banner prints,
+         * `h.running` is true and the port ACCEPTS CONNECTIONS, so every
+         * external check says the service is healthy while every request hangs
+         * forever with no response and nothing on stderr. Reported by the
+         * Transward build, which lost the diagnosis twice before reducing it
+         * to four lines.
+         *
+         * Sleeping while a server is live but not yet serving is exactly that
+         * state, and nothing else: a sleep BEFORE `serve` has no live server,
+         * and a sleep inside a handler is already in the loop. */
+        if (webserver_serving_here() && !webserver_event_loop_running) {
+            runtime_warn("sleeping while a server is bound but not yet serving: "
+                         "a server serves after main returns, so a `while "
+                         "h.running` loop here never answers a request -- "
+                         "let main return instead",
+                         1003, "webserver", value_null());
+        }
+
         struct timespec rem;
         while (nanosleep(&req, &rem) == -1 && errno == EINTR) {
             req = rem;

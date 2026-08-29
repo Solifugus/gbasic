@@ -201,4 +201,35 @@ else
     printf 'SKIP block_tls (openssl not installed)\n'
 fi
 
+# --- the post-serve loop trap (PLAT-WEB, reported by the Transward build) ---
+#
+# A single-process server serves from the event loop that runs AFTER main
+# returns, so `h = serve(app)` followed by `while h.running / sleep(...)` never
+# reaches it. Everything short of an actual request says the service is
+# healthy: the listener binds, the banner prints, h.running is true and the
+# port ACCEPTS CONNECTIONS. Every request then hangs forever with nothing on
+# stderr. That cost the reporter two diagnoses before they reduced it to four
+# lines, which is why it warns rather than merely being documented.
+#
+# The fixture is killed by `timeout` on purpose: it demonstrates the state, and
+# the state is one a program cannot leave -- setting `draining` in main cannot
+# help, because the loop it would drain has not started.
+trap_out="$scratch/post_serve.err"
+timeout 5 ./gbasic tests/web_server_block/post_serve_sleep.bas >/dev/null 2>"$trap_out" || true
+grep -q "never answers a request" "$trap_out" \
+    || fail "post_serve_sleep (no warning: $(head -1 "$trap_out"))"
+printf 'PASS post_serve_sleep (sleeping after serve warns about the loop that never serves)\n'
+
+# THE CONTROL, and it is what keeps the warning from being noise: a HELD
+# listener is bound and deliberately never accepted -- the supervisor pattern
+# hands it to children over LISTEN_FDS -- so a supervisor polling its children
+# is doing the right thing. The first version of this warning reddened
+# run_web_stream's drain driver for exactly that.
+held_out="$scratch/held.err"
+timeout 5 ./gbasic tests/web_server_block/held_sleep.bas >/dev/null 2>"$held_out" || true
+if grep -q "never answers a request" "$held_out"; then
+    fail "held_sleep (a supervisor holding a listener must NOT be warned at)"
+fi
+printf 'PASS held_sleep (a held listener is a supervisor, not the trap)\n'
+
 printf 'run_web_server_block: all cases passed\n'

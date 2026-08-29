@@ -177,3 +177,28 @@ if command -v ps >/dev/null 2>&1; then
 else
     printf 'SKIP tests/native_platform/plat_proc_abandon.bas (ps not installed)\n'
 fi
+
+# --- env, and refusing unknown options (PLAT-PROC, Transward report) --------
+#
+# The first DAMAGED A DESIGN: passing a password to OpenSSH needs SSH_ASKPASS,
+# so with no env option the reporter had to generate a shell wrapper script per
+# run -- putting a shell back into the exact code path whose stated principle
+# is that nothing is ever parsed as shell syntax. The second is its companion:
+# `env:` was silently DROPPED before it existed, so the mistake looked like the
+# feature working until the child reported an empty variable. webserver.listen
+# refuses unknown options by name for exactly this reason, and the edge is
+# sharper here: an ignored option there leaves a server on loopback, here it
+# leaves a credential unset.
+env_out="$(./gbasic tests/process/env_options.bas 2>&1)"
+if printf '%s' "$env_out" | grep -q MISMATCH; then
+    printf 'FAIL env_options\n'
+    printf '%s\n' "$env_out" | grep MISMATCH
+    exit 1
+fi
+if ! printf '%s' "$env_out" | grep -qx 'mismatches: 0'; then
+    printf 'FAIL env_options (did not finish)\n'
+    printf '%s\n' "$env_out" | tail -3
+    exit 1
+fi
+printf 'PASS env_options (%s checks: env merged, nothing unsets, unknown options refused by name)\n' \
+    "$(printf '%s' "$env_out" | sed -n 's/^checks: //p')"

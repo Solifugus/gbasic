@@ -2111,6 +2111,29 @@ program main( args )
 end program
 ```
 
+**Let `main` return. Do not loop after `serve`.** A single-process server
+serves from the event loop that runs **after `main` returns**, so the shape
+most service authors reach for —
+
+<!--fragment: the anti-pattern this warning exists for; it hangs by design-->
+```basic
+h = serve(app)
+while h.running        ' never reaches the event loop
+    sleep(0.25)
+end while
+```
+
+— binds the listener, prints the banner, sets `h.running` true and **accepts
+connections**, while every request hangs forever with no response and nothing
+on stderr. Every check short of an actual request says the service is healthy.
+Sleeping while a server is bound but not yet serving now **warns**, because
+reading the documentation is not much help when the symptom looks like a
+working server.
+
+A *held* listener (`webserver.listen(port, { hold: true })`) is the exception
+and is not warned about: it is bound deliberately without being served, so a
+supervisor can hand it to workers over `LISTEN_FDS` and poll them.
+
 **Zero new reserved words.** `server`, the verbs, `web`, `root`,
 `trust_proxy` and hook names are ordinary identifiers recognized by
 position and validated at load time — `server = webserver.listen(0)` keeps
@@ -2772,6 +2795,30 @@ Options record:
   contains no `/`, otherwise run as a literal (relative or absolute) path.
 - `args` (array of strings, optional) — the arguments after `command`. Default none.
 - `cwd` (string, optional) — a directory to switch into before running the child.
+- `env` (record, optional) — environment variables for the child, **merged over
+  the inherited environment**: a name maps to a string, or to `nothing` to
+  unset it. Merged rather than replacing, because a child that loses `PATH` and
+  `HOME` to gain one variable is almost never what was meant. The parent's own
+  environment is untouched.
+
+  ```basic
+  process.run({ command: "ssh", args: ["host", "true"],
+                env: { SSH_ASKPASS: "/usr/lib/gb/askpass",
+                       SSH_ASKPASS_REQUIRE: "force",
+                       DISPLAY: nothing } })
+  ```
+
+  This is how a credential reaches a child that reads one from the
+  environment — `SSH_ASKPASS`, `GIT_SSH_COMMAND`, `SSL_CERT_FILE`, `TZ`,
+  `DOCKER_HOST`. Without it the only route was a generated shell wrapper
+  script, which puts a shell back into a code path whose point is that nothing
+  is parsed as shell syntax.
+
+**Unknown options are refused by name** (*since 0.1.0-rc9*). They were
+previously dropped in silence, so a misspelling looked exactly like the feature
+working until the child reported an empty variable — the same argument
+`webserver.listen` makes, with a sharper edge: an ignored option there leaves a
+server on loopback, and here it leaves a credential unset.
 - `timeout` (number, optional) — seconds; when the child outlives it, its whole
   process group is killed. Absent or `<= 0` means no limit.
 - `launch_failure` (string, optional; *since 0.1.0-rc3*) — `"raise"` (the
