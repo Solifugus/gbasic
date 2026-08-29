@@ -1,0 +1,11 @@
+USD 19.95
+EUR 19.95
+JPY 1995     <- no decimal places
+KWD 19.950  <- three
+
+USD + EUR : cannot add money in different currencies (USD and EUR)
+USD < EUR : cannot order money in different currencies (USD and EUR)
+USD = EUR : false
+
+registered ITL: 1000
+currencies known: 179

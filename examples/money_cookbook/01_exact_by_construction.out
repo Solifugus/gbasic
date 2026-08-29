@@ -1,0 +1,9 @@
+from text    : 19.95
+from a literal: 19.95
+identical     : true
+
+0.01 added 1000 times = 10.00
+the same in numbers   = 9.999999999999831   <- not 10
+
+authored 1.23456789 : money text has more decimal places than the currency allows
+computed 19.95*1.08 : 21.55

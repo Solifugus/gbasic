@@ -1,0 +1,9 @@
+(100.00 / 3) * 3 = 100.00   <- 99.99 without guard digits
+(1.00 / 7) * 7   = 1.00
+
+0.01 / 3 displays as 0.00
+  but x3 gives back 0.01
+
+50000000000.01 x 3 = 150000000000.03
+
+past the ceiling: money value is out of range

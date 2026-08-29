@@ -1,0 +1,15 @@
+a 50,000 asset, 5,000 salvage, 10 years
+
+straight line, every year: 4500.00
+
+year   sum-of-years  declining-balance
+1      8181.82       10000.00
+2      7363.64       8000.00
+3      6545.45       6400.00
+4      5727.27       5120.00
+5      4909.09       4096.00
+
+sum-of-years total:  45000.00
+cost minus salvage:  45000.00
+
+declining balance, year 10: 1342.18

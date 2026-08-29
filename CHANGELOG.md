@@ -9,6 +9,31 @@ language surface may still change between releases.
 
 ## Unreleased
 
+- **A money cookbook, and the defect it found on its first day.**
+  `docs/money_cookbook.md` is nine worked recipes over `money` and `finance`,
+  on the same cannot-lie harness as the xlsx and chart cookbooks: the page owns
+  neither the code nor the output it shows, and `tests/run_money_cookbook.sh`
+  fails while any of them disagree.
+
+  **Writing recipe 7 — an ordinary amortization schedule, not a stress case —
+  surfaced a silent wrong answer in `money * scalar`.** A double's shortest
+  decimal can need more fractional places than a power of ten fits in `int64`:
+  `0.005 * 1.005^12` is `0.0053083890593224915`, nineteen places. The code
+  treated any such scalar as negligible and returned `0.00`. It is not
+  negligible — in exactly those cases the mantissa is large too, so the value
+  is ordinary. Every payment in a 12-month schedule came out zero, while a
+  360-month one worked, because its scalar happened to land on eighteen places.
+
+  The unit fixtures had all used short scalars (`2`, `3`, `1.08`, `0.5`), so
+  only realistic arithmetic produced one long enough to trip it. That is the
+  argument for worked recipes in one example: a page of them exercises shapes a
+  unit suite does not think to. Fixed by trimming the insignificant low digits
+  rather than discarding the scalar; the regression is pinned in
+  `money_arithmetic_test.bas` and red-proofed against the pre-fix source.
+
+  Every figure on the page is independently verified — NPV, IRR and
+  declining-balance recomputed in Python, and `pmt` checked against Excel.
+
 - **Allocation, and the time value of money (PLAT-MONEY phase 4).** Two
   additions that finish the money work and answer what a line-of-business
   application actually computes.

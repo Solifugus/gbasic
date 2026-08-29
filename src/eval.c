@@ -3988,6 +3988,34 @@ static int money_scale_by(long long units, double scalar, int divide,
     int dexp = 0;
     if (!money_scalar_parts(scalar, &num, &dexp, err)) return 0;
 
+    /* A double's shortest decimal can need more fractional places than a
+     * power of ten fits in int64 -- 0.0053083890593224915 is 19 -- and the
+     * MANTISSA is large in exactly those cases, so the value is ordinary
+     * rather than negligible. Trim the insignificant low digits instead of
+     * treating the scalar as zero.
+     *
+     * The first version did treat it as zero, and the failure was silent and
+     * severe: `money * 0.0053083890593224915` returned 0.00, which made
+     * finance.pmt return a zero payment for a 12-month loan while working for
+     * a 360-month one (whose scalar happened to land on 18 places). Found by
+     * writing an ordinary cookbook recipe, not by the unit tests, whose
+     * scalars were all short. */
+    while (dexp > 18 && num != 0) {
+        long long q = num / 10;
+        long long r = num % 10;
+        if (r >= 5) q++;
+        else if (r <= -5) q--;
+        num = q;
+        dexp--;
+    }
+    while (dexp < -18 && num != 0) {
+        if (__builtin_mul_overflow(num, 10LL, &num)) {
+            *err = "money value is out of range";
+            return 0;
+        }
+        dexp++;
+    }
+
     if (num == 0) {
         if (divide) { *err = "division by zero"; return 0; }
         *out = 0;

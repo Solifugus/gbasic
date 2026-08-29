@@ -363,6 +363,26 @@ function names in backticks in `project_state.md`'s toolkit list, where
 backticks mean library names — and PLAT-DEBT 2's roster check reported seven
 libraries that do not exist. The prose was wrong, not the check.
 
+## 8f. A defect the cookbook found (2026-08-29)
+
+Writing `examples/money_cookbook/07_amortization.bas` — an ordinary schedule,
+not a stress case — surfaced a **silent wrong answer in phase 1's
+`money * scalar`**. A double's shortest decimal can need more fractional
+places than a power of ten fits in `int64`: `0.005 * 1.005^12` is
+`0.0053083890593224915`, nineteen places. The code treated any such scalar as
+negligible and returned **0.00**.
+
+It is not negligible — in exactly those cases the mantissa is large too, so
+the value is ordinary. Every payment in a 12-month schedule came out zero,
+while a 360-month one worked, because its scalar happened to land on eighteen
+places.
+
+The unit fixtures had all used short scalars (`2`, `3`, `1.08`, `0.5`), so
+only realistic arithmetic produced one long enough to trip it. That is the
+argument for the cookbook harness in one example: **a page of worked recipes
+exercises shapes a unit suite does not think to.** The regression is now
+pinned in `money_arithmetic_test.bas`, red-proofed against the pre-fix source.
+
 ## 9. Tests to pin
 
 - exact construction at the top of the int64 range, per currency;

@@ -1,0 +1,9 @@
+on 2026-03-01: 920.00
+on 2026-12-01: 950.00   (June's rate, still current)
+in yen:        151250
+
+March used rate 0.92 dated 2026-01-01
+
+the other way: no EUR to USD rate on that date; a USD to EUR rate exists, but inverting it would invent a spread
+
+USD to USD:    1000.00

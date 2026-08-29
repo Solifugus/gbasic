@@ -79,6 +79,22 @@ check("dividing by a fraction multiplies", d / 0.5, "200.00")
 ' different problem from arithmetic not losing money.
 check("guard digits close the round-trip gap", (d / 3) * 3, "100.00")
 
+' -------------------------------- LONG SCALARS: the 19-digit trap
+' A double's shortest decimal can need more fractional places than a power of
+' ten fits in int64. 0.0053083890593224915 needs 19, and in those cases the
+' MANTISSA is large too, so the value is ordinary rather than negligible.
+' Treating it as negligible returned 0.00 -- silently, for an entirely normal
+' multiplier. Found by writing a cookbook recipe, not by this file, whose
+' scalars were all short; these are the regression.
+ten_k {USD}= "10000.00"
+r19 = 0.005 * pow(1.005, 12)          ' 0.0053083890593224915 -- 19 places
+check("a 19-place scalar is not treated as zero", ten_k * r19, "53.08")
+r18 = 0.005 * pow(1.005, 360)         ' 18 places -- worked before, must still
+check("an 18-place scalar still works", ten_k * r18, "301.13")
+check("a 19-place divisor works too", ten_k / 0.06167781186449828, "162132.86")
+tiny_but_real {USD}= "1000000.00"
+check("a genuinely tiny scalar is still zero", tiny_but_real * 0.0000000000000000001, "0.00")
+
 ' ------------------------------------------------------- scalar on the left
 check("number * money works too", 3 * big, "150000000000.03")
 check("and rounds the same way", 0.5 * q, "0.08")

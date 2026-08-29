@@ -1,0 +1,8 @@
+100.00 three ways: [33.34,33.33,33.33]
+  they sum to:     100.00
+
+split 1:1:2      : [25.00,25.00,50.00]
+split six and one: [7.70,7.70,7.69,7.69,7.69,7.69,53.84]
+  still exact:     true
+
+JPY 100 three ways: [34,33,33]

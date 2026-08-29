@@ -1,0 +1,10 @@
+savings are worth today: 56861.80
+the machine costs:       50000.00
+net:                     6861.80
+
+internal rate of return: 15.24%
+
+at 5%:  64942.15
+at 20%: 44859.18
+
+one dollar against 50,000: finance.irr: no rate between -99% and 1000% makes these flows break even
