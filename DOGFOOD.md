@@ -110,6 +110,13 @@ and the stale-looking ones carry a Status line saying what overtook them.
     returned VALUE — which is what lets `return nothing` (the void convention)
     be exempt by value and keeps `append`'s 1101 bare calls quiet.
 
+12. **`money` is exact in storage and lossy at every boundary.** The int64
+    cents core is right (0.01 accumulated 1000 times is exactly 10.00, which a
+    double cannot do), but nothing can put an exact value INTO it and `*`/`/`
+    take it back out through a double. Reported by the gdash session with
+    evidence; verified here. See the 2026-08-29 entry for the three defects,
+    the guard-digit proposal, and the ruling still needed on currency identity.
+
 ### Open — accepted as documented limitations (no action planned)
 
 - A raise cannot be caught; `on error resume next` abandons the whole failing
@@ -3074,3 +3081,219 @@ from this and neither is silent:
 - **Would have been better:** a `follow` option (default whatever preserves
   today's behavior), plus `redirects` on the response so a caller can see what
   was followed.
+
+## 2026-08-29 — CC — while: reviewing gBASIC's money type against gdash's evidence
+- **Type:** bug
+- **Severity:** high
+- **What:** `money` stores exact int64 cents, and every path in and out of that
+  core degrades it. Reported by the gdash session (the type's first real
+  consumer); each defect re-verified here against the source rather than taken
+  on trust.
+
+  **1. There is no exact way to construct one.** `{USD}` accepts a number,
+  which is already a double, and refuses text:
+
+  ```basic
+  big {USD}= 92233720368547.75      ' -> 92233720368547.76, silently
+  b   {USD}= "92233720368547.75"    ' -> raises: USD modifier expects a number
+  ```
+
+  So the int64 range is unreachable through the type's own constructor.
+
+  **2. `*` and `/` by a number leave integer arithmetic.** Both route through
+  `(double)left.as.cents * number` and then `round_to_cents(amount / 100.0)`
+  (src/eval.c) — a divide by 100 and a multiply by 100 in floating point, for
+  an operation that needs neither. gdash calls this the worst of the three and
+  that is right: it corrupts a value the caller already got correct, with no
+  error. Multiplying by an *integral* scalar is not exact:
+
+  ```basic
+  b {USD}= 0.03
+  print (b / 3) * 3          ' 0.03 here, but 1000000000.05 / 7 * 7 -> 1000000000.02
+  ```
+
+  **3. Scale is hardcoded to cents.** `round_to_cents`, `format_money` and
+  `odbc_money_text` all assume `/ 100` and `% 100`. JPY (exponent 0) and
+  KWD/BHD/TND (exponent 3) have no correct representation, and neither does
+  anything needing sub-cent precision.
+
+  **A fourth, found here:** the rounding rule at the `.5` boundary is not
+  well-defined. `0.125 -> 0.13` but `0.145 -> 0.14`, which looks like
+  banker's rounding and is not: `round_to_cents` is half-away-from-zero, and
+  `0.145` as a double is `0.14499999999999999001`. So the rule depends on the
+  binary representation of the literal, not on the text the author wrote. This
+  is the same wound as defect 1 — a double sitting at the entrance to an exact
+  type — and an exact decimal-text constructor closes both at once.
+
+  **Interlock worth knowing before sequencing:** defect 1 blocks the *test* for
+  defect 2. The double path only diverges above 2^53 cents
+  ($90,071,992,547,409.92), and no exact value that large can be constructed
+  from source while defect 1 stands. Attempted and confirmed: the fixture has
+  to assert on a value that is already wrong.
+
+- **Workaround:** none needed downstream — gdash carries money as decimal text
+  and int64 in SQLite and never constructs a `money` value, which is itself the
+  finding: the platform type was not usable for the job it exists for. Open;
+  design ruling pending on guard digits and on whether a money value carries
+  its currency (per-currency scale requires it). `serialize`/`deserialize` are
+  public builtins and the reader requires an exact `SER_VERSION` match, so a
+  representation change must accept v1 payloads and rescale rather than bump
+  and reject.
+
+## 2026-08-29 — CC — while: scanning a watched directory in Transward (M11)
+- **Type:** doc-gap + language-surprise
+- **Severity:** medium
+- **What:** `list_files(path)` returns **file references**, not strings, but the
+  reference describes it as returning "the **files** in one directory, as full
+  paths" — and they *render* as paths, so nothing gives the game away until a
+  path-taking operation refuses them:
+
+  ```basic
+  for each path in list_files(dir)
+      f{file} = path          ' runtime error: file modifier expects a path string
+  end for
+  ```
+
+  `type(entry)` is `"file"` and `string(entry)` is the path, so the fix is to
+  use the entry directly for `file_size`/`file_mtime` and `string()` when text
+  is wanted. The trap is that "as full paths" reads as a promise about the
+  element type, and the error arrives at the `{file}` modifier rather than at
+  the listing, so it looks like the modifier is broken.
+
+  Worth comparing with its neighbour: `list(d)` is documented as returning
+  `{name, type}` records, which is precise. Either wording `list_files` as
+  "file references, which render as full paths", or having `{file}` accept a
+  file reference as a no-op, would have removed this.
+- **Workaround:** use the entry directly; call `string(entry)` for a path.
+- **Also:** the file-deletion builtin is **`delete(f)`**, which appears nowhere
+  in the reference's "Files and Directories" list (`exists`, `read`, `write`,
+  `append`, `bytes`, `lines`, `chars`, `lock`, `unlock`, `file_size`,
+  `file_mtime`, `atomic_replace`, `real_path`, `file_type`, `list`, `files`,
+  `folders`). I found it by guessing four names. A destructive operation is the
+  one that should be easiest to look up.
+
+## 2026-08-29 — CC — while: preparing Transward's askpass round trip (M12)
+- **Type:** missing-feature + language-surprise
+- **Severity:** high
+- **What:** Two problems, one of which hides the other.
+
+  **1. A child process's environment cannot be set.** `process.run` and
+  `process.start` take `command`, `args`, `cwd`, `timeout` and `listen_fds`;
+  there is no `env`. The child inherits the parent's environment and nothing
+  can be added, removed or overridden.
+
+  That blocks a whole category of integration, because the standard way to
+  configure a Unix tool for one invocation is an environment variable:
+  `SSH_ASKPASS` and `SSH_ASKPASS_REQUIRE` (how OpenSSH is handed a password
+  without putting it in argv, which is exactly what Transward needs),
+  `GIT_SSH_COMMAND`, `SSL_CERT_FILE`, `TZ`, `LANG`, `DOCKER_HOST`,
+  `no_proxy`. Without it, a program must write a wrapper script that exports
+  the variables and `exec`s the real command — which puts a shell back in the
+  path that argument-vector execution existed to remove, and for a secret-
+  bearing variable it means writing that value to disk.
+
+  **2. An unknown option is silently ignored.** Passing `env:` does not raise;
+  it is dropped, so the mistake looks like the feature working until the child
+  reports an empty variable:
+
+  ```basic
+  r = process.run({ command: "sh", args: ["-c", "echo $MY_VAR"],
+                    env: { MY_VAR: "hello" } })    ' stdout is empty
+  r = process.run({ command: "true", nonsense_option: 42 })  ' also accepted
+  ```
+
+  This is the opposite of `webserver.listen`, which the reference singles out
+  for refusing an unknown option **by name** on the grounds that "a
+  misspelling that was ignored would leave a server the author asked to publish
+  sitting on loopback". The same argument applies here with a sharper edge: a
+  silently-dropped `env` leaves a credential unset rather than a port unbound.
+- **Workaround:** generate a small wrapper script per run that exports the
+  variables and execs `sftp`, in the run's private directory, removed
+  afterwards. Every byte of it is Transward-generated, but it reintroduces a
+  shell to a code path whose design principle (§25) is that no vendor- or
+  operator-supplied value is ever parsed as shell syntax.
+- **Would have been better:** an `env` option (merged over the inherited
+  environment, with an explicit way to unset), and unknown option names refused
+  the way `webserver.listen` refuses them.
+
+## 2026-08-29 — CC — while: extracting a shared test helper in Transward (M6)
+- **Type:** language-surprise
+- **Severity:** medium
+- **What:** A **local** function shadows a library's function of the same name
+  so completely that even the **qualified** call fails:
+
+  ```basic
+  program main(args)
+      load httpc from "helpers/httpc.bas"
+      srv = httpc.start_server()   ' invalid function call: httpc.start_server
+  end program
+
+  function start_server()          ' a leftover local of the same name
+      ...
+  end function
+  ```
+
+  Deleting the local `start_server` makes `httpc.start_server()` resolve. This
+  is a relative of the builtin-collision family already logged, but sharper:
+  the qualifier is precisely the escape hatch one reaches for when a name
+  collides, and here it does not escape. The diagnostic also points at the
+  *call* as invalid rather than naming the local that shadowed it, so the
+  reader looks in the library.
+
+  It surfaced while moving harness functions into a shared library and leaving
+  the originals behind for a moment — an ordinary refactoring step, and the
+  program was broken in a way that read as "the library did not load".
+- **Workaround:** delete the local, which was the intent anyway.
+- **Would have been better:** let a qualified name always mean the module's
+  function, or warn that a local shadows a loaded library's function the way a
+  library/builtin collision now warns.
+
+## 2026-08-29 — CC — while: building Transward's credential vault (M12)
+- **Type:** bug
+- **Severity:** HIGH — silent wrong value from a cryptographic primitive
+- **What:** **`aes_gcm_decrypt` does not raise on authentication failure. It
+  returns `unknown`.** The reference promises the opposite, in as many words:
+
+  > `aes_gcm_decrypt(key, nonce, blob, aad)` — verifies and decrypts; a wrong
+  > key, nonce, `aad`, or tampered blob **raises** rather than returning
+  > garbage.
+
+  Measured, all three cases, with `on error goto next` armed:
+
+  ```basic
+  blob = aes_gcm_encrypt(key, nonce, "secret text", "")
+  aes_gcm_decrypt(key, nonce, blob + "x", "")        ' -> unknown   (no raise)
+  aes_gcm_decrypt(key, nonce, <one byte flipped>, "")' -> unknown   (no raise)
+  aes_gcm_decrypt(random_bytes(32), nonce, blob, "") ' -> unknown   (no raise)
+  ```
+
+  Why this is worse than an ordinary API mismatch: the whole reason to choose
+  an **authenticated** cipher is that tampering is detected rather than
+  decrypted into something else, and the documented contract is what a caller
+  builds on. A program written against the reference does no check, because the
+  reference says a check is unnecessary — so the failure flows onward as a
+  value. And `unknown` is not obviously wrong at a glance: `string(unknown)` is
+  `"unknown"`, so a credential vault following the docs would hand OpenSSH the
+  literal password `unknown`, and a program storing the result would persist
+  that string. Silent, plausible, and wrong is the worst combination for a
+  primitive whose only job is to refuse.
+
+  Note the neighbouring behaviour is right: `pbkdf2`/`scrypt` raise on an empty
+  salt, and the reference says AEAD failures "raise structured errors ... these
+  builtins pre-validate rather than degrade". This one degrades.
+- **Workaround:** every call site treats `unknown` as a failure and raises
+  itself:
+
+  ```basic
+  plain = aes_gcm_decrypt(key, nonce, blob, "")
+  if is_unknown(plain) then
+      error { message: "vault: decryption failed", source: "vault" }
+  end if
+  ```
+
+  That works, but only for callers who discovered the discrepancy. Anyone
+  following the reference has an undetected failure path.
+- **Would have been better:** raise, as documented. If returning a value is
+  deliberate, the reference must say so loudly and the value should be
+  `nothing` rather than `unknown` — but raising is the right answer for a
+  primitive whose contract is authentication.

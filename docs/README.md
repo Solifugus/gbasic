@@ -79,6 +79,7 @@ Task-oriented, with runnable examples.
 | [gui_cookbook.md](gui_cookbook.md) | Shipped | GUI by task; every recipe executed by tests/run_gui_cookbook.sh. |
 | [chart_design.md](chart_design.md) | Partial | The charting library — deterministic SVG as text. Phases 1, 2 and 4 are built (`stdlib/chart.bas`, `docs/chart_cookbook.md`); §13 records what is deferred. |
 | [datetime_design.md](datetime_design.md) | Shipped | The datetime/duration redesign — precision-aware datetimes, accountant's month arithmetic, duration algebra, business calendars, `matches`/`select`/`series`, `schedule.bas`. Every planned v1 layer is built; §9 lists what is deferred by decision (timezones, business-hours arithmetic). |
+| [money_design.md](money_design.md) | Proposal | The `money` type: four verified defects (no exact constructor, `*`/`/` leaving integer arithmetic, cents hardcoded, an undefined `.5` rule), and the ruled design — ISO 4217 currency on the value, per-currency exponent plus four guard digits. Phasing, migration and tests. Not yet implemented. |
 
 ## Statistics
 
