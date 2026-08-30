@@ -603,24 +603,31 @@ The documentation gate should distinguish shipped behavior from proposals and pa
 
 **Exit criterion:** core functions pass independent reference comparisons, edge cases, and algebraic invariants.
 
-### Phase 2: Lending and deposits
+> **Phases 2 and 3 were swapped on 2026-08-30.** Accounting now comes first.
+> Double-entry is the substrate lending events post *into* — a loan schedule
+> that cannot emit journal entries is half a product — and it is settled ground
+> with no convention ambiguity to rule on, where lending has several. It is
+> also useful to every business rather than only to lenders. The lending
+> workstream is unchanged apart from its position.
+
+### Phase 2: Accounting
+
+- implement balanced journal entries, ledgers, periods, and statements;
+- add receivables, payables, inventory costing, ratios, valuation, and unit economics;
+- demonstrate database and spreadsheet reporting workflows.
+
+**Exit criterion:** a small business can be modeled from transactions through statements and analytical reports.
+
+### Phase 3: Lending and deposits
 
 - implement product-neutral loan definitions and amortization;
 - add daily accrual, payoff, irregular-payment, rate-change, and modification support;
 - add underwriting ratios and loan-pricing analytics;
 - implement deposit and CD calculations;
+- connect loan and deposit events to the Phase 2 accounting entries;
 - create realistic credit-union and commercial-lending examples.
 
-**Exit criterion:** several end-to-end products reconcile payments, balances, accrued interest, and final settlement under declared policies.
-
-### Phase 3: Accounting and business finance
-
-- implement balanced journal entries, ledgers, periods, and statements;
-- connect loan, deposit, sales, and purchasing events to accounting entries;
-- add receivables, payables, inventory costing, ratios, valuation, and unit economics;
-- demonstrate database and spreadsheet reporting workflows.
-
-**Exit criterion:** a small business can be modeled from transactions through statements and analytical reports.
+**Exit criterion:** several end-to-end products reconcile payments, balances, accrued interest, and final settlement under declared policies — and post to a ledger that balances.
 
 ### Phase 4: Fixed income and portfolios
 
