@@ -29,20 +29,27 @@ end function
 
 ' ------------------------------------------------- the five TVM quantities
 p {USD}= "250000.00"
-check("pmt: a 250k mortgage at 6%/yr over 30 years", finance.pmt(p, 0.06 / 12, 360), "-1498.88")
+check("pmt: a 250k mortgage at 6%/yr over 30 years", finance.pmt(0.06 / 12, 360, p), "-1498.88")
 
 pay {USD}= "-1000.00"
-check("pv: 1000/month for 30 years at 6%/yr", finance.pv(pay, 0.06 / 12, 360), "166791.61")
+check("pv: 1000/month for 30 years at 6%/yr", finance.pv(0.06 / 12, 360, pay), "166791.61")
 
-c {USD}= "10000.00"
-check("fv: 10000 at 5% for 10 years", finance.fv(c, 0.05, 10), "16288.95")
+' fv changed SHAPE and SIGN (design §7): it is Excel's annuity form now, and
+' the old one did not negate. Paying 10000 in returns 16288.95, so the present
+' value is NEGATIVE and the answer positive -- the old call's `c` was positive
+' and its answer positive, which is the sign defect this migration fixes.
+c {USD}= "-10000.00"
+check("fv: 10000 at 5% for 10 years", finance.fv(0.05, 10, 0, c), "16288.95")
 
-pp {USD}= "1498.88"
-check("nper: rounds back to the term it came from", round(finance.nper(p, pp, 0.06 / 12), 2), 360)
+' The PAYMENT IS NEGATIVE now. The old nper took its absolute value, which
+' quietly accepted a sign combination the equation cannot balance; following
+' Excel strictly means a repayment leaves the borrower and says so.
+pp {USD}= "-1498.88"
+check("nper: rounds back to the term it came from", round(finance.nper(0.06 / 12, pp, p), 2), 360)
 
 ' A zero rate is its own case -- pow(1,n) is fine but the formula divides by r.
-check("pmt at a zero rate is just the principal split", finance.pmt(p, 0, 10), "-25000.00")
-check("pv at a zero rate is the payments added up", finance.pv(pay, 0, 10), "10000.00")
+check("pmt at a zero rate is just the principal split", finance.pmt(0, 10, p), "-25000.00")
+check("pv at a zero rate is the payments added up", finance.pv(0, 10, pay), "10000.00")
 
 ' ---------------------------------------------------------- appraisal
 a {USD}= "1000.00"
@@ -66,7 +73,7 @@ check("ddb: year 2 is 20% of what is left", finance.ddb(cost, sal, 10, 2), "8000
 ' throughout would end owing a few cents or having overpaid. The final payment
 ' is adjusted, which is what lenders do.
 loan {USD}= "1000.00"
-rows = finance.schedule(loan, 0.01, 12)
+rows = finance.schedule(0.01, 12, loan)
 check("the schedule has one row per period", count(rows), 12)
 
 zero {USD}= "0.00"
@@ -90,28 +97,71 @@ check("interest falls over the term", rows[0].interest > rows[11].interest, true
 check("principal rises over the term", rows[0].principal < rows[11].principal, true)
 check("the first interest charge is 1% of the loan", rows[0].interest, "10.00")
 
+' ------------------------------------------------ rate: the fifth solver
+' The DEFINING property, and one no reference can drift out from under: the
+' rate recovered from a payment must reproduce that payment. Checked as a
+' round trip rather than against a literal, so it cannot rot.
+recovered = finance.rate(360, pp, p)
+check("rate: recovers the rate pmt used", round(recovered * 12, 6), 0.06)
+check("rate: and round-trips back to the payment",
+      finance.pmt(recovered, 360, p), "-1498.88")
+
+' A zero rate is the case the equation divides by, so it gets its own check.
+flat {USD}= "-2500.00"
+flat_pv {USD}= "25000.00"
+' TOLERANCE, not equality, and the reason is worth stating: near r = 0 the
+' annuity factor (g-1)/r is catastrophic cancellation -- g is 1 + something
+' tiny, and subtracting 1 throws away most of the significant digits -- so the
+' residual goes noisy and bisection stalls around 1e-9 rather than reaching 0.
+' Asserting exact zero would be asserting something arithmetic cannot deliver.
+check("rate: a zero rate is found to within 1e-6",
+      abs(finance.rate(10, flat, flat_pv)) < 0.000001, true)
+
+' ------------------------------------------------- the optional tail
+' `timing` and `fv` are what a spreadsheet omits. Beginning-of-period payments
+' are smaller, because every payment gets one extra period of interest.
+at_end = finance.pmt(0.06 / 12, 360, p)
+at_begin = finance.pmt(0.06 / 12, 360, p, 0, "begin")
+check("timing: a begin-of-period payment is smaller", at_begin > at_end, true)
+check("timing: by exactly one period of interest",
+      round(number(string(at_begin)) * (1 + 0.06 / 12), 2),
+      round(number(string(at_end)), 2))
+
+' A balloon balance reduces the payment: less principal is amortized.
+balloon {USD}= "-50000.00"
+with_balloon = finance.pmt(0.06 / 12, 360, p, balloon)
+check("fv: a balloon balance lowers the payment", with_balloon > at_end, true)
+
+' Omitting the tail must equal supplying its defaults.
+check("omitting the tail equals supplying the defaults",
+      finance.pmt(0.06 / 12, 360, p, 0, "end"), at_end)
+
 ' ---------------------------------------------------------- refusals
 on error goto next
 
-x = finance.pmt(250000, 0.005, 360)
-check("a bare number is not a principal", error.message, "finance.pmt expects the principal as money")
+x = finance.pmt(0.005, 360, 250000)
+check("a bare number is not a principal", error.message, "finance.pmt needs at least one amount as money")
 error.clear()
 
-x = finance.pmt(p, "0.005", 360)
+x = finance.pmt("0.005", 360, p)
 check("a rate must be a number", error.message, "finance.pmt expects the period rate as a number (0.05 is 5%)")
 error.clear()
 
-x = finance.pmt(p, 0.005, 0)
+x = finance.pmt(0.005, 0, p)
 check("zero periods is refused", error.message, "finance.pmt expects a whole number of periods, 1 or more")
 error.clear()
 
-x = finance.pmt(p, 0.005, 12.5)
+x = finance.pmt(0.005, 12.5, p)
 check("a fractional term is refused", error.message, "finance.pmt expects a whole number of periods, 1 or more")
 error.clear()
 
-tiny {USD}= "1.00"
-x = finance.nper(p, tiny, 0.06 / 12)
-check("a payment that never repays is refused", error.message, "finance.nper: the payment never repays the principal at that rate")
+' A payment too small to cover the interest never repays. Negative, because
+' the payment leaves the borrower -- a POSITIVE one would mean money arriving
+' from both directions, which is a different mistake and is caught by the
+' balance check rather than this one.
+tiny {USD}= "-1.00"
+x = finance.nper(0.06 / 12, tiny, p)
+check("a payment that never repays is refused", error.message, "finance.nper: the payment never repays the present value at that rate")
 error.clear()
 
 ' A single flow CAN break even, at a negative rate -- 1000 against 2486.85 is

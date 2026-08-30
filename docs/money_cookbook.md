@@ -470,7 +470,7 @@ program main(args)
   principal {USD}= "250000.00"
   monthly = 0.06 / 12
 
-  payment = finance.pmt(principal, monthly, 360)
+  payment = finance.pmt(monthly, 360, principal)
   print "250,000 at 6% over 30 years"
   print "  monthly payment: " + string(payment)
 
@@ -482,13 +482,14 @@ program main(args)
   print ""
   rent {USD}= "-2500.00"
   print "a 5-year lease at 2,500/month, 6%/yr, is worth"
-  print "  " + string(finance.pv(rent, monthly, 60)) + " today"
+  print "  " + string(finance.pv(monthly, 60, rent)) + " today"
 
   ' How long would a given payment take?
   print ""
-  pay {USD}= "2000.00"
+  ' Negative: the payment leaves you. Excel's convention throughout.
+  pay {USD}= "-2000.00"
   print "paying 2,000/month instead clears it in "
-  print "  " + string(round(finance.nper(principal, pay, monthly), 1)) + " months"
+  print "  " + string(round(finance.nper(monthly, pay, principal), 1)) + " months"
 end program
 ```
 
@@ -511,9 +512,19 @@ Rates are **per period**, not per year: a 6% annual loan paid monthly is
 differ by product and jurisdiction, and a library that guessed would be wrong
 somewhere without telling you.
 
+**Argument order is Excel's** — rate, then periods, then the amount — for the
+same reason: `finance.pmt(0.06 / 12, 360, principal)` is `PMT(6%/12, 360,
+250000)`, and every worked example you already own is written that way.
+
 Sign follows the spreadsheet convention (money you pay is negative), because
 that is what you will check the answer against. `finance.pmt` of 250,000 at
-0.5%/month over 360 periods is `-1498.88` in Excel and LibreOffice too.
+0.5%/month over 360 periods is `-1498.88` in Excel and LibreOffice too. Note
+the payment passed to `finance.nper` above is negative for the same reason —
+it leaves you.
+
+Each of the five takes an optional tail you can ignore until you need it:
+`fv` for a balloon balance still owed at the end, and `timing` of `"end"` (the
+default) or `"begin"` for payments at the start of each period.
 
 ---
 
@@ -536,7 +547,7 @@ program main(args)
   load finance
 
   loan {USD}= "10000.00"
-  rows = finance.schedule(loan, 0.005, 12)
+  rows = finance.schedule(0.005, 12, loan)
 
   print "period   payment  interest principal   balance"
   for each r in rows

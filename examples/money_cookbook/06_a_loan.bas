@@ -11,7 +11,7 @@ program main(args)
   principal {USD}= "250000.00"
   monthly = 0.06 / 12
 
-  payment = finance.pmt(principal, monthly, 360)
+  payment = finance.pmt(monthly, 360, principal)
   print "250,000 at 6% over 30 years"
   print "  monthly payment: " + string(payment)
 
@@ -23,11 +23,12 @@ program main(args)
   print ""
   rent {USD}= "-2500.00"
   print "a 5-year lease at 2,500/month, 6%/yr, is worth"
-  print "  " + string(finance.pv(rent, monthly, 60)) + " today"
+  print "  " + string(finance.pv(monthly, 60, rent)) + " today"
 
   ' How long would a given payment take?
   print ""
-  pay {USD}= "2000.00"
+  ' Negative: the payment leaves you. Excel's convention throughout.
+  pay {USD}= "-2000.00"
   print "paying 2,000/month instead clears it in "
-  print "  " + string(round(finance.nper(principal, pay, monthly), 1)) + " months"
+  print "  " + string(round(finance.nper(monthly, pay, principal), 1)) + " months"
 end program

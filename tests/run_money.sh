@@ -308,13 +308,17 @@ do
 done
 
 printf 'TIER the time value of money (phase 4)\n'
-GBASIC_PATH=stdlib run_fixture tests/finance_test.bas 28 'finance'
+GBASIC_PATH=stdlib run_fixture tests/finance_test.bas 35 'finance'
 
 # Expected values are EXTERNAL: a spreadsheet's answer for the same inputs
 # (PMT 250,000 at 0.5%/month over 360 is -1498.88 in Excel and LibreOffice) or
 # computed in Python. A TVM function wrong in the second decimal returns a
 # number a finance person would act on.
 for label in \
+    'rate: recovers the rate pmt used' \
+    'rate: and round-trips back to the payment' \
+    'timing: by exactly one period of interest' \
+    'omitting the tail equals supplying the defaults' \
     'pmt: a 250k mortgage at 6%/yr over 30 years' \
     'pv: 1000/month for 30 years at 6%/yr' \
     'fv: 10000 at 5% for 10 years' \

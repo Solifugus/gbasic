@@ -38,11 +38,14 @@ Three properties are already right and this design does not disturb them.
 |---|---|---|
 | `pmt` 250 000 at 0.05/12 over 360 | `-1342.05` | `-1342.05` |
 | `pv` of 100 for 10 at 0.05 | `-772.17` | `-772.17` |
-| `fv` of 1000 for 10 at 0.05 | `1628.89` | `1628.89` |
+| `fv` of 1000 for 10 at 0.05 | `1628.89` | `-1628.89` — magnitude agrees, **sign does not**; see §7 |
 
 **The sign convention is already Excel's** — money received is positive, money
 paid is negative — and it is stated in the library's own header. A borrower's
-`pmt` is negative because the payment leaves them.
+`pmt` is negative because the payment leaves them. **`fv` is the exception**,
+and nobody had noticed: it returns `amount * (1+r)^n` unnegated, so it alone
+contradicts the header it sits under. §7 covers what that means for the
+migration.
 
 **Amounts are money and rates are numbers**, enforced rather than documented:
 `finance.pmt` *raises* when handed a plain number for the principal. Rates are
@@ -232,21 +235,39 @@ in `lending.loan({...})` it plainly is.
 
 ### Time value
 
-| Call | Notes |
-|---|---|
-| `finance.pmt(rate, nper, pv)` | payment per period |
-| `finance.pv(rate, nper, pmt)` | present value of a payment stream |
-| `finance.fv(rate, nper, pmt, pv)` | **shape change**, see below |
-| `finance.nper(rate, pmt, pv)` | periods; number, usually fractional |
-| `finance.rate(nper, pmt, pv)` | **new** — the fifth solver |
-| optional tail | `fv = 0`, `timing = "end"` where the equation admits them |
+Exact signatures. The trailing two are what a spreadsheet omits, and they
+carry the values a spreadsheet assumes:
 
-**`fv` changes shape, not just order.** Today `fv(amount, r, n)` is the future
-value of a *lump sum*. Excel's `FV(rate, nper, pmt, [pv], [type])` is an
-annuity plus an optional lump sum. The Excel shape is adopted, so today's
-`fv(c, 0.05, 10)` becomes `fv(0.05, 10, 0, c)`. This is the only function whose
-*meaning* moves, and it is called out separately because a reordering
-migration would otherwise miss it.
+```
+finance.pmt (rate, nper, pv,   fv = 0, timing = "end")   -> money
+finance.pv  (rate, nper, pmt,  fv = 0, timing = "end")   -> money
+finance.fv  (rate, nper, pmt,  pv = 0, timing = "end")   -> money
+finance.nper(rate, pmt,  pv,   fv = 0, timing = "end")   -> number
+finance.rate(nper, pmt,  pv,   fv = 0, timing = "end")   -> number
+```
+
+`timing` is `"end"` (payments at period end, Excel's type 0) or `"begin"`
+(type 1). Any other value raises rather than being treated as one of them.
+
+**`fv` changes shape AND sign, and this was found by implementing it rather
+than by reading.** Today `fv(amount, r, n)` is the future value of a *lump
+sum*, computed as `amount * (1+r)^n` with **no negation** — so it is the one
+function in the library that does *not* follow the spreadsheet sign convention
+the header claims, and §1's "the values agree with Excel" is true of `pmt` and
+`pv` but only of `fv`'s magnitude.
+
+Excel's `FV(rate, nper, pmt, [pv], [type])` is an annuity plus an optional
+lump sum, and it negates like everything else: `FV(0.05, 10, 0, -1000)` is
+`1628.89` — you pay a thousand now to receive that later. So the migration is
+
+```
+fv(c, 0.05, 10)        ->   fv(0.05, 10, 0, c * -1)
+```
+
+and dropping the `* -1` gives a correct-looking number with the wrong sign.
+This is why §8's "keep the expected values unchanged" rule has exactly one
+exception, and why `fv` is called out separately: a reorder-only migration
+would miss both halves.
 
 **`rate` is the gap.** Four of the five solvers exist; `rate` does not. It is
 the reason Phase 1 exists at all, and it must report convergence rather than

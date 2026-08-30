@@ -12,7 +12,7 @@ program main(args)
   load finance
 
   loan {USD}= "10000.00"
-  rows = finance.schedule(loan, 0.005, 12)
+  rows = finance.schedule(0.005, 12, loan)
 
   print "period   payment  interest principal   balance"
   for each r in rows

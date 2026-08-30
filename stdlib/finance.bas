@@ -50,74 +50,187 @@ library finance
 
     ' --- the five time-value quantities ------------------------------------
     '
-    ' Each solves the same equation for a different unknown:
+    ' Each solves the SAME equation for a different unknown (design §3):
     '
-    '     pv * (1+r)^n  +  pmt * ((1+r)^n - 1) / r  +  fv  =  0
+    '     pv * (1+r)^n  +  pmt * ((1+r)^n - 1)/r * (1 + r*t)  +  fv  =  0
     '
-    ' SIGN CONVENTION follows the spreadsheet one, because that is what a
-    ' finance person will check the answer against: money you RECEIVE is
-    ' positive and money you PAY is negative. Borrowing 250,000 and repaying
-    ' it means a positive pv and a negative pmt.
+    ' where t is 0 for payments at the END of each period and 1 for the
+    ' BEGINNING. The r = 0 case is computed exactly rather than left to a limit.
+    '
+    ' ARGUMENT ORDER IS EXCEL'S (design §2): rate first, then periods, then the
+    ' amount. The people who check these answers check them in a spreadsheet,
+    ' and every reference example they own is written that way. The values and
+    ' signs already agreed with Excel before the order did.
+    '
+    ' SIGN CONVENTION follows the spreadsheet one: money you RECEIVE is
+    ' positive and money you PAY is negative. Borrowing 250,000 and repaying it
+    ' means a positive pv and a negative pmt.
 
-    ' The payment per period that repays `principal` over `n` periods at `r`.
-    function pmt(principal, r, n)
-        _check_rate(r, "finance.pmt")
-        _check_periods(n, "finance.pmt")
-        if type(principal) != "money" then
-            error "finance.pmt expects the principal as money"
+    function _check_timing(t, who)
+        if type(t) != "string" or (t != "end" and t != "begin") then
+            error who + " expects timing of \"end\" or \"begin\""
         end if
+        return nothing
+    end function
+
+    ' 1 when payments fall at the START of the period, else 0.
+    function _timing_flag(t)
+        if t = "begin" then
+            return 1
+        end if
+        return 0
+    end function
+
+    ' The annuity factor ((1+r)^n - 1)/r, adjusted for timing. At r = 0 the
+    ' factor is exactly n -- taking the limit rather than dividing by zero.
+    function _annuity_factor(r, n, t)
         if r = 0 then
-            return (principal / n) * -1
+            return n
         end if
-        g = _growth(r, n)
-        ' principal * r * g / (g - 1), negated: a repayment leaves the borrower
-        return ((principal * (r * g)) / (g - 1)) * -1
+        return ((_growth(r, n) - 1) / r) * (1 + r * _timing_flag(t))
     end function
 
-    ' What a stream of `n` payments of `pmt_amount` is worth today at `r`.
-    function pv(pmt_amount, r, n)
-        _check_rate(r, "finance.pv")
-        _check_periods(n, "finance.pv")
-        if type(pmt_amount) != "money" then
-            error "finance.pv expects the payment as money"
-        end if
-        if r = 0 then
-            return (pmt_amount * n) * -1
-        end if
-        g = _growth(r, n)
-        return ((pmt_amount * ((g - 1) / r)) / g) * -1
+    ' Every solver takes the same trailing pair, so a caller who does not care
+    ' about a balloon balance or beginning-of-period payments writes neither.
+    function _check_tvm(r, n, timing, who)
+        _check_rate(r, who)
+        _check_periods(n, who)
+        _check_timing(timing, who)
+        return nothing
     end function
 
-    ' What `amount` today is worth after `n` periods at `r`.
-    function fv(amount, r, n)
-        _check_rate(r, "finance.fv")
-        _check_periods(n, "finance.fv")
-        if type(amount) != "money" then
-            error "finance.fv expects an amount as money"
-        end if
-        return amount * _growth(r, n)
+    ' The payment per period. `pv` is what you receive now, `fv` what is still
+    ' owed (or wanted) at the end.
+    function pmt(rate, nper, pv, fv = 0, timing = "end")
+        _check_tvm(rate, nper, timing, "finance.pmt")
+        amounts = _pair(pv, fv, "finance.pmt")
+        present = amounts[0]
+        balloon = amounts[1]
+        af = _annuity_factor(rate, nper, timing)
+        return ((present * _growth(rate, nper) + balloon) / af) * -1
     end function
 
-    ' How many periods of `payment` clear `principal` at `r`. Returns a number,
-    ' which is usually fractional -- the last payment is smaller.
-    function nper(principal, payment, r)
-        _check_rate(r, "finance.nper")
-        if type(principal) != "money" or type(payment) != "money" then
-            error "finance.nper expects money for the principal and the payment"
-        end if
-        p = number(string(principal))
-        a = abs(number(string(payment)))
-        if a <= 0 then
+    ' What a stream of `pmt` payments (plus any `fv`) is worth today.
+    function pv(rate, nper, pmt, fv = 0, timing = "end")
+        _check_tvm(rate, nper, timing, "finance.pv")
+        amounts = _pair(pmt, fv, "finance.pv")
+        payment = amounts[0]
+        balloon = amounts[1]
+        af = _annuity_factor(rate, nper, timing)
+        return ((payment * af + balloon) / _growth(rate, nper)) * -1
+    end function
+
+    ' What `pv` today plus `pmt` per period is worth after `nper` periods.
+    '
+    ' NOTE THE SHAPE CHANGED (design §7). This used to be the future value of a
+    ' LUMP SUM -- fv(amount, r, n). It is now Excel's annuity form, so the old
+    ' fv(c, 0.05, 10) is written fv(0.05, 10, 0, c).
+    function fv(rate, nper, pmt, pv = 0, timing = "end")
+        _check_tvm(rate, nper, timing, "finance.fv")
+        amounts = _pair(pmt, pv, "finance.fv")
+        payment = amounts[0]
+        present = amounts[1]
+        af = _annuity_factor(rate, nper, timing)
+        return ((present * _growth(rate, nper) + payment * af) * -1)
+    end function
+
+    ' How many periods are needed. Returns a number, usually fractional -- the
+    ' last payment is smaller than the rest.
+    function nper(rate, pmt, pv, fv = 0, timing = "end")
+        _check_rate(rate, "finance.nper")
+        _check_timing(timing, "finance.nper")
+        amounts = _pair(pmt, pv, "finance.nper")
+        balloon = _pair(amounts[1], fv, "finance.nper")[1]
+        a = number(string(amounts[0]))
+        p = number(string(amounts[1]))
+        f = number(string(balloon))
+        if a = 0 then
             error "finance.nper needs a non-zero payment"
         end if
+        if rate = 0 then
+            return (0 - (p + f)) / a
+        end if
+        k = (1 + rate * _timing_flag(timing)) / rate
+        denom = p + a * k
+        numer = a * k - f
+        if denom = 0 or (numer / denom) <= 0 then
+            error "finance.nper: the payment never repays the present value at that rate"
+        end if
+        return log(numer / denom) / log(1 + rate)
+    end function
+
+    ' The rate per period that makes the equation balance -- the fifth solver,
+    ' and the one that did not exist before.
+    '
+    ' BISECTION, NOT NEWTON, for the reason `irr` gives: it cannot diverge, and
+    ' a wrong rate is a plausible-looking percentage someone would act on. Works
+    ' in plain numbers because the search visits rates near -100% where a
+    ' discount factor is about 1e-12 and dividing money by it overflows the
+    ' type; a rate is a ratio anyway.
+    function rate(nper, pmt, pv, fv = 0, timing = "end")
+        _check_periods(nper, "finance.rate")
+        _check_timing(timing, "finance.rate")
+        amounts = _pair(pmt, pv, "finance.rate")
+        balloon = _pair(amounts[1], fv, "finance.rate")[1]
+        a = number(string(amounts[0]))
+        p = number(string(amounts[1]))
+        f = number(string(balloon))
+        t = _timing_flag(timing)
+
+        lo = -0.999999
+        hi = 10.0
+        f_lo = _tvm_residual(lo, nper, a, p, f, t)
+        f_hi = _tvm_residual(hi, nper, a, p, f, t)
+        if f_lo * f_hi > 0 then
+            error "finance.rate: no rate between -100% and 1000% balances these terms"
+        end if
+        i = 0
+        while i < 200
+            mid = (lo + hi) / 2
+            f_mid = _tvm_residual(mid, nper, a, p, f, t)
+            if f_lo * f_mid <= 0 then
+                hi = mid
+            else
+                lo = mid
+                f_lo = f_mid
+            end if
+            i += 1
+        end while
+        return (lo + hi) / 2
+    end function
+
+    ' The equation's left-hand side in plain numbers, for the rate search.
+    function _tvm_residual(r, n, a, p, f, t)
         if r = 0 then
-            return p / a
+            return p + a * n + f
         end if
-        if a <= p * r then
-            ' The payment never covers the interest, so the balance grows.
-            error "finance.nper: the payment never repays the principal at that rate"
+        g = pow(1 + r, n)
+        return p * g + a * ((g - 1) / r) * (1 + r * t) + f
+    end function
+
+    ' The two amount arguments of a TVM call, with a bare 0 allowed for either.
+    '
+    ' Money has no literal form and a currency cannot be guessed, so `0` is read
+    ' as "zero in the same currency as the OTHER amount" -- the only reading
+    ' that cannot invent one. At least one of the pair must be real money.
+    ' Excel writes the lump-sum case as FV(0.05, 10, 0, -1000) and this is what
+    ' lets the same thing be written here.
+    function _pair(x, y, who)
+        xm = (type(x) = "money")
+        ym = (type(y) = "money")
+        if xm and ym then
+            return [x, y]
         end if
-        return log(a / (a - p * r)) / log(1 + r)
+        if xm and type(y) = "number" and y = 0 then
+            return [x, x * 0]
+        end if
+        if ym and type(x) = "number" and x = 0 then
+            return [y * 0, y]
+        end if
+        if not xm and not ym then
+            error who + " needs at least one amount as money"
+        end if
+        error who + " expects money, or 0, for each amount"
     end function
 
     ' --- project appraisal --------------------------------------------------
@@ -217,13 +330,16 @@ library finance
     ' third of a cent -- and those roundings accumulate, so a schedule that
     ' used the same figure throughout would end owing a few cents or having
     ' overpaid. Lenders do the same thing.
-    function schedule(principal, r, n)
-        _check_rate(r, "finance.schedule")
-        _check_periods(n, "finance.schedule")
-        if type(principal) != "money" then
-            error "finance.schedule expects the principal as money"
+    function schedule(rate, nper, pv)
+        _check_rate(rate, "finance.schedule")
+        _check_periods(nper, "finance.schedule")
+        if type(pv) != "money" then
+            error "finance.schedule expects the present value as money"
         end if
-        payment = pmt(principal, r, n) * -1
+        principal = pv
+        r = rate
+        n = nper
+        payment = pmt(rate, nper, pv) * -1
         rows = []
         balance = principal
         i = 1

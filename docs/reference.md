@@ -4558,14 +4558,20 @@ General-purpose:
   saying so. Sign follows the spreadsheet convention — money received is
   positive, money paid is negative — because that is what the answer will be
   checked against.
-  `finance.pmt(principal, rate, periods)` is the payment that repays a loan,
-  `finance.pv(payment, rate, periods)` what a stream is worth today,
-  `finance.fv(amount, rate, periods)` what an amount grows to, and
-  `finance.nper(principal, payment, rate)` how many periods clear it.
+  **Argument order is Excel's** (`docs/finance_design.md` §2), because the
+  answers get checked in a spreadsheet: `finance.pmt(rate, nper, pv)` is the
+  payment that repays a loan, `finance.pv(rate, nper, pmt)` what a stream is
+  worth today, `finance.fv(rate, nper, pmt, pv)` what it grows to,
+  `finance.nper(rate, pmt, pv)` how many periods clear it, and
+  `finance.rate(nper, pmt, pv)` the rate that balances them. Each takes an
+  optional tail — `fv = 0` for a balloon balance and `timing = "end"` or
+  `"begin"` — and either amount may be written as a bare `0`, taking its
+  currency from the other, so a lump sum is `finance.fv(0.05, 10, 0, cost)`
+  exactly as a spreadsheet writes it.
   `finance.npv(rate, flows)` discounts an array of money one period apart, and
   `finance.irr(outlay, flows)` finds the rate that breaks even — by bisection,
   which cannot diverge, because a wrong IRR is a plausible percentage someone
-  would act on. `finance.schedule(principal, rate, periods)` returns one record
+  would act on. `finance.schedule(rate, nper, pv)` returns one record
   per period (`period`, `payment`, `interest`, `principal`, `balance`) whose
   **final payment is adjusted so the balance lands exactly on zero**: every
   payment is whole minor units, those roundings accumulate, and a schedule
