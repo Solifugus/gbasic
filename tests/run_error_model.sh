@@ -35,6 +35,7 @@ positive=(
     trace
     resume_ident
     clear
+    arg_raise
 )
 
 for name in "${positive[@]}"; do

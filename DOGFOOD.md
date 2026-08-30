@@ -3598,8 +3598,79 @@ from this and neither is silent:
 - **Workaround:** evaluate a fallible argument into a variable on its own line
   and check `error` before the call. Do not rely on a raise in an argument
   stopping the call.
-- **NOT investigated:** whether this is specific to argument position or is the
-  general shape of statement abandonment; whether a builtin callee behaves the
-  same as a gBASIC one; and whether the short-circuit-to-`nothing` rule is
-  deliberate elsewhere. Reported rather than fixed — the fix is an evaluator
-  change to the PLAT-ERR machinery and wants a decision, not a patch.
+- **FIXED same day** (Matthew said fix it), and the open questions answered
+  first, because they decided the shape of the fix:
+  - It was **specific to user-defined callees.** A BUILTIN callee abandoned
+    correctly, and so did a binary operand — every other argument-evaluation
+    loop in `src/eval.c` already checked `error_action_pending()` (the spawn
+    path, the crypto helpers, the bitwise helpers, each module's dispatch).
+    `eval_user_function_with_receiver` was the sole outlier, so the fix is the
+    same check those already use, in the one loop that lacked it. Function
+    VALUES share that path — confirmed by disabling the guard and watching the
+    function-value form run its body too, rather than assumed.
+  - Arguments **left of** the raise are still evaluated. Abandonment stops AT
+    the failure; the argument list does not become atomic. Pinned as its own
+    line in the fixture, because a reader would otherwise assume either way.
+- **The lesson worth keeping is about the TEST, not the fix.** The fixture
+  prints `ok` or `WRONG` so a regression names itself — and that device is
+  half-defeated by this very bug, since a body running with an error pending
+  has its own `print` poisoned: a WRONG marker built by concatenation comes out
+  as the bare word `nothing`. Verified against a guard-disabled binary: the
+  nested case, whose marker is a plain literal, printed WRONG, while the two
+  built by concatenation printed `nothing`. So the golden diff is the real
+  detector here and the markers are the readable half. `tests/error_model/
+  arg_raise.bas`, wired into run_error_model.sh, red-proofed, valgrind clean.
+
+## 2026-08-29 — a call to a function that does not exist is a *runtime* error, and `on error goto next` swallows it
+
+Found while writing Transward's licence issuer. I wrote `random_hex(8)`,
+remembering it from the reference — it is `crypto.random_hex`, a stdlib library
+function, not a builtin. The program parsed, `--ast` was clean, and it failed at
+runtime six lines later with:
+
+```
+runtime error at issue.bas:89:5: undefined variable: payload
+```
+
+The real failure was on line 82. `on error goto next` was in force for the
+surrounding I/O, the failing call raised `invalid function call: random_hex`,
+the assignment was abandoned, and the next statement to touch `payload` reported
+the *symptom*. Reduced:
+
+```basic
+program main(args)
+    on error goto next
+    x = no_such_function(1)
+    if error then print("caught: " + error.message)   ' invalid function call
+    print("x is " + string(x))                        ' undefined variable: x
+end program
+```
+
+**Why this one is worth a change rather than a note.** Every other thing
+`on error goto next` catches is a condition the *world* produced: a file that
+is not there, a socket that refused, a blob that did not authenticate. A call
+to a name that does not exist is not a condition; it is a defect in the source
+text, and it is knowable without running anything. Lumping it in with
+recoverable errors means the construct written to make a program robust against
+its environment is also, silently, what hides its typos — and the more careful
+the code is about error handling, the further the symptom lands from the cause.
+
+The suggestion, in preference order:
+
+1. **A static check.** The interpreter already resolves names to report this at
+   all; doing it at load time over the whole program would turn every one of
+   these into a diagnostic with the right line number. `--add-loads` shows the
+   analysis pass already exists — this could be `--check-calls`, or simply part
+   of `--ast`. That also catches the *other* half of this trap, which is worse:
+   a qualified call to a library function that was renamed still parses.
+2. **Failing that, make it uncatchable** — raise it as a defect that
+   `on error goto next` does not intercept, the way a syntax error is not
+   interceptable. A program cannot meaningfully recover from a name that does
+   not exist, so nothing legitimate is lost.
+
+Option 1 is the one that pays: it moves the whole class from "found at runtime,
+possibly in the branch that only runs on a Sunday" to "found by `--ast`".
+
+**Workaround applied:** `hex_encode(random_bytes(6))`, which is builtins only.
+No comment naming the constraint, because the fixed code is what I should have
+written anyway — the constraint is on the diagnostic, not on the program.

@@ -9090,8 +9090,40 @@ static Value eval_user_function_with_receiver(AstExpr *expr,
             abort();
         }
     }
+    /* An argument that raised means the call does not happen.
+     *
+     * docs/error_model_design.md §2.1 says a raise under `on error goto next`
+     * ABANDONS the raising statement, and §2 that "the call that was in flight
+     * is abandoned". This loop did neither: it evaluated the remaining
+     * arguments and then ran the body, so a function executed on arguments
+     * that never successfully evaluated. Every other argument-evaluation loop
+     * in this file already checks -- the spawn path, the crypto helpers, the
+     * bitwise helpers, and each module's own dispatch -- so a builtin callee
+     * behaved correctly and a gBASIC one did not.
+     *
+     * How it surfaced is worse than the rule. With an error pending, calls
+     * inside the body short-circuit to `nothing` while literals evaluate
+     * normally, so `print "a=" + string(a)` emitted the bare word `nothing` to
+     * STDOUT -- a phantom line no `print` in the program asked for, stderr
+     * empty, exit 0. It also defeated the obvious defence, since an
+     * `error.clear()` at the top of the body is itself a call and
+     * short-circuited too. */
+    size_t evaluated = 0;
+    int arg_error = 0;
     for (size_t i = 0; i < expr->as.call.args.count; i++) {
         args[i] = eval_expr(expr->as.call.args.items[i]);
+        evaluated++;
+        if (error_action_pending() || runtime_stopped) {
+            arg_error = 1;
+            break;
+        }
+    }
+    if (arg_error) {
+        for (size_t i = 0; i < evaluated; i++) {
+            value_free(args[i]);
+        }
+        free(args);
+        return value_null();
     }
 
     return invoke_function(stmt, args, expr->as.call.args.count, receiver);

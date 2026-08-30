@@ -1,0 +1,10 @@
+ok   bare call: abandoned, and the raise is catchable
+     message: join_path expects two path arguments
+ok   assignment: abandoned
+ok   and the assignment target was left untouched
+ok   nested: abandoned
+     evaluated first
+ok   an argument before the failure still evaluated
+ok   through a function value: abandoned
+ok   a healthy call still runs, a=x b=a/b
+ok   and returned ret
