@@ -110,7 +110,8 @@ document list, with a status column, is `docs/README.md`.
   `sourceeditor` (GTK 4 over `gi`), `filetree`, `persist` (crash-safe versioned
   storage), `dates`/`schedule` (business calendars, appointment slots), `ari`
   (anchor-relative report parsing), `matrix`, `crypto` (JWT, CSRF, signed
-  cookies), and the GTK 3 `gui` proof of concept.
+  cookies), `mail` (RFC 5322 composition, for the native SMTP transport), and
+  the GTK 3 `gui` proof of concept.
 
 Loadable names are exactly the filenames in `stdlib/`; `tests/run_docs_gate.sh`
 checks this list against that directory, because it previously named two
@@ -123,6 +124,7 @@ libraries that do not exist (`sourceview`, `text`) and omitted four that do.
 - libpq enables `load pg`.
 - unixODBC (or iODBC) enables `load odbc`; the database driver itself is the
   operator's to install.
+- libcurl enables `load webclient` and `load smtp`.
 - libcurl enables `load webclient` (and the EDGAR/LLM network paths).
 - libxml2 enables `load xml`.
 - libcrypto enables the cryptographic builtins.

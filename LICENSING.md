@@ -29,10 +29,10 @@ suit you — contact matthewct@gmail.com.
 - The interpreter: `src/`, `include/`, `tools/`, `tests/`, `examples/`
 - **Every C module compiled into the binary**, including `src/modules/xlsx.c`
   (the ZIP container, formula evaluator and recalculation engine),
-  `src/modules/xml.c` and `src/modules/rowmodel.c`
+  `src/modules/xml.c`, `src/modules/smtp.c` and `src/modules/rowmodel.c`
 - `stdlib/`: `ari` `chart` `crypto` `datagrid` `dates` `filetree` `finance`
-  `frame` `gtk` `gtkui` `gui` `llm` `market` `matrix` `persist` `schedule`
-  `sourceeditor` `stats` `web`
+  `frame` `gtk` `gtkui` `gui` `llm` `mail` `market` `matrix` `persist`
+  `schedule` `sourceeditor` `stats` `web`
 
 ### AGPL-3.0-or-later
 

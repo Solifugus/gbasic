@@ -1,0 +1,42 @@
+envelope-from: noreply@example.com
+envelope-rcpt: a@example.com, b@example.com, c@example.com, hidden@example.com
+---
+From: =?utf-8?B?U3lzdMOobWU=?= <noreply@example.com>
+To: a@example.com, Bee <b@example.com>
+Cc: c@example.com
+Reply-To: support@example.com
+Subject: =?utf-8?B?UmFwcG9ydCBxdW90aWRpZW4g4oCUIOaXpeacrOiqng==?=
+Date: Sun, 01 Mar 2026 09:30:00 +0000
+Message-ID: <MESSAGEID@example.com>
+MIME-Version: 1.0
+X-Run-Id: run-91
+Content-Type: multipart/mixed; boundary="BOUNDARY"
+
+--BOUNDARY
+Content-Type: multipart/alternative; boundary="BOUNDARY"
+
+--BOUNDARY
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 7bit
+
+Bonjour,
+
+Ci-joint le rapport.
+
+--BOUNDARY
+Content-Type: text/html; charset="utf-8"
+Content-Transfer-Encoding: 7bit
+
+<p>Bonjour</p>
+
+--BOUNDARY--
+
+--BOUNDARY
+Content-Type: text/csv; name="report.csv"
+Content-Transfer-Encoding: base64
+Content-Disposition: attachment; filename="report.csv"
+
+YSxiCjEsMgo=
+
+--BOUNDARY--
+

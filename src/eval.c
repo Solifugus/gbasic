@@ -690,6 +690,8 @@ static int pg_library_loaded = 0;
 static int sqlite_library_loaded = 0;
 static int odbc_library_loaded = 0;
 static int webclient_library_loaded = 0;
+static int smtp_library_loaded = 0;
+#define SMTP_ERROR_CODE 3101
 static int webclient_curl_initialized = 0;
 static int webserver_library_loaded = 0;
 static int xml_library_loaded = 0;
@@ -6414,6 +6416,44 @@ static Value datetime_field_value(DateTime dt, const char *name) {
 static Value zone_eval_call(AstExpr *expr) {
     const char *name = expr->as.call.name;
     char message[192];
+    /* `zone_offset(dt)` -- the SYSTEM's offset for that wall-clock time. A
+     * datetime carries no zone, so without this a program can read the wall
+     * clock and has no way to say what it is offset from: an RFC 5322 Date,
+     * an ISO 8601 offset and a zone-stamped log line are all unwritable. The
+     * two-argument form answers "what if this were in that zone"; naming the
+     * local zone is exactly the thing the caller cannot do. */
+    if (strcmp(name, "zone_offset") == 0 && expr->as.call.args.count == 1) {
+        Value dv = eval_expr(expr->as.call.args.items[0]);
+        if (error_action_pending()) {
+            value_free(dv);
+            return value_null();
+        }
+        if (dv.kind != VALUE_DATETIME) {
+            value_free(dv);
+            runtime_error_raise("zone_offset expects a datetime", 1003,
+                                "invalid argument type");
+            return value_null();
+        }
+        DateTime local_dt = dv.as.datetime;
+        value_free(dv);
+        if (local_dt.time_only || local_dt.precision < PREC_HOUR) {
+            runtime_error_raise("zone_offset requires a time of day (hour precision "
+                                "or finer); an all-day value has no instant",
+                                1003, "datetime");
+            return value_null();
+        }
+        struct tm tm;
+        zone_fill_tm(local_dt, &tm);
+        tm.tm_isdst = -1;
+        time_t instant = mktime(&tm);
+        if (instant == (time_t)-1) {
+            runtime_error_raise("zone_offset could not place that datetime on the timeline",
+                                1003, "datetime");
+            return value_null();
+        }
+        return value_duration(duration_from_totals(0,
+                              zone_timegm(local_dt) - (long long)instant));
+    }
     if (expr->as.call.args.count != 2) {
         snprintf(message, sizeof(message), "%s expects a datetime and a zone name", name);
         runtime_error_raise(message, 1003, "invalid function call");
@@ -7451,6 +7491,26 @@ static void library_import(const char *name, const char *path) {
         runtime_error_raise("WebClient support is not available in this build",
                             3001,
                             "webclient");
+#endif
+        return;
+    }
+
+    if (!path && strcmp(name, "smtp") == 0) {
+#if HAVE_LIBCURL
+        if (!webclient_curl_initialized) {
+            if (curl_global_init(CURL_GLOBAL_DEFAULT) != CURLE_OK) {
+                runtime_error_raise("could not initialize libcurl",
+                                    SMTP_ERROR_CODE,
+                                    "smtp");
+                return;
+            }
+            webclient_curl_initialized = 1;
+        }
+        smtp_library_loaded = 1;
+#else
+        runtime_error_raise("SMTP support is not available in this build",
+                            SMTP_ERROR_CODE,
+                            "smtp");
 #endif
         return;
     }
@@ -18799,6 +18859,10 @@ static Value pg_eval_call(AstExpr *expr) {
  * the static Value API above; guarded internally by HAVE_LIBXML2. */
 #include "modules/xml.c"
 
+/* SMTP module (mail_design.md). Same arrangement; guarded internally by
+ * HAVE_LIBCURL. Composition lives in stdlib/mail.bas -- this is the wire. */
+#include "modules/smtp.c"
+
 /* ===== Cryptography (docs/crypto_design.md) ===============================
  * Phase 1 (base64/hex encoding, random_bytes, constant-time bytes_equal) is
  * plain C and always available. Phases 2/4 (hashing, HMAC, AES-GCM, Ed25519)
@@ -24396,6 +24460,23 @@ static Value eval_call(AstExpr *expr) {
                 return value_null();
             }
             return webserver_eval_call(expr);
+        }
+
+        if (strcmp(expr->as.call.library, "smtp") == 0) {
+            if (!smtp_library_loaded) {
+                runtime_error_raise("library not loaded: smtp",
+                                    SMTP_ERROR_CODE,
+                                    "smtp");
+                return value_null();
+            }
+#if HAVE_LIBCURL
+            return smtp_eval_call(expr);
+#else
+            runtime_error_raise("SMTP support is not available in this build",
+                                SMTP_ERROR_CODE,
+                                "smtp");
+            return value_null();
+#endif
         }
 
         if (strcmp(expr->as.call.library, "webclient") == 0) {
@@ -31994,6 +32075,7 @@ int eval_program(AstStmtList program) {
     gui_library_loaded = 0;
     pg_library_loaded = 0;
     webclient_library_loaded = 0;
+    smtp_library_loaded = 0;
     webserver_library_loaded = 0;
     gi_library_loaded = 0;
     webserver_clear();

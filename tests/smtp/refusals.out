@@ -1,0 +1,22 @@
+-- injection
+refused  subject with a newline: mail.compose: subject contains a line break, which would let it write its own headers; remove it -- headers cannot span lines
+ACCEPTED subject without one (the control)
+refused  recipient with a newline: mail.compose: to contains a line break, which would let it write its own headers; remove it -- headers cannot span lines
+refused  from with a CRLF: mail.compose: from contains a line break, which would let it write its own headers; remove it -- headers cannot span lines
+refused  header value with a CRLF: mail.compose: header X-Note contains a line break, which would let it write its own headers; remove it -- headers cannot span lines
+ACCEPTED header value without one (the control)
+refused  attachment name with a newline: mail.compose: attachment name contains a line break, which would let it write its own headers; remove it -- headers cannot span lines
+-- headers
+refused  header name with a space: mail.compose: 'X Note' is not a valid header name -- letters, digits and '-' only
+refused  a header mail.compose writes itself: mail.compose: 'Subject' is written by mail.compose; supplying it would put the field in the message twice
+-- addresses
+refused  no from: mail.compose: from is required
+refused  no recipients: mail.compose: no recipients (to, cc and bcc are all empty)
+refused  an address with no @: mail.compose: to is not an address (no '@'): nobody
+refused  a space inside the address: mail.compose: to has a space inside the address: b b@example.com
+refused  an unclosed angle bracket: mail.compose: to has '<' without a closing '>': Bee <b@example.com
+ACCEPTED a closed one (the control)
+-- shape
+refused  a misspelled field: mail.compose: unknown field 'bodyy'; expected one of from, to, cc, bcc, reply_to, subject, body, html, attachments, headers, date
+refused  an attachment with no content: mail.compose: each attachment needs a name and content
+ACCEPTED an attachment with one (the control)

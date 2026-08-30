@@ -94,6 +94,7 @@ records, and no module system beyond `load`.
 | **PostgreSQL** | Shipped | libpq | [reference](docs/reference.md#postgresql-module) |
 | **ODBC** — SQL Server, MySQL, Oracle, DB2, … | Shipped | unixODBC | [cookbook](docs/odbc_cookbook.md) · [reference](docs/reference.md#odbc-module) |
 | **WebClient** — synchronous HTTP/HTTPS | Shipped | libcurl | [reference](docs/reference.md#webclient-module) |
+| **Mail** — RFC 5322 composition, SMTP with TLS and auth | Shipped | libcurl | [design](docs/mail_design.md) |
 | **WebServer** — TLS, routing, static files, streaming, worker pool | Shipped | libssl for TLS | [reference](docs/reference.md#webserver-module) |
 | **XML** — tree, lenient HTML, constant-memory streaming | Shipped | libxml2 | [reference](docs/reference.md#xml-module) |
 | **xlsx** — reads, edits and recalculates real workbooks | Shipped | zlib + libxml2 | [cookbook](docs/xlsx_cookbook.md) |
@@ -155,7 +156,7 @@ Twenty-eight pure-gBASIC libraries in `stdlib/`. The larger ones:
   widget-tree reconciler, a virtualized data grid, and a syntax-highlighting
   editor, all over `gi`. [Tutorial](docs/gui_tutorial.md)
 - **odds and ends** — `web` (routing), `frame` (data frames), `matrix`,
-  `persist` (crash-safe versioned storage), `filetree`, `crypto`, `llm`,
+  `persist` (crash-safe versioned storage), `filetree`, `crypto`, `mail`, `llm`,
   `ari` (anchor-relative report parsing).
 
 Two larger example programs live in the repository:
@@ -173,7 +174,7 @@ You need a C11 compiler, `make` and `bison`. Everything else is optional:
 | sqlite3 | `load sqlite` |
 | libpq | `load pg` |
 | unixODBC | `load odbc` |
-| libcurl | `load webclient` |
+| libcurl | `load webclient`, `load smtp` |
 | libxml2 | `load xml` (and, with zlib, `xlsx`) |
 | zlib | `xlsx` |
 | libcrypto (OpenSSL) | cryptography builtins, `load crypto` |

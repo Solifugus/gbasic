@@ -1,0 +1,19 @@
+-- configuration
+refused  no host: smtp.send: host is required and must be a non-empty string
+refused  an unknown option: smtp.send: unknown configuration field 'nowhere'; expected one of host, port, security, username, password, timeout, verify
+refused  an unknown security: smtp.send: unknown security 'ssl'; expected starttls, tls or plain
+refused  a port out of range: smtp.send: port must be a whole number from 1 to 65535
+refused  a fractional port: smtp.send: port must be a whole number from 1 to 65535
+refused  a negative timeout: smtp.send: timeout must be a positive number of seconds
+refused  verify as a string: smtp.send: verify must be true or false
+-- message
+refused  not the record compose returns: smtp.send: unknown message field 'subject'; expected one of from, recipients, text, message_id
+refused  an unknown message field: smtp.send: unknown message field 'extra'; expected one of from, recipients, text, message_id
+refused  no recipients: smtp.send: the message has no recipients
+refused  empty text: smtp.send: the message text is empty
+refused  a recipient that is not a string: smtp.send: every recipient must be a string
+refused  a CR in the envelope from: smtp.send: from contains a control character (byte 13), which would let it write its own SMTP commands
+refused  a LF in a recipient: smtp.send: recipient contains a control character (byte 10), which would let it write its own SMTP commands
+refused  an address already in angle brackets: smtp.send: from must be a bare address without angle brackets: <a@x.com>
+-- the control
+refused  a well-formed send, at the socket rather than by validation

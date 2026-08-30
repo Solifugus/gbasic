@@ -1,0 +1,24 @@
+ok   ascii body stays 7bit
+ok   ascii body is readable on the wire
+ok   non-ascii body goes base64
+ok   non-ascii body round-trips
+ok   a 1200-char line goes base64 even though it is ascii
+ok   an 800-char line does not (the control)
+ok   ascii subject is not encoded
+ok   non-ascii subject is an encoded-word
+ok   bcc is in the envelope
+ok   bcc is not in the message
+ok   bcc has no header at all
+ok   body only is a single part
+ok   body + html is alternative
+ok   body + html is not mixed
+ok   body + attachment is mixed
+ok   body + html + attachment is mixed wrapping alternative
+ok   the chosen boundary does not occur in the body
+ok   base64 wraps at 76 columns
+ok   attachment content survives
+ok   attachment is marked as one
+ok   envelope from strips the display name
+ok   message-id is at the sender's domain
+ok   a single recipient may be given without an array
+checks: 23

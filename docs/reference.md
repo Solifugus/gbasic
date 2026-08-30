@@ -1902,6 +1902,96 @@ libcurl is optional at build time. A build without it remains usable, but
 `load webclient` reports that the module is unavailable. WebClient is for
 outgoing requests only. Incoming requests use the separate WebServer module.
 
+## Mail: composing and sending
+
+Sending email is two pieces, and the split is deliberate: `mail` builds the
+message and is ordinary gBASIC, `smtp` speaks to the relay and is native. See
+[mail_design.md](mail_design.md) for why each refusal lives where it does.
+
+```basic
+program main( args )
+    load mail
+    load smtp
+
+    m = mail.compose({
+        from: "Alerts <alerts@example.com>",
+        to: ["ops@example.com"],
+        subject: "Nightly run failed",
+        body: "3 of 41 tapes were rejected."
+    })
+
+    r = smtp.send({ host: "smtp.example.com", port: 587, security: "starttls",
+                    username: "alerts", password: secret }, m)
+    print "sent " + r.message_id
+end program
+```
+
+### `mail.compose(message)`
+
+Fields, all optional but `from` and at least one recipient:
+
+| field | |
+|---|---|
+| `from` | `"a@x.com"` or `"Name <a@x.com>"` |
+| `to`, `cc`, `bcc` | one address or an array of them |
+| `reply_to` | one address |
+| `subject`, `body`, `html` | text; `html` makes the message `multipart/alternative` |
+| `attachments` | array of `{ name:, content:, type: }` |
+| `headers` | a record of extra headers |
+| `date` | a datetime; defaults to `now()` |
+
+Returns `{ from, recipients, message_id, text }` — `recipients` is the
+**envelope**, so it includes `bcc`, and `text` is the message, where `bcc`
+appears nowhere.
+
+Encoding is chosen, not configured. A non-ASCII subject or display name
+becomes an RFC 2047 encoded-word; a body that is pure ASCII with no very long
+line is sent `7bit` and stays readable on the wire, anything else is `base64`
+with `charset="utf-8"`; attachments are always base64.
+
+`compose` **raises** rather than escaping when a value cannot go where it was
+asked to go. A CR or LF in a subject, an address, an attachment name or a
+header value would let whoever supplied that text write headers of their own,
+and a header value cannot contain a newline, so there is nothing for an escape
+to mean. It also refuses an address with no `@` or with a space in it, a
+header name that is not a token, a header `compose` writes itself (which would
+put the field in the message twice), and an unknown field.
+
+### The pieces, separately
+
+`compose` is built from parts that are useful on their own and are public for
+that reason:
+
+| | |
+|---|---|
+| `mail.is_ascii(text)` | true when every codepoint is below 0x80. O(1) — it compares `byte_count` with `len` rather than scanning. |
+| `mail.encode_word(text)` | the text unchanged if it is ASCII, an RFC 2047 `=?utf-8?B?…?=` encoded-word if not. |
+| `mail.wrap_base64(text)` | base64, wrapped at 76 columns. |
+| `mail.address_parts(field, address)` | `{ name, address }` from either spelling; raises, naming `field`, if it is not an address. |
+| `mail.format_address(field, address)` | the header form, with the display name encoded if it needs it. |
+| `mail.format_date(when)` | a datetime as an RFC 5322 `Date`, using the system's own offset. Byte-identical to python's `email.utils.format_datetime` across all seven weekdays. |
+
+### `smtp.send(config, message)`
+
+`config` takes `host` (required), `port` (default 587, or 465 for `tls`),
+`security` (`"starttls"` — the default — `"tls"` or `"plain"`), `username`,
+`password`, `timeout` (seconds, default 30) and `verify` (default `true`).
+`message` is what `mail.compose` returned. Returns
+`{ recipients, code, message_id }`.
+
+Available when gBASIC is built with libcurl. Raises on a transport or relay
+failure, carrying the server's own reply — so a rejected recipient names *which
+one* and why. Any rejected recipient fails the whole send: partial delivery
+reported as success is the failure mode that costs the most to discover later.
+
+Two defaults are security-relevant. Certificate verification is **on**;
+`verify: false` exists for a self-signed relay and has to be asked for. And
+`starttls` against a relay that does not offer STARTTLS **fails** rather than
+continuing in the clear.
+
+Line endings are normalized to CRLF on the way out, so a body written with
+plain `\n` is compliant without the author knowing the rule.
+
 ## WebServer Module
 
 WebServer provides an HTTP/1.1 server using live records, ordinary arrays, and
@@ -3352,7 +3442,7 @@ month-bearing duration with `<`/`>` raises, as does scaling its months by a
 non-integer. Refusals, not guesses: a month has no fixed length.
 
 **Timezone edges** — `to_zone(dt, zone)`, `from_zone(dt, zone)`,
-`zone_offset(dt, zone)`, `zone_resolve(dt, zone)`, with IANA names
+`zone_offset(dt, zone)`, `zone_offset(dt)`, `zone_resolve(dt, zone)`, with IANA names
 (`"America/Chicago"`, `"UTC"`). The doctrine (design §9): UTC for the
 timeline, civil time for the calendar, zone names at the edges — store future
 intentions as a rule plus a zone name, never as UTC instants. `from_zone`
@@ -3360,6 +3450,13 @@ resolves DST edges by the "compatible" default (the repeated fall-back hour →
 the earlier instant; the spring-forward gap → shifted forward);
 `zone_resolve` returns `{kind, utc, earlier, later}` with `kind` one of
 `unique`/`ambiguous`/`nonexistent` so callers can choose their own policy.
+
+`zone_offset(dt)` with no zone answers the **system's** offset for that
+wall-clock time, as a duration. The two-argument form asks "what if this were
+in that zone"; naming the local zone is the one thing a caller cannot do for
+itself, and without this a program can read the wall clock and has no way to
+say what it is offset from — an RFC 5322 `Date`, an ISO 8601 offset and a
+zone-stamped log line are all unwritable.
 Unknown zones raise (a typo must not become quietly-UTC arithmetic), and
 all-day values raise (`… an all-day value has no instant`). Worked example:
 recipe 11 of `docs/datetime_cookbook.md`.

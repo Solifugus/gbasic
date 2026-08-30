@@ -57,6 +57,7 @@ Task-oriented, with runnable examples.
 | [ari_spec_language.md](ari_spec_language.md) | Shipped | The ARI spec language for parsing paginated print-image reports. |
 | [bitwise_design.md](bitwise_design.md) | Shipped | `band`/`bor`/`bxor`/`bnot`/`shl`/`shr`/`rotl`/`rotr`, 32-bit unsigned. |
 | [crypto_design.md](crypto_design.md) | Shipped | Hashing, HMAC, AES-GCM, Ed25519, plus `stdlib/crypto.bas` (JWT, CSRF, signed cookies). |
+| [mail_design.md](mail_design.md) | Shipped | Composing RFC 5322 messages (`stdlib/mail.bas`) and sending them over SMTP with TLS and auth. |
 | [array_cow_design.md](array_cow_design.md) | Shipped | Why arrays are shared, refcounted and copy-on-write. |
 | [source_outline_design.md](source_outline_design.md) | Shipped | `source_outline(text)` — structural outline over the reentrant parser. |
 | [gbasic_clause_recognition.md](gbasic_clause_recognition.md) | Shipped | How clause recognition was ruled on and implemented. |
