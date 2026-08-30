@@ -28524,8 +28524,16 @@ static Value eval_call(AstExpr *expr) {
     const char *name = expr->as.call.name;
     if (gbasic_builtin_function(name)) {
         if (expr->as.call.args.count != 1) {
+            /* Name what is expected. This family all take ONE numeric array,
+             * and the old text -- "invalid function call: range" -- read as
+             * though the function did not exist, sending the author looking for
+             * a missing feature rather than at their own argument list.
+             * `range(1, 5)` is the shape that gets this wrong: `range` takes an
+             * array and returns max minus min, not two bounds. */
             char message[256];
-            snprintf(message, sizeof(message), "invalid function call: %s", expr->as.call.name);
+            snprintf(message, sizeof(message),
+                     "%s expects one numeric array, got %zu arguments",
+                     expr->as.call.name, expr->as.call.args.count);
             runtime_error_raise(message, 1003, "invalid function call");
             return value_null();
         }

@@ -30,6 +30,18 @@ set -uo pipefail
 # longer exists -- so the second tier does that, since a reference naming a
 # removed function is worse than one missing a present one.
 #
+# THE BUILTIN TIER USES A STRICTER STANDARD, AND THE DIFFERENCE IS THE WHOLE
+# POINT. For stdlib the bar is "named in any doc", which is right for a library
+# whose design document is where you would read about it. For a BUILTIN it is
+# not enough, and that was measured rather than argued: an application author
+# needed the bare filename out of a path, could not find `file_name`, and wrote
+# their own splitter -- while `file_name` WAS documented, in docs/tutorial.md
+# and a historical archive, so every "is it documented" check in this repo said
+# yes. What they did was open docs/reference.md, which is where you look a
+# function UP, and it was not there. Four path builtins were missing from it and
+# 31 in total. So builtins are checked against reference.md specifically; the
+# loose standard is exactly the one that let this through.
+#
 # Headless, no build required, never skips.
 
 cd "$(dirname "$0")/.."
@@ -107,6 +119,35 @@ else:
           f"({len(DELIBERATE)} named-but-absent by design)")
     for name, why in sorted(DELIBERATE.items()):
         print(f"       - {name}: {why}")
+
+print("")
+print("TIER every registered builtin appears in docs/reference.md")
+ref = open('docs/reference.md', encoding='utf-8', errors='replace').read()
+bsrc = open('src/builtins.c', encoding='utf-8', errors='replace').read()
+builtins = []
+for m in re.findall(r'^\s*"([a-z_0-9]+)",?\s*$', bsrc, re.M):
+    if m not in builtins:
+        builtins.append(m)
+if len(builtins) < 100:
+    print("  FAIL only %d builtin names parsed out of src/builtins.c --"
+          " the registry format changed and this tier is not looking at it"
+          % len(builtins))
+    failures += 1
+else:
+    missing = [b for b in builtins
+               if not (("`%s(" % b) in ref or ("`%s`" % b) in ref
+                       or ("`%s " % b) in ref)]
+    total += len(builtins)
+    if missing:
+        failures += 1
+        print("  FAIL %d of %d builtins have no docs/reference.md entry:"
+              % (len(missing), len(builtins)))
+        for b in missing:
+            print("       %s" % b)
+        print("       reference.md is where a function is looked UP. A mention"
+              " in a design doc or the tutorial does not substitute.")
+    else:
+        print("  ok   all %d builtins appear in docs/reference.md" % len(builtins))
 
 sys.exit(1 if failures else 0)
 PY

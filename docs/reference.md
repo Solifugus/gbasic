@@ -2897,6 +2897,10 @@ Random and comparison:
 Hashing and HMAC:
 
 - `sha256(s)`, `sha512(s)`, `sha1(s)` — message digests.
+- `md5(s)` — 16 raw bytes. Provided for **compatibility** — reading a checksum
+  someone else produced, or a legacy format that specifies it. MD5 is broken
+  for collision resistance, so never use it for signatures, password storage or
+  deduplicating untrusted input; reach for `sha256`.
 - `hmac_sha256(key, message)`, `hmac_sha512(key, message)` — keyed MACs.
 
 Password-based key derivation — turning a **passphrase** into key bytes:
@@ -4037,6 +4041,59 @@ or out-of-range input:
 - `compare(a, operator, b)` — compare two values using an operator named as a
   string (the general form behind the comparison operators and modifiers).
 
+Rounding and sign:
+
+- `abs(x)` — magnitude. `floor(x)` — largest integer **not greater** than `x`,
+  so `floor(-2.1)` is `-3`. `ceil(x)` — smallest integer not less than `x`, so
+  `ceil(-2.1)` is `-2`. Note `floor` rounds toward negative infinity while
+  `int`-style truncation would round toward zero; they differ on negatives.
+- `sign(x)` — `-1`, `0` or `1`.
+
+Powers, roots and logarithms. Each raises rather than returning `nan` or
+`inf`, so a domain error stops at the call that made it:
+
+- `sqrt(x)` — square root; raises `sqrt of a negative number`.
+- `pow(base, exponent)` — `pow(2, 10)` is `1024`, and a fractional exponent is
+  a root: `pow(2, 0.5)` is √2.
+- `log(x)` — **natural** logarithm; `log10(x)` — base 10. Both raise
+  `log of a non-positive number` for `x <= 0`.
+- `erf(x)` / `erfc(x)` — the error function and its complement.
+  `lgamma(x)` — the natural log of the absolute value of the gamma function.
+
+Randomness — not cryptographic. For anything security-bearing use
+`random_bytes` from the crypto builtins:
+
+- `random()` — a number in `[0, 1)`.
+- `random_int(low, high)` — a whole number in `[low, high]`, **inclusive** at
+  both ends.
+- `seed(n)` — set the generator's seed, making a run repeatable. Two runs
+  seeded alike produce the same sequence, which is what makes a test that uses
+  randomness deterministic.
+
+### Statistics
+
+Summaries over an array of numbers. The sample/population distinction is
+explicit in the names rather than an argument, because getting it wrong
+produces a plausible number rather than an error:
+
+- `variance(a)` / `stdev(a)` — **sample** (divide by *n−1*).
+- `pvariance(a)` / `pstdev(a)` — **population** (divide by *n*).
+- `range(a)` — largest minus smallest. Takes an **array**, not two bounds.
+- `quantile(a, p)` — `p` from **0 to 1**; `percentile(a, p)` — `p` from **0 to
+  100**. Both interpolate linearly between the two neighbouring values, using
+  position `p × (n−1)` in the sorted data, which is the common default (numpy's
+  `linear`). `quantile(a, 0.5)` is the median.
+- `iqr(a)` — the interquartile range, `quantile(a, 0.75) - quantile(a, 0.25)`.
+- `skewness(a)` — **population** skewness, `m₃ / m₂^1.5`. This is *not* the
+  sample-adjusted G₁ that some packages report by default; on the same data the
+  two differ noticeably.
+- `kurtosis(a)` — **excess** kurtosis, `m₄ / m₂² − 3`, so a normal distribution
+  gives `0` rather than `3`.
+- `correlation(a, b)` / `covariance(a, b)` — over two equal-length arrays.
+
+`stdlib/stats.bas` builds on these with distributions, regressions and tests;
+these are the primitives.
+
 ### Input
 
 - `input(prompt)` — read a line; always returns a **string**. Wrap it with
@@ -4098,6 +4155,14 @@ File functions (see also the file/directory value types):
   was not, so a file holding binary — a `serialize` payload, an image — could
   be written and silently read back short.
 - `bytes(f)` / `lines(f)` / `chars(f)` — the file's **size** in bytes, its line count, its character count. These are counts, not content; use `read` for the content.
+- `read_lines(f)` — the file's lines as an array of **strings**, without their
+  line endings. `lines(f)` counts them; this returns them.
+- `overwrite(f, text, position)` — write `text` **in place** at a byte offset,
+  leaving the rest of the file alone. Three arguments, not two: it is not a
+  whole-file replace, which is what `write` does. `overwrite(f, "XYZ", 3)` over
+  `abcdefghij` gives `abcXYZghij`.
+- `delete(f)` — remove a file. `remove_dir(d)` — remove a directory;
+  `make_dir(d)` creates one.
 - `lock(f)` / `unlock(f)` — advisory locks (see `with lock`).
 
 **Taking a path apart.** These work on a file or directory reference and on a

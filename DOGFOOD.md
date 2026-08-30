@@ -3674,3 +3674,48 @@ possibly in the branch that only runs on a Sunday" to "found by `--ast`".
 **Workaround applied:** `hex_encode(random_bytes(6))`, which is builtins only.
 No comment naming the constraint, because the fixed code is what I should have
 written anyway — the constraint is on the diagnostic, not on the program.
+
+## 2026-08-29 — there is no way to ship a gBASIC program to a machine that has no gBASIC
+
+Found while packaging Transward as a `.deb` and installing it into a clean
+Ubuntu container. Two failures in a row, each of which produced a package that
+installed cleanly and could not run:
+
+1. `libpq.so.5: cannot open shared object file` — the interpreter binary was
+   copied into the package, but it links dynamically against libpq, libcurl,
+   libodbc, libgnutls and thirty-odd others.
+2. `library not found: web` — with the libraries satisfied, the interpreter
+   started and died on the first `load`, because `stdlib/` is resolved through
+   `GBASIC_PATH` and falls back to the path the interpreter was *built* with.
+
+Both are fixable from the outside, and Transward's build script now does fix
+them: compute `Depends` from `ldd`, copy `stdlib/` into the package, and export
+`GBASIC_PATH` from the launcher. But every gBASIC application that ever gets
+deployed will have to rediscover this, and the second failure in particular is
+one you only meet on a machine that has never had gBASIC on it — which is to
+say, never on the developer's own.
+
+**What would have helped, in preference order:**
+
+1. **`gbasic --bundle app.bas -o app`** — emit a self-contained artefact: the
+   interpreter, the stdlib, and the program's own `.bas` files, resolved and
+   packed. This is the one that turns "I wrote a gBASIC application" into "I
+   can hand someone an application". For a language whose pitch includes
+   building real deployable software, it is close to a prerequisite.
+2. **An installable gBASIC package** (`.deb`/`.rpm`) that other packages can
+   simply `Depends: gbasic` on. Cheaper than (1), and it makes the stdlib
+   question somebody else's solved problem.
+3. **Failing both: make the stdlib fallback loud.** `library not found: web` is
+   a true statement that points nowhere. `library not found: web (searched
+   GBASIC_PATH, then /usr/local/share/gbasic/stdlib, which does not exist)`
+   would have taken minutes instead of a container round trip.
+
+(3) is worth doing regardless of (1) and (2) — the diagnostic is wrong for
+every cause, not just this one.
+
+**Related, and cheaper than any of the above:** `ldd` on the interpreter shows
+it pulling in the client libraries for Postgres, ODBC, curl, GTK and more,
+whether or not a program touches them. A packager inherits all of it. If those
+were dlopen-ed on first use rather than linked, a Transward package would need
+`libsqlite3` and `libssl` and nothing else — a materially smaller and less
+distro-locked artefact.
