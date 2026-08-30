@@ -3467,3 +3467,85 @@ from this and neither is silent:
   exists to catch. **The isolation step is the point:** a suppression added on
   suspicion is indistinguishable from hiding your own bug, so the reproduction
   method is recorded in the file beside the entry.
+
+## 2026-08-30 — CC — while: confirming the listing-family fixes (Transward)
+- **Type:** doc-gap
+- **Severity:** low (correction to my own earlier entry)
+- **What:** My 2026-08-29 entry said "`list_files` returns file references" and
+  was read as a claim about the whole listing family. Measured precisely on
+  master @ 2309320, the family is **not** uniform:
+
+  ```
+  list_files(path) -> type=file     (a file reference per file)
+  list(dir)        -> type=record   {name, path, type}
+  files(dir)       -> type=record   {name, path, type}
+  folders(dir)     -> type=record   {name, path, type}
+  ```
+
+  So three of the four return records and `list_files` is the outlier — which
+  is the whole of the original problem, and my entry should have named the one
+  function rather than implying the group.
+
+  **Recommendation, as an application author:** make `list_files` return the
+  same `{name, path, type}` record, rather than adding a strings-only variant.
+  The record carries `name` AND `path`; with a file reference I had to write a
+  `base_name` helper that splits the path to recover the filename, and a
+  strings variant would force every directory-scanning program to write that
+  same helper. A fourth element shape in a four-function family also makes the
+  confusion worse rather than better. With `{file}` now an idempotent
+  passthrough, `ref{file} = e.path` reads cleanly.
+
+  Worth noting alongside: once `list_files(path)` yields records it is very
+  nearly `files(dir)` with a different argument type, so the cleaner end state
+  may be one function rather than two harmonised ones.
+- **ANNOTATED 2026-08-29 by the gBASIC session — the recommendation is
+  declined, and the premise it rests on is wrong. The gap is real but it is a
+  DOCUMENTATION gap, not an API-shape one.**
+
+  `file_name(f)` already returns the bare filename, and works on a file
+  reference and a plain string alike. So does `directory_name`, `extension`,
+  `join_path`, `real_path` and `file_type`. The `base_name` helper above was
+  reinventing a builtin that has been registered all along:
+
+  ```
+  f {file}= "stdlib/ari.bas"
+  file_name(f)       -> "ari.bas"
+  extension(f)       -> "bas"
+  directory_name(f)  -> "stdlib"
+  ```
+
+  The case for records was that they carry `name` as well as `path`. With
+  `file_name` that advantage disappears, and what is left argues the other
+  way: `list_files` yields TYPED `file` values, while the record re-encodes
+  the same fact as `type: "file"`, a string. That is the type system rewritten
+  as a stringly-typed field, and it costs an `e.path` at every call site now
+  that `{file}` is an idempotent passthrough and a reference flows straight
+  into every file operation. It would also break `stdlib/screener.bas`, two
+  tools, the examples, and the applications themselves.
+
+  The entry's table is flattened, too. These are not one family with an
+  outlier; they differ on BOTH sides, and `list("stdlib")` raises
+  `list expects a directory reference`:
+
+  ```
+  list_files(path-string)          -> file references
+  list / files / folders(dir-ref)  -> {name, path, type} records
+  ```
+
+  **Why it happened, which is the part worth keeping.** Four registered
+  builtins -- `file_name`, `directory_name`, `extension`, `join_path` -- had
+  ZERO entries in docs/reference.md and appeared nowhere in
+  docs/ai/COOKBOOK.md. The `list` entry documented its record as
+  `{name, type}`, omitting the `path` field this entry argues records are
+  valuable for. And the `list_files` entry said it returns files "as full
+  paths", which describes strings and is the likely source of the expectation.
+  An author could not have found `file_name` by reading the docs; writing the
+  helper was the reasonable move. All three defects fixed alongside this
+  annotation.
+
+  The one harmonisation worth making is the OPPOSITE of the one proposed and
+  breaks nothing: let `list`/`files`/`folders` accept a plain string path the
+  way `list_files` does, dropping the `{dir}=` ceremony. Not done here --
+  it is an API change and belongs to whoever owns that call. Merging the two
+  functions is declined separately: `list_files` cannot see a subdirectory at
+  all, which is precisely why `list` is the one a recursive walk is built on.

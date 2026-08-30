@@ -108,8 +108,19 @@ for error handling, `ERRORS.md`.
   verdict for the same file. → `examples/xlsx_try_open_test.bas`
 - **Walking a directory tree** — `list_files` reports FILES ONLY and does not
   recurse, so it cannot drive a walk: a subdirectory is invisible to it. Use
-  `list(d)` on a `{dir}` reference, which answers `{name, type}` for every entry
-  including folders, and keep your own worklist. → `stdlib/filetree.bas`
+  `list(d)` on a `{dir}` reference, which answers `{name, path, type}` for every
+  entry including folders, and keep your own worklist. Take `e.path` from the
+  record rather than reassembling `here + "/" + e.name`.
+  → `stdlib/filetree.bas`
+- **Taking a path apart — do NOT write your own splitter** — `file_name(p)`,
+  `directory_name(p)`, `extension(p)` and `join_path(a, b)` all exist, and all
+  take a file/dir REFERENCE or a plain string, so an entry straight out of
+  `list_files` needs no conversion. `file_name` is the one people reinvent:
+  `list_files` yields FILE REFERENCES, not strings, and `file_name(e)` is the
+  bare name. `extension` drops the dot and returns the LAST suffix only
+  (`"c.tar.gz"` → `"gz"`, `".hidden"` → `""`), and `join_path` takes exactly
+  two components and always joins, so `join_path("a", "/b")` is `"a/b"` and not
+  `"/b"`. → `stdlib/filetree.bas`
 - **JSON for anything leaving gBASIC** — `json_encode(value)`, strict RFC 8259;
   `json_encodable(value)` asks the same question without raising. Reach for this
   and NOT `encode` for an HTTP body, a file another program reads, or a queue

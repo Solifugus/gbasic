@@ -85,6 +85,14 @@ ok()   { cases=$((cases + 1)); printf 'PASS %s\n' "$1"; }
 run() { GBASIC_PATH=stdlib ./gbasic "$@"; }
 
 # Start a sink, wait for it to publish its port, and echo the port.
+# NOTE start_sink runs inside $( ), so `fail` here would exit the SUBSHELL and
+# the parent would sail on with an empty port -- which is not hypothetical: it
+# interpolated nothing into the generated fixture and the suite then reported a
+# gBASIC "syntax error, unexpected COMMA", sending the reader after a parser
+# bug when a python sink had failed to start. So this echoes the port and
+# nothing else, and every caller passes it through `require_port`, which runs
+# in the PARENT and can actually stop the run. Timeout is generous because the
+# observed failure was under full-gate load, not a dead sink.
 start_sink() { # transcript count [extra args...]
     local transcript="$1"; shift
     local count="$1"; shift
@@ -95,10 +103,26 @@ start_sink() { # transcript count [extra args...]
     local waited=0
     while [ ! -s "$portfile" ]; do
         waited=$((waited + 1))
-        [ "$waited" -gt 200 ] && fail "the sink never published a port: $(cat "$portfile.err")"
+        if [ "$waited" -gt 400 ]; then
+            # Return 0, NOT 1: the script runs under `set -e` and this is
+            # inside $( ), so a nonzero status kills the run at the assignment
+            # and the message below never prints. Echo a non-numeric sentinel
+            # and let require_port do the failing, where it can be seen.
+            printf 'sink-did-not-start(%s)' \
+                "$(tr '\n' ' ' <"$portfile.err" 2>/dev/null)"
+            return 0
+        fi
         sleep 0.05
     done
     cat "$portfile"
+}
+
+# Runs in the parent, so it can stop the run. A port that is not a bare number
+# is a sink that did not start, and saying so beats every downstream symptom.
+require_port() { # port label
+    case "$1" in
+        ''|*[!0-9]*) fail "$2: the sink did not start (got '"$1"')" ;;
+    esac
 }
 
 wait_transcript() { # path
@@ -162,6 +186,7 @@ ok "send-refusal: $((sendrefused - 1)) envelope and configuration refusals, plus
 # dot-stuffing AT ALL -- it would pass on a build that never stuffed anything.
 # The second carries the UTF-8, and proves base64 survives the transport.
 port=$(start_sink "$scratch/wire.json" 2)
+require_port "$port" "wire"
 cat >"$scratch/wire.bas" <<EOF
 program main( args )
     load mail
@@ -235,6 +260,7 @@ ok "wire: CRLF framing, dot-stuffing exactly once, bcc in the envelope only, utf
 
 # ------------------------------------------------------------------ auth
 port=$(start_sink "$scratch/auth.json" 2 --require-auth)
+require_port "$port" "auth"
 cat >"$scratch/auth.bas" <<EOF
 program main( args )
     load mail
@@ -266,6 +292,7 @@ ok "auth: credentials reach the relay, and a relay demanding them refuses withou
 
 # ---------------------------------------------------------------- reject
 port=$(start_sink "$scratch/reject.json" 1 --reject-rcpt bad@example.com)
+require_port "$port" "reject"
 cat >"$scratch/reject.bas" <<EOF
 program main( args )
     load mail
@@ -305,6 +332,7 @@ if command -v openssl >/dev/null 2>&1; then
     for mode in tls starttls; do
         if [ "$mode" = tls ]; then flag=--tls; else flag=--starttls; fi
         port=$(start_sink "$scratch/$mode.json" 2 "$flag" "$scratch/cert.pem" "$scratch/key.pem")
+        require_port "$port" "tls/$mode"
         cat >"$scratch/$mode.bas" <<EOF
 program main( args )
     load mail
@@ -332,6 +360,7 @@ EOF
     # FAIL -- silently continuing in the clear would put the message, and the
     # credentials, on the wire in plaintext.
     port=$(start_sink "$scratch/downgrade.json" 1)
+    require_port "$port" "tls/downgrade"
     cat >"$scratch/downgrade.bas" <<EOF
 program main( args )
     load mail
@@ -362,6 +391,7 @@ fi
 # -------------------------------------------------------------- valgrind
 if command -v valgrind >/dev/null 2>&1; then
     port=$(start_sink "$scratch/vg.json" 1)
+    require_port "$port" "valgrind"
     cat >"$scratch/vg.bas" <<EOF
 program main( args )
     load mail

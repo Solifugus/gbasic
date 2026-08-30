@@ -4100,32 +4100,61 @@ File functions (see also the file/directory value types):
 - `bytes(f)` / `lines(f)` / `chars(f)` — the file's **size** in bytes, its line count, its character count. These are counts, not content; use `read` for the content.
 - `lock(f)` / `unlock(f)` — advisory locks (see `with lock`).
 
+**Taking a path apart.** These work on a file or directory reference and on a
+plain string alike, so a value straight out of a listing needs no conversion:
+
+- `file_name(p)` — the last component. `file_name("a/b/c.tar.gz")` is
+  `"c.tar.gz"`; a trailing slash is tolerated, so `file_name("a/b/")` is `"b"`.
+- `directory_name(p)` — everything before it. `directory_name("a/b/c")` is
+  `"a/b"`, and a bare name gives `"."`.
+- `extension(p)` — the last suffix, **without** the dot: `extension("c.tar.gz")`
+  is `"gz"`, not `"tar.gz"`. A name with no dot gives `""`, and so does a
+  dotfile like `".hidden"` — a leading dot is not an extension.
+- `join_path(a, b)` — joins exactly **two** components with a single separator,
+  whatever slashes they already carry. Note it always joins: `join_path("a",
+  "/b")` is `"a/b"`, not `"/b"`, so an absolute second argument does not replace
+  the first the way some languages' equivalents do.
+- `real_path(p)` — the canonical absolute path, resolving `.`, `..` and
+  symlinks. The path must exist. To validate a path you are about to *create*,
+  resolve `directory_name(p)` instead.
+- `file_type(p)` — `"file"`, `"folder"`, or `"missing"`.
+
 Listing a directory — two functions, and the difference matters:
 
-- `list_files(path)` — the **files** in one directory, as full paths. It does
-  **not** recurse, and it does **not** report subdirectories at all, so it cannot
-  by itself drive a walk: a directory is invisible to it.
-- `list(d)` — every entry of a **directory reference**, as `{name, type}` records
-  where `type` is `"file"` or `"folder"`. `name` is the bare entry name, not a
-  path. This is the one to build a recursive walk on, because it is the one that
-  can see a subdirectory:
+- `list_files(path)` — the **files** in one directory, as **file references**
+  (not strings, though one renders as its full path). Use `file_name` on an
+  entry for the bare name and `extension` for its suffix; `{file}` is an
+  idempotent passthrough, so an entry also flows straight into `read`, `bytes`
+  and the rest. It does **not** recurse, and it does **not** report
+  subdirectories at all, so it cannot by itself drive a walk: a directory is
+  invisible to it.
+- `list(d)` — every entry of a **directory reference**, as
+  `{name, path, type}` records where `type` is `"file"` or `"folder"`. `name`
+  is the bare entry name and `path` is the path to it. This is the one to build
+  a recursive walk on, because it is the one that can see a subdirectory:
 
   ```basic
   pending = [root]
-  files = []
+  found = []
   while len(pending) > 0
       here = take_last(pending)
       d {dir} = here
       for each e in list(d)
-          full = here + "/" + e.name
           if e.type = "folder" then
-              pending = append(pending, full)
+              pending = append(pending, e.path)
           else
-              files = append(files, full)
+              found = append(found, e.path)
           end if
       end for
   end while
   ```
+
+  Use `e.path` rather than reassembling `here + "/" + e.name` by hand — the
+  record already carries it.
+
+- `files(d)` / `folders(d)` — the same records as `list`, filtered to one kind.
+  `files(d)` is `list(d)` minus the subdirectories, which makes it the direct
+  counterpart of `list_files` for a directory reference.
 
   Order is the filesystem's, not sorted — `sort` it if you need a stable one.
   `stdlib/filetree.bas` is this walk with expand/collapse state on top.

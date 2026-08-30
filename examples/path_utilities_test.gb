@@ -15,3 +15,13 @@ print extension("/home/matt/test.txt")
 print extension(file)
 print "[" + extension("/home/matt/README") + "]"
 print "[" + extension("/home/matt/.profile") + "]"
+
+' A trailing slash is tolerated, and a bare name has "." for its directory --
+' both documented in reference.md, neither obvious, and a walk that reassembles
+' paths by hand meets the first one.
+print file_name("/home/matt/archive/")
+print directory_name("bare")
+
+' join_path always JOINS. An absolute second component does not replace the
+' first the way some languages' equivalents do.
+print join_path("a", "/b")
