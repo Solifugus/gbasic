@@ -21,6 +21,13 @@
 ' library that guessed would be wrong somewhere without saying so.
 library finance
 
+    ' Day-count conventions need calendar arithmetic. Loaded INSIDE the library
+    ' and by explicit filename, which is the stdlib idiom (grid.bas and
+    ' consolidate.bas load frame.bas the same way) -- a bare top-level `load`
+    ' searches the calling program's own directory first, so naming the file is
+    ' what keeps a stray dates.bas beside an application from replacing this one.
+    load dates from "dates.bas"
+
     ' --- internal ---------------------------------------------------------
 
     function _check_rate(r, who)
@@ -233,6 +240,112 @@ library finance
         error who + " expects money, or 0, for each amount"
     end function
 
+    ' --- day count conventions ---------------------------------------------
+    '
+    ' What fraction of a year lies between two dates. Every accrual, coupon and
+    ' interest calculation rests on this, and the conventions DISAGREE by enough
+    ' to matter -- the same two dates are 0.163889 of a year under Actual/360 and
+    ' 0.166667 under 30/360, which on a million-dollar balance is real money.
+    '
+    ' THERE IS NO DEFAULT. No convention is dominant across products, and one
+    ' guessed silently would be wrong somewhere without saying so -- the same
+    ' rule the period-rate decision follows.
+
+    ' `mod(a, b)`, not an infix `%` -- gBASIC has no `%` operator at all, and
+    ' `y % 4` lexes as something else entirely.
+    function _is_leap(y)
+        if mod(y, 400) = 0 then
+            return true
+        end if
+        if mod(y, 100) = 0 then
+            return false
+        end if
+        return mod(y, 4) = 0
+    end function
+
+    function _days_in_year(y)
+        if _is_leap(y) then
+            return 366
+        end if
+        return 365
+    end function
+
+    function _jan1(y)
+        d {date}= string(y) + "-01-01"
+        return d
+    end function
+
+    ' The 30/360 US (bond basis) day adjustment, which is where this convention
+    ' earns its reputation: a month is 30 days by fiat, and the end-of-month
+    ' rules decide what happens when the calendar disagrees.
+    function _thirty_360_us(d_from, d_to)
+        d1 = d_from.day
+        d2 = d_to.day
+        ' Both ends on the last day of February collapse to 30.
+        if _is_eom_feb(d_from) and _is_eom_feb(d_to) then
+            d2 = 30
+        end if
+        if _is_eom_feb(d_from) then
+            d1 = 30
+        end if
+        if d1 = 31 then
+            d1 = 30
+        end if
+        if d2 = 31 and d1 = 30 then
+            d2 = 30
+        end if
+        return (360 * (d_to.year - d_from.year) + 30 * (d_to.month - d_from.month) + (d2 - d1)) / 360
+    end function
+
+    function _is_eom_feb(d)
+        if d.month != 2 then
+            return false
+        end if
+        if _is_leap(d.year) then
+            return d.day = 29
+        end if
+        return d.day = 28
+    end function
+
+    ' Actual/Actual ISDA: each day is weighted by the length of the year it
+    ' falls in, so a period spanning a leap year is not the same as one that
+    ' does not. Split at the year boundaries and weight each piece.
+    function _act_act_isda(d_from, d_to)
+        if d_from.year = d_to.year then
+            return dates.days_between(d_from, d_to) / _days_in_year(d_from.year)
+        end if
+        total = dates.days_between(d_from, _jan1(d_from.year + 1)) / _days_in_year(d_from.year)
+        y = d_from.year + 1
+        while y < d_to.year
+            total = total + 1
+            y += 1
+        end while
+        return total + (dates.days_between(_jan1(d_to.year), d_to) / _days_in_year(d_to.year))
+    end function
+
+    ' `convention` is one of "actual/360", "actual/365", "actual/actual" or
+    ' "30/360". Spelled out rather than numbered: Excel's YEARFRAC takes a
+    ' `basis` of 0 to 4 and nobody remembers which is which.
+    function year_fraction(d_from, d_to, convention)
+        if type(d_from) != "datetime" or type(d_to) != "datetime" then
+            error "finance.year_fraction expects two dates"
+        end if
+        if convention = "actual/360" then
+            return dates.days_between(d_from, d_to) / 360
+        end if
+        if convention = "actual/365" then
+            return dates.days_between(d_from, d_to) / 365
+        end if
+        if convention = "actual/actual" then
+            return _act_act_isda(d_from, d_to)
+        end if
+        if convention = "30/360" then
+            return _thirty_360_us(d_from, d_to)
+        end if
+        error ("finance.year_fraction: unknown convention \"" + string(convention)
+               + "\" -- use actual/360, actual/365, actual/actual or 30/360")
+    end function
+
     ' --- project appraisal --------------------------------------------------
 
     ' Net present value of `flows` (an array of money, one per period,
@@ -255,19 +368,6 @@ library finance
         return total
     end function
 
-    ' NPV over plain numbers, for the rate search. Kept separate from the
-    ' money-valued `npv` so neither has to compromise: one is exact, one can
-    ' visit rates that would overflow the money type.
-    function _npv_number(r, nums)
-        total = 0.0
-        i = 0
-        while i < count(nums)
-            total = total + nums[i] / pow(1 + r, i + 1)
-            i += 1
-        end while
-        return total
-    end function
-
     ' The rate at which the flows repay `outlay` exactly.
     '
     ' WORKS IN PLAIN NUMBERS, not money, and that is deliberate rather than
@@ -279,36 +379,101 @@ library finance
     '
     ' Bisection rather than Newton: it cannot diverge, and a wrong IRR is a
     ' plausible-looking percentage that would be acted on.
-    function irr(outlay, flows)
-        if type(outlay) != "money" then
-            error "finance.irr expects the outlay as money"
-        end if
-        if type(flows) != "array" or count(flows) = 0 then
-            error "finance.irr expects a non-empty array of money"
-        end if
-        target = number(string(outlay))
-        if target <= 0 then
-            error "finance.irr expects a positive outlay"
+    ' The rate at which a series of period-indexed flows breaks even.
+    '
+    ' EXCEL'S SHAPE (design §7): `values[0]` is the period-0 flow, normally the
+    ' outlay and normally negative. The outlay used to be a separate argument,
+    ' which reads well but is not what a spreadsheet does and does not line up
+    ' with `xirr`, where the dates array must match the values array including
+    ' period 0.
+    function irr(values)
+        nums = _flow_numbers(values, "finance.irr")
+        _warn_if_multiple_irr(nums, "finance.irr")
+        return _solve_rate(nums, _period_offsets(count(nums)), "finance.irr")
+    end function
+
+    ' Periodic flows are dated flows whose offsets happen to be 0, 1, 2, ...
+    ' so both rate searches are the same function.
+    function _period_offsets(n)
+        offsets = []
+        i = 0
+        while i < n
+            append(offsets, i)
+            i += 1
+        end while
+        return offsets
+    end function
+
+    function _flow_numbers(values, who)
+        if type(values) != "array" or count(values) = 0 then
+            error who + " expects a non-empty array of money"
         end if
         nums = []
-        for each f in flows
+        for each f in values
             if type(f) != "money" then
-                error "finance.irr expects every flow to be money"
+                error who + " expects every flow to be money"
             end if
             append(nums, number(string(f)))
         next
+        return nums
+    end function
 
-        lo = -0.99
+    function _npv_number(r, nums, offsets)
+        total = 0.0
+        i = 0
+        while i < count(nums)
+            total = total + nums[i] / pow(1 + r, offsets[i])
+            i += 1
+        end while
+        return total
+    end function
+
+    ' Find a rate where the present value is zero.
+    '
+    ' SCANS FOR A BRACKET FIRST, and that is not defensive padding -- it is
+    ' required for correctness whenever the flows change sign more than once.
+    ' Testing only the two endpoints assumes the curve crosses zero an odd
+    ' number of times: [-1000, 5000, -6000] has roots at 100% AND 200%, dips
+    ' back, and is NEGATIVE at both ends, so an endpoint-only test concludes
+    ' "no rate makes these flows break even" -- a confident refusal about
+    ' something that demonstrably exists. Walking a grid finds a neighbouring
+    ' pair that straddles a root, then bisects inside it.
+    '
+    ' Bisection rather than Newton: it cannot diverge, and a wrong rate is a
+    ' plausible-looking percentage that would be acted on.
+    function _solve_rate(nums, offsets, who)
+        lo = -0.999999
         hi = 10.0
-        f_lo = _npv_number(lo, nums) - target
-        f_hi = _npv_number(hi, nums) - target
-        if f_lo * f_hi > 0 then
-            error "finance.irr: no rate between -99% and 1000% makes these flows break even"
+        steps = 400
+        width = (hi - lo) / steps
+        a = lo
+        f_a = _npv_number(a, nums, offsets)
+        found = false
+        i = 1
+        while i <= steps
+            b = lo + width * i
+            f_b = _npv_number(b, nums, offsets)
+            if f_a = 0 then
+                return a
+            end if
+            if f_a * f_b < 0 then
+                lo = a
+                hi = b
+                found = true
+                break
+            end if
+            a = b
+            f_a = f_b
+            i += 1
+        end while
+        if not found then
+            error who + ": no rate between -100% and 1000% makes these flows break even"
         end if
+        f_lo = _npv_number(lo, nums, offsets)
         i = 0
         while i < 200
             mid = (lo + hi) / 2
-            f_mid = _npv_number(mid, nums) - target
+            f_mid = _npv_number(mid, nums, offsets)
             if f_lo * f_mid <= 0 then
                 hi = mid
             else
@@ -318,6 +483,109 @@ library finance
             i += 1
         end while
         return (lo + hi) / 2
+    end function
+
+    ' MORE THAN ONE SIGN CHANGE ADMITS MORE THAN ONE RATE.
+    '
+    ' Descartes' rule of signs: a polynomial has at most as many positive roots
+    ' as its coefficients have sign changes. A conventional project -- pay once,
+    ' receive thereafter -- changes sign once and has exactly one IRR. A project
+    ' that changes sign again (a mid-life reinvestment, a decommissioning cost)
+    ' can have several, and the search returns whichever the first bracket
+    ' contains. That is a plausible percentage someone would act on, so it is
+    ' said out loud.
+    '
+    ' A WARNING, NOT A REFUSAL: the answer returned is a real root and is often
+    ' the one wanted. Refusing would block a legitimate calculation; staying
+    ' silent would hand over a number with a hidden assumption. `on warning
+    ' ignore` is there for a caller who has already thought about it.
+    function _warn_if_multiple_irr(nums, who)
+        changes = 0
+        previous = 0
+        for each v in nums
+            if v > 0 then
+                if previous = -1 then
+                    changes += 1
+                end if
+                previous = 1
+            end if
+            if v < 0 then
+                if previous = 1 then
+                    changes += 1
+                end if
+                previous = -1
+            end if
+        next
+        if changes > 1 then
+            warning(who + ": these flows change sign " + string(changes)
+                    + " times, so more than one rate can satisfy them"
+                    + " -- the one returned is a root, not necessarily the only one")
+        end if
+        return nothing
+    end function
+
+    ' --- dated cash flows ---------------------------------------------------
+    '
+    ' XNPV and XIRR: flows that fall on ACTUAL DATES rather than on regular
+    ' periods, which is what a real project throws off. Discounting uses
+    ' Actual/365 from the FIRST date, which is Excel's definition -- not a
+    ' choice this library gets to make, since the whole point is to agree with
+    ' the spreadsheet the answer will be checked in.
+
+    function _check_dated(values, dates_list, who)
+        if type(values) != "array" or count(values) = 0 then
+            error who + " expects a non-empty array of money"
+        end if
+        if type(dates_list) != "array" or count(dates_list) != count(values) then
+            error who + " expects one date per flow"
+        end if
+        i = 0
+        while i < count(values)
+            if type(values[i]) != "money" then
+                error who + " expects every flow to be money"
+            end if
+            if type(dates_list[i]) != "datetime" then
+                error who + " expects every date to be a date"
+            end if
+            if i > 0 and dates_list[i] < dates_list[i - 1] then
+                error who + " expects the dates in ascending order"
+            end if
+            i += 1
+        end while
+        return nothing
+    end function
+
+    ' Year offsets from the first date, Actual/365.
+    function _date_offsets(dates_list)
+        offsets = []
+        i = 0
+        while i < count(dates_list)
+            append(offsets, dates.days_between(dates_list[0], dates_list[i]) / 365)
+            i += 1
+        end while
+        return offsets
+    end function
+
+    ' Net present value of dated flows. Returns money, in the flows' currency.
+    function xnpv(rate, values, dates_list)
+        _check_rate(rate, "finance.xnpv")
+        _check_dated(values, dates_list, "finance.xnpv")
+        offsets = _date_offsets(dates_list)
+        total = values[0] * 0
+        i = 0
+        while i < count(values)
+            total = total + (values[i] / pow(1 + rate, offsets[i]))
+            i += 1
+        end while
+        return total
+    end function
+
+    ' The rate at which dated flows break even.
+    function xirr(values, dates_list)
+        _check_dated(values, dates_list, "finance.xirr")
+        nums = _flow_numbers(values, "finance.xirr")
+        _warn_if_multiple_irr(nums, "finance.xirr")
+        return _solve_rate(nums, _date_offsets(dates_list), "finance.xirr")
     end function
 
     ' --- schedules ----------------------------------------------------------

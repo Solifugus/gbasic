@@ -307,10 +307,21 @@ idiom is `outlay + finance.npv(r, rest)`, exactly as in a spreadsheet.
 Excel's and it makes `xirr` — where the dates array must line up with the
 values array including period 0 — awkward.
 
-**Multiple IRRs must be reported.** A sign change in the flows more than once
+**Multiple IRRs must be reported.** More than one sign change in the flows
 admits more than one root, and returning the first one found is a plausible
-percentage someone acts on. `irr` must detect the condition and refuse or warn;
-this is a correctness requirement, not a nicety.
+percentage someone acts on. `irr` and `xirr` **warn**, naming the count — a
+refusal would block a legitimate calculation, since the root returned is real
+and is usually the one wanted. `on warning ignore` is the opt-out.
+
+**Implementing this exposed a second defect the design had not anticipated.**
+The rate search tested only the two endpoints for a sign change, which assumes
+the curve crosses zero an odd number of times. `[-1000, 5000, -6000]` has roots
+at 100% *and* 200% and is negative at both ends, so the endpoint test concluded
+"no rate makes these flows break even" — a confident refusal about something
+that demonstrably exists. All three searches now walk a grid to find a
+bracketing pair before bisecting. This also made `irr` answer cases it used to
+refuse: 50,000 returning one dollar breaks even at −99.998%, which is a real
+answer, not an error.
 
 ### Day count
 

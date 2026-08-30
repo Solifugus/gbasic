@@ -54,8 +54,57 @@ check("pv at a zero rate is the payments added up", finance.pv(0, 10, pay), "100
 ' ---------------------------------------------------------- appraisal
 a {USD}= "1000.00"
 check("npv: three years of 1000 at 10%", finance.npv(0.10, [a, a, a]), "2486.85")
-out {USD}= "2486.85"
-check("irr: recovers the rate npv used", round(finance.irr(out, [a, a, a]), 4), 0.1)
+
+' irr takes EXCEL'S SHAPE now (design §7): values[0] is the period-0 flow, so
+' the outlay lives inside the array as a negative rather than as its own
+' argument. That is also what lets xirr's dates line up one-for-one.
+outlay {USD}= "-2486.85"
+check("irr: recovers the rate npv used",
+      round(finance.irr([outlay, a, a, a]), 4), 0.1)
+
+' ------------------------------------------------------ dated cash flows
+' Microsoft's own documented XIRR/XNPV example, recomputed independently:
+' 0.373363 and 2086.65.
+f0 {USD}= "-10000.00"
+f1 {USD}= "2750.00"
+f2 {USD}= "4250.00"
+f3 {USD}= "3250.00"
+f4 {USD}= "2750.00"
+t0 {date}= "2008-01-01"
+t1 {date}= "2008-03-01"
+t2 {date}= "2008-10-30"
+t3 {date}= "2009-02-15"
+t4 {date}= "2009-04-01"
+dated = [f0, f1, f2, f3, f4]
+when = [t0, t1, t2, t3, t4]
+check("xirr: Excel's documented example", round(finance.xirr(dated, when), 6), 0.373363)
+check("xnpv: the same example at 9%", finance.xnpv(0.09, dated, when), "2086.65")
+
+' xnpv at the xirr must be (near) zero -- the defining relationship, and one
+' no reference can drift out from under.
+at_root = finance.xnpv(finance.xirr(dated, when), dated, when)
+check("xnpv at the xirr is zero", abs(number(string(at_root))) < 0.01, true)
+
+' --------------------------------------------------------- day counts
+' Verified against calendar arithmetic computed outside gBASIC.
+ja {date}= "2026-01-31"
+mb {date}= "2026-03-31"
+check("actual/360", round(finance.year_fraction(ja, mb, "actual/360"), 8), 0.16388889)
+check("actual/365", round(finance.year_fraction(ja, mb, "actual/365"), 8), 0.16164384)
+check("actual/actual", round(finance.year_fraction(ja, mb, "actual/actual"), 8), 0.16164384)
+' 30/360 disagrees with all three, which is the entire reason to name it.
+check("30/360 differs from the actual counts",
+      round(finance.year_fraction(ja, mb, "30/360"), 8), 0.16666667)
+
+' A leap year is exactly one year under actual/actual, and the convention has
+' to split at the boundary to get a span right.
+la {date}= "2024-01-01"
+lb {date}= "2025-01-01"
+check("actual/actual: a leap year is exactly 1", finance.year_fraction(la, lb, "actual/actual"), 1)
+sa {date}= "2023-12-15"
+sb {date}= "2025-03-10"
+check("actual/actual: a span across three years",
+      round(finance.year_fraction(sa, sb, "actual/actual"), 8), 1.23287671)
 
 ' ------------------------------------------------------- depreciation
 cost {USD}= "50000.00"
@@ -136,6 +185,34 @@ check("fv: a balloon balance lowers the payment", with_balloon > at_end, true)
 check("omitting the tail equals supplying the defaults",
       finance.pmt(0.06 / 12, 360, p, 0, "end"), at_end)
 
+' ------------------------------------- more than one IRR is said out loud
+' Descartes: a project that changes sign more than once can have several
+' rates, and bisection returns whichever its bracket contains. The classic
+' [-1, 5, -6] has roots at 100% and 200%.
+'
+' `on warning goto next` captures it as a VALUE rather than letting it reach
+' stderr, which is what lets a fixture assert on a warning at all.
+on warning goto next
+m0 {USD}= "-1000.00"
+m1 {USD}= "5000.00"
+m2 {USD}= "-6000.00"
+multi = finance.irr([m0, m1, m2])
+' `w = warning` snapshots AND claims it -- there is no warning.clear(); reading
+' bare `warning` is what acknowledges one.
+w = warning
+check("multiple roots are warned about", contains(w.message, "more than one rate"), true)
+check("and a root is still returned", multi > 0, true)
+
+' THE CONTROL. A conventional project changes sign once and must be SILENT,
+' or the warning is noise an author learns to ignore.
+s0 {USD}= "-1000.00"
+s1 {USD}= "600.00"
+s2 {USD}= "600.00"
+plain = finance.irr([s0, s1, s2])
+check("a single sign change warns about nothing", warning, false)
+check("and still returns a rate", plain > 0, true)
+on warning print
+
 ' ---------------------------------------------------------- refusals
 on error goto next
 
@@ -169,13 +246,13 @@ error.clear()
 ' -99% the present value of 1.00 is only 100.
 huge {USD}= "1000000.00"
 penny {USD}= "1.00"
-x = finance.irr(huge, [penny])
-check("flows that cannot break even at any rate are refused", error.message, "finance.irr: no rate between -99% and 1000% makes these flows break even")
+x = finance.irr([huge, penny])
+check("flows that cannot break even at any rate are refused", error.message, "finance.irr: no rate between -100% and 1000% makes these flows break even")
 error.clear()
 
 ' And the control: the case my first version wrongly assumed was impossible.
 ' A single flow against a larger outlay breaks even at a NEGATIVE rate.
-single = finance.irr(out, [a])
+single = finance.irr([outlay, a])
 check("a single flow breaks even at a negative rate", round(single, 3), -0.598)
 error.clear()
 

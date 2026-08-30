@@ -7,4 +7,6 @@ internal rate of return: 15.24%
 at 5%:  64942.15
 at 20%: 44859.18
 
-one dollar against 50,000: finance.irr: no rate between -99% and 1000% makes these flows break even
+one dollar back on 50,000: -99.998%
+
+all-positive flows: finance.irr: no rate between -100% and 1000% makes these flows break even

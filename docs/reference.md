@@ -4569,9 +4569,27 @@ General-purpose:
   currency from the other, so a lump sum is `finance.fv(0.05, 10, 0, cost)`
   exactly as a spreadsheet writes it.
   `finance.npv(rate, flows)` discounts an array of money one period apart, and
-  `finance.irr(outlay, flows)` finds the rate that breaks even — by bisection,
-  which cannot diverge, because a wrong IRR is a plausible percentage someone
-  would act on. `finance.schedule(rate, nper, pv)` returns one record
+  `finance.irr(values)` finds the rate that breaks even — `values[0]` is the
+  period-0 flow, normally a negative outlay, as a spreadsheet lays them out.
+  For flows on real dates rather than regular periods,
+  `finance.xnpv(rate, values, dates)` and `finance.xirr(values, dates)`
+  discount Actual/365 from the first date, which is Excel's definition.
+  All three searches **scan for a bracket before bisecting**: testing only the
+  endpoints assumes the curve crosses zero an odd number of times, and
+  `[-1000, 5000, -6000]` has roots at 100% *and* 200% while being negative at
+  both ends. Bisection rather than Newton, because it cannot diverge and a
+  wrong rate is a plausible percentage someone would act on. Flows that change
+  sign **more than once** admit more than one rate, so `irr` and `xirr` emit a
+  **warning** naming the count — the answer is a real root, just not
+  necessarily the only one; `on warning ignore` silences it once you have
+  thought about it.
+  `finance.year_fraction(from, to, convention)` is the day count, with
+  `"actual/360"`, `"actual/365"`, `"actual/actual"` (ISDA, weighting each day
+  by the length of its own year) and `"30/360"` (US bond basis, including the
+  end-of-February rules). **There is no default convention**: they disagree by
+  enough to matter — the same two dates are `0.163889` of a year under
+  Actual/360 and `0.166667` under 30/360 — and no one of them is dominant
+  across products. `finance.schedule(rate, nper, pv)` returns one record
   per period (`period`, `payment`, `interest`, `principal`, `balance`) whose
   **final payment is adjusted so the balance lands exactly on zero**: every
   payment is whole minor units, those roundings accumulate, and a schedule
