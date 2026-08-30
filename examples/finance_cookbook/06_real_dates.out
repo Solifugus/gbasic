@@ -1,0 +1,5 @@
+xirr:          37.3363%
+xnpv at 9%:    2086.65
+xnpv at xirr:  0.00   <- zero, by definition
+
+as if evenly spaced: 11.5413%

@@ -1,0 +1,11 @@
+savings are worth today: 56861.80
+the machine costs:       50000.00
+net at 10%:              6861.80
+
+internal rate of return: 15.24%
+
+net at 5%:  14942.15
+net at 20%: -5140.82
+
+worth doing at a 10% cost of capital: true
+worth doing at 20%:                   false

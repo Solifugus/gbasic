@@ -1,0 +1,12 @@
+31 Jan 2026 to 31 Mar 2026 is 59 actual days
+  actual/360:     0.16388889
+  actual/365:     0.16164384
+  actual/actual:  0.16164384
+  30/360:         0.16666667
+
+interest at 5% on 1,000,000 for that period
+  actual/360:     8194.44
+  30/360:         8333.33
+
+2024 (a leap year) under actual/actual: 1
+  the same span under actual/365:      1.00273973

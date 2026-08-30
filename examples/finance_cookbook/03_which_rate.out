@@ -1,0 +1,14 @@
+quoted (nominal, monthly):  0.12
+  one month of it:          0.01
+  what it actually earns:   0.126825
+  the difference:           0.006825
+
+the same 12% nominal, compounded
+  yearly:     0.12
+  quarterly:  0.125509
+  monthly:    0.126825
+  daily:      0.127475
+
+an advertised APY of 5% is a nominal rate of
+  0.048889 compounded monthly
+  back to APY: 0.05

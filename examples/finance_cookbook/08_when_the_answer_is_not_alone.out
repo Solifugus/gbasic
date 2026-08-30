@@ -1,0 +1,10 @@
+conventional project: 13.07%
+
+two sign changes: a rate comes back (100%)
+and gBASIC says so:
+  finance.irr: these flows change sign 2 times, so more than one rate can satisfy them -- the one returned is a root, not necessarily the only one
+
+npv at 100%: 0.00
+npv at 200%: 0.00
+
+all-positive flows: finance.irr: no rate between -100% and 1000% makes these flows break even

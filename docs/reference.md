@@ -4583,6 +4583,15 @@ General-purpose:
   **warning** naming the count — the answer is a real root, just not
   necessarily the only one; `on warning ignore` silences it once you have
   thought about it.
+  **Rate conversion**, so "the rate for one period" is never a guess:
+  `finance.periodic(nominal, m)` is one period of a nominal annual rate
+  (division, which is what nominal means); `finance.effective(nominal, m)` is
+  what it actually earns in a year — the **APY** of a quoted rate — and
+  `finance.nominal(effective, m)` is its exact inverse;
+  `finance.continuous(effective)` and `finance.from_continuous(r)` cross to and
+  from continuously compounded rates. "12% compounded monthly" earns 12.6825%
+  a year, so the two annual rates are different numbers and which one a quote
+  means is not answerable from the number alone.
   `finance.year_fraction(from, to, convention)` is the day count, with
   `"actual/360"`, `"actual/365"`, `"actual/actual"` (ISDA, weighting each day
   by the length of its own year) and `"30/360"` (US bond basis, including the

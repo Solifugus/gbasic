@@ -1,6 +1,9 @@
 # Core finance design
 
-**Status:** Proposal
+**Status:** Shipped (Phase 1) — the conventions below are implemented in
+`stdlib/finance.bas`, with worked recipes in
+[finance_cookbook.md](finance_cookbook.md). Sections marked as future work
+remain proposals.
 **Scope:** `stdlib/finance.bas` — the time value of money, cash-flow appraisal,
 schedules and depreciation. This is the Phase 1 design the
 [finance and business platform proposal](gbasic_finance_business_platform_proposal.md)

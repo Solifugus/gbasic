@@ -238,6 +238,54 @@ library finance
         error who + " expects money, or 0, for each amount"
     end function
 
+    ' --- rate conversion ----------------------------------------------------
+    '
+    ' Every solver above takes the rate FOR ONE PERIOD, which is the caller's
+    ' arithmetic on purpose. These exist so that arithmetic is never a guess.
+    '
+    ' THE TWO ANNUAL RATES ARE DIFFERENT NUMBERS. A "12% nominal, compounded
+    ' monthly" loan and a "12% effective annual" loan are not the same loan:
+    ' the first earns 12.6825% over a year. A quoted rate is almost always
+    ' NOMINAL, and an APY or effective yield is what it actually comes to.
+
+    ' One period of a NOMINAL annual rate. Plain division, which is what
+    ' "nominal" means -- naming it is the point.
+    function periodic(nominal_annual, periods_per_year)
+        _check_rate(nominal_annual, "finance.periodic")
+        _check_periods(periods_per_year, "finance.periodic")
+        return nominal_annual / periods_per_year
+    end function
+
+    ' Nominal annual -> effective annual. This is the APY of a quoted rate.
+    function effective(nominal_annual, periods_per_year)
+        _check_rate(nominal_annual, "finance.effective")
+        _check_periods(periods_per_year, "finance.effective")
+        return pow(1 + nominal_annual / periods_per_year, periods_per_year) - 1
+    end function
+
+    ' Effective annual -> the nominal rate that produces it at that frequency.
+    ' The exact inverse of `effective`.
+    function nominal(effective_annual, periods_per_year)
+        _check_rate(effective_annual, "finance.nominal")
+        _check_periods(periods_per_year, "finance.nominal")
+        return (pow(1 + effective_annual, 1 / periods_per_year) - 1) * periods_per_year
+    end function
+
+    ' Effective annual -> the continuously compounded rate with the same
+    ' one-year growth, and back. Option pricing and curve work are written in
+    ' continuous rates; loans are not.
+    function continuous(effective_annual)
+        _check_rate(effective_annual, "finance.continuous")
+        return log(1 + effective_annual)
+    end function
+
+    function from_continuous(continuous_rate)
+        if type(continuous_rate) != "number" then
+            error "finance.from_continuous expects a rate as a number"
+        end if
+        return exp(continuous_rate) - 1
+    end function
+
     ' --- day count conventions ---------------------------------------------
     '
     ' What fraction of a year lies between two dates. Every accrual, coupon and
