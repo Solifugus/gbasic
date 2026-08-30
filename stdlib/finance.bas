@@ -191,8 +191,7 @@ library finance
         if f_lo * f_hi > 0 then
             error "finance.rate: no rate between -100% and 1000% balances these terms"
         end if
-        i = 0
-        while i < 200
+        for i = 1 to 200
             mid = (lo + hi) / 2
             f_mid = _tvm_residual(mid, nper, a, p, f, t)
             if f_lo * f_mid <= 0 then
@@ -201,8 +200,7 @@ library finance
                 lo = mid
                 f_lo = f_mid
             end if
-            i += 1
-        end while
+        end for
         return (lo + hi) / 2
     end function
 
@@ -315,11 +313,9 @@ library finance
             return dates.days_between(d_from, d_to) / _days_in_year(d_from.year)
         end if
         total = dates.days_between(d_from, _jan1(d_from.year + 1)) / _days_in_year(d_from.year)
-        y = d_from.year + 1
-        while y < d_to.year
+        for y = d_from.year + 1 to d_to.year - 1
             total = total + 1
-            y += 1
-        end while
+        end for
         return total + (dates.days_between(_jan1(d_to.year), d_to) / _days_in_year(d_to.year))
     end function
 
@@ -356,15 +352,13 @@ library finance
             error "finance.npv expects a non-empty array of money"
         end if
         total = flows[0] * 0
-        i = 0
-        while i < count(flows)
+        for i = 0 to count(flows) - 1
             f = flows[i]
             if type(f) != "money" then
                 error "finance.npv expects every flow to be money"
             end if
             total = total + (f / _growth(r, i + 1))
-            i += 1
-        end while
+        end for
         return total
     end function
 
@@ -396,11 +390,9 @@ library finance
     ' so both rate searches are the same function.
     function _period_offsets(n)
         offsets = []
-        i = 0
-        while i < n
+        for i = 0 to n - 1
             append(offsets, i)
-            i += 1
-        end while
+        end for
         return offsets
     end function
 
@@ -420,11 +412,9 @@ library finance
 
     function _npv_number(r, nums, offsets)
         total = 0.0
-        i = 0
-        while i < count(nums)
+        for i = 0 to count(nums) - 1
             total = total + nums[i] / pow(1 + r, offsets[i])
-            i += 1
-        end while
+        end for
         return total
     end function
 
@@ -449,8 +439,7 @@ library finance
         a = lo
         f_a = _npv_number(a, nums, offsets)
         found = false
-        i = 1
-        while i <= steps
+        for i = 1 to steps
             b = lo + width * i
             f_b = _npv_number(b, nums, offsets)
             if f_a = 0 then
@@ -464,14 +453,12 @@ library finance
             end if
             a = b
             f_a = f_b
-            i += 1
-        end while
+        end for
         if not found then
             error who + ": no rate between -100% and 1000% makes these flows break even"
         end if
         f_lo = _npv_number(lo, nums, offsets)
-        i = 0
-        while i < 200
+        for i = 1 to 200
             mid = (lo + hi) / 2
             f_mid = _npv_number(mid, nums, offsets)
             if f_lo * f_mid <= 0 then
@@ -480,8 +467,7 @@ library finance
                 lo = mid
                 f_lo = f_mid
             end if
-            i += 1
-        end while
+        end for
         return (lo + hi) / 2
     end function
 
@@ -539,8 +525,7 @@ library finance
         if type(dates_list) != "array" or count(dates_list) != count(values) then
             error who + " expects one date per flow"
         end if
-        i = 0
-        while i < count(values)
+        for i = 0 to count(values) - 1
             if type(values[i]) != "money" then
                 error who + " expects every flow to be money"
             end if
@@ -550,19 +535,16 @@ library finance
             if i > 0 and dates_list[i] < dates_list[i - 1] then
                 error who + " expects the dates in ascending order"
             end if
-            i += 1
-        end while
+        end for
         return nothing
     end function
 
     ' Year offsets from the first date, Actual/365.
     function _date_offsets(dates_list)
         offsets = []
-        i = 0
-        while i < count(dates_list)
+        for i = 0 to count(dates_list) - 1
             append(offsets, dates.days_between(dates_list[0], dates_list[i]) / 365)
-            i += 1
-        end while
+        end for
         return offsets
     end function
 
@@ -572,11 +554,9 @@ library finance
         _check_dated(values, dates_list, "finance.xnpv")
         offsets = _date_offsets(dates_list)
         total = values[0] * 0
-        i = 0
-        while i < count(values)
+        for i = 0 to count(values) - 1
             total = total + (values[i] / pow(1 + rate, offsets[i]))
-            i += 1
-        end while
+        end for
         return total
     end function
 
