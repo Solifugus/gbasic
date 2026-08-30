@@ -34,10 +34,19 @@ program main(args)
   end while
   print "the same in numbers   = " + string(approx) + "   <- not 10"
 
+  ' Money stores four guard digits below the minor unit, so USD holds six
+  ' decimal places. Sub-cent prices are ordinary -- fuel is posted at $3.459
+  ' a gallon -- and they are kept exactly, even though display rounds to
+  ' cents. Multiply to see the digits that are really there.
+  print ""
+  fuel {USD}= "3.459"
+  print "posted 3.459/gal     = " + string(fuel) + "   <- display rounds"
+  print "  ten gallons        = " + string(fuel * 10) + "  <- the value did not"
+
   ' Excess precision you WROTE is refused, because you wrote something money
-  ' cannot hold. Excess precision that a CALCULATION produced is rounded,
-  ' because `price * 1.08` always has seventeen digits and refusing it would
-  ' make the type unusable.
+  ' cannot hold -- past the six places, not past the two. Excess precision a
+  ' CALCULATION produced is rounded, because `price * 1.08` always has
+  ' seventeen digits and refusing it would make the type unusable.
   print ""
   on error goto next
   bad {USD}= "1.23456789"

@@ -160,6 +160,29 @@ the platform ruling, matching gdash's design §4 and the house idiom already
 used by `odbc` (refuse what cannot be represented faithfully) and `encode`
 (refuse a value whose text will not read back).
 
+**The threshold is the storage scale, not the minor unit, and the distinction
+is load-bearing.** Phase 2 shipped with it at the minor unit, on the argument
+that guard digits are internal headroom rather than precision an author may
+claim. That argument is wrong three ways, and it is written down here because
+it is easy to re-derive. Sub-cent *authored* prices are ordinary rather than
+exotic — fuel is posted at $3.459 a gallon, electricity quoted at $0.10432 a
+kWh — so the narrow rule refused values the type holds exactly, while
+reporting that the currency did not allow them, which was false. It refused
+`"0.030000"`, which claims no extra precision at all, being `0.03` with
+trailing zeros. And it defeated the requirement that motivated guard digits in
+the first place: representing three cents as `3.0000`. Corrected 2026-08-29
+after gdash reported it; the two construction routes now share one threshold
+and differ only in what an excess digit **means** (§11).
+
+**The exit has to match the entrance.** Fixing the threshold made sub-cent
+values constructible and immediately exposed the mirror gap: `string(m)`
+renders at the minor unit and `number(m)` refuses money, so an exact value
+went in and could not come out. `money.text(amount [, places])` renders at the
+storage scale by default, so text written to a database column or a JSON
+document reads back through `{CUR}=` as the same value; an explicit width
+renders there instead, half-even. Display keeps rounding to the minor unit,
+because that is what a screen wants.
+
 **Display is at currency precision**, and the rounding rule is **half-even by
 default** — the usual financial choice, and unbiased. It is *not* the only rule
 available: several tax jurisdictions mandate half-up, and hardcoding half-even

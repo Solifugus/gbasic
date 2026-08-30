@@ -23,12 +23,21 @@ end function
 on error goto next
 
 ' ------------------------------------------- authored excess precision
-a {USD}= "1.234"
-check("sub-cent authored text is refused", error.message, "money text has more decimal places than the currency allows")
+' The threshold is the STORAGE SCALE, not the minor unit (design §5). USD
+' stores 6 places, so seven is the first that cannot be held. It was briefly
+' the minor unit, which refused ordinary sub-cent prices -- and refused
+' "0.030000" too, which claims no extra precision at all; the acceptance tier
+' at the foot of this file is what pins that.
+a {USD}= "1.2345678"
+check("authored text past the STORAGE scale is refused", error.message, "USD: money text has more decimal places than the currency can store (USD stores 6)")
 error.clear()
 
-b {USD}= "0.125"
-check("a sub-cent authored digit is refused", error.message, "money text has more decimal places than the currency allows")
+b {KWD}= "0.12345678"
+check("the threshold follows the CURRENCY, not a constant", error.message, "KWD: money text has more decimal places than the currency can store (KWD stores 7)")
+error.clear()
+
+c2 {JPY}= "12.00001"
+check("a minor-unit-free currency still stores its guard digits", error.message, "JPY: money text has more decimal places than the currency can store (JPY stores 4)")
 error.clear()
 
 ' ------------------------------------------------------------- range
@@ -83,7 +92,7 @@ error.clear()
 ' Without this tier the refusals above could be satisfied by a modifier that
 ' rejected everything. Each of these is the nearest legal neighbour of a
 ' refusal directly above it.
-n {USD}= 1.234
+n {USD}= number("1.2345678")
 check("the SAME excess precision, COMPUTED, is accepted", n, "1.23")
 error.clear()
 
@@ -97,6 +106,41 @@ error.clear()
 
 q {USD}= "1e2"
 check("a well-formed exponent is accepted", q, "100.00")
+error.clear()
+
+' --------------------------------- what the MINOR-UNIT threshold used to refuse
+' These are the regression tier for the threshold fix. Every one of them was
+' refused as "more decimal places than the currency allows" -- a report that
+' was false, since the type holds all of them exactly. Sub-cent authored
+' prices are ordinary rather than exotic: fuel is posted at $3.459 a gallon
+' and electricity quoted at $0.10432 a kWh.
+r {USD}= "0.035"
+check("a half-cent price is accepted", r, "0.04")
+error.clear()
+
+s2 {USD}= "3.459"
+check("a posted fuel price is accepted", s2, "3.46")
+error.clear()
+
+' Retention is the point, and display cannot show it: 0.10432 rounds to 0.10
+' for display, so only arithmetic reveals whether the guard digits survived
+' construction. A value rounded to cents at the door gives 100.00 here.
+t {USD}= "0.10432"
+check("an authored sub-cent value is RETAINED, not rounded at the door", t * 1000, "104.32")
+error.clear()
+
+' The requirement that motivated guard digits, in gdash's own words: three
+' cents as 3.0000. Trailing zeros claim no precision at all.
+u {USD}= "0.030000"
+check("trailing zeros are accepted", u, "0.03")
+error.clear()
+
+v {USD}= "0.03"
+check("and change nothing about the value", u = v, true)
+error.clear()
+
+w {USD}= "1.234567"
+check("exactly AT the storage scale is accepted", w * 1000000, "1234567.00")
 error.clear()
 
 on error stop

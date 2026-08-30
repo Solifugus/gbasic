@@ -23,6 +23,16 @@ program main(args)
   print ""
   print "50000000000.01 x 3 = " + string(big * 3)
 
+  ' Those guard digits are real, and `string` does not show them -- it renders
+  ' at the cent, which is what you want on screen. `money.text` renders the
+  ' whole value, so money survives a trip through a database column or a JSON
+  ' document and reads back as the same value.
+  third = one_dollar() / 3
+  print ""
+  print "a third of a dollar  = " + string(third) + "        <- on screen"
+  print "  all of it          = " + money.text(third) + "  <- in a file"
+  print "  times three        = " + string(third * 3)
+
   ' Overflow raises rather than wrapping. Guard digits cost range: USD spans
   ' about plus or minus 9.22 trillion, which is generous but not infinite.
   on error goto next

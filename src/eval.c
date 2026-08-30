@@ -3691,6 +3691,13 @@ typedef enum {
     MONEY_EXCESS_ROUND     /* a computed value: rounding below the scale is harmless */
 } MoneyExcess;
 
+/* The excess-precision refusal. Named because the construction site recognises
+ * it and reissues it naming the currency and its actual limit -- "how many
+ * places DOES it store" is the author's next question, and the answer varies
+ * by currency (6 for USD, 7 for KWD, 4 for JPY). */
+#define MONEY_ERR_EXCESS_DIGITS \
+    "money text has more decimal places than the currency can store"
+
 /* Round-half-even on a decision digit plus whether anything nonzero follows.
  * Half-even is the financial default (§5): it is unbiased across many
  * roundings, where half-up drifts upward. */
@@ -3786,7 +3793,7 @@ static int money_parse_decimal(const char *text,
         /* Everything is below the scale. Still a rounding decision: 0.6 cents
          * at scale 2 is 0.01, not 0. */
         if (excess == MONEY_EXCESS_REJECT && (ndigits > 0 || dropped_nonzero)) {
-            *err = "money text has more decimal places than the currency allows";
+            *err = MONEY_ERR_EXCESS_DIGITS;
             return 0;
         }
         int decision = (keep == 0 && ndigits > 0) ? digits[0] - '0' : 0;
@@ -3808,7 +3815,7 @@ static int money_parse_decimal(const char *text,
     if (keep < ndigits) {
         /* Digits fall below the scale. */
         if (excess == MONEY_EXCESS_REJECT) {
-            *err = "money text has more decimal places than the currency allows";
+            *err = MONEY_ERR_EXCESS_DIGITS;
             return 0;
         }
         int decision = digits[keep] - '0';
@@ -23951,6 +23958,53 @@ static Value money_eval_call(AstExpr *expr) {
         return value_number((double)assigned);
     }
 
+    if (strcmp(name, "text") == 0) {
+        /* The lossless EXIT, and the mirror of the construction rule.
+         *
+         * `string(m)` renders at the currency's minor unit, which is right for
+         * display and lossy for storage: a value authored or computed below
+         * the cent -- $0.10432 a kWh -- comes back "0.10", and `number(m)`
+         * refuses money outright. So until this existed a program could put an
+         * exact sub-cent value in and had no way to get it out again, which is
+         * the same too-narrow-doorway defect the construction threshold had,
+         * one level along. gdash holds decimal text and needs the digits back.
+         *
+         * Default is the STORAGE SCALE, so `money.text(m)` round-trips through
+         * `{USD}=` exactly. An explicit digit count renders at that many
+         * places instead, rounding half-even like everything else here. */
+        if (expr->as.call.args.count < 1 || expr->as.call.args.count > 2) {
+            runtime_error_raise("money.text expects an amount and an optional number of decimal places",
+                                1003, "money");
+            return value_null();
+        }
+        Value amount = eval_expr(expr->as.call.args.items[0]);
+        if (error_action_pending()) { value_free(amount); return value_null(); }
+        if (amount.kind != VALUE_MONEY) {
+            value_free(amount);
+            runtime_error_raise("money.text expects money", 1003, "money");
+            return value_null();
+        }
+        int digits = money_scale_of(amount.as.money);
+        if (expr->as.call.args.count == 2) {
+            Value d = eval_expr(expr->as.call.args.items[1]);
+            if (error_action_pending()) { value_free(amount); value_free(d); return value_null(); }
+            if (d.kind != VALUE_NUMBER || !isfinite(d.as.number) ||
+                d.as.number != floor(d.as.number) ||
+                d.as.number < 0 || d.as.number > 18) {
+                value_free(amount); value_free(d);
+                runtime_error_raise("money.text expects a whole number of decimal places from 0 to 18",
+                                    1003, "money");
+                return value_null();
+            }
+            digits = (int)d.as.number;
+            value_free(d);
+        }
+        char buf[64];
+        money_render(amount.as.money, digits, buf, sizeof(buf));
+        value_free(amount);
+        return value_string(buf);
+    }
+
     if (strcmp(name, "allocate") == 0) {
         /* --- PLAT-MONEY phase 4: splitting money into PAYABLE parts --------
          *
@@ -30258,18 +30312,24 @@ static Value apply_assignment_modifier(AstModifierUse modifier, Value value) {
 
         int scale = (int)mod_exp + MONEY_GUARD_DIGITS;
         if (value.kind == VALUE_STRING) {
-            /* Authored text is rejected past the MINOR UNIT, not past the
-             * guard digits: the guard digits are internal headroom for
-             * intermediates, not precision an author may claim to have. */
-            ok = money_parse_decimal(value.as.string, (int)mod_exp,
+            /* Authored text is rejected past the STORAGE SCALE (design §5),
+             * which is the same scale the computed route uses: the two routes
+             * differ in what an excess digit MEANS, not in where the value
+             * stops fitting.
+             *
+             * This threshold was briefly the MINOR UNIT, on the argument that
+             * guard digits are internal headroom rather than precision an
+             * author may claim. That argument is wrong twice over. Sub-cent
+             * authored prices are ordinary, not exotic -- fuel is posted at
+             * $3.459 a gallon and electricity quoted at $0.10432 a kWh -- so
+             * the narrow rule refused values the type holds exactly while
+             * reporting that the currency does not allow them, which was
+             * false. And it refused "0.030000", which claims no extra
+             * precision at all: it is 0.03 with trailing zeros. It also
+             * defeated the requirement that motivated guard digits in the
+             * first place, representing three cents as 3.0000. */
+            ok = money_parse_decimal(value.as.string, scale,
                                      MONEY_EXCESS_REJECT, &units, &err);
-            if (ok) {
-                for (int g = 0; g < MONEY_GUARD_DIGITS; g++) {
-                    if (__builtin_mul_overflow(units, 10LL, &units)) {
-                        ok = 0; err = "money value is out of range"; break;
-                    }
-                }
-            }
         } else if (value.kind == VALUE_NUMBER) {
             if (!isfinite(value.as.number)) {
                 char message[128];
@@ -30312,6 +30372,15 @@ static Value apply_assignment_modifier(AstModifierUse modifier, Value value) {
 
         value_free(value);
         if (!ok) {
+            if (err && strcmp(err, MONEY_ERR_EXCESS_DIGITS) == 0) {
+                char message[192];
+                snprintf(message, sizeof(message),
+                         "%s: %s (%s stores %d)",
+                         modifier.name, MONEY_ERR_EXCESS_DIGITS,
+                         modifier.name, scale);
+                runtime_error_raise(message, 1003, "money");
+                return value_null();
+            }
             runtime_error_raise(err ? err : "invalid money value", 1003, "money");
             return value_null();
         }

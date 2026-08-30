@@ -64,10 +64,19 @@ program main(args)
   end while
   print "the same in numbers   = " + string(approx) + "   <- not 10"
 
+  ' Money stores four guard digits below the minor unit, so USD holds six
+  ' decimal places. Sub-cent prices are ordinary -- fuel is posted at $3.459
+  ' a gallon -- and they are kept exactly, even though display rounds to
+  ' cents. Multiply to see the digits that are really there.
+  print ""
+  fuel {USD}= "3.459"
+  print "posted 3.459/gal     = " + string(fuel) + "   <- display rounds"
+  print "  ten gallons        = " + string(fuel * 10) + "  <- the value did not"
+
   ' Excess precision you WROTE is refused, because you wrote something money
-  ' cannot hold. Excess precision that a CALCULATION produced is rounded,
-  ' because `price * 1.08` always has seventeen digits and refusing it would
-  ' make the type unusable.
+  ' cannot hold -- past the six places, not past the two. Excess precision a
+  ' CALCULATION produced is rounded, because `price * 1.08` always has
+  ' seventeen digits and refusing it would make the type unusable.
   print ""
   on error goto next
   bad {USD}= "1.23456789"
@@ -91,7 +100,10 @@ identical     : true
 0.01 added 1000 times = 10.00
 the same in numbers   = 9.999999999999831   <- not 10
 
-authored 1.23456789 : money text has more decimal places than the currency allows
+posted 3.459/gal     = 3.46   <- display rounds
+  ten gallons        = 34.59  <- the value did not
+
+authored 1.23456789 : USD: money text has more decimal places than the currency can store (USD stores 6)
 computed 19.95*1.08 : 21.55
 ```
 
@@ -100,10 +112,17 @@ number; it is an exact integer of scaled units. Both decimal **text** and a
 plain literal are exact, because a literal is rendered to its shortest decimal
 before being parsed.
 
+Money stores four **guard digits** below the minor unit, so a USD value holds
+six decimal places, not two. Sub-cent prices are ordinary rather than exotic —
+fuel is posted at $3.459 a gallon, electricity quoted at $0.10432 a kWh — and
+they are stored exactly. Display rounds to cents, so the only way to see the
+retained digits is to use them: `fuel * 10` is `34.59`, which a value rounded
+at construction could not produce.
+
 The split on excess precision is deliberate: what you **wrote** is refused,
-because you wrote something money cannot hold; what a **calculation** produced
-is rounded, because `price * 1.08` always carries seventeen digits and
-refusing it would make the type unusable.
+because you wrote something money cannot hold — past the six places, not past
+the two; what a **calculation** produced is rounded, because `price * 1.08`
+always carries seventeen digits and refusing it would make the type unusable.
 
 ---
 
@@ -218,6 +237,16 @@ program main(args)
   print ""
   print "50000000000.01 x 3 = " + string(big * 3)
 
+  ' Those guard digits are real, and `string` does not show them -- it renders
+  ' at the cent, which is what you want on screen. `money.text` renders the
+  ' whole value, so money survives a trip through a database column or a JSON
+  ' document and reads back as the same value.
+  third = one_dollar() / 3
+  print ""
+  print "a third of a dollar  = " + string(third) + "        <- on screen"
+  print "  all of it          = " + money.text(third) + "  <- in a file"
+  print "  times three        = " + string(third * 3)
+
   ' Overflow raises rather than wrapping. Guard digits cost range: USD spans
   ' about plus or minus 9.22 trillion, which is generous but not infinite.
   on error goto next
@@ -248,6 +277,10 @@ end function
 
 50000000000.01 x 3 = 150000000000.03
 
+a third of a dollar  = 0.33        <- on screen
+  all of it          = 0.333333  <- in a file
+  times three        = 1.00
+
 past the ceiling: money value is out of range
 ```
 
@@ -255,6 +288,12 @@ Money stores four **guard digits** below the minor unit, so intermediates
 below a cent survive and are rounded once, at display. That is why
 `(100.00 / 3) * 3` comes back whole where a cents-only representation gives
 `99.99`.
+
+`string` shows the cent, which is right on screen and lossy in a file — a
+third of a dollar is `0.33` there and `0.333333` in the value. Use
+**`money.text`** when the digits have to survive: it renders the whole value,
+and the text reads back through `{USD}=` as the same money. That is the form
+to put in a database column or a JSON document.
 
 The cost is range — USD spans about ±$9.22 trillion — and overflow **raises**
 rather than wrapping.

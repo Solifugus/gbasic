@@ -745,10 +745,11 @@ Arrays currently work best with numeric aggregate built-ins. Records hold string
 
 File and directory references are typed paths, not open handles.
 
-Money created by `USD` is stored as **exact integer cents** — never a
+Money is stored as an **exact integer** count of units — never a
 floating-point value, so accumulating `0.01` a thousand times is exactly
-`10.00`. See [money_design.md](money_design.md) for the representation and the
-work still planned (per-currency scale, guard digits, currency identity).
+`10.00`. A value carries its currency, and the scale is that currency's minor
+unit plus four guard digits. See [money_design.md](money_design.md) for the
+representation.
 
 ### Strings and Unicode
 
@@ -1115,6 +1116,24 @@ gives `99.99`. The cost is range — USD spans about ±$9.22 trillion, JPY about
 ±¥922 trillion, KWD about ±922 billion. Beyond that, arithmetic **raises**
 rather than wrapping.
 
+`string(m)` renders at the currency's minor unit, which is what you want on
+screen and lossy in a file. **`money.text(amount [, places])`** is the exit
+that keeps the guard digits:
+
+```basic
+rate {USD}= "0.10432"
+print string(rate)              ' 0.10       <- display
+print money.text(rate)          ' 0.104320   <- the whole value
+print money.text(rate, 2)       ' 0.10       <- an explicit width
+back {USD}= money.text(rate)    ' round-trips exactly
+```
+
+With no width it renders at the **storage scale**, so the text reads back
+through `{USD}=` as the same value — which is what storing money as decimal
+text in a database or a JSON document needs. An explicit width renders there
+instead, rounding half-even. It raises on anything but money, and on a width
+that is not a whole number from 0 to 18.
+
 The built-in table is the **current** ISO 4217 list, so withdrawn currencies
 (ITL, DEM, FRF) are not in it. Register what you need:
 
@@ -1223,8 +1242,15 @@ becomes `0.12` and `0.155` becomes `0.16`. Before rc9 the rule depended on the
 Range is int64 at the storage scale, so it depends on the currency: about
 ±$9.22 trillion for USD, ±¥922 trillion for JPY. Beyond that, and on a
 non-finite number, a currency modifier raises rather than wrapping or
-saturating. Authored text is capped at the **minor unit** — the guard digits
-are internal headroom for intermediates, not precision an author may claim.
+saturating.
+
+Both construction routes stop at the **storage scale** — six decimal places
+for USD, seven for KWD, four for JPY — and differ only in what an excess digit
+means. Text you wrote is **refused**, because you wrote something money cannot
+hold; a number is **rounded** half-even, because `price * 1.08` carries
+seventeen digits as a matter of course. So a sub-cent authored price is exact
+(`{USD}= "3.459"` is a real fuel price, and `x * 10` gives `34.59`) while
+`{USD}= "1.23456789"` raises, naming the limit.
 
 - Assignment: `USD`, `date`, `time`, `datetime`, `year`, `month`, `day`, `hour`, `minute`, `second`, `file`, `dir`, `trimmed`/`trim`, `lowered`/`lower`, `uppered`/`upper` (both spellings accepted), `split`, `join`, `length`, `number`, `string`
 - Comparison: `caseless`, date/time lens comparisons

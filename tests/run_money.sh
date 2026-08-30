@@ -99,14 +99,44 @@ do
 done
 
 printf 'TIER refusals\n'
-run_fixture tests/money_refusal_test.bas 17 'money_refusal'
+run_fixture tests/money_refusal_test.bas 24 'money_refusal'
 
+# The threshold labels are named individually because the refusal tier and the
+# acceptance tier below it are only meaningful as a PAIR: the same fixture has
+# to refuse past the storage scale AND accept everything up to it, or a
+# threshold that drifted in either direction would still look green. The
+# retention label is the one display cannot show -- see the fixture.
 for label in \
-    'sub-cent authored text is refused' \
+    'authored text past the STORAGE scale is refused' \
+    'the threshold follows the CURRENCY, not a constant' \
     "past USD's ceiling is refused" \
     'a non-finite number is refused' \
     'the SAME excess precision, COMPUTED, is accepted' \
-    'just inside the ceiling is accepted'
+    'just inside the ceiling is accepted' \
+    'a half-cent price is accepted' \
+    'an authored sub-cent value is RETAINED, not rounded at the door' \
+    'trailing zeros are accepted' \
+    'exactly AT the storage scale is accepted'
+do
+    if command grep -Fq "ok   $label" "$work/out"; then
+        pass "asserted: $label"
+    else
+        fail "asserted: $label"
+    fi
+done
+
+printf 'TIER the lossless exit (money.text)\n'
+run_fixture tests/money_text_test.bas 20 'money_text'
+
+# The control label is named explicitly: every other check in that fixture is
+# also satisfied by a money.text that simply called string(), except the round
+# trips -- and those pass for any value that happens to land on whole cents.
+for label in \
+    'USD renders at its storage scale' \
+    'USD round-trips through text exactly' \
+    'a computed third round-trips' \
+    'money.text does not' \
+    'half-even rounds 0.125 to 0.12'
 do
     if command grep -Fq "ok   $label" "$work/out"; then
         pass "asserted: $label"
@@ -322,6 +352,7 @@ fi
 printf 'TIER valgrind\n'
 if command -v valgrind >/dev/null 2>&1; then
     for fixture in tests/money_construct_test.bas tests/money_refusal_test.bas \
+                   tests/money_text_test.bas \
                    tests/money_arithmetic_test.bas tests/money_overflow_test.bas \
                    tests/money_currency_test.bas tests/money_registry_test.bas \
                    tests/money_fx_test.bas tests/money_allocate_test.bas; do

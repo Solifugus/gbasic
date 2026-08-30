@@ -5,5 +5,8 @@ identical     : true
 0.01 added 1000 times = 10.00
 the same in numbers   = 9.999999999999831   <- not 10
 
-authored 1.23456789 : money text has more decimal places than the currency allows
+posted 3.459/gal     = 3.46   <- display rounds
+  ten gallons        = 34.59  <- the value did not
+
+authored 1.23456789 : USD: money text has more decimal places than the currency can store (USD stores 6)
 computed 19.95*1.08 : 21.55
