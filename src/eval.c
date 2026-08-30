@@ -8791,15 +8791,27 @@ static Value eval_dir_call(AstExpr *expr) {
     }
 
     Value dir_value = eval_expr(expr->as.call.args.items[0]);
-    if (dir_value.kind != VALUE_DIR) {
+    /* A plain string path is accepted as well as a `{dir}` reference, matching
+     * `list_files`, which has always taken either. Requiring the modifier here
+     * bought nothing: `{dir}=` is a LABELLING operation, not a validation --
+     * it accepts a missing path and even a file's path -- so `d {dir}= p` in
+     * front of every listing was ceremony that checked nothing. */
+    const char *dir_path = NULL;
+    if (dir_value.kind == VALUE_DIR) {
+        dir_path = dir_value.as.dir_path;
+    } else if (dir_value.kind == VALUE_STRING) {
+        dir_path = dir_value.as.string;
+    }
+    if (!dir_path) {
         char message[128];
-        snprintf(message, sizeof(message), "%s expects a directory reference", name);
+        snprintf(message, sizeof(message),
+                 "%s expects a string or directory reference", name);
         runtime_error_raise(message, 1003, "invalid function call");
         value_free(dir_value);
         return value_null();
     }
 
-    DIR *dir = opendir(dir_value.as.dir_path);
+    DIR *dir = opendir(dir_path);
     if (!dir) {
         value_free(dir_value);
         return value_array(NULL, 0);
@@ -8813,14 +8825,14 @@ static Value eval_dir_call(AstExpr *expr) {
             continue;
         }
 
-        size_t folder_len = strlen(dir_value.as.dir_path);
+        size_t folder_len = strlen(dir_path);
         size_t name_len = strlen(entry->d_name);
-        int needs_slash = folder_len > 0 && dir_value.as.dir_path[folder_len - 1] != '/';
+        int needs_slash = folder_len > 0 && dir_path[folder_len - 1] != '/';
         char *path = malloc(folder_len + (size_t)needs_slash + name_len + 1);
         if (!path) {
             abort();
         }
-        memcpy(path, dir_value.as.dir_path, folder_len);
+        memcpy(path, dir_path, folder_len);
         if (needs_slash) {
             path[folder_len] = '/';
         }
@@ -8846,7 +8858,7 @@ static Value eval_dir_call(AstExpr *expr) {
             abort();
         }
         items = next;
-        items[count++] = make_dir_entry(dir_value.as.dir_path, entry->d_name, type);
+        items[count++] = make_dir_entry(dir_path, entry->d_name, type);
     }
 
     closedir(dir);

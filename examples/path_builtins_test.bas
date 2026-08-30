@@ -2,8 +2,9 @@
 '
 ' `real_path` resolves `.`, `..` and symlinks through the kernel and reports a
 ' missing path as `unknown`. `file_type` says "file", "folder" or "other", also
-' `unknown` when nothing is there -- the only non-raising way to ask whether a
-' path is a directory (`file_size` on one raises, and a raise cannot be caught).
+' `unknown` when nothing is there -- the way to ask whether a path is a
+' directory without raising (`file_size` on one raises; that IS catchable now
+' with frame-scoped `on error`, but a value beats an error for a plain query).
 '
 ' Every check states its own expected answer, and the output names no absolute
 ' path, so the golden is the same on any machine.
@@ -59,6 +60,35 @@ delete(note)
 remove_dir(inner)
 remove_dir(home)
 append(results, check("the probe cleaned up after itself", true, is_unknown(file_type("examples/tmp_pathprobe"))))
+
+' ---------------------------------------------------------------------------
+' `list`, `files` and `folders` take a plain string path as well as a `{dir}`
+' reference, matching `list_files`. The two forms must agree exactly -- if a
+' string were resolved differently the counts would drift apart on a directory
+' with subdirectories, which "examples" has.
+probe = "examples/money_cookbook"
+pd {dir}= probe
+append(results, check("list takes a string", list(pd), list(probe)))
+append(results, check("files takes a string", files(pd), files(probe)))
+append(results, check("folders takes a string", folders(pd), folders(probe)))
+
+' The counts are not the check above -- deep equality is -- but a listing that
+' returned nothing for both forms would satisfy it, so pin that the probe
+' directory is not empty.
+append(results, check("and the probe actually listed something", true, count(list(probe)) > 0))
+
+' Wrong types are still refused. A file reference is included deliberately: a
+' file is not a directory, and quietly listing its parent would be a plausible
+' wrong answer rather than an error.
+on error goto next
+oops = list(42)
+append(results, check("a number is still refused", "list expects a string or directory reference", error.message))
+error.clear()
+fref {file}= "examples/path_builtins_test.bas"
+oops2 = list(fref)
+append(results, check("a file reference is still refused", "list expects a string or directory reference", error.message))
+error.clear()
+on error stop
 
 bad = 0
 for each verdict in results

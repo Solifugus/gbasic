@@ -3545,7 +3545,19 @@ from this and neither is silent:
 
   The one harmonisation worth making is the OPPOSITE of the one proposed and
   breaks nothing: let `list`/`files`/`folders` accept a plain string path the
-  way `list_files` does, dropping the `{dir}=` ceremony. Not done here --
-  it is an API change and belongs to whoever owns that call. Merging the two
-  functions is declined separately: `list_files` cannot see a subdirectory at
-  all, which is precisely why `list` is the one a recursive walk is built on.
+  way `list_files` does, dropping the `{dir}=` ceremony. **DONE 2026-08-29,
+  approved by Matthew.** `{dir}=` turned out to be a LABELLING operation with
+  no validation in it -- it accepts a missing path and even a file's path --
+  so the modifier in front of every listing was ceremony that checked nothing.
+  Merging the two functions is declined separately: `list_files` cannot see a
+  subdirectory at all, which is precisely why `list` is the one a recursive
+  walk is built on.
+
+  Left ALONE deliberately, and now documented rather than fixed: the two
+  families disagree on a directory that cannot be opened. `list_files` raises;
+  `list`/`files`/`folders` return an empty array, indistinguishable from an
+  empty directory -- the silent-answer shape this file usually argues against.
+  It stays because `stdlib/filetree.bas` documents and depends on it ("Missing/
+  unreadable dir -> empty (no raise)"), and it is right for a tree browser: a
+  subdirectory you cannot read should not end a walk. `file_type(p)` answers
+  the question for callers who need it.

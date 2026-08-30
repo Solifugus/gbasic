@@ -59,7 +59,7 @@ fatal watch_body.bas "undefined variable: undefined_in_body"
 # builtins left with the shape; the sweep is what makes that a measurement
 # rather than a hope.
 fatal dir_arity.bas "list expects one directory argument"
-fatal dir_type.bas  "files expects a directory reference"
+fatal dir_type.bas  "files expects a string or directory reference"
 
 # --- catchable, which the printed line never was --------------------------
 for name in label_caught index_read_caught modifier_caught watch_caught dir_caught; do

@@ -108,9 +108,12 @@ for error handling, `ERRORS.md`.
   verdict for the same file. → `examples/xlsx_try_open_test.bas`
 - **Walking a directory tree** — `list_files` reports FILES ONLY and does not
   recurse, so it cannot drive a walk: a subdirectory is invisible to it. Use
-  `list(d)` on a `{dir}` reference, which answers `{name, path, type}` for every
-  entry including folders, and keep your own worklist. Take `e.path` from the
-  record rather than reassembling `here + "/" + e.name`.
+  `list(path)`, which answers `{name, path, type}` for every entry including
+  folders, and keep your own worklist. It takes a plain string or a `{dir}`
+  reference, so no `d {dir}= p` line is needed. Take `e.path` from the record
+  rather than reassembling `here + "/" + e.name`. NOTE `list`/`files`/`folders`
+  return an EMPTY ARRAY for a directory they cannot open, where `list_files`
+  RAISES -- ask `file_type(p)` first if you need to tell empty from missing.
   → `stdlib/filetree.bas`
 - **Taking a path apart — do NOT write your own splitter** — `file_name(p)`,
   `directory_name(p)`, `extension(p)` and `join_path(a, b)` all exist, and all

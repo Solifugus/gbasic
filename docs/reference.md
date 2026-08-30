@@ -4128,18 +4128,21 @@ Listing a directory — two functions, and the difference matters:
   and the rest. It does **not** recurse, and it does **not** report
   subdirectories at all, so it cannot by itself drive a walk: a directory is
   invisible to it.
-- `list(d)` — every entry of a **directory reference**, as
-  `{name, path, type}` records where `type` is `"file"` or `"folder"`. `name`
-  is the bare entry name and `path` is the path to it. This is the one to build
-  a recursive walk on, because it is the one that can see a subdirectory:
+- `list(d)` — every entry of a directory, as `{name, path, type}` records
+  where `type` is `"file"` or `"folder"`. `name` is the bare entry name and
+  `path` is the path to it. Takes a **plain string path or a `{dir}`
+  reference** (*since 0.1.0-rc9*), so the `d {dir}= p` line in front of a
+  listing is no longer needed — `{dir}=` labels a path, it does not check one,
+  and it accepts a missing path or a file's path just the same. This is the
+  one to build a recursive walk on, because it is the one that can see a
+  subdirectory:
 
   ```basic
   pending = [root]
   found = []
   while len(pending) > 0
       here = take_last(pending)
-      d {dir} = here
-      for each e in list(d)
+      for each e in list(here)
           if e.type = "folder" then
               pending = append(pending, e.path)
           else
@@ -4152,9 +4155,17 @@ Listing a directory — two functions, and the difference matters:
   Use `e.path` rather than reassembling `here + "/" + e.name` by hand — the
   record already carries it.
 
-- `files(d)` / `folders(d)` — the same records as `list`, filtered to one kind.
-  `files(d)` is `list(d)` minus the subdirectories, which makes it the direct
-  counterpart of `list_files` for a directory reference.
+- `files(d)` / `folders(d)` — the same records as `list`, filtered to one
+  kind, and they take a string path or a `{dir}` reference too. `files(d)` is
+  `list(d)` minus the subdirectories.
+
+  **The two families differ on a directory that cannot be opened, and the
+  difference is deliberate.** `list_files` **raises** (`could not list files:
+  <path>`); `list`, `files` and `folders` return an **empty array**, which is
+  indistinguishable from a genuinely empty directory. That is what a tree
+  browser wants — a subdirectory you lack permission to read should not end a
+  walk, and `stdlib/filetree.bas` relies on it — but if you need to know the
+  difference, ask `file_type(p)` first.
 
   Order is the filesystem's, not sorted — `sort` it if you need a stable one.
   `stdlib/filetree.bas` is this walk with expand/collapse state on top.

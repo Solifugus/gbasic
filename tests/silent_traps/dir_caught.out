@@ -1,2 +1,2 @@
-caught: folders expects a directory reference
+caught: folders expects a string or directory reference
 a real listing still works: true

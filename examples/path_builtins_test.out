@@ -10,6 +10,12 @@ ok   a missing path is unknown
 ok   and so is a path under a missing directory
 ok   out and back is where you started
 ok   the probe cleaned up after itself
+ok   list takes a string
+ok   files takes a string
+ok   folders takes a string
+ok   and the probe actually listed something
+ok   a number is still refused
+ok   a file reference is still refused
 
-checks: 12
+checks: 18
 mismatches: 0
