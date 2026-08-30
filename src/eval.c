@@ -2893,6 +2893,18 @@ static void runtime_error_raise(const char *message, int code, const char *sourc
     raise_in_flight = 1;
 }
 
+/* Raise against a location that is NOT the current statement. Needed for the
+ * checks that run at DECLARATION time -- a malformed parameter list is a fact
+ * about the `function` line, and reporting it against whatever statement the
+ * pre-registration pass happens to be on would point at the wrong file. */
+static void runtime_error_raise_at(const char *message, int code,
+                                   const char *source, int line, int column) {
+    error_set_state_full(message, code, source, value_null(), value_null(),
+                         line, column);
+    error_generation++;
+    raise_in_flight = 1;
+}
+
 /* The raise found no armed frame: report it exactly as the old STOP mode did
  * (same sink, same single line -- byte-exact against 333 negative goldens)
  * and stop the run. */
@@ -6854,7 +6866,70 @@ static FunctionDef *function_resolve(const char *library, const char *name) {
     return best;
 }
 
+/* An optional parameter may not be followed by a required one.
+ *
+ * `function f(a = 1, b)` has no sensible reading: a caller writing `f(5)` means
+ * `a` positionally, which leaves `b` unset while the parameter that HAS a
+ * default got the argument. Refused where it is declared rather than where it
+ * is called, so it fails once at the definition instead of confusing every
+ * caller. Returns 1 when the list is well formed. */
+static int params_defaults_are_trailing(AstNameList params, const char *what,
+                                        const char *name, int line, int column) {
+    if (!params.defaults) {
+        return 1;
+    }
+    int seen_default = 0;
+    for (size_t i = 0; i < params.count; i++) {
+        if (params.defaults[i]) {
+            seen_default = 1;
+        } else if (seen_default) {
+            char message[256];
+            snprintf(message, sizeof(message),
+                     "%s %s: parameter '%s' has no default but follows one that does"
+                     " -- optional parameters must come last",
+                     what, name ? name : "?", params.items[i]);
+            runtime_error_raise_at(message, 1003, "invalid function call",
+                                   line, column);
+            return 0;
+        }
+    }
+    return 1;
+}
+
+/* `parameter_list` is shared by functions, modifiers, `program` blocks and
+ * server handlers, so the grammar accepts a default in all four. Only a
+ * function can honour one: a modifier's parameter is supplied by the clause
+ * that invokes it, a program block's by the command line, and a server
+ * handler's by the URL pattern -- in each case the caller is the runtime, and
+ * a default would be a value nothing can ever fail to supply. Refused by name
+ * rather than ignored, since a default silently dropped is a value the author
+ * believes is in effect. */
+static int params_reject_defaults(AstNameList params, const char *what,
+                                  const char *name, int line, int column) {
+    if (!params.defaults) {
+        return 1;
+    }
+    for (size_t i = 0; i < params.count; i++) {
+        if (params.defaults[i]) {
+            char message[256];
+            snprintf(message, sizeof(message),
+                     "%s %s: parameter '%s' cannot have a default -- only"
+                     " function parameters can",
+                     what, name ? name : "?", params.items[i]);
+            runtime_error_raise_at(message, 1003, "invalid function call",
+                                   line, column);
+            return 0;
+        }
+    }
+    return 1;
+}
+
 static void function_register_def(AstStmt *stmt, int imported, const char *library) {
+    if (!params_defaults_are_trailing(stmt->as.function.params, "function",
+                                      stmt->as.function.name,
+                                      stmt->line, stmt->column)) {
+        return;
+    }
     /* gbasic_HAS_builtin, not gbasic_builtin_FUNCTION. The second list --
      * `exists`, `read`, `write`, `bytes`, `lines`, `chars`, `lock`, `unlock`,
      * `list`, `files`, `folders`, the file and directory families -- is
@@ -7039,6 +7114,11 @@ static ModifierDef *modifier_resolve(AstModifierUse use, const char *context, co
 }
 
 static void modifier_register_def(AstStmt *stmt, int imported, const char *library) {
+    if (!params_reject_defaults(stmt->as.modifier.params, "modifier",
+                                stmt->as.modifier.name,
+                                stmt->line, stmt->column)) {
+        return;
+    }
     if (strcmp(stmt->as.modifier.context, "assign") != 0 &&
         strcmp(stmt->as.modifier.context, "compare") != 0) {
         runtime_error_raise("modifier context must be assign or compare", 1003, "modifier");
@@ -8898,6 +8978,22 @@ static Value invoke_function(AstStmt *stmt, Value *args, size_t argc, Value *rec
     for (size_t i = 0; i < argc; i++) {
         env_set(stmt->as.function.params.items[i], args[i]);
     }
+
+    /* Fill the optional tail. Doing it HERE, rather than in each caller, is
+     * what makes defaults reach every entry point: a plain call, a method, a
+     * function value, a sort comparator, a webserver hook -- and an ACTOR,
+     * whose arguments arrive deserialized in a forked child that never saw the
+     * call site. All nine invoke_function callers pass through this loop.
+     *
+     * The default is a literal, so eval_expr cannot reach the environment, run
+     * user code, or raise; it is evaluated fresh per call so a mutable default
+     * (a string) is never shared between invocations. */
+    for (size_t i = argc; i < stmt->as.function.params.count; i++) {
+        AstExpr *dflt = stmt->as.function.params.defaults
+            ? stmt->as.function.params.defaults[i] : NULL;
+        env_set(stmt->as.function.params.items[i],
+                dflt ? eval_expr(dflt) : value_null());
+    }
     free(args);
 
     /* PLAT-ERR: a fresh error frame per invocation, in the DEFAULT state
@@ -9063,7 +9159,10 @@ static Value eval_user_function_with_receiver(AstExpr *expr,
                                               FunctionDef *function,
                                               Value *receiver) {
     AstStmt *stmt = function->stmt;
-    if (expr->as.call.args.count != stmt->as.function.params.count) {
+    size_t want_min = stmt->as.function.params.required;
+    size_t want_max = stmt->as.function.params.count;
+    if (expr->as.call.args.count < want_min ||
+        expr->as.call.args.count > want_max) {
         /* A real, located runtime error -- not a bare fprintf. The old behavior
          * printed one unlocated line and KEPT RUNNING with a null result, so the
          * caller's own return value looked fine and the failure surfaced frames
@@ -9074,11 +9173,20 @@ static Value eval_user_function_with_receiver(AstExpr *expr,
          * spawn path a few thousand lines down has raised for this all along;
          * plain calls were the outlier. */
         char message[256];
-        snprintf(message, sizeof message, "%s expects %zu argument%s, got %zu",
-                 expr->as.call.name,
-                 stmt->as.function.params.count,
-                 stmt->as.function.params.count == 1 ? "" : "s",
-                 expr->as.call.args.count);
+        if (want_min == want_max) {
+            snprintf(message, sizeof message, "%s expects %zu argument%s, got %zu",
+                     expr->as.call.name, want_max,
+                     want_max == 1 ? "" : "s",
+                     expr->as.call.args.count);
+        } else {
+            /* Name the RANGE. "expects 3 arguments, got 5" would be false once
+             * some are optional, and an author reading it would go looking for
+             * a parameter that is not missing. */
+            snprintf(message, sizeof message,
+                     "%s expects %zu to %zu arguments, got %zu",
+                     expr->as.call.name, want_min, want_max,
+                     expr->as.call.args.count);
+        }
         runtime_error_raise(message, 1003, "invalid function call");
         return value_null();
     }
@@ -12038,7 +12146,8 @@ static Value eval_spawn(AstExpr *expr) {
         runtime_error_raise(message, 1003, "actor");
         return value_null();
     }
-    if (argc != fn->as.function.params.count) {
+    if (argc < fn->as.function.params.required ||
+        argc > fn->as.function.params.count) {
         char message[256];
         snprintf(message, sizeof message, "spawn: %s expects %zu arguments",
                  entry, fn->as.function.params.count);
@@ -12354,7 +12463,13 @@ int eval_run_actor(AstStmtList program, const char *entry,
         return 1;
     }
     size_t argc = arg_value.as.array.store->count;
-    if (argc != fn->as.function.params.count) {
+    /* A short vector is legitimate: the parent sends only the arguments the
+     * CALL supplied, and invoke_function fills the optional tail here in the
+     * child. Sending materialized defaults instead would put them on the wire
+     * and let a child built from different source disagree with its parent
+     * about what they are. */
+    if (argc < fn->as.function.params.required ||
+        argc > fn->as.function.params.count) {
         value_free(arg_value);
         fprintf(stderr, "actor: %s startup argument count mismatch\n", entry);
         return 1;
@@ -31008,6 +31123,18 @@ static void server_register_scope(const char *server_name, AstServerItemList *it
     for (size_t i = 0; i < items->count; i++) {
         AstServerItem *item = items->items[i];
         if (item->kind == AST_SERVER_HANDLER || item->kind == AST_SERVER_HOOK) {
+            /* A handler's parameters are URL CAPTURES and a hook's are
+             * supplied by the server, so a default could never take effect.
+             * Refused here rather than inside server_item_ensure_fn, which
+             * has no failure path -- returning early from it leaves fn_stmt
+             * NULL and the register call below dereferences it (segfault,
+             * found the direct way). */
+            if (!params_reject_defaults(item->params,
+                                        item->kind == AST_SERVER_HOOK
+                                            ? "hook" : "handler",
+                                        item->word, item->line, item->column)) {
+                return;
+            }
             server_item_ensure_fn(server_name, item);
             function_register(item->fn_stmt);
         } else if (item->kind == AST_SERVER_SITE) {
@@ -31573,10 +31700,24 @@ static EvalResult eval_stmt(AstStmt *stmt) {
             }
         } else {
             function_register(stmt);
+            /* Registration can now REFUSE -- a parameter list with a default
+             * before a required parameter. Propagate it the way the attach
+             * branch above does, or the declaration is reported and the
+             * program carries on running underneath the diagnostic. */
+            if (raise_in_flight) {
+                current_line = previous_line;
+                current_column = previous_column;
+                return eval_error_result();
+            }
         }
         break;
     case AST_STMT_MODIFIER:
         modifier_register(stmt);
+        if (raise_in_flight) {
+            current_line = previous_line;
+            current_column = previous_column;
+            return eval_error_result();
+        }
         break;
     case AST_STMT_PROGRAM:
     case AST_STMT_LIBRARY:
@@ -32035,6 +32176,12 @@ int eval_program(AstStmtList program) {
                 break;
             }
             program_block = program.items[i];
+            if (!params_reject_defaults(program_block->as.program.args,
+                                        "program", "block",
+                                        program_block->line,
+                                        program_block->column)) {
+                break;
+            }
         }
     }
 
@@ -32127,7 +32274,13 @@ int eval_program(AstStmtList program) {
         }
     }
 
-    EvalResult result = runtime_stopped
+    /* `raise_in_flight` as well as `runtime_stopped`: a refusal from the
+     * PRE-REGISTRATION pass above -- a malformed parameter list, say -- is
+     * raised before any statement has run, and running the program anyway
+     * would print its output beneath a reported error, which is the
+     * "diagnostic without consequence" shape run_parse_exit.sh exists for.
+     * Nothing has executed yet, so nothing should. */
+    EvalResult result = (runtime_stopped || raise_in_flight)
         ? eval_stop()
         : eval_stmt_list(program_block ? program_block->as.program.body : program);
 

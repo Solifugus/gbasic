@@ -79,10 +79,30 @@ AstNameList ast_name_list_empty(void) {
     return list;
 }
 
-AstNameList ast_name_list_append(AstNameList list, char *name) {
+static AstNameList name_list_push(AstNameList list, char *name, AstExpr *dflt) {
     list.items = xrealloc(list.items, sizeof(char *) * (list.count + 1));
-    list.items[list.count++] = name;
+    list.defaults = xrealloc(list.defaults, sizeof(AstExpr *) * (list.count + 1));
+    list.items[list.count] = name;
+    list.defaults[list.count] = dflt;
+    list.count++;
+    if (!dflt) {
+        /* `required` is the count of leading parameters with no default. A
+         * default followed by a required parameter is a gap, and the caller
+         * checks for it by comparing this against the position. */
+        if (list.required == list.count - 1) {
+            list.required = list.count;
+        }
+    }
     return list;
+}
+
+AstNameList ast_name_list_append(AstNameList list, char *name) {
+    return name_list_push(list, name, NULL);
+}
+
+AstNameList ast_name_list_append_default(AstNameList list, char *name,
+                                         AstExpr *default_value) {
+    return name_list_push(list, name, default_value);
 }
 
 static AstExpr *ast_expr_new(AstExprKind kind) {
@@ -1193,10 +1213,7 @@ static void free_stmt(AstStmt *stmt) {
         free(stmt->as.function.object);
         free(stmt->as.function.field);
         free(stmt->as.function.source_path);
-        for (size_t i = 0; i < stmt->as.function.params.count; i++) {
-            free(stmt->as.function.params.items[i]);
-        }
-        free(stmt->as.function.params.items);
+        ast_free_name_list(stmt->as.function.params);
         ast_free_program(stmt->as.function.body);
         break;
     case AST_STMT_RETURN:
@@ -1217,6 +1234,7 @@ static void free_stmt(AstStmt *stmt) {
             free(stmt->as.watch.names.items[i]);
         }
         free(stmt->as.watch.names.items);
+        free(stmt->as.watch.names.defaults);
         ast_free_program(stmt->as.watch.body);
         break;
     case AST_STMT_UNWATCH:
@@ -1238,10 +1256,7 @@ static void free_stmt(AstStmt *stmt) {
         break;
     case AST_STMT_MODIFIER:
         free(stmt->as.modifier.name);
-        for (size_t i = 0; i < stmt->as.modifier.params.count; i++) {
-            free(stmt->as.modifier.params.items[i]);
-        }
-        free(stmt->as.modifier.params.items);
+        ast_free_name_list(stmt->as.modifier.params);
         free(stmt->as.modifier.context);
         ast_free_program(stmt->as.modifier.body);
         break;
@@ -1251,6 +1266,7 @@ static void free_stmt(AstStmt *stmt) {
             free(stmt->as.program.args.items[i]);
         }
         free(stmt->as.program.args.items);
+        free(stmt->as.program.args.defaults);
         ast_free_program(stmt->as.program.body);
         break;
     case AST_STMT_LIBRARY:
@@ -1351,8 +1367,12 @@ void ast_free_expr_list(AstExprList list) {
 void ast_free_name_list(AstNameList list) {
     for (size_t i = 0; i < list.count; i++) {
         free(list.items[i]);
+        if (list.defaults && list.defaults[i]) {
+            free_expr(list.defaults[i]);
+        }
     }
     free(list.items);
+    free(list.defaults);
 }
 
 void ast_free_record_field_list(AstRecordFieldList list) {

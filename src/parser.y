@@ -453,6 +453,7 @@ static void report_syntax_error(gb_parse_ctx *ctx, int line, int column,
 %type <record_field_list> record_field_list
 %type <field_policy> field_policy
 %type <consider_branch_list> consider_branch_list
+%type <expr> parameter_default
 %type <name_list> parameter_list parameter_list_opt watch_target_list
 %type <modifier> comparison_lens
 %type <modifier_signature> modifier_signature
@@ -1331,9 +1332,36 @@ parameter_list_opt
     | parameter_list { $$ = $1; }
     ;
 
+/* An OPTIONAL PARAMETER's default is a LITERAL and nothing else -- a number
+ * (optionally signed), a string, `true`/`false`, `nothing` or `unknown`.
+ *
+ * Not an arbitrary expression, and the restriction is semantic rather than
+ * grammatical convenience: an expression default has to be evaluated in SOME
+ * scope, and gBASIC has no closures, so "can a default see an earlier
+ * parameter, or a global" has no comfortable answer -- the read-then-shadow
+ * rule run_core.sh guards would apply to it. A literal has nothing to see, so
+ * the question does not arise. Going literal -> expression later is possible;
+ * the reverse is not. */
+parameter_default
+    : NUMBER { $$ = expr_at(ast_number($1), @1.first_line, @1.first_column); }
+    | MINUS NUMBER { $$ = expr_at(ast_number(-$2), @1.first_line, @1.first_column); }
+    | PLUS NUMBER { $$ = expr_at(ast_number($2), @1.first_line, @1.first_column); }
+    | STRING { $$ = expr_at(ast_string($1), @1.first_line, @1.first_column); }
+    | TRUE { $$ = expr_at(ast_bool(1), @1.first_line, @1.first_column); }
+    | FALSE { $$ = expr_at(ast_bool(0), @1.first_line, @1.first_column); }
+    | NOTHING { $$ = expr_at(ast_null(), @1.first_line, @1.first_column); }
+    | UNKNOWN_VALUE { $$ = expr_at(ast_unknown(), @1.first_line, @1.first_column); }
+    ;
+
 parameter_list
     : IDENT { $$ = ast_name_list_append(ast_name_list_empty(), $1); }
+    | IDENT OP_EQ parameter_default {
+        $$ = ast_name_list_append_default(ast_name_list_empty(), $1, $3);
+      }
     | parameter_list COMMA IDENT { $$ = ast_name_list_append($1, $3); }
+    | parameter_list COMMA IDENT OP_EQ parameter_default {
+        $$ = ast_name_list_append_default($1, $3, $5);
+      }
     ;
 
 

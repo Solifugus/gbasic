@@ -175,44 +175,56 @@ the ends; the search does not.
 
 ---
 
-## 6. The language constraint that shapes the API
+## 6. Optional arguments
 
-**gBASIC has no optional parameters.** Measured: arity is strict
-(`f expects 2 arguments, got 1`), and `default(value, fallback)` is a *value*
-helper for `nothing`/`unknown`, not parameter defaulting.
+**Superseded 2026-08-30 — and this section is kept because the decision it
+records was reversed by building the missing capability rather than working
+around it.**
 
-So Excel's `PMT(rate, nper, pv, [fv], [type])` cannot be transcribed. Three
-options were considered:
+When this document was first written, gBASIC had no optional parameters: arity
+was strict and `default(value, fallback)` was a *value* helper for
+`nothing`/`unknown`, not parameter defaulting. Excel's
+`PMT(rate, nper, pv, [fv], [type])` therefore could not be transcribed, and the
+design settled on a short form plus a record form.
 
-1. **All arguments required** — every caller writes `0` and `"end"` forever.
-   Rejected: it makes the common case ugly and the two trailing arguments are
-   exactly the ones a caller gets wrong when forced to supply them blindly.
-2. **Name-per-variant** (`pmt`, `pmt_due`, `pmt_with_balloon`) — does not
-   compose; four combinations of two options need four names.
-3. **Short form plus a record form.** Adopted.
-
-Each function gets **two spellings**:
+The language now has **literal default parameters**, so the Excel signature is
+writable directly:
 
 ```basic
-' The Excel three -- the common case, and what a spreadsheet user already types.
-finance.pmt(0.005, 360, principal)
-
-' The full form. Same field names as the short form's parameters, and the only
-' place timing and a balloon balance appear.
-finance.pmt_of({ rate: 0.005,
-                 nper: 360,
-                 pv: principal,
-                 fv: balloon,
-                 timing: "begin" })
+finance.pmt(rate, nper, pv)                      ' the common case
+finance.pmt(rate, nper, pv, fv, timing)          ' the full one
 ```
 
-The record form takes the same field names as the short form's parameters,
-fills absent fields with `default(...)`, and is the only place timing, balloon
-balances and future rate features appear. This follows the platform proposal's
-own API guidelines 1 and 7, and it is what the `_of` suffix means throughout.
+`finance.pmt(rate, nper, pv, fv = 0, timing = "end")` is the whole
+declaration. The record form is **no longer required** and drops to an optional
+convenience for the functions that genuinely have many independent inputs —
+which, in core finance, may be none of them. `lending.loan({...})` in the
+platform proposal's vision is still a record, because a loan really does have a
+dozen fields; a `pmt` does not.
 
-The short form is defined as the record form with `fv: 0` and `timing: "end"`.
-Not merely documented that way — implemented that way, so the two cannot drift.
+This is why the sequencing mattered: had Phase 1 shipped first, its first
+deliverable would have been a workaround for a limitation that disappeared a
+day later.
+
+The two-form pattern below is retained only where a function's inputs justify
+it:
+
+One declaration covers both. The trailing two are what a spreadsheet leaves
+out, and they carry the values a spreadsheet assumes:
+
+```
+function pmt(rate, nper, pv, fv = 0, timing = "end")
+```
+
+```basic
+finance.pmt(0.005, 360, principal)
+finance.pmt(0.005, 360, principal, balloon, "begin")
+```
+
+A record form is worth adding only where a call has enough independently
+meaningful inputs that five positional arguments stop being readable — the
+platform proposal's API guideline 1. In core finance that is arguably nowhere;
+in `lending.loan({...})` it plainly is.
 
 ---
 
@@ -227,7 +239,7 @@ Not merely documented that way — implemented that way, so the two cannot drift
 | `finance.fv(rate, nper, pmt, pv)` | **shape change**, see below |
 | `finance.nper(rate, pmt, pv)` | periods; number, usually fractional |
 | `finance.rate(nper, pmt, pv)` | **new** — the fifth solver |
-| `finance.<name>_of({...})` | full form for each of the five |
+| optional tail | `fv = 0`, `timing = "end"` where the equation admits them |
 
 **`fv` changes shape, not just order.** Today `fv(amount, r, n)` is the future
 value of a *lump sum*. Excel's `FV(rate, nper, pmt, [pv], [type])` is an
@@ -294,7 +306,7 @@ payment so the balance lands exactly on zero** — is correct and stays. It is
 what lenders do, and it is asserted arithmetically rather than as a golden.
 
 `sln`, `syd` and `ddb` already match Excel's order and stay. `ddb` gains
-Excel's optional `factor` via `ddb_of`.
+Excel's optional `factor` as a defaulted parameter.
 
 ---
 

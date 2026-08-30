@@ -109,9 +109,18 @@ typedef struct {
     size_t count;
 } AstConsiderBranchList;
 
+/* A parameter list. `defaults[i]` is NULL when the parameter is required, and
+ * otherwise a LITERAL expression -- number, string, boolean, `nothing` or
+ * `unknown`, optionally signed. Literals only, deliberately: an arbitrary
+ * default expression would have to be evaluated in some scope, and gBASIC has
+ * no closures, so "what can a default see" is a question with no comfortable
+ * answer. A literal has nothing to see. Defaults must be TRAILING, checked
+ * where the function is defined. */
 typedef struct {
     char **items;
+    AstExpr **defaults;      /* NULL entry = required parameter */
     size_t count;
+    size_t required;         /* parameters before the first default */
 } AstNameList;
 
 /* PLAT-WEB-5: one entry in a `server` declarative block. The grammar is
@@ -357,6 +366,8 @@ AstConsiderBranchList ast_consider_branch_list_empty(void);
 AstConsiderBranchList ast_consider_branch_list_append(AstConsiderBranchList list, AstExpr *match, AstStmtList body);
 AstNameList ast_name_list_empty(void);
 AstNameList ast_name_list_append(AstNameList list, char *name);
+AstNameList ast_name_list_append_default(AstNameList list, char *name,
+                                         AstExpr *default_value);
 
 AstServerItemList ast_server_item_list_empty(void);
 AstServerItemList ast_server_item_list_append(AstServerItemList list, AstServerItem *item);

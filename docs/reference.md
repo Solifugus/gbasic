@@ -4094,6 +4094,48 @@ produces a plausible number rather than an error:
 `stdlib/stats.bas` builds on these with distributions, regressions and tests;
 these are the primitives.
 
+### Optional parameters
+
+A function parameter may carry a **default**, used when the caller omits it:
+
+```basic
+function greet(name, greeting = "Hello", punct = "!")
+    return greeting + ", " + name + punct
+end function
+
+print greet("Ada")              ' Hello, Ada!
+print greet("Ada", "Hi")        ' Hi, Ada!
+print greet("Ada", "Hi", "?")   ' Hi, Ada?
+```
+
+**A default must be a literal** — a number (optionally signed), a string,
+`true`, `false`, `nothing` or `unknown`. Not an expression, not another
+variable, not a call. The restriction is deliberate rather than temporary: an
+expression would have to be evaluated in some scope, and gBASIC has no
+closures, so a default reading an enclosing variable would inherit the
+read-then-shadow rule, and one reading an earlier parameter would need a
+defined evaluation order. A literal has nothing to see.
+
+It also removes the mutable-default trap other languages have: an array or
+record default is a parse error, and gBASIC strings are immutable, so no
+default is a value that could be mutated and carried into the next call.
+
+**Optional parameters must come last.** `function f(a = 1, b)` is refused where
+it is declared — a caller writing `f(5)` would mean `a` positionally, leaving
+`b` unset while the parameter that *has* a default took the argument.
+
+Arity errors name the range: `greet expects 1 to 3 arguments, got 0`. A
+function with no optional parameters keeps the exact-count message.
+
+Defaults are for **functions only**. A modifier's parameters come from the
+clause that invokes it, a `program` block's from the command line, and a server
+handler's from the URL pattern — in each case the runtime supplies them, so a
+default could never take effect and is refused by name rather than ignored.
+
+Defaults apply wherever the function is called from, including through a
+function value, and including an actor: `spawn worker(1)` sends only the
+argument the call supplied and the child fills the rest itself.
+
 ### Input
 
 - `input(prompt)` — read a line; always returns a **string**. Wrap it with
