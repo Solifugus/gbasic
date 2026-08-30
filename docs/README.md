@@ -135,6 +135,7 @@ Read in this order. gBASIC diverges from QBasic/VB intuition in ways that fail
 | [shipping_applications.md](shipping_applications.md) | Shipped | Turning a .bas program into a .deb a customer installs: lean builds, layout, the library-search hazard, systemd hardening. |
 | [historical_development_archive.md](historical_development_archive.md) | Record | Completed phases, so retired trackers need not stay active. |
 | [future_library_ideas.md](future_library_ideas.md) | **Proposal** | Directions not committed to. |
+| [gbasic_finance_business_platform_proposal.md](gbasic_finance_business_platform_proposal.md) | **Proposal** | A long-term program to make gBASIC a finance and business platform: 18 libraries over 7 phases, built on exact `money`, dates and `stats`. **Nothing here is built.** `stdlib/finance.bas` is the existing foundation it extends, and only the Phase 1 backlog (`rate`, generalized TVM, day counts, XNPV/XIRR) is proposed for approval — later workstreams need their own design review, and several need a domain reviewer this project does not yet have. |
 | [TOKENS.md](TOKENS.md) | Record | Token inventory. |
 | [gbasic_dogfood_notes.md](gbasic_dogfood_notes.md) | Record | Friction found using gBASIC on real work. See also `/DOGFOOD.md`. |
 | [tedderland_dogfood_notes.md](tedderland_dogfood_notes.md) | Record | Friction found building tedderland.com in gBASIC. |

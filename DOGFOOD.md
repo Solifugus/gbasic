@@ -3719,3 +3719,67 @@ whether or not a program touches them. A packager inherits all of it. If those
 were dlopen-ed on first use rather than linked, a Transward package would need
 `libsqlite3` and `libssl` and nothing else — a materially smaller and less
 distro-locked artefact.
+
+## 2026-08-29 — the arg-raise fix is confirmed good; a builtin's type check still overwrites the cause
+
+Verified 2263ed2 against Transward. Both halves work: a plain user function and
+a library function each **abandon the call** when an argument raises, and
+neither body runs. Confirmed by watching for a marker print that no longer
+appears, with the assignment target pre-bound so abandonment is observable
+without tripping `undefined variable`:
+
+```basic
+function case_library()
+    load helper from "argraise.bas"
+    on error goto next
+    y = "untouched"
+    y = helper.takes("ok", raiser())   ' raiser() raises
+    if error then print("caught: " + error.message)
+    print("assignment left as: " + y)  ' -> untouched. Body did not run.
+end function
+```
+
+Transward's suite — 24 files, including the live-sshd ones — passes unchanged
+on the fixed build, so nothing here was relying on the old behaviour.
+
+**The residual.** For a BUILTIN callee the call is correctly abandoned, but the
+builtin's own argument validation runs *before* it notices the pending error,
+and when it rejects the poisoned value **its complaint replaces the real one**:
+
+| expression | error reported |
+|---|---|
+| `string(raiser())` | `boom` ✓ |
+| `number(raiser())` | `boom` ✓ |
+| `append([1], raiser())` | `boom` ✓ |
+| `trim(raiser())` | `trim expects a string` ✗ |
+| `upper(raiser())` | `upper expects a string` ✗ |
+| `len(raiser())` | `len expects string or array` ✗ |
+| `join(["a", raiser()], "-")` | `join array elements must be strings` ✗ |
+
+The split is whether the builtin type-checks that parameter. `string`, `number`
+and `append` accept anything in that position and so never get the chance to
+overwrite; the strict ones always do.
+
+**This is not theoretical — it was live in this repo.** The licence issuer had
+`private = hex_decode(trim(read(kf)))` inside `on error goto next`, reporting
+`error.message` to the operator. A missing key file came out as:
+
+```
+cannot read a signing key from /nonexistent/key: trim expects a string
+```
+
+Split into `raw = read(kf)` / check / `hex_decode(trim(raw))`, it now says
+`could not read file: /nonexistent/key`. The same shape was in `vault.bas` on
+the vault key and salt — the one file whose read failure most needs a truthful
+message — and is fixed the same way.
+
+**Suggested fix:** check `error_action_pending()` at the top of the builtin
+argument-validation path, before the type checks, so a pending error passes
+through untouched. That is the same guard the fix just added to
+`eval_user_function_with_receiver`, applied one layer out; the strict builtins
+are the only ones that can currently overwrite.
+
+Severity is diagnostic, not correctness — the call is abandoned and the error
+*is* caught either way. But it points every reader at the innocent party, and
+`trim expects a string` sends you looking at your own string handling rather
+than at the file that would not open.

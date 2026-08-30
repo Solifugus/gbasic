@@ -42,6 +42,14 @@ set -uo pipefail
 # 31 in total. So builtins are checked against reference.md specifically; the
 # loose standard is exactly the one that let this through.
 #
+# STATED LIMIT: this tier sees only `stdlib/*.bas` libraries. NATIVE modules --
+# `money`, `sqlite`, `pg`, `odbc`, `xlsx`, `webclient`, `webserver`, `xml`,
+# `gi`, `process`, `smtp` -- are dispatched by strcmp inside src/eval.c with no
+# list to read, so a doc naming `money.no_such_function(x)` passes. Found by a
+# red-proof that used exactly that name and did NOT go red. Closing it means
+# extracting the dispatch names from eval.c, which is a real job rather than a
+# tweak; recorded here so the gap is known rather than assumed covered.
+#
 # Headless, no build required, never skips.
 
 cd "$(dirname "$0")/.."
@@ -102,8 +110,30 @@ DELIBERATE = {
     'llm.embed':
         'declared near-scope future work, not shipped',
 }
+# A document the index marks **Proposal** is EXEMPT from this tier, and only
+# this one. "Proposal" is defined in docs/README.md as "describes work that
+# does not exist -- do not code against it", so naming an unbuilt function is
+# what such a document is FOR; the finance/business platform proposal names two
+# dozen. The alternative -- an allowlist entry per proposed function -- would
+# bury the three real DELIBERATE cases above in noise and would need editing
+# every time a proposal was revised.
+#
+# The exemption is narrow and self-maintaining: it reads the status out of the
+# index, and run_docs_gate.sh separately REQUIRES every doc to be indexed, so a
+# file cannot dodge this tier by being unlisted. It is also reported rather
+# than silent -- a count that quietly grew would be the same failure this suite
+# exists to prevent.
+index = docs.get('docs/README.md', '')
+proposals = set()
+for m in re.finditer(r'^\|\s*\[([^\]]+)\]\([^)]+\)\s*\|\s*\*{0,2}([A-Za-z]+)\*{0,2}\s*\|',
+                     index, re.M):
+    if m.group(2).lower() == 'proposal':
+        proposals.add('docs/' + m.group(1))
+
 stale = {}
 for path, text in sorted(docs.items()):
+    if path in proposals:
+        continue
     for lib in libs:
         for m in re.findall(r'\b%s\.([a-z_][a-z0-9_]*)\s*\(' % lib, text):
             name = f"{lib}.{m}"
@@ -119,6 +149,11 @@ else:
           f"({len(DELIBERATE)} named-but-absent by design)")
     for name, why in sorted(DELIBERATE.items()):
         print(f"       - {name}: {why}")
+    if proposals:
+        print(f"       {len(proposals)} **Proposal** document(s) exempt, "
+              f"naming unbuilt functions by design:")
+        for path in sorted(proposals):
+            print(f"       - {path}")
 
 print("")
 print("TIER every registered builtin appears in docs/reference.md")
