@@ -3561,3 +3561,45 @@ from this and neither is silent:
   unreadable dir -> empty (no raise)"), and it is right for a tree browser: a
   subdirectory you cannot read should not end a walk. `file_type(p)` answers
   the question for callers who need it.
+
+## 2026-08-29 — CC — a raise inside an ARGUMENT does not abandon the call
+- **Type:** bug (error model)
+- **Severity:** medium — the callee runs on arguments that were never evaluated
+- **What:** `docs/error_model_design.md` §2.1 says a raise under
+  `on error goto next` **abandons the raising statement**, and §2 says "the
+  call that was in flight is abandoned". Measured on master @ 0d83ffb, it is
+  not: when an argument expression raises, the function is still ENTERED and
+  its body executes.
+
+  ```
+  function f(a, b)
+      print "PLAIN LITERAL inside f"
+      return nothing
+  end function
+  on error goto next
+  f("x", join_path("a","b","c"))     ' join_path raises: it takes exactly 2
+  error.clear()
+  ```
+  prints `PLAIN LITERAL inside f`. The body ran, on arguments that never
+  successfully evaluated.
+
+  **How it surfaces, which is worse than the rule itself.** While the error is
+  pending, CALLS inside the body short-circuit to `nothing` while literals
+  evaluate normally. So a body whose print mixes the two —
+  `print "a=" + string(a)` — emits the bare word **`nothing`** to STDOUT, with
+  stderr empty and exit 0. That is a phantom line no `print` in the program
+  asked for, in the middle of real output, and it is how this was found: a
+  throwaway probe printed `nothing` and nothing explained it.
+
+  It also makes the obvious defence useless: `error.clear()` as the first
+  statement of the body is itself a call, so it short-circuits and the frame
+  stays poisoned.
+
+- **Workaround:** evaluate a fallible argument into a variable on its own line
+  and check `error` before the call. Do not rely on a raise in an argument
+  stopping the call.
+- **NOT investigated:** whether this is specific to argument position or is the
+  general shape of statement abandonment; whether a builtin callee behaves the
+  same as a gBASIC one; and whether the short-circuit-to-`nothing` rule is
+  deliberate elsewhere. Reported rather than fixed — the fix is an evaluator
+  change to the PLAT-ERR machinery and wants a decision, not a patch.

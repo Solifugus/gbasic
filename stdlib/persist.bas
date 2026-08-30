@@ -12,10 +12,12 @@
 '     The text goes to a `.tmp` sibling and is swapped in with `atomic_replace`
 '     (a single rename(2)), so a crash mid-write never leaves a truncated file:
 '     a reader sees either the whole old file or the whole new one.
-'   * READ never raises. `decode` raises on malformed JSON and gBASIC cannot
-'     catch a raise (docs/ai/ERRORS.md), so reads go through `try_decode` and
-'     report one of three states as a VALUE — missing, corrupt (with the parser's
-'     reason and position), or loaded. The caller owns the recovery policy.
+'   * READ never raises. `decode` raises on malformed JSON, so reads go through
+'     `try_decode` and report one of three states as a VALUE — missing, corrupt
+'     (with the parser's reason and position), or loaded. The caller owns the
+'     recovery policy. (A raise could not be caught at all when this was
+'     written; frame-scoped `on error` since changed that, but a value is still
+'     the right answer for "is this file readable".)
 '
 '   persist.ensure_dir(home)
 '   persist.write_atomic(home + "/settings.json", { schema_version: 1, theme: "dark" })

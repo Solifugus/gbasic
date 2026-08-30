@@ -227,9 +227,12 @@ library crypto
     '     -? ( 0 | [1-9][0-9]* ) ( . [0-9]+ )? ( [eE] [+-]? [0-9]+ )?
     '
     ' Not "collect the number-ish characters and convert them". `number()`
-    ' RAISES on a string it cannot read, gBASIC cannot catch a raise, and this
-    ' parser reads ATTACKER-SUPPLIED JWT payloads -- so a span it cannot convert
-    ' has to be a refusal and can never be a raise. It was one: _json_parse_value
+    ' RAISES on a string it cannot read, and this parser reads
+    ' ATTACKER-SUPPLIED JWT payloads -- so a span it cannot convert has to be a
+    ' refusal rather than a raise. (When this was written a raise could not be
+    ' caught at all; frame-scoped `on error` since changed that, but a VALUE is
+    ' still the right answer for a parser deciding whether input is well
+    ' formed.) It was one: _json_parse_value
     ' falls through to a number for every character that is not `"`, `t`, `f` or
     ' `n`, so `{"a":inf}` reached number("") and killed the program instead of
     ' being rejected as the malformed token it is. The door was as wide as the
