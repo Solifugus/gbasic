@@ -2145,6 +2145,15 @@ Each request record contains:
 - `headers`: record with lowercase names
 - `cookies`: record parsed from the `Cookie` header
 - `body`: request body string
+- `form`: record of the body decoded as `application/x-www-form-urlencoded` —
+  what an HTML form POSTs. It shares the `query` parser, because the two are
+  the same grammar: pairs joined by `&`, percent-decoded, with `+` meaning
+  space. So `pass=p%40ss%26word` gives `p@ss&word`, encoded separator and all.
+  **Only a form content type is decoded**; a JSON, multipart or absent type
+  gives an **empty** record rather than nonsense — splitting `{"a":1}` on `&`
+  and `=` would otherwise yield a field named `{"a"` holding `1}`, which is a
+  plausible-looking record and the wrong one. A `; charset=…` parameter is
+  ignored. Multipart bodies (file uploads) are not decoded.
 - `json`: decoded JSON value, present only when parsing succeeds
 - `remote_ip`: peer IP string
 - `remote_port`: peer port number

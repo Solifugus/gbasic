@@ -14274,6 +14274,25 @@ static char *webserver_percent_decode(const char *text, size_t length) {
     return decoded;
 }
 
+/* `req.form` -- the request body decoded as
+ * `application/x-www-form-urlencoded`, which is what an HTML form POSTs.
+ *
+ * It shares the QUERY parser, because the two are the same grammar: pairs
+ * joined by `&`, percent-decoded, with `+` meaning space. Writing a second
+ * decoder would be writing a second set of bugs, and percent-decoding is
+ * exactly the thirty lines every web application otherwise gets independently
+ * wrong.
+ *
+ * Only a form content type is decoded. A JSON or multipart body yields an
+ * EMPTY record rather than nonsense: splitting `{"a":1}` on `&` and `=` would
+ * otherwise produce a field named `{"a"` with the value `1}`, which is a
+ * plausible-looking record and the wrong one. Parameters after the media type
+ * (`; charset=utf-8`) are ignored, since they do not change the grammar.
+ *
+ * NOT multipart/form-data: file uploads need a different parser and a decision
+ * about where the bytes go, which is its own piece of work. */
+static Value webserver_form_record(Value *headers, const char *body);
+
 static Value webserver_query_record(const char *query) {
     Value record = value_record(NULL, 0);
     const char *cursor = query;
@@ -14296,6 +14315,30 @@ static Value webserver_query_record(const char *query) {
         cursor = amp + 1;
     }
     return record;
+}
+
+static Value webserver_form_record(Value *headers, const char *body) {
+    RecordField *ct = headers && headers->kind == VALUE_RECORD
+        ? record_find(headers, "content-type") : NULL;
+    if (!ct || ct->value->kind != VALUE_STRING || !body) {
+        return value_record(NULL, 0);
+    }
+    const char *type = ct->value->as.string;
+    while (*type == ' ' || *type == '\t') {
+        type++;
+    }
+    const char *want = "application/x-www-form-urlencoded";
+    size_t want_len = strlen(want);
+    if (strncasecmp(type, want, want_len) != 0) {
+        return value_record(NULL, 0);
+    }
+    /* Only a parameter (`;`) or trailing space may follow the media type --
+     * otherwise this is a longer type that merely starts the same way. */
+    char after = type[want_len];
+    if (after != '\0' && after != ';' && after != ' ' && after != '\t') {
+        return value_record(NULL, 0);
+    }
+    return webserver_query_record(body);
 }
 
 static char *webserver_trim_copy(const char *start, size_t length) {
@@ -14389,6 +14432,8 @@ static Value webserver_make_request(WebServerClient *client,
     record_set(&request, "headers", headers);
     record_set(&request, "cookies", webserver_cookie_record(webserver_field(&request, "headers")));
     record_set(&request, "body", value_string(body));
+    record_set(&request, "form",
+               webserver_form_record(webserver_field(&request, "headers"), body));
     {
         int over_tls = 0;
 #if HAVE_LIBSSL

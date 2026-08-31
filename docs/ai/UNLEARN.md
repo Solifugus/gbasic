@@ -412,6 +412,37 @@ day — so assume you will hit them too.
   function. It warns at the call site now. Holding such a variable is fine
   (`list = [1,2]`); only calling it is the mistake. A record field is immune.
 
+- **The library-override warning is CALL-TRIGGERED, not load-triggered
+  (measured 2026-08-30).** Two loaded libraries that define the same public
+  name produce **no warning at all** while every call is qualified. The warning
+  lives in the *unqualified* lookup, so it fires the first time something calls
+  the bare name and resolves ambiguously:
+
+  ```basic
+  load alpha from "alpha.bas"     ' both define ensure_dir
+  load beta from "beta.bas"
+  print alpha.ensure_dir("x")     ' silent -- qualified
+  print beta.ensure_dir("x")      ' silent
+  print ensure_dir("x")           ' warns: 'ensure_dir' from 'beta' overrides 'alpha'
+  ```
+
+  That is correct for what it is — an override only *matters* where an
+  unqualified call has to choose — but it means **the warning cannot be used
+  as a namespace audit**. A collision between libraries whose functions are
+  always called qualified is invisible, and stays invisible until someone adds
+  the first unqualified call. Reported by the gdash session, which had exactly
+  this pair: `persist` and its own `gdash_paths` both define `ensure_dir` and
+  nothing warned, while a `resolve` colliding with `web.resolve` did — same
+  code path, different call sites.
+
+  For reference, `stdlib` itself currently has **seven** such shared public
+  names: `at` (dates/grid), `create` (datagrid/sourceeditor), `merge`
+  (consolidate/dates), `offline` (edgar/llm/market), `select` (dates/frame),
+  `series` (dates/fundamentals), `with_transport` (llm/market). All are
+  harmless while callers qualify them, which is why a load-time warning was not
+  added: it would fire on every program that loads `dates` and `frame` and
+  never writes a bare `select`.
+
 - **`lib.fn` is a function value (2026-08-28).** It used to work only in CALL
   position: `lib.fn(x)` ran, `f = lib.fn` died with "undefined variable: lib",
   so passing a library function as a callback had no direct form. The
