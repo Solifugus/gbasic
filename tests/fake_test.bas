@@ -124,6 +124,36 @@ next
 check("every invoice names a customer that exists", missing, 0)
 check("every total equals the sum of its own lines, to the cent", mismatched, 0)
 
+' ------------------------------------------------ UNIQUENESS IS LAYER 2
+' A VALUE may repeat -- real people share names, and `fake.person` drawing the
+' same one twice is honest. A POPULATION of distinct entities may not: 2,000
+' customers sharing 555 email addresses is not realistic, it is broken, and
+' anything keyed on email silently merges rows. Measured before the fix: 555
+' distinct emails and 359 distinct names out of 2,000, because 24 heads x 15
+' tails saturates at 360 and the birthday problem beats any pool at scale.
+many = fake.customers(11, 2000)
+emails = []
+names = []
+ids = []
+for each c in many
+    append(emails, c.email)
+    append(names, c.name)
+    append(ids, c.id)
+next
+check("2000 customers have 2000 distinct emails", count(unique(emails)), 2000)
+check("and 2000 distinct names", count(unique(names)), 2000)
+check("and 2000 distinct ids", count(unique(ids)), 2000)
+
+' THE CONTROL, and it is what makes the tier a statement about LAYERS rather
+' than about de-duplication: the VALUE generator underneath still repeats,
+' because two real people are called Ada Novak.
+plain = []
+for i = 0 to 999
+    append(plain, fake.person(11, i).name)
+next
+check("the value generator underneath still repeats, by design",
+      count(unique(plain)) < 1000, true)
+
 ' ------------------------------------------------ THE TEST THAT PROVES ALL FOUR
 ' Design §7: the output must drive `accounting` without a single refusal. An
 ' unbalanced entry, a phantom account or a cross-currency line would each be

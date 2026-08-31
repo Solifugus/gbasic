@@ -218,7 +218,32 @@ cross-currency line would each be rejected at the point it was posted. A
 generator whose ledger posts cleanly has demonstrated its consistency rather
 than claimed it.
 
-## 8. It must be obviously fake
+## 8. Uniqueness belongs to Layer 2
+
+**A value may repeat; a population may not.** Two real people are called Ada
+Novak, so `fake.person` returning the same name twice is honest. A customer
+list with two `Basalt Partners` is not realistic — it is broken, and anything
+keyed on email silently merges rows.
+
+Measured before this was fixed: **2,000 customers gave 555 distinct emails and
+359 distinct company names**, because 24 heads × 15 tails saturates at 360.
+Widening the pools only moves the number; the birthday problem beats any pool
+at population scale.
+
+So the **dataset builder** guarantees uniqueness, which it can do because it
+owns the whole list — a `(seed, index)` value generator cannot see its own
+siblings. It appends the smallest numeral that makes a value new, which is what
+real directories do (`j.smith2@` exists because `j.smith@` was taken), so the
+result stays plausible rather than becoming a serial number. Below saturation
+no suffix appears at all.
+
+This is also where Faker's `unique` proxy sits, and the comparison is worth
+being straight about: Faker's is general and applies to any provider; ours is a
+property of the dataset builders only. That is a deliberate consequence of the
+layering, not an oversight — but it does mean a caller assembling their own
+population out of Layer 1 values must handle uniqueness themselves.
+
+## 9. It must be obviously fake
 
 **Names, addresses, companies and contact details must not collide with real
 people or organisations**, and the library should make that structural rather
@@ -236,7 +261,7 @@ real person is a privacy problem the moment it leaves the machine.
 
 ---
 
-## 9. Validation
+## 10. Validation
 
 - **Reproducibility**: the same seed produces byte-identical output, asserted
   across two runs in the same suite — the property everything else rests on.
@@ -256,7 +281,7 @@ real person is a privacy problem the moment it leaves the machine.
 
 ---
 
-## 10. Deferred, with reasons
+## 11. Deferred, with reasons
 
 - **Locales beyond en-US** — real localisation needs native review per locale,
   and a machine-translated name list is worse than none. This is the one place
@@ -276,7 +301,7 @@ real person is a privacy problem the moment it leaves the machine.
 
 ---
 
-## 11. First consumer
+## 12. First consumer
 
 Phase 2's worked consultancy, scaled up: the same chart of accounts, a year of
 generated transactions instead of nine typed ones, and the accounting equation

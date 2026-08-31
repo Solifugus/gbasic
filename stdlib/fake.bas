@@ -281,18 +281,66 @@ library fake
     ' INPUT to `accounting` rather than only as filler.
 
     ' `n` customers, each regenerable from (base, index) alone.
+    '
+    ' UNIQUENESS IS A LAYER-2 GUARANTEE, NOT A LAYER-1 ONE, and the split is
+    ' the point. A VALUE may repeat -- two real people are called Ada Novak,
+    ' and `fake.person` drawing the same name twice is honest. A POPULATION of
+    ' distinct entities may not: a customer list with two "Basalt Partners" and
+    ' 2,000 rows sharing 555 email addresses is not realistic, it is broken,
+    ' and anything keyed on email silently merges rows.
+    '
+    ' Measured before this was added: 2,000 customers gave 555 distinct emails
+    ' and 359 distinct company names, because the pools saturate (24 heads x 15
+    ' tails is 360 combinations). Widening the pools only moves the number --
+    ' the birthday problem beats any pool at population scale. So the dataset
+    ' builder disambiguates, which it CAN do because it owns the whole list,
+    ' where a (seed, index) value generator cannot see its own siblings.
     function customers(base, n)
         rows = []
+        seen_name = { }
+        seen_email = { }
         for i = 0 to n - 1
             c = company(base, i)
             p = person(base, i)
+            nm = _distinct(seen_name, c.name)
+            seen_name[nm] = true
+            local = lower(p.given) + "." + lower(p.family)
+            addr = _distinct(seen_email, local + "@" + c.domain)
+            seen_email[addr] = true
             append(rows, { id: "C" + _pad4(i),
-                           name: c.name,
+                           name: nm,
                            contact: p.name,
-                           email: lower(p.given) + "@" + c.domain,
+                           email: addr,
                            country: weighted(base, i, ["US", "CA", "GB"], [70, 20, 10]) })
         end for
         return rows
+    end function
+
+    ' Append the smallest numeral that makes a value new. Real directories do
+    ' exactly this -- `j.smith2@` exists because `j.smith@` was taken -- so the
+    ' result stays plausible instead of becoming a serial number.
+    function _distinct(seen, candidate)
+        if is_unknown(seen[candidate]) then
+            return candidate
+        end if
+        k = 2
+        while k < 100000
+            tried = _suffixed(candidate, k)
+            if is_unknown(seen[tried]) then
+                return tried
+            end if
+            k = k + 1
+        end while
+        error "fake: could not find a distinct value for " + string(candidate)
+    end function
+
+    ' A numeral goes before the `@` in an email and at the end of a name.
+    function _suffixed(candidate, k)
+        at = find(candidate, "@")
+        if is_nothing(at) then
+            return candidate + " " + string(k)
+        end if
+        return mid(candidate, 0, at) + string(k) + mid(candidate, at, len(candidate) - at)
     end function
 
     function _pad4(n)
