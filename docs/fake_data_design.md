@@ -73,7 +73,46 @@ invoice generated afterwards, or committed fixtures silently rot.
 
 ---
 
-## 3. Shape
+## 3. Two layers, because "realistic" depends on what for
+
+**"Fake" is the simple half. "Realistic" is relative to a purpose**, and
+conflating the two is what limits a library to one domain.
+
+So the design splits:
+
+**Layer 1 — values.** Domain-neutral draws: a name, a company, an address, an
+email, a date, an identifier. This is roughly what Python's Faker provides, and
+it is deliberately opinion-free about what the data is *for*. It should stay
+general even though this library's first domain is business and finance.
+
+**Layer 2 — datasets.** A *population* with constraints, consistency and
+distributions: customers, the invoices that reference them, the payments that
+settle those invoices, and a ledger that balances. This is where "realistic for
+what" lives, and it is the half a value generator cannot reach.
+
+**The rule that keeps it from becoming a business-only library: Layer 1 must
+not know Layer 2 exists.** Adding healthcare, logistics or telemetry later is a
+Layer-2 addition and touches nothing underneath.
+
+### What a value generator cannot do
+
+Faker (recollection, not measured — it is not installed here) generates
+independent values, so `name()` and `email()` are unrelated draws: "John Smith"
+with `wgarcia@example.org`. Four kinds of consistency follow from that gap, and
+all four are why business data needs Layer 2:
+
+| Consistency | Example | Without it |
+|---|---|---|
+| **Intra-record** | the email derives from the name; the postcode belongs to the city | data that looks wrong to anyone who reads a row |
+| **Referential** | every invoice names a customer that exists | cannot drive `accounting` or a foreign key at all |
+| **Temporal** | a payment is dated after its invoice; nothing predates the company | any aging, cohort or vintage analysis is meaningless |
+| **Arithmetic** | line items sum to the invoice total; payments never exceed it | `accounting` refuses it, correctly, and the fixture is unusable |
+
+The fourth is the one that decides whether generated data is usable **as
+input** rather than only as filler. A ledger whose entries do not balance is
+not fake business data; it is noise shaped like business data.
+
+## 4. Shape
 
 ```basic
 ' Every generator takes the seed and the row index. Nothing is stateful.
@@ -96,7 +135,7 @@ customers = fake.table(seed, 500, {
 
 ---
 
-## 4. Distributions are the point
+## 5. Distributions are the point
 
 A uniform amount column is useless for testing anything that cares about
 shape. The generator must offer, and default to, distributions that look like
@@ -115,7 +154,7 @@ neither is inferable — the same rule `money` and `finance` already follow.
 
 ---
 
-## 5. Planted anomalies
+## 6. Planted anomalies
 
 The feature that a hand-written fixture cannot provide: a clean population with
 a **known** defect inserted at a **known** place.
@@ -136,18 +175,34 @@ just-under-threshold approvals, sequence gaps, and a weekend-dated entry.
 
 ---
 
-## 6. Referential integrity
+## 7. Consistency, concretely
 
-Generated data must be internally consistent or it cannot drive `accounting`
-or `dbframe`: an invoice must reference a customer that exists, and a payment
-must reference an invoice whose amount it does not exceed.
+§3 names four kinds; this is how they are met.
 
-The `(seed, index)` design makes this cheap — a child row picks its parent by
-index, and the parent is regenerable from the same seed without being stored.
+**Referential** — a child row picks its parent **by index**, and the
+`(seed, index)` design makes the parent regenerable from the same seed without
+being stored. So an invoice can reference customer 317 and both agree, in any
+order, without either being kept in memory.
 
----
+**Temporal** — a generated entity carries its own window. An invoice cannot
+predate its customer's `since` date, and a payment is drawn from the window
+*after* its invoice. Dates are business-day clustered by default (§5).
 
-## 7. It must be obviously fake
+**Arithmetic** — line items are generated first and the total is their sum,
+never the reverse; a payment is drawn as a fraction of the outstanding balance,
+so it cannot exceed it. Money is exact, so these hold to the cent rather than
+approximately.
+
+**Intra-record** — an email is derived from the name and company that were
+already drawn for that row, not drawn independently.
+
+**The test that all four are real** is that the output drives `accounting`
+without a single refusal: an unbalanced entry, a phantom account or a
+cross-currency line would each be rejected at the point it was posted. A
+generator whose ledger posts cleanly has demonstrated its consistency rather
+than claimed it.
+
+## 8. It must be obviously fake
 
 **Names, addresses, companies and contact details must not collide with real
 people or organisations**, and the library should make that structural rather
@@ -165,7 +220,7 @@ real person is a privacy problem the moment it leaves the machine.
 
 ---
 
-## 8. Validation
+## 9. Validation
 
 - **Reproducibility**: the same seed produces byte-identical output, asserted
   across two runs in the same suite — the property everything else rests on.
@@ -185,10 +240,16 @@ real person is a privacy problem the moment it leaves the machine.
 
 ---
 
-## 9. Deferred, with reasons
+## 10. Deferred, with reasons
 
 - **Locales beyond en-US** — real localisation needs native review per locale,
-  and a machine-translated name list is worse than none.
+  and a machine-translated name list is worse than none. This is the one place
+  Faker is clearly ahead (~70 locales) and the gap is honest: those lists were
+  contributed by speakers, and there is no shortcut.
+- **Domains beyond business and finance** — healthcare, logistics, telemetry.
+  Not excluded, just not first: they are Layer-2 additions by construction
+  (§3), so adding one later touches nothing underneath. The value layer is
+  built general precisely so this stays true.
 - **A schema-inference mode** ("generate data like this table") — attractive
   and a different problem: it needs profiling, and profiling real data is how
   real values leak into fake ones.
@@ -199,7 +260,7 @@ real person is a privacy problem the moment it leaves the machine.
 
 ---
 
-## 10. First consumer
+## 11. First consumer
 
 Phase 2's worked consultancy, scaled up: the same chart of accounts, a year of
 generated transactions instead of nine typed ones, and the accounting equation
