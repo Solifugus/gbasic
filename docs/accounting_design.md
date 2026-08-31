@@ -1,6 +1,7 @@
 # Accounting design
 
-**Status:** Proposal
+**Status:** Shipped — `stdlib/accounting.bas`, `tests/run_accounting.sh`.
+Sections marked deferred remain proposals.
 **Scope:** `stdlib/accounting.bas` — chart of accounts, journal entries,
 posting, the ledger, trial balance, the two primary statements, and period
 closing. Phase 2 of the

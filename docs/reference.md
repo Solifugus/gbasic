@@ -1134,6 +1134,13 @@ text in a database or a JSON document needs. An explicit width renders there
 instead, rounding half-even. It raises on anything but money, and on a width
 that is not a whole number from 0 to 18.
 
+**`money.currency(amount)`** returns the amount's ISO code as a string. Money
+is otherwise the one typed value you cannot fully introspect — `type(m)` says
+`money` and nothing says *which* — and grouping amounts by currency needs it.
+A value deserialized from an actor whose currency this process never registered
+answers with its numeric code as text, rather than losing information the value
+still carries.
+
 The built-in table is the **current** ISO 4217 list, so withdrawn currencies
 (ITL, DEM, FRF) are not in it. Register what you need:
 
@@ -4607,6 +4614,28 @@ General-purpose:
   `finance.syd(cost, salvage, life, period)` sum-of-years-digits, and
   `finance.ddb(cost, salvage, life, period)` double-declining balance, floored
   at salvage so an asset is never written below what it is worth.
+- `accounting` — double-entry bookkeeping, pure gBASIC over exact `money`
+  (`docs/accounting_design.md`). `accounting.chart(accounts)` validates a chart
+  of accounts and fixes each one's normal balance side from its `kind`
+  (`asset`, `liability`, `equity`, `revenue`, `expense`);
+  `accounting.normal_side(kind)` is that rule on its own — `"debit"` for assets
+  and expenses, `"credit"` for the rest — written once and read everywhere,
+  since it decides both statement placement and the sign a reader expects.
+  `accounting.entry(chart, date, memo, lines)` builds **and validates** one
+  entry — a line carries `debit` **or** `credit`, never a signed amount,
+  because "is a negative debit a credit" is a question that produces statements
+  which balance and are backwards. **Every entry must balance, in every
+  currency**, and an unbalanced one is refused at that point rather than
+  discovered later by a report that cannot say which entry did it; so is a line
+  naming an account absent from the chart. `accounting.ledger()` makes an empty one and
+  `accounting.post(ledger, entry)`
+  **returns** the new ledger (inside a function `append` mutates a local copy,
+  so a mutate-in-place API would silently do nothing).
+  `accounting.balances`, `.trial_balance`, `.balance_sheet` and
+  `.income_statement` report; `.close(chart, ledger, through, equity)` moves
+  revenue and expenses into equity and seals the period — **refused** on a
+  period already closed, because running a close twice doubles equity and
+  leaves the ledger balanced while doing it.
 - `chart` — charts as deterministic SVG text, pure gBASIC: line, scatter, area,
   bar, histogram, pie, heatmap and sparkline (`docs/chart_design.md`; worked
   recipes in `docs/chart_cookbook.md`). `chart.area_xy(xs, ys)` and

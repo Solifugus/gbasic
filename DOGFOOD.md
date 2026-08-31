@@ -3783,3 +3783,29 @@ Severity is diagnostic, not correctness — the call is abandoned and the error
 *is* caught either way. But it points every reader at the innocent party, and
 `trim expects a string` sends you looking at your own string handling rather
 than at the file that would not open.
+
+## 2026-08-30 — CC — money could not report its own currency
+- **Type:** missing capability (resolved same day)
+- **Severity:** low, but it BLOCKED a design
+- **What:** Writing `stdlib/accounting.bas`, whose one invariant is that an
+  entry balances IN EVERY CURRENCY, there was no way to ask a money value which
+  currency it is. `type(m)` answers `money`; `m.currency` and `m.code` both
+  raise `field access expects a record`; `money.currencies()` lists what is
+  registered but says nothing about a VALUE. Money was the one typed value that
+  could not be fully introspected.
+
+  The workarounds were all bad: add it to a known currency and catch the raise,
+  or parse the error message for the code it names. The alternative was to
+  narrow the design to single-currency entries -- which would have been a real
+  loss, since a foreign-currency purchase is exactly the entry that needs the
+  rule.
+
+- **Resolved:** `money.currency(amount)` returns the ISO alpha code. A value
+  deserialized from an actor whose currency this process never registered
+  answers with its numeric code as text rather than "?", because the value
+  still carries that information and still computes correctly.
+- **Worth noting:** the gap existed because every earlier consumer knew the
+  currency from context -- it was hardcoded in the program, or came from a
+  column whose currency the caller chose. `accounting` is the first consumer
+  that receives money from somewhere else and must GROUP by currency, which is
+  the shape that needs the accessor.

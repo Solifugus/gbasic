@@ -24164,6 +24164,36 @@ static Value money_eval_call(AstExpr *expr) {
         return value_string(buf);
     }
 
+    if (strcmp(name, "currency") == 0) {
+        /* A money value could not report its own currency at all, which makes
+         * it the one typed value you cannot fully introspect: `type(m)` says
+         * "money" and nothing says WHICH. Found writing accounting.bas, where
+         * an entry must balance per currency and there was no way to group the
+         * lines. Returns the ISO alpha code, or the numeric code as text for a
+         * currency this process has not registered -- a value deserialized
+         * from an actor carries its numeric code and stays computable, so
+         * answering "?" here would lose information the value still has. */
+        if (expr->as.call.args.count != 1) {
+            runtime_error_raise("money.currency expects one amount", 1003, "money");
+            return value_null();
+        }
+        Value amount = eval_expr(expr->as.call.args.items[0]);
+        if (error_action_pending()) { value_free(amount); return value_null(); }
+        if (amount.kind != VALUE_MONEY) {
+            value_free(amount);
+            runtime_error_raise("money.currency expects money", 1003, "money");
+            return value_null();
+        }
+        const char *alpha = currency_alpha_of(amount.as.money.currency);
+        char buf[16];
+        if (!alpha) {
+            snprintf(buf, sizeof(buf), "%u", (unsigned)amount.as.money.currency);
+            alpha = buf;
+        }
+        value_free(amount);
+        return value_string(alpha);
+    }
+
     if (strcmp(name, "allocate") == 0) {
         /* --- PLAT-MONEY phase 4: splitting money into PAYABLE parts --------
          *
