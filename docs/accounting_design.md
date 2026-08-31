@@ -1,12 +1,11 @@
 # Accounting design
 
-**Status:** Partial — the **kernel** is shipped (`stdlib/accounting.bas`,
-`tests/run_accounting.sh`): chart, entries, ledger, balances, trial balance,
-both statements, closing. Two of §6's own validation items are **not** done —
-a worked business with externally computed figures, and the `dbframe` round
-trip — so the platform proposal's Phase 2 exit criterion (*a small business
-can be modeled from transactions through statements and analytical reports*)
-is not yet met. Sections marked deferred remain proposals.
+**Status:** Shipped — `stdlib/accounting.bas`, `tests/run_accounting.sh`,
+`docs/accounting_cookbook.md`. All five of §6's validation items are done,
+including the worked business and the `dbframe` round trip, so the platform
+proposal's Phase 2 exit criterion is met. Sections marked deferred remain
+proposals.
+
 **Scope:** `stdlib/accounting.bas` — chart of accounts, journal entries,
 posting, the ledger, trial balance, the two primary statements, and period
 closing. Phase 2 of the

@@ -86,6 +86,54 @@ do
     fi
 done
 
+printf 'TIER a worked business\n'
+# The Phase 2 exit criterion: a small company from transactions through
+# statements. EVERY expected figure was computed OUTSIDE gBASIC before the
+# fixture existed -- which is what separates it from a transcript, since a
+# golden records whatever the library produced and every mistake here leaves a
+# balanced ledger and a plausible statement.
+if GBASIC_PATH=stdlib ./gbasic tests/accounting_business_test.bas >"$scratch/biz" 2>"$scratch/bizerr"; then
+    pass "accounting_business exits 0"
+else
+    fail "accounting_business exits 0 ($(head -1 "$scratch/bizerr"))"
+fi
+if grep -q "^mismatches: 0$" "$scratch/biz"; then
+    pass "accounting_business reports no mismatch"
+else
+    fail "accounting_business reports no mismatch"; grep MISMATCH "$scratch/biz" | head -5
+fi
+ranb=$(sed -n 's/^checks: //p' "$scratch/biz")
+if [ "${ranb:-0}" -ge 23 ]; then
+    pass "accounting_business ran at least 23 checks (ran ${ranb:-0})"
+else
+    fail "accounting_business ran at least 23 checks (ran ${ranb:-0})"
+fi
+for label in 'THE ACCOUNTING EQUATION HOLDS' 'net income' 'equity absorbs the net income'; do
+    command grep -Fq "ok   $label" "$scratch/biz" && pass "asserted: $label" || fail "asserted: $label"
+done
+
+printf 'TIER through a database and back\n'
+# The claim that accounting composes with the data pipeline, made a fact: the
+# ledger goes out through dbframe into SQLite, comes back through sqlite, is
+# rebuilt from DATABASE bytes, and must produce identical statements. Money is
+# exact and a REAL column is not -- a total off by a cent still looks like a
+# total -- so the cents are asserted as figures, not merely as self-equality.
+if GBASIC_PATH=stdlib ./gbasic tests/accounting_dbframe_test.bas >"$scratch/db" 2>"$scratch/dberr"; then
+    if grep -q "^mismatches: 0$" "$scratch/db"; then
+        pass "the ledger round-trips through SQLite with identical statements"
+    else
+        fail "the ledger round-trips through SQLite with identical statements"
+        grep MISMATCH "$scratch/db" | head -5
+    fi
+    command grep -Fq "ok   the awkward cents are intact" "$scratch/db" \
+        && pass "asserted: the awkward cents are intact" \
+        || fail "asserted: the awkward cents are intact"
+elif grep -qi "library not loaded: sqlite\|invalid function call: sqlite" "$scratch/dberr"; then
+    pass "database round trip (SKIP: no sqlite in this build)"
+else
+    fail "the ledger round-trips through SQLite ($(head -1 "$scratch/dberr"))"
+fi
+
 printf 'TIER valgrind\n'
 if command -v valgrind >/dev/null 2>&1; then
     if GBASIC_PATH=stdlib valgrind --error-exitcode=9 --leak-check=full \

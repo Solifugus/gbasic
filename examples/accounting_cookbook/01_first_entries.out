@@ -1,0 +1,6 @@
+cash is a  asset, normally debit
+fees are a revenue, normally credit
+
+entries posted: 1
+
+refused: accounting.entry does not balance in USD: debits minus credits is 1000.00

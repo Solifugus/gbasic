@@ -1,0 +1,17 @@
+cash on hand:      14500.00
+still owed to you: 4000.00
+equipment, net:    5900.00
+
+trial balance:  debits 32500.00  credits 32500.00
+  balanced:     true
+
+January
+  revenue:    12000.00
+  expenses:   8100.00
+  net income: 3900.00
+
+  assets:      24400.00
+  liabilities: 500.00
+  equity:      20000.00
+  earnings:    3900.00  (not yet closed)
+  balances:    true

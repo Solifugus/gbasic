@@ -616,7 +616,7 @@ The documentation gate should distinguish shipped behavior from proposals and pa
 - add receivables, payables, inventory costing, ratios, valuation, and unit economics;
 - demonstrate database and spreadsheet reporting workflows.
 
-**Exit criterion:** a small business can be modeled from transactions through statements and analytical reports.
+**Exit criterion:** a small business can be modeled from transactions through statements and analytical reports. **MET 2026-08-30** — `stdlib/accounting.bas` with a worked consultancy month (figures computed outside gBASIC), a ledger round trip through `dbframe`/SQLite producing identical statements, and `docs/accounting_cookbook.md`. Receivables, payables and inventory costing remain deferred with reasons in `docs/accounting_design.md` §7.
 
 ### Phase 3: Lending and deposits
 

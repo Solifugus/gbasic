@@ -1,0 +1,14 @@
+unbalanced:
+  accounting.entry does not balance in USD: debits minus credits is 40.00
+account not in the chart:
+  accounting.entry: line 1 names account 1oo0, which is not in the chart
+a line with both sides:
+  accounting.entry: line 1 has both a debit and a credit
+a line with neither:
+  accounting.entry: line 1 has neither a debit nor a credit
+mixed currencies:
+  accounting.entry does not balance in USD: debits minus credits is 100.00
+duplicate account code:
+  accounting.chart: duplicate account code 1000
+
+and a correct entry is accepted: 2 lines

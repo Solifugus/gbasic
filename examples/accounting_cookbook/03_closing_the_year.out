@@ -1,0 +1,14 @@
+before closing
+  equity:   5000.00
+  earnings: 1800.00
+
+after closing
+  equity:   6800.00   <- the earnings moved here
+  earnings: 0.00
+  assets unchanged: true
+  still balances:   true
+
+closing again: accounting.close: the period through 2026-04-30 is already closed
+backdating:    accounting.post: the period through 2026-04-30 is closed; an entry dated 2026-04-15 cannot be added
+
+May still posts: 1 new entry
