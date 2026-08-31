@@ -2912,6 +2912,12 @@ Random and comparison:
 
 Hashing and HMAC:
 
+- `password_hash_cost()` -> `{ ms, prefix }` — what one password hash costs
+  **on this machine**, measured by performing one, plus the algorithm and
+  parameter field libxcrypt embedded (`$y$j9T$` is yescrypt at its default
+  cost). `password_hash` takes no options, so this is how a deployment states
+  its KDF posture rather than assuming it. It takes as long as a hash — a
+  diagnostic, not a per-request call.
 - `sha256(s)`, `sha512(s)`, `sha1(s)` — message digests.
 - `md5(s)` — 16 raw bytes. Provided for **compatibility** — reading a checksum
   someone else produced, or a legacy format that specifies it. MD5 is broken
@@ -4331,6 +4337,29 @@ File metadata and atomic replacement:
     relocation that may cross filesystems.
 
 Path questions about what is really there:
+
+- `library_collisions()` -> array of `{ name, libraries }` — every public name
+  defined by **more than one loaded library**. The override warning cannot
+  answer this: it lives in the unqualified-lookup path, so it is
+  *call-triggered* and stays silent while every call is qualified — a collision
+  is invisible until someone writes the first bare call, which is exactly when
+  it is too late to be told.
+
+  **It is not an error condition and you should not assert it is empty.**
+  `stdlib` alone has seven benign shared names, so a program loading `dates`
+  and `frame` legitimately reports `select`. The useful shapes are an allowlist
+  or a baseline:
+
+  ```basic
+  load dates
+  load frame
+  accepted = ["select"]
+  for each c in library_collisions()
+      if not contains(accepted, c.name) then
+          print to error "namespace: " + c.name + " from " + join(c.libraries, ", ")
+      end if
+  next
+  ```
 
 - `real_path(p)` — the canonical absolute path: `.` and `..` removed, every
   symlink resolved by the kernel. Returns `unknown` when the path does not

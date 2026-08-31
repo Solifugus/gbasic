@@ -25159,6 +25159,165 @@ static Value eval_call(AstExpr *expr) {
         return value_number(secs);
     }
 
+    if (strcmp(expr->as.call.name, "library_collisions") == 0) {
+        /* Every public name defined by more than one LOADED library.
+         *
+         * The override warning cannot answer this: it lives in the unqualified
+         * lookup, so it is CALL-TRIGGERED and stays silent for as long as every
+         * call is qualified. A collision is therefore invisible until someone
+         * adds the first bare call -- which is exactly when it is too late to
+         * be told. This reports the latent state instead.
+         *
+         * NOT AN ERROR CONDITION, and callers should not assert it is empty:
+         * stdlib alone has seven benign shared names (`select` in dates and
+         * frame, and so on), harmless while callers qualify them. The useful
+         * shape is an allowlist or a baseline comparison, the way this repo's
+         * own documentation gates handle their deliberate exceptions. */
+        if (expr->as.call.args.count != 0) {
+            runtime_error_raise("library_collisions expects no arguments",
+                                1003, "invalid function call");
+            return value_null();
+        }
+        Value *rows = NULL;
+        size_t row_count = 0;
+        for (size_t i = 0; i < function_count; i++) {
+            FunctionDef *a = &functions[i];
+            if (!a->imported || !a->library || !a->name) {
+                continue;
+            }
+            /* Report each NAME once: skip if an earlier entry already owns it. */
+            int already = 0;
+            for (size_t j = 0; j < i && !already; j++) {
+                if (functions[j].imported && functions[j].library &&
+                    functions[j].name && strcmp(functions[j].name, a->name) == 0) {
+                    already = 1;
+                }
+            }
+            if (already) {
+                continue;
+            }
+            /* Collect the distinct libraries defining it. */
+            Value *libs = NULL;
+            size_t lib_count = 0;
+            for (size_t j = 0; j < function_count; j++) {
+                FunctionDef *b = &functions[j];
+                if (!b->imported || !b->library || !b->name) {
+                    continue;
+                }
+                if (strcmp(b->name, a->name) != 0) {
+                    continue;
+                }
+                int seen = 0;
+                for (size_t k = 0; k < lib_count && !seen; k++) {
+                    if (strcmp(libs[k].as.string, b->library) == 0) {
+                        seen = 1;
+                    }
+                }
+                if (!seen) {
+                    libs = realloc(libs, sizeof(Value) * (lib_count + 1));
+                    if (!libs) abort();
+                    libs[lib_count++] = value_string(b->library);
+                }
+            }
+            if (lib_count > 1) {
+                RecordField *f = calloc(2, sizeof(RecordField));
+                if (!f) abort();
+                f[0].name = copy_string("name");       f[0].value = cell_alloc();
+                f[1].name = copy_string("libraries");  f[1].value = cell_alloc();
+                *f[0].value = value_string(a->name);
+                *f[1].value = value_array(libs, lib_count);
+                rows = realloc(rows, sizeof(Value) * (row_count + 1));
+                if (!rows) abort();
+                rows[row_count++] = value_record(f, 2);
+            } else {
+                for (size_t k = 0; k < lib_count; k++) {
+                    value_free(libs[k]);
+                }
+                free(libs);
+            }
+        }
+        return value_array(rows, row_count);
+    }
+
+    if (strcmp(expr->as.call.name, "password_hash_cost") == 0) {
+        /* What a password hash actually costs ON THIS MACHINE, and under what
+         * parameters.
+         *
+         * `password_hash` takes no options -- it uses libxcrypt's preferred
+         * defaults -- so a deployment could not previously state its own KDF
+         * posture, only assume it. That is a real gap for anything holding
+         * credentials: the right cost depends on the hardware and on how many
+         * logins a second the box must survive, and neither is knowable here.
+         *
+         * MEASURED, NOT DECLARED. It performs one real hash and times it,
+         * because the parameters alone do not tell you what they cost on the
+         * machine in front of you -- which is the number an operator actually
+         * needs. It therefore takes as long as a hash (~12ms here) and is a
+         * diagnostic, not something to call per request.
+         *
+         * `prefix` is the algorithm and parameter field libxcrypt embedded --
+         * `$y$j9T$` is yescrypt at its default cost -- so two deployments can
+         * compare postures rather than compare guesses. */
+        if (expr->as.call.args.count != 0) {
+            runtime_error_raise("password_hash_cost expects no arguments",
+                                1003, "invalid function call");
+            return value_null();
+        }
+#if HAVE_LIBXCRYPT
+        char *salt = crypt_gensalt_ra(NULL, 0, NULL, 0);
+        if (!salt) {
+            runtime_error_raise("password_hash_cost could not generate a salt",
+                                1003, "password_hash");
+            return value_null();
+        }
+        struct timespec t0, t1;
+        clock_gettime(CLOCK_MONOTONIC, &t0);
+        void *data = NULL;
+        int data_size = 0;
+        char *hash = crypt_ra("password-hash-cost-probe", salt, &data, &data_size);
+        clock_gettime(CLOCK_MONOTONIC, &t1);
+        if (!hash) {
+            free(salt);
+            free(data);
+            runtime_error_raise("password_hash_cost could not hash", 1003, "password_hash");
+            return value_null();
+        }
+        double ms = (double)(t1.tv_sec - t0.tv_sec) * 1000.0
+                  + (double)(t1.tv_nsec - t0.tv_nsec) / 1000000.0;
+        /* The parameter field is everything up to the salt: libxcrypt writes
+         * `$y$j9T$<salt>$<hash>`, so keep through the third `$`. */
+        char prefix[64];
+        size_t p = 0;
+        int dollars = 0;
+        for (size_t i = 0; hash[i] && p + 1 < sizeof(prefix); i++) {
+            prefix[p++] = hash[i];
+            if (hash[i] == '$') {
+                dollars++;
+                /* `$y$j9T$` -- through the THIRD `$`. The fourth begins the
+                 * salt, which differs every call and would make two postures
+                 * incomparable, which is the whole point of reporting it. */
+                if (dollars == 3) {
+                    break;
+                }
+            }
+        }
+        prefix[p] = '\0';
+        RecordField *f = calloc(2, sizeof(RecordField));
+        if (!f) abort();
+        f[0].name = copy_string("ms");     f[0].value = cell_alloc();
+        f[1].name = copy_string("prefix"); f[1].value = cell_alloc();
+        *f[0].value = value_number(ms);
+        *f[1].value = value_string(prefix);
+        free(salt);
+        free(data);
+        return value_record(f, 2);
+#else
+        runtime_error_raise("password_hash_cost is not available in this build",
+                            1004, "password_hash");
+        return value_null();
+#endif
+    }
+
     if (strcmp(expr->as.call.name, "password_hash") == 0) {
         if (expr->as.call.args.count != 1) {
             runtime_error_raise("password_hash expects one argument", 1003, "invalid function call");

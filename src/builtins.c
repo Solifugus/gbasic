@@ -128,6 +128,8 @@ int gbasic_builtin_function(const char *name) {
         "overwrite",
         "read_lines",
         "join_path",
+        "library_collisions",
+        "password_hash_cost",
         "real_path",
         "file_type",
         "file_name",
