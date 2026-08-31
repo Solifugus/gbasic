@@ -381,8 +381,27 @@ day — so assume you will hit them too.
   watcher body runs ONCE at registration — a `print` inside one prints
   immediately, before any change.
 
-- **A keyword may now be a field name, both ways** (0.1.0-rc6). `{ on: 1 }`
-  constructs and `r.on` reads it. Until rc6 the literal worked and the dot did
+- **A keyword may be a field name, both ways** (0.1.0-rc6) — **but its case is
+  not preserved** (measured 2026-08-31). `{ on: 1 }` constructs and `r.on`
+  reads it; `{ OR: 1 }` also constructs, and stores the key as **`"or"`**:
+
+  ```basic
+  a = { Name: 1, name: 2 }   ' two keys -- identifiers are case-sensitive
+  b = { OR: 1, or: 2 }       ' ONE name, twice: keys() reports "or,or"
+  print b["OR"]              ' unknown
+  print b["or"]              ' 1
+  ```
+
+  The grammar maps each keyword token to a canonical lowercase spelling
+  (`kw_name("or")` in `src/parser.y`), so the author's case is discarded. Dot
+  access still works in either case (`b.OR` and `b.or` both read it) because
+  dot fields are resolved in the LEXER, not the grammar — which is why only the
+  record-literal form is affected.
+
+  **The inconsistency is real**: whether a field name is case-sensitive depends
+  on whether it happens to collide with a keyword. Use the lowercase spelling
+  for a keyword field, or bracket-assign (`m["OR"] = 1`) when you need the case
+  kept, which is the same route non-identifier keys already take. Until rc6 the literal worked and the dot did
   not, which forced four renames in shipped designs (`kind:` in consolidate,
   `open`/`close` for calendar hours, `when:` and `through:` in date specs).
   Those renames are still in the code; nothing needs undoing, but new APIs no

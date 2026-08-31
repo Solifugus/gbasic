@@ -3931,8 +3931,48 @@ invent it, and one that forgets is one page away from an outage.
 - **Workaround:** build the map with bracket assignment, which is the route
   UNLEARN already recommends for non-identifier keys:
   `m = { }` then `m["OR"] = "97"`.
-- **NOT investigated:** whether this is specific to `OR` (an operator keyword
-  rather than a statement keyword), whether the literal or the lookup is at
-  fault, or whether dot access `r.OR` behaves differently. Recorded rather than
-  diagnosed, since the workaround was immediate and the fixture was not the
-  place to chase it.
+- **DIAGNOSED 2026-08-31**, at Matthew's request. The literal is at fault, not
+  the lookup, and the mechanism is exact: `src/parser.y`'s `dot_field_name`
+  maps each keyword token to a **canonical lowercase spelling** —
+  `| OR { $$ = kw_name("or"); }` and 45 more — so the author's case is
+  discarded at parse time. `{ OR: 1 }` stores the key `"or"`.
+
+  Dot access is unaffected in either case (`b.OR` and `b.or` both read it)
+  because dot fields are resolved in the LEXER rather than the grammar, so only
+  the record-literal form loses case. Matthew's guess — "the lexer reads them as
+  keywords before they can be read as identifiers" — is right about the cause
+  and one layer off about the location: the lexer does classify them as
+  keywords, but it is the grammar that then throws the spelling away.
+
+  **The sharpest consequence** is not the lowercasing but what it produces:
+  `{ OR: 1, or: 2 }` yields a record whose `keys()` are `or,or` — a duplicate
+  key, silently. (Duplicate keys are general record behaviour, not
+  keyword-specific: `{ x: 1, x: 2 }` does the same and the FIRST wins on
+  lookup. The keyword defect is that it manufactures the duplicate from two
+  spellings the language otherwise treats as distinct.)
+
+  **The inconsistency worth fixing:** whether a field name is case-sensitive
+  depends on whether it happens to collide with a keyword. Identifiers are
+  case-sensitive; keywords are not; a keyword-as-field-name silently follows
+  the keyword rule.
+
+  **Fix options, with costs, none taken yet:**
+  1. *Give the 46 keyword tokens a semantic value carrying their source text.*
+     Correct and uniform, but every `if`/`then`/`end` in every program would
+     then allocate a string the reduction ignores, which bison does not free —
+     a leak per keyword token unless each is consumed or destructed.
+  2. *Carry (start, length) into the source buffer instead of a copy.* No
+     allocation and no leak, but needs a new `%union` member and touches every
+     keyword token declaration.
+  3. *Record recent keyword tokens with their locations in `gb_parse_ctx` and
+     have `dot_field_name` look up by `@1`.* Allocates only in field position.
+     Needs a small ring rather than one slot, because the parser has usually
+     read the lookahead by the time the rule reduces.
+  4. *Rule that a keyword field name is case-insensitive, and say so.* Zero
+     code. Defensible — keywords ARE case-insensitive — but it keeps the
+     inconsistency and only documents it.
+
+  Recommended: (3), as the only one that is both leak-free and contained to the
+  rule that has the defect. Not done in this session; raised rather than
+  started, because it is a language-semantics change and the investigation was
+  what was asked for.
