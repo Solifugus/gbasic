@@ -4652,6 +4652,27 @@ General-purpose:
   `finance.syd(cost, salvage, life, period)` sum-of-years-digits, and
   `finance.ddb(cost, salvage, life, period)` double-declining balance, floored
   at salvage so an asset is never written below what it is worth.
+- `fake` — fabricated but realistic data, pure gBASIC
+  (`docs/fake_data_design.md`). **Every generator is a pure function of
+  `(seed, index)`** — there is no stream object, because a record is a value
+  and `s.n = s.n + 1` inside a function mutates a local copy. That makes
+  generation **order-independent**: row 47 is the same row whether you asked
+  for it directly or reached it by walking, so adding a field to one generator
+  cannot shift everything produced after it. The RNG is gBASIC's own
+  (xoshiro256, not libc), so output is identical across machines and builds.
+  Values: `fake.person`, `fake.company`, `fake.address`, `fake.phone`,
+  `fake.between`, `fake.pick`, `fake.weighted`, `fake.lognormal`,
+  `fake.date_between`, `fake.business_date`, `fake.amount`. Datasets:
+  `fake.customers(seed, n)` and
+  `fake.invoices(seed, customers, n, from, to, currency)`, which are
+  **consistent** rather than merely plausible — an invoice names a customer
+  that exists, is dated on a business day inside its window, and has a total
+  that is the *sum* of its lines rather than an independent draw. Amounts are
+  **lognormal**, which is the shape real invoice values take and the reason
+  they satisfy Benford's law; a uniform column cannot exercise a Benford
+  detector at all. Names, emails and phone numbers are structurally incapable
+  of naming a real person: RFC 2606 reserved domains and the 555-01xx range
+  reserved for fiction.
 - `accounting` — double-entry bookkeeping, pure gBASIC over exact `money`
   (`docs/accounting_design.md`). `accounting.chart(accounts)` validates a chart
   of accounts and fixes each one's normal balance side from its `kind`

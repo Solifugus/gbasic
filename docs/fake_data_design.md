@@ -1,6 +1,11 @@
 # Fake data design
 
-**Status:** Proposal
+**Status:** Partial — Layer 1 (values) and the first Layer 2 builders
+(`customers`, `invoices`) are shipped in `stdlib/fake.bas` with
+`tests/run_fake.sh`. Planted anomalies (§6), the `fake.table` spec form (§4)
+and the year-long worked business (§11) are **not** built. Sections marked
+deferred remain proposals.
+
 **Scope:** `stdlib/fake.bas` — fabricated but realistic data for tests,
 demonstrations and development. Names and addresses are the easy half; the
 half that finds bugs is **distributions**.
@@ -96,10 +101,21 @@ Layer-2 addition and touches nothing underneath.
 
 ### What a value generator cannot do
 
-Faker (recollection, not measured — it is not installed here) generates
-independent values, so `name()` and `email()` are unrelated draws: "John Smith"
-with `wgarcia@example.org`. Four kinds of consistency follow from that gap, and
-all four are why business data needs Layer 2:
+Measured against Faker 39.0.0 rather than recalled. It generates independent
+values, so `name()` and `email()` are unrelated draws — seeded at 0 it produces
+`Norma Fisher` / `tammy76@example.com` and `Heather Snow` /
+`williamcampbell@example.org`. It has no invoice, ledger, customer or
+relational concept at all (searched: none). And its numeric providers are
+**uniform**: 20,000 draws of `pyint(1, 100000)` put 11.0% of values in each
+leading digit where Benford's law expects 30.1% for 1 — so Faker data
+**cannot** exercise a Benford detector, which is the single clearest example of
+why "realistic" has to mean distributions and not just plausible strings.
+
+Its seeding is solid and reproducible, and it already uses RFC 2606 reserved
+domains for email, which §8 adopts.
+
+Four kinds of consistency follow from the value-at-a-time gap, and all four are
+why business data needs Layer 2:
 
 | Consistency | Example | Without it |
 |---|---|---|

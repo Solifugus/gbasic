@@ -101,6 +101,10 @@ document list, with a status column, is `docs/README.md`.
 - **spreadsheets** — `xlsx` (read/write plus a formula engine measured against
   15,871 real workbooks; `xlsx.try_open` reports a bad workbook as a value so a
   batch survives one), `grid`, `frame`/`dbframe`, `consolidate`, `chart`.
+- **test data** — `fake`, fabricated but realistic populations: pure functions
+  of (seed, index) so generation is order-independent and reproducible across
+  machines, with lognormal amounts, business-day dates, and referential and
+  arithmetic consistency strong enough to post to a ledger.
 - **accounting** — `accounting`, double-entry bookkeeping over the exact
   money type: a validated chart of accounts, journal entries that must balance
   in every currency or are refused where they are written, ledger, trial

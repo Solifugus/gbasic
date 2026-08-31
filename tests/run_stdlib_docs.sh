@@ -109,6 +109,19 @@ DELIBERATE = {
     # Stated future scope, explicitly flagged as not built.
     'llm.embed':
         'declared near-scope future work, not shipped',
+    # fake_data_design.md is Partial: Layer 1 and the first dataset builders
+    # ship, these three do not. Named in the design because the design is where
+    # scope is argued, and a Partial document has to be able to say what it
+    # does not yet have.
+    'fake.plant':
+        'planted anomalies, design section 6, not built',
+    'fake.table':
+        'the spec-record table form, design section 4, not built',
+    # Named in order to say it is IMPOSSIBLE, like chart.new above: a gBASIC
+    # record is a value, so a stream object cannot advance itself, which is the
+    # whole reason the API is pure functions of (seed, index).
+    'fake.stream':
+        'named as the shape gBASIC cannot express; generators are (seed, index)',
 }
 # A document the index marks **Proposal** is EXEMPT from this tier, and only
 # this one. "Proposal" is defined in docs/README.md as "describes work that
