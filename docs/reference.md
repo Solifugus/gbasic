@@ -1134,6 +1134,19 @@ text in a database or a JSON document needs. An explicit width renders there
 instead, rounding half-even. It raises on anything but money, and on a width
 that is not a whole number from 0 to 18.
 
+**`money.of(code, text)`** builds money from a currency code held in a
+**variable** — the mirror of `money.currency`. `{USD}=` is a modifier and needs
+a *literal* code, so a program that learns its currency at runtime (from a
+column, a config file, a loop over `money.currencies()`) could not construct a
+value at all; the workaround was an `if` chain with one branch per currency.
+Same parse path and same refusals as the modifier, so excess precision past the
+storage scale is rejected exactly as `{USD}=` rejects it, and a historical
+currency is refused for new values.
+
+```basic
+m = money.of("KWD", "1234.5678")   ' three minor-unit digits, per KWD
+```
+
 **`money.currency(amount)`** returns the amount's ISO code as a string. Money
 is otherwise the one typed value you cannot fully introspect — `type(m)` says
 `money` and nothing says *which* — and grouping amounts by currency needs it.

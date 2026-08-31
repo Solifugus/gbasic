@@ -244,33 +244,15 @@ library fake
         return _to_money(raw, currency_code)
     end function
 
-    ' Round to whole minor units through TEXT, so the value is exact rather
-    ' than a double that happens to look like money.
+    ' Round to whole minor units through TEXT so the value is exact, then hand
+    ' the code to `money.of` rather than a hardcoded chain of modifiers.
+    '
+    ' This used to be an if-chain over four currencies, because `{USD}=` is a
+    ' modifier and needs a LITERAL code -- so a generator could only offer the
+    ' currencies whoever wrote the chain had thought of, four out of 178.
+    ' `money.of(code, text)` was added for exactly this (2026-08-31).
     function _to_money(raw, currency_code)
-        cents = string(round(raw, 2))
-        m {USD}= cents
-        if currency_code = "USD" then
-            return m
-        end if
-        ' Other currencies go through money.convert-free re-tagging by text,
-        ' which is the only way to build one without a literal per currency.
-        return _tag(cents, currency_code)
-    end function
-
-    function _tag(text, currency_code)
-        if currency_code = "EUR" then
-            e {EUR}= text
-            return e
-        end if
-        if currency_code = "GBP" then
-            g {GBP}= text
-            return g
-        end if
-        if currency_code = "JPY" then
-            j {JPY}= string(round(number(text), 0))
-            return j
-        end if
-        error "fake.amount: currency " + string(currency_code) + " is not one of USD, EUR, GBP, JPY"
+        return money.of(currency_code, string(round(raw, 2)))
     end function
 
     ' --- Layer 2: datasets ---------------------------------------------------

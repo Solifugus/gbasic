@@ -3890,3 +3890,49 @@ no duplication. It is the right belt-and-braces regardless, because this
 process is also the supervisor for running transfers and a page bug must not
 abandon a transfer that is mid-file. But applications should not each have to
 invent it, and one that forgets is one page away from an outage.
+
+## 2026-08-31 — CC — money could not be built from a currency code in a variable
+- **Type:** missing capability (resolved same day)
+- **Severity:** low individually, but it SHAPED an API
+- **What:** `{USD}=` is an assignment modifier and needs a **literal** code, so
+  a program that learns its currency at runtime cannot construct money at all.
+  Writing `fake.amount(seed, i, currency_code, ...)` in `stdlib/fake.bas`, the
+  only way to honour the caller's code was an if-chain:
+
+  ```
+  if currency_code = "EUR" then
+      e {EUR}= text
+      return e
+  end if
+  ' ... one branch per currency
+  ```
+
+  which offered **four** currencies out of 178 — the four whoever wrote the
+  chain thought of. `money.currency` (added 2026-08-30) could read a code off a
+  value; nothing could put one together from a code.
+- **Resolved:** `money.of(code, text)`. Same parse path and refusals as the
+  modifier, so it is reach rather than a second set of rules. fake.bas's chain
+  became one line and gained all 178 currencies, with per-currency exponents —
+  JPY comes back with no decimal places and KWD with three, which the hardcoded
+  chain had to special-case.
+- **Worth noting:** this is the second half of the same gap. A typed value that
+  can be constructed only from a literal and inspected only by its own kind is
+  reachable from a program but not from *data*, and both halves went unnoticed
+  until a library had to accept a currency it did not choose.
+
+## 2026-08-31 — CC — a keyword as a record-literal key did not survive lookup
+- **Type:** surprise (worked around)
+- **Severity:** low
+- **What:** `docs/ai/UNLEARN.md` says a keyword may be a field name both ways
+  since rc6 (`{ on: 1 }` constructs and `r.on` reads). Writing a state-to-prefix
+  map in `tests/fake_test.bas`, `{ OR: "97", MI: "49", ... }` then `m["OR"]`
+  came back `unknown` — `OR` is a keyword, and the literal key did not survive
+  the bracket lookup.
+- **Workaround:** build the map with bracket assignment, which is the route
+  UNLEARN already recommends for non-identifier keys:
+  `m = { }` then `m["OR"] = "97"`.
+- **NOT investigated:** whether this is specific to `OR` (an operator keyword
+  rather than a statement keyword), whether the literal or the lookup is at
+  fault, or whether dot access `r.OR` behaves differently. Recorded rather than
+  diagnosed, since the workaround was immediate and the fixture was not the
+  place to chase it.

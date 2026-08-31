@@ -21,6 +21,21 @@ function check(label, got, want)
     return nothing
 end function
 
+' Built by bracket assignment, not a record literal: `OR` is a keyword, and a
+' literal key of that name did not survive the lookup.
+function _zip_for(region)
+    m = { }
+    m["OR"] = "97"
+    m["MI"] = "49"
+    m["PA"] = "15"
+    m["TX"] = "78"
+    m["NY"] = "12"
+    m["CO"] = "80"
+    m["WA"] = "98"
+    m["GA"] = "30"
+    return m[region]
+end function
+
 ' ------------------------------------------------ REPRODUCIBILITY
 ' The property everything else rests on. gBASIC's RNG is its own (xoshiro256,
 ' not libc), so this holds across machines and builds too.
@@ -123,6 +138,45 @@ for each v in inv
 next
 check("every invoice names a customer that exists", missing, 0)
 check("every total equals the sum of its own lines, to the cent", mismatched, 0)
+
+' ------------------------------------------------ THE REST OF THE SURFACE
+' Probed by hand and found sound, which is not a gate -- so they are here.
+v = fake.between(11, 0, 1, 6)
+check("between stays inside its bounds", v >= 1 and v <= 6, true)
+outside = 0
+for i = 0 to 1999
+    b = fake.between(11, i, 1, 6)
+    if b < 1 or b > 6 then
+        outside = outside + 1
+    end if
+next
+check("and does so over 2000 draws", outside, 0)
+check("pick returns a member of its list",
+      contains(["a", "b", "c"], fake.pick(11, 0, ["a", "b", "c"])), true)
+
+ad = fake.address(11, 0)
+check("an address has all four parts",
+      len(ad.line1) > 0 and len(ad.city) > 0 and len(ad.region) = 2 and len(ad.postcode) = 5, true)
+' The postcode must agree with the region -- an address whose postcode belongs
+' to another state is the intra-record defect one level down.
+agree = 0
+for i = 0 to 499
+    a2 = fake.address(11, i)
+    if starts_with(a2.postcode, _zip_for(a2.region)) then
+        agree = agree + 1
+    end if
+next
+check("every postcode agrees with its region", agree, 500)
+
+' `amount` takes ANY of the 178 ISO currencies, because money.of does. It was
+' four, hardcoded, until money.of existed.
+for each cc in ["USD", "EUR", "JPY", "KWD", "CHF"]
+    m = fake.amount(11, 0, cc, 1000, 0.8)
+    check("amount in " + cc + " carries that currency", money.currency(m), cc)
+next
+' JPY has no minor unit and KWD has three -- the exponent must follow the
+' currency, not a hardcoded two.
+check("JPY has no decimal places", contains(string(fake.amount(11, 0, "JPY", 1000, 0.8)), "."), false)
 
 ' ------------------------------------------------ UNIQUENESS IS LAYER 2
 ' A VALUE may repeat -- real people share names, and `fake.person` drawing the

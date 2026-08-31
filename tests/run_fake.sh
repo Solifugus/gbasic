@@ -52,10 +52,10 @@ else
     fail "fake_test reports no mismatch"; grep MISMATCH "$scratch/out" | head -5
 fi
 ran=$(sed -n 's/^checks: //p' "$scratch/out")
-if [ "${ran:-0}" -ge 22 ]; then
-    pass "fake_test ran at least 22 checks (ran ${ran:-0})"
+if [ "${ran:-0}" -ge 33 ]; then
+    pass "fake_test ran at least 33 checks (ran ${ran:-0})"
 else
-    fail "fake_test ran at least 22 checks (ran ${ran:-0})"
+    fail "fake_test ran at least 33 checks (ran ${ran:-0})"
 fi
 
 for label in \
@@ -65,6 +65,9 @@ for label in \
     'business dates never fall on a weekend' \
     'every invoice names a customer that exists' \
     'every total equals the sum of its own lines, to the cent' \
+    'every postcode agrees with its region' \
+    'amount in KWD carries that currency' \
+    'JPY has no decimal places' \
     '2000 customers have 2000 distinct emails' \
     'the value generator underneath still repeats, by design' \
     'every generated invoice posts to a ledger' \

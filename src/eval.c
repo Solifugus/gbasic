@@ -24162,6 +24162,70 @@ static Value money_eval_call(AstExpr *expr) {
         return value_number((double)assigned);
     }
 
+    if (strcmp(name, "of") == 0) {
+        /* Construct money from a currency code held in a VARIABLE.
+         *
+         * `{USD}=` is a modifier and needs a LITERAL code, so a program that
+         * learns its currency at runtime -- from a column, a config file, or a
+         * loop over `money.currencies()` -- could not build a value at all.
+         * The workaround was a hardcoded if-chain per currency, which is what
+         * stdlib/fake.bas had: four currencies out of 178, chosen by whoever
+         * wrote the chain.
+         *
+         * This is the mirror of `money.currency`, added the same week: that
+         * one reads the code off a value, this one puts a value together from
+         * one. Same parse path and same refusals as the modifier -- excess
+         * precision past the storage scale is rejected exactly as `{USD}=`
+         * rejects it -- so this is reach, not a second set of rules. */
+        if (expr->as.call.args.count != 2) {
+            runtime_error_raise("money.of expects a currency code and decimal text",
+                                1003, "money");
+            return value_null();
+        }
+        Value code = eval_expr(expr->as.call.args.items[0]);
+        if (error_action_pending()) { value_free(code); return value_null(); }
+        Value text = eval_expr(expr->as.call.args.items[1]);
+        if (error_action_pending()) { value_free(code); value_free(text); return value_null(); }
+        if (code.kind != VALUE_STRING || text.kind != VALUE_STRING) {
+            value_free(code); value_free(text);
+            runtime_error_raise("money.of expects a currency code and decimal text as strings",
+                                1003, "money");
+            return value_null();
+        }
+        unsigned short numeric = 0;
+        unsigned char exponent = 0;
+        int historical = 0;
+        if (!currency_find_alpha(code.as.string, &numeric, &exponent, &historical)) {
+            char message[128];
+            snprintf(message, sizeof(message),
+                     "money.of: %s is not a known currency", code.as.string);
+            value_free(code); value_free(text);
+            runtime_error_raise(message, 1003, "money");
+            return value_null();
+        }
+        const char *err = NULL;
+        long long units = 0;
+        if (historical) {
+            char message[160];
+            snprintf(message, sizeof(message),
+                     "money.of: %s is historical; new values are refused",
+                     code.as.string);
+            value_free(code); value_free(text);
+            runtime_error_raise(message, 1003, "money");
+            return value_null();
+        }
+        int scale = (int)exponent + MONEY_GUARD_DIGITS;
+        int ok = money_parse_decimal(text.as.string, scale,
+                                     MONEY_EXCESS_REJECT, &units, &err);
+        value_free(code);
+        value_free(text);
+        if (!ok) {
+            runtime_error_raise(err ? err : "invalid money value", 1003, "money");
+            return value_null();
+        }
+        return value_money(money_make(units, numeric, exponent));
+    }
+
     if (strcmp(name, "text") == 0) {
         /* The lossless EXIT, and the mirror of the construction rule.
          *
