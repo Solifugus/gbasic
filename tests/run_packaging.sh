@@ -128,10 +128,17 @@ cp -r "$work/x$RT/." "$RT/" 2>/dev/null
 # read back from the service's own startup line, which also exercises the
 # `port: 0` path an operator uses behind a reverse proxy.
 printf 'port = 0\ndatabase = %s/state/notes.db\n' "$work" > "$work/notesd.conf"
-( cd / && NOTESD_CONF="$work/notesd.conf" "$RT/gbasic" --line-buffered "$RT/app/notesd.bas" \
-    >"$work/svc.log" 2>&1 & echo $! > "$work/pid" )
+# `exec`, and the `&` on the SUBSHELL rather than inside it. Without both, `$!`
+# is the PID of the wrapper subshell and not of gbasic, so the teardown below
+# kills the wrapper and leaves the server running with its parent gone. That is
+# not hypothetical: it leaked one orphan PER RUN, and 64 were found alive on
+# this machine, the oldest after two days (2026-08-30). `exec` makes the
+# subshell BECOME gbasic, so the recorded pid is the one that must die.
+( cd / && export NOTESD_CONF="$work/notesd.conf" \
+  && exec "$RT/gbasic" --line-buffered "$RT/app/notesd.bas" ) \
+    >"$work/svc.log" 2>&1 &
+svc_pid=$!
 sleep 1
-svc_pid="$(cat "$work/pid" 2>/dev/null || true)"
 
 port=""
 for _ in 1 2 3 4 5 6 7 8 9 10; do

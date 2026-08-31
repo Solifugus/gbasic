@@ -3809,3 +3809,84 @@ than at the file that would not open.
   column whose currency the caller chose. `accounting` is the first consumer
   that receives money from somewhere else and must GROUP by currency, which is
   the shape that needs the accessor.
+
+## 2026-08-30 — an uncaught error in a `serve()` handler kills the whole server, and prints nothing
+
+**Highest-severity finding of this project so far.** A gBASIC web server dies
+completely the first time any handler raises, and leaves no diagnostic at all.
+
+Found the hard way: the Transward service had been up for twelve hours, the
+user opened a page, and the process was gone. The log contained the two startup
+lines and nothing else. Exit status 1 — which is the interpreter's uncaught-
+runtime-error status, not any exit path in the application, and the only reason
+the cause was narrowable at all.
+
+Reduced to twenty lines:
+
+```basic
+program main(args)
+    load web
+    h = serve(app)
+    print("listening on " + string(h.port))
+    return
+end program
+
+server app( port: 8471, address: "127.0.0.1" )
+    get "/ok"( req )
+        return { status: 200, body: "fine" }
+    end get
+    get "/boom"( req )
+        x = no_such_function(1)      ' any raise will do
+        return { status: 200, body: "unreachable" }
+    end get
+end server
+```
+
+```
+GET /ok    -> 200
+GET /boom  -> 500          the client IS answered
+GET /ok    -> connection refused    the server is gone
+log:       "listening on 8471"      and nothing more
+```
+
+**Two separate defects, and the second is worse than the first.**
+
+1. **The process dies.** A handler fault should be contained to the request.
+   Every other server runtime treats "this request raised" as a 500 and carries
+   on, because the alternative is that one unhandled edge in one rarely visited
+   page is a total outage. Note the runtime already *knows* how to answer 500 —
+   it sends one — and then exits anyway.
+
+2. **The diagnostic is lost.** No message, no line number, no handler name, on
+   stdout or stderr. An uncaught error anywhere else in gBASIC prints
+   `runtime error at FILE:LINE: message`, which is genuinely good; inside a
+   handler it prints nothing. So the one failure that takes down a production
+   service is the one failure that tells you least. Even keeping the current
+   fatal behaviour, printing the error first would change this from
+   undiagnosable to obvious.
+
+**What it cost, concretely.** Transward's `/security` page had a
+use-after-close bug: it called `database.close(db)` and then passed `db` to a
+function that queries. Every visit killed the service. That bug survived
+because:
+
+  * the page 500'd and the server vanished, so no message ever named it;
+  * `join` then reported `array elements must be strings` — the strict-builtin
+    masking already logged on 2026-08-29 — pointing at the innocent party;
+  * a live browser test *recorded the wreckage as its expected output*. The
+    golden contained a runtime error line, `approved: 0`, and `exit code: 70`
+    on the assertion that a browser-configured job transfers a file. The suite
+    was green for days with the flagship end-to-end path broken.
+
+With a guard added around every handler, the log immediately said
+`unhandled error in pagedir.get_security: join array elements must be strings`,
+and the bug took four minutes to find.
+
+**Workaround applied**, since this cannot wait for a fix: every Transward route
+is now called through `webui.guarded(req, name, handler)`, which wraps the call
+in `on error goto next`, logs `unhandled error in <handler>: <message>`, and
+returns a 500 page. Function values made this cheap — one wrapper, 42 routes,
+no duplication. It is the right belt-and-braces regardless, because this
+process is also the supervisor for running transfers and a page bug must not
+abandon a transfer that is mid-file. But applications should not each have to
+invent it, and one that forgets is one page away from an outage.
