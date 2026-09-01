@@ -4699,6 +4699,44 @@ General-purpose:
   detector at all. Names, emails and phone numbers are structurally incapable
   of naming a real person: RFC 2606 reserved domains and the 555-01xx range
   reserved for fiction.
+
+  **`fake.plant(rows, spec)`** takes a clean population and puts a *known*
+  defect in a *known* place — the one thing a hand-written fixture cannot give
+  you at scale. It returns `{ rows, planted }`: the population, and one report
+  record per anomaly (`anomaly`, `id`, `index`, `was`, `now`, `source`).
+
+  ```basic
+  rigged = fake.plant(ledger, { anomaly: "round_dollar", count: 12, at: 7 })
+  ```
+
+  The spec takes `anomaly`, `count` and `at` (the seed that decides which rows
+  are chosen — required, since a plant nobody can reproduce is not a fixture),
+  optionally `amount_field` / `date_field` / `id_field` (defaulting to `total`,
+  `on_date` and `id`, which is what `fake.invoices` produces), `threshold` for
+  `just_under`, and `avoid` — a list of row indices a second plant must stay
+  off, so two anomaly kinds can be composed without the later overwriting the
+  earlier.
+
+  The five kinds: `round_dollar` (an amount replaced by the round figure a
+  human reaches for at that size), `just_under` (an amount put strictly below
+  an approval limit, the way a $4,950 invoice sits under a $5,000 one),
+  `weekend` (an entry dated on a day the business was shut — plantable
+  precisely because `fake.business_date` never produces one), `duplicate` (the
+  same money to the same party a few days later under its own document
+  number), and `sequence_gap` (rows simply removed, so the ids around them
+  still run in order and nothing in the surviving data is wrong).
+
+  **The planted rows carry no marker.** The report comes back separately and
+  the rows stay ordinary rows of their neighbours' shape, because a marker
+  field is a back door a detector could read — and a detector tested against
+  data that labels its own anomalies has not been tested. For the same reason a
+  planted duplicate gets an id *continuing* the population's own sequence, and
+  a population whose ids do not end in digits is **refused** rather than given
+  one that stands out.
+
+  Like `accounting.post`, `plant` returns a new array rather than mutating: a
+  mutate-in-place API would silently do nothing to the caller's value, since
+  inside a function `append` and `remove` act on a local copy.
 - `deposits` — deposit interest, crediting and certificates, pure gBASIC
   (`docs/lending_design.md` §7). A **separate library from `lending`** on
   purpose: their vocabularies barely overlap, and what they do share — simple

@@ -180,14 +180,52 @@ ledger = fake.transactions(seed, 5000, spec)
 rigged = fake.plant(ledger, { anomaly: "round_dollar", count: 12, at: seed })
 ```
 
-This is what makes `forensics` testable. Today its Benford and accrual tests
-assert against data chosen to produce the expected answer; with a planted
-anomaly the assertion becomes *the detector found the twelve rows we planted
-and did not flag the other 4,988*, which is a statement about the detector
-rather than about the fixture.
+**Correction, 2026-08-31:** an earlier version of this section said this would
+improve "`forensics`' Benford and accrual tests". `stdlib/forensics.bas` has no
+Benford test — it is *financial-statement* forensics (accruals, M-score,
+Beneish, Piotroski, Altman, dilution), not transaction-level anomaly detection,
+and the only occurrence of the word "benford" in the tree was in this document.
+The claim was about a detector that does not exist.
 
-Anomaly kinds worth having first: round-dollar clustering, duplicate payments,
-just-under-threshold approvals, sequence gaps, and a weekend-dated entry.
+What planting is actually for is therefore **future** rather than current, and
+worth stating as such. When a transaction-level detector exists, the assertion
+it enables is *found the twelve rows we planted and did not flag the other
+4,988* — a statement about the **detector** rather than about a fixture chosen
+to produce the expected answer. The nearer consumer is Phase 3's credit
+analytics (`docs/lending_design.md` §8), where vintage curves and roll rates
+need a portfolio with known-bad accounts rather than six hand-written loans.
+
+Planting is independently testable in the meantime, and that is the bar it has
+to meet now: plant *n* anomalies into a clean population and assert that
+exactly those *n* rows carry it, that they are the rows named, and that every
+other row is untouched.
+
+**Shipped 2026-08-31**, with exactly those five kinds: `round_dollar`,
+`just_under`, `weekend`, `duplicate`, `sequence_gap`.
+
+`plant` returns `{ rows, planted }` — the population, and a report record per
+anomaly carrying `anomaly`, `id`, `index`, `was`, `now` and `source`. The spec
+takes `anomaly`, `count` and `at`, and optionally `amount_field` /
+`date_field` / `id_field`, a `threshold` for `just_under`, and `avoid` so a
+second plant can be composed onto a first without overwriting it.
+
+**The report is separate from the rows, and that is the design.** No planted
+row carries a field its neighbours do not — a marker would be a back door a
+detector could read, and a detector tested against data that labels its own
+anomalies has not been tested at all. The rule has one visible consequence:
+because a `duplicate` needs an id that continues the population's own sequence
+rather than announcing itself, a population whose ids do not end in digits is
+**refused** rather than given an id that stands out. Refusing is the right
+answer here; inventing a distinguishable id would quietly make the fixture
+worthless.
+
+The suite is `tests/run_fake_plant.sh`, self-checking rather than golden for
+the usual reason — every planting defect leaves a population that still looks
+like a population. Its tiers were proven red one at a time against deliberately
+broken copies of the library: a report naming the wrong row, a clean row
+altered in passing, a marker field, a duplicate id that stands out, an unsorted
+sample, and a weekend anomaly that misses the weekend. Each was caught by the
+tier written for it and by no other.
 
 ---
 

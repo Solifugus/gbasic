@@ -104,7 +104,9 @@ document list, with a status column, is `docs/README.md`.
 - **test data** — `fake`, fabricated but realistic populations: pure functions
   of (seed, index) so generation is order-independent and reproducible across
   machines, with lognormal amounts, business-day dates, and referential and
-  arithmetic consistency strong enough to post to a ledger.
+  arithmetic consistency strong enough to post to a ledger; plus `fake.plant`,
+  which puts a known defect in a known place and reports which rows it took
+  without marking them.
 - **deposits** — `deposits`, the other side of the book: declared balance
   method, compounding kept separate from crediting, tiered rates, and
   certificates whose early-withdrawal penalty may reduce principal.
