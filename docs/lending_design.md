@@ -1,6 +1,11 @@
 # Lending and deposits design
 
-**Status:** Proposal
+**Status:** Partial — the first increment (§10) is shipped in
+`stdlib/lending.bas` with `tests/run_lending.sh`: the loan record and its
+conventions, schedule, `apply` over both bases and both waterfalls, `payoff`,
+underwriting, and `entries` with the ledger test. `deposits` is not built;
+neither is anything in §8.
+
 **Scope:** `stdlib/lending.bas` and `stdlib/deposits.bas` — loan definition,
 amortization, servicing, payoff, underwriting ratios, and deposit interest.
 Phase 3 of the
@@ -98,10 +103,30 @@ state = lending.apply(loan, events)
            last_accrued_to, delinquent_days, history }
 ```
 
-**`apply` is a pure function of the loan and its event list**, so a servicing
-state is reproducible from the record of what happened — which is what makes it
-auditable, and what lets a test assert the whole life of a loan rather than one
-step.
+**`apply` is a pure function of the loan and its event list** — a fold, not an
+incremental step (decided 2026-08-31).
+
+The alternative is how servicing actually runs: one event at a time, carrying
+state forward. **The fold is chosen for auditability, which in lending is not a
+nice-to-have.** State is derived from the record of what happened, so *why is
+this balance what it is* is always answerable by replaying it. With stored
+incremental state the number IS the answer, and if it is ever wrong there is
+nothing to reconstruct it from. In a dispute that difference is the whole
+question.
+
+The cost is recomputation, and it is free at the scale that matters first: a
+360-payment loan folds in microseconds. It bites only on a portfolio, and the
+remedy is an **addition rather than a redesign** — `apply(loan, events,
+from_state)` is a fold with a starting value, and the audit trail survives
+because the checkpoint is itself derivable.
+
+`history` is therefore **opt-in**: returning it always would make every
+portfolio scan O(n) in memory per loan, for a field a scan does not read.
+
+(gBASIC makes this cheap either way: a record is a value, so even the
+incremental design would have to return new state — `state = lending.post(state,
+e)`, exactly as `accounting.post` does. There is no mutable-object ergonomics
+to give up.)
 
 `lending.payoff(loan, events, on)` answers what closes it on a date, including
 per-diem. `lending.schedule(loan)` is `finance.schedule` with the loan's own
@@ -142,26 +167,40 @@ returns `unknown`, and a caller who wants a refusal asks for one.
 
 ---
 
-## 7. Deposits
+## 7. Deposits are a separate library
 
-The mirror image, sharing the accrual machinery: interest is **credited** to
-the balance rather than amortized away.
+`stdlib/deposits.bas`, not part of `lending` (decided 2026-08-31, and what the
+platform proposal's architecture table already said).
 
-- **Balance methods**: daily balance, average daily balance, minimum balance.
-  These give different interest on the same account and the same activity,
-  which is the deposit-side version of §2's accrual basis.
-- **Compounding and crediting are separate**: interest may compound daily and
-  be credited monthly. Conflating them is the common error.
-- **Certificates**: term, maturity, and an early-withdrawal penalty that can
-  exceed interest earned — so a penalty may reduce principal, and the library
-  must not clamp that silently.
-- **Tiered rates**: the rate depends on the balance, and whether it applies to
-  the whole balance or only the portion in the tier is a product decision.
+**The vocabularies barely overlap.** `waterfall`, `delinquency`, `payoff` and
+per-diem mean nothing to a savings account; `tier`, `crediting schedule`,
+`early-withdrawal penalty` and average daily balance mean nothing to a
+mortgage. Two sets of concepts in one namespace makes both harder to read.
 
-Deferred: deposit beta, decay and attrition modelling, cost of funds — those
-are portfolio analytics rather than account mechanics.
+**And what they genuinely share is not lending's to own.** The overlap is
+*interest accrued on a balance over a day count*, which is `finance`'s job —
+`year_fraction` already lives there. Putting shared accrual in `lending` would
+force `deposits` to depend on it, which is backwards: deposits do not borrow.
 
----
+```
+finance    — accrual, day counts, rate conversions   (shared)
+  |- lending   — schedules, servicing, payoff, underwriting
+  |- deposits  — balance methods, crediting, certificates, tiers
+```
+
+**Lending ships first**, and any shared accrual helper is pushed *down* into
+`finance` once lending has proved what it needs — so the shared piece is
+designed from one real caller rather than two hypothetical ones.
+
+The deposit subject, for when it comes: balance methods (daily, average daily,
+minimum) which give different interest on the same activity; compounding and
+crediting as **separate** schedules, since interest may compound daily and be
+credited monthly and conflating them is the common error; certificates whose
+early-withdrawal penalty may exceed the interest earned and so reduce
+principal, which must not be silently clamped; and tiered rates, where whether
+the rate applies to the whole balance or only the portion in the tier is a
+product decision. Deposit beta, decay and cost of funds are portfolio
+analytics rather than account mechanics, and are deferred with §8.
 
 ## 8. Deferred, with reasons
 
@@ -202,17 +241,16 @@ are portfolio analytics rather than account mechanics.
 
 ## 10. First increment
 
-Deliberately smaller than the workstream:
+`lending` only — deposits follow as their own library (§7). Deliberately
+smaller than the workstream:
 
 1. The loan record and its declared conventions (§2).
 2. `lending.schedule` over them.
 3. `lending.apply` with payment, fee and rate-change events, both accrual bases
-   and at least two waterfalls.
+   and at least two waterfalls, with `history` opt-in.
 4. `lending.payoff` with per-diem.
 5. Underwriting ratios (§6).
-6. Deposits: daily and average-daily balance, compounding separate from
-   crediting, and a certificate with an early-withdrawal penalty.
-7. `lending.entries` and the ledger test (§5).
+6. `lending.entries` and the ledger test (§5).
 
-ARM machinery, credit analytics and everything in §8 follow later, each with
-its own review.
+ARM machinery, credit analytics, deposits and everything in §8 follow later,
+each with its own review.

@@ -4695,6 +4695,25 @@ General-purpose:
   detector at all. Names, emails and phone numbers are structurally incapable
   of naming a real person: RFC 2606 reserved domains and the 555-01xx range
   reserved for fiction.
+- `lending` — loans, servicing and payoff, pure gBASIC over `finance` and
+  `accounting` (`docs/lending_design.md`). `finance` answers what the payment
+  *is*; this answers what happens next. **A loan declares its conventions and
+  the library never assumes**, because each changes the answer and none has a
+  dominant default: `basis` is `"amortized"` (one period's interest per period,
+  whatever the days) or `"daily_simple"` (the actual balance for the actual
+  days) — *different loans*, where paying five days early saves five days on
+  one and nothing on the other; `waterfall` is
+  `"fees_interest_principal"` or `"interest_principal_fees"`; `day_count` is
+  any `finance.year_fraction` convention. `lending.apply(loan, events, history)`
+  is a **fold** over `payment`/`fee`/`rate_change` events, so state is derived
+  from the record of what happened and *why is this balance what it is* is
+  answerable by replaying it; `history` is opt-in. `lending.payoff` adds
+  per-diem, and `lending.period_rate(loan)` is the rate it accrues at, which is
+  the annual rate divided by its own frequency. Underwriting is `ltv`, `dti`, `dscr` and `payment_to_income` — a
+  **missing input returns `unknown`, never zero**, since these feed credit
+  decisions and an absent income that became zero would make every ratio look
+  perfect. `lending.entries(chart, loan, events, accounts)` **emits** journal
+  entries and never posts them: the caller owns the ledger.
 - `accounting` — double-entry bookkeeping, pure gBASIC over exact `money`
   (`docs/accounting_design.md`). `accounting.chart(accounts)` validates a chart
   of accounts and fixes each one's normal balance side from its `kind`

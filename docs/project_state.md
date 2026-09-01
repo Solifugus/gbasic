@@ -105,6 +105,11 @@ document list, with a status column, is `docs/README.md`.
   of (seed, index) so generation is order-independent and reproducible across
   machines, with lognormal amounts, business-day dates, and referential and
   arithmetic consistency strong enough to post to a ledger.
+- **lending** — `lending`, loans and servicing over the finance and accounting
+  libraries: declared accrual basis, payment waterfall and day count; servicing
+  as a fold over events so a balance is always explainable by replay; payoff
+  with per-diem; underwriting ratios; and journal entries emitted for the
+  caller's own ledger.
 - **accounting** — `accounting`, double-entry bookkeeping over the exact
   money type: a validated chart of accounts, journal entries that must balance
   in every currency or are refused where they are written, ledger, trial
