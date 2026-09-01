@@ -206,6 +206,9 @@ static int text_equals_keyword(const char *start, const char *end, const char *k
     return keyword_equals(start, (int)(end - start), keyword);
 }
 
+/* Defined below, beside the bracket bookkeeping it reads. */
+static int lexer_in_brace(Lexer *lexer);
+
 static TokenType identifier_type(const char *start, int length) {
     if (keyword_equals(start, length, "program")) return TOKEN_PROGRAM;
     if (keyword_equals(start, length, "library")) return TOKEN_LIBRARY;
@@ -294,6 +297,53 @@ static Token identifier_token(Lexer *lexer, const char *start, int line, int col
         lexer->column = saved_column;
     }
     TokenType type = identifier_type(start, (int)(lexer->current - start));
+
+    /* A KEYWORD USED AS A RECORD KEY IS A NAME, NOT A KEYWORD.
+     *
+     * `{ OR: 1 }` used to lex `OR` as the keyword, and the grammar then mapped
+     * every keyword token to a canonical LOWERCASE spelling -- so the key was
+     * stored as "or", `r["OR"]` missed, and `{ OR: 1, or: 2 }` silently became
+     * a record with two fields both called "or". Identifiers are
+     * case-sensitive and keywords are not, so whether a field name kept its
+     * case depended on whether it happened to collide with a keyword.
+     *
+     * Fixing it HERE rather than in the grammar is what preserves the case:
+     * emitting TOKEN_IDENT hands the parser the original span, which it copies
+     * verbatim, where a grammar rule only ever had the token's identity to work
+     * from.
+     *
+     * The context test is exact rather than heuristic. Inside an open `{` --
+     * tracked already for line continuation -- an identifier-shaped word
+     * followed by `:` can only be a record key: a brace MODIFIER clause
+     * (`x {USD}= 5`) contains no colon, and `consider` recognises its branches
+     * by column rather than by brace. Anything else that reaches this point is
+     * still lexed as the keyword it is. */
+    /* The same rule after a DOT. `r.OR` is a field read, so `OR` is a name --
+     * and without this the literal and the access would disagree, which is
+     * worse than the original defect: `{ OR: 1, or: 2 }` would store two keys
+     * while `r.OR` read only the lowercase one. The preceding byte is the
+     * whole test; a `.` can only be field access here, since a number's
+     * decimal point never precedes an identifier character. */
+    if (type != TOKEN_IDENT && start > lexer->source && start[-1] == '.') {
+        type = TOKEN_IDENT;
+    }
+
+    if (type != TOKEN_IDENT && lexer_in_brace(lexer)) {
+        const char *saved_current = lexer->current;
+        int saved_line = lexer->line;
+        int saved_column = lexer->column;
+        while (peek(lexer) == ' ' || peek(lexer) == '\t' || peek(lexer) == '\r') {
+            advance(lexer);
+        }
+        int is_key = (peek(lexer) == ':');
+        lexer->current = saved_current;
+        lexer->line = saved_line;
+        lexer->column = saved_column;
+        if (is_key) {
+            type = TOKEN_IDENT;
+        }
+    }
+
     if (type == TOKEN_IDENT && peek(lexer) == '.' &&
         (isalpha((unsigned char)peek_next(lexer)) || peek_next(lexer) == '_')) {
         const char *saved_current = lexer->current;
@@ -356,6 +406,16 @@ static void bracket_open(Lexer *lexer, char ch, int line) {
         lexer->bracket_lines[lexer->bracket_depth] = line;
     }
     lexer->bracket_depth++;
+}
+
+/* Is the innermost unclosed bracket a `{`? Used to tell a record key from a
+ * keyword; the stack is maintained for line continuation and reused here. */
+static int lexer_in_brace(Lexer *lexer) {
+    if (lexer->bracket_depth <= 0 ||
+        lexer->bracket_depth > GBASIC_BRACKET_STACK) {
+        return 0;
+    }
+    return lexer->bracket_chars[lexer->bracket_depth - 1] == '{';
 }
 
 static void bracket_close(Lexer *lexer) {

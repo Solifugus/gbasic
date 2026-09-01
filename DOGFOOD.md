@@ -3972,7 +3972,22 @@ invent it, and one that forgets is one page away from an outage.
      code. Defensible — keywords ARE case-insensitive — but it keeps the
      inconsistency and only documents it.
 
-  Recommended: (3), as the only one that is both leak-free and contained to the
-  rule that has the defect. Not done in this session; raised rather than
-  started, because it is a language-semantics change and the investigation was
-  what was asked for.
+  **RESOLVED the same day, and by none of the four.** Matthew asked whether it
+  could be done at the LEXER level. It can, and that is better than any option
+  above: emitting `TOKEN_IDENT` hands the parser the ORIGINAL SPAN, which it
+  copies verbatim, where every grammar-side fix only ever had the token's
+  identity to work from and had to reconstruct the text.
+
+  Two contexts, both exact rather than heuristic. Inside an open `{` -- a depth
+  the lexer already tracks, added a week earlier for line continuation -- an
+  identifier-shaped word followed by `:` can only be a record key: a brace
+  MODIFIER contains no colon and `consider` recognises branches by column.
+  After a `.` the word can only be a field. Everywhere else the keyword is
+  still a keyword, so `to = 5` remains a parse error, which the suite asserts.
+
+  Both halves were needed. Fixing only the literal left `{ OR: 1, or: 2 }`
+  storing two keys while `r.OR` read only the lowercase one -- two keys stored,
+  one reachable, which is worse than the original defect.
+
+  No golden moved across 82 suites, which is the evidence that nothing depended
+  on the lowercasing. `tests/run_keyword_fields.sh`.

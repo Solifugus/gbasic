@@ -381,31 +381,25 @@ day — so assume you will hit them too.
   watcher body runs ONCE at registration — a `print` inside one prints
   immediately, before any change.
 
-- **A keyword may be a field name, both ways** (0.1.0-rc6) — **but its case is
-  not preserved** (measured 2026-08-31). `{ on: 1 }` constructs and `r.on`
-  reads it; `{ OR: 1 }` also constructs, and stores the key as **`"or"`**:
+- **A keyword may be a field name, both ways, and its case is kept**
+  (0.1.0-rc6; case fixed 2026-08-31). `{ on: 1 }` constructs, `r.on` reads it,
+  and a field name behaves exactly like an identifier — case-sensitive, whether
+  or not it collides with a keyword:
 
   ```basic
-  a = { Name: 1, name: 2 }   ' two keys -- identifiers are case-sensitive
-  b = { OR: 1, or: 2 }       ' ONE name, twice: keys() reports "or,or"
-  print b["OR"]              ' unknown
-  print b["or"]              ' 1
+  r = { OR: "upper", or: "lower" }
+  print join(sort(keys(r)), ",")    ' OR,or  -- two distinct keys
+  print r.OR                        ' upper
   ```
 
-  The grammar maps each keyword token to a canonical lowercase spelling
-  (`kw_name("or")` in `src/parser.y`), so the author's case is discarded. Dot
-  access still works in either case (`b.OR` and `b.or` both read it) because
-  dot fields are resolved in the LEXER, not the grammar — which is why only the
-  record-literal form is affected.
-
-  **The inconsistency is real**: whether a field name is case-sensitive depends
-  on whether it happens to collide with a keyword. Use the lowercase spelling
-  for a keyword field, or bracket-assign (`m["OR"] = 1`) when you need the case
-  kept, which is the same route non-identifier keys already take. Until rc6 the literal worked and the dot did
-  not, which forced four renames in shipped designs (`kind:` in consolidate,
-  `open`/`close` for calendar hours, `when:` and `through:` in date specs).
-  Those renames are still in the code; nothing needs undoing, but new APIs no
-  longer have to dodge the keyword list.
+  Until 2026-08-31 the grammar mapped every keyword token to a canonical
+  lowercase spelling, so `{ OR: 1 }` stored `"or"`, `r["OR"]` missed, and
+  `{ OR: 1, or: 2 }` silently became a record with two fields both named `or`.
+  Whether a field name kept its case depended on whether it happened to be a
+  keyword. It is now decided in the LEXER: inside an open `{`, or after a `.`,
+  an identifier-shaped word is a name. Everywhere else a keyword is still a
+  keyword, so `to = 5` is still a parse error. Pinned by
+  `tests/run_keyword_fields.sh`.
 
 - **43 of the 47 keywords cannot be a variable name; the full list is in
   `docs/reference.md` under Reserved words (2026-08-26).** Before that there was
