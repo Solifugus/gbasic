@@ -6815,6 +6815,44 @@ static FunctionDef *function_find_local(const char *name) {
     return NULL;
 }
 
+/* A LIBRARY'S OWN FUNCTION, WHEN THE CALL IS COMING FROM INSIDE IT.
+ *
+ * Without this, an unqualified call inside a library resolved through the same
+ * backward scan every caller uses -- last registration wins -- so a library's
+ * internals were rewired by whatever was LOADED AFTER it. Measured: with
+ * `alpha` and `beta` both defining `helper`, and `alpha.outer` calling
+ * `helper` unqualified, loading alpha then beta made alpha.outer call BETA's
+ * helper, and loading them the other way round did not. A library could not
+ * call itself reliably, and which one it got depended on a load order it does
+ * not control.
+ *
+ * `current_import_path` is already the executing function's own source file --
+ * invoke_function sets and restores it so a raise names the right file -- so
+ * this needs no new state.
+ *
+ * It is consulted BEFORE the local (root-program) check at both call sites: a
+ * root function of the same name is another outside definition, and a library
+ * calling itself should not be captured by that either. Calls from the root
+ * program are unaffected, because no import path is in force there, so the
+ * documented shadowing and override behaviour is unchanged where it applies. */
+static FunctionDef *function_in_current_source(const char *name) {
+    if (!current_import_path || !current_import_path[0]) {
+        return NULL;
+    }
+    for (size_t i = function_count; i > 0; i--) {
+        FunctionDef *function = &functions[i - 1];
+        if (function->imported &&
+            strcmp(function->name, name) == 0 &&
+            function->stmt &&
+            function->stmt->as.function.source_path &&
+            path_equal(function->stmt->as.function.source_path,
+                       current_import_path)) {
+            return function;
+        }
+    }
+    return NULL;
+}
+
 static FunctionDef *function_resolve(const char *library, const char *name) {
     if (library) {
         for (size_t i = function_count; i > 0; i--) {
@@ -6827,6 +6865,11 @@ static FunctionDef *function_resolve(const char *library, const char *name) {
             }
         }
         return NULL;
+    }
+
+    FunctionDef *own = function_in_current_source(name);
+    if (own) {
+        return own;
     }
 
     FunctionDef *local = function_find_local(name);
@@ -25042,6 +25085,17 @@ static Value eval_call(AstExpr *expr) {
         current_error_frame->pending = 0;
         error_clear_state();
         return value_null();
+    }
+
+    /* Inside a library body, that library's own function wins -- checked here
+     * as well as in function_resolve, because this site consults
+     * function_find_local DIRECTLY and would otherwise hand a root-program
+     * function to a library calling itself. Fixing only function_resolve left
+     * exactly that hole, and it was invisible until a root program happened to
+     * define the same name. */
+    FunctionDef *own_function = function_in_current_source(expr->as.call.name);
+    if (own_function) {
+        return eval_user_function(expr, own_function);
     }
 
     FunctionDef *local_function = function_find_local(expr->as.call.name);

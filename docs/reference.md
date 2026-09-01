@@ -1374,6 +1374,15 @@ Unqualified `load NAME` search order:
 
 `GBASIC_PATH` is colon-separated.
 
+**Inside a library body, an unqualified call resolves to that library's own
+function first** (*since 0.1.0-rc9*), then falls back to the ordinary search.
+Before that it went through the same last-registration-wins scan as every other
+caller, so a library's internals were rewired by whatever was loaded *after*
+it — with two libraries both defining `helper`, whether one of them called its
+own depended on load order. A library calling a name it does **not** define
+still reaches outside, and calls from the root program are unaffected, so the
+shadowing and override warnings below are unchanged where they apply.
+
 Functions in loaded libraries are imported by default for now. Library modifiers must be marked `export modifier` to be imported.
 
 Qualified function calls:

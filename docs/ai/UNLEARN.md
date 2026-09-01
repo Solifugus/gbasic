@@ -425,6 +425,23 @@ day — so assume you will hit them too.
   function. It warns at the call site now. Holding such a variable is fine
   (`list = [1,2]`); only calling it is the mistake. A record field is immune.
 
+- **A library calls its OWN function first** (fixed 0.1.0-rc9). An unqualified
+  call inside a library body used to resolve through the same
+  last-registration-wins scan as every other caller, so a library's internals
+  were rewired by whatever was **loaded after** it:
+
+  ```basic
+  ' alpha and beta both define `helper`; alpha.outer() calls it unqualified.
+  load alpha from "alpha.bas"
+  load beta  from "beta.bas"
+  print alpha.outer()      ' used to print beta's answer -- now alpha's
+  ```
+
+  Swapping the two `load` lines changed the result, and a library has no
+  control over the order a program loads things in. A library calling a name it
+  does **not** define still reaches outside, and the root program is
+  unaffected. Pinned by `tests/run_library_scope.sh`.
+
 - **The library-override warning is CALL-TRIGGERED, not load-triggered
   (measured 2026-08-30).** Two loaded libraries that define the same public
   name produce **no warning at all** while every call is qualified. The warning
