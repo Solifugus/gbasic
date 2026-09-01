@@ -105,6 +105,9 @@ document list, with a status column, is `docs/README.md`.
   of (seed, index) so generation is order-independent and reproducible across
   machines, with lognormal amounts, business-day dates, and referential and
   arithmetic consistency strong enough to post to a ledger.
+- **deposits** — `deposits`, the other side of the book: declared balance
+  method, compounding kept separate from crediting, tiered rates, and
+  certificates whose early-withdrawal penalty may reduce principal.
 - **lending** — `lending`, loans and servicing over the finance and accounting
   libraries: declared accrual basis, payment waterfall and day count; servicing
   as a fold over events so a balance is always explainable by replay; payoff

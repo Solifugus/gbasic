@@ -1,10 +1,9 @@
 # Lending and deposits design
 
-**Status:** Partial — the first increment (§10) is shipped in
-`stdlib/lending.bas` with `tests/run_lending.sh`: the loan record and its
-conventions, schedule, `apply` over both bases and both waterfalls, `payoff`,
-underwriting, and `entries` with the ledger test. `deposits` is not built;
-neither is anything in §8.
+**Status:** Partial — `stdlib/lending.bas` (`tests/run_lending.sh`) and
+`stdlib/deposits.bas` (`tests/run_deposits.sh`) both ship the first increment.
+Shared simple interest was pushed down into `finance.accrue` as §7 said it
+should be. ARM machinery, credit analytics and everything in §8 are not built.
 
 **Scope:** `stdlib/lending.bas` and `stdlib/deposits.bas` — loan definition,
 amortization, servicing, payoff, underwriting ratios, and deposit interest.

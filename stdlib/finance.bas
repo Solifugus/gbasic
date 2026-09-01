@@ -390,6 +390,29 @@ library finance
                + "\" -- use actual/360, actual/365, actual/actual or 30/360")
     end function
 
+    ' --- simple interest over a span ----------------------------------------
+    '
+    ' Interest on a balance for the days between two dates, at an ANNUAL rate,
+    ' under a named day count. Pushed down here from `lending` once it had
+    ' proved what the shared piece is (docs/lending_design.md §7): both a loan
+    ' accruing daily simple interest and a deposit earning it want exactly
+    ' this, and neither should own it -- a deposit does not borrow.
+    '
+    ' The rate is ANNUAL because the day count already carries the year: the
+    ' convention says what fraction of a year has passed, so a period rate here
+    ' would be applying the frequency twice.
+    function accrue(balance, annual_rate, start, finish, convention)
+        _check_rate(annual_rate, "finance.accrue")
+        if type(balance) != "money" then
+            error "finance.accrue expects a money balance"
+        end if
+        fraction = year_fraction(start, finish, convention)
+        if fraction < 0 then
+            error "finance.accrue: the period ends before it starts"
+        end if
+        return balance * (annual_rate * fraction)
+    end function
+
     ' --- project appraisal --------------------------------------------------
 
     ' Net present value of `flows` (an array of money, one per period,

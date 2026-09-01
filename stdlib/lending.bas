@@ -125,8 +125,10 @@ library lending
             return _zero(l)
         end if
         if l.basis = "daily_simple" then
-            fraction = finance.year_fraction(from_d, to_d, l.day_count)
-            return balance * (l.rate * fraction)
+            ' `finance.accrue` rather than a local copy: a deposit earning
+            ' simple interest wants the identical calculation, and neither
+            ' library should own it (design §7).
+            return finance.accrue(balance, l.rate, from_d, to_d, l.day_count)
         end if
         ' Amortized: ONE PERIOD'S INTEREST PER WHOLE PERIOD ELAPSED, and
         ' nothing for a part period. That is the distinction from daily simple

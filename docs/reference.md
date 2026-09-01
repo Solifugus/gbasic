@@ -4659,6 +4659,10 @@ General-purpose:
   from continuously compounded rates. "12% compounded monthly" earns 12.6825%
   a year, so the two annual rates are different numbers and which one a quote
   means is not answerable from the number alone.
+  `finance.accrue(balance, annual_rate, from, to, convention)` is simple interest
+  on a balance for the days between two dates — the piece `lending` and
+  `deposits` share, which lives here so neither owns it. The rate is **annual**,
+  because the day count already carries the year.
   `finance.year_fraction(from, to, convention)` is the day count, with
   `"actual/360"`, `"actual/365"`, `"actual/actual"` (ISDA, weighting each day
   by the length of its own year) and `"30/360"` (US bond basis, including the
@@ -4695,6 +4699,30 @@ General-purpose:
   detector at all. Names, emails and phone numbers are structurally incapable
   of naming a real person: RFC 2606 reserved domains and the 555-01xx range
   reserved for fiction.
+- `deposits` — deposit interest, crediting and certificates, pure gBASIC
+  (`docs/lending_design.md` §7). A **separate library from `lending`** on
+  purpose: their vocabularies barely overlap, and what they do share — simple
+  interest over a day count — lives in `finance.accrue`, since a deposit does
+  not borrow. **The account declares its `balance_method`** — `"daily"`,
+  `"average_daily"` or `"minimum"` — which give different interest on the same
+  activity; a large late withdrawal earns 28.77 under daily and 4.11 under
+  minimum. (Daily and average-daily *agree* at a constant rate, and that is
+  arithmetic rather than a bug: simple interest is linear in the balance. They
+  part company under tiers.) **Compounding and crediting are separate**:
+  interest is computed per crediting period and added at the end of it, and
+  interest since the last crediting date is reported apart from the balance,
+  because the holder has earned it and not been paid it.
+  `deposits.tiered_rate(tiers, balance, "whole")` gives the single rate a
+  balance earns; `deposits.tiered_interest(tiers, balance, from, to,
+  convention)` is the per-portion product, where each slice earns its own tier
+  like a tax bracket. They differ sharply at a boundary, which is why the mode
+  is declared. `deposits.certificate(spec)` adds `term_days` and
+  `penalty_days`, `deposits.matures(cert)` is its maturity date, and
+  `deposits.redeem(cert, as_of)` returns
+  `{ principal, interest, penalty, early, proceeds, principal_reduced }` —
+  where **a penalty larger than the interest earned reduces principal** rather
+  than being clamped, because clamping would report proceeds the holder will
+  not receive.
 - `lending` — loans, servicing and payoff, pure gBASIC over `finance` and
   `accounting` (`docs/lending_design.md`). `finance` answers what the payment
   *is*; this answers what happens next. **A loan declares its conventions and
