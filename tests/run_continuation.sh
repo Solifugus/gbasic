@@ -36,6 +36,7 @@
 #                bounds -- 200 levels, each on its own line, under valgrind.
 set -euo pipefail
 cd "$(dirname "$0")/.."
+. "$(dirname "$0")/valgrind_tier.sh"
 
 make >/dev/null
 
@@ -147,16 +148,13 @@ grep -qF "unclosed '('" "$scratch/err" \
     || fail "depth-unclosed (missing message; got: $(cat "$scratch/err"))"
 ok "depth: unclosed past the opener stack still names a bracket"
 
-if command -v valgrind >/dev/null 2>&1; then
-    valgrind -q --error-exitcode=9 --leak-check=no \
-        ./gbasic "$scratch/deep.bas" >/dev/null 2>"$scratch/vg" \
+if vg_available; then
+    vg_run_access_only ./gbasic "$scratch/deep.bas" >/dev/null 2>"$scratch/vg" \
         || fail "valgrind (deep nesting)$(printf '\n%s' "$(cat "$scratch/vg")")"
-    valgrind -q --error-exitcode=9 --leak-check=no \
-        ./gbasic "$scratch/deep_open.bas" >/dev/null 2>"$scratch/vg" || true
+    vg_run_access_only ./gbasic "$scratch/deep_open.bas" >/dev/null 2>"$scratch/vg" || true
     grep -q "Invalid" "$scratch/vg" \
         && fail "valgrind (unclosed past the stack)$(printf '\n%s' "$(cat "$scratch/vg")")"
-    valgrind -q --error-exitcode=9 --leak-check=no \
-        ./gbasic tests/continuation/forms.bas >/dev/null 2>"$scratch/vg" \
+    vg_run_access_only ./gbasic tests/continuation/forms.bas >/dev/null 2>"$scratch/vg" \
         || fail "valgrind (forms)$(printf '\n%s' "$(cat "$scratch/vg")")"
     ok "valgrind: no invalid access across the opener stack"
 else

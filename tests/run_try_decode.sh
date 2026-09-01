@@ -20,6 +20,7 @@
 set -u
 
 cd "$(dirname "$0")/.."
+. "$(dirname "$0")/valgrind_tier.sh"
 
 if ! make >/dev/null 2>&1; then
     printf 'FAIL run_try_decode: build failed\n'
@@ -138,10 +139,8 @@ else
 fi
 
 # --- Tier 4: memory, including the malformed paths -----------------------------
-if command -v valgrind >/dev/null 2>&1; then
-    if valgrind --error-exitcode=99 --leak-check=full --track-fds=yes \
-            --errors-for-leak-kinds=definite \
-            ./gbasic tests/try_decode_test.bas >/dev/null 2>"$stderr_file" </dev/null; then
+if vg_available; then
+    if vg_run ./gbasic tests/try_decode_test.bas >/dev/null 2>"$stderr_file" </dev/null; then
         printf 'PASS try_decode_memory (valgrind clean over every case)\n'
     else
         printf 'FAIL try_decode_memory\n'

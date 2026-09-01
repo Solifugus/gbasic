@@ -28,6 +28,7 @@
 #   5. VALGRIND.
 set -u
 cd "$(dirname "$0")/.."
+. "$(dirname "$0")/valgrind_tier.sh"
 
 if ! make >/dev/null 2>&1; then
     printf 'FAIL run_grid: build failed\n'
@@ -127,9 +128,8 @@ else
     status=1
 fi
 
-if command -v valgrind >/dev/null 2>&1; then
-    if valgrind --error-exitcode=9 --leak-check=full --errors-for-leak-kinds=definite -q \
-        ./gbasic examples/xlsx_grid_test.bas >/dev/null 2>"$err"; then
+if vg_available; then
+    if vg_run ./gbasic examples/xlsx_grid_test.bas >/dev/null 2>"$err"; then
         printf 'PASS valgrind examples/xlsx_grid_test.bas\n'
     else
         printf 'FAIL valgrind\n'

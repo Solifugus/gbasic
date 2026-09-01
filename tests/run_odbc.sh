@@ -39,6 +39,7 @@ set -uo pipefail
 # Headless, no network in the default configuration.
 
 cd "$(dirname "$0")/.."
+. "$(dirname "$0")/valgrind_tier.sh"
 make >/dev/null || exit 1
 
 probe="$(mktemp)"
@@ -283,7 +284,7 @@ CSEOF
 fi
 
 printf 'TIER valgrind\n'
-if command -v valgrind >/dev/null 2>&1; then
+if vg_available; then
     for fixture in tests/odbc_test.bas tests/odbc_refusal_test.bas; do
         # The driver manager and the driver itself leak by design (dlopen'd
         # libraries, one-time catalogs), so this tier asserts NO INVALID
@@ -295,9 +296,8 @@ if command -v valgrind >/dev/null 2>&1; then
         # The entries are narrow (a named object and entry point) rather than
         # "anything inside a driver", because a blanket rule would also hide
         # uninitialised data WE passed in -- the very thing this tier is for.
-        if valgrind --error-exitcode=99 --errors-for-leak-kinds=none \
-                    --leak-check=no -q --suppressions=tests/odbc.supp \
-                    ./gbasic "$fixture" >/dev/null 2>"$work/vg"; then
+        if VG_EXTRA=--suppressions=tests/odbc.supp \
+                vg_run_access_only ./gbasic "$fixture" >/dev/null 2>"$work/vg"; then
             pass "valgrind clean: $fixture"
         else
             fail "valgrind clean: $fixture"

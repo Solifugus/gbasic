@@ -66,6 +66,7 @@ set -euo pipefail
 # Headless, no network, no optional dependency. Never skips (bar valgrind).
 
 cd "$(dirname "$0")/.."
+. "$(dirname "$0")/valgrind_tier.sh"
 make >/dev/null
 export GBASIC_PATH=stdlib
 
@@ -160,10 +161,8 @@ do
 done
 
 printf 'TIER valgrind\n'
-if command -v valgrind >/dev/null 2>&1; then
-    if valgrind --error-exitcode=9 --leak-check=full \
-                --errors-for-leak-kinds=definite \
-                ./gbasic tests/causal_test.bas >/dev/null 2>"$work/vg" </dev/null; then
+if vg_available; then
+    if vg_run ./gbasic tests/causal_test.bas >/dev/null 2>"$work/vg" </dev/null; then
         pass 'causal_test is clean under valgrind'
     else
         fail 'causal_test is clean under valgrind'

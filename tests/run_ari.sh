@@ -28,6 +28,7 @@
 set -u
 
 cd "$(dirname "$0")/.."
+. "$(dirname "$0")/valgrind_tier.sh"
 
 if ! make >/dev/null 2>&1; then
     printf 'FAIL run_ari: build failed\n'
@@ -188,9 +189,8 @@ for page in 0 20 45 66; do
 done
 
 # --- Tier 4: valgrind ----------------------------------------------------------
-if command -v valgrind >/dev/null 2>&1; then
-    if GBASIC_PATH=stdlib valgrind --error-exitcode=9 --leak-check=full \
-            --errors-for-leak-kinds=definite ./gbasic examples/ari_teller_test.bas \
+if vg_available; then
+    if GBASIC_PATH=stdlib vg_run ./gbasic examples/ari_teller_test.bas \
             >"$out" 2>"$err" </dev/null; then
         if diff -q examples/ari_teller_test.out "$out" >/dev/null; then
             printf 'PASS valgrind examples/ari_teller_test.bas\n'

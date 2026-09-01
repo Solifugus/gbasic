@@ -25,6 +25,7 @@
 # optional-dependency convention.
 set -u
 cd "$(dirname "$0")/.."
+. "$(dirname "$0")/valgrind_tier.sh"
 
 if ! make >/dev/null 2>&1; then
     printf 'FAIL run_dbframe: build failed\n'
@@ -96,9 +97,8 @@ case "$a_res" in
     status=1 ;;
 esac
 
-if command -v valgrind >/dev/null 2>&1; then
-    if valgrind --error-exitcode=9 --leak-check=full --errors-for-leak-kinds=definite -q \
-        ./gbasic examples/xlsx_dbframe_test.bas >/dev/null 2>"$err"; then
+if vg_available; then
+    if vg_run ./gbasic examples/xlsx_dbframe_test.bas >/dev/null 2>"$err"; then
         printf 'PASS valgrind examples/xlsx_dbframe_test.bas\n'
     else
         printf 'FAIL valgrind\n'; head -20 "$err"; status=1

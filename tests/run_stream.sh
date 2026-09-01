@@ -14,6 +14,7 @@
 set -u
 
 cd "$(dirname "$0")/.."
+. "$(dirname "$0")/valgrind_tier.sh"
 
 if ! make >/dev/null 2>&1; then
     printf 'FAIL run_stream: build failed\n'
@@ -77,10 +78,8 @@ else
 fi
 
 # --- Memory: the flag must not change the interpreter's allocation behaviour ---
-if command -v valgrind >/dev/null 2>&1; then
-    if valgrind --error-exitcode=99 --leak-check=full --track-fds=yes \
-            --errors-for-leak-kinds=definite \
-            ./gbasic --line-buffered tests/native_platform/plat_stream_bulk_child.bas 500 \
+if vg_available; then
+    if vg_run ./gbasic --line-buffered tests/native_platform/plat_stream_bulk_child.bas 500 \
             >/dev/null 2>"$stderr_file"; then
         printf 'PASS plat_stream_memory (valgrind clean with --line-buffered)\n'
     else

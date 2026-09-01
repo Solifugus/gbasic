@@ -58,6 +58,7 @@
 set -u
 
 cd "$(dirname "$0")/.."
+. "$(dirname "$0")/valgrind_tier.sh"
 
 if ! make >/dev/null 2>&1; then
     printf 'FAIL run_render: build failed\n'
@@ -160,10 +161,8 @@ boundary 'encode({ when: d })'      'encode supports numbers'
 boundary 'json_encode({ when: d })' 'json_encode supports numbers'
 
 # --- Tier 5: valgrind ---------------------------------------------------------
-if command -v valgrind >/dev/null 2>&1; then
-    if valgrind --error-exitcode=9 --leak-check=full \
-                --errors-for-leak-kinds=definite \
-                ./gbasic tests/render_parity_test.bas >"$work/vg.txt" 2>"$err" </dev/null; then
+if vg_available; then
+    if vg_run ./gbasic tests/render_parity_test.bas >"$work/vg.txt" 2>"$err" </dev/null; then
         if diff -q tests/render_parity_test.out "$work/vg.txt" >/dev/null; then
             printf 'PASS valgrind tests/render_parity_test.bas\n'
         else

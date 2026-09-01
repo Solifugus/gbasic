@@ -29,6 +29,7 @@ set -uo pipefail
 # Headless, GI-independent, never skips (bar valgrind).
 
 cd "$(dirname "$0")/.."
+. "$(dirname "$0")/valgrind_tier.sh"
 make >/dev/null 2>&1 || { echo "FAIL build"; exit 1; }
 
 scratch="$(mktemp -d)"
@@ -135,14 +136,12 @@ fi
 
 # --------------------------------------------------------------- valgrind
 printf 'TIER valgrind\n'
-if command -v valgrind >/dev/null 2>&1; then
+if vg_available; then
     # The defaults array is a NEW allocation per parameter list, freed in six
     # places (function, modifier, program, watch, server item, modifier
     # signature). Missing one leaks a few bytes per parse -- which is exactly
     # what happened, and 22 suites went red on their own valgrind tiers.
-    if valgrind --error-exitcode=9 --leak-check=full \
-                --errors-for-leak-kinds=definite \
-                ./gbasic tests/optparams/semantics.bas >/dev/null 2>"$scratch/vg"; then
+    if vg_run ./gbasic tests/optparams/semantics.bas >/dev/null 2>"$scratch/vg"; then
         pass "no definite leak or invalid access"
     else
         fail "no definite leak or invalid access"

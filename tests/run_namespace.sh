@@ -34,6 +34,7 @@ set -uo pipefail
 # Headless, GI-independent. The password tier needs libxcrypt in the build.
 
 cd "$(dirname "$0")/.."
+. "$(dirname "$0")/valgrind_tier.sh"
 make >/dev/null 2>&1 || { echo "FAIL build"; exit 1; }
 
 scratch="$(mktemp -d)"
@@ -107,9 +108,8 @@ else
 fi
 
 printf 'TIER valgrind\n'
-if command -v valgrind >/dev/null 2>&1; then
-    if ( cd tests && GBASIC_PATH=. valgrind --error-exitcode=9 --leak-check=full \
-            --errors-for-leak-kinds=definite ../gbasic namespace_test.bas ) \
+if vg_available; then
+    if ( cd tests && GBASIC_PATH=. vg_run ../gbasic namespace_test.bas ) \
             >/dev/null 2>"$scratch/vg"; then
         pass "no definite leak or invalid access"
     else

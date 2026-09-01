@@ -16,6 +16,7 @@
 set -u
 
 cd "$(dirname "$0")/.."
+. "$(dirname "$0")/valgrind_tier.sh"
 
 if ! make >/dev/null 2>&1; then
     printf 'FAIL run_stderr: build failed\n'
@@ -92,10 +93,8 @@ else
 fi
 
 # --- Memory --------------------------------------------------------------------
-if command -v valgrind >/dev/null 2>&1; then
-    if valgrind --error-exitcode=99 --leak-check=full --track-fds=yes \
-            --errors-for-leak-kinds=definite \
-            ./gbasic tests/native_platform/plat_stderr_parity_child.bas \
+if vg_available; then
+    if vg_run ./gbasic tests/native_platform/plat_stderr_parity_child.bas \
             >/dev/null 2>"$stderr_file"; then
         printf 'PASS plat_stderr_memory (valgrind clean)\n'
     else

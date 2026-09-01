@@ -29,6 +29,7 @@ set -uo pipefail
 # Headless, GI-independent, never skips (bar valgrind).
 
 cd "$(dirname "$0")/.."
+. "$(dirname "$0")/valgrind_tier.sh"
 make >/dev/null 2>&1 || { echo "FAIL build"; exit 1; }
 
 scratch="$(mktemp -d)"
@@ -143,7 +144,7 @@ else
 fi
 
 printf 'TIER valgrind\n'
-if command -v valgrind >/dev/null 2>&1; then
+if vg_available; then
     cat >"$scratch/vg.bas" <<'EOF'
 load fake
 start {date}= "2026-01-01"
@@ -158,8 +159,7 @@ next
 u = fake.plant(inv, { anomaly: "just_under", count: 4, at: 9, threshold: money.of("USD", "5000") })
 print string(total + count(u.planted))
 EOF
-    if GBASIC_PATH=stdlib valgrind --error-exitcode=9 --leak-check=full \
-            --errors-for-leak-kinds=definite ./gbasic "$scratch/vg.bas" \
+    if GBASIC_PATH=stdlib vg_run ./gbasic "$scratch/vg.bas" \
             >/dev/null 2>"$scratch/vg"; then
         pass "no definite leak or invalid access"
     else

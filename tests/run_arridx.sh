@@ -34,6 +34,7 @@
 set -u
 
 cd "$(dirname "$0")/.."
+. "$(dirname "$0")/valgrind_tier.sh"
 
 if ! make >/dev/null 2>&1; then
     printf 'FAIL run_arridx: build failed\n'
@@ -152,10 +153,8 @@ else
 fi
 
 # --- Tier 4: valgrind ---------------------------------------------------------
-if command -v valgrind >/dev/null 2>&1; then
-    if valgrind --error-exitcode=9 --leak-check=full --track-fds=yes \
-                --errors-for-leak-kinds=definite \
-                ./gbasic tests/arridx_test.bas >"$out" 2>"$err" </dev/null; then
+if vg_available; then
+    if vg_run ./gbasic tests/arridx_test.bas >"$out" 2>"$err" </dev/null; then
         if diff -q tests/arridx_test.out "$out" >/dev/null; then
             printf 'PASS valgrind tests/arridx_test.bas\n'
         else

@@ -30,6 +30,7 @@ set -uo pipefail
 # Headless, GI-independent, never skips (bar valgrind).
 
 cd "$(dirname "$0")/.."
+. "$(dirname "$0")/valgrind_tier.sh"
 make >/dev/null 2>&1 || { echo "FAIL build"; exit 1; }
 
 scratch="$(mktemp -d)"
@@ -89,9 +90,8 @@ EOF
 done
 
 printf 'TIER valgrind\n'
-if command -v valgrind >/dev/null 2>&1; then
-    if ( cd tests && GBASIC_PATH=. valgrind --error-exitcode=9 --leak-check=full \
-            --errors-for-leak-kinds=definite ../gbasic library_scope_test.bas ) \
+if vg_available; then
+    if ( cd tests && GBASIC_PATH=. vg_run ../gbasic library_scope_test.bas ) \
             >/dev/null 2>"$scratch/vg"; then
         pass "no definite leak or invalid access"
     else

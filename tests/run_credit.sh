@@ -41,6 +41,7 @@ set -uo pipefail
 # money, `lending`, `finance` and `fake`.
 
 cd "$(dirname "$0")/.."
+. "$(dirname "$0")/valgrind_tier.sh"
 make >/dev/null 2>&1 || { echo "FAIL build"; exit 1; }
 
 scratch="$(mktemp -d)"
@@ -146,7 +147,7 @@ fi
 printf 'TIER valgrind\n'
 # Small on purpose: the semantics fixture is a 12s program and the point here
 # is the allocation paths, not the population size.
-if command -v valgrind >/dev/null 2>&1; then
+if vg_available; then
     cat >"$scratch/vg.bas" <<'EOF'
 load credit
 o {date}= "2026-01-01"
@@ -171,8 +172,7 @@ print error.message
 error.clear()
 on error stop
 EOF
-    if GBASIC_PATH=stdlib valgrind --error-exitcode=9 --leak-check=full \
-            --errors-for-leak-kinds=definite ./gbasic "$scratch/vg.bas" \
+    if GBASIC_PATH=stdlib vg_run ./gbasic "$scratch/vg.bas" \
             >/dev/null 2>"$scratch/vg"; then
         pass "no definite leak or invalid access"
     else

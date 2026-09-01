@@ -14,6 +14,7 @@
 set -u
 
 cd "$(dirname "$0")/.."
+. "$(dirname "$0")/valgrind_tier.sh"
 
 if [ ! -x ./gbasic ]; then
     if ! make gbasic >/dev/null 2>&1; then
@@ -91,7 +92,7 @@ else
 fi
 
 # ---- Tier 4: memory ----------------------------------------------------------
-if command -v valgrind >/dev/null 2>&1; then
+if vg_available; then
     MED="$TMP/med.bas"
     awk 'BEGIN{for(i=0;i<200;i++){printf "function f%d(a, b)\n  if a > b then\n    return a\n  end if\n  return b\nend function\n\n", i}}' > "$MED"
     vg_ok=1
@@ -99,8 +100,7 @@ if command -v valgrind >/dev/null 2>&1; then
     for run in "$DUMP nested" "$STRESS $MED 5"; do
         log="$TMP/vg.log"
         # shellcheck disable=SC2086
-        valgrind --error-exitcode=99 --leak-check=full --errors-for-leak-kinds=definite \
-            ./gbasic $run >/dev/null 2>"$log"
+        vg_run ./gbasic $run >/dev/null 2>"$log"
         rc=$?
         if [ $rc -eq 99 ]; then
             echo "FAIL outline:valgrind ($run)"

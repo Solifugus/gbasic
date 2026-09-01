@@ -53,6 +53,7 @@
 set -u
 
 cd "$(dirname "$0")/.."
+. "$(dirname "$0")/valgrind_tier.sh"
 
 if ! make >/dev/null 2>&1; then
     printf 'FAIL run_numfmt: build failed\n'
@@ -222,10 +223,8 @@ else
 fi
 
 # --- Tier 5: valgrind ---------------------------------------------------------
-if command -v valgrind >/dev/null 2>&1; then
-    if valgrind --error-exitcode=9 --leak-check=full \
-                --errors-for-leak-kinds=definite \
-                ./gbasic tests/numfmt_test.bas >"$out" 2>"$err" </dev/null; then
+if vg_available; then
+    if vg_run ./gbasic tests/numfmt_test.bas >"$out" 2>"$err" </dev/null; then
         if diff -q tests/numfmt_test.out "$out" >/dev/null; then
             printf 'PASS valgrind tests/numfmt_test.bas\n'
         else

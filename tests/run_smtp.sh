@@ -51,6 +51,7 @@
 # needs openssl. Everything is loopback; nothing leaves the machine.
 set -euo pipefail
 cd "$(dirname "$0")/.."
+. "$(dirname "$0")/valgrind_tier.sh"
 
 make >/dev/null
 
@@ -389,7 +390,7 @@ else
 fi
 
 # -------------------------------------------------------------- valgrind
-if command -v valgrind >/dev/null 2>&1; then
+if vg_available; then
     port=$(start_sink "$scratch/vg.json" 1)
     require_port "$port" "valgrind"
     cat >"$scratch/vg.bas" <<EOF
@@ -404,8 +405,7 @@ program main( args )
     print string(r.code)
 end program
 EOF
-    GBASIC_PATH=stdlib valgrind -q --error-exitcode=9 --leak-check=no \
-        ./gbasic "$scratch/vg.bas" >/dev/null 2>"$scratch/vg" \
+    GBASIC_PATH=stdlib vg_run_access_only ./gbasic "$scratch/vg.bas" >/dev/null 2>"$scratch/vg" \
         || fail "valgrind$(printf '\n%s' "$(cat "$scratch/vg")")"
     grep -q "Invalid" "$scratch/vg" && fail "valgrind$(printf '\n%s' "$(cat "$scratch/vg")")"
     ok "valgrind: no invalid access composing and sending"

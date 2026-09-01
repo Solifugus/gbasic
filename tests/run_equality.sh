@@ -58,6 +58,7 @@
 set -u
 
 cd "$(dirname "$0")/.."
+. "$(dirname "$0")/valgrind_tier.sh"
 
 if ! make >/dev/null 2>&1; then
     printf 'FAIL run_equality: build failed\n'
@@ -157,12 +158,10 @@ refuse '{ a: 1 } <= 5'       'records support only = and !='
 refuse '{ a: 1 } !> { b: 2 }' 'records support only = and !='
 
 # --- Tier 5: valgrind ---------------------------------------------------------
-if command -v valgrind >/dev/null 2>&1; then
+if vg_available; then
     vg_ok=1
     for fixture in tests/equality_test.bas tests/equality_dispatch_test.bas; do
-        if ! valgrind --error-exitcode=9 --leak-check=full \
-                      --errors-for-leak-kinds=definite \
-                      ./gbasic "$fixture" >"$work/vg.txt" 2>"$err" </dev/null; then
+        if ! vg_run ./gbasic "$fixture" >"$work/vg.txt" 2>"$err" </dev/null; then
             printf 'FAIL valgrind %s\n' "$fixture"
             cat "$err"
             status=1

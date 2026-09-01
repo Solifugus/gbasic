@@ -31,6 +31,7 @@ set -uo pipefail
 # money and the built-in RNG.
 
 cd "$(dirname "$0")/.."
+. "$(dirname "$0")/valgrind_tier.sh"
 make >/dev/null 2>&1 || { echo "FAIL build"; exit 1; }
 
 scratch="$(mktemp -d)"
@@ -124,7 +125,7 @@ else
 fi
 
 printf 'TIER valgrind\n'
-if command -v valgrind >/dev/null 2>&1; then
+if vg_available; then
     cat >"$scratch/vg.bas" <<'EOF'
 load fake
 start {date}= "2026-01-01"
@@ -133,8 +134,7 @@ cust = fake.customers(3, 20)
 inv = fake.invoices(3, cust, 40, start, finish, "USD")
 print string(count(inv))
 EOF
-    if GBASIC_PATH=stdlib valgrind --error-exitcode=9 --leak-check=full \
-            --errors-for-leak-kinds=definite ./gbasic "$scratch/vg.bas" \
+    if GBASIC_PATH=stdlib vg_run ./gbasic "$scratch/vg.bas" \
             >/dev/null 2>"$scratch/vg"; then
         pass "no definite leak or invalid access"
     else

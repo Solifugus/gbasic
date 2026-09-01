@@ -42,6 +42,7 @@ set -euo pipefail
 # the live tier's client is bash's own /dev/tcp, on loopback.
 
 cd "$(dirname "$0")/.."
+. "$(dirname "$0")/valgrind_tier.sh"
 
 make
 
@@ -282,11 +283,10 @@ fi
 # ---------------------------------------------------------------- valgrind
 
 printf 'TIER valgrind\n'
-if ! command -v valgrind >/dev/null 2>&1; then
+if ! vg_available; then
     printf '  SKIP (valgrind is unavailable)\n'
 else
-    if valgrind --error-exitcode=9 --leak-check=full --errors-for-leak-kinds=definite \
-        ./gbasic tests/web_routes_oracle_test.bas >/dev/null 2>"$stderr_file"; then
+    if vg_run ./gbasic tests/web_routes_oracle_test.bas >/dev/null 2>"$stderr_file"; then
         pass 'valgrind reports no definite leak or error'
     else
         fail 'valgrind reports no definite leak or error'

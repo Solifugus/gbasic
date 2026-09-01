@@ -29,6 +29,7 @@ set -uo pipefail
 # Headless, no optional dependency, never skips (bar valgrind).
 
 cd "$(dirname "$0")/.."
+. "$(dirname "$0")/valgrind_tier.sh"
 make >/dev/null || exit 1
 
 work="$(mktemp -d)"
@@ -360,14 +361,13 @@ else
 fi
 
 printf 'TIER valgrind\n'
-if command -v valgrind >/dev/null 2>&1; then
+if vg_available; then
     for fixture in tests/money_construct_test.bas tests/money_refusal_test.bas \
                    tests/money_text_test.bas \
                    tests/money_arithmetic_test.bas tests/money_overflow_test.bas \
                    tests/money_currency_test.bas tests/money_registry_test.bas \
                    tests/money_fx_test.bas tests/money_allocate_test.bas; do
-        if valgrind --error-exitcode=99 --leak-check=full --errors-for-leak-kinds=definite -q \
-                    ./gbasic "$fixture" >/dev/null 2>"$work/vg"; then
+        if vg_run ./gbasic "$fixture" >/dev/null 2>"$work/vg"; then
             pass "valgrind clean: $fixture"
         else
             fail "valgrind clean: $fixture"

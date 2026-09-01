@@ -32,6 +32,7 @@ set -euo pipefail
 # IPv6 tiers (which state why) and valgrind.
 
 cd "$(dirname "$0")/.."
+. "$(dirname "$0")/valgrind_tier.sh"
 
 make
 
@@ -266,12 +267,11 @@ do
 done
 
 printf 'TIER valgrind\n'
-if ! command -v valgrind >/dev/null 2>&1; then
+if ! vg_available; then
     printf '  SKIP (valgrind is unavailable)\n'
 else
     rm -f "$port_file"
-    valgrind --error-exitcode=9 --leak-check=full --errors-for-leak-kinds=definite \
-        ./gbasic tests/web_bind_fixture.bas >"$server_out" 2>"$server_err" &
+    vg_run ./gbasic tests/web_bind_fixture.bas >"$server_out" 2>"$server_err" &
     server_pid=$!
     waited=0
     while [[ $waited -lt 300 ]]; do

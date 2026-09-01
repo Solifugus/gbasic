@@ -20,6 +20,7 @@
 # Negatives (refusals by name) live in run_negative.sh: negative_chart_*.
 set -u
 cd "$(dirname "$0")/.."
+. "$(dirname "$0")/valgrind_tier.sh"
 status=0
 
 printf -- '-- golden: the four-chart rendering\n'
@@ -108,9 +109,9 @@ heatmap cell texts 3'
     fi
 fi
 
-if command -v valgrind >/dev/null 2>&1; then
+if vg_available; then
     printf -- '-- valgrind over the golden program\n'
-    if valgrind --error-exitcode=99 --leak-check=full ./gbasic examples/chart_test.bas >/dev/null 2>/tmp/chart_vg.txt; then
+    if vg_run ./gbasic examples/chart_test.bas >/dev/null 2>/tmp/chart_vg.txt; then
         printf 'PASS valgrind clean\n'
     else
         printf 'FAIL valgrind\n'
