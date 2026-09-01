@@ -210,6 +210,13 @@ analytics rather than account mechanics, and are deferred with §8.
   recovery. These are about *populations*, and they want the fake-data
   library's planted-anomaly work first so they can be tested against a
   portfolio with known-bad accounts rather than six hand-written loans.
+  **Discharged 2026-08-31**: `fake.plant` and `fake.sample`/`fake.portfolio`
+  shipped, and `stdlib/credit.bas` is built on them — see
+  `docs/credit_analytics_design.md`. Note what moved: the analytics do **not**
+  take loans and events. They take a *status table*, because `apply` is a fold
+  and a 5,000-loan book over 36 month-ends is 180,000 of them, and because real
+  portfolio data arrives as a monthly performance record per loan.
+  `credit.observe` is the bridge from here to there.
 - **APR** — jurisdiction policy, ruled out of core finance for the same reason
   (`docs/finance_design.md` §7). The math is an IRR over fee-inclusive flows;
   *which fees count* belongs in a versioned jurisdiction package.

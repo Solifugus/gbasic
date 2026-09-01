@@ -110,6 +110,11 @@ document list, with a status column, is `docs/README.md`.
 - **deposits** — `deposits`, the other side of the book: declared balance
   method, compounding kept separate from crediting, tiered rates, and
   certificates whose early-withdrawal penalty may reduce principal.
+- **credit analytics** — `credit`, questions about a book rather than a loan:
+  vintage curves by months on book, roll rates, migration and charge-off, over
+  a status table so it can be pointed at a real servicer extract. Attrition is
+  a state in the matrix, not a hole, and the reconciliation that falls out of
+  that is the invariant the suite asserts.
 - **lending** — `lending`, loans and servicing over the finance and accounting
   libraries: declared accrual basis, payment waterfall and day count; servicing
   as a fold over events so a balance is always explainable by replay; payoff

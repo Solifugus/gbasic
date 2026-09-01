@@ -448,6 +448,16 @@ library fake
         return _plant_gap(rows, picked, id_field)
     end function
 
+    ' `k` DISTINCT indices out of `n`, in row order, decided by the seed alone.
+    '
+    ' Public because choosing a reproducible subset without marking it is the
+    ' primitive `plant` is built on, and it is exactly what a caller needs to
+    ' say "these twelve accounts are the bad ones" in a test -- reproducibly,
+    ' with nothing in the data itself giving them away.
+    function sample(base, n, k)
+        return _sample(base, n, k, [])
+    end function
+
     ' Distinct row indices, in row order. Walking forward on a collision keeps
     ' this O(k) for the k << n case every caller has, and the error at the end
     ' is reachable only when `avoid` has already claimed nearly everything.
@@ -685,6 +695,60 @@ library fake
             append(flipped, report[j])
         next
         return flipped
+    end function
+
+    ' A book of loan terms -- the third Layer-2 dataset, after customers and
+    ' invoices, and the one `credit` needs to be testable at all
+    ' (docs/lending_design.md §8 asked for "a portfolio with known-bad accounts
+    ' rather than six hand-written loans").
+    '
+    ' It returns loan SPECS, plain records, rather than `lending.loan` values.
+    ' That keeps `fake` free of a dependency on `lending`: a test-data library
+    ' that had to load the finance stack to fabricate anything could not be
+    ' used to fabricate input FOR it without the two libraries staring at each
+    ' other. The caller passes each spec to `lending.loan`, which is where the
+    ' declared basis, waterfall and day count belong anyway -- they are the
+    ' lender's policy, not a property of the borrower.
+    '
+    ' spec: { from:, to:, currency:, median:, sigma:, rate_low:, rate_high:, terms: }
+    function portfolio(base, n, spec)
+        if type(spec) != "record" then
+            error "fake.portfolio expects a spec record"
+        end if
+        for each field in ["from", "to", "currency"]
+            if is_unknown(spec[field]) then
+                error "fake.portfolio needs a " + field
+            end if
+        next
+        median = _opt(spec, "median", 25000)
+        sigma = _opt(spec, "sigma", 0.6)
+        rate_low = _opt(spec, "rate_low", 0.05)
+        rate_high = _opt(spec, "rate_high", 0.18)
+        terms = _opt(spec, "terms", [12, 24, 36, 60])
+        if rate_high < rate_low then
+            error "fake.portfolio: rate_high is below rate_low"
+        end if
+        rows = []
+        for i = 0 to n - 1
+            ' Origination is a business day: a book with a tenth of its loans
+            ' written on Sundays is wrong in a way every downstream date
+            ' calculation inherits.
+            opened = business_date(base, i, spec["from"], spec["to"])
+            ' Rates are quoted in eighths and quarters, not to seventeen
+            ' decimal places. Rounding to a real quotation step is what stops
+            ' a generated book looking like a random-number dump.
+            raw = rate_low + _at(base, i, 71) * (rate_high - rate_low)
+            ' Divide rather than multiply back: 41 * 0.0025 accumulates float
+            ' error and prints as 0.10250000000000001, where 41 / 400 lands on
+            ' the nearest double to 0.1025 and prints as 0.1025.
+            rate = round(raw * 400, 0) / 400
+            append(rows, { id: "LN" + _pad4(i),
+                           opened: opened,
+                           principal: amount(base, i * 131, spec["currency"], median, sigma),
+                           rate: rate,
+                           term: _pick_at(base, i, 72, terms) })
+        end for
+        return rows
     end function
 
 end library

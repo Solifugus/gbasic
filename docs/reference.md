@@ -4737,6 +4737,22 @@ General-purpose:
   Like `accounting.post`, `plant` returns a new array rather than mutating: a
   mutate-in-place API would silently do nothing to the caller's value, since
   inside a function `append` and `remove` act on a local copy.
+
+  **`fake.sample(seed, n, k)`** is the primitive underneath it: `k` distinct
+  indices out of `n`, in row order, decided by the seed alone. Public because
+  choosing a reproducible subset *without marking it* is exactly what a test
+  needs to say "these twelve accounts are the bad ones".
+
+  **`fake.portfolio(seed, n, spec)`** is the third Layer-2 dataset, after
+  customers and invoices: a book of loan terms
+  (`{ id, opened, principal, rate, term }`) over a `{ from, to, currency }`
+  window, with lognormal principals, business-day originations and rates
+  rounded to a real quotation step. It returns loan **specs**, not
+  `lending.loan` values, which keeps `fake` free of a dependency on the finance
+  stack — a test-data library that had to load `lending` to fabricate anything
+  could not be used to fabricate input *for* it. The caller passes each spec to
+  `lending.loan`, which is where the declared basis, waterfall and day count
+  belong: they are the lender's policy, not a property of the borrower.
 - `deposits` — deposit interest, crediting and certificates, pure gBASIC
   (`docs/lending_design.md` §7). A **separate library from `lending`** on
   purpose: their vocabularies barely overlap, and what they do share — simple
@@ -4780,6 +4796,59 @@ General-purpose:
   decisions and an absent income that became zero would make every ratio look
   perfect. `lending.entries(chart, loan, events, accounts)` **emits** journal
   entries and never posts them: the caller owns the ledger.
+- `credit` — credit analytics over a **portfolio**, pure gBASIC
+  (`docs/credit_analytics_design.md`). `lending` answers questions about one
+  loan; this answers questions about a book — vintage curves, roll rates,
+  migration, charge-off and recovery — none of which is derivable from a single
+  loan or is arithmetic about balances. They are questions about **states over
+  time**.
+
+  **The input is a status table, not a list of loans**, and everything else
+  follows from that: one row per loan per observation date,
+  `{ id, opened, as_of, status, balance }`. Real portfolio data arrives as a
+  monthly performance record per loan — the shape published loan-level datasets
+  and any servicer's extract take — so a library that could only read our own
+  `lending` loans could not be pointed at a real book.
+  `credit.observe(book, dates, method)` is the **bridge** from `lending`, which
+  makes our own machinery a producer of the table rather than a special case.
+
+  **Delinquency is declared and the industry disagrees about it.**
+  `credit.bucket(unpaid, as_of, method)` takes `"mba"` — 30 days delinquent the
+  day after one payment is missed, counting *payments missed* — or `"ots"` —
+  30 days delinquent when the oldest unpaid instalment is 30 days old, counting
+  *days past due*. On a monthly loan they run about a month apart for the whole
+  life of a delinquency, so a book reported one way is not comparable with one
+  reported the other, and the method is required rather than defaulted.
+  `credit.methods()` names the two; `credit.buckets()` is the declared ladder
+  (`current`, `dpd_30`, `dpd_60`, `dpd_90`, `dpd_120_plus`, `paid_off`,
+  `charged_off`) and a status outside it is refused rather than becoming a
+  population of one; `credit.absorbing()` names the two states nothing rolls
+  out of.
+
+  **Attrition is a state, not a hole.** `paid_off` and `charged_off` are
+  buckets in the matrix and nothing rolls out of them; a loan present at *t* and
+  missing at *t+1* is reported as `unobserved` rather than dropped, because "we
+  stopped seeing it" is a fact about the data, not the borrower. Dropping it
+  makes a book look like it is curing — an ordinary-looking percentage that is
+  wrong, with nothing raised. That gives the invariant the library rests on, the
+  counterpart of the balance-sheet identity: **every loan observed at *t* is
+  accounted for at *t+1***, row totals plus `unobserved` equalling the starting
+  population bucket by bucket. It is never enforced anywhere; it falls out of
+  correct bucketing.
+
+  `credit.migration(table, from, to)` returns counts (plus `entered`, the new
+  lending that is *not* part of the migration); `credit.roll_rates` divides by
+  the **whole** starting bucket, and a bucket nobody was in reports `unknown`
+  rather than zero. `credit.vintage(table, spec)` plots a cohort's **cumulative**
+  bad rate against **age in months on book**, never calendar month — indexed by
+  calendar, every cohort's curve starts at a different age and the result is a
+  smooth, meaningless line that does not look like a mistake. A cohort's curve
+  stops at the age it has reached, so an unlived age reads as absent rather than
+  as 0%. `basis` is `"original"` or `"outstanding"` and is required, since they
+  are different curves. `credit.losses` **reads** `charged_off` from the record
+  rather than inferring it from days past due — a charge-off is a decision, and
+  inferring it produces a loss figure the servicer's own books disagree with —
+  and reports gross and recoveries separately rather than netting them silently.
 - `accounting` — double-entry bookkeeping, pure gBASIC over exact `money`
   (`docs/accounting_design.md`). `accounting.chart(accounts)` validates a chart
   of accounts and fixes each one's normal balance side from its `kind`
