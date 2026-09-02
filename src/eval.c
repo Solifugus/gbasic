@@ -3004,8 +3004,22 @@ static void warn_sites_clear(void) {
 }
 
 /* Takes ownership of `details` (VALUE_NULL for none). */
-static void runtime_warn(const char *message, int code, const char *source,
-                         Value details) {
+/* `line`/`column` are the WARNING'S OWN SITE, which is not always where the
+ * interpreter happens to be standing. Registration-time warnings -- a library
+ * function colliding with a built-in, a modifier overriding another -- are
+ * raised while the LOAD statement is executing, so `current_line` is a line in
+ * the CALLER, paired in the report with the LIBRARY's path. That mismatched
+ * pair is worse than no position at all: it looks like a real location and
+ * points at an unrelated line in a different file.
+ *
+ * It also silently under-reports, because the position is the DEDUPLICATION
+ * key: every collision in one library shared the one load statement's line, so
+ * a library shadowing three built-ins warned about the first and swallowed the
+ * other two. Reported by the gdash session, which inferred from a few samples
+ * that the count skipped comment lines; the truth was that it was not the
+ * library's line count at all. */
+static void runtime_warn_at(const char *message, int code, const char *source,
+                            Value details, int line, int column) {
     int mode = warn_mode_effective();
     if (mode == WARN_MODE_IGNORE) {
         value_free(details);
@@ -3026,8 +3040,8 @@ static void runtime_warn(const char *message, int code, const char *source,
         warning_clear_state();
         current_warning.active = 1;
         current_warning.message = copy_string(message);
-        current_warning.line = current_line;
-        current_warning.column = current_column;
+        current_warning.line = line;
+        current_warning.column = column;
         current_warning.code = code;
         current_warning.source = copy_string(source ? source : "warning");
         current_warning.path = copy_string(runtime_error_path() ? runtime_error_path() : "");
@@ -3041,12 +3055,17 @@ static void runtime_warn(const char *message, int code, const char *source,
         return;
     }
     value_free(details);
-    if (!warn_site_first_time(current_line, current_column)) {
+    if (!warn_site_first_time(line, column)) {
         return;
     }
     fprintf(stderr, "warning: %s at %s:%d:%d\n", message,
             runtime_error_path() ? runtime_error_path() : "?",
-            current_line, current_column);
+            line, column);
+}
+
+static void runtime_warn(const char *message, int code, const char *source,
+                         Value details) {
+    runtime_warn_at(message, code, source, details, current_line, current_column);
 }
 
 /* printf-style front end, so the pre-existing diagnostics can move onto the
@@ -3058,6 +3077,18 @@ static void warn_fmt(int code, const char *source, const char *fmt, ...) {
     vsnprintf(buffer, sizeof(buffer), fmt, args);
     va_end(args);
     runtime_warn(buffer, code, source, value_null());
+}
+
+/* Same, for a diagnostic whose site is a DECLARATION rather than wherever the
+ * interpreter is standing. */
+static void warn_fmt_at(int code, const char *source, int line, int column,
+                        const char *fmt, ...) {
+    char buffer[512];
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(buffer, sizeof(buffer), fmt, args);
+    va_end(args);
+    runtime_warn_at(buffer, code, source, value_null(), line, column);
 }
 
 /* Bare `warning` CLAIMS the pending warning: the object once, false after. */
@@ -6988,12 +7019,24 @@ static void function_register_def(AstStmt *stmt, int imported, const char *libra
      * it. */
     if (gbasic_has_builtin(stmt->as.function.name)) {
         if (imported) {
-            warn_fmt(2102, "override",
-                    "function '%s' from library '%s' has same name as a built-in; unqualified calls use the built-in",
+            /* THE MESSAGE MUST SAY WHICH SIDE OF THE BOUNDARY IT MEANS. It used
+             * to read "unqualified calls use the built-in", which stopped being
+             * true of the site it points AT when d08409f made a library resolve
+             * its own functions first: inside the library the library's own
+             * function now wins, and only outside does the built-in. Reported
+             * by the gdash session. The wording follows the local-shadows-
+             * library warning below, which already names both sides. */
+            warn_fmt_at(2102, "override", stmt->line, stmt->column,
+                    "function '%s' from library '%s' has the same name as a built-in; "
+                    "inside '%s' unqualified calls use this function, outside it they use "
+                    "the built-in, and '%s.%s' is explicit either way",
                     stmt->as.function.name,
-                    library ? library : "");
+                    library ? library : "",
+                    library ? library : "",
+                    library ? library : "",
+                    stmt->as.function.name);
         } else {
-            warn_fmt(2102, "override",
+            warn_fmt_at(2102, "override", stmt->line, stmt->column,
                     "local function '%s' overrides built-in function",
                     stmt->as.function.name);
         }
@@ -7027,7 +7070,7 @@ static void function_register_def(AstStmt *stmt, int imported, const char *libra
          * the library-versus-builtin case has warned for a long time, and this
          * is the same shape one level over. */
         if (library) {
-            warn_fmt(2102, "override",
+            warn_fmt_at(2102, "override", stmt->line, stmt->column,
                     "local function '%s' shadows '%s' from library '%s'; "
                     "unqualified calls use the local, and '%s.%s' reaches the library one",
                     stmt->as.function.name, stmt->as.function.name, library,
@@ -7176,7 +7219,7 @@ static void modifier_register_def(AstStmt *stmt, int imported, const char *libra
         if (imported && existing->imported) {
             existing = NULL;
         } else if (!imported && existing->imported && existing->library) {
-            warn_fmt(2102, "override",
+            warn_fmt_at(2102, "override", stmt->line, stmt->column,
                     "local modifier '%s' overrides modifier from library '%s'",
                     stmt->as.modifier.name,
                     existing->library);

@@ -89,6 +89,102 @@ EOF
     fi
 done
 
+printf 'TIER the built-in collision warning\n'
+# d08409f made a library resolve its OWN functions first. That reached the
+# BUILT-IN case too, and the diagnostic did not follow it (reported by the
+# gdash session, 2026-09-01). Two separate defects, and the second is the
+# worse one.
+#
+# (1) THE MESSAGE DESCRIBED THE OPPOSITE OF WHAT HAPPENS. It read "unqualified
+#     calls use the built-in", which is true OUTSIDE the library and false at
+#     the declaration it points at.
+#
+# (2) THE POSITION WAS THE CALLER'S. Registration-time warnings fire while the
+#     `load` statement runs, so the line came from the CALLING file and was
+#     printed beside the LIBRARY's path -- a mismatched pair that looks like a
+#     real location. And since the position is also the DEDUPLICATION key,
+#     every collision in one library shared the one load line: a library
+#     shadowing three built-ins warned about ONE and swallowed two.
+mkdir -p "$scratch/w"
+cat >"$scratch/w/wlib.bas" <<'BAS'
+library wlib
+    function lines(t)
+        return split(string(t), chr(10))
+    end function
+
+    function chars(t)
+        return t
+    end function
+
+    function folders(t)
+        return t
+    end function
+
+    function count_them(t)
+        return count(lines(t))
+    end function
+end library
+BAS
+cat >"$scratch/w/wuse.bas" <<'BAS'
+load wlib from "wlib.bas"
+print "inside:  " + string(wlib.count_them("a" + chr(10) + "b"))
+on error goto next
+r = lines("a" + chr(10) + "b")
+if error then
+  print "outside: builtin"
+  error.clear()
+else
+  print "outside: library"
+end if
+on error stop
+BAS
+./gbasic "$scratch/w/wuse.bas" >"$scratch/w/out" 2>"$scratch/w/err"
+
+# ONE WARNING PER COLLISION. This is the tier that catches the dedup
+# swallowing: the count, not the content.
+n=$(grep -c "same name as a built-in" "$scratch/w/err")
+if [ "$n" = 3 ]; then
+    pass "all three shadowed built-ins warn (not just the first)"
+else
+    fail "all three shadowed built-ins warn (got $n of 3)"
+fi
+
+# EACH WARNING NAMES ITS OWN DECLARATION. `lines` is on line 2, `chars` on 6,
+# `folders` on 10 -- all in wlib.bas, none of them line 1, which is where the
+# `load` statement sits in the OTHER file.
+for pair in lines:2 chars:6 folders:10; do
+    fn=${pair%%:*}; ln=${pair##*:}
+    if grep -q "'$fn' from library 'wlib'.*wlib\.bas:$ln:" "$scratch/w/err"; then
+        pass "the warning for '$fn' names wlib.bas:$ln, its own declaration"
+    else
+        got=$(grep -o "wlib\.bas:[0-9]*:[0-9]*" <<<"$(grep "'$fn' from" "$scratch/w/err")")
+        fail "the warning for '$fn' names wlib.bas:$ln (got '${got:-none}')"
+    fi
+done
+
+# THE MESSAGE NAMES BOTH SIDES OF THE BOUNDARY, which is the whole correction:
+# a sentence true of one side and false of the other is worse than silence.
+if grep -q "inside 'wlib' unqualified calls use this function" "$scratch/w/err" \
+   && grep -q "outside it they use the built-in" "$scratch/w/err"; then
+    pass "the message says which side of the library boundary it means"
+else
+    fail "the message says which side of the library boundary it means"
+    grep -m1 "same name as a built-in" "$scratch/w/err"
+fi
+
+# AND THE MESSAGE MUST MATCH THE BEHAVIOUR, or it is just a different lie.
+# This is the control on the tier above: it asserts what actually happens.
+if grep -q "^inside:  2$" "$scratch/w/out"; then
+    pass "behaviour: inside the library, its own function wins"
+else
+    fail "behaviour: inside the library, its own function wins ($(head -1 "$scratch/w/out"))"
+fi
+if grep -q "^outside: builtin$" "$scratch/w/out"; then
+    pass "behaviour: outside it, the built-in wins"
+else
+    fail "behaviour: outside it, the built-in wins ($(sed -n 2p "$scratch/w/out"))"
+fi
+
 printf 'TIER valgrind\n'
 if vg_available; then
     if ( cd tests && GBASIC_PATH=. vg_run ../gbasic library_scope_test.bas ) \
