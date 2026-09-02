@@ -193,6 +193,14 @@ Four tiers carry the load:
   measurement layer first, which is this.
 - **Scorecards and PD models** — statistics, and `stats` already has the
   regression machinery; what is missing is the population, which is this.
+  **Discharged 2026-09-01**: `stdlib/scoring.bas` and
+  [scoring_design.md](scoring_design.md). Note what it is *not* — it does not
+  reimplement the regression, it adds the credit-specific half `stats` has no
+  reason to carry: binning by weight of evidence, discrimination measured the
+  way lenders measure it, calibration onto a point scale, and stability. Reject
+  inference stayed deferred there, for the same reason it is deferred here: every
+  method for imputing an outcome onto declined applicants is a modelling
+  assumption that changes the answer.
 - **Cure definitions beyond bucket-to-current** — a cure that requires three
   consecutive on-time payments is a real convention and a different rule; it
   belongs behind a declared option once someone needs it.

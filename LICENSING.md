@@ -32,7 +32,7 @@ suit you — contact matthewct@gmail.com.
   `src/modules/xml.c`, `src/modules/smtp.c` and `src/modules/rowmodel.c`
 - `stdlib/`: `accounting` `ari` `chart` `credit` `crypto` `datagrid` `dates` `deposits` `fake` `filetree` `finance` `lending`
   `frame` `gtk` `gtkui` `gui` `llm` `mail` `market` `matrix` `persist`
-  `schedule` `sourceeditor` `stats` `web`
+  `schedule` `scoring` `sourceeditor` `stats` `web`
 
 ### AGPL-3.0-or-later
 

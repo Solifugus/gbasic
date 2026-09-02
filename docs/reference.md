@@ -4849,6 +4849,63 @@ General-purpose:
   rather than inferring it from days past due — a charge-off is a decision, and
   inferring it produces a loss figure the servicer's own books disagree with —
   and reports gross and recoveries separately rather than netting them silently.
+- `scoring` — credit scorecards, pure gBASIC over `stats`
+  (`docs/scoring_design.md`). `credit` measures what a book has already done;
+  this turns a population into a model that **ranks** risk and then into the
+  artefact a credit committee approves: a table of attributes and points. It is
+  deliberately the credit-specific half only — `stats.logistic_regression` is
+  the engine and is not reimplemented here.
+
+  **One coding is fixed and everything else is declared:** an outcome of `1`
+  means **bad** (the event being predicted). Fixed rather than declared because
+  it appears in every call, and it is validated, so a column meaning the
+  opposite fails loudly instead of inverting the model.
+
+  `scoring.bin_numeric(values, outcomes, cuts)` cuts a predictor at declared
+  ascending upper edges; an unknown value gets **its own bin** rather than being
+  dropped, since missing is predictive and dropping it also silently changes
+  every other bin's denominator. `scoring.bin_categorical(values, outcomes,
+  groups)` groups a categorical predictor and **refuses** a value in no group
+  rather than sweeping it into an "other" bin — an unlisted category absorbed
+  is a category nobody decided about.
+
+  `scoring.woe_table(bins, spec)` computes Weight of Evidence and Information
+  Value. `spec.orientation` is required and `scoring.orientations()` names the
+  two: `"good_bad"` gives higher WOE to better risk, `"bad_good"` is its
+  negative. **They differ by sign and nothing else**, so the wrong one produces
+  a scorecard with the same discrimination ranking perfectly backwards while
+  looking entirely normal. IV is orientation-independent, which falls out of the
+  formula rather than being arranged. A bin with no goods or no bads has an
+  infinite WOE and is **refused by name**; `spec.smoothing` accepts it, but is
+  the caller's declaration because smoothing **invents evidence** in proportion
+  to how small the bin is, and the output does not show that.
+  `scoring.woe_of(table, label)` looks a bin up, and refuses a label the table
+  never saw.
+
+  `scoring.auc(scores, outcomes)` uses the Mann–Whitney rank identity with ties
+  taking half credit, so it is exact rather than a trapezoid over a sampled
+  curve. Scores run the scorecard way — **higher means lower risk**. An **AUC
+  below 0.5 means the model is backwards, not weak**: it is returned as it
+  stands with `reversed: true` rather than flipped, because flipping silently
+  turns the most consequential error in this work into a mediocre-looking
+  result that gets deployed. `gini` is `2 * auc - 1`.
+  `scoring.ks(scores, outcomes)` is a **different** quantity — the largest gap
+  between the cumulative good and bad distributions — so two models can rank one
+  way on AUC and the other on KS; it is reported separately, never as "the"
+  statistic.
+
+  `scoring.scaling({ base_score, base_odds, pdo })` builds the point scale,
+  where `pdo` is *points to double the odds* — the number the business agrees
+  to. All three are required; a default would silently redefine every cut-off
+  downstream. `scoring.points_of(scaling, log_odds)` and
+  `scoring.log_odds_of(scaling, points)` are exact inverses, and `pdo` more
+  points doubles the odds exactly.
+
+  `scoring.psi(expected, actual)` is the Population Stability Index over
+  matching bands — the number that says the model has not changed but the
+  applicants have. Its customary thresholds are returned as a **label and a
+  stated rule of thumb**, never as a verdict, and a band empty in one population
+  is refused rather than contributing an infinite index.
 - `accounting` — double-entry bookkeeping, pure gBASIC over exact `money`
   (`docs/accounting_design.md`). `accounting.chart(accounts)` validates a chart
   of accounts and fixes each one's normal balance side from its `kind`

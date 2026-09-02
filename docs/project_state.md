@@ -111,6 +111,12 @@ document list, with a status column, is `docs/README.md`.
   method, compounding kept separate from crediting, tiered rates, and
   certificates whose early-withdrawal penalty may reduce principal. Worked
   recipes: docs/deposits_cookbook.md.
+- **credit scorecards** — `scoring`, turning a population into a model that
+  ranks risk and then into the artefact a credit committee approves: binning by
+  weight of evidence, information value, AUC/KS/Gini, calibration onto a point
+  scale, and population stability. The WOE orientation is declared, an empty
+  bin is refused rather than smoothed, and an AUC below 0.5 is reported as it
+  stands rather than flipped. Design: docs/scoring_design.md.
 - **credit analytics** — `credit`, questions about a book rather than a loan:
   vintage curves by months on book, roll rates, migration and charge-off, over
   a status table so it can be pointed at a real servicer extract. Attrition is
