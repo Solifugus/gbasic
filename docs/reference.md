@@ -4849,6 +4849,17 @@ General-purpose:
   rather than inferring it from days past due — a charge-off is a decision, and
   inferring it produces a loss figure the servicer's own books disagree with —
   and reports gross and recoveries separately rather than netting them silently.
+Inside a library, an unqualified call resolves to **that library's own
+function first**, before any other library, the root program, or a built-in.
+Outside it, the library's functions need qualification (`lib.name`) and an
+unqualified name reaches the built-in as usual. So a library that defines
+`lines` calls its own from inside and does not change what anyone else means by
+`lines`. A function whose name collides with a built-in produces a **note** —
+not a warning — naming both sides of that boundary, because it describes a rule
+rather than a hazard; `on warning ignore` silences it, and `on warning stop`
+does not escalate it. `library_collisions()` reports the same information for a
+whole program without needing a call site.
+
 - `scoring` — credit scorecards, pure gBASIC over `stats`
   (`docs/scoring_design.md`). `credit` measures what a book has already done;
   this turns a population into a model that **ranks** risk and then into the

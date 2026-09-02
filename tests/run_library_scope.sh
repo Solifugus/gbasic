@@ -89,7 +89,7 @@ EOF
     fi
 done
 
-printf 'TIER the built-in collision warning\n'
+printf 'TIER the built-in collision note\n'
 # d08409f made a library resolve its OWN functions first. That reached the
 # BUILT-IN case too, and the diagnostic did not follow it (reported by the
 # gdash session, 2026-09-01). Two separate defects, and the second is the
@@ -183,6 +183,35 @@ if grep -q "^outside: builtin$" "$scratch/w/out"; then
     pass "behaviour: outside it, the built-in wins"
 else
     fail "behaviour: outside it, the built-in wins ($(sed -n 2p "$scratch/w/out"))"
+fi
+
+
+# IT IS A NOTE, NOT A WARNING (ratified 2026-09-01). It reports a
+# DETERMINISTIC documented rule that the author may not have realised was in
+# play, not a hazard -- so `on warning stop` must not turn a rule of the
+# language into an error. It is still silenced by `on warning ignore`, because
+# an author who turned the noise off meant all of it.
+if grep -q "^note: function 'lines' from library 'wlib'" "$scratch/w/err"; then
+    pass "the diagnostic is a note, not a warning"
+else
+    fail "the diagnostic is a note, not a warning"
+    grep -m1 "same name as a built-in" "$scratch/w/err"
+fi
+
+printf 'on warning ignore\nload wlib from "wlib.bas"\nprint "ran"\n' >"$scratch/w/wig.bas"
+./gbasic "$scratch/w/wig.bas" >/dev/null 2>"$scratch/w/eig"
+if [ ! -s "$scratch/w/eig" ]; then
+    pass "'on warning ignore' silences the note"
+else
+    fail "'on warning ignore' silences the note"
+    head -1 "$scratch/w/eig"
+fi
+
+printf 'on warning stop\nload wlib from "wlib.bas"\nprint "survived"\n' >"$scratch/w/wst.bas"
+if ./gbasic "$scratch/w/wst.bas" 2>/dev/null | grep -q "^survived$"; then
+    pass "'on warning stop' does NOT escalate a note into an error"
+else
+    fail "'on warning stop' does NOT escalate a note into an error"
 fi
 
 printf 'TIER valgrind\n'

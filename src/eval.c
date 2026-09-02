@@ -3068,6 +3068,47 @@ static void runtime_warn(const char *message, int code, const char *source,
     runtime_warn_at(message, code, source, details, current_line, current_column);
 }
 
+/* A NOTE is not a warning. It reports a DETERMINISTIC, documented rule that
+ * the author may not have realised was in play -- not a hazard, and not
+ * something to be "fixed". The distinction was forced by ratifying d08409f's
+ * built-in half (2026-09-01): a library calling its own `lines` gets its own,
+ * every time, by the same rule that makes it call its own anything. Reporting
+ * that as a warning tells the author something is wrong when nothing is, and
+ * `on warning stop` would turn a rule of the language into an error.
+ *
+ * So a note PRINTS, is silenced by `on warning ignore` (an author who has
+ * turned the noise off means all of it), and is otherwise INERT: it never
+ * escalates under `stop` and never sets the pending flag under `goto next`,
+ * because `if warning then` must not fire on a rule being followed correctly.
+ * Deduplicated on position exactly as warnings are.
+ *
+ * The severity name is not invented here: GB_SEVERITY_NOTE already exists in
+ * the diagnostics sink, where it maps to LSP Information. */
+static void runtime_note_at(const char *message, int code, const char *source,
+                            int line, int column) {
+    (void)code;
+    (void)source;
+    if (warn_mode_effective() == WARN_MODE_IGNORE) {
+        return;
+    }
+    if (!warn_site_first_time(line, column)) {
+        return;
+    }
+    fprintf(stderr, "note: %s at %s:%d:%d\n", message,
+            runtime_error_path() ? runtime_error_path() : "?",
+            line, column);
+}
+
+static void note_fmt_at(int code, const char *source, int line, int column,
+                        const char *fmt, ...) {
+    char buffer[512];
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(buffer, sizeof(buffer), fmt, args);
+    va_end(args);
+    runtime_note_at(buffer, code, source, line, column);
+}
+
 /* printf-style front end, so the pre-existing diagnostics can move onto the
  * channel without reshaping their call sites. */
 static void warn_fmt(int code, const char *source, const char *fmt, ...) {
@@ -7026,7 +7067,7 @@ static void function_register_def(AstStmt *stmt, int imported, const char *libra
              * function now wins, and only outside does the built-in. Reported
              * by the gdash session. The wording follows the local-shadows-
              * library warning below, which already names both sides. */
-            warn_fmt_at(2102, "override", stmt->line, stmt->column,
+            note_fmt_at(2102, "override", stmt->line, stmt->column,
                     "function '%s' from library '%s' has the same name as a built-in; "
                     "inside '%s' unqualified calls use this function, outside it they use "
                     "the built-in, and '%s.%s' is explicit either way",
@@ -7036,8 +7077,9 @@ static void function_register_def(AstStmt *stmt, int imported, const char *libra
                     library ? library : "",
                     stmt->as.function.name);
         } else {
-            warn_fmt_at(2102, "override", stmt->line, stmt->column,
-                    "local function '%s' overrides built-in function",
+            note_fmt_at(2102, "override", stmt->line, stmt->column,
+                    "local function '%s' has the same name as a built-in; "
+                    "unqualified calls in this file use this function",
                     stmt->as.function.name);
         }
     }

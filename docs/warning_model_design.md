@@ -304,3 +304,36 @@ the runtime said 287, because the estimate only saw same-file top-level globals.
 The unused-result estimate said 173 and the runtime said 54, for the opposite
 reason: name collisions across files inflated it. Both numbers were wrong in
 different directions, and only running the code settled it.
+
+---
+
+## 12. Notes (added 2026-09-01)
+
+A **note** is not a warning. It reports a *deterministic, documented rule* the
+author may not have realised was in play — not a hazard, and not something to
+be fixed.
+
+The distinction was forced by ratifying the built-in half of `d08409f`. A
+library calling its own `lines` gets its own, every time, by the same rule that
+makes it call its own anything. Reporting that as a warning tells the author
+something is wrong when nothing is, and `on warning stop` would turn a rule of
+the language into an error.
+
+So a note:
+
+- **prints** on stderr with a `note:` prefix and a position, deduplicated by
+  site exactly as a warning is;
+- is **silenced by `on warning ignore`**, because an author who turned the
+  noise off meant all of it;
+- **never escalates** under `on warning stop`;
+- **never sets the pending flag** under `on warning goto next`, so
+  `if warning then` cannot fire on a rule being followed correctly.
+
+The severity name is not invented here: `GB_SEVERITY_NOTE` already exists in
+the diagnostics sink, where it maps to LSP *Information*.
+
+Currently one diagnostic class uses it — a function whose name collides with a
+built-in, in a library or in the root program. Both describe the same rule:
+**your own first**. The neighbouring diagnostics stay warnings, because they
+are not describing a rule being followed; that boundary is the thing to keep in
+mind before moving anything else across.
