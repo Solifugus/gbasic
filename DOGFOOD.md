@@ -124,14 +124,44 @@ and the stale-looking ones carry a Status line saying what overtook them.
 
 ### Open — accepted as documented limitations (no action planned)
 
-- A raise cannot be caught; `on error resume next` abandons the whole failing
-  statement. Doctrine: pre-validate, and grow `try_*`/probe builtins where a
-  failure must be a value (`try_decode`, `process.which`,
-  `launch_failure:"result"`, `has_builtin`). ERRORS.md is the model.
-- `call(args) = value` misparses as a modifier clause — bind the result first
-  (`docs/gbasic_clause_recognition.md` §9).
-- Keywords work as record-literal keys but not after a dot (`r.end`) — lexer
-  boundary, bracket access reaches them (2026-08-15).
+**Every live bullet below is EXECUTABLE.** `tests/run_limitations.sh` runs one
+probe per bullet and fails when a limitation stops being true, naming the entry
+to strike — a negative control, in the shape `run_docs_gate.sh` uses for
+performance claims. It exists because on 2026-09-01 **five of the fourteen
+bullets here were false**, each fixed by a shipped phase with a passing suite in
+the same tree, and no amount of reading had caught it. The struck entries are
+that suite's positive control: they must be provably resolved, which is also
+what proves the live probes are running anything at all.
+
+
+- ~~A raise cannot be caught; `on error resume next` abandons the whole
+  failing statement. Doctrine: pre-validate, and grow `try_*`/probe builtins
+  where a failure must be a value.~~ **RESOLVED by PLAT-ERR** (struck
+  2026-09-01). `on error` is FRAME-scoped now: a function can catch a raise
+  and return a fallback, which is exactly the case the old model could not
+  pass (`tests/run_error_model.sh`, tier `catch_return`). The PRE-VALIDATE
+  DOCTRINE THIS BULLET CARRIED IS RETIRED WITH IT -- it was TOCTOU-broken for
+  anything external, and it is what drove four independent inventions of a
+  catchable-error convention the language would not bless. The `try_*` and
+  probe builtins keep their place on their own merits (`try_decode` reports
+  WHERE the JSON is malformed, not merely that it is), not as a workaround.
+  ERRORS.md is still the model for when failure should be a VALUE.
+- ~~`call(args) = value` misparses as a modifier clause — bind the result
+  first.~~ **RESOLVED by PLAT-BRACE** (struck 2026-09-01). This WAS the
+  residual case, pinned for two phases as a permanent defect in
+  `negative_clause_residual.bas`; moving modifier clauses into braces removed
+  the ambiguity at its source, since a brace cannot open a call. It now parses
+  as the ordinary call it always was (`tests/run_brace_modifiers.sh`, tier
+  RESIDUAL).
+- ~~Keywords work as record-literal keys but not after a dot (`r.end`) —
+  lexer boundary, bracket access reaches them (2026-08-15).~~ **RESOLVED**
+  (struck 2026-09-01). Fixed in the LEXER, which is why it works at all: after
+  a `.` a word can only be a field, so the keyword is emitted as TOKEN_IDENT
+  and the parser copies the original span verbatim
+  (`tests/run_keyword_fields.sh`). Measured on 2026-09-01: all 16 keywords
+  tried resolve after a dot. NOTE this also half-obsoletes the `kind`-not-`as`
+  justification recorded for `stdlib/consolidate.bas`; `kind` stays because it
+  says more, not because `as` cannot be written.
 - `.file`/`.date` modifiers do not work postfix in expression position — use
   the assignment form.
 - No `gi.emit` — the per-widget signal-synthesis catalogue (2026-07-31) covers
@@ -140,14 +170,25 @@ and the stale-looking ones carry a Status line saying what overtook them.
   — per-instance routes exist (2026-08-22).
 - No exponent literal — `1e20` lexes as a duration with a misleading message;
   `number("1e20")` is the idiom.
-- `find` misses with `nothing`, `match` with `unknown` — changing `find` is
-  breaking; helpers check both.
+- ~~`find` misses with `nothing`, `match` with `unknown` — changing `find` is
+  breaking; helpers check both.~~ **RESOLVED by PLAT-EQ** (struck 2026-09-01).
+  `find`/`contains` route through `values_equal`, which PLAT-EQ repaired for
+  compound and sentinel values; measured 2026-09-01, both hit on both
+  `nothing` and `unknown`. The hand-written helpers that check both are now
+  redundant rather than required.
 - `exists` rejects a dir reference; `make_dir` is not idempotent — the
   `ensure_dir` ceremony stands.
 - `atomic_replace` gives dest the temp's inode (perms reset, symlinks
   replaced); no `chmod`/`lstat` to compose the safe form — Studio writes
   source files in place because of this.
-- No line continuation; multi-line array literals and `join` are the idioms.
+- ~~No line continuation; multi-line array literals and `join` are the
+  idioms.~~ **RESOLVED by PLAT-CONT** (struck 2026-09-01). A newline inside an
+  unclosed `(`, `[` or `{` continues the statement — no new syntax and no
+  trailing marker to forget, because the brackets the author already wrote say
+  where the statement ends (`tests/run_continuation.sh`). The limit worth
+  knowing, and the reason this bullet read as true for so long: a continuation
+  OUTSIDE brackets is still a parse error, so a long `print a + b` has to be
+  wrapped in parens to span lines.
 - A method call on a call-result receiver as a bare statement does not parse
   (expression position works).
 - Library diagnostics print the load path unnormalized (`tests/../stdlib/...`)
