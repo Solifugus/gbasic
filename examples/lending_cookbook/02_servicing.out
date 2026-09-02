@@ -1,0 +1,15 @@
+date         event         balance     owed interest   fees
+2026-02-01   payment       9211.51     0.00         0.00
+2026-03-15   fee           9211.51     92.12        25.00
+2026-03-15   payment       8440.14     0.00         0.00
+2026-04-01   payment       8040.14     0.00         0.00
+2026-05-01   payment       6720.54     0.00         0.00
+
+principal repaid:  3279.46
+interest paid:     272.52
+fees paid:         25.00
+still owed:        6720.54
+
+received:          3576.98
+accounted for:     3576.98
+nothing lost:      true

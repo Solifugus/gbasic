@@ -1,0 +1,15 @@
+charge-offs by cohort
+  2026-Q1
+    accounts written off:  2
+    gross charge-offs:     21987.13
+    recoveries:            1500.00
+    net charge-offs:       20487.13
+
+gross and net differ by the recoveries: 
+  20487.13 = 20487.13
+
+each account is counted once: 2 accounts
+
+refused: credit.losses: loan X2 is charged off with no balance -- the amount written off is the number
+
+refused: credit.losses: loan X1 reports a recovery on 2026-03-01 that is not after a charge-off -- money before the write-off is a payment

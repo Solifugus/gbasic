@@ -1,0 +1,15 @@
+payoff quote for 2026-03-01
+  principal   9213.43
+  interest    84.81
+  fees        0.00
+  total       9298.24
+  per diem    3.03
+
+the parts are the total: 
+  true
+
+two days later the total is 9304.30
+  which is larger by         6.06
+  and two per-diems are      6.06
+
+refused: lending.payoff: the date is before the last event

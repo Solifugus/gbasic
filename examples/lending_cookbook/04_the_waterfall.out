@@ -1,0 +1,16 @@
+fees_interest_principal — the fee is taken first
+  to fees:       50.00
+  to interest:   70.00
+  to principal:  0.00
+  still owed:    interest 30.00, fees 0.00
+
+interest_principal_fees — interest is taken first, the fee waits
+  to fees:       0.00
+  to interest:   100.00
+  to principal:  20.00
+  still owed:    interest 0.00, fees 50.00
+
+same money received either way:   true
+different place on the balance:   true
+
+refused: lending.apply: payment exceeds what is owed by 89899.00 -- an overpayment is a refund, not a negative balance

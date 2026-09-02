@@ -1,0 +1,16 @@
+one payment, on the due date (31 days after origination)
+  amortized      interest 100.00
+  daily_simple   interest 101.92
+  daily-simple charges for the 31st day too, so it is dearer by 1.92
+
+the same payment five days early (26 days after origination)
+  amortized      interest 0.00
+  daily_simple   interest 85.48
+
+paying early saves interest on a daily-simple loan: true
+on an amortized loan the interest arrives with the period, not the day.
+
+balance after the on-time payment
+  amortized     9211.51
+  daily_simple  9213.43
+  the two bases differ: true

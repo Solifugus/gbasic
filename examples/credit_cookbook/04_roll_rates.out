@@ -1,0 +1,17 @@
+from `current`, 2026-09-01 to 2026-10-01
+  loans in the bucket:  8
+  stayed current:       75%
+  went unobserved:      25%
+
+counting only the loans still visible:
+  6 of 6 = 100% stayed current
+counting the whole starting bucket, as the library does:
+  6 of 8 = 75%
+The first number is not wrong arithmetic. It answers a different
+question, and nothing on a report distinguishes them.
+
+nothing was charged off in September:
+  loans in the bucket:  0
+  roll to current:      unknown
+  is that unknown?      true
+  is that zero?         false

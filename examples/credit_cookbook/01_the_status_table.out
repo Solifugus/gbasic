@@ -1,0 +1,26 @@
+rows in the table: 63
+  not 72 — a loan contributes a row only from the month it was
+  written. Emitting rows before origination would put unwritten
+  loans in `current` and inflate every denominator behind them.
+
+the loans, on 2026-12-01:
+  L1  current       6673.70
+  L2  dpd_120_plus  10527.80
+  L3  current       6673.70
+  L4  current       8226.70
+  L5  current       8226.70
+  L6  current       8226.70
+
+L2, which paid three times and stopped:
+  2026-01-01  current
+  2026-02-01  current
+  2026-03-01  current
+  2026-04-01  current
+  2026-05-01  dpd_30
+  2026-06-01  dpd_60
+  2026-07-01  dpd_90
+  2026-08-01  dpd_120_plus
+  2026-09-01  dpd_120_plus
+  2026-10-01  dpd_120_plus
+  2026-11-01  dpd_120_plus
+  2026-12-01  dpd_120_plus

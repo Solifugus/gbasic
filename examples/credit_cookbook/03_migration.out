@@ -1,0 +1,15 @@
+migration 2026-09-01 to 2026-10-01
+  loans at the start:  6
+  still observed:      5
+  no longer observed:  1
+  new since the start: 0
+
+from            to              n
+  current       current       3
+  current       paid_off      1
+  current       (unobserved)  1
+  dpd_120_plus  dpd_120_plus  1
+
+every starting bucket reconciles: true
+
+refused: credit.migration: no rows dated 2020-01-01 -- comparing against an empty date reports 100% attrition

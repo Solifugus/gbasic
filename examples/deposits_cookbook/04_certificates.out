@@ -1,0 +1,28 @@
+a 365-day certificate with a 90-day penalty
+  matures on 2027-01-01
+
+redeemed early, on 2026-02-01:
+  principal          10000.00
+  interest earned    42.47   (31 days)
+  penalty            123.29  (90 days)
+  proceeds           9919.18
+
+  was it early?              true
+  did the penalty exceed the interest? true
+  so the holder gets back less than they put in: 
+    true
+
+redeemed at maturity:
+  interest earned    500.00
+  penalty            0.00
+  proceeds           10500.00
+  was it early?      false
+  proceeds are principal plus interest: 
+    true
+
+redeemed early but late in the term, on 2026-10-01:
+  interest earned    373.97
+  penalty            123.29
+  proceeds           10250.68
+  principal intact?  true
+  but worse than waiting: true

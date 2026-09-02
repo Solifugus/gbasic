@@ -1,0 +1,12 @@
+annual rate:       0.12
+periods per year:  12
+period rate:       0.01
+scheduled payment: 888.49
+
+first payment:  interest 100.00
+                principal 788.49
+last payment:   interest 8.80
+                principal 879.69
+final balance:  0.00
+
+refused: lending.loan needs a basis

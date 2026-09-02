@@ -1,0 +1,11 @@
+10,000 held for 20 days, then 9,000 withdrawn:
+  daily          28.77
+  average_daily  28.77
+  minimum        4.11
+
+minimum pays 7 times less on identical activity.
+
+daily and average_daily are equal here: true
+  not a coincidence — simple interest is linear in the balance.
+
+with no activity at all, daily and minimum agree: true

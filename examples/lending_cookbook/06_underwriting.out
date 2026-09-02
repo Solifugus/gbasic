@@ -1,0 +1,13 @@
+loan to value:       80%
+debt to income:      33.33%
+payment to income:   24.98%
+
+debt service coverage: 1.3
+  above 1 is healthy — the inverse of the three above.
+  healthy here?        true
+
+with no income on file:
+  is it unknown?  true
+  is it zero?     false
+with an income of exactly zero:
+  is it unknown?  true

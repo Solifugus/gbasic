@@ -1,0 +1,17 @@
+opening balance:     10000.00
+credited over 2026:  504.45
+closing balance:     10504.45
+
+last crediting date: 2026-12-27
+  earned since then, not yet paid: 5.76
+available today:     10510.21
+  which is balance + accrued: true
+
+simple interest would be:  500.00
+credited interest was:     504.45
+compounding is worth:      4.45
+
+with a 2,500 deposit in March and an 1,800 withdrawal in September:
+  closing balance:  11280.45
+  interest credited 580.45
+  more than idle:   true

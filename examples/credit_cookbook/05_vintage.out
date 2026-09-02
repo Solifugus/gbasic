@@ -1,0 +1,25 @@
+cumulative bad rate by months on book (basis: original)
+
+age    2026-Q1     2026-Q2     2026-Q3
+0      0%          0%          0%
+1      0%          0%          0%
+2      0%          0%          0%
+3      0%          0%          0%
+4      0%          0%          0%
+5      20%         20%         20%
+6      20%         20%         -
+7      20%         20%         -
+8      20%         20%         -
+9      20%         -           -
+10     20%         -           -
+11     20%         -           -
+
+  a dash is NO DATA, not a zero. The 2026-Q3 cohort is five months
+  old; it has no month-nine bad rate to report.
+
+the January cohort at month 9:
+  original     20%   (2 bad out of the 10 written)
+  outstanding  25%   (2 bad out of the 8 still on the book)
+  the two differ: true
+
+refused: credit.vintage needs a basis: "original" divides by the cohort as it was written, "outstanding" by what is still on the book, and they are different curves

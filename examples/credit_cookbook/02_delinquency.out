@@ -1,0 +1,14 @@
+date         payments due   mba            ots
+  2026-02-02   1              dpd_30         current
+  2026-03-02   2              dpd_60         current
+  2026-04-02   3              dpd_90         dpd_30
+  2026-04-15   3              dpd_90         dpd_60
+  2026-05-15   3              dpd_90         dpd_90
+
+mba is at or ahead of ots on every row above.
+
+with nothing due yet:
+  mba current
+  ots current
+
+refused: credit.bucket: method must be "mba" or "ots" -- they are a month apart and neither is the default (got whatever)

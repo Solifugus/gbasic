@@ -1,6 +1,6 @@
 # gBASIC Project State
 
-Last updated: 2026-08-26 (0.1.0-rc8)
+Last updated: 2026-09-01 (0.1.0-rc8)
 
 This file is the compact source of truth for current implementation status.
 Detailed language behavior belongs in `docs/reference.md`; completed development
@@ -109,17 +109,19 @@ document list, with a status column, is `docs/README.md`.
   without marking them.
 - **deposits** — `deposits`, the other side of the book: declared balance
   method, compounding kept separate from crediting, tiered rates, and
-  certificates whose early-withdrawal penalty may reduce principal.
+  certificates whose early-withdrawal penalty may reduce principal. Worked
+  recipes: docs/deposits_cookbook.md.
 - **credit analytics** — `credit`, questions about a book rather than a loan:
   vintage curves by months on book, roll rates, migration and charge-off, over
   a status table so it can be pointed at a real servicer extract. Attrition is
   a state in the matrix, not a hole, and the reconciliation that falls out of
-  that is the invariant the suite asserts.
+  that is the invariant the suite asserts. Worked recipes:
+  docs/credit_cookbook.md.
 - **lending** — `lending`, loans and servicing over the finance and accounting
   libraries: declared accrual basis, payment waterfall and day count; servicing
   as a fold over events so a balance is always explainable by replay; payoff
   with per-diem; underwriting ratios; and journal entries emitted for the
-  caller's own ledger.
+  caller's own ledger. Worked recipes: docs/lending_cookbook.md.
 - **accounting** — `accounting`, double-entry bookkeeping over the exact
   money type: a validated chart of accounts, journal entries that must balance
   in every currency or are refused where they are written, ledger, trial
