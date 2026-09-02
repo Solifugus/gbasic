@@ -98,5 +98,58 @@ else
     fail "the threshold is computed from the search width"
 fi
 
+
+printf 'TIER recipe 1 through the library (02), and the two must agree\n'
+if GBASIC_PATH=stdlib ./gbasic examples/automation_lab/02_explain_change.bas \
+        >"$scratch/lib" 2>/dev/null; then
+    pass "02_explain_change runs"
+else
+    fail "02_explain_change runs"
+fi
+if diff -u examples/automation_lab/02_explain_change.out "$scratch/lib" >/dev/null 2>&1; then
+    pass "02 matches its committed golden"
+else
+    fail "02 matches its committed golden"
+    diff -u examples/automation_lab/02_explain_change.out "$scratch/lib" | head -12
+fi
+
+# THE CROSS-CHECK. Two independent implementations over identical data: the
+# hand-rolled decomposition in 01 has no null model, the library in 02 does.
+# They must agree about WHERE the change is concentrated and disagree only
+# about whether it MEANS anything. Agreement on the cell is what makes 02 a
+# check on the library rather than a restatement of it.
+if grep -q "leading cell      Northeast -> Northeast-2 -> Outdoor" "$scratch/lib" \
+   && grep -q "CONCLUSION: Northeast -> Northeast-2 -> Outdoor" "$scratch/out"; then
+    pass "hand-rolled and library agree on the planted cell"
+else
+    fail "hand-rolled and library agree on the planted cell"
+fi
+if grep -q "leading cell      Southeast -> Southeast-2 -> Electronics" "$scratch/lib" \
+   && grep -q "CONCLUSION: Southeast -> Southeast-2 -> Electronics" "$scratch/out"; then
+    pass "and on the noise run's leader"
+else
+    fail "and on the noise run's leader"
+fi
+
+# And where they differ is the whole point of the library.
+a_verdict=$(grep -c "beyond ordinary variation" "$scratch/lib")
+b_verdict=$(grep -c "within ordinary variation" "$scratch/lib")
+if [ "$a_verdict" = 1 ] && [ "$b_verdict" = 1 ]; then
+    pass "the library separates them: one verdict each way"
+else
+    fail "the library separates them (beyond=$a_verdict within=$b_verdict)"
+fi
+
+# THE RESULT THAT SURPRISED ME MOST, pinned so it cannot quietly change: BOTH
+# runs withhold shares, because the -1.8% headline is itself not
+# distinguishable from zero. "82.6% of the decline" in recipe 1 was a share of
+# a decline that had never been established -- even in the run where one cell
+# really did collapse.
+if [ "$(grep -c 'shares reportable false' "$scratch/lib")" = 2 ]; then
+    pass "both runs withhold shares -- the aggregate decline was never established"
+else
+    fail "both runs withhold shares"
+fi
+
 printf '\nrun_automation_lab: %d checks, %d failed\n' "$checks" "$failures"
 [ "$failures" -eq 0 ] || exit 1

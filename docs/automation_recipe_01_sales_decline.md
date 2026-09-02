@@ -138,11 +138,17 @@ the siblings are the reference distribution.
 
 ### The threshold is not a constant
 
-The cut that separates those two is **not** a number a library may choose. The
-largest of *n* draws from a standard normal sits near `sqrt(2 ln n)` when
-nothing is happening: 2.86 for 60 cells, 2.33 for 15, 3.26 for 200. A `z = 3`
-that is remarkable across four regions is unremarkable across two hundred
-product families.
+The cut that separates those two is **not** a number a library may choose. A
+`z = 3` that is remarkable across four regions is unremarkable across two
+hundred product families.
+
+> **Superseded while implementing §13.** This recipe used `sqrt(2 ln n)` — the
+> *expected* maximum of *n* draws. That turned out to be far too weak: 6 of 13
+> pure-noise seeds cleared it. `insight.explain_change` uses a family-wise
+> quantile instead, and `examples/automation_lab/02_explain_change.bas` reruns
+> this same investigation through it. The recipe's conclusions are unchanged —
+> the planted cell clears either cut and the noise cell clears neither — but
+> the threshold shown in this page's output is the weaker one.
 
 So a decomposition **cannot set this cut unless it knows how wide its own
 search was** — which makes search width part of the result, not an

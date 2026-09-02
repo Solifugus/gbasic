@@ -111,6 +111,15 @@ document list, with a status column, is `docs/README.md`.
   method, compounding kept separate from crediting, tiered rates, and
   certificates whose early-withdrawal penalty may reduce principal. Worked
   recipes: docs/deposits_cookbook.md.
+- **business automation reasoning** — `reasoning` (the shared value model) and
+  `insight` (observes and reasons), the first increment of
+  docs/automation_reasoning_design.md. `insight.explain_change` decomposes a
+  change across dimensions and says whether any of it means anything: the
+  reference distribution is the sibling cells, the significance cut is a
+  family-wise quantile derived from how many cells were searched, and a
+  contribution share is withheld when the net change is not distinguishable
+  from zero. A Finding refuses to carry a cause, a materiality or an assurance.
+  The decision and automation layers are not built.
 - **credit scorecards** — `scoring`, turning a population into a model that
   ranks risk and then into the artefact a credit committee approves: binning by
   weight of evidence, information value, AUC/KS/Gini, calibration onto a point

@@ -1,0 +1,141 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+# insight.explain_change + reasoning.bas -- the first increment of Business
+# Automation Reasoning (docs/automation_reasoning_design.md §13, validated per
+# §14).
+#
+# SELF-CHECKING, NOT GOLDEN, AND FORCED. Every defect this increment exists to
+# prevent produces a CONFIDENT, ORDINARY-LOOKING CAUSAL STORY -- a chain of
+# plausible percentages naming a place and a category. A golden would record
+# one as expected and defend it, which is precisely how Recipe 1 showed the
+# unguarded version failing.
+#
+# THE LOAD-BEARING TIER IS THE PLANTED/NULL PAIR: the same decomposition over a
+# population with a real 55% collapse planted in a known cell, and over one
+# with NOTHING planted, must reach OPPOSITE verdicts. Everything else checks a
+# component; that checks the library can tell a cause from nothing, which is
+# the only reason it exists.
+#
+# TWO CORRECTIONS WERE MADE BY BUILDING IT, both invisible to reading:
+#
+# 1. THE THRESHOLD WAS WRONG. Recipe 1 used sqrt(2 ln n) -- where the largest
+#    of n draws lands ON AVERAGE -- so roughly half of all pure-noise
+#    populations clear it. Measured: 6 of 13 seeds with nothing planted. That
+#    is a coin flip with a formula in front of it. It is now the two-sided
+#    Bonferroni quantile for a declared alpha, recorded in the Finding; the
+#    same 13 seeds now clear 0 of 13.
+#
+# 2. THE SHARE REFUSAL BITES HARDER THAN EXPECTED, and correctly. R2 asks
+#    whether the NET change is distinguishable from zero before reporting any
+#    share of it. In Recipe 1's own data it is not (t = -1.03 over 60 cells) --
+#    so "82.6% of the decline is Northeast" was a share of a decline that had
+#    never been established, in the run where a cell really had collapsed.
+#    That tier therefore carries a CONTROL, or a library that never reported a
+#    share would satisfy it.
+#
+# Headless, GI-independent, never skips (bar valgrind): pure gBASIC over
+# `frame`, `stats` and `fake`.
+
+cd "$(dirname "$0")/.."
+. "$(dirname "$0")/valgrind_tier.sh"
+make >/dev/null 2>&1 || { echo "FAIL build"; exit 1; }
+
+scratch="$(mktemp -d)"
+trap 'rm -rf "$scratch"' EXIT
+
+checks=0; failures=0
+pass() { checks=$((checks+1)); printf '  ok   %s\n' "$1"; }
+fail() { checks=$((checks+1)); failures=$((failures+1)); printf '  FAIL %s\n' "$1"; }
+
+printf 'TIER semantics\n'
+if GBASIC_PATH=stdlib ./gbasic tests/insight_test.bas >"$scratch/out" 2>"$scratch/err"; then
+    pass "insight_test exits 0"
+else
+    fail "insight_test exits 0 ($(head -1 "$scratch/err"))"
+fi
+if grep -q "^mismatches: 0$" "$scratch/out"; then
+    pass "no mismatches"
+else
+    fail "no mismatches"
+    grep "^MISMATCH" "$scratch/out" | head -10
+fi
+
+n=$(sed -n 's/^checks: //p' "$scratch/out")
+if [ -n "$n" ] && [ "$n" -ge 45 ]; then
+    pass "check count floor ($n checks)"
+else
+    fail "check count floor (got '${n:-none}', want >= 45)"
+fi
+
+# The named tiers must actually have run. Without this the floor above is
+# satisfied by forty-five checks of anything.
+printf 'TIER the load-bearing tiers ran\n'
+for needle in \
+    "the planted run leads with the planted cell" \
+    "the quiet run's leader does NOT clear it" \
+    "the threshold is well above sqrt(2 ln n), which is only the average max" \
+    "a real aggregate decline DOES report shares" \
+    "a Finding carrying materiality is refused, with the reason" \
+    "and explicitly NOT an explanation"
+do
+    if grep -qF "ok   $needle" "$scratch/out"; then
+        pass "ran: $needle"
+    else
+        fail "ran: $needle"
+    fi
+done
+
+printf 'TIER valgrind\n'
+if vg_available; then
+    cat >"$scratch/vg.bas" <<'EOF'
+load insight
+load reasoning
+load frame
+load fake
+rows = []
+i = 0
+for each rg in ["A", "B", "C", "D"]
+    for each c in ["p", "q", "r"]
+        for d = 1 to 8
+            for p = 0 to 1
+                i = i + 1
+                append(rows, { region: rg, category: c, period: p,
+                               revenue: fake.lognormal(9, i, 500, 0.4),
+                               stock: fake.lognormal(9, i + 90000, 100, 0.3) })
+            next
+        next
+    next
+next
+f = insight.explain_change(frame.from_rows(rows),
+      { measure: "revenue", period: "period", baseline: 0, current: 1,
+        dimensions: ["region", "category"], comparison: "period_over_period",
+        null: "siblings", associations: ["stock"] })
+print string(f.search.cells) + " " + string(count(f.contributors))
+print string(count(reasoning.provenance_complete(f)))
+on error goto next
+x = insight.explain_change(frame.from_rows(rows),
+      { measure: "revenue", period: "period", baseline: 0, current: 1,
+        dimensions: ["region"], comparison: "period_over_period", null: "nope" })
+print error.message
+error.clear()
+x = reasoning.finding({ subject: "s", measure: "m", observation: { },
+                        search: { cells: 3, width: 2 }, null: { kind: "siblings" },
+                        strength: { }, contributors: [], provenance: { },
+                        cause: "x" })
+print error.message
+error.clear()
+on error stop
+EOF
+    if GBASIC_PATH=stdlib vg_run ./gbasic "$scratch/vg.bas" >/dev/null 2>"$scratch/vg"; then
+        pass "no definite leak or invalid access"
+    else
+        fail "no definite leak or invalid access"
+        grep -E "definitely lost|Invalid" "$scratch/vg" | head -3
+    fi
+else
+    pass "valgrind (SKIP: not installed)"
+fi
+
+printf '\nrun_insight: %d checks, %d failed\n' "$checks" "$failures"
+[ "$failures" -eq 0 ] || exit 1

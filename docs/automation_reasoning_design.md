@@ -1,10 +1,12 @@
 # Business Automation Reasoning
 
-Status: **Design.** Recipe 1 is built and measured
+Status: **Partial.** §13's first increment is **built** — `stdlib/reasoning.bas`
+and `stdlib/insight.bas`, `tests/run_insight.sh`. `decision` and `automation`
+are not. Recipe 1 is built and measured
 ([automation_recipe_01_sales_decline.md](automation_recipe_01_sales_decline.md),
 `examples/automation_lab/01_sales_decline.bas`,
-`tests/run_automation_lab.sh`). No library is built. §13 is the first increment
-and is ready to implement.
+`tests/run_automation_lab.sh`), and `examples/automation_lab/02_explain_change.bas`
+runs the same investigation through the library as a cross-check.
 
 *This document began as a charter written 2026-09-01 and was rewritten into a
 design on the same day, after Recipe 1. The vision in §2–§3 is substantially
@@ -106,13 +108,24 @@ the same data that raised the question.
 
 ### 4.3 Search width is part of the result
 
-The cut separating those two is not a number a library may choose. The largest
-of *n* draws lands near `sqrt(2 ln n)` when nothing is happening — 2.33 at 15
-cells, 2.86 at 60, 3.26 at 200. A `z` that is remarkable across four regions is
-unremarkable across two hundred product families.
+The cut separating those two is not a number a library may choose. A `z` that
+is remarkable across four regions is unremarkable across two hundred product
+families.
 
 **A Finding must carry how wide the search was.** Without it the Finding cannot
 be judged, and two Findings from searches of different width cannot be compared.
+
+**Correction, made while implementing §13.** Recipe 1 used `sqrt(2 ln n)`,
+which is where the largest of *n* draws lands *on average* — so roughly half of
+all pure-noise populations produce a leader that clears it. Measured: **6 of 13
+seeds with nothing planted cleared**. That is a coin flip with a formula in
+front of it, not a correction.
+
+The threshold is the two-sided **family-wise quantile** for a declared error
+rate: reject only beyond the point a search of *n* cells would exceed with
+probability `alpha` when nothing is happening. The same 13 seeds now clear
+**0 of 13**. `alpha` is recorded in the Finding, because a threshold nobody can
+see is a threshold nobody can argue with.
 
 ### 4.4 Contribution shares do not partition
 

@@ -4860,6 +4860,52 @@ rather than a hazard; `on warning ignore` silences it, and `on warning stop`
 does not escalate it. `library_collisions()` reports the same information for a
 whole program without needing a call site.
 
+- `reasoning` / `insight` — the first increment of Business Automation
+  Reasoning (`docs/automation_reasoning_design.md`). `credit` and friends answer
+  questions about a domain; these answer *did anything happen, and does it mean
+  anything*. `decision` and `automation` are not built.
+
+  `reasoning` owns the shared value model and has no behaviour beyond
+  construction and validation, because all three planned layers construct and
+  inspect these values and none should depend on another to do it.
+  `reasoning.finding(spec)` builds and **validates** a Finding, and its
+  refusals are where the design's corrections live rather than in prose: a
+  Finding may not carry `materiality` (it needs objectives, objectives belong
+  to the decision layer, and putting it here would force `insight` to know the
+  business's goals), may not carry a `cause` (it carries `associations`; a
+  hypothesis becomes an explanation only by passing a recorded test), may not
+  carry `assurance` (that is the decision layer's), and **must** carry
+  `search.cells` and `search.width`, since the significance cut is a function
+  of how wide the search was and a Finding that cannot state it cannot be
+  judged.
+
+  `reasoning.nulls()` and `reasoning.comparisons()` are the declared choices —
+  what counts as *ordinary*, and what this period is being compared against —
+  neither of which is inferred, because each changes every answer downstream.
+  `reasoning.confidence_kinds()` names three quantities that are easy to
+  confuse: `confidence` (how well a quantity is estimated), `support` (how well
+  a hypothesis accounts for the evidence) and `assurance` (how sure we are an
+  action is right). `reasoning.compare_confidence` **refuses** to compare two
+  of different kinds rather than coercing them — they are all numbers in 0..1
+  and nothing else would complain. `reasoning.provenance(spec)` is deliberately
+  clock-free, so a Finding is reproducible; a caller who wants the run stamped
+  passes `as_of`. `reasoning.provenance_complete(finding)` returns what is
+  missing, so completeness is checkable structurally rather than by reading.
+
+  `insight.explain_change(frame, spec)` is the whole of `insight` so far. It
+  decomposes a change in a measure across an ordered list of dimensions and
+  returns a Finding. Three things make it more than a group-by. The
+  **reference distribution is the sibling cells** — the other cells of the same
+  decomposition are a sample of ordinary movement, so no external baseline is
+  needed. The **threshold is derived from the search width**, as a two-sided
+  family-wise quantile for a declared `alpha` (0.05 unless given), because a
+  drill-down is a *search* and a search always returns a winner. And a
+  **contribution share is withheld** when the net change is not distinguishable
+  from zero, with `shares_withheld_because` saying so — a share of a change
+  that was never established is not a number, however computable it is.
+  `associations` names other measures that moved with this one, and each is
+  reported as `moved with` and `explains: false`.
+
 - `scoring` — credit scorecards, pure gBASIC over `stats`
   (`docs/scoring_design.md`). `credit` measures what a book has already done;
   this turns a population into a model that **ranks** risk and then into the
