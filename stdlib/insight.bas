@@ -151,7 +151,34 @@ library insight
         if type(alpha) != "number" or alpha <= 0 or alpha >= 1 then
             error "insight.explain_change: alpha must be a number between 0 and 1"
         end if
-        threshold = stats.normal_quantile(1 - alpha / (2 * n), 0, 1)
+
+        ' THE NULL IS COMPUTED LEAVE-ONE-OUT, and that is not a refinement.
+        ' Standardising a cell against a spread that INCLUDES it means the
+        ' outlier inflates the very sd it is measured against, which puts a
+        ' hard ceiling on how extreme anything can look: max|z| = (n-1)/sqrt(n),
+        ' regardless of the data. At 12 cells that ceiling is 3.17; at 8 it is
+        ' 2.47 -- BELOW the threshold, so the test could never fire however
+        ' completely a cell had collapsed, and would report "within ordinary
+        ' variation" for a cell that had gone to zero.
+        '
+        ' Found by replaying a year through the process (recipe 6): it fired 0
+        ' of 12 months and MISSED a planted collapse it had caught easily at 60
+        ' cells. Leaving the cell out removes the contamination and the ceiling
+        ' with it.
+        '
+        ' A leave-one-out standardised residual is t-distributed with n-2
+        ' degrees of freedom, not normal, so the threshold follows -- using a
+        ' normal quantile here would be anti-conservative at exactly the small
+        ' n where this matters most.
+        if n < 4 then
+            error ("insight.explain_change: " + string(n) + " cells is too few"
+                   + " to judge one against the others -- a leave-one-out"
+                   + " spread needs at least two degrees of freedom, and a"
+                   + " search this narrow cannot establish anything. Decompose"
+                   + " by fewer dimensions, or accept that this question is not"
+                   + " answerable from this data")
+        end if
+        threshold = stats.t_quantile(1 - alpha / (2 * n), n - 2)
 
         ' --- R2 / §4.4. A share is contributor_change / net_change, and that
         ' denominator is unstable: as offsetting movements grow, shares inflate
@@ -176,13 +203,25 @@ library insight
                         + " something not established")
         end if
 
+        total = 0
+        for each c in changes
+            total = total + c
+        next
+
         contributors = []
+        idx = 0
         for each k in cells.order
             d = cells.current[k] - cells.baseline[k]
+            ' Leave-one-out: this cell is judged against the OTHERS, never
+            ' against a spread it is itself part of.
+            others = _without(changes, idx)
+            om = mean(others)
+            osd = stdev(others)
             z = 0
-            if sd > 0 then
-                z = (d - m) / sd
+            if osd > 0 then
+                z = (d - om) / osd
             end if
+            idx = idx + 1
             share = unknown
             if reportable and net != 0 then
                 share = d / net
@@ -228,7 +267,7 @@ library insight
             search: { dimensions: dims, cells: n, width: threshold,
                       alpha: alpha, correction: "bonferroni" },
             null: { kind: spec["null"], mean: m, sd: sd, threshold: threshold,
-                    net_t: t },
+                    net_t: t, standardized: "leave_one_out", df: n - 2 },
             strength: { z: top.z, clears: top.clears, leader: top.path },
             contributors: contributors,
             shares_reportable: reportable,
@@ -295,6 +334,18 @@ library insight
             next
             append(out, { measure: a, correlation: _corr(changes, other),
                           relationship: "moved with", explains: false })
+        next
+        return out
+    end function
+
+    ' The list with one entry removed. Small n by construction -- this is a
+    ' decomposition, not a dataset -- so the copy is the honest implementation.
+    function _without(xs, skip)
+        out = []
+        for i = 0 to count(xs) - 1
+            if i != skip then
+                append(out, xs[i])
+            end if
         next
         return out
     end function

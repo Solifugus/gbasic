@@ -111,24 +111,38 @@ check("both populations declined", planted.observation.change < 0
 ' --- TIER: THE THRESHOLD IS DERIVED, NOT A CONSTANT -----------------------
 ' A hardcoded cut silently stops scaling with the search, which is the mistake
 ' the whole increment is about. Asserted at three widths.
-near("the threshold is the family-wise quantile for 20 cells",
-     planted.search.width, stats.normal_quantile(1 - 0.05 / (2 * 20), 0, 1), 0.0000001)
+near("the threshold is the family-wise t quantile for 20 cells",
+     planted.search.width, stats.t_quantile(1 - 0.05 / (2 * 20), 18), 0.0000001)
 check("and the error rate it was set for is recorded", planted.search.alpha, 0.05)
 check("along with which correction", planted.search.correction, "bonferroni")
+check("and that cells are judged leave-one-out", planted.null.standardized, "leave_one_out")
+check("with the degrees of freedom that implies", planted.null.df, 18)
+
 ' IT IS NOT THE EXPECTED MAXIMUM. sqrt(2 ln n) is where the largest of n draws
 ' lands ON AVERAGE, so half of all pure-noise populations clear it -- measured
 ' at 6 of 13 seeds while building this. A family-wise quantile is strictly
 ' larger, and this assertion is what stops a future simplification going back.
 check("the threshold is well above sqrt(2 ln n), which is only the average max",
       planted.search.width > sqrt(2 * log(20)), true)
+
+' AND IT IS NOT MONOTONE IN THE SEARCH WIDTH, which is worth pinning because
+' the obvious mental model says it should be. Two effects pull opposite ways:
+' with few cells the SPREAD is badly estimated and the t distribution demands
+' an enormous z, while with many cells the SEARCH PENALTY grows. The threshold
+' is U-shaped -- 8.86 at 4 cells, a minimum near 3.48 around 30, 3.73 at 200 --
+' so there is a granularity sweet spot, and it falls out of the two corrections
+' rather than being chosen. Recipe 6 measured the same thing from the other
+' end: 12 cells missed a collapse that 60 cells caught.
 one_dim = insight.explain_change(build(4242, 1, 0),
             { measure: "revenue", period: "period", baseline: 0, current: 1,
               dimensions: ["region"], comparison: "period_over_period",
               null: "siblings" })
 check("a narrower search has fewer cells", one_dim.search.cells, 4)
-near("and a lower threshold", one_dim.search.width,
-     stats.normal_quantile(1 - 0.05 / (2 * 4), 0, 1), 0.0000001)
-check("so the threshold rises with the search", planted.search.width > one_dim.search.width, true)
+near("and its threshold follows the same formula", one_dim.search.width,
+     stats.t_quantile(1 - 0.05 / (2 * 4), 2), 0.0000001)
+check("four cells demand a far HIGHER z, not a lower one -- the spread is"
+      + " barely estimated", one_dim.search.width > planted.search.width, true)
+check("  and it is a very high bar indeed", one_dim.search.width > 8, true)
 
 ' --- TIER: R2, THE SHARE REFUSAL ------------------------------------------
 ' A share is contributor_change / net_change and that denominator is unstable.

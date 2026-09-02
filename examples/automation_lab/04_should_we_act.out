@@ -1,0 +1,27 @@
+=== §19's questions, asked of two configurations of the SAME process
+
+
+                        cells  fires  caught the real one  false alarms
+  by region x category  12     1      false                1
+  plus store            60     1      true                 0
+
+  The coarse configuration MISSES the collapse it exists to find,
+  and the one time it does fire, it is wrong. Every alarm it raises
+  in a year is a false one. The fine configuration catches the real
+  event and raises nothing else.
+
+  Same code, same data, same year. Nothing in the source says which
+  of the two you have -- only the replay does, which is why R5 makes
+  it a precondition rather than a feature to add later.
+
+=== the gates, with the fine configuration's rehearsal
+
+  within authority, never rehearsed         REFUSED  this process has never been replayed against history, so nothing is known about how often it fires or how often it is wrong (design R5)
+  within authority, rehearsed               acts     within delegated authority
+  beyond authority, rehearsed, unapproved   REFUSED  this recommendation exceeds the delegated authority and no approval is on file: cost 15000 exceeds the spend limit of 5000
+  beyond authority, rehearsed, approved     acts     approved by regional director
+
+  Note the first line. An unrehearsed process is refused BEFORE
+  authority is even considered, and approval does not substitute:
+  a human asked to approve it has nothing to approve on, because
+  nobody knows how often it fires or how often it is wrong.

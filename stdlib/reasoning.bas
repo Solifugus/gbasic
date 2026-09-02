@@ -220,6 +220,58 @@ library reasoning
         return out
     end function
 
+    ' --- Action and Outcome --------------------------------------------------
+
+    function action(spec)
+        if type(spec) != "record" then
+            error "reasoning.action expects a record"
+        end if
+        for each field in ["decision", "rehearsal", "authority", "result",
+                           "provenance"]
+            if is_unknown(spec[field]) then
+                error "reasoning.action needs a " + field
+            end if
+        next
+        out = { }
+        for each field in keys(spec)
+            out[field] = spec[field]
+        next
+        return out
+    end function
+
+    function outcome(spec)
+        if type(spec) != "record" then
+            error "reasoning.outcome expects a record"
+        end if
+        for each field in ["expected", "observed", "measured_at"]
+            if is_unknown(spec[field]) then
+                error ("reasoning.outcome needs a " + field
+                       + " -- an outcome without a measurement is a memory")
+            end if
+        next
+        return { expected: spec["expected"], observed: spec["observed"],
+                 measured_at: spec["measured_at"],
+                 met: spec["met"] }
+    end function
+
+    ' R7. "We did this before and it worked" enters the system as a FACT when
+    ' it is a memory. An action may be cited only once its outcome has actually
+    ' been measured -- which is also the only thing that makes §11's learning
+    ' loop worth anything.
+    function as_evidence(act)
+        if type(act) != "record" or is_unknown(act["decision"]) then
+            error "reasoning.as_evidence expects an Action"
+        end if
+        o = act["outcome"]
+        if is_unknown(o) then
+            error ("reasoning.as_evidence: this action has no measured outcome,"
+                   + " so it is not evidence -- it is a memory. Measure it with"
+                   + " automation.observe first (design R7)")
+        end if
+        return { kind: "prior_action", decision: act["decision"]["recommendation"],
+                 expected: o["expected"], observed: o["observed"], met: o["met"] }
+    end function
+
     ' --- provenance ----------------------------------------------------------
 
     ' §9. Deliberately CLOCK-FREE: a caller who wants the run stamped passes

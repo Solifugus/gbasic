@@ -1,9 +1,9 @@
 RUN A - a real 45% collapse planted in Northeast-2 / Outdoor
   change            -37495  (-1.8%)
   cells searched    60
-  threshold         z 3.34  (family-wise, alpha 0.05)
+  threshold         z 3.53  (family-wise, alpha 0.05)
   leading cell      Northeast -> Northeast-2 -> Outdoor
-  its z             -3.45
+  its z             -3.9
   VERDICT           beyond ordinary variation. Worth explaining.
   shares reportable false
     because the net change is not distinguishable from zero (t = -1.03 over 60 cells), so a share of it would be a share of something not established
@@ -11,9 +11,9 @@ RUN A - a real 45% collapse planted in Northeast-2 / Outdoor
 RUN B - nothing planted anywhere
   change            -36562  (-1.8%)
   cells searched    60
-  threshold         z 3.34  (family-wise, alpha 0.05)
+  threshold         z 3.53  (family-wise, alpha 0.05)
   leading cell      Southeast -> Southeast-2 -> Electronics
-  its z             -2.38
+  its z             -2.52
   VERDICT           within ordinary variation for this many cells.
   shares reportable false
     because the net change is not distinguishable from zero (t = -1.04 over 60 cells), so a share of it would be a share of something not established

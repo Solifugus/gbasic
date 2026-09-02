@@ -1,9 +1,11 @@
 # Business Automation Reasoning
 
-Status: **Partial.** Two of the three layers have a first increment built —
-`stdlib/reasoning.bas`, `stdlib/insight.bas` (`tests/run_insight.sh`) and
-`stdlib/decision.bas` (`tests/run_decision.sh`). The automation layer is not
-built, so R5's simulation gate and R6's *enforcement* half are still untested. Recipe 1 is built and measured
+Status: **Partial.** **All three layers now have a first increment** —
+`stdlib/reasoning.bas`, `stdlib/insight.bas` (`tests/run_insight.sh`),
+`stdlib/decision.bas` (`tests/run_decision.sh`) and `stdlib/automation.bas`
+(`tests/run_automation.sh`). The architecture is closed end to end: a Finding
+becomes a Decision becomes a gated Action becomes a measured Outcome. What is
+not built is breadth — one function per layer, and §15's recipes 2–4. Recipe 1 is built and measured
 ([automation_recipe_01_sales_decline.md](automation_recipe_01_sales_decline.md),
 `examples/automation_lab/01_sales_decline.bas`,
 `tests/run_automation_lab.sh`), and `examples/automation_lab/02_explain_change.bas`
@@ -127,6 +129,26 @@ rate: reject only beyond the point a search of *n* cells would exceed with
 probability `alpha` when nothing is happening. The same 13 seeds now clear
 **0 of 13**. `alpha` is recorded in the Finding, because a threshold nobody can
 see is a threshold nobody can argue with.
+
+**Second correction, made while implementing §13's automation increment.** A
+cell was being standardised against a spread that *included it*, so the outlier
+inflated the very sd it was measured against. That puts a hard ceiling on how
+extreme anything can look — `max|z| = (n-1)/sqrt(n)` — and at 8 cells the
+ceiling is **2.47, below the threshold**: the test could never fire however
+completely a cell had collapsed, and would report *within ordinary variation*
+for a cell that had gone to zero. Cells are now judged **leave-one-out**, and
+since a leave-one-out residual is *t*-distributed rather than normal the
+threshold uses *t* with `n−2` degrees of freedom. Below four cells there is no
+dispersion left to estimate and the call is refused.
+
+One consequence is worth knowing, because the obvious mental model says
+otherwise: **the threshold is not monotone in the search width.** Two effects
+pull opposite ways — with few cells the spread is badly estimated and *t*
+demands an enormous z; with many cells the search penalty grows. It is U-shaped
+(8.86 at 4 cells, a minimum near 3.48 around 30, 3.73 at 200), so there is a
+granularity sweet spot, and it falls out of the two corrections rather than
+being chosen. Recipe 6 met the same fact from the other end: 12 cells missed a
+collapse that 60 cells caught.
 
 ### 4.4 Contribution shares do not partition
 
@@ -387,6 +409,13 @@ Deliberately one function at a time.
 ### Built
 
 - **`reasoning.finding` + `insight.explain_change`** — below.
+- **`automation.would` / `rehearsal` / `execute` / `observe`** (Recipe 6,
+  [automation_recipe_06_should_we_act.md](automation_recipe_06_should_we_act.md)):
+  the only layer that changes external state, and it changes nothing itself —
+  the executor is a function value the caller supplies, called only past the
+  gate. Enforces R5 and R6, and the dry run and the live path **share one
+  gate**, or a rehearsal would describe a different program than the one that
+  runs.
 - **`decision.evaluate`** (Recipe 5,
   [automation_recipe_05_what_to_do.md](automation_recipe_05_what_to_do.md)):
   scores every alternative, computes materiality from the Context, states the
@@ -477,10 +506,12 @@ four are chosen to **break** the model rather than broaden it:
 | **4. A high-cardinality dimension** | search width dominates; almost nothing should survive |
 | ~~**5. The first recipe that decides**~~ | *done — produced R9, and `decision.evaluate`* |
 
-Recipe 5 was the important one and is done. What is now unexamined is the
-`automation` layer: nothing yet executes anything, so R5 (simulation as a
-precondition) and the enforcement half of R6 have no test. The next recipe
-after 2–4 should be the first that **acts**.
+Recipes 5 and 6 were the important ones and both are done; the architecture is
+closed. What remains unexamined is **learning**: `observe` records an outcome
+and R7 refuses to cite an unmeasured one, but nothing yet feeds a measured
+outcome back in as evidence and shows it change a later decision. Until it
+does, §11's cycle is bookkeeping rather than a loop. That, and recipes 2–4, are
+the next work.
 
 ## 16. Deferred, with reasons
 

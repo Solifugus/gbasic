@@ -30,7 +30,7 @@ suit you — contact matthewct@gmail.com.
 - **Every C module compiled into the binary**, including `src/modules/xlsx.c`
   (the ZIP container, formula evaluator and recalculation engine),
   `src/modules/xml.c`, `src/modules/smtp.c` and `src/modules/rowmodel.c`
-- `stdlib/`: `accounting` `ari` `chart` `credit` `crypto` `datagrid` `dates` `decision` `deposits` `fake` `filetree` `finance` `lending`
+- `stdlib/`: `accounting` `ari` `automation` `chart` `credit` `crypto` `datagrid` `dates` `decision` `deposits` `fake` `filetree` `finance` `lending`
   `frame` `gtk` `gtkui` `gui` `insight` `llm` `mail` `market` `matrix` `persist`
   `reasoning`
   `schedule` `scoring` `sourceeditor` `stats` `web`

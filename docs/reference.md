@@ -4860,10 +4860,12 @@ rather than a hazard; `on warning ignore` silences it, and `on warning stop`
 does not escalate it. `library_collisions()` reports the same information for a
 whole program without needing a call site.
 
-- `reasoning` / `insight` / `decision` — the first increments of Business
-  Automation Reasoning (`docs/automation_reasoning_design.md`). `credit` and friends answer
+- `reasoning` / `insight` / `decision` / `automation` — the first increments of
+  Business Automation Reasoning (`docs/automation_reasoning_design.md`). `credit` and friends answer
   questions about a domain; these answer *did anything happen, does it mean
-  anything, and what should be done about it*. The automation layer is not built.
+  anything, what should be done about it, and whether the software may do it*.
+  One function or so per layer; the architecture is closed end to end but not
+  broad.
 
   `reasoning` owns the shared value model and has no behaviour beyond
   construction and validation, because all three planned layers construct and
@@ -4891,6 +4893,27 @@ whole program without needing a call site.
   clock-free, so a Finding is reproducible; a caller who wants the run stamped
   passes `as_of`. `reasoning.provenance_complete(finding)` returns what is
   missing, so completeness is checkable structurally rather than by reading.
+
+  `automation` is **the only layer that changes external state**, and it changes
+  nothing itself: the executor is a function value the caller supplies, and it
+  is called only past the gate. `automation.execute(decision, context,
+  rehearsal, executor)` enforces two refusals. A process that has never been
+  replayed against history may not act at all — `automation.rehearsal(spec)`
+  records a replay and `authority.min_rehearsal_periods` says how much is
+  required — and this is checked **before** authority, because a human asked to
+  approve an unrehearsed process has nothing to approve on. Then authority, the
+  half `decision` only *states*: a recommendation beyond the delegated limit
+  needs a named `approval` in the context or it is refused.
+  `automation.would(decision, context, rehearsal)` is the dry run; it takes no
+  executor, so it cannot act by construction, and it **shares one gate** with
+  `execute` — if the two could disagree, a rehearsal would describe a different
+  program than the one that runs. `automation.observe(action, measured)`
+  returns the action with its outcome attached (a record is a value, so
+  mutating the caller's copy would silently do nothing), and
+  `reasoning.as_evidence(action)` refuses an action whose outcome was never
+  measured: *we did this before and it worked* is otherwise a memory entering
+  the system as a fact. `reasoning.action` and `reasoning.outcome` validate the
+  two values.
 
   `decision.evaluate(finding, context, alternatives, spec)` is the whole of
   `decision` so far. It scores **every** alternative — not just the affordable

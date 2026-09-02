@@ -145,8 +145,10 @@ hundred product families.
 > **Superseded while implementing §13.** This recipe used `sqrt(2 ln n)` — the
 > *expected* maximum of *n* draws. That turned out to be far too weak: 6 of 13
 > pure-noise seeds cleared it. `insight.explain_change` uses a family-wise
-> quantile instead, and `examples/automation_lab/02_explain_change.bas` reruns
-> this same investigation through it. The recipe's conclusions are unchanged —
+> quantile instead — over a **leave-one-out** spread, with a *t* threshold,
+> after Recipe 6 found that standardising a cell against a spread including
+> itself caps `max|z|` at `(n-1)/sqrt(n)`. `examples/automation_lab/02_explain_change.bas`
+> reruns this same investigation through the current library. The recipe's conclusions are unchanged —
 > the planted cell clears either cut and the noise cell clears neither — but
 > the threshold shown in this page's output is the weaker one.
 

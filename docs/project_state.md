@@ -123,7 +123,12 @@ document list, with a status column, is `docs/README.md`.
   computes materiality from the context, states the authority a recommendation
   needs without enforcing it, and reports assurance as a sensitivity sweep with
   the crossing named. It refuses to size a decision off a quantity the finding
-  declined to establish. The automation layer is not built.
+  declined to establish. `automation` is the only layer that changes external
+  state: it enforces the authority `decision` merely states, refuses to act at
+  all until the process has been replayed against history, and shares one gate
+  between its dry run and its live path so a rehearsal describes the program
+  that will actually run. An action's outcome must be measured before it may be
+  cited as evidence.
 - **credit scorecards** — `scoring`, turning a population into a model that
   ranks risk and then into the artefact a credit committee approves: binning by
   weight of evidence, information value, AUC/KS/Gini, calibration onto a point
