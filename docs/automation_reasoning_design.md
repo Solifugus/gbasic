@@ -1399,3 +1399,186 @@ The cookbook is where those abstractions should be discovered.
 The libraries are what we build from what the cookbook teaches us.
 
 The finalized cookbook then demonstrates what those libraries make possible.
+
+---
+
+# 28. Findings from Recipe 1 (added 2026-09-01)
+
+§26 said to start with Recipe 1 and not to assume the proposed API is correct.
+Recipe 1 is done, and it is **executable** —
+`examples/automation_lab/01_sales_decline.bas`, asserted by
+`tests/run_automation_lab.sh`, written up in
+[automation_recipe_01_sales_decline.md](automation_recipe_01_sales_decline.md).
+The findings below are measurements, not opinions, and the first one
+contradicts §11.
+
+## 28.1 §11's automatic decomposition, as specified, cannot be built
+
+The experiment ran the same drill-down over two populations: one with a real
+45% collapse planted in a known cell, one with **nothing planted at all**.
+
+| | real cause | pure noise |
+|---|---|---|
+| headline | −37,495 (−1.8%) | −36,562 (−1.8%) |
+| top region share | 82.6% | 80.3% |
+| top store share | 57.3% | 51.2% |
+| conclusion | Northeast → Northeast-2 → Outdoor | Southeast → Southeast-2 → Electronics |
+
+Same headline to the tenth of a percent, same confident three-level chain,
+same shape of evidence. **The output cannot distinguish a real cause from
+nothing**, because a drill-down is a *search*, and a search always returns a
+winner. §11's illustrative output is exactly what this produces — from noise as
+readily as from a cause.
+
+This does not retire §11. It makes the null model the load-bearing part of it,
+rather than a refinement to add later.
+
+## 28.2 The reference distribution is the sibling cells
+
+The fix needs no new capability. The other 59 leaf cells are a sample of
+ordinary movement, and against that null the two runs separate cleanly
+(z = −3.45 against z = −2.38).
+
+Generalise the pattern: *what does ordinary look like here?* is usually
+answerable from the same data that raised the question.
+
+## 28.3 Search width is part of the result
+
+The cut that separates those two is not a number a library may choose. The
+largest of *n* draws lands near `sqrt(2 ln n)` when nothing is happening —
+2.33 at 15 cells, 2.86 at 60, 3.26 at 200. A `z` that is remarkable across four
+regions is unremarkable across two hundred product families.
+
+So **a Finding must carry how many cells were searched to produce it.** Without
+it the Finding cannot be judged, and two Findings from searches of different
+width cannot be compared.
+
+## 28.4 Contribution shares do not partition
+
+In the planted run the region shares were −22.6%, −3.7%, 43.7% and 82.6%. Among
+the regions that actually *declined* they sum to **126%**.
+
+Correct arithmetic, disastrous phrasing: "Northeast is 82.6% of the decline"
+invites *most of it was Northeast* when Midwest was independently 43.7% of it.
+As offsetting movements grow the shares inflate without bound while the net
+change goes to zero.
+
+Report gross alongside net, and refuse the share when they diverge.
+
+## 28.5 "Confidence" is three quantities sharing one word
+
+The document currently uses `confidence` for:
+
+1. how well a quantity is **estimated** (§10),
+2. how well a hypothesis **accounts for the evidence** (§11's `confidence .91`),
+3. how sure we are that a recommended **action is right** (§25's `> .95`).
+
+These do not share a scale and must not share a threshold. Provisional names:
+`confidence` for the first (keep it where it is well understood), `support` for
+the second, `assurance` for the third. The names matter less than the split.
+
+## 28.6 Materiality cannot live on the Finding
+
+§10 makes materiality a property of a Finding. But the insight layer can say a
+cell is *statistically unusual* with no business context at all, and cannot say
+it *matters* without an objective — and objectives are `decision.bas`'s input.
+As written, §10 forces `insight.bas` to know the organisation's goals, which
+breaks the §7 separation the architecture rests on.
+
+Two ways out, and §24 should choose deliberately:
+
+- move materiality to the decision layer, leaving Findings purely descriptive; or
+- give the insight layer an explicit **policy** argument, so the dependence is
+  visible in the call rather than hidden in the library.
+
+The second suggests the architecture may want a fourth thing that is not a
+layer — a shared, declared **context** (objectives, thresholds, authority)
+that both insight and decision read. That is a better answer to §24's question
+than moving responsibilities between the three.
+
+## 28.7 The boilerplate is the API's job
+
+Of the experiment's ~200 lines, roughly 60 are the decomposition and the rest
+is grouping, distinct-value extraction and filtered totals — all of which
+`frame.summarize` already does. `insight.explain_change` should take a frame, a
+measure column, a period column, and an ordered list of dimensions.
+
+---
+
+# 29. Refusals (added 2026-09-01)
+
+This document had principles and no refusals. Every shipped library in this
+tree turns on a small set of things it will **not** do, each preventing a
+specific plausible-looking wrong answer rather than a crash — `money` refuses
+to add two currencies, `credit` refuses to infer a delinquency convention,
+`scoring` refuses to smooth an empty bin.
+
+This domain needs them more than any of those, because it is the one where a
+plausible wrong answer is *acted upon automatically, at scale, without a human
+reading it*. The following are proposed as binding.
+
+**R1 — a decomposition that cannot state its search width is refused.**
+Not defaulted, not estimated. Established by 28.1 and 28.3: without it the
+significance cut cannot be set and the result is a confident chain built from
+noise.
+
+**R2 — a contribution share is refused when the net change is small relative to
+the gross movement behind it.** The honest output is the signed contributions
+and a statement that no share is reportable (28.4). A percentage that happens
+to be computable is not a percentage that means anything.
+
+**R3 — an association is not an explanation, and the type system should say so.**
+§4 states this as an aspiration with no mechanism. The mechanism: a Finding
+carries associations; a Hypothesis is a separate object; a Hypothesis becomes an
+Explanation only by passing a **declared test** whose result is recorded. There
+is no path from correlation to `finding.cause` that does not go through a
+recorded test.
+
+**R4 — confidences of different kinds may not be compared or thresholded
+together** (28.5). Raise rather than coerce.
+
+**R5 — an action whose process has never been replayed against history is
+refused.** §19 treats simulation as a capability to add eventually. It should
+be a **precondition**: a process that has never been dry-run has no evidence
+about how often it would fire, how often it would have been wrong, or what it
+would have cost. Promoting this from feature to gate is the cheapest safety
+property in the document.
+
+**R6 — authority is enforced at the action, never at the decision.**
+A decision may freely recommend what it is not authorised to execute; that is
+useful information and suppressing it hides the cases a human most needs to
+see. The refusal belongs at execution, where the authority is actually spent.
+
+**R7 — an outcome that was never measured is not evidence.**
+§20 closes the loop and §8 lets an outcome become evidence for future
+reasoning. A prior action may be cited as evidence only if its outcome was
+recorded. Otherwise "we did this before and it worked" enters the system as a
+fact when it is a memory.
+
+**R8 — the null must be declared, not inferred.**
+Following `credit`'s delinquency method and `scoring`'s WOE orientation: what
+counts as *ordinary* is a modelling choice that changes every answer downstream.
+Sibling cells (28.2) are a good default for a stationary measure and a wrong one
+under seasonality — which Recipe 1 assumed away and a later recipe must not.
+
+---
+
+# 30. What the next recipes should attack
+
+Recipe 1 used one measure, one period comparison, three dimensions and a single
+planted cause. It says nothing about the cases most likely to break the model,
+and the next recipes should be chosen to break it rather than to broaden it:
+
+- **two causes at once**, where the drill-down's greedy first step is wrong;
+- **a seasonal measure**, where "ordinary movement" is not stationary and R8 has
+  to be exercised rather than assumed;
+- **a high-cardinality dimension** (hundreds of products), where search width
+  dominates and almost nothing should survive;
+- **a cause that moves between periods**, which no single before/after
+  comparison can see;
+- and the first recipe that **decides** something, since Recipes 1–N so far all
+  stop at the finding and the `decision.bas` boundary is entirely untested.
+
+§17's list is a good breadth-first plan. This is the depth-first one, and the
+architecture is likelier to be corrected by depth.
+

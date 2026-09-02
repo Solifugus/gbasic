@@ -1,0 +1,70 @@
+==================================================================
+ RUN A — one cell really did decline
+==================================================================
+
+revenue  baseline 2040764   current 2003269
+change   -37495  (-1.8%)
+
+  by region:
+    Midwest          change -16384        = 43.7% of the total change
+    Northeast        change -30984        = 82.6% of the total change
+    Southeast        change 8476          = -22.6% of the total change
+    West             change 1397          = -3.7% of the total change
+    -> largest contributor: Northeast (82.6%)
+  within Northeast:
+    Northeast-1      change -16524        = 44.1% of the total change
+    Northeast-2      change -21488        = 57.3% of the total change
+    Northeast-3      change 7028          = -18.7% of the total change
+    -> largest contributor: Northeast-2 (57.3%)
+  within Northeast-2:
+    Apparel          change -4422         = 11.8% of the total change
+    Electronics      change 1628          = -4.3% of the total change
+    Grocery          change 1403          = -3.7% of the total change
+    Home             change -3261         = 8.7% of the total change
+    Outdoor          change -16835        = 44.9% of the total change
+    -> largest contributor: Outdoor (44.9%)
+
+  CONCLUSION: Northeast -> Northeast-2 -> Outdoor
+
+  against the null (60 leaf cells searched):
+    ordinary cell change: mean -625, sd 4703
+    the winning cell:     -16835  (z = -3.45)
+    most extreme decline of any cell: -16835
+    searching 60 cells, the worst of them lands near z = -2.86 when NOTHING is happening
+    -> z -3.45 is beyond that. The cell is worth explaining.
+
+==================================================================
+ RUN B — nothing declined. Same code, same thresholds.
+==================================================================
+
+revenue  baseline 2047374   current 2010812
+change   -36562  (-1.8%)
+
+  by region:
+    Midwest          change 9770          = -26.7% of the total change
+    Northeast        change -17771        = 48.6% of the total change
+    Southeast        change -29360        = 80.3% of the total change
+    West             change 799           = -2.2% of the total change
+    -> largest contributor: Southeast (80.3%)
+  within Southeast:
+    Southeast-1      change -10292        = 28.2% of the total change
+    Southeast-2      change -18729        = 51.2% of the total change
+    Southeast-3      change -339          = 0.9% of the total change
+    -> largest contributor: Southeast-2 (51.2%)
+  within Southeast-2:
+    Apparel          change -4379         = 12% of the total change
+    Electronics      change -11412        = 31.2% of the total change
+    Grocery          change 1561          = -4.3% of the total change
+    Home             change -8011         = 21.9% of the total change
+    Outdoor          change 3512          = -9.6% of the total change
+    -> largest contributor: Electronics (31.2%)
+
+  CONCLUSION: Southeast -> Southeast-2 -> Electronics
+
+  against the null (60 leaf cells searched):
+    ordinary cell change: mean -609, sd 4545
+    the winning cell:     -11412  (z = -2.38)
+    most extreme decline of any cell: -11412
+    searching 60 cells, the worst of them lands near z = -2.86 when NOTHING is happening
+    -> z -2.38 does not clear it. A search over 60 cells
+       returns a winner whether or not anything happened. This is that winner.
