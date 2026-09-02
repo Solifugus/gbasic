@@ -145,7 +145,12 @@ what proves the live probes are running anything at all.
   catchable-error convention the language would not bless. The `try_*` and
   probe builtins keep their place on their own merits (`try_decode` reports
   WHERE the JSON is malformed, not merely that it is), not as a workaround.
-  ERRORS.md is still the model for when failure should be a VALUE.
+  WHAT CHANGED IS A NARROWING, NOT A REVERSAL: failure-as-a-value is still a
+  legitimate route and those builtins still take it -- what ended is its being
+  the ONLY one. A raise can now be caught with `on error goto ...` and
+  `if error then`, so the two coexist and the choice is the author's. ERRORS.md
+  puts it exactly: try_decode "remains as a convenience ... not as the only way
+  to survive bad input".
 - ~~`call(args) = value` misparses as a modifier clause — bind the result
   first.~~ **RESOLVED by PLAT-BRACE** (struck 2026-09-01). This WAS the
   residual case, pinned for two phases as a permanent defect in
@@ -233,6 +238,15 @@ of these were resolved long after their text was written.
   phase.
 
 ## 2026-07-18 — CC — while: D0 audit (S13)
+- **Status 2026-09-01:** RESOLVED by PLAT-ERR (2026-08-23). `on error` is
+  frame-scoped, a function CAN catch a raise and return a clean fallback, and
+  `on error resume next` was deleted outright — the spelling below no longer
+  parses (`resume` is an ordinary identifier again). The **Workaround: OPEN**
+  line beneath is historical: pre-validation is no longer required, and the
+  doctrine it names is retired in `docs/ai/ERRORS.md`. `stdlib/llm.bas` still
+  runs `_json_valid` before `decode`, but for reasons of its own that it states
+  in place — the scanner reports WHERE the payload is malformed — not as a
+  workaround for this.
 - **Type:** language-surprise
 - **Severity:** high
 - **What:** `on error resume next` cannot be used inside a library function to
@@ -298,6 +312,15 @@ of these were resolved long after their text was written.
   exit-code inconsistency is worth fixing; noted in PLAN.md deferred.
 
 ## 2026-07-18 — CC — while: D3 ERRORS.md (S13 follow-up)
+- **Status 2026-09-01:** RESOLVED by PLAT-ERR (2026-08-23), with the entry
+  above. The generation-counter model pinned below is an accurate description
+  of a mechanism that NO LONGER EXISTS: absorption now restores the generation
+  to the absorbing frame's entry value, which is precisely what makes a raise
+  invisible to outer frames and catch-and-return possible. The
+  **Workaround: Unchanged — PRE-VALIDATE** line is historical. NOTE the fixture
+  it cites, `examples/on_error_resume_next_test.bas`, was deleted with the
+  construct; the current one is `examples/on_error_goto_next_test.bas` and the
+  suite is `tests/run_error_model.sh`.
 - **Type:** language-surprise
 - **Severity:** high
 - **What:** Status update to the S13 entry above. The `on error resume next`

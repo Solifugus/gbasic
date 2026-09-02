@@ -256,8 +256,23 @@ print safe_div(10, 0)
 print "caller continued"
 EOF
     out=$(run "$WORK/c.bas")
-    if printf '%s' "$out" | grep -q 'fallback' && printf '%s' "$out" | grep -q 'caller continued'; then
-        ok "CONTROL: a raise is catchable and a fallback returnable (PLAT-ERR)"
+
+    # The bullet named `on error resume next` by name, so pin that the spelling
+    # is GONE as well as that catching works. Note what did and did not change:
+    # failure-as-a-value did NOT go away -- try_decode and the probe builtins
+    # still take that route and it is still right for them -- it simply stopped
+    # being the ONLY route, because a raise became catchable. `resume next` is
+    # the part that was deleted outright, and a grammar still accepting it would
+    # mean the replacement had not actually happened.
+    printf 'on error resume next\nprint 1\n' > "$WORK/c2.bas"
+    old_spelling=$(run "$WORK/c2.bas")
+
+    if printf '%s' "$out" | grep -q 'fallback' \
+       && printf '%s' "$out" | grep -q 'caller continued' \
+       && printf '%s' "$old_spelling" | grep -q 'expecting GOTO or STOP'; then
+        ok "CONTROL: a raise is catchable, a fallback returnable, and 'resume next' is gone (PLAT-ERR)"
+    elif ! printf '%s' "$old_spelling" | grep -q 'expecting GOTO or STOP'; then
+        regressed "CONTROL: 'on error resume next' parses again"
     else
         regressed "CONTROL: a raise is no longer catchable"
     fi
