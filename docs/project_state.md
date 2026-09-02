@@ -119,7 +119,11 @@ document list, with a status column, is `docs/README.md`.
   family-wise quantile derived from how many cells were searched, and a
   contribution share is withheld when the net change is not distinguishable
   from zero. A Finding refuses to carry a cause, a materiality or an assurance.
-  The decision and automation layers are not built.
+  `decision` (evaluates and chooses; never executes) scores every alternative,
+  computes materiality from the context, states the authority a recommendation
+  needs without enforcing it, and reports assurance as a sensitivity sweep with
+  the crossing named. It refuses to size a decision off a quantity the finding
+  declined to establish. The automation layer is not built.
 - **credit scorecards** — `scoring`, turning a population into a model that
   ranks risk and then into the artefact a credit committee approves: binning by
   weight of evidence, information value, AUC/KS/Gini, calibration onto a point

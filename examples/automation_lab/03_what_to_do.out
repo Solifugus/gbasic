@@ -1,0 +1,42 @@
+THE FINDING
+  aggregate change   -37495
+  established?       false
+  leading cell       Northeast -> Northeast-2 -> Outdoor
+  its change         -16835
+  established?       true
+
+  So ONE cell is real and the aggregate is not. That is not a corner
+  case -- it is what the data said, and the decision has to survive it.
+
+THE DECISION: spend 15000 to recover 60% of the loss?
+
+  sized off the aggregate decline:
+    loss taken as    -37495
+    expected benefit 22497
+    cost             -15000
+    expected value   7497
+    -> ACT
+  sized off the cell that cleared:
+    loss taken as    -16835
+    expected benefit 10101
+    cost             -15000
+    expected value   -4899
+    -> DO NOT ACT
+
+  THE SAME INTERVENTION, THE SAME DATA, OPPOSITE ANSWERS. The only
+  difference is which number was taken as the loss -- and the Finding
+  already said the aggregate was not established.
+
+AUTHORITY: this process may spend up to 5000 unattended.
+
+  do nothing                 EV 0         within authority
+  send a regional manager    EV 1000      within authority
+  restock and promote        EV 7497      needs approval
+
+  best option overall:            restock and promote (EV 7497)
+  best option within authority:   send a regional manager (EV 1000)
+
+  A decision layer that quietly returned the second one would be
+  hiding the only choice a human actually needs to make. The
+  recommendation is the FIRST; authority is a separate field, and it
+  is enforced later, at the action (design R6).

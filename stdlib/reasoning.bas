@@ -158,6 +158,68 @@ library reasoning
         return out
     end function
 
+    ' --- Decision ------------------------------------------------------------
+
+    ' The mirror of `finding`'s refusals, one layer along. A Decision carries
+    ' `assurance`, never `confidence` -- how sure we are an ACTION is right is
+    ' not how well a quantity is estimated (§4.5) -- and it must state what
+    ' authority it needs, because R6 puts the enforcement at the action and an
+    ' unstated requirement cannot be enforced anywhere.
+    function _forbidden_decision(field)
+        if field = "confidence" then
+            return ("`confidence` is the insight layer's -- how well a quantity"
+                    + " is estimated. A Decision carries `assurance`: how sure"
+                    + " we are the recommended action is right (design §4.5)")
+        end if
+        if field = "authorized" or field = "permitted" then
+            return ("a Decision does not decide whether it is allowed. It states"
+                    + " the authority it REQUIRES, and enforcement happens at"
+                    + " the action -- a decision may freely recommend what it"
+                    + " may not execute, and suppressing that hides the case a"
+                    + " human most needs to see (design R6)")
+        end if
+        return ""
+    end function
+
+    function decision(spec)
+        if type(spec) != "record" then
+            error "reasoning.decision expects a record"
+        end if
+        for each field in keys(spec)
+            why = _forbidden_decision(field)
+            if why != "" then
+                error "reasoning.decision: " + why
+            end if
+        next
+        for each field in ["objective", "alternatives", "recommendation",
+                           "expected_value", "authority_required", "sized_off",
+                           "provenance"]
+            if is_unknown(spec[field]) then
+                error "reasoning.decision needs a " + field
+            end if
+        next
+        ' R9. The quantity a decision was sized off must be one the Finding
+        ' ESTABLISHED. Recorded here so the chain is auditable even when the
+        ' decision layer got it right by accident.
+        so = spec["sized_off"]
+        if is_unknown(so["quantity"]) or is_unknown(so["established"]) then
+            error ("reasoning.decision: `sized_off` must name the quantity the"
+                   + " decision was sized off and whether the finding"
+                   + " established it (design R9)")
+        end if
+        if so["established"] != true then
+            error ("reasoning.decision: sized off " + string(so["quantity"])
+                   + ", which the finding did NOT establish -- a decision built"
+                   + " on a quantity its own evidence declined to establish is"
+                   + " the failure recipe 5 exists to prevent (design R9)")
+        end if
+        out = { }
+        for each field in keys(spec)
+            out[field] = spec[field]
+        next
+        return out
+    end function
+
     ' --- provenance ----------------------------------------------------------
 
     ' §9. Deliberately CLOCK-FREE: a caller who wants the run stamped passes

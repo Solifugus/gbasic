@@ -1,8 +1,9 @@
 # Business Automation Reasoning
 
-Status: **Partial.** §13's first increment is **built** — `stdlib/reasoning.bas`
-and `stdlib/insight.bas`, `tests/run_insight.sh`. `decision` and `automation`
-are not. Recipe 1 is built and measured
+Status: **Partial.** Two of the three layers have a first increment built —
+`stdlib/reasoning.bas`, `stdlib/insight.bas` (`tests/run_insight.sh`) and
+`stdlib/decision.bas` (`tests/run_decision.sh`). The automation layer is not
+built, so R5's simulation gate and R6's *enforcement* half are still untested. Recipe 1 is built and measured
 ([automation_recipe_01_sales_decline.md](automation_recipe_01_sales_decline.md),
 `examples/automation_lab/01_sales_decline.bas`,
 `tests/run_automation_lab.sh`), and `examples/automation_lab/02_explain_change.bas`
@@ -319,6 +320,15 @@ and it worked* enters the system as a fact when it is a memory.
 
 **R8 — the null must be declared, not inferred** (§7).
 
+**R9 — a decision may not be sized off a quantity the Finding declined to
+establish.** R2's consequence one layer along, and produced by Recipe 5 rather
+than reasoned to. Measured: the same intervention over the same data gives
+expected value **+7,497** sized off the aggregate decline and **−4,899** sized
+off the cell that actually cleared — ACT against DO NOT ACT — with the Finding
+having already said the aggregate was not established. Enforced at the boundary
+in `decision.evaluate` and again structurally in `reasoning.decision`, so a
+hand-built Decision cannot smuggle one past.
+
 ---
 
 ## 9. Provenance
@@ -370,9 +380,22 @@ property this design exists to provide.
 
 ---
 
-## 13. First increment
+## 13. Increments
 
-Deliberately one function, in one library, and nothing else.
+Deliberately one function at a time.
+
+### Built
+
+- **`reasoning.finding` + `insight.explain_change`** — below.
+- **`decision.evaluate`** (Recipe 5,
+  [automation_recipe_05_what_to_do.md](automation_recipe_05_what_to_do.md)):
+  scores every alternative, computes materiality from the Context, states the
+  authority a recommendation needs **without enforcing it** (R6), reports
+  assurance as a sensitivity sweep with the crossing named, and refuses R9. Its
+  value turned out not to be the choice at all — everything useful is beside
+  the recommendation.
+
+### The first one, for reference
 
 ```text
 reasoning.finding(spec)                  construct + validate a Finding
@@ -452,10 +475,12 @@ four are chosen to **break** the model rather than broaden it:
 | **2. Two causes at once** | the drill-down's greedy first step is wrong |
 | **3. A seasonal measure** | "ordinary" is not stationary; R8 exercised rather than assumed |
 | **4. A high-cardinality dimension** | search width dominates; almost nothing should survive |
-| **5. The first recipe that decides** | the `decision` boundary is so far **entirely untested** |
+| ~~**5. The first recipe that decides**~~ | *done — produced R9, and `decision.evaluate`* |
 
-Recipe 5 is the important one. Recipes 1–4 all stop at the finding, which means
-two thirds of the architecture is still unexamined.
+Recipe 5 was the important one and is done. What is now unexamined is the
+`automation` layer: nothing yet executes anything, so R5 (simulation as a
+precondition) and the enforcement half of R6 have no test. The next recipe
+after 2–4 should be the first that **acts**.
 
 ## 16. Deferred, with reasons
 

@@ -4860,10 +4860,10 @@ rather than a hazard; `on warning ignore` silences it, and `on warning stop`
 does not escalate it. `library_collisions()` reports the same information for a
 whole program without needing a call site.
 
-- `reasoning` / `insight` — the first increment of Business Automation
-  Reasoning (`docs/automation_reasoning_design.md`). `credit` and friends answer
-  questions about a domain; these answer *did anything happen, and does it mean
-  anything*. `decision` and `automation` are not built.
+- `reasoning` / `insight` / `decision` — the first increments of Business
+  Automation Reasoning (`docs/automation_reasoning_design.md`). `credit` and friends answer
+  questions about a domain; these answer *did anything happen, does it mean
+  anything, and what should be done about it*. The automation layer is not built.
 
   `reasoning` owns the shared value model and has no behaviour beyond
   construction and validation, because all three planned layers construct and
@@ -4891,6 +4891,24 @@ whole program without needing a call site.
   clock-free, so a Finding is reproducible; a caller who wants the run stamped
   passes `as_of`. `reasoning.provenance_complete(finding)` returns what is
   missing, so completeness is checkable structurally rather than by reading.
+
+  `decision.evaluate(finding, context, alternatives, spec)` is the whole of
+  `decision` so far. It scores **every** alternative — not just the affordable
+  ones — picks the best by expected value, and states the authority that choice
+  needs in `authority_required` without enforcing it, because enforcement
+  belongs at the action: a layer that quietly recommended the best *affordable*
+  option would hide the only choice a human needs to make. Materiality is
+  computed here, from the context's thresholds, and answers `unknown` rather
+  than `false` when no threshold is declared. `assurance` is a **sensitivity**,
+  not a feeling: the share of a declared `sensitivity_range` (a multiplier on
+  the assumed recoveries, which must bracket 1) over which the recommendation
+  survives, with `sensitivities` naming where it flips. `decision.sizings()`
+  names what a decision may be sized off — `aggregate` or `leading_cell` — and
+  sizing off one the Finding did **not** establish is refused, since the same
+  intervention over the same data picks opposite actions depending on which is
+  taken. `reasoning.decision(spec)` validates the result and refuses a
+  `confidence` (that is the insight layer's) or an `authorized` field (a
+  decision does not decide its own permission).
 
   `insight.explain_change(frame, spec)` is the whole of `insight` so far. It
   decomposes a change in a measure across an ordered list of dimensions and
