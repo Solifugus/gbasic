@@ -134,7 +134,10 @@ document list, with a status column, is `docs/README.md`.
   that will actually run. An action's outcome must be measured before it may be
   cited as evidence — and, since an action is taken precisely when a measure is
   extreme, only a measurement against a deliberately held-back comparison
-  counts as evidence that acting *worked*.
+  counts as evidence that acting *worked*. `decision.calibrate` closes the
+  cycle by turning that evidence into the assumption behind the next decision,
+  as an interval rather than a number, so *enough evidence* is answered
+  relative to the decision at hand rather than by a sample-size rule.
 - **credit scorecards** — `scoring`, turning a population into a model that
   ranks risk and then into the artefact a credit committee approves: binning by
   weight of evidence, information value, AUC/KS/Gini, calibration onto a point

@@ -40,6 +40,20 @@ set -uo pipefail
 # recommendation and a marginal one (0.95 against 0.43) rather than as a number
 # in range.
 #
+# RECIPE 9 IS ASSERTED HERE TOO. It turns the loop -- controlled evidence
+# becomes the assumption -- and answers "how much evidence is enough" the only
+# way the question has an answer: relative to A DECISION. Sending a manager
+# costs 2000 against a 16835 loss, so it breaks even at a recovery of 0.119;
+# enough evidence is when the interval stops straddling that. Case A (true
+# effect 0.35) settles on TWO observations. Case B (true effect 0.15, a hair
+# above break-even) does not settle on THIRTY. Both halves are asserted,
+# because either verdict alone would prove nothing about sufficiency.
+#
+# IT ALSO RETIRES SOMETHING INVENTED. Recipe 5's `sensitivity_range: [0, 2]`
+# was a span I chose; a calibration supplies the range the EVIDENCE supports,
+# so assurance becomes the share of the plausible interval over which the
+# recommendation survives.
+#
 # Headless, GI-independent, never skips (bar valgrind).
 
 cd "$(dirname "$0")/.."
@@ -66,10 +80,10 @@ else
     grep "^MISMATCH" "$scratch/out" | head -10
 fi
 n=$(sed -n 's/^checks: //p' "$scratch/out")
-if [ -n "$n" ] && [ "$n" -ge 38 ]; then
+if [ -n "$n" ] && [ "$n" -ge 50 ]; then
     pass "check count floor ($n checks)"
 else
-    fail "check count floor (got '${n:-none}', want >= 38)"
+    fail "check count floor (got '${n:-none}', want >= 50)"
 fi
 
 printf 'TIER the load-bearing tiers ran\n'
@@ -79,7 +93,11 @@ for needle in \
     "a cheaper affordable option existed and was NOT chosen" \
     "with no threshold declared, materiality is unknown" \
     "so assurance distinguishes them" \
-    "a Decision that decides its own permission is refused"
+    "a Decision that decides its own permission is refused" \
+    "more evidence gives a narrower interval" \
+    "evidence far from the break-even is decisive" \
+    "the SAME amount of evidence near it is not" \
+    "uncontrolled observations may not be calibrated from"
 do
     if grep -qF "ok   $needle" "$scratch/out"; then
         pass "ran: $needle"
@@ -114,6 +132,36 @@ if grep -q "best option overall:            restock and promote" "$scratch/lab" 
     pass "and the best option is still beyond authority, so R6 has something to bite on"
 else
     fail "and the best option is still beyond authority"
+fi
+
+
+printf 'TIER recipe 9: how much evidence is enough\n'
+if GBASIC_PATH=stdlib ./gbasic examples/automation_lab/07_how_much_evidence.bas \
+        >"$scratch/ev" 2>/dev/null; then
+    pass "07_how_much_evidence runs"
+else
+    fail "07_how_much_evidence runs"
+fi
+if diff -u examples/automation_lab/07_how_much_evidence.out "$scratch/ev" >/dev/null 2>&1; then
+    pass "07 matches its committed golden"
+else
+    fail "07 matches its committed golden"
+    diff -u examples/automation_lab/07_how_much_evidence.out "$scratch/ev" | head -12
+fi
+# THE DEMONSTRATION: sufficiency is distance from the break-even, not n. Case A
+# settles on TWO observations; case B does not settle on THIRTY. If either half
+# stops being true the recipe no longer says what it claims.
+case_a=$(sed -n '/CASE A/,/CASE B/p' "$scratch/ev" | grep -c "DECISIVE: the recommendation holds")
+if [ "$case_a" = 3 ]; then
+    pass "case A is decisive at every sample size, including n=2"
+else
+    fail "case A is decisive at every sample size (got $case_a of 3)"
+fi
+if sed -n '/CASE B/,$p' "$scratch/ev" | grep -q "n = 30" \
+   && sed -n '/n = 30/,+3p' "$scratch/ev" | grep -q "NOT DECISIVE"; then
+    pass "and case B is still undecided at n=30"
+else
+    fail "and case B is still undecided at n=30"
 fi
 
 printf 'TIER valgrind\n'

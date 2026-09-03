@@ -428,6 +428,13 @@ Deliberately one function at a time.
 ### Built
 
 - **`reasoning.finding` + `insight.explain_change`** — below.
+- **`decision.calibrate`** (Recipe 9,
+  [automation_recipe_09_how_much_evidence.md](automation_recipe_09_how_much_evidence.md)):
+  turns the loop. Takes controlled evidence and produces the assumption, and
+  answers *how much evidence is enough* the only way the question has an answer
+  — relative to a decision, when the interval stops straddling the break-even.
+  Retires the invented `sensitivity_range`: the sweep now runs over the range
+  the evidence supports.
 - **`reasoning.hypothesis` + `insight.weigh`** (Recipe 8,
   [automation_recipe_08_why_might_it_be.md](automation_recipe_08_why_might_it_be.md)):
   §4's third rung, and built so it cannot reach the fifth — every hypothesis

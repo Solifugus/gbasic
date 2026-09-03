@@ -4915,6 +4915,21 @@ whole program without needing a call site.
   cleared is refused — there is no pattern to explain, and ranking against
   nothing would order stories by how little they claim.
 
+  `decision.calibrate(evidences)` closes the cycle: it takes
+  `reasoning.as_evidence` results — and **nothing else**, so R10 has already
+  refused anything uncontrolled — and returns an *interval*, not a number. One
+  observation is refused: an interval needs two, and a single measurement
+  offers no way to tell a real effect from the one time it happened to work.
+  Passing the result to `decision.evaluate` as `calibration` replaces the
+  `sensitivity_range` a caller would otherwise have to invent, so `assurance`
+  becomes the share of the range **the evidence supports** over which the
+  recommendation survives. That also answers *how much evidence is enough*,
+  which has no answer in the abstract and a precise one relative to a decision:
+  enough is when the interval stops straddling the point at which the
+  recommendation changes. It is a fact about distance from that boundary rather
+  than about sample size — two observations can settle a clear-cut case and
+  thirty can leave a marginal one open.
+
   `automation` is **the only layer that changes external state**, and it changes
   nothing itself: the executor is a function value the caller supplies, and it
   is called only past the gate. `automation.execute(decision, context,

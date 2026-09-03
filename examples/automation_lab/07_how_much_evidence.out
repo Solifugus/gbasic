@@ -1,0 +1,66 @@
+Sending a manager costs 2000 against a loss of 16835, so the action
+pays for itself at a recovery of 0.119. That is the BREAK-EVEN, and
+the whole question is whether the evidence can put the truth on one
+side of it.
+
+=== CASE A: the true incremental effect is 0.35, well clear of it
+
+  n = 2   estimate 0.48   95% interval 0.226 to 0.734
+         recommendation send a manager  assurance 1
+         DECISIVE: the recommendation holds across the whole
+         interval the evidence supports.
+
+  n = 5   estimate 0.44   95% interval 0.324 to 0.556
+         recommendation send a manager  assurance 1
+         DECISIVE: the recommendation holds across the whole
+         interval the evidence supports.
+
+  n = 12  estimate 0.362   95% interval 0.292 to 0.432
+         recommendation send a manager  assurance 1
+         DECISIVE: the recommendation holds across the whole
+         interval the evidence supports.
+
+=== CASE B: the true incremental effect is 0.15, just above it
+
+  n = 2   estimate 0.28   95% interval 0.026 to 0.534
+         recommendation send a manager  assurance 0.81
+         NOT DECISIVE: inside the interval the evidence supports,
+         the recommendation changes. More evidence, or a human.
+           flips at scale 0.46: do nothing -> send a manager
+
+  n = 5   estimate 0.24   95% interval 0.124 to 0.356
+         recommendation send a manager  assurance 1
+         DECISIVE: the recommendation holds across the whole
+         interval the evidence supports.
+
+  n = 12  estimate 0.162   95% interval 0.092 to 0.232
+         recommendation send a manager  assurance 0.81
+         NOT DECISIVE: inside the interval the evidence supports,
+         the recommendation changes. More evidence, or a human.
+           flips at scale 0.74: do nothing -> send a manager
+
+  n = 30  estimate 0.142   95% interval 0.101 to 0.183
+         recommendation send a manager  assurance 0.76
+         NOT DECISIVE: inside the interval the evidence supports,
+         the recommendation changes. More evidence, or a human.
+           flips at scale 0.85: do nothing -> send a manager
+
+
+  ENOUGH EVIDENCE IS NOT A NUMBER OF OBSERVATIONS. In case A even TWO
+  observations settle it, because the truth is nowhere near the
+  break-even. In case B thirty do not, because it sits a hair above.
+  Sufficiency is a fact about the DISTANCE from the decision boundary,
+  not about the sample size, and any rule of thumb -- "at least
+  thirty" -- is wrong in both directions at once.
+
+  AND NOTE CASE B AT n=5. It reports DECISIVE and case B at n=12 does
+  not. That is not a bug and it is not progress reversing: it is what
+  happens when you re-ask a marginal question as evidence arrives.
+  An interval that straddles a boundary will sometimes clear it by
+  chance, and a system that acts the first time it does is choosing
+  the moment the noise flattered it.
+
+  THE WAY OUT OF AN UNDECIDABLE DECISION IS NOT MORE DATA. In case B
+  the decision is marginal because the action costs nearly what it
+  recovers. A cheaper action moves the break-even and settles the
+  question that no amount of measurement was going to settle.

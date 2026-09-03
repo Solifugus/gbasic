@@ -20,6 +20,7 @@
 library decision
 
     load reasoning from "reasoning.bas"
+    load stats from "stats.bas"
 
     ' --- what a decision may be sized off ------------------------------------
 
@@ -27,6 +28,61 @@ library decision
     ' whether the Finding established it.
     function sizings()
         return ["aggregate", "leading_cell"]
+    end function
+
+    ' --- calibration ---------------------------------------------------------
+    '
+    ' TURNING THE LOOP. Recipe 5 ASSUMED a recovery of 0.6 and flagged its
+    ' recommendation as sensitive to exactly that figure. Recipe 7 showed where
+    ' such a figure comes from, and that measuring it without a control gives
+    ' the wrong one. This is the third step: take controlled evidence and
+    ' produce the assumption.
+    '
+    ' IT TAKES `as_evidence` RESULTS, NOT NUMBERS. That is the whole point --
+    ' R10 has already refused anything uncontrolled, so a calibration cannot be
+    ' built from observations of what merely happened next.
+    '
+    ' AND WHAT IT RETURNS IS AN INTERVAL, NOT A NUMBER. "How much evidence is
+    ' enough" has no answer in the abstract; it has an answer relative to A
+    ' DECISION, and §14 below is where the two meet.
+    function calibrate(evidences)
+        if type(evidences) != "array" then
+            error "decision.calibrate expects an array of evidence"
+        end if
+        n = count(evidences)
+        if n < 2 then
+            error ("decision.calibrate: " + string(n) + " observation is not a"
+                   + " calibration -- an interval needs at least two, and a"
+                   + " single measurement offers no way to tell a real effect"
+                   + " from the one time it happened to work")
+        end if
+        effects = []
+        for i = 0 to n - 1
+            e = evidences[i]
+            if type(e) != "record" or e["kind"] != "prior_action" then
+                error ("decision.calibrate: item " + string(i + 1) + " is not"
+                       + " evidence from reasoning.as_evidence")
+            end if
+            if e["controlled"] != true then
+                error ("decision.calibrate: item " + string(i + 1) + " is not"
+                       + " controlled -- calibrating from what merely happened"
+                       + " next reproduces the regression it measured (R10)")
+            end if
+            if is_unknown(e["effect"]) then
+                error ("decision.calibrate: item " + string(i + 1)
+                       + " has no measured effect")
+            end if
+            append(effects, e["effect"])
+        next
+        m = mean(effects)
+        sd = stdev(effects)
+        se = sd / sqrt(n)
+        ' A t interval, because the spread is estimated from the same handful
+        ' of observations. With n small this is WIDE, and it is supposed to be.
+        crit = stats.t_quantile(0.975, n - 1)
+        return { n: n, estimate: m, sd: sd, standard_error: se,
+                 low: m - crit * se, high: m + crit * se, level: 0.95,
+                 from: "controlled outcomes" }
     end function
 
     ' --- evaluate ------------------------------------------------------------
@@ -124,6 +180,30 @@ library decision
         sensitivities = []
         if needs_sizing then
             rng = spec["sensitivity_range"]
+            cal = spec["calibration"]
+            if not is_unknown(cal) then
+                ' THE RANGE STOPS BEING INVENTED. Recipe 5 swept an arbitrary
+                ' [0, 2] because there was nothing better; a calibration
+                ' supplies the range the EVIDENCE actually supports, so
+                ' `assurance` becomes the share of the plausible interval over
+                ' which the recommendation survives rather than the share of a
+                ' span somebody chose.
+                if is_unknown(cal["low"]) or is_unknown(cal["high"]) then
+                    error "decision.evaluate: a calibration needs low and high"
+                end if
+                base = cal["estimate"]
+                if base = 0 then
+                    error ("decision.evaluate: the calibrated estimate is zero,"
+                           + " so it cannot scale an assumed recovery")
+                end if
+                rng = [cal["low"] / base, cal["high"] / base]
+                if rng[0] > 1 then
+                    rng[0] = 1
+                end if
+                if rng[1] < 1 then
+                    rng[1] = 1
+                end if
+            end if
             if is_unknown(rng) then
                 error ("decision.evaluate: an alternative sized by `recovers`"
                        + " needs a `sensitivity_range` to be assured over."
@@ -185,6 +265,7 @@ library decision
                 rows: count(alternatives),
                 parameters: { sizing: spec["sizing"],
                               sensitivity_range: spec["sensitivity_range"],
+                              calibrated_from: _cal_n(spec["calibration"]),
                               spend_limit: auth["spend_limit"] },
                 assumptions: ["alternatives are mutually exclusive",
                               "the recovery fraction is the only uncertainty swept"] }) })
@@ -314,6 +395,13 @@ library decision
             end if
         next
         return best
+    end function
+
+    function _cal_n(cal)
+        if is_unknown(cal) then
+            return unknown
+        end if
+        return cal["n"]
     end function
 
     function _authority_reason(best, auth)

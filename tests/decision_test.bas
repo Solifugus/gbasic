@@ -13,6 +13,7 @@
 
 load decision
 load insight
+load fake
 load reasoning
 load frame
 load fake
@@ -239,6 +240,98 @@ ok_d = reasoning.decision({ objective: { }, alternatives: [], recommendation: "a
                             provenance: { }, assurance: 0.8 })
 check("a well-formed Decision is accepted", ok_d.recommendation, "a")
 check("and assurance IS allowed on one", ok_d.assurance, 0.8)
+
+' --- TIER: calibration, and turning the loop ------------------------------
+' Recipe 5 assumed 0.6 and flagged its recommendation as sensitive to exactly
+' that. Recipe 7 showed where the figure comes from and that measuring it
+' uncontrolled gives the wrong one. This is where it becomes the assumption.
+
+function made_up_evidence(n, effect, spread)
+    load fake
+    out = []
+    for i = 1 to n
+        e = effect + (fake.between(9, i * 7, 0, 2000) - 1000) / 1000 * spread
+        append(out, { kind: "prior_action", controlled: true, effect: e,
+                      decision: "act", expected: 0, observed: e, met: true })
+    next
+    return out
+end function
+
+tight = decision.calibrate(made_up_evidence(20, 0.4, 0.1))
+loose = decision.calibrate(made_up_evidence(3, 0.4, 0.1))
+check("a calibration reports how many observations it rests on", tight.n, 20)
+check("and comes from controlled outcomes", tight.from, "controlled outcomes")
+' THE PROPERTY THAT MAKES IT A CALIBRATION rather than an average: the interval
+' narrows as evidence accumulates. Asserted as a DIFFERENCE, since an interval
+' of any particular width proves nothing on its own.
+check("more evidence gives a narrower interval",
+      (tight.high - tight.low) < (loose.high - loose.low), true)
+' AND IT MUST NARROW BY ROUGHLY sqrt(n), NOT MERELY NARROW. A standard error
+' that forgot to divide by sqrt(n) still shrinks a little, because the t factor
+' falls as the degrees of freedom rise -- so "narrower" alone is satisfied by
+' an interval that ignores the sample size entirely. From 3 observations to 20
+' the width should fall about fivefold; without the sqrt(n) it falls about
+' twofold, and this is the assertion that tells them apart.
+check("  and by much more than the t factor alone accounts for",
+      (loose.high - loose.low) / (tight.high - tight.low) > 3, true)
+check("and the estimate sits inside its own interval",
+      tight.estimate > tight.low and tight.estimate < tight.high, true)
+
+' THE INVENTED RANGE IS RETIRED. Recipe 5 swept an arbitrary [0, 2] because
+' there was nothing better. A calibration supplies the range the EVIDENCE
+' supports, so assurance stops being the share of a span somebody chose.
+ctx2 = { objectives: [{ measure: "revenue", direction: "maximize" }],
+         thresholds: { revenue: 5000 }, authority: { spend_limit: 5000 } }
+opts2 = [{ name: "do nothing", cost: 0, benefit: 0 },
+         { name: "act", cost: 2000, recovers: tight.estimate }]
+from_evidence = decision.evaluate(spotty, ctx2, opts2,
+                  { sizing: "leading_cell", calibration: tight })
+check("a decision can be swept over the calibrated interval instead",
+      from_evidence.provenance.parameters.calibrated_from, 20)
+check("  and no invented range is recorded",
+      is_unknown(from_evidence.provenance.parameters.sensitivity_range), true)
+
+' AND THE DISTINCTION THE WHOLE RECIPE IS ABOUT. Whether evidence settles a
+' decision is a fact about its DISTANCE FROM THE BREAK-EVEN, not about n. Two
+' calibrations with the SAME number of observations, one far from the boundary
+' and one on it, must differ in whether the recommendation survives the
+' interval -- asserted as a difference, because either verdict alone proves
+' nothing.
+far = decision.calibrate(made_up_evidence(12, 0.60, 0.1))
+near = decision.calibrate(made_up_evidence(12, 0.125, 0.1))
+d_far = decision.evaluate(spotty, ctx2,
+          [{ name: "do nothing", cost: 0, benefit: 0 },
+           { name: "act", cost: 2000, recovers: far.estimate }],
+          { sizing: "leading_cell", calibration: far })
+d_near = decision.evaluate(spotty, ctx2,
+           [{ name: "do nothing", cost: 0, benefit: 0 },
+            { name: "act", cost: 2000, recovers: near.estimate }],
+           { sizing: "leading_cell", calibration: near })
+check("evidence far from the break-even is decisive", d_far.assurance, 1)
+check("the SAME amount of evidence near it is not", d_near.assurance < 1, true)
+check("  and the flip is named", count(d_near.sensitivities) > 0, true)
+
+' --- TIER: calibration refusals -------------------------------------------
+on error goto next
+
+x = decision.calibrate([{ kind: "prior_action", controlled: true, effect: 0.3 }])
+check("one observation is not a calibration",
+      contains(error.message, "is not a calibration"), true)
+error.clear()
+
+x = decision.calibrate([{ kind: "prior_observation", uncontrolled: true, effect: 0.3 },
+                        { kind: "prior_observation", uncontrolled: true, effect: 0.4 }])
+check("uncontrolled observations may not be calibrated from",
+      contains(error.message, "not evidence from reasoning.as_evidence"), true)
+error.clear()
+
+x = decision.calibrate([{ kind: "prior_action", controlled: false, effect: 0.3 },
+                        { kind: "prior_action", controlled: false, effect: 0.4 }])
+check("nor may evidence that carries no comparison",
+      contains(error.message, "reproduces the regression it measured"), true)
+error.clear()
+
+on error stop
 
 ' --- TIER: provenance ------------------------------------------------------
 check("the decision records how it was made",
