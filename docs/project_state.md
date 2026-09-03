@@ -128,7 +128,9 @@ document list, with a status column, is `docs/README.md`.
   all until the process has been replayed against history, and shares one gate
   between its dry run and its live path so a rehearsal describes the program
   that will actually run. An action's outcome must be measured before it may be
-  cited as evidence.
+  cited as evidence — and, since an action is taken precisely when a measure is
+  extreme, only a measurement against a deliberately held-back comparison
+  counts as evidence that acting *worked*.
 - **credit scorecards** — `scoring`, turning a population into a model that
   ranks risk and then into the artefact a credit committee approves: binning by
   weight of evidence, information value, AUC/KS/Gini, calibration onto a point

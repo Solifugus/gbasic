@@ -177,14 +177,80 @@ check("an action with no measured outcome is not evidence",
 error.clear()
 on error stop
 
-observed = automation.observe(act3, { value: 9000, at: "2026-10-01" })
+' R10, AND IT IS THE EXPENSIVE ONE. A measured outcome with NO COMPARISON is
+' evidence that something happened next -- not that the action worked. An
+' action is taken precisely when a measure is EXTREME, and extremes revert on
+' their own: recipe 7 measured a 52% apparent "recovery" from an intervention
+' whose true effect was exactly zero.
+uncontrolled = automation.observe(act3, { value: 9000, at: "2026-10-01" })
+on error goto next
+x = reasoning.as_evidence(uncontrolled)
+check("a measured but UNCONTROLLED outcome is still not evidence of an effect",
+      contains(error.message, "only that something happened next"), true)
+error.clear()
+on error stop
+' It may still be read -- honestly labelled, in the value rather than in a
+' comment somebody may not read.
+obs = reasoning.as_observation(uncontrolled)
+check("  it may be read as an observation", obs.kind, "prior_observation")
+check("  which says so about itself", obs.uncontrolled, true)
+check("  and carries the caveat", contains(obs.caveat, "not the effect of acting"), true)
+
+' THE CONTROL: with a holdout, it IS evidence, and the effect is the difference.
+observed = automation.observe(act3, { value: 9000, holdout: 6000, at: "2026-10-01" })
 ev = reasoning.as_evidence(observed)
-check("once measured, it is", ev.kind, "prior_action")
+check("with a holdout, it is evidence", ev.kind, "prior_action")
 check("  and carries what was expected", ev.expected, 7497)
 check("  and what was observed", ev.observed, 9000)
+check("  and what the untreated did", ev.holdout, 6000)
+check("  so the EFFECT is the difference, not the observation", ev.effect, 3000)
 check("  and whether it was met", ev.met, true)
-worse = automation.observe(act3, { value: 100, at: "2026-10-01" })
+worse = automation.observe(act3, { value: 100, holdout: 50, at: "2026-10-01" })
 check("an action that underperformed says so", worse.outcome.met, false)
+check("  and an effect can be small even when the observation is large",
+      automation.observe(act3, { value: 9000, holdout: 8990, at: "x" }).outcome.effect, 10)
+
+' --- TIER: holding out, the concept the architecture lacked ---------------
+' A system that always acts when it should can never learn whether acting
+' helps. Assignment is DETERMINISTIC in the key, not random, because a replay
+' must make the same assignments as the live run (R5) and an operator asking
+' "why was this one held back" must get an answer.
+first = automation.assign("North-2/Outdoor", 0.3)
+again = automation.assign("North-2/Outdoor", 0.3)
+check("assignment is deterministic in the key", first.arm, again.arm)
+check("and says why", contains(first.why, "held back deliberately")
+      or contains(first.why, "assigned to act"), true)
+' SHORT SEQUENTIAL KEYS ON PURPOSE. The first hash left consecutive short keys
+' consecutive, so a whole run landed on one side of the threshold -- 0 holdouts
+' out of 400 for exactly these keys -- while longer varied keys looked fine. A
+' distribution tier that uses comfortable keys does not test the hash.
+held = 0
+for i = 1 to 400
+    if automation.assign("c" + string(i), 0.25).arm = "holdout" then
+        held = held + 1
+    end if
+next
+check("short sequential keys land near the declared rate",
+      held > 80 and held < 120, true)
+held2 = 0
+for i = 1 to 400
+    if automation.assign("North-" + string(i) + "/Outdoor", 0.5).arm = "holdout" then
+        held2 = held2 + 1
+    end if
+next
+check("and so do path-shaped keys at another rate",
+      held2 > 160 and held2 < 240, true)
+' A zero holdout is allowed and SAYS what it costs, rather than being refused:
+' plenty of processes have nothing worth learning about.
+none = automation.assign("x", 0)
+check("a zero holdout treats everything", none.arm, "treat")
+check("  and says what that costs",
+      contains(none.why, "nothing can be learned"), true)
+on error goto next
+x = automation.assign("x", 1)
+check("holding everything back is refused", contains(error.message, "never acting"), true)
+error.clear()
+on error stop
 
 ' --- TIER: rehearsal validation -------------------------------------------
 on error goto next

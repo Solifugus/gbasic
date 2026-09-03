@@ -249,9 +249,19 @@ library reasoning
                        + " -- an outcome without a measurement is a memory")
             end if
         next
-        return { expected: spec["expected"], observed: spec["observed"],
-                 measured_at: spec["measured_at"],
-                 met: spec["met"] }
+        out = { expected: spec["expected"], observed: spec["observed"],
+                measured_at: spec["measured_at"],
+                met: spec["met"], controlled: false, effect: unknown }
+        ' R10. A comparison turns an observation into a measurement OF AN
+        ' EFFECT. Without one, `observed` is what happened next, which is not
+        ' the same thing and in the one case anybody bothers to measure is
+        ' systematically not the same thing (§10 of recipe 7).
+        if not is_unknown(spec["holdout"]) then
+            out["holdout"] = spec["holdout"]
+            out["controlled"] = true
+            out["effect"] = spec["observed"] - spec["holdout"]
+        end if
+        return out
     end function
 
     ' R7. "We did this before and it worked" enters the system as a FACT when
@@ -268,8 +278,44 @@ library reasoning
                    + " so it is not evidence -- it is a memory. Measure it with"
                    + " automation.observe first (design R7)")
         end if
+        ' R10. THE ONE THAT COSTS SOMETHING TO OBEY. An outcome with no
+        ' comparison is evidence that something happened next, and an action is
+        ' taken precisely when a measure is EXTREME, so what happened next is
+        ' mostly the extreme reverting. Measured in recipe 7: an intervention
+        ' with a true effect of exactly zero showed a 52% "recovery", which is
+        ' the number a learning loop would have stored.
+        if o["controlled"] != true then
+            error ("reasoning.as_evidence: this outcome has no comparison, so it"
+                   + " is not evidence that the action WORKED -- only that"
+                   + " something happened next. An action is taken when a"
+                   + " measure is extreme, and extremes revert on their own:"
+                   + " measured at 52% apparent recovery for an intervention"
+                   + " that did nothing at all. Supply a holdout, or read it"
+                   + " with reasoning.as_observation and do not call it"
+                   + " evidence (design R10)")
+        end if
         return { kind: "prior_action", decision: act["decision"]["recommendation"],
-                 expected: o["expected"], observed: o["observed"], met: o["met"] }
+                 expected: o["expected"], observed: o["observed"],
+                 holdout: o["holdout"], effect: o["effect"], met: o["met"],
+                 controlled: true }
+    end function
+
+    ' What happened next, honestly labelled. Not evidence of an effect, and it
+    ' says so in the value rather than in a comment somebody may not read.
+    function as_observation(act)
+        if type(act) != "record" or is_unknown(act["decision"]) then
+            error "reasoning.as_observation expects an Action"
+        end if
+        o = act["outcome"]
+        if is_unknown(o) then
+            error ("reasoning.as_observation: this action has no measured"
+                   + " outcome (design R7)")
+        end if
+        return { kind: "prior_observation", uncontrolled: true,
+                 decision: act["decision"]["recommendation"],
+                 expected: o["expected"], observed: o["observed"], met: o["met"],
+                 caveat: ("no comparison, so this is what happened next and not"
+                          + " the effect of acting") }
     end function
 
     ' --- provenance ----------------------------------------------------------

@@ -33,7 +33,15 @@ set -uo pipefail
 # else. Same code, same data. If that stops being true the recipe is wrong and
 # R5 is unmotivated.
 #
-# Headless, GI-independent, never skips (bar valgrind). ~10s for the recipe.
+# RECIPE 7 IS ASSERTED HERE TOO, because it is the argument for R10 and it is
+# the sharpest measurement in the whole lab: an intervention whose true effect
+# is EXACTLY ZERO -- nothing in the fixture alters a number after the decision
+# is taken -- shows a ~49% apparent "recovery", which is the number a learning
+# loop would have stored, and is entirely regression to the mean. The cells
+# nobody touched recovered just as well. Both halves are asserted, since the
+# apparent recovery alone is only half the argument.
+#
+# Headless, GI-independent, never skips (bar valgrind). ~20s for the recipes.
 
 cd "$(dirname "$0")/.."
 . "$(dirname "$0")/valgrind_tier.sh"
@@ -59,10 +67,10 @@ else
     grep "^MISMATCH" "$scratch/out" | head -10
 fi
 n=$(sed -n 's/^checks: //p' "$scratch/out")
-if [ -n "$n" ] && [ "$n" -ge 28 ]; then
+if [ -n "$n" ] && [ "$n" -ge 42 ]; then
     pass "check count floor ($n checks)"
 else
-    fail "check count floor (got '${n:-none}', want >= 28)"
+    fail "check count floor (got '${n:-none}', want >= 42)"
 fi
 
 # The executor leaves a file behind. If the fixture ever stops cleaning up, or
@@ -82,7 +90,10 @@ for needle in \
     "a rehearsed, within-authority decision DOES act" \
     "a decision beyond delegated authority may not act unattended" \
     "an action with no measured outcome is not evidence" \
-    "a dry run that WOULD act still does not act"
+    "a dry run that WOULD act still does not act" \
+    "a measured but UNCONTROLLED outcome is still not evidence of an effect" \
+    "  so the EFFECT is the difference, not the observation" \
+    "short sequential keys land near the declared rate"
 do
     if grep -qF "ok   $needle" "$scratch/out"; then
         pass "ran: $needle"
@@ -123,6 +134,38 @@ if [ "$(grep -c 'REFUSED' "$scratch/lab")" = 2 ] \
     pass "and the four gate cases still land two each way"
 else
     fail "and the four gate cases still land two each way"
+fi
+
+
+printf 'TIER recipe 7: learning, and what it teaches when uncontrolled\n'
+if GBASIC_PATH=stdlib ./gbasic examples/automation_lab/05_did_it_work.bas \
+        >"$scratch/learn" 2>/dev/null; then
+    pass "05_did_it_work runs"
+else
+    fail "05_did_it_work runs"
+fi
+if diff -u examples/automation_lab/05_did_it_work.out "$scratch/learn" >/dev/null 2>&1; then
+    pass "05 matches its committed golden"
+else
+    fail "05 matches its committed golden"
+    diff -u examples/automation_lab/05_did_it_work.out "$scratch/learn" | head -12
+fi
+# THE DEMONSTRATION. The intervention's true effect is exactly zero -- nothing
+# in the fixture alters a number after the decision. If the uncontrolled
+# measurement ever stops reporting a large apparent recovery, the recipe no
+# longer demonstrates the trap and R10 is unmotivated.
+apparent=$(sed -n 's/^    the intervention recovers \([0-9.]*\)%.*/\1/p' "$scratch/learn")
+if [ -n "$apparent" ] && awk -v a="$apparent" 'BEGIN{exit !(a>25)}'; then
+    pass "an intervention with ZERO effect still shows ${apparent}% apparent recovery"
+else
+    fail "an intervention with zero effect still shows a large apparent recovery (got '${apparent:-none}')"
+fi
+# And the holdout must recover too, or the comparison proves nothing.
+holdout=$(sed -n 's/^    holdout recovered  \([0-9.-]*\)%.*/\1/p' "$scratch/learn")
+if [ -n "$holdout" ] && awk -v h="$holdout" 'BEGIN{exit !(h>25)}'; then
+    pass "and the cells nobody touched recovered ${holdout}% -- the comparison is what measures the effect"
+else
+    fail "the holdout also recovered (got '${holdout:-none}')"
 fi
 
 printf 'TIER valgrind\n'

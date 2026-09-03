@@ -342,6 +342,16 @@ and it worked* enters the system as a fact when it is a memory.
 
 **R8 — the null must be declared, not inferred** (§7).
 
+**R10 — an outcome measured without a comparison is not evidence that the
+action worked.** Only that something happened next. Produced by Recipe 7, and
+the bias is not a tail risk: an action is taken *precisely when* a measure is
+extreme, so the entire learning corpus is drawn from the one condition where
+the naive measurement is systematically wrong. Measured — an intervention whose
+true effect was **exactly zero** showed a **48.7% apparent recovery**, which is
+the number a learning loop would have stored, and is entirely regression to the
+mean. The cells nobody touched recovered just as well. `as_evidence` refuses an
+uncontrolled outcome; `as_observation` reads it labelled.
+
 **R9 — a decision may not be sized off a quantity the Finding declined to
 establish.** R2's consequence one layer along, and produced by Recipe 5 rather
 than reasoned to. Measured: the same intervention over the same data gives
@@ -409,6 +419,11 @@ Deliberately one function at a time.
 ### Built
 
 - **`reasoning.finding` + `insight.explain_change`** — below.
+- **`automation.assign` + controlled outcomes** (Recipe 7,
+  [automation_recipe_07_did_it_work.md](automation_recipe_07_did_it_work.md)):
+  the missing concept of deliberately **not** acting, so the effect of acting
+  is measurable at all; deterministic in the key, because a replay must make
+  the same assignments as the live run.
 - **`automation.would` / `rehearsal` / `execute` / `observe`** (Recipe 6,
   [automation_recipe_06_should_we_act.md](automation_recipe_06_should_we_act.md)):
   the only layer that changes external state, and it changes nothing itself —
@@ -506,12 +521,17 @@ four are chosen to **break** the model rather than broaden it:
 | **4. A high-cardinality dimension** | search width dominates; almost nothing should survive |
 | ~~**5. The first recipe that decides**~~ | *done — produced R9, and `decision.evaluate`* |
 
-Recipes 5 and 6 were the important ones and both are done; the architecture is
-closed. What remains unexamined is **learning**: `observe` records an outcome
-and R7 refuses to cite an unmeasured one, but nothing yet feeds a measured
-outcome back in as evidence and shows it change a later decision. Until it
-does, §11's cycle is bookkeeping rather than a loop. That, and recipes 2–4, are
-the next work.
+Recipes 5, 6 and 7 were the important ones and all three are done. The
+architecture is closed and the learning loop has a mechanism — and Recipe 7
+found that the obvious way to close it teaches the system something false
+(R10).
+
+What remains is to **turn** the loop: nothing yet takes a controlled effect and
+feeds it into a later decision as the recovery assumption. That is a small step
+now, but it wants its own recipe, because the interesting question is what
+happens when the evidence is thin — one controlled observation is not a
+calibration, and there is no rule yet for how much evidence is enough. That,
+and recipes 2–4.
 
 ## 16. Deferred, with reasons
 

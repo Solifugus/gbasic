@@ -154,6 +154,60 @@ library automation
                 assumptions: ["the executor reports its own success honestly"] }) })
     end function
 
+    ' --- holding out ---------------------------------------------------------
+
+    ' THE CONCEPT THE ARCHITECTURE LACKED (recipe 7). A system that always acts
+    ' when it should can never learn whether acting helps, because it has
+    ' nothing to compare against -- and what happened next, uncontrolled, is
+    ' mostly the extreme reverting on its own.
+    '
+    ' DETERMINISTIC IN THE KEY, not random, for two reasons that are both about
+    ' R5: a replay must make the same assignments as the live run or the
+    ' rehearsal describes a different program, and an operator asking "why was
+    ' this one held back" must get an answer.
+    function assign(key, holdout_rate)
+        if type(holdout_rate) != "number" or holdout_rate < 0 or holdout_rate >= 1 then
+            error ("automation.assign: holdout_rate must be at least 0 and below"
+                   + " 1 -- holding everything back means never acting")
+        end if
+        if holdout_rate = 0 then
+            return { arm: "treat", key: key,
+                     why: "no holdout declared; nothing can be learned about"
+                          + " whether acting helps" }
+        end if
+        h = _hash(string(key))
+        if mod(h, 1000) / 1000 < holdout_rate then
+            return { arm: "holdout", key: key,
+                     why: "held back deliberately, so the effect of acting is"
+                          + " measurable" }
+        end if
+        return { arm: "treat", key: key, why: "assigned to act" }
+    end function
+
+    ' Stable string hash, deterministic across runs and machines -- this decides
+    ' an experiment's arms, not a security property.
+    '
+    ' IT NEEDS A MIXING STEP AND THE FIRST VERSION DID NOT HAVE ONE. A plain
+    ' `h = h * 31 + byte` mod a large prime leaves consecutive short keys
+    ' consecutive, so `mod(h, 1000)` walked in lockstep and a run of keys landed
+    ' entirely on one side of the threshold: measured 0 holdouts out of 400 for
+    ' keys "c1".."c400", while longer varied keys looked perfectly fine. That is
+    ' the shape of hash bug that hides -- the first distribution check used
+    ' "cell-N/x" and reported a clean 0.200.
+    '
+    ' Values are kept small enough that every intermediate stays well inside
+    ' exact double integers; gBASIC numbers are doubles and a 32-bit-style
+    ' multiply would silently lose the low bits that carry the entropy.
+    function _hash(s)
+        h = 5381
+        for i = 0 to len(s) - 1
+            h = mod(h * 33 + byte_at(s, i), 1000003)
+        next
+        h = bxor(h, shl(h, 7))
+        h = bxor(h, shr(h, 11))
+        return mod(h * 2654435 + 12345, 1000003)
+    end function
+
     ' --- outcome -------------------------------------------------------------
 
     ' §11 and R7. Returns the action WITH its outcome, because a gBASIC record
@@ -178,6 +232,7 @@ library automation
         out["outcome"] = reasoning.outcome({
             expected: expected, observed: observed,
             measured_at: measured["at"],
+            holdout: measured["holdout"],
             met: observed >= expected })
         return out
     end function

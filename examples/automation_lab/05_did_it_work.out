@@ -1,0 +1,37 @@
+Eighteen months. Each month the process finds the worst cell and
+'intervenes' -- an intervention with a TRUE EFFECT OF ZERO.
+
+Cells are split by automation.assign -- deterministic in the cell's
+own key, so a replay makes the same assignments as the live run.
+
+  group     n   mean fall     mean bounce    apparent recovery
+  treated   12  -7106         3458           48.7%
+  holdout   5   -8431         7208           85.5%
+
+  WHAT WE LEARNED, measured the obvious way:
+    the intervention recovers 48.7% of the loss.
+
+  That is the number a learning loop would store, and it is FALSE.
+  The intervention does nothing. What it measures is REGRESSION TO
+  THE MEAN: a cell is picked BECAUSE it was extreme, and extreme
+  observations contain noise, which does not repeat.
+
+  WHAT WE LEARNED, against the holdout:
+    treated recovered  48.7%
+    holdout recovered  85.5%
+    effect of acting   -36.8%
+
+  The cells nobody touched recovered just as well. THAT is the
+  measurement, and it needs something the system had no concept of:
+  occasions on which it deliberately did NOT act.
+
+  And note what the honest conclusion is NOT. The difference is
+  small on a handful of observations either way, which is not a
+  measurement of anything -- it is noise, and a holdout this
+  small cannot resolve a small effect either. The defensible
+  statement is that there is no evidence the intervention does
+  anything, which happens to be exactly right: it does nothing.
+
+  Recipe 5 ASSUMED a recovery of 60% and warned that its
+  recommendation was sensitive to it. This is where that number was
+  going to come from, and uncontrolled it would have come back 52%.

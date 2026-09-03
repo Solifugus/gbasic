@@ -4909,11 +4909,27 @@ whole program without needing a call site.
   `execute` — if the two could disagree, a rehearsal would describe a different
   program than the one that runs. `automation.observe(action, measured)`
   returns the action with its outcome attached (a record is a value, so
-  mutating the caller's copy would silently do nothing), and
-  `reasoning.as_evidence(action)` refuses an action whose outcome was never
-  measured: *we did this before and it worked* is otherwise a memory entering
-  the system as a fact. `reasoning.action` and `reasoning.outcome` validate the
-  two values.
+  mutating the caller's copy would silently do nothing).
+
+  Two refusals govern what an outcome may then be used for.
+  `reasoning.as_evidence(action)` rejects an action whose outcome was never
+  measured — *we did this before and it worked* is otherwise a memory entering
+  the system as a fact — and rejects a measured outcome that carries **no
+  comparison**, because an action is taken precisely when a measure is extreme
+  and extremes revert on their own: an intervention with a true effect of
+  exactly zero was measured showing a 48.7% apparent "recovery". Supply
+  `holdout` in the measurement and the outcome carries `controlled: true` and
+  an `effect` that is the *difference*, or read it with
+  `reasoning.as_observation(action)`, which returns it labelled
+  `uncontrolled: true` with the caveat in the value rather than in a comment.
+  `automation.assign(key, holdout_rate)` is how a holdout is produced at all —
+  the concept of deliberately **not** acting, without which a system that
+  always acts when it should can never learn whether acting helps. It is
+  deterministic in the key rather than random, so a replay makes the same
+  assignments as the live run and an operator asking *why was this one held
+  back* gets an answer; a zero rate is allowed but says what it costs, and
+  holding everything back is refused. `reasoning.action` and
+  `reasoning.outcome` validate the two values.
 
   `decision.evaluate(finding, context, alternatives, spec)` is the whole of
   `decision` so far. It scores **every** alternative — not just the affordable
