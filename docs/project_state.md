@@ -123,7 +123,11 @@ document list, with a status column, is `docs/README.md`.
   computes materiality from the context, states the authority a recommendation
   needs without enforcing it, and reports assurance as a sensitivity sweep with
   the crossing named. It refuses to size a decision off a quantity the finding
-  declined to establish. `automation` is the only layer that changes external
+  declined to establish. `insight.weigh` reaches the third rung of the causal
+  ladder without ever reaching the fifth: a hypothesis states which cells it
+  predicts and the observation that would discriminate it, is scored by set
+  agreement rather than a probability, and two that predict identically are
+  reported tied rather than ranked. `automation` is the only layer that changes external
   state: it enforces the authority `decision` merely states, refuses to act at
   all until the process has been replayed against history, and shares one gate
   between its dry run and its live path so a rehearsal describes the program

@@ -1,0 +1,34 @@
+THE FINDING
+  leading cell   Northeast -> Northeast-2 -> Outdoor
+  cells that cleared their threshold: 1
+
+WEIGHED AGAINST THE PATTERN
+  hypothesis                                       predicts hit over agree
+  a stock-out of Outdoor goods at Northeast-2     1        1   0    1
+  a competitor opened near Northeast-2 selling o  1        1   0    1
+  supply constraint across store Northeast-2      5        1   4    0.2
+  an Outdoor category problem everywhere          12       1   11   0.08
+  a Northeast regional demand shock               15       1   14   0.07
+
+  set agreement between predicted and affected cells (hits / union), NOT a probability that the hypothesis is true
+
+  Note what ranks and why. The narrowest hypothesis consistent with
+  the data wins, because a hypothesis that predicts fifteen cells and
+  explains one has OVER-PREDICTED fourteen. Parsimony is not imposed
+  here; it falls out of comparing predicted cells with affected ones.
+
+WHAT THIS DATA CANNOT DECIDE
+  'a stock-out of Outdoor goods at Northeast-2'
+  'a competitor opened near Northeast-2 selling'
+  predict exactly the same cells. Ranking them would invent a
+  preference the evidence does not support.
+
+  leader                a stock-out of Outdoor goods at Northeast-2
+  separable from rivals false
+
+  NEXT TEST
+    the leading hypotheses predict the same cells and this data cannot separate them. Observe: on-hand inventory for that line at that store  OR  footfall and competitor pricing near that store
+
+  That is the output. Not a cause -- a question, and the observation
+  that would answer it. Every hypothesis above still says
+  explains: false.

@@ -220,6 +220,49 @@ library reasoning
         return out
     end function
 
+    ' --- Hypothesis ----------------------------------------------------------
+
+    ' §4's ladder: observation -> association -> CAUSAL HYPOTHESIS -> test ->
+    ' supported or rejected explanation. A Hypothesis is the third rung and it
+    ' is never the fifth. It carries `explains: false` for its whole life here,
+    ' because nothing in this library can promote it -- only a recorded test
+    ' can, and that is R3.
+    '
+    ' `predicts` is a record of dimension -> value constraints, ALL of which
+    ' must hold for a cell to be predicted. It is declarative rather than a
+    ' function value on purpose: a prediction that cannot be written into
+    ' provenance cannot be audited later, and "why did we believe that" is the
+    ' question this whole layer exists to answer.
+    '
+    ' `discriminator` is REQUIRED, and that is the opinionated part. A
+    ' hypothesis you cannot imagine an observation for is not a hypothesis, it
+    ' is a story -- and a story that scores well against a pattern is exactly
+    ' the failure mode this design keeps finding.
+    function hypothesis(spec)
+        if type(spec) != "record" then
+            error "reasoning.hypothesis expects a record"
+        end if
+        for each field in ["name", "predicts", "discriminator"]
+            if is_unknown(spec[field]) then
+                if field = "discriminator" then
+                    error ("reasoning.hypothesis needs a discriminator: the"
+                           + " observation that would tell this apart from its"
+                           + " rivals. A hypothesis nobody can imagine a test"
+                           + " for is a story, and a story scores against a"
+                           + " pattern just as well as an explanation does")
+                end if
+                error "reasoning.hypothesis needs a " + field
+            end if
+        next
+        if type(spec["predicts"]) != "record" then
+            error ("reasoning.hypothesis: `predicts` must be a record of"
+                   + " dimension -> value constraints")
+        end if
+        return { name: spec["name"], predicts: spec["predicts"],
+                 discriminator: spec["discriminator"],
+                 rationale: spec["rationale"], explains: false }
+    end function
+
     ' --- Action and Outcome --------------------------------------------------
 
     function action(spec)

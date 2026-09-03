@@ -342,6 +342,15 @@ and it worked* enters the system as a fact when it is a memory.
 
 **R8 — the null must be declared, not inferred** (§7).
 
+**R11 — two hypotheses that predict the same pattern may not be ranked against
+each other on that pattern.** Produced by Recipe 8. Ordering them would invent
+a preference the evidence does not support; they are reported tied, with both
+discriminators offered as the observation that would separate them. And no
+probability is claimed anywhere: what is computed is *set agreement* between
+predicted and affected cells, which travels with its own definition, because
+the charter's `confidence .91` for a cause is a number nothing in the data
+supports.
+
 **R10 — an outcome measured without a comparison is not evidence that the
 action worked.** Only that something happened next. Produced by Recipe 7, and
 the bias is not a tail risk: an action is taken *precisely when* a measure is
@@ -419,6 +428,14 @@ Deliberately one function at a time.
 ### Built
 
 - **`reasoning.finding` + `insight.explain_change`** — below.
+- **`reasoning.hypothesis` + `insight.weigh`** (Recipe 8,
+  [automation_recipe_08_why_might_it_be.md](automation_recipe_08_why_might_it_be.md)):
+  §4's third rung, and built so it cannot reach the fifth — every hypothesis
+  carries `explains: false` and only a recorded test could promote one. A
+  hypothesis predicts WHICH cells should have moved; comparing that with the
+  cells that cleared is a contingency, not a probability. Parsimony falls out
+  rather than being imposed. A `discriminator` is required, because a
+  hypothesis nobody can imagine a test for is a story.
 - **`automation.assign` + controlled outcomes** (Recipe 7,
   [automation_recipe_07_did_it_work.md](automation_recipe_07_did_it_work.md)):
   the missing concept of deliberately **not** acting, so the effect of acting
@@ -526,7 +543,8 @@ architecture is closed and the learning loop has a mechanism — and Recipe 7
 found that the obvious way to close it teaches the system something false
 (R10).
 
-What remains is to **turn** the loop: nothing yet takes a controlled effect and
+Recipe 8 built the third rung of §4's ladder. What remains is to **turn** the
+loop: nothing yet takes a controlled effect and
 feeds it into a later decision as the recovery assumption. That is a small step
 now, but it wants its own recipe, because the interesting question is what
 happens when the evidence is thin — one controlled observation is not a

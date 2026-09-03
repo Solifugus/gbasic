@@ -276,6 +276,171 @@ library insight
             provenance: prov })
     end function
 
+    ' --- weighing hypotheses --------------------------------------------------
+    '
+    ' THE VALUE IS IN THE PATTERN, NOT THE MAGNITUDE. A hypothesis predicts
+    ' WHICH cells should have moved. Comparing that prediction against the
+    ' cells that actually cleared is a CONTINGENCY -- hits, over-predictions,
+    ' and cells left unexplained -- and it is auditable in a way a scalar is
+    ' not.
+    '
+    ' SO THERE IS NO PROBABILITY HERE. The charter\'s §11 showed
+    ' "inventory availability   confidence .91", and that number is unearned:
+    ' nothing in the data supports a probability that a hypothesis is TRUE.
+    ' What can honestly be computed is set agreement, which is reported under
+    ' its own name with its definition attached.
+    function weigh(finding, hypotheses)
+        if type(finding) != "record" or is_unknown(finding["contributors"]) then
+            error "insight.weigh expects a Finding"
+        end if
+        if type(hypotheses) != "array" or count(hypotheses) = 0 then
+            error "insight.weigh expects a non-empty array of hypotheses"
+        end if
+
+        affected = []
+        for each c in finding["contributors"]
+            if c["clears"] then
+                append(affected, _key(c["path"], finding["search"]["dimensions"]))
+            end if
+        next
+        if count(affected) = 0 then
+            error ("insight.weigh: this finding has no cell that cleared its"
+                   + " threshold, so there is no pattern to explain -- weighing"
+                   + " hypotheses against nothing would rank stories by how"
+                   + " little they claim")
+        end if
+
+        scored = []
+        for each h in hypotheses
+            if is_unknown(h["predicts"]) or is_unknown(h["discriminator"]) then
+                error ("insight.weigh: every hypothesis must be built with"
+                       + " reasoning.hypothesis")
+            end if
+            predicted = []
+            for each c in finding["contributors"]
+                if _matches(c["path"], finding["search"]["dimensions"], h["predicts"]) then
+                    append(predicted, _key(c["path"], finding["search"]["dimensions"]))
+                end if
+            next
+            hit = 0
+            for each a in affected
+                if contains(predicted, a) then
+                    hit = hit + 1
+                end if
+            next
+            over = count(predicted) - hit
+            missed = count(affected) - hit
+            union = count(predicted) + count(affected) - hit
+            agreement = 0
+            if union > 0 then
+                agreement = hit / union
+            end if
+            append(scored, { name: h["name"], predicts: h["predicts"],
+                             discriminator: h["discriminator"],
+                             predicted: count(predicted), hit: hit,
+                             over_predicted: over, unexplained: missed,
+                             agreement: agreement,
+                             explains: false })
+        next
+
+        ranked = _by_agreement(scored)
+
+        ' R11. TWO HYPOTHESES THAT PREDICT THE SAME CELLS ARE NOT SEPARATED BY
+        ' THIS DATA, and ordering them would be inventing a preference the
+        ' evidence does not support. They are reported as tied, and the
+        ' discriminators are what the caller should go and observe.
+        tied = []
+        for i = 0 to count(ranked) - 1
+            for j = i + 1 to count(ranked) - 1
+                if _same_prediction(finding, ranked[i], ranked[j]) then
+                    append(tied, { a: ranked[i].name, b: ranked[j].name,
+                                   agreement: ranked[i].agreement,
+                                   separate_them_by: [ranked[i].discriminator,
+                                                      ranked[j].discriminator] })
+                end if
+            next
+        next
+
+        leader = ranked[0].name
+        separable = true
+        for each t in tied
+            if t.a = leader or t.b = leader then
+                separable = false
+            end if
+        next
+
+        return { affected_cells: count(affected), hypotheses: ranked,
+                 leader: leader, leader_is_separable: separable,
+                 indistinguishable: tied,
+                 agreement_is: ("set agreement between predicted and affected"
+                                + " cells (hits / union), NOT a probability that"
+                                + " the hypothesis is true"),
+                 next_test: _next_test(ranked, tied) }
+    end function
+
+    function _next_test(ranked, tied)
+        for each t in tied
+            if t.a = ranked[0].name or t.b = ranked[0].name then
+                return ("the leading hypotheses predict the same cells and this"
+                        + " data cannot separate them. Observe: "
+                        + join(t.separate_them_by, "  OR  "))
+            end if
+        next
+        return ("to confirm the leader rather than merely rank it, observe: "
+                + ranked[0].discriminator)
+    end function
+
+    function _same_prediction(finding, a, b)
+        if a.predicted != b.predicted then
+            return false
+        end if
+        for each c in finding["contributors"]
+            ma = _matches(c["path"], finding["search"]["dimensions"], a.predicts)
+            mb = _matches(c["path"], finding["search"]["dimensions"], b.predicts)
+            if ma != mb then
+                return false
+            end if
+        next
+        return true
+    end function
+
+    function _matches(path, dims, predicts)
+        for each d in keys(predicts)
+            ' `contains`, not `find`: a miss from `find` is `nothing`, and
+            ' `is_unknown(nothing)` is FALSE, so an is_unknown guard here reads
+            ' as "found at index nothing" and silently lets a hypothesis
+            ' predict on an axis that was never searched.
+            if not contains(dims, d) then
+                error ("insight.weigh: a hypothesis predicts on `" + string(d)
+                       + "`, which is not one of the dimensions this finding"
+                       + " searched (" + join(dims, ", ") + ")")
+            end if
+            idx = find(dims, d)
+            if path[idx] != predicts[d] then
+                return false
+            end if
+        next
+        return true
+    end function
+
+    function _key(path, dims)
+        return join(path, "/")
+    end function
+
+    function _by_agreement(items)
+        out = items
+        for i = 1 to count(out) - 1
+            j = i
+            while j > 0 and out[j - 1].agreement < out[j].agreement
+                t = out[j - 1]
+                out[j - 1] = out[j]
+                out[j] = t
+                j = j - 1
+            end while
+        next
+        return out
+    end function
+
     ' --- internals -----------------------------------------------------------
 
     function _accumulate(rows, spec, dims, assoc_names)

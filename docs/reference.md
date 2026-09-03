@@ -4894,6 +4894,27 @@ whole program without needing a call site.
   passes `as_of`. `reasoning.provenance_complete(finding)` returns what is
   missing, so completeness is checkable structurally rather than by reading.
 
+  `insight.weigh(finding, hypotheses)` is §4's third rung, and is built so it
+  cannot reach the fifth: every `reasoning.hypothesis` carries
+  `explains: false` for its whole life, because only a recorded test could
+  promote one. A hypothesis declares which cells it **predicts** (a record of
+  dimension → value constraints — declarative rather than a function value, so
+  the prediction can be written into provenance and audited later) and a
+  **discriminator**, which is required: a hypothesis nobody can imagine an
+  observation for is a story, and a story scores against a pattern exactly as
+  well as an explanation does. `weigh` compares each prediction with the cells
+  that actually cleared and reports a contingency — `predicted`, `hit`,
+  `over_predicted`, `unexplained` — plus set agreement, which travels with its
+  own definition and is explicitly **not** a probability that the hypothesis is
+  true. Parsimony is not imposed: a hypothesis predicting fifteen cells and
+  explaining one has over-predicted fourteen, and agreement says so. Two
+  hypotheses that predict **the same cells** are reported in
+  `indistinguishable` and are not ordered against each other, since ranking
+  them would invent a preference the evidence does not support; `next_test`
+  then names both discriminators. Weighing against a finding where nothing
+  cleared is refused — there is no pattern to explain, and ranking against
+  nothing would order stories by how little they claim.
+
   `automation` is **the only layer that changes external state**, and it changes
   nothing itself: the executor is a function value the caller supplies, and it
   is called only past the gate. `automation.execute(decision, context,
