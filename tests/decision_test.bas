@@ -333,6 +333,73 @@ error.clear()
 
 on error stop
 
+' --- TIER: a decision whose answer is a QUANTITY ---------------------------
+' `evaluate` chooses among a list. A price, a reorder level or a staffing
+' number has no list -- it has a MODEL, and the model carries the parameter's
+' uncertainty into the answer in a way that is usually not proportional.
+
+function price_star(b)
+    if b >= 0 - 1 then
+        return unknown
+    end if
+    return 10.0 * b / (1 + b)
+end function
+
+far = decision.quantity({ parameter: { estimate: 0 - 2.55, low: 0 - 2.82, high: 0 - 2.28 },
+                          map: price_star, model: "constant-elasticity p*" })
+near = decision.quantity({ parameter: { estimate: 0 - 1.3, low: 0 - 1.57, high: 0 - 1.03 },
+                           map: price_star, model: "constant-elasticity p*" })
+check("a quantity far from the model's edge is defined", far.defined, true)
+check("  and recommends a price", round(far.recommended, 2), 16.45)
+check("one near the edge is still defined", near.defined, true)
+
+' AMPLIFICATION, asserted as a DIFFERENCE. The two intervals are of similar
+' width in the PARAMETER; what differs is how hard the model magnifies them,
+' and a single value would say nothing about that.
+' AND IT MUST BE A RATIO, NOT THE RAW SPREAD. Reporting the quantity spread
+' alone passes "amplification is large near the edge" and "it separates them"
+' -- both true of the raw number too. What distinguishes them is that far from
+' the edge this model DAMPENS: a 1.24x parameter interval becomes a 1.15x
+' price interval, so amplification is BELOW 1 while the raw spread is above it.
+check("far from the edge the model DAMPENS, so amplification is below 1",
+      far.amplification < 1, true)
+check("  which the raw quantity spread is not", far.quantity_spread > 1, true)
+check("near it, the SAME quality of estimate is magnified many times over",
+      near.amplification > 5, true)
+check("  so amplification separates them", near.amplification > far.amplification * 4, true)
+check("and it says what it means", contains(near.amplification_is, "1 would be proportional"), true)
+
+' R12, THE LOAD-BEARING ONE. Where the interval reaches a parameter value at
+' which the model is undefined there is no quantity to recommend -- not a wide
+' one, NONE. And the refusal reports what a point estimate would have said,
+' because that number is the most confident-looking wrong answer here.
+broken = decision.quantity({ parameter: { estimate: 0 - 1.2, low: 0 - 1.47, high: 0 - 0.93 },
+                             map: price_star, model: "constant-elasticity p*" })
+check("an interval reaching where the model breaks yields NO quantity",
+      broken.defined, false)
+check("  and no recommendation at all", is_unknown(broken.recommended), true)
+check("  naming where it broke", broken.broke_at > 0 - 1.01 and broken.broke_at < 0 - 0.98, true)
+check("  and what a point estimate would have claimed",
+      round(broken.point_estimate_would_say, 1), 60)
+check("  which is a perfectly ordinary-looking price",
+      broken.point_estimate_would_say > 0, true)
+
+on error goto next
+x = decision.quantity({ parameter: { estimate: 0 - 2, low: 0 - 3, high: 0 - 1.5 },
+                        map: price_star })
+check("a quantity decision with no named model is refused",
+      contains(error.message, "which is the thing a reader has to be able to argue with"), true)
+error.clear()
+x = decision.quantity({ parameter: { estimate: 0 - 2 }, map: price_star, model: "m" })
+check("a point estimate with no interval is refused",
+      contains(error.message, "cannot say whether the model still applies"), true)
+error.clear()
+x = decision.quantity({ parameter: { estimate: 0 - 2, low: 0 - 1.5, high: 0 - 3 },
+                        map: price_star, model: "m" })
+check("an inverted interval is refused", contains(error.message, "inverted"), true)
+error.clear()
+on error stop
+
 ' --- TIER: provenance ------------------------------------------------------
 check("the decision records how it was made",
       db.provenance.method, "evaluate/expected_value")

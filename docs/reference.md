@@ -4915,6 +4915,23 @@ whole program without needing a call site.
   cleared is refused — there is no pattern to explain, and ranking against
   nothing would order stories by how little they claim.
 
+  `decision.quantity(spec)` is the decision layer's **second shape**.
+  `evaluate` chooses among a list; a price, a reorder level or a staffing
+  number has no list — it has a model mapping an estimated parameter to the
+  answer, and the model carries the parameter's interval through in a way that
+  is usually not proportional. `spec` names the `model` (required, because that
+  is what a reader has to be able to argue with), a `parameter` with
+  `estimate`/`low`/`high`, and a `map` function value returning the quantity or
+  `unknown` where the model does not apply. It **walks** the interval rather
+  than checking its endpoints, since a break anywhere is a break, and where one
+  is found there is no recommendation at all — plus
+  `point_estimate_would_say`, because that number is the most
+  confident-looking wrong answer available. Otherwise it reports the answer's
+  own interval and `amplification`: how much the model magnifies the
+  parameter's uncertainty, where 1 is proportional and below 1 means it damps.
+  Note that `map` cannot capture anything from its caller — gBASIC has no
+  closures — so a caller needs one function per model *instance*.
+
   `decision.calibrate(evidences)` closes the cycle: it takes
   `reasoning.as_evidence` results — and **nothing else**, so R10 has already
   refused anything uncontrolled — and returns an *interval*, not a number. One

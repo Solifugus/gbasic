@@ -1,0 +1,31 @@
+A product costing 10.00 to make, and a year of weekly prices and
+volumes. What price maximises profit?
+
+For constant-elasticity demand the answer is  p* = cost * b/(1+b),
+which exists only while the elasticity b is below -1. At -1 revenue
+is flat in price and profit rises without bound; above it, the model
+has no maximum at all.
+
+CASE A: clearly elastic
+  elasticity  -2.55   95% interval -2.82 to -2.28
+  price       16.46   from the interval 15.5 to 17.83
+  the elasticity interval is 1.24x wide and the price interval 1.15x
+  amplification 0.93   (1 would be proportional)
+
+CASE B: elastic, but close to the edge
+  elasticity  -1.3   95% interval -1.57 to -1.03
+  price       43.64   from the interval 27.64 to 373.18
+  the elasticity interval is 1.52x wide and the price interval 13.5x
+  amplification 8.85   (1 would be proportional)
+
+CASE C: barely elastic
+  elasticity  -1.2   95% interval -1.47 to -0.93
+  REFUSED
+    the parameter interval reaches -0.9977, where this model is undefined, so there is no quantity to recommend. A point estimate would have answered 60.7 with a straight face
+
+  THE SHAPE OF THE ANSWER IS THE FINDING. In case A the price is
+  known about as well as the elasticity is. In case B the SAME
+  quality of estimate -- an interval a shade over 1.5x wide -- gives
+  a price anywhere from 27.6 to 373, because the model divides by
+  (1 + b) and b is near -1. In case C there is no answer at all, and
+  a point estimate would have named one anyway.

@@ -428,6 +428,16 @@ Deliberately one function at a time.
 ### Built
 
 - **`reasoning.finding` + `insight.explain_change`** — below.
+- **`decision.quantity`** (Recipe 10,
+  [automation_recipe_10_what_price.md](automation_recipe_10_what_price.md)):
+  the first recipe of a different shape, and the one that showed
+  `evaluate`'s list-of-alternatives does not fit every decision. Where the
+  answer is a continuous quantity produced by a model, the parameter's
+  interval is carried through the model rather than around it: **R12** refuses
+  a recommendation when that interval reaches a value at which the model is
+  undefined, and `amplification` reports how hard the model magnifies
+  uncertainty — 8.85 in the worked case, where a 1.5x parameter interval
+  becomes a 13.5x price interval.
 - **`decision.calibrate`** (Recipe 9,
   [automation_recipe_09_how_much_evidence.md](automation_recipe_09_how_much_evidence.md)):
   turns the loop. Takes controlled evidence and produces the assumption, and

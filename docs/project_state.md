@@ -138,6 +138,11 @@ document list, with a status column, is `docs/README.md`.
   cycle by turning that evidence into the assumption behind the next decision,
   as an interval rather than a number, so *enough evidence* is answered
   relative to the decision at hand rather than by a sample-size rule.
+  `decision.quantity` is the layer's second shape, for answers that are a
+  continuous quantity produced by a model rather than a choice from a list: it
+  carries the parameter's interval through the model, refuses to recommend
+  anything when that interval reaches a value at which the model is undefined,
+  and reports how hard the model magnifies uncertainty.
 - **credit scorecards** — `scoring`, turning a population into a model that
   ranks risk and then into the artefact a credit committee approves: binning by
   weight of evidence, information value, AUC/KS/Gini, calibration onto a point

@@ -271,6 +271,120 @@ library decision
                               "the recovery fraction is the only uncertainty swept"] }) })
     end function
 
+    ' --- a decision whose answer is a QUANTITY ---------------------------------
+    '
+    ' `evaluate` chooses among a list. Some decisions have no list: a price, a
+    ' reorder level, a staffing number. What they have instead is a MODEL that
+    ' maps an estimated parameter to the answer -- and the parameter has an
+    ' interval, which the model carries through to the answer in a way that is
+    ' usually not proportional.
+    '
+    ' TWO THINGS COME OUT OF THAT AND BOTH ARE REFUSALS OF A KIND.
+    '
+    ' R12: if the interval reaches a parameter value where the model is
+    ' UNDEFINED, there is no quantity to recommend. Not a wide one -- none. A
+    ' point estimate will happily return a number there, and it is the most
+    ' confident-looking wrong answer in this whole design.
+    '
+    ' And AMPLIFICATION is reported rather than left implicit: how much the
+    ' model magnifies the parameter's uncertainty into the answer's. Where that
+    ' is large, the honest reading is that the answer is not known even though
+    ' the parameter looks well estimated.
+    '
+    ' `map` is a function value taking a parameter value and returning the
+    ' quantity, or `unknown` where the model does not apply. The domain
+    ' knowledge belongs to the caller; what belongs here is refusing to paper
+    ' over it.
+    function quantity(spec)
+        if type(spec) != "record" then
+            error "decision.quantity expects a record"
+        end if
+        for each field in ["parameter", "map", "model"] 
+            if is_unknown(spec[field]) then
+                error ("decision.quantity needs a " + field
+                       + " -- `model` names the relationship being relied on,"
+                       + " which is the thing a reader has to be able to argue"
+                       + " with")
+            end if
+        next
+        par = spec["parameter"]
+        for each field in ["estimate", "low", "high"]
+            if is_unknown(par[field]) then
+                error ("decision.quantity: the parameter needs a " + field
+                       + " -- a point estimate alone cannot say whether the"
+                       + " model still applies across the range the evidence"
+                       + " supports")
+            end if
+        next
+        if par["low"] > par["high"] then
+            error "decision.quantity: the parameter interval is inverted"
+        end if
+        f = spec["map"]
+
+        ' Walk the interval. Sampling rather than solving, because `map` is the
+        ' caller's function and this library cannot know its analytic form --
+        ' and a break anywhere in the interval is a break.
+        steps = 100
+        broken_at = unknown
+        lo_q = unknown
+        hi_q = unknown
+        for k = 0 to steps
+            v = par["low"] + (par["high"] - par["low"]) * k / steps
+            q = f(v)
+            if is_unknown(q) then
+                if is_unknown(broken_at) then
+                    broken_at = v
+                end if
+            else
+                if is_unknown(lo_q) or q < lo_q then
+                    lo_q = q
+                end if
+                if is_unknown(hi_q) or q > hi_q then
+                    hi_q = q
+                end if
+            end if
+        next
+
+        point = f(par["estimate"])
+        if not is_unknown(broken_at) then
+            said = "nothing"
+            if not is_unknown(point) then
+                said = string(round(point, 2))
+            end if
+            return { recommended: unknown, model: spec["model"],
+                     defined: false, broke_at: broken_at,
+                     point_estimate_would_say: point,
+                     why: ("the parameter interval reaches " + string(round(broken_at, 4))
+                           + ", where this model is undefined, so there is no"
+                           + " quantity to recommend. A point estimate would"
+                           + " have answered " + said + " with a straight face"),
+                     parameter: par }
+        end if
+        if is_unknown(point) then
+            error "decision.quantity: the model is undefined at the estimate itself"
+        end if
+
+        par_spread = 1
+        if par["low"] != 0 and par["high"] != 0 then
+            par_spread = abs(par["low"] / par["high"])
+            if par_spread < 1 then
+                par_spread = 1 / par_spread
+            end if
+        end if
+        q_spread = 1
+        if lo_q != 0 then
+            q_spread = abs(hi_q / lo_q)
+        end if
+        return { recommended: point, model: spec["model"], defined: true,
+                 low: lo_q, high: hi_q,
+                 parameter: par, parameter_spread: par_spread,
+                 quantity_spread: q_spread,
+                 amplification: q_spread / par_spread,
+                 amplification_is: ("how much this model magnifies the"
+                                    + " parameter's uncertainty into the"
+                                    + " answer's; 1 would be proportional") }
+    end function
+
     ' --- internals -----------------------------------------------------------
 
     ' §4.6: materiality is computed HERE, from the context, and never on the

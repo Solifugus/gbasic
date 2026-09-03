@@ -54,6 +54,16 @@ set -uo pipefail
 # so assurance becomes the share of the plausible interval over which the
 # recommendation survives.
 #
+# RECIPE 10 IS ASSERTED HERE TOO, and it is the first recipe of a DIFFERENT
+# SHAPE -- every other executable recipe is "a measure moved, where, which of
+# these actions". Here the answer is a CONTINUOUS QUANTITY, there is no
+# decomposition, the cost of inaction dominates, and a MODEL carries the
+# parameter's uncertainty into the answer. That last part is what breaks
+# things: p* = cost*b/(1+b) divides by (1+b), so an elasticity interval a
+# shade over 1.5x wide becomes a price interval 13.5x wide, and an interval
+# that reaches b = -1 has NO answer -- while a point estimate names one (60.7)
+# with a straight face. Both halves asserted.
+#
 # Headless, GI-independent, never skips (bar valgrind).
 
 cd "$(dirname "$0")/.."
@@ -80,10 +90,10 @@ else
     grep "^MISMATCH" "$scratch/out" | head -10
 fi
 n=$(sed -n 's/^checks: //p' "$scratch/out")
-if [ -n "$n" ] && [ "$n" -ge 50 ]; then
+if [ -n "$n" ] && [ "$n" -ge 64 ]; then
     pass "check count floor ($n checks)"
 else
-    fail "check count floor (got '${n:-none}', want >= 50)"
+    fail "check count floor (got '${n:-none}', want >= 64)"
 fi
 
 printf 'TIER the load-bearing tiers ran\n'
@@ -97,7 +107,10 @@ for needle in \
     "more evidence gives a narrower interval" \
     "evidence far from the break-even is decisive" \
     "the SAME amount of evidence near it is not" \
-    "uncontrolled observations may not be calibrated from"
+    "uncontrolled observations may not be calibrated from" \
+    "an interval reaching where the model breaks yields NO quantity" \
+    "  so amplification separates them" \
+    "  and what a point estimate would have claimed"
 do
     if grep -qF "ok   $needle" "$scratch/out"; then
         pass "ran: $needle"
@@ -162,6 +175,35 @@ if sed -n '/CASE B/,$p' "$scratch/ev" | grep -q "n = 30" \
     pass "and case B is still undecided at n=30"
 else
     fail "and case B is still undecided at n=30"
+fi
+
+
+printf 'TIER recipe 10: a decision whose answer is a quantity\n'
+if GBASIC_PATH=stdlib ./gbasic examples/automation_lab/08_what_price.bas \
+        >"$scratch/pr" 2>/dev/null; then
+    pass "08_what_price runs"
+else
+    fail "08_what_price runs"
+fi
+if diff -u examples/automation_lab/08_what_price.out "$scratch/pr" >/dev/null 2>&1; then
+    pass "08 matches its committed golden"
+else
+    fail "08 matches its committed golden"
+    diff -u examples/automation_lab/08_what_price.out "$scratch/pr" | head -12
+fi
+# THE DEMONSTRATION, both halves. Case B: a parameter interval a shade over
+# 1.5x wide becomes a price interval 13.5x wide, because the model divides by
+# (1+b). Case C: no answer at all, and a point estimate names one anyway.
+if grep -q "the elasticity interval is 1.52x wide and the price interval 13.5x" "$scratch/pr"; then
+    pass "a 1.52x parameter interval still becomes a 13.5x price interval"
+else
+    fail "a 1.52x parameter interval still becomes a 13.5x price interval"
+    grep "elasticity interval is" "$scratch/pr"
+fi
+if grep -q "would have answered 60.7 with a straight face" "$scratch/pr"; then
+    pass "and the refused case still reports the number a point estimate would have named"
+else
+    fail "and the refused case still reports the number a point estimate would have named"
 fi
 
 printf 'TIER valgrind\n'
