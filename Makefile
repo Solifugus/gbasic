@@ -39,6 +39,9 @@ SQLITE3_LIBS := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --li
 ODBC_AVAILABLE := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --exists odbc && printf 1 || printf 0)
 ODBC_CFLAGS := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --cflags odbc 2>/dev/null)
 ODBC_LIBS := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --libs odbc 2>/dev/null)
+LDAP_AVAILABLE := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --exists ldap && printf 1 || printf 0)
+LDAP_CFLAGS := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --cflags ldap 2>/dev/null)
+LDAP_LIBS := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --libs ldap lber 2>/dev/null)
 LIBCURL_AVAILABLE := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --exists libcurl && printf 1 || printf 0)
 LIBCURL_CFLAGS := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --cflags libcurl 2>/dev/null)
 LIBCURL_LIBS := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --libs libcurl 2>/dev/null)
@@ -132,6 +135,13 @@ CFLAGS += -DHAVE_ODBC=1 $(ODBC_CFLAGS)
 LDLIBS += $(ODBC_LIBS)
 else
 CFLAGS += -DHAVE_ODBC=0
+endif
+
+ifeq ($(LDAP_AVAILABLE),1)
+CFLAGS += -DHAVE_LDAP=1 $(LDAP_CFLAGS)
+LDLIBS += $(LDAP_LIBS)
+else
+CFLAGS += -DHAVE_LDAP=0
 endif
 
 ifeq ($(LIBCURL_AVAILABLE),1)
@@ -258,7 +268,7 @@ src/parser.tab.o: src/parser.tab.c src/parser.tab.h include/ast.h include/lexer.
 src/ast.o: src/ast.c include/ast.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
-src/eval.o: src/eval.c src/modules/xml.c src/modules/smtp.c src/modules/rowmodel.c src/modules/xlsx.c include/eval.h include/ast.h include/builtins.h include/actor.h include/diagnostics.h .stdlibdir-stamp
+src/eval.o: src/eval.c src/modules/xml.c src/modules/smtp.c src/modules/ldap.c src/modules/rowmodel.c src/modules/xlsx.c include/eval.h include/ast.h include/builtins.h include/actor.h include/diagnostics.h .stdlibdir-stamp
 	$(CC) $(CFLAGS) -c $< -o $@
 
 src/builtins.o: src/builtins.c include/builtins.h

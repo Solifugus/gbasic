@@ -275,7 +275,7 @@ if [ -f "$STATE" ]; then
         # this, so only names that LOOK like a library are checked: a name is
         # exempt if it is a documented module rather than a stdlib file.
         case "$n" in
-            xlsx|sqlite|pg|odbc|webclient|webserver|xml|gi|gui|process|reflect) continue ;;
+            xlsx|sqlite|pg|odbc|ldap|webclient|webserver|xml|gi|gui|process|reflect) continue ;;
         esac
         if [ ! -f "stdlib/$n.bas" ]; then
             echo "FAIL roster ghost   $STATE names \`$n\` but stdlib/$n.bas does not exist"

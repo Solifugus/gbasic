@@ -48,6 +48,11 @@
 #include <sqlext.h>
 #endif
 
+#if HAVE_LDAP
+#include <ldap.h>
+#include <lber.h>
+#endif
+
 #if HAVE_SQLITE3
 #include <sqlite3.h>
 #endif
@@ -173,6 +178,11 @@ void parse_set_source_path(const char *path);
 typedef struct PgConnectionValue PgConnectionValue;
 typedef struct SqliteConnectionValue SqliteConnectionValue;
 typedef struct OdbcConnectionValue OdbcConnectionValue;
+typedef struct LdapConnectionValue LdapConnectionValue;
+
+/* LDAP result codes are the server's; this is the gBASIC-side error code, in
+ * the module-error range beside odbc's 2003. */
+#define LDAP_ERROR_CODE 2004
 typedef struct RegexValue RegexValue;
 typedef struct XlsxWorkbook XlsxWorkbook;
 typedef struct XmlReaderValue XmlReaderValue;
@@ -199,6 +209,7 @@ typedef enum {
     VALUE_POSTGRES_CONNECTION,
     VALUE_SQLITE_CONNECTION,
     VALUE_ODBC_CONNECTION,
+    VALUE_LDAP_CONNECTION,
     VALUE_XML_READER,
     VALUE_PROCESS,
     VALUE_GOBJECT,
@@ -311,6 +322,7 @@ struct Value {
         PgConnectionValue *postgres_connection;
         SqliteConnectionValue *sqlite_connection;
         OdbcConnectionValue *odbc_connection;
+        LdapConnectionValue *ldap_connection;
         RegexValue *regex;
         /* A first-class watcher value: an index into the global watcher
          * registry. Indices are stable because unwatch TOMBSTONES an entry
@@ -362,6 +374,15 @@ struct OdbcConnectionValue {
 #endif
     size_t ref_count;
     int closed;
+};
+
+struct LdapConnectionValue {
+#if HAVE_LDAP
+    LDAP *ld;
+#endif
+    size_t ref_count;
+    int closed;
+    int bound;
 };
 
 /* A compiled regular expression (docs/text_design.md §3, decision §13.D).
@@ -691,6 +712,7 @@ static int sqlite_library_loaded = 0;
 static int odbc_library_loaded = 0;
 static int webclient_library_loaded = 0;
 static int smtp_library_loaded = 0;
+static int ldap_library_loaded = 0;
 #define SMTP_ERROR_CODE 3101
 static int webclient_curl_initialized = 0;
 static int webserver_library_loaded = 0;
@@ -782,6 +804,8 @@ static const char *value_kind_name(ValueKind kind) {
         return "sqlite_connection";
     case VALUE_ODBC_CONNECTION:
         return "odbc_connection";
+    case VALUE_LDAP_CONNECTION:
+        return "ldap_connection";
     case VALUE_XML_READER:
         return "xml_reader";
     case VALUE_GOBJECT:
@@ -1896,6 +1920,13 @@ static Value value_odbc_connection(OdbcConnectionValue *connection) {
     Value value = {0};
     value.kind = VALUE_ODBC_CONNECTION;
     value.as.odbc_connection = connection;
+    return value;
+}
+
+static Value value_ldap_connection(LdapConnectionValue *connection) {
+    Value value = {0};
+    value.kind = VALUE_LDAP_CONNECTION;
+    value.as.ldap_connection = connection;
     return value;
 }
 
@@ -3292,6 +3323,10 @@ static Value value_copy(Value value) {
         value.as.odbc_connection->ref_count++;
         return value_odbc_connection(value.as.odbc_connection);
     }
+    if (value.kind == VALUE_LDAP_CONNECTION) {
+        value.as.ldap_connection->ref_count++;
+        return value_ldap_connection(value.as.ldap_connection);
+    }
     if (value.kind == VALUE_XML_READER) {
         value.as.xml_reader->ref_count++;
         return value_xml_reader(value.as.xml_reader);
@@ -3387,6 +3422,16 @@ static void value_free(Value value) {
 #if HAVE_SQLITE3
             if (!connection->closed && connection->connection) {
                 sqlite3_close(connection->connection);
+            }
+#endif
+            free(connection);
+        }
+    } else if (value.kind == VALUE_LDAP_CONNECTION) {
+        LdapConnectionValue *connection = value.as.ldap_connection;
+        if (connection && --connection->ref_count == 0) {
+#if HAVE_LDAP
+            if (!connection->closed && connection->ld) {
+                ldap_unbind_ext_s(connection->ld, NULL, NULL);
             }
 #endif
             free(connection);
@@ -3547,6 +3592,11 @@ static int value_truthy(Value value) {
         runtime_error_raise("odbc connection cannot be used as a condition",
                             2002,
                             "odbc");
+        return 0;
+    case VALUE_LDAP_CONNECTION:
+        runtime_error_raise("ldap connection cannot be used as a condition",
+                            LDAP_ERROR_CODE,
+                            "ldap");
         return 0;
     case VALUE_SQLITE_CONNECTION:
         runtime_error_raise("sqlite connection cannot be used as a condition",
@@ -4779,6 +4829,8 @@ static int value_storage_equal(const Value *left, const Value *right) {
         return left->as.sqlite_connection == right->as.sqlite_connection;
     case VALUE_ODBC_CONNECTION:
         return left->as.odbc_connection == right->as.odbc_connection;
+    case VALUE_LDAP_CONNECTION:
+        return left->as.ldap_connection == right->as.ldap_connection;
     case VALUE_XML_READER:
         return left->as.xml_reader == right->as.xml_reader;
     case VALUE_GOBJECT:
@@ -7730,6 +7782,17 @@ static void library_import(const char *name, const char *path) {
         return;
     }
 
+    if (!path && strcmp(name, "ldap") == 0) {
+#if HAVE_LDAP
+        ldap_library_loaded = 1;
+#else
+        runtime_error_raise("LDAP support is not available in this build",
+                            LDAP_ERROR_CODE,
+                            "ldap");
+#endif
+        return;
+    }
+
     if (!path && strcmp(name, "webserver") == 0) {
         webserver_library_loaded = 1;
         return;
@@ -10204,6 +10267,8 @@ static const char *builtin_type_name(Value value) {
         return "sqlite_connection";
     case VALUE_ODBC_CONNECTION:
         return "odbc_connection";
+    case VALUE_LDAP_CONNECTION:
+        return "ldap_connection";
     case VALUE_XML_READER:
         return "xml_reader";
     case VALUE_GOBJECT:
@@ -10576,6 +10641,9 @@ static Value builtin_string_value(Value value) {
     case VALUE_ODBC_CONNECTION:
         value_free(value);
         return value_string("<odbc_connection>");
+    case VALUE_LDAP_CONNECTION:
+        value_free(value);
+        return value_string("<ldap_connection>");
     case VALUE_XML_READER:
         value_free(value);
         return value_string("<xml_reader>");
@@ -10717,6 +10785,7 @@ static int encode_value_to_builder(StringBuilder *builder, Value value, RenderMo
     case VALUE_POSTGRES_CONNECTION:
     case VALUE_SQLITE_CONNECTION:
     case VALUE_ODBC_CONNECTION:
+    case VALUE_LDAP_CONNECTION:
     case VALUE_XML_READER:
     case VALUE_GOBJECT:
     case VALUE_GBOXED:
@@ -11069,6 +11138,7 @@ static int serialize_value(SerBuf *b, Value v, int depth) {
     case VALUE_POSTGRES_CONNECTION:
     case VALUE_SQLITE_CONNECTION:
     case VALUE_ODBC_CONNECTION:
+    case VALUE_LDAP_CONNECTION:
     case VALUE_XML_READER:
         runtime_error_raise("serialize: database connections cannot be serialized",
                             1003, "actor");
@@ -19201,6 +19271,7 @@ static Value pg_eval_call(AstExpr *expr) {
 /* SMTP module (mail_design.md). Same arrangement; guarded internally by
  * HAVE_LIBCURL. Composition lives in stdlib/mail.bas -- this is the wire. */
 #include "modules/smtp.c"
+#include "modules/ldap.c"
 
 /* ===== Cryptography (docs/crypto_design.md) ===============================
  * Phase 1 (base64/hex encoding, random_bytes, constant-time bytes_equal) is
@@ -23298,6 +23369,7 @@ static const char *reflect_category(Value v) {
     case VALUE_POSTGRES_CONNECTION:
     case VALUE_SQLITE_CONNECTION:
     case VALUE_ODBC_CONNECTION:
+    case VALUE_LDAP_CONNECTION:
     case VALUE_XML_READER:
     case VALUE_WORKBOOK:
         return "foreign";
@@ -24955,6 +25027,23 @@ static Value eval_call(AstExpr *expr) {
             runtime_error_raise("SMTP support is not available in this build",
                                 SMTP_ERROR_CODE,
                                 "smtp");
+            return value_null();
+#endif
+        }
+
+        if (strcmp(expr->as.call.library, "ldap") == 0) {
+            if (!ldap_library_loaded) {
+                runtime_error_raise("library not loaded: ldap",
+                                    LDAP_ERROR_CODE,
+                                    "ldap");
+                return value_null();
+            }
+#if HAVE_LDAP
+            return ldap_eval_call(expr);
+#else
+            runtime_error_raise("LDAP support is not available in this build",
+                                LDAP_ERROR_CODE,
+                                "ldap");
             return value_null();
 #endif
         }

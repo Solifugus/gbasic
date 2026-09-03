@@ -4860,6 +4860,44 @@ rather than a hazard; `on warning ignore` silences it, and `on warning stop`
 does not escalate it. `library_collisions()` reports the same information for a
 whole program without needing a call site.
 
+- `ldap` — bind and search against a directory (`docs/ldap_design.md`). A
+  native module, like `sqlite` and `smtp`; `load ldap` raises cleanly in a
+  build without libldap. Scope is deliberately two operations: this is
+  authentication, not directory administration, and modify/add/delete,
+  referral chasing, SASL, pooling and paged results are all out.
+
+  `ldap.connect(config)` takes `host`, `port` (389 or 636 by default), and
+  **`security`, which is required and has no default** — `"ldaps"`,
+  `"starttls"` or `"plain"`. A default would make a cleartext bind either
+  silent or accidental; requiring it means a cleartext bind is a word somebody
+  typed and is greppable in a configuration review. `verify` is **true** unless
+  explicitly set false, and `ca_file` names an intranet CA, which is the normal
+  case here rather than an exotic one. **Referral chasing is disabled and is
+  not configurable**: a referral is the server telling the client to go and ask
+  a different server, which on an authentication path is an instruction to send
+  credentials somewhere the operator never named.
+
+  `ldap.bind(connection, dn, password)` **returns a value, and does not raise**
+  for an authentication outcome: `{ ok, reason, code, message }` where `reason`
+  is `""`, `"invalid_credentials"`, `"unreachable"`, `"tls_failed"`,
+  `"timeout"` or `"server_error"`. *Wrong password* and *the directory is
+  unreachable* are both ordinary on this path and must never be the same
+  answer — the first is shown to a user, the second is an operator's problem
+  and must not reach a viewer as a bad password — so a caller has to read
+  `reason` to learn anything and cannot conflate them by accident. An **empty
+  password is refused** rather than sent: LDAP treats it as an unauthenticated
+  bind, the directory answers *success*, and a caller that did not know would
+  have logged the user in.
+
+  `ldap.search(connection, spec)` takes `base`, `scope` (`"base"`, `"one"` or
+  `"sub"`), `filter`, an optional `attributes` list (empty or absent means all,
+  as LDAP defines it) and an optional `limit`. It returns an array of
+  `{ dn, attributes }`, and **attribute values are always an array**, even for
+  a single value: `memberOf` is multi-valued and `cn` is not, and a caller that
+  special-cases the two is correct until the day a user joins a second group.
+  A search matching nothing is an **empty array, not an error**.
+  `ldap.close(connection)` is idempotent.
+
 - `reasoning` / `insight` / `decision` / `automation` — the first increments of
   Business Automation Reasoning (`docs/automation_reasoning_design.md`). `credit` and friends answer
   questions about a domain; these answer *did anything happen, does it mean

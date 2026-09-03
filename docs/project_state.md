@@ -111,6 +111,12 @@ document list, with a status column, is `docs/README.md`.
   method, compounding kept separate from crediting, tiered rates, and
   certificates whose early-withdrawal penalty may reduce principal. Worked
   recipes: docs/deposits_cookbook.md.
+- **directory** — `ldap`, a native module for bind and search against LDAP(S):
+  the identity tier an intranet application needs. the security mode is required with
+  no default, referral chasing is off and not configurable, and bind reports
+  failure as a value so *wrong password* and *directory unreachable* can never
+  be the same answer. The gBASIC layer above it is the application's, because
+  which attribute holds groups is policy. Design: docs/ldap_design.md.
 - **business automation reasoning** — `reasoning` (the shared value model) and
   `insight` (observes and reasons), the first increment of
   docs/automation_reasoning_design.md. `insight.explain_change` decomposes a
