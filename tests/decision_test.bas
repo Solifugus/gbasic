@@ -44,7 +44,7 @@ end function
 
 ' --- two real findings from the insight layer ------------------------------
 ' `spotty`  -- one cell really collapsed; the AGGREGATE is not established.
-' `broad`   -- every cell declined; the aggregate IS established.
+' `broad`   -- six scattered cells collapsed; the aggregate IS established.
 
 function build(seed, plant, slump)
     load fake
@@ -61,8 +61,26 @@ function build(seed, plant, slump)
                         if plant = 1 and rg = "North" and c = "Outdoor" then
                             amt = amt * 0.45
                         end if
-                        if slump = 1 then
-                            amt = amt * 0.6
+                        ' R13 CHANGED WHAT THIS CONTROL HAS TO BE, and the
+                        ' change is the point rather than an adjustment. It
+                        ' used to slump EVERY cell by 40% -- a movement common
+                        ' to the whole population, which is what an ordinary
+                        ' January looks like (Recipe 3), so a share of it
+                        ' attributes to one cell what every cell did. The
+                        ' control for R2 must be a decline that is SOMEWHERE:
+                        ' six of the twenty cells collapse, scattered across
+                        ' regions so no single branch of the decomposition
+                        ' owns them, and the other fourteen are left alone.
+                        ' Measured across five seeds this reports shares every
+                        ' time, at t -2.76 to -3.17 and sign p 0.12 to 0.50.
+                        if slump = 1 and contains(["North/Outdoor",
+                                                   "South/Apparel",
+                                                   "East/Home",
+                                                   "West/Grocery",
+                                                   "North/Home",
+                                                   "South/Grocery"],
+                                                  rg + "/" + c) then
+                            amt = amt * 0.15
                         end if
                     end if
                     append(rows, { region: rg, category: c, period: p, revenue: amt })

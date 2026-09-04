@@ -1,0 +1,125 @@
+
+==================================================================
+ RUN A — December -> January.  Nothing is wrong.
+==================================================================
+  change              -474745   (-50.1%)
+  net t               -4.49   over 24 cells
+  moved together      22 down / 2 up   sign p 4e-05
+  shares              WITHHELD
+    because this movement is common to the population -- 22 of 24 cells moved down (sign test p = 4e-05), so it happened everywhere and the decomposition has not located it. A share would attribute to one cell what every cell did. Seasonality, a common shock and a broken feed all look like this and the data cannot tell them apart; compare like with like (comparison: "versus_last_year") if the measure has a season (design R13)
+  threshold           z 3.49
+  strength.leader     West / Toys   z -3.35
+  strength.clears     no
+  most anomalous      West / Toys   z -3.35
+  cells clearing      0
+  West / Grocery      rank 13 by size, z 0.52
+
+==================================================================
+ RUN B — December -> January.  West / Grocery really collapsed 45%.
+==================================================================
+  change              -488022   (-51.5%)
+  net t               -4.65   over 24 cells
+  moved together      22 down / 2 up   sign p 4e-05
+  shares              WITHHELD
+    because this movement is common to the population -- 22 of 24 cells moved down (sign test p = 4e-05), so it happened everywhere and the decomposition has not located it. A share would attribute to one cell what every cell did. Seasonality, a common shock and a broken feed all look like this and the data cannot tell them apart; compare like with like (comparison: "versus_last_year") if the measure has a season (design R13)
+  threshold           z 3.49
+  strength.leader     West / Toys   z -3.33
+  strength.clears     no
+  most anomalous      West / Toys   z -3.33
+  cells clearing      0
+  West / Grocery      rank 9 by size, z -0.09
+
+==================================================================
+ RUN C — January -> January.  The SAME collapsed population.
+==================================================================
+  change              11533   (2.6%)
+  net t               0.7   over 24 cells
+  moved together      9 down / 15 up   sign p 0.30746
+  shares              WITHHELD
+    because the net change is not distinguishable from zero (t = 0.7 over 24 cells), so a share of it would be a share of something not established
+  threshold           z 3.49
+  strength.leader     West / Grocery   z -4.91
+  strength.clears     YES — beyond ordinary variation
+  most anomalous      West / Grocery   z -4.91
+  cells clearing      1
+  West / Grocery      rank 1 by size, z -4.91
+
+==================================================================
+ RUN D — January -> January.  Nothing planted.  The control.
+==================================================================
+  change              24809   (5.5%)
+  net t               2.15   over 24 cells
+  moved together      8 down / 16 up   sign p 0.15159
+  shares              REPORTED
+  threshold           z 3.49
+  strength.leader     Southeast / Home   z 3.59
+  strength.clears     YES — beyond ordinary variation
+  most anomalous      Southeast / Home   z 3.59
+  cells clearing      1
+  West / Grocery      rank 8 by size, z 0.65
+
+==================================================================
+ RUN E — Run C again, with null: siblings_permuted.
+==================================================================
+  change              11533   (2.6%)
+  net t               0.7   over 24 cells
+  moved together      9 down / 15 up   sign p 0.30746
+  shares              WITHHELD
+    because the net change is not distinguishable from zero (t = 0.7 over 24 cells), so a share of it would be a share of something not established
+  threshold           z 4.45
+  strength.leader     West / Grocery   z -4.91
+  strength.clears     YES — beyond ordinary variation
+  most anomalous      West / Grocery   z -4.91
+  cells clearing      1
+  West / Grocery      rank 1 by size, z -4.91
+
+==================================================================
+ RUN F — Run D again, with null: siblings_permuted.
+==================================================================
+  change              24809   (5.5%)
+  net t               2.15   over 24 cells
+  moved together      8 down / 16 up   sign p 0.15159
+  shares              REPORTED
+  threshold           z 4.36
+  strength.leader     Southeast / Home   z 3.59
+  strength.clears     no
+  most anomalous      Southeast / Home   z 3.59
+  cells clearing      0
+  West / Grocery      rank 8 by size, z 0.65
+
+==================================================================
+ WHAT THIS MEASURED
+==================================================================
+
+  1. SEASONALITY DOES NOT PRODUCE FALSE ALARMS HERE. IT PRODUCES
+     BLINDNESS. Runs A and B agree on every number that matters:
+     the same leader, the same z to two decimals, nothing clearing
+     either time. One of them has a cell that lost 45% of its
+     revenue. That cell's z went from +0.52 to -0.09 -- the
+     collapse made it look MORE ordinary, because the seasonal
+     spread it is judged against is so wide that a real failure
+     lands in the middle of it.
+
+  2. WITHOUT R13 THE HEADLINE IS WORSE THAN THE SILENCE. The net
+     test establishes a 50.1% decline at t = -4.49 and shares were
+     duly reported: a confident attribution of an ordinary January
+     to whichever cell sells the most toys. The signature is in
+     the data and costs nothing to look for -- 22 of 24 cells moved
+     the same way, which is a one-in-thirty-thousand event if a
+     cell is as likely to rise as to fall. A movement common to
+     every cell is not explained by any of them.
+
+  3. THE FIX IS THE COMPARISON, NOT THE NULL. Run C is the same
+     data, the same library and the same threshold, asked January
+     against January: West / Grocery, z -4.91, rank 1, clears.
+     Design §7 had declared `versus_last_year` for two months and
+     `reasoning.comparisons()` returned one value, so the remedy
+     for seasonality could not be spelled. That is fixed here.
+
+  4. AND THE NULL STILL MATTERS, FOR THE OTHER FAULT. Run D plants
+     nothing and Southeast / Home clears anyway at z 3.59 -- the
+     miscalibration already measured for the t threshold, seen
+     live. Runs E and F repeat C and D under siblings_permuted:
+     the false one goes away and the true one survives. That is a
+     confirmation on a population the permuted null was never
+     tuned against.

@@ -62,8 +62,31 @@ function build(seed, plant, slump)
                             amt = amt * 0.45
                             stock = stock * 0.45
                         end if
-                        if slump = 1 then
+                        ' R13 CHANGED WHAT THIS CONTROL HAS TO BE, and the
+                        ' change is the point rather than an adjustment. It
+                        ' used to slump EVERY cell by 40% -- a movement common
+                        ' to the whole population, which is what an ordinary
+                        ' January looks like (Recipe 3), so a share of it
+                        ' attributes to one cell what every cell did. The
+                        ' control for R2 must be a decline that is SOMEWHERE:
+                        ' six of the twenty cells collapse, scattered across
+                        ' regions so no single branch of the decomposition
+                        ' owns them, and the other fourteen are left alone.
+                        ' Measured across five seeds this reports shares every
+                        ' time, at t -2.76 to -3.17 and sign p 0.12 to 0.50.
+                        ' slump = 2 is the OLD control and is now R13's
+                        ' subject: a shift common to every cell.
+                        if slump = 2 then
                             amt = amt * 0.6
+                        end if
+                        if slump = 1 and contains(["North/Outdoor",
+                                                   "South/Apparel",
+                                                   "East/Home",
+                                                   "West/Grocery",
+                                                   "North/Home",
+                                                   "South/Grocery"],
+                                                  rg + "/" + c) then
+                            amt = amt * 0.15
                         end if
                     end if
                     append(rows, { region: rg, category: c, period: p,
@@ -84,6 +107,8 @@ end function
 planted = insight.explain_change(build(4242, 1, 0), spec_for("siblings"))
 quiet = insight.explain_change(build(58, 0, 0), spec_for("siblings"))
 slumped = insight.explain_change(build(31, 0, 1), spec_for("siblings"))
+common = insight.explain_change(build(31, 0, 2), spec_for("siblings"))
+common_planted = insight.explain_change(build(4242, 1, 2), spec_for("siblings"))
 
 ' --- TIER: the shape of a Finding -----------------------------------------
 check("the decomposition found 20 cells", planted.search.cells, 20)
@@ -168,7 +193,8 @@ check("the planted run ALSO withholds them -- one real cell does not make the"
       + " aggregate real", planted.shares_reportable, false)
 
 ' THE CONTROL. Without it a library that never reported a share would pass
-' every check above. A population where every cell really did fall must report.
+' every check above. A population with a decline that is really SOMEWHERE
+' -- located, not universal (R13) -- must report.
 check("a real aggregate decline DOES report shares", slumped.shares_reportable, true)
 check("and its contributors carry one", is_unknown(slumped.contributors[0].share), false)
 total_share = 0
@@ -176,6 +202,51 @@ for each c in slumped.contributors
     total_share = total_share + c.share
 next
 near("the shares sum to 1 when they are reportable", total_share, 1, 0.0000001)
+
+' --- TIER: R13, THE SECOND WAY A SHARE LIES ------------------------------
+' R2 asks whether the net moved at all. R13 asks whether it moved EVERYWHERE,
+' and the two are not the same question -- Recipe 3 found a population where
+' the net moved enormously (t = -4.49) and the movement was an ordinary
+' January in every cell at once. A share of that attributes to one cell what
+' every cell did.
+'
+' The sign test is deliberately the assumption-light one: it says only that a
+' cell is as likely to rise as to fall under the null, and nothing about the
+' shape of how far -- which is less than the t test beside it already assumes.
+check("a shift common to every cell withholds shares",
+      common.shares_reportable, false)
+check("  and says so in those terms",
+      contains(common.shares_withheld_because, "common to the population"), true)
+check("  counting the cells that moved together",
+      common.null.common_movement.down, 20)
+check("  and calling it common", common.null.common_movement.common, true)
+
+' THE TWO REFUSALS MUST BE DISTINGUISHABLE. If one message served both, R13
+' would be indistinguishable from R2 and could be deleted without a test
+' noticing.
+check("R2's refusal is not R13's",
+      contains(quiet.shares_withheld_because, "common to the population"), false)
+check("and R13's is not R2's",
+      contains(common.shares_withheld_because, "not distinguishable from zero"),
+      false)
+
+' THE CONTROL, again. A decline that is really SOMEWHERE is not common, and
+' must still report -- or R13 is just "refuse everything" wearing a p-value.
+check("a located decline is not common movement",
+      slumped.null.common_movement.common, false)
+
+' AND THE MECHANISM, asserted as a DIFFERENCE rather than a number. A common
+' multiplicative shift does not merely mislead the headline: it inflates the
+' cross-sectional spread every cell is judged against, in proportion to
+' itself, so it RAISES THE DETECTION FLOOR. The same planted collapse, same
+' seed, clears without the shift and does not clear with it. That is why R13
+' says the decomposition has not located this, rather than saying the data is
+' seasonal -- which it has no way to know.
+check("the planted cell clears on its own", planted.strength.clears, true)
+check("  and the SAME cell no longer clears under a common shift",
+      common_planted.strength.clears, false)
+check("  while still being the biggest mover",
+      common_planted.strength.leader[1], "Outdoor")
 
 ' --- TIER: contributors are ranked and complete ---------------------------
 check("every cell is a contributor", count(planted.contributors), 20)

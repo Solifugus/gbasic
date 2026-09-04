@@ -62,14 +62,14 @@ else
 fi
 
 n=$(sed -n 's/^checks: //p' "$scratch/out")
-if [ -n "$n" ] && [ "$n" -ge 45 ]; then
+if [ -n "$n" ] && [ "$n" -ge 62 ]; then
     pass "check count floor ($n checks)"
 else
-    fail "check count floor (got '${n:-none}', want >= 45)"
+    fail "check count floor (got '${n:-none}', want >= 62)"
 fi
 
 # The named tiers must actually have run. Without this the floor above is
-# satisfied by forty-five checks of anything.
+# satisfied by sixty-two checks of anything.
 printf 'TIER the load-bearing tiers ran\n'
 for needle in \
     "the planted run leads with the planted cell" \
@@ -77,7 +77,10 @@ for needle in \
     "the threshold is well above sqrt(2 ln n), which is only the average max" \
     "a real aggregate decline DOES report shares" \
     "a Finding carrying materiality is refused, with the reason" \
-    "and explicitly NOT an explanation"
+    "and explicitly NOT an explanation" \
+    "a shift common to every cell withholds shares" \
+    "  and the SAME cell no longer clears under a common shift" \
+    "a located decline is not common movement"
 do
     if grep -qF "ok   $needle" "$scratch/out"; then
         pass "ran: $needle"
@@ -85,6 +88,85 @@ do
         fail "ran: $needle"
     fi
 done
+
+# --- RECIPE 3: a seasonal measure ----------------------------------------
+#
+# The design laboratory's answer to design §7's open question -- both nulls
+# are cross-sectional and neither looks at time, so are they wrong under
+# seasonality? The recipe compares December with January, which is the most
+# ordinary seasonal comparison in commerce, over a population with nothing
+# wrong in it and then over the same population with a real 45% collapse.
+#
+# The golden pins the transcript. These assertions pin what makes the
+# transcript MEAN what the recipe says, each of which could stop being true
+# while leaving a passing golden, because a golden records whatever came out.
+printf 'TIER recipe 3 -- a seasonal measure\n'
+if GBASIC_PATH=stdlib ./gbasic examples/automation_lab/09_a_seasonal_measure.bas \
+        >"$scratch/r3" 2>"$scratch/r3err"; then
+    pass "09_a_seasonal_measure runs"
+else
+    fail "09_a_seasonal_measure runs ($(head -1 "$scratch/r3err"))"
+fi
+if diff -u examples/automation_lab/09_a_seasonal_measure.out "$scratch/r3" >/dev/null 2>&1; then
+    pass "output matches the committed golden"
+else
+    fail "output matches the committed golden"
+    diff -u examples/automation_lab/09_a_seasonal_measure.out "$scratch/r3" | head -15
+fi
+
+# 1. THE LOAD-BEARING ONE. Runs A and B are the same population with and
+#    without a real 45% collapse in it, compared December to January. If the
+#    two runs stop agreeing on the leader and its z, the experiment is no
+#    longer showing that seasonality BLINDS the test -- it is showing
+#    something else, and the write-up would be wrong.
+a_lead=$(sed -n '/RUN A/,/RUN B/p' "$scratch/r3" | grep -m1 'strength.leader')
+b_lead=$(sed -n '/RUN B/,/RUN C/p' "$scratch/r3" | grep -m1 'strength.leader')
+if [ -n "$a_lead" ] && [ "${a_lead%z*}" = "${b_lead%z*}" ]; then
+    pass "a real 45% collapse does not change who leads"
+else
+    fail "a real 45% collapse does not change who leads ($a_lead / $b_lead)"
+fi
+if sed -n '/RUN B/,/RUN C/p' "$scratch/r3" | grep -q 'cells clearing      0'; then
+    pass "and nothing clears in the run that has a real collapse in it"
+else
+    fail "and nothing clears in the run that has a real collapse in it"
+fi
+
+# 2. R13 must fire on the seasonal comparison and say why.
+if sed -n '/RUN A/,/RUN B/p' "$scratch/r3" | grep -q 'common to the population'; then
+    pass "run A withholds shares as a movement common to the population"
+else
+    fail "run A withholds shares as a movement common to the population"
+fi
+
+# 3. THE CONTROL, and without it the two above are satisfied by a library
+#    that finds nothing anywhere. The SAME data compared January to January
+#    must recover the planted cell, ranked first and clearing.
+if sed -n '/RUN C/,/RUN D/p' "$scratch/r3" | grep -q 'West / Grocery      rank 1 '; then
+    pass "compared like with like, the planted cell is recovered and ranked first"
+else
+    fail "compared like with like, the planted cell is recovered and ranked first"
+fi
+if sed -n '/RUN C/,/RUN D/p' "$scratch/r3" | grep -q 'strength.clears     YES'; then
+    pass "and it clears"
+else
+    fail "and it clears"
+fi
+
+# 4. The permuted null, on a population it was never tuned against: it must
+#    remove run D's false positive AND keep run C's true one. Either half
+#    alone is satisfied by a threshold that never fires or never moves.
+if sed -n '/RUN D/,/RUN E/p' "$scratch/r3" | grep -q 'strength.clears     YES' \
+   && sed -n '/RUN F/,$p' "$scratch/r3" | grep -q 'strength.clears     no'; then
+    pass "the permuted null removes the false positive the t threshold allows"
+else
+    fail "the permuted null removes the false positive the t threshold allows"
+fi
+if sed -n '/RUN E/,/RUN F/p' "$scratch/r3" | grep -q 'strength.clears     YES'; then
+    pass "and keeps the true one"
+else
+    fail "and keeps the true one"
+fi
 
 printf 'TIER valgrind\n'
 if vg_available; then

@@ -44,8 +44,20 @@ library reasoning
     ' The comparison is likewise declared: period over period, versus the same
     ' period last year, and versus forecast disagree routinely and each is
     ' right for a different question.
+    '
+    ' `versus_last_year` WAS DECLARED IN THE DESIGN FOR TWO MONTHS AND THIS
+    ' FUNCTION RETURNED ONE VALUE, so the error message beside it named three
+    ' comparisons in prose and accepted one. Recipe 3 is what noticed, because
+    ' comparing like with like is the whole remedy for a seasonal measure and
+    ' it could not be spelled. The arithmetic is the same either way -- the
+    ' caller chooses which rows are baseline and which are current -- so what
+    ' this records is WHICH QUESTION WAS ASKED, which is exactly the thing a
+    ' reader of the Finding cannot otherwise recover.
+    '
+    ' `versus_forecast` is still absent, and deliberately: it needs a forecast,
+    ' which is a value nothing in this tree produces yet.
     function comparisons()
-        return ["period_over_period"]
+        return ["period_over_period", "versus_last_year"]
     end function
 
     ' §4.5. Three quantities that shared one word and one threshold in the

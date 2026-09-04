@@ -226,6 +226,56 @@ layers read.
 column and an ordered list of dimensions. Everything Recipe 1 hand-rolled
 around that is `frame`'s existing work.
 
+### 4.8 Seasonality does not cause false alarms. It causes blindness.
+
+*Measured by Recipe 3 (`examples/automation_lab/09_a_seasonal_measure.bas`,
+asserted in `tests/run_insight.sh`).* The expectation going in was the obvious
+one: a cross-sectional null under a seasonal measure would flag the
+high-amplitude cells and produce confident nonsense about toys. It does not,
+and what it does instead is worse.
+
+Twenty-four cells, December against January, categories with their ordinary
+seasonal profiles — toys triple into Christmas and collapse after it. Two runs
+of the same population, one with a real 45% collapse planted in a
+flat-seasonal cell:
+
+| | run A, nothing wrong | run B, a real 45% collapse |
+|---|---|---|
+| headline | −50.1% | −51.5% |
+| net *t* | −4.49 | −4.65 |
+| leader | West / Toys, z −3.35 | West / Toys, z −3.33 |
+| cells clearing | 0 | 0 |
+| the collapsed cell's z | +0.52 | **−0.09** |
+
+The two runs are the same answer. And the cell that lost 45% of its revenue
+did not merely fail to stand out — **it moved towards the middle**. The
+mechanism is general and has nothing to do with seasons: a shift shared by
+every cell inflates the cross-sectional spread *in proportion to itself*, so it
+raises the detection floor for everything. Seasonality is one way to get one.
+Isolated in the simplest possible population — every cell down 40%, nothing
+else — the same planted collapse that clears on its own no longer clears.
+
+Two corrections came out of it.
+
+**R13**, above: the population moving together is visible in the data at no
+cost, and a movement common to every cell is not explained by any of them.
+
+**`versus_last_year` was declared and not implemented.** §7 had named three
+comparisons since the rewrite, `reasoning.comparisons()` returned one, and the
+error message beside it listed all three in prose. The remedy for a seasonal
+measure could not be spelled. With it, the same data, library and threshold
+that found nothing at December-against-January recovers the planted cell at
+z −4.91, ranked first, clearing. **The fix for seasonality is the comparison,
+not the null** — which is the opposite of where this section expected to end
+up, and is why a third, temporal null is *not* being added.
+
+A third result arrived unasked: run D plants nothing, compares January with
+January, and a cell clears anyway at z 3.59 — the *t* threshold's known
+miscalibration (§4.3), seen live rather than in a Monte Carlo. Repeating runs
+C and D under `siblings_permuted` removes the false one and keeps the true one,
+which is a confirmation of that null on a population it was never tuned
+against.
+
 ---
 
 ## 5. Architecture (decided)
@@ -336,11 +386,19 @@ answers, the caller declares and the library never infers.
     exchangeable between periods under the null (0.085 and 0.050 measured).
 
   Both are cross-sectional: they compare cells to each other at one moment and
-  neither looks at time, so **both are wrong under seasonality**. That is
-  Recipe 3's question and it is open.
-- **The comparison** — period over period, versus same period last year,
-  versus forecast. These disagree, routinely, and each is right for a different
-  question.
+  neither looks at time. **Recipe 3 answered what that costs, and the answer
+  was not the expected one** (§4.8): under seasonality the cross-sectional null
+  does not produce false alarms about cells, it produces *blindness* — a cell
+  that lost 45% of its revenue became **more** ordinary-looking, because a
+  common shift inflates the spread every cell is judged against in proportion
+  to itself. The fix is the comparison, not the null.
+- **The comparison** — `period_over_period` or `versus_last_year`. These
+  disagree routinely and each is right for a different question, and comparing
+  like with like is the whole remedy for a seasonal measure: the same data,
+  library and threshold that found nothing at December-against-January recovers
+  the planted cell at z −4.91, ranked first, at January-against-January.
+  `versus_forecast` is still absent because it needs a forecast, which nothing
+  in this tree produces yet.
 - **The authority envelope** — what this process may do without a human.
   Never a default; an unset authority means *nothing may execute*.
 - **Materiality thresholds** — per measure, in the `Context`.
@@ -410,6 +468,23 @@ the number a learning loop would have stored, and is entirely regression to the
 mean. The cells nobody touched recovered just as well. `as_evidence` refuses an
 uncontrolled outcome; `as_observation` reads it labelled.
 
+**R13 — a share is refused when the movement is common to the population.**
+Produced by Recipe 3. R2 asks whether the net moved *at all*; R13 asks whether
+it moved *everywhere*, and the two are not the same question. Measured: an
+ordinary December-to-January comparison over a population with **nothing wrong
+in it** fell 50.1%, the net test established it at t = −4.49, and shares were
+duly reported — a confident attribution of an ordinary January to whichever
+cell sells the most toys. The signature costs nothing to look for: **22 of 24
+cells moved the same way**, a one-in-thirty-thousand event under a null where a
+cell is as likely to rise as to fall. A sign test decides it, and assumes less
+than the t test beside it already assumes — only the direction, never the shape
+of how far.
+
+It is **not a seasonality detector and must not be read as one.** A real
+company-wide collapse moves 22 of 24 cells down, and so does a broken feed.
+What is established is what R2 establishes one level down: *the decomposition
+has not located this*. Which of the three it is, is outside the data.
+
 **R9 — a decision may not be sized off a quantity the Finding declined to
 establish.** R2's consequence one layer along, and produced by Recipe 5 rather
 than reasoned to. Measured: the same intervention over the same data gives
@@ -476,7 +551,15 @@ Deliberately one function at a time.
 
 ### Built
 
-- **`reasoning.finding` + `insight.explain_change`** — below.
+- **`reasoning.finding` + `insight.explain_change`** — below, and since
+  extended by Recipe 3 (§4.8,
+  [automation_recipe_03_a_seasonal_measure.md](automation_recipe_03_a_seasonal_measure.md)):
+  **R13** refuses a share when the movement is common to the population, and
+  `versus_last_year` became a comparison the code will actually accept rather
+  than one this document merely named. The recipe's own finding is that a
+  cross-sectional null under a seasonal measure does not raise false alarms —
+  it goes **blind**, because a shift shared by every cell inflates the spread
+  each cell is judged against in proportion to itself.
 - **`decision.quantity`** (Recipe 10,
   [automation_recipe_10_what_price.md](automation_recipe_10_what_price.md)):
   the first recipe of a different shape, and the one that showed
@@ -600,7 +683,7 @@ four are chosen to **break** the model rather than broaden it:
 | next | what it attacks |
 |---|---|
 | **2. Two causes at once** | the drill-down's greedy first step is wrong |
-| **3. A seasonal measure** | "ordinary" is not stationary; R8 exercised rather than assumed |
+| ~~**3. A seasonal measure**~~ | *done — produced R13, and `versus_last_year`* |
 | **4. A high-cardinality dimension** | search width dominates; almost nothing should survive |
 | ~~**5. The first recipe that decides**~~ | *done — produced R9, and `decision.evaluate`* |
 

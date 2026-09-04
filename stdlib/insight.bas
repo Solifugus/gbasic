@@ -233,6 +233,56 @@ library insight
         if se > 0 then
             t = m / se
         end if
+        ' --- R13. THE SECOND WAY A SHARE LIES, and it is not R2's way.
+        ' Recipe 3 compared December with January -- the most ordinary seasonal
+        ' comparison in commerce -- over a population with NOTHING wrong in it.
+        ' Revenue "fell" 50.1%, the net test established it at t = -4.49, and
+        ' shares were duly reported: a confident attribution of an entirely
+        ' ordinary January to whichever cell happened to sell the most toys.
+        '
+        ' The signature is visible in the data and needs nothing extra: 22 of
+        ' 24 cells moved the SAME WAY. Under any null where a cell is as likely
+        ' to rise as to fall, that is a one-in-thirty-thousand event -- the
+        ' population moved TOGETHER, and a movement common to every cell is not
+        ' explained by any of them. A sign test says so, and it assumes less
+        ' than the t test already assumes: only that a cell is as likely to
+        ' rise as to fall, never anything about the shape of how far.
+        '
+        ' THIS IS NOT A SEASONALITY DETECTOR AND MUST NOT BE READ AS ONE. A
+        ' real company-wide collapse moves 22 of 24 cells down too, and so does
+        ' a broken feed. What the test establishes is the same thing R2
+        ' establishes one level down -- that the DECOMPOSITION HAS NOT LOCATED
+        ' THIS -- and the honest report of a common movement is that it
+        ' happened everywhere, not that Northeast caused 82.6% of it.
+        down = 0
+        up = 0
+        for each d in changes
+            if d < 0 then
+                down = down + 1
+            end if
+            if d > 0 then
+                up = up + 1
+            end if
+        next
+        ' The sign test uses the SAME declared alpha, uncorrected, and that is
+        ' deliberate: the search width is a family-wise rate over n cells
+        ' because a drill-down IS a search, while this is ONE test asked once,
+        ' so there is no family to correct for. Both are the caller's declared
+        ' tolerance for being wrong; only one of them is spent n times.
+        moved = down + up
+        sign_p = 1
+        if moved > 0 then
+            fewer = down
+            if up < down then
+                fewer = up
+            end if
+            sign_p = 2 * stats.binom_cdf(fewer, moved, 0.5)
+            if sign_p > 1 then
+                sign_p = 1
+            end if
+        end if
+        common = sign_p < alpha
+
         reportable = abs(t) >= 2
         withheld = ""
         if not reportable then
@@ -240,6 +290,26 @@ library insight
                         + " (t = " + string(round(t, 2)) + " over " + string(n)
                         + " cells), so a share of it would be a share of"
                         + " something not established")
+        end if
+        if reportable and common then
+            reportable = false
+            bigger = down
+            way = "down"
+            if up > down then
+                bigger = up
+                way = "up"
+            end if
+            withheld = ("this movement is common to the population -- "
+                        + string(bigger) + " of " + string(moved)
+                        + " cells moved " + way + " (sign test p = "
+                        + string(round(sign_p, 5)) + "), so it happened"
+                        + " everywhere and the decomposition has not located"
+                        + " it. A share would attribute to one cell what every"
+                        + " cell did. Seasonality, a common shock and a broken"
+                        + " feed all look like this and the data cannot tell"
+                        + " them apart; compare like with like"
+                        + " (comparison: \"versus_last_year\") if the measure"
+                        + " has a season (design R13)")
         end if
 
         sums = _sums(changes)
@@ -304,6 +374,8 @@ library insight
                       alpha_requested: alpha, correction: "bonferroni" },
             null: { kind: spec["null"], mean: m, sd: sd, threshold: threshold,
                     net_t: t, standardized: "leave_one_out", df: n - 2,
+                    common_movement: { down: down, up: up, p: sign_p,
+                                       common: common },
                     calibration: calibration,
                     draws: draws, permute_seed: permute_seed },
             strength: { z: top.z, clears: top.clears, leader: top.path },
