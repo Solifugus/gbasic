@@ -238,17 +238,41 @@ static Value ldap_eval_connect(AstExpr *expr) {
     int newctx = 0;
     ldap_set_option(ld, LDAP_OPT_X_TLS_NEWCTX, &newctx);
 
+    /* A STARTTLS FAILURE IS RECORDED, NOT RAISED, and that is a correction.
+     *
+     * It used to raise from `connect` while an LDAPS failure surfaced as a
+     * VALUE from `bind` -- the same condition (TLS could not be established)
+     * behaving differently depending on which security mode was declared, with
+     * the documented contract ("bind reports failure as a value") holding for
+     * two modes out of three.
+     *
+     * The consequence was not cosmetic. gdash reported it from a real
+     * directory: a caller who guards `bind`, as the documentation steers them
+     * to, takes the raise -- and a raise inside a web handler kills the worker
+     * under the let-it-crash rule, so an intranet directory with an expired
+     * certificate would crash a worker on EVERY login attempt instead of
+     * showing "sign-in is unavailable".
+     *
+     * So the failure is carried on the handle and answered by `bind`, where
+     * every other operational failure is answered. It also makes `tls_failed`
+     * reachable from StartTLS, which it previously documented and could not
+     * produce. */
+    char *fail_reason = NULL, *fail_message = NULL;
+    int fail_code = 0;
     if (is_starttls) {
         rc = ldap_start_tls_s(ld, NULL, NULL);
         if (rc != LDAP_SUCCESS) {
             char msg[512];
-            snprintf(msg, sizeof(msg),
-                     "ldap.connect: StartTLS failed against %s: %s",
-                     uri, ldap_err2string(rc));
-            ldap_unbind_ext_s(ld, NULL, NULL);
-            free(host); free(security); free(ca_file);
-            ldap_raise(msg);
-            return value_null();
+            char *diag = NULL;
+            ldap_get_option(ld, LDAP_OPT_DIAGNOSTIC_MESSAGE, &diag);
+            snprintf(msg, sizeof(msg), "StartTLS failed against %s: %s%s%s",
+                     uri, ldap_err2string(rc),
+                     (diag && diag[0]) ? " -- " : "",
+                     (diag && diag[0]) ? diag : "");
+            fail_reason = copy_string("tls_failed");
+            fail_message = copy_string(msg);
+            fail_code = rc;
+            if (diag) ldap_memfree(diag);
         }
     }
 
@@ -261,6 +285,9 @@ static Value ldap_eval_connect(AstExpr *expr) {
     }
     conn->ld = ld;
     conn->ref_count = 1;
+    conn->fail_reason = fail_reason;
+    conn->fail_message = fail_message;
+    conn->fail_code = fail_code;
     return value_ldap_connection(conn);
 }
 
@@ -288,13 +315,25 @@ static Value ldap_eval_bind(AstExpr *expr) {
         return value_null();
     }
 
+    /* A connect-time TLS failure is answered here, so every operational
+     * failure of every security mode arrives by the same route. */
+    if (conn->fail_reason) {
+        value_free(dn_v); value_free(pw_v);
+        return ldap_bind_result(0, conn->fail_reason, conn->fail_code,
+                                conn->fail_message ? conn->fail_message : "");
+    }
+
     /* An empty password is an UNAUTHENTICATED bind in LDAP: the server answers
      * success and the caller believes the credentials were checked. Refused
      * here rather than passed on, because it is the classic way an LDAP login
      * ends up accepting everyone. */
     if (pw_v.as.string[0] == '\0') {
+        /* Its OWN reason, not `invalid_credentials`. Both fail closed, but a
+         * caller cannot otherwise tell "I passed an empty password" -- a bug in
+         * their code -- from "the directory rejected these credentials".
+         * Reported by gdash against a real directory. */
         value_free(dn_v); value_free(pw_v);
-        return ldap_bind_result(0, "invalid_credentials",
+        return ldap_bind_result(0, "empty_password",
                                 LDAP_INVALID_CREDENTIALS,
                                 "an empty password is an unauthenticated bind,"
                                 " which the directory would answer with success");
@@ -347,6 +386,13 @@ static Value ldap_eval_search(AstExpr *expr) {
     LdapConnectionValue *conn =
         ldap_conn_arg(expr, 0, "ldap.search expects a connection");
     if (!conn) {
+        return value_null();
+    }
+    if (conn->fail_reason) {
+        char msg[640];
+        snprintf(msg, sizeof(msg), "ldap.search: this connection never came up: %s",
+                 conn->fail_message ? conn->fail_message : conn->fail_reason);
+        ldap_raise(msg);
         return value_null();
     }
     Value spec = eval_expr(expr->as.call.args.items[1]);

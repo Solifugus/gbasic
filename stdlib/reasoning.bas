@@ -24,12 +24,21 @@ library reasoning
     ' --- what is declared ----------------------------------------------------
 
     ' R8: what counts as ORDINARY is a modelling choice that changes every
-    ' answer downstream, so it is declared and never inferred. `siblings` --
-    ' the other cells of the same decomposition -- is right for a stationary
-    ' measure and WRONG under seasonality, which is why the list is short and
-    ' adding to it is deliberate.
+    ' answer downstream, so it is declared and never inferred.
+    '
+    '   siblings           the other cells, with a threshold from the t
+    '                      distribution. Exactly calibrated when cell changes
+    '                      are light-tailed and ANTI-CONSERVATIVE when they are
+    '                      not -- measured at 0.047 against a requested 0.05 for
+    '                      uniform data and 0.110 for lognormal revenue.
+    '   siblings_permuted  the same cells, with the threshold taken from THIS
+    '                      DATA'S OWN TAILS by sign-flipping. Costs B passes and
+    '                      assumes only that a deviation is as likely up as down.
+    '
+    ' Both are wrong under seasonality, which is a temporal structure neither
+    ' looks at. That is why the list is short and adding to it is deliberate.
     function nulls()
-        return ["siblings"]
+        return ["siblings", "siblings_permuted"]
     end function
 
     ' The comparison is likewise declared: period over period, versus the same

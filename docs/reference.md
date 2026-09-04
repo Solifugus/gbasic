@@ -4879,8 +4879,10 @@ whole program without needing a call site.
 
   `ldap.bind(connection, dn, password)` **returns a value, and does not raise**
   for an authentication outcome: `{ ok, reason, code, message }` where `reason`
-  is `""`, `"invalid_credentials"`, `"unreachable"`, `"tls_failed"`,
-  `"timeout"` or `"server_error"`. *Wrong password* and *the directory is
+  is `""`, `"invalid_credentials"`, `"empty_password"`, `"unreachable"`,
+  `"tls_failed"`, `"timeout"` or `"server_error"` — and **every operational
+  failure arrives this way in every security mode**, including a StartTLS
+  failure, which `connect` records rather than raising. *Wrong password* and *the directory is
   unreachable* are both ordinary on this path and must never be the same
   answer — the first is shown to a user, the second is an operator's problem
   and must not reach a viewer as a bad password — so a caller has to read
@@ -4891,7 +4893,8 @@ whole program without needing a call site.
 
   `ldap.search(connection, spec)` takes `base`, `scope` (`"base"`, `"one"` or
   `"sub"`), `filter`, an optional `attributes` list (empty or absent means all,
-  as LDAP defines it) and an optional `limit`. It returns an array of
+  as LDAP defines it — bound as an administrator that includes `userPassword`,
+  so name the attributes you want) and an optional `limit`. It returns an array of
   `{ dn, attributes }`, and **attribute values are always an array**, even for
   a single value: `memberOf` is multi-valued and `cn` is not, and a caller that
   special-cases the two is correct until the day a user joins a second group.

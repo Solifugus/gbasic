@@ -383,6 +383,11 @@ struct LdapConnectionValue {
     size_t ref_count;
     int closed;
     int bound;
+    /* A connect-time failure that must surface as a VALUE from `bind` rather
+     * than as a raise from `connect`. See modules/ldap.c. */
+    char *fail_reason;
+    char *fail_message;
+    int fail_code;
 };
 
 /* A compiled regular expression (docs/text_design.md §3, decision §13.D).
@@ -3434,6 +3439,8 @@ static void value_free(Value value) {
                 ldap_unbind_ext_s(connection->ld, NULL, NULL);
             }
 #endif
+            free(connection->fail_reason);
+            free(connection->fail_message);
             free(connection);
         }
     } else if (value.kind == VALUE_ODBC_CONNECTION) {

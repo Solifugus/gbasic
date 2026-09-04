@@ -52,7 +52,11 @@ check("  carrying the directory's own result code", bad.code, 49)
 ' classic way an LDAP login accepts everybody.
 empty = ldap.bind(c, alice, "")
 check("an empty password is refused rather than sent", empty.ok, false)
-check("  as invalid credentials", empty.reason, "invalid_credentials")
+' ITS OWN REASON. Both fail closed, but a caller cannot otherwise tell "I
+' passed an empty password" -- their own bug -- from "the directory rejected
+' these credentials". Reported by gdash from a real directory.
+check("  with its own reason", empty.reason, "empty_password")
+check("  distinguishable from a rejected credential", empty.reason != bad.reason, true)
 check("  explaining what it would otherwise be",
         contains(empty.message, "unauthenticated bind"), true)
 
@@ -70,6 +74,26 @@ check("  and is its own reason, not `unreachable`", tls.reason, "tls_failed")
 check("so a certificate problem is distinguishable from a network one",
         tls.reason != down.reason, true)
 check("and from a bad password", tls.reason != bad.reason, true)
+
+' A TLS FAILURE ARRIVES BY THE SAME ROUTE AS EVERY OTHER OPERATIONAL FAILURE,
+' whichever security mode was declared. StartTLS used to RAISE from `connect`
+' while LDAPS answered from `bind` -- the same condition behaving differently
+' depending on a configuration field, with the documented contract holding for
+' two modes out of three. gdash found it against a real directory and named the
+' consequence: a caller who guards `bind`, as the documentation steers them to,
+' takes the raise, and a raise inside a web handler kills the worker on EVERY
+' login attempt instead of showing "sign-in is unavailable".
+on error goto next
+st = ldap.connect({ host: "127.0.0.1", port: plain_port, security: "starttls" })
+check("StartTLS against a server that cannot do it does NOT raise from connect",
+      error = false, true)
+error.clear()
+on error stop
+st_bind = ldap.bind(st, alice, "correct horse")
+check("  it answers from bind, like everything else", st_bind.ok, false)
+check("  with tls_failed, which was documented and previously unreachable here",
+      st_bind.reason, "tls_failed")
+ldap.close(st)
 
 ' --- TIER: search ---------------------------------------------------------
 rows = ldap.search(c, { base: "ou=people,dc=example,dc=com", scope: "sub",

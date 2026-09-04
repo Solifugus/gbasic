@@ -71,10 +71,26 @@ must never reach a viewer as a bad password. So `bind` does not raise for
 either. It returns:
 
 ```text
-{ ok: false, reason: "invalid_credentials" | "unreachable" | "tls_failed"
-                   | "timeout" | "server_error",
+{ ok: false, reason: "invalid_credentials" | "empty_password" | "unreachable"
+                   | "tls_failed" | "timeout" | "server_error",
   code: <the LDAP result code>, message: <the server's diagnostic> }
 ```
+
+`empty_password` is its own reason rather than folded into
+`invalid_credentials`. Both fail closed, but a caller cannot otherwise tell *I
+passed an empty password* — their own bug — from *the directory rejected these
+credentials*.
+
+**Every operational failure arrives by this route, in every security mode.**
+That is a correction: StartTLS failure used to raise from `connect` while an
+LDAPS failure answered from `bind`, so the same condition behaved differently
+depending on a configuration field and the contract above held for two modes
+out of three. gdash found it against a real directory and named the
+consequence — a caller who guards `bind`, as this document steers them to,
+takes the raise, and a raise inside a web handler kills the worker under the
+let-it-crash rule, so a directory with an expired certificate would crash a
+worker on **every login attempt** instead of showing "sign-in is unavailable".
+It also left `tls_failed` documented but unreachable from StartTLS.
 
 An application cannot accidentally conflate them, because it has to read
 `reason` to learn anything at all. Following `market`'s treatment of a dead
@@ -112,6 +128,24 @@ failure gdash's own ask names, and which it would then have to work around.
 The transport is the part that is genuinely ours: it is the same for everyone
 and it is the part that is dangerous to get wrong.
 
+**Two things the first caller learned, recorded here so the next one does not
+have to.** Reported by gdash from a real OpenLDAP 2.6.10.
+
+**`memberOf` is Active Directory's shape.** OpenLDAP does not populate it
+unless an operator enabled the `memberof` overlay, so a caller reading only
+that attribute gets **zero groups** from a stock OpenLDAP — and zero groups is
+a *legitimate answer*, not an error, so it fails silently: every group-gated
+page refuses everyone while the log shows successful logins. The alternative is
+a search for groups whose `member` is the user's DN. Which one applies is a
+property of the directory, so it belongs in configuration with **no default**,
+for exactly the reason `security` has none: guessing wrong produces a plausible
+answer rather than a failure.
+
+**Always name the attributes you want.** A search with no `attributes` list
+means *everything*, as LDAP defines it — and bound as an administrator that
+includes `userPassword`. Correct LDAP and correct behaviour from this module,
+and still a good way to put a password hash somewhere it should never be.
+
 ## 8. Validation, and its honest limit
 
 Tested against **a mock LDAP responder** (`tests/ldap/mock_ldap.py`) that
@@ -121,12 +155,25 @@ BindRequest and SearchRequest messages to answer. Verified before any of this
 was built: a good password binds, a bad one returns result code 49, and a
 search returns multi-valued `memberOf`.
 
-**It has never been tested against Active Directory or OpenLDAP.** No such
-server is reachable from this machine, and a mock is not a directory: it does
-not implement referrals, aliases, size limits, controls, or any of the
-behaviour a real server has and this module might mishandle. The first thing
-gdash should do with this module is point it at a real directory, and the
-first thing to expect is that something is wrong.
+**It has since met a real directory.** gdash ran it against **OpenLDAP 2.6.10**
+in a rootless container and reported back
+(`~/development/gdash/docs/gdash5_platform_report_ldap.md`). The module held:
+correct bind succeeds, a wrong password is `invalid_credentials` code 49,
+**a DN that does not exist answers the same way — so there is no enumeration
+oracle**, an unreachable server is `unreachable`, an empty result is an empty
+array, single-valued attributes still arrive as arrays, and the attribute list
+is honoured. StartTLS did not downgrade against a plaintext server, LDAPS to a
+plaintext port failed, and both `security: "none"` and an omitted `security`
+were refused.
+
+Three things came back and all three are fixed above: the StartTLS/LDAPS
+inconsistency (§5), `empty_password` (§5), and the `memberOf` assumption (§7)
+— which was wrong in *both* repositories' designs, not in the code.
+
+**Still not tested against Active Directory**, whose `memberOf` behaviour is
+the one this module's callers are most likely to rely on. And a real directory
+is not every directory: referrals, aliases, size limits and controls remain
+unexercised.
 
 That limit is stated rather than papered over because this is an
 authentication path, and gdash put it best: a client that is subtly wrong here

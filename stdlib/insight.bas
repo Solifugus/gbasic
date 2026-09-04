@@ -178,7 +178,29 @@ library insight
                    + " by fewer dimensions, or accept that this question is not"
                    + " answerable from this data")
         end if
-        threshold = stats.t_quantile(1 - alpha / (2 * n), n - 2)
+        draws = spec["draws"]
+        if is_unknown(draws) then
+            draws = 200
+        end if
+        permute_seed = spec["permute_seed"]
+        if is_unknown(permute_seed) then
+            permute_seed = 1
+        end if
+
+        threshold = 0
+        calibration = ""
+        if spec["null"] = "siblings_permuted" then
+            threshold = _permuted_threshold(cells, alpha, draws, permute_seed)
+            calibration = "permuted from this data (" + string(draws) + " draws)"
+        else
+            threshold = stats.t_quantile(1 - alpha / (2 * n), n - 2)
+            calibration = ("assumed: a t threshold, exact only when cell changes"
+                           + " are light-tailed. Measured 0.047 against a"
+                           + " requested 0.05 for uniform data and 0.110 for"
+                           + " lognormal revenue -- declare"
+                           + " null: \"siblings_permuted\" to take the"
+                           + " threshold from the data instead")
+        end if
 
         ' --- R2 / §4.4. A share is contributor_change / net_change, and that
         ' denominator is unstable: as offsetting movements grow, shares inflate
@@ -203,25 +225,14 @@ library insight
                         + " something not established")
         end if
 
-        total = 0
-        for each c in changes
-            total = total + c
-        next
+        sums = _sums(changes)
 
         contributors = []
-        idx = 0
         for each k in cells.order
             d = cells.current[k] - cells.baseline[k]
             ' Leave-one-out: this cell is judged against the OTHERS, never
             ' against a spread it is itself part of.
-            others = _without(changes, idx)
-            om = mean(others)
-            osd = stdev(others)
-            z = 0
-            if osd > 0 then
-                z = (d - om) / osd
-            end if
-            idx = idx + 1
+            z = _loo_z(d, n, sums.total, sums.total_sq)
             share = unknown
             if reportable and net != 0 then
                 share = d / net
@@ -243,7 +254,8 @@ library insight
                  parameters: { measure: spec["measure"], period: spec["period"],
                                baseline: spec["baseline"], current: spec["current"],
                                dimensions: dims, comparison: spec["comparison"],
-                               null: spec["null"] },
+                               null: spec["null"], alpha: alpha,
+                               threshold_calibration: calibration },
                  assumptions: ["ordinary movement is stationary across cells",
                                "cells vary independently"],
                  as_of: spec["as_of"] })
@@ -267,7 +279,9 @@ library insight
             search: { dimensions: dims, cells: n, width: threshold,
                       alpha: alpha, correction: "bonferroni" },
             null: { kind: spec["null"], mean: m, sd: sd, threshold: threshold,
-                    net_t: t, standardized: "leave_one_out", df: n - 2 },
+                    net_t: t, standardized: "leave_one_out", df: n - 2,
+                    calibration: calibration,
+                    draws: draws, permute_seed: permute_seed },
             strength: { z: top.z, clears: top.clears, leader: top.path },
             contributors: contributors,
             shares_reportable: reportable,
@@ -448,6 +462,8 @@ library insight
         current = { }
         path = { }
         order = []
+        values = { }
+        baseline_n = { }
         ab = { }
         ac = { }
         measure = spec["measure"]
@@ -462,6 +478,8 @@ library insight
             if is_unknown(baseline[key]) then
                 baseline[key] = 0
                 current[key] = 0
+                values[key] = []
+                baseline_n[key] = 0
                 path[key] = parts
                 append(order, key)
                 for each a in assoc_names
@@ -471,18 +489,26 @@ library insight
             end if
             if r[pcol] = spec["baseline"] then
                 baseline[key] = baseline[key] + r[measure]
+                lst = values[key]
+                append(lst, r[measure])
+                values[key] = lst
+                baseline_n[key] = baseline_n[key] + 1
                 for each a in assoc_names
                     ab[a + "@" + key] = ab[a + "@" + key] + r[a]
                 next
             else if r[pcol] = spec["current"] then
                 current[key] = current[key] + r[measure]
+                lst = values[key]
+                append(lst, r[measure])
+                values[key] = lst
                 for each a in assoc_names
                     ac[a + "@" + key] = ac[a + "@" + key] + r[a]
                 next
             end if
         next
         return { baseline: baseline, current: current, path: path,
-                 order: order, assoc_baseline: ab, assoc_current: ac }
+                 order: order, values: values, baseline_n: baseline_n,
+                 assoc_baseline: ab, assoc_current: ac }
     end function
 
     ' R3. These are ASSOCIATIONS. The word `cause` does not appear, and
@@ -503,16 +529,143 @@ library insight
         return out
     end function
 
-    ' The list with one entry removed. Small n by construction -- this is a
-    ' decomposition, not a dataset -- so the copy is the honest implementation.
-    function _without(xs, skip)
-        out = []
-        for i = 0 to count(xs) - 1
-            if i != skip then
-                append(out, xs[i])
+    ' Leave-one-out standardisation in CLOSED FORM, from running sums. The
+    ' first version rebuilt the list without each cell, which is O(n^2) and
+    ' fine at twenty cells and not at two hundred -- and the permutation null
+    ' below needs this same quantity B times over, which the copying version
+    ' could not afford.
+    '
+    ' BOTH PATHS CALL THIS. If the parametric threshold and the permuted one
+    ' standardised differently, the permutation would be calibrating a
+    ' statistic nobody computes.
+    function _loo_z(x, n, total, total_sq)
+        if n < 3 then
+            return 0
+        end if
+        others_mean = (total - x) / (n - 1)
+        others_sq = total_sq - x * x
+        ss = others_sq - (total - x) * (total - x) / (n - 1)
+        if ss <= 0 then
+            return 0
+        end if
+        sd = sqrt(ss / (n - 2))
+        if sd <= 0 then
+            return 0
+        end if
+        return (x - others_mean) / sd
+    end function
+
+    function _sums(xs)
+        t = 0
+        q = 0
+        for each v in xs
+            t = t + v
+            q = q + v * v
+        next
+        return { total: t, total_sq: q }
+    end function
+
+    ' The largest |z| in one vector -- the statistic the whole search rests on.
+    function _max_abs_z(xs)
+        n = count(xs)
+        s = _sums(xs)
+        best = 0
+        for each v in xs
+            z = abs(_loo_z(v, n, s.total, s.total_sq))
+            if z > best then
+                best = z
             end if
         next
+        return best
+    end function
+
+    ' A PERMUTATION THRESHOLD, for the null that does not assume a shape.
+    '
+    ' MEASURED, WHICH IS WHY THIS EXISTS: the parametric threshold is exactly
+    ' right when cell changes are light-tailed (0.047 observed against a
+    ' requested 0.05 for uniform data) and 2-3x wrong when they are not (0.110
+    ' at 20 cells and 0.143 at 40 for lognormal revenue), getting WORSE as the
+    ' search widens -- the opposite of what a family-wise correction is for.
+    ' A change is a difference of two independent sums, so its SKEW cancels;
+    ' what does not cancel is TAIL WEIGHT, and revenue-like data has it.
+    '
+    ' THE OBVIOUS PERMUTATION IS WRONG AND WAS BUILT FIRST. Sign-flipping each
+    ' cell\'s deviation leaves every |deviation| intact, so the biggest cell is
+    ' still the biggest in every draw and the permutation distribution centres
+    ' on the very statistic it is judging: measured, the permuted threshold
+    ' (3.724) came out ABOVE the observed maximum (3.309) and the test fired
+    ' 0 times in 200 null trials. A null that never fires is worse than one
+    ' that fires too often, because nothing reveals it.
+    '
+    ' What IS exchangeable under the null is the PERIOD LABEL WITHIN A CELL: if
+    ' a cell did not move, which of its observations were "before" and which
+    ' "after" is arbitrary. Reassigning those labels at random, keeping each
+    ' cell\'s own counts, gives the distribution of "the largest |z| when
+    ' nothing moved" from this data\'s own variability -- tails included.
+    '
+    ' Deterministic in a declared seed: a rehearsal must reach the same
+    ' threshold as the live run, or R5\'s argument fails one level down.
+    function _permuted_threshold(cells, alpha, draws, seed)
+        n = count(cells.order)
+        maxes = []
+        for b = 1 to draws
+            changes = []
+            idx = 0
+            for each k in cells.order
+                vals = cells.values[k]
+                nb = cells.baseline_n[k]
+                ' A deterministic shuffle, then split at the cell's own
+                ' baseline count -- so the periods keep their sizes and only
+                ' the labelling moves.
+                order = _shuffled(count(vals), seed, b, idx)
+                lo = 0
+                hi = 0
+                for j = 0 to count(order) - 1
+                    if j < nb then
+                        lo = lo + vals[order[j]]
+                    else
+                        hi = hi + vals[order[j]]
+                    end if
+                next
+                append(changes, hi - lo)
+                idx = idx + 1
+            next
+            append(maxes, _max_abs_z(changes))
+        next
+        ranked = sort(maxes)
+        i = floor((1 - alpha) * draws)
+        if i > draws - 1 then
+            i = draws - 1
+        end if
+        if i < 0 then
+            i = 0
+        end if
+        return ranked[i]
+    end function
+
+    ' Fisher-Yates from the deterministic bit source.
+    function _shuffled(n, seed, b, cell)
+        out = []
+        for i = 0 to n - 1
+            append(out, i)
+        next
+        for i = n - 1 to 1 step -1
+            j = mod(_bit(seed + cell, b, i), i + 1)
+            t = out[i]
+            out[i] = out[j]
+            out[j] = t
+        next
         return out
+    end function
+
+    ' Small deterministic bit source. Same requirement as automation.assign:
+    ' reproducible across runs and machines, because a replay must land on the
+    ' same threshold.
+    function _bit(seed, b, i)
+        h = mod(seed * 2654435 + b * 40503 + i * 12289, 1000003)
+        h = bxor(h, shl(h, 7))
+        h = bxor(h, shr(h, 11))
+        return mod(h * 2654435 + 12345, 1000003)
     end function
 
     function _corr(a, b)
