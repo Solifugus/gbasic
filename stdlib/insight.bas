@@ -188,18 +188,35 @@ library insight
         end if
 
         threshold = 0
-        calibration = ""
+        calibration = { }
         if spec["null"] = "siblings_permuted" then
             threshold = _permuted_threshold(cells, alpha, draws, permute_seed)
-            calibration = "permuted from this data (" + string(draws) + " draws)"
+            calibration = { method: "period-label permutation",
+                            assumed: false,
+                            draws: draws, seed: permute_seed,
+                            measured_null_rate: ("0.085 at 20 cells and 0.050 at"
+                                                 + " 40, at 200 draws; 0.070 at 20"
+                                                 + " cells at 800 draws"
+                                                 + " (lognormal revenue, 200 trials"
+                                                 + " each). More draws estimate the"
+                                                 + " quantile better and cost"
+                                                 + " proportionally more"),
+                            note: ("the threshold comes from this data's own"
+                                   + " variability, so it follows the tails"
+                                   + " rather than assuming them") }
         else
             threshold = stats.t_quantile(1 - alpha / (2 * n), n - 2)
-            calibration = ("assumed: a t threshold, exact only when cell changes"
-                           + " are light-tailed. Measured 0.047 against a"
-                           + " requested 0.05 for uniform data and 0.110 for"
-                           + " lognormal revenue -- declare"
-                           + " null: \"siblings_permuted\" to take the"
-                           + " threshold from the data instead")
+            calibration = { method: "t quantile", assumed: true,
+                            measured_null_rate: ("0.047 light-tailed; 0.100 at 20"
+                                                 + " cells and 0.130 at 40 for"
+                                                 + " lognormal revenue"),
+                            note: ("EXACT ONLY FOR LIGHT-TAILED cell changes."
+                                   + " A change is a difference of two"
+                                   + " independent sums so its skew cancels;"
+                                   + " tail weight does not, and revenue-like"
+                                   + " data has it. Declare"
+                                   + " null: \"siblings_permuted\" to take the"
+                                   + " threshold from the data instead") }
         end if
 
         ' --- R2 / §4.4. A share is contributor_change / net_change, and that
@@ -254,8 +271,9 @@ library insight
                  parameters: { measure: spec["measure"], period: spec["period"],
                                baseline: spec["baseline"], current: spec["current"],
                                dimensions: dims, comparison: spec["comparison"],
-                               null: spec["null"], alpha: alpha,
-                               threshold_calibration: calibration },
+                               null: spec["null"], alpha_requested: alpha,
+                               threshold_method: calibration["method"],
+                               threshold_assumed: calibration["assumed"] },
                  assumptions: ["ordinary movement is stationary across cells",
                                "cells vary independently"],
                  as_of: spec["as_of"] })
@@ -276,8 +294,14 @@ library insight
             comparison: spec["comparison"],
             observation: { baseline: base_total, current: now_total,
                            change: net, change_pct: pct },
+            ' `alpha_requested`, NOT `alpha`. What was asked for is not what
+            ' was achieved: measured, the t threshold delivers 0.10-0.13 on
+            ' revenue-like data against a requested 0.05. The field name is the
+            ' retraction -- a Finding may state what error rate was REQUESTED
+            ' and must not imply it was DELIVERED. `null.calibration` carries
+            ' what is actually known.
             search: { dimensions: dims, cells: n, width: threshold,
-                      alpha: alpha, correction: "bonferroni" },
+                      alpha_requested: alpha, correction: "bonferroni" },
             null: { kind: spec["null"], mean: m, sd: sd, threshold: threshold,
                     net_t: t, standardized: "leave_one_out", df: n - 2,
                     calibration: calibration,

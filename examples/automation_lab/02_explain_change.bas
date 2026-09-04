@@ -36,7 +36,8 @@ function report(f)
          + "  (" + string(round(f.observation.change_pct * 100, 1)) + "%)")
   print "  cells searched    " + string(f.search.cells)
   print ("  threshold         z " + string(round(f.search.width, 2))
-         + "  (family-wise, alpha " + string(f.search.alpha) + ")")
+         + "  (requested alpha " + string(f.search.alpha_requested) + ")")
+  print "  threshold from    " + f.null.calibration.method
   print "  leading cell      " + join(f.strength.leader, " -> ")
   print "  its z             " + string(round(f.strength.z, 2))
   if f.strength.clears then

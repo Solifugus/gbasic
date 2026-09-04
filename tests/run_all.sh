@@ -38,7 +38,7 @@ logdir="$(mktemp -d)"
 # Excluded unless RUN_MANUAL=1, and NAMED when excluded rather than quietly
 # dropped: run_xml_bigfile generates a >=100 MB document and is documented as a
 # manual tier. Anything added here must be announced the same way.
-manual=(run_xml_bigfile.sh)
+manual=(run_xml_bigfile.sh run_insight_calibration.sh)
 
 is_manual() {
     local s

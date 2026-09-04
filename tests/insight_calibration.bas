@@ -95,3 +95,35 @@ function rate_of(shape, regions, cats, nullkind, trials)
     next
     return hits / trials
 end function
+
+' --- TIER: the machinery is right when its assumption holds -----------------
+' The control. Under light-tailed cell changes the t threshold is exactly what
+' it claims, and without this tier the two below could be read as "the
+' correction is simply broken" rather than "its assumption is unmet".
+light = rate_of("light", 4, 5, "siblings", 150)
+report("light-tailed, t threshold", light, 0.0, 0.11)
+
+' --- TIER: and wrong when it does not --------------------------------------
+' THE DOCUMENTED LIMITATION, ASSERTED AS A FACT. `null.calibration` tells a
+' reader the t threshold delivers 0.10-0.13 on revenue-like data. If that
+' stopped being true the label would be wrong, so the label is tested.
+heavy_t = rate_of("heavy", 4, 5, "siblings", 150)
+report("heavy-tailed, t threshold", heavy_t, 0.06, 0.22)
+check("which is materially above the requested 0.05", heavy_t > 0.07, true)
+
+' --- TIER: the permuted null is better, asserted as a DIFFERENCE ------------
+' Not "the permuted rate is small" -- that passes on a null that never fires,
+' which is exactly the bug the first attempt shipped (sign-flipping left every
+' |deviation| intact, so the threshold landed above the statistic it judged and
+' the test fired 0 times in 200 trials). A difference against the t null on the
+' SAME data is what distinguishes better calibration from no calibration, and
+' the lower bound is what distinguishes it from silence.
+heavy_p = rate_of("heavy", 4, 5, "siblings_permuted", 150)
+report("heavy-tailed, permuted threshold", heavy_p, 0.005, 0.14)
+check("the permuted null fires LESS often than the t null on the same data",
+      heavy_p < heavy_t, true)
+check("but it still fires -- it is a threshold, not a mute button",
+      heavy_p > 0, true)
+
+print "checks: " + string(tally.checks)
+print "mismatches: " + string(tally.mismatches)

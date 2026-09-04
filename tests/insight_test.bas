@@ -113,7 +113,18 @@ check("both populations declined", planted.observation.change < 0
 ' the whole increment is about. Asserted at three widths.
 near("the threshold is the family-wise t quantile for 20 cells",
      planted.search.width, stats.t_quantile(1 - 0.05 / (2 * 20), 18), 0.0000001)
-check("and the error rate it was set for is recorded", planted.search.alpha, 0.05)
+' `alpha_requested`, not `alpha`. The rename IS the retraction: measured, the
+' t threshold delivers 0.10-0.13 on revenue-like data against a requested 0.05,
+' so a Finding may say what was ASKED FOR and must not imply it was DELIVERED.
+check("the error rate it was REQUESTED with is recorded", planted.search.alpha_requested, 0.05)
+check("and the old field, which implied delivery, is gone",
+      is_unknown(planted.search["alpha"]), true)
+check("the null says how its threshold was arrived at",
+      planted.null.calibration.method, "t quantile")
+check("  and that it is ASSUMED rather than measured",
+      planted.null.calibration.assumed, true)
+check("  carrying the rate actually observed under it",
+      contains(planted.null.calibration.measured_null_rate, "0.130"), true)
 check("along with which correction", planted.search.correction, "bonferroni")
 check("and that cells are judged leave-one-out", planted.null.standardized, "leave_one_out")
 check("with the degrees of freedom that implies", planted.null.df, 18)

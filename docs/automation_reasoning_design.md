@@ -141,6 +141,43 @@ since a leave-one-out residual is *t*-distributed rather than normal the
 threshold uses *t* with `n−2` degrees of freedom. Below four cells there is no
 dispersion left to estimate and the call is refused.
 
+**Third correction, made under review (2026-09-03), and the one that matters
+most: the threshold was calibrated and the calibration was never checked.**
+Measured over 200 null trials — nothing planted — the family-wise
+false-positive rate came out **0.090 at 12 cells, 0.110 at 20 and 0.143 at 40**
+against a requested 0.05, *worsening as the search widened*, which is the
+opposite of what a family-wise correction is for.
+
+The cause is **tail weight, not skew**. A cell's change is a difference of two
+independent sums, so skew cancels; tail weight does not, and revenue-like data
+has it. Confirmed by a control: the identical search over uniform data lands at
+**0.047**, exactly α. The correction was never wrong about multiplicity — it
+was wrong about the shape of the distribution it was correcting.
+
+Two things follow, and the first is a retraction. `search.alpha` is now
+**`search.alpha_requested`**: a Finding may state the error rate it was *asked*
+for and must not imply it *achieved* it. `null.calibration` carries what is
+actually known — the method, whether it is assumed or measured, and the
+observed rates.
+
+The second is a second declared null. **`siblings_permuted`** takes the
+threshold from this data's own variability by reassigning period labels within
+each cell, which follows the tails instead of assuming them: **0.085 at 20
+cells and 0.050 at 40** at the default 200 draws. Raising the draw count helps
+and costs proportionally: **0.070 at 20 cells with 800**, so part of the
+residual is the coarseness of estimating a 95th percentile from 200 samples and
+part of it is not. Better, not perfect, and every number here is pinned in
+`tests/insight_calibration.bas` rather than claimed.
+
+*An attempt that failed, kept because it is the same class of error this
+library exists to refuse:* the first permutation flipped the sign of each
+cell's deviation. That leaves every |deviation| intact, so the largest cell is
+still the largest in every draw and the permutation distribution centres on the
+statistic it is supposed to judge — the threshold came out **above** the
+observed maximum (3.724 against 3.309) and the test fired **0 times in 200 null
+trials**. A null that never fires is worse than one that fires too often,
+because nothing reveals it.
+
 One consequence is worth knowing, because the obvious mental model says
 otherwise: **the threshold is not monotone in the search width.** Two effects
 pull opposite ways — with few cells the spread is badly estimated and *t*
@@ -287,8 +324,20 @@ Following `lending`'s accrual basis, `credit`'s delinquency method and
 `scoring`'s WOE orientation: where two reasonable conventions give different
 answers, the caller declares and the library never infers.
 
-- **The null** — what counts as *ordinary*. Sibling cells (§4.2) are a good
-  default for a stationary measure and a wrong one under seasonality.
+- **The null** — what counts as *ordinary*, and now a real choice rather than a
+  single option:
+  - `siblings` — the other cells, with a threshold from the *t* distribution.
+    Cheap, and **exact only for light-tailed cell changes** (0.047 measured
+    against a requested 0.05 for uniform data; 0.100–0.143 for lognormal
+    revenue).
+  - `siblings_permuted` — the same cells, with the threshold taken from the
+    data's own variability by permuting period labels within each cell. Costs
+    *B* extra passes and assumes only that a cell's observations are
+    exchangeable between periods under the null (0.085 and 0.050 measured).
+
+  Both are cross-sectional: they compare cells to each other at one moment and
+  neither looks at time, so **both are wrong under seasonality**. That is
+  Recipe 3's question and it is open.
 - **The comparison** — period over period, versus same period last year,
   versus forecast. These disagree, routinely, and each is right for a different
   question.
