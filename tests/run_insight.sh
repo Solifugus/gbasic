@@ -62,14 +62,14 @@ else
 fi
 
 n=$(sed -n 's/^checks: //p' "$scratch/out")
-if [ -n "$n" ] && [ "$n" -ge 62 ]; then
+if [ -n "$n" ] && [ "$n" -ge 77 ]; then
     pass "check count floor ($n checks)"
 else
-    fail "check count floor (got '${n:-none}', want >= 62)"
+    fail "check count floor (got '${n:-none}', want >= 77)"
 fi
 
 # The named tiers must actually have run. Without this the floor above is
-# satisfied by sixty-two checks of anything.
+# satisfied by seventy-seven checks of anything.
 printf 'TIER the load-bearing tiers ran\n'
 for needle in \
     "the planted run leads with the planted cell" \
@@ -80,7 +80,10 @@ for needle in \
     "and explicitly NOT an explanation" \
     "a shift common to every cell withholds shares" \
     "  and the SAME cell no longer clears under a common shift" \
-    "a located decline is not common movement"
+    "a located decline is not common movement" \
+    "  and the fall is monotone in how many others broke" \
+    "allowing for them restores the statistic to the cell" \
+    "  and saying so explicitly changes no answer"
 do
     if grep -qF "ok   $needle" "$scratch/out"; then
         pass "ran: $needle"
@@ -166,6 +169,75 @@ if sed -n '/RUN E/,/RUN F/p' "$scratch/r3" | grep -q 'strength.clears     YES'; 
     pass "and keeps the true one"
 else
     fail "and keeps the true one"
+fi
+
+# --- RECIPE 2: two causes at once ----------------------------------------
+#
+# Leave-one-out removes a cell from its own reference and nothing else. The
+# recipe holds ONE cell literally constant -- the same collapse, the same
+# change of -25,728 -- and varies only how many UNRELATED cells collapsed
+# beside it. Anything that moves its verdict is a fact about its neighbours.
+#
+# The golden pins the two tables. These assertions pin what makes them mean
+# what the write-up says, and the third is the one that keeps `max_causes`
+# from being read as a repair rather than a trade.
+printf 'TIER recipe 2 -- two causes at once\n'
+if GBASIC_PATH=stdlib ./gbasic examples/automation_lab/10_two_causes_at_once.bas \
+        >"$scratch/r2" 2>"$scratch/r2err"; then
+    pass "10_two_causes_at_once runs"
+else
+    fail "10_two_causes_at_once runs ($(head -1 "$scratch/r2err"))"
+fi
+if diff -u examples/automation_lab/10_two_causes_at_once.out "$scratch/r2" >/dev/null 2>&1; then
+    pass "output matches the committed golden"
+else
+    fail "output matches the committed golden"
+    diff -u examples/automation_lab/10_two_causes_at_once.out "$scratch/r2" | head -15
+fi
+
+# 1. THE EXPERIMENT'S PREMISE. If the watched cell's change is not identical in
+#    every run, the whole demonstration is about something else.
+nchanges=$(sed -n '/others  watched change/,/^$/p' "$scratch/r2" \
+           | awk '$1 ~ /^[0-9]+$/ {print $2}' | sort -u | wc -l)
+if [ "$nchanges" = "1" ]; then
+    pass "the watched cell's change is identical in all four runs"
+else
+    fail "the watched cell's change is identical in all four runs (got $nchanges values)"
+fi
+
+# 2. And its verdict is not.
+if sed -n '/others  watched change/,/^$/p' "$scratch/r2" | grep -q 'FOUND' \
+   && sed -n '/others  watched change/,/^$/p' "$scratch/r2" | grep -q 'nothing'; then
+    pass "and its verdict flips, decided by cells it has nothing to do with"
+else
+    fail "and its verdict flips, decided by cells it has nothing to do with"
+fi
+
+# 3. THE LOAD-BEARING ONE. `max_causes` must be shown as a TRADE, not a fix:
+#    the last row must FAIL to clear, or the recipe teaches that allowing for
+#    more causes always recovers them, which is the opposite of what it found.
+if sed -n '/others  max_causes/,/^$/p' "$scratch/r2" | grep -q 'FOUND' \
+   && sed -n '/others  max_causes/,/^$/p' "$scratch/r2" | tail -3 | grep -q 'nothing'; then
+    pass "allowing for more causes recovers some and, at the end, does not"
+else
+    fail "allowing for more causes recovers some and, at the end, does not"
+fi
+
+# 4. The bar must actually rise with what is allowed for. Without this, part 2
+#    is satisfied by a threshold that never moved.
+ths=$(sed -n '/others  max_causes/,/^$/p' "$scratch/r2" | awk 'NF==5 && $1 ~ /^[0-9]/ {print $4}')
+if [ "$(printf '%s\n' "$ths" | sort -g | tr '\n' ' ')" = "$(printf '%s\n' "$ths" | tr '\n' ' ')" ] \
+   && [ "$(printf '%s\n' "$ths" | sort -u | wc -l)" = "3" ]; then
+    pass "and the threshold rises monotonically with max_causes"
+else
+    fail "and the threshold rises monotonically with max_causes ($ths)"
+fi
+
+# 5. The refusal is on the page, because it is half the design.
+if grep -q 'max_causes above 1 needs' "$scratch/r2"; then
+    pass "the t null refuses a trimmed reference, and says why"
+else
+    fail "the t null refuses a trimmed reference, and says why"
 fi
 
 printf 'TIER valgrind\n'

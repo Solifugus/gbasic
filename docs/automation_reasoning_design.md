@@ -276,6 +276,33 @@ C and D under `siblings_permuted` removes the false one and keeps the true one,
 which is a confirmation of that null on a population it was never tuned
 against.
 
+### 4.9 The test finds a problem only while it is nearly the only problem
+
+*Measured by Recipe 2 (`examples/automation_lab/10_two_causes_at_once.bas`,
+asserted in `tests/run_insight.sh`).* §4.8 found that a movement shared by every
+cell blinds the cross-sectional test. Recipe 2 asks the narrower and more
+ordinary question: what if just *two* things have gone wrong?
+
+The experiment holds one cell literally constant and varies only its
+neighbours, so anything that moves its verdict is a fact about cells it has
+nothing to do with. It moves a great deal — the table is in **R14** below. One
+unrelated cause takes a third of the watched cell's z away; three take two
+thirds; at four it is no longer reported at all.
+
+This is the same mechanism as §4.8 in miniature, and the two together are one
+result: **the reference population is contaminated by exactly the thing being
+looked for.** §4.8's version is contamination by a shared shift, §4.9's is
+contamination by other instances of the same failure. Leave-one-out, added in
+Recipe 6, addressed only the special case where the contaminating cell *is* the
+cell under test.
+
+The correction (R14) is a declared bound on how many cells may be wrong at
+once, and its interest is that it is **priced**: allowing for more causes
+raises the bar for every cause, and the recipe's last row is the one where the
+allowance has outrun the evidence. That row is deliberately in the golden — a
+recipe that showed only successful recoveries would teach that `max_causes`
+repairs the problem, when what it does is move it.
+
 ---
 
 ## 5. Architecture (decided)
@@ -399,6 +426,10 @@ answers, the caller declares and the library never infers.
   the planted cell at z −4.91, ranked first, at January-against-January.
   `versus_forecast` is still absent because it needs a forecast, which nothing
   in this tree produces yet.
+- **How many causes at once** — `max_causes`, default 1. The number of cells
+  that may be simultaneously wrong is not discoverable from the data: allowing
+  for more is what lets a second cause be seen at all, and it raises the bar
+  for every cause (§4.9, R14). Above 1 it requires the permuted null.
 - **The authority envelope** — what this process may do without a human.
   Never a default; an unset authority means *nothing may execute*.
 - **Materiality thresholds** — per measure, in the `Context`.
@@ -485,6 +516,47 @@ company-wide collapse moves 22 of 24 cells down, and so does a broken feed.
 What is established is what R2 establishes one level down: *the decomposition
 has not located this*. Which of the three it is, is outside the data.
 
+**R14 — how many things may be wrong at once is declared, not assumed.**
+Produced by Recipe 2. Leave-one-out removes a cell from *its own* reference and
+nothing else. Holding one cell literally constant — the same collapse, the same
+change of −25,728 — and varying only how many **unrelated** cells collapsed
+beside it:
+
+| others broken | reference mean | reference sd | z | verdict |
+|---|---|---|---|---|
+| 0 | −666 | 6,974 | −5.70 | found |
+| 1 | −1,643 | 8,472 | −3.65 | found |
+| 2 | −2,663 | 9,668 | −2.83 | nothing |
+| 4 | −4,942 | 12,213 | −1.86 | nothing |
+
+Both terms move against detection at once: the reference mean slides *towards*
+the anomaly and the reference spread inflates. **The test finds a problem only
+while it is nearly the only problem** — and deepening the collapse does not
+help, because the cells contaminating the reference deepen with it.
+
+Two obvious repairs were measured and both failed, which is why this is a
+declared choice rather than a better default. **Sequential peeling** does not
+help, because the *first* test is the most contaminated and it is the one that
+decides whether anything is reported at all. **A robust median/MAD scale** does
+not help either: at 24 cells the MAD itself rose 28% between one cause and two,
+and once its own null threshold is measured honestly (4.18 against the t
+formula's 3.49) the robust statistic is *further* from clearing.
+
+What works is excluding the other candidates from the **reference** — not
+blessing them as findings, merely declining to let them define what ordinary
+looks like. It restores the statistic to a property of the cell: the trimmed z
+is −5.59, −5.46, −5.48 across the same runs whose untrimmed z fell from −3.65 to
+−1.86. **And it is not free.** The bar rises with what is allowed for — 4.35,
+4.84, 6.46 — so by five causes in twenty-four cells it has outrun the evidence.
+A trade with a limit, not a repair.
+
+`max_causes` therefore belongs to the caller, defaulting to 1 because that is
+what this library has always silently assumed; naming it changes no existing
+answer, and that is asserted. Above 1 it **requires `siblings_permuted`**:
+trimming the reference changes the statistic, and the t quantile is a formula
+for the untrimmed one — not approximately right but a threshold for a different
+quantity, erring towards reporting causes that are not there.
+
 **R9 — a decision may not be sized off a quantity the Finding declined to
 establish.** R2's consequence one layer along, and produced by Recipe 5 rather
 than reasoned to. Measured: the same intervention over the same data gives
@@ -559,7 +631,11 @@ Deliberately one function at a time.
   than one this document merely named. The recipe's own finding is that a
   cross-sectional null under a seasonal measure does not raise false alarms —
   it goes **blind**, because a shift shared by every cell inflates the spread
-  each cell is judged against in proportion to itself.
+  each cell is judged against in proportion to itself. Extended again by
+  Recipe 2 (§4.9,
+  [automation_recipe_02_two_causes_at_once.md](automation_recipe_02_two_causes_at_once.md)):
+  **R14** and `max_causes`, after the same contamination was found in its
+  smaller and far more ordinary form — two things wrong at once.
 - **`decision.quantity`** (Recipe 10,
   [automation_recipe_10_what_price.md](automation_recipe_10_what_price.md)):
   the first recipe of a different shape, and the one that showed
@@ -682,7 +758,7 @@ four are chosen to **break** the model rather than broaden it:
 
 | next | what it attacks |
 |---|---|
-| **2. Two causes at once** | the drill-down's greedy first step is wrong |
+| ~~**2. Two causes at once**~~ | *done — produced R14, and `max_causes`* |
 | ~~**3. A seasonal measure**~~ | *done — produced R13, and `versus_last_year`* |
 | **4. A high-cardinality dimension** | search width dominates; almost nothing should survive |
 | ~~**5. The first recipe that decides**~~ | *done — produced R9, and `decision.evaluate`* |

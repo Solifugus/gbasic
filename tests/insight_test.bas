@@ -108,6 +108,61 @@ planted = insight.explain_change(build(4242, 1, 0), spec_for("siblings"))
 quiet = insight.explain_change(build(58, 0, 0), spec_for("siblings"))
 slumped = insight.explain_change(build(31, 0, 1), spec_for("siblings"))
 common = insight.explain_change(build(31, 0, 2), spec_for("siblings"))
+' R14's population: one WATCHED cell broken in every run, and a varying number
+' of unrelated cells broken beside it. The watched cell is identical
+' throughout, so anything that moves its verdict is a fact about its
+' neighbours.
+function two_causes(others)
+    load fake
+    load frame
+    broken = ["North/Outdoor"]
+    spare = ["South/Apparel", "East/Home", "West/Grocery"]
+    for j = 0 to others - 1
+        append(broken, spare[j])
+    next
+    rows = []
+    ri = 0
+    for each rg in ["North", "South", "East", "West"]
+        ci = 0
+        for each c in ["Outdoor", "Apparel", "Home", "Grocery", "Electronics"]
+            hit = contains(broken, rg + "/" + c)
+            for d = 1 to 30
+                for p = 0 to 1
+                    amt = fake.lognormal(4242, ri * 100000 + ci * 10000 + d * 10 + p,
+                                         1000, 0.5)
+                    if p = 1 and hit then
+                        amt = amt * 0.25
+                    end if
+                    append(rows, { region: rg, category: c, period: p, revenue: amt })
+                next
+            next
+            ci = ci + 1
+        next
+        ri = ri + 1
+    next
+    return frame.from_rows(rows)
+end function
+
+function watched_z(others, max_causes)
+    load insight
+    nl = "siblings"
+    if max_causes > 1 then
+        nl = "siblings_permuted"
+    end if
+    ' `draws` is tiny on purpose: this asks what the STATISTIC does, and the
+    ' statistic does not depend on the number of permutations. The threshold
+    ' is asserted in the recipe tier, where it is computed properly.
+    f = insight.explain_change(two_causes(others),
+          { measure: "revenue", period: "period", baseline: 0, current: 1,
+            dimensions: ["region", "category"], comparison: "period_over_period",
+            null: nl, max_causes: max_causes, draws: 8 })
+    for each c in f.contributors
+        if c.path[0] = "North" and c.path[1] = "Outdoor" then
+            return c.z
+        end if
+    next
+    return 0
+end function
 common_planted = insight.explain_change(build(4242, 1, 2), spec_for("siblings"))
 
 ' --- TIER: the shape of a Finding -----------------------------------------
@@ -247,6 +302,90 @@ check("  and the SAME cell no longer clears under a common shift",
       common_planted.strength.clears, false)
 check("  while still being the biggest mover",
       common_planted.strength.leader[1], "Outdoor")
+
+' --- TIER: R14, MORE THAN ONE CAUSE ---------------------------------------
+' Leave-one-out removes a cell from its own reference and nothing else. Recipe
+' 2 measured what that costs when several cells are broken at once, holding
+' ONE cell literally constant and varying only its neighbours.
+'
+' THE LOAD-BEARING ASSERTION IS A DIFFERENCE, because every plausible wrong
+' implementation still produces an ordinary-looking z. Under the default the
+' watched cell's verdict is decided by cells it has nothing to do with; with
+' the other candidates excluded from the reference it is decided by itself.
+d0 = watched_z(0, 1)
+d1 = watched_z(1, 1)
+d2 = watched_z(2, 1)
+d3 = watched_z(3, 1)
+check("alone, the watched cell is far out", abs(d0) > 5, true)
+check("  one unrelated cause takes a third of that away", abs(d1) < abs(d0) * 0.75, true)
+check("  three take two thirds", abs(d3) < abs(d0) * 0.4, true)
+check("  and the fall is monotone in how many others broke",
+      abs(d0) > abs(d1) and abs(d1) > abs(d2) and abs(d2) > abs(d3), true)
+
+t1 = watched_z(1, 2)
+t2 = watched_z(2, 3)
+t3 = watched_z(3, 4)
+' THE CONTROL FOR ALL OF THE ABOVE. If trimming did nothing, or trimmed the
+' wrong thing, these would drift with the neighbours exactly as the defaults
+' do. They must not: the cell has not changed.
+check("allowing for them restores the statistic to the cell",
+      abs(t1 - t2) < 0.3 and abs(t2 - t3) < 0.3, true)
+check("  at about the value it had when it was alone",
+      abs(abs(t1) - abs(d0)) < 0.5, true)
+
+' The default is 1 and naming it changes nothing -- the claim that this
+' introduces no new assumption, stated as a test.
+explicit = insight.explain_change(build(4242, 1, 0),
+             { measure: "revenue", period: "period", baseline: 0, current: 1,
+               dimensions: ["region", "category"],
+               comparison: "period_over_period", null: "siblings",
+               max_causes: 1 })
+check("max_causes defaults to 1", planted.search.max_causes, 1)
+check("  and saying so explicitly changes no answer",
+      explicit.strength.z, planted.strength.z)
+
+' `strength` names ONE cell, which is the reporting half of the same problem.
+check("strength.clearing lists every cell that cleared",
+      count(planted.strength.clearing), 1)
+check("  and it is the leader when exactly one cleared",
+      planted.strength.clearing[0][0], planted.strength.leader[0])
+check("nothing clears in the quiet run, and clearing is empty",
+      count(quiet.strength.clearing), 0)
+
+' --- TIER: R14's refusals, each beside its nearest legal neighbour ---------
+on error goto next
+x = insight.explain_change(build(4242, 1, 0),
+      { measure: "revenue", period: "period", baseline: 0, current: 1,
+        dimensions: ["region", "category"], comparison: "period_over_period",
+        null: "siblings", max_causes: 2 })
+check("max_causes above 1 is refused under the t null",
+      contains(error.message, "siblings_permuted"), true)
+error.clear()
+' THE CONTROL. Without it the refusal above is satisfied by a library that
+' refuses max_causes altogether.
+x = insight.explain_change(build(4242, 1, 0),
+      { measure: "revenue", period: "period", baseline: 0, current: 1,
+        dimensions: ["region", "category"], comparison: "period_over_period",
+        null: "siblings_permuted", max_causes: 2, draws: 8 })
+check("  and accepted under the permuted one", is_unknown(x), false)
+if error then
+    error.clear()
+end if
+x = insight.explain_change(build(4242, 1, 0),
+      { measure: "revenue", period: "period", baseline: 0, current: 1,
+        dimensions: ["region", "category"], comparison: "period_over_period",
+        null: "siblings_permuted", max_causes: 0, draws: 8 })
+check("max_causes below 1 is refused",
+      contains(error.message, "at least 1"), true)
+error.clear()
+x = insight.explain_change(build(4242, 1, 0),
+      { measure: "revenue", period: "period", baseline: 0, current: 1,
+        dimensions: ["region"], comparison: "period_over_period",
+        null: "siblings_permuted", max_causes: 3, draws: 8 })
+check("and one that would leave no population to judge against is refused",
+      contains(error.message, "no population left"), true)
+error.clear()
+on error stop
 
 ' --- TIER: contributors are ranked and complete ---------------------------
 check("every cell is a contributor", count(planted.contributors), 20)

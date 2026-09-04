@@ -1,0 +1,78 @@
+==================================================================
+ PART 1 — the default: one cause is assumed, silently
+==================================================================
+
+  The watched cell is Northeast / Outdoor and it is broken in all
+  four runs, identically. `others` counts how many UNRELATED cells
+  are broken at the same time.
+
+  others  watched change   pop. mean   pop. sd      z   verdict
+  ------  --------------   ---------   -------   ----   -------
+  0       -25728           -666        6974      -5.7   FOUND
+  1       -25728           -1643       8472      -3.65   FOUND
+  2       -25728           -2663       9668      -2.83   nothing
+  4       -25728           -4942       12213     -1.86   nothing
+
+  The watched cell never changed. The population around it did, and
+  that is enough to take it from a finding to nothing at all.
+
+==================================================================
+ PART 2 — allowing for more than one
+==================================================================
+
+  `max_causes` excludes the other candidates from the REFERENCE. It
+  does not bless them as findings; it declines to let them define
+  what ordinary looks like. The permuted null is required, because
+  trimming changes the statistic and the t formula is a formula for
+  the untrimmed one.
+
+  others  max_causes   watched z   threshold   verdict
+  ------  ----------   ---------   ---------   -------
+  1       2            -5.59       4.35        FOUND
+  2       3            -5.46       4.84        FOUND
+  4       5            -5.48       6.46        nothing
+
+  The bar rises with what you allow for. That is the trade and it
+  cannot be avoided: a population that may contain five broken cells
+  is a population in which any one of them is less surprising.
+
+==================================================================
+ PART 3 — the refusal
+==================================================================
+
+  insight.explain_change: max_causes above 1 needs null: "siblings_permuted" -- trimming the reference changes the statistic, and the t threshold is a formula for the untrimmed one. The permuted null takes its threshold from the statistic actually used, so it follows the trim; the t formula does not and would report causes that are not there
+
+==================================================================
+ WHAT THIS MEASURED
+==================================================================
+
+  1. THE TEST FINDS A PROBLEM ONLY WHILE IT IS NEARLY THE ONLY
+     PROBLEM. Four unrelated cells collapsing beside the watched one
+     halve its z and take it below the bar, without one number in
+     that cell changing. Both terms of the standardisation move at
+     once: the reference mean slides towards the anomaly and the
+     reference spread inflates.
+
+  2. TWO OBVIOUS REPAIRS WERE MEASURED AND BOTH FAILED. Sequential
+     peeling -- test the most extreme, remove it, test the next --
+     does not help, because the FIRST test is the most contaminated
+     and it is the one that decides whether anything is reported.
+     A robust median/MAD scale does not help either: at 24 cells the
+     MAD itself rose 28% between one cause and two, and once its own
+     null threshold is measured honestly (4.18, against the t
+     formula's 3.49) the robust statistic is FURTHER from clearing.
+
+  3. WHAT WORKS IS A DECLARED CHOICE, NOT A BETTER DEFAULT.
+     Excluding the other candidates from the reference restores the
+     statistic to a property of the cell: the trimmed z sits at
+     -5.5 in all three runs, where the default fell from -3.65 to
+     -1.86. But the bar rises with what is allowed for -- 4.35,
+     4.84, 6.46 -- and by five causes in twenty-four cells it has
+     outrun the evidence. That third row is the honest half: this
+     is a trade with a limit, not a repair.
+
+  4. SO THE NUMBER OF THINGS THAT MAY BE WRONG AT ONCE IS THE
+     CALLER'S TO STATE, like the null and the comparison. Its
+     default of 1 is not a new assumption -- it is the one that was
+     always being made, now written down where it can be argued
+     with, and recorded in the Finding as `search.max_causes`.

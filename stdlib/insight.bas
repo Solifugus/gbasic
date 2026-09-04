@@ -27,6 +27,9 @@ library insight
     '   dimensions    ordered list of columns to decompose by
     '   comparison    declared (reasoning.comparisons())
     '   null          declared (reasoning.nulls())
+    '   max_causes    optional, default 1 -- how many cells may be wrong at
+    '                 once. Raising it is what lets a second cause be seen and
+    '                 costs every cause a higher bar (R14).
     '   associations  optional: other measure columns that may have moved with it
     '   subject       optional label
     '   as_of         optional, recorded in provenance
@@ -187,10 +190,48 @@ library insight
             permute_seed = 1
         end if
 
+        ' R14. How many cells may be wrong at once. The default is 1 because
+        ' that is what a leave-one-out reference has always silently assumed --
+        ' naming it does not change any existing answer, it makes the
+        ' assumption arguable.
+        max_causes = spec["max_causes"]
+        if is_unknown(max_causes) then
+            max_causes = 1
+        end if
+        if type(max_causes) != "number" or max_causes < 1 or floor(max_causes) != max_causes then
+            error ("insight.explain_change: max_causes must be a whole number"
+                   + " of cells, at least 1")
+        end if
+        trim = max_causes - 1
+        if n - 1 - trim < 3 then
+            error ("insight.explain_change: max_causes " + string(max_causes)
+                   + " would leave " + string(n - 1 - trim) + " cells to define"
+                   + " ordinary out of " + string(n) + " -- allowing for that"
+                   + " many simultaneous causes in a search this narrow means"
+                   + " there is no population left to judge them against")
+        end if
+        if trim > 0 and spec["null"] != "siblings_permuted" then
+            ' NOT a matter of precision. The t quantile is a formula for the
+            ' UNTRIMMED statistic, and trimming the reference deflates its
+            ' spread under the null too -- measured at 24 cells, the null 95th
+            ' percentile of max|z| rises 3.74 -> 4.30 -> 4.76 -> 5.74 as the
+            ' trim goes 0 -> 1 -> 2 -> 4, while the t formula answers 3.49
+            ' whatever the trim. Using it here would not be approximately
+            ' right; it would be a threshold for a different statistic, and it
+            ' errs towards reporting causes that are not there.
+            error ("insight.explain_change: max_causes above 1 needs"
+                   + " null: \"siblings_permuted\" -- trimming the reference"
+                   + " changes the statistic, and the t threshold is a formula"
+                   + " for the untrimmed one. The permuted null takes its"
+                   + " threshold from the statistic actually used, so it"
+                   + " follows the trim; the t formula does not and would"
+                   + " report causes that are not there")
+        end if
+
         threshold = 0
         calibration = { }
         if spec["null"] = "siblings_permuted" then
-            threshold = _permuted_threshold(cells, alpha, draws, permute_seed)
+            threshold = _permuted_threshold(cells, alpha, draws, permute_seed, trim)
             calibration = { method: "period-label permutation",
                             assumed: false,
                             draws: draws, seed: permute_seed,
@@ -315,11 +356,19 @@ library insight
         sums = _sums(changes)
 
         contributors = []
+        ci = 0
         for each k in cells.order
             d = cells.current[k] - cells.baseline[k]
             ' Leave-one-out: this cell is judged against the OTHERS, never
-            ' against a spread it is itself part of.
-            z = _loo_z(d, n, sums.total, sums.total_sq)
+            ' against a spread it is itself part of -- and, when the caller has
+            ' allowed for more than one cause, never against the other
+            ' candidates either (R14).
+            if trim = 0 then
+                z = _loo_z(d, n, sums.total, sums.total_sq)
+            else
+                z = _trimmed_z(changes, ci, trim)
+            end if
+            ci = ci + 1
             share = unknown
             if reportable and net != 0 then
                 share = d / net
@@ -331,6 +380,12 @@ library insight
                                    clears: abs(z) > threshold })
         next
         contributors = _by_absolute_change(contributors)
+        clearing = []
+        for each c in contributors
+            if c.clears then
+                append(clearing, c.path)
+            end if
+        next
 
         top = contributors[0]
         assoc = _associations(cells, assoc_names, changes)
@@ -371,14 +426,19 @@ library insight
             ' and must not imply it was DELIVERED. `null.calibration` carries
             ' what is actually known.
             search: { dimensions: dims, cells: n, width: threshold,
-                      alpha_requested: alpha, correction: "bonferroni" },
+                      alpha_requested: alpha, correction: "bonferroni",
+                      max_causes: max_causes },
             null: { kind: spec["null"], mean: m, sd: sd, threshold: threshold,
                     net_t: t, standardized: "leave_one_out", df: n - 2,
                     common_movement: { down: down, up: up, p: sign_p,
                                        common: common },
                     calibration: calibration,
                     draws: draws, permute_seed: permute_seed },
-            strength: { z: top.z, clears: top.clears, leader: top.path },
+            ' `leader` is ONE cell, and R14 is the case where that is not
+            ' enough: two cells can clear and a reader of `strength` alone
+            ' would see one. `clearing` names all of them.
+            strength: { z: top.z, clears: top.clears, leader: top.path,
+                        clearing: clearing },
             contributors: contributors,
             shares_reportable: reportable,
             shares_withheld_because: withheld,
@@ -651,6 +711,81 @@ library insight
         return (x - others_mean) / sd
     end function
 
+    ' --- R14. THE REFERENCE MUST EXCLUDE THE OTHER CANDIDATES ----------------
+    '
+    ' Leave-one-out removes a cell from the spread it is judged against, which
+    ' is what Recipe 6 fixed. It removes NOTHING ELSE, and Recipe 2 measured
+    ' what that costs when more than one thing has gone wrong at once -- the
+    ' ordinary condition of a business rather than an exotic one.
+    '
+    ' The experiment holds ONE cell literally constant: the same collapse, a
+    ' change of -25,728, in every run. Only the number of OTHER, unrelated
+    ' cells collapsing beside it varies
+    ' (examples/automation_lab/10_two_causes_at_once.bas):
+    '
+    '   others broken   population mean   population sd       z   verdict
+    '               0              -666           6,974   -5.70   found
+    '               1            -1,643           8,472   -3.65   found
+    '               2            -2,663           9,668   -2.83   nothing
+    '               4            -4,942          12,213   -1.86   nothing
+    '
+    ' Both terms of the standardisation move against detection at once: the
+    ' reference mean slides towards the anomaly and the reference spread
+    ' inflates. Nothing in the watched cell changed. The test finds a problem
+    ' only while it is nearly the only problem, and deepening the collapse does
+    ' not help, because the cells contaminating the reference deepen with it.
+    '
+    ' TWO OBVIOUS REPAIRS WERE MEASURED AND BOTH FAILED, which is why this one
+    ' is a DECLARED CHOICE rather than a better default. Sequential peeling --
+    ' test the most extreme, remove it, test the next -- does not help, because
+    ' the FIRST test is the most contaminated and it is the one that decides
+    ' whether anything is reported at all. A robust median/MAD scale does not
+    ' help either: at 24 cells the MAD itself rose 28% between one cause and
+    ' two, and once its own null threshold is measured honestly (4.18 against
+    ' the t formula's 3.49) the robust statistic is FURTHER from clearing.
+    '
+    ' What works is excluding the other candidates from the REFERENCE -- not
+    ' blessing them as findings, merely declining to let them define what
+    ' ordinary looks like. It restores the statistic to a property of the cell:
+    ' the trimmed z is -5.59, -5.46, -5.48 across the same three runs whose
+    ' untrimmed z fell from -3.65 to -1.86. AND IT IS NOT FREE. The bar rises
+    ' with what is allowed for -- 4.35, 4.84, 6.46 -- so by five causes in
+    ' twenty-four cells it has outrun the evidence. A trade with a limit, not a
+    ' repair, and `max_causes` therefore belongs to the caller like the null
+    ' and the comparison. Its default is 1 because that is what this library
+    ' has always silently assumed; naming it changes no existing answer.
+    function _trimmed_z(xs, at, trim)
+        n = count(xs)
+        if n - 1 - trim < 3 then
+            return 0
+        end if
+        others = []
+        for j = 0 to n - 1
+            if j != at then
+                append(others, xs[j])
+            end if
+        next
+        for cut = 1 to trim
+            m = mean(others)
+            worst = 0
+            wd = 0 - 1
+            for j = 0 to count(others) - 1
+                d = abs(others[j] - m)
+                if d > wd then
+                    wd = d
+                    worst = j
+                end if
+            next
+            remove(others, worst)
+        next
+        m = mean(others)
+        sd = stdev(others)
+        if sd <= 0 then
+            return 0
+        end if
+        return (xs[at] - m) / sd
+    end function
+
     function _sums(xs)
         t = 0
         q = 0
@@ -662,12 +797,25 @@ library insight
     end function
 
     ' The largest |z| in one vector -- the statistic the whole search rests on.
-    function _max_abs_z(xs)
+    ' The statistic is defined HERE and nowhere else, which is what lets the
+    ' permuted threshold follow `trim` without knowing anything about it: a
+    ' threshold computed from a different statistic than the one it judges is
+    ' the defect this shape prevents.
+    function _max_abs_z(xs, trim)
         n = count(xs)
-        s = _sums(xs)
         best = 0
-        for each v in xs
-            z = abs(_loo_z(v, n, s.total, s.total_sq))
+        if trim = 0 then
+            s = _sums(xs)
+            for each v in xs
+                z = abs(_loo_z(v, n, s.total, s.total_sq))
+                if z > best then
+                    best = z
+                end if
+            next
+            return best
+        end if
+        for j = 0 to n - 1
+            z = abs(_trimmed_z(xs, j, trim))
             if z > best then
                 best = z
             end if
@@ -701,7 +849,7 @@ library insight
     '
     ' Deterministic in a declared seed: a rehearsal must reach the same
     ' threshold as the live run, or R5\'s argument fails one level down.
-    function _permuted_threshold(cells, alpha, draws, seed)
+    function _permuted_threshold(cells, alpha, draws, seed, trim)
         n = count(cells.order)
         maxes = []
         for b = 1 to draws
@@ -726,7 +874,7 @@ library insight
                 append(changes, hi - lo)
                 idx = idx + 1
             next
-            append(maxes, _max_abs_z(changes))
+            append(maxes, _max_abs_z(changes, trim))
         next
         ranked = sort(maxes)
         i = floor((1 - alpha) * draws)
