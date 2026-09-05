@@ -298,9 +298,7 @@ for error handling, `ERRORS.md`.
 - **WebServer** — `load webserver`; single request/connection.
   → `tests/webserver_integration.bas`
 - **XML** — `load xml`; parse and navigate by path; streaming reader for large
-  files. Note `load` is an EXECUTABLE statement, so with a `program` block it
-  goes INSIDE the block — a top-level `load` never runs and the symptom is
-  `library not loaded: xml`. → `examples/xml_parse_test.bas`
+  files. → `examples/xml_parse_test.bas`
 - **Spreadsheets (`xlsx`)** — no `load`; needs zlib + libxml2. Read, EDIT and
   save an existing workbook (unmodelled parts survive byte-for-byte), evaluate
   formulas, and check our engine against Excel's own cached values with

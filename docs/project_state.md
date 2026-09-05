@@ -29,7 +29,10 @@ document list, with a status column, is `docs/README.md`.
   after a dot)
 - functions with literal **default parameter values** (`function f(a, b = 10)`),
   programs, libraries, labels, `goto`, and `gosub`
-- `load`, `load NAME from "path"`, and `load ... as ALIAS` — the alias is the
+- `load`, `load NAME from "path"`, and `load ... as ALIAS`. `load` is a
+  DECLARATION: written at the top level or inside the `program` block, it is
+  registered before anything runs, by one pass the parent and a spawned actor
+  share. The alias is the
   name the loading file qualifies by, and is a distinct import identity, so two
   libraries whose own declared name is the same can coexist. Defining a function
   twice in one scope is refused, and **a function from another library must be

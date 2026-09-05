@@ -8,10 +8,11 @@ goldens — `examples/xml_{parse,form4,encode,reader,window_13f,parse_html}_test
 — wired into `tests/run_examples.sh`. This status line read "design proposal;
 nothing built" until 2026-08-15, contradicting both `reference.md` and
 `CLAUDE.md`; a release-prep sweep read the stale line and concluded the module
-had never been wired. Note the calling idiom: `load xml` is an EXECUTABLE
-statement, so in a program with a `program` block it must be written INSIDE the
-block — a top-level `load` does not run (see `tests/run_pre_registration.sh`),
-and the symptom is `library not loaded: xml`. A general-purpose XML module for
+had never been wired. (Historical note on the calling idiom: `load xml` used to be an
+EXECUTABLE statement, so with a `program` block it had to be written INSIDE the
+block or the symptom was `library not loaded: xml`. Since 0.1.0 `load` is a
+declaration and either position works — see `tests/run_pre_registration.sh`.) A
+general-purpose XML module for
 gBASIC: parse small documents into plain record trees, stream arbitrarily
 large documents through a pull cursor in constant memory, encode records back
 to XML, and (bonus, same engine) leniently parse HTML to a tree. First

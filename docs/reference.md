@@ -1131,12 +1131,11 @@ the library's. Until rc9 the import skipped registering a function whose name
 matched a local, so the qualified call — the very thing one reaches for when a
 name collides — failed with `invalid function call`.
 
-**A `load` outside a `program` block never runs**, because `load` is an
-executable statement and the top-level statements in such a file are not
-walked. This now warns, because the symptom is otherwise misdirecting: for a
-native module it is `library not loaded: xml`, but for a `.bas` library it is
-`invalid function call: lib.name`, which points at the call rather than at the
-import that never happened. Put the `load` inside the block.
+**`load` is position-blind** (*since 0.1.0*): write it at the top level or
+inside the `program` block, and it is registered before anything runs either
+way. Until this release a top-level `load` never ran when a program block
+existed — `load` was an executable statement and those statements are not
+walked — and it warned about it.
 
 Built-in/core modifiers include:
 
@@ -1356,40 +1355,50 @@ end program
 
 If a `program` block exists, only that program executes. If no `program` block exists, top-level statements are treated as an implicit program.
 
-**`load` goes inside the `program` block.** `load` is an executable statement,
-not a declaration, so the rule above applies to it: when a `program` block
-exists, a `load` written at top level **never runs**, and the first qualified
-call then fails with `library not loaded: NAME`. Note the example above puts
-`load text` inside `program demo`, which is the idiom to follow — as do the
-shipped `examples/xml_*_test.bas`.
+**`load` is a declaration, and either position works** (*since 0.1.0*). Write it
+at the top level or inside the `program` block; both are registered before
+anything runs.
 
 ```basic
-load xml                  ' WRONG when a program block exists — never runs
+load xml                  ' both of these work
 program main()
-    doc = xml.parse("<a/>")   ' runtime error: library not loaded: xml
-end program
-
-program main()
-    load xml              ' RIGHT
+    load sqlite
     doc = xml.parse("<a/>")
 end program
 ```
 
-What *is* hoisted, and so may be written below `end program`, is exactly:
-function declarations, modifier declarations, `library` declarations, and
-dotted-def method bodies. That set is pinned by `tests/run_pre_registration.sh`.
-Snippets elsewhere in this reference show `load` at top level because they have
-no `program` block, where it is correct.
+Until this release a top-level `load` never ran when a program block existed,
+and warned "this `load` is outside the program block, so it never runs — move it
+inside `program`". **The warning was true of the parent process and blind to a
+spawned actor.** A `spawn`ed actor is fork+exec: the child re-parses the source
+and runs the entry function, never entering the `program` block — so for the
+child the top-level position was the only one that worked, while for the parent
+it was the only one that did not. Taking the warning's advice made the worker
+fail on its first qualified call while the parent waited in `receive()`, and the
+symptom was a hang that pointed nowhere near the `load`. Parent and child now run
+one shared registration pass, which `tests/run_pre_registration.sh` pins
+structurally.
 
-**A library's own dependencies are declared INSIDE its `library` block.** A
-top-level `load` does not put the dependency in scope for the library's
-functions:
+**Only a `load` written as a direct child of the file or of the `program` block
+is hoisted.** `load` is an ordinary statement, so it may also appear inside
+`if`, a loop or a function, and one written there still runs where it is
+written — `if false then load nosuchlib` imports nothing.
+
+What may be written below `end program` is exactly: function declarations,
+modifier declarations, `library` declarations, `server` declarations, `load`,
+and dotted-def method bodies. That set is pinned by
+`tests/run_pre_registration.sh`, and gBASIC Studio's declaration-hoisting rule is
+defined as the same set.
+
+**A library's own dependencies are declared INSIDE its `library` block.**
+Declaring one beside the library rather than inside it is not a scoping error —
+it is a *packaging* one, and it fails only for someone else:
 
 ```basic
-load frame                ' WRONG — does not reach grid's functions
+load frame                ' WRONG — grid does not declare what it needs
 library grid
     function f()
-        return frame.from_rows([])   ' invalid function call: frame.from_rows
+        return frame.from_rows([])   ' works only while the CALLER loads frame too
     end function
 end library
 

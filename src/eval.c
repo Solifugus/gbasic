@@ -741,6 +741,7 @@ static void webserver_clear(void);
 static FunctionDef *function_resolve(const char *library, const char *name);
 static void method_ensure_internal_name(AstStmt *stmt);
 static void register_method_bodies_in(AstStmtList list);
+static void register_hoistable_declarations(AstStmtList program);
 
 #if HAVE_GTK
 typedef struct GuiNativeWindow GuiNativeWindow;
@@ -12908,22 +12909,23 @@ int eval_run_actor(AstStmtList program, const char *entry,
      * -- where it made every actor exit at startup. */
     prctl(PR_SET_PDEATHSIG, SIGTERM);
 
-    /* Register top-level functions, modifiers, and imports so the entry and its
-     * helpers resolve (the normal top-level walk does not run for an actor). */
-    for (size_t i = 0; i < program.count; i++) {
-        AstStmt *stmt = program.items[i];
-        if (stmt->kind == AST_STMT_FUNCTION && !stmt->as.function.object) {
-            function_register(stmt);
-        } else if (stmt->kind == AST_STMT_MODIFIER) {
-            modifier_register(stmt);
-        } else if (stmt->kind == AST_STMT_USE) {
-            library_import(stmt->as.use_stmt.name, stmt->as.use_stmt.path, stmt->as.use_stmt.alias);
-        }
+    /* Register what the program declares so the entry and its helpers resolve --
+     * the normal top-level walk does not run for an actor, and the program block
+     * is never entered. THE SAME PASS THE PARENT RUNS, deliberately: this used to
+     * be a separate loop over a different set, and a `load` written inside
+     * `program` was invisible here while a top-level one was invisible there.
+     * Methods are included because they attach via dotted-def statements the
+     * child never executes, and a received record-with-method must resolve
+     * (docs/multiprocessing_design.md §10). */
+    register_hoistable_declarations(program);
+    if (error_action_pending()) {
+        char b = 'E';
+        ssize_t w = write(control_fd, &b, 1);
+        (void)w;
+        close(control_fd);
+        fprintf(stderr, "actor: %s could not load what the program declares\n", entry);
+        return 1;
     }
-    /* Methods attach via dotted-def statements the child never executes; register
-     * their bodies (recursively, including inside the program block) so a received
-     * record-with-method resolves (§10). */
-    register_method_bodies_in(program);
 
     AstStmt *fn = find_top_level_function(entry);
     if (!fn) {
@@ -32183,6 +32185,112 @@ static void server_register(AstStmt *stmt) {
     env_set(stmt->as.server.name, server_build_value(stmt));
 }
 
+/* BEGIN PRE-REGISTRATION SET -- tripwired by tests/run_pre_registration.sh.
+ *
+ * THE DECLARATIONS A PROGRAM HAS WHEREVER THEY ARE WRITTEN, registered before
+ * anything runs. THE SAME FUNCTION SERVES THE PARENT AND THE ACTOR CHILD, and
+ * that is the point rather than a tidiness: they used to be two loops over
+ * different sets, and their blind spots were exactly complementary --
+ *
+ *                  top-level `load`      `load` inside `program`
+ *   parent         never ran (warned)    ran, as a statement
+ *   child          ran                   never seen
+ *
+ * -- so whichever position an author picked, one of the two processes was
+ * missing the import. Following the parent's warning ("move it inside
+ * `program`") made the CHILD fail on its first qualified call while the parent
+ * sat in receive(), and the visible symptom was a hang that pointed nowhere
+ * near the `load`. The warning was not wrong about the parent; it was blind to
+ * the child, which was the process that needed the library.
+ *
+ * `load` IS A DECLARATION, and three measured facts make hoisting it safe.
+ * Importing runs no user code: library_import_from_block handles USE, FUNCTION
+ * and MODIFIER and ignores every other statement kind, so a `library` block
+ * registers names and executes nothing. Hoisting is idempotent: a program-body
+ * `load` is hoisted here AND still reached as a statement, and the second
+ * import returns early at the `used_pairs` guard. And it is DIRECT CHILDREN
+ * ONLY -- `load` is a general statement, so `if false then load nosuchlib`
+ * parses today (examples/inline_if_test.bas) and hoisting it would raise; a
+ * load nested in control flow stays exactly where it was written.
+ *
+ * ORDER IS DECLARATIONS THEN IMPORTS, not source order, and it is load-bearing
+ * for a diagnostic: function_register_def warns when an IMPORTED function meets
+ * an existing local ("local function 'x' shadows 'x' from library 'y'") and is
+ * silent in the other direction, because function_find_local matches only
+ * non-imported entries. Registering locals first is what keeps that warning.
+ *
+ * gBASIC Studio's STU-4B declaration-hoisting rule is defined as this same set:
+ * when it materializes a byte prefix it appends post-target declarations of
+ * these kinds and no others, precisely because the interpreter is position-blind
+ * to these and to nothing else (docs/gbasic_studio_stu4b.md, "What qualifies as
+ * hoistable"). So this set is a shared contract, not a local detail. Adding a
+ * kind makes Studio's rule incomplete -- it would refuse to hoist something the
+ * runtime now registers. Removing one makes it unsound. Either way the hoisting
+ * rule must move with this code, and the tripwire fails until it does. Do not
+ * silence it by editing the expected set alone.
+ */
+static void register_hoistable_declarations(AstStmtList program) {
+    for (size_t i = 0; i < program.count; i++) {
+        AstStmt *stmt = program.items[i];
+        if (stmt->kind == AST_STMT_FUNCTION && !stmt->as.function.object) {
+            function_register(stmt);
+        } else if (stmt->kind == AST_STMT_MODIFIER) {
+            modifier_register(stmt);
+        } else if (stmt->kind == AST_STMT_SERVER) {
+            /* PLAT-WEB-5: a server declaration is position-blind too -- the
+             * draft's own example puts the block beside `program main` and
+             * calls serve(edge) from inside it. Head options are literals
+             * (load-time enforced), so this runs no user code beyond the
+             * `web` import the block is sugar for. */
+            server_register(stmt);
+        }
+        if (error_action_pending()) {
+            return;
+        }
+    }
+
+    for (size_t i = 0; i < program.count; i++) {
+        AstStmt *stmt = program.items[i];
+        if (stmt->kind == AST_STMT_USE) {
+            current_line = stmt->line;
+            current_column = stmt->column;
+            library_import(stmt->as.use_stmt.name, stmt->as.use_stmt.path,
+                           stmt->as.use_stmt.alias);
+            if (error_action_pending()) {
+                return;
+            }
+        }
+    }
+
+    /* And a `load` written INSIDE the program block, from its DIRECT children.
+     * The parent reaches these anyway; the child never enters the block, and
+     * this is the half that used to hang. */
+    for (size_t i = 0; i < program.count; i++) {
+        AstStmt *stmt = program.items[i];
+        if (stmt->kind != AST_STMT_PROGRAM) {
+            continue;
+        }
+        for (size_t j = 0; j < stmt->as.program.body.count; j++) {
+            AstStmt *inner = stmt->as.program.body.items[j];
+            if (inner->kind == AST_STMT_USE) {
+                current_line = inner->line;
+                current_column = inner->column;
+                library_import(inner->as.use_stmt.name, inner->as.use_stmt.path,
+                               inner->as.use_stmt.alias);
+                if (error_action_pending()) {
+                    return;
+                }
+            }
+        }
+    }
+
+    /* Method bodies (dotted defs) may sit inside the program block; register
+     * them so the parent resolves its own function values and a child can too
+     * (the internal name is deterministic across the program). */
+    register_method_bodies_in(program);
+}
+/* END PRE-REGISTRATION SET */
+
 /* Execute a define-and-attach statement: register the body under its internal
  * name, then store a function value referencing it in obj.field (ordinary field
  * assignment, so obj must be a record and PBI policies apply). Returns 1 on
@@ -33055,73 +33163,12 @@ int eval_program(AstStmtList program) {
     }
 
     /* When a program block runs, the top-level statements outside it are not
-     * walked, so their function/modifier declarations would never register. Do
-     * that up front (like the actor child entry does) so the block body can name
-     * top-level functions and resolve function values — including methods, whose
-     * dotted-def bodies register under their deterministic internal name. Without
-     * a program block the normal top-level walk still registers on-reach. */
-    /* BEGIN PRE-REGISTRATION SET -- tripwired by tests/run_pre_registration.sh.
-     *
-     * The statement kinds registered here are exactly the kinds a program block
-     * can reach REGARDLESS of where in the file they are written, and gBASIC
-     * Studio's STU-4B declaration-hoisting rule is defined as that same set: when
-     * it materializes a byte prefix, it appends post-target declarations of these
-     * kinds and no others, precisely because the interpreter is position-blind to
-     * these and to nothing else (docs/gbasic_studio_stu4b.md, "What qualifies as
-     * hoistable").
-     *
-     * So this set is a shared contract, not a local detail. Adding a kind here
-     * makes Studio's rule incomplete -- it would refuse to hoist something the
-     * runtime now registers. Removing one makes it unsound -- it would hoist
-     * something the runtime no longer registers, manufacturing behaviour the
-     * document does not have. Either way the hoisting rule must move with this
-     * code, and the tripwire fails until it does. Do not silence it by editing
-     * the expected set alone.
-     */
+     * walked, so their declarations would never register. Do that up front —
+     * the SAME pass the actor child runs, so the two cannot disagree about what
+     * a program declares. Without a program block the normal top-level walk
+     * still registers on-reach. */
     if (program_block) {
-        for (size_t i = 0; i < program.count; i++) {
-            AstStmt *stmt = program.items[i];
-            if (stmt->kind == AST_STMT_FUNCTION && !stmt->as.function.object) {
-                function_register(stmt);
-            } else if (stmt->kind == AST_STMT_MODIFIER) {
-                modifier_register(stmt);
-            } else if (stmt->kind == AST_STMT_SERVER) {
-                /* PLAT-WEB-5: a server declaration is position-blind too -- the
-                 * draft's own example puts the block beside `program main` and
-                 * calls serve(edge) from inside it. Head options are literals
-                 * (load-time enforced), so this runs no user code beyond the
-                 * `web` import the block is sugar for. */
-                server_register(stmt);
-            }
-        }
-        /* Method bodies (dotted defs) may sit inside the program block; register
-         * them so the parent resolves its own function values and a child can too
-         * (the internal name is deterministic across the program). */
-        register_method_bodies_in(program);
-        /* END PRE-REGISTRATION SET */
-
-        /* A TOP-LEVEL `load` NEVER RUNS when there is a program block, because
-         * `load` is an EXECUTABLE statement and the statements outside the
-         * block are not walked. It is documented, and it is still the most
-         * confusing way to lose an import: for a native module the symptom is
-         * at least "library not loaded: xml", but for a .bas library it is
-         * `invalid function call: httpc.start_server` -- which sends the reader
-         * to look inside a library that was never loaded at all.
-         *
-         * Deliberately NOT added to the pre-registration set above: making
-         * `load` position-blind would change what gBASIC Studio's hoisting rule
-         * must hoist, and running arbitrary library top-level code before the
-         * program block is a different decision from this one. Warning names
-         * the mistake without making that decision. */
-        for (size_t i = 0; i < program.count; i++) {
-            if (program.items[i]->kind == AST_STMT_USE) {
-                current_line = program.items[i]->line;
-                current_column = program.items[i]->column;
-                warn_fmt(2102, "override",
-                        "this `load` is outside the program block, so it never runs "
-                        "-- move it inside `program`");
-            }
-        }
+        register_hoistable_declarations(program);
 
         /* Bind the program block's declared parameter (conventionally `args`) to
          * the command-line arguments after the script path: a 0-based array of

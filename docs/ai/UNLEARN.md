@@ -430,6 +430,17 @@ day — so assume you will hit them too.
   calls its own functions with no prefix — in its own file, declared in the same
   file as the program, and inside a `modifier` body.
 
+- **`load` is position-blind** (0.1.0). Top level or inside the `program` block,
+  both work — it is registered before anything runs. It did NOT used to be: a
+  top-level `load` was dead code when a program block existed, and warned so.
+  **The warning was blind to actors.** A spawned actor is fork+exec and never
+  enters the `program` block, so the top-level position was the only one the
+  child could see while the block position was the only one the parent could.
+  Following the advice made the worker die on its first qualified call while the
+  parent waited in `receive()` — a hang, pointing nowhere near the `load`. Only a
+  `load` written as a direct child of the file or the block is hoisted;
+  `if false then load nosuchlib` still imports nothing.
+
 - **`load NAME as ALIAS` picks the prefix** (0.1.0). `load statistics_helpers as
   st` and the qualifier is `st.`; both spellings of `load` take one. The alias
   **replaces** the declared name rather than adding to it, so `statistics_helpers.`

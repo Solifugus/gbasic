@@ -9,6 +9,59 @@ language surface may still change between releases.
 
 ## Unreleased
 
+### Changed — `load` is a declaration, and the warning about it is gone
+
+Write `load` at the top level or inside the `program` block; both are registered
+before anything runs. Until now a top-level `load` never ran when a program block
+existed — `load` was an executable statement and those statements are not walked
+— and it warned so.
+
+**The warning was true about the parent process and blind to a spawned actor.**
+An actor is fork+exec: the child re-parses the source and runs the entry
+function, never entering the `program` block. Parent and child ran *separate*
+registration passes over *different* sets, and their blind spots were exactly
+complementary:
+
+| | top-level `load` | `load` inside `program` |
+|---|---|---|
+| parent | never ran → **warned** | ran, as a statement |
+| child | ran | **never seen** |
+
+So whichever position an author picked, one of the two processes was missing the
+import — and following the warning's advice ("move it inside `program`") made the
+worker die on its first qualified call while the parent waited in `receive()`.
+The symptom was a **hang**, pointing nowhere near the `load`.
+
+They now run **one shared pass**, which is the actual fix; making `load`
+position-blind falls out of it. `tests/run_pre_registration.sh` pins that they
+share it, structurally — the property is *there is only one pass*, and no single
+program can demonstrate that, since a behavioural test proves only that two
+passes agree about the case it exercises.
+
+Three measured things make hoisting safe rather than a guess. Importing runs no
+user code: `library_import_from_block` handles `USE`, `FUNCTION` and `MODIFIER`
+and ignores every other statement kind, so a `library` block registers names and
+executes nothing. Hoisting is idempotent: a program-body `load` is hoisted *and*
+still reached as a statement, and the second import returns early at the
+`used_pairs` guard. And it is **direct children only** — `load` is an ordinary
+statement, so `if false then load nosuchlib` parses today
+(`examples/inline_if_test.bas`) and must keep importing nothing.
+
+One behaviour change worth naming: a top-level `load pg` on a build without
+libpq used to be dead and now raises at startup. That is fail-fast rather than
+`invalid function call` later, but it is a change.
+
+The pre-registration set gains `AST_STMT_USE`, so **gBASIC Studio's STU-4B
+declaration-hoisting rule must gain `load`** — the tripwire says so by name.
+
+Four perturbations proven red. The fourth is the one worth recording: the first
+version of the actor fixture used `alias_host` and `alias_dep`, and `alias_host`
+*loads* `alias_dep` — so the child received the block-position library
+transitively, removing that hoist changed nothing, and the tier passed against a
+deliberately broken build. Each position now has a library nothing else reaches.
+Red-proofing also found that the warning-model tier failed *silently* under
+`set -e`, since the fixture exits nonzero when it regresses; it names itself now.
+
 ### Changed — documentation: gBASIC is no longer described as experimental
 
 The word carried an implication the tree stopped earning: 107 test suites, 40

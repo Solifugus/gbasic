@@ -35,13 +35,16 @@ and the stale-looking ones carry a Status line saying what overtook them.
 
 ### Open — worth fixing (ranked)
 
-0. **A spawned actor cannot see a library loaded inside `program`, and the
-   warning for the shape that works says the opposite.** The child never enters
-   the program block, so the worker's library must be loaded at the top level —
-   where the interpreter warns "this `load` ... never runs", which is true of
-   the parent and false of the child. Taking the advice makes the child die on
-   its first qualified call while the parent hangs in `receive()`, and the
-   symptom points nowhere near the `load`. Entry 2026-09-05.
+0. ~~**A spawned actor cannot see a library loaded inside `program`, and the
+   warning for the shape that works says the opposite.**~~ **RESOLVED
+   2026-09-05.** `load` is a declaration now, hoisted from either position by
+   ONE pass the parent and the actor child share — they used to run separate
+   loops over different sets, with exactly complementary blind spots, which is
+   why whichever position an author picked one process was missing the import.
+   The warning is retired rather than reworded: it was true about the parent
+   and blind to the child. `tests/run_pre_registration.sh` pins that the two
+   share a pass and exercises both positions with libraries nothing else
+   reaches.
 1. ~~**No modulo**~~ **RESOLVED 2026-08-24.** `mod(a, b)`, FLOORED — which is
    what the hand workaround `a - floor(a/b)*b` computed, so the four libraries
    written against that advice keep their meaning. Diverges from QBasic's
@@ -1993,6 +1996,8 @@ finding gets lost.
 ## 2026-08-15 — CC — while: release-prep doc sweep (xml "release blocker")
 - **Type:** doc-gap
 - **Severity:** high (it manufactured a false release blocker)
+- **Status: NO LONGER TRUE as of 2026-09-05** — `load` is a declaration and both
+  positions work. Kept unedited as the record of what it cost while it was true.
 - **What:** `load` is an EXECUTABLE statement, so when a `program` block exists a
   top-level `load` never runs — the same rule that makes declaration hoisting
   safe (`tests/run_pre_registration.sh` asserts `top-level-ran=false`). The
@@ -4127,3 +4132,14 @@ worker unless the load is written twice.
   block at all — all top level, which is a legitimate program shape and avoids
   the misleading warning entirely. Where a program block is wanted, write the
   `load` in both places.
+- **Status: RESOLVED 2026-09-05.** `load` became a declaration, hoisted from the
+  top level and from the program block's direct children by one pass
+  `eval_program` and `eval_run_actor` now share; the warning is gone. Three
+  things made hoisting safe rather than a guess: importing runs no user code
+  (`library_import_from_block` handles only USE/FUNCTION/MODIFIER), hoisting is
+  idempotent (the second import returns early at the `used_pairs` guard), and it
+  is direct-children-only, so `if false then load nosuchlib` still imports
+  nothing. **The first version of the new fixture could not have caught its own
+  bug**: it used `alias_host` and `alias_dep`, and `alias_host` loads
+  `alias_dep`, so the child got the block-position library transitively and
+  removing that hoist changed nothing. Two independent libraries now.

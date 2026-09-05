@@ -150,22 +150,42 @@ printf '%s' "$out" | grep -q "shadows 'start_server' from library 'shadowlib'" \
     || { printf 'FAIL local_shadows_library (no shadow warning)\n'; exit 1; }
 printf 'PASS local_shadows_library (qualified call escapes the collision, and it warns)\n'
 
-# --- a top-level `load` never runs -----------------------------------------
+# --- a top-level `load` RUNS, and the warning about it is gone --------------
 #
-# `load` is executable and the statements outside a program block are not
-# walked. Documented, and still the most confusing way to lose an import: for a
-# .bas library the symptom is `invalid function call: lib.name`, which points
-# at the call rather than the import.
-out="$(GBASIC_PATH=stdlib ./gbasic tests/warning_model/top_level_load.bas 2>&1)"
-printf '%s' "$out" | grep -q 'is outside the program block, so it never runs' \
-    || { printf 'FAIL top_level_load (no warning)\n'; exit 1; }
-printf 'PASS top_level_load (a load outside the program block is named as dead)\n'
+# STRUCK 2026-09-05. This tier used to assert the warning "this `load` is
+# outside the program block, so it never runs". It is now a NEGATIVE CONTROL on
+# the other side of that change, in the shape run_limitations.sh uses: it goes
+# red if the warning comes back or if the import stops working.
+#
+# Why the warning went rather than being reworded: it was true about the parent
+# and blind to the ACTOR CHILD. A spawned actor is fork+exec -- it re-parses the
+# source and runs the entry function, never entering the program block -- so the
+# top-level position was the only one that worked for it, while the block
+# position was the only one that worked for the parent. Following the warning's
+# advice broke the child, and the symptom was a hang rather than an error.
+# `load` is a declaration now, hoisted by one pass both processes share
+# (tests/run_pre_registration.sh pins that they share it).
+# `|| true`: the fixture EXITS NONZERO when this regresses (the import is dead,
+# so the qualified call raises), and under `set -e` the bare command substitution
+# would abort the suite with no message at all -- red, but silent about which
+# tier. Measured while red-proofing this change.
+out="$(GBASIC_PATH=stdlib ./gbasic tests/warning_model/top_level_load.bas 2>&1 || true)"
+if printf '%s' "$out" | grep -q 'never runs'; then
+    printf 'FAIL top_level_load (the retired warning is back)\n'
+    exit 1
+fi
+printf '%s' "$out" | grep -qx 'library:7' \
+    || { printf 'FAIL top_level_load (a top-level load did not run)\n'; exit 1; }
+printf 'PASS top_level_load (a load outside the program block runs, silently)\n'
 
-# THE CONTROL: a load INSIDE the block must stay silent, or the warning is
-# noise on every correctly-written program.
-out="$(GBASIC_PATH=stdlib ./gbasic tests/warning_model/local_shadows_library.bas 2>&1)"
+# THE CONTROL, unchanged in purpose: a load INSIDE the block still works and is
+# still silent. Without it, "no warning and the import works" is also satisfied
+# by a build that only ever honours the top-level position.
+out="$(GBASIC_PATH=stdlib ./gbasic tests/warning_model/local_shadows_library.bas 2>&1 || true)"
 if printf '%s' "$out" | grep -q 'never runs'; then
     printf 'FAIL top_level_load control (a load INSIDE the block must not warn)\n'
     exit 1
 fi
-printf 'PASS top_level_load control (a load inside the block is silent)\n'
+printf '%s' "$out" | grep -qx 'library:2' \
+    || { printf 'FAIL top_level_load control (a load inside the block did not run)\n'; exit 1; }
+printf 'PASS top_level_load control (a load inside the block runs, silently)\n'
