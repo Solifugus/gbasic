@@ -179,6 +179,47 @@ library reasoning
         return out
     end function
 
+    ' --- Context ---------------------------------------------------------------
+    '
+    ' §5 says this library owns the value shapes and their validation, and the
+    ' Context was the one it did not. It is not constructed here -- it is
+    ' ordinary business data, loaded and versioned like any other record -- but
+    ' both layers that read one should agree about what a field is called, and
+    ' until now neither checked.
+    '
+    ' MEASURED: a Context written with `objective` and `threshold` instead of
+    ' the plurals -- the easiest mistake available -- produced a decision with
+    ' `direction: "unstated"` and `materiality: unknown` and raised nothing. The
+    ' second of those is the designed HONEST answer when no threshold was
+    ' declared (§4.6), so a typo was indistinguishable from a deliberate
+    ' omission, which is the shape of failure this whole design exists to catch.
+    '
+    ' An unknown field is therefore refused BY NAME, the rule
+    ' `webserver.listen` already follows for its options: a misspelling that is
+    ' quietly ignored leaves the author believing they declared something they
+    ' did not.
+    function context_fields()
+        return ["objectives", "thresholds", "authority", "approval"]
+    end function
+
+    function check_context(context, who)
+        if type(context) != "record" then
+            error who + " expects a context record"
+        end if
+        known = context_fields()
+        for each field in keys(context)
+            if not contains(known, field) then
+                error (who + ": a context has no field `" + string(field)
+                       + "`. It carries " + join(known, ", ")
+                       + " -- and an unrecognised name is refused rather than"
+                       + " ignored, because a misspelled `thresholds` reports"
+                       + " materiality `unknown`, which is exactly what an"
+                       + " honestly undeclared threshold reports (design §5)")
+            end if
+        next
+        return nothing
+    end function
+
     ' --- Decision ------------------------------------------------------------
 
     ' The mirror of `finding`'s refusals, one layer along. A Decision carries

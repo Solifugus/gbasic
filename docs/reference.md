@@ -4990,6 +4990,19 @@ whole program without needing a call site.
   passes `as_of`. `reasoning.provenance_complete(finding)` returns what is
   missing, so completeness is checkable structurally rather than by reading.
 
+  `reasoning.context_fields()` names the fields a `Context` carries
+  (`objectives`, `thresholds`, `authority`, `approval`) and
+  `reasoning.check_context(context, who)` raises unless a context uses only
+  those — which `decision.evaluate` and `automation` both call, so the two
+  layers that read one context cannot disagree about what a field is called. An
+  unrecognised name is **refused rather than ignored**, and the reason is
+  measured: a context written with the singular `objective` and `threshold`
+  produced a decision with `direction: "unstated"` and `materiality: unknown`
+  and raised nothing — and `materiality: unknown` is the *designed* honest
+  answer when no threshold was declared, so a typo was indistinguishable from a
+  deliberate omission. The decision layer accepts `approval` even though only
+  `automation` reads it, because one context serves both.
+
   `insight.weigh(finding, hypotheses)` is §4's third rung, and is built so it
   cannot reach the fifth: every `reasoning.hypothesis` carries
   `explains: false` for its whole life, because only a recorded test could

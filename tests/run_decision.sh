@@ -90,10 +90,10 @@ else
     grep "^MISMATCH" "$scratch/out" | head -10
 fi
 n=$(sed -n 's/^checks: //p' "$scratch/out")
-if [ -n "$n" ] && [ "$n" -ge 92 ]; then
+if [ -n "$n" ] && [ "$n" -ge 98 ]; then
     pass "check count floor ($n checks)"
 else
-    fail "check count floor (got '${n:-none}', want >= 92)"
+    fail "check count floor (got '${n:-none}', want >= 98)"
 fi
 
 printf 'TIER the load-bearing tiers ran\n'
@@ -115,6 +115,8 @@ for needle in \
     "    and the two report DIFFERENT assurance from the same decision" \
     "  yet a third off the sized-off quantity reverses it" \
     "a flip INSIDE the swept range is caught" \
+    "a misspelled context field is refused BY NAME" \
+    "  and so is one carrying a field only the other layer reads" \
     "an interval reaching where the model breaks yields NO quantity" \
     "  so amplification separates them" \
     "  and what a point estimate would have claimed"

@@ -368,6 +368,53 @@ check("evidence far from the break-even is decisive", d_far.assurance, 1)
 check("the SAME amount of evidence near it is not", d_near.assurance < 1, true)
 check("  and the flip is named", count(d_near.sensitivities) > 0, true)
 
+' --- TIER: the Context is checked, because a typo in one is silent ---------
+'
+' §5 said reasoning.bas owns the value shapes and their validation, and the
+' Context was the one it did not check. MEASURED: a context written with
+' `objective` and `threshold` instead of the plurals -- the easiest mistake
+' available -- produced a decision with `direction: "unstated"` and
+' `materiality: unknown`, and raised nothing. The second is the DESIGNED
+' honest answer when no threshold was declared (§4.6), so a typo was
+' indistinguishable from a deliberate omission.
+on error goto next
+x = decision.evaluate(spotty, { objective: ctx.objectives,
+                                thresholds: ctx.thresholds,
+                                authority: ctx.authority },
+                      options, { sizing: "leading_cell",
+                                 sensitivity_range: [0, 2] })
+check("a misspelled context field is refused BY NAME",
+      contains(error.message, "no field `objective`"), true)
+check("  and the message lists what a context does carry",
+      contains(error.message, "objectives, thresholds, authority"), true)
+check("  and says why it is refused rather than ignored",
+      contains(error.message, "exactly what an honestly undeclared threshold"), true)
+error.clear()
+x = decision.evaluate(spotty, { objectives: ctx.objectives,
+                                threshold: ctx.thresholds,
+                                authority: ctx.authority },
+                      options, { sizing: "leading_cell",
+                                 sensitivity_range: [0, 2] })
+check("the singular `threshold` is caught too",
+      contains(error.message, "no field `threshold`"), true)
+error.clear()
+on error stop
+
+' THE CONTROLS, and there are two. A well-formed context is accepted -- and so
+' is one carrying `approval`, which only the automation layer reads: ONE
+' context serves both layers, so the decision layer must not refuse a field it
+' does not itself use.
+ok_ctx = decision.evaluate(spotty, ctx, options,
+                           { sizing: "leading_cell", sensitivity_range: [0, 2] })
+check("a well-formed context is accepted", ok_ctx.sized_off.quantity, "leading_cell")
+with_approval = decision.evaluate(spotty,
+                  { objectives: ctx.objectives, thresholds: ctx.thresholds,
+                    authority: ctx.authority,
+                    approval: { by: "regional director", at: "2026-09-04" } },
+                  options, { sizing: "leading_cell", sensitivity_range: [0, 2] })
+check("  and so is one carrying a field only the other layer reads",
+      with_approval.recommendation, ok_ctx.recommendation)
+
 ' --- TIER: R17, assurance travels with its definition ----------------------
 '
 ' `insight.weigh` reports agreement with `agreement_is` and

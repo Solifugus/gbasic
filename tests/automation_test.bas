@@ -211,6 +211,21 @@ check("an action that underperformed says so", worse.outcome.met, false)
 check("  and an effect can be small even when the observation is large",
       automation.observe(act3, { value: 9000, holdout: 8990, at: "x" }).outcome.effect, 10)
 
+' --- TIER: the same Context check, at the layer that spends authority ------
+' One context serves both layers, so both must agree what a field is called.
+' This is the layer where a silently ignored field matters most: an unset
+' authority means NOTHING may execute, and a MISSPELLED one is an unset one.
+on error goto next
+x = automation.would(cheap, { authorities: ctx.authority }, full)
+check("automation refuses a misspelled context field too",
+      contains(error.message, "no field `authorities`"), true)
+error.clear()
+on error stop
+' THE CONTROL: the same call with the field spelled correctly must still work,
+' or the check is indistinguishable from refusing everything.
+check("and the correctly spelled one still passes the gate",
+      automation.would(cheap, ctx, full).would_act, true)
+
 ' --- TIER: §9, an action records what it was and what permitted it --------
 '
 ' The design has said since it was written that an Action records "the finding

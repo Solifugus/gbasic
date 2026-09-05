@@ -1,15 +1,22 @@
 # Business Automation Reasoning
 
-Status: **Partial.** **All three layers now have a first increment** —
-`stdlib/reasoning.bas`, `stdlib/insight.bas` (`tests/run_insight.sh`),
-`stdlib/decision.bas` (`tests/run_decision.sh`) and `stdlib/automation.bas`
-(`tests/run_automation.sh`). The architecture is closed end to end: a Finding
-becomes a Decision becomes a gated Action becomes a measured Outcome. What is
-not built is breadth — one function per layer, and §15's recipes 2–4. Recipe 1 is built and measured
-([automation_recipe_01_sales_decline.md](automation_recipe_01_sales_decline.md),
-`examples/automation_lab/01_sales_decline.bas`,
-`tests/run_automation_lab.sh`), and `examples/automation_lab/02_explain_change.bas`
-runs the same investigation through the library as a cross-check.
+Status: **Partial, and reconciled against the code 2026-09-04.** All three
+layers have a first increment — `stdlib/reasoning.bas`, `stdlib/insight.bas`
+(`tests/run_insight.sh`), `stdlib/decision.bas` (`tests/run_decision.sh`) and
+`stdlib/automation.bas` (`tests/run_automation.sh`), plus the manual calibration
+tier (`tests/run_insight_calibration.sh`). The architecture is closed end to
+end: a Finding becomes a Decision becomes a gated Action becomes a measured
+Outcome, and a measured Outcome becomes the assumption a later Decision rests
+on.
+
+**Eleven recipes are built, executable and asserted** — `examples/automation_lab/`,
+each with a write-up in `docs/`. The depth plan §15 set out is discharged; what
+is not built is **breadth**, which is §15's twelve scenarios and mostly untouched.
+
+What every recipe still has in common, and it is the largest standing
+limitation: **all of them run on data this project generated.** The
+measurements are real measurements of this library's behaviour and none of them
+is a measurement of a real business.
 
 *This document began as a charter written 2026-09-01 and was rewritten into a
 design on the same day, after Recipe 1. The vision in §2–§3 is substantially
@@ -478,13 +485,27 @@ authority are read by more than one layer and belong to neither.
 Context
     objectives[]        what the organisation is trying to achieve
     thresholds          what counts as material, per measure
-    policies[]          what may be done, by whom, within what envelope
     authority           what THIS process may execute without a human
-    null_policy         what counts as ordinary (§7)
+    approval            who signed off, where one was required
 ```
 
 A `Context` is data. It is loaded, versioned, diffed and audited like any other
 business record, which is what makes "why was this allowed?" answerable later.
+It is therefore not *constructed* by `reasoning.bas` — but its field names are
+checked there, by both layers that read one, and **an unrecognised name is
+refused rather than ignored**. Measured: a context written with `objective` and
+`threshold` instead of the plurals produced a decision with `direction:
+"unstated"` and `materiality: unknown` and raised nothing — and `materiality:
+unknown` is the *designed* honest answer when no threshold was declared (§4.6),
+so a typo was indistinguishable from a deliberate omission. The decision layer
+accepts `approval` even though only `automation` reads it, because one context
+serves both.
+
+Two fields sketched in earlier drafts are **not** implemented and are not
+placeholders for work in progress: `policies[]`, because nothing has yet needed
+a policy separate from the authority envelope, and `null_policy`, because the
+null is declared per search in the `insight` spec (§7) where the search width
+that sets its threshold lives.
 
 A convenience facade (`business.bas`) is **deferred** (§16) until the three
 libraries have stabilised. Building it early would freeze boundaries the recipe
@@ -495,41 +516,127 @@ programme exists to test.
 ## 6. The shared reasoning model
 
 The charter listed fourteen candidate objects whose representations "should
-emerge from experimentation". Recipe 1 is one experiment, and it settles one of
-them. The rest are staged honestly rather than all specified at once.
+emerge from experimentation". Eleven recipes later, six are specified and the
+rest are still not objects.
 
-### 6.1 Finding — specified
+**These shapes are what the code produces**, not what an earlier draft hoped
+for; §6 has been reconciled against `reasoning.bas` rather than re-read.
+
+### 6.1 Finding
 
 ```text
 Finding
     subject                 what was examined
     measure                 the quantity ("revenue")
     period                  { baseline, current }
+    comparison              period_over_period | versus_last_year      §7
     observation             { baseline, current, change, change_pct }
-    search                  { dimensions[], cells, width }      REQUIRED  §4.3
-    null                    { kind, mean, sd, threshold }       DECLARED  §7
-    strength                { z, clears }                       §4.2
-    contributors[]          { path, change, share | unknown }   §4.4
+    search                  { dimensions[], cells, width,
+                              alpha_requested, correction, repetitions,
+                              max_causes, detectable }        REQUIRED  §4.3
+    null                    { kind, mean, sd, threshold, net_t,
+                              standardized, df, common_movement,
+                              calibration }                   DECLARED  §7
+    strength                { z, clears, leader, clearing }             §4.2
+    contributors[]          { path, baseline, current, change,
+                              share | unknown, z, clears }              §4.4
+    shares_reportable       false when R2 or R13 withheld them
+    shares_withheld_because the reason, in words
     associations[]          measures that moved with it — never "causes"
     hypotheses[]            Hypothesis values, untested until tested
-    provenance              §9
+    provenance              { method, rows, parameters, assumptions }   §9
 ```
 
+Every field beyond the original sketch was added by a recipe that measured why
+it was needed: `alpha_requested` and `null.calibration` by the calibration
+tier, `repetitions` by §4.13, `max_causes` by §4.9, `detectable` by §4.10,
+`common_movement` by §4.8, `strength.clearing` by §4.9.
+
 Note what is **absent**: no `materiality` (§4.6), no bare `confidence` (§4.5),
-and no `cause` (R3).
+no `alpha` that would imply a rate was delivered rather than requested, and no
+`cause` (R3).
 
-### 6.2 Context — specified above (§5).
+### 6.2 Context — §5.
 
-### 6.3 Hypothesis, Decision, Action, Outcome — shape deferred to their recipes
+### 6.3 Decision
 
-`Hypothesis` and the causal progression are sketched in R3 and need the recipe
-that tests one. `Decision`, `Action` and `Outcome` need the first recipe that
-actually decides something, which §15 schedules deliberately, because *no
-recipe so far has crossed the `decision` boundary at all*.
+```text
+Decision
+    objective               { measure, direction }, from the Context
+    finding                 the Finding that initiated it              §9, R16
+    materiality             computed from the Context, `unknown` if
+                            no threshold was declared                    §4.6
+    alternatives[]          each scored
+    recommendation          the best alternative, NOT the best affordable  R6
+    expected_value
+    authority_required      stated here, enforced at the action           R6
+    authority_reason
+    assurance               a share of a swept range                    §4.12
+    assurance_is            { definition, swept, over, from, steps,
+                              held_fixed, is_not }                   §4.12, R17
+    sensitivities[]         where the recommendation changes
+    sized_off               { quantity, established, value }              R9
+    provenance
+```
+
+`decision.quantity` answers a different shape of question — a continuous
+quantity from a model rather than a choice among alternatives (§4, Recipe 10) —
+and returns `{ recommended, model, defined, low, high, parameter,
+parameter_spread, quantity_spread, amplification, amplification_is }`, or
+`{ recommended: unknown, defined: false, broke_at, point_estimate_would_say,
+why }` where the model has no answer over the whole interval (R12).
+
+### 6.4 Action and Outcome
+
+```text
+Action
+    decision                the Decision, which carries the Finding      §9
+    context                 the policy in force when it ran              §9
+    rehearsal               { periods, fired, false_alarms, missed,
+                              needed_approval, false_alarm_rate }        R5
+    authority               { needed, granted_by, reason }               R6
+    result                  what the executor reported
+    provenance
+    outcome                 added later by automation.observe            R7
+
+Outcome
+    expected, observed, measured_at, met
+    controlled              false unless a holdout was supplied         R10
+    holdout, effect         present only when it was
+```
+
+An Action read back through `reasoning.as_evidence` becomes
+`{ kind, decision, about: { measure, intervention }, expected, observed,
+holdout, effect, met, controlled }` — and R10 refuses to produce one at all
+without a comparison, while R16 uses `about` to refuse pooling it with evidence
+about a different question. `reasoning.as_observation` reads the same Action
+honestly labelled, carrying its own caveat.
+
+### 6.5 Hypothesis
+
+```text
+Hypothesis
+    name
+    predicts                dimension -> value constraints, declarative
+    discriminator           REQUIRED: the observation that would separate
+                            this from its rivals
+    rationale
+    explains                false, for its whole life                    R3
+```
+
+`insight.weigh` returns `{ affected_cells, hypotheses[], leader,
+leader_is_separable, indistinguishable[], agreement_is, next_test }`. No
+probability appears anywhere in it (R11).
+
+### 6.6 Still not objects
 
 The charter's `METRIC`, `SIGNAL`, `EVIDENCE`, `FORECAST`, `RISK`, `GOAL`,
-`CONSTRAINT`, `ALTERNATIVE`, `POLICY` are **not** adopted as objects yet. Some
-will turn out to be fields rather than types. Recipe 1 needed none of them.
+`CONSTRAINT`, `ALTERNATIVE`, `POLICY` are **not** adopted as objects. Eleven
+recipes have needed none of them as types: `EVIDENCE` turned out to be what
+`as_evidence` returns from an Action, `ALTERNATIVE` a record in a list,
+`GOAL` and `CONSTRAINT` fields of the Context. `FORECAST` is the one with a
+real gap behind it — `versus_forecast` is absent from §7 because nothing in
+this tree produces a forecast.
 
 ---
 
@@ -568,8 +675,15 @@ answers, the caller declares and the library never infers.
   that may be simultaneously wrong is not discoverable from the data: allowing
   for more is what lets a second cause be seen at all, and it raises the bar
   for every cause (§4.9, R14). Above 1 it requires the permuted null.
+- **How many times the search will be run** — `repetitions`, default 1. The
+  correction is family-wise over the cells of one search, and a monitoring
+  process asks the same question every month; twelve runs are twelve families
+  (§4.13, R18). Not discoverable from the data, and priced: the bar rises with
+  the family, and by R15 the bar is the smallest change the search can find.
 - **The authority envelope** — what this process may do without a human.
-  Never a default; an unset authority means *nothing may execute*.
+  Never a default; an unset authority means *nothing may execute* — and a
+  misspelled one is an unset one, which is why an unrecognised Context field is
+  refused by name (§5).
 - **Materiality thresholds** — per measure, in the `Context`.
 
 ---
@@ -911,7 +1025,20 @@ Deliberately one function at a time.
   value turned out not to be the choice at all — everything useful is beside
   the recommendation.
 
-### The first one, for reference
+- **From the 0.1 audit rather than a recipe** (2026-09-04): **R17**, which gave
+  `assurance` the definition every other derived number in the layer already
+  carried, and in doing so measured that a recommendation reporting
+  `assurance 1` can reverse on a dial the sweep does not turn (§4.12); **R18**,
+  `repetitions`, after measuring that an ordinary year raises a finding 72.5% of
+  the time because the correction covers one search and a campaign is twelve
+  (§4.13); and the Context field check, after measuring that a plural typo in a
+  Context reports `materiality: unknown`, which is exactly what an honestly
+  undeclared threshold reports (§5).
+
+### The first increment, for reference
+
+*Historical: this is what was specified before any of it was built, kept
+because the sequencing argument is still the right one.*
 
 ```text
 reasoning.finding(spec)                  construct + validate a Finding
@@ -939,19 +1066,38 @@ Self-checking, not golden, and here it is forced: every defect this design
 exists to prevent produces a **confident, ordinary-looking causal story**, and a
 golden would record it as expected.
 
-- **The planted-versus-null pair**, as Recipe 1 already does: the same
-  decomposition over a real planted cause and over pure noise, required to
-  reach opposite verdicts while producing the same headline. This is the
-  load-bearing test and it must survive every change.
-- **The threshold is derived, not constant**: asserted at several search widths,
-  since a hardcoded cut silently stops scaling.
-- **Share refusal**: a population with large offsetting movements must report
-  no share rather than a computable one, with a control beside it — an ordinary
-  population must still report shares, or a library that refuses everything
-  passes.
+The standing rules, each of which has caught something:
+
+- **The planted-versus-null pair**, as Recipe 1 does: the same decomposition
+  over a real planted cause and over pure noise, required to reach opposite
+  verdicts while producing the same headline. This is the load-bearing test and
+  it must survive every change.
+- **The threshold is derived, not constant**: asserted at several search widths
+  and now at several *repetition* counts, since a hardcoded cut silently stops
+  scaling.
+- **Refusals with controls**, each beside its nearest legal neighbour. A
+  refusal tier with no control is satisfied by refusing everything, and that has
+  been the near-miss more than once — R16 without its control would forbid the
+  pooling a calibration exists for.
 - **Provenance completeness**: a Finding that cannot answer §9's questions
   fails, checked structurally rather than by reading.
-- **Refusals with controls**, each beside its nearest legal neighbour.
+- **Assert a DIFFERENCE between two runs, not a value in a range.** This is the
+  rule the programme learned the hard way and it is written down because it was
+  violated four times: the sensitivity sweep (§4, Recipe 5), the calibration
+  interval (Recipe 9), the model amplification (Recipe 10) and an interval
+  bracket in Recipe 11's own tier each first got an assertion that passes on the
+  broken implementation. What separates a right answer from a plausible wrong
+  one is almost never that a number is large or has moved in the right
+  direction.
+- **A no-op default is asserted as a no-op.** `max_causes: 1` and
+  `repetitions: 1` are what the library always silently assumed; a tier requires
+  that naming them moves no existing answer, because a default that quietly
+  moved one would be a behaviour change wearing a declaration's clothes.
+- **Calibrations are checked, not trusted.** `tests/insight_calibration.bas` is
+  a manual tier because measuring a false-positive rate costs hundreds of
+  searches, and it is the only reason this design knows that its own threshold
+  delivers 0.10–0.14 against a requested 0.05, and that an ordinary year raises
+  a finding 72.5% of the time.
 
 ## 15. The recipe programme
 

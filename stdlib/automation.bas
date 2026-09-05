@@ -29,6 +29,7 @@ library automation
         if type(dec) != "record" or is_unknown(dec["recommendation"]) then
             error "automation: expected a Decision"
         end if
+        reasoning.check_context(context, "automation")
         auth = context["authority"]
         if is_unknown(auth) then
             error ("automation: the context needs an authority -- unset means"

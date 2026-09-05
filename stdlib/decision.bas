@@ -128,9 +128,7 @@ library decision
         if type(finding) != "record" or is_unknown(finding["observation"]) then
             error "decision.evaluate expects a Finding"
         end if
-        if type(context) != "record" then
-            error "decision.evaluate expects a context record"
-        end if
+        reasoning.check_context(context, "decision.evaluate")
         if type(alternatives) != "array" or count(alternatives) = 0 then
             error "decision.evaluate expects a non-empty array of alternatives"
         end if
