@@ -1,0 +1,1 @@
+runtime error at tests/negative_duplicate_function_program.bas:11:1: function 'twice' is defined twice in this file -- the first, at line 7, would be unreachable

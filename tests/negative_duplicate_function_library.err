@@ -1,0 +1,1 @@
+runtime error at tests/libs/duplicate_fn.bas:9:5: function 'helper' is defined twice in library 'duplicate_fn' -- the first, at line 5, would be unreachable

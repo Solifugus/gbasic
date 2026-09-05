@@ -6946,6 +6946,23 @@ static FunctionDef *function_find_local(const char *name) {
     return NULL;
 }
 
+/* THE SAME SCOPE, for the duplicate-definition refusal. `function_find_local`
+ * answers only for the root program, because a library's functions are all
+ * `imported`; two definitions of one name inside one library need this. */
+static FunctionDef *function_find_in_library(const char *name, const char *library) {
+    if (!library) {
+        return NULL;
+    }
+    for (size_t i = 0; i < function_count; i++) {
+        if (functions[i].imported && functions[i].library &&
+            strcmp(functions[i].library, library) == 0 &&
+            strcmp(functions[i].name, name) == 0) {
+            return &functions[i];
+        }
+    }
+    return NULL;
+}
+
 /* A LIBRARY'S OWN FUNCTION, WHEN THE CALL IS COMING FROM INSIDE IT.
  *
  * Without this, an unqualified call inside a library resolved through the same
@@ -7151,6 +7168,50 @@ static void function_register_def(AstStmt *stmt, int imported, const char *libra
      * is NULL again -- which is precisely why the path used to be wrong. */
     if (!stmt->as.function.source_path && current_import_path && current_import_path[0]) {
         stmt->as.function.source_path = copy_string(current_import_path);
+    }
+
+    /* DEFINING THE SAME NAME TWICE IN ONE SCOPE IS A MISTAKE, and it used to be
+     * a silent one: the second definition overwrote the first's `stmt` and the
+     * first became unreachable with nothing said. Two functions of one name in
+     * one file is a paste that went wrong or an edit that missed its twin, and
+     * in either case the program runs the one the author is less likely to be
+     * looking at.
+     *
+     * SCOPE here is the root program for a local definition and the LIBRARY for
+     * an imported one -- deliberately not "the whole program", because a local
+     * shadowing a library function, and two libraries sharing a name, are both
+     * legitimate and both already have their own diagnostics.
+     *
+     * Keyed on the AST POINTER, so re-registering the SAME definition is not a
+     * duplicate -- and that is DEFENCE, not a fix for a case that exists. Every
+     * re-registration path was checked and none of them reaches here twice with
+     * one statement: a library imported again returns early at the `used_pairs`
+     * guard, an actor child registers into a fresh table in its own process,
+     * and a program block's pre-registration pass and the top-level walk are
+     * mutually exclusive. Measured -- the whole gate passes with the pointer
+     * comparison removed. It is kept because the asymmetry favours it: a
+     * spurious "defined twice" on valid code is a worse failure than a silent
+     * re-registration, and the cost is one comparison. */
+    FunctionDef *same_scope = imported
+        ? function_find_in_library(stmt->as.function.name, library)
+        : function_find_local(stmt->as.function.name);
+    if (same_scope && same_scope->stmt && same_scope->stmt != stmt) {
+        char message[320];
+        if (imported) {
+            snprintf(message, sizeof(message),
+                     "function '%s' is defined twice in library '%s' -- the"
+                     " first, at line %d, would be unreachable",
+                     stmt->as.function.name, library ? library : "?",
+                     same_scope->stmt->line);
+        } else {
+            snprintf(message, sizeof(message),
+                     "function '%s' is defined twice in this file -- the first,"
+                     " at line %d, would be unreachable",
+                     stmt->as.function.name, same_scope->stmt->line);
+        }
+        runtime_error_raise_at(message, 1003, "invalid function call",
+                               stmt->line, stmt->column);
+        return;
     }
 
     FunctionDef *function = function_find_local(stmt->as.function.name);

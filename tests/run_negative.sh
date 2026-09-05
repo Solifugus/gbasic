@@ -364,6 +364,9 @@ cases=(
     negative_chart_pie_unknown
     negative_chart_pie_negative
     negative_chart_heatmap_ragged
+    negative_duplicate_function
+    negative_duplicate_function_program
+    negative_duplicate_function_library
 )
 
 for name in "${cases[@]}"; do
