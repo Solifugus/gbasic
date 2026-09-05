@@ -189,13 +189,16 @@ function watched_z(others, max_causes)
     if max_causes > 1 then
         nl = "siblings_permuted"
     end if
-    ' `draws` is tiny on purpose: this asks what the STATISTIC does, and the
-    ' statistic does not depend on the number of permutations. The threshold
-    ' is asserted in the recipe tier, where it is computed properly.
+    ' This tier asks what the STATISTIC does, and the statistic does not depend
+    ' on the number of permutations -- `draws` was 8 here for years, on exactly
+    ' that argument. It is 200 now because the library stopped allowing 8: a
+    ' permuted threshold at alpha 0.05 from 8 draws IS the largest of the 8,
+    ' and the rule that refuses it cannot make an exception for a caller who
+    ' promises not to look at the answer.
     f = insight.explain_change(two_causes(others),
           { measure: "revenue", period: "period", baseline: 0, current: 1,
             dimensions: ["region", "category"], comparison: "period_over_period",
-            null: nl, max_causes: max_causes, draws: 8 })
+            null: nl, max_causes: max_causes, draws: 200 })
     for each c in f.contributors
         if c.path[0] = "North" and c.path[1] = "Outdoor" then
             return c.z
@@ -407,7 +410,7 @@ error.clear()
 x = insight.explain_change(build(4242, 1, 0),
       { measure: "revenue", period: "period", baseline: 0, current: 1,
         dimensions: ["region", "category"], comparison: "period_over_period",
-        null: "siblings_permuted", max_causes: 2, draws: 8 })
+        null: "siblings_permuted", max_causes: 2, draws: 200 })
 check("  and accepted under the permuted one", is_unknown(x), false)
 if error then
     error.clear()
@@ -529,6 +532,46 @@ x = insight.explain_change(build(4242, 1, 0),
 check("  and so is a fractional one", contains(error.message, "whole number"), true)
 error.clear()
 on error stop
+
+' --- TIER: a permuted threshold needs draws in the tail it estimates -------
+'
+' The permuted threshold is an ESTIMATED quantile at rank
+' floor((1 - alpha/repetitions) * draws). Once that rank reaches the top of the
+' sample the answer is simply the LARGEST draw -- a random variable with no
+' stated coverage, returned silently and looking exactly like a threshold. It
+' was reachable before only through an unusual `alpha`; R18 made it reachable
+' by an ordinary `repetitions: 12`, which at the default 200 draws asks for
+' rank 199 of 200.
+on error goto next
+x = insight.explain_change(build(4242, 1, 0),
+      { measure: "revenue", period: "period", baseline: 0, current: 1,
+        dimensions: ["region", "category"],
+        comparison: "period_over_period", null: "siblings_permuted",
+        repetitions: 12 })
+check("a permuted threshold the draws cannot support is refused",
+      contains(error.message, "just the largest draw"), true)
+check("  and the message names the draws it would need", contains(error.message,
+      "at least 2400 draws"), true)
+error.clear()
+on error stop
+
+' TWO CONTROLS. The DEFAULT pair must be accepted -- and it sits exactly on the
+' rule, because 200 draws is the smallest count that supports alpha 0.05, which
+' is why the rule does not quietly forbid the library's own default.
+d1 = insight.explain_change(build(4242, 1, 0),
+       { measure: "revenue", period: "period", baseline: 0, current: 1,
+         dimensions: ["region", "category"],
+         comparison: "period_over_period", null: "siblings_permuted" })
+check("the default alpha and draws are accepted", d1.search.width > 0, true)
+' And a campaign IS allowed once it pays for the draws, or the refusal would be
+' a ban on combining the permuted null with R18 rather than a price for it.
+d2 = insight.explain_change(build(4242, 1, 0),
+       { measure: "revenue", period: "period", baseline: 0, current: 1,
+         dimensions: ["region", "category"],
+         comparison: "period_over_period", null: "siblings_permuted",
+         repetitions: 2, draws: 400 })
+check("  and so is a campaign that pays for the draws", d2.search.width > 0, true)
+check("    at a higher bar than one run", d2.search.width > d1.search.width, true)
 
 ' --- TIER: contributors are ranked and complete ---------------------------
 check("every cell is a contributor", count(planted.contributors), 20)

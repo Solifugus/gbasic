@@ -1,0 +1,76 @@
+A shop chain: 4 regions x 5 categories = 20 cells, 14 months.
+Most months one cell collapses. The process looks every month,
+and because it looks every month it declares repetitions: 12 (R18).
+
+=== PART 1: month 2, and R5 will not let it act
+
+  month 2: North/Outdoor clears at z -5.01
+  decision: send a manager, expected value 9308, assurance 0.9
+  would it run? false -- needs rehearsal
+    this process has never been replayed against history, so nothing is known about how often it fires or how often it is wrong (design R5)
+
+  The finding is real and the decision is sound, and nothing runs.
+  A process that has never been replayed against history has no
+  evidence about its own behaviour, so it may not act (R5). Note
+  this is checked BEFORE authority: approval would not help.
+
+=== PART 2: the rehearsal
+
+  Replayed over 12 periods, fired 9 times, 2 of them false alarms.
+  That clears the authority's min_rehearsal_periods of 6.
+
+=== PART 3: the live months
+
+  month  finding                    verdict        action
+  3      East/Home (z -3.92)        ordinary       none
+  4      South/Grocery (z -3.51)    ordinary       none
+  5      West/Apparel (z -3.47)     ordinary       none
+  6      North/Electronics (z -5.28)act            HELD BACK
+  7      East/Outdoor (z -5.43)     act            HELD BACK
+  8      South/Home (z -5.87)       act            executed: true
+  9      West/Grocery (z -4.46)     ordinary       none
+  10     North/Apparel (z -4.71)    act            executed: true
+  11     East/Electronics (z -4.35) ordinary       none
+  12     South/Outdoor (z -6.23)    act            executed: true
+  13     South/Outdoor (z 4.31)     ordinary       none
+
+  acted on 3 cells, deliberately held back 2 (automation.assign, 30%)
+  controlled evidence collected: 3
+
+=== PART 4: the loop turns
+
+  calibrated from 3 controlled outcomes: 0.374  [0.331, 0.417]
+  about: send a manager on revenue
+
+  Month 13, where nothing cleared, cannot be decided at all:
+    decision.evaluate: sized off the leading_cell, which this finding did not establish -- the leading cell does not clear the threshold for a search of 20 cells. Size off something the evidence supports, or gather more evidence (design R9)
+
+  Month 12 did clear. The SAME finding, decided under the invented
+  range recipe 5 used and under the measured one:
+
+  sensitivity_range [0, 2]    send a manager   assurance 0.9
+                              over [0, 2]
+                              from a range the caller declared
+
+  the calibrated interval     send a manager   assurance 1
+                              over [0.885, 1.115]
+                              from the calibrated interval, from 3 controlled outcomes
+
+  The recommendation is the same and what is KNOWN about it is not.
+  That is the loop closing: the assumption stopped being a number
+  somebody chose and became one this business measured about
+  itself, under a comparison it deliberately arranged.
+
+=== PART 5: what one Action turned out to carry
+
+  the finding it came from     revenue, z -5.87
+    which established           leading_cell = -17128
+  the decision that chose it   send a manager
+    assured over               a range the caller declared
+  the policy that permitted it spend limit 5000, rehearsal >= 6
+  the authority it spent       within delegated authority
+  the rehearsal it rested on   12 periods, 9 firings
+  what the executor reported   dispatched: send a manager
+
+  Every line of that came out of the run. No part of this Action was
+  written by hand, which had never been true before.

@@ -4063,3 +4063,29 @@ invent it, and one that forgets is one page away from an outage.
 
   No golden moved across 82 suites, which is the evidence that nothing depended
   on the lowercasing. `tests/run_keyword_fields.sh`.
+
+### `automation.assign(key, rate)` returns a record; comparing it to a string is silently false
+
+**Date:** 2026-09-05
+**Where:** `examples/automation_lab/13_the_whole_loop.bas`, first draft.
+
+`assign` returns `{ arm, key, why }`. Written as
+`if automation.assign(cell, 0.3) = "holdout" then`, the comparison is between a
+record and a string, which PLAT-EQ answers **false** rather than raising —
+correctly and by design, since equality across kinds answers and only ordering
+refuses.
+
+The consequence is specific to this library and bad: nothing is ever held back,
+so the run has no counterfactual, so `reasoning.as_evidence` refuses every
+outcome (R10), so no calibration is ever produced — and every one of those is
+the library behaving correctly. The measured symptom was "0 of 20 held out at a
+declared rate of 0.3", which reads exactly like a broken hash. `assign` was
+fine; the caller had dropped `.arm`.
+
+**Workaround:** `automation.assign(cell, 0.3).arm = "holdout"`.
+
+**Worth noting:** the same shape caught me twice in one file — a local
+`show(label, d)` renamed to `show_case` left two call sites reading `show(...)`,
+which then bound to `frame.show` with no warning at all, and that part of the
+output simply vanished. A renamed local is a name that was shadowing something,
+and the warning that told you so disappears with the rename.

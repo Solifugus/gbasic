@@ -259,6 +259,32 @@ library insight
         threshold = 0
         calibration = { }
         if spec["null"] = "siblings_permuted" then
+            ' A PERMUTED THRESHOLD IS AN ESTIMATED QUANTILE, and an estimate of
+            ' a quantile needs draws OUT IN THE TAIL IT IS ESTIMATING. The
+            ' index is floor((1 - alpha) * draws), so once alpha falls below
+            ' about 1/draws the answer is simply the LARGEST of the draws --
+            ' a random variable with no stated coverage, returned silently and
+            ' looking exactly like a threshold.
+            '
+            ' It was reachable before only through an unusual `alpha`. R18 made
+            ' it reachable by an ORDINARY declaration: `repetitions: 12` divides
+            ' alpha by twelve, and at the default 200 draws that asks for rank
+            ' 199 of 200. Requiring at least ten draws beyond the threshold is
+            ' the rule, and the default pair (alpha 0.05, 200 draws) sits
+            ' exactly on it, which is not a coincidence -- 200 is the smallest
+            ' draw count that supports the default alpha.
+            tail = alpha / repetitions * draws
+            if tail < 10 then
+                error ("insight.explain_change: a permuted threshold at alpha "
+                       + string(alpha) + " over " + string(repetitions)
+                       + " run(s) needs at least "
+                       + string(ceil(10 * repetitions / alpha)) + " draws and"
+                       + " has " + string(draws) + " -- with fewer, the"
+                       + " threshold is just the largest draw and its coverage"
+                       + " is not the alpha you asked for. Raise `draws`, or"
+                       + " use null: \"siblings\" and accept its tail-weight"
+                       + " assumption instead")
+            end if
             ' Dividing alpha by the repetitions is the Bonferroni step ACROSS
             ' runs, applied on top of a within-run null that is already exact
             ' family-wise over the cells.

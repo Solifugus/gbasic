@@ -174,6 +174,100 @@ else
     fail "the holdout also recovered (got '${holdout:-none}')"
 fi
 
+printf 'TIER recipe 12: the whole loop, in one program\n'
+if GBASIC_PATH=stdlib ./gbasic examples/automation_lab/13_the_whole_loop.bas \
+        >"$scratch/loop" 2>/dev/null; then
+    pass "13_the_whole_loop runs"
+else
+    fail "13_the_whole_loop runs"
+fi
+if diff -u examples/automation_lab/13_the_whole_loop.out "$scratch/loop" >/dev/null 2>&1; then
+    pass "13 matches its committed golden"
+else
+    fail "13 matches its committed golden"
+    diff -u examples/automation_lab/13_the_whole_loop.out "$scratch/loop" | head -12
+fi
+
+# THE REASON THIS RECIPE EXISTS. Every other recipe executes a HAND-BUILT
+# Decision -- recipes 9 and 11 print what `decision.evaluate` returned and then
+# execute a hand-written one, so the decision->automation seam had never been
+# driven by the real producer. `assurance_is` is the proof it was here: nothing
+# but `evaluate` puts one on a Decision, and this line reads it back off an
+# executed Action.
+if grep -q "assured over               " "$scratch/loop"; then
+    pass "the executed Action carries a Decision that decision.evaluate produced"
+else
+    fail "the executed Action carries a Decision that decision.evaluate produced"
+fi
+# And the rest of §9's chain, read off the same Action rather than asserted.
+for needle in "the finding it came from" "which established" \
+              "the policy that permitted it" "the rehearsal it rested on" \
+              "what the executor reported"; do
+    if grep -q "$needle" "$scratch/loop"; then
+        pass "  and $needle"
+    else
+        fail "  and $needle"
+    fi
+done
+
+# R5 bites before anything else can. A finding this strong with a sound
+# decision behind it still may not run, and the reason names the rehearsal.
+if grep -q "would it run? false -- needs rehearsal" "$scratch/loop"; then
+    pass "R5 refuses the first month, with a real finding and a real decision"
+else
+    fail "R5 refuses the first month"
+fi
+
+# BOTH ARMS, or automation.assign proves nothing: a run that only ever acts has
+# no counterfactual and a run that only ever holds back never tests anything.
+acted=$(sed -n 's/^  acted on \([0-9]*\) cells.*/\1/p' "$scratch/loop")
+held=$(sed -n 's/^.*deliberately held back \([0-9]*\).*/\1/p' "$scratch/loop")
+if [ "${acted:-0}" -ge 1 ] && [ "${held:-0}" -ge 1 ]; then
+    pass "the run both acted ($acted) and deliberately held back ($held)"
+else
+    fail "the run both acted and deliberately held back (acted=$acted held=$held)"
+fi
+
+# THE LOAD-BEARING ASSERTION, and it is falsifiable rather than a transcript.
+# A treated cell recovers 0.62 of its gap and an untreated one 0.24, so the
+# true incremental effect of acting is 0.38. The loop is required to RECOVER
+# that from its own controlled outcomes -- which is the only check here that
+# would fail if the chain were wired up correctly and measuring the wrong
+# thing.
+est=$(sed -n 's/^  calibrated from [0-9]* controlled outcomes: \([0-9.]*\).*/\1/p' "$scratch/loop")
+if [ -n "$est" ] && awk -v e="$est" 'BEGIN{exit !(e>0.30 && e<0.46)}'; then
+    pass "the loop recovers the true incremental effect (0.38): measured $est"
+else
+    fail "the loop recovers the true incremental effect 0.38 (got '${est:-none}')"
+fi
+
+# R9 still bites inside the loop: a month where nothing cleared cannot be
+# decided at all, rather than being sized off the leader anyway.
+if grep -q "Month 13, where nothing cleared, cannot be decided at all" "$scratch/loop" \
+   && grep -q "did not establish" "$scratch/loop"; then
+    pass "R9 refuses a month where nothing cleared"
+else
+    fail "R9 refuses a month where nothing cleared"
+fi
+
+# R17 as a DIFFERENCE between two runs over the SAME finding: the invented span
+# and the measured interval must not report the same assurance, and the value
+# must say which is which. A single assurance number proves neither.
+inv=$(grep -A2 "sensitivity_range \[0, 2\]" "$scratch/loop" | grep -o "assurance [0-9.]*" | head -1)
+mea=$(grep -A2 "the calibrated interval  " "$scratch/loop" | grep -o "assurance [0-9.]*" | head -1)
+if [ -n "$inv" ] && [ -n "$mea" ] && [ "$inv" != "$mea" ]; then
+    pass "the same finding reports different assurance under the two ranges ($inv vs $mea)"
+else
+    fail "the same finding reports different assurance under the two ranges (inv='$inv' mea='$mea')"
+fi
+if grep -q "from a range the caller declared" "$scratch/loop" \
+   && grep -q "from the calibrated interval, from 3 controlled outcomes" "$scratch/loop"; then
+    pass "  and each says where its range came from"
+else
+    fail "  and each says where its range came from"
+fi
+
+
 printf 'TIER valgrind\n'
 if vg_available; then
     if GBASIC_PATH=stdlib vg_run ./gbasic tests/automation_test.bas \

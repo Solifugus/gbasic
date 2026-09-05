@@ -657,6 +657,29 @@ answers, the caller declares and the library never infers.
     *B* extra passes and assumes only that a cell's observations are
     exchangeable between periods under the null (0.085 and 0.050 measured).
 
+  **Why the miscalibrated one is still the default**, measured 2026-09-05
+  rather than assumed. Three costs, and together they are why flipping the
+  default would be the wrong trade:
+
+  | | `siblings` | `siblings_permuted`, 200 draws |
+  |---|---|---|
+  | 20 cells | 0.056 s | 3.2 s |
+  | 60 cells | 0.152 s | 10.3 s |
+  | 200 cells | 0.598 s | 34.5 s |
+
+  **~60x**, at every width. Second, its threshold is *estimated*, so it carries
+  a standard deviation of about 0.10–0.16 across permute seeds at 200 draws
+  against a bar near 3.7 — a borderline cell can clear or not depending on the
+  seed, which the *t* threshold cannot do because it is exact given *n*. Third,
+  it compounds with R18: a permuted threshold needs at least ten draws beyond
+  the quantile it is estimating, so `repetitions: 12` needs 2,400 draws, and a
+  200-cell monthly search would take about seven minutes.
+
+  So the honest position is that `siblings` is anti-conservative by 2–3x, the
+  remedy costs ~60x and introduces seed-dependence, and **both facts belong in
+  the Finding** — which is what `null.calibration` is for. The default stays,
+  and it stays *declared*.
+
   Both are cross-sectional: they compare cells to each other at one moment and
   neither looks at time. **Recipe 3 answered what that costs, and the answer
   was not the expected one** (§4.8): under seasonality the cross-sectional null
@@ -888,6 +911,17 @@ search*, or *over the cells of this search times 12 runs*. The declaration is
 priced, like `max_causes`: the bar rises with the family and by R15 the bar is
 the smallest change the search can find.
 
+R18 also exposed a defect that had been reachable all along and never reached:
+a permuted threshold is an **estimated quantile at rank
+floor((1 − alpha/repetitions) × draws)**, and once that rank reaches the top of
+the sample the answer is simply the largest draw — a random variable with no
+stated coverage, returned silently and looking exactly like a threshold. It was
+reachable before only through an unusual `alpha`; `repetitions: 12` reaches it
+with the default 200 draws, which asks for rank 199 of 200. At least ten draws
+must lie beyond the quantile, so the pair is refused with the count it would
+need. The library's own default (alpha 0.05, 200 draws) sits exactly on that
+rule, which is not a coincidence: 200 is the smallest count that supports 0.05.
+
 ---
 
 ## 9. Provenance
@@ -1034,6 +1068,18 @@ Deliberately one function at a time.
   (§4.13); and the Context field check, after measuring that a plural typo in a
   Context reports `materiality: unknown`, which is exactly what an honestly
   undeclared threshold reports (§5).
+
+- **Recipe 12, which built nothing** (§13,
+  [automation_recipe_12_the_whole_loop.md](automation_recipe_12_the_whole_loop.md)):
+  fourteen months through the real libraries in one program, because the claim
+  that the architecture is closed end to end had been made since Recipe 6 and
+  never run. It found that **no Action in this tree had ever been built from a
+  Decision `decision.evaluate` produced** — recipes 9 and 11 print `evaluate`'s
+  answer and execute a hand-written one — so R9's sizing check and §9's chain
+  had only ever been enforced against records written by hand. The loop
+  recovers a true incremental effect of 0.38 as **0.374** from its own
+  controlled outcomes, which is the assertion that would fail if the chain were
+  wired correctly and measuring the wrong thing.
 
 ### The first increment, for reference
 
