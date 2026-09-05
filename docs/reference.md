@@ -757,15 +757,30 @@ A gBASIC string is a **binary-safe sequence of bytes**, UTF-8 by convention. It
 carries an explicit length, so any byte — including NUL (`chr(0)`) — is valid
 content; strings are not NUL-terminated from the program's point of view.
 
-String operations split into two families:
+String operations split into four families, and **every string operation is
+named in one of them.** Which family an operation belongs to used to be
+something a caller discovered by experiment, and that gap is what allowed
+`replace` and `trim` to stop at an interior NUL for years while `len` and `mid`
+did not. `find` appears twice on purpose: it *matches* by byte and *answers* in
+codepoints.
 
 - **Character-oriented (Unicode codepoints).** `len`, `left`, `right`, `mid`,
   `reverse`, `find`, `chr`, and `code` count and slice by **codepoint**, never
   splitting a multibyte character. `len("café")` is `4`. Indexing is 0-based,
   matching `mid` and arrays. A malformed UTF-8 byte degrades gracefully to one
   unit (these operations never error on arbitrary bytes).
-- **Byte-oriented (raw).** `byte_count`, `byte_at` (0-based), and `from_bytes`
-  work on raw bytes for binary and protocol work.
+- **Matching (byte sequence, codepoint-exact on valid UTF-8).** `contains`,
+  `starts_with`, `ends_with`, `find`, `replace`, `split` and `compare` locate a
+  needle by **comparing bytes**. On valid UTF-8 this is exactly codepoint
+  matching and needs no special handling, because UTF-8 is self-synchronizing:
+  a valid multi-byte sequence can only ever match at a codepoint boundary. See
+  *Matching and invalid UTF-8* below for the one case where that does not hold.
+- **Byte-preserving (structural).** `trim`, `join`, `repeat`, `upper`, `lower`
+  and concatenation move bytes without interpreting them, so multibyte
+  characters pass through unchanged. `trim` treats **ASCII whitespace only** —
+  `U+00A0` and other Unicode spaces are content, not padding.
+- **Byte-oriented (raw).** `byte_count`, `byte_at` (0-based), `from_bytes` and
+  `hex_encode` work on raw bytes for binary and protocol work.
 
 ```basic
 len("café")                    ' 4   codepoints
@@ -783,6 +798,46 @@ clusters are future work.
 
 **Literals** are UTF-8 from the source file. The escape `\u{...}` inserts a
 codepoint by hex value (`"\u{1F600}"` is `"😀"`); for a literal NUL use `chr(0)`.
+
+**Binary safety covers the whole string family, subject *and* pattern.**
+`replace`, `split`, `trim`, `join`, `repeat`, `starts_with` and `ends_with` are
+length-aware like `len`, `mid`, `contains` and `find`, and a needle or separator
+carrying a NUL is an ordinary needle:
+
+```basic
+s = "a" + chr(0) + "b"
+len(replace(s, "b", "B"))      ' 3   the match after the NUL is found
+ends_with(s, "b")              ' true
+starts_with("xy", chr(0))      ' false — a NUL needle is not a wildcard
+count(split(s, chr(0)))        ' 2   a NUL is a usable separator
+```
+
+`replace` and `split` still refuse a needle of **length zero**, which has no
+first occurrence; that is not the same as one that begins with a NUL. Until
+rc9 the matching and byte-preserving families read their arguments as C strings
+and stopped at the first NUL — silently returning a shorter string, or the
+wrong boolean — so this paragraph describes a guarantee that is now enforced by
+`tests/run_string_nul.sh` rather than one the reference merely asserted.
+
+**Matching and invalid UTF-8.** Because matching compares bytes, a needle that
+is **not itself valid UTF-8** can match in the middle of a character:
+
+```basic
+starts_with("日本語", from_bytes([230]))       ' true  — 0xE6 is 日's lead byte
+find("日本語", from_bytes([156]))              ' 2     — a codepoint index for
+                                               '         byte 4, which is not a
+                                               '         codepoint boundary
+replace("日本語", from_bytes([156]), "!")      ' invalid UTF-8 out of valid in
+```
+
+This cannot happen with a needle that is valid UTF-8, which is every needle a
+program writes as a literal. It is reachable only by constructing a fragment
+with `from_bytes` or by slicing bytes apart deliberately — which is byte work,
+and byte semantics is the right answer there. But note the consequence: when a
+match lands mid-codepoint, **`find`'s codepoint index does not name a
+boundary**, and a `replace` can produce invalid UTF-8 from valid input. If you
+are matching untrusted bytes rather than text, work in `byte_at`/`from_bytes`
+and check validity yourself.
 
 ## First-Class Functions
 

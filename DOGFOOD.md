@@ -3465,6 +3465,14 @@ from this and neither is silent:
   source reverted but the test kept -- the round trip fails while the
   on-disk-length control passes, which is what locates the fault in `read`
   rather than `write`.
+- **Follow-on, 2026-09-04:** this fix should have prompted a sweep and did
+  not. `read` was one `strlen` where a length was already known -- and so were
+  `replace`, `trim`, `join`, `split`, `repeat`, `starts_with` and `ends_with`,
+  which went on truncating at a NUL for another five days until the gdash
+  session hit them writing LDAP escaping. **A NUL-truncation defect found in
+  one place is evidence about every place that reads a string**, and the cheap
+  move after this entry was `grep -n 'strlen(' src/eval.c` rather than closing
+  the ticket. See `tests/run_string_nul.sh`.
 
 ## 2026-08-29 — CC — while: running the odbc suite against SQL Server and MariaDB for the first time
 - **Type:** bug

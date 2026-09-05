@@ -9507,23 +9507,22 @@ static Value builtin_trim_value(Value text) {
         runtime_error_raise("trim expects a string", 1003, "invalid function call");
         return value_null();
     }
-    const char *start = text.as.string;
-    while (*start && isspace((unsigned char)*start)) {
+    /* PLAT-NUL. The scan is bounded by the header length, not by a
+     * terminator: NUL is not whitespace, so trimming stops at it and every
+     * byte after it survives. Before, `end` came from strlen and the tail was
+     * silently discarded. */
+    const char *base = text.as.string;
+    size_t total = string_length(base);
+    const char *start = base;
+    const char *end = base + total;
+    while (start < end && isspace((unsigned char)*start)) {
         start++;
     }
-    const char *end = text.as.string + strlen(text.as.string);
     while (end > start && isspace((unsigned char)end[-1])) {
         end--;
     }
     size_t length = (size_t)(end - start);
-    char *trimmed = malloc(length + 1);
-    if (!trimmed) {
-        abort();
-    }
-    memcpy(trimmed, start, length);
-    trimmed[length] = '\0';
-    Value result = value_string(trimmed);
-    free(trimmed);
+    Value result = value_string_n(start, length);
     value_free(text);
     return result;
 }
@@ -9585,7 +9584,9 @@ static Value builtin_split_value(Value text, Value separator, int has_separator)
             runtime_error_raise("split separator must be a string", 1003, "invalid function call");
             return value_null();
         }
-        if (separator.as.string[0] == '\0') {
+        /* PLAT-NUL. Empty means LENGTH ZERO. A separator that merely begins
+         * with NUL is an ordinary separator. */
+        if (string_length(separator.as.string) == 0) {
             value_free(text);
             value_free(separator);
             runtime_error_raise("split separator cannot be empty", 1003, "invalid function call");
@@ -9595,57 +9596,50 @@ static Value builtin_split_value(Value text, Value separator, int has_separator)
 
     Value *items = NULL;
     size_t count = 0;
+    /* PLAT-NUL throughout: every walk is bounded by the header length and
+     * every part is built with value_string_n, so an interior NUL is content
+     * in the subject and in the separator alike. */
+    const char *base = text.as.string;
+    size_t total = string_length(base);
     if (!has_separator) {
-        const char *p = text.as.string;
-        while (*p) {
-            while (*p && isspace((unsigned char)*p)) {
-                p++;
+        size_t i = 0;
+        while (i < total) {
+            while (i < total && isspace((unsigned char)base[i])) {
+                i++;
             }
-            const char *start = p;
-            while (*p && !isspace((unsigned char)*p)) {
-                p++;
+            size_t start = i;
+            while (i < total && !isspace((unsigned char)base[i])) {
+                i++;
             }
-            if (p > start) {
-                size_t length = (size_t)(p - start);
-                char *part = malloc(length + 1);
-                if (!part) {
-                    abort();
-                }
-                memcpy(part, start, length);
-                part[length] = '\0';
+            if (i > start) {
                 Value *next = realloc(items, sizeof(Value) * (count + 1));
                 if (!next) {
                     abort();
                 }
                 items = next;
-                items[count++] = value_string(part);
-                free(part);
+                items[count++] = value_string_n(base + start, i - start);
             }
         }
     } else {
         const char *sep = separator.as.string;
-        size_t sep_len = strlen(sep);
-        const char *start = text.as.string;
+        size_t sep_len = string_length(sep);
+        size_t start = 0;
         for (;;) {
-            const char *found = strstr(start, sep);
-            size_t length = found ? (size_t)(found - start) : strlen(start);
-            char *part = malloc(length + 1);
-            if (!part) {
-                abort();
+            long at = -1;
+            if (start <= total) {
+                at = string_find_bytes(base + start, total - start, sep, sep_len);
             }
-            memcpy(part, start, length);
-            part[length] = '\0';
+            size_t length = at >= 0 ? (size_t)at : total - start;
             Value *next = realloc(items, sizeof(Value) * (count + 1));
             if (!next) {
                 abort();
             }
             items = next;
-            items[count++] = value_string(part);
-            free(part);
-            if (!found) {
+            items[count++] = value_string_n(base + start, length);
+            if (at < 0) {
                 break;
             }
-            start = found + sep_len;
+            start += (size_t)at + sep_len;
         }
     }
 
@@ -9668,7 +9662,11 @@ static Value builtin_join_value(Value array, Value separator) {
         return value_null();
     }
 
-    size_t sep_len = strlen(separator.as.string);
+    /* PLAT-NUL. Sizing and copying both used strlen, so one element carrying
+     * an interior NUL truncated the whole result -- and the size it computed
+     * was the truncated one, so the bug was self-consistent and left no
+     * overrun to find. */
+    size_t sep_len = string_length(separator.as.string);
     size_t total = 0;
     for (size_t i = 0; i < array.as.array.store->count; i++) {
         if (array.as.array.store->items[i].kind != VALUE_STRING) {
@@ -9677,7 +9675,7 @@ static Value builtin_join_value(Value array, Value separator) {
             runtime_error_raise("join array elements must be strings", 1003, "invalid function call");
             return value_null();
         }
-        total += strlen(array.as.array.store->items[i].as.string);
+        total += string_length(array.as.array.store->items[i].as.string);
         if (i > 0) {
             total += sep_len;
         }
@@ -9693,12 +9691,12 @@ static Value builtin_join_value(Value array, Value separator) {
             memcpy(joined + offset, separator.as.string, sep_len);
             offset += sep_len;
         }
-        size_t part_len = strlen(array.as.array.store->items[i].as.string);
+        size_t part_len = string_length(array.as.array.store->items[i].as.string);
         memcpy(joined + offset, array.as.array.store->items[i].as.string, part_len);
         offset += part_len;
     }
     joined[offset] = '\0';
-    Value result = value_string(joined);
+    Value result = value_string_n(joined, offset);
     free(joined);
     value_free(array);
     value_free(separator);
@@ -26803,7 +26801,20 @@ static Value eval_call(AstExpr *expr) {
             return value_null();
         }
 
-        if (strlen(from.as.string) == 0) {
+        const char *text_str = text.as.string;
+        const char *from_str = from.as.string;
+        const char *to_str = to.as.string;
+        /* PLAT-NUL. Lengths come from the string header, never from strlen:
+         * a gBASIC string is a counted sequence of bytes and NUL is content.
+         * The refusal below is about an EMPTY needle, which has no first
+         * occurrence to replace -- a needle that merely BEGINS with NUL is an
+         * ordinary needle, and reading it as empty is the same C-string
+         * mistake one level along. */
+        size_t text_len = string_length(text_str);
+        size_t from_len = string_length(from_str);
+        size_t to_len = string_length(to_str);
+
+        if (from_len == 0) {
             value_free(text);
             value_free(from);
             value_free(to);
@@ -26811,31 +26822,27 @@ static Value eval_call(AstExpr *expr) {
             return value_null();
         }
 
-        const char *text_str = text.as.string;
-        const char *from_str = from.as.string;
-        const char *to_str = to.as.string;
-        size_t from_len = strlen(from_str);
-        size_t to_len = strlen(to_str);
-
         // Count occurrences to calculate result size
         size_t count = 0;
-        const char *pos = text_str;
-        while ((pos = strstr(pos, from_str)) != NULL) {
+        size_t scan = 0;
+        while (scan + from_len <= text_len) {
+            long at = string_find_bytes(text_str + scan, text_len - scan, from_str, from_len);
+            if (at < 0) {
+                break;
+            }
             count++;
-            pos += from_len;
+            scan += (size_t)at + from_len;
         }
 
         if (count == 0) {
             // No replacements needed
-            Value result = value_string(text_str);
+            Value result = value_string_n(text_str, text_len);
             value_free(text);
             value_free(from);
             value_free(to);
             return result;
         }
 
-        // Calculate new string size
-        size_t text_len = strlen(text_str);
         size_t new_len = text_len - (count * from_len) + (count * to_len);
 
         char *result_str = malloc(new_len + 1);
@@ -26848,26 +26855,23 @@ static Value eval_call(AstExpr *expr) {
         }
 
         char *result_pos = result_str;
-        const char *current = text_str;
-
-        while ((pos = strstr(current, from_str)) != NULL) {
-            // Copy text before match
-            size_t before_len = pos - current;
-            memcpy(result_pos, current, before_len);
-            result_pos += before_len;
-
-            // Copy replacement text
+        size_t cursor = 0;
+        while (cursor + from_len <= text_len) {
+            long at = string_find_bytes(text_str + cursor, text_len - cursor, from_str, from_len);
+            if (at < 0) {
+                break;
+            }
+            memcpy(result_pos, text_str + cursor, (size_t)at);
+            result_pos += (size_t)at;
             memcpy(result_pos, to_str, to_len);
             result_pos += to_len;
-
-            // Move past the match
-            current = pos + from_len;
+            cursor += (size_t)at + from_len;
         }
+        memcpy(result_pos, text_str + cursor, text_len - cursor);
+        result_pos += text_len - cursor;
+        *result_pos = '\0';
 
-        // Copy remaining text
-        strcpy(result_pos, current);
-
-        Value result = value_string(result_str);
+        Value result = value_string_n(result_str, new_len);
         free(result_str);
         value_free(text);
         value_free(from);
@@ -26905,7 +26909,15 @@ static Value eval_call(AstExpr *expr) {
             return value_null();
         }
 
-        int result = strncmp(text.as.string, prefix.as.string, strlen(prefix.as.string)) == 0;
+        /* PLAT-NUL. strlen(prefix) stopped at an interior NUL, so a prefix
+         * carrying one compared only its head -- and a prefix that BEGAN with
+         * one compared nothing at all and matched everything. Both answered
+         * TRUE for text that does not start with the prefix, which is the
+         * dangerous direction for a predicate used to validate input. */
+        size_t text_len = string_length(text.as.string);
+        size_t prefix_len = string_length(prefix.as.string);
+        int result = prefix_len <= text_len
+                     && memcmp(text.as.string, prefix.as.string, prefix_len) == 0;
         value_free(text);
         value_free(prefix);
         return value_bool(result);
@@ -26941,12 +26953,18 @@ static Value eval_call(AstExpr *expr) {
             return value_null();
         }
 
-        size_t text_len = strlen(text.as.string);
-        size_t suffix_len = strlen(suffix.as.string);
+        /* PLAT-NUL. Both lengths came from strlen and the tails were compared
+         * with strcmp, so `contains` and `ends_with` -- two functions in the
+         * same family -- disagreed about what the string was. This one did not
+         * truncate a value, it returned the wrong boolean, which is the
+         * quietest failure of the set. */
+        size_t text_len = string_length(text.as.string);
+        size_t suffix_len = string_length(suffix.as.string);
 
         int result = 0;
         if (suffix_len <= text_len) {
-            result = strcmp(text.as.string + text_len - suffix_len, suffix.as.string) == 0;
+            result = memcmp(text.as.string + text_len - suffix_len,
+                            suffix.as.string, suffix_len) == 0;
         }
 
         value_free(text);
@@ -27005,7 +27023,8 @@ static Value eval_call(AstExpr *expr) {
             return value_string("");
         }
 
-        size_t text_len = strlen(text.as.string);
+        /* PLAT-NUL. */
+        size_t text_len = string_length(text.as.string);
         size_t result_len = text_len * count;
 
         char *result_str = malloc(result_len + 1);
@@ -27018,11 +27037,12 @@ static Value eval_call(AstExpr *expr) {
 
         char *pos = result_str;
         for (int i = 0; i < count; i++) {
-            strcpy(pos, text.as.string);
+            memcpy(pos, text.as.string, text_len);
             pos += text_len;
         }
+        *pos = '\0';
 
-        Value result = value_string(result_str);
+        Value result = value_string_n(result_str, result_len);
         free(result_str);
         value_free(text);
         value_free(count_val);
