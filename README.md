@@ -127,7 +127,9 @@ Two of these deserve a sentence more than a table row:
 
 ### The standard library
 
-Twenty-eight pure-gBASIC libraries in `stdlib/`. The larger ones:
+Forty pure-gBASIC libraries in `stdlib/`. Each bullet says what backs it,
+because they are not at the same maturity and a uniform list would imply they
+are.
 
 - **statistics** (`stats`) — descriptive and inferential statistics, regression
   and the GLM suite, mediation/moderation, time series, econometric
@@ -135,6 +137,15 @@ Twenty-eight pure-gBASIC libraries in `stdlib/`. The larger ones:
   analysis, event studies, and causal inference (DiD, IV/2SLS).
   [Social & behavioral cookbook](docs/cookbook_social_behavioral.md) ·
   [econometrics & finance](docs/cookbook_econometrics_finance.md)
+- **finance and accounting** (`finance`, `accounting`, `lending`, `deposits`,
+  `credit`, `scoring`) — time value of money in Excel's argument order,
+  double-entry books that refuse to balance wrongly, loan servicing as an
+  auditable fold, deposit interest and certificates, portfolio roll rates and
+  vintage curves, and credit scorecards. Five cookbooks, each on a harness that
+  fails if the page and the code disagree: [finance](docs/finance_cookbook.md) ·
+  [money](docs/money_cookbook.md) · [accounting](docs/accounting_cookbook.md) ·
+  [lending](docs/lending_cookbook.md) · [deposits](docs/deposits_cookbook.md) ·
+  [credit](docs/credit_cookbook.md)
 - **charts** (`chart`) — line, scatter, area, bar, histogram, pie, heatmap and
   sparkline as deterministic SVG text, in pure gBASIC.
   [Cookbook](docs/chart_cookbook.md)
@@ -146,15 +157,29 @@ Twenty-eight pure-gBASIC libraries in `stdlib/`. The larger ones:
 - **dates and scheduling** (`dates`, `schedule`) — business calendars, date
   expressions, convention layout, appointment slots.
   [Cookbook](docs/datetime_cookbook.md)
-- **EDGAR securities analysis** (`edgar` and six companions) — SEC data
-  acquisition, fundamentals, a forensic scorecard, ownership and insider
-  analysis, MD&A extraction with an LLM analyst panel, a market screener and a
-  watcher monitor. [Tutorial](docs/edgar_tutorial.md)
+- **EDGAR securities analysis** (`edgar`, `fundamentals`, `forensics`,
+  `insiders`, `mdna`, `ownership`, `screener`) — SEC data acquisition,
+  fundamentals, a forensic scorecard, ownership and insider analysis, MD&A
+  extraction with an LLM analyst panel, a market screener and a watcher
+  monitor. [Tutorial](docs/edgar_tutorial.md)
 - **market data** (`market`) — daily price history as a frame: the input the
   finance and event-study code always needed and nothing produced.
-- **GUI toolkits** (`gtk`, `gtkui`, `datagrid`, `sourceeditor`) — a declarative
-  widget-tree reconciler, a virtualized data grid, and a syntax-highlighting
-  editor, all over `gi`. [Tutorial](docs/gui_tutorial.md)
+- **fabricated data** (`fake`) — realistic populations that are pure functions
+  of (seed, index), so a fixture cannot silently rot, plus `fake.plant` for a
+  clean population with a known defect in a known place.
+- **GUI toolkits** (`gtk`, `gtkui`, `datagrid`, `sourceeditor`, `gui`) — a
+  declarative widget-tree reconciler, a virtualized data grid, and a
+  syntax-highlighting editor over `gi`; `gui` is the older GTK 3 proof of
+  concept. [Tutorial](docs/gui_tutorial.md)
+- **business automation reasoning** (`reasoning`, `insight`, `decision`,
+  `automation`) — **experimental, and more so than anything else here.** A
+  design laboratory rather than a toolkit: *did anything happen, does it mean
+  anything, what should be done about it, and may the software do it*. The
+  architecture is closed end to end and is one function or so per layer, its
+  default significance threshold is measurably anti-conservative, and every
+  measurement behind it is on generated data. Read the
+  [caveats in the reference](docs/reference.md) before depending on it.
+  [Design](docs/automation_reasoning_design.md)
 - **odds and ends** — `web` (routing), `frame` (data frames), `matrix`,
   `persist` (crash-safe versioned storage), `filetree`, `crypto`, `mail`, `llm`,
   `ari` (anchor-relative report parsing).

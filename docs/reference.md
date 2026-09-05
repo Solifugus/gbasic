@@ -4956,12 +4956,42 @@ whole program without needing a call site.
   A search matching nothing is an **empty array, not an error**.
   `ldap.close(connection)` is idempotent.
 
-- `reasoning` / `insight` / `decision` / `automation` — the first increments of
-  Business Automation Reasoning (`docs/automation_reasoning_design.md`). `credit` and friends answer
+- `reasoning` / `insight` / `decision` / `automation` — Business Automation
+  Reasoning (`docs/automation_reasoning_design.md`). `credit` and friends answer
   questions about a domain; these answer *did anything happen, does it mean
   anything, what should be done about it, and whether the software may do it*.
-  One function or so per layer; the architecture is closed end to end but not
-  broad.
+  The architecture is closed end to end — a Finding becomes a Decision becomes
+  a gated Action becomes a measured Outcome — but it is one function or so per
+  layer.
+
+  > **Experimental, and more so than anything else in this reference.** These
+  > four are a **design laboratory** (`docs/automation_reasoning_design.md`
+  > §15). Their twelve worked examples in `examples/automation_lab/` are
+  > *experiments* whose job is to make a design claim measurable, not recipes
+  > to copy; three of them refuted the design document that commissioned them.
+  > Four things a caller should know before depending on this:
+  >
+  > 1. **The default null is anti-conservative.** `null: "siblings"` takes its
+  >    threshold from the *t* distribution, which is exact only for
+  >    light-tailed cell changes. Measured on lognormal revenue it delivers a
+  >    family-wise false-positive rate of **0.10–0.14 against a requested
+  >    0.05**, worsening as the search widens. `null.calibration` on every
+  >    Finding says so. `null: "siblings_permuted"` measures 0.05–0.085 and
+  >    costs about **60x** the runtime.
+  > 2. **The correction covers one search, not a campaign.** A process that
+  >    asks the same question every month runs twelve families and pays for
+  >    one: measured, **0.725** that an ordinary year with nothing wrong in it
+  >    raises a finding. Declare `repetitions:` and it falls to 0.175. Even a
+  >    perfectly calibrated 0.05 per run is 0.46 over twelve.
+  > 3. **Every measurement behind these libraries is on generated data.** They
+  >    have never been pointed at a real business.
+  > 4. **The value shapes will move.** This is the surface most likely to
+  >    change between releases.
+  >
+  > What is *not* provisional is the refusals. Eighteen of them
+  > (`automation_reasoning_design.md` §8) exist because a measurement
+  > contradicted an expectation, and each prevents a specific plausible-looking
+  > wrong answer rather than a crash.
 
   `reasoning` owns the shared value model and has no behaviour beyond
   construction and validation, because all three planned layers construct and

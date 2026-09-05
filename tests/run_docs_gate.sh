@@ -285,6 +285,71 @@ if [ -f "$STATE" ]; then
     [ "$roster_ok" = "1" ] && echo "PASS roster         $STATE names every stdlib library, and no library it does not have"
 fi
 
+# 1b. THE SAME CHECK ON THE README, which is the page a stranger actually
+#     reads, and which rotted for exactly the reason project_state did: it said
+#     "Twenty-eight pure-gBASIC libraries" while the tree held forty. Twelve had
+#     been added -- the whole finance and accounting family, and the whole
+#     business-automation-reasoning family -- without the list moving, and no
+#     check could see it because this tier only ever looked at project_state.
+#
+#     The stated COUNT is checked too. A list can be complete and still open
+#     with a stale number, and the number is the part a reader believes without
+#     counting.
+if [ -f README.md ]; then
+    readme_ok=1
+    rsection=$(awk '/^### The standard library/{f=1} f&&/^Two larger example/{exit} f' README.md)
+    for f in stdlib/*.bas; do
+        [ -e "$f" ] || continue
+        base=$(basename "$f" .bas)
+        if ! printf '%s' "$rsection" | grep -qF "\`$base\`"; then
+            echo "FAIL roster missing README.md does not name stdlib/$base.bas in its standard-library section"
+            readme_ok=0; status=1
+        fi
+    done
+    for n in $(printf '%s' "$rsection" | grep -oE '`[a-z_]+`' | tr -d '`' | sort -u); do
+        case "$n" in
+            xlsx|sqlite|pg|odbc|ldap|webclient|webserver|xml|gi|process|reflect) continue ;;
+        esac
+        if [ ! -f "stdlib/$n.bas" ]; then
+            echo "FAIL roster ghost   README.md names \`$n\` but stdlib/$n.bas does not exist"
+            readme_ok=0; status=1
+        fi
+    done
+    want=$(ls stdlib/*.bas 2>/dev/null | wc -l)
+    # The count may be a numeral or a word, including a compound like
+    # "Twenty-eight" -- which the first version of this parser read as 20. It
+    # still failed (20 != 40) and it failed for the wrong reason, and would
+    # have PASSED a stale "Twenty-eight" on a tree of twenty.
+    said=$(printf '%s' "$rsection" | grep -m1 'pure-gBASIC libraries')
+    n=$(printf '%s' "$said" | awk '
+        BEGIN{
+            split("one two three four five six seven eight nine", u, " ")
+            for (i in u) v[u[i]] = i
+            v["ten"]=10; v["eleven"]=11; v["twelve"]=12; v["thirteen"]=13
+            v["fourteen"]=14; v["fifteen"]=15; v["sixteen"]=16
+            v["seventeen"]=17; v["eighteen"]=18; v["nineteen"]=19
+            v["twenty"]=20; v["thirty"]=30; v["forty"]=40; v["fifty"]=50
+            v["sixty"]=60; v["seventy"]=70; v["eighty"]=80; v["ninety"]=90
+        }
+        {
+            if (match($0, /^[0-9]+/)) { print substr($0, 1, RLENGTH); exit }
+            head = tolower($1)
+            gsub(/[^a-z-]/, "", head)
+            total = 0; got = 0
+            k = split(head, parts, "-")
+            for (i = 1; i <= k; i++) if (parts[i] in v) { total += v[parts[i]]; got = 1 }
+            if (got) print total
+        }')
+    if [ -z "$n" ]; then
+        echo "FAIL roster count   README.md standard-library section states no library count"
+        readme_ok=0; status=1
+    elif [ "$n" != "$want" ]; then
+        echo "FAIL roster count   README.md says $n libraries (\"$(printf '%s' "$said" | cut -d' ' -f1)\"); the tree has $want"
+        readme_ok=0; status=1
+    fi
+    [ "$readme_ok" = "1" ] && echo "PASS roster README  README.md names every stdlib library and states the right count ($want)"
+fi
+
 # 2. Negative capability claims contradicted by a test suite.
 #
 #    The vocabulary is derived FROM THE SUITE NAMES, not hand-listed, so a new
