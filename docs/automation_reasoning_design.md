@@ -303,6 +303,29 @@ allowance has outrun the evidence. That row is deliberately in the golden — a
 recipe that showed only successful recoveries would teach that `max_causes`
 repairs the problem, when what it does is move it.
 
+### 4.10 The multiplicity correction is cheap; the support is not
+
+*Measured by Recipe 4 (`examples/automation_lab/11_a_high_cardinality_dimension.bas`,
+asserted in `tests/run_insight.sh`).* R1 made the search width a first-class
+part of every Finding on the argument that a z remarkable across four regions is
+unremarkable across two hundred product families. That argument is sound and its
+practical weight was overestimated: **the correction it buys costs 18% of the
+threshold across a fiftyfold widening.**
+
+The recipe was written to confirm the depth plan's prediction and refuted it,
+which is the whole reason for running rather than reasoning. What actually
+limits a fine-grained decomposition is that the cells stop containing enough
+business to say anything about. The correction (R15) is not a refusal but a
+disclosure, and the case for it is that today's silence is indistinguishable
+from health.
+
+Together with §4.8 and §4.9 this completes a picture the design did not have.
+Three separate things degrade the cross-sectional test, and **only one of them
+was in the original architecture**: multiplicity (R1, and it is the mild one),
+contamination of the reference by the thing being sought (R13, R14), and lack of
+support (R15). The first is priced into the threshold; the second is a declared
+bound; the third can only be reported.
+
 ---
 
 ## 5. Architecture (decided)
@@ -557,6 +580,38 @@ trimming the reference changes the statistic, and the t quantile is a formula
 for the untrimmed one — not approximately right but a threshold for a different
 quantity, erring towards reporting causes that are not there.
 
+**R15 — a Finding states the smallest change it could have found.**
+Produced by Recipe 4, which was run to confirm a prediction and refuted it. The
+depth plan said *search width dominates; almost nothing should survive*. It does
+not dominate: cutting one business of fixed size into 24, 240 and 1,200 cells
+moves the threshold only 3.49 → 3.77 → 4.11, because `sqrt(2 ln n)` grows about
+as slowly as anything in statistics. **Paying for the multiplicity of a wide
+search is nearly free.**
+
+What dominates is **support**. Cut the same business finer and each cell holds
+less of it, so each cell's ordinary variation grows relative to its size. The
+same planted collapse — 75% of a cell, in all three runs — falls from z −14.6 to
+−3.3 and stops being reported; at the finest cut a *different* cell clears
+instead.
+
+| cells | a typical cell bills | smallest detectable change |
+|---|---|---|
+| 24 | 635,515 | 113,554 (18% of a cell) |
+| 240 | 65,011 | 34,303 (53% of a cell) |
+| 1,200 | 12,349 | 18,096 (**147% of a cell**) |
+
+At 1,200 cells the bar exceeds a cell's entire revenue: **no decline, however
+complete, could be reported.** A cell could go to zero and the answer would
+still be *within ordinary variation* — in exactly the words used when a business
+is healthy.
+
+So every Finding carries `search.detectable`: the smallest change the search was
+capable of finding, in the units of the business and as a share of a typical
+cell, **reported whether or not anything cleared** — because *nothing cleared*
+is precisely when a reader needs to know whether the search could clear
+anything at all. It is a falsifiable number, not a formula echo: a collapse
+below the stated bar does not clear and one above it does, and that is asserted.
+
 **R9 — a decision may not be sized off a quantity the Finding declined to
 establish.** R2's consequence one layer along, and produced by Recipe 5 rather
 than reasoned to. Measured: the same intervention over the same data gives
@@ -635,7 +690,11 @@ Deliberately one function at a time.
   Recipe 2 (§4.9,
   [automation_recipe_02_two_causes_at_once.md](automation_recipe_02_two_causes_at_once.md)):
   **R14** and `max_causes`, after the same contamination was found in its
-  smaller and far more ordinary form — two things wrong at once.
+  smaller and far more ordinary form — two things wrong at once. And again by
+  Recipe 4 (§4.10,
+  [automation_recipe_04_a_high_cardinality_dimension.md](automation_recipe_04_a_high_cardinality_dimension.md)):
+  **R15**, `search.detectable`, after the prediction that search width would
+  dominate turned out to be wrong and support turned out to be everything.
 - **`decision.quantity`** (Recipe 10,
   [automation_recipe_10_what_price.md](automation_recipe_10_what_price.md)):
   the first recipe of a different shape, and the one that showed
@@ -760,7 +819,7 @@ four are chosen to **break** the model rather than broaden it:
 |---|---|
 | ~~**2. Two causes at once**~~ | *done — produced R14, and `max_causes`* |
 | ~~**3. A seasonal measure**~~ | *done — produced R13, and `versus_last_year`* |
-| **4. A high-cardinality dimension** | search width dominates; almost nothing should survive |
+| ~~**4. A high-cardinality dimension**~~ | *done — refuted the prediction; produced R15* |
 | ~~**5. The first recipe that decides**~~ | *done — produced R9, and `decision.evaluate`* |
 
 Recipes 5, 6 and 7 were the important ones and all three are done. The

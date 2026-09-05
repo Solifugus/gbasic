@@ -353,6 +353,38 @@ library insight
                         + " has a season (design R13)")
         end if
 
+        ' --- R15. WHAT THIS SEARCH COULD HAVE FOUND -----------------------
+        '
+        ' `within ordinary variation` is returned in identical words by a
+        ' search that examined a healthy business and by one that could not
+        ' have found a cell going to zero. Recipe 4 measured the difference and
+        ' it is not small: cutting one business of fixed size into 24, 240 and
+        ' 1200 cells moves the threshold only 3.49 -> 3.77 -> 4.11, because
+        ' sqrt(2 ln n) grows about as slowly as anything in statistics -- but
+        ' the smallest change that could clear it goes from 18% of a typical
+        ' cell to 53% to 147%. At the finest cut NO DECLINE, however complete,
+        ' could be reported: a cell's whole revenue is smaller than the bar.
+        '
+        ' So a Finding states the smallest change it was capable of finding,
+        ' in the units of the business and as a share of a typical cell, and it
+        ' states it WHETHER OR NOT anything cleared -- because "nothing
+        ' cleared" is exactly when a reader needs to know whether the search
+        ' was able to clear anything at all.
+        '
+        ' The spread used is the population's, not a particular cell's
+        ' leave-one-out reference; those differ by O(1/n) and a headline figure
+        ' that varied by cell would not be a headline.
+        baselines = []
+        for each k in cells.order
+            append(baselines, cells.baseline[k])
+        next
+        typical_cell = median(baselines)
+        detectable_change = threshold * sd
+        detectable_share = unknown
+        if typical_cell != 0 then
+            detectable_share = detectable_change / typical_cell
+        end if
+
         sums = _sums(changes)
 
         contributors = []
@@ -427,7 +459,10 @@ library insight
             ' what is actually known.
             search: { dimensions: dims, cells: n, width: threshold,
                       alpha_requested: alpha, correction: "bonferroni",
-                      max_causes: max_causes },
+                      max_causes: max_causes,
+                      detectable: { change: detectable_change,
+                                    typical_cell: typical_cell,
+                                    share: detectable_share } },
             null: { kind: spec["null"], mean: m, sd: sd, threshold: threshold,
                     net_t: t, standardized: "leave_one_out", df: n - 2,
                     common_movement: { down: down, up: up, p: sign_p,

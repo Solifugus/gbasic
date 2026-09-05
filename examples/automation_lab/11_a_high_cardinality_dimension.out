@@ -1,0 +1,58 @@
+==================================================================
+ THE SAME BUSINESS, CUT THREE WAYS
+==================================================================
+
+  cells   per cell   threshold   quiet run   planted z   found?
+  -----   --------   ---------   ---------   ---------   ------
+  24      500        3.49        0 cleared   -14.64      YES
+  240     50         3.77        0 cleared   -5.19       YES
+  1200    10         4.11        1 cleared   -3.34       no  (S838 cleared instead)
+
+  Fifty times the search width buys an 18% higher bar. The
+  Bonferroni correction is the CHEAP part -- it grows like the
+  square root of a logarithm and it was never going to dominate
+  anything. What collapses is the planted cell's z, and it
+  collapses because the cell it lives in has almost nothing in it.
+
+==================================================================
+ WHAT A CHANGE WOULD HAVE HAD TO BE, TO BE FOUND
+==================================================================
+
+  cells   a typical cell bills   smallest detectable change
+  -----   --------------------   --------------------------
+  24      635515                 113554        (18% of a cell)
+  240     65011                  34303         (53% of a cell)
+  1200    12349                  18096         (147% of a cell)
+
+  Read the last row twice. At twelve hundred cells the smallest
+  change that could clear the bar is larger than a typical cell's
+  entire revenue, so NO DECLINE IN SUCH A CELL, HOWEVER COMPLETE,
+  COULD EVER BE REPORTED. The cell could go to zero and the answer
+  would still be `within ordinary variation` -- in exactly the
+  words the library uses when a business is healthy.
+
+==================================================================
+ WHAT THIS MEASURED
+==================================================================
+
+  1. THE PREDICTION WAS WRONG, AND IN A USEFUL DIRECTION. Search
+     width does not dominate. Widening the search fifty-fold moves
+     the threshold from 3.49 to 4.11, because sqrt(2 ln n) grows
+     about as slowly as anything in statistics. Paying for the
+     multiplicity of a wide search is nearly free.
+
+  2. WHAT DOMINATES IS SUPPORT. Cut the same business finer and
+     each cell holds less of it, so each cell's ordinary variation
+     grows relative to its size. The planted cell loses 75% of its
+     revenue in all three runs and its z falls from -14.6 to -3.3.
+     Nothing about that cell changed between the runs; only how
+     much of the business was left in it.
+
+  3. AND THE LIBRARY HAD NO WAY TO SAY SO. `within ordinary
+     variation` is returned identically by a search that examined a
+     healthy business and by one that could not have found a cell
+     going to zero. That silence is what R15 fixes: a Finding now
+     states the smallest change it could have found, in the units
+     of the business and as a share of a typical cell. It is
+     reported whether or not anything cleared, because `nothing
+     cleared` is precisely when a reader needs it.

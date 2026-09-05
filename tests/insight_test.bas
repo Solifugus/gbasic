@@ -108,6 +108,46 @@ planted = insight.explain_change(build(4242, 1, 0), spec_for("siblings"))
 quiet = insight.explain_change(build(58, 0, 0), spec_for("siblings"))
 slumped = insight.explain_change(build(31, 0, 1), spec_for("siblings"))
 common = insight.explain_change(build(31, 0, 2), spec_for("siblings"))
+' R15's population: one business of FIXED total size, cut coarse and fine.
+' 8,000 transactions per period however many cells they are spread across, so
+' the only thing that changes between the two cuts is how much of the business
+' is left in each cell.
+function cut_business(ncells, per_cell, collapse_cell, frac)
+    load fake
+    load frame
+    rows = []
+    for c = 0 to ncells - 1
+        for d = 1 to per_cell
+            for p = 0 to 1
+                amt = fake.lognormal(4242, c * 100000 + d * 10 + p, 1000, 0.7)
+                if p = 1 and c = collapse_cell then
+                    amt = amt * frac
+                end if
+                append(rows, { sku: "S" + string(c), period: p, revenue: amt })
+            next
+        next
+    next
+    return frame.from_rows(rows)
+end function
+
+function cut_look(ncells, per_cell, collapse_cell, frac)
+    load insight
+    return insight.explain_change(
+             cut_business(ncells, per_cell, collapse_cell, frac),
+             { measure: "revenue", period: "period", baseline: 0, current: 1,
+               dimensions: ["sku"], comparison: "period_over_period",
+               null: "siblings" })
+end function
+
+function cell_zero(f)
+    for each c in f.contributors
+        if c.path[0] = "S0" then
+            return c
+        end if
+    next
+    return nothing
+end function
+
 ' R14's population: one WATCHED cell broken in every run, and a varying number
 ' of unrelated cells broken beside it. The watched cell is identical
 ' throughout, so anything that moves its verdict is a fact about its
@@ -386,6 +426,48 @@ check("and one that would leave no population to judge against is refused",
       contains(error.message, "no population left"), true)
 error.clear()
 on error stop
+
+' --- TIER: R15, WHAT THIS SEARCH COULD HAVE FOUND -------------------------
+' `within ordinary variation` is returned in identical words by a search that
+' examined a healthy business and by one that could not have found a cell going
+' to zero. A Finding must be able to tell those apart.
+check("a Finding states the smallest change it could have found",
+      is_unknown(planted.search.detectable.change), false)
+check("  in the units of the business", planted.search.detectable.change > 0, true)
+check("  and as a share of a typical cell",
+      planted.search.detectable.share > 0, true)
+
+' THE CONTROL, and the reason the field exists at all: it must be there when
+' NOTHING cleared, which is exactly when a reader cannot tell an incapable
+' search from a healthy business.
+check("it is reported when nothing cleared", quiet.strength.clears, false)
+check("  and is a number even then",
+      quiet.search.detectable.share > 0, true)
+
+' THE DIFFERENCE. One business of fixed size, cut coarse and fine: the
+' threshold barely moves and the detectable share moves enormously. Asserting
+' either number alone would pass on a library that computed a constant.
+coarse = cut_look(20, 400, 0 - 1, 1)
+fine = cut_look(400, 20, 0 - 1, 1)
+check("a twentyfold wider search raises the bar by under a fifth",
+      fine.search.width < coarse.search.width * 1.2, true)
+check("  while the smallest detectable change goes from a fifth of a cell",
+      coarse.search.detectable.share < 0.3, true)
+check("  to nearly all of one", fine.search.detectable.share > 0.8, true)
+
+' AND IT PREDICTS. Without this the figure is a formula echoing itself: it
+' claims a change must be about 94% of a cell to clear, so a 50% collapse in
+' the same population must NOT clear and a total one must.
+half = cell_zero(cut_look(400, 20, 0, 0.5))
+total = cell_zero(cut_look(400, 20, 0, 0.0001))
+check("a collapse smaller than the stated bar does not clear", half.clears, false)
+check("  and one larger than it does", total.clears, true)
+' AND THE STATED NUMBER MUST LIE BETWEEN THEM, or the two checks above are
+' facts about the verdicts with nothing tying them to the figure reported.
+' (S0 is not exactly a typical cell, so this brackets rather than pins.)
+check("  and the stated bar lies between the two",
+      fine.search.detectable.share > 0.5 and fine.search.detectable.share < 1,
+      true)
 
 ' --- TIER: contributors are ranked and complete ---------------------------
 check("every cell is a contributor", count(planted.contributors), 20)

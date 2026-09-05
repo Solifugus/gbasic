@@ -62,14 +62,14 @@ else
 fi
 
 n=$(sed -n 's/^checks: //p' "$scratch/out")
-if [ -n "$n" ] && [ "$n" -ge 77 ]; then
+if [ -n "$n" ] && [ "$n" -ge 88 ]; then
     pass "check count floor ($n checks)"
 else
-    fail "check count floor (got '${n:-none}', want >= 77)"
+    fail "check count floor (got '${n:-none}', want >= 88)"
 fi
 
 # The named tiers must actually have run. Without this the floor above is
-# satisfied by seventy-seven checks of anything.
+# satisfied by eighty-eight checks of anything.
 printf 'TIER the load-bearing tiers ran\n'
 for needle in \
     "the planted run leads with the planted cell" \
@@ -83,7 +83,11 @@ for needle in \
     "a located decline is not common movement" \
     "  and the fall is monotone in how many others broke" \
     "allowing for them restores the statistic to the cell" \
-    "  and saying so explicitly changes no answer"
+    "  and saying so explicitly changes no answer" \
+    "a collapse smaller than the stated bar does not clear" \
+    "  and one larger than it does" \
+    "  to nearly all of one" \
+    "  and the stated bar lies between the two"
 do
     if grep -qF "ok   $needle" "$scratch/out"; then
         pass "ran: $needle"
@@ -238,6 +242,65 @@ if grep -q 'max_causes above 1 needs' "$scratch/r2"; then
     pass "the t null refuses a trimmed reference, and says why"
 else
     fail "the t null refuses a trimmed reference, and says why"
+fi
+
+# --- RECIPE 4: a high-cardinality dimension -------------------------------
+#
+# The depth plan predicted "search width dominates; almost nothing should
+# survive". It is the wrong prediction and this recipe is the measurement that
+# says so: the same business cut 24 / 240 / 1200 ways moves the threshold only
+# 3.49 -> 4.11, while the smallest change that could be found goes from 18% of
+# a typical cell to 147% of one.
+printf 'TIER recipe 4 -- a high-cardinality dimension\n'
+if GBASIC_PATH=stdlib ./gbasic examples/automation_lab/11_a_high_cardinality_dimension.bas \
+        >"$scratch/r4" 2>"$scratch/r4err"; then
+    pass "11_a_high_cardinality_dimension runs"
+else
+    fail "11_a_high_cardinality_dimension runs ($(head -1 "$scratch/r4err"))"
+fi
+if diff -u examples/automation_lab/11_a_high_cardinality_dimension.out "$scratch/r4" >/dev/null 2>&1; then
+    pass "output matches the committed golden"
+else
+    fail "output matches the committed golden"
+    diff -u examples/automation_lab/11_a_high_cardinality_dimension.out "$scratch/r4" | head -15
+fi
+
+# 1. THE LOAD-BEARING ONE, and it is the one that contradicts the plan: the
+#    threshold must barely move across a fiftyfold widening. If it ever starts
+#    dominating, the recipe's whole argument reverses and the write-up is wrong.
+w=$(sed -n '/cells   per cell/,/^$/p' "$scratch/r4" | awk '$1 ~ /^[0-9]+$/ {print $3}')
+first=$(printf '%s\n' "$w" | head -1); last=$(printf '%s\n' "$w" | tail -1)
+if awk -v a="$first" -v b="$last" 'BEGIN{exit !(b > a && b < a * 1.25)}'; then
+    pass "a fiftyfold wider search raises the threshold by under a quarter ($first -> $last)"
+else
+    fail "a fiftyfold wider search raises the threshold by under a quarter ($first -> $last)"
+fi
+
+# 2. And the planted cell -- identical in all three runs -- must go from found
+#    to not found, or there is nothing for the threshold not to explain.
+if sed -n '/cells   per cell/,/^$/p' "$scratch/r4" | grep -q 'YES' \
+   && sed -n '/cells   per cell/,/^$/p' "$scratch/r4" | grep -qE '   no( |$)'; then
+    pass "the same planted collapse goes from found to not found"
+else
+    fail "the same planted collapse goes from found to not found"
+fi
+
+# 3. THE FINDING THE PLAN MISSED: what dominates is support, stated as the
+#    smallest detectable change crossing 100% of a cell.
+if sed -n '/a typical cell bills/,/^$/p' "$scratch/r4" | grep -qE '\(1[0-9][0-9]% of a cell\)'; then
+    pass "at the finest cut no decline in a cell, however complete, could clear"
+else
+    fail "at the finest cut no decline in a cell, however complete, could clear"
+fi
+
+# 4. The share must RISE across the cuts. Without this, tier 3 is satisfied by a
+#    library that reports an impossible bar at every granularity.
+sh=$(sed -n '/a typical cell bills/,/^$/p' "$scratch/r4" | grep -o '([0-9]*% of a cell)' | tr -dc '0-9\n' | grep .)
+if [ "$(printf '%s\n' "$sh" | sort -n | tr '\n' ' ')" = "$(printf '%s\n' "$sh" | tr '\n' ' ')" ] \
+   && [ "$(printf '%s\n' "$sh" | sort -u | wc -l)" = "3" ]; then
+    pass "and the bar rises monotonically as the cut gets finer"
+else
+    fail "and the bar rises monotonically as the cut gets finer ($sh)"
 fi
 
 printf 'TIER valgrind\n'
