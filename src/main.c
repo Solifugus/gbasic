@@ -871,7 +871,7 @@ int main(int argc, char **argv) {
         print_help(argv[0]);
         return 0;
     } else if (argc == 2 && strcmp(argv[1], "--version") == 0) {
-        printf("gBASIC 0.1.0-rc8\n");
+        printf("gBASIC 0.1.0\n");
         return 0;
     } else if (argc == 3 && strcmp(argv[1], "--ast") == 0) {
         ast_only = 1;

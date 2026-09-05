@@ -9,8 +9,14 @@ it sits a working platform — databases, a hardened web server, spreadsheets,
 statistics, charts and native GUI — so a gBASIC program can be a real
 application rather than a demonstration.
 
-This repository holds the C implementation of gBASIC `0.1.0-rc8`. The language
-and runtime are under active development and are **not yet production-stable**.
+This repository holds the C implementation of gBASIC `0.1.0` — the **first
+release, and an experimental one**. Until 1.0.0 the language surface may change
+between releases; [CHANGELOG.md](CHANGELOG.md) says what is solid, what is
+experimental within it, and what is not here yet.
+
+**Platform: Linux.** CI builds and runs the full suite on Ubuntu 24.04 LTS and
+current Ubuntu on x86-64, and riscv64 is a supported target. macOS and Windows
+are **not** tested and no support for them is claimed.
 
 **New here?** [Tutorial](docs/tutorial.md) to learn it ·
 [Reference](docs/reference.md) for the details ·
@@ -192,7 +198,7 @@ Two larger example programs live in the repository:
 
 ## Quick start
 
-You need a C11 compiler, `make` and `bison`. Everything else is optional:
+On Linux, with a C11 compiler, `make` and `bison`. Everything else is optional:
 
 | Dependency | Enables |
 | --- | --- |
@@ -378,7 +384,7 @@ design proposal as an available feature.
 ## Version
 
 ```sh
-./gbasic --version        # gBASIC 0.1.0-rc8
+./gbasic --version        # gBASIC 0.1.0
 ```
 
 ## Contributing

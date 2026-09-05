@@ -9,6 +9,67 @@ language surface may still change between releases.
 
 ## Unreleased
 
+Nothing yet.
+
+---
+
+## 0.1.0 — 2026-09-05
+
+**The first release, and it is experimental.** gBASIC has been developed
+through eight release candidates; this is the point at which the ladder stops
+saying anything a ninth would say. The version is `0.1.0` and the word for it
+is *experimental*, not *beta* — beta implies feature-complete and stabilising,
+and parts of this are neither by design.
+
+**What that means concretely.** Until 1.0.0 the language surface may change
+between releases. Semantic versioning permits it; this note is here so nobody
+has to infer it. Where a change would move a program's behaviour rather than
+extend it, the entry below says so.
+
+**What is solid.** The core language and runtime — records, first-class
+functions, watchers, shared-nothing actors, frame-scoped error handling, and
+typed values for dates, durations and money — are covered by a gate of 105
+suites that runs on every change, over a CI matrix of three configurations
+(every optional module, none of them, and the previous LTS) built after a real
+build failure that a 500-case suite could not see. The platform modules
+(SQLite, PostgreSQL, ODBC, XML, xlsx, WebClient, WebServer, Mail, LDAP,
+cryptography, process control) each carry their own suite and skip cleanly
+when their library is absent; the interpreter always builds. The `xlsx` engine
+is measured against 15,871 real Excel workbooks, agreeing on 97.38% of formula
+cells. The finance and accounting libraries have cookbooks on a harness that
+fails if the page and the code disagree.
+
+**What is experimental within it**, beyond the release as a whole:
+
+- **`reasoning` / `insight` / `decision` / `automation`** — a design
+  laboratory rather than a toolkit. The architecture is closed end to end and
+  is one function or so per layer; the default significance threshold is
+  measurably anti-conservative (0.10–0.14 against a requested 0.05 on
+  lognormal data); the correction covers one search rather than a campaign;
+  and every measurement behind it is on generated data. The caveats are stated
+  in the reference and in `docs/automation_reasoning_design.md`.
+- **`gui`** (GTK 3) — a proof of concept, superseded by `gi` and the GTK 4
+  libraries built on it.
+- **GUI testing is manual.** It needs a display, so the display-gated tiers do
+  not run in CI.
+
+**What is not here.** WebSockets and chunked request bodies in the WebServer.
+Optimisation (`MAXIMIZE … SUBJECT TO`). A `business.bas` facade over the
+reasoning layers, deliberately deferred until their boundaries have been
+tested. Reject inference, monotonic binning and adverse-action reason codes in
+`scoring`.
+
+**Platform.** Linux. CI builds and runs the suite on Ubuntu 24.04 LTS and
+current Ubuntu, on x86-64. **riscv64** is also a supported target and the suite
+runs there on Ubuntu 24.04, with the valgrind tiers skipping because valgrind
+has no riscv64 port. No macOS or Windows support is claimed — neither is
+tested, and neither should be assumed to work.
+
+**Everything below** is the development record of the eight release candidates
+that became this release, newest first.
+
+---
+
 - **ODBC verified against SQL Server and MariaDB — four fixes.** The module
   shipped with tests against the SQLite3 ODBC driver only. Pointed at MariaDB
   11.8 and SQL Server 2025 — the same fixtures, one connection string apart —

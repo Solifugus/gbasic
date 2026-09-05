@@ -350,6 +350,36 @@ if [ -f README.md ]; then
     [ "$readme_ok" = "1" ] && echo "PASS roster README  README.md names every stdlib library and states the right count ($want)"
 fi
 
+# 1c. THE PLATFORM CLAIM, against the CI configuration that is its only
+#     evidence. A README that names the platforms it is tested on is a claim
+#     like any other, and this one has two ways to go stale: CI moves to a
+#     newer Ubuntu and the README goes on naming the old one, or CI gains a
+#     macOS or Windows runner and the README goes on saying neither is tested.
+#     Both directions are checked.
+CI=.github/workflows/ci.yml
+if [ -f "$CI" ] && [ -f README.md ]; then
+    plat_ok=1
+    # Collapsed to ONE LINE: the claim spans a line break ("macOS and Windows"
+    # ends one line and "are **not** tested" begins the next), and grep is
+    # line-oriented, so the macOS/Windows half silently matched nothing until
+    # this was red-proofed.
+    plat=$(grep -m1 -A3 '^\*\*Platform' README.md | tr '\n' ' ')
+    for v in $(grep -oE 'ubuntu-[0-9]+\.[0-9]+' "$CI" | sed 's/ubuntu-//' | sort -u); do
+        if ! printf '%s' "$plat" | grep -qF "$v"; then
+            echo "FAIL platform       $CI builds on Ubuntu $v and README.md's platform note does not say so"
+            plat_ok=0; status=1
+        fi
+    done
+    for other in macos windows; do
+        if grep -qE "runs-on:.*$other|$other-[0-9a-z]+" "$CI" \
+           && printf '%s' "$plat" | grep -qiE "$other.*not|not.*$other"; then
+            echo "FAIL platform       $CI has a $other runner but README.md says $other is not tested"
+            plat_ok=0; status=1
+        fi
+    done
+    [ "$plat_ok" = "1" ] && echo "PASS platform       README.md names the platforms CI actually builds on"
+fi
+
 # 2. Negative capability claims contradicted by a test suite.
 #
 #    The vocabulary is derived FROM THE SUITE NAMES, not hand-listed, so a new
