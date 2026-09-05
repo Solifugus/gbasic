@@ -62,10 +62,10 @@ else
 fi
 
 n=$(sed -n 's/^checks: //p' "$scratch/out")
-if [ -n "$n" ] && [ "$n" -ge 88 ]; then
+if [ -n "$n" ] && [ "$n" -ge 100 ]; then
     pass "check count floor ($n checks)"
 else
-    fail "check count floor (got '${n:-none}', want >= 88)"
+    fail "check count floor (got '${n:-none}', want >= 100)"
 fi
 
 # The named tiers must actually have run. Without this the floor above is
@@ -87,7 +87,11 @@ for needle in \
     "a collapse smaller than the stated bar does not clear" \
     "  and one larger than it does" \
     "  to nearly all of one" \
-    "  and the stated bar lies between the two"
+    "  and the stated bar lies between the two" \
+    "declaring 1 run changes nothing" \
+    "a year of monthly runs is the family-wise t quantile over 20 x 12" \
+    "  and therefore a larger smallest detectable change" \
+    "fewer than one run is refused"
 do
     if grep -qF "ok   $needle" "$scratch/out"; then
         pass "ran: $needle"

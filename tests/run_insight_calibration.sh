@@ -38,6 +38,18 @@ set -uo pipefail
 #     3.309) and the test fired 0 times in 200 trials. Hence the final tier:
 #     it still fires. It is a threshold, not a mute button.
 #
+# AND A FOURTH TIER, ADDED 2026-09-04, MEASURING A DIFFERENT AXIS ENTIRELY:
+# every tier above measures ONE search, and a monitoring process asks the same
+# question every month. The correction has always been family-wise over the
+# CELLS of one search -- twelve families, paid for once -- and nothing said so.
+# MEASURED over a population with NOTHING wrong in it: 0.725 that some month
+# raises a finding within the year. This is NOT the tail-weight problem above;
+# even a perfectly calibrated 0.05 per run is 1 - 0.95^12 = 0.46 over a year,
+# so it is arithmetic about repetition. Declaring `repetitions: 12` takes it to
+# 0.175, and the tier asserts BOTH halves plus the honest third -- that it does
+# NOT reach the requested 0.05, for the same tail-weight reason one level
+# deeper into the tail.
+#
 # INSIGHT_CALIBRATION_FULL=1 raises the trial and draw counts for a real
 # measurement rather than a regression check.
 
@@ -64,13 +76,13 @@ else
     fail "no mismatches"
     grep "^MISMATCH" "$scratch/out" | head -10
 fi
-sed -n 's/^ok   /  measured: /p' "$scratch/out" | grep "=" | head -5
+sed -n 's/^ok   /  measured: /p' "$scratch/out" | grep "=" | head -8
 
 n=$(sed -n 's/^checks: //p' "$scratch/out")
-if [ -n "$n" ] && [ "$n" -ge 6 ]; then
+if [ -n "$n" ] && [ "$n" -ge 11 ]; then
     pass "check count floor ($n checks)"
 else
-    fail "check count floor (got '${n:-none}', want >= 6)"
+    fail "check count floor (got '${n:-none}', want >= 11)"
 fi
 
 printf '\nrun_insight_calibration: %d checks, %d failed\n' "$checks" "$failures"

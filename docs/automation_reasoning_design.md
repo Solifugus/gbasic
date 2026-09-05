@@ -405,6 +405,42 @@ estimated, and what is genuinely uncertain — how much of an ongoing loss an
 action recovers — is precisely what the calibration already covers. What was
 missing was a reader being told which dial was turned.
 
+### 4.13 The correction is per run, and a campaign is many runs
+
+*Measured by `tests/insight_calibration.bas` (manual tier — ~5 minutes over
+freshly generated null data).* R1 made the search width a first-class part of
+every Finding, and every tier that has ever checked the resulting threshold has
+checked **one search**. A monitoring process asks the same question every
+month. Twelve searches are twelve families, and nothing anywhere said the
+correction covered only one.
+
+Measured over a population with **nothing wrong in it**, twelve monthly runs,
+firing if any month raises a finding:
+
+| | campaign false-alarm rate |
+|---|---|
+| repetition undeclared | **0.725** |
+| `repetitions: 12` declared | **0.175** |
+
+**This is not the tail-weight problem §4.3 already records.** Even a perfectly
+calibrated 0.05 per run gives 1 − 0.95¹² = **0.46** over a year. It is
+arithmetic about repetition, and it applies to a correctly calibrated library
+just as much as to this one.
+
+The remedy is a declaration, and it is priced. At 20 cells the bar goes 3.51 →
+4.63 for a year of monthly runs, 5.31 weekly, 6.25 daily — and by R15 the bar
+*is* the smallest change the search can find, so declaring a year of monitoring
+raises the smallest detectable change by about a third. That is a trade to make
+deliberately, which is why it is declared rather than inferred.
+
+And the honest third fact: **0.175 is not 0.05.** Declaring the repetition cuts
+the campaign rate roughly fourfold and does not deliver alpha, for the same
+tail-weight reason `null.calibration` already carries, one level deeper into
+the tail. Whether `siblings_permuted` closes that gap at campaign level is
+**not measured** — the run was attempted and is expensive enough (~1.4 s a
+call, so ~6 minutes for a usable estimate) to want its own tier rather than a
+guess here.
+
 ---
 
 ## 5. Architecture (decided)
@@ -729,6 +765,15 @@ The same discipline is already applied to `agreement` and `amplification`.
 which is the same gap one library along and is recorded here rather than
 quietly fixed — `decision.quantity` deserves its own measurement first.
 
+**R18 — how many times a search will be run is declared, and the correction
+names its family.** §4.13. `repetitions` defaults to 1, which is what the
+library always silently assumed, so naming it changes no existing answer — and
+that is asserted. `search.correction` no longer says "bonferroni" and leaves the
+reader to imagine the family; it says *bonferroni over the cells of this one
+search*, or *over the cells of this search times 12 runs*. The declaration is
+priced, like `max_causes`: the bar rises with the family and by R15 the bar is
+the smallest change the search can find.
+
 ---
 
 ## 9. Provenance
@@ -962,9 +1007,10 @@ insight layer and produced R13, R14 and R15.
 The depth plan is discharged. What it leaves behind is a short list the
 recipes themselves raised and did not settle:
 
-- **The correction is per-call, not per-campaign.** A Finding's alpha is a
-  family-wise rate over the cells of *one* search. Twelve monthly runs are
-  twelve families, and nothing anywhere says so.
+- ~~**The correction is per-call, not per-campaign.**~~ *— done (R18, §4.13).
+  Measured at 0.725 that an ordinary year raises a finding, against 0.175 once
+  the repetition is declared. Open behind it: whether `siblings_permuted`
+  closes the remaining gap to alpha at campaign level.*
 - ~~**`assurance` is a bare scalar in [0, 1]**~~ *— done (R17, §4.12), and
   writing the definition is what found that a recommendation reporting
   `assurance 1` can reverse on a dial the sweep does not turn.*

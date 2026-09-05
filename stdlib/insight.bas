@@ -194,6 +194,34 @@ library insight
         ' that is what a leave-one-out reference has always silently assumed --
         ' naming it does not change any existing answer, it makes the
         ' assumption arguable.
+        ' R18. HOW MANY TIMES THIS SEARCH WILL BE RUN. The correction has
+        ' always been family-wise over the CELLS of ONE search, and nothing
+        ' anywhere said so -- so a monitoring process re-asking the same
+        ' question every month is running twelve families and paying for one.
+        ' Measured over a population with NOTHING wrong in it: 0.10 per run,
+        ' and 0.725 that some month raises a finding within the year. Even a
+        ' perfectly calibrated 0.05 per run is 0.46 over twelve.
+        '
+        ' Default 1, which is what the library always silently assumed, so
+        ' naming it changes no existing answer. AND IT IS NOT FREE, which is
+        ' why it is declared rather than guessed: at 20 cells the bar goes
+        ' 3.51 -> 4.63 for a year of monthly runs, 5.31 weekly, 6.25 daily,
+        ' and by R15 the bar IS the smallest change the search can find. What
+        ' it buys was measured over a population with nothing wrong in it:
+        ' the chance that some month raises a finding falls from 0.725 to
+        ' 0.175. It does not reach the requested 0.05, for the tail-weight
+        ' reason `null.calibration` already records, deeper into the tail.
+        repetitions = spec["repetitions"]
+        if is_unknown(repetitions) then
+            repetitions = 1
+        end if
+        if type(repetitions) != "number" or repetitions < 1 or floor(repetitions) != repetitions then
+            error ("insight.explain_change: repetitions must be a whole number"
+                   + " of runs, at least 1 -- it is how many times this same"
+                   + " search will be asked, and the correction is family-wise"
+                   + " over cells TIMES runs (design R18)")
+        end if
+
         max_causes = spec["max_causes"]
         if is_unknown(max_causes) then
             max_causes = 1
@@ -231,7 +259,11 @@ library insight
         threshold = 0
         calibration = { }
         if spec["null"] = "siblings_permuted" then
-            threshold = _permuted_threshold(cells, alpha, draws, permute_seed, trim)
+            ' Dividing alpha by the repetitions is the Bonferroni step ACROSS
+            ' runs, applied on top of a within-run null that is already exact
+            ' family-wise over the cells.
+            threshold = _permuted_threshold(cells, alpha / repetitions, draws,
+                                            permute_seed, trim)
             calibration = { method: "period-label permutation",
                             assumed: false,
                             draws: draws, seed: permute_seed,
@@ -246,7 +278,10 @@ library insight
                                    + " variability, so it follows the tails"
                                    + " rather than assuming them") }
         else
-            threshold = stats.t_quantile(1 - alpha / (2 * n), n - 2)
+            ' The family is cells TIMES runs. df stays n - 2: the degrees of
+            ' freedom are a fact about the data of THIS run, not about how often
+            ' the question is asked.
+            threshold = stats.t_quantile(1 - alpha / (2 * n * repetitions), n - 2)
             calibration = { method: "t quantile", assumed: true,
                             measured_null_rate: ("0.047 light-tailed; 0.100 at 20"
                                                  + " cells and 0.130 at 40 for"
@@ -429,6 +464,7 @@ library insight
                                baseline: spec["baseline"], current: spec["current"],
                                dimensions: dims, comparison: spec["comparison"],
                                null: spec["null"], alpha_requested: alpha,
+                               repetitions: repetitions,
                                threshold_method: calibration["method"],
                                threshold_assumed: calibration["assumed"] },
                  assumptions: ["ordinary movement is stationary across cells",
@@ -458,7 +494,8 @@ library insight
             ' and must not imply it was DELIVERED. `null.calibration` carries
             ' what is actually known.
             search: { dimensions: dims, cells: n, width: threshold,
-                      alpha_requested: alpha, correction: "bonferroni",
+                      alpha_requested: alpha, correction: _correction(repetitions),
+                      repetitions: repetitions,
                       max_causes: max_causes,
                       detectable: { change: detectable_change,
                                     typical_cell: typical_cell,
@@ -884,6 +921,17 @@ library insight
     '
     ' Deterministic in a declared seed: a rehearsal must reach the same
     ' threshold as the live run, or R5\'s argument fails one level down.
+    ' R18. The correction NAMES ITS FAMILY. "bonferroni" alone left a reader
+    ' to assume the family was whatever they had in mind, and what it actually
+    ' was is the cells of one search.
+    function _correction(repetitions)
+        if repetitions = 1 then
+            return "bonferroni over the cells of this one search"
+        end if
+        return ("bonferroni over the cells of this search times "
+                + string(repetitions) + " runs")
+    end function
+
     function _permuted_threshold(cells, alpha, draws, seed, trim)
         n = count(cells.order)
         maxes = []

@@ -245,7 +245,8 @@ check("  and that it is ASSUMED rather than measured",
       planted.null.calibration.assumed, true)
 check("  carrying the rate actually observed under it",
       contains(planted.null.calibration.measured_null_rate, "0.130"), true)
-check("along with which correction", planted.search.correction, "bonferroni")
+check("along with which correction, NAMING ITS FAMILY", planted.search.correction,
+      "bonferroni over the cells of this one search")
 check("and that cells are judged leave-one-out", planted.null.standardized, "leave_one_out")
 check("with the degrees of freedom that implies", planted.null.df, 18)
 
@@ -468,6 +469,66 @@ check("  and one larger than it does", total.clears, true)
 check("  and the stated bar lies between the two",
       fine.search.detectable.share > 0.5 and fine.search.detectable.share < 1,
       true)
+
+' --- TIER: R18, HOW MANY TIMES THIS SEARCH WILL BE ASKED -------------------
+'
+' The correction has always been family-wise over the CELLS OF ONE SEARCH, and
+' nothing said so. A monitoring process re-asking the same question every month
+' runs twelve families and pays for one. Measured over a population with
+' NOTHING wrong in it (tests/insight_calibration.bas, manual tier): 0.725 that
+' some month raises a finding within the year, against 0.175 once the
+' repetition is declared. Even a perfectly calibrated 0.05 per run is 0.46
+' over twelve, so this is not a consequence of the tail-weight miscalibration
+' -- it is arithmetic about repetition.
+check("a Finding says how many times the search will be run",
+      planted.search.repetitions, 1)
+check("  and the correction NAMES the family it covers",
+      contains(planted.search.correction, "cells of this one search"), true)
+
+' THE DEFAULT IS A NO-OP, which is what makes it a declaration rather than a
+' change of behaviour: 1 is what the library always silently assumed.
+once = insight.explain_change(build(4242, 1, 0),
+         { measure: "revenue", period: "period", baseline: 0, current: 1,
+           dimensions: ["region", "category"],
+           comparison: "period_over_period", null: "siblings",
+           repetitions: 1 })
+check("declaring 1 run changes nothing", once.search.width, planted.search.width)
+check("  nor any verdict", once.strength.clears, planted.strength.clears)
+
+' AND IT IS NOT FREE. The bar rises with the family, and by R15 the bar IS the
+' smallest change the search can find -- so this is a priced trade, like
+' max_causes, and the price is asserted rather than described.
+monthly = insight.explain_change(build(4242, 1, 0),
+            { measure: "revenue", period: "period", baseline: 0, current: 1,
+              dimensions: ["region", "category"],
+              comparison: "period_over_period", null: "siblings",
+              repetitions: 12 })
+near("a year of monthly runs is the family-wise t quantile over 20 x 12",
+     monthly.search.width, stats.t_quantile(1 - 0.05 / (2 * 20 * 12), 18), 0.0000001)
+check("  which is a HIGHER bar", monthly.search.width > planted.search.width, true)
+check("  and therefore a larger smallest detectable change",
+      monthly.search.detectable.change > planted.search.detectable.change, true)
+check("  the correction says so", contains(monthly.search.correction,
+      "times 12 runs"), true)
+check("  and the Finding records the count", monthly.search.repetitions, 12)
+
+on error goto next
+x = insight.explain_change(build(4242, 1, 0),
+      { measure: "revenue", period: "period", baseline: 0, current: 1,
+        dimensions: ["region", "category"],
+        comparison: "period_over_period", null: "siblings",
+        repetitions: 0 })
+check("fewer than one run is refused",
+      contains(error.message, "at least 1"), true)
+error.clear()
+x = insight.explain_change(build(4242, 1, 0),
+      { measure: "revenue", period: "period", baseline: 0, current: 1,
+        dimensions: ["region", "category"],
+        comparison: "period_over_period", null: "siblings",
+        repetitions: 2.5 })
+check("  and so is a fractional one", contains(error.message, "whole number"), true)
+error.clear()
+on error stop
 
 ' --- TIER: contributors are ranked and complete ---------------------------
 check("every cell is a contributor", count(planted.contributors), 20)

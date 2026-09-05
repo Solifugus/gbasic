@@ -52,7 +52,7 @@ function report(label, rate, lo, hi)
 end function
 
 ' One null trial: nothing planted anywhere.
-function fires(seed, shape, regions, cats, nullkind)
+function fires(seed, shape, regions, cats, nullkind, reps)
     load fake
     load frame
     load insight
@@ -77,7 +77,8 @@ function fires(seed, shape, regions, cats, nullkind)
     f = insight.explain_change(frame.from_rows(rows),
           { measure: "revenue", period: "period", baseline: 0, current: 1,
             dimensions: ["region", "category"],
-            comparison: "period_over_period", null: nullkind })
+            comparison: "period_over_period", null: nullkind,
+            repetitions: reps })
     for each ct in f.contributors
         if ct.clears then
             return true
@@ -89,7 +90,7 @@ end function
 function rate_of(shape, regions, cats, nullkind, trials)
     hits = 0
     for t = 1 to trials
-        if fires(t * 37, shape, regions, cats, nullkind) then
+        if fires(t * 37, shape, regions, cats, nullkind, 1) then
             hits = hits + 1
         end if
     next
@@ -124,6 +125,51 @@ check("the permuted null fires LESS often than the t null on the same data",
       heavy_p < heavy_t, true)
 check("but it still fires -- it is a threshold, not a mute button",
       heavy_p > 0, true)
+
+' --- TIER: R18, the correction is per RUN and a campaign is many runs -------
+'
+' Every tier above measures ONE search. A monitoring process asks the same
+' question every month, and the correction has always been family-wise over
+' the CELLS of one search -- twelve families, paid for once. This is not a
+' consequence of the tail-weight miscalibration above: even a perfectly
+' calibrated 0.05 per run is 1 - 0.95^12 = 0.46 over a year.
+'
+' A campaign fires if ANY month does, which is what an operator experiences.
+function campaign_fires(seed, shape, regions, cats, nullkind, periods, reps)
+    for m = 1 to periods
+        if fires(seed * 1000 + m * 37, shape, regions, cats, nullkind, reps) then
+            return true
+        end if
+    next
+    return false
+end function
+
+function campaign_rate(shape, regions, cats, nullkind, periods, campaigns, reps)
+    hits = 0
+    for t = 1 to campaigns
+        if campaign_fires(t, shape, regions, cats, nullkind, periods, reps) then
+            hits = hits + 1
+        end if
+    next
+    return hits / campaigns
+end function
+
+undeclared = campaign_rate("heavy", 4, 5, "siblings", 12, 40, 1)
+report("a year of monthly runs, repetition UNDECLARED", undeclared, 0.55, 0.90)
+check("which is most of the time -- an ordinary year raises a finding",
+      undeclared > 0.5, true)
+
+' AND THE OTHER HALF, which is what makes the first a finding rather than a
+' complaint: declaring the repetition is what the library needed, and it works.
+declared = campaign_rate("heavy", 4, 5, "siblings", 12, 40, 12)
+report("the same year with repetitions: 12 declared", declared, 0.04, 0.36)
+check("declaring it cuts the campaign false-alarm rate several fold",
+      declared < undeclared / 2, true)
+' AND IT DOES NOT REACH THE REQUESTED 0.05, which is the same tail-weight
+' limitation the tiers above measure, now deeper into the tail. Asserted so
+' the honest claim stays honest: this REDUCES the rate, it does not deliver
+' alpha.
+check("but it does not deliver the requested 0.05 either", declared > 0.05, true)
 
 print "checks: " + string(tally.checks)
 print "mismatches: " + string(tally.mismatches)
