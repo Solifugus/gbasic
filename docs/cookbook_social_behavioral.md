@@ -46,10 +46,10 @@ quantile(sort(x), 0.25)    iqr(x)    skewness(x)    kurtosis(x)
 **Question:** does the outcome differ between two groups?
 
 ```basic
-tt = t_test_2sample(control, treatment)   ' Welch: t_test_welch; paired: t_test_paired
-d  = cohens_d(control, treatment)         ' effect size
+tt = stats.t_test_2sample(control, treatment)   ' Welch: t_test_welch; paired: t_test_paired
+d  = stats.cohens_d(control, treatment)         ' effect size
 ' non-normal? use the rank test:
-mw = mann_whitney(control, treatment)
+mw = stats.mann_whitney(control, treatment)
 ```
 **Report:** *t*(df) = `tt.statistic`, *p* = `tt.p_value`, Cohen's *d* = `d`. Give
 the group means and a CI (`confidence_interval`). Cohen's *d* ≈ 0.2 / 0.5 / 0.8 =
@@ -58,9 +58,9 @@ small / medium / large.
 ## 3. Compare three or more groups (one-way)
 
 ```basic
-av = anova_oneway(groups)          ' groups = [[...],[...],[...]]
-es = eta_squared(groups)           ' eta^2 (and omega^2)
-hsd = tukey_hsd(groups)            ' which pairs differ (Tukey HSD)
+av = stats.anova_oneway(groups)          ' groups = [[...],[...],[...]]
+es = stats.eta_squared(groups)           ' eta^2 (and omega^2)
+hsd = stats.tukey_hsd(groups)            ' which pairs differ (Tukey HSD)
 ```
 Non-parametric alternative: `kruskal_wallis(groups)`.
 **Report:** *F*(df1, df2) = `av.statistic`, *p* = `av.p_value`, η² =
@@ -69,9 +69,9 @@ Non-parametric alternative: `kruskal_wallis(groups)`.
 ## 4. Factorial & repeated-measures designs
 
 ```basic
-aw = anova_twoway(cells)        ' cells[i][j] = replicate list; {a, b, interaction, residual}
-rm = anova_repeated(data)       ' data[subject][condition]; within-subjects
-fr = friedman(data)             ' non-parametric repeated measures
+aw = stats.anova_twoway(cells)        ' cells[i][j] = replicate list; {a, b, interaction, residual}
+rm = stats.anova_repeated(data)       ' data[subject][condition]; within-subjects
+fr = stats.friedman(data)             ' non-parametric repeated measures
 ```
 **Report** each effect: *F*, *p*, and for two-way the interaction line — the term
 communication reviewers look at first.
@@ -79,28 +79,28 @@ communication reviewers look at first.
 ## 5. Association between two variables
 
 ```basic
-pearson: ols(y, [x]) or correlation(x, y)
-spearman(x, y)          ' rank correlation {rho, p_value, n}
-kendall_tau(x, y)       ' tau-b, tie-corrected
-partial_correlation(x, y, z)     ' control for z
-point_biserial(binary, x)        ' one dichotomous variable
-cramers_v(table)                 ' two categorical (from a contingency table)
+pearson: stats.ols(y, [x]) or correlation(x, y)
+stats.spearman(x, y)          ' rank correlation {rho, p_value, n}
+stats.kendall_tau(x, y)       ' tau-b, tie-corrected
+stats.partial_correlation(x, y, z)     ' control for z
+stats.point_biserial(binary, x)        ' one dichotomous variable
+stats.cramers_v(table)                 ' two categorical (from a contingency table)
 ```
 
 ## 6. Predict a continuous outcome (regression)
 
 ```basic
 ' categorical predictor -> dummy columns (first level = reference)
-d = dummy_code(group)
-fit = ols(y, [x, d.columns[0], d.columns[1]])
+d = stats.dummy_code(group)
+fit = stats.ols(y, [x, d.columns[0], d.columns[1]])
 fit.coefficients   fit.std_errors   fit.p_values   fit.r_squared   fit.adj_r_squared
-ci = conf_int(fit, 0.95)
+ci = stats.conf_int(fit, 0.95)
 
 ' interaction term (moderation in a regression):
-fit2 = ols(y, [x, d.columns[0], interaction(x, d.columns[0])])
+fit2 = stats.ols(y, [x, d.columns[0], stats.interaction(x, d.columns[0])])
 
 ' heteroskedasticity? robust standard errors (HC0/HC1/HC2/HC3):
-rob = ols_robust(y, [x, d.columns[0], d.columns[1]], "HC3")
+rob = stats.ols_robust(y, [x, d.columns[0], d.columns[1]], "HC3")
 ```
 **Report:** *b* (SE), *t*, *p* per predictor, and *R²* / adjusted *R²*. With
 dummies, each coefficient is the contrast vs the reference level.
@@ -117,9 +117,9 @@ dummies, each coefficient is the contrast vs the reference level.
 | Over-dispersed counts | `negbinom_regression(y, xs)` | IRRs, dispersion `alpha` |
 
 ```basic
-lg  = logistic_regression(yb, [x])
-orr = odds_ratios(lg, 0.95)        ' orr[j] = {odds_ratio, ci_low, ci_high}
-me  = marginal_effects(lg, [x])    ' average marginal effects (interpretable)
+lg  = stats.logistic_regression(yb, [x])
+orr = stats.odds_ratios(lg, 0.95)        ' orr[j] = {odds_ratio, ci_low, ci_high}
+me  = stats.marginal_effects(lg, [x])    ' average marginal effects (interpretable)
 lg.pseudo_r2                       ' McFadden
 ```
 **Report (logistic):** OR = `orr[1].odds_ratio`, 95% CI [`ci_low`, `ci_high`],
@@ -132,7 +132,7 @@ not OLS.
 **Mediation** (does X affect Y *through* M?):
 ```basic
 seed(42)                              ' reproducible bootstrap CI
-med = mediation(y, x, m, 5000)
+med = stats.mediation(y, x, m, 5000)
 med.indirect      med.boot_low  med.boot_high    ' a*b with percentile CI
 med.c_direct      med.c_total   med.prop_mediated
 ```
@@ -142,7 +142,7 @@ Hayes standard); plus direct and total effects.
 
 **Moderation** (does the X→Y effect *depend on* W?):
 ```basic
-ss = simple_slopes(y, x, w, [mean(w) - stdev(w), mean(w), mean(w) + stdev(w)])
+ss = stats.simple_slopes(y, x, w, [mean(w) - stdev(w), mean(w), mean(w) + stdev(w)])
 ss.interaction_coef   ss.interaction_p         ' the X*W term
 ss.slopes[k]                                    ' {w, slope, se, t, p_value}
 ```
@@ -153,13 +153,13 @@ ss.slopes[k]                                    ' {w, slope, se, t, p_value}
 
 **Scale reliability** (do these items hang together?):
 ```basic
-cronbach_alpha(items)      ' items[subject][item]; {alpha, n_items, n_subjects}
+stats.cronbach_alpha(items)      ' items[subject][item]; {alpha, n_items, n_subjects}
 ```
 **Content analysis / intercoder agreement:**
 ```basic
-krippendorff_alpha(coded, "nominal")   ' coded[coder][unit], unknown = missing
-cohens_kappa(coder1, coder2)           ' two coders
-icc(ratings)                           ' intraclass correlation, ratings[subject][rater]
+stats.krippendorff_alpha(coded, "nominal")   ' coded[coder][unit], unknown = missing
+stats.cohens_kappa(coder1, coder2)           ' two coders
+stats.icc(ratings)                           ' intraclass correlation, ratings[subject][rater]
 ```
 **Report:** α ≥ .70 acceptable; Krippendorff α ≥ .80 (≥ .667 tentative). Use
 Krippendorff for content analysis (handles >2 coders and missing codes);
@@ -168,21 +168,21 @@ Krippendorff for content analysis (handles >2 coders and missing codes);
 ## 10. Proportions & campaign metrics
 
 ```basic
-prop_test_1(successes, n, p0)                 ' one proportion vs a benchmark
-prop_test_2(s1, n1, s2, n2)                   ' two proportions
-ab = ab_test({successes: 90, n: 1000}, {successes: 120, n: 1000})
+stats.prop_test_1(successes, n, p0)                 ' one proportion vs a benchmark
+stats.prop_test_2(s1, n1, s2, n2)                   ' two proportions
+ab = stats.ab_test({successes: 90, n: 1000}, {successes: 120, n: 1000})
 ab.lift    ab.p_value    ab.significant       ' relative lift + test
-funnel(steps)    cohort_retention(events)     ' conversion / retention
+stats.funnel(steps)    stats.cohort_retention(events)     ' conversion / retention
 ```
 
 ## 11. Design: power & sample size
 
 Run **before** collecting data (a priori power) or to justify *N* to reviewers:
 ```basic
-power_ttest(effect_size, n, alpha, sided)     ' two-sample t-test power
-power_anova(k, n, effect_size, alpha)         ' one-way ANOVA (Cohen's f)
-sample_size_ttest(effect_size, power, alpha, sided)   ' required per-group n
-power_ttest_paired(effect_size, n, alpha, sided)
+stats.power_ttest(effect_size, n, alpha, sided)     ' two-sample t-test power
+stats.power_anova(k, n, effect_size, alpha)         ' one-way ANOVA (Cohen's f)
+stats.sample_size_ttest(effect_size, power, alpha, sided)   ' required per-group n
+stats.power_ttest_paired(effect_size, n, alpha, sided)
 ```
 **Report:** "To detect *d* = 0.5 at α = .05 with 80% power (two-tailed), we need
 *n* = `sample_size_ttest(0.5, 0.8, 0.05, 2)` per group."
@@ -194,11 +194,11 @@ churn, time to hire — and where for some people the event **has not happened
 yet** when observation stops:
 
 ```basic
-km = kaplan_meier(times, events)     ' events: 1 = event, 0 = still censored
+km = stats.kaplan_meier(times, events)     ' events: 1 = event, 0 = still censored
 km.times   km.survival   km.se   km.lower   km.upper
 km.median   km.median_reached   km.at_risk   km.n_events
-survival_at(km, 10)                  ' S(t) at a specific time
-logrank(t_a, e_a, t_b, e_b)          ' compare two groups
+stats.survival_at(km, 10)                  ' S(t) at a specific time
+stats.logrank(t_a, e_a, t_b, e_b)          ' compare two groups
 ```
 
 **Censoring is the whole subject and it is not optional.** Both shortcuts are
@@ -212,9 +212,9 @@ observed time.
 To **model** it rather than describe it — covariates, not just curves:
 
 ```basic
-cx = cox_ph(times, events, [treatment, age])
+cx = stats.cox_ph(times, events, [treatment, age])
 cx.hazard_ratios   cx.std_errors   cx.p_values   cx.ci_low   cx.ci_high
-hr_per(cx, 1, 10)                    ' the ratio over a 10-unit change in age
+stats.hr_per(cx, 1, 10)                    ' the ratio over a 10-unit change in age
 ```
 A hazard ratio is **per unit**, so a covariate in dollars gives 1.0000-something
 and reads as nothing — `hr_per` restates it over an interval you choose, without
@@ -230,11 +230,11 @@ looked plausible.
 ## 13. Pooling a literature (meta-analysis)
 
 ```basic
-ma = meta_analysis(studies, { model: "random" })    ' or "fixed"
+ma = stats.meta_analysis(studies, { model: "random" })    ' or "fixed"
 ma.estimate   ma.ci_low   ma.ci_high   ma.p
 ma.q   ma.q_p   ma.i_squared   ma.tau_squared       ' heterogeneity, always
-smd_variance(d, n1, n2)                             ' reported d -> variance
-eggers_test(studies)                                ' funnel asymmetry
+stats.smd_variance(d, n1, n2)                             ' reported d -> variance
+stats.eggers_test(studies)                                ' funnel asymmetry
 ```
 Each study is `{effect:, variance:}`. Random effects (DerSimonian–Laird) is the
 honest default when studies differ in population or protocol; the heterogeneity
@@ -256,7 +256,7 @@ When several items are thought to measure a smaller number of underlying
 constructs:
 
 ```basic
-fa = factor_analysis(cols, { factors: 2, rotate: "varimax" })
+fa = stats.factor_analysis(cols, { factors: 2, rotate: "varimax" })
 fa.loadings   fa.communalities   fa.uniquenesses
 fa.eigenvalues   fa.variance_explained   fa.heywood
 ```

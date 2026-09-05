@@ -16,7 +16,7 @@ program main( args )
     ' true. Under the paren spelling it never got here: the parser guessed
     ' "clause" and died at run time with `compare modifier not found: x`,
     ' naming the caller's own argument as a missing modifier.
-    if kind(x) = "record" then
+    if clause_probe.kind(x) = "record" then
         print "unqualified call, identifier argument: parsed as a CALL"
     end if
 

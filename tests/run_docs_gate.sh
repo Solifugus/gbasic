@@ -380,6 +380,41 @@ if [ -f "$CI" ] && [ -f README.md ]; then
     [ "$plat_ok" = "1" ] && echo "PASS platform       README.md names the platforms CI actually builds on"
 fi
 
+# 1d. THE STATS COOKBOOKS, against the rule that a function from another library
+#     must be qualified. Both pages taught `ols(...)` after `load stats` -- 78
+#     calls between them -- and nothing could see it: they are not in
+#     run_doc_examples, and a parse-only check would not help if they were,
+#     because an unqualified call PARSES perfectly well. It is only wrong at
+#     run time, and only since the cross-library scan was removed.
+#
+#     Checked by comparing the fenced code against stats' own exports, which is
+#     the only way to tell `stats.ols(...)` from a local helper named `ols`.
+for page in docs/cookbook_social_behavioral.md docs/cookbook_econometrics_finance.md; do
+    [ -f "$page" ] || continue
+    # A call NOT preceded by a dot. Identifiers may contain digits --
+    # `t_test_2sample` is one, and an earlier pattern that stripped them turned
+    # it into `t_test_sample`, matched nothing, and passed while the page was
+    # wrong. Found by red-proofing this tier, not by reading it.
+    # THREE THINGS THIS GOT WRONG, all found by red-proofing and none by
+    # reading it: identifiers may contain digits (`t_test_2sample` became
+    # `t_test_sample` and matched nothing), the EXPORTS side needed the same
+    # fix, and `comm` wants byte order where `sort` gives locale order -- it
+    # said "input is not in sorted order" on stderr and returned nothing, so
+    # the tier passed on a page that was wrong.
+    bare=$(awk '/^```basic/{f=1;next} f&&/^```/{f=0;next} f' "$page" \
+           | grep -oE "(^|[^[:alnum:]_.])[a-z_][a-z0-9_]*[[:space:]]*\(" \
+           | sed -E 's/^[^a-z_]//; s/[[:space:]]*\($//' | LC_ALL=C sort -u)
+    exports=$(grep -oE '^    function [a-z_][a-z0-9_]*' stdlib/stats.bas \
+              | awk '{print $2}' | grep -v '^_' | LC_ALL=C sort -u)
+    hits=$(LC_ALL=C comm -12 <(printf '%s\n' "$bare") <(printf '%s\n' "$exports") | tr '\n' ' ')
+    if [ -n "$(printf '%s' "$hits" | tr -d ' ')" ]; then
+        echo "FAIL cookbook qual  $page calls stats functions unqualified: $hits"
+        status=1
+    else
+        echo "PASS cookbook qual  $page qualifies every stats call"
+    fi
+done
+
 # 2. Negative capability claims contradicted by a test suite.
 #
 #    The vocabulary is derived FROM THE SUITE NAMES, not hand-listed, so a new

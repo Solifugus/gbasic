@@ -3,7 +3,7 @@
 ' A single-process server serves from the event loop that runs AFTER main
 ' returns, so the shape every service author reaches for --
 '
-'     h = serve(app)
+'     h = web.serve(app)
 '     while h.running
 '         sleep(0.25)
 '     end while
@@ -20,7 +20,7 @@ server app( port: 0 )
 end server
 
 program main( args )
-    h = serve(app)
+    h = web.serve(app)
     print "bound"
     sleep(0.05)
     print "slept"

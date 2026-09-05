@@ -1,0 +1,1 @@
+runtime error at tests/negative_unqualified_library_call.bas:8:5: invalid function call: only_alpha -- library 'scope_alpha' defines it, and a function from another library must be qualified. Write scope_alpha.only_alpha(...)

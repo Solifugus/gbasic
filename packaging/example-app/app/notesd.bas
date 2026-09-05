@@ -53,7 +53,7 @@ program main( args )
     ' unused-result warning would fire on every service start and land in the
     ' journal -- and `running.port` is how a caller learns the port when the
     ' block binds `port: 0`.
-    running = serve(notesd)
+    running = web.serve(notesd)
     ' Reported from the LIVE server, never from the configuration: with
     ' `port: 0` the kernel chooses, and an operator needs the real number.
     print to error "notesd: listening on 127.0.0.1:" + string(running.port) + ", store " + store

@@ -7,7 +7,7 @@ program demo(args)
     ' --- Simple regression: y ~ x ---
     x = [1, 2, 3, 4, 5, 6, 7, 8]
     y = [5.1, 7.9, 11.2, 13.8, 17.1, 19.9, 23.2, 25.8]
-    r = ols(y, x)
+    r = stats.ols(y, x)
     print("b0 " + string(round(r.coefficients[0], 6)))
     print("b1 " + string(round(r.coefficients[1], 6)))
     print("r2 " + string(round(r.r_squared, 6)))
@@ -25,7 +25,7 @@ program demo(args)
     x1 = [1, 2, 3, 4, 5, 6]
     x2 = [2, 1, 4, 3, 6, 5]
     y2 = [4.0, 5.1, 9.9, 11.2, 16.8, 17.9]
-    m = ols(y2, [x1, x2])
+    m = stats.ols(y2, [x1, x2])
     print("m_b0 " + string(round(m.coefficients[0], 6)))
     print("m_b1 " + string(round(m.coefficients[1], 6)))
     print("m_b2 " + string(round(m.coefficients[2], 6)))
@@ -33,7 +33,7 @@ program demo(args)
     print("m_df " + string(m.df))
 
     ' --- Edge cases return unknown ---
-    print("empty " + string(ols([], [])))
-    print("under " + string(ols([1, 2], [[1, 2]])))
-    print("mismatch " + string(ols([1, 2, 3], [[1, 2]])))
+    print("empty " + string(stats.ols([], [])))
+    print("under " + string(stats.ols([1, 2], [[1, 2]])))
+    print("mismatch " + string(stats.ols([1, 2, 3], [[1, 2]])))
 end program

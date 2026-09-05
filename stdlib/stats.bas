@@ -649,15 +649,15 @@ library stats
         end while
 
         ' Normal equations: beta = (X'X)^-1 X'y.
-        xt = mat_transpose(bigx)
-        xtxinv = mat_inverse(mat_mul(xt, bigx))
+        xt = matrix.mat_transpose(bigx)
+        xtxinv = matrix.mat_inverse(matrix.mat_mul(xt, bigx))
         if is_unknown(xtxinv) then
             return unknown
         end if
-        beta = mat_vec(xtxinv, mat_vec(xt, y))
+        beta = matrix.mat_vec(xtxinv, matrix.mat_vec(xt, y))
 
         ' Fitted values, residuals, and residual sum of squares.
-        fitted = mat_vec(bigx, beta)
+        fitted = matrix.mat_vec(bigx, beta)
         residuals = []
         rss = 0
         i = 0
@@ -1422,12 +1422,12 @@ library stats
             append(wz, w[i] * z[i])
             i = i + 1
         end while
-        xt = mat_transpose(bigx)
-        inv = mat_inverse(mat_mul(xt, wx))
+        xt = matrix.mat_transpose(bigx)
+        inv = matrix.mat_inverse(matrix.mat_mul(xt, wx))
         if is_unknown(inv) then
             return unknown
         end if
-        beta = mat_vec(inv, mat_vec(xt, wz))
+        beta = matrix.mat_vec(inv, matrix.mat_vec(xt, wz))
         return { beta: beta, cov: inv }
     end function
 
@@ -1882,13 +1882,13 @@ library stats
             return unknown
         end if
         bigx = _design(cols, n)
-        xt = mat_transpose(bigx)
-        xtxinv = mat_inverse(mat_mul(xt, bigx))
+        xt = matrix.mat_transpose(bigx)
+        xtxinv = matrix.mat_inverse(matrix.mat_mul(xt, bigx))
         if is_unknown(xtxinv) then
             return unknown
         end if
-        beta = mat_vec(xtxinv, mat_vec(xt, y))
-        fitted = mat_vec(bigx, beta)
+        beta = matrix.mat_vec(xtxinv, matrix.mat_vec(xt, y))
+        fitted = matrix.mat_vec(bigx, beta)
         e = []
         i = 0
         while i < n
@@ -1904,7 +1904,7 @@ library stats
                 om = ei2 * n / (n - p)
             end if
             if hc = "HC2" then
-                v = mat_vec(xtxinv, bigx[i])
+                v = matrix.mat_vec(xtxinv, bigx[i])
                 hi = 0
                 a = 0
                 while a < p
@@ -1914,7 +1914,7 @@ library stats
                 om = ei2 / (1 - hi)
             end if
             if hc = "HC3" then
-                v = mat_vec(xtxinv, bigx[i])
+                v = matrix.mat_vec(xtxinv, bigx[i])
                 hi = 0
                 a = 0
                 while a < p
@@ -1951,7 +1951,7 @@ library stats
             end while
             i = i + 1
         end while
-        cov = mat_mul(mat_mul(xtxinv, meat), xtxinv)
+        cov = matrix.mat_mul(matrix.mat_mul(xtxinv, meat), xtxinv)
         ses = []
         zvals = []
         pvals = []
@@ -2070,7 +2070,7 @@ library stats
             end while
             c = c + 1
         end while
-        covame = mat_mul(mat_mul(gmat, cov), mat_transpose(gmat))
+        covame = matrix.mat_mul(matrix.mat_mul(gmat, cov), matrix.mat_transpose(gmat))
         ses = []
         zvals = []
         pvals = []
@@ -2396,7 +2396,7 @@ library stats
             end while
             i = i + 1
         end while
-        return mat_inverse(hess)
+        return matrix.mat_inverse(hess)
     end function
 
     ' Negative NB2 log-likelihood. ctx = {y, bigx, p}; params = [beta..., ln_alpha].
@@ -3279,7 +3279,7 @@ library stats
             append(s, row)
             i = i + 1
         end while
-        v = mat_identity(n)
+        v = matrix.mat_identity(n)
         sweep = 0
         converged = false
         while sweep < 100 and converged = false
@@ -5936,11 +5936,11 @@ library stats
             append(y, xs[t])
             t = t + 1
         end while
-        xt = mat_transpose(bigx)
-        xtxinv = mat_inverse(mat_mul(xt, bigx))
-        beta = mat_vec(xtxinv, mat_vec(xt, y))
+        xt = matrix.mat_transpose(bigx)
+        xtxinv = matrix.mat_inverse(matrix.mat_mul(xt, bigx))
+        beta = matrix.mat_vec(xtxinv, matrix.mat_vec(xt, y))
         ne = len(y)
-        fitted = mat_vec(bigx, beta)
+        fitted = matrix.mat_vec(bigx, beta)
         sse = 0
         i = 0
         while i < ne
@@ -6112,11 +6112,11 @@ library stats
             end while
             i = i + 1
         end while
-        minv = mat_inverse(m)
+        minv = matrix.mat_inverse(m)
         if is_unknown(minv) then
             return unknown
         end if
-        x = mat_vec(minv, rhs)
+        x = matrix.mat_vec(minv, rhs)
         p0 = []
         i = 0
         while i < r
@@ -6578,13 +6578,13 @@ library stats
         if n <= k then
             return unknown
         end if
-        xt = mat_transpose(bigx)
-        xtxinv = mat_inverse(mat_mul(xt, bigx))
+        xt = matrix.mat_transpose(bigx)
+        xtxinv = matrix.mat_inverse(matrix.mat_mul(xt, bigx))
         if is_unknown(xtxinv) then
             return unknown
         end if
-        beta = mat_vec(xtxinv, mat_vec(xt, y))
-        fitted = mat_vec(bigx, beta)
+        beta = matrix.mat_vec(xtxinv, matrix.mat_vec(xt, y))
+        fitted = matrix.mat_vec(bigx, beta)
         resid = []
         rss = 0
         i = 0
@@ -6937,7 +6937,7 @@ library stats
             l = l + 1
         end while
         xtxinv = fit.xtxinv
-        cov = mat_mul(mat_mul(xtxinv, meat), xtxinv)
+        cov = matrix.mat_mul(matrix.mat_mul(xtxinv, meat), xtxinv)
         beta = fit.beta
         ses = []
         zvals = []
@@ -8641,7 +8641,7 @@ library stats
 
     ' bread * meat * bread, both square p x p.
     function _sandwich(bread, meat)
-        return mat_mul(mat_mul(bread, meat), bread)
+        return matrix.mat_mul(matrix.mat_mul(bread, meat), bread)
     end function
 
     ' Heteroskedasticity-consistent meat: sum_i w_i x_i x_i'.
@@ -8677,7 +8677,7 @@ library stats
                 om = ei2 * n / (n - p)
             end if
             if hc = "HC2" or hc = "HC3" then
-                v = mat_vec(xtxinv, bigx[i])
+                v = matrix.mat_vec(xtxinv, bigx[i])
                 hi = 0
                 a = 0
                 while a < p
@@ -8773,13 +8773,13 @@ library stats
             return { ok: false, message: "not enough observations (" + string(n) + ") for " + string(p) + " parameters" }
         end if
         bigx = _design(cols, n)
-        xt = mat_transpose(bigx)
-        xtxinv = mat_inverse(mat_mul(xt, bigx))
+        xt = matrix.mat_transpose(bigx)
+        xtxinv = matrix.mat_inverse(matrix.mat_mul(xt, bigx))
         if is_unknown(xtxinv) then
             return { ok: false, message: "design matrix is singular: a column is collinear with the others" }
         end if
-        beta = mat_vec(xtxinv, mat_vec(xt, y))
-        fitted = mat_vec(bigx, beta)
+        beta = matrix.mat_vec(xtxinv, matrix.mat_vec(xt, y))
+        fitted = matrix.mat_vec(bigx, beta)
         e = []
         rss = 0
         i = 0
@@ -9181,22 +9181,22 @@ library stats
         end if
         bigx = _design(_cat_cols(ecols, xcols), n)
         bigz = _design(_cat_cols(zcols, xcols), n)
-        zt = mat_transpose(bigz)
-        ztzinv = mat_inverse(mat_mul(zt, bigz))
+        zt = matrix.mat_transpose(bigz)
+        ztzinv = matrix.mat_inverse(matrix.mat_mul(zt, bigz))
         if is_unknown(ztzinv) then
             return { ok: false, message: "the instrument matrix is singular: two instruments carry the same information" }
         end if
         ' X-hat = Z (Z'Z)^-1 Z' X, the projection of every regressor onto the
         ' instrument space. An exogenous control projects onto itself.
-        xhat = mat_mul(bigz, mat_mul(ztzinv, mat_mul(zt, bigx)))
-        xht = mat_transpose(xhat)
-        ainv = mat_inverse(mat_mul(xht, xhat))
+        xhat = matrix.mat_mul(bigz, matrix.mat_mul(ztzinv, matrix.mat_mul(zt, bigx)))
+        xht = matrix.mat_transpose(xhat)
+        ainv = matrix.mat_inverse(matrix.mat_mul(xht, xhat))
         if is_unknown(ainv) then
             return { ok: false, message: "the instruments do not identify the endogenous regressor(s)" }
         end if
-        beta = mat_vec(ainv, mat_vec(xht, y))
+        beta = matrix.mat_vec(ainv, matrix.mat_vec(xht, y))
 
-        fitted = mat_vec(bigx, beta)
+        fitted = matrix.mat_vec(bigx, beta)
         u = []
         rss = 0
         i = 0

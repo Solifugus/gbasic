@@ -9,5 +9,5 @@ program demo(args)
     next{next monday}= today
     print(next)
 
-    print(dayname(today))
+    print(dates.dayname(today))
 end program

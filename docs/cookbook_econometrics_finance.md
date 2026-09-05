@@ -35,9 +35,9 @@ Run with the stdlib on the path: `GBASIC_PATH=stdlib ./gbasic analysis.bas`
 ## 1. Returns from prices
 
 ```basic
-r  = simple_returns(prices)     ' r_t = P_t/P_{t-1} - 1   (length n-1)
-lr = log_returns(prices)        ' r_t = ln(P_t/P_{t-1})
-tot = cumulative_return(r)      ' compounded: prod(1+r) - 1
+r  = stats.simple_returns(prices)     ' r_t = P_t/P_{t-1} - 1   (length n-1)
+lr = stats.log_returns(prices)        ' r_t = ln(P_t/P_{t-1})
+tot = stats.cumulative_return(r)      ' compounded: prod(1+r) - 1
 ```
 Use **log returns** for statistical modeling (they add across time); **simple
 returns** for reporting performance.
@@ -45,11 +45,11 @@ returns** for reporting performance.
 ## 2. Performance & risk metrics
 
 ```basic
-sharpe_ratio(r, rf, periods)    ' annualized; periods = 252 daily, 12 monthly
-sortino_ratio(r, rf, periods)   ' downside-only volatility in the denominator
-md = max_drawdown(prices)       ' {max_drawdown, peak, trough}; drawdown is negative
-value_at_risk(r, 0.05, "historical")   ' 95% VaR, as a positive loss; or "normal"
-cvar(r, 0.05)                          ' expected shortfall (average tail loss)
+stats.sharpe_ratio(r, rf, periods)    ' annualized; periods = 252 daily, 12 monthly
+stats.sortino_ratio(r, rf, periods)   ' downside-only volatility in the denominator
+md = stats.max_drawdown(prices)       ' {max_drawdown, peak, trough}; drawdown is negative
+stats.value_at_risk(r, 0.05, "historical")   ' 95% VaR, as a positive loss; or "normal"
+stats.cvar(r, 0.05)                          ' expected shortfall (average tail loss)
 ```
 **Report:** annualized Sharpe (`rf` is the per-period risk-free rate), max
 drawdown as a percentage, and VaR/CVaR as the loss you'd expect to breach `alpha`
@@ -60,7 +60,7 @@ of the time. Sharpe uses total volatility; Sortino penalizes only downside moves
 **Question:** how much of an asset's excess return is explained by the market?
 
 ```basic
-cp = capm(asset_returns, market_returns, rf)
+cp = stats.capm(asset_returns, market_returns, rf)
 cp.beta        ' systematic risk (market sensitivity)
 cp.alpha       ' Jensen's alpha (skill / mispricing); cp.alpha_p to test it vs 0
 cp.r_squared   ' fraction of variance explained by the market
@@ -75,9 +75,9 @@ Ordinary standard errors assume homoskedastic, uncorrelated errors — rarely tr
 for economic data. Match the standard error to the violation:
 
 ```basic
-fit = ols(y, [x1, x2])                 ' point estimates (always valid under OLS)
-rob = ols_robust(y, [x1, x2], "HC3")   ' heteroskedasticity-robust SEs
-nw  = newey_west(y, [x1, x2], 4)       ' HAC: robust to heteroskedasticity + autocorrelation
+fit = stats.ols(y, [x1, x2])                 ' point estimates (always valid under OLS)
+rob = stats.ols_robust(y, [x1, x2], "HC3")   ' heteroskedasticity-robust SEs
+nw  = stats.newey_west(y, [x1, x2], 4)       ' HAC: robust to heteroskedasticity + autocorrelation
 ```
 - Cross-section, unequal variance → **`ols_robust`** (HC0/HC1/HC2/HC3; HC3 is the
   safe default in small samples).
@@ -91,9 +91,9 @@ used and why.
 ## 5. Diagnosing the regression
 
 ```basic
-breusch_pagan(fit.residuals, [x1, x2])   ' heteroskedasticity: small p -> non-constant variance
-ljung_box(fit.residuals, 4)              ' leftover autocorrelation: small p -> correlated errors
-durbin_watson(fit.residuals)             ' ~2 = no AR(1); <2 positive, >2 negative
+stats.breusch_pagan(fit.residuals, [x1, x2])   ' heteroskedasticity: small p -> non-constant variance
+stats.ljung_box(fit.residuals, 4)              ' leftover autocorrelation: small p -> correlated errors
+stats.durbin_watson(fit.residuals)             ' ~2 = no AR(1); <2 positive, >2 negative
 ```
 **Report:** if Breusch-Pagan rejects, use `ols_robust`/`newey_west`; if Ljung-Box
 or Durbin-Watson flags autocorrelation, use `newey_west` (or model the dynamics —
@@ -106,13 +106,13 @@ statistic).
 series on another produces *spurious* results.
 
 ```basic
-a = adf_test(x, lags, "c")     ' Augmented Dickey-Fuller; trend "n"/"c"/"ct"
+a = stats.adf_test(x, lags, "c")     ' Augmented Dickey-Fuller; trend "n"/"c"/"ct"
 a.statistic    a.p_value    a.crit_5     ' reject unit root (stationary) if p small / stat < crit
 ```
 If it fails to reject (large *p*), **difference and retest**:
 ```basic
-dx = diff(x, 1)                ' first difference
-a2 = adf_test(dx, lags, "c")   ' usually stationary now -> the series is I(1)
+dx = stats.diff(x, 1)                ' first difference
+a2 = stats.adf_test(dx, lags, "c")   ' usually stationary now -> the series is I(1)
 ```
 **Report:** the ADF statistic, its *p*-value, and the differencing order *d* you
 settled on. `trend="c"` for a series around a constant mean, `"ct"` if it drifts
@@ -123,12 +123,12 @@ with a linear trend, `"n"` for zero-mean.
 **Identify the order** from the autocorrelation functions, then fit:
 
 ```basic
-acf(x, 20)      ' MA signature: cuts off after lag q
-pacf(x, 20)     ' AR signature: cuts off after lag p
+stats.acf(x, 20)      ' MA signature: cuts off after lag q
+stats.pacf(x, 20)     ' AR signature: cuts off after lag p
 
-m  = arima_fit(x, p, d, q)     ' d = differencing from §6
+m  = stats.arima_fit(x, p, d, q)     ' d = differencing from §6
 m.phi   m.theta   m.aic   m.bic
-fc = arima_forecast(m, x, h)   ' h-step-ahead forecast
+fc = stats.arima_forecast(m, x, h)   ' h-step-ahead forecast
 ```
 Special cases: `ar_fit(x, p)` (pure AR by OLS), `arma_fit(x, p, q)` (exact
 Kalman-filter MLE, matches statsmodels). **Report:** the chosen (p, d, q), the
@@ -142,8 +142,8 @@ Financial returns have calm and turbulent periods — variance that clusters in
 time. Test for it, then model it:
 
 ```basic
-arch_lm(returns, 2)            ' Engle's test; small p -> ARCH effects present
-g = garch_fit(returns)         ' GARCH(1,1)
+stats.arch_lm(returns, 2)            ' Engle's test; small p -> ARCH effects present
+g = stats.garch_fit(returns)         ' GARCH(1,1)
 g.omega   g.alpha   g.beta   g.persistence     ' persistence = alpha+beta (near 1 = long memory)
 ```
 **Report:** the ARCH-LM test result (justifies modeling volatility at all), then
@@ -187,10 +187,10 @@ Fit a normal-return model *before* an event, then measure the residual across
 it. This is what turns a filing date into a testable claim:
 
 ```basic
-w  = event_window(dates, event_date, 5, 5)       ' 5 TRADING days either side
-ev = abnormal_returns(asset_r, market_r, { event: 150, pre: 1, post: 1, estimation: 120 })
+w  = stats.event_window(dates, event_date, 5, 5)       ' 5 TRADING days either side
+ev = stats.abnormal_returns(asset_r, market_r, { event: 150, pre: 1, post: 1, estimation: 120 })
 ev.alpha   ev.beta   ev.ar   ev.car              ' the model, and the abnormal return
-agg = event_study([ev1, ev2, ev3])               ' pool events -> CAAR + t-test
+agg = stats.event_study([ev1, ev2, ev3])               ' pool events -> CAAR + t-test
 agg.caar   agg.t   agg.p   agg.n   agg.contaminated
 ```
 Windows count **trading days** — they index the dates the series actually has,
@@ -214,7 +214,7 @@ one. Nothing about the output looks off.
 an untreated group's:
 
 ```basic
-d = did(y, treated, post, { cluster: unit_id })
+d = stats.did(y, treated, post, { cluster: unit_id })
 d.att   d.std_error   d.p_value   d.conf_low   d.conf_high
 d.means      ' the four cells: control_pre/post, treated_pre/post
 ```
@@ -233,7 +233,7 @@ since it is a claim about what the treated group *would* have done. What you
 can test is whether the groups moved together *before* treatment:
 
 ```basic
-pt = pre_trends(y, treated, period, treat_start)
+pt = stats.pre_trends(y, treated, period, treat_start)
 pt.f_stat   pt.p_value   pt.leads   pt.periods
 ```
 A large *p* here is the **absence of evidence against** parallel trends over
@@ -243,7 +243,7 @@ however many pre-periods you happen to have — not evidence for it. The returne
 **Instrumental variables** — use a variable that moves X but not Y directly:
 
 ```basic
-iv = iv_2sls(y, endog, instruments, { exog: controls })
+iv = stats.iv_2sls(y, endog, instruments, { exog: controls })
 iv.estimate   iv.std_error   iv.p_value
 iv.first_stage[0].f_stat      ' below ~10 the instrument is weak
 iv.weak   iv.sargan   iv.wu_hausman

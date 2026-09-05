@@ -295,6 +295,13 @@ struct AstStmt {
              * by the time the function was CALLED -- so every stdlib diagnostic
              * reported a real line against the wrong file. */
             char *source_path;
+            /* The LIBRARY this function belongs to, or NULL for the root
+             * source. Stamped at registration beside `source_path`, and for the
+             * same kind of reason: an unqualified call inside a library must
+             * reach that library's own function, and the file path cannot say
+             * so when the library is declared in the SAME FILE as the program
+             * that loads it -- it has no separate path to match on. */
+            char *library;
         } function;
         AstExpr *return_expr;
         char *label;

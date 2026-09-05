@@ -21,6 +21,6 @@ server myapp( port: 0 )
 end server
 
 program main( args )
-    h = serve(myapp)
+    h = web.serve(myapp)
     print "PORT " + string(h.port)
 end program

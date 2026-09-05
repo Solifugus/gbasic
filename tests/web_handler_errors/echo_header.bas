@@ -28,6 +28,6 @@ server echoer( port: 0 )
 end server
 
 program main( args )
-    h = serve(echoer)
+    h = web.serve(echoer)
     print "PORT " + string(h.port)
 end program

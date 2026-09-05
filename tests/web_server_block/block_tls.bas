@@ -12,6 +12,6 @@ server sec( port: 0,
 end server
 
 program main( args )
-    h = serve(sec)
+    h = web.serve(sec)
     print "PORT " + string(h.port)
 end program

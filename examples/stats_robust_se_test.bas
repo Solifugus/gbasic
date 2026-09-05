@@ -14,17 +14,17 @@ program demo(args)
     '   HC1 0.28673 0.19431 0.16947
     '   HC2 0.29101 0.19779 0.17194
     '   HC3 0.30475 0.20773 0.17999
-    h0 = ols_robust(y, [x1, x2], "HC0")
+    h0 = stats.ols_robust(y, [x1, x2], "HC0")
     print("HC0 se " + string(round(h0.std_errors[0], 5)) + " " + string(round(h0.std_errors[1], 5)) + " " + string(round(h0.std_errors[2], 5)))
-    h1 = ols_robust(y, [x1, x2], "HC1")
+    h1 = stats.ols_robust(y, [x1, x2], "HC1")
     print("HC1 se " + string(round(h1.std_errors[0], 5)) + " " + string(round(h1.std_errors[1], 5)) + " " + string(round(h1.std_errors[2], 5)))
-    h2 = ols_robust(y, [x1, x2], "HC2")
+    h2 = stats.ols_robust(y, [x1, x2], "HC2")
     print("HC2 se " + string(round(h2.std_errors[0], 5)) + " " + string(round(h2.std_errors[1], 5)) + " " + string(round(h2.std_errors[2], 5)))
-    h3 = ols_robust(y, [x1, x2], "HC3")
+    h3 = stats.ols_robust(y, [x1, x2], "HC3")
     print("HC3 se " + string(round(h3.std_errors[0], 5)) + " " + string(round(h3.std_errors[1], 5)) + " " + string(round(h3.std_errors[2], 5)))
     print("coef " + string(round(h0.coefficients[0], 5)) + " " + string(round(h0.coefficients[1], 5)) + " " + string(round(h0.coefficients[2], 5)))
     print("HC3 p " + string(round(h3.p_values[1], 5)) + " " + string(round(h3.p_values[2], 5)))
 
     ' domain guard returns unknown
-    print("guard " + string(ols_robust([1, 2], [[1, 2]], "HC1")))
+    print("guard " + string(stats.ols_robust([1, 2], [[1, 2]], "HC1")))
 end program

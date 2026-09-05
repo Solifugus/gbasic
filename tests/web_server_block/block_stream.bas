@@ -8,15 +8,15 @@ server sse( port: 0 )
     stream "/tick"( req )
         n = 0
         while n < 3
-            e = emit(req, web.sse_event("tick " + string(n)))
+            e = web.emit(req, web.sse_event("tick " + string(n)))
             n = n + 1
         end while
-        f = finish(req)
+        f = web.finish(req)
         return 0
     end stream
 
     stream "/events"( req )
-        e = emit(req, web.sse_event("open"))
+        e = web.emit(req, web.sse_event("open"))
         append(G.streams, req)
         return 0
     end stream
@@ -24,7 +24,7 @@ server sse( port: 0 )
     post "/poke"( req )
         kept = []
         for each s in G.streams
-            ok = emit(s, web.sse_named("poke", "hello"))
+            ok = web.emit(s, web.sse_named("poke", "hello"))
             if ok then
                 append(kept, s)
             end if
@@ -37,6 +37,6 @@ end server
 
 program main( args )
     G = { streams: [] }
-    h = serve(sse)
+    h = web.serve(sse)
     print "PORT " + string(h.port)
 end program

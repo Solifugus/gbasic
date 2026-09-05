@@ -367,6 +367,8 @@ cases=(
     negative_duplicate_function
     negative_duplicate_function_program
     negative_duplicate_function_library
+    negative_unqualified_library_call
+    negative_unqualified_ambiguous
 )
 
 for name in "${cases[@]}"; do

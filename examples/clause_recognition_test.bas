@@ -121,15 +121,15 @@ program main(args)
   ' A clause body always begins with a modifier NAME, though, and a name is
   ' always identifier-shaped -- so a body that starts a number or a string
   ' cannot be one, and these are calls (PLAT-CLAUSE-B).
-  if kind(1) = "record" then
+  if clause_probe.kind(1) = "record" then
     print "unqual num   ok"
   end if
-  if kind("q") = "record" then
+  if clause_probe.kind("q") = "record" then
     print "unqual str   ok"
   end if
   ' A nested call or a parenthesised argument was never affected: an inner `(`
   ' is not accepted in a clause body.
-  if kind(clause_probe.one(1)) = "record" then
+  if clause_probe.kind(clause_probe.one(1)) = "record" then
     print "unqual nest  ok"
   end if
   ' `kind(x)` -- an IDENTIFIER argument -- is NOT fixed and cannot be, because

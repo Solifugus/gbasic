@@ -38,7 +38,7 @@ server notes( port: 0 )
     post "/notes"( req )
         append(G.notes, req.body)
         for each s in G.feeds
-            ok = emit(s, web.sse_named("note", req.body))
+            ok = web.emit(s, web.sse_named("note", req.body))
         end for
         return { status: 201, body: "note " + string(count(G.notes)) }
     end post
@@ -52,7 +52,7 @@ server notes( port: 0 )
     end get
 
     stream "/feed"( req )
-        e = emit(req, web.sse_event("watching"))
+        e = web.emit(req, web.sse_event("watching"))
         append(G.feeds, req)
         return 0
     end stream
@@ -67,6 +67,6 @@ end server
 
 program main( args )
     G = { notes: [], feeds: [] }
-    h = serve(notes)
+    h = web.serve(notes)
     print "PORT " + string(h.port)
 end program

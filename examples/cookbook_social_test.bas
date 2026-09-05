@@ -13,51 +13,51 @@ program demo(args)
     ' ---- Two conditions: independent t-test + effect size ----
     ctrl = [4.1, 3.8, 4.4, 3.9, 4.0, 4.2, 3.7, 4.3]
     treat = [4.6, 4.9, 4.4, 5.1, 4.8, 4.7, 5.0, 4.5]
-    tt = t_test_2sample(ctrl, treat)
-    print("ttest t " + string(round(tt.statistic, 3)) + " p " + string(round(tt.p_value, 4)) + " d " + string(round(cohens_d(ctrl, treat), 3)))
+    tt = stats.t_test_2sample(ctrl, treat)
+    print("ttest t " + string(round(tt.statistic, 3)) + " p " + string(round(tt.p_value, 4)) + " d " + string(round(stats.cohens_d(ctrl, treat), 3)))
 
     ' ---- 3+ groups: one-way ANOVA, post-hoc, effect size ----
     g = [ [5, 6, 4, 5], [7, 8, 6, 7], [9, 10, 8, 9] ]
-    av = anova_oneway(g)
-    es = eta_squared(g)
+    av = stats.anova_oneway(g)
+    es = stats.eta_squared(g)
     print("anova F " + string(round(av.statistic, 3)) + " p " + string(round(av.p_value, 5)) + " eta2 " + string(round(es.eta_squared, 3)))
 
     ' ---- Association between two variables ----
     xcorr = [1, 2, 3, 4, 5, 6, 7, 8]
     ycorr = [2, 1, 4, 3, 6, 5, 8, 9]
-    sp = spearman(xcorr, ycorr)
+    sp = stats.spearman(xcorr, ycorr)
     print("spearman rho " + string(round(sp.rho, 3)) + " p " + string(round(sp.p_value, 4)))
 
     ' ---- Continuous outcome with a factor + interaction (OLS) ----
     y = [2.1, 3.4, 2.8, 4.1, 3.0, 5.2, 3.3, 4.8, 2.5, 3.9, 4.4, 5.5]
     x = [1.0, 2.0, 1.5, 3.0, 2.2, 3.5, 1.8, 3.1, 1.2, 2.7, 2.9, 3.8]
     grp = ["A", "A", "A", "A", "B", "B", "B", "B", "C", "C", "C", "C"]
-    d = dummy_code(grp)
-    fit = ols(y, [x, d.columns[0], d.columns[1]])
+    d = stats.dummy_code(grp)
+    fit = stats.ols(y, [x, d.columns[0], d.columns[1]])
     print("ols b0 " + string(round(fit.coefficients[0], 3)) + " bx " + string(round(fit.coefficients[1], 3)) + " r2 " + string(round(fit.r_squared, 3)))
-    rob = ols_robust(y, [x, d.columns[0], d.columns[1]], "HC3")
+    rob = stats.ols_robust(y, [x, d.columns[0], d.columns[1]], "HC3")
     print("ols HC3 se_x " + string(round(rob.std_errors[1], 4)))
 
     ' ---- Binary outcome: logistic with odds ratios + marginal effects ----
     yb = [0, 0, 1, 0, 1, 1, 0, 1, 1, 1, 0, 1]
-    lg = logistic_regression(yb, [x])
-    orr = odds_ratios(lg, 0.95)
-    me = marginal_effects(lg, [x])
+    lg = stats.logistic_regression(yb, [x])
+    orr = stats.odds_ratios(lg, 0.95)
+    me = stats.marginal_effects(lg, [x])
     print("logit OR_x " + string(round(orr[1].odds_ratio, 3)) + " AME_x " + string(round(me.effects[0], 4)) + " prsq " + string(round(lg.pseudo_r2, 3)))
 
     ' ---- Likert-scale outcome: ordinal logistic ----
     likert = [0, 1, 0, 1, 2, 2, 1, 1, 0, 2, 1, 2]
-    orl = ordinal_regression(likert, [x])
+    orl = stats.ordinal_regression(likert, [x])
     print("ordinal b " + string(round(orl.coefficients[0], 3)) + " prsq " + string(round(orl.pseudo_r2, 3)))
 
     ' ---- Scale reliability + content-analysis intercoder agreement ----
     items = [ [4, 4, 3], [5, 5, 4], [2, 1, 2], [3, 3, 4], [5, 4, 5], [1, 2, 1] ]
-    print("cronbach " + string(round(cronbach_alpha(items).alpha, 3)))
+    print("cronbach " + string(round(stats.cronbach_alpha(items).alpha, 3)))
     coded = [ [1, 2, 3, 3, 2], [1, 2, 3, 2, 2], [1, 2, 3, 3, 1] ]
-    print("krippendorff " + string(round(krippendorff_alpha(coded, "nominal").alpha, 3)))
+    print("krippendorff " + string(round(stats.krippendorff_alpha(coded, "nominal").alpha, 3)))
 
     ' ---- Proportions / A-B campaign test ----
-    ab = ab_test({ successes: 90, n: 1000 }, { successes: 120, n: 1000 })
+    ab = stats.ab_test({ successes: 90, n: 1000 }, { successes: 120, n: 1000 })
     print("abtest lift " + string(round(ab.lift, 3)) + " p " + string(round(ab.p_value, 4)) + " sig " + string(ab.significant))
 
     ' ---- Mediation (X -> M -> Y) ----
@@ -65,16 +65,16 @@ program demo(args)
     mm = [2.0, 2.6, 3.9, 2.2, 3.1, 4.0, 1.9, 3.6, 3.8, 2.4, 2.9, 4.4]
     my = [2.4, 3.1, 4.2, 2.6, 3.6, 4.5, 2.2, 4.0, 4.3, 2.8, 3.3, 4.9]
     seed(7)
-    med = mediation(my, mx, mm, 1000)
+    med = stats.mediation(my, mx, mm, 1000)
     print("mediation indirect " + string(round(med.indirect, 3)) + " direct " + string(round(med.c_direct, 3)))
 
     ' ---- Moderation: simple slopes of x at mean(w) +/- 1 SD ----
     w = [0.5, 1.0, 1.5, 0.8, 1.2, 1.8, 0.6, 1.4, 1.6, 0.9, 1.1, 1.9]
-    ss = simple_slopes(y, x, w, [mean(w) - stdev(w), mean(w), mean(w) + stdev(w)])
+    ss = stats.simple_slopes(y, x, w, [mean(w) - stdev(w), mean(w), mean(w) + stdev(w)])
     print("moderation intr_p " + string(round(ss.interaction_p, 4)) + " slope_hi " + string(round(ss.slopes[2].slope, 3)))
 
     ' ---- Design: power and required sample size ----
-    print("power2 " + string(round(power_ttest(0.5, 30, 0.05, 2), 3)) + " n_needed " + string(sample_size_ttest(0.5, 0.8, 0.05, 2)))
+    print("power2 " + string(round(stats.power_ttest(0.5, 30, 0.05, 2), 3)) + " n_needed " + string(stats.sample_size_ttest(0.5, 0.8, 0.05, 2)))
 
     ' ---- Survival: time to event, with censoring carried explicitly ----
     ' The Freireich 1963 leukaemia trial. The `+` cases in the paper are
@@ -84,9 +84,9 @@ program demo(args)
     ee = [1, 1, 1, 0, 1, 0,  1,  0,  0,  1,  1,  0,  0,  0,  1,  1,  0,  0,  0,  0,  0]
     ct = [1, 1, 2, 2, 3, 4, 4, 5, 5, 8, 8, 8, 8, 11, 11, 12, 12, 15, 17, 22, 23]
     ce = [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,  1,  1,  1,  1,  1,  1,  1,  1]
-    km = kaplan_meier(tt, ee)
-    print("survival median " + string(km.median) + " S(10) " + string(round(survival_at(km, 10), 4)))
-    lr2 = logrank(tt, ee, ct, ce)
+    km = stats.kaplan_meier(tt, ee)
+    print("survival median " + string(km.median) + " S(10) " + string(round(stats.survival_at(km, 10), 4)))
+    lr2 = stats.logrank(tt, ee, ct, ce)
     print("logrank chi2 " + string(round(lr2.chi_squared, 2)) + " p " + string(round(lr2.p, 6)))
     grp = []
     for each v in tt
@@ -109,14 +109,14 @@ program demo(args)
     for each v in ce
         append(allev, v)
     next v
-    cx = cox_ph(alltimes, allev, [grp])
+    cx = stats.cox_ph(alltimes, allev, [grp])
     print("cox hr " + string(round(cx.hazard_ratios[0], 3)) + " p " + string(round(cx.p_values[0], 5)))
 
     ' ---- Meta-analysis: pool studies, and report the heterogeneity beside it ----
     studies = [{ effect: 0.30, variance: 0.010 }, { effect: 0.45, variance: 0.015 },
                { effect: 0.20, variance: 0.008 }, { effect: 0.55, variance: 0.020 },
                { effect: 0.35, variance: 0.012 }]
-    ma = meta_analysis(studies, { model: "random" })
+    ma = stats.meta_analysis(studies, { model: "random" })
     print("meta pooled " + string(round(ma.estimate, 4)) + " I2 " + string(round(ma.i_squared, 1)) + " Q p " + string(round(ma.q_p, 4)))
 
     ' ---- Factor analysis: latent structure, not a summary of the variables ----
@@ -140,7 +140,7 @@ program demo(args)
         append(c6, 1.2 * fa2 + 0.3 * (mod(i * 6, 5) - 2))
         i += 1
     end while
-    fa = factor_analysis([c1, c2, c3, c4, c5, c6], { factors: 2, rotate: "varimax" })
+    fa = stats.factor_analysis([c1, c2, c3, c4, c5, c6], { factors: 2, rotate: "varimax" })
     ' Which factor each item leads on. Rotation does not promise an ORDER, so
     ' the property to check is the BLOCK PATTERN -- items 1-3 together, items
     ' 4-6 together, and the two groups apart -- never "item 1 is on factor 1".

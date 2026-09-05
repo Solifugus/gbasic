@@ -9,7 +9,56 @@ language surface may still change between releases.
 
 ## Unreleased
 
-Nothing yet.
+### Changed — a function from another library must now be qualified
+
+An unqualified name resolves in exactly two places: **the library whose code is
+running**, and **the root program's own functions**. `load stats` followed by
+`ols(...)` is now an error.
+
+The error is written to be the edit — *`invalid function call: ols — library
+'stats' defines it, and a function from another library must be qualified.
+Write stats.ols(...)`* — and where more than one loaded library defines the
+name it offers each rather than choosing.
+
+**What it replaced** was a backward scan over every imported function, newest
+registration first. It was a real convenience, and it decided *which library a
+call meant* by **load order** — something the author of the call neither
+controls nor can see — so adding a `load` at the top of a file could silently
+move a call in the middle of it.
+
+Measured before removing it, by instrumenting the resolver and running the whole
+suite: 4,311 resolutions went through that scan; **3,931 were one library
+reaching another** (`stats.bas` → `matrix`, five names); and of the 177 distinct
+`library.function` pairs root programs reached, **exactly one name was defined
+by more than one library**. The scan was almost never choosing between
+candidates — it was resolving a unique name by a rule that could have chosen
+wrongly.
+
+**A library still calls its own functions with no prefix**, and that now holds
+in every shape a library takes: in its own file, declared in the *same file* as
+the program that loads it, and inside a `modifier` body. The same-file case
+**never worked** — the own-first rule was keyed on the source path and a
+same-file library has none — and nobody could tell, because the cross-library
+scan caught the call on the way past.
+
+Two other things fell out. The `x(mod) = v` clause ambiguity documented in
+`docs/ai/UNLEARN.md` **can no longer occur**: `if kind(x) = "record"` with
+`kind` from a library used to parse as a modifier clause and fail with
+`compare modifier not found: x`, naming your own argument; it is now an error
+that names the library. And the library-override warning is **gone**, because
+there is no longer an override to warn about; `library_collisions()` still
+reports shared names.
+
+Migration: ~400 call sites across the tree, the two statistics cookbooks, and
+the `server` block's `serve`/`emit`/`finish`, are all qualified.
+
+### Changed — defining the same function twice in one scope is refused
+
+It was silent: the second definition overwrote the first and the first became
+unreachable. Scope is the file for a local definition and the **library** for an
+imported one — a local shadowing a library function, two libraries sharing a
+name, and a local shadowing a builtin are all still legal. The message names the
+line of the definition being lost.
 
 ---
 

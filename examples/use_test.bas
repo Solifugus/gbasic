@@ -14,7 +14,7 @@ program demo(args)
     use math
     use text
 
-    print add(2, 3)
+    print math.add(2, 3)
 
     msg{shout}= "hello"
     print msg

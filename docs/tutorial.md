@@ -1262,13 +1262,19 @@ print(replace("hello", "l", "x"))   ' "hexxo"
 
 ## Libraries and load
 
-A library collects functions and exported modifiers. Functions in a loaded
-library are imported by default; modifiers must be marked `export modifier`.
+A library collects functions and exported modifiers. **A function from a
+library is called with the library's name in front of it** — `text.add(2, 3)`.
+Modifiers are the exception: they are used by name, and must be marked
+`export modifier` to leave the library at all.
 
 ```basic
 library text
     function add(a, b)
         return a + b
+    end function
+
+    function add_thrice(a)
+        return add(a, add(a, a))   ' its OWN function: no prefix needed
     end function
 
     export modifier shout for assign
@@ -1278,12 +1284,23 @@ end library
 
 program demo(args)
     load text
-    print(add(2, 3))
+    print(text.add(2, 3))       ' 5
+    print(text.add_thrice(2))   ' 6
     msg{shout}= "hello"
-    print(msg)              ' "HELLO"
-    print(text.add(2, 3))  ' qualified call bypasses override lookup
+    print(msg)                  ' "HELLO"
 end program
 ```
+
+**Inside a library, its own functions need no prefix** — `add_thrice` calls
+`add` directly, and gets *this* library's `add` even if another loaded library
+defines one too. Outside it, the prefix is required: writing `add(2, 3)` in the
+program above is an error, and the error names the library and spells the call
+for you.
+
+That rule replaced one where an unqualified name searched every loaded library,
+newest first. It was convenient and it decided which library a call meant by
+**load order** — so adding a `load` at the top of a file could silently change
+what a call in the middle of it did.
 
 Load from another file with `load NAME from "path"`:
 

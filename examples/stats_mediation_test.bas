@@ -15,7 +15,7 @@ program demo(args)
     ' Mediation. statsmodels: a 0.59448, b 0.40943, c' 0.37606, c 0.61946,
     ' indirect 0.2434, prop 0.39292. Bootstrap CI is seeded/deterministic.
     seed(42)
-    med = mediation(y, x, m, 2000)
+    med = stats.mediation(y, x, m, 2000)
     print("med a " + string(round(med.a, 5)) + " b " + string(round(med.b, 5)))
     print("med cdir " + string(round(med.c_direct, 5)) + " ctot " + string(round(med.c_total, 5)))
     print("med indirect " + string(round(med.indirect, 5)) + " prop " + string(round(med.prop_mediated, 5)))
@@ -25,12 +25,12 @@ program demo(args)
     ' w 0.479 slope 0.44344; w 1.04377 slope 0.66333; w 1.6085 slope 0.88321.
     mw = mean(w)
     sw = stdev(w)
-    ss = simple_slopes(yw, x, w, [mw - sw, mw, mw + sw])
+    ss = stats.simple_slopes(yw, x, w, [mw - sw, mw, mw + sw])
     print("mod intr " + string(round(ss.interaction_coef, 5)) + " p " + string(round(ss.interaction_p, 5)))
     print("mod lo w " + string(round(ss.slopes[0].w, 4)) + " slope " + string(round(ss.slopes[0].slope, 5)) + " se " + string(round(ss.slopes[0].se, 5)))
     print("mod mid slope " + string(round(ss.slopes[1].slope, 5)) + " se " + string(round(ss.slopes[1].se, 5)))
     print("mod hi slope " + string(round(ss.slopes[2].slope, 5)) + " se " + string(round(ss.slopes[2].se, 5)))
 
     ' domain guards return unknown
-    print("guard_med " + string(mediation([1, 2], [1, 2], [1, 2], 10)))
+    print("guard_med " + string(stats.mediation([1, 2], [1, 2], [1, 2], 10)))
 end program

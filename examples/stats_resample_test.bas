@@ -25,25 +25,25 @@ program demo(args)
     seed(2024)
     data = [10, 20, 30, 40, 50]
 
-    sh = shuffle(data)
+    sh = stats.shuffle(data)
     print("shuffle " + string(sh))
     print("orig_intact " + string(data))
     print("shuffle_sum " + string(sum(sh)))
 
-    s3 = sample(data, 3)
+    s3 = stats.sample(data, 3)
     print("sample3 " + string(s3))
-    print("sample0 " + string(sample(data, 0)))
-    print("sample_over " + string(sample(data, 9)))
+    print("sample0 " + string(stats.sample(data, 0)))
+    print("sample_over " + string(stats.sample(data, 9)))
 
-    rs = resample(data, 8)
+    rs = stats.resample(data, 8)
     print("resample8 " + string(rs))
     print("resample_len " + string(len(rs)))
 
     ' Bootstrap the sampling distribution of the mean.
     seed(99)
-    bs = bootstrap(data, avg, 3000)
+    bs = stats.bootstrap(data, avg, 3000)
     print("boot_n " + string(len(bs)))
     print("boot_mean " + string(round(mean(bs), 3)))
     print("boot_se " + string(round(stdev(bs), 3)))
-    print("boot_empty " + string(bootstrap([], avg, 10)))
+    print("boot_empty " + string(stats.bootstrap([], avg, 10)))
 end program

@@ -97,15 +97,13 @@ the standing ones.
 
 - **`x(mod) = v` is a modifier clause, and `(` is otherwise just a paren.**
   `if (a - b) > 0` parses normally, as does a qualified or method call in a
-  comparison (`lib.f(1) = "x"`, `rec.m(1) = "x"`). **One case still misfires:** an
-  **unqualified** call to a function from a **`load`ed library** whose argument is
-  a bare *identifier* — `if kind(x) = "record"` where `kind` came from a library.
-  It *parses*, then fails at run time with `compare modifier not found: x`, naming
-  your own argument. A number or string argument (`kind(1)`, `kind("q")`) is fine:
-  a modifier name is always identifier-shaped, so those cannot be clauses. The
-  identifier case is not fixable here — `name{caseless} = "joe"` is the same
-  tokens in the same order and must mean a clause. Call it qualified
-  (`lib.kind(x)`) or bind the result to a variable first. Pinned in
+  comparison (`lib.f(1) = "x"`, `rec.m(1) = "x"`). **The case that used to
+  misfire is gone as of 0.1.0**: `if kind(x) = "record"` where `kind` came from
+  a library parsed as a clause and failed at run time with `compare modifier not
+  found: x`, naming your own argument. Such a call is now simply an error that
+  names the library and spells `lib.kind(x)` — which was already the advised
+  workaround, and is now the only spelling. A root-program function with an
+  identifier argument was never affected and still is not. Pinned in
   `tests/negative_clause_residual.bas`; analysis in
   `docs/gbasic_clause_recognition.md` §9.
 
@@ -425,7 +423,14 @@ day — so assume you will hit them too.
   function. It warns at the call site now. Holding such a variable is fine
   (`list = [1,2]`); only calling it is the mistake. A record field is immune.
 
-- **A library calls its OWN function first** (fixed 0.1.0-rc9). An unqualified
+- **A function from another library MUST be qualified** (0.1.0). An unqualified
+  name reaches only two things: the library whose code is running, and the root
+  program's own functions. `load stats` then `ols(...)` is an error, and the
+  error names the library and spells `stats.ols(...)` for you. A library still
+  calls its own functions with no prefix — in its own file, declared in the same
+  file as the program, and inside a `modifier` body.
+
+- **What that replaced** (the own-first rule, fixed 0.1.0-rc9). An unqualified
   call inside a library body used to resolve through the same
   last-registration-wins scan as every other caller, so a library's internals
   were rewired by whatever was **loaded after** it:
@@ -442,11 +447,14 @@ day — so assume you will hit them too.
   does **not** define still reaches outside, and the root program is
   unaffected. Pinned by `tests/run_library_scope.sh`.
 
-- **The library-override warning is CALL-TRIGGERED, not load-triggered
-  (measured 2026-08-30).** Two loaded libraries that define the same public
-  name produce **no warning at all** while every call is qualified. The warning
-  lives in the *unqualified* lookup, so it fires the first time something calls
-  the bare name and resolves ambiguously:
+- **The library-override warning is GONE as of 0.1.0**, because there is no
+  longer an override to warn about: an unqualified name never reaches another
+  library, so two libraries defining one name is simply not a conflict. Calling
+  the bare name is an error that names every candidate. `library_collisions()`
+  still reports shared names for a whole program, and is still the way to see
+  them without a call site. *Historically* the warning was CALL-TRIGGERED, not
+  load-triggered (measured 2026-08-30) — two libraries sharing a name produced
+  no warning at all while every call was qualified:
 
   ```basic
   load alpha from "alpha.bas"     ' both define ensure_dir

@@ -348,6 +348,7 @@ AstStmt *ast_function(char *name, AstNameList params, AstStmtList body) {
     stmt->as.function.object = NULL;
     stmt->as.function.field = NULL;
     stmt->as.function.source_path = NULL;   /* stamped at registration, see ast.h */
+    stmt->as.function.library = NULL;       /* likewise */
     /* A dotted name (`function obj.method()`) is the define-and-attach sugar: an
      * executable statement, not a hoisted declaration (first_class_functions_design
      * §6-7). Split it now; the internal registered name is generated lazily at
@@ -1213,6 +1214,7 @@ static void free_stmt(AstStmt *stmt) {
         free(stmt->as.function.object);
         free(stmt->as.function.field);
         free(stmt->as.function.source_path);
+        free(stmt->as.function.library);
         ast_free_name_list(stmt->as.function.params);
         ast_free_program(stmt->as.function.body);
         break;
@@ -1326,6 +1328,7 @@ void ast_free_server_item_list(AstServerItemList list) {
              * weight by the time this runs. */
             free(item->fn_stmt->as.function.name);
             free(item->fn_stmt->as.function.source_path);
+            free(item->fn_stmt->as.function.library);
             free(item->fn_stmt);
         }
         ast_free_name_list(item->strings);

@@ -1,0 +1,1 @@
+runtime error at tests/negative_unqualified_ambiguous.bas:6:5: invalid function call: shared -- 2 loaded libraries define it, and a function from another library must be qualified. Write one of: scope_alpha.shared(...), scope_beta.shared(...)

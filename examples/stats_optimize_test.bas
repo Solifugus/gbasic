@@ -26,7 +26,7 @@ program demo(args)
     load stats from "../stdlib/stats.bas"
 
     ' Minimize Rosenbrock; global minimum f=0 at (1, 1).
-    r = optimize(rosenbrock, [-1.2, 1.0], { max_iter: 2000 }, unknown)
+    r = stats.optimize(rosenbrock, [-1.2, 1.0], { max_iter: 2000 }, unknown)
     print("rosen p " + string(round(r.params[0], 4)) + " " + string(round(r.params[1], 4)) + " conv " + string(r.converged))
 
     ' Fit exponential decay to noiseless data from a=2.5, b=0.4, c=0.5.
@@ -37,7 +37,7 @@ program demo(args)
         append(ys, 2.5 * exp(0 - 0.4 * xs[i]) + 0.5)
         i = i + 1
     end while
-    ef = curve_fit(expmodel, xs, ys, [1.0, 1.0, 1.0])
+    ef = stats.curve_fit(expmodel, xs, ys, [1.0, 1.0, 1.0])
     print("expfit p " + string(round(ef.params[0], 4)) + " " + string(round(ef.params[1], 4)) + " " + string(round(ef.params[2], 4)) + " r2 " + string(round(ef.r_squared, 6)))
 
     ' Fit logistic growth to noiseless data from L=10, k=1, x0=5.
@@ -48,10 +48,10 @@ program demo(args)
         append(ys2, 10 / (1 + exp(0 - 1 * (xs2[i] - 5))))
         i = i + 1
     end while
-    lf = curve_fit(logmodel, xs2, ys2, [8.0, 0.5, 4.0])
+    lf = stats.curve_fit(logmodel, xs2, ys2, [8.0, 0.5, 4.0])
     print("logfit p " + string(round(lf.params[0], 4)) + " " + string(round(lf.params[1], 4)) + " " + string(round(lf.params[2], 4)) + " r2 " + string(round(lf.r_squared, 6)))
 
     ' domain guards return unknown
-    print("guard_opt " + string(optimize(rosenbrock, [], unknown, unknown)))
-    print("guard_fit " + string(curve_fit(expmodel, [1, 2], [1], [1, 1, 1])))
+    print("guard_opt " + string(stats.optimize(rosenbrock, [], unknown, unknown)))
+    print("guard_fit " + string(stats.curve_fit(expmodel, [1, 2], [1], [1, 1, 1])))
 end program

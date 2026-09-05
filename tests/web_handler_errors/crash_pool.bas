@@ -2,7 +2,7 @@
 '
 ' A raise inside a handler is let-it-crash by design (§7b) -- the worker dies
 ' and its supervisor restarts it. Every other fixture runs at the default
-' `workers: 1`, where serve() never becomes a supervisor and there is nothing
+' `workers: 1`, where web.serve() never becomes a supervisor and there is nothing
 ' to do the restarting, so the design's own error model has never actually
 ' been exercised. This is that test: kill a worker through the front door and
 ' require the service to come back.
@@ -20,6 +20,6 @@ server crashy( port: 0, workers: 2 )
 end server
 
 program main( args )
-    h = serve(crashy)
+    h = web.serve(crashy)
     print to error "supervisor done"
 end program

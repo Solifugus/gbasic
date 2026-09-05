@@ -107,6 +107,6 @@ server bad( port: 0 )
 end server
 
 program main( args )
-    h = serve(bad)
+    h = web.serve(bad)
     print "PORT " + string(h.port)
 end program

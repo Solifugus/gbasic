@@ -1,7 +1,7 @@
 ' Host dispatch across sites -- and the UNBOUND serve: the live server record
 ' is bound only in boot()'s local frame, which is gone by the time requests
 ' arrive. Dispatch must not depend on a global binding, because the draft's
-' own example calls serve(edge) without keeping the result at all.
+' own example calls web.serve(edge) without keeping the result at all.
 server edge( port: 0 )
 
     get "/"( req )
@@ -26,7 +26,7 @@ server edge( port: 0 )
 end server
 
 function boot()
-    s = serve(edge)
+    s = web.serve(edge)
     print "PORT " + string(s.port)
     return 0
 end function

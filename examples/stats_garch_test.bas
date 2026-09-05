@@ -11,10 +11,10 @@ program demo(args)
 
     ' arch: mu 0.484 omega 0.092 alpha 0.074 beta 0.873 llf -508.90
     '       (llf shown to 2 dp: the backcast leaves a ~1e-3 gap, negligible).
-    g = garch_fit(r)
+    g = stats.garch_fit(r)
     print("garch mu " + string(round(g.mu, 3)) + " omega " + string(round(g.omega, 3)) + " alpha " + string(round(g.alpha, 3)) + " beta " + string(round(g.beta, 3)))
     print("garch persist " + string(round(g.persistence, 3)) + " llf " + string(round(g.llf, 2)))
 
     ' domain guard returns unknown
-    print("guard " + string(garch_fit([1, 2, 3])))
+    print("guard " + string(stats.garch_fit([1, 2, 3])))
 end program

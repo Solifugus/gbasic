@@ -15,32 +15,32 @@ program demo(args)
 
     ' Reporting helpers on a logistic fit. statsmodels Logit: pseudo-R2 0.21697;
     ' x1 odds ratio 4.6674 (95% CI 2.0482-10.6362), coef CI 0.717-2.3643.
-    lg = logistic_regression(yb, [x1, x2])
+    lg = stats.logistic_regression(yb, [x1, x2])
     print("logit prsq " + string(round(lg.pseudo_r2, 5)))
-    orr = odds_ratios(lg, 0.95)
+    orr = stats.odds_ratios(lg, 0.95)
     print("logit or1 " + string(round(orr[1].odds_ratio, 4)) + " ci " + string(round(orr[1].ci_low, 4)) + " " + string(round(orr[1].ci_high, 4)))
-    ci = conf_int(lg, 0.95)
+    ci = stats.conf_int(lg, 0.95)
     print("logit ci1 " + string(round(ci[1].low, 4)) + " " + string(round(ci[1].high, 4)))
     ' Average marginal effects. statsmodels margeff(overall): logit
     ' AME 0.25775 -0.00957, SE 0.0462 0.08834.
-    me = marginal_effects(lg, [x1, x2])
+    me = stats.marginal_effects(lg, [x1, x2])
     print("logit ame " + string(round(me.effects[0], 5)) + " " + string(round(me.effects[1], 5)) + " se " + string(round(me.std_errors[0], 5)) + " " + string(round(me.std_errors[1], 5)))
 
     ' Probit. statsmodels GLM(probit): beta 0.5418 0.8966 -0.0523,
     ' se 0.3685 0.2257 0.3101, llf -40.0556, aic 86.1113.
-    pb = probit_regression(yb, [x1, x2])
+    pb = stats.probit_regression(yb, [x1, x2])
     print("probit b " + string(round(pb.coefficients[0], 4)) + " " + string(round(pb.coefficients[1], 4)) + " " + string(round(pb.coefficients[2], 4)))
     print("probit se " + string(round(pb.std_errors[0], 4)) + " " + string(round(pb.std_errors[1], 4)) + " " + string(round(pb.std_errors[2], 4)))
     print("probit ll " + string(round(pb.log_likelihood, 4)) + " aic " + string(round(pb.aic, 4)))
     ' Probit AME. Effects match statsmodels (0.25399 -0.01481); the SEs use the
     ' expected-information covariance (like GLM), so they differ slightly from
     ' sm.Probit's observed-Hessian margeff SEs, as the coefficient SEs do.
-    pme = marginal_effects(pb, [x1, x2])
+    pme = stats.marginal_effects(pb, [x1, x2])
     print("probit ame " + string(round(pme.effects[0], 5)) + " " + string(round(pme.effects[1], 5)) + " se " + string(round(pme.std_errors[0], 5)) + " " + string(round(pme.std_errors[1], 5)))
 
     ' Negative binomial (NB2). statsmodels: beta 0.1837 0.7963 -0.5248,
     ' se 0.2587 0.1534 0.2282, alpha 0.242, llf -95.7091, aic 199.4183.
-    nb = negbinom_regression(yc, [x1, x2])
+    nb = stats.negbinom_regression(yc, [x1, x2])
     print("negbin b " + string(round(nb.coefficients[0], 4)) + " " + string(round(nb.coefficients[1], 4)) + " " + string(round(nb.coefficients[2], 4)))
     print("negbin se " + string(round(nb.std_errors[0], 4)) + " " + string(round(nb.std_errors[1], 4)) + " " + string(round(nb.std_errors[2], 4)))
     print("negbin alpha " + string(round(nb.alpha, 4)) + " ll " + string(round(nb.log_likelihood, 4)) + " aic " + string(round(nb.aic, 4)))
@@ -48,7 +48,7 @@ program demo(args)
     ' Ordinal logistic (proportional odds). statsmodels OrderedModel:
     ' slopes 0.9366 -0.8446, se 0.3019 0.4798, cutpoints 0.2655 1.8826,
     ' llf -55.4391.
-    orl = ordinal_regression(yo, [x1, x2])
+    orl = stats.ordinal_regression(yo, [x1, x2])
     print("ordinal b " + string(round(orl.coefficients[0], 4)) + " " + string(round(orl.coefficients[1], 4)))
     print("ordinal se " + string(round(orl.std_errors[0], 4)) + " " + string(round(orl.std_errors[1], 4)))
     print("ordinal cuts " + string(round(orl.cutpoints[0], 4)) + " " + string(round(orl.cutpoints[1], 4)) + " ll " + string(round(orl.log_likelihood, 4)))
@@ -57,7 +57,7 @@ program demo(args)
     ' Multinomial logistic (baseline category 0). statsmodels MNLogit:
     ' cat1 [1.0929 0.4915 -1.3096], cat2 [-0.3007 -0.5946 0.5669],
     ' llf -76.3001, aic 164.6002.
-    mn = multinomial_regression(ym, [x1, x2])
+    mn = stats.multinomial_regression(ym, [x1, x2])
     print("mnl cat1 " + string(round(mn.coefficients[0][0], 4)) + " " + string(round(mn.coefficients[0][1], 4)) + " " + string(round(mn.coefficients[0][2], 4)))
     print("mnl cat2 " + string(round(mn.coefficients[1][0], 4)) + " " + string(round(mn.coefficients[1][1], 4)) + " " + string(round(mn.coefficients[1][2], 4)))
     print("mnl se1 " + string(round(mn.std_errors[0][0], 4)) + " " + string(round(mn.std_errors[0][1], 4)) + " " + string(round(mn.std_errors[0][2], 4)))
@@ -65,6 +65,6 @@ program demo(args)
     print("mnl prsq " + string(round(mn.pseudo_r2, 5)))
 
     ' domain guards return unknown
-    print("guard_ord " + string(ordinal_regression([0, 1], [])))
-    print("guard_mnl " + string(multinomial_regression([0, 1], [[1, 2]])))
+    print("guard_ord " + string(stats.ordinal_regression([0, 1], [])))
+    print("guard_mnl " + string(stats.multinomial_regression([0, 1], [[1, 2]])))
 end program

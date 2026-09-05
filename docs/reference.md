@@ -1429,16 +1429,48 @@ Unqualified `load NAME` search order:
 
 `GBASIC_PATH` is colon-separated.
 
-**Inside a library body, an unqualified call resolves to that library's own
-function first** (*since 0.1.0-rc9*), then falls back to the ordinary search.
-Before that it went through the same last-registration-wins scan as every other
-caller, so a library's internals were rewired by whatever was loaded *after*
-it — with two libraries both defining `helper`, whether one of them called its
-own depended on load order. A library calling a name it does **not** define
-still reaches outside, and calls from the root program are unaffected, so the
-shadowing and override warnings below are unchanged where they apply.
+### Which function an unqualified name reaches
 
-Functions in loaded libraries are imported by default for now. Library modifiers must be marked `export modifier` to be imported.
+A name written without a `library.` prefix resolves in exactly two places, in
+this order:
+
+1. **The library whose code is running**, if any — its own function wins.
+2. **The root program's own functions.**
+
+and nothing else. **A function from another library must be qualified**
+(*since 0.1.0*). Builtins are tried before either, outside a library body.
+
+```basic
+load stats
+print(stats.ols(y, [x]))     ' correct
+print(ols(y, [x]))           ' error: names the library and spells the call
+```
+
+The error is written to be the edit: *`invalid function call: ols — library
+'stats' defines it, and a function from another library must be qualified.
+Write stats.ols(...)`*. Where more than one loaded library defines the name it
+offers each of them rather than choosing.
+
+**Rule 1 holds in every shape a library takes** — one in its own file, one
+declared in the *same* file as the program that loads it, and a `modifier`
+body, which is library code invoked by a different path. A library calling a
+name it does not define reaches the builtins, and calls from the root program
+are unaffected.
+
+There used to be a third step: a backward scan over every imported function,
+newest registration first. It resolved `ols(...)` after `load stats`, which was
+a real convenience — and it decided *which library a call meant* by **load
+order**, something the author of the call neither controls nor can see, so
+adding a `load` at the top of a file could silently move a call in the middle
+of it. Measured before removing it: of 4,311 resolutions that went through the
+scan across the whole test suite, 3,931 were one library reaching another, and
+of the 177 distinct `library.function` pairs root programs reached, exactly one
+name was defined by more than one library — so the scan was almost never
+choosing between candidates, it was resolving a unique name by a rule that
+could have chosen wrongly.
+
+Library modifiers must be marked `export modifier` to be usable outside the
+library; unlike functions they are used by name, with no prefix.
 
 Qualified function calls:
 
@@ -2479,7 +2511,7 @@ answered (routes win over files on overlap), scoped to the site that
 declared it. `trust_proxy "ip", ...` applies `web.trust_proxy` to every
 request. `on drain ... end on` runs once when draining begins.
 
-**`serve(sv)`** (a `web` function, reachable unqualified) binds and runs:
+**`serve(sv)`** (a `web` function, so `web.serve(sv)`) binds and runs:
 
 - Inherited sockets (`LISTEN_FDS`) are adopted first and `READY` is printed
   — a spawned worker and a systemd-activated process are the same path.
