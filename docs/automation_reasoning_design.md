@@ -364,6 +364,47 @@ not say what it was about, because an Action did not record it. §9 had asked
 for exactly that from the start and called it *not a logging feature*; this is
 what it was not a logging feature **for**.
 
+### 4.12 `assurance` is a sensitivity to one dial
+
+*Measured while writing the definition down (`tests/decision_test.bas`, R17
+tier). Not a lab recipe — this one came out of the 0.1 audit, and it is
+recorded here because the measurement is the same kind.*
+
+Two of the three derived numbers this design produces already travel with their
+own definition: `insight.weigh` reports `agreement_is` ("set agreement between
+predicted and affected cells, NOT a probability that the hypothesis is true")
+and `decision.quantity` reports `amplification_is`. **`assurance` carried
+none** — and it is the one most likely to be misread, because a bare scalar in
+[0, 1] printed beside a recommendation reads as the probability that the
+recommendation is right.
+
+Writing the definition is what exposed the limitation. Assurance is *the share
+of the swept range of the recovery assumption over which the recommendation does
+not change* — and everything else is held at a point estimate. Measured, with
+the recovery calibrated to [0.13, 0.17] from 40 controlled outcomes:
+
+| sized-off loss | expected value | recommendation | assurance |
+|---|---|---|---|
+| −16,835 (the cell's own change) | +525 | send a manager | **1** |
+| −12,000 | 0 | do nothing | — |
+
+`assurance 1`, no sensitivity reported, and a third off the quantity the
+recovery is a fraction **of** reverses the answer. R9 established that *which*
+quantity a decision is sized off turns +7,497 into −4,899; this is the same
+knife one turn along, and assurance is silent about it by construction.
+
+There is a second thing the number does not say on its own. `assurance 1` over
+an interval that 40 controlled outcomes support is a different claim from
+`assurance 1` over a span the caller declared, and until now nothing in the
+value distinguished them — the sweep simply ran over whichever range it was
+given.
+
+**The remedy is disclosure, not a wider sweep.** The library must not invent an
+interval for the sized-off quantity: the cell's change is *observed*, not
+estimated, and what is genuinely uncertain — how much of an ongoing loss an
+action recovers — is precisely what the calibration already covers. What was
+missing was a reader being told which dial was turned.
+
 ---
 
 ## 5. Architecture (decided)
@@ -673,6 +714,21 @@ and the policy that permitted it; evidence read back off an Action can
 therefore say what it was about. Each link is required rather than encouraged,
 because a rule that only the happy path obeys is a convention.
 
+**R17 — `assurance` travels with its definition, including what it held
+fixed.** §4.12. A Decision carries `assurance_is`: the definition, what was
+swept, over which range, **where that range came from** (a calibration, naming
+how much evidence it rests on, or a span the caller declared), and the list of
+things held at a point estimate — the sized-off quantity and its value, the
+costs, and the set of alternatives considered. It states plainly that it is not
+a probability. Where nothing was sized by a recovery assumption there is no
+assurance at all, and the value says why rather than reporting a number nobody
+could interpret.
+
+The same discipline is already applied to `agreement` and `amplification`.
+`amplification_is` names what it is but does not yet list what it holds fixed,
+which is the same gap one library along and is recorded here rather than
+quietly fixed — `decision.quantity` deserves its own measurement first.
+
 ---
 
 ## 9. Provenance
@@ -909,9 +965,9 @@ recipes themselves raised and did not settle:
 - **The correction is per-call, not per-campaign.** A Finding's alpha is a
   family-wise rate over the cells of *one* search. Twelve monthly runs are
   twelve families, and nothing anywhere says so.
-- **`assurance` is a bare scalar in [0, 1]** and reads as a probability. R4
-  exists to stop `confidence`, `support` and `assurance` being conflated; the
-  one that carries no definition with it is `assurance`.
+- ~~**`assurance` is a bare scalar in [0, 1]**~~ *— done (R17, §4.12), and
+  writing the definition is what found that a recommendation reporting
+  `assurance 1` can reverse on a dial the sweep does not turn.*
 - **Every executable recipe still runs on data this project generated.** The
   measurements are real measurements of the library's behaviour, and none of
   them is a measurement of a real business.

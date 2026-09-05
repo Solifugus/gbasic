@@ -90,10 +90,10 @@ else
     grep "^MISMATCH" "$scratch/out" | head -10
 fi
 n=$(sed -n 's/^checks: //p' "$scratch/out")
-if [ -n "$n" ] && [ "$n" -ge 74 ]; then
+if [ -n "$n" ] && [ "$n" -ge 92 ]; then
     pass "check count floor ($n checks)"
 else
-    fail "check count floor (got '${n:-none}', want >= 74)"
+    fail "check count floor (got '${n:-none}', want >= 92)"
 fi
 
 printf 'TIER the load-bearing tiers ran\n'
@@ -111,6 +111,10 @@ for needle in \
     "two interventions may not be pooled into one calibration" \
     "nor may two measures" \
     "one intervention on one measure pools" \
+    "the definition travels with the number" \
+    "    and the two report DIFFERENT assurance from the same decision" \
+    "  yet a third off the sized-off quantity reverses it" \
+    "a flip INSIDE the swept range is caught" \
     "an interval reaching where the model breaks yields NO quantity" \
     "  so amplification separates them" \
     "  and what a point estimate would have claimed"

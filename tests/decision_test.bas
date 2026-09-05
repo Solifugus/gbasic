@@ -272,6 +272,28 @@ check("and assurance IS allowed on one", ok_d.assurance, 0.8)
 ' cases is what `calibrate` does with a list somebody assembled, and the R16
 ' checks must fire on a hand-built evidence record exactly as on one that came
 ' through as_evidence -- otherwise the rule is a convention rather than a rule.
+' A Finding whose leading cell collapsed by a stated amount. Built by hand so
+' the sized-off quantity is the one thing that varies between two runs -- the
+' comparison is only worth anything if everything else is literally identical.
+function sized_finding(change)
+    load reasoning
+    return reasoning.finding({
+        subject: "North/Outdoor", measure: "revenue",
+        observation: { baseline: 2040764, current: 2003269, change: 0 - 37495,
+                       change_pct: 0 - 0.018 },
+        search: { dimensions: ["region", "category"], cells: 20,
+                  width: 3.42, alpha: 0.05, correction: "bonferroni" },
+        null: { kind: "siblings", mean: 0 - 625, sd: 4703, threshold: 3.42,
+                standardized: "leave_one_out", df: 18 },
+        strength: { z: 0 - 3.9, clears: true, leader: ["North", "Outdoor"] },
+        contributors: [{ path: ["North", "Outdoor"], change: change,
+                         share: unknown, z: 0 - 3.9, clears: true }],
+        shares_reportable: false,
+        shares_withheld_because: "the net change is not distinguishable from zero",
+        provenance: { method: "fixture", rows: 4800, parameters: { },
+                      assumptions: [] } })
+end function
+
 function evidence_about(measure, intervention, effect)
     return { kind: "prior_action", controlled: true, effect: effect,
              decision: intervention,
@@ -345,6 +367,79 @@ d_near = decision.evaluate(spotty, ctx2,
 check("evidence far from the break-even is decisive", d_far.assurance, 1)
 check("the SAME amount of evidence near it is not", d_near.assurance < 1, true)
 check("  and the flip is named", count(d_near.sensitivities) > 0, true)
+
+' --- TIER: R17, assurance travels with its definition ----------------------
+'
+' `insight.weigh` reports agreement with `agreement_is` and
+' `decision.quantity` reports amplification with `amplification_is`. Assurance
+' was the one derived number in this layer carrying none -- and it is the one
+' most likely to be misread, because a bare scalar in [0, 1] printed beside a
+' recommendation reads as the probability that the recommendation is right.
+tight = { n: 40, estimate: 0.15, low: 0.13, high: 0.17, level: 0.95 }
+two = [{ name: "do nothing", cost: 0, benefit: 0 },
+       { name: "send a manager", cost: 2000, recovers: 0.15 }]
+a = decision.evaluate(sized_finding(0 - 16835), ctx, two,
+                      { sizing: "leading_cell", calibration: tight })
+check("the definition travels with the number",
+      contains(a.assurance_is.definition, "share of the swept range"), true)
+check("  and says what it is NOT",
+      contains(a.assurance_is.is_not, "not a probability"), true)
+check("  and what was swept", contains(a.assurance_is.swept, "recovery"), true)
+check("  over which range", a.assurance_is.over, [tight.low / tight.estimate,
+                                                  tight.high / tight.estimate])
+' WHERE THE RANGE CAME FROM IS PART OF WHAT THE NUMBER MEANS. Assurance 1 over
+' an interval 40 controlled outcomes support is a different claim from
+' assurance 1 over a span the caller chose, and nothing else in the value
+' distinguishes them.
+check("  and where the range came from", contains(a.assurance_is.from,
+      "calibrated interval"), true)
+check("    naming how much evidence it rests on",
+      contains(a.assurance_is.from, "40"), true)
+declared = decision.evaluate(sized_finding(0 - 16835), ctx, two,
+                             { sizing: "leading_cell", sensitivity_range: [0, 2] })
+check("  a declared range says so instead",
+      contains(declared.assurance_is.from, "declared"), true)
+check("    and the two report DIFFERENT assurance from the same decision",
+      a.assurance != declared.assurance, true)
+
+' THE DEMONSTRATION, and it is a DIFFERENCE between two runs rather than a
+' property of one. At the nominal loss the recommendation is ACT and holds
+' over the WHOLE interval the evidence supports -- assurance 1, no sensitivity
+' reported. The same decision, with the quantity it is a fraction OF a third
+' smaller, is DO NOT ACT. R9 established that WHICH quantity you size off
+' turns +7,497 into -4,899; this is the same knife one turn along, and
+' assurance 1 is silent about it because that quantity is held fixed.
+check("at the nominal loss the recommendation is to act", a.recommendation,
+      "send a manager")
+check("  and it holds over the whole calibrated interval", a.assurance, 1)
+check("  with no sensitivity reported at all", count(a.sensitivities), 0)
+b = decision.evaluate(sized_finding(0 - 12000), ctx, two,
+                      { sizing: "leading_cell", calibration: tight })
+check("  yet a third off the sized-off quantity reverses it", b.recommendation,
+      "do nothing")
+check("  so assurance 1 was a statement about ONE dial", contains(
+      string(a.assurance_is.held_fixed), "leading_cell"), true)
+check("    which the value names, with its value",
+      contains(string(a.assurance_is.held_fixed), "-16835"), true)
+
+' THE CONTROL. Without it "assurance is blind" would be satisfied by an
+' assurance blind to everything. Widen the calibration on the SAME loss and
+' the sweep does catch the flip it does cover.
+wide = { n: 5, estimate: 0.15, low: 0.05, high: 0.25, level: 0.95 }
+c = decision.evaluate(sized_finding(0 - 16835), ctx, two,
+                      { sizing: "leading_cell", calibration: wide })
+check("a flip INSIDE the swept range is caught", c.assurance < 1, true)
+check("  and named", count(c.sensitivities) > 0, true)
+
+' And when there is nothing to sweep, it says so rather than reporting a
+' number nobody could interpret.
+flat = decision.evaluate(sized_finding(0 - 16835), ctx,
+         [{ name: "do nothing", cost: 0, benefit: 0 },
+          { name: "buy a sign", cost: 500, benefit: 3000 }],
+         { sizing: "leading_cell" })
+check("with no sized alternative there is no assurance", is_unknown(flat.assurance), true)
+check("  and the value says why", contains(flat.assurance_is.why,
+      "nothing to sweep"), true)
 
 ' --- TIER: calibration refusals -------------------------------------------
 on error goto next

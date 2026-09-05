@@ -210,10 +210,20 @@ library decision
         ' is the share of a DECLARED range of the recovery assumption over which
         ' the recommendation does not change, plus the point at which it does.
         assurance = unknown
+        ' R17. THE DEFINITION TRAVELS WITH THE NUMBER, as it already does for
+        ' `insight.weigh`'s agreement and `decision.quantity`'s amplification.
+        ' `assurance` was the one derived number in this layer that carried
+        ' none, and it is the one most likely to be misread: a bare scalar in
+        ' [0, 1] beside a recommendation reads as the probability that the
+        ' recommendation is right, and it is nothing of the kind.
+        assurance_is = { swept: unknown,
+                         why: ("no alternative is sized by a recovery"
+                               + " assumption, so there was nothing to sweep") }
         sensitivities = []
         if needs_sizing then
             rng = spec["sensitivity_range"]
             cal = spec["calibration"]
+            from_where = "a range the caller declared"
             if not is_unknown(cal) then
                 ' THE RANGE STOPS BEING INVENTED. Recipe 5 swept an arbitrary
                 ' [0, 2] because there was nothing better; a calibration
@@ -229,6 +239,8 @@ library decision
                     error ("decision.evaluate: the calibrated estimate is zero,"
                            + " so it cannot scale an assumed recovery")
                 end if
+                from_where = ("the calibrated interval, from "
+                              + string(cal["n"]) + " controlled outcomes")
                 rng = [cal["low"] / base, cal["high"] / base]
                 if rng[0] > 1 then
                     rng[0] = 1
@@ -260,6 +272,30 @@ library decision
             swept = _sweep(alternatives, auth, loss, rng, best.name)
             assurance = swept.held
             sensitivities = swept.sensitivities
+            ' AND WHAT IT HELD FIXED, which is the half a reader will not
+            ' supply for themselves. Measured: with the recovery calibrated to
+            ' [0.13, 0.17] the recommendation is ACT at assurance 1 -- it holds
+            ' over the whole interval the evidence supports -- and it becomes
+            ' DO NOT ACT if the quantity it is a fraction OF is a third
+            ' smaller. R9 already established that WHICH quantity you size off
+            ' turns +7,497 into -4,899; this is the same knife one turn along,
+            ' and `assurance 1` says nothing about it.
+            assurance_is = {
+                definition: ("the share of the swept range of the recovery"
+                             + " assumption over which the recommendation does"
+                             + " not change"),
+                swept: "the recovery assumption, as a multiplier on the"
+                       + " assumed recovery of every alternative",
+                over: rng,
+                from: from_where,
+                steps: 21,
+                held_fixed: ["the sized-off quantity (" + string(sized.quantity)
+                             + " = " + string(sized.value) + ")",
+                             "the cost of every alternative",
+                             "the set of alternatives considered"],
+                is_not: ("not a probability that the recommendation is right,"
+                         + " and not a statement about anything held fixed"
+                         + " above") }
             ' THE INVARIANT THAT CATCHES A BROKEN SWEEP. At a scale of 1 the
             ' sweep is computing exactly what the point estimate computed, so
             ' it must reach the same recommendation. The first version of
@@ -294,6 +330,7 @@ library decision
             authority_required: not best.within_authority,
             authority_reason: _authority_reason(best, auth),
             assurance: assurance,
+            assurance_is: assurance_is,
             sensitivities: sensitivities,
             sized_off: { quantity: sized.quantity, established: sized.established,
                          value: sized.value },
