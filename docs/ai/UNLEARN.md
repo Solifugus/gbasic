@@ -430,6 +430,26 @@ day — so assume you will hit them too.
   calls its own functions with no prefix — in its own file, declared in the same
   file as the program, and inside a `modifier` body.
 
+- **`load NAME as ALIAS` picks the prefix** (0.1.0). `load statistics_helpers as
+  st` and the qualifier is `st.`; both spellings of `load` take one. The alias
+  **replaces** the declared name rather than adding to it, so `statistics_helpers.`
+  is then an error — and the error says which name it *was* loaded under, because
+  a rename that missed a call site is the easy mistake here. Effective names are
+  a flat namespace: an alias may not be another loaded library's name, another
+  alias, or a built-in module (`sqlite`, `pg`, `gi`, …), and a built-in may not
+  be aliased. **A library does not know it was renamed** — its own unqualified
+  calls and the libraries *it* loads are untouched. (The alias adds no second
+  name of its own, but a library name is available when *something* loaded the
+  library under it, so aliasing one another library also loads plainly gives
+  both names.)
+
+- **Two libraries whose own declared name is the same now need an alias, and
+  before 0.1.0 could not coexist at all.** The second import used to fail with
+  `function 'describe' is defined twice in library 'toolkit'` — naming a function
+  neither file defined twice and never mentioning that there are two files. It is
+  now one refusal naming both sources and spelling the `as` that resolves it.
+  Pinned by `tests/run_alias.sh`.
+
 - **What that replaced** (the own-first rule, fixed 0.1.0-rc9). An unqualified
   call inside a library body used to resolve through the same
   last-registration-wins scan as every other caller, so a library's internals

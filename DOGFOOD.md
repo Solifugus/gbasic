@@ -35,6 +35,13 @@ and the stale-looking ones carry a Status line saying what overtook them.
 
 ### Open — worth fixing (ranked)
 
+0. **A spawned actor cannot see a library loaded inside `program`, and the
+   warning for the shape that works says the opposite.** The child never enters
+   the program block, so the worker's library must be loaded at the top level —
+   where the interpreter warns "this `load` ... never runs", which is true of
+   the parent and false of the child. Taking the advice makes the child die on
+   its first qualified call while the parent hangs in `receive()`, and the
+   symptom points nowhere near the `load`. Entry 2026-09-05.
 1. ~~**No modulo**~~ **RESOLVED 2026-08-24.** `mod(a, b)`, FLOORED — which is
    what the hand workaround `a - floor(a/b)*b` computed, so the four libraries
    written against that advice keep their meaning. Diverges from QBasic's
@@ -4089,3 +4096,34 @@ fine; the caller had dropped `.arm`.
 which then bound to `frame.show` with no warning at all, and that part of the
 output simply vanished. A renamed local is a name that was shadowing something,
 and the warning that told you so disappears with the rename.
+
+## 2026-09-05 — CC — while: writing the actor tier for `load NAME as ALIAS`
+- **Type:** language-surprise
+- **Severity:** medium
+- **What:** A spawned function cannot see a library loaded inside `program`, and
+  the diagnostic for the shape that *does* work says the opposite.
+
+A spawned actor is a fork+exec: the child re-parses the source and runs the
+named function directly, never entering the `program` block. So a library the
+worker needs must be loaded at the **top level** — and doing that prints
+
+```
+warning: this `load` is outside the program block, so it never runs -- move it
+inside `program`
+```
+
+which is true of the parent and false of the child. Following the advice moves
+the load into `program main`, and then the child dies with `undefined variable:
+host` on its first qualified call — while the parent, still blocked in
+`receive()`, hangs until something kills it. The visible symptom is a hang, and
+nothing about it points at the `load`.
+
+The existing note at DOGFOOD line 362 records the other half of this ("a
+top-level `load` doesn't carry into the program block"), so between the two
+there is no single placement that serves both a program block and a spawned
+worker unless the load is written twice.
+
+- **Workaround:** the actor fixture in `tests/run_alias.sh` has no `program`
+  block at all — all top level, which is a legitimate program shape and avoids
+  the misleading warning entirely. Where a program block is wanted, write the
+  `load` in both places.

@@ -9,6 +9,53 @@ language surface may still change between releases.
 
 ## Unreleased
 
+### Added — `load NAME as ALIAS`
+
+A file may choose the name it calls a library by:
+
+```basic
+load statistics_helpers as st
+print(st.zscore(2, 1, 1))
+```
+
+The alias works wherever the library's own name would — qualified calls,
+qualified modifiers, function values — and both spellings of `load` take one
+(`load toolkit from "vendor/a/toolkit.bas" as tools_a`).
+
+**The case it exists for** is two libraries whose own declared name is the same.
+Before this they could not coexist in one program: the second import failed with
+*"function 'describe' is defined twice in library 'toolkit'"* — a message that
+names a function neither file defined twice and never mentions that there are
+two files. The loading file had nothing it could say about it even when it had
+named both by full path.
+
+An alias is an **import identity**, not a lookup-time rename: registration keys
+on the effective name, which is what lets one declared name arrive from two
+paths at once. A scoped rename would have bought the typing convenience and left
+the collision exactly where it was.
+
+**An alias replaces the declared name rather than adding to it.** Two names for
+one import is the ambiguity aliasing removes. A call to the replaced name says
+which name the library *was* loaded under, since a rename that missed a call
+site is the mistake this makes easiest to write. (The alias adds no second name
+of its own; a library name is available when *something* loaded the library
+under it, so if another library loads `matrix` plainly while your file loads it
+`as m`, both resolve. Refusing that would let any library decide which names its
+consumers may pick.)
+
+**A library does not know it was renamed** — its own unqualified calls still
+reach its own functions, and the libraries *it* loads keep their own names.
+
+**Collisions are refused.** Effective library names are a flat namespace: an
+alias may not be another loaded library's name, another alias, or a built-in
+module (`sqlite`, `pg`, `gi`, …), and a built-in module may not be aliased,
+since those qualifiers are recognized before user functions are resolved. Two
+libraries claiming one declared name are now refused by **one message that names
+both files and spells the `as` that resolves it**, in place of the duplicate-
+function error that used to surface instead.
+
+`tests/run_alias.sh`, four perturbations proven red.
+
 ### Changed — a function from another library must now be qualified
 
 An unqualified name resolves in exactly two places: **the library whose code is

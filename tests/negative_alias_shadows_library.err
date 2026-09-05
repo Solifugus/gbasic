@@ -1,0 +1,1 @@
+runtime error at tests/negative_alias_shadows_library.bas:4:1: the name 'scope_alpha' already refers to library 'scope_alpha' from tests/libs/scope_alpha.bas, and cannot also refer to library 'scope_beta' from tests/libs/scope_beta.bas -- load one of them under another name, as in `load scope_beta from "..." as my_scope_beta`

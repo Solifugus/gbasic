@@ -369,6 +369,13 @@ cases=(
     negative_duplicate_function_library
     negative_unqualified_library_call
     negative_unqualified_ambiguous
+    negative_alias_native_target
+    negative_alias_native_name
+    negative_alias_duplicate
+    negative_alias_shadows_library
+    negative_alias_shadowed_by_library
+    negative_alias_same_declared_name
+    negative_alias_declared_name_gone
 )
 
 for name in "${cases[@]}"; do

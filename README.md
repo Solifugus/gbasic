@@ -80,13 +80,14 @@ evaluator; strict expressions; compound assignment (`+=` `-=` `*=` `/=`);
 `if`/`else if`/`else`, `consider`, `while`, `do…until`; statements that
 continue across a line break inside an unclosed `(`, `[` or `{`; `for each` with
 `break`/`continue` that may name their loop; arrays, records and nested
-assignment; functions, programs, libraries and `load`; first-class function
-values; **prototypal objects** with per-property inheritance policies;
-assignment and comparison modifiers; watchers and locks; frame-scoped
-`on error` and a suppressible warning channel; distinct `nothing` and
-`unknown`; date, duration, money, file and directory values; binary-safe
-Unicode-aware strings; regular expressions as a value kind; bitwise builtins;
-and strict RFC 8259 JSON alongside a round-tripping gBASIC dialect.
+assignment; functions, programs, libraries and `load` (with `as` to pick the
+qualifier); first-class function values; **prototypal objects** with
+per-property inheritance policies; assignment and comparison modifiers; watchers
+and locks; frame-scoped `on error` and a suppressible warning channel; distinct
+`nothing` and `unknown`; date, duration, money, file and directory values;
+binary-safe Unicode-aware strings; regular expressions as a value kind;
+bitwise builtins; and strict RFC 8259 JSON alongside a
+round-tripping gBASIC dialect.
 
 Notable absences: **no closures** (a function cannot rebind an enclosing
 scalar — see [UNLEARN.md](docs/ai/UNLEARN.md)), no user-defined types beyond

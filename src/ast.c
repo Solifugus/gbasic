@@ -564,11 +564,12 @@ AstStmt *ast_library(char *name, AstStmtList body) {
     return stmt;
 }
 
-AstStmt *ast_use(char *name, char *path) {
+AstStmt *ast_use(char *name, char *path, char *alias) {
     AstStmt *stmt = xmalloc(sizeof(*stmt));
     stmt->kind = AST_STMT_USE;
     stmt->as.use_stmt.name = name;
     stmt->as.use_stmt.path = path;
+    stmt->as.use_stmt.alias = alias;
     return stmt;
 }
 
@@ -1008,7 +1009,12 @@ static void dump_stmt(AstStmt *stmt, int indent) {
         }
         break;
     case AST_STMT_USE:
-        if (stmt->as.use_stmt.path) {
+        if (stmt->as.use_stmt.path && stmt->as.use_stmt.alias) {
+            printf("Use %s from \"%s\" as %s\n", stmt->as.use_stmt.name,
+                   stmt->as.use_stmt.path, stmt->as.use_stmt.alias);
+        } else if (stmt->as.use_stmt.alias) {
+            printf("Use %s as %s\n", stmt->as.use_stmt.name, stmt->as.use_stmt.alias);
+        } else if (stmt->as.use_stmt.path) {
             printf("Use %s from \"%s\"\n", stmt->as.use_stmt.name, stmt->as.use_stmt.path);
         } else {
             printf("Use %s\n", stmt->as.use_stmt.name);
@@ -1278,6 +1284,7 @@ static void free_stmt(AstStmt *stmt) {
     case AST_STMT_USE:
         free(stmt->as.use_stmt.name);
         free(stmt->as.use_stmt.path);
+        free(stmt->as.use_stmt.alias);
         break;
     case AST_STMT_IF:
         free_expr(stmt->as.if_stmt.condition);

@@ -1,0 +1,1 @@
+runtime error at tests/negative_alias_declared_name_gone.bas:5:1: invalid function call: toolkit.describe -- library 'toolkit' was loaded as 'ta', and an alias replaces the library's own name rather than adding to it

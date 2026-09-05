@@ -843,10 +843,11 @@ library_statement
     ;
 
 use_statement
-    : USE IDENT { $$ = ast_use($2, NULL); }
-    | LOAD IDENT { $$ = ast_use($2, NULL); }
-    | USE STRING { $$ = ast_use($2, NULL); }
-    | LOAD STRING { $$ = ast_use($2, NULL); }
+    : USE IDENT { $$ = ast_use($2, NULL, NULL); }
+    | LOAD IDENT { $$ = ast_use($2, NULL, NULL); }
+    | USE STRING { $$ = ast_use($2, NULL, NULL); }
+    | LOAD STRING { $$ = ast_use($2, NULL, NULL); }
+    | LOAD IDENT AS IDENT { $$ = ast_use($2, NULL, $4); }
     | USE IDENT IDENT STRING {
         if (strcmp($3, "from") != 0) {
             report_syntax_error(ctx, ctx->la_line, ctx->la_column,
@@ -861,7 +862,7 @@ use_statement
             YYERROR;
         }
         free($3);
-        $$ = ast_use($2, $4);
+        $$ = ast_use($2, $4, NULL);
       }
     | LOAD IDENT IDENT STRING {
         if (strcmp($3, "from") != 0) {
@@ -877,7 +878,25 @@ use_statement
             YYERROR;
         }
         free($3);
-        $$ = ast_use($2, $4);
+        $$ = ast_use($2, $4, NULL);
+      }
+    | LOAD IDENT IDENT STRING AS IDENT {
+        if (strcmp($3, "from") != 0) {
+            report_syntax_error(ctx, ctx->la_line, ctx->la_column,
+                                ctx->la_end_line, ctx->la_end_column,
+                                "expected from in load statement");
+            free($2);
+            free($3);
+            free($4);
+            free($6);
+            $2 = NULL;
+            $3 = NULL;
+            $4 = NULL;
+            $6 = NULL;
+            YYERROR;
+        }
+        free($3);
+        $$ = ast_use($2, $4, $6);
       }
     ;
 

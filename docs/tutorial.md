@@ -1314,6 +1314,20 @@ current directory and subdirectories, then `GBASIC_PATH` (colon-separated), and
 finally any `.bas` containing `library NAME`. (`use` is a deprecated alias for
 `load`.)
 
+If the prefix is a mouthful, or if two libraries you need happen to have picked
+the same name, add `as` and choose your own:
+
+<!--needs-context-->
+```basic
+load toolkit from "vendor/a/toolkit.bas" as tools_a
+load toolkit from "vendor/b/toolkit.bas" as tools_b
+```
+
+The alias is what the library is called *in this file* — `tools_a.describe()`.
+It replaces the library's own name rather than adding to it, so there is still
+exactly one way to say which one you mean. Loading two libraries under one name
+is refused, and so is aliasing a built-in module like `sqlite`.
+
 ## Databases: SQLite and PostgreSQL
 
 Both modules are optional at build time and load on demand. Parameters are bound

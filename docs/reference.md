@@ -1429,6 +1429,62 @@ Unqualified `load NAME` search order:
 
 `GBASIC_PATH` is colon-separated.
 
+### Loading a library under another name
+
+`load NAME as ALIAS` gives the library the name **this file** wants to call it
+by (*since 0.1.0*):
+
+```basic
+load statistics_helpers as st
+print(st.zscore(2, 1, 1))
+```
+
+The alias works everywhere the library's own name would: qualified calls,
+qualified modifiers (`x {st.rounded}= 1.5`), and function values (`f = st.mean`).
+Both spellings of `load` take one — the deprecated `use` does not:
+
+```basic
+load toolkit from "vendor/a/toolkit.bas" as tools_a
+```
+
+**An alias replaces the library's declared name rather than adding to it.**
+After `load toolkit ... as tools_a`, `toolkit.describe()` is an error — two
+names for one import is the ambiguity aliasing exists to remove. The error says
+which name the library *was* loaded under, because a rename that missed a call
+site is the mistake this makes easiest to write.
+
+(Precisely: the alias adds no second name of its own. A library name is
+available when *something* in the program loaded the library under it, which
+has always been true — so if another library loads `matrix` plainly while your
+file loads it `as m`, both `matrix.` and `m.` resolve. That is deliberate:
+refusing it would let any library decide which names its consumers may pick.)
+
+**A library does not know it was renamed.** Its own unqualified calls still
+reach its own functions, and the libraries *it* loads keep their own names — an
+alias is the importing file's word for one library, not a renaming that reaches
+into what that library loads.
+
+**Effective library names are a flat namespace, and a collision is refused.**
+An alias may not be the name of another loaded library, another alias, or a
+built-in module (`sqlite`, `pg`, `gi`, …), and a built-in module may not be
+aliased — those qualifiers are recognized by name before user functions are
+resolved, so an alias could never reach one.
+
+The case that alias exists for is **two libraries whose own declared name is the
+same**. Before aliasing they could not coexist: the second import failed with
+*"function 'describe' is defined twice in library 'toolkit'"*, which names a
+function neither file defined twice and never mentions that there are two files.
+Now the collision is one refusal that names both sources and spells the fix, and
+either file can be loaded under another name:
+
+```basic
+load toolkit from "vendor/a/toolkit.bas" as tools_a
+load toolkit from "vendor/b/toolkit.bas" as tools_b
+```
+
+An alias is an **import identity**, not a lookup-time rename: registration keys
+on the effective name, which is what lets one declared name arrive twice.
+
 ### Which function an unqualified name reaches
 
 A name written without a `library.` prefix resolves in exactly two places, in

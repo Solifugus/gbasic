@@ -1,0 +1,1 @@
+runtime error at tests/negative_alias_duplicate.bas:4:1: the name 't' already refers to library 'toolkit' from tests/libs/vendor_a/toolkit.bas, and cannot also refer to library 'toolkit' from tests/libs/vendor_b/toolkit.bas -- load one of them under another name, as in `load toolkit from "..." as my_toolkit`

@@ -337,6 +337,10 @@ struct AstStmt {
         struct {
             char *name;
             char *path;
+            /* `load NAME as ALIAS` -- the name this FILE calls the library by,
+             * or NULL. The library's own declared name is unaffected; an alias
+             * is a rename at qualification time, scoped to the importer. */
+            char *alias;
         } use_stmt;
         struct {
             AstExpr *condition;
@@ -437,7 +441,7 @@ AstStmt *ast_error(AstExpr *message);
 AstStmt *ast_modifier(char *name, AstNameList params, char *context, int exported, AstStmtList body);
 AstStmt *ast_program(char *name, AstNameList args, AstStmtList body);
 AstStmt *ast_library(char *name, AstStmtList body);
-AstStmt *ast_use(char *name, char *path);
+AstStmt *ast_use(char *name, char *path, char *alias);
 AstStmt *ast_if(AstExpr *condition, AstStmtList body);
 AstStmt *ast_while(AstExpr *condition, AstStmtList body);
 AstStmt *ast_consider(AstExpr *subject, AstConsiderBranchList branches, AstStmtList else_body);

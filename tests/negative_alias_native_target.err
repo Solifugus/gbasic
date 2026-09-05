@@ -1,0 +1,1 @@
+runtime error at tests/negative_alias_native_target.bas:5:1: the built-in module 'sqlite' cannot be aliased -- 'sqlite.' calls are recognised by that name

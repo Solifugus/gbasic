@@ -7838,12 +7838,159 @@ static void search_gbasic_path_for_library(const char *name,
 #endif
 }
 
-static void library_import_from_block(AstStmt *library);
+static void library_import_from_block(AstStmt *library, const char *effective);
 
-static void library_import(const char *name, const char *path) {
+/* THE NAMES A LIBRARY IS QUALIFIED BY.
+ *
+ * A library used to be reachable by exactly one name -- the one on its own
+ * `library` block -- and that name was claimed by whichever file happened to
+ * declare it. Two libraries that picked the same name could not coexist: the
+ * second registration met the duplicate-function refusal and the program
+ * stopped, with nothing the loading file could say about it, even when it had
+ * named both files by full path.
+ *
+ * `load NAME as ALIAS` makes the EFFECTIVE name -- the one `alias.fn` uses --
+ * a choice of the file doing the loading. Registration keys on it, so an alias
+ * is a distinct import identity rather than a lookup-time rename: that is what
+ * lets the same declared name arrive from two paths at once.
+ *
+ * This table is the flat namespace those effective names live in. It exists to
+ * REFUSE a second claim on a name already answering for a different library --
+ * alias against alias, alias against a real name, and (new, and the case that
+ * used to fail obscurely) real name against real name. Every collision is one
+ * check with one message that names both sources and spells the fix. */
+typedef struct {
+    char *effective;   /* the name qualification uses */
+    char *path;        /* the source file it was imported from */
+    char *declared;    /* the name on the library block itself */
+} LibraryName;
+
+static LibraryName *library_names = NULL;
+static size_t library_name_count = 0;
+
+/* Qualifiers the evaluator intercepts by string BEFORE user-function
+ * resolution (module dispatch: `sqlite.query`, `gi.new`, ...). An alias can
+ * never reach one, and one can never be reached through an alias, so both
+ * directions are refused rather than silently not working. */
+static int library_is_native_qualifier(const char *name) {
+    static const char *native[] = {
+        "gi", "gui", "ldap", "money", "odbc", "pg", "process", "reflect",
+        "rowmodel", "smtp", "sqlite", "this", "webclient", "webserver",
+        "xlsx", "xml", NULL
+    };
+    for (size_t i = 0; native[i]; i++) {
+        if (strcmp(name, native[i]) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* Claim `effective` for the library `declared` in `path`. Returns 1 when the
+ * name is free or already held by this same library, 0 (having raised) when it
+ * answers for a different one. */
+static int library_name_claim(const char *effective, const char *path, const char *declared) {
+    for (size_t i = 0; i < library_name_count; i++) {
+        LibraryName *held = &library_names[i];
+        if (strcmp(held->effective, effective) != 0) {
+            continue;
+        }
+        if (strcmp(held->path, path) == 0 && strcmp(held->declared, declared) == 0) {
+            return 1;
+        }
+        char message[640];
+        snprintf(message, sizeof(message),
+                 "the name '%s' already refers to library '%s' from %s, and cannot"
+                 " also refer to library '%s' from %s -- load one of them under"
+                 " another name, as in `load %s from \"...\" as my_%s`",
+                 effective, held->declared, held->path, declared, path,
+                 declared, declared);
+        runtime_error_raise(message, 1003, "use");
+        return 0;
+    }
+    LibraryName *next = realloc(library_names, sizeof(LibraryName) * (library_name_count + 1));
+    if (!next) {
+        abort();
+    }
+    library_names = next;
+    library_names[library_name_count].effective = copy_string(effective);
+    library_names[library_name_count].path = copy_string(path);
+    library_names[library_name_count].declared = copy_string(declared);
+    library_name_count++;
+    return 1;
+}
+
+/* `toolkit.describe()` after `load toolkit ... as ta` is the mistake this
+ * feature makes easiest to write -- a rename that missed a call site -- and
+ * "invalid function call: toolkit.describe" sends the reader looking for a
+ * missing function rather than at the name. Fills `buf` with the names the
+ * library IS loaded under, or returns 0 when nothing declares that name. */
+static int library_alias_hint(const char *written, char *buf, size_t size) {
+    char names[256];
+    size_t used = 0;
+    names[0] = '\0';
+    for (size_t i = 0; i < library_name_count; i++) {
+        LibraryName *held = &library_names[i];
+        if (strcmp(held->declared, written) != 0 ||
+            strcmp(held->effective, written) == 0) {
+            continue;
+        }
+        int wrote = snprintf(names + used, sizeof(names) - used, "%s'%s'",
+                             used ? " and " : "", held->effective);
+        if (wrote < 0 || (size_t)wrote >= sizeof(names) - used) {
+            break;
+        }
+        used += (size_t)wrote;
+    }
+    if (!used) {
+        return 0;
+    }
+    snprintf(buf, size,
+             " -- library '%s' was loaded as %s, and an alias replaces the"
+             " library's own name rather than adding to it",
+             written, names);
+    return 1;
+}
+
+static void library_names_clear(void) {
+    for (size_t i = 0; i < library_name_count; i++) {
+        free(library_names[i].effective);
+        free(library_names[i].path);
+        free(library_names[i].declared);
+    }
+    free(library_names);
+    library_names = NULL;
+    library_name_count = 0;
+}
+
+static void library_import(const char *name, const char *path, const char *alias) {
     AstStmt *library = NULL;
     char *resolved = NULL;
     char *previous_import_path = NULL;
+    const char *effective = alias ? alias : name;
+
+    if (alias) {
+        /* Both directions of the module-dispatch problem, refused where the
+         * author wrote the alias rather than later at a call that quietly does
+         * not reach what it names. */
+        if (library_is_native_qualifier(alias)) {
+            char message[256];
+            snprintf(message, sizeof(message),
+                     "'%s' is a built-in module name and cannot be used as an alias",
+                     alias);
+            runtime_error_raise(message, 1003, "use");
+            return;
+        }
+        if (library_is_native_qualifier(name)) {
+            char message[256];
+            snprintf(message, sizeof(message),
+                     "the built-in module '%s' cannot be aliased -- '%s.' calls are"
+                     " recognised by that name",
+                     name, name);
+            runtime_error_raise(message, 1003, "use");
+            return;
+        }
+    }
 
     if (!path && strcmp(name, "pg") == 0) {
 #if HAVE_LIBPQ
@@ -7960,18 +8107,18 @@ static void library_import(const char *name, const char *path) {
     if (path) {
         const char *base = current_import_path ? current_import_path : root_source_path;
         resolved = resolve_use_path(base, path);
-        if (use_pair_contains(used_pairs, used_pair_count, resolved, name)) {
+        if (use_pair_contains(used_pairs, used_pair_count, resolved, effective)) {
             free(resolved);
             return;
         }
-        if (use_pair_contains(use_stack, use_stack_count, resolved, name)) {
+        if (use_pair_contains(use_stack, use_stack_count, resolved, effective)) {
             char message[512];
-            snprintf(message, sizeof(message), "circular use detected for %s from %s", name, resolved);
+            snprintf(message, sizeof(message), "circular use detected for %s from %s", effective, resolved);
             runtime_error_raise(message, 1003, "use");
             free(resolved);
             return;
         }
-        use_pair_add(&use_stack, &use_stack_count, resolved, name);
+        use_pair_add(&use_stack, &use_stack_count, resolved, effective);
         LoadedFile *loaded = loaded_file_get(resolved);
         if (!loaded) {
             use_pair_pop(use_stack, &use_stack_count);
@@ -7987,13 +8134,18 @@ static void library_import(const char *name, const char *path) {
             free(resolved);
             return;
         }
+        if (!library_name_claim(effective, resolved, name)) {
+            use_pair_pop(use_stack, &use_stack_count);
+            free(resolved);
+            return;
+        }
         previous_import_path = current_import_path;
         current_import_path = resolved;
-        library_import_from_block(library);
+        library_import_from_block(library, effective);
         current_import_path = previous_import_path;
         use_pair_pop(use_stack, &use_stack_count);
         if (!error_action_pending()) {
-            use_pair_add(&used_pairs, &used_pair_count, resolved, name);
+            use_pair_add(&used_pairs, &used_pair_count, resolved, effective);
         }
         free(resolved);
         return;
@@ -8002,21 +8154,24 @@ static void library_import(const char *name, const char *path) {
     library = library_find(name);
     if (library) {
         const char *source_path = root_source_path ? root_source_path : "<current>";
-        if (use_pair_contains(used_pairs, used_pair_count, source_path, name)) {
+        if (use_pair_contains(used_pairs, used_pair_count, source_path, effective)) {
             return;
         }
-        if (use_pair_contains(use_stack, use_stack_count, source_path, name)) {
+        if (use_pair_contains(use_stack, use_stack_count, source_path, effective)) {
             char message[512];
-            snprintf(message, sizeof(message), "circular use detected for %s from %s", name, source_path);
+            snprintf(message, sizeof(message), "circular use detected for %s from %s", effective, source_path);
             runtime_error_raise(message, 1003, "use");
             return;
         }
+        if (!library_name_claim(effective, source_path, name)) {
+            return;
+        }
 
-        use_pair_add(&use_stack, &use_stack_count, source_path, name);
-        library_import_from_block(library);
+        use_pair_add(&use_stack, &use_stack_count, source_path, effective);
+        library_import_from_block(library, effective);
         use_pair_pop(use_stack, &use_stack_count);
         if (!error_action_pending()) {
-            use_pair_add(&used_pairs, &used_pair_count, source_path, name);
+            use_pair_add(&used_pairs, &used_pair_count, source_path, effective);
         }
         return;
     }
@@ -8057,14 +8212,18 @@ static void library_import(const char *name, const char *path) {
         return;
     }
 
-    if (use_pair_contains(used_pairs, used_pair_count, matches[0].path, name)) {
+    if (use_pair_contains(used_pairs, used_pair_count, matches[0].path, effective)) {
         library_matches_clear(matches, match_count);
         return;
     }
-    if (use_pair_contains(use_stack, use_stack_count, matches[0].path, name)) {
+    if (use_pair_contains(use_stack, use_stack_count, matches[0].path, effective)) {
         char message[512];
-        snprintf(message, sizeof(message), "circular use detected for %s from %s", name, matches[0].path);
+        snprintf(message, sizeof(message), "circular use detected for %s from %s", effective, matches[0].path);
         runtime_error_raise(message, 1003, "use");
+        library_matches_clear(matches, match_count);
+        return;
+    }
+    if (!library_name_claim(effective, matches[0].path, name)) {
         library_matches_clear(matches, match_count);
         return;
     }
@@ -8076,19 +8235,19 @@ static void library_import(const char *name, const char *path) {
                 matches[i].path);
     }
 
-    use_pair_add(&use_stack, &use_stack_count, matches[0].path, name);
+    use_pair_add(&use_stack, &use_stack_count, matches[0].path, effective);
     previous_import_path = current_import_path;
     current_import_path = matches[0].path;
-    library_import_from_block(matches[0].library);
+    library_import_from_block(matches[0].library, effective);
     current_import_path = previous_import_path;
     use_pair_pop(use_stack, &use_stack_count);
     if (!error_action_pending()) {
-        use_pair_add(&used_pairs, &used_pair_count, matches[0].path, name);
+        use_pair_add(&used_pairs, &used_pair_count, matches[0].path, effective);
     }
     library_matches_clear(matches, match_count);
 }
 
-static void library_import_from_block(AstStmt *library) {
+static void library_import_from_block(AstStmt *library, const char *effective) {
     if (strcmp(library->as.library.name, "gui") == 0) {
 #if HAVE_GIR
         /* A single process cannot host both GTK 3 (this gui module) and GTK 4
@@ -8104,16 +8263,20 @@ static void library_import_from_block(AstStmt *library) {
     for (size_t i = 0; i < library->as.library.body.count; i++) {
         AstStmt *stmt = library->as.library.body.items[i];
         if (stmt->kind == AST_STMT_USE) {
-            library_import(stmt->as.use_stmt.name, stmt->as.use_stmt.path);
+            /* A library's OWN dependencies keep their own names: an alias is
+             * the importing file's word for one library, not a renaming that
+             * reaches into what that library loads. */
+            library_import(stmt->as.use_stmt.name, stmt->as.use_stmt.path,
+                           stmt->as.use_stmt.alias);
             if (error_action_pending()) {
                 return;
             }
         } else if (stmt->kind == AST_STMT_FUNCTION && !stmt->as.function.object) {
             /* Dotted defs are executable attach statements, not hoistable
              * declarations — they are never library exports. */
-            function_register_def(stmt, 1, library->as.library.name);
+            function_register_def(stmt, 1, effective);
         } else if (stmt->kind == AST_STMT_MODIFIER && stmt->as.modifier.exported) {
-            modifier_register_def(stmt, 1, library->as.library.name);
+            modifier_register_def(stmt, 1, effective);
         }
     }
 }
@@ -12754,7 +12917,7 @@ int eval_run_actor(AstStmtList program, const char *entry,
         } else if (stmt->kind == AST_STMT_MODIFIER) {
             modifier_register(stmt);
         } else if (stmt->kind == AST_STMT_USE) {
-            library_import(stmt->as.use_stmt.name, stmt->as.use_stmt.path);
+            library_import(stmt->as.use_stmt.name, stmt->as.use_stmt.path, stmt->as.use_stmt.alias);
         }
     }
     /* Methods attach via dotted-def statements the child never executes; register
@@ -25298,10 +25461,14 @@ static Value eval_call(AstExpr *expr) {
             return eval_user_function(expr, function);
         }
 
-        char message[256];
+        char message[512];
         char label[160];
+        char hint[256];
         call_label(expr, label, sizeof(label));
-        snprintf(message, sizeof(message), "invalid function call: %s", label);
+        if (!library_alias_hint(expr->as.call.library, hint, sizeof(hint))) {
+            hint[0] = '\0';
+        }
+        snprintf(message, sizeof(message), "invalid function call: %s%s", label, hint);
         runtime_error_raise(message, 1003, "invalid function call");
         return value_null();
     }
@@ -32009,7 +32176,7 @@ static Value server_build_value(AstStmt *stmt) {
  * the pre-registration walk and the on-reach walk may both get here. */
 static void server_register(AstStmt *stmt) {
     server_register_scope(stmt->as.server.name, &stmt->as.server.items);
-    library_import("web", NULL);
+    library_import("web", NULL, NULL);
     if (error_action_pending()) {
         return;
     }
@@ -32425,7 +32592,7 @@ static EvalResult eval_stmt(AstStmt *stmt) {
     case AST_STMT_LIBRARY:
         break;
     case AST_STMT_USE:
-        library_import(stmt->as.use_stmt.name, stmt->as.use_stmt.path);
+        library_import(stmt->as.use_stmt.name, stmt->as.use_stmt.path, stmt->as.use_stmt.alias);
         if (error_action_pending()) {
             current_line = previous_line;
             current_column = previous_column;
@@ -33047,6 +33214,10 @@ int eval_program(AstStmtList program) {
     loaded_files_clear();
     use_pairs_clear(&used_pairs, &used_pair_count);
     use_pairs_clear(&use_stack, &use_stack_count);
+    /* Reset with the rest of the import state: a second program run in one
+     * process would otherwise meet the first run's claims and report a
+     * collision against a library nothing had loaded yet. */
+    library_names_clear();
     gui_clear_native_windows();
     gui_library_loaded = 0;
     pg_library_loaded = 0;
