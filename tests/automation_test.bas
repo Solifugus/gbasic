@@ -62,6 +62,7 @@ function decide(needs_authority)
         expected_value: 7497, authority_required: needs_authority,
         authority_reason: "cost 15000 exceeds the spend limit of 5000",
         sized_off: { quantity: "leading_cell", established: true, value: 0 - 16835 },
+        finding: { subject: "Northeast/Outdoor", measure: "revenue" },
         provenance: { method: "m", rows: 1, parameters: { }, assumptions: [] } })
 end function
 
@@ -209,6 +210,54 @@ worse = automation.observe(act3, { value: 100, holdout: 50, at: "2026-10-01" })
 check("an action that underperformed says so", worse.outcome.met, false)
 check("  and an effect can be small even when the observation is large",
       automation.observe(act3, { value: 9000, holdout: 8990, at: "x" }).outcome.effect, 10)
+
+' --- TIER: §9, an action records what it was and what permitted it --------
+'
+' The design has said since it was written that an Action records "the finding
+' that initiated it, the decision that recommended it, the policy permitting
+' it, the authority under which it ran, the parameters, the external result,
+' and the observed outcome", and that "R5, R6 and R7 are all unenforceable
+' without it". Two of those seven were absent until recipe 11 -- and the cost
+' was not a thin audit log: evidence read back off an action could not say what
+' it was about, so it pooled with evidence about something else.
+check("an executed action records the decision", act3.decision.recommendation,
+      "restock")
+check("  and the finding, through it", act3.decision.finding.subject,
+      "Northeast/Outdoor")
+check("  and the POLICY that permitted it", act3.context.authority.spend_limit,
+      5000)
+check("  including the rehearsal requirement in force at the time",
+      act3.context.authority.min_rehearsal_periods, 12)
+check("  and the authority actually spent", act3.authority.granted_by,
+      "delegated authority")
+' AND THE CONSEQUENCE, which is the only reason the fields are required rather
+' than encouraged: evidence knows what it is about.
+check("evidence read off it says what it was about", ev.about.intervention,
+      "restock")
+check("  including the measure", ev.about.measure, "revenue")
+check("  and so does an observation", obs.about.intervention, "restock")
+
+' THE STRUCTURAL REFUSAL. A hand-built Decision with no finding must not be
+' able to enter the action layer -- the same treatment R9 gets, because a rule
+' that only the happy path obeys is a convention.
+on error goto next
+x = reasoning.action({ decision: { recommendation: "act" }, context: { },
+                       rehearsal: full, authority: { }, result: { },
+                       provenance: { } })
+check("an action built on a decision that names no finding is refused",
+      contains(error.message, "does not name the finding"), true)
+error.clear()
+x = reasoning.action({ decision: cheap, rehearsal: full, authority: { },
+                       result: { }, provenance: { } })
+check("and one that records no policy is refused",
+      contains(error.message, "needs a context"), true)
+error.clear()
+on error stop
+' THE CONTROL, or "refuse everything" would satisfy both.
+ok_act = reasoning.action({ decision: cheap, context: ctx, rehearsal: full,
+                            authority: { }, result: { }, provenance: { } })
+check("a well-formed action is accepted", ok_act.decision.recommendation,
+      "restock")
 
 ' --- TIER: holding out, the concept the architecture lacked ---------------
 ' A system that always acts when it should can never learn whether acting

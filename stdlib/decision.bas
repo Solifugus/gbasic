@@ -73,6 +73,39 @@ library decision
                        + " has no measured effect")
             end if
             append(effects, e["effect"])
+            ' R16. A calibration answers "how well does THIS work on THIS
+            ' measure", and the arithmetic below does not know it is being
+            ' asked something else. Two interventions with true effects of
+            ' 0.35 and 0.05 pool to 0.20 -- and because the standard error
+            ' falls with the size of the pool, MORE evidence makes that number
+            ' more confident and no less wrong (recipe 11).
+            '
+            ' Cells are deliberately NOT part of this: pooling across the
+            ' places a thing was tried is the whole purpose of a calibration.
+            ' What may not be pooled is different QUESTIONS.
+            ab = e["about"]
+            if type(ab) != "record" or is_unknown(ab["measure"]) then
+                error ("decision.calibrate: item " + string(i + 1) + " does not"
+                       + " say what it was about, so nothing can tell whether"
+                       + " it belongs in this pool (design R16)")
+            end if
+            if i = 0 then
+                about = ab
+            end if
+            if ab["measure"] != about["measure"] then
+                error ("decision.calibrate: item " + string(i + 1) + " measures "
+                       + string(ab["measure"]) + " and item 1 measures "
+                       + string(about["measure"]) + " -- these are not"
+                       + " observations of one quantity, and their average is"
+                       + " not an estimate of anything (design R16)")
+            end if
+            if ab["intervention"] != about["intervention"] then
+                error ("decision.calibrate: item " + string(i + 1) + " is about "
+                       + string(ab["intervention"]) + " and item 1 about "
+                       + string(about["intervention"]) + " -- calibrating one"
+                       + " intervention from another's outcomes answers a"
+                       + " question nobody asked, confidently (design R16)")
+            end if
         next
         m = mean(effects)
         sd = stdev(effects)
@@ -82,7 +115,7 @@ library decision
         crit = stats.t_quantile(0.975, n - 1)
         return { n: n, estimate: m, sd: sd, standard_error: se,
                  low: m - crit * se, high: m + crit * se, level: 0.95,
-                 from: "controlled outcomes" }
+                 about: about, from: "controlled outcomes" }
     end function
 
     ' --- evaluate ------------------------------------------------------------
@@ -247,7 +280,11 @@ library decision
 
         return reasoning.decision({
             objective: _objective(context, finding),
-            finding_subject: finding["subject"],
+            ' §9: the finding that initiated it. The WHOLE Finding, not a
+            ' label -- "which finding was this" is answerable from a label,
+            ' but "did that finding establish the quantity we sized off" is
+            ' the question R9 exists for and only the record answers it.
+            finding: finding,
             materiality: material,
             alternatives: scored,
             recommendation: best.name,

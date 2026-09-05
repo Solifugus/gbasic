@@ -141,6 +141,11 @@ library automation
         end if
         return reasoning.action({
             decision: dec,
+            ' §9's "policy permitting it". The regime in force when this ran --
+            ' objectives, thresholds, authority -- without which an action
+            ' cannot be re-judged later against the rules that have replaced
+            ' it, and a stored action cannot say why it was allowed.
+            context: context,
             rehearsal: rehearsal_v,
             authority: { needed: dec["authority_required"], granted_by: ap["by"],
                          reason: g.reason },

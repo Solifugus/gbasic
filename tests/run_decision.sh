@@ -90,10 +90,10 @@ else
     grep "^MISMATCH" "$scratch/out" | head -10
 fi
 n=$(sed -n 's/^checks: //p' "$scratch/out")
-if [ -n "$n" ] && [ "$n" -ge 64 ]; then
+if [ -n "$n" ] && [ "$n" -ge 74 ]; then
     pass "check count floor ($n checks)"
 else
-    fail "check count floor (got '${n:-none}', want >= 64)"
+    fail "check count floor (got '${n:-none}', want >= 74)"
 fi
 
 printf 'TIER the load-bearing tiers ran\n'
@@ -108,6 +108,9 @@ for needle in \
     "evidence far from the break-even is decisive" \
     "the SAME amount of evidence near it is not" \
     "uncontrolled observations may not be calibrated from" \
+    "two interventions may not be pooled into one calibration" \
+    "nor may two measures" \
+    "one intervention on one measure pools" \
     "an interval reaching where the model breaks yields NO quantity" \
     "  so amplification separates them" \
     "  and what a point estimate would have claimed"
@@ -205,6 +208,68 @@ if grep -q "would have answered 60.7 with a straight face" "$scratch/pr"; then
 else
     fail "and the refused case still reports the number a point estimate would have named"
 fi
+
+printf 'TIER recipe 11: what was this evidence about\n'
+if GBASIC_PATH=stdlib ./gbasic examples/automation_lab/12_what_was_this_about.bas \
+        >"$scratch/ab" 2>/dev/null; then
+    pass "12_what_was_this_about runs"
+else
+    fail "12_what_was_this_about runs"
+fi
+if diff -u examples/automation_lab/12_what_was_this_about.out "$scratch/ab" >/dev/null 2>&1; then
+    pass "12 matches its committed golden"
+else
+    fail "12 matches its committed golden"
+    diff -u examples/automation_lab/12_what_was_this_about.out "$scratch/ab" | head -12
+fi
+# THE DEMONSTRATION IS A DIFFERENCE BETWEEN TWO RUNS OVER THE SAME EVIDENCE,
+# because a number from the pooled run alone is satisfied by any library that
+# returns something. Asked one campaign at a time the answers are opposite --
+# ACT on the manager, DO NOT ACT on the price cut. Pooled, they are the same
+# answer, and it is the wrong one for both.
+sep=$(sed -n '/PART A/,/PART B/p' "$scratch/ab" | grep -c "DO NOT ACT")
+pooled=$(sed -n '/PART B/,/PART C/p' "$scratch/ab" | grep -c "DO NOT ACT")
+if [ "$sep" = 1 ] && [ "$pooled" = 0 ]; then
+    pass "separated, one campaign is refused; pooled, neither is"
+else
+    fail "separated, one campaign is refused; pooled, neither is (sep=$sep pooled=$pooled)"
+fi
+# AND THE SHARP HALF: the pooled interval does not merely go wrong, it goes
+# CONFIDENTLY wrong, and gets more so with evidence. At n=120 the estimate must
+# be clear of the 0.119 break-even while the truth it is estimating is 0.05.
+if sed -n '/PART C/,/PART D/p' "$scratch/ab" | grep -q "cut the price.*estimate 0.198" \
+   && sed -n '/PART C/,/PART D/p' "$scratch/ab" | grep -q "cut the price   ACT   assurance 1"; then
+    pass "at n=120 the pooled answer is DECISIVE and recommends a loss-making action"
+else
+    fail "at n=120 the pooled answer is DECISIVE and recommends a loss-making action"
+    sed -n '/PART C/,/PART D/p' "$scratch/ab" | grep "cut the price"
+fi
+# The interval must also have stopped containing either truth -- without this
+# the previous check passes on a pooled estimate that is merely imprecise.
+lo=$(sed -n '/PART C/,/PART D/p' "$scratch/ab" | grep -m1 "^  120 " | awk '{print $3}')
+hi=$(sed -n '/PART C/,/PART D/p' "$scratch/ab" | grep -m1 "^  120 " | awk '{print $5}')
+# Both must PARSE as numbers before they are compared: awk reads a non-numeric
+# field as 0, so a mis-cut column would compare "to" against 0.05 and pass.
+if [[ "$lo" =~ ^-?[0-9.]+$ && "$hi" =~ ^-?[0-9.]+$ ]] \
+   && awk -v lo="$lo" -v hi="$hi" 'BEGIN{exit !(lo>0.05 && hi<0.35)}'; then
+    pass "and its interval [$lo, $hi] contains neither 0.05 nor 0.35"
+else
+    fail "and its interval [$lo, $hi] contains neither 0.05 nor 0.35"
+fi
+# R16 with its CONTROL, in the recipe rather than only in the unit fixture:
+# a rule that refused every pool would satisfy the two refusals above.
+if grep -q "calibrating one intervention from another" "$scratch/ab" \
+   && grep -q "these are not observations of one quantity" "$scratch/ab"; then
+    pass "R16 refuses both a mixed intervention and a mixed measure, naming each"
+else
+    fail "R16 refuses both a mixed intervention and a mixed measure"
+fi
+if grep -q "12 outcomes from two regions, estimate" "$scratch/ab"; then
+    pass "and the CONTROL still pools: one intervention, one measure, two places"
+else
+    fail "and the CONTROL still pools: one intervention, one measure, two places"
+fi
+
 
 printf 'TIER valgrind\n'
 if vg_available; then

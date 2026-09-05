@@ -67,10 +67,10 @@ else
     grep "^MISMATCH" "$scratch/out" | head -10
 fi
 n=$(sed -n 's/^checks: //p' "$scratch/out")
-if [ -n "$n" ] && [ "$n" -ge 42 ]; then
+if [ -n "$n" ] && [ "$n" -ge 54 ]; then
     pass "check count floor ($n checks)"
 else
-    fail "check count floor (got '${n:-none}', want >= 42)"
+    fail "check count floor (got '${n:-none}', want >= 54)"
 fi
 
 # The executor leaves a file behind. If the fixture ever stops cleaning up, or
@@ -93,6 +93,10 @@ for needle in \
     "a dry run that WOULD act still does not act" \
     "a measured but UNCONTROLLED outcome is still not evidence of an effect" \
     "  so the EFFECT is the difference, not the observation" \
+    "  and the POLICY that permitted it" \
+    "evidence read off it says what it was about" \
+    "an action built on a decision that names no finding is refused" \
+    "a well-formed action is accepted" \
     "short sequential keys land near the declared rate"
 do
     if grep -qF "ok   $needle" "$scratch/out"; then

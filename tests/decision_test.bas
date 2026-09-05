@@ -228,6 +228,7 @@ error.clear()
 x = reasoning.decision({ objective: { }, alternatives: [], recommendation: "a",
                          expected_value: 1, authority_required: false,
                          sized_off: { quantity: "aggregate", established: true },
+                         finding: { subject: "s", measure: "revenue" },
                          provenance: { }, confidence: 0.9 })
 check("a Decision carrying `confidence` is refused, with the reason",
       contains(error.message, "A Decision carries `assurance`"), true)
@@ -236,6 +237,7 @@ error.clear()
 x = reasoning.decision({ objective: { }, alternatives: [], recommendation: "a",
                          expected_value: 1, authority_required: false,
                          sized_off: { quantity: "aggregate", established: true },
+                         finding: { subject: "s", measure: "revenue" },
                          provenance: { }, authorized: true })
 check("a Decision that decides its own permission is refused",
       contains(error.message, "enforcement happens at"), true)
@@ -244,6 +246,7 @@ error.clear()
 x = reasoning.decision({ objective: { }, alternatives: [], recommendation: "a",
                          expected_value: 1, authority_required: false,
                          sized_off: { quantity: "aggregate", established: false },
+                         finding: { subject: "s", measure: "revenue" },
                          provenance: { } })
 check("a Decision sized off an unestablished quantity is refused even if built by hand",
       contains(error.message, "declined to establish"), true)
@@ -255,6 +258,7 @@ on error stop
 ok_d = reasoning.decision({ objective: { }, alternatives: [], recommendation: "a",
                             expected_value: 1, authority_required: false,
                             sized_off: { quantity: "aggregate", established: true },
+                            finding: { subject: "s", measure: "revenue" },
                             provenance: { }, assurance: 0.8 })
 check("a well-formed Decision is accepted", ok_d.recommendation, "a")
 check("and assurance IS allowed on one", ok_d.assurance, 0.8)
@@ -264,13 +268,26 @@ check("and assurance IS allowed on one", ok_d.assurance, 0.8)
 ' that. Recipe 7 showed where the figure comes from and that measuring it
 ' uncontrolled gives the wrong one. This is where it becomes the assumption.
 
+' One controlled outcome, labelled. Hand-built on purpose: the point of these
+' cases is what `calibrate` does with a list somebody assembled, and the R16
+' checks must fire on a hand-built evidence record exactly as on one that came
+' through as_evidence -- otherwise the rule is a convention rather than a rule.
+function evidence_about(measure, intervention, effect)
+    return { kind: "prior_action", controlled: true, effect: effect,
+             decision: intervention,
+             about: { measure: measure, intervention: intervention },
+             expected: 0, observed: effect, met: true }
+end function
+
 function made_up_evidence(n, effect, spread)
     load fake
     out = []
     for i = 1 to n
         e = effect + (fake.between(9, i * 7, 0, 2000) - 1000) / 1000 * spread
         append(out, { kind: "prior_action", controlled: true, effect: e,
-                      decision: "act", expected: 0, observed: e, met: true })
+                      decision: "act",
+                      about: { measure: "revenue", intervention: "act" },
+                      expected: 0, observed: e, met: true })
     next
     return out
 end function
@@ -349,7 +366,45 @@ check("nor may evidence that carries no comparison",
       contains(error.message, "reproduces the regression it measured"), true)
 error.clear()
 
+' R16. THE POOL MUST BE OF ONE QUESTION. An effect is a bare number and bare
+' numbers average happily -- measured in recipe 11, two interventions with true
+' effects of 0.35 and 0.05 pool to 0.198 with a 95% interval containing
+' NEITHER, and the interval keeps narrowing as more mismatched evidence
+' arrives. Each refusal sits beside a control below, because "refuse to pool"
+' is also satisfied by refusing every pool, and a calibration that can never be
+' computed is the same as not having one.
+x = decision.calibrate([evidence_about("revenue", "send a manager", 0.3),
+                        evidence_about("revenue", "cut the price", 0.4)])
+check("two interventions may not be pooled into one calibration",
+      contains(error.message, "calibrating one intervention from another"), true)
+check("  and the message names both", contains(error.message, "cut the price")
+      and contains(error.message, "send a manager"), true)
+error.clear()
+
+x = decision.calibrate([evidence_about("revenue", "send a manager", 0.3),
+                        evidence_about("days_to_pay", "send a manager", 0.4)])
+check("nor may two measures", contains(error.message,
+      "not observations of one quantity"), true)
+error.clear()
+
+x = decision.calibrate([{ kind: "prior_action", controlled: true, effect: 0.3 },
+                        { kind: "prior_action", controlled: true, effect: 0.4 }])
+check("nor may evidence that cannot say what it was about",
+      contains(error.message, "does not say what it was about"), true)
+error.clear()
+
 on error stop
+
+' THE CONTROLS. One intervention on one measure still pools -- and it pools
+' ACROSS PLACES, which is the entire purpose of a calibration and the thing
+' the refusal above must not have taken away.
+same = decision.calibrate([evidence_about("revenue", "send a manager", 0.30),
+                           evidence_about("revenue", "send a manager", 0.36),
+                           evidence_about("revenue", "send a manager", 0.33)])
+check("one intervention on one measure pools", same.n, 3)
+check("  and the calibration says what it is about", same.about.intervention,
+      "send a manager")
+check("  including the measure", same.about.measure, "revenue")
 
 ' --- TIER: a decision whose answer is a QUANTITY ---------------------------
 ' `evaluate` chooses among a list. A price, a reorder level or a staffing

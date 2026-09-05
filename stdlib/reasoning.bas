@@ -214,11 +214,28 @@ library reasoning
         next
         for each field in ["objective", "alternatives", "recommendation",
                            "expected_value", "authority_required", "sized_off",
-                           "provenance"]
+                           "finding", "provenance"]
             if is_unknown(spec[field]) then
                 error "reasoning.decision needs a " + field
             end if
         next
+        ' §9. THE CHAIN IS DATA -> FINDING -> DECISION -> ACTION, and it is
+        ' inspectable only if each link names the one before it. A Finding
+        ' already carries `subject` and `measure`, so passing the Finding
+        ' itself satisfies this; a reference record carrying those two fields
+        ' does as well, for a decision reconstructed from a stored one.
+        '
+        ' It is required rather than optional because of what reads it: a
+        ' calibration pools measured outcomes, and evidence that cannot say
+        ' WHAT IT WAS ABOUT gets pooled with evidence about something else
+        ' (R16, measured in recipe 11).
+        f = spec["finding"]
+        if type(f) != "record" or is_unknown(f["subject"]) or is_unknown(f["measure"]) then
+            error ("reasoning.decision: `finding` must name the finding this"
+                   + " decision came from -- at minimum its subject and its"
+                   + " measure. Pass the Finding itself, or a record carrying"
+                   + " those two fields (design §9)")
+        end if
         ' R9. The quantity a decision was sized off must be one the Finding
         ' ESTABLISHED. Recorded here so the chain is auditable even when the
         ' decision layer got it right by accident.
@@ -286,16 +303,38 @@ library reasoning
 
     ' --- Action and Outcome --------------------------------------------------
 
+    ' §9: an Action records "the finding that initiated it, the decision that
+    ' recommended it, the policy permitting it, the authority under which it
+    ' ran, the parameters, the external result, and the observed outcome".
+    '
+    ' THE FINDING ARRIVES THROUGH THE DECISION rather than beside it, and that
+    ' is deliberate: `reasoning.decision` requires it, so containment carries
+    ' it, and a second copy on the Action would be a second thing that can
+    ' disagree with the first. What is checked here is that the link is
+    ' actually there -- a hand-built Decision must not be able to enter the
+    ' action layer without one, the same structural check R9 gets.
+    '
+    ' `context` is the policy: the objectives, thresholds and authority in
+    ' force when this ran. It was missing entirely until recipe 11, and its
+    ' absence is not a logging gap -- an Action that cannot say what regime
+    ' permitted it cannot be re-judged when the regime changes.
     function action(spec)
         if type(spec) != "record" then
             error "reasoning.action expects a record"
         end if
-        for each field in ["decision", "rehearsal", "authority", "result",
-                           "provenance"]
+        for each field in ["decision", "context", "rehearsal", "authority",
+                           "result", "provenance"]
             if is_unknown(spec[field]) then
                 error "reasoning.action needs a " + field
             end if
         next
+        d = spec["decision"]
+        if type(d) != "record" or is_unknown(d["finding"]) then
+            error ("reasoning.action: this decision does not name the finding it"
+                   + " came from, so the action cannot either -- and an action"
+                   + " that cannot say what it was about is pooled with"
+                   + " actions about something else (design §9, R16)")
+        end if
         out = { }
         for each field in keys(spec)
             out[field] = spec[field]
@@ -358,7 +397,15 @@ library reasoning
                    + " with reasoning.as_observation and do not call it"
                    + " evidence (design R10)")
         end if
+        ' R16. WHAT THIS EVIDENCE IS ABOUT, carried in the value rather than
+        ' left to whoever assembles the list. An effect is a bare number and
+        ' bare numbers average happily: without this, evidence that sending a
+        ' manager recovers 0.35 pools with evidence that a price cut recovers
+        ' 0.05 and the answer is 0.20, which is right about neither and gets
+        ' MORE confident as the pool grows (recipe 11).
         return { kind: "prior_action", decision: act["decision"]["recommendation"],
+                 about: { measure: act["decision"]["finding"]["measure"],
+                          intervention: act["decision"]["recommendation"] },
                  expected: o["expected"], observed: o["observed"],
                  holdout: o["holdout"], effect: o["effect"], met: o["met"],
                  controlled: true }
@@ -377,6 +424,8 @@ library reasoning
         end if
         return { kind: "prior_observation", uncontrolled: true,
                  decision: act["decision"]["recommendation"],
+                 about: { measure: act["decision"]["finding"]["measure"],
+                          intervention: act["decision"]["recommendation"] },
                  expected: o["expected"], observed: o["observed"], met: o["met"],
                  caveat: ("no comparison, so this is what happened next and not"
                           + " the effect of acting") }

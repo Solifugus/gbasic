@@ -1,0 +1,81 @@
+A year of automation. Two campaigns, both gated, both measured
+against a holdout, both read back through reasoning.as_evidence --
+so R10 is satisfied and every observation here is controlled.
+
+  send a manager   costs 2000, and truly recovers 0.35
+  cut the price    costs 2000, and truly recovers 0.05
+
+Against a loss of 16835 an action of cost 2000 pays for itself at a
+recovery of 0.119. So the first is worth doing and the second is not,
+and the whole job of a calibration is to say so.
+
+=== PART A: each campaign calibrated from its own evidence
+
+  send a manager    estimate 0.368   interval 0.297 to 0.438
+                    recommendation send a manager  ACT   assurance 1
+
+  cut the price     estimate 0.027   interval -0.057 to 0.112
+                    recommendation do nothing      DO NOT ACT   assurance 1
+
+  Both right. This is what the library does when it is asked one
+  question at a time.
+
+=== PART B: one pool -- "how well do our interventions work?"
+
+  Nothing in the shape of the data objects. Twenty-four controlled
+  outcomes, all revenue, all from gated actions, all measured the
+  same way. A loop that stores every measured action and calibrates
+  from the store produces exactly this.
+
+  send a manager    estimate 0.197   interval 0.108 to 0.287
+                    recommendation send a manager  ACT   assurance 0.9
+
+  cut the price     estimate 0.197   interval 0.108 to 0.287
+                    recommendation cut the price   ACT   assurance 0.9
+
+  THE PRICE CUT IS NOW RECOMMENDED, and it recovers 0.05 against a
+  break-even of 0.119. The estimate is not a compromise between two
+  answers -- it is the answer to a question nobody asked, and it is
+  wrong in opposite directions for the two campaigns that made it.
+
+=== PART C: and more evidence does not help
+
+     n     estimate    95% interval          width
+  12    0.18       0.063 to 0.297     0.234
+  24    0.197       0.108 to 0.287     0.178
+  48    0.19       0.128 to 0.252     0.125
+  120   0.198       0.161 to 0.235     0.074
+
+  The interval collapses towards the midpoint of two truths, which is
+  the effect of nothing. THE STANDARD ERROR FALLS WITH THE SIZE OF THE
+  POOL, so the more incommensurable evidence is gathered the more
+  confident the wrong number becomes -- and by n=120 the interval no
+  longer contains either truth at all:
+
+  cut the price     estimate 0.198   interval 0.161 to 0.235
+                    recommendation cut the price   ACT   assurance 1
+
+  DECISIVE, from 120 controlled observations, about an intervention
+  that loses money every time it is taken. That is the shape recipe 9
+  taught us to trust -- a narrow interval well clear of the break-even
+  -- and here it is being produced by a defect.
+
+=== PART D: what the evidence can be made to say
+
+  pooling two interventions:
+    decision.calibrate: item 13 is about cut the price and item 1 about send a manager -- calibrating one intervention from another's outcomes answers a question nobody asked, confidently (design R16)
+
+  pooling two measures:
+    decision.calibrate: item 13 measures days_to_pay and item 1 measures revenue -- these are not observations of one quantity, and their average is not an estimate of anything (design R16)
+
+  AND THE CONTROL, because a rule that refuses everything is not a
+  rule. The same intervention on the same measure in DIFFERENT PLACES
+  is exactly what a calibration is for, and it still pools:
+    12 outcomes from two regions, estimate 0.353, about send a manager on revenue
+
+  WHAT MADE THE REFUSAL POSSIBLE WAS NOT A NEW MEASUREMENT. It was
+  the chain: a Decision now names the Finding it came from, an Action
+  carries the Decision and the policy that permitted it, and evidence
+  read back off an Action can therefore say what it was about. §9
+  had asked for that from the start and called it "not a logging
+  feature" -- this is what it was for.

@@ -326,6 +326,44 @@ contamination of the reference by the thing being sought (R13, R14), and lack of
 support (R15). The first is priced into the threshold; the second is a declared
 bound; the third can only be reported.
 
+### 4.11 An effect is a bare number, and bare numbers average
+
+*Measured by Recipe 11 (`examples/automation_lab/12_what_was_this_about.bas`,
+asserted in `tests/run_decision.sh`).* Recipe 9 turned the loop: controlled
+outcomes become the assumption a later decision rests on. It measured **one**
+intervention, so the question a real learning loop meets on its first day never
+came up — an organisation runs several campaigns at once and stores every
+measured action in one place.
+
+Two campaigns, both gated, both measured against a holdout, both read back
+through `as_evidence`, so R10 is satisfied and every observation is controlled.
+*Send a manager* truly recovers 0.35; *cut the price* truly recovers 0.05;
+against a 16,835 loss an action costing 2,000 breaks even at 0.119. Asked one
+at a time the library gets both right — ACT and DO NOT ACT, each with assurance
+1. Pooled, it recommends **both**.
+
+| pool | estimate | 95% interval | width |
+|---|---|---|---|
+| 12 | 0.180 | 0.063 to 0.297 | 0.234 |
+| 24 | 0.197 | 0.108 to 0.287 | 0.178 |
+| 48 | 0.190 | 0.128 to 0.252 | 0.125 |
+| 120 | 0.198 | 0.161 to 0.235 | 0.074 |
+
+**The standard error falls with the size of the pool**, so gathering more
+mismatched evidence makes the wrong number more confident. By 120 observations
+the interval contains neither truth, and the decision sized off it reports
+`assurance 1` — DECISIVE, from 120 controlled observations, about an
+intervention that loses money every time it is taken. That is precisely the
+shape §4 taught us to trust: a narrow interval well clear of the break-even.
+
+Nothing in the data objects. All 24 outcomes are revenue, all from gated
+actions, all measured the same way. **The pooled mean is a real quantity — it
+is simply not the answer to the question asked**, and no property of the
+arithmetic can notice that. What was missing was upstream: the evidence could
+not say what it was about, because an Action did not record it. §9 had asked
+for exactly that from the start and called it *not a logging feature*; this is
+what it was not a logging feature **for**.
+
 ---
 
 ## 5. Architecture (decided)
@@ -621,6 +659,20 @@ having already said the aggregate was not established. Enforced at the boundary
 in `decision.evaluate` and again structurally in `reasoning.decision`, so a
 hand-built Decision cannot smuggle one past.
 
+**R16 — a calibration may not pool evidence about different questions.**
+Produced by Recipe 11 (§4.11). Every item must agree on the **measure** and the
+**intervention**, and the resulting calibration carries both. Cells are
+deliberately *not* part of the rule: pooling across the places a thing was
+tried is the entire purpose of a calibration, and a refusal that took that away
+would be indistinguishable from having no calibration at all — so the control
+is asserted beside the refusal.
+
+The rule is only expressible because the chain carries it. A Decision names the
+Finding it came from, so it knows the measure; an Action carries the Decision
+and the policy that permitted it; evidence read back off an Action can
+therefore say what it was about. Each link is required rather than encouraged,
+because a rule that only the happy path obeys is a convention.
+
 ---
 
 ## 9. Provenance
@@ -637,7 +689,19 @@ supported the conclusion. An Action records the finding that initiated it, the
 decision that recommended it, the policy permitting it, the authority under
 which it ran, the parameters, the external result, and the observed outcome.
 
-This is not a logging feature. R5, R6 and R7 are all unenforceable without it.
+This is not a logging feature. R5, R6 and R7 are all unenforceable without it,
+and R16 is not even *statable* without it — Recipe 11 measured what that costs.
+
+**The finding reaches the Action through the Decision, not beside it.**
+`reasoning.decision` requires a `finding` (at minimum its subject and measure,
+which a Finding satisfies by being one), so containment carries it and there is
+no second copy to disagree with the first. What `reasoning.action` checks is
+that the link is actually there — a hand-built Decision naming no finding may
+not enter the action layer, the same structural treatment R9 gets.
+
+`context` is the policy: the objectives, thresholds and authority in force when
+the action ran. An action that cannot say which regime permitted it cannot be
+re-judged when the regime changes.
 
 ## 10. Simulation is a precondition
 
@@ -711,7 +775,13 @@ Deliberately one function at a time.
   answers *how much evidence is enough* the only way the question has an answer
   — relative to a decision, when the interval stops straddling the break-even.
   Retires the invented `sensitivity_range`: the sweep now runs over the range
-  the evidence supports.
+  the evidence supports. Extended by Recipe 11 (§4.11,
+  [automation_recipe_11_what_was_this_about.md](automation_recipe_11_what_was_this_about.md)):
+  **R16** refuses to pool evidence about different questions, after the same
+  machinery was measured recommending a loss-making intervention with
+  `assurance 1` from 120 controlled observations. Making that refusal
+  *statable* is what closed §9's gap — a Decision now names its Finding and an
+  Action records the policy that permitted it.
 - **`reasoning.hypothesis` + `insight.weigh`** (Recipe 8,
   [automation_recipe_08_why_might_it_be.md](automation_recipe_08_why_might_it_be.md)):
   §4's third rung, and built so it cannot reach the fifth — every hypothesis
@@ -821,19 +891,30 @@ four are chosen to **break** the model rather than broaden it:
 | ~~**3. A seasonal measure**~~ | *done — produced R13, and `versus_last_year`* |
 | ~~**4. A high-cardinality dimension**~~ | *done — refuted the prediction; produced R15* |
 | ~~**5. The first recipe that decides**~~ | *done — produced R9, and `decision.evaluate`* |
+| ~~**11. What was this evidence about**~~ | *done — produced R16, and closed §9's provenance gap* |
 
 Recipes 5, 6 and 7 were the important ones and all three are done. The
 architecture is closed and the learning loop has a mechanism — and Recipe 7
 found that the obvious way to close it teaches the system something false
 (R10).
 
-Recipe 8 built the third rung of §4's ladder. What remains is to **turn** the
-loop: nothing yet takes a controlled effect and
-feeds it into a later decision as the recovery assumption. That is a small step
-now, but it wants its own recipe, because the interesting question is what
-happens when the evidence is thin — one controlled observation is not a
-calibration, and there is no rule yet for how much evidence is enough. That,
-and recipes 2–4.
+Recipe 8 built the third rung of §4's ladder. Recipe 9 **turned** the loop, and
+Recipe 11 found what the loop does when more than one thing is being learned at
+once: it averages them, confidently. Recipes 2, 3 and 4 then stressed the
+insight layer and produced R13, R14 and R15.
+
+The depth plan is discharged. What it leaves behind is a short list the
+recipes themselves raised and did not settle:
+
+- **The correction is per-call, not per-campaign.** A Finding's alpha is a
+  family-wise rate over the cells of *one* search. Twelve monthly runs are
+  twelve families, and nothing anywhere says so.
+- **`assurance` is a bare scalar in [0, 1]** and reads as a probability. R4
+  exists to stop `confidence`, `support` and `assurance` being conflated; the
+  one that carries no definition with it is `assurance`.
+- **Every executable recipe still runs on data this project generated.** The
+  measurements are real measurements of the library's behaviour, and none of
+  them is a measurement of a real business.
 
 ## 16. Deferred, with reasons
 

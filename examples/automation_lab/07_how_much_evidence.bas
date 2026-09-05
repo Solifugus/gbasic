@@ -125,6 +125,7 @@ function a_decision()
     alternatives: [], recommendation: "send a manager",
     expected_value: 500, authority_required: false,
     sized_off: { quantity: "leading_cell", established: true, value: 0 - 16835 },
+    finding: { subject: "Northeast/Outdoor", measure: "revenue" },
     provenance: { method: "recipe 5", rows: 1, parameters: { }, assumptions: [] } })
 end function
 

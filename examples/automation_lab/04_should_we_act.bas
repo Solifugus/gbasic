@@ -80,6 +80,7 @@ function a_decision(needs_authority)
     expected_value: 7497, authority_required: needs_authority,
     authority_reason: "cost 15000 exceeds the spend limit of 5000",
     sized_off: { quantity: "leading_cell", established: true, value: 0 - 16835 },
+    finding: { subject: "Northeast/Outdoor", measure: "revenue" },
     provenance: { method: "recipe 5", rows: 1, parameters: { }, assumptions: [] } })
 end function
 
