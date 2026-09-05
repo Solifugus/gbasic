@@ -1,6 +1,6 @@
 # gBASIC Reference
 
-This reference describes the implemented v0.1 language surface. gBASIC is experimental; behavior may change before a stable release.
+This reference describes the implemented v0.1 language surface. gBASIC is pre-1.0: what is documented here works and is tested, and the surface may still change before 1.0.0 — the [CHANGELOG](../CHANGELOG.md) records what moves and why.
 
 This is a reference, not a tutorial: it states what each construct and module does, not how to learn the language. For a guided introduction see `docs/tutorial.md`; for runnable programs see `examples/`. AI agents writing gBASIC should start at `docs/ai/START-HERE.md`, which distills the surprises and idioms this document records in full.
 
@@ -5098,6 +5098,14 @@ whole program without needing a call site.
   `reasoning.nulls()` and `reasoning.comparisons()` are the declared choices —
   what counts as *ordinary*, and what this period is being compared against —
   neither of which is inferred, because each changes every answer downstream.
+  `comparisons()` returns `period_over_period` and `versus_last_year`, and the
+  second is not decoration: compared December to January over cells with
+  ordinary seasonal profiles, a run with a real 45% collapse and a run with
+  **nothing wrong** give the same leader and the same *z* to two decimals — a
+  shift shared by every cell inflates the spread each cell is judged against in
+  proportion to itself, so seasonality causes *blindness*, not false alarms.
+  On the same data and threshold, `versus_last_year` recovers the planted cell
+  at *z* −4.91, ranked first. The remedy is the comparison, not the null.
   `reasoning.confidence_kinds()` names three quantities that are easy to
   confuse: `confidence` (how well a quantity is estimated), `support` (how well
   a hypothesis accounts for the evidence) and `assurance` (how sure we are an
@@ -5132,8 +5140,8 @@ whole program without needing a call site.
   well as an explanation does. `weigh` compares each prediction with the cells
   that actually cleared and reports a contingency — `predicted`, `hit`,
   `over_predicted`, `unexplained` — plus set agreement, which travels with its
-  own definition and is explicitly **not** a probability that the hypothesis is
-  true. Parsimony is not imposed: a hypothesis predicting fifteen cells and
+  own definition in `agreement_is` and is explicitly **not** a probability that
+  the hypothesis is true. Parsimony is not imposed: a hypothesis predicting fifteen cells and
   explaining one has over-predicted fourteen, and agreement says so. Two
   hypotheses that predict **the same cells** are reported in
   `indistinguishable` and are not ordered against each other, since ranking
@@ -5154,8 +5162,12 @@ whole program without needing a call site.
   is found there is no recommendation at all — plus
   `point_estimate_would_say`, because that number is the most
   confident-looking wrong answer available. Otherwise it reports the answer's
-  own interval and `amplification`: how much the model magnifies the
-  parameter's uncertainty, where 1 is proportional and below 1 means it damps.
+  own interval and `amplification`, with `amplification_is` beside it: how much
+  the model magnifies the parameter's uncertainty, where 1 is proportional and
+  below 1 means it damps. Measured on a pricing model, `p* = cost*b/(1+b)`
+  divides by `1+b`, so an elasticity interval a shade over 1.5x wide becomes a
+  price interval **13.5x wide** — amplification 8.85 — while a point estimate
+  names a single price with a straight face.
   Note that `map` cannot capture anything from its caller — gBASIC has no
   closures — so a caller needs one function per model *instance*.
 
@@ -5221,7 +5233,22 @@ whole program without needing a call site.
   than `false` when no threshold is declared. `assurance` is a **sensitivity**,
   not a feeling: the share of a declared `sensitivity_range` (a multiplier on
   the assumed recoveries, which must bracket 1) over which the recommendation
-  survives, with `sensitivities` naming where it flips. `decision.sizings()`
+  survives, with `sensitivities` naming where it flips.
+
+  Because a bare number in 0..1 printed beside a recommendation reads as *the
+  probability that the recommendation is right*, `assurance` never travels
+  alone: `assurance_is` carries its `definition`, what was `swept`, the range it
+  was swept `over`, **where that range came from** (a calibration naming how
+  much evidence it rests on, or a span the caller declared — assurance 1 over
+  those two is not the same claim, and nothing else distinguished them), the
+  `steps`, what was `held_fixed` *together with the sized-off quantity's value*,
+  and an `is_not` saying outright that it is not a probability. Writing that
+  definition down is what exposed its limit: the sweep moves the recovery
+  assumption and holds everything else at a point estimate, so an answer can be
+  `assurance 1` and still flip if the quantity it is a fraction *of* is a third
+  smaller. The remedy chosen was **disclosure, not a wider sweep** — the cell's
+  change is observed rather than estimated, and inventing an interval for it
+  would be inventing a statistic. `decision.sizings()`
   names what a decision may be sized off — `aggregate` or `leading_cell` — and
   sizing off one the Finding did **not** establish is refused, since the same
   intervention over the same data picks opposite actions depending on which is
@@ -5242,6 +5269,48 @@ whole program without needing a call site.
   that was never established is not a number, however computable it is.
   `associations` names other measures that moved with this one, and each is
   reported as `moved with` and `explains: false`.
+
+  Three fields of its spec are choices a caller has to make rather than
+  defaults to accept.
+
+  `search.width` is **required** — the significance cut is a function of how
+  wide the search was, so a decomposition that cannot state its width cannot set
+  its own threshold. `repetitions` (default 1) declares how many times this same
+  search will be run: the correction is family-wise over the **cells of one
+  search**, so a monthly process runs twelve families and pays for one.
+  `max_causes` (default 1) says how many cells may be wrong at once, and it
+  excludes the other candidates from the **reference** — not blessing them as
+  findings, merely declining to let them define *ordinary*. Without it the test
+  finds a problem only while it is nearly the only problem: measured, holding
+  one cell literally constant and varying only how many unrelated cells
+  collapsed beside it, its *z* fell −5.70 → −3.65 → −2.83 → −1.86 and its
+  verdict went from found to nothing, because both the reference mean and the
+  reference spread move at once. Trimming holds it flat at about −5.5. It is
+  **not free**: the bar rises 4.35 → 4.84 → 6.46, so by five causes in
+  twenty-four cells it has outrun the evidence. Above 1 it **requires**
+  `null: "siblings_permuted"`, because trimming changes the statistic and the
+  *t* quantile is a formula for the untrimmed one.
+
+  Every Finding carries `search.detectable` — `change`, `typical_cell` and
+  `share` — **whether or not anything cleared**, and that is the point:
+  *nothing cleared* is precisely when a reader cannot tell an incapable search
+  from a healthy business. Measured over one business of fixed size cut 24 /
+  240 / 1200 ways, the threshold moves only 3.49 → 3.77 → 4.11 (paying for
+  multiplicity is nearly free) while the smallest detectable change goes 18% →
+  53% → **147% of a typical cell** — so at the finest cut a cell could fall to
+  zero and the answer would still be `within ordinary variation`, in exactly the
+  words used when a business is healthy. What dominates a wide search is
+  support, not multiplicity.
+
+  A share of a change is refused when the movement is **common to the
+  population**, decided by a sign test, which assumes less than the *t* test
+  beside it: 22 of 24 cells moving the same way is one-in-thirty-thousand under
+  a null where a cell is as likely to rise as fall. Without that refusal an
+  ordinary January produces a confident attribution to whichever cell sells the
+  most toys. It is deliberately **not** a seasonality detector, and the message
+  says so — a real company-wide collapse and a broken data feed move 22 of 24
+  cells down alike, and what is established is one level up: the decomposition
+  has not located this.
 
 - `scoring` — credit scorecards, pure gBASIC over `stats`
   (`docs/scoring_design.md`). `credit` measures what a book has already done;
@@ -5345,13 +5414,30 @@ whole program without needing a call site.
   return `unknown` rather than a truncated result — which is how every
   regression in `stats` decides whether a design is estimable. Full table:
   `docs/statistics_design.md` §8b.
-- `grid` — a messy worksheet turned into clean frames: `grid.tables` guesses and
-  reports a confidence with its reasons, `grid.extract` follows a spec record
-  whose anchors match by CONTENT so inserting rows cannot break it.
+- `grid` — a messy worksheet turned into clean frames. The contract is
+  *automatic when safe, spec when not, and it tells you which*:
+  `grid.tables(g)` guesses and returns each candidate with a **confidence** and
+  the reasons behind it, so a messy sheet reports `low` rather than handing back
+  a plausible wrong frame; `grid.extract(g, spec)` then does exactly what it is
+  told. A spec that matches nothing returns `ok: false` rather than an empty
+  frame, because an empty frame reads as *no data*.
+
+  Every spec field is optional. Anchors match by **content**, not row number, so
+  inserting rows above a table cannot break a spec: `starts` (text or regex the
+  label column must match to begin), `ends` (exclusive), `header_row`,
+  `header_rows` (how many rows the header spans — a parent level is carried
+  across blank cells and joined with a space, which is how Excel stores a merged
+  header), `first_row` / `last_row` (explicit, overriding detection),
+  `break_on_blank` (default true), `drop_totals` (drop rows whose label matches
+  `total_pattern()`), `drop_matching` (a regex), `label_col` (default the first)
+  and `columns` (explicit names, overriding the header).
+
   `grid.total_pattern()` returns the regex used to recognise a totals row —
   exposed rather than hidden precisely so a caller can see and change what is
   being trusted — and `grid.row_is_blank(g, r)` is the emptiness test the
-  detector uses. Design: `docs/xlsx_design.md` §5.
+  detector uses. What remains after reading a sheet is **policy** — which row is
+  a header, which is a total — which is why this is pure gBASIC and lives where
+  the report's owner can change it. Design: `docs/xlsx_design.md` §5.
 - `consolidate` — many differently-shaped sources merged onto one schema
   (`docs/xlsx_design.md` §6). The value coercions are public because a caller
   often needs them alone: `to_money(v)` accepts the union a report actually

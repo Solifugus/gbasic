@@ -6,8 +6,7 @@ duplicate language content here.
 
 ## What this is
 
-gBASIC is an experimental BASIC-family language: a tree-walking interpreter in
-C11. The single binary `gbasic` lexes, parses, and evaluates `.bas`/`.gb` files.
+gBASIC is a modern BASIC-family language: a tree-walking interpreter in C11. The single binary `gbasic` lexes, parses, and evaluates `.bas`/`.gb` files.
 See `README.md` for the feature surface, `docs/` for design/reference, and
 `CLAUDE.md` for the architecture map (where the weight sits: `src/eval.c` is the
 whole runtime).

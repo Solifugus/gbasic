@@ -1,6 +1,6 @@
 # gBASIC Project State
 
-Last updated: 2026-09-01 (0.1.0)
+Last updated: 2026-09-05 (0.1.0)
 
 This file is the compact source of truth for current implementation status.
 Detailed language behavior belongs in `docs/reference.md`; completed development
@@ -27,7 +27,13 @@ document list, with a status column, is `docs/README.md`.
 - arrays, records, dynamic record access, and nested lvalue assignment
   (records are copy-on-write; a keyword may be a field name, in a literal and
   after a dot)
-- functions, programs, libraries, `load`, labels, `goto`, and `gosub`
+- functions with literal **default parameter values** (`function f(a, b = 10)`),
+  programs, libraries, labels, `goto`, and `gosub`
+- `load`, `load NAME from "path"`, and `load ... as ALIAS` — the alias is the
+  name the loading file qualifies by, and is a distinct import identity, so two
+  libraries whose own declared name is the same can coexist. Defining a function
+  twice in one scope is refused, and **a function from another library must be
+  qualified**; a library still calls its own functions unqualified
 - first-class function values (references) that can be stored, passed, and called
 - Policy-Based Inheritance object model (`new`, `constructor`, methods via `this`)
 - shared-nothing actors over `spawn`/`send`/`receive` with monitor/link
@@ -228,8 +234,8 @@ points at, so it doubles as an integration suite for this repository.
 
 ## Current Limitations
 
-- experimental, non-optimized interpreter
-- evolving diagnostics and module APIs
+- tree-walking, non-optimized interpreter
+- pre-1.0: evolving diagnostics and module APIs
 - non-raising `try_*` twins (`try_decode`, `xlsx.try_open`, `process.which`,
   `has_builtin`) predate the frame-scoped error model and remain, now as an
   ergonomic choice rather than a necessity — they report *where* an input is

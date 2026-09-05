@@ -86,8 +86,16 @@ for error handling, `ERRORS.md`.
   → `examples/lock_test.gb`
 - **Program arguments** — declare `program main(args)`; `args` is the 0-based
   string array after the script path. → `examples/args_test.bas`
-- **Libraries** — `library`/`load` (and `load NAME from "file"`).
-  → `examples/library_test.bas`
+- **Libraries** — `library`/`load` (and `load NAME from "file"`). A function from
+  ANOTHER library must be qualified (`stats.ols(...)`); a library calls its own
+  unqualified. → `examples/library_test.bas`, `tests/run_scope.sh`
+- **Naming a library yourself** — `load NAME as ALIAS`, on both forms of `load`.
+  The alias is what you qualify by and REPLACES the declared name; it is a
+  distinct import identity, so two libraries whose own declared name is the same
+  can be loaded at once. → `tests/alias_test.bas`
+- **Optional arguments** — literal defaults in the declaration:
+  `function pmt(rate, nper, pv, fv = 0, timing = "end")`. Literals only — gBASIC
+  has no closures, so a default has nothing to see. → `stdlib/finance.bas`
 - **Unicode-aware strings** — codepoint iteration and byte access.
   → `examples/unicode_chars_test.bas`
 - **Date/time, duration, money** — the specialized value types and their

@@ -1,11 +1,10 @@
 # gBASIC Tutorial
 
-gBASIC is an experimental BASIC-family language for readable, business-style
-programs. It keeps BASIC's plain syntax but adds modern ideas you don't usually
-find together: domain-aware **modifiers/lenses**, reactive **watchers**,
-prototypal objects with **Policy-Based Inheritance**, shared-nothing **actors**,
-and first-class **functions and methods** — over a small, dependency-light C
-interpreter.
+gBASIC is a modern BASIC for readable, business-style programs. It keeps
+BASIC's plain syntax but adds ideas you don't usually find together:
+domain-aware **modifiers/lenses**, reactive **watchers**, prototypal objects
+with **Policy-Based Inheritance**, shared-nothing **actors**, and first-class
+**functions and methods** — over a small, dependency-light C interpreter.
 
 This tutorial teaches the current v0.1 implementation through short, runnable
 examples. Every example here runs on the interpreter as written. For exhaustive

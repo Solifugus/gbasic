@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-gBASIC is an experimental BASIC-family language implemented as a tree-walking
+gBASIC is a modern BASIC-family language implemented as a tree-walking
 interpreter in C11. The single binary `gbasic` lexes, parses, and evaluates
 `.bas`/`.gb` source files (both extensions are used interchangeably). Version is
 `0.1.0`. See `README.md` for the language feature surface and `docs/` for

@@ -2,26 +2,36 @@
 
 ![Byte Beaver, the gBASIC mascot](docs/assets/mascot.png)
 
-gBASIC is an experimental BASIC-family language for readable, practical
-programs: familiar control flow, plus records, first-class functions, watchers,
-shared-nothing actors, and typed values for dates, durations and money. Around
-it sits a working platform — databases, a hardened web server, spreadsheets,
-statistics, charts and native GUI — so a gBASIC program can be a real
-application rather than a demonstration.
+gBASIC is a **modern BASIC for business programming**: familiar control flow,
+plus records, first-class functions, watchers, shared-nothing actors, and typed
+values for dates, durations and money. Around it sits a working platform —
+databases, a hardened web server, spreadsheets, statistics, charts and native
+GUI — and forty pure-gBASIC libraries covering double-entry accounting, loan
+servicing, deposits, credit analytics, securities analysis and more. A gBASIC
+program is meant to be a real application, not a demonstration.
 
-This repository holds the C implementation of gBASIC `0.1.0` — the **first
-release, and an experimental one**. Until 1.0.0 the language surface may change
-between releases; [CHANGELOG.md](CHANGELOG.md) says what is solid, what is
-experimental within it, and what is not here yet.
+This repository holds the C implementation of gBASIC `0.1.0`. It is an **early
+release** and the version number is honest about that — but it is not a sketch:
+**107 test suites** gate every change, goldens are byte-exact, and the claims in
+this file that can be measured have been. Until 1.0.0 the language surface may
+still move between releases; [CHANGELOG.md](CHANGELOG.md) records what changed
+and why, and the [documentation index](docs/README.md) marks every document
+Shipped, Partial, Proposal or Record so a description of working behaviour is
+never mistaken for a design.
+
+One part *is* still experimental and says so everywhere it appears: the
+business-automation-reasoning libraries (`reasoning`, `insight`, `decision`,
+`automation`), which are a design laboratory rather than a toolkit.
 
 **Platform: Linux.** CI builds and runs the full suite on Ubuntu 24.04 LTS and
 current Ubuntu on x86-64, and riscv64 is a supported target. macOS and Windows
 are **not** tested and no support for them is claimed.
 
-**New here?** [Tutorial](docs/tutorial.md) to learn it ·
-[Reference](docs/reference.md) for the details ·
-[Documentation index](docs/README.md) for everything else, with each document
-marked Shipped, Partial, Proposal or Record.
+**New here?** [Tutorial](docs/tutorial.md) to learn the language ·
+[Reference](docs/reference.md) for every construct and builtin ·
+**[Cookbooks](#cookbooks)** for worked, runnable recipes — spreadsheets,
+finance, accounting, lending, deposits, credit, charts, dates, ODBC and GUI ·
+[Documentation index](docs/README.md) for everything else.
 
 ---
 
@@ -80,14 +90,14 @@ evaluator; strict expressions; compound assignment (`+=` `-=` `*=` `/=`);
 `if`/`else if`/`else`, `consider`, `while`, `do…until`; statements that
 continue across a line break inside an unclosed `(`, `[` or `{`; `for each` with
 `break`/`continue` that may name their loop; arrays, records and nested
-assignment; functions, programs, libraries and `load` (with `as` to pick the
-qualifier); first-class function values; **prototypal objects** with
-per-property inheritance policies; assignment and comparison modifiers; watchers
-and locks; frame-scoped `on error` and a suppressible warning channel; distinct
-`nothing` and `unknown`; date, duration, money, file and directory values;
-binary-safe Unicode-aware strings; regular expressions as a value kind;
-bitwise builtins; and strict RFC 8259 JSON alongside a
-round-tripping gBASIC dialect.
+assignment; functions with literal default parameter values, programs,
+libraries and `load` (with `as` to pick the qualifier); first-class function
+values; **prototypal objects** with per-property inheritance policies;
+assignment and comparison modifiers; watchers and locks; frame-scoped
+`on error` and a suppressible warning channel; distinct `nothing` and
+`unknown`; date, duration, money, file and directory values; binary-safe
+Unicode-aware strings; regular expressions as a value kind; bitwise builtins;
+and strict RFC 8259 JSON alongside a round-tripping gBASIC dialect.
 
 Notable absences: **no closures** (a function cannot rebind an enclosing
 scalar — see [UNLEARN.md](docs/ai/UNLEARN.md)), no user-defined types beyond
@@ -107,6 +117,7 @@ records, and no module system beyond `load`.
 | **xlsx** — reads, edits and recalculates real workbooks | Shipped | zlib + libxml2 | [cookbook](docs/xlsx_cookbook.md) |
 | **Process** — run a child, or drive a live one | Shipped | — | [reference](docs/reference.md#process-module) |
 | **Actors** — shared-nothing multiprocessing | Shipped | — | [design](docs/multiprocessing_design.md) |
+| **LDAP** — bind and search against a directory | Shipped | libldap | [design](docs/ldap_design.md) |
 | **Cryptography** — hashing, HMAC, AES-GCM, Ed25519, JWT | Shipped | libcrypto | [reference](docs/reference.md#cryptography) |
 | **`gi`** — GObject-Introspection bridge (GTK 4) | Shipped | libgirepository | [tutorial](docs/gui_tutorial.md) · [cookbook](docs/gui_cookbook.md) |
 | **`gui`** — GTK 3 declarative windows | Proof of concept | GTK 3 | [reference](docs/reference.md#gui-gtk-3-module--experimental) |
@@ -207,6 +218,7 @@ On Linux, with a C11 compiler, `make` and `bison`. Everything else is optional:
 | libpq | `load pg` |
 | unixODBC | `load odbc` |
 | libcurl | `load webclient`, `load smtp` |
+| libldap | `load ldap` |
 | libxml2 | `load xml` (and, with zlib, `xlsx`) |
 | zlib | `xlsx` |
 | libcrypto (OpenSSL) | cryptography builtins, `load crypto` |
@@ -291,7 +303,7 @@ default target: build it with `make dev` and install it with
 ./tests/run_all.sh web              # or filter by substring
 ```
 
-**Use `run_all.sh` rather than naming suites.** It discovers all 75 suites by
+**Use `run_all.sh` rather than naming suites.** It discovers all 107 suites by
 glob, and that is the whole point: a hand-maintained list is a gate that
 silently shrinks. Four suites in this repository sat broken across two releases
 because every list anyone ran happened not to name them. It reports a suite
@@ -329,15 +341,41 @@ index, or if the index links to something that is not there.
 - [Reference](docs/reference.md) — syntax, semantics and every builtin
 - [Language design](docs/gbasic-design.md) — the reasoning behind the language
 
-**Cookbooks** — task-oriented, with runnable examples. Every code and output
-block on these pages is verified by executing it, so a page cannot drift from
-the product without a test failing:
+<a id="cookbooks"></a>
 
-- [Spreadsheets](docs/xlsx_cookbook.md) — read, edit and save real workbooks
+**Cookbooks** — task-oriented, with runnable examples. Every code block and
+every output block on these pages is owned by a file that is executed by the
+test suite and compared byte for byte, so a page cannot drift from the product
+without a test going red. Thirteen of them:
+
+*Money and business*
+
+- [Money](docs/money_cookbook.md) — exact currency, 178 currencies with their
+  own minor units, allocation that sums back exactly, dated FX
+- [Finance](docs/finance_cookbook.md) — time value of money in Excel's argument
+  order, amortization, NPV/IRR, day counts
+- [Accounting](docs/accounting_cookbook.md) — a chart of accounts, a
+  consultancy's month end to end, and why closing a period twice is refused
+- [Lending](docs/lending_cookbook.md) — a loan's conventions, servicing as an
+  auditable fold, payoff, underwriting, posting to a ledger
+- [Deposits](docs/deposits_cookbook.md) — compounding versus crediting, the
+  three balance methods, tiered rates, certificates
+- [Credit analytics](docs/credit_cookbook.md) — delinquency, roll rates,
+  vintage triangles, charge-offs and recoveries
+
+*Data and presentation*
+
+- [Spreadsheets](docs/xlsx_cookbook.md) — read, edit, recalculate and save real
+  workbooks
 - [Databases over ODBC](docs/odbc_cookbook.md) — SQL Server, MySQL, Oracle and
   the rest through one module
-- [Charts](docs/chart_cookbook.md) — charts as deterministic SVG text
-- [Dates, durations and scheduling](docs/datetime_cookbook.md)
+- [Charts](docs/chart_cookbook.md) — line, bar, pie, heatmap and sparkline as
+  deterministic SVG text
+- [Dates, durations and scheduling](docs/datetime_cookbook.md) — business
+  calendars, date expressions, appointment slots
+
+*Applications and analysis*
+
 - [GUI](docs/gui_tutorial.md) and its [cookbook](docs/gui_cookbook.md) — native
   GTK 4 applications
 - [EDGAR securities analysis](docs/edgar_tutorial.md) — build a forensic
@@ -366,17 +404,25 @@ gBASIC diverges from QBasic/VB intuition in ways that fail *silently*. Start at
 
 ## Limitations
 
-gBASIC remains an experimental interpreter:
+Known edges, stated plainly rather than discovered later:
 
-- the evaluator is tree-walking and not optimized
+- the evaluator is tree-walking and not optimized — fast enough for business
+  workloads, not a JIT
 - there are no closures; a function cannot rebind a variable in an enclosing
   scope, and doing so silently creates a local instead (it warns)
-- diagnostics and tooling are still developing
-- optional modules depend on platform libraries
-- the GTK 3 `gui` module is a proof of concept; `gi` is the supported path
+- the GTK 3 `gui` module is a proof of concept; `gi` (GTK 4) is the supported
+  path
 - the WebServer does not do WebSockets or chunked request bodies
-- module APIs and language details may change before a stable release
+- the business-automation-reasoning libraries are a design laboratory, and
+  every measurement behind them is on generated data
+- optional modules depend on platform libraries, and a missing one turns its
+  module into a clean runtime error rather than a build failure
+- diagnostics and tooling are still developing
+- pre-1.0: module APIs and language details may still change
 
+[DOGFOOD.md](DOGFOOD.md) is the running log of every limitation and surprise
+hit while actually writing gBASIC, with the workaround — and its accepted
+limitations are executable, so a bullet that stops being true fails a test.
 Check a document's status in the [index](docs/README.md) before relying on a
 design proposal as an available feature.
 

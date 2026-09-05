@@ -1093,10 +1093,12 @@ refused: credit.losses: loan X1 reports a recovery on 2026-03-01 that is not aft
 
 ## What is not here
 
-`credit` measures what a book has already done. Forecasting what it will do —
-CECL and lifetime expected loss, and scorecard development — is named in
-[credit_analytics_design.md](credit_analytics_design.md) §9 and is not built.
-The measurement layer those need now exists.
+`credit` measures what a book has already done. Scorecard development — turning
+a population into a model that *ranks* risk — is the other half and now exists
+as [`scoring`](scoring_design.md), with WOE/IV binning, AUC/KS/Gini, point
+scaling and PSI. Forecasting what a book *will* do — CECL and lifetime expected
+loss — is named in [credit_analytics_design.md](credit_analytics_design.md) §9
+and is still not built; the measurement layer it needs now exists.
 
 The evidence on this page is entirely self-generated: the loans are ours, the
 payment streams are ours, and the figures were computed by the library being

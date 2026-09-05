@@ -9,6 +9,36 @@ language surface may still change between releases.
 
 ## Unreleased
 
+### Changed — documentation: gBASIC is no longer described as experimental
+
+The word carried an implication the tree stopped earning: 107 test suites, 40
+standard libraries, thirteen cookbooks whose every code and output block is
+executed and compared byte for byte, and an `xlsx` engine measured against
+15,871 real workbooks. `0.1.0` is **early** and pre-1.0 — the surface may still
+move — and that is what the README, tutorial and reference now say.
+
+**Two things keep the word, and now keep it alone**: the
+business-automation-reasoning libraries (`reasoning`, `insight`, `decision`,
+`automation`), which are a design laboratory whose every measurement is on
+generated data, and the GTK 3 `gui` module, a proof of concept superseded by
+`gi`.
+
+The sweep also found rot the existing tripwires could not see and closed it:
+
+- The README claimed `run_all.sh` discovers **75 suites** against a tree holding
+  **107** — understating the gate by a third. The roster tripwire beside it
+  reads only the standard-library section, so nothing could see it.
+- Six of the thirteen cookbooks — money, finance, accounting, lending, deposits
+  and credit — were named in the standard-library section and **missing from
+  the documentation section**, which is where a reader actually looks.
+- `run_docs_gate.sh` now counts both from the tree: the suite count and the
+  cookbook list, each red-proofed.
+- `docs/reference.md` gained the fields a caller could not find: `grid.extract`'s
+  whole spec (`header_rows`, `drop_totals`, `drop_matching`, `starts`/`ends`
+  and the rest), `insight`'s `max_causes`, `repetitions`, `versus_last_year`
+  and `search.detectable`, and the self-describing `agreement_is`,
+  `assurance_is` and `amplification_is`.
+
 ### Added — `load NAME as ALIAS`
 
 A file may choose the name it calls a library by:
@@ -111,11 +141,11 @@ line of the definition being lost.
 
 ## 0.1.0 — 2026-09-05
 
-**The first release, and it is experimental.** gBASIC has been developed
-through eight release candidates; this is the point at which the ladder stops
-saying anything a ninth would say. The version is `0.1.0` and the word for it
-is *experimental*, not *beta* — beta implies feature-complete and stabilising,
-and parts of this are neither by design.
+**The first release.** gBASIC has been developed through eight release
+candidates; this is the point at which the ladder stops saying anything a ninth
+would say. `0.1.0` is *early* and the version number says so — but it is not a
+sketch, and it is not *beta* either, since beta implies feature-complete and
+stabilising and parts of this are neither by design.
 
 **What that means concretely.** Until 1.0.0 the language surface may change
 between releases. Semantic versioning permits it; this note is here so nobody
@@ -135,7 +165,8 @@ is measured against 15,871 real Excel workbooks, agreeing on 97.38% of formula
 cells. The finance and accounting libraries have cookbooks on a harness that
 fails if the page and the code disagree.
 
-**What is experimental within it**, beyond the release as a whole:
+**What is experimental within it** — these carry the word, the release as a
+whole no longer does:
 
 - **`reasoning` / `insight` / `decision` / `automation`** — a design
   laboratory rather than a toolkit. The architecture is closed end to end and

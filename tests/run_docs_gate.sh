@@ -380,6 +380,145 @@ if [ -f "$CI" ] && [ -f README.md ]; then
     [ "$plat_ok" = "1" ] && echo "PASS platform       README.md names the platforms CI actually builds on"
 fi
 
+# 1c-2. THE SUITE COUNT AND THE COOKBOOK COUNT, both of which the README states
+#     as a number a reader believes without counting -- and both of which are
+#     exactly the shape that rots. MEASURED when this check was written: the
+#     README said "all 75 suites" against a tree holding 107, so it was
+#     understating the gate by a third, and the roster tripwire beside it could
+#     not see it because that one only reads the standard-library section.
+#
+#     Counted from the tree, never from a list, for the same reason run_all.sh
+#     discovers by glob: a number maintained by hand is a number that drifts.
+num_word() {
+    awk '
+        BEGIN{
+            split("one two three four five six seven eight nine", u, " ")
+            for (i in u) v[u[i]] = i
+            v["ten"]=10; v["eleven"]=11; v["twelve"]=12; v["thirteen"]=13
+            v["fourteen"]=14; v["fifteen"]=15; v["sixteen"]=16
+            v["seventeen"]=17; v["eighteen"]=18; v["nineteen"]=19
+            v["twenty"]=20; v["thirty"]=30; v["forty"]=40; v["fifty"]=50
+            v["sixty"]=60; v["seventy"]=70; v["eighty"]=80; v["ninety"]=90
+        }
+        {
+            w = tolower($1); gsub(/[^a-z0-9-]/, "", w)
+            if (w ~ /^[0-9]+$/) { print w; exit }
+            total = 0; got = 0
+            k = split(w, parts, "-")
+            for (i = 1; i <= k; i++) if (parts[i] in v) { total += v[parts[i]]; got = 1 }
+            if (got) print total
+        }'
+}
+
+if [ -f README.md ]; then
+    count_ok=1
+    libcount_tmp=$(mktemp)
+
+    #     EVERY numeric suite claim, not just the one in the Tests section: the
+    #     README states the count twice (the opening and `run_all.sh`), and a
+    #     check that reads one of them leaves the other free to drift, which is
+    #     the same shape as the rot it exists to catch.
+    want_suites=$(ls tests/run_*.sh 2>/dev/null | grep -vc 'run_all\.sh$')
+    said_suites=$(grep -oE '[0-9]+ (test )?suites' README.md | grep -oE '^[0-9]+')
+    if [ -z "$said_suites" ]; then
+        echo "FAIL suite count    README.md never states how many test suites there are"
+        count_ok=0; status=1
+    else
+        for n in $said_suites; do
+            if [ "$n" != "$want_suites" ]; then
+                echo "FAIL suite count    README.md says $n suites; tests/ holds $want_suites"
+                count_ok=0; status=1
+            fi
+        done
+    fi
+
+    #     BOTH spellings of the library count, for the same reason. The roster
+    #     tier above reads only the standard-library section; the opening
+    #     paragraph states the number again, where nothing was looking. Scoped
+    #     to the two phrasings that mean THIS count, so "48 shared libraries"
+    #     (a packaging measurement) and "4 libraries" (a different claim
+    #     entirely) are not swept in -- nor is "Ten standard libraries are AGPL",
+    #     which is a true statement about a SUBSET and is why the phrase checked
+    #     is `pure-gBASIC libraries`, which has exactly one meaning here.
+    want_libs=$(ls stdlib/*.bas 2>/dev/null | wc -l)
+    grep -oiE '[a-z0-9-]+ pure-gBASIC libraries' README.md | while read -r said _; do
+        n=$(printf '%s' "$said" | num_word)
+        if [ -z "$n" ]; then
+            echo "FAIL library count  README.md says \"$said ... libraries\" and the number cannot be read"
+        elif [ "$n" != "$want_libs" ]; then
+            echo "FAIL library count  README.md says $n libraries (\"$said\"); stdlib/ holds $want_libs"
+        fi
+    done > "$libcount_tmp" 2>/dev/null || true
+    if [ -s "$libcount_tmp" ]; then
+        cat "$libcount_tmp"
+        count_ok=0; status=1
+    fi
+    rm -f "$libcount_tmp"
+
+    # The cookbook list is the README's answer to "where do I actually learn
+    # this", so a page missing from it is a page nobody finds.
+    want_books=$(ls docs/*cookbook*.md 2>/dev/null | wc -l)
+    bsection=$(awk '/^\*\*Cookbooks\*\*/{f=1} f&&/^\*\*Ship it\*\*/{exit} f' README.md)
+    said_books=$(printf '%s' "$bsection" | grep -oiE '[a-z0-9-]+ of them' | num_word)
+    if [ -z "$said_books" ]; then
+        echo "FAIL cookbook count README.md cookbook section states no count"
+        count_ok=0; status=1
+    elif [ "$said_books" != "$want_books" ]; then
+        echo "FAIL cookbook count README.md says $said_books cookbooks; docs/ holds $want_books"
+        count_ok=0; status=1
+    fi
+    for f in docs/*cookbook*.md; do
+        [ -e "$f" ] || continue
+        if ! printf '%s' "$bsection" | grep -qF "$(basename "$f")"; then
+            echo "FAIL cookbook list  README.md cookbook section does not link $f"
+            count_ok=0; status=1
+        fi
+    done
+
+    [ "$count_ok" = "1" ] && echo "PASS README counts  suite count ($want_suites) and cookbook list ($want_books) match the tree"
+fi
+
+# 1c-3. THE OPTIONAL-DEPENDENCY TABLE, against the Makefile that is its only
+#     evidence. Every `HAVE_*` the build probes is a dependency a reader has to
+#     be told about, and the README's table is where they are told. MEASURED
+#     when this was written: the `ldap` module had shipped and appeared in
+#     NEITHER the platform table nor the dependency table -- so the one page a
+#     stranger reads did not know a module existed. Nothing could see it,
+#     because the roster tiers read the standard-library section and `ldap` is
+#     a native module rather than a stdlib file.
+#
+#     Names, not macros: the table says "libcurl", the Makefile says
+#     HAVE_LIBCURL, so the macro tail is mapped to the spelling a reader would
+#     recognise. GIO rides with GIR and is not separately installable.
+if [ -f Makefile ] && [ -f README.md ]; then
+    dep_ok=1
+    deptable=$(awk '/^\| Dependency \| Enables \|/{f=1} f&&/^```/{exit} f' README.md)
+    for m in $(grep -oE 'HAVE_[A-Z0-9_]+' Makefile | sort -u); do
+        case "$m" in
+            HAVE_GIO) continue ;;                       # ships with HAVE_GIR
+            HAVE_GIR)      want='girepository' ;;
+            HAVE_GTK)      want='GTK 3' ;;
+            HAVE_SQLITE3)  want='sqlite3' ;;
+            HAVE_LIBPQ)    want='libpq' ;;
+            HAVE_ODBC)     want='ODBC' ;;
+            HAVE_LDAP)     want='libldap' ;;
+            HAVE_LIBCURL)  want='libcurl' ;;
+            HAVE_LIBXCRYPT) want='libxcrypt' ;;
+            HAVE_LIBCRYPTO) want='libcrypto' ;;
+            HAVE_LIBSSL)   want='libssl' ;;
+            HAVE_LIBXML2)  want='libxml2' ;;
+            HAVE_ZLIB)     want='zlib' ;;
+            *) echo "FAIL dependency     Makefile probes $m and this check has no README spelling for it"
+               dep_ok=0; status=1; continue ;;
+        esac
+        if ! printf '%s' "$deptable" | grep -qiF "$want"; then
+            echo "FAIL dependency     Makefile probes $m and README.md's dependency table does not name $want"
+            dep_ok=0; status=1
+        fi
+    done
+    [ "$dep_ok" = "1" ] && echo "PASS dependency     README.md names every optional dependency the build probes"
+fi
+
 # 1d. THE STATS COOKBOOKS, against the rule that a function from another library
 #     must be qualified. Both pages taught `ols(...)` after `load stats` -- 78
 #     calls between them -- and nothing could see it: they are not in
