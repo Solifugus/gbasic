@@ -17,6 +17,7 @@ typedef enum {
     AST_STMT_PRINT,
     AST_STMT_EXPR,
     AST_STMT_WITH_LOCK,
+    AST_STMT_WITH_PRINCIPAL,
     AST_STMT_FOR_EACH,
     AST_STMT_FOR_RANGE,
     AST_STMT_FUNCTION,
@@ -260,6 +261,14 @@ struct AstStmt {
             AstExpr *file;
             AstStmtList body;
         } with_lock;
+        /* `with principal(p) ... end with`: the identity on whose behalf the
+         * body acts. Same node shape as with_lock and the same grammar
+         * production -- the opener word is checked by POSITION, so neither
+         * `lock` nor `principal` is a reserved word. */
+        struct {
+            AstExpr *value;
+            AstStmtList body;
+        } with_principal;
         struct {
             char *name;
             AstExpr *iterable;
@@ -420,6 +429,7 @@ AstStmt *ast_print(AstExpr *expr);
 AstStmt *ast_print_error(AstExpr *expr);
 AstStmt *ast_expr_stmt(AstExpr *expr);
 AstStmt *ast_with_lock(AstExpr *file, AstStmtList body);
+AstStmt *ast_with_principal(AstExpr *value, AstStmtList body);
 AstStmt *ast_for_each(char *name, AstExpr *iterable, AstStmtList body);
 AstStmt *ast_for_range(char *name, AstExpr *start, AstExpr *limit,
                        AstExpr *step, AstStmtList body);

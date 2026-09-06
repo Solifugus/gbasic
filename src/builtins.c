@@ -129,6 +129,7 @@ int gbasic_builtin_function(const char *name) {
         "read_lines",
         "join_path",
         "library_collisions",
+        "principal",
         "password_hash_cost",
         "real_path",
         "file_type",

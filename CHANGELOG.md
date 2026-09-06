@@ -9,6 +9,40 @@ language surface may still change between releases.
 
 ## Unreleased
 
+### Added — `with principal`: the identity on whose behalf a body acts
+
+`with principal(p) ... end with` and `principal()`. Step 2 of the AI reference
+proposal, and general beyond it: any program that acts for somebody needs a
+place to say who, and every layer below needs to be able to ask.
+
+**No word is reserved and the grammar did not change.** It rides the
+`with lock(...)` production, whose opener is recognised by position, so
+`principal` stays an ordinary identifier — a variable, a field and a parameter
+may all be called it. Measured: **zero new bison conflicts**, which is not
+decoration in a project that rejected `IDENT expression` as a statement form
+over four measured ones.
+
+`principal()` answers **`nothing`**, never an empty record, when no block is
+open: "nobody said" and "acting for a principal that carries no fields" are
+different claims, and an enforcement point must be able to refuse the first.
+The block takes a record and refuses anything else, naming the kind; the fields
+are the application's, since a deployment with tenants and one without do not
+carry the same identity.
+
+Dynamically scoped, so a function three levels down sees the caller's answer
+without any signature carrying it. Nesting shadows and leaving restores —
+including on a `return`, a `goto` or a raise, so a scope never outlives the work
+it was opened for.
+
+**Two places it deliberately does not reach**, both asserted as differences
+because either half alone is satisfied by something broken. An actor does not
+inherit it — `spawn` is fork and exec, so the isolation falls out of the process
+model — while a worker handed the record explicitly does act under it. And a
+handler fired by the event loop inherits nothing even when the listener was
+created inside a block, because the loop runs after `main`; a request is acted
+on for whoever *sent* it, and the same handler establishing a principal from the
+request works.
+
 ### Fixed — a watched transfer was cancelled when the program rebound its variable
 
 Dropping the last reference to an `http` handle cancels the transfer. In

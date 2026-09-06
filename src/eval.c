@@ -589,6 +589,31 @@ typedef struct {
     int depth;
 } LockEntry;
 
+/* --- `with principal(p)`: the identity on whose behalf the body acts -------
+ *
+ * DYNAMICALLY SCOPED, like `on warning`'s mode and unlike `on error`'s frame:
+ * the question "who is this being done for" belongs to the CALLER, and a
+ * function called three levels down must see the same answer without every
+ * signature carrying it. A stack, so a nested scope shadows and leaving
+ * restores -- including on a return, a goto or a raise, which is why the
+ * evaluator pops before propagating.
+ *
+ * IT DOES NOT CROSS `spawn`, and that falls out rather than being enforced:
+ * an actor is fork+exec, so a child begins with an empty stack. A worker that
+ * should act for someone re-enters the scope from the message it received,
+ * which is the designed handoff -- an identity that travelled implicitly would
+ * be an identity nobody wrote down.
+ *
+ * NOR DOES IT REACH A WATCHER, for the same structural reason: a watcher fires
+ * from the event loop, outside every `with` block the program ever opened. A
+ * request handler therefore establishes the principal from the request, which
+ * is where it should come from anyway. */
+typedef struct {
+    Value value;
+} PrincipalEntry;
+
+
+
 typedef struct {
     AstStmt *stmt;
     int pending;
@@ -2985,11 +3010,39 @@ static void http_handle_release(HttpHandle *handle) {
     }
 }
 
+#if HAVE_LIBCURL
+/* Only the module constructs one, and the module is compiled out with libcurl.
+ * value_free and value_copy still handle VALUE_HTTP unconditionally, because
+ * the value LIFECYCLE must behave identically either way. */
 static Value value_http(HttpHandle *handle) {
     Value v = {0};
     v.kind = VALUE_HTTP;
     v.as.http = handle;
     return v;
+}
+#endif
+
+static PrincipalEntry *principal_stack = NULL;
+static size_t principal_depth = 0;
+
+/* The principal in force, or `nothing` when there is none. NOTHING, never an
+ * empty record: "nobody said" and "acting for a principal that happens to
+ * carry no fields" are different claims, and an enforcement point has to be
+ * able to refuse the first. Same reason `materiality` answers `unknown`
+ * rather than `false` when no threshold was declared. */
+static Value principal_current(void) {
+    if (principal_depth == 0) {
+        return value_null();
+    }
+    return value_copy(principal_stack[principal_depth - 1].value);
+}
+
+static void principal_clear(void) {
+    while (principal_depth > 0) {
+        value_free(principal_stack[--principal_depth].value);
+    }
+    free(principal_stack);
+    principal_stack = NULL;
 }
 
 static void error_clear_state(void) {
@@ -25798,6 +25851,11 @@ static void outline_walk_stmt(OutlineCtx *c, AstStmt *stmt, int parent_id) {
         outline_walk_list(c, stmt->as.without_watchers, id);
         break;
     }
+    case AST_STMT_WITH_PRINCIPAL: {
+        int id = outline_emit(c, stmt, "with_principal", NULL, 1, 0, 0, parent_id);
+        outline_walk_list(c, stmt->as.with_principal.body, id);
+        break;
+    }
     case AST_STMT_WITH_LOCK: {
         int id = outline_emit(c, stmt, "with_lock", NULL, 1, 0, 0, parent_id);
         outline_walk_list(c, stmt->as.with_lock.body, id);
@@ -27313,6 +27371,24 @@ static Value eval_call(AstExpr *expr) {
             req = rem;
         }
         return value_number(secs);
+    }
+
+    if (strcmp(expr->as.call.name, "principal") == 0) {
+        /* The identity in force, or `nothing` when no `with principal` block
+         * is open. NOTHING rather than an empty record, deliberately: "nobody
+         * said" and "acting for a principal that carries no fields" are
+         * different claims, and the point of an enforcement layer is to be
+         * able to refuse the first.
+         *
+         * A SOFT NAME is not needed here the way it was for `warning`: this is
+         * an ordinary builtin, so a variable called `principal` shadows it by
+         * the usual rule and `p.principal` is an ordinary field. */
+        if (expr->as.call.args.count != 0) {
+            runtime_error_raise("principal expects no arguments",
+                                1003, "invalid function call");
+            return value_null();
+        }
+        return principal_current();
     }
 
     if (strcmp(expr->as.call.name, "library_collisions") == 0) {
@@ -33609,6 +33685,9 @@ static void register_method_bodies_in(AstStmtList list) {
         case AST_STMT_WITH_LOCK:
             register_method_bodies_in(stmt->as.with_lock.body);
             break;
+        case AST_STMT_WITH_PRINCIPAL:
+            register_method_bodies_in(stmt->as.with_principal.body);
+            break;
         case AST_STMT_FOR_EACH:
             register_method_bodies_in(stmt->as.for_each.body);
             break;
@@ -34153,6 +34232,50 @@ static EvalResult eval_stmt(AstStmt *stmt) {
             }
         }
         value_free(value);
+        break;
+    }
+    case AST_STMT_WITH_PRINCIPAL: {
+        int before_error = error_generation;
+        Value who = eval_expr(stmt->as.with_principal.value);
+        if (error_generation != before_error) {
+            value_free(who);
+            current_line = previous_line;
+            current_column = previous_column;
+            return eval_error_result();
+        }
+        /* A RECORD and nothing else. The FIELDS are the application's -- a
+         * deployment with tenants and one without do not carry the same
+         * identity -- so the language checks the shape and leaves the contents
+         * to whoever enforces them. What it will not accept is a bare string:
+         * `with principal("alice")` looks like it works and gives every reader
+         * downstream something they cannot ask a question of. */
+        if (who.kind != VALUE_RECORD) {
+            char message[160];
+            snprintf(message, sizeof(message),
+                     "with principal expects a record describing who is acting, "
+                     "not a %s", value_kind_name(who.kind));
+            value_free(who);
+            runtime_error_raise(message, 1003, "principal");
+            current_line = previous_line;
+            current_column = previous_column;
+            return eval_error_result();
+        }
+        PrincipalEntry *grown = realloc(principal_stack,
+                                        sizeof(PrincipalEntry) * (principal_depth + 1));
+        if (!grown) {
+            abort();
+        }
+        principal_stack = grown;
+        principal_stack[principal_depth++].value = who;
+        EvalResult presult = eval_stmt_list(stmt->as.with_principal.body);
+        /* Popped before the result propagates, so a return, a goto or a raise
+         * leaves the scope exactly as an ordinary fall-through does. */
+        value_free(principal_stack[--principal_depth].value);
+        if (eval_result_exits_block(presult)) {
+            current_line = previous_line;
+            current_column = previous_column;
+            return presult;
+        }
         break;
     }
     case AST_STMT_WITH_LOCK: {
@@ -34975,6 +35098,7 @@ int eval_program(AstStmtList program) {
     webserver_library_loaded = 0;
     gi_library_loaded = 0;
     webserver_clear();
+    principal_clear();
     http_library_loaded = 0;
     http_shutdown();
     if (webclient_curl_initialized) {

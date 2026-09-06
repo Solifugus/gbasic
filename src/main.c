@@ -602,6 +602,10 @@ static void analyze_stmt(AddUsesContext *ctx, AstStmt *stmt) {
         analyze_expr(ctx, stmt->as.with_lock.file);
         analyze_stmt_list(ctx, stmt->as.with_lock.body);
         break;
+    case AST_STMT_WITH_PRINCIPAL:
+        analyze_expr(ctx, stmt->as.with_principal.value);
+        analyze_stmt_list(ctx, stmt->as.with_principal.body);
+        break;
     case AST_STMT_FOR_EACH:
         analyze_expr(ctx, stmt->as.for_each.iterable);
         analyze_stmt_list(ctx, stmt->as.for_each.body);

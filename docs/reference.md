@@ -2262,6 +2262,77 @@ continuing in the clear.
 Line endings are normalized to CRLF on the way out, so a body written with
 plain `\n` is compliant without the author knowing the rule.
 
+## Identity: `with principal`
+
+`with principal(p) ... end with` declares the identity on whose behalf the body
+acts, and `principal()` reads it. The word is the one the security literature
+uses for exactly this, and it is deliberately not `context` — `reasoning`
+already defines a Context as `{objectives, thresholds, authority, approval}`,
+which is a different thing that will be loaded into the same program.
+
+```basic
+with principal({ user: "alice", groups: ["staff"], tenant: "acme" })
+    post_entry(ledger, entry)        ' every layer below sees who asked
+end with
+```
+
+`principal()` answers `nothing` when no block is open — **never an empty
+record**. "Nobody said" and "acting for a principal that happens to carry no
+fields" are different claims, and the point of an enforcement layer is to be
+able to refuse the first.
+
+The block takes a **record**; anything else is refused, naming the kind. The
+*fields* are yours: a deployment with tenants and one without do not carry the
+same identity, so the language checks the shape and leaves the contents to
+whatever enforces them.
+
+**Dynamically scoped**, like `on warning`'s mode and unlike `on error`'s frame.
+A function three levels down sees the caller's principal without any signature
+carrying it, because "who is this being done for" is the caller's answer to
+give. Nesting shadows; leaving restores — including on a `return`, a `goto` or
+a raise, so a scope never outlives the work it was opened for.
+
+`principal` is not a reserved word. It rides the `with lock(...)` production,
+whose opener is recognised by position, so a variable, a field and a parameter
+may all be called `principal`.
+
+### Two places it deliberately does not reach
+
+**An actor does not inherit it.** `spawn` is fork and exec, so a child begins
+with no principal at all — the isolation falls out of the process model rather
+than being enforced. A worker that should act for someone re-enters the scope
+from the message it received:
+
+```basic
+function worker()
+    job = receive()
+    with principal(job.principal)
+        handle(job)
+    end with
+end function
+```
+
+That is the designed handoff. An identity that travelled implicitly would be an
+identity nobody wrote down.
+
+**A watcher fired by the event loop does not inherit it either**, for the same
+structural reason: the loop runs after `main`, outside every block the program
+opened. So a request handler sees no principal and must establish one from the
+request — which is where it should come from anyway, since a request is acted
+on for whoever *sent* it, not for whatever the program was doing when it bound
+the socket.
+
+```basic
+watch(server.requests)
+    while count(server.requests) > 0
+        req = take_first(server.requests)
+        with principal(identify(req))
+            append(server.responses, handle(req))
+        end with
+    end while
+end watch
+```
+
 ## HTTP Module
 
 `webclient` performs one request and returns when it has finished, which is the

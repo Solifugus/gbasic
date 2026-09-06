@@ -311,6 +311,14 @@ AstStmt *ast_with_lock(AstExpr *file, AstStmtList body) {
     return stmt;
 }
 
+AstStmt *ast_with_principal(AstExpr *value, AstStmtList body) {
+    AstStmt *stmt = xmalloc(sizeof(*stmt));
+    stmt->kind = AST_STMT_WITH_PRINCIPAL;
+    stmt->as.with_principal.value = value;
+    stmt->as.with_principal.body = body;
+    return stmt;
+}
+
 AstStmt *ast_for_each(char *name, AstExpr *iterable, AstStmtList body) {
     AstStmt *stmt = xmalloc(sizeof(*stmt));
     stmt->kind = AST_STMT_FOR_EACH;
@@ -836,6 +844,17 @@ static void dump_stmt(AstStmt *stmt, int indent) {
         printf("ExpressionStatement\n");
         dump_expr(stmt->as.expr_stmt, indent + 1);
         break;
+    case AST_STMT_WITH_PRINCIPAL:
+        printf("WithPrincipal\n");
+        dump_indent(indent + 1);
+        printf("Principal\n");
+        dump_expr(stmt->as.with_principal.value, indent + 2);
+        dump_indent(indent + 1);
+        printf("Body\n");
+        for (size_t i = 0; i < stmt->as.with_principal.body.count; i++) {
+            dump_stmt(stmt->as.with_principal.body.items[i], indent + 2);
+        }
+        break;
     case AST_STMT_WITH_LOCK:
         printf("WithLock\n");
         dump_indent(indent + 1);
@@ -1198,6 +1217,10 @@ static void free_stmt(AstStmt *stmt) {
     case AST_STMT_WITH_LOCK:
         free_expr(stmt->as.with_lock.file);
         ast_free_program(stmt->as.with_lock.body);
+        break;
+    case AST_STMT_WITH_PRINCIPAL:
+        free_expr(stmt->as.with_principal.value);
+        ast_free_program(stmt->as.with_principal.body);
         break;
     case AST_STMT_DO_LOOP:
         ast_free_program(stmt->as.do_loop.body);

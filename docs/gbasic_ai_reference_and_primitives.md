@@ -1008,12 +1008,27 @@ parameter name in `llm.bas`, so it cannot be reserved and must be recognised
 by position — and if the count is not zero, it is not added. It would lower
 to exactly the record `tools.define` takes.
 
-**`with principal <record> ... end with`** and `principal()` — the identity
-scope. Same rule as `with lock`, one word over. Dynamically scoped; does not
-cross `spawn` *implicitly* — a pool worker re-enters it explicitly from the
-message it received, which is the designed handoff (Part 3, item 7). (Was
-`context`; renamed because `reasoning` already defines a Context and the two
-do not overlap in meaning.)
+**`with principal(p) ... end with`** and `principal()` — **built**
+(2026-09-06). The identity scope, riding the `with lock(...)` production
+exactly as planned: the opener is recognised by position, so no word is
+reserved and there are **zero new grammar conflicts**. Dynamically scoped;
+does not cross `spawn`, which falls out of fork+exec rather than being
+enforced — a pool worker re-enters it explicitly from the message it received,
+the designed handoff (Part 3, item 7). (Was `context`; renamed because
+`reasoning` already defines a Context and the two do not overlap in meaning.)
+
+Two decisions the build settled. `principal()` answers **`nothing`**, never an
+empty record, so "nobody said" is distinguishable from "acting for a principal
+with no fields" — the rule `materiality` already follows. And the block takes a
+**record** and validates nothing else: the fields belong to the deployment, and
+a Context-style field check here would refuse identities that are perfectly
+well formed somewhere else.
+
+A third fell out and is worth stating, because §1.4 assumed it: **a handler
+fired by the event loop inherits nothing**, even when the listener was created
+inside a block, because the loop runs after `main`. A request is therefore
+acted on for whoever *sent* it and for nobody else — which is what the design
+wanted, arrived at structurally rather than by a rule. `tests/run_principal.sh`.
 
 ### 4.3 Stdlib
 
@@ -1054,7 +1069,7 @@ example.
    also produced was three defects invisible to the design — the coalescing
    hang, the unreported watcher raise, and PLAT-EQ's open fallthrough (item
    12c) — none of which any amount of further reading would have found.
-2. `with principal`.
+2. ~~`with principal`~~ — **built 2026-09-06**.
 3. `tools.define`, `tools.schema` and the **worker pool** — the library
    form. (The grammar block only after a zero conflict count, and only as
    sugar.)

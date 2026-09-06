@@ -669,16 +669,22 @@ call_statement
 
 with_lock_statement
     : WITH IDENT LPAREN expression RPAREN NEWLINE statement_list END WITH NEWLINE {
-        if (strcmp($2, "lock") != 0) {
+        /* The opener word is recognised by POSITION, not reserved -- the same
+         * technique the `server` block's verbs use -- so `lock` and
+         * `principal` both stay ordinary identifiers. A second accepted word
+         * is a semantic check, not a grammar change: 0 new conflicts. */
+        int is_lock = strcmp($2, "lock") == 0;
+        int is_principal = strcmp($2, "principal") == 0;
+        if (!is_lock && !is_principal) {
             report_syntax_error(ctx, ctx->la_line, ctx->la_column,
                                 ctx->la_end_line, ctx->la_end_column,
-                                "expected lock in with lock block");
+                                "expected lock or principal in a with block");
             free($2);
             $2 = NULL;
             YYERROR;
         }
         free($2);
-        $$ = ast_with_lock($4, $7);
+        $$ = is_lock ? ast_with_lock($4, $7) : ast_with_principal($4, $7);
       }
     ;
 
