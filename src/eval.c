@@ -30827,6 +30827,54 @@ static Value eval_comparison(AstExpr *expr, Value left, Value right) {
             value_free(right);
             return value_null();
         }
+    } else if (left.kind == VALUE_STRING || right.kind == VALUE_STRING) {
+        /* A STRING COMPARED AGAINST A NON-STRING, and the twelfth branch of a
+         * chain that had eleven. Every other rich kind above has a pair --
+         * `array && array` beside `array || array`, and the same for record,
+         * function, watcher, regex, gobject, gboxed, money, datetime, duration
+         * and nothing/unknown -- answering unequal for = and refusing to
+         * order. String had the `both` branch (above) and no mixed one, so a
+         * string met a number at the numeric fallthrough below, where
+         * `value_number_or_zero` returns 0.0 for every kind that is not a
+         * number or a boolean.
+         *
+         * The result was not "numeric strings compare as numbers" -- `1 = "1"`
+         * was FALSE. It was that every string is zero, so `0 = "stop"`,
+         * `0 = ""` and `0 = "abc"` were all TRUE, and `1 > "stop"` ANSWERED
+         * rather than refusing. That is PLAT-EQ's defect exactly (both sides
+         * coerced to 0, and 0 = 0), surviving for scalars because PLAT-EQ
+         * routed the compounds away from this fallthrough and left the
+         * scalars in it.
+         *
+         * MEASURED BEFORE FIXING, the whole gate instrumented: 1,500
+         * comparisons reach the fallthrough with mismatched kinds. 1,472 are
+         * number-versus-boolean, which is a real coercion (`0 = false`) and
+         * keeps working -- it is below, unchanged. The other 28 are
+         * number-versus-string, at two sites, and ONE OF THEM WAS ALREADY
+         * WRONG: `if c.value = "#VALUE!"` in run_xlsx.sh counts corrupted
+         * cells, and a cell holding the number 0 compared EQUAL to that
+         * string and would have been counted as corrupt. The test passes
+         * today only because no cell in the fixture is zero.
+         *
+         * `x = 0` is the shape that makes this worth refusing rather than
+         * documenting: `if input("n: ") = 0` was true for any answer that was
+         * not a number. */
+        if (strcmp(op, "=") == 0) {
+            result = 0;
+        } else if (strcmp(op, "!=") == 0) {
+            result = 1;
+        } else {
+            char message[128];
+            snprintf(message, sizeof(message),
+                     "a string and a %s have no order; = and != answer, "
+                     "the ordering operators do not",
+                     value_kind_name(left.kind == VALUE_STRING
+                                     ? right.kind : left.kind));
+            runtime_error_raise(message, 1003, "comparison");
+            value_free(left);
+            value_free(right);
+            return value_null();
+        }
     } else {
         double a = value_number_or_zero(left);
         double b = value_number_or_zero(right);

@@ -815,7 +815,68 @@ same argument the LDAP module made for referral chasing — on an
 authentication path, a convenience is an instruction to send something
 somewhere the operator never named.
 
-### 12. Small corrections
+### 12. Handle delivery needs no new mechanism, and two constraints it does have
+
+Item 2 said readiness must be *delivered* by the event loop rather than
+waited on, and left the delivery itself as phase 1's engineering. Measured, it
+is mostly already there.
+
+**A global record may share a name with a native module qualifier.** This was
+the open question — `watch(http.events)` needs a global named `http`, and
+`http.start(...)` needs the module. Both work at once, measured:
+
+```basic
+process = { events: [] }        ' a global record named after the module
+watch(process.events)
+    print count(process.events)
+end watch
+r = process.run({ command: "echo", args: ["hi"] })   ' still dispatches natively
+process.events = append(process.events, "e1")        ' watcher fires
+```
+
+The *call* path checks the native module name before anything else; the
+*field* path checks `env_lookup_exists` before treating `x.y` as a library
+reference. So the `http` module binds a global `http = { events: [] }` at load
+and appends to it, firing `watcher_trigger_change("http.events")` on a fixed
+path. No new machinery, no scan.
+
+**Two constraints to design around, both measured:**
+
+- **`watch` takes a dotted name path.** `watch(box.events)` parses;
+  `watch(pool[0].events)` is a **parse error** — the grammar's
+  `watch_target_path` is names and dots. So a pool of workers cannot each have
+  their own watched path. They share one queue and the reader routes by `id`,
+  which is what item 2's `h.kind`/`h.id` corollary already required; this is
+  the reason it is required.
+- **Fixed-path delivery is better than the precedent.** The webserver finds
+  its queue by scanning `global_env` for the variable holding the server
+  record (`webserver_find_record`) and building the path from that variable's
+  *name* — O(globals) per request, and it only works because the program bound
+  the record to a global. A module-owned global needs neither.
+
+What remains genuinely new in phase 1 is therefore the `http` module itself on
+libcurl's multi interface, plus registering handle fds into the loop's
+existing `poll()` set, plus the waited-or-watched rule from item 8. The
+delivery is a dozen lines.
+
+### 12b. `0 = "stop"` was true, and `agent.step` is a string state machine
+
+Not in the design, and it would have been under it: `agent.step` dispatches on
+`event.kind` strings and compares tool results, and until 2026-09-05 a string
+compared against a number went through a fallthrough where every string became
+`0` — so `0 = "stop"` was **true** while `1 = "1"` was false, and `1 > "stop"`
+answered rather than refusing. Found measuring the worker-pool round trip for
+item 8: a worker whose sentinel was `"stop"` exited on the message `0` and the
+parent hung in `receive()` forever, which is the shape of half the bugs this
+architecture could have.
+
+Fixed (`CHANGELOG.md`): equality answers, ordering refuses, number-versus-
+boolean unchanged at 1,472 measured uses. Recorded here because it is a
+prerequisite that was invisible from the design, and because the way it was
+found — building the smallest measurement rather than reasoning about the
+design — is the same argument item 13 makes for a skeleton.
+
+### 13. Small corrections
 
 - There is no `new_id()`; `hex_encode(random_bytes(16))` is the spelling.
 - A run record must not carry its handle (§1.8): `encode` refuses live
@@ -915,8 +976,11 @@ example.
 ### 4.4 Order, revised
 
 1. `http` (six primitives) and **handle event delivery through the event
-   loop** together — one platform phase, and the delivery is what makes
-   `http` usable from a server at all.
+   loop** together — one platform phase. Measured smaller than it looked
+   (item 12): the delivery is a module-owned global record plus a fixed-path
+   `watcher_trigger_change`, so what is actually new is the libcurl multi
+   interface, registering handle fds into the loop's existing `poll()` set,
+   and the waited-or-watched rule.
 2. `with principal`.
 3. `tools.define`, `tools.schema` and the **worker pool** — the library
    form. (The grammar block only after a zero conflict count, and only as

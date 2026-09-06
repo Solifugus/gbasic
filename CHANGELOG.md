@@ -9,6 +9,41 @@ language surface may still change between releases.
 
 ## Unreleased
 
+### Fixed — a string is never equal to a number, and ordering across kinds refuses
+
+`0 = "stop"` was **true**. So were `0 = ""` and `0 = "abc"`, while `1 = "1"`
+was false and `1 > "stop"` *answered*. Every string became `0` at the end of
+`eval_comparison`'s chain, where `value_number_or_zero` returns 0.0 for any
+kind that is not a number or a boolean — so only the number zero equalled a
+string, which is not a coercion anyone designed.
+
+**It was a missing case in a uniform chain.** Every rich kind has two
+branches: `array && array` beside `array || array`, and the same for record,
+function, watcher, regex, gobject, gboxed, money, datetime, duration and
+nothing/unknown. Eleven pairs. String had the `both` branch and no `mixed`
+one. The fix is the twelfth, written in the shape of the other eleven:
+equality answers, ordering raises naming both kinds. This is PLAT-EQ's defect
+exactly — it routed compounds away from that fallthrough in August and left
+the scalars in it.
+
+**Measured before fixing**, the whole gate instrumented: 1,500 mixed-kind
+comparisons reach the fallthrough. **1,472 are number-versus-boolean** — a
+real coercion (`0 = false`), kept unchanged, and now the control that catches
+an over-correction. The other **28 are number-versus-string at two sites, and
+one was already wrong**: `run_xlsx.sh` counts corrupted cells with
+`c.value = "#VALUE!"`, and a cell holding the number `0` compared equal to that
+string and would have been counted as corrupt. It passes today only because no
+cell in the fixture is zero.
+
+Found measuring an actor pool for the AI reference proposal: a worker whose
+stop sentinel was `"stop"` exited on the message `0`, and the parent hung in
+`receive()` forever. The shape to watch for is `x = 0` as a test on something
+that might be text — `if input("n: ") = 0` was true for any non-numeric answer.
+
+`tests/equality_scalar_test.bas`, 26 checks, in PLAT-EQ's suite. Three
+perturbations red: the fix reverted, the fix over-applied to number/boolean,
+and the ordering refusal dropped. No golden moved.
+
 ### Added — `pg` reads and writes native Postgres arrays
 
 A result column of any built-in array type arrives as a gBASIC array —

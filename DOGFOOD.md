@@ -35,18 +35,19 @@ and the stale-looking ones carry a Status line saying what overtook them.
 
 ### Open — worth fixing (ranked)
 
--1. **`0 = "stop"` is TRUE, `1 = "1"` is FALSE, and `1 > "stop"` answers.**
-   PLAT-EQ's defect class — both sides coerced to 0 at the end of the
-   comparison chain — survives for SCALARS: `value_number_or_zero` returns 0
-   for every string whatever it says (`src/eval.c:30498`), so any number
-   compared to a non-numeric string is equal iff the number is 0, and
-   ordering answers instead of refusing. Violates the documented idiom
-   ("equality answers, ordering refuses", reference.md, the same rule PLAT-EQ
-   gave compounds). Found 2026-09-05 measuring an actor pool: a worker whose
-   stop sentinel was `"stop"` exited on the message `0`. Blast radius is real
-   — `if input("n: ") = 0` is true for ANY non-numeric text — so it needs the
-   PLAT-EQ treatment: instrument, run the gate, count what depends on it, then
-   a suite proven red. Entry below.
+-1. ~~**`0 = "stop"` is TRUE, `1 = "1"` is FALSE, and `1 > "stop"` answers.**~~
+   **RESOLVED 2026-09-05, same day.** It was a MISSING CASE in a uniform
+   chain, not a design choice: `eval_comparison` gives every rich kind a
+   `both` branch and a `mixed` branch — array, record, function, watcher,
+   regex, gobject, gboxed, money, datetime, duration, nothing/unknown, eleven
+   pairs — and STRING had only the `both` one, so a string met a number at the
+   numeric fallthrough. The twelfth branch, written in the shape of the other
+   eleven, is the whole fix. INSTRUMENTED FIRST, whole gate: 1,500 mixed-kind
+   comparisons, 1,472 number-versus-boolean (a real coercion, kept and
+   asserted as the control), 28 number-versus-string at two sites — and one of
+   those was ALREADY WRONG, a corruption counter in run_xlsx.sh that would
+   have counted a cell holding 0 as corrupt. Three perturbations red,
+   including over-correction. Gate unchanged.
 0. ~~**`pg` can neither return nor accept a native array, and said so
    nowhere.**~~ **RESOLVED 2026-09-05, same day.** Twenty-two array types read
    as gBASIC arrays (elements by their own type, so `int8[]` is strings for
@@ -4258,10 +4259,16 @@ orders freely.
 - **Workaround:** compare on `type()` first — `if type(m) = "string" then break`
   — which is what the pool measurement did. Do not rely on `x = 0` to test a
   value that might be text.
-- **Not fixed here** because the blast radius is unmeasured: `if input("n: ")
-  = 0` is TRUE today for any non-numeric answer, and something in the tree may
-  lean on that. Needs the PLAT-EQ treatment — instrument the fallthrough, run
-  the gate, count the dependents, then a self-checking suite proven red.
+- **Status: RESOLVED 2026-09-05**, the same evening, by the treatment this
+  entry asked for. Instrumented, gate run, dependents counted: 1,472
+  number-versus-boolean (kept — a real coercion, and now the control that
+  catches over-correction) and 28 number-versus-string at two sites, one of
+  them already wrong. The fix is the twelfth branch of a chain that had
+  eleven — string had no `mixed` branch where every other rich kind does —
+  and it moved no golden and no suite. `tests/equality_scalar_test.bas`, 26
+  checks, in PLAT-EQ's own suite because it is PLAT-EQ's own defect one level
+  over. Three perturbations red: the fix reverted, the fix over-applied to
+  number/boolean, and the ordering refusal forgotten.
 
 ## 2026-09-05 — CC — while: the same measurement
 - **Type:** language-surprise

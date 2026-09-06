@@ -92,6 +92,37 @@ if grep -q 'MISMATCH' "$out"; then
     status=1
 fi
 
+# --- Tier 1b: the SCALAR half of the same defect -------------------------------
+#
+# PLAT-EQ routed compounds away from the numeric fallthrough and left scalars
+# in it, so every STRING was still 0 there: `0 = "stop"` was TRUE, `0 = ""` was
+# TRUE, `1 = "1"` was false, and `1 > "stop"` ANSWERED. Found 2026-09-05
+# measuring an actor pool -- a worker whose sentinel was "stop" exited on the
+# message 0 and the parent hung in receive().
+#
+# MEASURED BEFORE FIXING, whole gate instrumented: 1,500 mismatched-kind
+# comparisons reach that fallthrough, 1,472 of them number-versus-boolean --
+# a real coercion, asserted in the fixture as still working, and the control
+# without which the fix is indistinguishable from refusing every mixed
+# comparison. The other 28 were number-versus-string at two sites, one of them
+# ALREADY WRONG: run_xlsx.sh counts corrupted cells with `c.value = "#VALUE!"`
+# and would have counted a cell holding 0 as corrupt.
+if timeout 300 ./gbasic tests/equality_scalar_test.bas >"$work/scalar.txt" 2>"$err" </dev/null; then
+    if grep -q '^mismatches: 0$' "$work/scalar.txt" \
+       && [ "$(sed -n 's/^checks: //p' "$work/scalar.txt")" -ge 24 ]; then
+        printf 'PASS tests/equality_scalar_test.bas (%s checks)\n' \
+            "$(sed -n 's/^checks: //p' "$work/scalar.txt")"
+    else
+        printf 'FAIL tests/equality_scalar_test.bas -- scalar comparison SEMANTICS moved\n'
+        grep -E '^MISMATCH|^checks|^mismatches' "$work/scalar.txt"
+        status=1
+    fi
+else
+    printf 'FAIL tests/equality_scalar_test.bas (exit)\n'
+    cat "$err"
+    status=1
+fi
+
 # --- Tier 2: the in-language oracle -------------------------------------------
 if grep -q 'ORACLE DISAGREES' "$out"; then
     printf 'FAIL oracle -- the operator and the in-language walk disagree:\n'

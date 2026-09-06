@@ -609,6 +609,25 @@ a !>= b
 a !<= b
 ```
 
+**Across kinds, equality answers and ordering refuses** (*since 0.1.0*). There
+is no implicit numeric/string coercion in a comparison any more than in
+arithmetic, so a string is never equal to a number — `0 = "stop"`, `0 = ""` and
+`1 = "1"` are all **false** — and `1 > "stop"` **raises**, naming both kinds.
+The same rule already governs arrays, records, functions, watchers, regexes,
+gobjects, boxed values, money and date/time: `=` and `!=` are questions with
+answers, ordering is not a question at all.
+
+Numbers and booleans are the exception and coerce as they always have: `0 =
+false` and `1 = true` are true, and `1 > false` orders. That is a real
+coercion the language uses — measured at 1,472 of the 1,500 mixed-kind
+comparisons in the test suite — where a string against a number was, at every
+one of the remaining sites, a mistake.
+
+Until this release a string compared against a number went through the numeric
+fallthrough, where every string became `0` — so `0 = "stop"` was **true** while
+`1 = "1"` was false, and `1 > "stop"` answered. `if input("n: ") = 0` was true
+for any answer that was not a number.
+
 Date/time bare comparisons are exact. Two date/time values are equal only when
 their stored date/time fields and stored precision match. For precision-aware
 comparison, use an explicit comparison lens:
@@ -1157,8 +1176,9 @@ print u = e            ' false -- a real question, answered
 ```
 
 Equality *answers* while ordering *refuses*, following the same idiom as
-compound values: "is USD 19.95 equal to EUR 19.95" is a question whose answer
-is no; "is it less than" is not a question at all without an exchange rate.
+compound values and as a string against a number: "is USD 19.95 equal to
+EUR 19.95" is a question whose answer is no; "is it less than" is not a
+question at all without an exchange rate.
 Applying a different currency's modifier to existing money is refused for the
 same reason — re-tagging and converting are different operations, and picking
 one silently would invent a rate of 1.

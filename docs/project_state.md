@@ -45,6 +45,9 @@ document list, with a status column, is `docs/README.md`.
   `on error goto LABEL`, `if error then` (`docs/error_model_design.md`)
 - a **warning channel** beside it — `on warning print|ignore|stop|goto next`,
   `if warning then`, `warning(…)` (`docs/warning_model_design.md`)
+- comparison across kinds: equality **answers**, ordering **refuses** — a
+  string is never equal to a number (`0 = "stop"` is false, `1 > "stop"`
+  raises); numbers and booleans coerce (`0 = false`)
 - distinct `nothing` and `unknown` values
 - date/time, duration, money, file, and directory values
 - binary-safe, Unicode-aware strings, codepoint operations, and byte builtins

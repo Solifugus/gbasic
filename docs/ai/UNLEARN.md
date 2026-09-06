@@ -430,6 +430,15 @@ day — so assume you will hit them too.
   calls its own functions with no prefix — in its own file, declared in the same
   file as the program, and inside a `modifier` body.
 
+- **A string is never equal to a number** (0.1.0). `0 = "stop"` is **false**,
+  and `1 > "stop"` **raises**. It used to be TRUE: every string became `0` in
+  the comparison fallthrough, so only the number zero equalled one, while
+  `1 = "1"` was false — not a coercion, an omission. Numbers and booleans still
+  coerce (`0 = false` is true, 1,472 uses in the suite). Watch for `x = 0` as a
+  test on something that might be text: `if input("n: ") = 0` used to be true
+  for any non-numeric answer. Same rule as arrays, records and money —
+  **equality answers, ordering refuses**.
+
 - **`load` is position-blind** (0.1.0). Top level or inside the `program` block,
   both work — it is registered before anything runs. It did NOT used to be: a
   top-level `load` was dead code when a program block existed, and warned so.
