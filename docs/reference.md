@@ -2353,6 +2353,27 @@ A `data` event is reported once for the bytes currently buffered and again only
 after a `read`, so a program that does not want the body is told twice at most
 rather than on every turn of the loop.
 
+**Declare the watcher before starting anything.** Dropping the last reference to
+a handle cancels its transfer — in waited mode that is right, since nobody could
+read the answer again. In watched mode it is not: the loop will deliver the
+completion and the event carries the handle back, so the loop holds a reference
+of its own, taken when the transfer starts *if a watcher is already live*. This
+is what lets the natural deferred handler work:
+
+```basic
+watch(server.requests)
+    while count(server.requests) > 0
+        req = take_first(server.requests)
+        h = http.start({ url: upstream })
+        pending[string(h.id)] = req.id      ' remember the request, not the handle
+    end while
+end watch
+```
+
+`h` is rebound on every request, and without the loop's own reference the second
+request would cancel the first — two handlers run, one answer arrives, and
+nothing is reported.
+
 ## WebServer Module
 
 WebServer provides an HTTP/1.1 server using live records, ordinary arrays, and

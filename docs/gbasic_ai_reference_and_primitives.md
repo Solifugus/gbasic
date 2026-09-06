@@ -957,7 +957,17 @@ an event carries the handle **itself** as well as its id — a watcher needs no
 table to map an id back to a transfer, and the reference the event holds is
 what keeps the transfer from being collected before it is read.
 
-Two things came out of building it that the design did not have.
+**§1.8's deferred handler is PROVEN, and it needed no new mechanism.** The
+architecture's central claim is that a request needing a model call is answered
+*later*: the handler starts the call and returns, and the answer is appended
+when the reply arrives, from a different watcher. Nothing in the tree had ever
+done it. It works — a response appended to `server.responses` names its request
+by id, and the id outlives the handler — and `tests/run_http.sh`'s DEFERRED tier
+asserts it as an **ordering**, not a clock: two requests at once, both handlers
+must have returned before either answer appears, which is what "the loop was
+never blocked" actually means.
+
+Three things came out of building it that the design did not have.
 
 A `data` event must be **coalesced**: reported once for the bytes currently
 buffered and again only after a `read`. The first version re-reported undrained
@@ -965,10 +975,18 @@ bytes on every turn of the loop, which for a program that did not want the body
 is an unbounded queue and a loop that never goes idle. It did not fail, it
 **hung**, so its tier is bounded by `timeout`.
 
-And a raise inside a watcher was **reported nowhere** — exit 1, nothing on
+A raise inside a watcher was **reported nowhere** — exit 1, nothing on
 stderr. Pre-existing in `watch(server.requests)` since the watcher path was
 written, because the fatal report runs when `main` returns and a watcher fires
 after that. Fixed for both queues, and asserted for both.
+
+And **the loop must hold its own reference to a watched handle.** Dropping the
+last reference cancels a transfer, which is right in waited mode and wrong in
+watched mode. Written the natural way — `h = http.start(...)` inside a request
+watcher, rebinding one global per request — the second request cancelled the
+first: two handlers ran, one answer arrived, nothing was reported. This is the
+defect the deferred tier was written to prove works and instead proved broken,
+which is the best possible outcome for a tier.
 
 **`rank`** — deferred. No consumer once ranking is a pgvector query (Part
 3, item 10). Revisit with a second consumer in hand.

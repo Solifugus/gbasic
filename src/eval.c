@@ -553,7 +553,20 @@ struct HttpHandle {
      * never goes idle, for a program that simply did not want the body. */
     int data_notified;
     int waited;             /* a blocking wait/poll has claimed this handle */
-    int watched;            /* the event loop has claimed this handle */
+    /* THE LOOP'S OWN REFERENCE. Dropping the last reference to a handle
+     * cancels the transfer, because in waited mode nobody could ever read the
+     * answer again. In WATCHED mode that is false: the event loop will deliver
+     * the completion and the event carries the handle back, so the loop is an
+     * interested party and must hold a reference of its own.
+     *
+     * Without it the natural way to write a deferred handler loses transfers
+     * silently. `h = http.start(...)` inside a request watcher rebinds one
+     * global, so the SECOND request cancelled the first -- measured: two
+     * concurrent requests, both handlers ran, one answer ever arrived, and
+     * nothing was reported. Taken at `start` when a watcher on `http.events`
+     * is live, released once `done` has been delivered or the handle is
+     * claimed by wait/stop/release. */
+    int loop_ref;
     long status;            /* HTTP status code; 0 until the response line arrives */
     ProcBuf pending;        /* body bytes not yet handed to http.read */
     size_t body_total;      /* every body byte seen, for the size limit */
@@ -10518,25 +10531,24 @@ static int value_unique_comparable(Value value) {
         value.kind == VALUE_UNKNOWN;
 }
 
+/* ONE DEFINITION OF EQUALITY, and `unique` used to have its own.
+ *
+ * This was a separate switch requiring both kinds to match, so it disagreed
+ * with every other route on the language's one real coercion:
+ * `unique([0, false])` returned BOTH elements, and then
+ * `contains(that, 0)` and `contains(that, false)` were both true -- an array
+ * `unique` had just declared duplicate-free, holding what `contains` regards
+ * as a duplicate. `unique` is defined as removing duplicates, and what counts
+ * as a duplicate is not `unique`'s to decide differently from `=`.
+ *
+ * Callers hold BORROWED values, so both sides are copied: values_equal
+ * consumes what it is given.
+ *
+ * The scalar refusal above it stays. Lifting it would be a feature change
+ * (deep comparison of records, O(n^2) in a different sense), not part of
+ * making the routes agree. */
 static int unique_values_equal(Value left, Value right) {
-    if (left.kind != right.kind) {
-        return 0;
-    }
-    switch (left.kind) {
-    case VALUE_NUMBER:
-        return left.as.number == right.as.number;
-    case VALUE_STRING:
-        return string_value_equal(left.as.string, right.as.string);
-    case VALUE_BOOL:
-        return left.as.boolean == right.as.boolean;
-    case VALUE_DATETIME:
-        return datetime_compare_exact(left.as.datetime, right.as.datetime) == 0;
-    case VALUE_NULL:
-    case VALUE_UNKNOWN:
-        return 1;
-    default:
-        return 0;
-    }
+    return values_equal(value_copy(left), value_copy(right));
 }
 
 static int array_all_unique_comparable(Value array) {
@@ -14454,6 +14466,9 @@ static Value webclient_eval_call(AstExpr *expr) {
 
 static CURLM *http_multi = NULL;
 
+static int http_events_watched(void);
+static void http_drop_loop_ref(HttpHandle *h);
+
 static Value http_raise(const char *message) {
     runtime_error_raise(message, HTTP_ERROR_CODE, "http");
     return value_null();
@@ -14750,6 +14765,16 @@ static void http_pump(void) {
     }
 }
 
+/* Give up the loop's reference, once. Never the last one in practice -- the
+ * caller is holding the handle it was reached through -- but written to be
+ * safe if it ever is. */
+static void http_drop_loop_ref(HttpHandle *h) {
+    if (h && h->loop_ref) {
+        h->loop_ref = 0;
+        http_handle_release(h);
+    }
+}
+
 static Value http_make_status(HttpHandle *h) {
     RecordField *fields = calloc(8, sizeof(RecordField));
     if (!fields) {
@@ -14941,6 +14966,15 @@ static Value http_do_start(AstExpr *expr) {
     http_handles = grown;
     http_handles[http_handle_count++] = h;
 
+    /* See HttpHandle.loop_ref: in watched mode the loop, not the program's
+     * variable, is what keeps a transfer alive. The watcher has to be declared
+     * before the start -- which is the order every sensible program uses, since
+     * it is a declaration of how the answer will be heard. */
+    if (http_events_watched()) {
+        h->loop_ref = 1;
+        h->ref_count++;
+    }
+
     /* One perform now, so a request that fails immediately (a bad host with a
      * cached negative answer) is already failed when start returns. */
     http_pump();
@@ -15021,6 +15055,7 @@ static Value http_do_wait(AstExpr *expr) {
                  "from `http.events` instead, or accept the stall deliberately");
     }
 
+    http_drop_loop_ref(h);   /* waited now, so not the loop's to deliver */
     h->waited = 1;
     double started = http_now_seconds();
     while (!h->done) {
@@ -15071,6 +15106,7 @@ static Value http_do_stop(AstExpr *expr) {
         http_handle_detach(h);
     }
     h->waited = 1;      /* a stopped handle is nobody's to deliver */
+    http_drop_loop_ref(h);
     value_free(owner);
     return value_bool(1);
 }
@@ -15096,6 +15132,7 @@ static Value http_do_release(AstExpr *expr) {
     h->waited = 1;
     http_handle_detach(h);
     http_registry_remove(h);
+    http_drop_loop_ref(h);
     value_free(owner);
     return value_bool(1);
 }
@@ -15336,6 +15373,10 @@ static int http_loop_service(void) {
             if (!http_emit_event(h, "done")) {
                 return 0;
             }
+            /* Delivered: the loop is finished with it. The event the watcher
+             * just received holds its own reference, so the handle survives for
+             * as long as the program keeps that event and no longer. */
+            http_drop_loop_ref(h);
             if (i >= http_handle_count || http_handles[i] != h) {
                 i--;
             }

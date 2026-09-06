@@ -157,6 +157,42 @@ else
     status=1
 fi
 
+# --- Tier 1d: ONE definition of equality, asked through every route ------------
+#
+# The durable half of the three PLAT-EQ fixes. Each corrected ONE site and left
+# the others to be found later, so this tier asks the SAME question through
+# every route -- `=`, `contains`, `find`, `remove_value`, `consider`, `unique`
+# -- and requires one answer, with the expected answer STATED by the fixture so
+# it cannot pass by having every route agree on the wrong one.
+#
+# `unique` is why it exists: it had its own switch requiring both kinds to
+# match, so `unique([0, false])` returned BOTH elements and `contains` then
+# reported each of them present -- an array `unique` had just called
+# duplicate-free holding what `contains` calls a duplicate. It delegates now.
+#
+# THE WATCHER IS DELIBERATELY OUTSIDE THAT SET and the fixture's last tier says
+# why: it answers whether the STORED VALUE CHANGED, which on the language's one
+# real coercion must differ from `=`. A variable holding 1 that is assigned
+# `true` has changed, and a watcher that stayed silent would leave the program
+# holding a boolean while reporting nothing. Both halves are asserted, with a
+# control (an equal ARRAY assigned over itself is not a change) without which
+# the exception would read as watchers firing on everything.
+if timeout 300 ./gbasic tests/equality_routes_test.bas >"$work/routes.txt" 2>"$err" </dev/null; then
+    if grep -q '^mismatches: 0$' "$work/routes.txt" \
+       && [ "$(sed -n 's/^checks: //p' "$work/routes.txt")" -ge 90 ]; then
+        printf 'PASS tests/equality_routes_test.bas (%s checks across 6 routes)\n' \
+            "$(sed -n 's/^checks: //p' "$work/routes.txt")"
+    else
+        printf 'FAIL tests/equality_routes_test.bas -- the routes disagree about equality\n'
+        grep -E '^MISMATCH|^checks|^mismatches' "$work/routes.txt"
+        status=1
+    fi
+else
+    printf 'FAIL tests/equality_routes_test.bas (exit)\n'
+    cat "$err"
+    status=1
+fi
+
 # --- Tier 2: the in-language oracle -------------------------------------------
 if grep -q 'ORACLE DISAGREES' "$out"; then
     printf 'FAIL oracle -- the operator and the in-language walk disagree:\n'

@@ -250,6 +250,101 @@ else
     note "PASS RAISE/server (exit $sraise_status, located)"
 fi
 
+# --- DEFERRED: a handler that starts a call and does not answer ------------
+#
+# The shape everything downstream of this phase needs: a handler runs on the
+# event loop's thread, so a request that needs a model call must start it and
+# RETURN, with the answer appended later from a different watcher. Nothing in
+# the tree had ever done that.
+#
+# THE ASSERTION IS AN ORDERING, NOT A CLOCK. Two requests are sent at once and
+# each upstream call takes 800ms; both handlers must have STARTED before either
+# ANSWER appears. A test that only checked both clients got their bodies would
+# pass on a handler that blocked the loop and served them one at a time.
+srv_port="$(python3 - <<'PORT'
+import socket
+s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()
+PORT
+)"
+# --line-buffered because the tier reads the fixture's stdout after killing it:
+# block-buffered, the lines that prove the ordering may never reach the file,
+# and the tier would report "0 started" for a run that worked.
+PORT="$srv_port" UPSTREAM="$port" timeout -k 5 60 ./gbasic --line-buffered tests/http/deferred_server.bas \
+    >"$work/def.out" 2>"$work/def.err" &
+defsrv=$!
+# `|| true`: a lost transfer means a client that never gets an answer, and the
+# driver failing must produce a REPORTED failure below rather than aborting the
+# suite under `set -e` and taking the remaining tiers with it.
+python3 - "$srv_port" "$work" <<'DRIVE' || true
+import socket, sys, threading, time
+port, work = int(sys.argv[1]), sys.argv[2]
+deadline = time.time() + 10
+while time.time() < deadline:
+    try:
+        socket.create_connection(("127.0.0.1", port), timeout=1).close()
+        break
+    except OSError:
+        time.sleep(0.05)
+bodies = {}
+def ask(n):
+    # Read exactly Content-Length rather than to EOF: the server may hold the
+    # connection open, and a reader waiting for EOF then blocks until its own
+    # timeout and looks like a server that never answered.
+    with socket.create_connection(("127.0.0.1", port), timeout=8) as c:
+        c.sendall(b"GET /ask HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+        data = b""
+        while b"\r\n\r\n" not in data:
+            chunk = c.recv(4096)
+            if not chunk:
+                break
+            data += chunk
+        head, _, body = data.partition(b"\r\n\r\n")
+        length = 0
+        for line in head.split(b"\r\n"):
+            if line.lower().startswith(b"content-length:"):
+                length = int(line.split(b":", 1)[1].strip())
+        while len(body) < length:
+            chunk = c.recv(4096)
+            if not chunk:
+                break
+            body += chunk
+    bodies[n] = (head + b"\r\n\r\n" + body).decode("utf-8", "replace")
+def guarded(n):
+    # One client that never gets its answer must not stop the other from
+    # recording what it DID get: the tier's message names how many of the two
+    # arrived, and that count is the diagnosis.
+    try:
+        ask(n)
+    except Exception as exc:
+        bodies[n] = "CLIENT FAILED: %s" % exc
+ts = [threading.Thread(target=guarded, args=(i,)) for i in (1, 2)]
+for t in ts: t.start()
+for t in ts: t.join()
+with open(work + "/def.client", "w") as f:
+    for n in sorted(bodies):
+        f.write(bodies[n].replace("\r\n", "|") + "\n")
+DRIVE
+kill $defsrv 2>/dev/null || true
+wait $defsrv 2>/dev/null || true
+answered=$(grep -c '^answered ' "$work/def.out" || true)
+started=$(grep -c '^started ' "$work/def.out" || true)
+# `|| true` on the pipeline too: under `pipefail` a grep that matches nothing
+# fails the assignment and `set -e` ends the suite silently -- which is how a
+# RED tier reports nothing at all instead of reporting red.
+order=$(grep -E '^(started|answered) ' "$work/def.out" | awk '{print $1}' | tr '\n' ' ' || true)
+got=$(grep -c 'deferred:waited 800' "$work/def.client" 2>/dev/null || true)
+if [[ "$started" != "2" || "$answered" != "2" ]]; then
+    cat "$work/def.out" "$work/def.err"
+    bad "DEFERRED: $started started, $answered answered; both requests must be handled"
+elif [[ "$order" != "started started answered answered " ]]; then
+    bad "DEFERRED: order was [$order]; both handlers must RETURN before either answer arrives, or the loop was blocked"
+elif [[ "$got" != "2" ]]; then
+    cat "$work/def.client"
+    bad "DEFERRED: $got of 2 clients received the deferred body"
+else
+    note "PASS DEFERRED (two handlers returned unanswered; both answered later from the http watcher)"
+fi
+
 # --- WARN: a blocking wait inside the loop, and its control ----------------
 if ! timeout -k 5 60 ./gbasic tests/http/wait_in_watcher.bas \
         >"$work/win.out" 2>"$work/win.err"; then

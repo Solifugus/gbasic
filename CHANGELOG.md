@@ -9,6 +9,43 @@ language surface may still change between releases.
 
 ## Unreleased
 
+### Fixed — a watched transfer was cancelled when the program rebound its variable
+
+Dropping the last reference to an `http` handle cancels the transfer. In
+*waited* mode that is right — nobody could read the answer again. In *watched*
+mode it is wrong: the event loop will deliver the completion and the event
+carries the handle back, so the loop is an interested party.
+
+Without a reference of its own, the natural deferred handler lost transfers
+**silently**. `h = http.start(...)` inside a request watcher rebinds one global,
+so the second request cancelled the first. Measured: two concurrent requests,
+both handlers ran, **one answer ever arrived**, and nothing was reported. The
+loop now takes a reference when a watcher on `http.events` is live and releases
+it once `done` has been delivered.
+
+### Fixed — `unique` had its own definition of equality
+
+`unique([0, false])` returned **both** elements, and `contains` then reported
+each of them present: an array `unique` had just called duplicate-free holding
+what `contains` calls a duplicate. It had a separate switch requiring both kinds
+to match, so it disagreed with every other route on the language's one real
+coercion. What counts as a duplicate is not `unique`'s to decide differently
+from `=`; it delegates now.
+
+Found by a sweep after the third PLAT-EQ fix, on the standing rule that a defect
+found in one place is evidence about every place that does the same thing.
+`tests/equality_routes_test.bas` (95 checks) now asks the same question through
+`=`, `contains`, `find`, `remove_value`, `consider` and `unique` and requires one
+answer, with the expected answer stated by the fixture so it cannot pass by
+having every route agree on the wrong one.
+
+**And one claim was too strong.** `CLAUDE.md` said the operator and change
+detection "cannot disagree". They must, on number-versus-boolean: `1 = true`,
+yet a variable holding `1` that is assigned `true` **has** changed, and a silent
+watcher would leave the program holding a boolean while reporting nothing. The
+watcher answers a different question. Corrected in place, with the one point of
+divergence and a control asserted.
+
 ### Added — `http`: requests that do not block the program
 
 `webclient` performs one request and returns when it has finished. `http` is
