@@ -9,6 +9,36 @@ language surface may still change between releases.
 
 ## Unreleased
 
+### Documented — what `pg` does with a set-valued column, measured
+
+Postgres's native array types are **unsupported in both directions**: a
+`text[]` or `float8[]` result column raises, and an array parameter is sent as
+JSON text, which Postgres refuses as `malformed array literal`. This was true
+since the module was written and appeared in no document and no suite. It is
+in `docs/reference.md` now, beside the alternative that works on the module as
+it is: a `jsonb` column takes the JSON a parameter already is ("any of these"
+is a join over `jsonb_array_elements_text`), and a pgvector column arrives as
+text that `decode` reads and `encode` sends back for a `<->` search.
+
+`tests/postgres_arrays.bas` holds the reference to that, and its two "raises"
+checks are a **negative control** that goes red when native arrays are
+implemented — the signal to rewrite the paragraph, not the test.
+
+Found checking the AI reference proposal
+(`docs/gbasic_ai_reference_and_primitives.md`) against the tree, and worth
+recording for how it went: the first reading concluded native arrays blocked
+the design and put them first in the build order; running the workaround
+against a real PostgreSQL 17.10 reversed that within the hour. The design's
+retrieval query fails as sketched and runs with a `jsonb`/`vector` schema —
+which is the schema a pgvector-backed store would use anyway.
+
+`tools/setup_postgres_dev.sh` provisions the role and two databases for the
+opt-in suites (peer auth; no `pg_hba.conf` edits; idempotent). Running them for
+the first time on this machine found `run_gbasic_site_postgres.sh` **red since
+PLAT-WARN shipped**: `record_post_event` returned a boolean nobody read, and
+the unused-result warning failed the suite's clean-stderr check. It returns
+`nothing` now. Both opt-in suites pass.
+
 ### Changed — `load` is a declaration, and the warning about it is gone
 
 Write `load` at the top level or inside the `program` block; both are registered

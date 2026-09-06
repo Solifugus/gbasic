@@ -387,11 +387,16 @@ function post_rate_limited(db, req)
 end function
 
 function record_post_event(db, req, kind)
+    ' An effect, not a query: nothing reads the result, so it returns nothing
+    ' (the void convention PLAT-WARN exempts by value). It used to return a
+    ' boolean, and the two bare calls tripped the unused-result warning --
+    ' which failed this suite's clean-stderr check for as long as no Postgres
+    ' was reachable to run it.
     if post_rate_limit() <= 0 then
-        return false
+        return nothing
     end if
     pg.exec(db, "insert into gbasic_site_post_events (remote_ip, kind) values ($1, $2)", [client_ip(req), kind])
-    return true
+    return nothing
 end function
 
 function rate_limited_response(req)

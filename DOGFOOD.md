@@ -35,7 +35,29 @@ and the stale-looking ones carry a Status line saying what overtook them.
 
 ### Open — worth fixing (ranked)
 
-0. ~~**A spawned actor cannot see a library loaded inside `program`, and the
+-1. **`0 = "stop"` is TRUE, `1 = "1"` is FALSE, and `1 > "stop"` answers.**
+   PLAT-EQ's defect class — both sides coerced to 0 at the end of the
+   comparison chain — survives for SCALARS: `value_number_or_zero` returns 0
+   for every string whatever it says (`src/eval.c:30498`), so any number
+   compared to a non-numeric string is equal iff the number is 0, and
+   ordering answers instead of refusing. Violates the documented idiom
+   ("equality answers, ordering refuses", reference.md, the same rule PLAT-EQ
+   gave compounds). Found 2026-09-05 measuring an actor pool: a worker whose
+   stop sentinel was `"stop"` exited on the message `0`. Blast radius is real
+   — `if input("n: ") = 0` is true for ANY non-numeric text — so it needs the
+   PLAT-EQ treatment: instrument, run the gate, count what depends on it, then
+   a suite proven red. Entry below.
+0. **`pg` can neither return nor accept a native array, and said so
+   nowhere.** Any array-typed result column raises (`src/eval.c:19265`,
+   twenty-two OIDs from `text[]` to `float8[]`), and an array *parameter* is
+   sent as JSON text, so `where acl && $1` receives `["a","b"]` and Postgres
+   answers `malformed array literal`. MEASURED 2026-09-05 against 17.10 once a
+   database existed. NOW DOCUMENTED in reference.md with the alternative that
+   works on the same module: a `jsonb` column takes the JSON a parameter
+   already is, and a pgvector column round-trips through `decode`/`encode`.
+   Still open as a feature (`&&` is the natural spelling, and an existing
+   `text[]` column is unreadable); no longer blocks anything. Entry below.
+0a. ~~**A spawned actor cannot see a library loaded inside `program`, and the
    warning for the shape that works says the opposite.**~~ **RESOLVED
    2026-09-05.** `load` is a declaration now, hoisted from either position by
    ONE pass the parent and the actor child share — they used to run separate
@@ -4143,3 +4165,102 @@ worker unless the load is written twice.
   bug**: it used `alias_host` and `alias_dep`, and `alias_host` loads
   `alias_dep`, so the child got the block-position library transitively and
   removing that hoist changed nothing. Two independent libraries now.
+
+## 2026-09-05 — CC — while: checking docs/gbasic_ai_reference_and_primitives.md against the tree
+- **Type:** missing-feature
+- **Severity:** high
+- **What:** `pg` has no array support in either direction, and nothing says so.
+
+The proposal's one load-bearing query is
+
+```basic
+rows = pg.query(db, "select id, vector, text, source from chunks where acl && $1", [ctx.groups])
+```
+
+and it fails twice. Reading a `text[]` or `float8[]` column raises
+`PostgreSQL array result types are not supported` (`src/eval.c:19265`,
+`pg_oid_is_array`). Passing `[ctx.groups]` as a parameter routes
+`VALUE_ARRAY` through `pg_json_append_value`, so the wire carries
+`["staff","lending"]` and the `&&` operator refuses it.
+
+The limitation appeared in no document and no suite. The pg suite is opt-in
+(`GBASIC_POSTGRES_TEST=1`) and no database existed on this machine, so the
+first version of this entry was written from reading the raise, and its
+workaround was *reasoned*. Then a database was provisioned
+(`tools/setup_postgres_dev.sh`) and everything below was RUN against
+PostgreSQL 17.10 + pgvector 0.7.2. Both failure paths execute as read;
+Postgres's own message for the parameter case is `malformed array literal:
+"["staff","lending"]"`.
+
+- **Workaround, measured:** store the ACL as `jsonb` and filter with
+  `exists (select 1 from jsonb_array_elements_text(acl) a join
+  jsonb_array_elements_text($1::jsonb) g on a = g)` — matched exactly the
+  right rows. A pgvector `vector` column arrives as the string
+  `[0.1,0.2,0.3]`, `decode` reads it, and `encode(v)` with a `::vector` cast
+  sends one back — `vec <-> $1::vector order by dist limit 1` found the
+  nearest row at distance 0. So the schema a pgvector-backed store would use
+  anyway works with the module as it is. **The reasoned version of this
+  entry concluded native arrays had to come first; running it reversed
+  that.** Native arrays are still the fix for the general case and the gap is
+  now documented in reference.md.
+
+**Also found by provisioning the database:** `run_gbasic_site_postgres.sh`
+had been RED since PLAT-WARN shipped — `record_post_event` returned a
+boolean nobody read, two bare calls tripped the unused-result warning, and
+the suite's clean-stderr check failed. Invisible for the same reason as the
+array gap: opt-in, no server. Fixed by returning `nothing` (the void
+convention the warning exempts). Both opt-in suites are green on this
+machine now, for the first time.
+
+## 2026-09-05 — CC — while: measuring an actor pool's per-message cost for the AI proposal review
+- **Type:** bug
+- **Severity:** high
+- **What:** a worker that breaks on `if m = "stop"` exits on the message `0`.
+
+```basic
+function worker(parent)
+    while true
+        m = receive()
+        if m = "stop" then break     ' true when m is 0
+        send(parent, m * 2)
+    end while
+end function
+```
+
+The loop counter started at 0, the worker took `0 = "stop"` as true, exited,
+and the parent hung in `receive()` forever. Mapped:
+
+```
+0 = "stop"  -> true      0 = ""     -> true      0 = "abc"  -> true
+1 = "abc"   -> false     0 = "0"    -> true      1 = "1"    -> false
+1 = "1.0"   -> false     "stop" = 0 -> true      0 != "stop" -> false
+0 < "stop"  -> false     1 > "stop" -> true      (ordering ANSWERS)
+```
+
+So it is not "numeric strings compare as numbers" — `1 = "1"` is false. It
+is the terminal fallthrough of `eval_comparison` (`src/eval.c:30497`):
+`value_number_or_zero` returns `0.0` for any kind that is not number or bool,
+so a string is 0 and only the number 0 equals it. PLAT-EQ (2026-08-14) found
+exactly this shape for arrays and records ("both sides 0 -- and 0 = 0") and
+routed compounds away from it; scalars still arrive here. The documented rule
+since is *equality answers, ordering refuses*; this answers wrongly and
+orders freely.
+
+- **Workaround:** compare on `type()` first — `if type(m) = "string" then break`
+  — which is what the pool measurement did. Do not rely on `x = 0` to test a
+  value that might be text.
+- **Not fixed here** because the blast radius is unmeasured: `if input("n: ")
+  = 0` is TRUE today for any non-numeric answer, and something in the tree may
+  lean on that. Needs the PLAT-EQ treatment — instrument the fallthrough, run
+  the gate, count the dependents, then a self-checking suite proven red.
+
+## 2026-09-05 — CC — while: the same measurement
+- **Type:** language-surprise
+- **Severity:** low
+- **What:** the "function 'join' from library 'frame' has the same name as a
+  built-in" NOTE prints once per **process**, so a program that spawns twenty
+  workers prints it twenty-one times — every child re-parses and re-registers.
+  A web `server` with `workers: 8` prints it eight times. Position is the
+  dedup key and every child has the same position; the key needs the process
+  too, or the note needs to be parent-only.
+- **Workaround:** none needed; noise only. `on warning ignore` silences it.

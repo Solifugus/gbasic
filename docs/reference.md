@@ -1874,6 +1874,34 @@ loss. JSON results decode to normal arrays, records, and scalar values.
 PostgreSQL errors use `error.source = "postgres"` and include SQLSTATE when
 available.
 
+**Postgres's native array types are not supported, in either direction.** A
+result column of any array type (`text[]`, `int[]`, `float8[]`, …) raises
+`PostgreSQL array result types are not supported`, and an array *parameter*
+is sent as JSON text — so `where acl && $1` with `[["staff","lending"]]`
+fails inside Postgres with `malformed array literal: "["staff","lending"]"`.
+Measured against PostgreSQL 17.10 (2026-09-05).
+
+What *does* work, because it is the same JSON in both directions, is a
+`jsonb` column: a gBASIC array or record parameter arrives as JSON, and a
+`jsonb` result decodes back. So a set-valued column is stored as `jsonb`, and
+"any of these" is a join rather than an operator:
+
+```basic
+' acl is jsonb, e.g. '["staff","lending"]'
+rows = pg.query(db,
+    "select id, text from chunks where exists (" +
+    "  select 1 from jsonb_array_elements_text(acl) a" +
+    "  join jsonb_array_elements_text($1::jsonb) g on a = g)",
+    [["staff", "lending"]])
+```
+
+A **pgvector** column also works with today's module, for the same reason:
+its text form is `[0.1,0.2,0.3]`, which arrives as a string that `decode`
+reads, and a vector sent back for a similarity search is `encode(v)` with a
+`::vector` cast — `vec <-> $1::vector` finds the nearest row. Native array
+support (parameters rendered as array literals, results parsed by element
+type) is the outstanding item, recorded in `DOGFOOD.md`.
+
 ## ODBC Module
 
 ODBC support is available when gBASIC is built with unixODBC (or iODBC). A
