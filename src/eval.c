@@ -19093,6 +19093,9 @@ static char *pg_datetime_text(DateTime datetime) {
     return copy_string(buffer);
 }
 
+static int pg_oid_is_array(Oid oid);
+static int pg_array_literal_append(StringBuilder *builder, Value value);
+
 static char *pg_parameter_text(Value value) {
     char buffer[64];
     switch (value.kind) {
@@ -19136,7 +19139,22 @@ static void pg_parameter_list_clear(PgParameterList *params) {
     memset(params, 0, sizeof(*params));
 }
 
-static int pg_parameter_list_build(Value value, PgParameterList *out) {
+/* AN ARRAY PARAMETER IS AMBIGUOUS AND THE DATABASE IS THE ONLY ONE WHO KNOWS.
+ * `[["staff","lending"]]` is a JSON array for `$1::jsonb` and a Postgres array
+ * for `acl && $1`, and the text on the wire differs (`["staff","lending"]`
+ * against `{"staff","lending"}`). Nothing in the call says which; the
+ * statement does. So when any parameter is an array the statement is PREPARED
+ * and DESCRIBED first, and each array parameter is rendered by the type
+ * Postgres inferred for its position: an array type gets the literal,
+ * anything else gets the JSON it always got. That preserves every call that
+ * worked before -- a jsonb column still receives JSON -- and makes the array
+ * contexts work, without a syntax for the caller to declare a type they
+ * already wrote into the SQL.
+ *
+ * `types` is NULL when no parameter is an array, and then this is exactly the
+ * pre-2026-09-05 builder: no describe, no extra round trip. Measured cost of
+ * the describe when it happens: see tests/postgres_arrays.bas. */
+static int pg_parameter_list_build(Value value, PgParameterList *out, const Oid *types) {
     if (value.kind != VALUE_ARRAY) {
         pg_raise_message("PostgreSQL query parameters must be an array");
         return 0;
@@ -19158,7 +19176,18 @@ static int pg_parameter_list_build(Value value, PgParameterList *out) {
             out->pointers[i] = NULL;
             continue;
         }
-        out->values[i] = pg_parameter_text(item);
+        if (item.kind == VALUE_ARRAY && types && pg_oid_is_array(types[i])) {
+            StringBuilder builder;
+            sb_init(&builder);
+            if (!pg_array_literal_append(&builder, item)) {
+                free(builder.items);
+                pg_parameter_list_clear(out);
+                return 0;
+            }
+            out->values[i] = sb_take(&builder);
+        } else {
+            out->values[i] = pg_parameter_text(item);
+        }
         if (!out->values[i]) {
             pg_parameter_list_clear(out);
             return 0;
@@ -19168,9 +19197,82 @@ static int pg_parameter_list_build(Value value, PgParameterList *out) {
     return 1;
 }
 
+static int pg_parameters_contain_array(Value value) {
+    if (value.kind != VALUE_ARRAY) {
+        return 0;
+    }
+    for (size_t i = 0; i < value.as.array.store->count; i++) {
+        if (value.as.array.store->items[i].kind == VALUE_ARRAY) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* Prepare the unnamed statement and ask Postgres what type each parameter
+ * position has. Fills `*types` (caller frees) with `count` OIDs, or returns 0
+ * having raised. A statement that cannot be prepared -- bad SQL -- is reported
+ * here, in the same words the execute path would have used. */
+static int pg_describe_parameter_types(PgConnectionValue *connection,
+                                       const char *sql, int count, Oid **types) {
+    PGresult *prepared = PQprepare(connection->connection, "", sql, 0, NULL);
+    if (!prepared || PQresultStatus(prepared) != PGRES_COMMAND_OK) {
+        if (prepared) {
+            pg_raise_result_error(connection->connection, prepared);
+            PQclear(prepared);
+        } else {
+            pg_raise_connection_error(connection->connection, "PostgreSQL prepare failed");
+        }
+        return 0;
+    }
+    PQclear(prepared);
+    PGresult *described = PQdescribePrepared(connection->connection, "");
+    if (!described || PQresultStatus(described) != PGRES_COMMAND_OK) {
+        if (described) {
+            pg_raise_result_error(connection->connection, described);
+            PQclear(described);
+        } else {
+            pg_raise_connection_error(connection->connection, "PostgreSQL describe failed");
+        }
+        return 0;
+    }
+    int nparams = PQnparams(described);
+    if (nparams != count) {
+        char message[160];
+        snprintf(message, sizeof(message),
+                 "PostgreSQL statement has %d parameter%s but %d %s supplied",
+                 nparams, nparams == 1 ? "" : "s", count, count == 1 ? "was" : "were");
+        PQclear(described);
+        pg_raise_message(message);
+        return 0;
+    }
+    *types = calloc((size_t)(count > 0 ? count : 1), sizeof(Oid));
+    if (!*types) {
+        abort();
+    }
+    for (int i = 0; i < nparams; i++) {
+        (*types)[i] = PQparamtype(described, i);
+    }
+    PQclear(described);
+    return 1;
+}
+
 static PGresult *pg_execute_sql(PgConnectionValue *connection,
                                 const char *sql,
-                                PgParameterList *params) {
+                                PgParameterList *params,
+                                int prepared) {
+    if (params && prepared) {
+        /* The unnamed statement was prepared by pg_describe_parameter_types;
+         * executing it rather than the SQL text again is what makes the
+         * described types the ones actually used. */
+        return PQexecPrepared(connection->connection,
+                              "",
+                              params->count,
+                              params->pointers,
+                              NULL,
+                              NULL,
+                              0);
+    }
     if (params) {
         return PQexecParams(connection->connection,
                             sql,
@@ -19184,18 +19286,97 @@ static PGresult *pg_execute_sql(PgConnectionValue *connection,
     return PQexec(connection->connection, sql);
 }
 
-static int pg_oid_is_array(Oid oid) {
-    static const Oid array_oids[] = {
-        1000, 1001, 1002, 1003, 1005, 1007, 1009, 1014, 1015, 1016,
-        1021, 1022, 1028, 1115, 1182, 1183, 1185, 1187, 1231, 199,
-        2951, 3807
+/* NATIVE POSTGRES ARRAYS, both directions.
+ *
+ * Until 2026-09-05 an array-typed RESULT column raised ("array result types
+ * are not supported") and an array PARAMETER was rendered as JSON text, which
+ * Postgres refuses for an array context with `malformed array literal`. The
+ * limitation was documented nowhere; it was found because the AI reference
+ * proposal's one retrieval query -- an ACL as text[] filtered with `&&` --
+ * failed in both directions, measured against 17.10 once a database existed.
+ *
+ * The array OID -> element OID mapping is Postgres's own fixed catalogue
+ * (pg_type.typelem for the built-in types), hardcoded as the list of
+ * supported array OIDs always was. A column of an array type not listed here
+ * -- an array of a user-defined type, say -- falls through to the string
+ * fallback at the end of pg_scalar_from_text, exactly as its scalar would. */
+static Oid pg_array_element_oid(Oid array_oid) {
+    static const struct { Oid array; Oid element; } table[] = {
+        { 1000, 16 },   /* bool[]        */
+        { 1001, 17 },   /* bytea[]       */
+        { 1002, 18 },   /* "char"[]      */
+        { 1003, 19 },   /* name[]        */
+        { 1005, 21 },   /* int2[]        */
+        { 1007, 23 },   /* int4[]        */
+        { 1009, 25 },   /* text[]        */
+        { 1014, 1042 }, /* bpchar[]      */
+        { 1015, 1043 }, /* varchar[]     */
+        { 1016, 20 },   /* int8[]        */
+        { 1021, 700 },  /* float4[]      */
+        { 1022, 701 },  /* float8[]      */
+        { 1028, 26 },   /* oid[]         */
+        { 1115, 1114 }, /* timestamp[]   */
+        { 1182, 1082 }, /* date[]        */
+        { 1183, 1083 }, /* time[]        */
+        { 1185, 1184 }, /* timestamptz[] */
+        { 1187, 1186 }, /* interval[]    */
+        { 1231, 1700 }, /* numeric[]     */
+        { 199, 114 },   /* json[]        */
+        { 2951, 2950 }, /* uuid[]        */
+        { 3807, 3802 }, /* jsonb[]       */
     };
-    for (size_t i = 0; i < sizeof(array_oids) / sizeof(array_oids[0]); i++) {
-        if (oid == array_oids[i]) {
-            return 1;
+    for (size_t i = 0; i < sizeof(table) / sizeof(table[0]); i++) {
+        if (table[i].array == array_oid) {
+            return table[i].element;
         }
     }
     return 0;
+}
+
+static int pg_oid_is_array(Oid oid) {
+    return pg_array_element_oid(oid) != 0;
+}
+
+/* Render a gBASIC array as a Postgres array LITERAL -- `{a,"b c",NULL,{1,2}}`.
+ * Every element is double-quoted with `"` and `\` escaped, which is always
+ * legal and avoids deciding which bare spellings Postgres would accept
+ * (`NULL`, whitespace, braces, commas and the quote itself are all different
+ * cases in the bare form and one case in the quoted one). `nothing` is the
+ * bare NULL. A record element is its JSON, quoted, which is what a jsonb[]
+ * column wants. Returns 0 having raised for a kind Postgres cannot take. */
+static int pg_array_literal_append(StringBuilder *builder, Value value) {
+    sb_append_char(builder, '{');
+    for (size_t i = 0; i < value.as.array.store->count; i++) {
+        Value item = value.as.array.store->items[i];
+        if (i > 0) {
+            sb_append_char(builder, ',');
+        }
+        if (item.kind == VALUE_NULL) {
+            sb_append_text(builder, "NULL");
+            continue;
+        }
+        if (item.kind == VALUE_ARRAY) {
+            if (!pg_array_literal_append(builder, item)) {
+                return 0;
+            }
+            continue;
+        }
+        char *text = pg_parameter_text(item);
+        if (!text) {
+            return 0;   /* pg_parameter_text raised */
+        }
+        sb_append_char(builder, '"');
+        for (const char *c = text; *c; c++) {
+            if (*c == '"' || *c == '\\') {
+                sb_append_char(builder, '\\');
+            }
+            sb_append_char(builder, *c);
+        }
+        sb_append_char(builder, '"');
+        free(text);
+    }
+    sb_append_char(builder, '}');
+    return 1;
 }
 
 static Value pg_decode_json(const char *text) {
@@ -19255,16 +19436,149 @@ static int pg_parse_number_result(const char *text, double *out) {
     return 1;
 }
 
+static Value pg_scalar_from_text(Oid oid, const char *text);
+
+/* Parse one Postgres array literal into a gBASIC array of `element_oid`
+ * scalars. Handles the quoted and bare element forms, backslash escapes
+ * inside quotes, bare NULL, nested braces (a multi-dimensional array becomes
+ * nested arrays -- parsed, never flattened), the empty array, and the
+ * optional `[lo:hi]=` dimension prefix Postgres emits for arrays with
+ * non-default lower bounds. `*cursor` is advanced past the closing brace.
+ * Returns 0 having raised on malformed text, which from a real server means
+ * a type this table does not know rather than a bad literal. */
+static int pg_parse_array_literal(const char **cursor, Oid element_oid, Value *out) {
+    const char *p = *cursor;
+    if (*p != '{') {
+        pg_raise_message("invalid PostgreSQL array result");
+        return 0;
+    }
+    p++;
+    Value *items = NULL;
+    size_t count = 0, capacity = 0;
+    StringBuilder builder;
+    sb_init(&builder);
+
+    while (*p == ' ') p++;
+    if (*p == '}') {
+        p++;
+        *cursor = p;
+        free(builder.items);
+        *out = value_array(NULL, 0);
+        return 1;
+    }
+    for (;;) {
+        while (*p == ' ') p++;
+        Value element;
+        if (*p == '{') {
+            if (!pg_parse_array_literal(&p, element_oid, &element)) {
+                goto fail;
+            }
+        } else if (*p == '"') {
+            p++;
+            builder.length = 0;
+            builder.items[0] = '\0';
+            while (*p && *p != '"') {
+                if (*p == '\\' && p[1]) {
+                    p++;
+                }
+                sb_append_char(&builder, *p++);
+            }
+            if (*p != '"') {
+                pg_raise_message("invalid PostgreSQL array result (unterminated element)");
+                goto fail;
+            }
+            p++;
+            element = pg_scalar_from_text(element_oid, builder.items);
+            if (error_action_pending()) {
+                goto fail;
+            }
+        } else {
+            builder.length = 0;
+            builder.items[0] = '\0';
+            while (*p && *p != ',' && *p != '}') {
+                sb_append_char(&builder, *p++);
+            }
+            /* trim trailing spaces of a bare element */
+            while (builder.length > 0 && builder.items[builder.length - 1] == ' ') {
+                builder.items[--builder.length] = '\0';
+            }
+            if (strcmp(builder.items, "NULL") == 0) {
+                element = value_null();
+            } else {
+                element = pg_scalar_from_text(element_oid, builder.items);
+                if (error_action_pending()) {
+                    goto fail;
+                }
+            }
+        }
+        if (count == capacity) {
+            capacity = capacity ? capacity * 2 : 8;
+            Value *next = realloc(items, sizeof(Value) * capacity);
+            if (!next) {
+                abort();
+            }
+            items = next;
+        }
+        items[count++] = element;
+        while (*p == ' ') p++;
+        if (*p == ',') {
+            p++;
+            continue;
+        }
+        if (*p == '}') {
+            p++;
+            break;
+        }
+        pg_raise_message("invalid PostgreSQL array result (expected , or })");
+        goto fail;
+    }
+    free(builder.items);
+    *cursor = p;
+    *out = value_array(items, count);
+    return 1;
+
+fail:
+    for (size_t i = 0; i < count; i++) {
+        value_free(items[i]);
+    }
+    free(items);
+    free(builder.items);
+    return 0;
+}
+
+static Value pg_array_from_text(Oid array_oid, const char *text) {
+    Oid element_oid = pg_array_element_oid(array_oid);
+    const char *p = text;
+    /* `[1:3]={a,b,c}`: an explicit dimension prefix. The bounds carry nothing a
+     * gBASIC array can hold, so they are skipped. */
+    if (*p == '[') {
+        const char *eq = strchr(p, '=');
+        if (!eq) {
+            pg_raise_message("invalid PostgreSQL array result (dimension prefix)");
+            return value_null();
+        }
+        p = eq + 1;
+    }
+    Value out;
+    if (!pg_parse_array_literal(&p, element_oid, &out)) {
+        return value_null();
+    }
+    return out;
+}
+
 static Value pg_result_value(PGresult *result, int row, int column) {
     if (PQgetisnull(result, row, column)) {
         return value_null();
     }
+    return pg_scalar_from_text(PQftype(result, column), PQgetvalue(result, row, column));
+}
 
-    Oid oid = PQftype(result, column);
-    const char *text = PQgetvalue(result, row, column);
+/* One column's text, by its type OID, as a gBASIC value. Shared by the row
+ * reader and the array parser, so an element of int8[] is a STRING for the
+ * same reason a bare int8 is: exactness. */
+static Value pg_scalar_from_text(Oid oid, const char *text) {
     if (pg_oid_is_array(oid)) {
-        pg_raise_message("PostgreSQL array result types are not supported");
-        return value_null();
+        return pg_array_from_text(oid, text);
     }
     if (oid == 16) {
         if (strcmp(text, "t") == 0 || strcmp(text, "true") == 0) {
@@ -19462,10 +19776,28 @@ static Value pg_eval_sql(AstExpr *expr, int query_mode) {
     PgParameterList params = {0};
     Value params_value = value_null();
     PgParameterList *params_ptr = NULL;
+    Oid *param_types = NULL;
+    int prepared = 0;
     if (expr->as.call.args.count == 3) {
         params_value = eval_expr(expr->as.call.args.items[2]);
-        if (error_action_pending() ||
-            !pg_parameter_list_build(params_value, &params)) {
+        if (error_action_pending()) {
+            value_free(params_value);
+            value_free(sql);
+            value_free(connection_value);
+            return value_null();
+        }
+        if (pg_parameters_contain_array(params_value)) {
+            int n = (int)params_value.as.array.store->count;
+            if (!pg_describe_parameter_types(connection, sql.as.string, n, &param_types)) {
+                value_free(params_value);
+                value_free(sql);
+                value_free(connection_value);
+                return value_null();
+            }
+            prepared = 1;
+        }
+        if (!pg_parameter_list_build(params_value, &params, param_types)) {
+            free(param_types);
             value_free(params_value);
             value_free(sql);
             value_free(connection_value);
@@ -19474,7 +19806,8 @@ static Value pg_eval_sql(AstExpr *expr, int query_mode) {
         params_ptr = &params;
     }
 
-    PGresult *result = pg_execute_sql(connection, sql.as.string, params_ptr);
+    PGresult *result = pg_execute_sql(connection, sql.as.string, params_ptr, prepared);
+    free(param_types);
     pg_parameter_list_clear(&params);
     value_free(params_value);
     value_free(sql);

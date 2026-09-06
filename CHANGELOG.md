@@ -9,6 +9,40 @@ language surface may still change between releases.
 
 ## Unreleased
 
+### Added — `pg` reads and writes native Postgres arrays
+
+A result column of any built-in array type arrives as a gBASIC array —
+twenty-two types, each element converted by its own type under the bare
+column's rules (`int8[]` and `numeric[]` elements are strings for exactness,
+`NULL` is `nothing`, a 2-D array is nested arrays). An array parameter is
+rendered as a Postgres literal when the statement wants an array and as JSON
+when it wants JSON.
+
+**The statement decides, because nothing else can.** `[["staff","lending"]]`
+is `{"staff","lending"}` for `acl && $1` and `["staff","lending"]` for
+`$1::jsonb`, and the wire text differs. So a call that passes an array
+prepares and *describes* the statement first, and each array parameter is
+rendered by the type Postgres inferred for its position. Every call that
+worked before still works — `jsonb` columns still get JSON, an untyped `$1`
+is still JSON text, records are always JSON — and the array contexts start
+working, with no syntax for the caller to restate a type already written
+into the SQL. Cost: 1.3× a trivial local query, only when an array is passed.
+
+`tests/postgres_arrays.bas`, 50 checks, **with Postgres as the oracle**: an
+array parameter is read back through `array_length`/`unnest`/`array_dims`, so
+what is asserted is what the server parsed rather than what our reader makes
+of our writer — a round trip alone passes on a matched pair of bugs. Proven
+red on the pair that matters: with the backslash unescaped, `back\slash`
+arrives as `backslash`, a plausible string that only the oracle and the round
+trip can see. Also proven red on arrays-as-JSON-regardless (the old
+behaviour) and on a bare `NULL` element read as text. Valgrind clean.
+
+This is the item the entry below documented as a limitation, on the same
+afternoon: the negative control in that suite went red the moment arrays
+landed, which is how the reference paragraph got rewritten instead of
+rotting. The AI reference proposal's retrieval query, `acl && $1` over a
+`text[]`, now runs verbatim.
+
 ### Documented — what `pg` does with a set-valued column, measured
 
 Postgres's native array types are **unsupported in both directions**: a

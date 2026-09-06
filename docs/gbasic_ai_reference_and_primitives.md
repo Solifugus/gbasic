@@ -17,8 +17,9 @@ anti-pattern that hangs by design, and tool bodies as first drafted ran on
 the same thread, so every tool call would have frozen every client (fixed
 with a worker pool, chosen by measuring 78 ms per spawn against 0.015 ms per
 message). A third looked load-bearing on reading — the retrieval query
-cannot be executed by `pg` as sketched — and on *running* turned out to be a
-schema choice, recorded because the reversal is the point.
+cannot be executed by `pg` as sketched — on *running* turned out to be a
+schema choice, and by the end of the day was moot, because the missing
+primitive was built; it is recorded because the reversal is the point.
 
 The document has four parts:
 
@@ -178,14 +179,11 @@ restricted. That was the argument for a `rank` primitive with a candidate
 mask (Part 2, item 5); pgvector does it in SQL and the primitive is deferred
 (Part 3, item 10).
 
-**The first draft of this function could not run, and this one runs today.**
-The draft selected a `float8[]` vector and filtered `acl && $1` over a
-`text[]`; the `pg` module raises on any array-typed result and sends an array
-parameter as JSON, so both halves failed — measured, Part 3 item 1. With the
-ACL as `jsonb` and the vector as pgvector's own type, both work on the module
-as it is: a JSON parameter is what `jsonb` wants, and pgvector's text form is
-what `encode` produces. The design was right; the schema in the sketch was
-the wrong one for this client library.
+With native arrays in `pg` (Part 3, item 1 — built the same day the gap was
+found) the ACL may equally be a `text[]` and the predicate the two-character
+`acl && $2`; the `jsonb` join above is what ran on the module *before* that,
+and it is kept because it still works and still reads as what it does. The
+vector stays pgvector's own type: it is not a `float8[]` and never was.
 
 ### 1.8 The conversation loop, which is not a loop
 
@@ -553,7 +551,7 @@ is a different kind of evidence: each item below is a measurement in
 have stopped the reference on its first day; the others change names or
 order.
 
-### 1. `pg` can neither return nor accept a native array — and the design does not need one
+### 1. `pg` could neither return nor accept a native array — and now does
 
 The retrieval query in §1.7 selects a vector column and filters with
 `acl && $1`. Both halves fail, and both were **run**, against PostgreSQL
@@ -588,13 +586,22 @@ rows = pg.query(db, "select id, text, vec <-> $1::vector as dist " +
 ' -> "lending policy 4.2", dist 0
 ```
 
-So the schema Steward needs is `acl jsonb, vec vector(n)` — which is also
-the schema a pgvector-backed store would use anyway — and §1.7 runs on the
-module as it is. Native array support is still a real gap (the `&&` operator
-is the natural spelling, and a `text[]` column from an existing schema is
-unreadable), it is now **documented in `docs/reference.md` with the working
-alternative**, and it is on the DOGFOOD ledger. It is no longer in Steward's
-critical path, and the build order below reflects that.
+So the schema Steward needs was `acl jsonb, vec vector(n)` — which is also
+the schema a pgvector-backed store would use anyway — and §1.7 ran on the
+module as it was. Native array support was still a real gap (the `&&`
+operator is the natural spelling, and a `text[]` column from an existing
+schema was unreadable), so it was documented with the working alternative
+and put on the DOGFOOD ledger, out of Steward's critical path.
+
+**And then it was built, the same afternoon**, because the database was
+there and the negative control was in place. Twenty-two array types read as
+gBASIC arrays; an array parameter is rendered as a literal or as JSON *by the
+type Postgres infers for its position* — the statement is prepared and
+described first, which is the only place the answer to "is this JSON or an
+array" exists — so every `jsonb` call keeps working and `acl && $1` over a
+real `text[]` runs verbatim. The suite uses Postgres as the oracle for what a
+parameter became. `docs/reference.md`, "PostgreSQL Module". Steward may use
+either schema; the ACL as `text[]` with `&&` is now the simpler one.
 
 Two lessons this item carries beyond its content. The limitation was
 undocumented and untested, which is how a careful design walked into it: a
@@ -830,12 +837,10 @@ somewhere the operator never named.
 
 ### 4.1 Platform (C)
 
-**`pg` native arrays** — wanted, not blocking. Array parameters rendered as
-Postgres array literals; array results parsed by element OID into gBASIC
-arrays; nested arrays refused by name rather than flattened. Its suite is
-self-checking with a round trip through a real column, since a golden would
-record a mangled literal as expected. Steward uses `jsonb` and `vector` and
-does not wait for it.
+**`pg` native arrays** — **built** (2026-09-05, same day). Array results
+parsed by element type into gBASIC arrays, nested arrays parsed not
+flattened; array parameters rendered as literals or JSON by the type the
+described statement wants. Suite uses Postgres as the oracle.
 
 **`http`** — unchanged: `start`, `poll`, `read`, `wait`, `stop`, `release`,
 mirroring `process` in shape, status record, and the no-framing rule. libcurl
@@ -924,8 +929,9 @@ example.
 7. Retrieval, as a pgvector query with the ACL predicate in it. (`rank` is
    deferred: no consumer.)
 8. Steward itself, then `evalrun`.
-9. `pg` native arrays — a platform gap in its own right, now documented with
-   its workaround, and not something Steward waits for.
+9. ~~`pg` native arrays~~ — built before step 1 after all, because the
+   database was provisioned and the control was in place; it took an
+   afternoon. The order above is otherwise unchanged.
 
 The reference is built *during* steps 4–8, not after. Each step's phase
 document should include the Steward code that consumes it, on the same

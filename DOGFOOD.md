@@ -47,16 +47,18 @@ and the stale-looking ones carry a Status line saying what overtook them.
    — `if input("n: ") = 0` is true for ANY non-numeric text — so it needs the
    PLAT-EQ treatment: instrument, run the gate, count what depends on it, then
    a suite proven red. Entry below.
-0. **`pg` can neither return nor accept a native array, and said so
-   nowhere.** Any array-typed result column raises (`src/eval.c:19265`,
-   twenty-two OIDs from `text[]` to `float8[]`), and an array *parameter* is
-   sent as JSON text, so `where acl && $1` receives `["a","b"]` and Postgres
-   answers `malformed array literal`. MEASURED 2026-09-05 against 17.10 once a
-   database existed. NOW DOCUMENTED in reference.md with the alternative that
-   works on the same module: a `jsonb` column takes the JSON a parameter
-   already is, and a pgvector column round-trips through `decode`/`encode`.
-   Still open as a feature (`&&` is the natural spelling, and an existing
-   `text[]` column is unreadable); no longer blocks anything. Entry below.
+0. ~~**`pg` can neither return nor accept a native array, and said so
+   nowhere.**~~ **RESOLVED 2026-09-05, same day.** Twenty-two array types read
+   as gBASIC arrays (elements by their own type, so `int8[]` is strings for
+   exactness; nested parsed, not flattened). An array PARAMETER is the
+   ambiguity: JSON for `$1::jsonb`, a literal for `acl && $1`, different wire
+   text -- so a statement carrying one is prepared and DESCRIBED, and each
+   array is rendered by the type Postgres inferred for its position. Every
+   jsonb call that worked before still gets JSON. 1.3x the cost of a bare
+   query, only when an array is passed. The suite uses Postgres as the ORACLE
+   (array_length/unnest read back what the server parsed); proven red on the
+   backslash escape, where `back\slash` becomes `backslash` -- plausible,
+   and invisible to anything but the oracle.
 0a. ~~**A spawned actor cannot see a library loaded inside `program`, and the
    warning for the shape that works says the opposite.**~~ **RESOLVED
    2026-09-05.** `load` is a declaration now, hoisted from either position by
@@ -4203,6 +4205,13 @@ Postgres's own message for the parameter case is `malformed array literal:
   entry concluded native arrays had to come first; running it reversed
   that.** Native arrays are still the fix for the general case and the gap is
   now documented in reference.md.
+
+- **Status: RESOLVED 2026-09-05**, the same afternoon. Native arrays both
+  ways, type-directed by prepare+describe so the jsonb path is untouched.
+  `tests/postgres_arrays.bas` -- which had been the negative control for this
+  entry and went red the moment arrays landed -- is now the 50-check positive
+  suite with Postgres as the oracle. The `jsonb` workaround above still works
+  and is still right when the column really is JSON.
 
 **Also found by provisioning the database:** `run_gbasic_site_postgres.sh`
 had been RED since PLAT-WARN shipped — `record_post_event` returned a

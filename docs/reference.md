@@ -1874,33 +1874,48 @@ loss. JSON results decode to normal arrays, records, and scalar values.
 PostgreSQL errors use `error.source = "postgres"` and include SQLSTATE when
 available.
 
-**Postgres's native array types are not supported, in either direction.** A
-result column of any array type (`text[]`, `int[]`, `float8[]`, …) raises
-`PostgreSQL array result types are not supported`, and an array *parameter*
-is sent as JSON text — so `where acl && $1` with `[["staff","lending"]]`
-fails inside Postgres with `malformed array literal: "["staff","lending"]"`.
-Measured against PostgreSQL 17.10 (2026-09-05).
+**Postgres array types work in both directions** (*since 0.1.0*, 2026-09-05).
+A result column of any built-in array type — `text[]`, `int[]`, `float8[]`,
+`bool[]`, `numeric[]`, `jsonb[]`, `uuid[]`, twenty-two in all — arrives as a
+gBASIC array, with each element converted by its own type under the same
+rules as a bare column: `int8[]` and `numeric[]` elements are **strings** for
+exactness, a `NULL` element is `nothing`, and a multi-dimensional array is
+nested arrays, parsed rather than flattened. Quoted elements, escaped quotes
+and backslashes, the empty array, and the text `"NULL"` (which is a string,
+unlike a bare `NULL`) are all read as Postgres wrote them.
 
-What *does* work, because it is the same JSON in both directions, is a
-`jsonb` column: a gBASIC array or record parameter arrives as JSON, and a
-`jsonb` result decodes back. So a set-valued column is stored as `jsonb`, and
-"any of these" is a join rather than an operator:
+An array **parameter** is rendered as a Postgres array literal when the
+statement wants an array, and as JSON when it wants JSON — and the statement
+decides. `[["staff","lending"]]` is the literal `{"staff","lending"}` for
+`acl && $1` and the JSON `["staff","lending"]` for `$1::jsonb`, and the text
+on the wire differs, so when a call passes an array the module **prepares and
+describes** the statement first and renders each array parameter by the type
+Postgres inferred for its position. Every call that worked before still
+works: a `jsonb` column still receives JSON, and an array in an untyped
+position (`select $1`) is JSON text, as it always was. Records are always
+JSON. The describe costs about 1.3× a trivial local query and happens only
+when an array is passed.
 
 ```basic
-' acl is jsonb, e.g. '["staff","lending"]'
-rows = pg.query(db,
-    "select id, text from chunks where exists (" +
-    "  select 1 from jsonb_array_elements_text(acl) a" +
-    "  join jsonb_array_elements_text($1::jsonb) g on a = g)",
-    [["staff", "lending"]])
+rows = pg.query(db, "select id from chunks where acl && $1", [ctx.groups])
+rows = pg.query(db, "select id from orders where id = any($1)", [[3, 4, 99]])
+pg.exec(db, "insert into t (tags, scores) values ($1, $2)", [["a", "b c"], [0.1, 0.2]])
 ```
 
-A **pgvector** column also works with today's module, for the same reason:
-its text form is `[0.1,0.2,0.3]`, which arrives as a string that `decode`
-reads, and a vector sent back for a similarity search is `encode(v)` with a
-`::vector` cast — `vec <-> $1::vector` finds the nearest row. Native array
-support (parameters rendered as array literals, results parsed by element
-type) is the outstanding item, recorded in `DOGFOOD.md`.
+Nested arrays are sent with their dimensions (`[[1,2],[3,4]]` arrives as
+`[1:2][1:2]`), an empty array as `{}`, and `nothing` as `NULL` — never as
+the text. An element Postgres cannot take for the column's type (`"two"` into
+`int[]`) is refused by Postgres with its own message, not silently zeroed.
+Arrays of user-defined types fall through to strings per element, as their
+scalars do. `bytea[]` is refused as `bytea` is.
+
+Until this release the module raised on any array result and sent every
+array parameter as JSON, which Postgres refused for an array context as
+`malformed array literal`; that was documented nowhere and found by a design
+that needed an ACL as `text[]`. The `jsonb` alternative still works and is
+still right when the column really is JSON — see `tests/postgres_arrays.bas`,
+which asserts both, with Postgres itself as the oracle for what a parameter
+became.
 
 ## ODBC Module
 

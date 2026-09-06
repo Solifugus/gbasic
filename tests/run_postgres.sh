@@ -26,20 +26,25 @@ else
     exit "$status"
 fi
 
-# SET-VALUED COLUMNS, held to what docs/reference.md says about them. Native
-# Postgres arrays are unsupported both ways (the two "raises" lines are a
-# NEGATIVE CONTROL that goes red when that changes -- update the reference,
-# not the test), and a jsonb column plus pgvector's own type carry the same
-# data on the module as it is. Self-checking rather than golden, because the
-# defect class here is an ordinary-looking wrong row set. The pgvector tier
-# skips itself when the extension is absent from $PGDATABASE.
+# NATIVE POSTGRES ARRAYS, both directions, with POSTGRES AS THE ORACLE: an
+# array parameter is read back through array_length/unnest/array_dims, so
+# what is asserted is what the SERVER parsed rather than what our reader
+# makes of our writer -- a round trip alone passes on a matched pair of bugs.
+# Proven red on the pair that matters: with the backslash unescaped,
+# `back\slash` arrives as `backslash`, a plausible string only the oracle
+# and the round trip can see. Self-checking rather than golden for the same
+# reason. The pgvector tier skips itself when the extension is absent from
+# $PGDATABASE; the cost tier gates the prepare+describe round trip at 5x a
+# bare query (measured 1.3x).
 #
-# Found by checking the AI reference proposal against the tree: the first
-# reading concluded native arrays blocked the design, and RUNNING the
-# workaround reversed that. This file is what kept the reversal honest.
+# This file was the NEGATIVE CONTROL for the limitation it now tests the
+# removal of: until 2026-09-05 an array result raised and an array parameter
+# went out as JSON, both undocumented, found checking the AI reference
+# proposal against the tree. The control went red the day arrays landed,
+# which is how the reference paragraph got rewritten instead of rotting.
 if ./gbasic tests/postgres_arrays.bas >"$stdout_file" 2>"$stderr_file"; then
     if grep -q '^mismatches: 0$' "$stdout_file" \
-       && [ "$(sed -n 's/^checks: //p' "$stdout_file")" -ge 10 ]; then
+       && [ "$(sed -n 's/^checks: //p' "$stdout_file")" -ge 45 ]; then
         printf 'PASS tests/postgres_arrays.bas (%s checks%s)\n' \
             "$(sed -n 's/^checks: //p' "$stdout_file")" \
             "$(grep -q '^SKIP pgvector' "$stdout_file" && printf ', pgvector tiers skipped')"
