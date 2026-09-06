@@ -190,6 +190,7 @@ typedef struct GObjectValue GObjectValue;
 typedef struct GBoxedValue GBoxedValue;
 typedef struct ActorHandle ActorHandle;
 typedef struct ProcessHandle ProcessHandle;
+typedef struct HttpHandle HttpHandle;
 typedef struct WebServer WebServer;
 typedef struct WebServerClient WebServerClient;
 
@@ -212,6 +213,7 @@ typedef enum {
     VALUE_LDAP_CONNECTION,
     VALUE_XML_READER,
     VALUE_PROCESS,
+    VALUE_HTTP,
     VALUE_GOBJECT,
     VALUE_ACTOR,
     VALUE_FUNCTION,
@@ -335,6 +337,7 @@ struct Value {
         GBoxedValue *gboxed;
         ActorHandle *actor;
         ProcessHandle *process;
+        HttpHandle *http;
         /* A first-class function value: a reference to a registered function by
          * name (NOT a capturing closure — see docs/first_class_functions_design.md
          * §2). `library` is the owning library for an imported function, or NULL
@@ -507,6 +510,58 @@ struct ProcessHandle {
     ProcBuf pending_err;
     int reaped;             /* waitpid completed; `status` is final */
     int status;             /* raw wait(2) status, valid when reaped */
+    size_t ref_count;
+};
+
+/* PLAT-HTTP: a handle to a LIVE HTTP request started by `http.start`.
+ *
+ * Shaped after ProcessHandle deliberately -- start/poll/read/wait/stop/release
+ * mean the same things here, `pending` holds bytes drained off the transfer but
+ * not yet handed to the program, and bytes leave it exactly once. Refcounted the
+ * same way, so copies made by copy-on-read (`env_get` -> `value_copy`) name ONE
+ * transfer: a stop seen through one copy is a stop seen through all of them.
+ *
+ * TRANSPORT AND HTTP ARE SEPARATE and the field names say so. `failed` means the
+ * transfer did not complete -- refused connection, DNS failure, timeout -- and is
+ * the only thing `transport_ok` reports. A 500 response is a transfer that
+ * SUCCEEDED and carries status 500. Conflating the two is the plausible wrong
+ * answer this shape exists to make unwritable, and tests/run_http.sh asserts the
+ * pair rather than either half.
+ *
+ * `waited` and `watched` are the two ways a handle's readiness reaches the
+ * program, and a handle may only be one of them (see http_claim_waited). */
+struct HttpHandle {
+    unsigned long id;
+#if HAVE_LIBCURL
+    CURL *easy;
+    /* Owned by the handle, not by the start call: libcurl reads this list for
+     * the whole transfer, so freeing it after `start` returns (which is what
+     * webclient.request can safely do around a blocking perform) would hand
+     * curl a dangling pointer on the first write. */
+    struct curl_slist *header_list;
+    char errbuf[CURL_ERROR_SIZE];
+#endif
+    int in_multi;
+    int done;               /* the transfer finished, successfully or not */
+    int failed;             /* TRANSPORT failure; says nothing about `status` */
+    int stopped;            /* http.stop was called */
+    int released;           /* http.release was called: no further verbs */
+    int delivered;          /* a `done` event has been appended to http.events */
+    /* A `data` event has been reported for the bytes currently buffered, and
+     * not yet superseded by a read. Without it the loop re-reports the same
+     * undrained bytes on every iteration -- an unbounded queue, and a loop that
+     * never goes idle, for a program that simply did not want the body. */
+    int data_notified;
+    int waited;             /* a blocking wait/poll has claimed this handle */
+    int watched;            /* the event loop has claimed this handle */
+    long status;            /* HTTP status code; 0 until the response line arrives */
+    ProcBuf pending;        /* body bytes not yet handed to http.read */
+    size_t body_total;      /* every body byte seen, for the size limit */
+    int too_large;
+    Value headers;          /* response headers, filled as they arrive */
+    char *reason;           /* HTTP reason phrase; "" until known */
+    char *url;              /* owned copy, for diagnostics and events */
+    char *error;            /* transport error text; NULL when none */
     size_t ref_count;
 };
 
@@ -721,6 +776,11 @@ static int pg_library_loaded = 0;
 static int sqlite_library_loaded = 0;
 static int odbc_library_loaded = 0;
 static int webclient_library_loaded = 0;
+static int http_library_loaded = 0;
+static void http_bind_events_global(void);
+/* Defined with the webserver's globals far below; declared here because
+ * http.wait warns when it is called from inside the loop. */
+static int webserver_event_loop_running;
 static int smtp_library_loaded = 0;
 static int ldap_library_loaded = 0;
 #define SMTP_ERROR_CODE 3101
@@ -827,6 +887,8 @@ static const char *value_kind_name(ValueKind kind) {
         return "actor";
     case VALUE_PROCESS:
         return "process";
+    case VALUE_HTTP:
+        return "http";
     case VALUE_FUNCTION:
         return "function";
     case VALUE_REGEX:
@@ -2850,6 +2912,73 @@ static int eval_result_exits_block(EvalResult result) {
 static Value value_copy(Value value);
 static void value_free(Value value);
 
+/* --- PLAT-HTTP: handle registry and release ------------------------------
+ *
+ * The unconditional half of the http module. It lives here, far above the
+ * libcurl code, because `value_free` releases handles and is declared just
+ * above -- the same reason ProcBuf sits beside ActorHandle rather than beside
+ * the process module.
+ *
+ * The registry is every handle `http.start` has created and not yet finished
+ * with. The event loop walks it; `wait` walks it; release removes from it. It
+ * is a flat array because the count is small by construction: a handle is a
+ * request in flight, and a program with thousands of those has a pool problem,
+ * not a lookup problem. */
+#define HTTP_ERROR_CODE 3002
+
+/* Poll descriptors libcurl may ask the event loop to watch. Beyond this the loop
+ * falls back to its own tick, which is slower but never wrong. */
+#define HTTP_MAX_POLL_FDS 128
+
+static HttpHandle **http_handles = NULL;
+static size_t http_handle_count = 0;
+static unsigned long http_next_id = 1;
+
+static void http_registry_remove(HttpHandle *handle) {
+    for (size_t i = 0; i < http_handle_count; i++) {
+        if (http_handles[i] != handle) {
+            continue;
+        }
+        for (size_t j = i + 1; j < http_handle_count; j++) {
+            http_handles[j - 1] = http_handles[j];
+        }
+        http_handle_count--;
+        return;
+    }
+}
+
+/* Detach from libcurl and close the socket, leaving the record readable. Called
+ * by stop, by release, and by completion -- after which `poll` still answers
+ * from the fields, which is what lets a program read a status it never waited
+ * for. Idempotent. */
+static void http_handle_detach(HttpHandle *handle);
+
+/* Refcount release. The last reference is the ABANDONMENT point: an in-flight
+ * transfer whose handle nobody holds is cancelled rather than left running,
+ * because there is no longer anything that could read its answer. */
+static void http_handle_release(HttpHandle *handle) {
+    if (!handle) {
+        return;
+    }
+    if (--handle->ref_count == 0) {
+        http_handle_detach(handle);
+        http_registry_remove(handle);
+        free(handle->pending.data);
+        value_free(handle->headers);
+        free(handle->reason);
+        free(handle->url);
+        free(handle->error);
+        free(handle);
+    }
+}
+
+static Value value_http(HttpHandle *handle) {
+    Value v = {0};
+    v.kind = VALUE_HTTP;
+    v.as.http = handle;
+    return v;
+}
+
 static void error_clear_state(void) {
     free(current_error.message);
     free(current_error.source);
@@ -3361,6 +3490,11 @@ static Value value_copy(Value value) {
         value.as.process->ref_count++;
         return value;
     }
+    if (value.kind == VALUE_HTTP) {
+        /* Same rule one module over: every copy names the SAME transfer. */
+        value.as.http->ref_count++;
+        return value;
+    }
     if (value.kind == VALUE_FUNCTION) {
         return value_function(value.as.function.name, value.as.function.library);
     }
@@ -3469,6 +3603,8 @@ static void value_free(Value value) {
         gboxed_release(value.as.gboxed);
     } else if (value.kind == VALUE_PROCESS) {
         process_handle_release(value.as.process);
+    } else if (value.kind == VALUE_HTTP) {
+        http_handle_release(value.as.http);
     } else if (value.kind == VALUE_ACTOR) {
         ActorHandle *handle = value.as.actor;
         if (handle && --handle->ref_count == 0) {
@@ -3623,6 +3759,8 @@ static int value_truthy(Value value) {
     case VALUE_ACTOR:
         return 1;
     case VALUE_PROCESS:
+        return 1;
+    case VALUE_HTTP:
         return 1;
     case VALUE_FUNCTION:
         return 1;
@@ -4861,6 +4999,9 @@ static int value_storage_equal(const Value *left, const Value *right) {
         /* Identity by handle: copies of one handle compare equal, two separately
          * started children never do (even running the same command). */
         return left->as.process == right->as.process;
+    case VALUE_HTTP:
+        /* Same rule: two requests to one URL are two transfers, never equal. */
+        return left->as.http == right->as.http;
     case VALUE_FUNCTION:
         return function_value_equal(left, right);
     case VALUE_REGEX:
@@ -7875,9 +8016,9 @@ static size_t library_name_count = 0;
  * directions are refused rather than silently not working. */
 static int library_is_native_qualifier(const char *name) {
     static const char *native[] = {
-        "gi", "gui", "ldap", "money", "odbc", "pg", "process", "reflect",
-        "rowmodel", "smtp", "sqlite", "this", "webclient", "webserver",
-        "xlsx", "xml", NULL
+        "gi", "gui", "http", "ldap", "money", "odbc", "pg", "process",
+        "reflect", "rowmodel", "smtp", "sqlite", "this", "webclient",
+        "webserver", "xlsx", "xml", NULL
     };
     for (size_t i = 0; native[i]; i++) {
         if (strcmp(name, native[i]) == 0) {
@@ -8022,6 +8163,30 @@ static void library_import(const char *name, const char *path, const char *alias
         runtime_error_raise("ODBC support is not available in this build",
                             2003,
                             "odbc");
+#endif
+        return;
+    }
+
+    if (!path && strcmp(name, "http") == 0) {
+#if HAVE_LIBCURL
+        if (!webclient_curl_initialized) {
+            if (curl_global_init(CURL_GLOBAL_DEFAULT) != CURLE_OK) {
+                runtime_error_raise("could not initialize libcurl",
+                                    3002,
+                                    "http");
+                return;
+            }
+            webclient_curl_initialized = 1;
+        }
+        http_library_loaded = 1;
+        /* Binds the global record `http` holding `events`, which is what a
+         * `watch(http.events)` reads and what the event loop appends to. Left
+         * alone if the program bound one first. */
+        http_bind_events_global();
+#else
+        runtime_error_raise("HTTP support is not available in this build",
+                            3002,
+                            "http");
 #endif
         return;
     }
@@ -10587,6 +10752,8 @@ static const char *builtin_type_name(Value value) {
         return "actor";
     case VALUE_PROCESS:
         return "process";
+    case VALUE_HTTP:
+        return "http";
     case VALUE_FUNCTION:
         return "function";
     case VALUE_REGEX:
@@ -10960,6 +11127,9 @@ static Value builtin_string_value(Value value) {
     case VALUE_PROCESS:
         value_free(value);
         return value_string("<process>");
+    case VALUE_HTTP:
+        value_free(value);
+        return value_string("<http>");
     case VALUE_FUNCTION:
         snprintf(buffer, sizeof(buffer), "<function %s>", value.as.function.name);
         value_free(value);
@@ -11092,6 +11262,7 @@ static int encode_value_to_builder(StringBuilder *builder, Value value, RenderMo
     case VALUE_GBOXED:
     case VALUE_ACTOR:
     case VALUE_PROCESS:
+    case VALUE_HTTP:
     case VALUE_FUNCTION:
     case VALUE_REGEX:
     case VALUE_WATCHER:
@@ -11457,6 +11628,12 @@ static int serialize_value(SerBuf *b, Value v, int depth) {
          * process that forked the child holds. It is a local capability, not data:
          * shipping it would hand a peer a pid it can neither read nor reap. */
         runtime_error_raise("serialize: process handles cannot be serialized",
+                            1003, "actor");
+        return 0;
+    case VALUE_HTTP:
+        /* Same: a live transfer is a socket and a libcurl easy handle inside THIS
+         * process's multi. A peer could neither read nor cancel it. */
+        runtime_error_raise("serialize: http handles cannot be serialized",
                             1003, "actor");
         return 0;
     case VALUE_ACTOR:
@@ -14240,6 +14417,975 @@ static Value webclient_eval_call(AstExpr *expr) {
     webclient_raise(message);
     return value_null();
 }
+
+/* --- PLAT-HTTP: requests that do not block the program -------------------
+ *
+ * `webclient` performs one request and returns when it is finished, which is
+ * the right shape for a script and the wrong one for anything that also has to
+ * answer a socket. `http` is the same six verbs `process` gives a child --
+ * start, poll, read, wait, stop, release -- over libcurl's MULTI interface, so
+ * a request is a HANDLE that makes progress while the program does something
+ * else.
+ *
+ * Two rules carry the design.
+ *
+ * TRANSPORT IS NOT HTTP. `transport_ok` says the bytes arrived; `status` says
+ * what the server thought of the request. A 500 is a SUCCESSFUL transfer, and a
+ * refused connection has no status at all. The names are deliberately not
+ * interchangeable because a field called `success` beside a status code is read
+ * as "the request worked" by everyone, once, quietly.
+ *
+ * WAITED OR WATCHED, NEVER BOTH. `start` registers nothing with the event loop.
+ * A handle's readiness reaches the program either because the program blocks on
+ * it (`wait`) or because a watcher on `http.events` is running and the loop
+ * delivers it -- and `wait` CLAIMS the handle so the loop will not also report
+ * it. Without that rule a program that waits and then returns from `main` sees
+ * the same completion twice.
+ *
+ * NO FRAMING: `read` hands over the bytes that have arrived. A partial line, a
+ * partial SSE event and a partial UTF-8 sequence are all possible and all the
+ * caller's to reassemble, exactly as with `process.read`. */
+
+/* The undrained backlog a program may accumulate before the transfer is failed.
+ * Deliberately a cap on what has NOT been read rather than on the total: an SSE
+ * stream is unbounded by design and must be able to run for hours, while a
+ * program that never calls `read` must not grow without limit. */
+#define HTTP_MAX_BACKLOG (32u * 1024u * 1024u)
+
+static CURLM *http_multi = NULL;
+
+static Value http_raise(const char *message) {
+    runtime_error_raise(message, HTTP_ERROR_CODE, "http");
+    return value_null();
+}
+
+static CURLM *http_multi_get(void) {
+    if (!http_multi) {
+        http_multi = curl_multi_init();
+    }
+    return http_multi;
+}
+
+/* Detach from libcurl and free the socket. Idempotent, and it deliberately
+ * leaves every field readable: a completed handle still answers `poll` with the
+ * status and headers it collected, which is what lets a watcher read an answer
+ * it never waited for. */
+static void http_handle_detach(HttpHandle *handle) {
+    if (!handle) {
+        return;
+    }
+    if (handle->easy) {
+        if (handle->in_multi && http_multi) {
+            curl_multi_remove_handle(http_multi, handle->easy);
+        }
+        curl_easy_cleanup(handle->easy);
+        handle->easy = NULL;
+    }
+    handle->in_multi = 0;
+    if (handle->header_list) {
+        curl_slist_free_all(handle->header_list);
+        handle->header_list = NULL;
+    }
+}
+
+static size_t http_write_callback(char *data, size_t size, size_t nmemb, void *userdata) {
+    HttpHandle *h = userdata;
+    size_t total = size * nmemb;
+    if (total == 0) {
+        return 0;
+    }
+    if (h->pending.len + total > HTTP_MAX_BACKLOG) {
+        h->too_large = 1;
+        return 0;   /* aborts the transfer with CURLE_WRITE_ERROR */
+    }
+    if (h->pending.len + total + 1 > h->pending.cap) {
+        size_t cap = h->pending.cap ? h->pending.cap : 4096;
+        while (cap < h->pending.len + total + 1) {
+            cap *= 2;
+        }
+        char *grown = realloc(h->pending.data, cap);
+        if (!grown) {
+            abort();
+        }
+        h->pending.data = grown;
+        h->pending.cap = cap;
+    }
+    memcpy(h->pending.data + h->pending.len, data, total);
+    h->pending.len += total;
+    h->pending.data[h->pending.len] = '\0';
+    h->body_total += total;
+    return total;
+}
+
+/* Header parsing is webclient's, called through an alias of the two fields it
+ * owns. Sharing it is the point: a response's headers must not depend on which
+ * of the two clients asked for it, and tests/run_http.sh asserts that by
+ * comparing the same response fetched both ways. */
+static size_t http_header_callback(char *data, size_t size, size_t nitems, void *userdata) {
+    HttpHandle *h = userdata;
+    WebclientResponseMetadata meta;
+    meta.headers = h->headers;
+    meta.reason = h->reason;
+    size_t consumed = webclient_header_callback(data, size, nitems, &meta);
+    h->headers = meta.headers;
+    h->reason = meta.reason;
+    return consumed;
+}
+
+typedef struct {
+    char *method;
+    char *url;
+    char *body;
+    int has_body;
+    long timeout_ms;               /* 0 = no total timeout */
+    int follow;
+    struct curl_slist *headers;
+} HttpRequest;
+
+static void http_request_free(HttpRequest *request) {
+    free(request->method);
+    free(request->url);
+    free(request->body);
+    if (request->headers) {
+        curl_slist_free_all(request->headers);
+    }
+    memset(request, 0, sizeof(*request));
+}
+
+static int http_append_request_headers(struct curl_slist **headers, Value value) {
+    if (value.kind != VALUE_RECORD) {
+        http_raise("http.start: request headers must be a record");
+        return 0;
+    }
+    for (size_t i = 0; i < value.as.record.count; i++) {
+        RecordField *field = &value.as.record.fields[i];
+        if (!webclient_valid_token(field->name)) {
+            http_raise("http.start: request header name is invalid");
+            return 0;
+        }
+        if (field->value->kind != VALUE_STRING) {
+            http_raise("http.start: request header values must be strings");
+            return 0;
+        }
+        const char *text = field->value->as.string;
+        if (strpbrk(text, "\r\n")) {
+            http_raise("http.start: request header value is invalid");
+            return 0;
+        }
+        size_t length = strlen(field->name) + 2 + strlen(text) + 1;
+        char *line = malloc(length);
+        if (!line) {
+            abort();
+        }
+        snprintf(line, length, "%s: %s", field->name, text);
+        struct curl_slist *next = curl_slist_append(*headers, line);
+        free(line);
+        if (!next) {
+            http_raise("http.start: could not build request headers");
+            return 0;
+        }
+        *headers = next;
+    }
+    return 1;
+}
+
+static int http_request_from_record(Value record, HttpRequest *request) {
+    static const char *allowed[] = {
+        "method", "url", "headers", "body", "timeout", "follow"
+    };
+    for (size_t i = 0; i < record.as.record.count; i++) {
+        int known = 0;
+        for (size_t j = 0; j < sizeof(allowed) / sizeof(allowed[0]); j++) {
+            if (strcmp(record.as.record.fields[i].name, allowed[j]) == 0) {
+                known = 1;
+                break;
+            }
+        }
+        if (!known) {
+            char message[256];
+            snprintf(message, sizeof(message),
+                     "http.start: unknown request field: %s",
+                     record.as.record.fields[i].name);
+            http_raise(message);
+            return 0;
+        }
+    }
+
+    RecordField *url = record_find(&record, "url");
+    if (!url) {
+        http_raise("http.start: the request requires a url field");
+        return 0;
+    }
+    if (url->value->kind != VALUE_STRING) {
+        http_raise("http.start: request url must be a string");
+        return 0;
+    }
+    if (url->value->as.string[0] == '\0') {
+        http_raise("http.start: request url must not be empty");
+        return 0;
+    }
+    if (!webclient_url_has_supported_scheme(url->value->as.string)) {
+        http_raise("http.start: request url must use http:// or https://");
+        return 0;
+    }
+    request->url = copy_string(url->value->as.string);
+
+    RecordField *method = record_find(&record, "method");
+    if (method && method->value->kind != VALUE_STRING) {
+        http_raise("http.start: request method must be a string");
+        return 0;
+    }
+    const char *method_text = method ? method->value->as.string : "GET";
+    if (!webclient_valid_token(method_text)) {
+        http_raise("http.start: request method is invalid");
+        return 0;
+    }
+    request->method = copy_string(method_text);
+    for (char *c = request->method; *c; c++) {
+        *c = (char)toupper((unsigned char)*c);
+    }
+
+    RecordField *headers = record_find(&record, "headers");
+    if (headers && !http_append_request_headers(&request->headers, *headers->value)) {
+        return 0;
+    }
+
+    RecordField *body = record_find(&record, "body");
+    if (body) {
+        if (body->value->kind != VALUE_STRING) {
+            http_raise("http.start: request body must be a string");
+            return 0;
+        }
+        request->body = copy_string(body->value->as.string);
+        request->has_body = 1;
+    }
+
+    /* NO DEFAULT TOTAL TIMEOUT, unlike webclient's 30 seconds. A handle is the
+     * shape a STREAM arrives in, and a stream that is meant to stay open for an
+     * hour must not be killed by a default the author never wrote. The connect
+     * timeout below is always applied, because failing to reach the server is
+     * not something anyone streams through, and `http.stop` is the general
+     * answer for a transfer that has gone on long enough. */
+    request->timeout_ms = 0;
+    RecordField *timeout = record_find(&record, "timeout");
+    if (timeout) {
+        if (timeout->value->kind != VALUE_NUMBER ||
+            !isfinite(timeout->value->as.number) ||
+            timeout->value->as.number <= 0 ||
+            timeout->value->as.number > (double)LONG_MAX / 1000.0) {
+            http_raise("http.start: request timeout must be a positive number of seconds");
+            return 0;
+        }
+        request->timeout_ms = (long)ceil(timeout->value->as.number * 1000.0);
+        if (request->timeout_ms < 1) {
+            request->timeout_ms = 1;
+        }
+    }
+
+    request->follow = 1;
+    RecordField *follow = record_find(&record, "follow");
+    if (follow) {
+        if (follow->value->kind != VALUE_BOOL) {
+            http_raise("http.start: request follow must be true or false");
+            return 0;
+        }
+        request->follow = follow->value->as.boolean ? 1 : 0;
+    }
+    return 1;
+}
+
+/* Advance every transfer in the multi and retire the ones that finished.
+ *
+ * Everything needed from a CURLMsg is read into locals BEFORE the handle is
+ * detached, because any curl_multi_* call invalidates the message the queue
+ * just handed back. */
+static void http_pump(void) {
+    if (!http_multi) {
+        return;
+    }
+    int running = 0;
+    CURLMcode mc;
+    do {
+        mc = curl_multi_perform(http_multi, &running);
+    } while (mc == CURLM_CALL_MULTI_PERFORM);
+
+    for (;;) {
+        int left = 0;
+        CURLMsg *msg = curl_multi_info_read(http_multi, &left);
+        if (!msg) {
+            break;
+        }
+        if (msg->msg != CURLMSG_DONE) {
+            continue;
+        }
+        CURL *easy = msg->easy_handle;
+        CURLcode result = msg->data.result;
+        HttpHandle *h = NULL;
+        curl_easy_getinfo(easy, CURLINFO_PRIVATE, (char **)&h);
+        long status = 0;
+        if (result == CURLE_OK) {
+            curl_easy_getinfo(easy, CURLINFO_RESPONSE_CODE, &status);
+        }
+        if (!h) {
+            curl_multi_remove_handle(http_multi, easy);
+            curl_easy_cleanup(easy);
+            continue;
+        }
+        h->done = 1;
+        if (result == CURLE_OK) {
+            h->status = status;
+        } else {
+            h->failed = 1;
+            if (!h->error) {
+                const char *detail = h->errbuf[0] ? h->errbuf : curl_easy_strerror(result);
+                if (h->too_large) {
+                    detail = "unread response body exceeds 32 MiB; call http.read";
+                } else if (h->stopped) {
+                    detail = "stopped by http.stop";
+                }
+                h->error = copy_string(detail);
+            }
+        }
+        http_handle_detach(h);
+    }
+}
+
+static Value http_make_status(HttpHandle *h) {
+    RecordField *fields = calloc(8, sizeof(RecordField));
+    if (!fields) {
+        abort();
+    }
+    const char *names[] = {
+        "id", "running", "status", "reason", "headers",
+        "transport_ok", "error", "bytes"
+    };
+    for (size_t i = 0; i < 8; i++) {
+        fields[i].name = copy_string(names[i]);
+        fields[i].value = cell_alloc();
+        if (!fields[i].value) {
+            abort();
+        }
+    }
+    *fields[0].value = value_number((double)h->id);
+    *fields[1].value = value_bool(!h->done);
+    *fields[2].value = value_number((double)h->status);
+    *fields[3].value = value_string(h->reason ? h->reason : "");
+    *fields[4].value = value_copy(h->headers);
+    /* False while running: a transfer that has not finished has not succeeded.
+     * Read it after `running` is false, exactly as with process.success. */
+    *fields[5].value = value_bool(h->done && !h->failed);
+    *fields[6].value = value_string(h->error ? h->error : "");
+    *fields[7].value = value_number((double)h->body_total);
+    return value_record(fields, 8);
+}
+
+/* Hand over every body byte buffered so far and clear the buffer, so the next
+ * call starts where this one stopped. Bytes leave the handle exactly once. */
+static Value http_make_chunk(HttpHandle *h) {
+    RecordField *fields = calloc(2, sizeof(RecordField));
+    if (!fields) {
+        abort();
+    }
+    const char *names[] = {"id", "body"};
+    for (size_t i = 0; i < 2; i++) {
+        fields[i].name = copy_string(names[i]);
+        fields[i].value = cell_alloc();
+        if (!fields[i].value) {
+            abort();
+        }
+    }
+    *fields[0].value = value_number((double)h->id);
+    *fields[1].value = value_string_n(h->pending.data ? h->pending.data : "",
+                                      h->pending.len);
+    h->pending.len = 0;
+    h->data_notified = 0;   /* the next arrival is news again */
+    return value_record(fields, 2);
+}
+
+/* Evaluate argument `index` and require it to be an http handle. On success the
+ * BORROWED handle is returned and *owner holds the value the caller must free. */
+static HttpHandle *http_arg_handle(AstExpr *expr, const char *label, Value *owner) {
+    char msg[200];
+    *owner = value_null();
+    if (expr->as.call.args.count < 1) {
+        snprintf(msg, sizeof(msg), "%s expects an http handle", label);
+        http_raise(msg);
+        return NULL;
+    }
+    Value v = eval_expr(expr->as.call.args.items[0]);
+    if (error_action_pending()) {
+        value_free(v);
+        return NULL;
+    }
+    if (v.kind != VALUE_HTTP) {
+        value_free(v);
+        snprintf(msg, sizeof(msg), "%s expects an http handle from http.start", label);
+        http_raise(msg);
+        return NULL;
+    }
+    if (v.as.http->released) {
+        value_free(v);
+        snprintf(msg, sizeof(msg), "%s: this handle has been released", label);
+        http_raise(msg);
+        return NULL;
+    }
+    *owner = v;
+    return v.as.http;
+}
+
+/* http.start(request) -> handle. Same request record as webclient.request, with
+ * `timeout` optional rather than defaulted (see http_request_from_record). */
+static Value http_do_start(AstExpr *expr) {
+    if (expr->as.call.args.count != 1) {
+        return http_raise("http.start expects a single request record");
+    }
+    Value record = eval_expr(expr->as.call.args.items[0]);
+    if (error_action_pending()) {
+        value_free(record);
+        return value_null();
+    }
+    if (record.kind != VALUE_RECORD) {
+        value_free(record);
+        return http_raise("http.start expects a request record");
+    }
+    HttpRequest request = {0};
+    if (!http_request_from_record(record, &request)) {
+        value_free(record);
+        http_request_free(&request);
+        return value_null();
+    }
+    value_free(record);
+
+    CURLM *multi = http_multi_get();
+    if (!multi) {
+        http_request_free(&request);
+        return http_raise("http.start: could not create the libcurl multi handle");
+    }
+    CURL *easy = curl_easy_init();
+    if (!easy) {
+        http_request_free(&request);
+        return http_raise("http.start: could not create the libcurl request");
+    }
+
+    HttpHandle *h = calloc(1, sizeof(HttpHandle));
+    if (!h) {
+        abort();
+    }
+    h->id = http_next_id++;
+    h->easy = easy;
+    h->ref_count = 1;
+    h->headers = value_record(NULL, 0);
+    h->reason = copy_string("");
+    h->url = copy_string(request.url);
+    h->header_list = request.headers;
+    request.headers = NULL;      /* ownership moved to the handle */
+
+    curl_easy_setopt(easy, CURLOPT_URL, request.url);
+    curl_easy_setopt(easy, CURLOPT_PRIVATE, h);
+    curl_easy_setopt(easy, CURLOPT_PROTOCOLS_STR, "http,https");
+    curl_easy_setopt(easy, CURLOPT_REDIR_PROTOCOLS_STR, "http,https");
+    curl_easy_setopt(easy, CURLOPT_FOLLOWLOCATION, request.follow ? 1L : 0L);
+    curl_easy_setopt(easy, CURLOPT_MAXREDIRS, 10L);
+    if (request.timeout_ms > 0) {
+        curl_easy_setopt(easy, CURLOPT_TIMEOUT_MS, request.timeout_ms);
+    }
+    long connect_timeout = 30000L;
+    if (request.timeout_ms > 0 && request.timeout_ms < connect_timeout) {
+        connect_timeout = request.timeout_ms;
+    }
+    curl_easy_setopt(easy, CURLOPT_CONNECTTIMEOUT_MS, connect_timeout);
+    curl_easy_setopt(easy, CURLOPT_USERAGENT, "gBASIC/0.1 http");
+    curl_easy_setopt(easy, CURLOPT_ACCEPT_ENCODING, "");
+    curl_easy_setopt(easy, CURLOPT_WRITEFUNCTION, http_write_callback);
+    curl_easy_setopt(easy, CURLOPT_WRITEDATA, h);
+    curl_easy_setopt(easy, CURLOPT_HEADERFUNCTION, http_header_callback);
+    curl_easy_setopt(easy, CURLOPT_HEADERDATA, h);
+    curl_easy_setopt(easy, CURLOPT_ERRORBUFFER, h->errbuf);
+    if (h->header_list) {
+        curl_easy_setopt(easy, CURLOPT_HTTPHEADER, h->header_list);
+    }
+    if (strcmp(request.method, "GET") == 0 && !request.has_body) {
+        curl_easy_setopt(easy, CURLOPT_HTTPGET, 1L);
+    } else if (strcmp(request.method, "HEAD") == 0) {
+        curl_easy_setopt(easy, CURLOPT_NOBODY, 1L);
+        curl_easy_setopt(easy, CURLOPT_CUSTOMREQUEST, "HEAD");
+    } else {
+        if (strcmp(request.method, "POST") == 0) {
+            curl_easy_setopt(easy, CURLOPT_POST, 1L);
+        } else {
+            curl_easy_setopt(easy, CURLOPT_CUSTOMREQUEST, request.method);
+        }
+        /* COPYPOSTFIELDS, not POSTFIELDS: the request record is freed before
+         * the transfer runs, so curl must own the bytes. This is the one place
+         * a non-blocking start differs from webclient's blocking perform, and
+         * getting it wrong reads a freed buffer on the wire. */
+        curl_easy_setopt(easy, CURLOPT_POSTFIELDSIZE_LARGE,
+                         (curl_off_t)(request.has_body ? strlen(request.body) : 0));
+        curl_easy_setopt(easy, CURLOPT_COPYPOSTFIELDS,
+                         request.has_body ? request.body : "");
+    }
+
+    if (curl_multi_add_handle(multi, easy) != CURLM_OK) {
+        http_request_free(&request);
+        http_handle_release(h);
+        return http_raise("http.start: could not schedule the request");
+    }
+    h->in_multi = 1;
+    http_request_free(&request);
+
+    HttpHandle **grown = realloc(http_handles,
+                                 sizeof(HttpHandle *) * (http_handle_count + 1));
+    if (!grown) {
+        abort();
+    }
+    http_handles = grown;
+    http_handles[http_handle_count++] = h;
+
+    /* One perform now, so a request that fails immediately (a bad host with a
+     * cached negative answer) is already failed when start returns. */
+    http_pump();
+    return value_http(h);
+}
+
+static Value http_do_poll(AstExpr *expr) {
+    Value owner;
+    HttpHandle *h = http_arg_handle(expr, "http.poll", &owner);
+    if (!h) {
+        return value_null();
+    }
+    http_pump();
+    Value status = http_make_status(h);
+    value_free(owner);
+    return status;
+}
+
+static Value http_do_read(AstExpr *expr) {
+    Value owner;
+    HttpHandle *h = http_arg_handle(expr, "http.read", &owner);
+    if (!h) {
+        return value_null();
+    }
+    http_pump();
+    Value chunk = http_make_chunk(h);
+    value_free(owner);
+    return chunk;
+}
+
+static double http_now_seconds(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double)ts.tv_sec + (double)ts.tv_nsec / 1e9;
+}
+
+/* http.wait(handle [, timeout_seconds]) -> status. Blocks, pumping every
+ * transfer in the multi, until THIS handle finishes or the timeout expires.
+ * Other handles keep making progress meanwhile and buffer their bytes.
+ *
+ * Claims the handle (`waited`), so a watcher on `http.events` will not also
+ * report its completion -- the waited-or-watched rule. */
+static Value http_do_wait(AstExpr *expr) {
+    Value owner;
+    HttpHandle *h = http_arg_handle(expr, "http.wait", &owner);
+    if (!h) {
+        return value_null();
+    }
+    double limit = -1.0;
+    if (expr->as.call.args.count > 1) {
+        Value t = eval_expr(expr->as.call.args.items[1]);
+        if (error_action_pending()) {
+            value_free(t);
+            value_free(owner);
+            return value_null();
+        }
+        if (t.kind != VALUE_NUMBER || !isfinite(t.as.number) || t.as.number < 0) {
+            value_free(t);
+            value_free(owner);
+            return http_raise("http.wait: the timeout must be a non-negative number of seconds");
+        }
+        limit = t.as.number;
+        value_free(t);
+    }
+    if (expr->as.call.args.count > 2) {
+        value_free(owner);
+        return http_raise("http.wait expects a handle and an optional timeout");
+    }
+
+    /* Blocking here inside a watcher stalls every other client and every other
+     * transfer, for the same reason and in the same words as looping after
+     * `serve`. Warned rather than refused: a short wait in a handler is a
+     * defensible thing to write, and the author is the one who can price it. */
+    if (webserver_event_loop_running && warn_site_first_time(expr->line, expr->column)) {
+        warn_fmt(2105, "http",
+                 "http.wait blocks the event loop, so no other request, stream or "
+                 "transfer makes progress until it returns; read the completion "
+                 "from `http.events` instead, or accept the stall deliberately");
+    }
+
+    h->waited = 1;
+    double started = http_now_seconds();
+    while (!h->done) {
+        int numfds = 0;
+        long curl_timeout = -1;
+        curl_multi_timeout(http_multi, &curl_timeout);
+        long block_ms = 50;
+        if (curl_timeout >= 0 && curl_timeout < block_ms) {
+            block_ms = curl_timeout;
+        }
+        if (limit >= 0) {
+            double left = limit - (http_now_seconds() - started);
+            if (left <= 0) {
+                break;
+            }
+            long left_ms = (long)(left * 1000.0);
+            if (left_ms < block_ms) {
+                block_ms = left_ms < 0 ? 0 : left_ms;
+            }
+        }
+        curl_multi_wait(http_multi, NULL, 0, (int)block_ms, &numfds);
+        http_pump();
+        if (runtime_stopped) {
+            break;
+        }
+    }
+    Value status = http_make_status(h);
+    value_free(owner);
+    return status;
+}
+
+/* http.stop(handle) -> true. Cancels an in-flight transfer; harmless on one
+ * that has already finished. Whatever bytes had arrived stay readable, which is
+ * the same bargain process.stop strikes with a child's output. */
+static Value http_do_stop(AstExpr *expr) {
+    Value owner;
+    HttpHandle *h = http_arg_handle(expr, "http.stop", &owner);
+    if (!h) {
+        return value_null();
+    }
+    if (!h->done) {
+        h->stopped = 1;
+        h->done = 1;
+        h->failed = 1;
+        if (!h->error) {
+            h->error = copy_string("stopped by http.stop");
+        }
+        http_handle_detach(h);
+    }
+    h->waited = 1;      /* a stopped handle is nobody's to deliver */
+    value_free(owner);
+    return value_bool(1);
+}
+
+/* http.release(handle) -> true. Explicit end of interest. Dropping the last
+ * reference does the same work, so this exists to make the moment visible and
+ * to let a later verb say "released" rather than acting on a dead transfer. */
+static Value http_do_release(AstExpr *expr) {
+    Value owner;
+    HttpHandle *h = http_arg_handle(expr, "http.release", &owner);
+    if (!h) {
+        return value_null();
+    }
+    if (!h->done) {
+        h->stopped = 1;
+        h->done = 1;
+        h->failed = 1;
+        if (!h->error) {
+            h->error = copy_string("released by http.release");
+        }
+    }
+    h->released = 1;
+    h->waited = 1;
+    http_handle_detach(h);
+    http_registry_remove(h);
+    value_free(owner);
+    return value_bool(1);
+}
+
+static Value http_eval_call(AstExpr *expr) {
+    if (strcmp(expr->as.call.name, "start") == 0) {
+        return http_do_start(expr);
+    }
+    if (strcmp(expr->as.call.name, "poll") == 0) {
+        return http_do_poll(expr);
+    }
+    if (strcmp(expr->as.call.name, "read") == 0) {
+        return http_do_read(expr);
+    }
+    if (strcmp(expr->as.call.name, "wait") == 0) {
+        return http_do_wait(expr);
+    }
+    if (strcmp(expr->as.call.name, "stop") == 0) {
+        return http_do_stop(expr);
+    }
+    if (strcmp(expr->as.call.name, "release") == 0) {
+        return http_do_release(expr);
+    }
+    char message[200];
+    snprintf(message, sizeof(message), "invalid function call: http.%s",
+             expr->as.call.name);
+    return http_raise(message);
+}
+
+/* --- event delivery ------------------------------------------------------
+ *
+ * `load http` binds a global record named `http` holding `events`, and the
+ * module appends to it on the FIXED path "http.events". That a global may share
+ * a name with a native module qualifier is what makes this cheap: the call path
+ * matches the module name before anything else, and the field path resolves the
+ * global, so `http.start(...)` and `watch(http.events)` coexist.
+ *
+ * It is also better than the precedent it copies. The webserver locates its
+ * queue by scanning every global for the variable holding the server record and
+ * building the watch path from that variable's NAME -- O(globals) per request,
+ * and only possible because the program bound the record somewhere. A
+ * module-owned global needs neither the scan nor the binding. */
+
+static void http_bind_events_global(void) {
+    Symbol *existing = env_find_in_frame(&global_env, "http");
+    if (existing) {
+        return;     /* a program that bound it first keeps what it wrote */
+    }
+    RecordField *fields = calloc(1, sizeof(RecordField));
+    if (!fields) {
+        abort();
+    }
+    fields[0].name = copy_string("events");
+    fields[0].value = cell_alloc();
+    if (!fields[0].value) {
+        abort();
+    }
+    *fields[0].value = value_array(NULL, 0);
+    Value record = value_record(fields, 1);
+    /* Bound in the GLOBAL frame explicitly rather than through env_set, which
+     * writes to whatever frame is current: `load http` is hoisted and runs at
+     * top level today, and a binding the watcher path cannot find would be a
+     * silent no-delivery rather than an error. */
+    Symbol *items = realloc(global_env.items, sizeof(Symbol) * (global_env.count + 1));
+    if (!items) {
+        abort();
+    }
+    global_env.items = items;
+    global_env.items[global_env.count].name = copy_string("http");
+    global_env.items[global_env.count].value = record;
+    global_env.count++;
+}
+
+static int http_events_watched(void) {
+    for (size_t i = 0; i < watcher_count; i++) {
+        if (watchers[i].active &&
+            watcher_matches_change(watchers[i].stmt, "http.events")) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* A handle the event loop is responsible for: live, not claimed by a wait, and
+ * not released. A stopped or waited handle is deliberately excluded -- that is
+ * the whole of the waited-or-watched rule. */
+static int http_handle_is_watched(HttpHandle *h) {
+    return !h->released && !h->waited;
+}
+
+/* Does the event loop have http work to do? Used both by the loop's own
+ * condition and by the gate in main that decides whether to enter it at all, so
+ * a program with a watcher and an outstanding request keeps running after
+ * `main` returns even with no server bound. */
+static int http_loop_active(void) {
+    if (!http_events_watched()) {
+        return 0;
+    }
+    for (size_t i = 0; i < http_handle_count; i++) {
+        HttpHandle *h = http_handles[i];
+        if (!http_handle_is_watched(h)) {
+            continue;
+        }
+        /* Work remains only while something has yet to be REPORTED. Bytes the
+         * program has already been told about and chose not to read are not
+         * work; treating them as work is a loop that never ends. */
+        if (!h->done || !h->delivered) {
+            return 1;
+        }
+        if (h->pending.len > 0 && !h->data_notified) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* Ask libcurl which descriptors it wants watched and copy them into the loop's
+ * pollfd array. curl_multi_fdset is used rather than curl_multi_waitfds because
+ * it is available in every libcurl this project can be built against; its
+ * FD_SETSIZE ceiling is far above anything a handle count reaches. A -1 max_fd
+ * (curl resolving a name on another thread, say) simply contributes nothing and
+ * the loop's own tick carries the transfer forward. */
+static size_t http_collect_fds(int *fds, short *events, size_t max) {
+    if (!http_multi) {
+        return 0;
+    }
+    fd_set readers, writers, excepts;
+    FD_ZERO(&readers);
+    FD_ZERO(&writers);
+    FD_ZERO(&excepts);
+    int max_fd = -1;
+    if (curl_multi_fdset(http_multi, &readers, &writers, &excepts, &max_fd) != CURLM_OK) {
+        return 0;
+    }
+    size_t count = 0;
+    for (int fd = 0; fd <= max_fd && count < max; fd++) {
+        short want = 0;
+        if (FD_ISSET(fd, &readers)) {
+            want |= POLLIN;
+        }
+        if (FD_ISSET(fd, &writers)) {
+            want |= POLLOUT;
+        }
+        if (!want) {
+            continue;
+        }
+        fds[count] = fd;
+        events[count] = want;
+        count++;
+    }
+    return count;
+}
+
+/* How long the loop may block before libcurl needs attention again, clamped to
+ * the caller's own tick. */
+static long http_poll_timeout_ms(long tick_ms) {
+    long curl_timeout = -1;
+    if (http_multi) {
+        curl_multi_timeout(http_multi, &curl_timeout);
+    }
+    if (curl_timeout >= 0 && curl_timeout < tick_ms) {
+        return curl_timeout;
+    }
+    return tick_ms;
+}
+
+/* Append one event to `http.events` and fire the watcher. Returns 0 when the
+ * watcher raised, which the event loop turns into an exit. */
+static int http_emit_event(HttpHandle *h, const char *kind) {
+    Symbol *symbol = env_find_in_frame(&global_env, "http");
+    if (!symbol || symbol->value.kind != VALUE_RECORD) {
+        return 1;
+    }
+    RecordField *events = record_find(&symbol->value, "events");
+    if (!events || events->value->kind != VALUE_ARRAY) {
+        return 1;
+    }
+    RecordField *fields = calloc(4, sizeof(RecordField));
+    if (!fields) {
+        abort();
+    }
+    const char *names[] = {"id", "kind", "status", "handle"};
+    for (size_t i = 0; i < 4; i++) {
+        fields[i].name = copy_string(names[i]);
+        fields[i].value = cell_alloc();
+        if (!fields[i].value) {
+            abort();
+        }
+    }
+    *fields[0].value = value_number((double)h->id);
+    *fields[1].value = value_string(kind);
+    *fields[2].value = value_number((double)h->status);
+    /* THE EVENT CARRIES THE HANDLE, not only its id, following the precedent
+     * that a queued request carries everything its handler needs. A watcher
+     * that had to map an id back to a handle would need a table for the
+     * simplest case, and the id is kept beside it because routing a reply in a
+     * pool -- where `watch` cannot name a per-worker path -- is done by id.
+     *
+     * This is also what keeps the handle alive: the reference the event holds
+     * is released when the event is, so a transfer cannot be collected out from
+     * under an event that has not been read yet. */
+    h->ref_count++;
+    *fields[3].value = value_http(h);
+    Value event = value_record(fields, 4);
+    Value ignored = append_to_array_ref(events->value, event, 0);
+    value_free(ignored);
+    return watcher_trigger_change("http.events");
+}
+
+/* Called once per event-loop iteration: advance the transfers, then report what
+ * changed. `data` is coalesced to at most one event per iteration per handle --
+ * the program reads with http.read, which drains everything, so a second event
+ * naming the same bytes would say nothing new. Returns 0 when a watcher raised. */
+static int http_loop_service(void) {
+    if (!http_multi) {
+        return 1;
+    }
+    http_pump();
+    for (size_t i = 0; i < http_handle_count; i++) {
+        HttpHandle *h = http_handles[i];
+        if (!http_handle_is_watched(h)) {
+            continue;
+        }
+        if (h->pending.len > 0 && !h->data_notified) {
+            h->data_notified = 1;
+            if (!http_emit_event(h, "data")) {
+                return 0;
+            }
+            /* The watcher may have released this handle, in which case the
+             * registry shifted under us; re-check before touching it again. */
+            if (i >= http_handle_count || http_handles[i] != h) {
+                i--;
+                continue;
+            }
+        }
+        if (h->done && !h->delivered) {
+            h->delivered = 1;
+            if (!http_emit_event(h, "done")) {
+                return 0;
+            }
+            if (i >= http_handle_count || http_handles[i] != h) {
+                i--;
+            }
+        }
+    }
+    return 1;
+}
+
+/* Tear every live transfer down BEFORE curl_global_cleanup runs.
+ *
+ * The handle STRUCTS outlive this point -- they are owned by values in the
+ * global environment, which is cleared afterwards -- so leaving their easy
+ * handles alive would mean calling curl_easy_cleanup after the library it
+ * belongs to has been shut down. Detaching is idempotent, so the release that
+ * follows finds nothing left to do. */
+static void http_shutdown(void) {
+    while (http_handle_count > 0) {
+        HttpHandle *h = http_handles[http_handle_count - 1];
+        http_handle_detach(h);
+        h->done = 1;
+        http_registry_remove(h);
+    }
+    free(http_handles);
+    http_handles = NULL;
+    if (http_multi) {
+        curl_multi_cleanup(http_multi);
+        http_multi = NULL;
+    }
+    http_next_id = 1;
+}
+#else
+/* Without libcurl there is no transfer to detach, no loop work to do, and no
+ * global to bind. The verbs themselves raise at dispatch, as every optional
+ * module does; these exist so the value lifecycle and the event loop compile
+ * and behave identically in a build with the feature switched off. */
+static void http_handle_detach(HttpHandle *handle) { (void)handle; }
+static void http_bind_events_global(void) {}
+static int http_loop_active(void) { return 0; }
+static int http_loop_service(void) { return 1; }
+static size_t http_collect_fds(int *fds, short *events, size_t max) {
+    (void)fds; (void)events; (void)max;
+    return 0;
+}
+static long http_poll_timeout_ms(long tick_ms) { return tick_ms; }
+static void http_shutdown(void) {
+    free(http_handles);
+    http_handles = NULL;
+    http_handle_count = 0;
+    http_next_id = 1;
+}
 #endif
 
 #define WEBSERVER_ERROR_CODE 4001
@@ -15917,7 +17063,7 @@ static int webserver_event_loop_running = 0;
 
 static int webserver_run_event_loop(void) {
     webserver_event_loop_running = 1;
-    while (webserver_any_active() && !runtime_stopped) {
+    while ((webserver_any_active() || http_loop_active()) && !runtime_stopped) {
         if (webserver_term_requested) {
             for (size_t i = 0; i < webserver_count; i++) {
                 webservers[i].draining = 1;
@@ -15941,10 +17087,24 @@ static int webserver_run_event_loop(void) {
             }
             descriptor_count += webservers[i].client_count;
         }
-        if (descriptor_count == 0) {
+        /* PLAT-HTTP: libcurl's descriptors join the SAME poll rather than
+         * getting a wait of their own, which is the whole reason handle
+         * readiness can be delivered by the loop at all. A transfer that curl
+         * has no descriptor for yet (a name still resolving) contributes
+         * nothing and rides the tick. */
+        int http_fds[HTTP_MAX_POLL_FDS];
+        short http_events[HTTP_MAX_POLL_FDS];
+        size_t http_fd_count = 0;
+        int http_wants_loop = http_loop_active();
+        if (http_wants_loop) {
+            http_fd_count = http_collect_fds(http_fds, http_events,
+                                             HTTP_MAX_POLL_FDS);
+        }
+        if (descriptor_count == 0 && !http_wants_loop) {
             break;
         }
-        struct pollfd *pollfds = calloc(descriptor_count, sizeof(struct pollfd));
+        struct pollfd *pollfds = calloc(descriptor_count + http_fd_count + 1,
+                                        sizeof(struct pollfd));
         if (!pollfds) {
             abort();
         }
@@ -15968,10 +17128,19 @@ static int webserver_run_event_loop(void) {
                 cursor++;
             }
         }
-        int ready = poll(pollfds, descriptor_count, 50);
+        for (size_t k = 0; k < http_fd_count; k++) {
+            pollfds[descriptor_count + k].fd = http_fds[k];
+            pollfds[descriptor_count + k].events = http_events[k];
+        }
+        long tick_ms = http_wants_loop ? http_poll_timeout_ms(50) : 50;
+        int ready = poll(pollfds, descriptor_count + http_fd_count, (int)tick_ms);
         if (ready < 0 && errno != EINTR) {
             free(pollfds);
             webserver_raise("webserver poll failed");
+            return 1;
+        }
+        if (http_wants_loop && !http_loop_service()) {
+            free(pollfds);
             return 1;
         }
         cursor = 0;
@@ -24001,6 +25170,7 @@ static const char *reflect_category(Value v) {
     case VALUE_GBOXED:
     case VALUE_ACTOR:
     case VALUE_PROCESS:
+    case VALUE_HTTP:
     case VALUE_POSTGRES_CONNECTION:
     case VALUE_SQLITE_CONNECTION:
     case VALUE_ODBC_CONNECTION:
@@ -25679,6 +26849,20 @@ static Value eval_call(AstExpr *expr) {
             runtime_error_raise("LDAP support is not available in this build",
                                 LDAP_ERROR_CODE,
                                 "ldap");
+            return value_null();
+#endif
+        }
+
+        if (strcmp(expr->as.call.library, "http") == 0) {
+            if (!http_library_loaded) {
+                runtime_error_raise("library not loaded: http", 3002, "http");
+                return value_null();
+            }
+#if HAVE_LIBCURL
+            return http_eval_call(expr);
+#else
+            runtime_error_raise("HTTP support is not available in this build",
+                                3002, "http");
             return value_null();
 #endif
         }
@@ -30875,7 +32059,12 @@ static Value eval_comparison(AstExpr *expr, Value left, Value right) {
             value_free(right);
             return value_null();
         }
-    } else {
+    } else if ((left.kind == VALUE_NUMBER || left.kind == VALUE_BOOL) &&
+               (right.kind == VALUE_NUMBER || right.kind == VALUE_BOOL)) {
+        /* THE NUMERIC COERCION, NARROWED TO THE PAIR IT IS FOR. `0 = false` is
+         * a real coercion with 1,472 measured uses in this tree, and it is
+         * unchanged. What changed is that this is no longer the branch
+         * everything ELSE falls into. */
         double a = value_number_or_zero(left);
         double b = value_number_or_zero(right);
         if (strcmp(op, "=") == 0) result = a == b;
@@ -30888,6 +32077,56 @@ static Value eval_comparison(AstExpr *expr, Value left, Value right) {
         else if (strcmp(op, "!<") == 0) result = !(a < b);
         else if (strcmp(op, "!>=") == 0) result = !(a >= b);
         else if (strcmp(op, "!<=") == 0) result = !(a <= b);
+    } else {
+        /* THE FALLTHROUGH IS CLOSED, and closing it is the general form of a
+         * fix this chain had already received twice by hand.
+         *
+         * `value_number_or_zero` returns 0.0 for every kind that is not a
+         * number or a boolean, so an open catch-all here means EVERY value of
+         * such a kind is zero and therefore equal to every other. PLAT-EQ
+         * routed arrays and records away from it in August; the scalar half
+         * routed strings away from it on 2026-09-05. Neither closed the door,
+         * so every kind with no branch of its own was still inside:
+         *
+         *     {file}"/etc/hostname" = {file}"/etc/passwd"   -> TRUE
+         *     {dir}"/etc" = {dir}"/tmp"                     -> TRUE
+         *     two different child processes                 -> TRUE
+         *     a file = a directory = the number 0           -> TRUE
+         *     a file > a directory                          -> ANSWERED
+         *
+         * `file` and `dir` are ordinary program values, not exotic handles,
+         * and a program comparing two paths got `equal` for every pair. Found
+         * by adding a THIRTEENTH kind (`http`) and watching two distinct
+         * transfers compare equal in the new module's own fixture -- which is
+         * the argument for closing the door rather than adding a branch: a new
+         * value kind used to opt into this silently.
+         *
+         * MEASURED over the whole gate before changing it: exactly EIGHT
+         * comparisons reach here with a non-numeric kind -- 4 http, 3
+         * workbook, 1 actor -- and all eight are identity comparisons that
+         * value_storage_equal already answers correctly. Nothing in the tree
+         * depended on the coercion, which is exactly why it survived.
+         *
+         * Equality is value_storage_equal, the SAME function watchers use to
+         * decide whether a value changed, so the operator and change detection
+         * cannot disagree. Ordering refuses, as it does for the eleven kinds
+         * that already had a branch. */
+        int equal = value_storage_equal(&left, &right);
+        if (strcmp(op, "=") == 0) {
+            result = equal;
+        } else if (strcmp(op, "!=") == 0) {
+            result = !equal;
+        } else {
+            char message[160];
+            snprintf(message, sizeof(message),
+                     "a %s and a %s have no order; = and != answer, "
+                     "the ordering operators do not",
+                     value_kind_name(left.kind), value_kind_name(right.kind));
+            runtime_error_raise(message, 1003, "comparison");
+            value_free(left);
+            value_free(right);
+            return value_null();
+        }
     }
 
     value_free(left);
@@ -31615,6 +32854,32 @@ static Value eval_expr(AstExpr *expr) {
                 runtime_error_raise(message, 1003, "watcher");
                 return value_null();
             }
+        }
+        /* PLAT-HTTP: a handle answers `id` and `kind`, following the watcher
+         * precedent one field-kind over. `kind` exists so that a queue carrying
+         * more than one sort of handle -- which is where this is going -- can
+         * be routed without asking the value system, and `id` is the identity
+         * an event names. Everything else about a transfer is on the status
+         * record, which is where a value that CHANGES belongs. */
+        if (object.kind == VALUE_HTTP) {
+            HttpHandle *h = object.as.http;
+            if (strcmp(expr->as.field.field, "id") == 0) {
+                Value id = value_number((double)h->id);
+                value_free(object);
+                return id;
+            }
+            if (strcmp(expr->as.field.field, "kind") == 0) {
+                value_free(object);
+                return value_string("http");
+            }
+            char message[160];
+            snprintf(message, sizeof(message),
+                     "an http handle has no field '%s' (it has id and kind; "
+                     "status, headers and the rest come from http.poll)",
+                     expr->as.field.field);
+            value_free(object);
+            runtime_error_raise(message, HTTP_ERROR_CODE, "http");
+            return value_null();
         }
         if (object.kind != VALUE_RECORD) {
             runtime_error_raise("field access expects a record", 1003, "field access");
@@ -33619,8 +34884,23 @@ int eval_program(AstStmtList program) {
         value_free(result.value);
         exit_status = 1;
     }
-    if (!exit_status && webserver_any_active()) {
+    /* PLAT-HTTP: a program with a `watch(http.events)` and an outstanding
+     * request enters the loop with no server bound at all -- "the loop runs
+     * after `main` while there is anything to deliver, and exits when there is
+     * not". Before this, a program holding only handles simply exited. */
+    if (!exit_status && (webserver_any_active() || http_loop_active())) {
         exit_status = webserver_run_event_loop();
+        /* A raise inside a WATCHER happens after `main` has returned, so the
+         * fatal report above has already run and there is nothing left to
+         * report it. Until this line a `watch(server.requests)` body that
+         * raised ended the run with exit 1 and NOTHING on stderr -- no message,
+         * no location, no indication a program had failed rather than finished.
+         * Pre-existing since the watcher path was written and found while
+         * building the second caller of it; see tests/run_http.sh, tier
+         * WATCHER_RAISE, which asserts it for both queues. */
+        if (exit_status && (raise_in_flight || base_error_frame.pending)) {
+            raise_report_fatal();
+        }
     }
     free(base_error_frame.label);
     memset(&base_error_frame, 0, sizeof(base_error_frame));
@@ -33654,6 +34934,8 @@ int eval_program(AstStmtList program) {
     webserver_library_loaded = 0;
     gi_library_loaded = 0;
     webserver_clear();
+    http_library_loaded = 0;
+    http_shutdown();
     if (webclient_curl_initialized) {
 #if HAVE_LIBCURL
         curl_global_cleanup();

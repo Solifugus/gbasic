@@ -123,6 +123,40 @@ else
     status=1
 fi
 
+# --- Tier 1c: the kinds that had NO branch at all ------------------------------
+#
+# The two fixes above each routed a family AWAY from the numeric fallthrough
+# and neither CLOSED it, so every kind without a branch of its own was still
+# inside: two different files compared EQUAL, so did two directories, so did
+# two child processes, a file equalled a directory and the number 0, and
+# `file > dir` ANSWERED. `file` and `dir` are ordinary program values.
+#
+# Found by adding a THIRTEENTH value kind: PLAT-HTTP's fixture asserts that two
+# transfers are two handles and it failed. That is the argument for closing the
+# door rather than adding a fourteenth branch -- a new kind opted into the
+# coercion silently, and did.
+#
+# MEASURED before changing it, whole gate instrumented: exactly EIGHT
+# comparisons reach the fallthrough with a non-numeric kind (4 http, 3
+# workbook, 1 actor), all identity comparisons the fix answers correctly.
+# 9 of the 19 checks below are proven red against the open catch-all; the six
+# controls stay green, which is what says the fix is not "refuse everything".
+if timeout 300 ./gbasic tests/equality_kinds_test.bas >"$work/kinds.txt" 2>"$err" </dev/null; then
+    if grep -q '^mismatches: 0$' "$work/kinds.txt" \
+       && [ "$(sed -n 's/^checks: //p' "$work/kinds.txt")" -ge 19 ]; then
+        printf 'PASS tests/equality_kinds_test.bas (%s checks)\n' \
+            "$(sed -n 's/^checks: //p' "$work/kinds.txt")"
+    else
+        printf 'FAIL tests/equality_kinds_test.bas -- comparison across KINDS moved\n'
+        grep -E '^MISMATCH|^checks|^mismatches' "$work/kinds.txt"
+        status=1
+    fi
+else
+    printf 'FAIL tests/equality_kinds_test.bas (exit)\n'
+    cat "$err"
+    status=1
+fi
+
 # --- Tier 2: the in-language oracle -------------------------------------------
 if grep -q 'ORACLE DISAGREES' "$out"; then
     printf 'FAIL oracle -- the operator and the in-language walk disagree:\n'
@@ -187,6 +221,35 @@ refuse '[1] >= "x"'          'arrays support only = and !='
 refuse '{ a: 1 } < { a: 2 }' 'records support only = and !='
 refuse '{ a: 1 } <= 5'       'records support only = and !='
 refuse '{ a: 1 } !> { b: 2 }' 'records support only = and !='
+
+# The closed fallthrough's own refusals. A kind with no branch of its own used
+# to be coerced to 0 and ORDERED against anything, so these needed a helper
+# that takes a whole body: the value has to be BUILT before it can be compared.
+# The message names both sides, because which two kinds met is the thing the
+# author needs to see.
+refuse_body() { # body expected-message
+    printf 'program main(args)\n%s\nend program\n' "$1" >"$work/r.bas"
+    if ./gbasic "$work/r.bas" >/dev/null 2>"$work/r.err"; then
+        printf 'FAIL refusal: %-30s did NOT raise (it answered instead)\n' "$2"
+        status=1
+        return
+    fi
+    if grep -q "$2" "$work/r.err"; then
+        printf 'PASS refusal %-38s -> %s\n' "(built value)" "$2"
+    else
+        printf 'FAIL refusal: expected %-22s got:\n' "$2"
+        cat "$work/r.err"
+        status=1
+    fi
+}
+refuse_body '  x{file}= "/etc/hostname"
+  y{dir}= "/etc"
+  print(x > y)' 'a file and a directory have no order'
+refuse_body '  x{file}= "/etc/hostname"
+  print(x < 5)' 'a file and a number have no order'
+refuse_body '  x{file}= "/etc/hostname"
+  y{file}= "/etc/passwd"
+  print(x >= y)' 'a file and a file have no order'
 
 # --- Tier 5: valgrind ---------------------------------------------------------
 if vg_available; then

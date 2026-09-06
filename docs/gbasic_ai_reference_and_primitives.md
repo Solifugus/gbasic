@@ -876,6 +876,41 @@ prerequisite that was invisible from the design, and because the way it was
 found — building the smallest measurement rather than reasoning about the
 design — is the same argument item 13 makes for a skeleton.
 
+### 12c. Adding a value kind found that comparison had never been closed
+
+Item 12b recorded that `0 = "stop"` was true and was fixed the day before
+phase 1. Building phase 1 found the same defect one level up, and it is the
+more general one.
+
+`http` is a new **value kind**, and `tests/run_http.sh` asserts that two
+transfers are two handles. It failed: `h = p` was **true**. The cause is that
+`eval_comparison`'s numeric coercion is a catch-all `else`, and
+`value_number_or_zero` returns 0.0 for every kind that is not a number or a
+boolean — so a new kind opts into "every value of this kind equals every
+other" by existing. PLAT-EQ routed compounds away from that branch in August
+and strings away from it on 2026-09-05; neither closed it. Still inside were
+`file`, `dir`, the connection handles, `process`, `actor` and `workbook`:
+
+```
+{file}"/etc/hostname" = {file}"/etc/passwd"   ->  TRUE
+{dir}"/etc" = {dir}"/tmp"                     ->  TRUE
+two separately started child processes        ->  TRUE
+a file = a directory = the number 0           ->  TRUE
+a file > a directory                          ->  ANSWERED
+```
+
+`file` and `dir` are ordinary program values. Measured over the whole gate,
+exactly **eight** comparisons reach the fallthrough with a non-numeric kind
+(4 http, 3 workbook, 1 actor), all identity comparisons that
+`value_storage_equal` answers correctly, so closing it moved nothing.
+
+The relevance to this design is not the bug. It is that `agent.step` is a
+string state machine dispatching on `event.kind`, tool results are compared,
+and the whole architecture routes replies by id — the parts of it most likely
+to be wrong in a way nothing raises. Two of the three defects phase 1 found
+are of that shape, and both were found by *running the smallest thing that
+could work*, which is what item 13's skeleton is for.
+
 ### 13. Small corrections
 
 - There is no `new_id()`; `hex_encode(random_bytes(16))` is the spelling.
@@ -903,19 +938,37 @@ parsed by element type into gBASIC arrays, nested arrays parsed not
 flattened; array parameters rendered as literals or JSON by the type the
 described statement wants. Suite uses Postgres as the oracle.
 
-**`http`** — unchanged: `start`, `poll`, `read`, `wait`, `stop`, `release`,
-mirroring `process` in shape, status record, and the no-framing rule. libcurl
-multi interface.
+**`http`** — **built** (2026-09-06). `start`, `poll`, `read`, `wait`, `stop`,
+`release` over the libcurl multi interface, mirroring `process` in shape,
+status record and the no-framing rule. `timeout` has no default, unlike
+`webclient`'s 30 seconds, because a handle is the shape a stream arrives in.
+`transport_ok` and `status` are separate and named so they cannot be read as
+each other. Measured: four 400 ms requests take 515 ms together against
+1,717 ms sequentially. `tests/run_http.sh`.
 
-**Event delivery for handles** — new, replacing the first draft's
-`wait_any`. A handle is *waited* or *watched*, never both: `start` registers
-nothing; a `watch` on the handle's event value adds it to the event loop's
-existing `poll()` set, and `wait`/`stop`/`release` remove it. Readiness is
-delivered into the watched value (`llm.events`, `process.events`, and the
-pool's replies) the way requests reach `server.requests`. The event loop runs
-after `main` while a live server *or* a watched handle exists, and exits when
-neither does. `wait` inside a watcher warns as "loop after `serve`" does.
-Handles expose `kind` and `id`.
+**Event delivery for handles** — **built** (2026-09-06), replacing the first
+draft's `wait_any`. A handle is *waited* or *watched*, never both: `start`
+registers nothing; a watcher on `http.events` puts libcurl's descriptors into
+the event loop's existing `poll()` set, and `wait` *claims* a handle so the loop
+does not also report it. The event loop runs after `main` while a live server
+*or* a watched handle exists, and exits when neither does. `wait` inside a
+watcher warns as "loop after `serve`" does. Handles expose `kind` and `id`, and
+an event carries the handle **itself** as well as its id — a watcher needs no
+table to map an id back to a transfer, and the reference the event holds is
+what keeps the transfer from being collected before it is read.
+
+Two things came out of building it that the design did not have.
+
+A `data` event must be **coalesced**: reported once for the bytes currently
+buffered and again only after a `read`. The first version re-reported undrained
+bytes on every turn of the loop, which for a program that did not want the body
+is an unbounded queue and a loop that never goes idle. It did not fail, it
+**hung**, so its tier is bounded by `timeout`.
+
+And a raise inside a watcher was **reported nowhere** — exit 1, nothing on
+stderr. Pre-existing in `watch(server.requests)` since the watcher path was
+written, because the fatal report runs when `main` returns and a watcher fires
+after that. Fixed for both queues, and asserted for both.
 
 **`rank`** — deferred. No consumer once ranking is a pgvector query (Part
 3, item 10). Revisit with a second consumer in hand.
@@ -975,12 +1028,14 @@ example.
 
 ### 4.4 Order, revised
 
-1. `http` (six primitives) and **handle event delivery through the event
-   loop** together — one platform phase. Measured smaller than it looked
-   (item 12): the delivery is a module-owned global record plus a fixed-path
-   `watcher_trigger_change`, so what is actually new is the libcurl multi
-   interface, registering handle fds into the loop's existing `poll()` set,
-   and the waited-or-watched rule.
+1. ~~`http` (six primitives) and **handle event delivery through the event
+   loop**~~ — **built 2026-09-06**, one platform phase as planned. Item 12's
+   estimate held: the delivery is a module-owned global record plus a
+   fixed-path `watcher_trigger_change`, and the work was the libcurl multi
+   interface, the loop's `poll()` set, and the waited-or-watched rule. What it
+   also produced was three defects invisible to the design — the coalescing
+   hang, the unreported watcher raise, and PLAT-EQ's open fallthrough (item
+   12c) — none of which any amount of further reading would have found.
 2. `with principal`.
 3. `tools.define`, `tools.schema` and the **worker pool** — the library
    form. (The grammar block only after a zero conflict count, and only as

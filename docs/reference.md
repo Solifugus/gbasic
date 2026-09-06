@@ -2262,6 +2262,97 @@ continuing in the clear.
 Line endings are normalized to CRLF on the way out, so a body written with
 plain `\n` is compliant without the author knowing the rule.
 
+## HTTP Module
+
+`webclient` performs one request and returns when it has finished, which is the
+right shape for a script and the wrong one for anything that also has to answer
+a socket. `http` is the same request over libcurl's *multi* interface: a
+request is a **handle** that makes progress while the program does something
+else. It needs libcurl, like `webclient`.
+
+The six verbs are the ones `process` gives a child, and they mean the same
+things:
+
+```basic
+load http
+
+h = http.start({ url: "https://example.com/feed" })
+status = http.wait(h)
+print(status.status)
+print(http.read(h).body)
+```
+
+- `http.start(request) -> handle`
+- `http.poll(handle) -> status` — never blocks
+- `http.read(handle) -> { id, body }` — the bytes that have arrived
+- `http.wait(handle [, seconds]) -> status` — blocks until it finishes
+- `http.stop(handle) -> true` — cancels; what arrived stays readable
+- `http.release(handle) -> true` — explicit end of interest
+
+The request record is `webclient.request`'s, with one difference: `timeout` has
+**no default**. A handle is the shape a stream arrives in, and a stream meant to
+stay open for an hour must not be killed by a default nobody wrote. A connect
+timeout of 30 seconds always applies, because failing to reach the server is not
+something anyone streams through, and `http.stop` is the general answer to a
+transfer that has gone on long enough.
+
+A handle answers `handle.id` and `handle.kind`. Everything that changes is on
+the status record: `id`, `running`, `status`, `reason`, `headers`,
+`transport_ok`, `error`, `bytes`.
+
+**`transport_ok` is not `status`.** `transport_ok` says the bytes arrived;
+`status` says what the server thought of the request. A 500 response is a
+transfer that **succeeded** and carries status 500; a refused connection has no
+status at all and carries an `error`. Reading one as the other is the mistake
+this pair of names exists to prevent.
+
+`http.read` frames nothing. A partial line, a partial SSE event and a partial
+UTF-8 sequence are all possible, and reassembling them is the caller's job —
+exactly as with `process.read`. Bytes leave a handle exactly once: nothing is
+lost and nothing is repeated across reads.
+
+### Readiness delivered to a watcher
+
+A handle is **waited or watched, never both.**
+
+`http.start` registers nothing. If the program declares a watcher on
+`http.events`, the event loop advances every transfer and delivers readiness
+there, the way a request reaches `server.requests` — and `http.wait` *claims* a
+handle, so a transfer the program blocked on is not also reported.
+
+```basic
+load http
+
+watch(http.events)
+    while count(http.events) > 0
+        e = take_first(http.events)
+        if e.kind = "data" then
+            print(http.read(e.handle).body)
+        end if
+        if e.kind = "done" then
+            print("finished " + string(e.id) + " " + string(e.status))
+        end if
+    end while
+end watch
+
+h = http.start({ url: "https://example.com/feed" })
+```
+
+`load http` binds a global record named `http` holding `events`; the module
+appends to it. An event carries `id`, `kind` (`"data"` or `"done"`), `status`
+and `handle` — the handle itself, so a watcher needs no table to map an id back
+to a transfer, and the id beside it because a pool routes replies by id.
+
+**Let `main` return.** The event loop runs after `main` while there is anything
+to deliver — a live server *or* a watched handle — and exits when there is not.
+A program that loops instead is the trap described under WebServer, for the same
+reason. `http.wait` inside a watcher blocks every other transfer and every other
+client, and warns.
+
+A `data` event is reported once for the bytes currently buffered and again only
+after a `read`, so a program that does not want the body is told twice at most
+rather than on every turn of the loop.
+
 ## WebServer Module
 
 WebServer provides an HTTP/1.1 server using live records, ordinary arrays, and

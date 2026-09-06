@@ -9,6 +9,74 @@ language surface may still change between releases.
 
 ## Unreleased
 
+### Added — `http`: requests that do not block the program
+
+`webclient` performs one request and returns when it has finished. `http` is
+the same request over libcurl's **multi** interface, so a request is a handle
+that makes progress while the program does something else — the six verbs
+`process` gives a child, meaning the same things: `start`, `poll`, `read`,
+`wait`, `stop`, `release`. Measured, four 400 ms requests take **515 ms
+together against 1,717 ms one at a time**.
+
+**Transport is not HTTP, and the field names say so.** `transport_ok` says the
+bytes arrived; `status` says what the server thought of the request. A 500 is a
+transfer that **succeeded** and carries status 500; a refused connection has no
+status at all. A field called `success` beside a status code gets read as "the
+request worked", once, quietly — so the suite asserts the pair as a difference,
+and a perturbation conflating them is caught by exactly one check.
+
+**Readiness is delivered, not waited on.** A handle is *waited* or *watched*,
+never both: `start` registers nothing, a watcher on `http.events` puts libcurl's
+descriptors into the event loop's existing `poll()` — the same one the webserver
+runs — and `wait` *claims* a handle so the loop does not also report it. The
+loop now runs after `main` while there is anything to deliver, a live server
+**or** a watched handle, where a program holding only handles used to exit. An
+event carries the handle itself, so a watcher needs no table to map an id back
+to a transfer.
+
+`timeout` has no default, unlike `webclient`'s 30 seconds: a handle is the shape
+a stream arrives in, and a stream meant to stay open must not be killed by a
+default nobody wrote. A 30-second connect timeout always applies.
+
+### Fixed — a raise inside a watcher was reported nowhere
+
+A `watch(server.requests)` body that raised ended the run with **exit 1 and
+nothing on stderr** — no message, no location, no way to tell a failed program
+from a finished one. The fatal report runs when `main` returns, and a watcher
+fires after that. Pre-existing since the watcher path was written; found
+building the second caller of it. Both queues are asserted, because a fix proven
+only on the new one would say nothing about the old.
+
+### Fixed — every value kind without a comparison branch was equal to every other
+
+```
+{file}"/etc/hostname" = {file}"/etc/passwd"   ->  TRUE
+{dir}"/etc" = {dir}"/tmp"                     ->  TRUE
+two separately started child processes        ->  TRUE
+a file = a directory = the number 0           ->  TRUE
+a file > a directory                          ->  ANSWERED
+```
+
+PLAT-EQ routed arrays and records away from `eval_comparison`'s numeric
+fallthrough in August; the scalar half routed strings away from it the day
+before this. **Neither closed the door.** It stayed an open catch-all, and
+`value_number_or_zero` returns 0.0 for every kind that is not a number or a
+boolean — so every kind with no branch of its own was still inside, `file` and
+`dir` among them, which are ordinary program values and not exotic handles.
+
+**Found by adding a thirteenth kind.** The new `http` module's own fixture
+asserts that two transfers are two handles, and it failed. That is the argument
+for closing the fallthrough rather than adding a fourteenth branch: a new value
+kind opted into the coercion silently, and did.
+
+**Measured before changing it**, whole gate instrumented: exactly **eight**
+comparisons reach the fallthrough with a non-numeric kind — 4 http, 3 workbook,
+1 actor — and all eight are identity comparisons that `value_storage_equal`,
+the function watchers already use to decide whether a value changed, answers
+correctly. Nothing depended on the coercion, which is why it survived. Equality
+now routes there and ordering refuses, naming both kinds.
+`0 = false` is unchanged at 1,472 measured uses, and is the control.
+
 ### Fixed — a string is never equal to a number, and ordering across kinds refuses
 
 `0 = "stop"` was **true**. So were `0 = ""` and `0 = "abc"`, while `1 = "1"`
