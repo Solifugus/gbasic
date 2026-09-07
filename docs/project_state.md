@@ -161,6 +161,10 @@ document list, with a status column, is `docs/README.md`.
   carries the parameter's interval through the model, refuses to recommend
   anything when that interval reaches a value at which the model is undefined,
   and reports how hard the model magnifies uncertainty.
+- **agent runs** — `agent`, where a conversation in progress is a value and the
+  loop is a pure step returning the actions its caller must perform. The run is
+  plain data, so it survives storage and an approval can arrive later on another
+  request; a tool that declares mutations asks a person first.
 - **model tool-calling** — `tools`, one declaration of what a model may call:
   the parameter list is the source both the published schema and the argument
   validation derive from, so what the model is told and what is enforced cannot

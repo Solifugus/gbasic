@@ -146,10 +146,19 @@ PORT
     PORT="$hport" timeout -k 5 60 ./gbasic --line-buffered tests/tools/pool_server.bas \
         >"$work/h.out" 2>"$work/h.err" &
     hsrv=$!
-    for _ in $(seq 1 100); do
-        curl -s -m 1 -o /dev/null "http://127.0.0.1:$hport/?q=probe" 2>/dev/null && break
+    up=0
+    for _ in $(seq 1 300); do
+        if curl -s -m 1 -o /dev/null "http://127.0.0.1:$hport/?q=probe" 2>/dev/null; then
+            up=1
+            break
+        fi
         sleep 0.05
     done
+    if [ "$up" != "1" ]; then
+        cat "$work/h.err" 2>/dev/null || true
+        kill "$hsrv" 2>/dev/null || true
+        fail "the pooled server never answered, so this tier tested nothing"
+    fi
     : >"$work/bodies"
     ( curl -s -m 20 -H "X-User: a" "http://127.0.0.1:$hport/?q=one" >>"$work/bodies"; echo >>"$work/bodies" ) &
     c1=$!

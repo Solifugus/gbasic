@@ -87,18 +87,29 @@ import socket
 s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()
 PORT
 )"
-    PORT="$wport" timeout -k 5 30 ./gbasic --line-buffered tests/inbox_warn.bas \
+    PORT="$wport" timeout -k 5 60 ./gbasic --line-buffered tests/inbox_warn.bas \
         >"$work/w.out" 2>"$work/w.err" &
     wsrv=$!
-    for _ in $(seq 1 100); do
-        curl -s -m 1 -o /dev/null "http://127.0.0.1:$wport/" 2>/dev/null && break
+    # Generous, and the outcome is RECORDED: a server that never came up must
+    # be reported as that and not as "it did not warn". Under a loaded machine
+    # this tier once blamed the warning for a listener that had not finished
+    # binding, which is the wrong cause named confidently.
+    up=0
+    for _ in $(seq 1 300); do
+        if curl -s -m 1 -o /dev/null "http://127.0.0.1:$wport/" 2>/dev/null; then
+            up=1
+            break
+        fi
         sleep 0.05
     done
-    body="$(curl -s -m 10 "http://127.0.0.1:$wport/" || true)"
+    body="$(curl -s -m 20 "http://127.0.0.1:$wport/" || true)"
     sleep 0.2
     kill "$wsrv" 2>/dev/null || true
     wait "$wsrv" 2>/dev/null || true
-    if ! grep -q 'warning: receive() blocks the event loop' "$work/w.err"; then
+    if [ "$up" != "1" ]; then
+        cat "$work/w.err" 2>/dev/null || true
+        fail "the fixture server never answered, so this tier tested nothing (a machine problem, not a warning problem)"
+    elif ! grep -q 'warning: receive() blocks the event loop' "$work/w.err"; then
         cat "$work/w.err"; fail "a blocking receive inside a watcher did not warn"
     elif ! grep -q 'inbox_warn\.bas:[0-9]*:[0-9]*' "$work/w.err"; then
         cat "$work/w.err"; fail "the warning carries no location"

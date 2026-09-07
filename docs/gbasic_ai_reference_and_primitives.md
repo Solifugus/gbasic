@@ -1104,7 +1104,16 @@ example.
    carries the earlier turns in its messages and so already has a different
    key. The retry loop already counted attempts, so the weaker rule covers both
    named failures and needs no API change.
-5. `agent.step`.
+5. ~~`agent.step`~~ — **built 2026-09-07** as `agent.apply`
+   (`docs/agent_design.md`); `step` is a keyword and cannot be a function name.
+   Two things `encode` decided that this design had not: a TOOLSET cannot be in
+   the run (function values), so it holds `tools.schema` — which carries
+   `mutates`, exactly what the approval decision needs — and `expires_at` is a
+   NUMBER, since `encode` refuses a datetime too. Both are §1.8's own rule for
+   the live handle, reached from the same place. The idempotency key is
+   CONCATENATED rather than hashed, against §1.8's wording: both halves are
+   already opaque ids, so a hash adds no uniqueness and costs the reader the
+   ability to see which run and which call an effect belongs to.
 6. `mcp`, both transports, the stdio one shipped with `--line-buffered` in
    its launch configuration and a deadlock tier proving why.
 7. Retrieval, as a pgvector query with the ACL predicate in it. (`rank` is

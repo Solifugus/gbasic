@@ -9,6 +9,45 @@ language surface may still change between releases.
 
 ## Unreleased
 
+### Added — `agent`: a conversation is a value, and the loop is a pure step
+
+Step 5 of the AI reference proposal (`docs/agent_design.md`).
+
+The naive design is a loop — send the transcript, take the reply, dispatch any
+tool call, re-send. The **approval gate** makes that unwritable: when the model
+asks to do something that changes the world a person has to say yes, they may
+take a minute, the wait spans HTTP requests, and the server is single-threaded.
+Nothing may block. So a conversation in progress is a record and
+`agent.apply(run, event)` is a pure function returning the new run plus the
+*actions* its caller must perform.
+
+**Two structural facts came from `encode` rather than from the design.** A
+toolset cannot be in the run — it holds function values — so the run keeps
+`tools.schema(ts)`, ordinary records which carry `mutates`, exactly what the
+approval decision needs. And `expires_at` is a **number**, because `encode`
+refuses a datetime too. Both are the rule §1.8 already stated for the live
+model handle, reached from the same place: a run that cannot be stored is not a
+run.
+
+The load-bearing tier is **storage**: a run must survive `encode`/`decode` and
+behave identically, asserted as a difference between the original and the
+revived run — "it encodes" alone is satisfied by a run that encodes and then
+steps differently.
+
+**A declined call is an answer, not an error.** It appends a tool-result part
+marked `is_error`, naming who declined, so the model is told in the transcript
+and can say so or propose something else.
+
+Purity is asserted **structurally**, by reading the function's body, because a
+behavioural test cannot notice a clock read that happens to return the same
+value twice — and the perturbation proving it is a single added `epoch(now())`,
+caught by that tier and no other. One thing came free: a gBASIC record is a
+value, so `apply` cannot mutate its caller's run even by accident.
+
+Named `apply` rather than `step` because `step` is a keyword (`for i = 1 to 10
+step 2`) — the same wall `new` and `stop` put up elsewhere — and because
+`lending.apply` and `credit.apply` already mean "fold an event into a state".
+
 ### Added — `llm`: a canonical transcript, and replay keyed by request
 
 Step 4 of the AI reference proposal. Two additions, both required before an
