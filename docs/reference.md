@@ -2823,8 +2823,14 @@ moves with it). Nothing opens a socket or reads a certificate until
 spell: callable only through the values the record carries, polluting no
 scope. A server block implies `load web`.
 
-**Head options are literals** — number, string, `true`/`false` — and that
-restriction is what makes every load-time check statically decidable:
+**Head options are literals** — number, string, `true`/`false`. The binding
+reason is *when* a block exists: `server` declarations are pre-registered
+before anything runs, so a head option has nowhere to evaluate an expression —
+`workers: n` would read `n` before it was assigned. (Measured, only a site's
+`host` has its literal value read by a load-time check, to refuse two sites
+claiming one name; for the rest the literal rule is about evaluation order, not
+checkability.) The restriction is also what keeps every load-time check
+statically decidable:
 duplicate `method+path`, patterns that can never be told apart, malformed
 `{captures}`, unknown verbs/directives/hooks, duplicate hosts, `root`
 twice, a computed option. All of it is refused at load with file:line
@@ -2832,16 +2838,34 @@ through the same diagnostics as parse errors (`--json-diagnostics` code
 `GB_DIAG_SERVER_BLOCK`). Deliberately runtime instead: certificate file
 existence, port availability, static directory existence.
 
-**A computed option does not require abandoning the block.** The declaration
-binds a plain record and `serve` reads `options` off it, so a value known only
-at run time — a port from `/etc`, an address from the environment — is applied
-by overriding that record before serving:
+**A computed option does not require abandoning the block.**
+`web.configure(sv, settings)` returns *another declaration* with deployment
+settings merged in, so a value known only at run time — a port from `/etc`, a
+worker count from the environment — reaches the runtime without the head giving
+up its literals:
 
 ```basic
-app.options.port = number(conf.port)
-h = serve(app)
+cfg = web.configure(app, {
+    port:    number(conf.port),
+    workers: number(env("WORKERS"))
+})
+h = web.serve(cfg)
 print "listening on " + string(h.port)
 ```
+
+Because the result is a declaration, `web.routes`, `web.dispatch` and the
+outline all keep working on it, and configuring twice composes. Every head
+option is accepted — `port`, `address`, `inherit`, `workers`, `timeout`,
+`cert`, `key` — and nothing else: an unknown name is refused **by name** and a
+wrong type by type. `host` is refused for its own reason, because a site's host
+is the one option value a load-time check actually reads.
+
+The record can also be written directly, `app.options.port = number(conf.port)`,
+and that still works — but it validates nothing. `app.options.workesr = 4` is
+accepted in silence, creates a field nothing reads, and leaves the server
+running on the declared value while the author believes otherwise. Prefer
+`configure`; it also leaves the declaration itself unmodified, which matters
+once anything else reads it.
 
 Report the port from the **live** record (`h.port`), never from the
 configuration: with `port: 0` the kernel chooses. A service that prints the

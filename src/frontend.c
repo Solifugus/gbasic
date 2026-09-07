@@ -221,9 +221,20 @@ typedef struct {
     AstExprKind kind;                          /* required literal kind */
 } SrvOption;
 
+/* `remedy` is the sentence that follows the refusal. It differs by table and
+ * that is the point: for a HEAD option the answer is `web.configure` at serve
+ * time, and for a SITE option there is none -- `host` is the one option whose
+ * literal value a parse-time check actually reads (two sites may not claim one
+ * host), so it cannot be deferred without invalidating that check.
+ *
+ * The message used to say "computed configuration belongs to webserver.listen"
+ * for both. True for port/address/timeout/cert/key, and FALSE for `workers`,
+ * which is the one a real deployment hit first: webserver.listen binds one
+ * socket and has no worker count at all, so following the advice led nowhere. */
 static void srv_check_options(SrvCheck *chk, const AstRecordFieldList *options,
                               const SrvOption *allowed, size_t allowed_count,
-                              const char *where, int line, int column) {
+                              const char *where, const char *remedy,
+                              int line, int column) {
     for (size_t i = 0; i < options->count; i++) {
         const AstRecordField *field = &options->items[i];
         const SrvOption *spec = NULL;
@@ -249,10 +260,10 @@ static void srv_check_options(SrvCheck *chk, const AstRecordFieldList *options,
                              : spec->kind == AST_EXPR_STRING ? "a string literal"
                              : "true or false";
             srv_error(chk, line, column,
-                      "%s: option '%s' must be %s -- head options are literals, "
-                      "so the block stays statically checkable; computed "
-                      "configuration belongs to webserver.listen",
-                      where, field->name, want);
+                      "%s: option '%s' must be %s -- the block is registered "
+                      "before anything runs, so an option here has nowhere "
+                      "to evaluate an expression; %s",
+                      where, field->name, want, remedy);
         }
     }
 }
@@ -408,8 +419,10 @@ static void srv_check_server(SrvCheck *chk, const AstStmt *stmt) {
     char where[192];
     snprintf(where, sizeof(where), "server '%s'", stmt->as.server.name);
     srv_check_options(chk, &stmt->as.server.options, head_options,
-                      sizeof(head_options) / sizeof(head_options[0]),
-                      where, stmt->line, stmt->column);
+                      sizeof(head_options) / sizeof(head_options[0]), where,
+                      "set it from configuration at serve time with "
+                      "web.configure(name, { option: value })",
+                      stmt->line, stmt->column);
 
     /* Bare entries form the implicit default site; `web` blocks are the named
      * ones. Hosts must be unique across the named ones. */
@@ -435,7 +448,10 @@ static void srv_check_server(SrvCheck *chk, const AstStmt *stmt) {
         snprintf(site_where, sizeof(site_where), "web '%s'", site->name);
         srv_check_options(chk, &site->options, site_options,
                           sizeof(site_options) / sizeof(site_options[0]),
-                          site_where, site->line, site->column);
+                          site_where,
+                          "a site option stays in the source: `host` is read "
+                          "here to refuse two sites claiming one name",
+                          site->line, site->column);
         const char *host = srv_option_string(&site->options, "host");
         if (!host) {
             srv_error(chk, site->line, site->column,

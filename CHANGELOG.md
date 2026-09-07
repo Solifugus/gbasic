@@ -9,6 +9,51 @@ language surface may still change between releases.
 
 ## Unreleased
 
+### Added — `web.configure`: deployment settings for a declared server
+
+A `server` block's head options are literals, so a worker count could not come
+from configuration. Reported from a real application.
+
+**The head stays literal, and for the real reason rather than the stated one.**
+The refusal said "so the block stays statically checkable". Measured: of the
+seven head options **none** has its value read by a parse-time check — only the
+*site* option `host` does, to refuse two sites claiming one name. The binding
+reason is *when*: `server_register` is in the pre-registration set, so a block
+is materialised before anything runs and `workers: n` would read an unassigned
+`n`. So the fix is a second door, not a looser head.
+
+`web.configure(sv, settings)` returns **another declaration**, which is why it
+is not an argument to `serve`: `web.routes`, `web.dispatch` and the outline all
+keep working on the configured value, and configuring twice composes. Which
+options it admits is derived rather than chosen — an option may be overridden
+exactly when no parse-time check depends on its value, which is all seven head
+options and not `host`.
+
+**A correction to how this was first described.** The record could already be
+written directly (`app.options.port = ...`), and the reference documented it, so
+the gap was never "there is no way". But that path validates **nothing**:
+`app.options.workesr = 4` is accepted in silence, creates a field nothing reads,
+and leaves the server on the declared value. The suite asserts both halves,
+because "configure refuses a typo" alone is satisfied by a function nobody
+needs.
+
+**And the refusal named a remedy that did not exist.** It said computed
+configuration "belongs to `webserver.listen`" — true for `port`, `address`,
+`timeout`, `cert` and `key`, and **false for `workers`**, the one option a
+deployment hit first: `webserver.listen` binds one socket and has no worker
+count at all. One message served both option tables, which is how it came to be
+wrong for exactly one of them; head and site now give different, accurate
+remedies, asserted as a difference.
+
+A worker count is validated where it is **used**, so a literal `workers: 0` in
+the head meets the same rule as a configured one; it previously served
+single-process without a word.
+
+The admitted options now live in two places — `head_options[]` in
+`src/frontend.c` and `web.head_options()` in `stdlib/web.bas` — which is the
+drift hazard `tools` exists to prevent one library over. A tripwire tier reads
+both and requires them identical.
+
 ### Added — `tools`: one declaration of what a model may call
 
 `stdlib/tools.bas` (`docs/tools_design.md`). The **extraction** of what

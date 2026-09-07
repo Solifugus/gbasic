@@ -748,6 +748,111 @@ library web
     ' listener is active, and a drain (SIGTERM, or server.draining = true)
     ' lets it finish and exit. With `workers: N` this call IS the supervisor
     ' loop and returns after the pool drains.
+    ' ---- deployment settings for a declared server ------------------------
+    '
+    ' A `server` block's head options are LITERALS, and that is not a style
+    ' rule: `server_register` is in the interpreter's pre-registration set, so
+    ' a block is materialised BEFORE ANYTHING RUNS. `workers: n` would read `n`
+    ' before it was assigned, and there is no sound place to evaluate an
+    ' expression -- the same reason a default parameter value must be a literal.
+    '
+    ' So the declaration says what the service IS and this says where and how
+    ' big it runs. `web.configure` returns ANOTHER DECLARATION, which is why it
+    ' is not an argument to `serve`: everything that consumes a declaration --
+    ' `web.routes`, `web.dispatch`, the outline -- keeps working on the
+    ' configured value, and configuring twice composes.
+    '
+    ' WHICH OPTIONS ARE ADMITTED IS DERIVED, not chosen: an option may be
+    ' overridden exactly when no parse-time check depends on its value.
+    ' Measured over src/frontend.c, that is all seven head options and NOT
+    ' `host`, whose literal value is read to detect two sites claiming the same
+    ' name -- overriding it would invalidate a check already made.
+    '
+    ' THIS TABLE MIRRORS `head_options[]` IN src/frontend.c and the two can
+    ' drift, which is the defect `tools` exists to prevent one library over.
+    ' tests/run_web_configure.sh reads BOTH and requires them identical.
+    ' PRIVATE. It has no consumer outside this library -- `configure`'s refusal
+    ' lists the names, which is the discoverable path -- and a public
+    ' enumeration would be a promise with nobody asking for it. The tripwire in
+    ' tests/run_web_configure.sh reads this SOURCE, not an API, exactly as
+    ' run_pre_registration.sh reads eval.c.
+    function _head_options()
+        return [
+            { name: "port",    type: "number" },
+            { name: "address", type: "string" },
+            { name: "inherit", type: "boolean" },
+            { name: "workers", type: "number" },
+            { name: "timeout", type: "number" },
+            { name: "cert",    type: "string" },
+            { name: "key",     type: "string" }
+        ]
+    end function
+
+    function _option_type(name)
+        for each o in _head_options()
+            if o.name = name then return o.type
+        end for
+        return ""
+    end function
+
+    function _value_is(v, want)
+        if want = "number" then return is_number(v)
+        if want = "string" then return is_string(v)
+        if want = "boolean" then return is_boolean(v)
+        return false
+    end function
+
+    ' web.configure(sv, settings) -> a new server declaration
+    function configure(sv, settings)
+        shaped = _is_declaration(sv)
+        if not shaped then
+            error "configure expects a server declaration (a `server name(...)` block)"
+        end if
+        if not is_record(settings) then
+            error "configure expects a record of settings for server '" + sv.name + "'"
+        end if
+        for each k in keys(settings)
+            want = _option_type(k)
+            if want = "" then
+                if k = "host" then
+                    ' Named separately because it IS a real option -- of a
+                    ' `web` site block -- and the reason it cannot be set here
+                    ' is specific rather than "no such option".
+                    error "configure: 'host' cannot be set at deployment: it is a site option whose value is checked at parse time, where two sites claiming one host are refused"
+                end if
+                error "configure: server '" + sv.name + "' has no option '" + k + "'; it takes " + _option_names()
+            end if
+            if not _value_is(settings[k], want) then
+                error "configure: option '" + k + "' must be a " + want
+            end if
+        end for
+
+        ' Every field is carried over rather than named one by one, so a field
+        ' added to the declaration later travels through this untouched instead
+        ' of being silently dropped.
+        out = {}
+        for each f in keys(sv)
+            out[f] = sv[f]
+        end for
+        merged = {}
+        for each o in keys(sv.options)
+            merged[o] = sv.options[o]
+        end for
+        for each k in keys(settings)
+            merged[k] = settings[k]
+        end for
+        out["options"] = merged
+        return out
+    end function
+
+    function _option_names()
+        out = []
+        for each o in _head_options()
+            append(out, o.name)
+        end for
+        return join(out, ", ")
+    end function
+
     function serve(sv)
         shaped = _is_declaration(sv)
         if not shaped then
@@ -774,6 +879,14 @@ library web
         workers = 1
         if has(sv.options, "workers") then
             workers = sv.options.workers
+        end if
+        ' Checked HERE rather than in `configure`, so a literal `workers: 0` in
+        ' the head is refused by the same line as a configured one. The head's
+        ' parse-time check only knows the value is a number literal; that it is
+        ' a usable COUNT is a fact about the value, and `workers: 0` otherwise
+        ' serves single-process without a word.
+        if workers < 1 or workers != floor(workers) then
+            error "serve: server '" + sv.name + "' asks for " + string(workers) + " workers; it must be a whole number of at least 1"
         end if
         if workers > 1 then
             return _serve_pool(sv, ctx, tls)
