@@ -2262,6 +2262,43 @@ continuing in the clear.
 Line endings are normalized to CRLF on the way out, so a body written with
 plain `\n` is compliant without the author knowing the rule.
 
+## Actor replies in the event loop: `watch(inbox.messages)`
+
+`receive()` blocks. That is right for a sequential program and fatal in a
+request handler, because a watcher *is* the event loop — a worker pool whose
+replies are collected with `receive` has moved the work off the loop and then
+made the loop wait for it.
+
+An interpreter has exactly one inbox, so it joins the loop's `poll` set and a
+message arrives as an event:
+
+```basic
+watch reader(inbox.messages)
+    while count(inbox.messages) > 0
+        m = take_first(inbox.messages)
+        print("worker said " + string(m.answer))
+    end while
+    if done then
+        unwatch reader
+    end if
+end watch
+
+me = self()
+w = spawn worker(me)
+send(w, { job: 1 })
+```
+
+`send`, `receive` and `spawn` are builtins with no `load`, so the global record
+is bound when the **watcher is registered** — the watch is what declares that
+this program wants delivery, and the binding follows from it.
+
+**A mailbox has no completion**, unlike an http transfer, so the program says
+when it is finished: `unwatch` ends the delivery and the loop exits. Without it
+a program waits forever for a message that may never come.
+
+`receive()` inside a watcher **warns**, for the same reason and in the same
+words as `http.wait`.
+
 ## Identity: `with principal`
 
 `with principal(p) ... end with` declares the identity on whose behalf the body

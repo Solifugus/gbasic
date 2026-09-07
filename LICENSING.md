@@ -33,7 +33,7 @@ suit you — contact matthewct@gmail.com.
 - `stdlib/`: `accounting` `ari` `automation` `chart` `credit` `crypto` `datagrid` `dates` `decision` `deposits` `fake` `filetree` `finance` `lending`
   `frame` `gtk` `gtkui` `gui` `insight` `llm` `mail` `market` `matrix` `persist`
   `reasoning`
-  `schedule` `scoring` `sourceeditor` `stats` `web`
+  `schedule` `scoring` `sourceeditor` `stats` `tools` `web`
 
 ### AGPL-3.0-or-later
 

@@ -169,6 +169,15 @@ that suite's positive control: they must be provably resolved, which is also
 what proves the live probes are running anything at all.
 
 
+- `spawn` resolves a bare function **name**, not an expression, so it takes
+  neither a qualified name nor a function value: `spawn lib.worker(x)` is a
+  parse error and `f = worker` then `spawn f(x)` raises "no function named f".
+  A library that owns a worker protocol therefore cannot own the spawning —
+  the caller writes the entry function and hands the handles over
+  (`docs/tools_design.md` §4). A function value crosses `spawn` fine as an
+  ARGUMENT and is callable in the child, which is what makes the workaround
+  work at all.
+
 - ~~A raise cannot be caught; `on error resume next` abandons the whole
   failing statement. Doctrine: pre-validate, and grow `try_*`/probe builtins
   where a failure must be a value.~~ **RESOLVED by PLAT-ERR** (struck
@@ -4280,3 +4289,56 @@ orders freely.
   dedup key and every child has the same position; the key needs the process
   too, or the note needs to be parent-only.
 - **Workaround:** none needed; noise only. `on warning ignore` silences it.
+
+## 2026-09-06 — CC — `spawn` takes a bare function NAME, so a library cannot spawn its own worker
+- **Type:** limitation
+- **Severity:** medium
+- **What:** `spawn` resolves its identifier as a *function name*, not as an
+  expression, so neither of these works:
+  - `spawn tools._worker(me, ts)` — parse error, "unexpected QUALIFIED_IDENT,
+    expecting IDENT". A library cannot spawn a function it defines.
+  - `f = real_worker` then `spawn f(me)` — runtime error, "spawn: no function
+    named f". A function value in a variable is not accepted either, even
+    though a function value crosses `spawn` fine *as an argument* and is
+    callable in the child.
+- **Why it matters:** a library that owns a worker protocol cannot own the
+  spawning of the workers. `stdlib/tools.bas` wanted `tools.pool(ts, {workers:
+  4})` to build its own pool; it cannot.
+- **Workaround:** the library exports the worker LOOP and the caller writes a
+  three-line entry function in its own program, then hands the handles over:
+
+  ```basic
+  function tool_worker(back, ts)     ' must live in the program, not the library
+      tools.serve(back, ts)
+      return nothing
+  end function
+
+  handles = []
+  for i = 1 to 4
+      append(handles, spawn tool_worker(self(), ts))
+  end for
+  p = tools.pool(handles)
+  ```
+
+  This is not purely a loss — the caller can see how many workers it is
+  starting, and the protocol still has one definition — but it is boilerplate
+  the language is imposing, and `docs/tools_design.md` §4 has to explain it.
+- **What would fix it:** accepting a qualified name, and/or resolving a
+  function VALUE, in the spawn entry. The child is exec'd with `--actor ENTRY`,
+  so a qualified entry also needs the child to resolve it after its own
+  `load` — which it already does, since `register_hoistable_declarations`
+  registers imports in an actor child.
+
+## 2026-09-06 — CC — no suite had ever run valgrind over an actor program
+- **Type:** process
+- **Severity:** low
+- **What:** `ensure_root_mailbox` opens a socketpair the root actor owns for
+  its whole life, and nothing ever closed it — so every program that called
+  `self()` or `spawn` ended with two descriptors open. `--track-fds` reports it
+  immediately. It survived because the valgrind tiers of 36 suites never
+  pointed at a program that spawns: an untouched
+  `examples/spawn_handle_passing_test.bas` reports the same two.
+- **Workaround:** none needed; fixed at teardown (`actor_mailbox_shutdown`),
+  and `tests/run_inbox.sh` is the first suite to valgrind an actor program.
+- **The lesson is about coverage, not the leak.** A tier that exists in 36
+  suites still measures nothing about a shape none of them exercises.

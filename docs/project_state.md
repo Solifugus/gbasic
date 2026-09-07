@@ -161,6 +161,12 @@ document list, with a status column, is `docs/README.md`.
   carries the parameter's interval through the model, refuses to recommend
   anything when that interval reaches a value at which the model is undefined,
   and reports how hard the model magnifies uncertainty.
+- **model tool-calling** — `tools`, one declaration of what a model may call:
+  the parameter list is the source both the published schema and the argument
+  validation derive from, so what the model is told and what is enforced cannot
+  drift. A raising tool returns a result rather than ending the run; declared
+  effects are published but not gated; and bodies run in a pre-spawned worker
+  pool so a tool call does not freeze the event loop.
 - **credit scorecards** — `scoring`, turning a population into a model that
   ranks risk and then into the artefact a credit committee approves: binning by
   weight of evidence, information value, AUC/KS/Gini, calibration onto a point

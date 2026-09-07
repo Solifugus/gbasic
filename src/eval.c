@@ -816,6 +816,10 @@ static int odbc_library_loaded = 0;
 static int webclient_library_loaded = 0;
 static int http_library_loaded = 0;
 static void http_bind_events_global(void);
+static int inbox_events_watched(void);
+static void inbox_bind_global(void);
+static int inbox_loop_active(void);
+static int inbox_loop_service(void);
 /* Defined with the webserver's globals far below; declared here because
  * http.wait warns when it is called from inside the loop. */
 static int webserver_event_loop_running;
@@ -7113,8 +7117,14 @@ static int watcher_register(AstStmt *stmt) {
         handle.as.watcher_id = watcher_count;
         env_set(stmt->as.watch.name, handle);
     }
-    watcher_enqueue(watcher_count);
     watcher_count++;
+    /* A watch on the inbox is what declares that this program wants its
+     * mailbox delivered by the loop; bind the record before the body runs, or
+     * the watcher's first firing reads a name that does not exist. */
+    if (watcher_matches_change(stmt, "inbox.messages")) {
+        inbox_bind_global();
+    }
+    watcher_enqueue(watcher_count - 1);
     return watcher_drain();
 }
 
@@ -12188,6 +12198,35 @@ static int ensure_root_mailbox(void) {
     return 1;
 }
 
+/* Close the root mailbox at teardown.
+ *
+ * `ensure_root_mailbox` opens a socketpair the root actor owns for its whole
+ * life, and nothing ever closed it -- so every program that called `self()` or
+ * `spawn` ended with two descriptors open. Harmless as the process exits, and
+ * exactly what `--track-fds` exists to find, but it went unseen because NO
+ * SUITE HAD EVER RUN VALGRIND OVER AN ACTOR PROGRAM until run_inbox.sh; an
+ * untouched `examples/spawn_handle_passing_test.bas` reports the same two.
+ *
+ * The registry reference is given up here and the descriptor blanked, so a
+ * copy still held by a global is freed by the ordinary refcount path with
+ * nothing left to close. */
+static void actor_mailbox_shutdown(void) {
+    if (!root_mailbox_ready) {
+        return;
+    }
+    if (root_actor_handle) {
+        root_actor_handle->write_fd = -1;
+        if (--root_actor_handle->ref_count == 0) {
+            free(root_actor_handle);
+        }
+        root_actor_handle = NULL;
+    }
+    mailbox_close(&root_mailbox);
+    root_mailbox.read_fd = -1;
+    root_mailbox.write_fd = -1;
+    root_mailbox_ready = 0;
+}
+
 static Value value_actor(ActorHandle *handle) {
     Value value = {0};
     value.kind = VALUE_ACTOR;
@@ -15482,6 +15521,85 @@ static void http_shutdown(void) {
 }
 #endif
 
+/* --- the mailbox in the event loop ---------------------------------------
+ *
+ * `receive()` BLOCKS, which is right for a sequential program and fatal in a
+ * handler: a worker pool whose replies are collected with `receive` stalls the
+ * event loop for exactly as long as the tool takes, which is the stall the
+ * pool exists to remove. So the inbox joins the loop's `poll()` set the same
+ * way an http transfer does, and a reply arrives as an event.
+ *
+ * It is SMALLER than the http case, because an interpreter has exactly ONE
+ * inbox: one descriptor, and one readable event on a SOCK_SEQPACKET socket is
+ * exactly one whole frame -- which is not an assumption, it is what the GI
+ * bridge's mailbox source has relied on since it was written.
+ *
+ * The global is bound when the watcher is REGISTERED rather than at load,
+ * because `send`/`receive`/`spawn` are builtins with no `load` to hang it on.
+ * `watch(inbox.messages)` is therefore self-contained: the watch is what
+ * declares the program wants delivery, and the binding follows from it. */
+static int inbox_events_watched(void) {
+    for (size_t i = 0; i < watcher_count; i++) {
+        if (watchers[i].active &&
+            watcher_matches_change(watchers[i].stmt, "inbox.messages")) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void inbox_bind_global(void) {
+    if (env_find_in_frame(&global_env, "inbox")) {
+        return;
+    }
+    RecordField *fields = calloc(1, sizeof(RecordField));
+    if (!fields) {
+        abort();
+    }
+    fields[0].name = copy_string("messages");
+    fields[0].value = cell_alloc();
+    if (!fields[0].value) {
+        abort();
+    }
+    *fields[0].value = value_array(NULL, 0);
+    Value record = value_record(fields, 1);
+    Symbol *items = realloc(global_env.items, sizeof(Symbol) * (global_env.count + 1));
+    if (!items) {
+        abort();
+    }
+    global_env.items = items;
+    global_env.items[global_env.count].name = copy_string("inbox");
+    global_env.items[global_env.count].value = record;
+    global_env.count++;
+}
+
+/* Does the loop have inbox work? Only when a watcher wants it AND a mailbox
+ * exists -- a program that never called self() or spawn has nothing to read. */
+static int inbox_loop_active(void) {
+    return root_mailbox_ready && root_mailbox.read_fd >= 0 && inbox_events_watched();
+}
+
+/* Read the frames that are ready and deliver them. Returns 0 when a watcher
+ * raised, which the event loop turns into an exit. */
+static int inbox_loop_service(void) {
+    Symbol *symbol = env_find_in_frame(&global_env, "inbox");
+    if (!symbol || symbol->value.kind != VALUE_RECORD) {
+        return 1;
+    }
+    RecordField *messages = record_find(&symbol->value, "messages");
+    if (!messages || messages->value->kind != VALUE_ARRAY) {
+        return 1;
+    }
+    Value frame = value_null();
+    if (actor_recv_one(&frame) != ACTOR_RECV_OK) {
+        value_free(frame);
+        return 1;
+    }
+    Value ignored = append_to_array_ref(messages->value, frame, 0);
+    value_free(ignored);
+    return watcher_trigger_change("inbox.messages");
+}
+
 #define WEBSERVER_ERROR_CODE 4001
 #define WEBSERVER_DEFAULT_TIMEOUT_SECONDS 30.0
 #define WEBSERVER_MAX_REQUEST_SIZE (8u * 1024u * 1024u)
@@ -17157,7 +17275,8 @@ static int webserver_event_loop_running = 0;
 
 static int webserver_run_event_loop(void) {
     webserver_event_loop_running = 1;
-    while ((webserver_any_active() || http_loop_active()) && !runtime_stopped) {
+    while ((webserver_any_active() || http_loop_active() || inbox_loop_active()) &&
+           !runtime_stopped) {
         if (webserver_term_requested) {
             for (size_t i = 0; i < webserver_count; i++) {
                 webservers[i].draining = 1;
@@ -17194,10 +17313,13 @@ static int webserver_run_event_loop(void) {
             http_fd_count = http_collect_fds(http_fds, http_events,
                                              HTTP_MAX_POLL_FDS);
         }
-        if (descriptor_count == 0 && !http_wants_loop) {
+        /* The interpreter's ONE inbox, so a pool worker's reply arrives as an
+         * event instead of through a `receive` that would stall the loop. */
+        int inbox_wants_loop = inbox_loop_active();
+        if (descriptor_count == 0 && !http_wants_loop && !inbox_wants_loop) {
             break;
         }
-        struct pollfd *pollfds = calloc(descriptor_count + http_fd_count + 1,
+        struct pollfd *pollfds = calloc(descriptor_count + http_fd_count + 2,
                                         sizeof(struct pollfd));
         if (!pollfds) {
             abort();
@@ -17226,8 +17348,15 @@ static int webserver_run_event_loop(void) {
             pollfds[descriptor_count + k].fd = http_fds[k];
             pollfds[descriptor_count + k].events = http_events[k];
         }
+        size_t inbox_slot = descriptor_count + http_fd_count;
+        size_t polled = inbox_slot;
+        if (inbox_wants_loop) {
+            pollfds[inbox_slot].fd = root_mailbox.read_fd;
+            pollfds[inbox_slot].events = POLLIN;
+            polled++;
+        }
         long tick_ms = http_wants_loop ? http_poll_timeout_ms(50) : 50;
-        int ready = poll(pollfds, descriptor_count + http_fd_count, (int)tick_ms);
+        int ready = poll(pollfds, polled, (int)tick_ms);
         if (ready < 0 && errno != EINTR) {
             free(pollfds);
             webserver_raise("webserver poll failed");
@@ -17236,6 +17365,12 @@ static int webserver_run_event_loop(void) {
         if (http_wants_loop && !http_loop_service()) {
             free(pollfds);
             return 1;
+        }
+        if (inbox_wants_loop && (pollfds[inbox_slot].revents & POLLIN)) {
+            if (!inbox_loop_service()) {
+                free(pollfds);
+                return 1;
+            }
         }
         cursor = 0;
         for (size_t i = 0; i < webserver_count; i++) {
@@ -29608,6 +29743,21 @@ static Value eval_call(AstExpr *expr) {
     }
 
     if (strcmp(expr->as.call.name, "receive") == 0) {
+        /* Blocking here inside a watcher stalls every client and every other
+         * transfer, exactly as `http.wait` does and for the same reason: the
+         * watcher IS the event loop. A pool whose replies are collected with
+         * `receive` has moved the tool body off the loop and then made the
+         * loop wait for it, which is no improvement at all -- `watch(
+         * inbox.messages)` is the shape that is. Warned rather than refused: a
+         * short wait in a handler is defensible and the author can price it. */
+        if (webserver_event_loop_running &&
+            warn_site_first_time(expr->line, expr->column)) {
+            warn_fmt(2105, "actor",
+                     "receive() blocks the event loop, so no other request, stream "
+                     "or transfer makes progress until a message arrives; read "
+                     "replies from `inbox.messages` instead, or accept the stall "
+                     "deliberately");
+        }
         size_t rc = expr->as.call.args.count;
         if (rc == 0) {
             return actor_receive_impl(0, value_null(), 0, 0);
@@ -35052,7 +35202,8 @@ int eval_program(AstStmtList program) {
      * request enters the loop with no server bound at all -- "the loop runs
      * after `main` while there is anything to deliver, and exits when there is
      * not". Before this, a program holding only handles simply exited. */
-    if (!exit_status && (webserver_any_active() || http_loop_active())) {
+    if (!exit_status &&
+        (webserver_any_active() || http_loop_active() || inbox_loop_active())) {
         exit_status = webserver_run_event_loop();
         /* A raise inside a WATCHER happens after `main` has returned, so the
          * fatal report above has already run and there is nothing left to
@@ -35099,6 +35250,7 @@ int eval_program(AstStmtList program) {
     gi_library_loaded = 0;
     webserver_clear();
     principal_clear();
+    actor_mailbox_shutdown();
     http_library_loaded = 0;
     http_shutdown();
     if (webclient_curl_initialized) {

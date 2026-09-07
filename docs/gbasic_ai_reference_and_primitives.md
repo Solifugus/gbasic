@@ -1041,9 +1041,10 @@ volatile paths.
 **`agent`** — `new(ctx, system, toolset) -> run`,
 `step(run, event) -> {run, actions}`. Pure. Run record serializable.
 
-**`tools`** — `define(name, entries) -> toolset` (the design; entries are
-records naming `fn` or `via`, `reads`/`mutates`, `describe`, `params`),
-`schema(name)`, and `dispatch(name, args) -> tool_result_part`, validating
+**`tools`** — **built** (2026-09-06). `define(name, entries) -> toolset`
+(entries name `fn`, `reads`/`mutates`, `describe`, `params`; `via` was not
+built — a function value already names anything reachable), `schema(ts)`, and
+`dispatch(ts, name, args) -> tool_result_part`, validating
 and error-capturing, **run in a pool worker**. The pool itself is
 `tools.pool(toolset, {workers: n})`: pre-spawned actors, each holding its own
 connections, receiving `{principal, run_id, call}` and replying with the
@@ -1070,9 +1071,24 @@ example.
    hang, the unreported watcher raise, and PLAT-EQ's open fallthrough (item
    12c) — none of which any amount of further reading would have found.
 2. ~~`with principal`~~ — **built 2026-09-06**.
-3. `tools.define`, `tools.schema` and the **worker pool** — the library
-   form. (The grammar block only after a zero conflict count, and only as
-   sugar.)
+3. ~~`tools.define`, `tools.schema` and the **worker pool**~~ — **built
+   2026-09-06** (`stdlib/tools.bas`, `docs/tools_design.md`), plus the platform
+   piece the pool turned out to need: `watch(inbox.messages)`, the
+   interpreter's one mailbox in the event loop's `poll` set. Without it the
+   pool moves the tool body off the loop and then makes the loop wait for the
+   reply, which is no improvement at all. The whole chain runs: a handler
+   starts a tool call and returns, the body runs in a worker, and the reply
+   arrives as an event for a request that arrived earlier. (The grammar block
+   is still only sugar, and only after a zero conflict count.)
+
+   Three things the build settled that the design had not. **The caller
+   spawns, not the library** — `spawn` resolves a bare function *name*, so it
+   takes neither a library function nor a function value; the worker loop is
+   `tools.serve` and the entry function lives in the program. **`via:` was not
+   built**: a function value already names anything reachable, and a second
+   spelling would be a second thing to validate. And **a function value crosses
+   `spawn` and is callable in the child**, which is what lets a whole toolset —
+   records containing function values — be handed to a worker wholesale.
 4. `llm` with the canonical message shape and keyed replay from day one;
    `run_tools` re-expressed over `agent.step`.
 5. `agent.step`.

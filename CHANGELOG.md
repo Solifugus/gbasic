@@ -9,6 +9,64 @@ language surface may still change between releases.
 
 ## Unreleased
 
+### Added — `tools`: one declaration of what a model may call
+
+`stdlib/tools.bas` (`docs/tools_design.md`). The **extraction** of what
+`llm.bas` already does, and it exists because three things about that shape do
+not survive contact with an agent.
+
+**The schema and the validator were two hand-written things.** `llm.tool` takes
+a JSON-Schema record *and* a function, and nothing checked they agree — the
+schema could tell the model `id` is required while the function read
+`customer_id`. Now `params` is the declaration, `tools.schema` derives what the
+model is told and `tools.dispatch` validates against the same thing. The suite
+drives dispatch **from** the published schema, so a `required` the model is
+shown must be one dispatch refuses without, and a type it names must be one
+dispatch rejects a wrong value for.
+
+**A raising tool killed the run.** `llm.bas` documents that a tool "must not
+raise", which was true when it was written — a raise could not be caught at
+all. PLAT-ERR changed that and the rule outlived it; measured, a raising tool
+still ends the whole program on that path. `tools.dispatch` runs the body under
+`on error` and returns *any* failure as a result the model can read, and the
+fixture asserts the second half: **the next call still works**.
+
+**Effects are declared and published, not gated.** `reads` and `mutates` are
+required — "this tool changes nothing" is a claim somebody should have to make
+— and readable without opening the body. Whether a mutation needs approval is a
+decision, and decisions belong to whoever is accountable for them.
+
+Unknown fields are refused **by name**, on an entry and on a parameter: a
+misspelled `describe` is otherwise indistinguishable from a deliberate omission.
+
+### Added — `watch(inbox.messages)`: an actor reply delivered by the event loop
+
+`receive()` blocks, which is fatal in a handler: the watcher *is* the event
+loop, so a pool whose replies are collected with `receive` has moved the tool
+body off the loop and then made the loop wait for it. The interpreter's one
+inbox now joins the loop's `poll` set — smaller than the http case, because one
+readable event on a SOCK_SEQPACKET socket is exactly one whole frame, which is
+what the GI bridge's mailbox source has relied on since it was written.
+
+A mailbox has no completion, unlike a transfer, so the program says when it is
+done: `unwatch` ends the delivery and the loop exits. `receive()` inside a
+watcher warns, in the same words as `http.wait`.
+
+Together these make the whole chain run: a request handler starts a tool call
+and returns, the body runs in a pre-spawned worker, and the reply arrives as an
+event for a request that arrived earlier. Both handlers demonstrably return
+before either answer appears.
+
+### Fixed — the root mailbox was never closed
+
+`ensure_root_mailbox` opens a socketpair the root actor owns for its whole life
+and nothing released it, so **every program that called `self()` or `spawn`
+ended with two descriptors open**. Not a new defect — an untouched
+`examples/spawn_handle_passing_test.bas` reports the same two. It survived
+because no suite had ever run valgrind over an actor program until
+`tests/run_inbox.sh`. The lesson is about coverage rather than the leak: a tier
+present in 36 suites still measures nothing about a shape none of them exercise.
+
 ### Added — `with principal`: the identity on whose behalf a body acts
 
 `with principal(p) ... end with` and `principal()`. Step 2 of the AI reference

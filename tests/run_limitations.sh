@@ -93,6 +93,7 @@ atomic_replace_inode|gives dest the temp's inode
 callresult_method_stmt|method call on a call-result receiver
 unnormalized_load_path|print the load path unnormalized
 gi_emit|No \`gi.emit\`
+spawn_bare_name|resolves a bare function **name**
 "
 
 # Bullets that no program can decide, each with the reason. This list is the
@@ -114,6 +115,22 @@ probe_postfix_modifier() {
         ok "postfix .date in expression position is still a parse error"
     else
         fixed "postfix .date in expression position now parses"
+    fi
+}
+
+probe_spawn_bare_name() {
+    # Two halves, and both must still hold: a QUALIFIED entry must not parse,
+    # and a function VALUE must not resolve. Fixing either one alone would let
+    # a library spawn its own worker and this bullet should be struck.
+    printf 'load tools\nprogram main(args)\n  w = spawn tools.serve(self(), 1)\nend program\n' > "$WORK/p.bas"
+    qualified_out=$(GBASIC_PATH=stdlib run "$WORK/p.bas")
+    printf 'function w1(b)\n  return nothing\nend function\nprogram main(args)\n  f = w1\n  h = spawn f(self())\nend program\n' > "$WORK/p.bas"
+    value_out=$(run "$WORK/p.bas")
+    if printf '%s' "$qualified_out" | grep -q 'parse error' &&
+       printf '%s' "$value_out" | grep -q 'spawn: no function named'; then
+        ok "spawn still takes a bare function name (not a qualified one, not a value)"
+    else
+        fixed "spawn now accepts a qualified name or a function value"
     fi
 }
 
