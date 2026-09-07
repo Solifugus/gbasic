@@ -1,0 +1,5 @@
+{
+  "request": "{messages:[{parts:[{kind:s4:text,raw:unknown,text:s5:hello}],role:s4:user}],model:s11:claude-test,tools:unknown}",
+  "status": 429,
+  "body": { "type": "error", "error": { "type": "rate_limit_error", "message": "slow down" } }
+}

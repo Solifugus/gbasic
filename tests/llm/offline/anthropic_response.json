@@ -1,0 +1,6 @@
+{
+  "model": "claude-test",
+  "stop_reason": "end_turn",
+  "usage": { "input_tokens": 1, "output_tokens": 1 },
+  "content": [ { "type": "text", "text": "the one fixed answer" } ]
+}

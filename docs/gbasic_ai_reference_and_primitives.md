@@ -1089,8 +1089,21 @@ example.
    spelling would be a second thing to validate. And **a function value crosses
    `spawn` and is callable in the child**, which is what lets a whole toolset —
    records containing function values — be handed to a worker wholesale.
-4. `llm` with the canonical message shape and keyed replay from day one;
-   `run_tools` re-expressed over `agent.step`.
+4. `llm` with the canonical message shape and keyed replay — **both built
+   2026-09-07** (`docs/llm_design.md` §10). `run_tools` re-expressed over
+   `agent.step` waits on step 5, and so do `llm.start`/`poll`/`read`/`wait`/
+   `stop`/`release` and `llm.embed`: an agent loop can be built and tested
+   without them, because `agent.step` returns an *action* saying to call the
+   model rather than calling it, so they follow the step that needs them.
+
+   One thing the build settled. **The occurrence index is the retry attempt.**
+   The design said "occurrence index within the run", which would need state
+   outside the call — and a gBASIC record is a value, so a counter on the model
+   cannot be written back. Measured against the two failures item 4 actually
+   names: a retried request is attempts within one call, and a later *turn*
+   carries the earlier turns in its messages and so already has a different
+   key. The retry loop already counted attempts, so the weaker rule covers both
+   named failures and needs no API change.
 5. `agent.step`.
 6. `mcp`, both transports, the stdio one shipped with `--line-buffered` in
    its launch configuration and a deadlock tier proving why.

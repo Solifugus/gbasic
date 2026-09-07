@@ -45,6 +45,8 @@ library llm
             timeout: 60,
             retries: 3,
             offline_dir: unknown,
+            replay_dir: unknown,
+            volatile: [],
             transport: unknown,
             sleep_fn: unknown,
             tools: unknown,
@@ -185,7 +187,7 @@ library llm
             if is_string(system) and system != "" then
                 b.system = system
             end if
-            b.messages = messages
+            b.messages = to_wire(m, messages)
             if is_array(m.tools) then
                 b.tools = _tools_wire(m, m.tools)
             end if
@@ -196,7 +198,7 @@ library llm
         if is_string(system) and system != "" then
             append(msgs, { role: "system", content: system })
         end if
-        for each mm in messages
+        for each mm in to_wire(m, messages)
             append(msgs, mm)
         end for
         b = {}
@@ -269,6 +271,11 @@ library llm
         if not is_unknown(m.transport) then
             fn = m.transport
             return fn(m, req)
+        end if
+        ' Keyed replay before the single-fixture seam: a program that declared
+        ' both meant the specific one.
+        if not is_unknown(m.replay_dir) then
+            return _replay_transport(m, req)
         end if
         if not is_unknown(m.offline_dir) then
             return _offline_transport(m, req)
@@ -343,12 +350,16 @@ library llm
     ' Perform the request with the retry budget. 200 -> the response; 429/5xx ->
     ' backoff + retry while attempts remain; anything else, or budget exhausted,
     ' raises (§4). m.retries backoffs, then raise.
-    function _send(m, endpoint, headers, body)
+    function _send(m, endpoint, headers, body, fp, canon)
         attempt = 0
         result = unknown
         done = false
         while not done
-            req = { url: endpoint, headers: headers, body: body, attempt: attempt }
+            ' `fingerprint` and `canonical` ride along for the replay seam and
+            ' are visible to a with_transport function too, which is what lets
+            ' a caller record fixtures by name.
+            req = { url: endpoint, headers: headers, body: body, attempt: attempt,
+                    fingerprint: fp, canonical: canon }
             resp = _transport_call(m, req)
             if resp.status = 200 then
                 result = resp
@@ -366,6 +377,474 @@ library llm
         return result
     end function
 
+    ' ================= canonical transcript (proposal §2 item 3) =============
+    '
+    ' A MESSAGE IS NOT {role, content:string}. After a tool call the assistant
+    ' turn carries text AND one or more tool-call parts, and the reply carries
+    ' tool-result parts. Providers shape those differently, and a transcript
+    ' re-sent in the wrong shape is REJECTED -- so a conversation built for one
+    ' provider cannot be replayed against another, and an agent that builds its
+    ' own transcript has to know which provider it is talking to.
+    '
+    ' The canonical shape is { role, parts: [...] } with three part kinds:
+    '   { kind: "text",        text }
+    '   { kind: "tool_call",   id, name, args }
+    '   { kind: "tool_result", id, content, is_error }
+    '
+    ' EVERY PART KEEPS `raw`, the provider block it was parsed from, because an
+    ' assistant turn must be echoed back VERBATIM for tool-call ids to line up.
+    ' `to_wire` uses `raw` when it has one and synthesises otherwise, so a
+    ' transcript is portable where it can be and faithful where it must be.
+
+    function text(s)
+        return { kind: "text", text: s, raw: unknown }
+    end function
+
+    function tool_call(id, name, args)
+        return { kind: "tool_call", id: id, name: name, args: args, raw: unknown }
+    end function
+
+    function tool_result(id, content, is_error)
+        return { kind: "tool_result", id: id, content: content,
+                 is_error: is_error, raw: unknown }
+    end function
+
+    function message(role, parts)
+        if not is_string(role) then
+            error "llm: a message needs a role"
+        end if
+        if not is_array(parts) then
+            error "llm: message '" + role + "' needs an array of parts (use llm.text, llm.tool_call, llm.tool_result)"
+        end if
+        for each p in parts
+            if not is_record(p) then
+                error "llm: every part of message '" + role + "' must be a record"
+            end if
+            if not has(p, "kind") then
+                error "llm: a part of message '" + role + "' has no kind"
+            end if
+            known = p.kind = "text" or p.kind = "tool_call" or p.kind = "tool_result"
+            if not known then
+                error "llm: unknown part kind '" + string(p.kind) + "'; use text, tool_call or tool_result"
+            end if
+        end for
+        return { role: role, parts: parts }
+    end function
+
+    function _is_canonical(msg)
+        if not is_record(msg) then return false
+        if not has(msg, "parts") then return false
+        return is_array(msg.parts)
+    end function
+
+    ' The parts of a message, whichever shape it arrived in. A legacy
+    ' { role, content: "..." } message reads as a single text part, so code
+    ' written against the canonical shape works on an old transcript.
+    function parts_of(msg)
+        if _is_canonical(msg) then
+            return msg.parts
+        end if
+        if is_record(msg) then
+            if has(msg, "content") then
+                if is_string(msg.content) then
+                    return [ text(msg.content) ]
+                end if
+            end if
+        end if
+        return []
+    end function
+
+    function text_of(msg)
+        out = ""
+        for each p in parts_of(msg)
+            if p.kind = "text" then
+                out = out + p.text
+            end if
+        end for
+        return out
+    end function
+
+    ' ---- canonical -> provider ---------------------------------------------
+
+    function _wire_part_anthropic(p)
+        if is_record(p.raw) then
+            return p.raw
+        end if
+        if p.kind = "text" then
+            return { type: "text", text: p.text }
+        end if
+        if p.kind = "tool_call" then
+            return { type: "tool_use", id: p.id, name: p.name, input: p.args }
+        end if
+        b = {}
+        b["type"] = "tool_result"
+        b["tool_use_id"] = p.id
+        b["content"] = p.content
+        if p.is_error then
+            b["is_error"] = true
+        end if
+        return b
+    end function
+
+    function _wire_message_anthropic(msg)
+        blocks = []
+        for each p in parts_of(msg)
+            append(blocks, _wire_part_anthropic(p))
+        end for
+        return { role: msg.role, content: blocks }
+    end function
+
+    ' OpenAI splits one canonical turn into SEVERAL wire messages: tool results
+    ' are their own `tool` role, not blocks inside a user turn. That asymmetry
+    ' is the reason a transcript cannot simply be handed to either provider.
+    function _wire_messages_openai(msg)
+        out = []
+        said = ""
+        calls = []
+        for each p in parts_of(msg)
+            if p.kind = "text" then
+                said = said + p.text
+            end if
+            if p.kind = "tool_call" then
+                if is_record(p.raw) then
+                    append(calls, p.raw)
+                else
+                    f = {}
+                    f["name"] = p.name
+                    f["arguments"] = json_encode(p.args)
+                    append(calls, { id: p.id, type: "function", function: f })
+                end if
+            end if
+            if p.kind = "tool_result" then
+                r = {}
+                r["role"] = "tool"
+                r["tool_call_id"] = p.id
+                r["content"] = p.content
+                append(out, r)
+            end if
+        end for
+        made_a_turn = said != "" or count(calls) > 0
+        if made_a_turn then
+            head = {}
+            head["role"] = msg.role
+            head["content"] = said
+            if count(calls) > 0 then
+                head["tool_calls"] = calls
+            end if
+            ' The assistant turn precedes its own results, which is the order
+            ' both providers require and the order a reader expects.
+            joined = [ head ]
+            for each r in out
+                append(joined, r)
+            end for
+            return joined
+        end if
+        return out
+    end function
+
+    ' A canonical transcript in the provider's own shape. A message that is
+    ' already provider-shaped passes through untouched, so an existing program
+    ' keeps working and a mixed transcript is legal while one is migrated.
+    function to_wire(m, messages)
+        out = []
+        for each msg in messages
+            if not _is_canonical(msg) then
+                append(out, msg)
+            else
+                if m.format = "anthropic" then
+                    append(out, _wire_message_anthropic(msg))
+                else
+                    for each w in _wire_messages_openai(msg)
+                        append(out, w)
+                    end for
+                end if
+            end if
+        end for
+        return out
+    end function
+
+    ' ---- provider -> canonical ---------------------------------------------
+
+    ' The assistant turn from a response, as canonical parts. Every part keeps
+    ' the provider block it came from, so re-sending is byte-faithful.
+    function from_response(m, response)
+        parts = []
+        d = response.raw
+        if m.format = "anthropic" then
+            content = _field(d, "content")
+            if is_array(content) then
+                for each b in content
+                    t = _field(b, "type")
+                    if t = "text" then
+                        parts = append(parts, { kind: "text", text: _field(b, "text"), raw: b })
+                    end if
+                    if t = "tool_use" then
+                        parts = append(parts, { kind: "tool_call", id: _field(b, "id"),
+                                                name: _field(b, "name"),
+                                                args: _field(b, "input"), raw: b })
+                    end if
+                end for
+            end if
+            return { role: "assistant", parts: parts }
+        end if
+        msg = _field(_at(_field(d, "choices"), 0), "message")
+        c = _field(msg, "content")
+        if is_string(c) then
+            if c != "" then
+                parts = append(parts, { kind: "text", text: c, raw: unknown })
+            end if
+        end if
+        tc = _field(msg, "tool_calls")
+        if is_array(tc) then
+            for each call in tc
+                fn = _field(call, "function")
+                parts = append(parts, { kind: "tool_call", id: _field(call, "id"),
+                                        name: _field(fn, "name"),
+                                        args: _call_args(_field(fn, "arguments")),
+                                        raw: call })
+            end for
+        end if
+        return { role: "assistant", parts: parts }
+    end function
+
+    ' ================= keyed replay (proposal §2 item 4) ====================
+    '
+    ' `llm.offline(m, dir)` returns ONE fixed file for EVERY request, so it can
+    ' test a single turn and cannot replay a conversation: every turn gets the
+    ' same answer. Keyed replay is therefore a different thing rather than a
+    ' better one.
+    '
+    ' THE KEY IS A CANONICAL RENDERING WITH SORTED KEYS, so it does not depend
+    ' on the order a caller happened to build a record in -- two equal requests
+    ' written differently must fingerprint the same, which the suite asserts.
+    '
+    ' THE HASH IS ONLY A FILE NAME. A 32-bit hash collides, and a collision
+    ' would silently replay another request's answer -- so the fixture records
+    ' the canonical text it was made from and replay REFUSES when it does not
+    ' match. (That protects against collisions; it cannot protect against a
+    ' volatile path declared too broadly, which is the author saying they do
+    ' not care about that field.)
+
+    function _sorted_keys(r)
+        ks = []
+        for each k in keys(r)
+            append(ks, k)
+        end for
+        return sort(ks)
+    end function
+
+    ' A deterministic rendering of any value, records emitted with their keys
+    ' SORTED. Not JSON: it exists to be hashed and compared, and being
+    ' unambiguous matters more than being parseable.
+    function _canonical(v)
+        if is_record(v) then
+            out = "{"
+            first = true
+            for each k in _sorted_keys(v)
+                if not first then
+                    out = out + ","
+                end if
+                out = out + k + ":" + _canonical(v[k])
+                first = false
+            end for
+            return out + "}"
+        end if
+        if is_array(v) then
+            out = "["
+            i = 0
+            while i < count(v)
+                if i > 0 then
+                    out = out + ","
+                end if
+                out = out + _canonical(v[i])
+                i = i + 1
+            end while
+            return out + "]"
+        end if
+        if is_string(v) then
+            return "s" + string(len(v)) + ":" + v
+        end if
+        if is_nothing(v) then return "nothing"
+        if is_unknown(v) then return "unknown"
+        return string(v)
+    end function
+
+    ' Remove the value at a dotted path. Segments descend records by name and
+    ' arrays by index, so both `system` and `messages.0.content` work.
+    function _strip_path(v, path)
+        segs = split(path, ".")
+        return _strip_segs(v, segs, 0)
+    end function
+
+    function _strip_segs(v, segs, i)
+        if i >= count(segs) then
+            return unknown
+        end if
+        seg = segs[i]
+        last = i = count(segs) - 1
+        if is_record(v) then
+            if not has(v, seg) then
+                return v
+            end if
+            out = {}
+            for each k in keys(v)
+                if k = seg then
+                    if not last then
+                        out[k] = _strip_segs(v[k], segs, i + 1)
+                    end if
+                else
+                    out[k] = v[k]
+                end if
+            end for
+            return out
+        end if
+        if is_array(v) then
+            idx = number(seg)
+            if is_unknown(idx) then
+                return v
+            end if
+            out = []
+            j = 0
+            while j < count(v)
+                if j = idx then
+                    if not last then
+                        append(out, _strip_segs(v[j], segs, i + 1))
+                    end if
+                else
+                    append(out, v[j])
+                end if
+                j = j + 1
+            end while
+            return out
+        end if
+        return v
+    end function
+
+    ' FNV-1a, 32-bit, in hex. Written here rather than taken from `crypto`
+    ' because `crypto` needs libcrypto and this library's whole test story is
+    ' offline and dependency-free. It names a file; correctness comes from the
+    ' recorded canonical text, which replay verifies.
+    function _fnv1a(s)
+        h = 2166136261
+        i = 0
+        n = len(s)
+        while i < n
+            h = h + 0
+            b = byte_at(s, i)
+            h = _xor32(h, b)
+            h = _mul32(h, 16777619)
+            i = i + 1
+        end while
+        return _hex8(h)
+    end function
+
+    function _xor32(a, b)
+        out = 0
+        bit = 1
+        i = 0
+        while i < 32
+            abit = floor(a / bit) - floor(a / (bit * 2)) * 2
+            bbit = floor(b / bit) - floor(b / (bit * 2)) * 2
+            if abit != bbit then
+                out = out + bit
+            end if
+            bit = bit * 2
+            i = i + 1
+        end while
+        return out
+    end function
+
+    function _mul32(a, b)
+        ' Split so the product never exceeds a double's exact integer range.
+        lo = a - floor(a / 65536) * 65536
+        hi = floor(a / 65536)
+        p = lo * b + (hi * b - floor(hi * b / 65536) * 65536) * 65536
+        return p - floor(p / 4294967296) * 4294967296
+    end function
+
+    function _hex8(n)
+        digits = "0123456789abcdef"
+        out = ""
+        i = 0
+        v = n
+        while i < 8
+            d = v - floor(v / 16) * 16
+            out = mid(digits, d, 1) + out
+            v = floor(v / 16)
+            i = i + 1
+        end while
+        return out
+    end function
+
+    ' The canonical text a request hashes to, with volatile paths removed.
+    function canonical_request(m, request)
+        stripped = request
+        if is_array(m.volatile) then
+            for each path in m.volatile
+                stripped = _strip_path(stripped, path)
+            end for
+        end if
+        return _canonical(stripped)
+    end function
+
+    ' The replay key for a request. Public so an application can print it and
+    ' name a fixture, and override the key if it needs to.
+    function fingerprint(m, request)
+        return _fnv1a(canonical_request(m, request))
+    end function
+
+    ' Paths whose values are excluded from the key. The named failure is a
+    ' system prompt carrying today's date, which otherwise never matches.
+    function with_volatile(m, paths)
+        if not is_array(paths) then
+            error "llm: with_volatile expects an array of dotted paths"
+        end if
+        for each p in paths
+            if not is_string(p) then
+                error "llm: every volatile path must be a string"
+            end if
+        end for
+        m.volatile = paths
+        return m
+    end function
+
+    function replay(m, dir)
+        m.replay_dir = dir
+        return m
+    end function
+
+    ' `<key>-<attempt>.json`. THE ATTEMPT IS THE OCCURRENCE INDEX, and it comes
+    ' from the retry loop that already counts it -- which is exactly the second
+    ' failure the design names: a retried request must replay the SECOND
+    ' recorded response or retry logic is untestable. Occurrence is therefore
+    ' attempts WITHIN a call, not calls within a run; a later turn of a
+    ' conversation carries the earlier turns in its messages and so has a
+    ' different key already.
+    function _replay_transport(m, req)
+        base = m.replay_dir + "/" + req.fingerprint + "-" + string(req.attempt)
+        pref{file}= base + ".json"
+        if not exists(pref) then
+            error "llm: no recorded response for " + req.fingerprint + " attempt " + string(req.attempt) + " (expected " + base + ".json); llm.fingerprint names the file"
+        end if
+        recorded = decode(join(read_lines(pref), "\n"))
+        if not is_record(recorded) then
+            error "llm: recorded response " + base + ".json is not a record"
+        end if
+        ' The recorded canonical text is what makes a hash collision LOUD. A
+        ' 32-bit key can collide; two different requests must not silently
+        ' share an answer.
+        if has(recorded, "request") then
+            if recorded.request != req.canonical then
+                error "llm: fixture " + base + ".json was recorded for a different request (same key, different content -- a hash collision, or the fixture is stale)"
+            end if
+        end if
+        st = 200
+        if has(recorded, "status") then
+            st = recorded.status
+        end if
+        return { status: st, headers: {}, body: json_encode(recorded.body) }
+    end function
+
     ' --- calls (§3) ----------------------------------------------------------
 
     ' Full form: system prompt + explicit message list. Returns the common
@@ -375,7 +854,13 @@ library llm
         endpoint = _endpoint(m)
         headers = _headers(m, key)
         body = _build_body(m, system, messages)
-        resp = _send(m, endpoint, headers, body)
+        ' The key is computed from the CANONICAL request, not the wire body, so
+        ' a conversation recorded against one provider replays against the
+        ' other -- the transcript is the thing being identified, not the
+        ' encoding of it.
+        request = { model: m.model, system: system, messages: messages, tools: m.tools }
+        canon = canonical_request(m, request)
+        resp = _send(m, endpoint, headers, body, _fnv1a(canon), canon)
         return _extract(m, resp)
     end function
 

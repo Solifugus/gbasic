@@ -310,3 +310,117 @@ immediately.
 ---
 
 End of LLM client library design.
+
+---
+
+## 10. The canonical transcript and keyed replay (shipped 2026-09-07)
+
+Step 4 of [the AI reference proposal](gbasic_ai_reference_and_primitives.md).
+Two additions, both required before an agent loop can exist, and both testable
+entirely offline.
+
+### 10.1 A message is not `{role, content}`
+
+After a tool call the assistant turn carries text **and** one or more tool-call
+parts, and the reply carries tool-result parts. Providers shape those
+differently — Anthropic nests blocks inside a user turn, OpenAI gives a tool
+result its own `tool` role message and puts the call's arguments in a JSON
+*string* — so a transcript re-sent in the wrong shape is rejected. Until now the
+transcript **was** the provider's shape, which means a conversation built for
+one provider cannot be replayed against the other, and anything that builds its
+own transcript has to know which provider it is talking to.
+
+The canonical shape is `{ role, parts: [...] }` with three part kinds:
+
+```basic
+llm.text("Looking that up.")
+llm.tool_call("call_1", "get_balance", { id: 7 })
+llm.tool_result("call_1", "42.00", false)
+
+turn = llm.message("assistant", [ llm.text("Looking that up."),
+                                  llm.tool_call("call_1", "get_balance", { id: 7 }) ])
+```
+
+| Call | What it does |
+| --- | --- |
+| `llm.text(s)` / `llm.tool_call(id, name, args)` / `llm.tool_result(id, content, is_error)` | part constructors |
+| `llm.message(role, parts)` | a canonical message, validated |
+| `llm.parts_of(msg)` | the parts — a legacy `{role, content}` message reads as one text part |
+| `llm.text_of(msg)` | the text parts joined |
+| `llm.to_wire(m, messages)` | the transcript in the provider's own shape |
+| `llm.from_response(m, response)` | the assistant turn from a response, as canonical parts |
+
+**Every part keeps `raw`**, the provider block it was parsed from, because an
+assistant turn must be echoed back verbatim for tool-call ids to line up.
+`to_wire` uses `raw` when it has one and synthesises otherwise — portable where
+it can be, faithful where it must be.
+
+A provider-shaped message passes through `to_wire` untouched, so existing
+programs keep working and a transcript can be migrated one message at a time.
+
+### 10.2 Keyed replay
+
+`llm.offline(m, dir)` returns one fixed `<format>_response.json` for **every**
+request. That is enough to test a single turn and cannot replay a conversation,
+since every turn gets the same answer. Keyed replay is therefore a different
+thing rather than a better one, and `tests/run_llm_transcript.sh` asserts the
+difference rather than claiming it.
+
+```basic
+m = llm.with_volatile(llm.anthropic("claude-x", key), ["system"])
+m = llm.replay(m, "tests/fixtures/session")
+r = llm.chat(m, system, messages)     ' answered from <key>-<attempt>.json
+```
+
+| Call | What it does |
+| --- | --- |
+| `llm.replay(m, dir)` | answer from recorded fixtures in `dir` |
+| `llm.with_volatile(m, paths)` | dotted paths excluded from the key |
+| `llm.fingerprint(m, request)` | the key, so an application can name a fixture |
+| `llm.canonical_request(m, request)` | the exact text the key hashes |
+
+**The key is a canonical rendering with sorted keys**, so it does not depend on
+the order a caller happened to build a record in: two equal requests written
+differently must fingerprint the same. It is computed from the *canonical*
+request rather than the wire body, so a conversation recorded against one
+provider replays against the other — the transcript is what is being
+identified, not its encoding.
+
+**Volatile paths** answer the first failure this design hits: a system prompt
+that includes today's date never matches a recorded key. `["system"]` removes
+it from the key; a path descends records by name and arrays by index, so
+`messages.0.content` works too. Declaring a path too broadly is the author
+saying they do not care about that field, and the library cannot second-guess
+it.
+
+**The occurrence index is the retry attempt**, which answers the second failure:
+a retried request must replay the *second* recorded response or retry logic is
+untestable. The retry loop already counts attempts, so a fixture is
+`<key>-<attempt>.json`. Occurrence is therefore attempts *within* a call, not
+calls within a run — a later turn of a conversation carries the earlier turns in
+its messages and so already has a different key.
+
+**The hash is only a file name.** It is 32-bit FNV-1a, written here rather than
+taken from `crypto` because `crypto` needs libcrypto and this library's whole
+test story is offline and dependency-free. A 32-bit key can collide, and a
+collision would silently serve another request's answer — so each fixture
+records the canonical text it was made from and replay **refuses** when it does
+not match. That protects against collisions; it cannot protect against a
+volatile path declared too broadly, which is by construction the author's call.
+
+A fixture is a record:
+
+```json
+{
+  "request": "{messages:[...],model:s11:claude-test,tools:unknown}",
+  "status": 200,
+  "body": { "content": [ { "type": "text", "text": "Hi there." } ] }
+}
+```
+
+### 10.3 Not built here
+
+`llm.start`/`poll`/`read`/`wait`/`stop`/`release` over the `http` handle
+surface, and `llm.embed`. An agent loop can be built and tested without them —
+`agent.step` returns an *action* saying to call the model rather than calling
+it — so they follow the step that needs them rather than preceding it.

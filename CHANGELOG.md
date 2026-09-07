@@ -9,6 +9,56 @@ language surface may still change between releases.
 
 ## Unreleased
 
+### Added — `llm`: a canonical transcript, and replay keyed by request
+
+Step 4 of the AI reference proposal. Two additions, both required before an
+agent loop can exist, and both testable entirely offline.
+
+**A message is not `{role, content}`.** After a tool call the assistant turn
+carries text *and* tool-call parts, and providers shape those differently —
+Anthropic nests blocks inside a user turn, OpenAI gives a tool result its own
+`tool` role and puts the arguments in a JSON *string*. Until now the transcript
+**was** the provider's shape, so a conversation built for one could not be
+replayed against the other. The canonical shape is `{role, parts}` with
+`llm.text`, `llm.tool_call` and `llm.tool_result`; `llm.to_wire` translates and
+`llm.from_response` parses back. Every part keeps `raw`, the provider block it
+came from, because an assistant turn must be echoed verbatim for tool-call ids
+to line up. A provider-shaped message passes through untouched, so existing
+programs keep working.
+
+The suite asserts that **one transcript produces two different wire shapes** —
+a translator emitting one shape for both satisfies every check that names a
+single provider, and one of the two providers would then reject it.
+
+**Keyed replay.** `llm.offline(m, dir)` returns one fixed file for *every*
+request: enough for a single turn, and unable to replay a conversation, since
+every turn gets the same answer. That is asserted as the control rather than
+claimed — the same two turns through `offline` get the same answer, and through
+`replay` get their own.
+
+The key is a canonical rendering with **sorted keys**, so it does not depend on
+the order a caller built a record in, and it is computed from the *canonical*
+request rather than the wire body, so a conversation recorded against one
+provider replays against the other.
+
+Both failures the design names are fixed and asserted as differences.
+`llm.with_volatile(m, ["system"])` answers the first — a system prompt carrying
+today's date otherwise never matches — with the control that a change *outside*
+the volatile path still does not match, so it is the declaration doing the work
+rather than the hash ignoring things. And the occurrence index is the **retry
+attempt**, which answers the second: a retried request replays the *second*
+recording, or retry logic is untestable. The retry loop already counted
+attempts, so this needed no state outside the call.
+
+**The hash is only a file name** — 32-bit FNV-1a, written in the library because
+`crypto` needs libcrypto and this library's whole test story is dependency-free.
+A collision would silently serve another request's answer, so each fixture
+records the canonical text it was made from and replay refuses a mismatch.
+
+Five perturbations proven red. **Rebaselined**: five `negative_llm_*.err`
+goldens, all line-number shifts from inserting code into `stdlib/llm.bas`, no
+behavioural change.
+
 ### Added — `web.configure`: deployment settings for a declared server
 
 A `server` block's head options are literals, so a worker count could not come
