@@ -4342,3 +4342,22 @@ orders freely.
   and `tests/run_inbox.sh` is the first suite to valgrind an actor program.
 - **The lesson is about coverage, not the leak.** A tier that exists in 36
   suites still measures nothing about a shape none of them exercises.
+
+## 2026-09-07 — CC — `input()` cannot tell a blank line from end of input
+- **Type:** limitation
+- **Severity:** low
+- **What:** `input()` returns the empty string for both a blank line and EOF,
+  and there is no `eof()` or equivalent. Measured: feeding `x\n\ny\n` gives
+  `[x]`, `[]`, `[y]`, and feeding one line then closing gives `[x]`, `[]` —
+  the second `[]` is indistinguishable from the first.
+- **Why it matters:** any line-delimited protocol server written in gBASIC has
+  to treat a blank line as end-of-session. `stdlib/mcp.bas`'s stdio transport
+  does, and says so.
+- **Workaround:** none needed for JSON-RPC, which never sends a blank line, so
+  the behaviour is correct for that protocol. A protocol where a blank line is
+  meaningful — or one that must survive a stray newline from a sloppy client —
+  cannot be written over `input()` at all.
+- **What would fix it:** `input()` returning `nothing` at EOF (a breaking
+  change), or an `eof()` predicate beside it (additive). The second is the
+  smaller move and matches how `try_decode` reports failure as a value rather
+  than changing what `decode` returns.

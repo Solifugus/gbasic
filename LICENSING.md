@@ -31,7 +31,7 @@ suit you — contact matthewct@gmail.com.
   (the ZIP container, formula evaluator and recalculation engine),
   `src/modules/xml.c`, `src/modules/smtp.c` and `src/modules/rowmodel.c`
 - `stdlib/`: `accounting` `agent` `ari` `automation` `chart` `credit` `crypto` `datagrid` `dates` `decision` `deposits` `fake` `filetree` `finance` `lending`
-  `frame` `gtk` `gtkui` `gui` `insight` `llm` `mail` `market` `matrix` `persist`
+  `frame` `gtk` `gtkui` `gui` `insight` `llm` `mail` `mcp` `market` `matrix` `persist`
   `reasoning`
   `schedule` `scoring` `sourceeditor` `stats` `tools` `web`
 

@@ -9,6 +9,42 @@ language surface may still change between releases.
 
 ## Unreleased
 
+### Added — `mcp`: publishing a toolset over the Model Context Protocol
+
+Step 6 of the AI reference proposal (`docs/mcp_design.md`). Publishing only;
+consuming is a separate increment.
+
+**Two transports, one dispatcher.** `mcp.handle` turns a JSON-RPC request into a
+reply and does no I/O, so the stdio loop and an HTTP `server` block are thin
+wrappers over it — which means the protocol is testable with neither present,
+and the transports are tested only for what a transport can get wrong. The suite
+requires the same request to give a **byte-identical** reply over both, which is
+not implied by both merely working.
+
+**Run stdio under `--line-buffered`.** A desktop client launches the server as a
+subprocess and waits on its stdout; block-buffered, the reply sits in the pipe
+buffer while the server waits for the client's next request. That is a deadlock,
+not slowness, and the suite **demonstrates** it — the same session driven twice,
+every request timing out without the flag. The tier also fails if any request
+*is* answered, since that would mean the transport was never buffer-bound and
+the tier had been proving nothing.
+
+**A failed tool is not a protocol error.** A tool that raises, reports a miss or
+gets bad arguments comes back as a *result* with `isError` — the model asked for
+something reasonable and can react. A method that does not exist, or unparseable
+JSON, is a *JSON-RPC error*: the client is malformed and cannot fix that by
+retrying. Collapsing the two either way produces a well-formed reply that means
+the wrong thing, so both are asserted.
+
+**The mapped principal is the leak surface.** A read-only tool published over
+MCP is answered as whatever principal the configuration names, so a `principal`
+may only be declared alongside a `max_groups` ceiling and the server refuses to
+start when it is exceeded. A ceiling with no principal to bound is refused too.
+Serving with no principal at all is legal and is the *narrowest* state — the
+same argument `ldap` made for refusing referral chasing.
+
+Four perturbations proven red.
+
 ### Added — `agent`: a conversation is a value, and the loop is a pure step
 
 Step 5 of the AI reference proposal (`docs/agent_design.md`).

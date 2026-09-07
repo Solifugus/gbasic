@@ -161,6 +161,11 @@ document list, with a status column, is `docs/README.md`.
   carries the parameter's interval through the model, refuses to recommend
   anything when that interval reaches a value at which the model is undefined,
   and reports how hard the model magnifies uncertainty.
+- **publishing tools to other agents** — `mcp`, the Model Context Protocol over
+  stdio or HTTP through one dispatcher that does no I/O. A failed tool comes
+  back as a result the model can react to; a malformed request comes back as a
+  protocol error. A mapped principal needs a declared ceiling, because the
+  mapping is what a published read-only tool answers as.
 - **agent runs** — `agent`, where a conversation in progress is a value and the
   loop is a pure step returning the actions its caller must perform. The run is
   plain data, so it survives storage and an approval can arrive later on another

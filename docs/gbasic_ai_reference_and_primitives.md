@@ -1114,8 +1114,18 @@ example.
    CONCATENATED rather than hashed, against §1.8's wording: both halves are
    already opaque ids, so a hash adds no uniqueness and costs the reader the
    ability to see which run and which call an effect belongs to.
-6. `mcp`, both transports, the stdio one shipped with `--line-buffered` in
-   its launch configuration and a deadlock tier proving why.
+6. `mcp` — **publishing built 2026-09-07** (`docs/mcp_design.md`), both
+   transports over one dispatcher that does no I/O, with the deadlock tier
+   demonstrating why `--line-buffered` is required rather than asserting it:
+   the same session driven twice, every request timing out without the flag.
+   The principal ceiling of Part 3 item 11 is enforced at start.
+
+   **Consuming is deliberately a separate increment.** It is the other
+   direction, it needs `via:` in `tools` (left out for its own reasons), and
+   its failure modes are different — a server whose advertised list disagrees
+   with the declaration, load-time versus connect-time diagnostics, and a
+   remote failure that must not look like a local one. Publishing and consuming
+   share only `tools`.
 7. Retrieval, as a pgvector query with the ACL predicate in it. (`rank` is
    deferred: no consumer.)
 8. Steward itself, then `evalrun`.
