@@ -127,6 +127,21 @@ check("a volatile path descends into arrays too",
       llm.fingerprint(llm.with_volatile(anth, ["messages.0.content"]), req_a),
       llm.fingerprint(llm.with_volatile(anth, ["messages.0.content"]), req_c))
 
+' ---- the hash is the standard one, not merely a deterministic one ----------
+' 32-bit FNV-1a is written in the library rather than taken from `crypto`
+' because `crypto` needs libcrypto, and `llm.replay` is the seam that makes an
+' agent TESTABLE -- it should work in every build, which was MEASURED: with
+' libcrypto compiled out, crypto.sha256_hex raises and replay still passes.
+'
+' That is only defensible if the arithmetic is right, so these are the
+' algorithm's OWN published vectors. Without them "FNV-1a" would be a name on
+' 45 lines of float-based bit twiddling that nothing had checked -- and a wrong
+' hash still works, being deterministic, which is exactly why nothing else here
+' would notice.
+check("FNV-1a of the empty string", llm._fnv1a(""), "811c9dc5")
+check("FNV-1a of \"a\"", llm._fnv1a("a"), "e40c292c")
+check("FNV-1a of \"foobar\"", llm._fnv1a("foobar"), "bf9cf968")
+
 ' The canonical algorithm is PINNED, because the committed replay fixtures are
 ' named by it. Without this, changing the rendering makes every fixture fail
 ' with "no recorded response" -- true, and pointing at the wrong thing.

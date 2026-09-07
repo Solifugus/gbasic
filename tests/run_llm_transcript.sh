@@ -24,6 +24,13 @@
 #   COLLISION  a 32-bit key can collide and a collision would silently serve
 #              another request's answer, so the fixture records the canonical
 #              text and replay refuses when it does not match.
+#   VECTORS    the hash is checked against FNV-1a's OWN published vectors. It
+#              lives in the library rather than in `crypto` so that
+#              `llm.replay` -- the seam that makes an agent testable -- works
+#              in every build, which was measured: with libcrypto compiled out
+#              crypto.sha256_hex raises and replay still passes. That is only
+#              defensible if the arithmetic is right, and a WRONG hash still
+#              works, being deterministic, so nothing else here would notice.
 #   PINNED     the canonical rendering is asserted by value, because the
 #              committed fixtures are NAMED by it -- otherwise changing the
 #              rendering fails every fixture with "no recorded response",
@@ -64,7 +71,7 @@ run_fixture() { # file minimum-checks label
 }
 
 printf 'TIER the canonical transcript, both providers, and the fingerprint\n'
-run_fixture tests/llm_transcript_test.bas 31 "transcript"
+run_fixture tests/llm_transcript_test.bas 34 "transcript"
 
 printf 'TIER keyed replay, its controls, and the collision guard\n'
 run_fixture tests/llm_replay_test.bas 10 "replay"
