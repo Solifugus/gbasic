@@ -736,11 +736,21 @@ library llm
             out = "{"
             first = true
             for each k in _sorted_keys(v)
-                if not first then
-                    out = out + ","
+                ' `raw` IS EXCLUDED, and it is the one name treated specially.
+                ' It holds the provider block a part was parsed from -- a
+                ' transport echo kept so an assistant turn can be re-sent
+                ' verbatim, not content. Including it would make turn two's key
+                ' depend on turn one's exact response BYTES, so a fixture could
+                ' only be recorded as a chain and could never replay against a
+                ' different provider, which is the property `canonical` exists
+                ' to give.
+                if k != "raw" then
+                    if not first then
+                        out = out + ","
+                    end if
+                    out = out + k + ":" + _canonical(v[k])
+                    first = false
                 end if
-                out = out + k + ":" + _canonical(v[k])
-                first = false
             end for
             return out + "}"
         end if

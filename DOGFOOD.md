@@ -4361,3 +4361,45 @@ orders freely.
   change), or an `eof()` predicate beside it (additive). The second is the
   smaller move and matches how `try_decode` reports failure as a value rather
   than changing what `decode` returns.
+
+## 2026-09-07 — CC — a missing record key is `unknown`, so `= ""` does not catch it
+- **Type:** language-surprise
+- **Severity:** high (this one was an authentication bypass)
+- **What:** reading a key a record does not have gives `unknown`, not `nothing`
+  and not `""`. So both of these are FALSE for a missing key:
+  ```basic
+  if req.headers["x-user"] = "" then   ' does NOT fire
+  if is_nothing(rec[key]) then         ' does NOT fire
+  ```
+  Measured: `{a:1}["nope"]` has kind `unknown`; `is_nothing` false,
+  `is_unknown` true, `has(r,"nope")` false.
+- **Why it matters:** `examples/steward/steward.bas` guarded its identity check
+  with `req.headers["x-user"] = ""` and **answered 202 to a request carrying no
+  identity at all**, creating a run for nobody. Nothing raised. That is the
+  shape of a real authentication bypass, and no unit test in any library
+  underneath could have shown it — it only appeared when the layers were
+  joined.
+- **Workaround:** `has(rec, key)` first, then check the value. `is_unknown`
+  also works but says less about intent.
+- **Related:** the same family as `find` returning `nothing` on a miss where
+  `is_unknown(nothing)` is false. The general rule is that gBASIC has two
+  distinct absent-ish values and the predicates are not interchangeable.
+
+## 2026-09-07 — CC — a top-level `watch` registers nothing when a `program` block exists
+- **Type:** language-surprise
+- **Severity:** medium
+- **What:** with a `program` block present, top-level statements do not run —
+  which is documented — and `watch` is a statement, not a hoisted declaration.
+  So a `watch` written at the top of a file with a `program main(...)` below it
+  **never registers**, and nothing is said about it.
+- **Why it matters:** `examples/steward/steward.bas` had its `watch(inbox.messages)`
+  at top level. Every pool reply went undelivered and every conversation sat in
+  `calling_model` forever. The symptom points nowhere near the cause.
+- **Workaround:** put the `watch` inside the `program` block.
+- **Why it cannot simply be hoisted, unlike `load`:** a watcher FIRES on
+  registration, so hoisting it would run its body before anything it reads has
+  been assigned — measured: a hoisted `watch` body referring to a top-level
+  variable raises `undefined variable`. So this is a real constraint rather
+  than an oversight. What is missing is the DIAGNOSTIC: a top-level `watch` in
+  a file that has a `program` block is almost certainly a mistake, and the
+  interpreter is silent about it.

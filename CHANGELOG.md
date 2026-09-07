@@ -9,6 +9,51 @@ language surface may still change between releases.
 
 ## Unreleased
 
+### Added — Steward: the reference application's first slice
+
+Step 8 of the AI reference proposal, and the **skeleton** its Part 3 item 13
+asked for before more phase documents were written.
+`examples/steward/steward.bas`, `tests/run_steward.sh`.
+
+One route per thing a user does, a conversation held as a value between HTTP
+requests, model calls and tool calls dispatched to the same worker pool, and an
+approval that arrives minutes later on a different request. It answers from
+recorded fixtures, so it runs with no network and no API key.
+
+**One pool for both kinds of work**, which the skeleton settled and the design
+had not: a model call is simply another thing that blocks, and the pool exists
+for things that block. The non-streaming case therefore needs no `llm.start`/
+`poll`/`read` at all. `tools.serve` handles only tool calls, so the worker loop
+is written in the application — over the same `tools.dispatch`, so dispatching
+still has one definition even though the loop does not.
+
+**Both defects it found were invisible to every layer's own suite**, which is
+the argument for building it:
+
+- `if req.headers["x-user"] = ""` **let an unauthenticated request through**. A
+  missing record key reads back as `unknown`, and `unknown = ""` is false, so
+  the application answered 202 to a request carrying no identity at all and
+  created a run for nobody. Nothing raised. That is the shape of a real
+  authentication bypass, and the suite's AUTH tier exists for it.
+- **A top-level `watch` registers nothing when a `program` block exists**, and
+  says nothing about it — so every pool reply went undelivered and every
+  conversation sat in `calling_model` forever. It cannot simply be hoisted the
+  way `load` is: a watcher fires on registration, so hoisting would run its body
+  before anything it reads is assigned. What is missing is the diagnostic.
+
+Both are recorded in `DOGFOOD.md`.
+
+The load-bearing tier is **two runs suspended at once** while the server keeps
+serving a third to completion — which only works because the run is text in a
+store between steps, `encode` on the way in and `decode` on the way out, on the
+ordinary path rather than in a unit test. Three perturbations proven red,
+including the exact bug that was made.
+
+Also: `raw` is now excluded from `llm`'s canonical request. It holds the
+provider block a part was parsed from — a transport echo, not content — and
+including it made turn two's replay key depend on turn one's exact response
+bytes, so a fixture could only ever be recorded as a chain.
+
 ### Added — `retrieval`: the permission filter and the ranking are one query
 
 Step 7 of the AI reference proposal (`docs/retrieval_design.md`), with

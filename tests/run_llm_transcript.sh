@@ -74,7 +74,7 @@ run_fixture() { # file minimum-checks label
 }
 
 printf 'TIER the canonical transcript, both providers, and the fingerprint\n'
-run_fixture tests/llm_transcript_test.bas 34 "transcript"
+run_fixture tests/llm_transcript_test.bas 37 "transcript"
 
 printf 'TIER keyed replay, its controls, and the collision guard\n'
 run_fixture tests/llm_replay_test.bas 10 "replay"

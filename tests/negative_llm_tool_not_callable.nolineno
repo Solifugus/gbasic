@@ -1,0 +1,2 @@
+The line and column of a raise inside stdlib/llm.bas are not part of what
+this case pins: the message is. See the rationale in tests/run_negative.sh.

@@ -1,0 +1,8 @@
+{
+  "request": "{messages:[{parts:[{kind:s4:text,text:s21:a DIFFERENT question}],role:s4:user}],model:s11:claude-test,tools:unknown}",
+  "status": 200,
+  "body": {
+    "model": "claude-test",
+    "content": [ { "type": "text", "text": "an answer to someone else" } ]
+  }
+}

@@ -436,6 +436,27 @@ for name in "${cases[@]}"; do
         rm -f "$stdout_file" "$stderr_file"
         continue
     fi
+    # A case may declare, in a sidecar `tests/NAME.nolineno`, that the LINE and
+    # COLUMN of a raise inside a stdlib library are not part of what it pins.
+    # Both sides are then normalised to `stdlib/<lib>.bas:LINE:COL`.
+    #
+    # WHY. `stdlib/llm.bas` gained a canonical transcript, keyed replay and
+    # embeddings in one day, and each insertion moved every line below it: five
+    # goldens rebaselined THREE TIMES for a change none of them was about. The
+    # line number asserts nothing here -- all five messages are distinct, so it
+    # identifies nothing the text does not -- and this is the trade
+    # run_web_routes.sh already made in as many words: "the text is the
+    # contract". The FILE is still pinned, so a raise moving to another library
+    # still fails; only the digits are let go.
+    #
+    # NOT a blanket rule: run_chart.sh deliberately pins chart's line numbers,
+    # because a plausible wrong picture is worse than an error and the position
+    # is how you tell which of several similar refusals fired.
+    if [ -f "tests/$name.nolineno" ]; then
+        norm='s|\(stdlib/[a-z_]*\.bas\):[0-9][0-9]*:[0-9][0-9]*|\1:LINE:COL|g'
+        actual_text="$(printf '%s' "$actual_text" | sed "$norm")"
+        expected_text="$(printf '%s' "$expected_text" | sed "$norm")"
+    fi
     if [[ "$actual_text" == "$expected_text" ]]; then
         printf 'PASS %s\n' "$source"
     else

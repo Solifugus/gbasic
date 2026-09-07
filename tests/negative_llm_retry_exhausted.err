@@ -1,1 +1,1 @@
-runtime error at tests/../stdlib/llm.bas:374:21: llm: request failed (HTTP 500) after 3 retries
+runtime error at tests/../stdlib/llm.bas:LINE:COL: llm: request failed (HTTP 500) after 3 retries

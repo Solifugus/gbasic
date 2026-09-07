@@ -1,0 +1,18 @@
+{
+  "request": "{messages:[{parts:[{kind:s4:text,text:s27:what is the balance for a1?}],role:s4:user},{parts:[{args:{id:s2:a1},id:s2:c1,kind:s9:tool_call,name:s11:get_balance}],role:s9:assistant},{parts:[{content:s5:42.00,id:s2:c1,is_error:false,kind:s11:tool_result}],role:s4:user}],model:s11:claude-test,tools:unknown}",
+  "status": 200,
+  "body": {
+    "model": "claude-test",
+    "stop_reason": "end_turn",
+    "usage": {
+      "input_tokens": 60,
+      "output_tokens": 12
+    },
+    "content": [
+      {
+        "type": "text",
+        "text": "Your balance is 42.00."
+      }
+    ]
+  }
+}

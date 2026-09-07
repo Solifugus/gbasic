@@ -1,0 +1,22 @@
+{
+  "request": "{messages:[{parts:[{kind:s4:text,text:s14:freeze card c9}],role:s4:user}],model:s11:claude-test,tools:unknown}",
+  "status": 200,
+  "body": {
+    "model": "claude-test",
+    "stop_reason": "tool_use",
+    "usage": {
+      "input_tokens": 38,
+      "output_tokens": 18
+    },
+    "content": [
+      {
+        "type": "tool_use",
+        "id": "c2",
+        "name": "freeze_card",
+        "input": {
+          "id": "c9"
+        }
+      }
+    ]
+  }
+}

@@ -142,12 +142,36 @@ check("FNV-1a of the empty string", llm._fnv1a(""), "811c9dc5")
 check("FNV-1a of \"a\"", llm._fnv1a("a"), "e40c292c")
 check("FNV-1a of \"foobar\"", llm._fnv1a("foobar"), "bf9cf968")
 
+' `raw` IS EXCLUDED FROM THE KEY, and that is what makes a multi-turn fixture
+' possible at all: `from_response` puts the provider's own block on every part,
+' so including it would make turn two's key depend on turn one's exact response
+' BYTES -- a fixture could then only be recorded as a chain, and could never
+' replay against a different provider. Asserted as a DIFFERENCE: two transcripts
+' identical but for `raw` must have ONE key, while the same pair differing in
+' the TEXT must not.
+plain_turn = { model: "x", system: "s",
+               messages: [ { role: "assistant",
+                             parts: [ { kind: "text", text: "hi", raw: unknown } ] } ] }
+raw_turn = { model: "x", system: "s",
+             messages: [ { role: "assistant",
+                           parts: [ { kind: "text", text: "hi",
+                                      raw: { type: "text", text: "hi", id: "msg_01" } } ] } ] }
+other_turn = { model: "x", system: "s",
+               messages: [ { role: "assistant",
+                             parts: [ { kind: "text", text: "different", raw: unknown } ] } ] }
+check("a provider echo in `raw` does not change the key",
+      llm.fingerprint(anth, plain_turn), llm.fingerprint(anth, raw_turn))
+check("but the text does -- so it is `raw` being excluded, not everything",
+      llm.fingerprint(anth, plain_turn) != llm.fingerprint(anth, other_turn), true)
+check("and `raw` is absent from the canonical text",
+      contains(llm.canonical_request(anth, raw_turn), "msg_01"), false)
+
 ' The canonical algorithm is PINNED, because the committed replay fixtures are
 ' named by it. Without this, changing the rendering makes every fixture fail
 ' with "no recorded response" -- true, and pointing at the wrong thing.
 known = { model: "claude-test", system: "anything",
           messages: [ llm.message("user", [ llm.text("hello") ]) ], tools: unknown }
-check("the canonical rendering is pinned", llm.fingerprint(vol, known), "da72956e")
+check("the canonical rendering is pinned", llm.fingerprint(vol, known), "26e6eb38")
 
 ' ---- refusals, each beside its nearest legal neighbour ---------------------
 on error goto next

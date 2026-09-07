@@ -1140,7 +1140,28 @@ example.
    provider returns rows carrying an `index` and does not promise they arrive
    sorted, so read positionally every chunk is paired with another chunk's
    vector and nothing raises.
-8. Steward itself, then `evalrun`.
+8. Steward — **first slice built 2026-09-07** (`examples/steward/steward.bas`,
+   `tests/run_steward.sh`), which is also the SKELETON item 13 asked for before
+   more phase documents were written. One route per thing a user does, a
+   conversation held as a value between requests, model calls and tool calls
+   dispatched to the same pool, and the approval gate. `evalrun` still ahead.
+
+   **One pool for both kinds of work**, which the skeleton settled and the
+   design had not: a model call is simply another thing that blocks, and the
+   pool exists for things that block. The non-streaming case therefore needs no
+   `llm.start`/`poll`/`read` at all. `tools.serve` handles only tool calls, so
+   the worker loop is written in the application — over the same
+   `tools.dispatch`, so dispatching still has one definition even though the
+   loop does not. Whether `tools.serve` should be extensible is a real question
+   this raises and does not answer.
+
+   **Both defects it found were invisible to every layer's own suite**, which is
+   the argument for building it. `if req.headers["x-user"] = ""` let an
+   unauthenticated request through — a missing header reads back as `unknown`,
+   and `unknown = ""` is false — so the application answered 202 to a request
+   with no identity at all. And a top-level `watch` registers nothing when a
+   `program` block exists, so every pool reply went undelivered and every
+   conversation sat in `calling_model` forever. Both are in `DOGFOOD.md`.
 9. ~~`pg` native arrays~~ — built before step 1 after all, because the
    database was provisioned and the control was in place; it took an
    afternoon. The order above is otherwise unchanged.
