@@ -1126,8 +1126,20 @@ example.
    with the declaration, load-time versus connect-time diagnostics, and a
    remote failure that must not look like a local one. Publishing and consuming
    share only `tools`.
-7. Retrieval, as a pgvector query with the ACL predicate in it. (`rank` is
-   deferred: no consumer.)
+7. ~~Retrieval, as a pgvector query with the ACL predicate in it.~~ — **built
+   2026-09-07** (`docs/retrieval_design.md`), with `llm.embed` alongside.
+   `rank` stays deferred, and now demonstrably: pgvector does filter-then-rank
+   in SQL, so the candidate-mask primitive of Part 2 item 5 has no consumer.
+
+   The suite asserts the property as a difference against a real database —
+   a corpus where the nearest chunks are ones the caller may not see, and they
+   still get their own top-k. Two things the build settled. `search` calls
+   `query_text` rather than rebuilding the SQL, because written as two string
+   builds a perturbation that changed only `search` left the structural tier
+   passing. And **the embedding order is what goes silently wrong**: the
+   provider returns rows carrying an `index` and does not promise they arrive
+   sorted, so read positionally every chunk is paired with another chunk's
+   vector and nothing raises.
 8. Steward itself, then `evalrun`.
 9. ~~`pg` native arrays~~ — built before step 1 after all, because the
    database was provisioned and the control was in place; it took an

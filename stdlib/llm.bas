@@ -46,6 +46,7 @@ library llm
             retries: 3,
             offline_dir: unknown,
             replay_dir: unknown,
+            embed_model: unknown,
             volatile: [],
             transport: unknown,
             sleep_fn: unknown,
@@ -605,6 +606,100 @@ library llm
             end for
         end if
         return { role: "assistant", parts: parts }
+    end function
+
+    ' ================= embeddings (proposal §2 item 12) ======================
+    '
+    ' BATCH IS THE PRIMITIVE and one text is the special case: an embedding API
+    ' charges and rate-limits per request, so a chunked document embedded one
+    ' chunk at a time is the same work at many times the cost. `embed` takes an
+    ' array and returns an array.
+    '
+    ' AN EMBEDDING MODEL IS A DIFFERENT MODEL FROM A CHAT MODEL, which is the
+    ' fact this surface most often meets: `text-embedding-3-small` is not
+    ' `gpt-4o`. So `embed` refuses rather than reaching for `m.model`, where the
+    ' provider would answer with an error about a model that does not do this.
+
+    function with_embed_model(m, name)
+        if not is_string(name) then
+            error "llm: with_embed_model expects a model name"
+        end if
+        m.embed_model = name
+        return m
+    end function
+
+    function _embed_endpoint(m)
+        return m.base_url + "/v1/embeddings"
+    end function
+
+    ' The vectors for `texts`, in the SAME ORDER.
+    '
+    ' THE ORDER IS THE THING THAT GOES SILENTLY WRONG. The API returns a `data`
+    ' array whose entries carry an `index`, and nothing in the protocol promises
+    ' they arrive sorted. Reading them positionally pairs every chunk with
+    ' another chunk's vector -- and the result still looks like a list of
+    ' vectors, the store still fills, and retrieval simply returns the wrong
+    ' documents forever. So they are placed BY INDEX, and the suite feeds a
+    ' deliberately shuffled response.
+    function embed(m, texts)
+        if not is_array(texts) then
+            error "llm: embed expects an array of texts (batch is the primitive; one text is [text])"
+        end if
+        if count(texts) = 0 then
+            error "llm: embed was given nothing to embed"
+        end if
+        for each t in texts
+            if not is_string(t) then
+                error "llm: embed expects strings"
+            end if
+        end for
+        if m.format = "anthropic" then
+            error "llm: Anthropic has no embeddings endpoint; use llm.openai or llm.local (an OpenAI-compatible server) for embeddings"
+        end if
+        if is_unknown(m.embed_model) then
+            error "llm: embed needs an embedding model -- it is a different model from the chat one (llm.with_embed_model(m, \"text-embedding-3-small\"))"
+        end if
+        key = _resolve_key(m)
+        body = json_encode({ model: m.embed_model, input: texts })
+        request = { model: m.embed_model, input: texts }
+        canon = canonical_request(m, request)
+        resp = _send(m, _embed_endpoint(m), _headers(m, key), body, _fnv1a(canon), canon)
+        parsed = _parse_or_unknown(resp.body)
+        if is_unknown(parsed) then
+            error "llm: the embeddings response was not JSON"
+        end if
+        data = _field(parsed, "data")
+        if not is_array(data) then
+            error "llm: the embeddings response carried no data array"
+        end if
+        if count(data) != count(texts) then
+            error "llm: asked for " + string(count(texts)) + " embeddings and got " + string(count(data))
+        end if
+        ' Placed by the index the provider gave, not by arrival order.
+        out = []
+        for each t in texts
+            append(out, unknown)
+        end for
+        for each row in data
+            i = _field(row, "index")
+            v = _field(row, "embedding")
+            if not is_number(i) then
+                error "llm: an embeddings row carried no index, so its text cannot be identified"
+            end if
+            if i < 0 or i >= count(texts) then
+                error "llm: an embeddings row claims index " + string(i) + ", outside the batch"
+            end if
+            if not is_array(v) then
+                error "llm: the embedding at index " + string(i) + " is not an array"
+            end if
+            out[i] = v
+        end for
+        for each v in out
+            if is_unknown(v) then
+                error "llm: the provider returned no embedding for one of the texts"
+            end if
+        end for
+        return out
     end function
 
     ' ================= keyed replay (proposal §2 item 4) ====================

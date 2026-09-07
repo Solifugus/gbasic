@@ -31,6 +31,9 @@
 #              crypto.sha256_hex raises and replay still passes. That is only
 #              defensible if the arithmetic is right, and a WRONG hash still
 #              works, being deterministic, so nothing else here would notice.
+#   EMBED      batch embeddings, with the shuffled-response tier: reading the
+#              provider's rows positionally pairs every chunk with another
+#              chunk's vector, and nothing raises.
 #   PINNED     the canonical rendering is asserted by value, because the
 #              committed fixtures are NAMED by it -- otherwise changing the
 #              rendering fails every fixture with "no recorded response",
@@ -75,6 +78,15 @@ run_fixture tests/llm_transcript_test.bas 34 "transcript"
 
 printf 'TIER keyed replay, its controls, and the collision guard\n'
 run_fixture tests/llm_replay_test.bas 10 "replay"
+
+printf 'TIER batch embeddings, placed by index\n'
+# THE ORDER IS WHAT GOES SILENTLY WRONG. The API returns rows carrying an
+# `index` and does not promise they arrive sorted; read positionally, every
+# chunk is paired with another chunk's vector and NOTHING RAISES -- the store
+# fills, retrieval answers, and the documents are wrong forever. The fixture
+# feeds a deliberately shuffled response, which is the only way to tell a
+# placement by index from a placement by arrival.
+run_fixture tests/llm_embed_test.bas 15 "embed"
 
 printf 'TIER every committed fixture is reachable\n'
 # A fixture nobody replays is a fixture that rots. Each recorded file must be

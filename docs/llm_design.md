@@ -418,9 +418,35 @@ A fixture is a record:
 }
 ```
 
-### 10.3 Not built here
+### 10.3 Embeddings (shipped 2026-09-07)
+
+**Batch is the primitive** and one text is the special case: an embedding API
+charges and rate-limits per request, so a chunked document embedded one chunk at
+a time is the same work at many times the cost.
+
+```basic
+m = llm.with_embed_model(llm.openai("gpt-4o", key), "text-embedding-3-small")
+vectors = llm.embed(m, ["first chunk", "second chunk"])
+```
+
+Two things it refuses rather than guesses. **An embedding model is a different
+model from a chat model**, so `embed` requires `with_embed_model` rather than
+reaching for `m.model` and letting the provider answer with an error about a
+model that does not do this. And **Anthropic has no embeddings endpoint** —
+refused by name, pointing at `llm.openai` or `llm.local`.
+
+**The order is what goes silently wrong.** The API returns a `data` array whose
+entries carry an `index`, and nothing in the protocol promises they arrive
+sorted. Read positionally, every chunk is paired with another chunk's vector —
+and the result still looks like a list of vectors, the store still fills, and
+retrieval returns the wrong documents forever. Vectors are placed **by index**,
+and the suite feeds a deliberately shuffled response.
+
+`embed` goes through the same transport seam as `chat`, so it replays.
+
+### 10.4 Not built here
 
 `llm.start`/`poll`/`read`/`wait`/`stop`/`release` over the `http` handle
-surface, and `llm.embed`. An agent loop can be built and tested without them —
-`agent.step` returns an *action* saying to call the model rather than calling
-it — so they follow the step that needs them rather than preceding it.
+surface. An agent loop can be built and tested without them — `agent.apply`
+returns an *action* saying to call the model rather than calling it — so they
+follow the step that needs them rather than preceding it.

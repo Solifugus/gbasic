@@ -9,6 +9,48 @@ language surface may still change between releases.
 
 ## Unreleased
 
+### Added — `retrieval`: the permission filter and the ranking are one query
+
+Step 7 of the AI reference proposal (`docs/retrieval_design.md`), with
+`llm.embed` alongside.
+
+**The defect this exists to prevent** is the obvious implementation: rank first,
+then drop what the caller may not see. It fails in a way that looks like an
+ordinary empty result — a user with narrow permissions asks a question, the
+globally nearest chunks all belong to someone else, every one is dropped, and
+they are told nothing matched. Nothing errors, and their own best matches were
+never considered.
+
+Putting the ACL predicate in the `WHERE` makes the database narrow first and
+rank what remains. Asserted as a **difference** against a real pgvector: a
+corpus where the three nearest chunks are ones the asking user may not see, and
+they still get their own top-2 — with the control that a user who *may* see them
+gets those three instead. Without the control, "the narrow user got two rows" is
+equally satisfied by an ACL that does nothing.
+
+`search` calls `query_text` rather than building the same SQL again, and that is
+not tidiness: written as two separate string builds, a perturbation that changed
+only `search` left the structural tier passing. Two representations of one query
+drift.
+
+`store` is keyed by **content hash**, which is what makes an indexer resumable —
+a crash mid-run costs the batch in flight and nothing else. Identifiers are
+validated and **refused rather than escaped**, the rule `dbframe` follows.
+
+The suite has an offline tier that always runs, because an entirely skippable
+suite is one that can go quiet; the live tiers need `GBASIC_POSTGRES_TEST=1` and
+a `PGDATABASE` with pgvector. Four perturbations proven red, including the leak:
+with the predicate defeated, *"a caller with no overlapping group sees nothing at
+all: got 5, want 0"*.
+
+**`llm.embed`.** Batch is the primitive. It refuses rather than guesses twice —
+an embedding model is a different model from a chat model, and Anthropic has no
+embeddings endpoint. And **the order is what goes silently wrong**: the API
+returns rows carrying an `index` and does not promise they arrive sorted, so
+read positionally every chunk is paired with another chunk's vector, the store
+fills, and retrieval returns the wrong documents forever. Vectors are placed by
+index, and the suite feeds a shuffled response.
+
 ### Added — `mcp`: publishing a toolset over the Model Context Protocol
 
 Step 6 of the AI reference proposal (`docs/mcp_design.md`). Publishing only;

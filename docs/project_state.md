@@ -161,6 +161,11 @@ document list, with a status column, is `docs/README.md`.
   carries the parameter's interval through the model, refuses to recommend
   anything when that interval reaches a value at which the model is undefined,
   and reports how hard the model magnifies uncertainty.
+- **permission-filtered retrieval** — `retrieval`, where the ACL predicate and
+  the nearest-neighbour ordering are one pgvector query. Ranking first and
+  filtering after returns an empty list to a narrowly permitted user whose own
+  best matches were never looked at, and an empty list reads as "nothing
+  matched".
 - **publishing tools to other agents** — `mcp`, the Model Context Protocol over
   stdio or HTTP through one dispatcher that does no I/O. A failed tool comes
   back as a result the model can react to; a malformed request comes back as a
