@@ -6,13 +6,13 @@ gBASIC is a **modern BASIC for business programming**: familiar control flow,
 plus records, first-class functions, watchers, shared-nothing actors, and typed
 values for dates, durations and money. Around it sits a working platform —
 databases, a hardened web server, spreadsheets, statistics, charts and native
-GUI — and forty-four pure-gBASIC libraries covering double-entry accounting, loan
+GUI — and forty-five pure-gBASIC libraries covering double-entry accounting, loan
 servicing, deposits, credit analytics, securities analysis and more. A gBASIC
 program is meant to be a real application, not a demonstration.
 
 This repository holds the C implementation of gBASIC `0.1.0`. It is an **early
 release** and the version number is honest about that — but it is not a sketch:
-**117 test suites** gate every change, goldens are byte-exact, and the claims in
+**118 test suites** gate every change, goldens are byte-exact, and the claims in
 this file that can be measured have been. Until 1.0.0 the language surface may
 still move between releases; [CHANGELOG.md](CHANGELOG.md) records what changed
 and why, and the [documentation index](docs/README.md) marks every document
@@ -145,7 +145,7 @@ Two of these deserve a sentence more than a table row:
 
 ### The standard library
 
-Forty-four pure-gBASIC libraries in `stdlib/`. Each bullet says what backs it,
+Forty-five pure-gBASIC libraries in `stdlib/`. Each bullet says what backs it,
 because they are not at the same maturity and a uniform list would imply they
 are.
 
@@ -209,6 +209,10 @@ are.
   minutes later on a different one.
   And `mcp`, which publishes a toolset to any Model Context Protocol client
   over stdio or HTTP through one dispatcher.
+  And `otp`, one-time passwords as a second factor, where the replay guard is
+  structural — `otp.check` requires the last counter accepted and returns the one it
+  matched, because the argument easiest to forget is the one that must not be
+  optional.
   And `retrieval`, where the permission filter and the nearest-neighbour
   ranking are one pgvector query — because ranking first and filtering after
   hands a narrowly permitted user an empty result that reads as "nothing
@@ -328,7 +332,7 @@ default target: build it with `make dev` and install it with
 ./tests/run_all.sh web              # or filter by substring
 ```
 
-**Use `run_all.sh` rather than naming suites.** It discovers all 117 suites by
+**Use `run_all.sh` rather than naming suites.** It discovers all 118 suites by
 glob, and that is the whole point: a hand-maintained list is a gate that
 silently shrinks. Four suites in this repository sat broken across two releases
 because every list anyone ran happened not to name them. It reports a suite

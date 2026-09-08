@@ -166,6 +166,13 @@ document list, with a status column, is `docs/README.md`.
   filtering after returns an empty list to a narrowly permitted user whose own
   best matches were never looked at, and an empty list reads as "nothing
   matched".
+- **a second factor** — `otp`, one-time passwords (RFC 4226 HOTP, RFC 6238
+  TOTP). gBASIC owns the factor rather than delegating it, so it works whether
+  the directory is AD, OpenLDAP, a table or nothing. Replay is made structural:
+  `otp.check` requires the last counter the account accepted and returns the one it
+  matched, so a caller cannot reach it without saying what was last used. Rate
+  limiting is the actual break and is the caller's, which the design says
+  plainly rather than leaving to be inferred.
 - **publishing tools to other agents** — `mcp`, the Model Context Protocol over
   stdio or HTTP through one dispatcher that does no I/O. A failed tool comes
   back as a result the model can react to; a malformed request comes back as a

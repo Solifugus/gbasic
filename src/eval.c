@@ -21374,6 +21374,77 @@ static Value crypto_base64_encode(const unsigned char *in, size_t n, int url, in
     return result;
 }
 
+/* RFC 4648 base32. NOT behind HAVE_LIBCRYPTO, like base64 and hex beside it:
+ * this is bit-packing, not cryptography, and a build without OpenSSL should
+ * still be able to read an encoding. */
+static const char CRYPTO_B32_STD[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+
+static Value crypto_base32_encode(const unsigned char *in, size_t n) {
+    size_t out_cap = ((n + 4) / 5) * 8 + 1;
+    char *out = malloc(out_cap);
+    if (!out) {
+        abort();
+    }
+    size_t o = 0, i = 0;
+    while (i < n) {
+        size_t chunk = (n - i < 5) ? (n - i) : 5;
+        unsigned long long v = 0;
+        for (size_t k = 0; k < 5; k++) {
+            v = (v << 8) | (unsigned long long)(k < chunk ? in[i + k] : 0);
+        }
+        /* 5 input bytes are 8 output characters; a short final group carries
+         * fewer meaningful ones and the rest are padding. */
+        int chars = 8;
+        if (chunk == 1) chars = 2;
+        else if (chunk == 2) chars = 4;
+        else if (chunk == 3) chars = 5;
+        else if (chunk == 4) chars = 7;
+        for (int k = 0; k < 8; k++) {
+            out[o++] = (k < chars) ? CRYPTO_B32_STD[(v >> (35 - 5 * k)) & 31] : '=';
+        }
+        i += chunk;
+    }
+    Value result = value_string_n(out, o);
+    free(out);
+    return result;
+}
+
+/* Returns malloc'd bytes and sets *out_len; NULL on an invalid character.
+ *
+ * ACCEPTS LOWER CASE AND WHITESPACE, deliberately. A TOTP secret is a thing
+ * people transcribe by hand and authenticator apps display in spaced groups,
+ * so case and spacing are the ordinary transcription noise -- a decoder that
+ * refused them would turn a usability problem into a lockout. Anything that is
+ * not in the alphabet is still refused. */
+static unsigned char *crypto_base32_decode(const unsigned char *in, size_t n, size_t *out_len) {
+    unsigned char *out = malloc(n * 5 / 8 + 2);
+    if (!out) {
+        abort();
+    }
+    size_t o = 0;
+    unsigned long long buf = 0;
+    int bits = 0;
+    for (size_t i = 0; i < n; i++) {
+        unsigned char c = in[i];
+        if (c == '=' || c == ' ' || c == '\t' || c == '\r' || c == '\n') {
+            continue;
+        }
+        int v;
+        if (c >= 'A' && c <= 'Z') v = (int)(c - 'A');
+        else if (c >= 'a' && c <= 'z') v = (int)(c - 'a');
+        else if (c >= '2' && c <= '7') v = (int)(c - '2') + 26;
+        else { free(out); return NULL; }
+        buf = (buf << 5) | (unsigned long long)v;
+        bits += 5;
+        if (bits >= 8) {
+            bits -= 8;
+            out[o++] = (unsigned char)((buf >> bits) & 0xff);
+        }
+    }
+    *out_len = o;
+    return out;
+}
+
 static int crypto_b64_val(unsigned char c) {
     if (c >= 'A' && c <= 'Z') return (int)(c - 'A');
     if (c >= 'a' && c <= 'z') return (int)(c - 'a') + 26;
@@ -28288,6 +28359,29 @@ static Value eval_call(AstExpr *expr) {
         value_free(s);
         return r;
     }
+    if (strcmp(expr->as.call.name, "base32_encode") == 0) {
+        Value s;
+        if (!crypto_one_string(expr, "base32_encode", &s)) return value_null();
+        Value r = crypto_base32_encode((const unsigned char *)s.as.string, string_length(s.as.string));
+        value_free(s);
+        return r;
+    }
+    if (strcmp(expr->as.call.name, "base32_decode") == 0) {
+        Value s;
+        if (!crypto_one_string(expr, "base32_decode", &s)) return value_null();
+        size_t out_len = 0;
+        unsigned char *raw = crypto_base32_decode((const unsigned char *)s.as.string,
+                                                  string_length(s.as.string), &out_len);
+        value_free(s);
+        if (!raw) {
+            /* unknown, not a raise, and not "" -- the two are different answers
+             * and a caller must be able to tell "not base32" from "empty". */
+            return value_unknown();
+        }
+        Value r = value_string_n((char *)raw, out_len);
+        free(raw);
+        return r;
+    }
     if (strcmp(expr->as.call.name, "base64url_encode") == 0) {
         Value s;
         if (!crypto_one_string(expr, "base64url_encode", &s)) return value_null();
@@ -28430,12 +28524,18 @@ static Value eval_call(AstExpr *expr) {
         return value_null();
 #endif
     }
-    if (strcmp(expr->as.call.name, "hmac_sha256") == 0 ||
+    if (strcmp(expr->as.call.name, "hmac_sha1") == 0 ||
+        strcmp(expr->as.call.name, "hmac_sha256") == 0 ||
         strcmp(expr->as.call.name, "hmac_sha512") == 0) {
         Value key, msg;
         if (!crypto_two_strings(expr, expr->as.call.name, &key, &msg)) return value_null();
 #if HAVE_LIBCRYPTO
-        const EVP_MD *md = strcmp(expr->as.call.name, "hmac_sha512") == 0 ? EVP_sha512() : EVP_sha256();
+        /* hmac_sha1 exists for TOTP and for nothing else worth doing: RFC 6238
+         * permits SHA256/512 and authenticator apps in practice ignore the
+         * parameter and compute SHA1. Do not reach for it for anything new. */
+        const EVP_MD *md = EVP_sha256();
+        if (strcmp(expr->as.call.name, "hmac_sha512") == 0) md = EVP_sha512();
+        else if (strcmp(expr->as.call.name, "hmac_sha1") == 0) md = EVP_sha1();
         Value r = crypto_hmac(md, (const unsigned char *)key.as.string, string_length(key.as.string),
                               (const unsigned char *)msg.as.string, string_length(msg.as.string));
         value_free(key);

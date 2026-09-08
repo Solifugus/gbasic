@@ -3400,6 +3400,15 @@ Encoding:
 - `base64_encode(s)` / `base64_decode(s)` — standard Base64.
 - `base64url_encode(s)` / `base64url_decode(s)` — URL-safe Base64 (no padding).
 - `hex_encode(s)` / `hex_decode(s)` — lowercase hexadecimal.
+- `base32_encode(s)` / `base32_decode(s)` — RFC 4648 Base32, the encoding a
+  TOTP shared secret is stored and displayed in. **`base32_decode` answers
+  `unknown` for input that is not Base32**, not `""` — "not Base32" and "empty"
+  are different answers and a caller must be able to tell them apart. It
+  accepts **lower case and whitespace**, deliberately: a secret is a thing
+  people transcribe by hand and authenticator apps display in spaced groups, so
+  case and spacing are the ordinary transcription noise and refusing them would
+  turn a usability problem into a lockout. Anything outside the alphabet is
+  still refused.
 
 Random and comparison:
 
@@ -3420,6 +3429,12 @@ Hashing and HMAC:
   for collision resistance, so never use it for signatures, password storage or
   deduplicating untrusted input; reach for `sha256`.
 - `hmac_sha256(key, message)`, `hmac_sha512(key, message)` — keyed MACs.
+- `hmac_sha1(key, message)` — **exists for TOTP and for nothing else worth
+  doing.** RFC 6238 permits SHA256 and SHA512, and authenticator apps in
+  practice ignore the algorithm parameter and compute SHA1 anyway, so
+  interoperating requires it. SHA-1 is broken for collision resistance; HMAC
+  does not rest on that, which is why this remains sound *here* and is still
+  the wrong reach for anything new.
 
 Password-based key derivation — turning a **passphrase** into key bytes:
 

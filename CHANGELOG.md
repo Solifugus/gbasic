@@ -9,6 +9,55 @@ language surface may still change between releases.
 
 ## Unreleased
 
+### Added — `otp`: one-time passwords as a second factor
+
+`stdlib/otp.bas`, `tests/run_otp.sh`, `docs/otp_design.md`. RFC 4226 (HOTP) and
+RFC 6238 (TOTP), with `hmac_sha1` and `base32_encode`/`base32_decode` beneath
+them.
+
+**gBASIC owns the factor rather than delegating it.** Handing the second factor
+to an identity provider is right for an organisation that has one, and not
+every organisation does — a capability that only works for Active Directory
+shops is not a platform capability. The identity *source* stays a separate
+decision: `ldap` can supply the first factor, or a password table, or nothing.
+
+TOTP first because it needs **no delivery channel** — no gateway to pay for, no
+carrier to trust, nothing to be down at the moment somebody needs to log in.
+Deliberately not built: **SMS** (SIM-swap; NIST-deprecated) and **WebAuthn**,
+which is the only phishing-resistant option and needs ECDSA P-256 verification
+and a CBOR decoder, neither of which this tree has.
+
+**None of the defects this prevents are cryptographic, and every one ships
+looking correct.** Replay is the one made structural: `otp.check` **requires**
+the last counter the account accepted and **returns** the one it matched, so a
+caller cannot reach the function without saying what was last used — the rule
+`reasoning.finding` follows for `search.width`, because the argument easiest to
+forget is the one that must not be optional. Skew is bounded at 10 steps, since
+each one widens the brute-force window linearly. **Rate limiting is the actual
+break** — six digits is 10⁶ — and it is the caller's, because a library cannot
+hold per-account state across requests; the design says so plainly rather than
+leaving it to be inferred.
+
+**The oracle is external and published.** RFC 4226 Appendix D and RFC 6238
+Appendix B, computed independently before the library existed and agreeing with
+the printed tables — so the fixture asserts what the RFCs say, not what we
+emitted, which matters because every defect here produces a plausible six-digit
+number that no golden could be reviewed against. The vectors carry their own
+trap and it is exercised: the SHA256 and SHA512 seeds are **longer** than
+SHA1's (32 and 64 bytes against 20), and reusing the SHA1 seed for all three
+gives wrong answers whose correction gets applied to the code instead of the
+seed. The `t=20000000000` row is not decoration either — the counter reaches
+666666666, past what careless 32-bit packing would hold.
+
+Four perturbations proven red, each caught by the tier written for it: the
+replay guard removed, skew ignored, the seed reused across algorithms, and
+base32 accepting an out-of-alphabet character.
+
+`base32_decode` answers **`unknown`** for input that is not base32, never `""`
+— the two are different answers. It accepts lower case and whitespace on
+purpose: a secret is transcribed by hand and displayed in spaced groups, so
+refusing that noise turns a usability problem into a lockout.
+
 ### Added — `mcp` consuming: gBASIC as an MCP client
 
 `mcp.connect` / `tools_of` / `call` / `disconnect`, over both transports
