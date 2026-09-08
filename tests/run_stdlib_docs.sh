@@ -106,15 +106,10 @@ DELIBERATE = {
     # doc records the removal, which requires naming the thing removed.
     'crypto.json_encode':
         'removed in 0.1.0-rc8; the doc records the removal',
-    # Stated future scope, explicitly flagged as not built.
-    'llm.embed':
-        'declared near-scope future work, not shipped',
-    # fake_data_design.md is Partial: Layer 1 and the first dataset builders
-    # ship, these three do not. Named in the design because the design is where
-    # scope is argued, and a Partial document has to be able to say what it
-    # does not yet have.
-    'fake.plant':
-        'planted anomalies, design section 6, not built',
+    # fake_data_design.md is Partial: Layer 1, the first dataset builders and
+    # `plant` ship, this one does not. Named in the design because the design
+    # is where scope is argued, and a Partial document has to be able to say
+    # what it does not yet have.
     'fake.table':
         'the spec-record table form, design section 4, not built',
     # Named in order to say it is IMPOSSIBLE, like chart.new above: a gBASIC
@@ -169,6 +164,25 @@ else:
             print(f"       - {path}")
 
 print("")
+# THE ALLOWLIST NEEDS ITS OWN NEGATIVE CONTROL, because it is the one thing
+# this suite cannot otherwise see. An entry whose reason says a function does
+# not exist stops being an exemption the moment somebody builds it -- it
+# becomes a false statement in a file whose whole job is catching false
+# statements, and it silently stops guarding anything. MEASURED 2026-09-07:
+# `llm.embed` and `fake.plant` had BOTH shipped while their entries still read
+# "not shipped" and "not built", and the tier they live in printed those
+# reasons as ok lines on every green run.
+print("TIER no allowlist entry has quietly come true")
+came_true = sorted(n for n in DELIBERATE
+                   if n.split('.', 1)[0] in libs and n.split('.', 1)[1] in libs[n.split('.', 1)[0]])
+if came_true:
+    for name in came_true:
+        print(f"  FAIL {name} is allowlisted as not existing, but {name.split('.')[0]}"
+              f".bas now defines it -- strike the entry")
+    failures += len(came_true)
+else:
+    print(f"  ok   all {len(DELIBERATE)} allowlisted names are still absent")
+
 print("TIER every registered builtin appears in docs/reference.md")
 ref = open('docs/reference.md', encoding='utf-8', errors='replace').read()
 bsrc = open('src/builtins.c', encoding='utf-8', errors='replace').read()

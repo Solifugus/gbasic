@@ -25,6 +25,10 @@
 #             and is not implied by both merely working.
 #   CEILING   covered in the fixture: the mapped principal is the leak surface,
 #             so a mapping wider than its declared ceiling refuses to start.
+#   CONSUME   the other direction, gBASIC to gBASIC over both transports. Its
+#             load-bearing check is the DECLARATION MEETING THE SERVER at
+#             connect time rather than at the first call hours later, with the
+#             control that a declaration the server MEETS connects.
 #   VALGRIND
 set -euo pipefail
 
@@ -133,6 +137,55 @@ else
         pass "the same request over HTTP and over stdio gives byte-identical JSON"
     fi
 fi
+
+printf 'TIER consuming: gBASIC as an MCP client\n'
+# The other direction, tested gBASIC-to-gBASIC: our own publisher launched as a
+# subprocess, and our own HTTP server. Nothing external, no network beyond
+# loopback.
+#
+# The load-bearing check is the DECLARATION MEETING THE SERVER AT CONNECT TIME
+# -- a tool the caller declared and the server does not advertise must fail when
+# the connection is made, not at the first call hours later. Its control is a
+# declaration the server does meet, without which "connect refuses" is satisfied
+# by a client that refuses everything.
+consume_url=""
+chsrv=""
+if command -v curl >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
+    cport="$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1]);s.close()')"
+    MCP_HTTP_PORT="$cport" timeout -k 5 120 ./gbasic --line-buffered tests/mcp/http_server.bas \
+        >"$work/ch.out" 2>"$work/ch.err" &
+    chsrv=$!
+    for _ in $(seq 1 300); do
+        if curl -s -m 2 -o /dev/null -X POST -d '{}' "http://127.0.0.1:$cport/rpc" 2>/dev/null; then
+            consume_url="http://127.0.0.1:$cport/rpc"
+            break
+        fi
+        sleep 0.05
+    done
+fi
+if MCP_URL="$consume_url" timeout -k 5 180 ./gbasic tests/mcp/consume_test.bas \
+        >"$work/c.out" 2>"$work/c.err"; then
+    cchecks="$(sed -n 's/^checks: //p' "$work/c.out")"
+    want=17
+    [ -n "$consume_url" ] && want=20
+    if ! grep -q '^mismatches: 0$' "$work/c.out"; then
+        grep '^MISMATCH' "$work/c.out" || true
+        fail "the consume fixture disagreed with itself"
+    elif [ -z "$cchecks" ] || [ "$cchecks" -lt "$want" ]; then
+        fail "only ${cchecks:-0} consume checks ran, wanted at least $want"
+    else
+        if [ -n "$consume_url" ]; then
+            pass "$cchecks checks over BOTH transports, gBASIC consuming gBASIC"
+        else
+            pass "$cchecks checks over stdio (http skipped: no curl/python3)"
+        fi
+    fi
+else
+    grep '^MISMATCH' "$work/c.out" 2>/dev/null || true
+    cat "$work/c.err"
+    fail "the consume fixture did not run to completion"
+fi
+[ -n "$chsrv" ] && { kill "$chsrv" 2>/dev/null || true; wait "$chsrv" 2>/dev/null || true; }
 
 printf 'TIER valgrind\n'
 if vg_available; then

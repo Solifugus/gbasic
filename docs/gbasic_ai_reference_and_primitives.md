@@ -1120,12 +1120,26 @@ example.
    the same session driven twice, every request timing out without the flag.
    The principal ceiling of Part 3 item 11 is enforced at start.
 
-   **Consuming is deliberately a separate increment.** It is the other
-   direction, it needs `via:` in `tools` (left out for its own reasons), and
-   its failure modes are different — a server whose advertised list disagrees
-   with the declaration, load-time versus connect-time diagnostics, and a
-   remote failure that must not look like a local one. Publishing and consuming
-   share only `tools`.
+   **Consuming built the same day** (`mcp.connect`/`tools_of`/`call`/
+   `disconnect`, §6 of the design). All three failure modes this item named are
+   answered and each in its own place: a spec's `expect` list is checked against
+   the server's advertised tools **at connect time**, a malformed spec is
+   refused *before* anything is launched (so load-time and connect-time stay
+   distinct diagnostics), and a remote failure returns the same tool-result
+   shape `tools.dispatch` returns — a protocol error from the far end becomes an
+   error *result*, because from the caller's side "that call did not work" is
+   one outcome however the server phrased it.
+
+   Two things the build settled. **`via: { mcp: ... }` is a decision, not a
+   deferral**: it would make `tools` load `mcp`, so every program holding a
+   toolset would carry the client whether or not it consumed anything, and the
+   same thing is two lines in the application, where the coupling belongs. And
+   **`process.write` had to exist first** — `process.start` handed back a child
+   you could only listen to, which is enough for a command and not for a
+   conversation.
+
+   The honest limit: the suite is gBASIC consuming gBASIC, which needs nothing
+   external and cannot see a protocol disagreement both halves share.
 7. ~~Retrieval, as a pgvector query with the ACL predicate in it.~~ — **built
    2026-09-07** (`docs/retrieval_design.md`), with `llm.embed` alongside.
    `rank` stays deferred, and now demonstrably: pgvector does filter-then-rank
@@ -1162,6 +1176,14 @@ example.
    with no identity at all. And a top-level `watch` registers nothing when a
    `program` block exists, so every pool reply went undelivered and every
    conversation sat in `calling_model` forever. Both are in `DOGFOOD.md`.
+
+   **The second of those now has a diagnostic** (2026-09-07): a top-level
+   statement beside a `program` block warns once, `2106`, source `dead code`.
+   Measured before shipping — of 420 files in this tree with a program block,
+   four have a top-level statement — so it costs almost nothing. `watch` cannot
+   simply be hoisted with the declarations, because a watcher *fires* on
+   registration and would run its body before anything it reads was assigned;
+   what was missing was the diagnostic, and now it is not.
 9. ~~`pg` native arrays~~ — built before step 1 after all, because the
    database was provisioned and the control was in place; it took an
    afternoon. The order above is otherwise unchanged.

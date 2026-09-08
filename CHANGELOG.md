@@ -9,6 +9,83 @@ language surface may still change between releases.
 
 ## Unreleased
 
+### Added — `mcp` consuming: gBASIC as an MCP client
+
+`mcp.connect` / `tools_of` / `call` / `disconnect`, over both transports
+(`docs/mcp_design.md` §6, `tests/run_mcp.sh`). Publishing hands a toolset to
+somebody else's agent; this lets ours call somebody else's tools.
+
+**The declaration is checked against the server at connect time.** A spec's
+`expect` list names the tools the caller relies on, and connecting to a server
+that does not advertise one fails *there* — not at the first call, hours later,
+inside whatever the agent happened to be doing. A malformed spec is refused
+before anything is launched, so a load-time mistake and a connect-time
+disagreement stay distinct diagnostics.
+
+**A remote result is the same shape as a local one** — `mcp.call` returns the
+tool-result part `tools.dispatch` returns, so nothing downstream can tell a
+remote tool from a local one. A protocol error from the far end becomes an error
+*result*, because from the caller's side "that call did not work" is one outcome
+however the server phrased it; the message says which it was.
+
+Tested **gBASIC consuming gBASIC** over both transports, 20 checks. That needs
+nothing external and exercises the whole round trip, and it cannot see a
+protocol disagreement both halves share — stated in the design rather than
+papered over.
+
+**`via: { mcp: ... }` in a tool entry is deliberately not built**, and that is a
+decision rather than a deferral: it would make `tools` load `mcp`, so every
+program holding a toolset would carry the client whether or not it consumed
+anything. The same thing is two lines in the application.
+
+### Added — `process.write`, `process.close_stdin`, `stdin: "pipe"`
+
+`process.start` handed back a live child you could only *listen* to, which is
+enough for a command and not enough for a conversation — and a stdio MCP
+transport is a conversation. Opt-in, because the default is inheritance and
+inheritance is what a shelled-out command usually wants; the default is
+unchanged.
+
+The write pipe is **blocking**, unlike the read pipes: a partial write leaves
+the caller holding half a message with no framing to resynchronise on, and every
+caller would otherwise write the same retry loop. A child that has closed its
+stdin or exited is reported as a **short write, not a raise** — for a
+conversation that is an ordinary outcome, and `process.poll` can say why.
+`tests/native_platform/plat_proc_stdin.bas`, 13 checks including that the
+default still inherits — and that **a NUL is content**, since PLAT-NUL's
+standing lesson is that a truncation defect found in one place is evidence
+about every place that reads a string, and this is a new one.
+
+### Added — a top-level statement beside a `program` block now warns
+
+Warning `2106`, source `dead code`, once at the first such statement.
+
+When a program block exists the top level is read only for *declarations*; an
+ordinary statement out there does not run, and nothing said so. Building the AI
+stack this was hit three times in one day, the worst being a top-level
+`watch(inbox.messages)`, which registered nothing — so every worker reply went
+undelivered and every conversation hung, with the symptom pointing nowhere near
+the cause.
+
+Measured before shipping: of 420 files in this tree with a program block, **four**
+have a top-level statement, and one of those exists to assert exactly this
+behaviour. A warning rather than a refusal because the program still runs
+exactly as it did, and `watch` in particular cannot simply be hoisted with the
+declarations — a watcher fires on registration and would run its body before
+anything it reads was assigned.
+
+### Fixed — two documentation allowlist entries that had quietly come true
+
+`tests/run_stdlib_docs.sh` exempts a handful of names that are written as calls
+while deliberately not existing, each with a reason. `llm.embed` and
+`fake.plant` had both **shipped** while their entries still read "not shipped"
+and "not built" — false statements in the file whose job is catching false
+statements, printed as ok lines on every green run, guarding nothing.
+
+Struck, and the suite now has a **negative control on its own allowlist**: an
+entry naming a function that the stdlib defines fails, telling you to strike it.
+Proven red.
+
 ### Added — Steward: the reference application's first slice
 
 Step 8 of the AI reference proposal, and the **skeleton** its Part 3 item 13

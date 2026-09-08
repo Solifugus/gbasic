@@ -531,6 +531,21 @@ convention — binds to the command-line arguments after the script path, as a
 0-based array of strings, empty when none are passed. A file with no program
 block runs its top-level statements directly, with no argument binding.
 
+**When a program block exists, the top level is read only for declarations.**
+Functions, modifiers, libraries, `load`, function values and `server` blocks
+are registered before the block runs; an ordinary *statement* out there does
+not run at all, and gBASIC now says so — one warning at the first such
+statement (`2106`, source `dead code`), silenceable with `on warning ignore`.
+
+The program still behaves exactly as it did, so this is a warning rather than a
+refusal. It exists because the silence was expensive: building the AI stack this
+trap was hit three times in one day, and the worst of them was a top-level
+`watch(inbox.messages)`, which registered nothing, so every worker reply went
+undelivered and every conversation hung with the symptom pointing nowhere near
+the cause. `watch` cannot simply be hoisted with the declarations either — a
+watcher *fires* on registration, and would run its body before anything it reads
+had been assigned. Put it inside `program`.
+
 Library block:
 
 ```basic
@@ -3642,6 +3657,40 @@ the status record. See escalation below.
 
 **`process.release(handle)`** → closes the pipes and reaps the child. Idempotent,
 and never required for correctness — see abandonment below.
+
+**`process.write(handle, text)`** → the number of bytes written. Requires the
+child to have been started with `stdin: "pipe"`; without it the child inherits
+this program's stdin (the default, unchanged) and `write` raises rather than
+silently writing somewhere surprising.
+
+**`process.close_stdin(handle)`** → closes the child's stdin, which is how a
+child that reads to end-of-input is told there is no more. Idempotent.
+
+#### Writing to a child
+
+`stdin: "pipe"` is opt-in because the default is inheritance and inheritance is
+what a shelled-out command usually wants. A conversation is the case that needs
+it: `mcp.connect({transport: "stdio", ...})` launches a server and then has to
+*speak* to it, and a child you can only listen to cannot hold a conversation.
+
+```basic
+h = process.start({ command: "./server", args: [], stdin: "pipe" })
+n = process.write(h, line + "\n")
+reply = process.read(h)                ' whatever has arrived; never blocks
+x = process.close_stdin(h)             ' "no more input"
+```
+
+The write pipe is **blocking**, unlike the read pipes: a partial write would
+leave the caller holding half a message with no framing to resynchronise on, and
+every caller would have to write the same retry loop. A child that never drains
+its stdin can therefore stall a `write` — bound it the way you would bound
+anything else, with `process.stop`.
+
+**A child that has gone is a short write, not a raise.** If the child closed its
+stdin or exited, `write` returns fewer bytes than it was given (often zero)
+rather than raising: for a conversation that is an ordinary outcome, and the
+caller learns it from the count and from `process.poll`, which can say *why*.
+
 
 #### Reading is incremental and never blocks
 

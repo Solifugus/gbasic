@@ -125,10 +125,8 @@ configuration choice, not an architecture choice.
   customer appears.
 - ~~**Tool use / function calling**~~ — **SHIPPED (NAP-13)**, see §9.
 - **Images / documents in requests** — deferred.
-- **Embeddings** — deliberately *near*-scope: `llm.embed(m, text) -> list`
-  is a natural v2 and immediately useful for filing-similarity work
-  (risk-factor drift as cosine distance rather than string diff). Flagged
-  for the finance library's later phases.
+- ~~**Embeddings**~~ — **SHIPPED (2026-09-07)**, see §10.3. Batch is the
+  primitive, and the ordering trap is the reason it needed a suite.
 - Prompt caching, batch APIs, provider-side JSON mode flags — later
   optimizations behind the same call surface.
 
@@ -164,7 +162,8 @@ plus a manual live smoke on Ollama (free) and Anthropic.
 decoding is the acceptance case.
 
 ### Phase 3 — (as earned)
-Embeddings; provider JSON modes; streaming if a customer appears; then
+~~Embeddings~~ (shipped, §10.3); provider JSON modes; streaming if a
+customer appears; then
 graduation of anything the finance panel proves generally useful (e.g. a
 generic N-models-one-referee helper, *if* a second panel-shaped customer
 ever exists — until then it stays in `mdna.bas`).

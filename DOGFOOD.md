@@ -4403,3 +4403,27 @@ orders freely.
   than an oversight. What is missing is the DIAGNOSTIC: a top-level `watch` in
   a file that has a `program` block is almost certainly a mistake, and the
   interpreter is silent about it.
+- **Status: the DIAGNOSTIC SHIPPED the same day (2026-09-07).** A top-level
+  statement beside a `program` block now warns once at the first one (`2106`,
+  source `dead code`), which covers `watch` and every other statement out
+  there. Measured before shipping: of 420 files in this tree with a program
+  block, four have a top-level statement and one of those exists to assert this
+  behaviour, so it costs almost nothing. The hoisting constraint above stands
+  and is why this is a warning rather than a fix.
+
+## 2026-09-07 — CC — `env(name)` returns `unknown` for an unset variable, not ""
+- **Type:** language-surprise
+- **Severity:** low
+- **What:** an unset environment variable reads back as `unknown`, so
+  `if env("THING") = "" then` does not fire, and `len(env("THING"))` raises
+  rather than answering 0.
+- **Why it matters:** it is the same family as the record-key surprise directly
+  above, one builtin along, and it was hit in the same session — a fixture
+  reading an optional configuration variable took the "it was set" branch with
+  `unknown` in its hand. Two distinct absent-ish values, and the obvious
+  emptiness check tests for neither.
+- **Workaround:** `is_string(env(name))` before using it, or `is_unknown`.
+- **Not a bug:** `unknown` is the honest answer — "no such variable" and "set
+  to the empty string" are different facts and POSIX lets a program tell them
+  apart. What is unfortunate is only that the natural guard silently agrees
+  with the wrong one.

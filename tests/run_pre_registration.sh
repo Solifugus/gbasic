@@ -169,6 +169,15 @@ server=late/1
 server-handler=hoisted
 top-level-ran=false'
 
+# The warning belongs in the expectation, not around it. This fixture exists to
+# assert that a top-level statement beside a `program` block does NOT run, and
+# since 2026-09-07 the interpreter SAYS SO as well -- so the diagnostic and the
+# behaviour it describes are pinned by the same golden, and neither can move
+# without the other being looked at. Measured before the warning shipped: of 420
+# files in this tree with a program block, this is the ONLY one it fires on.
+expected_out="warning: this statement is outside the \`program\` block, so it never runs -- the block is what executes, and the top level is read only for declarations. Move it inside \`program\`. (A \`watch\` in particular registers nothing here, and its watcher will never fire.) at tests/native_platform/plat_guard_prereg_child.bas:49:1
+$expected_out"
+
 # GBASIC_PATH: registering the fixture's server block imports `web` (the block
 # implies its library), and that must resolve against THIS TREE's stdlib, not
 # whatever happens to be installed.

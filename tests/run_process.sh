@@ -202,3 +202,28 @@ if ! printf '%s' "$env_out" | grep -qx 'mismatches: 0'; then
 fi
 printf 'PASS env_options (%s checks: env merged, nothing unsets, unknown options refused by name)\n' \
     "$(printf '%s' "$env_out" | sed -n 's/^checks: //p')"
+
+# --- PLAT-PROC-STDIN: a child you can TALK to ------------------------------
+#
+# `process.start` used to hand back a live child you could only LISTEN to --
+# stdout and stderr were pipes, stdin was inherited -- so a program could start
+# a subprocess and never say anything to it. That is why no MCP stdio client
+# could be written: the transport is a conversation.
+#
+# The pipe is OPT-IN and the fixture's control is what keeps the default
+# honest: a child has always inherited its parent's stdin, and an interactive
+# tool launched by a gBASIC program would stop working if it were piped without
+# anyone asking.
+stdin_out="$(./gbasic tests/native_platform/plat_proc_stdin.bas 2>&1 || true)"
+if printf '%s' "$stdin_out" | grep -q MISMATCH; then
+    printf 'FAIL plat_proc_stdin\n'
+    printf '%s\n' "$stdin_out" | grep MISMATCH
+    exit 1
+fi
+if ! printf '%s' "$stdin_out" | grep -qx 'mismatches: 0'; then
+    printf 'FAIL plat_proc_stdin (did not finish)\n'
+    printf '%s\n' "$stdin_out" | tail -3
+    exit 1
+fi
+printf 'PASS plat_proc_stdin (%s checks: a two-way conversation, and the default still inherits)\n' \
+    "$(printf '%s' "$stdin_out" | sed -n 's/^checks: //p')"

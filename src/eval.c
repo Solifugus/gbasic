@@ -506,6 +506,17 @@ struct ProcessHandle {
     pid_t pid;
     int out_fd;             /* read end, O_NONBLOCK; -1 once EOF or closed */
     int err_fd;
+    /* PLAT-PROC-STDIN: the WRITE end of the child's stdin, or -1.
+     *
+     * Only opened when `process.start` was asked for it (`stdin: "pipe"`).
+     * The default is unchanged and must stay so: a child has always inherited
+     * the parent's stdin, and an interactive tool launched by a gBASIC program
+     * would stop working if it were piped without being asked for.
+     *
+     * Until this existed, `process.start` handed back a LIVE CHILD YOU COULD
+     * ONLY LISTEN TO -- half a pipe -- which is why no MCP stdio client could
+     * be written: the transport is a conversation. */
+    int in_fd;
     ProcBuf pending_out;
     ProcBuf pending_err;
     int reaped;             /* waitpid completed; `status` is final */
@@ -2794,6 +2805,9 @@ static void process_handle_release(ProcessHandle *handle) {
         }
         if (handle->err_fd >= 0) {
             close(handle->err_fd);
+        }
+        if (handle->in_fd >= 0) {
+            close(handle->in_fd);
         }
         free(handle->pending_out.data);
         free(handle->pending_err.data);
@@ -24583,14 +24597,21 @@ static int process_parse_options(Value *opts, const char *label, ProcLaunch *out
  * failure, or -2 on a pipe/fork failure. */
 static pid_t process_launch(char **argv, const char *cwd, Value *launch_env,
                             const int *share_fds, size_t share_count,
-                            int *out_fd, int *err_fd, int *launch_errno) {
+                            int *out_fd, int *err_fd, int *launch_errno,
+                            int want_stdin, int *in_fd) {
     int out_pipe[2] = {-1, -1}, err_pipe[2] = {-1, -1}, exec_pipe[2] = {-1, -1};
+    int in_pipe[2] = {-1, -1};
     *launch_errno = 0;
-    if (pipe(out_pipe) != 0 || pipe(err_pipe) != 0 || pipe(exec_pipe) != 0) {
+    if (in_fd) {
+        *in_fd = -1;
+    }
+    if (pipe(out_pipe) != 0 || pipe(err_pipe) != 0 || pipe(exec_pipe) != 0 ||
+        (want_stdin && pipe(in_pipe) != 0)) {
         for (int i = 0; i < 2; i++) {
             if (out_pipe[i] >= 0) close(out_pipe[i]);
             if (err_pipe[i] >= 0) close(err_pipe[i]);
             if (exec_pipe[i] >= 0) close(exec_pipe[i]);
+            if (in_pipe[i] >= 0) close(in_pipe[i]);
         }
         return -2;
     }
@@ -24602,12 +24623,14 @@ static pid_t process_launch(char **argv, const char *cwd, Value *launch_env,
         close(out_pipe[0]); close(out_pipe[1]);
         close(err_pipe[0]); close(err_pipe[1]);
         close(exec_pipe[0]); close(exec_pipe[1]);
+        if (in_pipe[0] >= 0) { close(in_pipe[0]); close(in_pipe[1]); }
         return -2;
     }
     if (pid == 0) {
         proc_arm_parent_death(launcher_pid);
         setpgid(0, 0);
-        if (dup2(out_pipe[1], STDOUT_FILENO) < 0 || dup2(err_pipe[1], STDERR_FILENO) < 0) {
+        if (dup2(out_pipe[1], STDOUT_FILENO) < 0 || dup2(err_pipe[1], STDERR_FILENO) < 0 ||
+            (in_pipe[0] >= 0 && dup2(in_pipe[0], STDIN_FILENO) < 0)) {
             int e = errno;
             ssize_t w = write(exec_pipe[1], &e, sizeof(e)); (void)w;
             _exit(127);
@@ -24615,6 +24638,7 @@ static pid_t process_launch(char **argv, const char *cwd, Value *launch_env,
         close(out_pipe[0]); close(out_pipe[1]);
         close(err_pipe[0]); close(err_pipe[1]);
         close(exec_pipe[0]);
+        if (in_pipe[0] >= 0) { close(in_pipe[0]); close(in_pipe[1]); }
         if (share_count > 0) {
             /* PLAT-WEB-2 Gap C: hand the child its inherited listeners at
              * fds 3..3+n-1, speaking the LISTEN_FDS protocol the child's
@@ -24675,6 +24699,9 @@ static pid_t process_launch(char **argv, const char *cwd, Value *launch_env,
     close(out_pipe[1]);
     close(err_pipe[1]);
     close(exec_pipe[1]);
+    if (in_pipe[0] >= 0) {
+        close(in_pipe[0]);   /* the child holds the read end */
+    }
 
     int child_errno = 0;
     {
@@ -24695,12 +24722,20 @@ static pid_t process_launch(char **argv, const char *cwd, Value *launch_env,
     if (child_errno != 0) {
         close(out_pipe[0]);
         close(err_pipe[0]);
+        if (in_pipe[1] >= 0) {
+            close(in_pipe[1]);
+        }
         int st;
         while (waitpid(pid, &st, 0) < 0 && errno == EINTR) { }
         *launch_errno = child_errno;
         return -1;
     }
 
+    if (in_fd) {
+        *in_fd = in_pipe[1];
+    } else if (in_pipe[1] >= 0) {
+        close(in_pipe[1]);
+    }
     *out_fd = out_pipe[0];
     *err_fd = err_pipe[0];
     return pid;
@@ -24950,7 +24985,7 @@ static Value process_do_start(AstExpr *expr) {
     size_t share_count = 0;
     {
         static const char *const allowed[] = {
-            "command", "args", "cwd", "env", "listen_fds", "timeout"
+            "command", "args", "cwd", "env", "listen_fds", "timeout", "stdin"
         };
         if (!process_reject_unknown(&opts, "process.start", allowed,
                                     sizeof(allowed) / sizeof(allowed[0]))) {
@@ -24988,9 +25023,29 @@ static Value process_do_start(AstExpr *expr) {
         }
     }
 
-    int out_fd = -1, err_fd = -1, launch_errno = 0;
+    /* `stdin: "pipe"` opts INTO a writable stdin. The default is unchanged --
+     * the child inherits ours -- because it always has, and an interactive tool
+     * launched by a gBASIC program would stop working if it were piped without
+     * anyone asking. */
+    int want_stdin = 0;
+    {
+        RecordField *sf = record_find(&opts, "stdin");
+        if (sf) {
+            if (sf->value->kind != VALUE_STRING ||
+                (strcmp(sf->value->as.string, "pipe") != 0 &&
+                 strcmp(sf->value->as.string, "inherit") != 0)) {
+                free(launch.argv);
+                value_free(opts);
+                return process_raise("process.start: options.stdin must be \"pipe\" or "
+                                     "\"inherit\" (the default)");
+            }
+            want_stdin = strcmp(sf->value->as.string, "pipe") == 0;
+        }
+    }
+
+    int out_fd = -1, err_fd = -1, in_fd = -1, launch_errno = 0;
     pid_t pid = process_launch(launch.argv, launch.cwd, launch.env, share_fds, share_count,
-                               &out_fd, &err_fd, &launch_errno);
+                               &out_fd, &err_fd, &launch_errno, want_stdin, &in_fd);
     if (pid == -2) {
         free(launch.argv);
         value_free(opts);
@@ -25019,12 +25074,90 @@ static Value process_do_start(AstExpr *expr) {
     h->pid = pid;
     h->out_fd = out_fd;
     h->err_fd = err_fd;
+    h->in_fd = in_fd;
     h->ref_count = 1;
     return value_process(h);
 }
 
 /* process.poll(handle) -> status. Never blocks; also pumps, so polling in a loop
  * keeps a chatty child from filling its pipe. */
+/* process.write(handle, text) -> the number of bytes written.
+ *
+ * BLOCKING, deliberately. A line-delimited protocol writes small messages and
+ * the pipe buffer covers them; a caller that writes a megabyte to a child which
+ * is not reading will block, exactly as `printf | child` does. Making it
+ * non-blocking would push partial-write bookkeeping onto every caller to serve
+ * a case that is rare and already has a name.
+ *
+ * Refuses when the child was not started with `stdin: "pipe"`, and says so --
+ * "broken pipe" for a stdin nobody asked for would be a true message about the
+ * wrong thing. */
+static Value process_do_write(AstExpr *expr) {
+    Value owner;
+    ProcessHandle *h = process_arg_handle(expr, "process.write", &owner);
+    if (!h) {
+        return value_null();
+    }
+    if (expr->as.call.args.count != 2) {
+        value_free(owner);
+        return process_raise("process.write expects a handle and the text to write");
+    }
+    Value text = eval_expr(expr->as.call.args.items[1]);
+    if (error_action_pending()) {
+        value_free(text);
+        value_free(owner);
+        return value_null();
+    }
+    if (text.kind != VALUE_STRING) {
+        value_free(text);
+        value_free(owner);
+        return process_raise("process.write expects text");
+    }
+    if (h->in_fd < 0) {
+        value_free(text);
+        value_free(owner);
+        return process_raise("process.write: this child's stdin is not a pipe; "
+                             "start it with process.start({ ..., stdin: \"pipe\" })");
+    }
+    const char *bytes = text.as.string;
+    size_t total = string_length(bytes);
+    size_t sent = 0;
+    while (sent < total) {
+        ssize_t n = write(h->in_fd, bytes + sent, total - sent);
+        if (n > 0) {
+            sent += (size_t)n;
+            continue;
+        }
+        if (n < 0 && errno == EINTR) {
+            continue;
+        }
+        /* EPIPE: the child closed its stdin or died. That is an ordinary
+         * outcome for a conversation, so it is reported as a short write
+         * rather than raised -- the caller learns it from the count and from
+         * process.poll. */
+        break;
+    }
+    value_free(text);
+    value_free(owner);
+    return value_number((double)sent);
+}
+
+/* process.close_stdin(handle) -> true. Many line protocols end on EOF, and a
+ * child waiting for one that never comes is a hang with nothing to see. */
+static Value process_do_close_stdin(AstExpr *expr) {
+    Value owner;
+    ProcessHandle *h = process_arg_handle(expr, "process.close_stdin", &owner);
+    if (!h) {
+        return value_null();
+    }
+    if (h->in_fd >= 0) {
+        close(h->in_fd);
+        h->in_fd = -1;
+    }
+    value_free(owner);
+    return value_bool(1);
+}
+
 static Value process_do_poll(AstExpr *expr) {
     proc_orphans_sweep();
     Value owner;
@@ -25353,6 +25486,12 @@ static Value process_eval_call(AstExpr *expr) {
     }
     if (strcmp(expr->as.call.name, "poll") == 0) {
         return process_do_poll(expr);
+    }
+    if (strcmp(expr->as.call.name, "write") == 0) {
+        return process_do_write(expr);
+    }
+    if (strcmp(expr->as.call.name, "close_stdin") == 0) {
+        return process_do_close_stdin(expr);
     }
     if (strcmp(expr->as.call.name, "read") == 0) {
         return process_do_read(expr);
@@ -35128,6 +35267,49 @@ int eval_program(AstStmtList program) {
      * a program declares. Without a program block the normal top-level walk
      * still registers on-reach. */
     if (program_block) {
+        /* A top-level statement beside a `program` block is DEAD CODE. The
+         * block is what runs, and the top level is walked only for the
+         * declarations hoisted below -- so an assignment, a `print` or a
+         * `watch` written up there does nothing and says nothing about it.
+         *
+         * MEASURED before warning: of 420 files in this tree with a program
+         * block, FOUR have a top-level statement, and one of those is
+         * tests/native_platform/plat_guard_prereg_child.bas, which exists to
+         * assert exactly this. So the diagnostic costs almost nothing and it
+         * catches a trap that is otherwise silent -- three times in one day,
+         * building the AI stack: a toolset assembled at the top level was
+         * simply absent, and a `watch(inbox.messages)` up there registered
+         * NOTHING, so every reply went undelivered and every conversation hung
+         * with the symptom pointing nowhere near the cause.
+         *
+         * A warning rather than a note, and rather than a refusal: there is no
+         * legitimate reason to write one -- unlike the library-name overlap,
+         * which is a real pattern -- but a program that does it still runs
+         * exactly as it did, so ending it would break working code to make a
+         * point. Once, at the first such statement: advice repeated is advice
+         * nobody reads. `on warning ignore` silences it, which is what the
+         * guard fixture uses.
+         *
+         * `watch` deliberately is NOT hoisted with the declarations: a watcher
+         * FIRES on registration, so hoisting one would run its body before
+         * anything it reads had been assigned. The fix is to move it inside the
+         * block, which is what the message says. */
+        for (size_t i = 0; i < program.count; i++) {
+            AstStmt *st = program.items[i];
+            if (st->kind == AST_STMT_PROGRAM || st->kind == AST_STMT_FUNCTION ||
+                st->kind == AST_STMT_MODIFIER || st->kind == AST_STMT_SERVER ||
+                st->kind == AST_STMT_USE || st->kind == AST_STMT_LIBRARY) {
+                continue;
+            }
+            warn_fmt_at(2106, "dead code", st->line, st->column,
+                        "this statement is outside the `program` block, so it never "
+                        "runs -- the block is what executes, and the top level is "
+                        "read only for declarations. Move it inside `program`. (A "
+                        "`watch` in particular registers nothing here, and its "
+                        "watcher will never fire.)");
+            break;
+        }
+
         register_hoistable_declarations(program);
 
         /* Bind the program block's declared parameter (conventionally `args`) to

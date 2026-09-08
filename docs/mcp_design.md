@@ -1,6 +1,6 @@
-# `mcp`: publishing a toolset over the Model Context Protocol
+# `mcp`: the Model Context Protocol, both directions
 
-**Status:** Shipped (2026-09-07), publishing only. `stdlib/mcp.bas`,
+**Status:** Shipped (2026-09-07), publishing and consuming. `stdlib/mcp.bas`,
 `tests/run_mcp.sh`. Step 6 of
 [the AI reference proposal](gbasic_ai_reference_and_primitives.md) (§1.11).
 
@@ -93,15 +93,75 @@ offers no way to tell them apart. JSON-RPC never sends a blank line, so this is
 correct for the protocol — but it is the language deciding rather than this
 library, and it is recorded in `DOGFOOD.md`.
 
-## 6. Not built: consuming
+## 6. Consuming: gBASIC as an MCP client
 
-A connect/list/call client surface, and the `via: { mcp: "..." }` tool binding
-— gBASIC as an MCP *client*. Written without call syntax deliberately:
-`run_stdlib_docs.sh` reads a documented call as a promise, and this page is
-Partial rather than a Proposal, so naming them that way would claim they exist.
+The other direction. Publishing hands a toolset to somebody else's agent;
+consuming lets ours call somebody else's tools. Same two transports, and the
+stdio one is why `process.write` had to exist — `process.start` used to hand
+back a live child you could only *listen* to, and a stdio transport is a
+conversation.
 
-Deliberately a separate increment. It is the other direction, it needs `via:` in
-`tools` (which was left out for its own reasons), and its failure modes are
-different: a server whose advertised tool list disagrees with the declaration,
-load-time versus connect-time diagnostics, and a remote failure that must not
-look like a local one. Publishing and consuming share only `tools`.
+```basic
+fs = mcp.connect({ transport: "stdio", command: "gbasic",
+                   args: ["--line-buffered", "fileserver.bas"],
+                   expect: ["read_file"] })
+part = mcp.call(fs, "read_file", { path: "/etc/hostname" })
+x = mcp.disconnect(fs)
+```
+
+| Call | What it does |
+| --- | --- |
+| `mcp.connect(spec)` | launch or address a server, handshake, fetch its tool list |
+| `mcp.tools_of(h)` | the advertised tools, as the server described them |
+| `mcp.call(h, name, args)` | one `tools/call` → a tool-result part |
+| `mcp.disconnect(h)` | end the session; for stdio, close stdin and reap the child |
+
+A spec is `{ transport, command, args, url, expect }`; unknown fields are
+refused **by name**, the rule `webserver.listen` already follows.
+
+**The declaration is checked against the server at connect time.** `expect`
+names the tools the caller relies on, and connecting to a server that does not
+advertise one of them fails *there* — not at the first call, hours later, inside
+whatever the agent happened to be doing. §1.11 asks for load-time and
+connect-time failures to be distinct diagnostics, and they are: a malformed spec
+is refused by `connect` before anything is launched, and a server that
+disagrees with the declaration is refused after.
+
+**A remote result is the same shape as a local one.** `mcp.call` returns the
+tool-result part `tools.dispatch` returns, so whatever consumes it — an `agent`
+transcript, a model turn — cannot tell a remote tool from a local one. A
+protocol error from the far end becomes an error *result* here, because from
+the caller's side "that call did not work" is one outcome however the server
+chose to phrase it; the message says which it was.
+
+**A server that never answers must diagnose, not hang.** `_read_line` is
+bounded, and the reason is the standing one in this tree: a hang is not a
+failure, it is a suite that never reports.
+
+`process` needs no `load` — it is unconditional, like `money` and `reflect`.
+`webclient` does, and is loaded lazily at the http transport, so a program
+consuming over stdio does not drag libcurl in behind it.
+
+### `via: { mcp: ... }` is deliberately not built
+
+This is a decision rather than a deferral. It would couple `tools` to `mcp`:
+`tools.dispatch` would have to know how to reach a server, so `tools` would load
+`mcp`, and every program using a toolset would carry the client whether or not
+it consumed anything. The same thing is two lines in the application, where the
+coupling belongs:
+
+```basic
+function read_file(args)
+    return mcp.call(FILESHARE, "read_file", args).content
+end function
+```
+
+### What is tested, and what is not
+
+`tests/run_mcp.sh` drives **gBASIC consuming gBASIC** over both transports —
+our own publisher is the server, which needs nothing external and exercises the
+whole round trip. It has never met a third-party MCP server, and the failure
+that would find is a disagreement about the protocol that both halves share, so
+the round trip cannot see it. That limit is real and is why the suite asserts
+the *wire* (byte-identical replies across transports, JSON-RPC shapes) rather
+than only that a call returned something.
