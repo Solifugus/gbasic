@@ -166,6 +166,15 @@ document list, with a status column, is `docs/README.md`.
   filtering after returns an empty list to a narrowly permitted user whose own
   best matches were never looked at, and an empty list reads as "nothing
   matched".
+- **what a database estate says about itself** — `discovery`, reading declared
+  facts through the ODBC driver manager: tables, columns, types, nullability,
+  primary keys and foreign keys, across several databases at once. It infers
+  NOTHING, deliberately — an inferred relationship is the result of a search,
+  and a search over a 500-table estate is ~50 million candidate pairs where
+  coincidences are a certainty. Every identity rule was measured against four
+  drivers: the qualifier is in `TABLE_CAT` on MariaDB, `TABLE_SCHEM` on
+  PostgreSQL and SQL Server and neither on SQLite, so an id built as
+  `schema.table` silently loses one.
 - **a second factor** — `otp`, one-time passwords (RFC 4226 HOTP, RFC 6238
   TOTP). gBASIC owns the factor rather than delegating it, so it works whether
   the directory is AD, OpenLDAP, a table or nothing. Replay is made structural:

@@ -9,6 +9,43 @@ language surface may still change between releases.
 
 ## Unreleased
 
+### Added — `discovery`: what a database estate says about itself
+
+`stdlib/discovery.bas`, `tests/run_discovery.sh`, `docs/discovery_design.md`.
+The first increment: **declared facts only**.
+
+**That is the design, not a stopping point.** An inferred relationship is the
+result of a search, and a search over a 500-table estate is roughly 50 million
+candidate pairs — at that width coincidences are a certainty rather than a
+risk, since every `status` overlaps every other `status` and every surrogate
+key is 1..N. Recipe 1's finding, one domain over. Inference arrives with a null
+model or not at all, and a tripwire tier fails if it arrives without one.
+
+**Every identity rule was measured against four drivers, not reasoned about.** A
+column's identity is `(source, catalog, schema, table, column)` with **both**
+qualifiers optional, because the qualifier is in `TABLE_CAT` on MariaDB,
+`TABLE_SCHEM` on PostgreSQL and SQL Server, and neither on SQLite — an id built
+as `schema.table` yields `.orders` on MariaDB, silently, in a library whose
+whole job is identifying columns. `source` leads because one organisation
+commonly runs several databases at once and two `orders` tables must not
+collide.
+
+Nullability is recorded from the numeric `NULLABLE` and explicitly **not
+trusted** for inference: `IS_NULLABLE` is empty on PostgreSQL and SQLite
+reports a primary key as nullable.
+
+The fixture runs against **all four** — SQLite, MariaDB, PostgreSQL, SQL Server
+— 26/26 on each, which is why the identity rules are claims rather than
+guesses. Its expected values differ per database, so a golden could only ever
+have pinned one of them.
+
+**A weak assertion caught by perturbation, and worth recording.** The
+ordinal-order tier did not bite: removing the sort entirely left every live
+check passing, because the driver returns columns in ordinal order and `keys()`
+returns them in insertion order, so the two agree by accident. It now asserts
+the *contract* against a hand-built catalog whose columns are inserted
+backwards. Three perturbations proven red.
+
 ### Fixed — psqlODBC reports booleans as text, and `"0"` is true in gBASIC
 
 Found by running the ODBC suite against **four real drivers** — SQLite,

@@ -1,0 +1,122 @@
+# `discovery`: what a database estate says about itself
+
+**Status:** Design (2026-09-08). First increment not yet built.
+
+## 1. The split that governs everything
+
+Two kinds of claim, and the library must never let the second wear the clothes
+of the first:
+
+- **Declared** — *read* from the catalog or from a view definition. Certain.
+- **Inferred** — the result of a **search**, and therefore carrying its width,
+  its null model and its threshold, exactly as `reasoning.finding` requires.
+
+The failure this prevents is Recipe 1's, one domain over. Point a tool at a
+schema and ask where a column came from, and value overlap plus name
+similarity will produce a confident answer **on an estate where no such
+relationship exists**. A 500-table estate at 20 columns each is 10,000 columns
+— roughly 50 million candidate pairs. At that width, coincidences are not a
+risk, they are a certainty: every `status` overlaps every other `status`, and
+every surrogate key is 1..N.
+
+## 2. The first increment is declared facts only
+
+No inference at all. Tables, columns, types, nullability, primary keys, foreign
+keys, and view definitions — read, never guessed.
+
+Three reasons it comes first, in order of weight: it has a correctness
+criterion that needs no null model; it is what NLQ needs before anything else,
+since schema retrieval must precede prompting (500 tables do not fit in a
+context window); and the declared sources are *free and certain*, so a tool
+that reaches for value overlap before exhausting them is doing the hard, wrong
+thing first.
+
+`information_schema.view_column_usage` in particular gives real **column-level**
+lineage for every view, with no inference whatsoever.
+
+## 3. The value model, and why it looks like this
+
+Every constraint below was **measured** on 2026-09-08 against four drivers, not
+reasoned about.
+
+**A column's identity is `(source, catalog, schema, table, column)`, with
+catalog and schema both optional.** Not `schema.table.column`:
+
+| | `TABLE_CAT` | `TABLE_SCHEM` |
+|---|---|---|
+| MariaDB | the database | *empty* |
+| PostgreSQL / SQL Server | the database | `public` / `dbo` |
+| SQLite | *empty* | *empty* |
+
+A key built as `schema.table` yields `nothing.orders` on MariaDB — silently, in
+a library whose entire job is identifying columns.
+
+**Type comparison across sources needs its own mapping.** The same
+`varchar(20)` reports `DATA_TYPE` 12 on three drivers and −9 on MariaDB, and
+`TYPE_NAME` is `int4` / `int` / `INT` / `INTEGER` for one column. Both
+PostgreSQL drivers agree on 12, so it is not an ANSI/Unicode split — drivers
+simply disagree. A type prefilter comparing codes across sources rejects real
+relationships before any value is examined (estate R30).
+
+**Nullability: read the numeric `NULLABLE`, and not from SQLite.**
+`IS_NULLABLE` is empty on PostgreSQL, and SQLite reports a primary key as
+nullable, which is false.
+
+**The graph is ID-indexed, never pointer-linked.** gBASIC has no references and
+is not getting them, so nodes are keyed records and edges are `(from, to)`
+pairs. That is the better representation here regardless: it encodes (an edge
+list with a cycle serialises; a pointer graph with one cannot), it **diffs** —
+which is how "did the ETL change?" is answered — and it maps one-to-one onto
+rows when the catalog is persisted for NLQ retrieval. `PLAT-RECIDX` made
+records hash-indexed above a small field count, so keyed lookup at 10,000
+columns is O(1).
+
+**An estate is several databases, not one.** One organisation commonly runs
+Postgres, SQL Server and MySQL at once, and lineage crosses them. `source` is
+therefore part of every identity from the first line of code, not retrofitted.
+
+## 3a. The surface
+
+| Call | What it does |
+| --- | --- |
+| `discovery.scan(connection, {source, catalog, schema, table})` | read one source's declared facts into a catalog. `source` is required |
+| `discovery.estate(catalogs)` | merge several sources into one estate; two catalogs claiming one source name are refused |
+| `discovery.columns_of(catalog, table_id)` | that table's columns, in **ordinal** order |
+| `discovery.is_primary_key(catalog, column_id)` | is this column part of its table's declared primary key |
+| `discovery.id_of(parts)` | the stable id for a table or column |
+
+Named `scan` and not `read`: `read` is a built-in, and a library function
+sharing a built-in's name resolves to itself inside the library and to the
+built-in outside it — legal, and noted by the interpreter on every load. A name
+that has to be explained at each call site is the wrong name.
+
+An identifier containing the key separator (`.`) is **refused where it is
+read**, rather than escaped — the rule `dbframe` already follows. Escaping an
+identifier is a decision about a quoting dialect; refusing one is a fact.
+
+## 4. What the catalog cannot answer, and must say so
+
+From the estate requirements (R3b, R21, R28): some facts are **not in the
+database at all**. That `tmp_rebate_2019` is load-bearing lives in a nightly
+job; which of `customer`, `customer2`, `customer_new` is live lives in the
+application. The correct answer is **"unanswerable from the catalog"**, not a
+guess — so the value model carries that as an outcome rather than treating
+absence of evidence as evidence.
+
+## 5. Deliberately not in the first increment
+
+- **Inference of any kind.** It needs the null model, and the null model needs
+  the estate fixture.
+- **NLQ.** It consumes this; it is not part of it.
+- **Writing anything.** Discovery reads.
+
+## 6. How it will be tested
+
+- **Against the four real catalogs already reachable** — SQLite, MariaDB,
+  PostgreSQL, SQL Server. Declared facts have a correctness criterion that does
+  not need a fixture: create a known schema, read it back, compare.
+- **Against the estate fixture, when it exists**, for the questions only ground
+  truth can pose — and its null region for the question that matters most,
+  which is whether anything is invented where there is nothing.
+- The standing caution: a generated schema is regular in ways a real one is
+  not, so neither retires the other.
