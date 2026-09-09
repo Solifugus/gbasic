@@ -319,10 +319,15 @@ AstStmt *ast_with_principal(AstExpr *value, AstStmtList body) {
     return stmt;
 }
 
-AstStmt *ast_for_each(char *name, AstExpr *iterable, AstStmtList body) {
+AstStmt *ast_for_each(char *name, char *index_name, AstExpr *iterable,
+                      AstStmtList body) {
     AstStmt *stmt = xmalloc(sizeof(*stmt));
     stmt->kind = AST_STMT_FOR_EACH;
     stmt->as.for_each.name = name;
+    stmt->as.for_each.index_name = index_name;
+    stmt->as.for_each.dead_checked = 0;
+    stmt->as.for_each.dead_line = 0;
+    stmt->as.for_each.dead_column = 0;
     stmt->as.for_each.iterable = iterable;
     stmt->as.for_each.body = body;
     return stmt;
@@ -897,7 +902,12 @@ static void dump_stmt(AstStmt *stmt, int indent) {
         }
         break;
     case AST_STMT_FOR_EACH:
-        printf("ForEach %s\n", stmt->as.for_each.name);
+        if (stmt->as.for_each.index_name) {
+            printf("ForEach %s index %s\n", stmt->as.for_each.name,
+                   stmt->as.for_each.index_name);
+        } else {
+            printf("ForEach %s\n", stmt->as.for_each.name);
+        }
         dump_indent(indent + 1);
         printf("Iterable\n");
         dump_expr(stmt->as.for_each.iterable, indent + 2);
@@ -1235,6 +1245,7 @@ static void free_stmt(AstStmt *stmt) {
         break;
     case AST_STMT_FOR_EACH:
         free(stmt->as.for_each.name);
+        free(stmt->as.for_each.index_name);
         free_expr(stmt->as.for_each.iterable);
         ast_free_program(stmt->as.for_each.body);
         break;

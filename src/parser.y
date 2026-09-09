@@ -65,6 +65,25 @@ static int for_end_matches(gb_parse_ctx *ctx, const char *loop_variable,
     return ok;
 }
 
+/* `for each item, item in list` -- the element and the index cannot share a
+ * name. Neither binding is wrong on its own, so nothing would raise: the index
+ * is assigned second and would simply overwrite the element, giving a loop
+ * whose variable is a number and whose body reads nonsense from it. Refused at
+ * parse time, where the typo is visible. */
+static int for_each_index_distinct(gb_parse_ctx *ctx, const char *value_name,
+                                   const char *index_name, int line, int column) {
+    if (!value_name || !index_name || strcmp(value_name, index_name) != 0) {
+        return 1;
+    }
+    char message[192];
+    snprintf(message, sizeof(message),
+             "`for each %s, %s` names the element and the index the same thing; "
+             "the index would overwrite the element",
+             value_name, index_name);
+    report_syntax_error(ctx, line, column, line, column, message);
+    return 0;
+}
+
 static int warn_channel_ok(gb_parse_ctx *ctx, const char *word,
                            int line, int column) {
     if (word && strcmp(word, "warning") == 0) {
@@ -705,11 +724,33 @@ for_end
 for_each_statement
     : FOR IDENT IN expression NEWLINE statement_list for_end {
         if (!for_end_matches(ctx, $2, $7, @7.first_line, @7.first_column)) { YYERROR; }
-        $$ = ast_for_each($2, $4, $6);
+        $$ = ast_for_each($2, NULL, $4, $6);
       }
     | FOR EACH IDENT IN expression NEWLINE statement_list for_end {
         if (!for_end_matches(ctx, $3, $8, @8.first_line, @8.first_column)) { YYERROR; }
-        $$ = ast_for_each($3, $5, $7);
+        $$ = ast_for_each($3, NULL, $5, $7);
+      }
+    /* `for each item, i in list` -- the element AND its position.
+     *
+     * gBASIC has no references, so a loop body cannot write through the
+     * element variable: `item.x = 1` mutates a copy and is silently lost. The
+     * index is what makes the write expressible, because `list[i] = item` is
+     * an lvalue PATH and those write in place. Iteration is over a SNAPSHOT
+     * (the array value is evaluated once, and a write detaches the variable's
+     * store through copy-on-write), so writing back while walking is safe and
+     * terminating -- appending inside the loop does not extend it.
+     *
+     * One lookahead past the name settles which form this is: COMMA here, IN
+     * for the plain element form, OP_EQ for the counted loop. No conflicts. */
+    | FOR IDENT COMMA IDENT IN expression NEWLINE statement_list for_end {
+        if (!for_each_index_distinct(ctx, $2, $4, @4.first_line, @4.first_column)) { YYERROR; }
+        if (!for_end_matches(ctx, $2, $9, @9.first_line, @9.first_column)) { YYERROR; }
+        $$ = ast_for_each($2, $4, $6, $8);
+      }
+    | FOR EACH IDENT COMMA IDENT IN expression NEWLINE statement_list for_end {
+        if (!for_each_index_distinct(ctx, $3, $5, @5.first_line, @5.first_column)) { YYERROR; }
+        if (!for_end_matches(ctx, $3, $10, @10.first_line, @10.first_column)) { YYERROR; }
+        $$ = ast_for_each($3, $5, $7, $9);
       }
     /* Counted loop. `to` is INCLUSIVE, as every BASIC has had it, and `step`
      * defaults to 1. Distinguished from `for each`/`for ... in` by the token

@@ -9,6 +9,85 @@ language surface may still change between releases.
 
 ## Unreleased
 
+### Added — warning `2107`: a write to a `for each` element that nothing reads
+
+The loop variable is a copy, so `item.x = 1` with nothing reading `item`
+afterwards is discarded when the iteration ends — **silently**, which is the one
+failure in this language that produced no diagnostic at all.
+
+**The discriminator is not the assignment, it is whether the value is read
+again**, and that is the whole design. Writing to the element is legitimate and
+ordinary: `row = normalise(row)` then `print row.name`, or `row.label =
+tag(row)` then `send(row)`. A syntactic "you assigned to a loop variable" rule
+flags both — which is exactly the shape that got the blind-shadow warning built,
+measured at 287 false positives across 103 files, and reverted. A write nothing
+reads cannot affect anything under any semantics, so only that is reported.
+
+**Measured before building:** 3 writes to a for-each variable exist across
+`stdlib`, `examples` and `tests`; the rule fires on exactly 1 — the fixture that
+demonstrates the discard — and the correct write-back idiom stays silent
+*without being special-cased*, because `list[i] = item` reads `item`.
+**Re-measured after building** by running every example and test: **0 false
+positives**.
+
+Deliberately conservative, erring towards silence: it compares source positions
+rather than doing dataflow, so a read on any later line suppresses it, a
+`goto`/`gosub`/label in the body suppresses it (source order stops implying
+execution order), and an unmodelled construct suppresses it. A missed dead write
+costs nothing; a false one costs the channel's credibility.
+
+Affordable only because the index form shipped the same day: the message names a
+remedy that exists rather than describing one. The fixture's own control carries
+`on warning ignore`, which doubles as the test that the opt-out is real — a
+diagnostic whose own suite cannot silence it is one that would have to be
+weakened instead.
+
+Two perturbations proven red: the read check removed (all four legitimate
+controls go red at once) and the warning disabled.
+
+### Added — `for each item, i in list`
+
+The element **and** its position, 0-based. `tests/run_for_each_index.sh`.
+
+**The semantics did not change, and deliberately.** gBASIC has no references,
+so a loop body cannot write through the element variable — `item.x = 1` mutates
+a copy and is silently discarded. The question was whether to add references.
+The answer is no, for three reasons that are load-bearing rather than
+theoretical: an actor is `fork`+`exec`, so a reference cannot cross `spawn` and
+the whole worker-pool architecture depends on values shipping; `encode`
+totality is what lets an `agent` run sit in a store between HTTP requests, and
+references admit cycles, which kills that property; and no library in this tree
+currently has to reason about aliasing. Copy-on-write already means passing is
+O(1), so the value model is not costing performance either.
+
+**Measured before building anything:** assigning to a `for each` variable
+appears **exactly once** across `stdlib`, `examples` and `tests`, in
+`examples/array_cow_test.bas` — the fixture that asserts the semantics. So the
+fix is to make the *correct* idiom cheap rather than to make the incorrect one
+work: `list[i] = item` is an lvalue **path**, and paths write in place.
+
+**Writing to the array while walking it is safe**, and that is what makes a
+single-pass rewrite expressible. Iteration is over a snapshot — the array
+expression is evaluated once and a write detaches the variable's store through
+copy-on-write — so the walk sees the entry values and appending inside the loop
+does not extend it. Stronger than Python, where mutating during iteration skips
+elements, or JavaScript, where it can loop forever.
+
+Both spellings take the index (`for each x, i in` and `for x, i in`). The
+element and the index may not share a name — neither binding is wrong alone, so
+nothing would raise; the index would simply overwrite the element and the body
+would read a number where it expected a record. Refused at parse time.
+
+**Bison still reports zero conflicts**, measured before and after. That is not
+decoration: this project rejected `IDENT expression` as a statement form over 4
+measured conflicts, and `IDENT COMMA IDENT` in a `for` head is exactly the
+shape that could have collided with the counted loop.
+
+Four perturbations proven red, each caught by the tier written for it — the
+index never bound, the duplicate-name refusal removed, the write-back dropped,
+and `index_name` never freed (which is PLAT-OPTPARAM's lesson: an unfreed
+parser field turned 22 suites red on their own valgrind tiers).
+
 ### Added — `otp`: one-time passwords as a second factor
 
 `stdlib/otp.bas`, `tests/run_otp.sh`, `docs/otp_design.md`. RFC 4226 (HOTP) and

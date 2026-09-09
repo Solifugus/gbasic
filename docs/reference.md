@@ -406,7 +406,35 @@ end for
 for each item in items
     print(item.name)
 next item
+
+for each item, i in items          ' the element AND its position, 0-based
+    items[i] = tagged(item)
+end for
 ```
+
+**`for each item, i in list` gives you the index**, and it is what makes a
+write-back expressible. gBASIC has no references, so the loop variable is a
+**copy**: `item.x = 1` mutates that copy and is silently discarded. `list[i]`
+is an lvalue *path*, and paths write in place — so `list[i] = item` is how a
+single pass rewrites what it walks. The index is an ordinary number in the
+enclosing scope and survives the loop, exactly as the element and the counted
+loop's counter do. The element and the index may not share a name.
+
+**A write the loop never reads is reported** (warning `2107`). Because the
+element is a copy, `item.x = 1` with nothing reading `item` afterwards is
+discarded when the iteration ends — silently, which is the one failure in this
+language that produces no diagnostic. Writing to the element and then *using*
+it is ordinary and stays silent: `row = normalise(row)` then `print row.name`
+warns about nothing, and neither does the write-back idiom, since `list[i] =
+item` reads `item`. `on warning ignore` covers a deliberate discard.
+
+**Writing to the array while walking it is safe.** Iteration is over a
+snapshot: the array expression is evaluated once, and a write detaches the
+variable's store through copy-on-write. So the walk sees the values the array
+had at loop entry, and **appending inside the loop does not extend it** — a
+single pass that rewrites or grows what it walks terminates and skips nothing.
+That is a stronger guarantee than Python (where mutating during iteration skips
+elements) or JavaScript (where it can loop forever).
 
 Function:
 

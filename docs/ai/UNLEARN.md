@@ -9,6 +9,17 @@ Two resolved surprises are noted first (they used to bite and no longer do), the
 the standing ones.
 
 ## Recently fixed — now works as you'd hope
+- **`for each item, i in list` gives you the index** (2026-09-08), and it is how
+  you write back into the array you are walking. The loop variable is a **copy**
+  — `item.x = 1` is silently discarded — because gBASIC has no references and is
+  not getting them (an actor is `fork`+`exec`, so a reference cannot cross
+  `spawn`; and `encode` totality is what lets an `agent` run be stored between
+  requests). `list[i] = item` is an lvalue *path*, and paths write in place.
+  **Mutating the array during the loop is safe**: iteration is over a snapshot,
+  so the walk sees the entry values and appending inside the loop does not
+  extend it.
+  A write to the element that nothing reads is now **reported** (warning
+  `2107`) and names the fix; writing to it and then using it stays silent.
 
 - **`program NAME(args)` binds command-line arguments.** The first parameter is a
   0-based array of the strings after the script path (empty when none). Run with

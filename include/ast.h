@@ -271,8 +271,21 @@ struct AstStmt {
         } with_principal;
         struct {
             char *name;
+            /* The optional INDEX variable of `for each item, i in list`. NULL
+             * when the form was not used. It is a plain loop-scoped number,
+             * not a reference: gBASIC has no references, so the index is how
+             * a loop body writes back into the array it is walking
+             * (`list[i] = item`), which is an in-place path assignment. */
+            char *index_name;
             AstExpr *iterable;
             AstStmtList body;
+            /* PLAT-WARN 2107: the dead-write analysis, computed ONCE on first
+             * execution and cached here -- a for-each nested in a hot loop
+             * must not re-walk its body per execution. 0 unchecked, 1 clean,
+             * 2 a dead write was found at (dead_line, dead_column). */
+            signed char dead_checked;
+            int dead_line;
+            int dead_column;
         } for_each;
         struct {
             AstStmtList body;
@@ -430,7 +443,8 @@ AstStmt *ast_print_error(AstExpr *expr);
 AstStmt *ast_expr_stmt(AstExpr *expr);
 AstStmt *ast_with_lock(AstExpr *file, AstStmtList body);
 AstStmt *ast_with_principal(AstExpr *value, AstStmtList body);
-AstStmt *ast_for_each(char *name, AstExpr *iterable, AstStmtList body);
+AstStmt *ast_for_each(char *name, char *index_name, AstExpr *iterable,
+                      AstStmtList body);
 AstStmt *ast_for_range(char *name, AstExpr *start, AstExpr *limit,
                        AstExpr *step, AstStmtList body);
 AstStmt *ast_do_loop(AstStmtList body, AstExpr *condition);

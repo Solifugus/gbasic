@@ -34483,6 +34483,279 @@ static int eval_method_attach(AstStmt *stmt) {
     return 1;
 }
 
+/* ---- PLAT-WARN 2107: a write to a `for each` element that is never read ----
+ *
+ * gBASIC has no references, so the loop variable is a COPY: `item.x = 1`
+ * mutates that copy and the write is discarded at the end of the iteration.
+ * That is the one thing in this language that fails SILENTLY rather than
+ * loudly, which is what the whole diagnostic channel exists to remove.
+ *
+ * WHAT IS *NOT* WARNED ABOUT, and this is the whole design. Writing to the
+ * element is LEGITIMATE and common:
+ *
+ *     for each row in rows          for each row in rows
+ *         row = normalise(row)          row.label = tag(row)
+ *         print row.name                send(row)
+ *     end for                       end for
+ *
+ * Both write to the copy on purpose and then USE it. A syntactic "you assigned
+ * to a loop variable" rule flags both, which is the shape that got the
+ * blind-shadow warning built, measured at 287 false positives, and reverted
+ * (warning_model_design.md row 6).
+ *
+ * The discriminator is not the assignment, it is whether the value is READ
+ * again: a write nothing reads cannot affect anything, in any language, under
+ * any semantics. So this warns only on a DEAD write.
+ *
+ * MEASURED over stdlib + examples + tests before it was built: 3 writes to a
+ * for-each variable exist, this rule fires on exactly 1, and that one is the
+ * fixture that demonstrates the discard. The correct write-back idiom
+ * (`list[i] = item`) stays silent WITHOUT being special-cased, because that
+ * statement reads `item`.
+ *
+ * The analysis is deliberately CONSERVATIVE, erring towards silence: it
+ * compares SOURCE POSITIONS rather than doing dataflow, so a read anywhere on
+ * a later line suppresses it, and anything it cannot analyse suppresses it
+ * too. A missed dead write costs nothing; a false one costs the channel's
+ * credibility. */
+
+/* The base identifier of an lvalue path: item, item.n, item[0].n -> "item". */
+static const char *lvalue_root_ident(const AstExpr *e) {
+    while (e) {
+        if (e->kind == AST_EXPR_IDENT) {
+            return e->as.ident;
+        }
+        if (e->kind == AST_EXPR_FIELD) {
+            e = e->as.field.object;
+        } else if (e->kind == AST_EXPR_INDEX) {
+            e = e->as.index.array;
+        } else {
+            return NULL;
+        }
+    }
+    return NULL;
+}
+
+typedef struct {
+    const char *name;
+    int max_mention_line;  /* the latest line at which the name appears */
+    int last_write_line;   /* the latest write rooted at the name */
+    int last_write_column;
+    int unanalysable;      /* a jump, or a construct this walk does not model */
+} DeadScan;
+
+static void dead_scan_expr(const AstExpr *e, DeadScan *s);
+static void dead_scan_list(AstStmtList body, DeadScan *s);
+
+static void dead_scan_exprs(AstExprList list, DeadScan *s) {
+    for (size_t i = 0; i < list.count; i++) {
+        dead_scan_expr(list.items[i], s);
+    }
+}
+
+static void dead_scan_fields(AstRecordFieldList list, DeadScan *s) {
+    for (size_t i = 0; i < list.count; i++) {
+        dead_scan_expr(list.items[i].value, s);
+        dead_scan_expr(list.items[i].reset_expr, s);
+    }
+}
+
+static void dead_scan_expr(const AstExpr *e, DeadScan *s) {
+    if (!e) {
+        return;
+    }
+    switch (e->kind) {
+    case AST_EXPR_IDENT:
+        if (e->as.ident && strcmp(e->as.ident, s->name) == 0 &&
+            e->line > s->max_mention_line) {
+            s->max_mention_line = e->line;
+        }
+        break;
+    case AST_EXPR_ARRAY:   dead_scan_exprs(e->as.array, s); break;
+    case AST_EXPR_RECORD:  dead_scan_fields(e->as.record, s); break;
+    case AST_EXPR_INDEX:
+        dead_scan_expr(e->as.index.array, s);
+        dead_scan_expr(e->as.index.index, s);
+        break;
+    case AST_EXPR_FIELD:   dead_scan_expr(e->as.field.object, s); break;
+    case AST_EXPR_CALL:
+        /* A bare identifier that is a library/receiver name is not a read of a
+         * variable, but counting it as one only makes this quieter. */
+        if (e->as.call.library && strcmp(e->as.call.library, s->name) == 0 &&
+            e->line > s->max_mention_line) {
+            s->max_mention_line = e->line;
+        }
+        dead_scan_expr(e->as.call.receiver, s);
+        dead_scan_exprs(e->as.call.args, s);
+        break;
+    case AST_EXPR_BINARY:
+        dead_scan_expr(e->as.binary.left, s);
+        dead_scan_expr(e->as.binary.right, s);
+        break;
+    case AST_EXPR_UNARY:   dead_scan_expr(e->as.unary.expr, s); break;
+    case AST_EXPR_NEW:
+        dead_scan_expr(e->as.derive.proto, s);
+        dead_scan_expr(e->as.derive.with, s);
+        break;
+    case AST_EXPR_SPAWN:
+        dead_scan_exprs(e->as.call.args, s);
+        break;
+    case AST_EXPR_NUMBER: case AST_EXPR_STRING: case AST_EXPR_BOOL:
+    case AST_EXPR_NULL: case AST_EXPR_UNKNOWN: case AST_EXPR_DURATION:
+        break;
+    default:
+        /* An expression kind this walk does not model: assume it could read. */
+        s->unanalysable = 1;
+        break;
+    }
+}
+
+static void dead_scan_stmt(const AstStmt *st, DeadScan *s) {
+    if (!st) {
+        return;
+    }
+    switch (st->kind) {
+    case AST_STMT_ASSIGN: {
+        const char *root = lvalue_root_ident(st->as.assign.target);
+        /* The VALUE is always a read. So is any index expression inside the
+         * target (`other[item.n] = 1`), which the target walk below covers --
+         * except for the root itself, which is the write. */
+        dead_scan_expr(st->as.assign.value, s);
+        if (st->as.assign.target &&
+            st->as.assign.target->kind != AST_EXPR_IDENT) {
+            /* walk the path's subscripts, but not the bare root ident */
+            const AstExpr *p = st->as.assign.target;
+            while (p) {
+                if (p->kind == AST_EXPR_INDEX) {
+                    dead_scan_expr(p->as.index.index, s);
+                    p = p->as.index.array;
+                } else if (p->kind == AST_EXPR_FIELD) {
+                    p = p->as.field.object;
+                } else {
+                    break;
+                }
+            }
+        }
+        if (root && strcmp(root, s->name) == 0) {
+            /* A COMPOUND assignment (`item.n += 1`) reads the target too, but
+             * that read happens BEFORE the write and cannot keep it alive. */
+            if (st->line > s->last_write_line) {
+                s->last_write_line = st->line;
+                s->last_write_column = st->column;
+            }
+        }
+        break;
+    }
+    case AST_STMT_PRINT:   dead_scan_expr(st->as.print.expr, s); break;
+    case AST_STMT_EXPR:    dead_scan_expr(st->as.expr_stmt, s); break;
+    case AST_STMT_RETURN:  dead_scan_expr(st->as.expr_stmt, s); break;
+    case AST_STMT_ERROR:   dead_scan_expr(st->as.error_message, s); break;
+    case AST_STMT_WARNING: dead_scan_expr(st->as.error_message, s); break;
+    case AST_STMT_IF:
+        dead_scan_expr(st->as.if_stmt.condition, s);
+        dead_scan_list(st->as.if_stmt.body, s);
+        dead_scan_list(st->as.if_stmt.else_body, s);
+        break;
+    case AST_STMT_WHILE:
+        dead_scan_expr(st->as.while_stmt.condition, s);
+        dead_scan_list(st->as.while_stmt.body, s);
+        break;
+    case AST_STMT_DO_LOOP:
+        dead_scan_expr(st->as.do_loop.condition, s);
+        dead_scan_list(st->as.do_loop.body, s);
+        break;
+    case AST_STMT_FOR_EACH:
+        dead_scan_expr(st->as.for_each.iterable, s);
+        dead_scan_list(st->as.for_each.body, s);
+        break;
+    case AST_STMT_FOR_RANGE:
+        dead_scan_expr(st->as.for_range.start, s);
+        dead_scan_expr(st->as.for_range.limit, s);
+        dead_scan_expr(st->as.for_range.step, s);
+        dead_scan_list(st->as.for_range.body, s);
+        break;
+    case AST_STMT_CONSIDER:
+        dead_scan_expr(st->as.consider.subject, s);
+        for (size_t i = 0; i < st->as.consider.branches.count; i++) {
+            dead_scan_expr(st->as.consider.branches.items[i].match, s);
+            dead_scan_list(st->as.consider.branches.items[i].body, s);
+        }
+        dead_scan_list(st->as.consider.else_body, s);
+        break;
+    case AST_STMT_WITH_LOCK:
+        dead_scan_expr(st->as.with_lock.file, s);
+        dead_scan_list(st->as.with_lock.body, s);
+        break;
+    case AST_STMT_WITH_PRINCIPAL:
+        dead_scan_expr(st->as.with_principal.value, s);
+        dead_scan_list(st->as.with_principal.body, s);
+        break;
+    case AST_STMT_WITHOUT_WATCHERS:
+        dead_scan_list(st->as.without_watchers, s);
+        break;
+    case AST_STMT_WATCH:
+        dead_scan_list(st->as.watch.body, s);
+        break;
+    case AST_STMT_UNWATCH:
+        dead_scan_expr(st->as.unwatch_expr, s);
+        break;
+    case AST_STMT_BREAK: case AST_STMT_CONTINUE:
+    case AST_STMT_ON_ERROR_GOTO: case AST_STMT_ON_ERROR_GOTO_NEXT:
+    case AST_STMT_ON_ERROR_STOP: case AST_STMT_ON_WARNING:
+    case AST_STMT_USE: case AST_STMT_LIBRARY: case AST_STMT_PROGRAM:
+        break;
+    case AST_STMT_GOTO: case AST_STMT_GOSUB: case AST_STMT_LABEL:
+        /* A jump makes source order stop implying execution order, and this
+         * analysis is built on source order. Refuse to judge. */
+        s->unanalysable = 1;
+        break;
+    default:
+        /* A statement kind this walk does not model -- a function or modifier
+         * declaration, a server block. Assume it could read the name. */
+        s->unanalysable = 1;
+        break;
+    }
+}
+
+static void dead_scan_list(AstStmtList body, DeadScan *s) {
+    for (size_t i = 0; i < body.count; i++) {
+        dead_scan_stmt(body.items[i], s);
+    }
+}
+
+/* Warn at most once per loop, at its LAST dead write: an earlier write is kept
+ * alive by a later mention, so the last one is the only one this rule can be
+ * sure about, and one diagnostic is enough to point into the loop. */
+static void for_each_check_dead_write(AstStmt *stmt) {
+    if (stmt->as.for_each.dead_checked) {
+        if (stmt->as.for_each.dead_checked == 2) {
+            warn_fmt_at(2107, "discarded write",
+                        stmt->as.for_each.dead_line,
+                        stmt->as.for_each.dead_column,
+                        "this writes to `%s`, which is a COPY of the element, "
+                        "and nothing reads it afterwards -- the write is "
+                        "discarded when the iteration ends. To change the "
+                        "array, take the index (`for each %s, i in ...`) and "
+                        "write back with `list[i] = %s`.",
+                        stmt->as.for_each.name, stmt->as.for_each.name,
+                        stmt->as.for_each.name);
+        }
+        return;
+    }
+    DeadScan s;
+    memset(&s, 0, sizeof(s));
+    s.name = stmt->as.for_each.name;
+    dead_scan_list(stmt->as.for_each.body, &s);
+    stmt->as.for_each.dead_checked = 1;
+    if (!s.unanalysable && s.last_write_line > 0 &&
+        s.max_mention_line <= s.last_write_line) {
+        stmt->as.for_each.dead_checked = 2;
+        stmt->as.for_each.dead_line = s.last_write_line;
+        stmt->as.for_each.dead_column = s.last_write_column;
+        for_each_check_dead_write(stmt);
+    }
+}
+
 static EvalResult eval_stmt(AstStmt *stmt) {
     EvalResult no_result = eval_no_result();
     int previous_line = current_line;
@@ -34834,9 +35107,19 @@ static EvalResult eval_stmt(AstStmt *stmt) {
             current_column = previous_column;
             return eval_error_result();
         }
+        for_each_check_dead_write(stmt);
         loop_depth++;
         for (size_t i = 0; i < iterable.as.array.store->count; i++) {
             env_set(stmt->as.for_each.name, value_copy(iterable.as.array.store->items[i]));
+            /* `for each item, i in list`. The index is an ordinary number in
+             * the enclosing scope, and it is what makes a write-back
+             * expressible -- `list[i] = item` is an lvalue path and writes in
+             * place, where `item.x = 1` mutates a copy that is discarded.
+             * Iteration is over the snapshot taken above, so writing to the
+             * array here cannot disturb the walk. */
+            if (stmt->as.for_each.index_name) {
+                env_set(stmt->as.for_each.index_name, value_number((double)i));
+            }
             EvalResult result = eval_stmt_list(stmt->as.for_each.body);
             if ((result.did_break || result.did_continue) &&
                 !loop_claims_flow(result, stmt->as.for_each.name)) {
