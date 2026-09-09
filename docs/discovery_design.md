@@ -100,6 +100,49 @@ stored as text rather than compiled into a queryable tree, so there is no
 metadata shortcut even in principle. Parsing is not a preference here; it is
 the only route.
 
+### References are not always qualified, so parsing is two phases
+
+Reported from the same experience — SQL Server references were often
+unqualified and the Python implementation had to correct for it. That is not a
+parsing problem, it is a **resolution** problem, and separating the two is the
+architecture:
+
+> **The parser produces unresolved references. A resolver binds them using the
+> catalog.**
+
+`discovery.scan` already provides the catalog, so the resolver has what it
+needs — but it needs one thing more, and this is a requirement on the module
+reader rather than on the parser: **the schema that OWNS the code**. An
+unqualified name is resolved relative to its container, so a view or procedure
+must be captured with its schema, which is load-bearing rather than decoration.
+
+Measured 2026-09-09 against SQL Server, both halves:
+
+- a procedure in schema `alt` referencing bare `res_probe`, where **both**
+  `alt.res_probe` and `dbo.res_probe` exist, binds to **`alt.res_probe`** — its
+  own schema wins;
+- the same procedure referencing a table that exists **only** in `dbo` binds to
+  `dbo` — so the search path is `[own schema, dbo]`, in that order.
+
+The stored source in both cases reads `from res_probe`. Nothing in the text
+says which table it means.
+
+Per dialect:
+
+| | how a bare name resolves |
+|---|---|
+| SQL Server | the containing object's schema, then `dbo` — **measured** |
+| PostgreSQL | the `search_path`, measured here as `"$user", public`; a function may carry its own via `pg_proc.proconfig` |
+| MariaDB | no schemas — the database is the only qualifier, so a bare name is the current database |
+| SQLite | no schemas |
+
+**Where resolution is genuinely ambiguous, it is refused, not guessed.** A
+cross-database reference with no qualifier depends on the connection's current
+database; a PostgreSQL `search_path` is session state and may not be the one
+the author had. Those are R3b outcomes — *unanswerable* — and binding them to a
+plausible candidate would produce a lineage graph that is confident and wrong,
+which is the failure this whole design is arranged against.
+
 ### What the parser must do, and what it must refuse
 
 Lineage does not need a complete SQL implementation. It needs: which objects
