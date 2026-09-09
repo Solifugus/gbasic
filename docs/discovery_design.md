@@ -19,6 +19,48 @@ relationship exists**. A 500-table estate at 20 columns each is 10,000 columns
 risk, they are a certainty: every `status` overlaps every other `status`, and
 every surrogate key is 1..N.
 
+## 1a. The question this exists to answer
+
+*Added 2026-09-09, from working with real company data. It reframes the
+library's purpose and reorders what gets built.*
+
+The headline question is **not** "what is related to what". It is:
+
+> Two reports both show a number called `revenue`. **Why are they different?**
+
+Today that costs someone a day of manual research. The answer is never "these
+are unrelated" — both numbers are correct. It is *"this one excludes cancelled
+orders"*, or *"this one books at order date and that one at ship date"*, or
+*"this one joins a lookup that filters out inactive counterparties"*.
+
+Three consequences, and each changes the design:
+
+**Lineage is path-valued, not edge-valued.** Two columns that disagree usually
+share an ancestor and **diverge at a step**. What the user needs is the
+divergence point, so a set of edges is not an answer — the ordered path is.
+
+**The predicate is part of the lineage.** A `where` clause is not metadata
+about a derivation, it *is* the reason two numbers differ. Filters, join
+conditions and grain changes must be carried along the path, or the library can
+say two columns are related and still not answer the only question asked.
+
+**The interesting hops are code, not constraints.** A real flow runs tables →
+views → stored procedures → tables, with several tables feeding in and several
+resulting. The catalog records none of that. **But the code is declared and
+readable** — a view's SQL and a procedure's text can be parsed — so this is
+*not* an inference problem. It belongs to the declared-facts family, where the
+answer is certain rather than searched for.
+
+That last point reorders the roadmap: **column-level lineage and predicates
+extracted from view and procedure source come before any value-overlap
+inference.** They answer a question people actually ask, and they answer it
+with certainty.
+
+A lookup table also plays a role the catalog cannot show: used as a **filter**
+it contributes no column to the output while changing which rows reach it, so
+it is part of the derivation context while being invisible in the result
+(estate R34).
+
 ## 2. The first increment is declared facts only
 
 No inference at all. Tables, columns, types, nullability, primary keys, foreign
@@ -106,7 +148,9 @@ absence of evidence as evidence.
 ## 5. Deliberately not in the first increment
 
 - **Inference of any kind.** It needs the null model, and the null model needs
-  the estate fixture.
+  the estate fixture. Note §1a: view and procedure lineage is *declared*, not
+  inferred, and therefore comes BEFORE this — it was originally sequenced after
+  inference, which was wrong.
 - **NLQ.** It consumes this; it is not part of it.
 - **Writing anything.** Discovery reads.
 

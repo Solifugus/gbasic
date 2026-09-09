@@ -159,6 +159,52 @@ the same run:
   populated everywhere. An inference like "this cannot be a key, it is
   nullable" is wrong on one and unanswerable on another.
 
+### R31–R35 — the ETL flow, contributed 2026-09-09
+
+From Matthew, out of working with real company data. **These reframe what the
+estate is for**, so they are not simply five more rows: R33 is a question the
+list above cannot pose at all.
+
+| | Planted | What it defeats |
+| --- | --- | --- |
+| R31 | **Tables → views → stored procedures → tables.** The middle hops are **code**, not constraints | lineage as a graph of *declared* edges. A procedure is where the derivation actually happens and nothing in the catalog records it |
+| R32 | **Fan-in and fan-out** — several tables feed a step, several tables result | lineage as a chain. A path from one column back to one origin is the easy case and not the common one |
+| R33 | **The same column name in two tables, both real, derived through different contexts** — different filters, different joins, different grain — so **the numbers legitimately differ** | *everything above it.* Both are correct, neither is a decoy, and no relationship is wrong. The question is not "are these related" but **"why do they disagree"**, and the answer is the point at which their derivations diverged |
+| R34 | **A lookup table used as a FILTER, not a dimension** — it contributes no column to the output and changes which rows reach it | lookup detection as "small table that gets joined". A filtering lookup is part of the derivation *context* while being invisible in the result's columns |
+| R35 | **Real column vocabulary**, harvested from the Enron corpus rather than invented | the author's naming imagination. Measured 2026-09-09 at an 18% yield over 260 workbooks, and it already contains the pathology: `Actual \| Target \| Fav/(Unfav)` **three times in one header**, `Period \| Total` twice, undocumented abbreviations (`PVR`, `DBQ`, `CTP`, `MMBtu/d`), a truncated name (`AFTER INITIAL TERM DATE/`), and `MANUAL ENTERY` — a typo in production |
+
+**R33 is the headline, and it is the question people actually ask.** Two
+reports show a number called `revenue`; the numbers differ; someone spends a
+day finding out why. The answer is never "these are unrelated" — it is *"this
+one excludes cancelled orders and that one does not"*, or *"this one is booked
+at order date and that one at ship date"*. Discovery earns its place by
+answering that in seconds rather than a day.
+
+**And the answer is mostly DECLARED, not inferred.** A view's SQL and a
+procedure's text are readable, and the predicate that makes the two numbers
+differ is *in* them. That reorders the roadmap: extracting column-level lineage
+and its predicates from view and procedure source is worth more than any
+value-overlap inference, and it belongs to the declared-facts family where the
+answer is certain rather than searched for.
+
+### On the Enron corpus, measured rather than assumed
+
+It holds **15,871 xlsx and 58 xls, and nothing else** — no databases, no views,
+no procedures, no SQL. So it cannot supply ETL flows; those we author, which
+means R1 still governs (one declaration produces both the database and the
+truth).
+
+What it *can* supply is the substrate: real column names, real abbreviations,
+real inconsistency, and real value distributions — which matter directly,
+because R7, R23 and R26 are all about what values look like. Harvesting the
+vocabulary and authoring the flows is strictly better than inventing both, and
+it removes one of this document's two stated blind spots.
+
+The honest cost: a plausible header row is recoverable from about **18%** of
+workbooks, many of the rest being forms rather than tables, and full extraction
+is a per-sheet spec problem (`run_grid`'s standing finding). Harvesting *names*
+is cheap; harvesting *tables* is a campaign.
+
 ## 5a. The coverage argument — read the table the other way
 
 gdash's, and it is worth more than another example. Several traps defeat the
