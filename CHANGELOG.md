@@ -9,6 +9,50 @@ language surface may still change between releases.
 
 ## Unreleased
 
+### Added — `odbc` catalog: what the database says about itself
+
+`odbc.tables`, `odbc.columns`, `odbc.primary_keys`, `odbc.foreign_keys` over
+`SQLTables`/`SQLColumns`/`SQLPrimaryKeys`/`SQLForeignKeys`. The first
+groundwork for the discovery library.
+
+**Read through the driver manager, not `information_schema`**, and that choice
+is the whole point. `information_schema` is a dialect matrix — Postgres, SQL
+Server and MySQL each spell parts of it differently and SQLite has none of it —
+while ODBC normalises these four calls across every database with a driver,
+which is the argument this module was built on. **One organisation often runs
+several databases at once**, so a catalog read that works against only one of
+them cannot describe the estate at all.
+
+They reuse `odbc_rows_from_statement`, so every type and exactness rule already
+governing a query result governs these too — a catalog row is an ordinary
+record.
+
+**The column names are the driver's, not ours.** ODBC specifies them
+(`TABLE_SCHEM`, without the A), so the raw names *are* the portable interface;
+renaming here would add a mapping that can drift while discarding a driver's
+extra columns. Friendly names belong to the library above, the same split
+`ldap` and `smtp` follow.
+
+**An absent option means "any", not "empty"** — ODBC distinguishes a NULL
+pattern from `""`, and conflating them returns nothing on a database that
+qualifies its objects.
+
+A defect the fixture caught in the first draft, and it is the "reports the
+wrong cause" class: `odbc_connection_from_value` already raises "odbc
+connection is closed", and the new code raised "expects an odbc connection"
+over the top of it — false, about a value that *is* one. Now it lets the true
+message stand.
+
+Two perturbations proven red. The load-bearing one is the **filter**: with
+`table` ignored, `cat_orders`' columns are all still present, just with every
+other table's mixed in — a result that still looks exactly like a catalog. Only
+asserting that a different table gives *different* columns catches it.
+
+**Verified hermetically only, and that is weak evidence** — SQLite is
+dynamically typed and its driver cannot reveal what a real server reports.
+`GBASIC_ODBC_CONNECTION` runs the same fixture against SQL Server or MySQL,
+which is where this earns its keep; that run has not happened yet.
+
 ### Added — warning `2107`: a write to a `for each` element that nothing reads
 
 The loop variable is a copy, so `item.x = 1` with nothing reading `item`

@@ -2027,6 +2027,38 @@ The module provides:
   manager can load
 - `odbc.sources()` → array of `{name, description}` — the configured DSNs
 
+The **catalog** — what the database says about itself:
+
+- `odbc.tables(connection[, {catalog, schema, table, types}])`
+- `odbc.columns(connection[, {catalog, schema, table, column}])`
+- `odbc.primary_keys(connection, {catalog, schema, table})` — `table` required
+- `odbc.foreign_keys(connection, {catalog, schema, table, referenced_catalog, referenced_schema, referenced_table})`
+
+Each returns an array of records, exactly as a query does. These read through
+the **driver manager**, not through `information_schema`, and that is the
+point: `information_schema` is a dialect matrix that Postgres, SQL Server and
+MySQL each spell differently and SQLite does not have at all, while ODBC
+normalises these four calls across every database with a driver. One
+organisation often runs several databases at once, so a catalog read that only
+works against one of them cannot describe the estate.
+
+**The column names are the driver's, not ours.** ODBC specifies the result
+columns for each call — `TABLE_CAT`, `TABLE_SCHEM` (no `A`), `TABLE_NAME`,
+`COLUMN_NAME`, `ORDINAL_POSITION`, `FKCOLUMN_NAME`, `PKTABLE_NAME` and so on —
+so the raw names *are* the portable interface, and renaming them here would add
+a mapping that can drift while discarding whatever extra columns a driver
+supplies. Friendly names belong to the library above this.
+
+**An absent option means "any", not "empty".** ODBC distinguishes a `NULL`
+pattern (match anything) from `""` (match only objects that have no catalog or
+schema), and conflating them returns nothing at all on a database that
+qualifies its objects. A field you do not supply is passed as `NULL`; an empty
+string is passed through as written.
+
+`odbc.foreign_keys` answers two different questions and you must say which:
+`table` gives the keys **defined on** that table, `referenced_table` gives the
+keys **pointing at** it. Supplying neither is refused rather than guessed.
+
 Parameters are arrays and are bound through `SQLBindParameter`; use the ODBC
 positional placeholder `?`. SQL `NULL` maps to `nothing`. Query results are
 arrays of records; duplicate column names are errors, because a record would

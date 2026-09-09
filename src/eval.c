@@ -20095,6 +20095,241 @@ static Value odbc_eval_catalog(AstExpr *expr, int drivers_mode) {
     return value_array(items, count);
 }
 
+/* ---- the catalog: what the database says about itself ---------------------
+ *
+ * SQLTables / SQLColumns / SQLPrimaryKeys / SQLForeignKeys. These produce
+ * ordinary result sets, so they reuse `odbc_rows_from_statement` and every
+ * type and exactness rule that already governs a query result.
+ *
+ * WHY THROUGH ODBC RATHER THAN `information_schema`. The alternative is a
+ * dialect matrix: `information_schema` covers Postgres, SQL Server and MySQL
+ * and each spells parts of it differently, and a discovery layer pointed at a
+ * customer's estate has to read whatever is there. The driver manager already
+ * normalises these four calls across every database with a driver, which is
+ * the argument this module was built on. ONE ORGANISATION OFTEN RUNS SEVERAL
+ * DATABASES AT ONCE, so "portable" here is not a nicety -- a single catalog
+ * read has to work against all of them or the estate cannot be described.
+ *
+ * COLUMN NAMES ARE THE DRIVER'S, NOT OURS, and deliberately. ODBC specifies
+ * the result columns for each of these calls (TABLE_CAT, TABLE_SCHEM,
+ * TABLE_NAME, ...), so the raw names ARE the portable interface, and renaming
+ * them here would add a mapping that can drift while losing the driver's own
+ * extra columns. Friendly names belong to the library above this, which is the
+ * same split `ldap` and `smtp` follow: the transport is native, the policy is
+ * gBASIC. Note ODBC's own spelling TABLE_SCHEM, without the A.
+ *
+ * AN ABSENT OPTION MEANS "ANY", NOT "EMPTY". ODBC distinguishes a NULL pattern
+ * (match anything) from "" (match only objects with no catalog or schema), and
+ * conflating them silently returns nothing on a database that qualifies its
+ * objects. So a field that is not supplied is passed as NULL, and an empty
+ * string is passed through as the caller wrote it. */
+
+/* Fetch an option as a SQL string, or NULL when absent. Returns 0 on a type
+ * error, having raised. */
+static int odbc_catalog_option(Value *opts, const char *field,
+                               const char *call, char **out) {
+    *out = NULL;
+    if (!opts || opts->kind != VALUE_RECORD) {
+        return 1;
+    }
+    RecordField *f = record_find(opts, field);
+    if (!f || f->value->kind == VALUE_NULL || f->value->kind == VALUE_UNKNOWN) {
+        return 1;
+    }
+    if (f->value->kind != VALUE_STRING) {
+        char message[256];
+        snprintf(message, sizeof(message),
+                 "%s: `%s` must be a string", call, field);
+        odbc_raise_message(message);
+        return 0;
+    }
+    *out = f->value->as.string;
+    return 1;
+}
+
+static int odbc_catalog_reject_unknown(Value *opts, const char *call,
+                                       const char *const *allowed, size_t n) {
+    if (!opts || opts->kind != VALUE_RECORD) {
+        return 1;
+    }
+    for (size_t i = 0; i < opts->as.record.count; i++) {
+        const char *name = opts->as.record.fields[i].name;
+        int ok = 0;
+        for (size_t j = 0; j < n; j++) {
+            if (strcmp(name, allowed[j]) == 0) { ok = 1; break; }
+        }
+        if (!ok) {
+            char list[256] = {0};
+            size_t used = 0;
+            for (size_t j = 0; j < n; j++) {
+                used += (size_t)snprintf(list + used, sizeof(list) - used,
+                                         "%s%s", j ? ", " : "", allowed[j]);
+                if (used >= sizeof(list)) break;
+            }
+            char message[512];
+            snprintf(message, sizeof(message),
+                     "%s: no option '%s'; it takes %s", call, name, list);
+            odbc_raise_message(message);
+            return 0;
+        }
+    }
+    return 1;
+}
+
+#define ODBC_CAT_STR(s) ((SQLCHAR *)(s)), ((s) ? SQL_NTS : 0)
+
+static Value odbc_eval_schema_call(AstExpr *expr, int which) {
+    static const char *const tables_opts[]  = {"catalog", "schema", "table", "types"};
+    static const char *const columns_opts[] = {"catalog", "schema", "table", "column"};
+    static const char *const pk_opts[]      = {"catalog", "schema", "table"};
+    static const char *const fk_opts[]      = {"catalog", "schema", "table",
+                                               "referenced_catalog",
+                                               "referenced_schema",
+                                               "referenced_table"};
+    const char *call = which == 0 ? "odbc.tables"
+                     : which == 1 ? "odbc.columns"
+                     : which == 2 ? "odbc.primary_keys"
+                                  : "odbc.foreign_keys";
+
+    if (expr->as.call.args.count != 1 && expr->as.call.args.count != 2) {
+        char message[160];
+        snprintf(message, sizeof(message),
+                 "%s expects a connection and an optional options record", call);
+        odbc_raise_message(message);
+        return value_null();
+    }
+
+    Value connection_value = eval_expr(expr->as.call.args.items[0]);
+    if (error_action_pending()) {
+        value_free(connection_value);
+        return value_null();
+    }
+    OdbcConnectionValue *connection = odbc_connection_from_value(connection_value);
+    if (!connection) {
+        /* It has ALREADY raised, and with the reason that matters -- a closed
+         * connection says so. Raising again here would overwrite a true
+         * message with a false one ("expects an odbc connection" about a value
+         * that IS one), which is the defect the fixture's use-after-close
+         * check caught. */
+        value_free(connection_value);
+        return value_null();
+    }
+
+    Value opts = value_null();
+    if (expr->as.call.args.count == 2) {
+        opts = eval_expr(expr->as.call.args.items[1]);
+        if (error_action_pending()) {
+            value_free(opts);
+            value_free(connection_value);
+            return value_null();
+        }
+        if (opts.kind != VALUE_RECORD) {
+            value_free(opts);
+            value_free(connection_value);
+            char message[160];
+            snprintf(message, sizeof(message), "%s: the options must be a record", call);
+            odbc_raise_message(message);
+            return value_null();
+        }
+    }
+
+    const char *const *allowed = which == 0 ? tables_opts
+                               : which == 1 ? columns_opts
+                               : which == 2 ? pk_opts : fk_opts;
+    size_t allowed_n = which == 0 ? 4 : which == 1 ? 4 : which == 2 ? 3 : 6;
+    Value result = value_null();
+    SQLHSTMT statement = NULL;
+
+    if (!odbc_catalog_reject_unknown(&opts, call, allowed, allowed_n)) {
+        goto done;
+    }
+
+    char *catalog = NULL, *schema = NULL, *table = NULL, *extra = NULL;
+    char *rcatalog = NULL, *rschema = NULL, *rtable = NULL;
+    if (!odbc_catalog_option(&opts, "catalog", call, &catalog) ||
+        !odbc_catalog_option(&opts, "schema", call, &schema) ||
+        !odbc_catalog_option(&opts, "table", call, &table)) {
+        goto done;
+    }
+    if (which == 0 && !odbc_catalog_option(&opts, "types", call, &extra)) {
+        goto done;
+    }
+    if (which == 1 && !odbc_catalog_option(&opts, "column", call, &extra)) {
+        goto done;
+    }
+    if (which == 3) {
+        if (!odbc_catalog_option(&opts, "referenced_catalog", call, &rcatalog) ||
+            !odbc_catalog_option(&opts, "referenced_schema", call, &rschema) ||
+            !odbc_catalog_option(&opts, "referenced_table", call, &rtable)) {
+            goto done;
+        }
+    }
+    /* SQLPrimaryKeys and SQLForeignKeys need a table: they take a NAME, not a
+     * pattern, and a driver asked for "the keys of anything" answers either
+     * nothing or an error depending on whose driver it is. Refused here, where
+     * the message can say which argument is missing. */
+    if (which == 2 && !table) {
+        char message[200];
+        snprintf(message, sizeof(message),
+                 "%s: `table` is required -- primary keys are read for one "
+                 "table at a time, not matched by pattern", call);
+        odbc_raise_message(message);
+        goto done;
+    }
+    if (which == 3 && !table && !rtable) {
+        odbc_raise_message("odbc.foreign_keys: give `table` (the keys defined "
+                           "ON that table) or `referenced_table` (the keys "
+                           "POINTING AT it); neither was supplied");
+        goto done;
+    }
+
+    SQLRETURN rc = SQLAllocHandle(SQL_HANDLE_STMT, connection->dbc, &statement);
+    if (!SQL_SUCCEEDED(rc)) {
+        odbc_raise_diag(SQL_HANDLE_DBC, connection->dbc,
+                        "could not allocate an odbc statement");
+        statement = NULL;
+        goto done;
+    }
+
+    switch (which) {
+    case 0:
+        rc = SQLTables(statement, ODBC_CAT_STR(catalog), ODBC_CAT_STR(schema),
+                       ODBC_CAT_STR(table), ODBC_CAT_STR(extra));
+        break;
+    case 1:
+        rc = SQLColumns(statement, ODBC_CAT_STR(catalog), ODBC_CAT_STR(schema),
+                        ODBC_CAT_STR(table), ODBC_CAT_STR(extra));
+        break;
+    case 2:
+        rc = SQLPrimaryKeys(statement, ODBC_CAT_STR(catalog),
+                            ODBC_CAT_STR(schema), ODBC_CAT_STR(table));
+        break;
+    default:
+        rc = SQLForeignKeys(statement,
+                            ODBC_CAT_STR(rcatalog), ODBC_CAT_STR(rschema),
+                            ODBC_CAT_STR(rtable),
+                            ODBC_CAT_STR(catalog), ODBC_CAT_STR(schema),
+                            ODBC_CAT_STR(table));
+        break;
+    }
+    if (!SQL_SUCCEEDED(rc)) {
+        char message[160];
+        snprintf(message, sizeof(message), "%s failed", call);
+        odbc_raise_diag(SQL_HANDLE_STMT, statement, message);
+        goto done;
+    }
+
+    result = odbc_rows_from_statement(statement);
+
+done:
+    if (statement) {
+        SQLFreeHandle(SQL_HANDLE_STMT, statement);
+    }
+    value_free(opts);
+    value_free(connection_value);
+    return result;
+}
+
 static Value odbc_eval_call(AstExpr *expr) {
     const char *name = expr->as.call.name;
     if (strcmp(name, "connect") == 0) {
@@ -20117,6 +20352,18 @@ static Value odbc_eval_call(AstExpr *expr) {
     }
     if (strcmp(name, "rollback") == 0) {
         return odbc_eval_transaction(expr, SQL_ROLLBACK, "rollback");
+    }
+    if (strcmp(name, "tables") == 0) {
+        return odbc_eval_schema_call(expr, 0);
+    }
+    if (strcmp(name, "columns") == 0) {
+        return odbc_eval_schema_call(expr, 1);
+    }
+    if (strcmp(name, "primary_keys") == 0) {
+        return odbc_eval_schema_call(expr, 2);
+    }
+    if (strcmp(name, "foreign_keys") == 0) {
+        return odbc_eval_schema_call(expr, 3);
     }
     if (strcmp(name, "drivers") == 0) {
         return odbc_eval_catalog(expr, 1);

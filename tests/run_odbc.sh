@@ -213,6 +213,26 @@ else
     fi
 fi
 
+printf 'TIER schema catalog (tables/columns/primary_keys/foreign_keys)\n'
+# WHAT THE DATABASE SAYS ABOUT ITSELF, read through the DRIVER MANAGER rather
+# than through a dialect matrix of `information_schema` queries -- which is the
+# argument this whole module rests on, and it matters more here than anywhere:
+# ONE ORGANISATION OFTEN RUNS SEVERAL DATABASES AT ONCE, so a catalog read that
+# only works on one of them cannot describe the estate at all.
+#
+# THE LOAD-BEARING CHECK IS THE FILTER, asserted as a DIFFERENCE: a supplied
+# `table` must NARROW the answer. A filter silently ignored returns every
+# column in the database, which still looks exactly like a catalog -- so
+# "cat_orders' columns are present" passes on the broken build, and only
+# "they are the ONLY ones, and a different table gives different ones" does
+# not.
+#
+# NOTE the standing caution this suite already carries: SQLite is dynamically
+# typed and cannot reveal a type error, so the hermetic run is WEAK EVIDENCE
+# for catalog metadata. GBASIC_ODBC_CONNECTION runs these same fixtures against
+# a real server, which is where this tier earns its keep.
+run_fixture tests/odbc_catalog_test.bas 23 'odbc_catalog_test'
+
 printf 'TIER binary-safe parameters\n'
 # gBASIC strings hold interior NULs. Bound with SQL_NTS -- the obvious
 # spelling, and what this module did until it was measured -- the driver gets
