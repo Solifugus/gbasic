@@ -2055,6 +2055,32 @@ schema), and conflating them returns nothing at all on a database that
 qualifies its objects. A field you do not supply is passed as `NULL`; an empty
 string is passed through as written.
 
+**The qualifier is not in the same place on every database.** Measured
+2026-09-08 across four drivers with the same table:
+
+| | `TABLE_CAT` | `TABLE_SCHEM` |
+|---|---|---|
+| SQLite | *nothing* | *nothing* |
+| MariaDB | the database | *nothing* |
+| PostgreSQL | the database | `public` |
+| SQL Server | the database | `dbo` |
+
+So code that builds a qualified name as `schema.table` produces
+`nothing.orders` against MariaDB. Read both, and expect either to be absent.
+
+**Type codes are the driver's opinion, not the SQL type's.** The same
+`varchar(20)` is `DATA_TYPE = 12` (`SQL_VARCHAR`) on PostgreSQL, SQL Server and
+SQLite, and `-9` (`SQL_WVARCHAR`) on MariaDB — and both PostgreSQL drivers,
+ANSI and Unicode, agree on 12, so it is not an ANSI/Unicode split. `TYPE_NAME`
+diverges further (`int4`, `int`, `INT`, `INTEGER` for the same column), and
+SQLite embeds the size in it (`varchar(20)`). Comparing types *across* sources
+needs its own mapping; neither field is portable on its own.
+
+**`IS_NULLABLE` is empty on PostgreSQL** — psqlODBC returns `nothing` where the
+others return `YES`/`NO`. Use the numeric `NULLABLE`, which all four populate.
+And SQLite reports a primary key as `NULLABLE = 1`, which is wrong: nullability
+from SQLite cannot be trusted.
+
 `odbc.foreign_keys` answers two different questions and you must say which:
 `table` gives the keys **defined on** that table, `referenced_table` gives the
 keys **pointing at** it. Supplying neither is refused rather than guessed.
@@ -2065,6 +2091,19 @@ arrays of records; duplicate column names are errors, because a record would
 silently keep only the last of them. `odbc.exec` refuses a statement that
 returns rows — use `odbc.query`. ODBC errors use `error.source = "odbc"` and
 carry the driver's own SQLSTATE and message.
+
+Two connection-string options are **warned about at connect time**, because
+both fail silently and produce a plausible wrong answer rather than an error:
+
+- **FreeTDS without `ClientCharset=UTF-8`** stores non-ASCII text one byte per
+  character. It round-trips through gBASIC, so a write-then-read test passes
+  while the database holds mojibake.
+- **psqlODBC without `BoolsAsChar=0`** reports a `boolean` column as
+  `SQL_VARCHAR`, so it arrives as the string `"1"` or `"0"`. **`"0"` is a
+  non-empty string and therefore TRUE in gBASIC**, so `if row.is_active` is
+  taken for a row the database says is inactive — a wrong answer in the
+  permissive direction, with nothing raised. MariaDB and SQL Server report
+  `bit` as `SQL_BIT` and are unaffected.
 
 `odbc.drivers()` and `odbc.sources()` exist so a program can tell "no driver
 of that name is installed" apart from "the server refused you" — two failures

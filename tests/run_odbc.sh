@@ -69,6 +69,27 @@ trap 'rm -rf "$work"' EXIT
 
 export GBASIC_ODBC_CONNECTION="${GBASIC_ODBC_CONNECTION:-Driver=$driver;Database=$work/odbc_test.db}"
 
+# TWO COLUMN TYPES HAVE NO PORTABLE SPELLING. `datetime` is what SQL Server,
+# MariaDB and SQLite want -- on SQL Server `timestamp` is a ROWVERSION and not
+# a time at all, which is why the fixture never used it -- while PostgreSQL has
+# no `datetime` and wants `timestamp`. PostgreSQL's `bit` is likewise a BIT
+# STRING rather than a boolean. Supplied here rather than guessed in the
+# fixture; the defaults leave every existing invocation byte-identical.
+case "$driver" in
+    PostgreSQL*)
+        export GBASIC_ODBC_TS_TYPE=timestamp
+        export GBASIC_ODBC_BOOL_TYPE=boolean
+        # And configure the driver the way its own warning tells you to -- see
+        # the psqlODBC boolean tier below for what happens without it. The
+        # suite runs as a correctly configured deployment would; the tier
+        # deliberately connects without it.
+        case "$GBASIC_ODBC_CONNECTION" in
+            *BoolsAsChar*) ;;
+            *) export GBASIC_ODBC_CONNECTION="$GBASIC_ODBC_CONNECTION;BoolsAsChar=0" ;;
+        esac
+        ;;
+esac
+
 failures=0
 checks=0
 pass() { checks=$((checks + 1)); printf '  ok   %s\n' "$1"; }
@@ -232,6 +253,56 @@ printf 'TIER schema catalog (tables/columns/primary_keys/foreign_keys)\n'
 # for catalog metadata. GBASIC_ODBC_CONNECTION runs these same fixtures against
 # a real server, which is where this tier earns its keep.
 run_fixture tests/odbc_catalog_test.bas 23 'odbc_catalog_test'
+
+printf 'TIER the psqlODBC boolean trap (PostgreSQL only)\n'
+# MEASURED 2026-09-08 against PostgreSQL 17 / psqlODBC 17.00, and it is the
+# same shape as the FreeTDS charset trap below: left to itself the driver
+# reports a `boolean` column as SQL_VARCHAR rather than SQL_BIT, so it arrives
+# as the STRING "1" or "0".
+#
+# THAT IS A WRONG ANSWER IN THE PERMISSIVE DIRECTION, not merely a type
+# surprise: "0" is a non-empty string and gBASIC makes any non-empty string
+# TRUE, so `if row.is_active` is taken for a row the database says is inactive,
+# and nothing raises. MariaDB and SQL Server both report `bit` as SQL_BIT and
+# are unaffected -- which is exactly why a suite that never met PostgreSQL
+# could not see it.
+#
+# Asserted as a DIFFERENCE with its control, because "it warns" alone passes on
+# a build that warns about every connection.
+case "$driver" in
+    PostgreSQL*)
+        bare="${GBASIC_ODBC_CONNECTION//;BoolsAsChar=0/}"
+        cat >"$work/pgbool.bas" <<'EOF'
+load odbc
+c = odbc.connect(env("PGBOOL_CS"))
+z = odbc.close(c)
+EOF
+        if PGBOOL_CS="$bare" ./gbasic "$work/pgbool.bas" 2>&1 | command grep -q "BoolsAsChar=0"; then
+            pass "an unconfigured psqlODBC connection warns about booleans"
+        else
+            fail "psqlODBC was not warned about; a false row would read as true"
+        fi
+        if [ -z "$(PGBOOL_CS="$bare;BoolsAsChar=0" ./gbasic "$work/pgbool.bas" 2>&1)" ]; then
+            pass "CONTROL: with BoolsAsChar=0 it is silent"
+        else
+            fail "warned even though the connection is configured correctly"
+        fi
+        ;;
+    *)
+        # THE OTHER CONTROL, and it is why this is not a blanket warning: the
+        # drivers that report SQL_BIT correctly must say nothing.
+        cat >"$work/nobool.bas" <<'EOF'
+load odbc
+c = odbc.connect(env("GBASIC_ODBC_CONNECTION"))
+z = odbc.close(c)
+EOF
+        if ./gbasic "$work/nobool.bas" 2>&1 | command grep -q "BoolsAsChar"; then
+            fail "$driver was warned about a psqlODBC-only trap"
+        else
+            pass "CONTROL: $driver reports SQL_BIT and is not warned"
+        fi
+        ;;
+esac
 
 printf 'TIER binary-safe parameters\n'
 # gBASIC strings hold interior NULs. Bound with SQL_NTS -- the obvious

@@ -128,6 +128,37 @@ estate can only hold a few.
 | R28 | **Table names encoding a history nobody remembers** — `customer`, `customer2`, `customer_new`, `customer_v2_final`; the live one is `customer2` | **the schema as the source of truth about what is live.** The only evidence is which one the application writes to, which is not in the database at all. Needs R3b |
 | R29 | **A schema whose only accurate documentation is a view** — the tables are a mess, the view is the contract, and a column's business meaning exists only in the expression producing it | extends R11 **with a purpose**: not "can the tool follow a view" but **"does it know the view is the interface"** |
 
+### R30 — found by running, not by reasoning
+
+Added 2026-09-08 after the ODBC catalog surface met four real drivers. It is
+not a schema trap and cannot be planted in one, which is why neither this
+document nor gdash's contribution contained it:
+
+| | Measured | What it defeats |
+| --- | --- | --- |
+| R30 | **The same declared type reports a different `DATA_TYPE` on different drivers** — `varchar(20)` is `12` on PostgreSQL, SQL Server and SQLite and `-9` on MariaDB; `TYPE_NAME` is `int4`/`int`/`INT`/`INTEGER` for one column; SQLite embeds the size in the name | **the type prefilter, across sources.** Both PostgreSQL drivers agree on 12, so it is not an ANSI/Unicode split — drivers simply disagree. A prefilter comparing codes rejects a real cross-source relationship before any value is looked at |
+
+§5a named the type prefilter as **the thinnest column, defeated by R17 alone**,
+and said that is where the next trap is worth more than a better
+implementation. The very first four-way measurement found a second thing
+defeating it — from a direction neither of us listed, because it is a property
+of the *driver* rather than of the schema.
+
+That is the coverage argument working exactly as intended: it pointed at the
+weakest assumption, and looking there found something.
+
+**Two more measured facts a multi-source value model must carry**, both from
+the same run:
+
+- **The qualifier is not in the same field on every database.** MariaDB puts
+  the database in `TABLE_CAT` and leaves `TABLE_SCHEM` empty; PostgreSQL and
+  SQL Server populate both; SQLite neither. Building a key as `schema.table`
+  yields `nothing.orders` on MariaDB.
+- **Nullability from SQLite is wrong** — it reports a primary key as nullable —
+  and `IS_NULLABLE` is *empty* on PostgreSQL while the numeric `NULLABLE` is
+  populated everywhere. An inference like "this cannot be a key, it is
+  nullable" is wrong on one and unanswerable on another.
+
 ## 5a. The coverage argument — read the table the other way
 
 gdash's, and it is worth more than another example. Several traps defeat the

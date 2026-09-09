@@ -9,6 +9,45 @@ language surface may still change between releases.
 
 ## Unreleased
 
+### Fixed — psqlODBC reports booleans as text, and `"0"` is true in gBASIC
+
+Found by running the ODBC suite against **four real drivers** — SQLite,
+MariaDB 11.8, PostgreSQL 17 and SQL Server — after the catalog surface landed.
+
+Left to itself, psqlODBC reports a `boolean` column as `SQL_VARCHAR` rather
+than `SQL_BIT`, so it arrives as the string `"1"` or `"0"`. That is not a type
+surprise but **a wrong answer in the permissive direction**: `"0"` is a
+non-empty string, gBASIC makes any non-empty string true, and `if row.is_active`
+is therefore taken for a row the database says is inactive. Nothing raises.
+MariaDB and SQL Server both report `bit` as `SQL_BIT` and are unaffected, which
+is precisely why a suite that had never met PostgreSQL could not see it.
+
+`odbc.connect` now warns at connect time, the same treatment FreeTDS's
+`ClientCharset` already gets and for the same reason: the failure is silent, so
+there is no error to attach a hint to. A warning rather than a refusal, and
+rather than special-casing `TYPE_NAME = "bool"` in the reader — the driver said
+varchar and we returned a string faithfully, so the fix belongs in the
+connection string the operator controls. Asserted as a difference with two
+controls: silent once `BoolsAsChar=0` is set, and silent on the three drivers
+that get it right.
+
+**Also fixed: the suite could not run against PostgreSQL at all.**
+`odbc_test.bas` declared `datetime` and `bit` columns — the portable spelling
+for SQL Server, MariaDB and SQLite, chosen because on SQL Server `timestamp`
+means *rowversion*. PostgreSQL has no `datetime`, and its `bit` is a bit-string
+rather than a boolean. The runner now supplies both spellings; defaults leave
+every existing invocation unchanged.
+
+**Measured facts now recorded in the reference**, all of which a multi-source
+tool must carry: the qualifier is in `TABLE_CAT` on MariaDB and `TABLE_SCHEM`
+on PostgreSQL/SQL Server and neither on SQLite; the same `varchar(20)` reports
+`DATA_TYPE` 12 on three drivers and -9 on MariaDB (and both PostgreSQL drivers
+agree on 12, so it is not an ANSI/Unicode split); `IS_NULLABLE` is empty on
+PostgreSQL; and SQLite reports a primary key as nullable, which is wrong.
+
+Suite results: SQLite 42, MariaDB 41, PostgreSQL 42, SQL Server 43 — 0 failed.
+The catalog fixture passes 23/23 on all four.
+
 ### Added — `odbc` catalog: what the database says about itself
 
 `odbc.tables`, `odbc.columns`, `odbc.primary_keys`, `odbc.foreign_keys` over

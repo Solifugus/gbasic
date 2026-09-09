@@ -57,7 +57,22 @@ check("odbc.sources returns an array", type(sources), "array")
 odbc.exec(db, "drop table if exists gb_odbc_t")
 odbc.exec(db, "drop table if exists gb_odbc_keep")
 
-r = odbc.exec(db, "create table gb_odbc_t (id integer, name varchar(40), note varchar(6000), flag bit, when_on date, at_time datetime, big bigint, exact varchar(40))")
+' TWO COLUMN TYPES HAVE NO PORTABLE SPELLING, so the runner supplies them
+' rather than this fixture guessing. `datetime` is what SQL Server, MariaDB and
+' SQLite want -- on SQL Server `timestamp` is a ROWVERSION, not a time -- while
+' PostgreSQL has no `datetime` at all and wants `timestamp`. And PostgreSQL's
+' `bit` is a BIT STRING rather than a boolean, so it would not read back as
+' one. Defaults keep every existing invocation unchanged.
+'
+' `default(env(..), ..)` because an unset variable reads back as `unknown`,
+' not "" -- and `unknown` concatenated into DDL would produce a create
+' statement that fails for a reason naming neither the type nor the fixture.
+ts_type = default(env("GBASIC_ODBC_TS_TYPE"), "datetime")
+bool_type = default(env("GBASIC_ODBC_BOOL_TYPE"), "bit")
+r = odbc.exec(db, join(["create table gb_odbc_t (id integer, name varchar(40),",
+                        "note varchar(6000), flag", bool_type + ",",
+                        "when_on date, at_time", ts_type + ",",
+                        "big bigint, exact varchar(40))"], " "))
 check("create reports its command", r.command, "CREATE")
 
 r = odbc.exec(db, "create table gb_odbc_keep (id integer)")

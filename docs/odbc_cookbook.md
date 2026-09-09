@@ -16,7 +16,7 @@ about their shape is SQLite-specific: point `odbc.connect` at a different
 connection string and the same code runs against a different database.
 
 **Verified against three engines.** The suite runs unchanged against
-**SQL Server 2025**, **MariaDB 11.8** and **SQLite** — the same fixtures, one
+**SQL Server 2025**, **MariaDB 11.8**, **PostgreSQL 17** and **SQLite** — the same fixtures, one
 connection string apart:
 
 ```

@@ -19160,6 +19160,35 @@ static Value odbc_eval_connect(AstExpr *expr) {
                          "error; add ClientCharset=UTF-8 to the connection string",
                          ODBC_ERROR_CODE, "odbc", value_null());
         }
+        /* The same shape one driver along, MEASURED 2026-09-08 against
+         * PostgreSQL 17 and psqlODBC 17.00: left to itself, psqlODBC reports a
+         * `boolean` column as SQL_VARCHAR rather than SQL_BIT, so it arrives as
+         * the STRING "1" or "0".
+         *
+         * That is not merely a type surprise, it is a WRONG ANSWER IN THE
+         * PERMISSIVE DIRECTION: "0" is a non-empty string and gBASIC's
+         * truthiness makes any non-empty string TRUE, so `if row.is_active`
+         * is taken for a row the database says is inactive. Nothing raises.
+         * MariaDB and SQL Server both report `bit` as SQL_BIT and are
+         * unaffected, which is exactly why a suite that never met PostgreSQL
+         * could not see this.
+         *
+         * A warning rather than a refusal, and rather than special-casing
+         * TYPE_NAME "bool" in the reader: the driver said varchar and we
+         * returned a string faithfully, so the fix belongs in the connection
+         * string the operator controls. A program that stores no booleans is
+         * unaffected and the channel is suppressible for that case. */
+        if (SQL_SUCCEEDED(SQLGetInfo(dbc, SQL_DRIVER_NAME, driver_name,
+                                     (SQLSMALLINT)sizeof(driver_name), &dn_len)) &&
+            strstr((const char *)driver_name, "psqlodbc") &&
+            !odbc_conn_has_option(target_text, "BoolsAsChar")) {
+            runtime_warn("this driver reports a boolean column as text unless "
+                         "told otherwise, and \"0\" is TRUE in gBASIC because it "
+                         "is a non-empty string -- so a false row reads as true "
+                         "with no error; add BoolsAsChar=0 to the connection "
+                         "string",
+                         ODBC_ERROR_CODE, "odbc", value_null());
+        }
     }
 
     OdbcConnectionValue *connection = calloc(1, sizeof(OdbcConnectionValue));
