@@ -61,6 +61,72 @@ it contributes no column to the output while changing which rows reach it, so
 it is part of the derivation context while being invisible in the result
 (estate R34).
 
+## 1b. Parse the SQL. Do not trust dependency metadata.
+
+*Added 2026-09-09 on Matthew's report of having built this before, in Python,
+against SQL Server: tracing forward and backward through long successions of
+procedures, views and tables. **The metadata approach failed repeatedly** — it
+changed between SQL Server versions and parts of it were never explicable.
+**Parsing the SQL succeeded.***
+
+That experience is corroborated by the product's own history:
+`sys.sql_dependencies` was deprecated precisely because it could not cope with
+deferred name resolution, and its replacement behaves differently again — so a
+lineage tool built on it is built on a moving floor.
+
+**The source text, by contrast, is retrievable everywhere.** Measured
+2026-09-09 against all four:
+
+| | view source | procedure source |
+|---|---|---|
+| SQLite | `sqlite_master.sql` | *no stored procedures* |
+| MariaDB | `information_schema.views.view_definition` | `information_schema.routines.routine_definition` |
+| PostgreSQL | `pg_get_viewdef()` | `pg_proc.prosrc` |
+| SQL Server | `sys.sql_modules.definition` | `sys.sql_modules.definition` |
+
+Two findings from that run, and the first inverts the expected difficulty:
+
+**Views come back rewritten on MariaDB and PostgreSQL, verbatim on SQLite and
+SQL Server.** MariaDB returns ``select `db`.`t`.`id` AS `id` …`` — fully
+qualified, with the column-level mapping *already resolved by the server*.
+PostgreSQL pretty-prints and makes casts explicit (`state::text = 'OPEN'::text`).
+So the two databases that rewrite hand you lineage the other two make you
+derive. A parser must handle both shapes, and "show me the source" for
+documentation is a *different* question from "parse this for lineage", because
+on two of four the stored text is not what the author wrote.
+
+**Procedure bodies come back verbatim on all three that have them.** A body is
+stored as text rather than compiled into a queryable tree, so there is no
+metadata shortcut even in principle. Parsing is not a preference here; it is
+the only route.
+
+### What the parser must do, and what it must refuse
+
+Lineage does not need a complete SQL implementation. It needs: which objects
+are **read** (`from`, `join`, subqueries, CTEs), which are **written**
+(`insert`, `update`, `delete`, `merge`, `select into`), the column mapping in
+the projection, and **the predicates** — which §1a establishes are not metadata
+about the derivation but the answer to the question being asked.
+
+It must be **partial, and say so**. Dynamic SQL assembled at run time, `select *`
+through several hops, a procedure branching on a parameter — these are not
+parse failures to be guessed past. They are the R3b outcome: *unanswerable from
+the source*, reported as such. A tracer that silently drops a hop it could not
+read produces a lineage graph that is confidently incomplete, which is worse
+than one that names its gaps.
+
+### What it is for
+
+Three uses, in the order they pay off:
+
+- **Impact analysis** — what does changing this column affect, upstream and
+  downstream? This is what a developer needs *before* altering anything, and it
+  is the use with the shortest path to value.
+- **Documentation** — flows that are currently reconstructed by hand, written
+  down and kept current because they are derived rather than maintained.
+- **NLQ** — which needs to know not just what tables exist but which one holds
+  the measure the question is about, and under which derivation.
+
 ## 2. The first increment is declared facts only
 
 No inference at all. Tables, columns, types, nullability, primary keys, foreign
