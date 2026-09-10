@@ -285,6 +285,34 @@ is not built and needs a null model first.
 | `estate.ddl(spec, dialect)` | create statements — `postgres` and `sqlserver` |
 | `estate.truth(spec)` | the answer key, derived from the same declaration |
 | `estate.objects(spec)` | every declared object as a flat list |
+| `estate.catalog(spec, source)` | what `discovery.scan` would read back, built from the declaration instead |
+
+`estate.catalog` is **not a substitute for the live tier** and does not pretend
+to be: it cannot see what a driver does to a name, which is exactly the class of
+defect the live tier exists to catch. What it buys is that the **column lineage**
+checks — which are about SQL, not about drivers — run with no database at all,
+so the part of this gate that can go quiet stays small.
+
+### Column lineage is declared, not derived
+
+The module bodies are the SQL; `spec().column_lineage` is what that SQL
+**means**, written out by hand when the estate was designed. `discovery.lineage`
+derives its answer from the bodies alone and has never seen that list, so
+agreement between the two is evidence — where a golden of either alone is a
+transcript. **Deriving the answer key from the bodies with the same parser would
+make it a copy of the answer**, and the check comparing them would pass on any
+parser that is consistently wrong. The same rule governs a view's output
+columns, which are declared beside its body rather than read out of it.
+
+`lineage_origins` names where the trail genuinely **ends** — the operational
+columns nothing in the estate writes — which is what makes "the walk stopped
+here" a checkable claim rather than a description of wherever it happened to
+stop.
+
+Added with it: `p_restate_fact`, a **second writer of a column another module
+already fills**, which reads the very table it writes. Both are ordinary in a
+real warehouse and both break a lineage walk that assumes one writer per column
+and no cycles.
 
 Covers R1–R4, R6–R13, R19, R21, R31–R35. **SQLite and MariaDB are refused**:
 one has no stored procedures, the other no schemas, and neither can carry this

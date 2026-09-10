@@ -179,7 +179,12 @@ document list, with a status column, is `docs/README.md`.
   coincidences are a certainty. Every identity rule was measured against four
   drivers: the qualifier is in `TABLE_CAT` on MariaDB, `TABLE_SCHEM` on
   PostgreSQL and SQL Server and neither on SQLite, so an id built as
-  `schema.table` silently loses one.
+  `schema.table` silently loses one. It also reads SQL: what a module touches,
+  why two same-named columns disagree, and **where a column came from across
+  hops** — a report's number traced back through views and procedures to the
+  operational table it originated in. The object level answers "which table
+  does this read", which rarely settles anything; the column level answers the
+  one that costs a day.
 - **a second factor** — `otp`, one-time passwords (RFC 4226 HOTP, RFC 6238
   TOTP). gBASIC owns the factor rather than delegating it, so it works whether
   the directory is AD, OpenLDAP, a table or nothing. Replay is made structural:

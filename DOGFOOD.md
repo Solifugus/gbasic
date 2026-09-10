@@ -4427,3 +4427,21 @@ orders freely.
   to the empty string" are different facts and POSIX lets a program tell them
   apart. What is unfortunate is only that the natural guard silently agrees
   with the wrong one.
+
+## 2026-09-09 — CC — `read(path)` and `write(path, text)` refuse a plain string; only a `{file}` reference will do
+- **Type:** language-surprise
+- **Severity:** low
+- **What:** `read("schema/0001.sql")` raises `read expects a file reference`,
+  and so does `write(path, text)`. The path-taking-apart family (`file_name`,
+  `join_path`, `extension`) and the listing functions accept a string, so the
+  natural reading of the reference — that a string and a reference are
+  interchangeable wherever a path is wanted — holds for every neighbour and
+  not for the two functions a program calls most.
+- **Where hit:** building Nexordia's migration runner (`src/migrate.bas`) and
+  three test fixtures in one session; each grew the same four-line helper
+  (`fr{file}= path` then `read(fr)`).
+- **Workaround:** a `_read_text(path)` / `write_text(path, text)` helper per
+  file. Cheap, but it is the same helper in four places.
+- **Suggestion:** let `read`, `write` and `append` take a string the way
+  `list`, `bytes` and `file_name` already do, or say in the reference's Files
+  section that whole-file I/O is the exception and why.

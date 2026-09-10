@@ -161,12 +161,27 @@ library estate
                 ' other only active deals. "Why are these different?" is the
                 ' question people actually ask, and the answer is the
                 ' predicate, not a missing relationship.
+                ' A VIEW'S OUTPUT COLUMNS ARE DECLARED, not read out of its
+                ' own body. Deriving them with the same parser under test
+                ' would make the answer key a second copy of the answer, and
+                ' the check that compares them would pass on any parser that
+                ' is consistently wrong.
                 { schema: "warehouse", name: "rpt_volume_gross", kind: "view",
                   body: "select effective_date, sum(gross_vol_mmbtu) as total_volume from warehouse.fact_volume group by effective_date",
+                  columns: ["effective_date date", "total_volume decimal(19,4)"],
                   reads: ["warehouse.fact_volume"], writes: [] },
                 { schema: "warehouse", name: "rpt_volume_net", kind: "view",
                   body: "select effective_date, sum(avail_after_pvr) as total_volume from warehouse.fact_volume where status = 'ACTIVE' group by effective_date",
+                  columns: ["effective_date date", "total_volume decimal(19,4)"],
                   reads: ["warehouse.fact_volume"], writes: [] },
+                ' A RESTATEMENT: the SECOND writer of a column another module
+                ' already fills, and it reads the very table it writes. Both
+                ' are ordinary and both break a lineage walk that assumes one
+                ' writer per column and no cycles.
+                { schema: "warehouse", name: "p_restate_fact", kind: "procedure",
+                  body: "update warehouse.fact_volume set avail_after_pvr = gross_vol_mmbtu * 0.97 where status = 'ACTIVE'",
+                  reads: ["warehouse.fact_volume"],
+                  writes: ["warehouse.fact_volume"] },
                 ' A GAP, deliberately: dynamic SQL cannot be read, and a tracer
                 ' that drops it silently is confidently incomplete.
                 { schema: "staging", name: "p_dynamic_rebate", kind: "procedure",
@@ -177,6 +192,51 @@ library estate
                   ' natural rather than contorted into both dialects.
                   dialects: ["sqlserver"] }
             ],
+            ' COLUMN LINEAGE, DECLARED. The module bodies above are the SQL;
+            ' this is what that SQL MEANS, written out by hand when the estate
+            ' was designed. `discovery.lineage` derives its answer from the
+            ' bodies alone and has never seen this list, so agreement between
+            ' the two is evidence -- where a golden of either alone is a
+            ' transcript. Deriving this from the bodies with the same parser
+            ' would make the answer key a copy of the answer.
+            column_lineage: [
+                { column: "warehouse.rpt_volume_net.total_volume",
+                  via: "warehouse.rpt_volume_net",
+                  from: ["warehouse.fact_volume.avail_after_pvr"] },
+                { column: "warehouse.rpt_volume_gross.total_volume",
+                  via: "warehouse.rpt_volume_gross",
+                  from: ["warehouse.fact_volume.gross_vol_mmbtu"] },
+                { column: "warehouse.fact_volume.avail_after_pvr",
+                  via: "warehouse.p_build_fact",
+                  from: ["warehouse.stg_deal.gross_vol_mmbtu", "warehouse.stg_deal.pvr_pct"] },
+                ' The same column, filled a second time by the restatement --
+                ' and from the SAME TABLE it writes.
+                { column: "warehouse.fact_volume.avail_after_pvr",
+                  via: "warehouse.p_restate_fact",
+                  from: ["warehouse.fact_volume.gross_vol_mmbtu"] },
+                { column: "warehouse.fact_volume.gross_vol_mmbtu",
+                  via: "warehouse.p_build_fact",
+                  from: ["warehouse.stg_deal.gross_vol_mmbtu"] },
+                { column: "warehouse.stg_deal.gross_vol_mmbtu",
+                  via: "warehouse.p_load_stg_deal",
+                  from: ["trading.deal.gross_vol_mmbtu"] },
+                { column: "warehouse.stg_deal.pvr_pct",
+                  via: "warehouse.p_load_stg_deal",
+                  from: ["trading.deal.pvr_pct"] },
+                { column: "finance.gl_entry.amount",
+                  via: "warehouse.p_post_gl",
+                  from: ["warehouse.fact_volume.avail_after_pvr"] },
+                ' A COLUMN FILLED FROM A CONSTANT. It has a writer and no
+                ' sources, which is a different fact from having no writer,
+                ' and conflating the two is how a hard-coded value becomes
+                ' invisible in a lineage report.
+                { column: "finance.gl_entry.acct_no",
+                  via: "warehouse.p_post_gl",
+                  from: [] }
+            ],
+            ' Where the trail genuinely ENDS: nothing in the estate writes
+            ' these, so a walk back from any report must arrive here.
+            lineage_origins: ["trading.deal.gross_vol_mmbtu", "trading.deal.pvr_pct"],
             ' R33 stated as a QUESTION the estate can be asked, with the answer
             ' recorded. This is what discovery must eventually explain.
             divergences: [
@@ -195,7 +255,49 @@ library estate
                  null_region: sp.null_region,
                  undiscoverable: sp.undiscoverable,
                  flows: sp.modules,
+                 column_lineage: sp.column_lineage,
+                 lineage_origins: sp.lineage_origins,
                  divergences: sp.divergences }
+    end function
+
+    ' ---- the catalog, from the same declaration ---------------------------
+    '
+    ' What `discovery.scan` would read back if the estate were materialised,
+    ' built from the declaration instead. THIS IS NOT A SUBSTITUTE FOR THE
+    ' LIVE TIER and does not pretend to be: it cannot see what a driver does
+    ' to a name, which is exactly the class of defect the live tier exists to
+    ' catch. What it buys is that the LINEAGE checks -- which are about SQL,
+    ' not about drivers -- can run with no database at all, so the part of
+    ' this gate that can go quiet stays small.
+    function catalog(sp, source)
+        cat = { source: source, tables: {}, columns: {}, primary_keys: [], edges: [] }
+        objs = []
+        for each t in sp.tables
+            append(objs, { schema: t.schema, name: t.name, columns: t.columns, type: "TABLE" })
+        end for
+        for each m in sp.modules
+            if has(m, "columns") then
+                append(objs, { schema: m.schema, name: m.name, columns: m.columns, type: "VIEW" })
+            end if
+        end for
+        for each o in objs
+            tid = source + "." + o.schema + "." + o.name
+            cat.tables[tid] = { source: source, catalog: "", schema: o.schema,
+                                table: o.name, column: "", type: o.type }
+            pos = 1
+            for each cdef in o.columns
+                nm = split(trim(cdef), " ")[0]
+                cid = tid + "." + nm
+                cat.columns[cid] = { source: source, catalog: "", schema: o.schema,
+                                     table: o.name, column: nm,
+                                     type_name: "", position: pos, nullable: true }
+                if contains(lower(cdef), "primary key") then
+                    append(cat.primary_keys, cid)
+                end if
+                pos = pos + 1
+            end for
+        end for
+        return cat
     end function
 
     function _type_for(dialect, decl)

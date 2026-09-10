@@ -166,12 +166,114 @@ for each r in tr.relationships
 end for
 
 print ""
+print "-- COLUMN LINEAGE, against the estate's own declared answer"
+' THE ORACLE, and the same one R33 uses: the estate declares what each column
+' is derived from, written by hand when the estate was designed;
+' `discovery.lineage` derives its answer from the module BODIES alone, having
+' never seen that list. Agreement between two independently written statements
+' is evidence -- a golden of either alone is a transcript. Deriving the answer
+' key from the bodies with the same parser would make it a copy of the answer.
+lcat = estate.catalog(sp, "wh")
+lmods = []
+for each m in sp.modules
+    ' The dynamic-SQL module is T-SQL only; it declares itself a gap and has
+    ' nothing to derive.
+    if not has(m, "dialects") then
+        append(lmods, { source: "wh", schema: m.schema, name: m.name,
+                        kind: m.kind, body: m.body })
+    end if
+end for
+
+function step_for(ln, column, via)
+    for each s in ln.steps
+        if s.column = "wh." + column and s.via = "wh." + via then
+            return s
+        end if
+    end for
+    return { column: "", via: "", sources: [], expression: "" }
+end function
+
+function qualify(names)
+    out = []
+    for each n in names
+        append(out, "wh." + n)
+    end for
+    return join(out, ",")
+end function
+
+' EVERY DECLARED EDGE, DERIVED. Each entry names a column, the module that
+' fills it, and what it is filled FROM -- and all three must come back.
+lin_checked = 0
+for each want in tr.column_lineage
+    ln = discovery.lineage(lcat, lmods, "PostgreSQL", "wh." + want.column, {})
+    got = step_for(ln, want.column, want.via)
+    check("lineage: " + want.column + " via " + want.via,
+          join(got.sources, ","), qualify(want.from))
+    lin_checked = lin_checked + 1
+end for
+check("every declared edge was checked", lin_checked, count(tr.column_lineage))
+
+' THE WHOLE CHAIN, not one hop. This is the question that costs a day: a
+' number on a report, four hops from the operational table it came out of.
+full = discovery.lineage(lcat, lmods, "PostgreSQL", "wh.warehouse.rpt_volume_net.total_volume", {})
+check("the trail ends where the estate says it ends",
+      join(full.origins, ","), qualify(tr.lineage_origins))
+check("and it took more than one hop to get there", count(full.steps) > 3, true)
+' NOTHING WAS LOST ON THE WAY. `unresolved` is the field a caller has to be
+' able to trust, so a clean chain must report an EMPTY one -- otherwise the
+' list becomes noise and stops being read.
+check("nothing on the chain was unresolved", count(full.unresolved), 0)
+
+' A COLUMN FILLED FROM A CONSTANT has a writer and no sources, which is a
+' DIFFERENT FACT from having no writer. Conflating them is how a hard-coded
+' value becomes invisible in a lineage report -- and a hard-coded value is one
+' of the commonest reasons a number is wrong and nobody can see why.
+konst = discovery.lineage(lcat, lmods, "PostgreSQL", "wh.finance.gl_entry.acct_no", {})
+check("a constant column has a writer", count(konst.steps), 1)
+check("and no sources", count(konst.steps[0].sources), 0)
+check("and is NOT reported as an origin", count(konst.origins), 0)
+check("while the literal itself is shown", contains(konst.steps[0].expression, "4000"), true)
+
+' TWO WRITERS OF ONE COLUMN, and the second reads the very table it writes.
+' Both are ordinary and both break a walk that assumes one writer and no
+' cycles; reporting only the first would silently hide a restatement.
+two = discovery.lineage(lcat, lmods, "PostgreSQL", "wh.warehouse.fact_volume.avail_after_pvr", {})
+vias = []
+for each st in two.steps
+    if st.hops = 0 then
+        append(vias, st.via)
+    end if
+end for
+check("both writers of one column are reported", count(vias), 2)
+check("including the one that reads the table it writes",
+      contains(join(vias, ","), "p_restate_fact"), true)
+
+' THE CONTROL. A base-table column nothing writes is an ORIGIN with no steps
+' -- without this, "the trail ends at trading.deal" is equally satisfied by a
+' walker that stops everywhere.
+base = discovery.lineage(lcat, lmods, "PostgreSQL", "wh.trading.deal.gross_vol_mmbtu", {})
+check("CONTROL: a column nothing writes is an origin", join(base.origins, ","), "wh.trading.deal.gross_vol_mmbtu")
+check("and has no derivation at all", count(base.steps), 0)
+
+' AND THE NULL REGION. Nothing in `staging` is written by anything readable,
+' so a lineage that reported a derivation there would have INVENTED it -- the
+' same assertion R9 makes for relationships, one level down.
+nul = discovery.lineage(lcat, lmods, "PostgreSQL", "wh.staging.tmp_rebate_2019.col_a", {})
+check("nothing is derived in the null region", count(nul.steps), 0)
+check("and it is reported as an origin, not as an answer", join(nul.origins, ","), "wh.staging.tmp_rebate_2019.col_a")
+
+print ""
 print "-- refusals"
 on error goto next
 estate.ddl(sp, "mariadb")
 check("a dialect that cannot carry the estate is refused", contains(error.message, "no schemas"), true)
 error.clear()
 check("CONTROL: postgres is supported", count(estate.ddl(sp, "postgres")) > 0, true)
+on error goto next
+discovery.lineage(lcat, lmods, "PostgreSQL", "wh.warehouse.fact_volume.no_such_column", {})
+check("lineage from a column that does not exist is refused", contains(error.message, "no column"), true)
+error.clear()
+on error stop
 
 print ""
 print "checks: " + string(tally.checks)

@@ -139,6 +139,28 @@ for each tid in keys(cat.tables)
         end for
     end if
 end for
+function col_id_for(cat, suffix)
+    for each k in keys(cat.columns)
+        if ends_with(k, suffix) then
+            return k
+        end if
+    end for
+    return ""
+end function
+
+function reaches_col(steps, hop, suffix)
+    for each st in steps
+        if st.hops = hop then
+            for each sc in st.sources
+                if ends_with(sc, suffix) then
+                    return true
+                end if
+            end for
+        end if
+    end for
+    return false
+end function
+
 function reaches(list, suffix)
     for each r in list
         if ends_with(r, suffix) then
@@ -153,6 +175,24 @@ check("and the LEDGER three hops out, in another schema", reaches(reached, ".fin
 check("and both divergent reports", reaches(reached, ".rpt_volume_gross") and reaches(reached, ".rpt_volume_net"), true)
 ' THE CONTROL: the null region is downstream of nothing.
 check("CONTROL: the null region is not reachable", reaches(reached, ".staging.tmp_rebate_2019"), false)
+
+print ""
+print "-- column lineage, against a REAL catalog and REAL stored source"
+' THE OFFLINE TIER PROVES THE PARSER; THIS PROVES THE BINDING. Everything
+' between a column name in a module body and a column id in the catalog is a
+' fact about the database -- how it qualifies objects, what case it stores
+' names in, what it hands back as the source of a view -- and none of it is
+' visible from a hand-built catalog. PostgreSQL rewrites a view's body when it
+' stores it, so what comes back is not the text that was submitted.
+lin = discovery.lineage(cat, mods, info.dbms_name, col_id_for(cat, ".warehouse.rpt_volume_net.total_volume"), {})
+check("the report's column is derived from the fact table",
+      reaches_col(lin.steps, 0, ".warehouse.fact_volume.avail_after_pvr"), true)
+check("and the trail ends at the operational table",
+      reaches(lin.origins, ".trading.deal.gross_vol_mmbtu"), true)
+' NOTHING WAS LOST ON THE WAY. A chain with unresolved sources is a chain a
+' caller cannot act on, and on a real database the resolution is where it
+' breaks -- an alias bound to the wrong object, or a name in the wrong case.
+check("nothing on the live chain was unresolved", count(lin.unresolved), 0)
 
 print ""
 print "checks: " + string(tally.checks)

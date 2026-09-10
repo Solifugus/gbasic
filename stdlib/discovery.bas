@@ -316,6 +316,36 @@ library discovery
                             i = i + 1
                             append(out, { kind: "quoted", text: join(piece, "") })
                         else
+                            if b >= 48 and b <= 57 then
+                                ' A NUMBER IS NOT A NAME, and until column
+                                ' lineage tried to resolve one, nothing here
+                                ' could tell them apart: digits are legal
+                                ' inside an identifier, so `0.97` arrived as
+                                ' the three tokens `0` `.` `97` and read
+                                ' exactly like a qualified column. `_sources_in`
+                                ' had been reporting `1` as a source column of
+                                ' `x * (1 - y)` since it was written, harmlessly
+                                ' until something tried to look it up -- and
+                                ' then as an entry in the UNRESOLVED list,
+                                ' which is the one field a caller has to be
+                                ' able to trust. An identifier cannot begin
+                                ' with a digit in any of these dialects, so
+                                ' the leading byte settles it.
+                                piece = []
+                                while i < n and byte_at(sql, i) >= 48 and byte_at(sql, i) <= 57
+                                    append(piece, from_bytes([byte_at(sql, i)]))
+                                    i = i + 1
+                                end while
+                                if i + 1 < n and byte_at(sql, i) = 46 and byte_at(sql, i + 1) >= 48 and byte_at(sql, i + 1) <= 57 then
+                                    append(piece, ".")
+                                    i = i + 1
+                                    while i < n and byte_at(sql, i) >= 48 and byte_at(sql, i) <= 57
+                                        append(piece, from_bytes([byte_at(sql, i)]))
+                                        i = i + 1
+                                    end while
+                                end if
+                                append(out, { kind: "number", text: join(piece, "") })
+                            else
                             if _is_ident_byte(b) then
                                 piece = []
                                 while i < n and _is_ident_byte(byte_at(sql, i))
@@ -328,6 +358,7 @@ library discovery
                                     append(out, { kind: "punct", text: from_bytes([b]) })
                                 end if
                                 i = i + 1
+                            end if
                             end if
                         end if
                     end if
@@ -384,8 +415,7 @@ library discovery
     ' and a tracer that drops it silently produces a lineage graph that is
     ' confidently incomplete -- worse than one that names what it could not
     ' follow.
-    function references(sql)
-        toks = _sql_tokens(sql)
+    function _references_range(toks, from_i, to_i)
         reads = []
         writes = []
         gaps = []
@@ -393,8 +423,8 @@ library discovery
 
         ' A CTE name is `word as (`. A table alias is `word as word`, and a
         ' derived table is `) as word`, so the shape is specific enough.
-        i = 0
-        while i + 2 < count(toks)
+        i = from_i
+        while i + 2 < to_i
             if toks[i].kind = "word" and toks[i + 1].kind = "word" and toks[i + 1].text = "as" then
                 if toks[i + 2].kind = "punct" and toks[i + 2].text = "(" then
                     append(ctes, toks[i].text)
@@ -404,8 +434,8 @@ library discovery
         end while
 
         prev = ""
-        i = 0
-        while i < count(toks)
+        i = from_i
+        while i < to_i
             tk = toks[i]
             if tk.kind = "word" then
                 w = tk.text
@@ -431,7 +461,7 @@ library discovery
                     ' insert into / merge into / select ... into -- all writes.
                     target = "write"
                 end if
-                if w = "update" then
+                if w = "update" or w = "merge" then
                     target = "write"
                 end if
                 if w = "table" and (prev = "truncate" or prev = "drop" or prev = "alter") then
@@ -440,7 +470,7 @@ library discovery
                 if w = "sp_executesql" or w = "immediate" then
                     append(gaps, "dynamic SQL: " + w)
                 end if
-                if (w = "exec" or w = "execute") and i + 1 < count(toks) then
+                if (w = "exec" or w = "execute") and i + 1 < to_i then
                     if toks[i + 1].kind = "punct" and toks[i + 1].text = "(" then
                         append(gaps, "dynamic SQL: exec(...)")
                     end if
@@ -458,6 +488,20 @@ library discovery
                             if not contains(writes, nm) then
                                 append(writes, nm)
                             end if
+                            ' AN UPDATE READS THE TABLE IT WRITES, and so does
+                            ' a MERGE: `set x = y * 0.97 where status = 'A'`
+                            ' takes both `y` and `status` from the target
+                            ' itself. Reported as a write alone, a restatement
+                            ' looks like a module with no inputs -- so altering
+                            ' the column it reads would show no impact on it.
+                            ' A DELETE is deliberately not in this: it reads
+                            ' the table to choose rows and puts no value into
+                            ' anything.
+                            if w = "update" or w = "merge" or (w = "into" and prev = "merge") then
+                                if not contains(reads, nm) then
+                                    append(reads, nm)
+                                end if
+                            end if
                         end if
                     end if
                 end if
@@ -470,6 +514,12 @@ library discovery
             i = i + 1
         end while
         return { reads: reads, writes: writes, gaps: gaps }
+    end function
+
+    ' discovery.references(sql) -> { reads, writes, gaps } over a WHOLE body.
+    function references(sql)
+        toks = _sql_tokens(sql)
+        return _references_range(toks, 0, count(toks))
     end function
 
     ' ---- modules: the views and procedures, WITH THEIR OWNING SCHEMA -------
@@ -569,7 +619,31 @@ library discovery
             if tk.kind = "quoted" then
                 txt = "\"" + txt + "\""
             end if
-            append(out, txt)
+            ' SPACING IS PART OF THE ANSWER, because this text is READ BY A
+            ' PERSON asking why two numbers differ. Joining every token with a
+            ' space renders `0.97` as `0 . 97` and `sum(x)` as `sum ( x )`,
+            ' which is legible only to someone who already knows what it says.
+            glue = false
+            if i > from_i then
+                pv = toks[i - 1]
+                if tk.kind = "punct" and contains([".", ",", ")"], tk.text) then
+                    glue = true
+                end if
+                if pv.kind = "punct" and contains([".", "("], pv.text) then
+                    glue = true
+                end if
+                ' A call binds to its name; `in (1, 2)` does not.
+                if tk.kind = "punct" and tk.text = "(" then
+                    if pv.kind = "word" and not _is_keyword(pv.text) then
+                        glue = true
+                    end if
+                end if
+            end if
+            if glue and count(out) > 0 then
+                out[count(out) - 1] = out[count(out) - 1] + txt
+            else
+                append(out, txt)
+            end if
             i = i + 1
         end while
         return join(out, " ")
@@ -614,15 +688,14 @@ library discovery
     ' built from. `select *` is NOT expanded and is reported as such: expanding
     ' it would require knowing the shape of something this function was not
     ' given, and guessing is how a lineage graph becomes confident and wrong.
-    function projection(sql)
-        toks = _sql_tokens(sql)
+    function _select_list(toks, from_i, to_i)
         out = []
         ' Find the first top-level SELECT and the FROM that closes its list.
         depth = 0
         start = -1
         list_end = -1
-        i = 0
-        while i < count(toks)
+        i = from_i
+        while i < to_i
             tk = toks[i]
             if tk.kind = "punct" and tk.text = "(" then
                 depth = depth + 1
@@ -644,7 +717,7 @@ library discovery
             return out
         end if
         if list_end < 0 then
-            list_end = count(toks)
+            list_end = to_i
         end if
         ' Split the list on top-level commas.
         item_start = start
@@ -670,8 +743,20 @@ library discovery
                 name = ""
                 expr_end = i
                 j = item_start
+                d2 = 0
                 while j < i
-                    if _kw_at(toks, j, "as") then
+                    if toks[j].kind = "punct" and toks[j].text = "(" then
+                        d2 = d2 + 1
+                    end if
+                    if toks[j].kind = "punct" and toks[j].text = ")" then
+                        d2 = d2 - 1
+                    end if
+                    ' ONLY A DEPTH-ZERO `as` IS AN ALIAS. `cast(x as int)` has
+                    ' one that is part of the expression, and taking it cut
+                    ' the expression off at the cast and named the output
+                    ' column `int` -- a plausible name, on a truncated
+                    ' derivation, with nothing raised.
+                    if d2 = 0 and _kw_at(toks, j, "as") then
                         if j + 1 < i then
                             name = toks[j + 1].text
                         end if
@@ -704,6 +789,7 @@ library discovery
                 append(out, { output: name,
                               expression: _render(toks, item_start, expr_end),
                               sources: _sources_in(toks, item_start, expr_end),
+                              source_refs: _source_refs(toks, item_start, expr_end),
                               aggregate: agg })
                 item_start = i + 1
             end if
@@ -712,17 +798,27 @@ library discovery
         return out
     end function
 
+    ' discovery.projection(sql) -> the SELECT list, wherever the first one is.
+    '
+    ' Kept as it was when it was the only shape this library read: a view is
+    ' one select and `explain` compares two of them. A body that WRITES needs
+    ' `derivations`, because the output names are on the other side of the
+    ' statement and pairing them is a decision this function does not make.
+    function projection(sql)
+        toks = _sql_tokens(sql)
+        return _select_list(toks, 0, count(toks))
+    end function
+
     ' discovery.predicates(sql) -> array of { kind, text }
     '
     ' `where` and `having` narrow which rows contribute; a join `on` decides
     ' which rows pair up and can narrow just as effectively. All three belong
     ' to the derivation, because all three are answers to "why is this number
     ' different from that one".
-    function predicates(sql)
-        toks = _sql_tokens(sql)
+    function _predicates_range(toks, from_i, to_i)
         out = []
-        i = 0
-        while i < count(toks)
+        i = from_i
+        while i < to_i
             tk = toks[i]
             if tk.kind = "word" and contains(["where", "having", "on"], tk.text) then
                 kind = tk.text
@@ -731,7 +827,7 @@ library discovery
                 end if
                 j = i + 1
                 depth = 0
-                while j < count(toks)
+                while j < to_i
                     t2 = toks[j]
                     if t2.kind = "punct" and t2.text = "(" then
                         depth = depth + 1
@@ -743,7 +839,15 @@ library discovery
                         depth = depth - 1
                     end if
                     if depth = 0 and t2.kind = "word" then
-                        if contains(["where", "group", "order", "having", "join", "union", "select", "inner", "left", "right", "full", "cross"], t2.text) then
+                        ' `when` and the DML verbs are in this list because a
+                        ' MERGE puts its arms AFTER the `on`, so without them
+                        ' the join predicate swallowed every arm of the
+                        ' statement and reported the whole thing as one
+                        ' condition.
+                        if contains(["where", "group", "order", "having", "join", "union", "select",
+                                     "inner", "left", "right", "full", "cross", "when", "then",
+                                     "values", "set", "using", "merge", "insert", "update",
+                                     "delete", "output", "returning"], t2.text) then
                             break
                         end if
                     end if
@@ -753,6 +857,672 @@ library discovery
                     append(out, { kind: kind, text: _render(toks, i + 1, j) })
                 end if
                 i = j
+            else
+                i = i + 1
+            end if
+        end while
+        return out
+    end function
+
+    ' discovery.predicates(sql) -> array of { kind, text } over a WHOLE body.
+    function predicates(sql)
+        toks = _sql_tokens(sql)
+        return _predicates_range(toks, 0, count(toks))
+    end function
+
+    ' ---- statements: a procedure body is not one statement -----------------
+    '
+    ' Everything above this line reads ONE statement, which is all a view ever
+    ' is. A stored procedure is where the ETL actually lives, and there the
+    ' interesting facts are per statement: `truncate table x; insert into x
+    ' select ... from y` writes x twice for two different reasons, and a
+    ' function that found "the first select" would describe the second and
+    ' silently drop the first.
+    '
+    ' SPLITTING IS NOT A SOLVED PROBLEM AND THIS DOES NOT PRETEND IT IS.
+    ' T-SQL makes the semicolon optional, so a body may be several statements
+    ' with nothing between them, and deciding where one ends needs a grammar
+    ' this library does not have. What it has instead is a rule about verbs:
+    ' `insert`, `update`, `delete`, `merge` and the rest START a statement
+    ' when they appear at bracket depth zero -- with three exceptions, each of
+    ' which was a wrong answer before it was an exception.
+    function _stmt_starters()
+        return ["insert", "update", "delete", "merge", "truncate", "declare",
+                "exec", "execute", "print", "create", "drop", "alter", "with",
+                "if", "while", "select", "return", "grant", "revoke"]
+    end function
+
+    function _statement_ranges(toks)
+        out = []
+        n = count(toks)
+        depth = 0
+        start = 0
+        prev = ""
+        first_word = ""
+        seen_select = false
+        seen_verb = false
+        i = 0
+        while i < n
+            tk = toks[i]
+            if tk.kind = "punct" and tk.text = "(" then
+                depth = depth + 1
+            end if
+            if tk.kind = "punct" and tk.text = ")" then
+                depth = depth - 1
+            end if
+            if depth = 0 and tk.kind = "punct" and tk.text = ";" then
+                if i > start then
+                    append(out, { from: start, to: i })
+                end if
+                start = i + 1
+                first_word = ""
+                seen_select = false
+                seen_verb = false
+                prev = ""
+            else
+                boundary = false
+                if depth = 0 and tk.kind = "word" and i > start then
+                    if contains(_stmt_starters(), tk.text) then
+                        boundary = true
+                        ' EXCEPTION 1: `... then insert` / `... then update`.
+                        ' A MERGE arm and a T-SQL `if ... then` both put a verb
+                        ' where it does not begin anything.
+                        if prev = "then" then
+                            boundary = false
+                        end if
+                        ' EXCEPTION 2: a MERGE owns every arm it declares. This
+                        ' is the one that produced a phantom table the first
+                        ' time it was missing -- `when matched then update set`
+                        ' split into a statement whose target was `set`.
+                        if first_word = "merge" then
+                            boundary = false
+                        end if
+                        ' EXCEPTION 2b: a CTE belongs to the statement it
+                        ' feeds. Split off, `with c as (...) insert into t
+                        ' select x from c` leaves an insert that reads a table
+                        ' called `c` -- a phantom object, reported with
+                        ' exactly the confidence of a real one.
+                        if first_word = "with" and not seen_verb then
+                            if contains(["insert", "update", "delete", "merge", "select"], tk.text) then
+                                boundary = false
+                            end if
+                        end if
+                        if tk.text = "select" then
+                            ' EXCEPTION 3: the SELECT that FEEDS a write is
+                            ' part of that write. `insert into t (a) select x`
+                            ' is one statement, and treating its select as a
+                            ' second one loses the pairing that makes column
+                            ' lineage possible at all.
+                            if contains(["insert", "update", "delete", "merge", "with",
+                                         "create", "declare", "if", "while", "return"], first_word) then
+                                if not seen_select then
+                                    boundary = false
+                                end if
+                            end if
+                            ' ... and a set operation is one statement with
+                            ' several selects in it.
+                            if contains(["union", "except", "intersect", "all", "as",
+                                         "exists", "in", "then", "into"], prev) then
+                                boundary = false
+                            end if
+                        end if
+                    end if
+                end if
+                if boundary then
+                    append(out, { from: start, to: i })
+                    start = i
+                    first_word = tk.text
+                    seen_select = tk.text = "select"
+                    seen_verb = contains(["insert", "update", "delete", "merge", "select"], tk.text)
+                    prev = tk.text
+                else
+                    if tk.kind = "word" then
+                        if i = start then
+                            first_word = tk.text
+                        end if
+                        if depth = 0 and tk.text = "select" then
+                            seen_select = true
+                        end if
+                        if depth = 0 and contains(["insert", "update", "delete", "merge", "select"], tk.text) then
+                            seen_verb = true
+                        end if
+                        prev = tk.text
+                    else
+                        if tk.kind != "punct" or tk.text != "." then
+                            prev = ""
+                        end if
+                    end if
+                end if
+            end if
+            i = i + 1
+        end while
+        if n > start then
+            append(out, { from: start, to: n })
+        end if
+        return out
+    end function
+
+    ' THE VERB, NOT THE FIRST WORD. `create view v as select ...` and
+    ' `with c as (...) insert into t select ...` both begin with something that
+    ' is not the verb, and the verb is what says which side of the statement
+    ' carries the output names.
+    function _statement_kind(toks, from_i, to_i)
+        depth = 0
+        i = from_i
+        while i < to_i
+            tk = toks[i]
+            if tk.kind = "punct" and tk.text = "(" then
+                depth = depth + 1
+            end if
+            if tk.kind = "punct" and tk.text = ")" then
+                depth = depth - 1
+            end if
+            if depth = 0 and tk.kind = "word" then
+                if contains(["insert", "update", "delete", "merge", "truncate", "select"], tk.text) then
+                    return { kind: tk.text, at: i }
+                end if
+            end if
+            i = i + 1
+        end while
+        return { kind: "other", at: from_i }
+    end function
+
+    ' The word following `after` at depth zero, as a possibly-qualified name.
+    function _name_after(toks, from_i, to_i, after)
+        depth = 0
+        i = from_i
+        while i < to_i
+            tk = toks[i]
+            if tk.kind = "punct" and tk.text = "(" then
+                depth = depth + 1
+            end if
+            if tk.kind = "punct" and tk.text = ")" then
+                depth = depth - 1
+            end if
+            if depth = 0 and tk.kind = "word" and tk.text = after then
+                found = _name_at(toks, i + 1)
+                if len(found.name) > 0 then
+                    if not _is_keyword(lower(split(found.name, ".")[0])) then
+                        return found.name
+                    end if
+                end if
+                return ""
+            end if
+            i = i + 1
+        end while
+        return ""
+    end function
+
+    function _statement_target(toks, from_i, to_i, kind, at)
+        if kind = "insert" then
+            return _name_after(toks, from_i, to_i, "into")
+        end if
+        if kind = "update" then
+            found = _name_at(toks, at + 1)
+            if len(found.name) > 0 and not _is_keyword(lower(split(found.name, ".")[0])) then
+                return found.name
+            end if
+            return ""
+        end if
+        if kind = "delete" then
+            t = _name_after(toks, from_i, to_i, "from")
+            if len(t) > 0 then
+                return t
+            end if
+            found = _name_at(toks, at + 1)
+            if len(found.name) > 0 and not _is_keyword(lower(split(found.name, ".")[0])) then
+                return found.name
+            end if
+            return ""
+        end if
+        if kind = "merge" then
+            t = _name_after(toks, from_i, to_i, "into")
+            if len(t) > 0 then
+                return t
+            end if
+            found = _name_at(toks, at + 1)
+            if len(found.name) > 0 and not _is_keyword(lower(split(found.name, ".")[0])) then
+                return found.name
+            end if
+            return ""
+        end if
+        if kind = "truncate" then
+            return _name_after(toks, from_i, to_i, "table")
+        end if
+        if kind = "select" then
+            ' `select ... into t` -- the one select that writes.
+            return _name_after(toks, from_i, to_i, "into")
+        end if
+        return ""
+    end function
+
+    ' discovery.statements(sql) -> array of { kind, target, sql }
+    function statements(sql)
+        toks = _sql_tokens(sql)
+        out = []
+        for each r in _statement_ranges(toks)
+            k = _statement_kind(toks, r.from, r.to)
+            append(out, { kind: k.kind,
+                          target: _statement_target(toks, r.from, r.to, k.kind, k.at),
+                          sql: _render(toks, r.from, r.to) })
+        end for
+        return out
+    end function
+
+    ' ---- pairing an output column with the expression that fills it --------
+
+    ' The column list of an INSERT, which may be written with or without
+    ' `into`: MERGE's insert arm has no `into` at all.
+    function _insert_columns(toks, from_i, to_i, at)
+        out = []
+        i = at + 1
+        if i < to_i then
+            if toks[i].kind = "word" and toks[i].text = "into" then
+                i = i + 1
+            end if
+        end if
+        found = _name_at(toks, i)
+        j = found.next
+        if len(found.name) = 0 then
+            j = i
+        end if
+        if j >= to_i then
+            return out
+        end if
+        if not (toks[j].kind = "punct" and toks[j].text = "(") then
+            return out
+        end if
+        j = j + 1
+        while j < to_i
+            tk = toks[j]
+            if tk.kind = "punct" and tk.text = ")" then
+                break
+            end if
+            if tk.kind = "word" or tk.kind = "quoted" then
+                append(out, tk.text)
+            end if
+            j = j + 1
+        end while
+        return out
+    end function
+
+    ' `values (a, b, c)` -- the other thing an INSERT can be fed by.
+    function _values_list(toks, from_i, to_i)
+        out = []
+        i = from_i
+        open_at = -1
+        while i < to_i
+            if toks[i].kind = "word" and toks[i].text = "values" then
+                if i + 1 < to_i and toks[i + 1].kind = "punct" and toks[i + 1].text = "(" then
+                    open_at = i + 1
+                    break
+                end if
+            end if
+            i = i + 1
+        end while
+        if open_at < 0 then
+            return out
+        end if
+        item_start = open_at + 1
+        depth = 0
+        i = item_start
+        while i < to_i
+            tk = toks[i]
+            done = false
+            if tk.kind = "punct" and tk.text = "(" then
+                depth = depth + 1
+            end if
+            if tk.kind = "punct" and tk.text = ")" then
+                if depth = 0 then
+                    done = true
+                else
+                    depth = depth - 1
+                end if
+            end if
+            if depth = 0 and tk.kind = "punct" and tk.text = "," then
+                done = true
+            end if
+            if done then
+                if i > item_start then
+                    append(out, { output: "",
+                                  expression: _render(toks, item_start, i),
+                                  sources: _sources_in(toks, item_start, i),
+                                  source_refs: _source_refs(toks, item_start, i),
+                                  aggregate: false })
+                end if
+                item_start = i + 1
+                if tk.kind = "punct" and tk.text = ")" then
+                    break
+                end if
+            end if
+            i = i + 1
+        end while
+        return out
+    end function
+
+    ' `set a = expr, b = expr` -- an UPDATE names both sides itself, which is
+    ' the one shape where no pairing decision has to be made.
+    function _set_list(toks, from_i, to_i)
+        out = []
+        set_at = -1
+        depth = 0
+        i = from_i
+        while i < to_i
+            tk = toks[i]
+            if tk.kind = "punct" and tk.text = "(" then
+                depth = depth + 1
+            end if
+            if tk.kind = "punct" and tk.text = ")" then
+                depth = depth - 1
+            end if
+            if depth = 0 and tk.kind = "word" and tk.text = "set" and set_at < 0 then
+                set_at = i
+            end if
+            i = i + 1
+        end while
+        if set_at < 0 then
+            return out
+        end if
+        stop_at = to_i
+        depth = 0
+        i = set_at + 1
+        while i < to_i
+            tk = toks[i]
+            if tk.kind = "punct" and tk.text = "(" then
+                depth = depth + 1
+            end if
+            if tk.kind = "punct" and tk.text = ")" then
+                depth = depth - 1
+            end if
+            if depth = 0 and tk.kind = "word" then
+                if contains(["from", "where", "output", "returning", "when"], tk.text) then
+                    stop_at = i
+                    break
+                end if
+            end if
+            i = i + 1
+        end while
+        item_start = set_at + 1
+        depth = 0
+        i = item_start
+        while i <= stop_at
+            done = i = stop_at
+            if not done then
+                tk = toks[i]
+                if tk.kind = "punct" and tk.text = "(" then
+                    depth = depth + 1
+                end if
+                if tk.kind = "punct" and tk.text = ")" then
+                    depth = depth - 1
+                end if
+                if depth = 0 and tk.kind = "punct" and tk.text = "," then
+                    done = true
+                end if
+            end if
+            if done and i > item_start then
+                eq = -1
+                j = item_start
+                while j < i
+                    if toks[j].kind = "punct" and toks[j].text = "=" then
+                        eq = j
+                        break
+                    end if
+                    j = j + 1
+                end while
+                if eq > item_start then
+                    append(out, { output: toks[eq - 1].text,
+                                  expression: _render(toks, eq + 1, i),
+                                  sources: _sources_in(toks, eq + 1, i),
+                                  source_refs: _source_refs(toks, eq + 1, i),
+                                  aggregate: false })
+                end if
+                item_start = i + 1
+            end if
+            i = i + 1
+        end while
+        return out
+    end function
+
+    ' THE SAME COLUMNS AS `_sources_in`, WITH THE QUALIFIER KEPT. Two fields
+    ' rather than one because they answer different questions and one answer
+    ' is wrong for the other: `explain` compares two derivations and must see
+    ' `f.amount` and `g.amount` as the SAME column of the same table, while
+    ' lineage has to know which table `f` was, and in a two-table join the
+    ' bare name cannot say.
+    function _source_refs(toks, from_i, to_i)
+        out = []
+        i = from_i
+        while i < to_i
+            tk = toks[i]
+            if tk.kind = "word" or tk.kind = "quoted" then
+                is_call = false
+                qualifier = ""
+                if i + 1 < to_i then
+                    if toks[i + 1].kind = "punct" and toks[i + 1].text = "(" then
+                        is_call = true
+                    end if
+                    if toks[i + 1].kind = "punct" and toks[i + 1].text = "." then
+                        is_call = true
+                    end if
+                end if
+                if i >= from_i + 2 then
+                    if toks[i - 1].kind = "punct" and toks[i - 1].text = "." then
+                        if toks[i - 2].kind = "word" or toks[i - 2].kind = "quoted" then
+                            qualifier = toks[i - 2].text
+                        end if
+                    end if
+                end if
+                if not is_call and not _is_keyword(tk.text) then
+                    seen = false
+                    for each r in out
+                        if r.name = tk.text and r.qualifier = qualifier then
+                            seen = true
+                        end if
+                    end for
+                    if not seen then
+                        append(out, { name: tk.text, qualifier: qualifier })
+                    end if
+                end if
+            end if
+            i = i + 1
+        end while
+        return out
+    end function
+
+    ' The objects a statement reads, WITH the alias each was given. Column
+    ' lineage needs this and object lineage did not: `s.gross_vol_mmbtu` names
+    ' a column of whatever `s` was bound to, and nothing else in the statement
+    ' says which table that is.
+    '
+    ' The INSERT target is deliberately NOT among the objects: its columns are
+    ' not in scope on the source side, and admitting it would let a column
+    ' resolve to the very table being written -- a lineage edge from a column
+    ' to itself, which looks exactly like a real one.
+    function _aliases_in(toks, from_i, to_i)
+        names = {}
+        objects = []
+        i = from_i
+        while i < to_i
+            tk = toks[i]
+            trig = false
+            reads = false
+            if tk.kind = "word" then
+                if contains(["from", "join", "using", "update", "merge", "into"], tk.text) then
+                    trig = true
+                    reads = tk.text != "into"
+                end if
+            end if
+            if trig then
+                found = _name_at(toks, i + 1)
+                nm = found.name
+                j = found.next
+                if len(nm) > 0 and not _is_keyword(lower(split(nm, ".")[0])) then
+                    if reads and not contains(objects, nm) then
+                        append(objects, nm)
+                    end if
+                    if j < to_i then
+                        if toks[j].kind = "word" and toks[j].text = "as" then
+                            j = j + 1
+                        end if
+                    end if
+                    if j < to_i then
+                        alias_ok = false
+                        if toks[j].kind = "quoted" then
+                            alias_ok = true
+                        end if
+                        if toks[j].kind = "word" and not _is_keyword(toks[j].text) then
+                            alias_ok = true
+                        end if
+                        if alias_ok then
+                            names[toks[j].text] = nm
+                        end if
+                    end if
+                end if
+                i = found.next
+            else
+                i = i + 1
+            end if
+        end while
+        return { alias: names, objects: objects }
+    end function
+
+    ' discovery.derivations(sql) -> one record per statement:
+    '   { kind, target, columns, predicates, reads, writes, gaps, aliases,
+    '     notes, sql }
+    ' where a column is { output, expression, sources, source_refs, aggregate }.
+    '
+    ' `notes` IS NOT A DIAGNOSTIC TO BE IGNORED, for the same reason `gaps` is
+    ' not: the two shapes that cannot be paired here -- an insert with no
+    ' column list, and one whose counts disagree -- both produce a perfectly
+    ' ordinary-looking set of expressions with the WRONG NAMES attached if
+    ' paired anyway, and a column lineage built on that is confident and
+    ' wrong in a way nothing downstream can detect.
+    function derivations(sql)
+        toks = _sql_tokens(sql)
+        out = []
+        for each r in _statement_ranges(toks)
+            k = _statement_kind(toks, r.from, r.to)
+            kind = k.kind
+            cols = []
+            notes = []
+            ' HOW THE PAIRING WAS MADE, as a field rather than as prose a
+            ' caller would have to sniff for. "ordinal" means the outputs are
+            ' NOT named by this statement and the names in `columns` are the
+            ' select list's own inferred ones, which are meaningless as target
+            ' column names -- only the catalog can settle it.
+            pairing = "none"
+            if kind = "insert" then
+                names = _insert_columns(toks, r.from, r.to, k.at)
+                src = _select_list(toks, r.from, r.to)
+                if count(src) = 0 then
+                    src = _values_list(toks, r.from, r.to)
+                end if
+                if count(names) = 0 then
+                    if count(src) > 0 then
+                        append(notes, "no column list: which column each expression fills is decided by the target's ordinal order, which is a fact about the catalog and not about this statement")
+                        pairing = "ordinal"
+                    end if
+                    cols = src
+                else
+                    if count(names) != count(src) then
+                        append(notes, "the column list names " + string(count(names)) + " columns and the source produces " + string(count(src)) + "; they cannot be paired")
+                        pairing = "refused"
+                    else
+                        pairing = "positional"
+                        idx = 0
+                        while idx < count(names)
+                            c = src[idx]
+                            append(cols, { output: names[idx], expression: c.expression,
+                                           sources: c.sources, source_refs: c.source_refs,
+                                           aggregate: c.aggregate })
+                            idx = idx + 1
+                        end while
+                    end if
+                end if
+            end if
+            if kind = "update" then
+                cols = _set_list(toks, r.from, r.to)
+                pairing = "assignment"
+            end if
+            if kind = "select" then
+                cols = _select_list(toks, r.from, r.to)
+                pairing = "select"
+            end if
+            if kind = "merge" then
+                cols = _merge_arms(toks, r.from, r.to)
+                pairing = "assignment"
+            end if
+            rr = _references_range(toks, r.from, r.to)
+            append(out, { kind: kind,
+                          target: _statement_target(toks, r.from, r.to, kind, k.at),
+                          columns: cols,
+                          pairing: pairing,
+                          predicates: _predicates_range(toks, r.from, r.to),
+                          reads: rr.reads,
+                          writes: rr.writes,
+                          gaps: rr.gaps,
+                          aliases: _aliases_in(toks, r.from, r.to),
+                          notes: notes,
+                          sql: _render(toks, r.from, r.to) })
+        end for
+        return out
+    end function
+
+    ' A MERGE assigns from several arms into one target, so its columns are
+    ' the union of them -- and a column assigned differently in the matched
+    ' and not-matched arms genuinely has two derivations, which is reported as
+    ' two entries rather than resolved into one.
+    function _merge_arms(toks, from_i, to_i)
+        out = []
+        depth = 0
+        i = from_i
+        while i < to_i
+            tk = toks[i]
+            if tk.kind = "punct" and tk.text = "(" then
+                depth = depth + 1
+            end if
+            if tk.kind = "punct" and tk.text = ")" then
+                depth = depth - 1
+            end if
+            if depth = 0 and tk.kind = "word" and tk.text = "then" and i + 1 < to_i then
+                arm = toks[i + 1].text
+                arm_end = to_i
+                d2 = 0
+                j = i + 2
+                while j < to_i
+                    t2 = toks[j]
+                    if t2.kind = "punct" and t2.text = "(" then
+                        d2 = d2 + 1
+                    end if
+                    if t2.kind = "punct" and t2.text = ")" then
+                        d2 = d2 - 1
+                    end if
+                    if d2 = 0 and t2.kind = "word" and t2.text = "when" then
+                        arm_end = j
+                        break
+                    end if
+                    j = j + 1
+                end while
+                if arm = "update" then
+                    for each c in _set_list(toks, i + 1, arm_end)
+                        append(out, c)
+                    end for
+                end if
+                if arm = "insert" then
+                    names = _insert_columns(toks, i + 1, arm_end, i + 1)
+                    vals = _values_list(toks, i + 1, arm_end)
+                    if count(names) = count(vals) and count(names) > 0 then
+                        idx = 0
+                        while idx < count(names)
+                            c = vals[idx]
+                            append(out, { output: names[idx], expression: c.expression,
+                                          sources: c.sources, source_refs: c.source_refs,
+                                          aggregate: false })
+                            idx = idx + 1
+                        end while
+                    end if
+                end if
+                i = arm_end
             else
                 i = i + 1
             end if
@@ -1021,6 +1791,273 @@ library discovery
             hops = hops + 1
         end while
         return out
+    end function
+
+    ' ---- column lineage: where THIS number came from -----------------------
+    '
+    ' `trace` and `impact` answer at the level of OBJECTS: this procedure reads
+    ' that table. That is the level a dependency graph is usually drawn at, and
+    ' it is one level too coarse for the question people actually ask. "Which
+    ' table does this report read" has an easy answer and rarely settles
+    ' anything; "where did THIS COLUMN come from" is the one that costs a day.
+    '
+    ' The difference is not cosmetic. `fact_volume` reads `stg_deal`, and that
+    ' says nothing about whether `avail_after_pvr` came from `gross_vol_mmbtu`,
+    ' from `pvr_pct`, from both, or from a constant -- and a column that turns
+    ' out to be a constant is the single most common reason a number is wrong
+    ' and nobody can see why.
+    '
+    ' WHAT IT WILL NOT DO IS GUESS. A source column that could belong to two
+    ' of the objects a statement reads is reported UNRESOLVED, by name, rather
+    ' than attributed to whichever was found first: the wrong attribution is
+    ' indistinguishable from the right one downstream, and picking one turns a
+    ' known unknown into an unknown wrong answer.
+
+    function _owner_of(cid)
+        parts = split(cid, _sep())
+        out = []
+        i = 0
+        while i < count(parts) - 1
+            append(out, parts[i])
+            i = i + 1
+        end while
+        return join(out, _sep())
+    end function
+
+    function _leaf_of(cid)
+        parts = split(cid, _sep())
+        return parts[count(parts) - 1]
+    end function
+
+    ' A CASE-INSENSITIVE INDEX, and it is not a convenience. Catalog names come
+    ' back in whatever case the database stores them (`GROSS_VOL_MMBTU` on one,
+    ' `gross_vol_mmbtu` on the next) while SQL tokens are lowercased here, so a
+    ' direct key lookup misses on exactly the databases that upper-case their
+    ' catalog -- silently, reporting the column as unresolved.
+    function _column_index(cat)
+        idx = {}
+        for each k in keys(cat.columns)
+            idx[lower(k)] = k
+        end for
+        return idx
+    end function
+
+    ' Every module that can put a value into a given object, WITH the statement
+    ' that does it. A view is included as the writer of ITSELF: a view has no
+    ' `insert`, and its select list is nonetheless the derivation of every
+    ' column a consumer sees, which is the whole reason a report's number can
+    ' be traced past the view it was read from.
+    function _writers(cat, mods, dbms)
+        out = []
+        for each m in mods
+            mid = m.source + _sep() + m.schema + _sep() + m.name
+            if len(m.schema) = 0 then
+                mid = m.source + _sep() + m.name
+            end if
+            path = _search_path(dbms, m.schema)
+            self_id = _bind(cat, m.schema + _sep() + m.name, m, path)
+            if len(m.schema) = 0 then
+                self_id = _bind(cat, m.name, m, path)
+            end if
+            for each d in derivations(m.body)
+                tid = ""
+                if len(d.target) > 0 then
+                    tid = _bind(cat, d.target, m, path)
+                end if
+                if len(tid) = 0 and d.kind = "select" and len(self_id) > 0 then
+                    ' A view producing its own object.
+                    tid = self_id
+                end if
+                ' A TARGET THAT BINDS TO NOTHING IS STILL A HOP. `select ...
+                ' into #tmp` then `insert ... select ... from #tmp` is how a
+                ' great deal of real ETL is written, and a temp table is never
+                ' in a catalog -- so without this the chain dead-ends at the
+                ' first one, which in T-SQL is most procedures. Nothing is
+                ' guessed: the statement that FILLS the temp table is what
+                ' says which columns it has. The id carries `::` so it can
+                ' never be mistaken for a catalog id, and `intermediates`
+                ' names every local object a walk passed through.
+                local_name = ""
+                if len(tid) = 0 and len(d.target) > 0 and count(d.columns) > 0 then
+                    local_name = lower(d.target)
+                    tid = mid + "::" + local_name
+                end if
+                ' AN INSERT WITH NO COLUMN LIST IS SETTLED BY THE CATALOG,
+                ' and only here: `derivations` is a pure function of the SQL
+                ' and cannot know the target's ordinal order, so it reports a
+                ' note instead of guessing. This is where that note is
+                ' discharged -- by the same rule the database itself applies.
+                ' If the counts disagree the statement is not valid SQL and
+                ' the note stands.
+                if len(tid) > 0 and len(local_name) = 0 then
+                    if d.pairing = "ordinal" and count(d.columns) > 0 then
+                        tcols = columns_of(cat, tid)
+                        if count(tcols) = count(d.columns) then
+                            filled = []
+                            ci = 0
+                            while ci < count(tcols)
+                                cc = d.columns[ci]
+                                append(filled, { output: tcols[ci].column,
+                                                 expression: cc.expression,
+                                                 sources: cc.sources,
+                                                 source_refs: cc.source_refs,
+                                                 aggregate: cc.aggregate })
+                                ci = ci + 1
+                            end while
+                            d.columns = filled
+                            d.notes = []
+                            d.pairing = "ordinal_settled"
+                        end if
+                    end if
+                end if
+                if len(tid) > 0 and (count(d.columns) > 0 or count(d.notes) > 0) then
+                    append(out, { table: tid, module: mid, path: path,
+                                  schema: m.schema, kind: d.kind,
+                                  local_name: local_name, derivation: d })
+                end if
+            end for
+        end for
+        return out
+    end function
+
+    ' One source reference resolved to a column id, or a reason it was not.
+    function _resolve_ref(cat, idx, w, ref, writers)
+        cands = []
+        objs = w.derivation.aliases.objects
+        if len(ref.qualifier) > 0 then
+            obj = ref.qualifier
+            if has(w.derivation.aliases.alias, ref.qualifier) then
+                obj = w.derivation.aliases.alias[ref.qualifier]
+            end if
+            objs = [obj]
+        end if
+        for each o in objs
+            tid = _bind(cat, o, w, w.path)
+            if len(tid) > 0 then
+                probe = lower(tid + _sep() + ref.name)
+                if has(idx, probe) then
+                    if not contains(cands, idx[probe]) then
+                        append(cands, idx[probe])
+                    end if
+                end if
+            else
+                ' Not in the catalog -- but this module may have filled it
+                ' itself, one statement earlier.
+                for each wl in writers
+                    if len(wl.local_name) > 0 and wl.module = w.module and wl.local_name = lower(o) then
+                        for each lc in wl.derivation.columns
+                            if lower(lc.output) = lower(ref.name) then
+                                probe2 = wl.table + _sep() + lc.output
+                                if not contains(cands, probe2) then
+                                    append(cands, probe2)
+                                end if
+                            end if
+                        end for
+                    end if
+                end for
+            end if
+        end for
+        if count(cands) = 1 then
+            return { ok: true, column: cands[0], reason: "" }
+        end if
+        if count(cands) = 0 then
+            if len(ref.qualifier) > 0 then
+                return { ok: false, column: "",
+                         reason: "'" + ref.qualifier + _sep() + ref.name + "': nothing this statement reads is an object of that name with that column" }
+            end if
+            return { ok: false, column: "",
+                     reason: "'" + ref.name + "': none of the objects this statement reads has a column of that name (it may be a variable, a parameter, or a function this parser does not know)" }
+        end if
+        return { ok: false, column: "",
+                 reason: "'" + ref.name + "' is unqualified and " + string(count(cands)) + " of the objects this statement reads have a column of that name; which one it is cannot be decided from the statement" }
+    end function
+
+    ' discovery.lineage(catalog, modules, dbms, column_id, options)
+    '   -> { steps, origins, unresolved, gaps }
+    '
+    ' A step is { hops, column, via, kind, expression, sources, predicates }:
+    ' the column being explained, the module that filled it, and the columns it
+    ' was filled FROM. `origins` are the columns nothing in the estate writes --
+    ' where the trail genuinely ends rather than where it was lost.
+    '
+    ' options: { max_hops }  -- default 20. A cycle is possible and ordinary:
+    ' a restatement reads the same table it writes.
+    function lineage(cat, mods, dbms, column_id, options)
+        max_hops = 20
+        if is_record(options) then
+            if has(options, "max_hops") then
+                max_hops = options.max_hops
+            end if
+        end if
+        idx = _column_index(cat)
+        if not has(idx, lower(column_id)) then
+            error "discovery: no column '" + column_id + "' is in this catalog; lineage starts from a column that exists"
+        end if
+        writers = _writers(cat, mods, dbms)
+
+        steps = []
+        origins = []
+        unresolved = []
+        gaps = []
+        intermediates = []
+        seen = [lower(column_id)]
+        frontier = [column_id]
+        hops = 0
+        while count(frontier) > 0 and hops < max_hops
+            nxt = []
+            for each cid in frontier
+                tid = _owner_of(cid)
+                cname = lower(_leaf_of(cid))
+                if contains(tid, "::") and not contains(intermediates, tid) then
+                    append(intermediates, tid)
+                end if
+                wrote = false
+                for each w in writers
+                    if w.table = tid then
+                        for each g in w.derivation.gaps
+                            append(gaps, { column: cid, module: w.module, reason: g })
+                        end for
+                        for each n in w.derivation.notes
+                            append(unresolved, { column: cid, module: w.module, reason: n })
+                        end for
+                        for each c in w.derivation.columns
+                            if lower(c.output) = cname then
+                                wrote = true
+                                ups = []
+                                for each ref in c.source_refs
+                                    r = _resolve_ref(cat, idx, w, ref, writers)
+                                    if r.ok then
+                                        if not contains(ups, r.column) then
+                                            append(ups, r.column)
+                                        end if
+                                        if not contains(seen, lower(r.column)) then
+                                            append(seen, lower(r.column))
+                                            append(nxt, r.column)
+                                        end if
+                                    else
+                                        append(unresolved, { column: cid, module: w.module,
+                                                             reason: r.reason })
+                                    end if
+                                end for
+                                append(steps, { hops: hops, column: cid, via: w.module,
+                                                kind: w.kind, expression: c.expression,
+                                                sources: ups,
+                                                predicates: w.derivation.predicates })
+                            end if
+                        end for
+                    end if
+                end for
+                if not wrote then
+                    if not contains(origins, cid) then
+                        append(origins, cid)
+                    end if
+                end if
+            end for
+            frontier = nxt
+            hops = hops + 1
+        end while
+        return { steps: steps, origins: origins, unresolved: unresolved,
+                 intermediates: intermediates, gaps: gaps }
     end function
 
     ' Several sources become one estate. THE WHOLE POINT of `source` being part

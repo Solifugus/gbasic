@@ -9,6 +9,83 @@ language surface may still change between releases.
 
 ## Unreleased
 
+### Added — `discovery.lineage`: where THIS column came from, across hops
+
+`discovery.statements`, `discovery.derivations` and `discovery.lineage`.
+
+`trace` and `impact` answer at the level of **objects**: this procedure reads
+that table. That is one level too coarse for the question people ask. Against
+the estate, four hops back from a report:
+
+```
+warehouse.rpt_volume_net.total_volume  <- [warehouse.fact_volume.avail_after_pvr]
+      via rpt_volume_net        : sum(avail_after_pvr)
+warehouse.fact_volume.avail_after_pvr  <- [stg_deal.gross_vol_mmbtu, stg_deal.pvr_pct]
+      via p_build_fact          : s.gross_vol_mmbtu * (1 - s.pvr_pct)
+warehouse.fact_volume.avail_after_pvr  <- [warehouse.fact_volume.gross_vol_mmbtu]
+      via p_restate_fact        : gross_vol_mmbtu * 0.97
+warehouse.stg_deal.gross_vol_mmbtu     <- [trading.deal.gross_vol_mmbtu]
+      via p_load_stg_deal       : d.gross_vol_mmbtu
+origins: trading.deal.gross_vol_mmbtu, trading.deal.pvr_pct
+```
+
+**A procedure body is not one statement**, and that is where the ETL lives.
+Splitting one is not a solved problem — T-SQL makes the semicolon optional — so
+the rule is about verbs at bracket depth zero, with four exceptions each of
+which was a wrong answer before it was an exception (a MERGE arm, a MERGE owning
+its arms, the select that feeds a write, and a CTE).
+
+**Pairing an output column with what fills it is the whole difficulty** for an
+INSERT: the names are on one side of the statement and the expressions on the
+other. It is positional, and the two shapes that cannot be paired — a count
+mismatch, and no column list at all — are reported rather than guessed. Both
+yield a perfectly ordinary set of expressions *with the wrong names attached*
+if paired anyway. `lineage`, which has a catalog, settles the ordinal case by
+the same rule the database applies; each derivation records **how** it paired
+(`positional`, `assignment`, `select`, `ordinal`, `refused`) as a field rather
+than as prose a caller would have to sniff for.
+
+**A `#temp` table is a hop, not a dead end.** `select ... into #tmp` then
+`insert ... select ... from #tmp` is how a great deal of real ETL is written,
+and a temp table is never in a catalog. The statement that fills it is what
+says which columns it has; the resolution is confined to the module that wrote
+it; the id carries `::` so it cannot be mistaken for a catalog id; and
+`intermediates` names every local object a walk went through.
+
+`lineage` will not guess (an ambiguous source is `unresolved`, by name), does
+not assume one writer per column, and does not assume the graph is acyclic. A
+**view is the writer of itself**, which is the only reason a report's number can
+be traced past the view it was read from. A column filled **from a constant** is
+a step with an empty source list — a different fact from having no writer, and
+one of the commonest reasons a number is wrong and nobody can see why.
+
+The estate declares the answer (`spec().column_lineage`, `lineage_origins`),
+written by hand when it was designed; `lineage` derives it from the module
+bodies alone. `estate.catalog(spec, source)` lets that comparison run with no
+database at all.
+
+### Fixed — two defects in the SQL reader, both found by trying to *resolve*
+
+- **A numeric literal was read as a column name.** Digits are legal inside an
+  identifier, so `0.97` arrived as the three tokens `0` `.` `97`. `_sources_in`
+  had been reporting `1` as a source column of `x * (1 - y)` since it was
+  written — harmless until it became an entry in the `unresolved` list, which
+  is the one field a caller has to be able to trust.
+- **`cast(x as int)` truncated the expression** and named the output column
+  `int`; only a depth-zero `as` is an alias.
+
+An UPDATE and a MERGE now report their target as a **read as well as a write**:
+`set x = y * 0.97 where status = 'A'` takes both `y` and `status` from the target
+itself, and reported as a write alone a restatement looks like a module with no
+inputs. A DELETE is deliberately unchanged.
+
+### Changed — the SQL reader is tested without a database
+
+`tests/discovery_sql_test.bas` runs **before** the ODBC driver gate. The parser
+was previously exercised only from inside the catalog fixture, so on a machine
+with no driver the whole of it was skipped along with a connection it did not
+need.
+
 ### Added — `discovery.explain`: why two same-named columns disagree
 
 `discovery.projection`, `discovery.predicates` and `discovery.explain` — the

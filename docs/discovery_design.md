@@ -242,6 +242,9 @@ therefore part of every identity from the first line of code, not retrofitted.
 | `discovery.projection(sql)` | each output column, the expression, the columns it reads, whether it aggregates |
 | `discovery.predicates(sql)` | `where` / `having` / join `on` — which **are** the lineage, not metadata about it |
 | `discovery.explain(a, b)` | why two same-named columns disagree |
+| `discovery.statements(sql)` | a body split into statements: `{kind, target, sql}` each |
+| `discovery.derivations(sql)` | per statement, each **output column paired with the expression that fills it** |
+| `discovery.lineage(catalog, modules, dbms, column_id, options)` | `{steps, origins, unresolved, gaps}` — where **this column** came from, across hops |
 
 Named `scan` and not `read`: `read` is a built-in, and a library function
 sharing a built-in's name resolves to itself inside the library and to the
@@ -251,6 +254,126 @@ that has to be explained at each call site is the wrong name.
 An identifier containing the key separator (`.`) is **refused where it is
 read**, rather than escaped — the rule `dbframe` already follows. Escaping an
 identifier is a decision about a quoting dialect; refusing one is a fact.
+
+### 3b. A procedure body is not one statement
+
+Everything above `statements` reads one statement, which is all a view ever is.
+The ETL lives in procedures, and there the interesting facts are per statement:
+`truncate table x; insert into x select ... from y` writes `x` twice for two
+different reasons, and a function that found "the first select" would describe
+the second and silently drop the first.
+
+**Splitting is not a solved problem and this does not pretend it is.** T-SQL
+makes the semicolon optional, so a body may be several statements with nothing
+between them, and deciding where one ends needs a grammar this library does not
+have. What it has instead is a rule about verbs: `insert`, `update`, `delete`,
+`merge` and the rest start a statement when they appear at bracket depth zero —
+with four exceptions, **each of which was a wrong answer before it was an
+exception**:
+
+1. `... then insert` — a MERGE arm, and a T-SQL `if ... then`, put a verb where
+   it begins nothing.
+2. A MERGE owns every arm it declares. Missing this produced a statement whose
+   target was `set` — a phantom table, reported with the confidence of a real
+   one.
+3. The `select` that **feeds** a write belongs to that write. Treating it as a
+   second statement loses the pairing that makes column lineage possible at all.
+   A set operation is likewise one statement with several selects in it.
+4. A CTE belongs to the statement it feeds. Split off, `with c as (...) insert
+   into t select x from c` leaves an insert that reads a table called `c`.
+
+Stated limits, rather than papered over: a conditional's **condition is not
+attached** to the statements inside it, so `if @x = 1 insert into a ...` reports
+the write without the condition — the edge is real and the circumstance is lost.
+And a body whose statements are separated by neither a semicolon nor a leading
+verb cannot be split at all.
+
+### 3c. Pairing an output column with what fills it
+
+`projection` reads a select list, which names its own outputs. An INSERT does
+not: the names are on one side of the statement and the expressions on the
+other, and **pairing them is the whole difficulty**. It is positional, and the
+two shapes that cannot be paired are reported rather than guessed:
+
+- **A count mismatch** — the column list names three and the source produces two.
+- **No column list at all** — which column each expression fills is decided by
+  the target's ordinal order, which is a fact about the **catalog**, not about
+  the statement. `lineage`, which has a catalog, settles it by the same rule
+  the database itself applies; `derivations`, which does not, says so. If the
+  counts disagree the statement is not valid SQL and the refusal stands.
+
+Each derivation records **how** the pairing was made — `positional`,
+`assignment`, `select`, `ordinal`, `refused` — as a field rather than as prose
+a caller would have to sniff for. `ordinal` is the one that matters: it means
+the output names in `columns` are the *select list's own* inferred ones, which
+are meaningless as target column names. Inside `lineage` an `ordinal` pairing
+that the catalog has discharged becomes `ordinal_settled`, so "the catalog
+answered this" and "the statement answered this" stay distinguishable.
+
+Both produce a perfectly ordinary set of expressions **with the wrong names
+attached** if paired anyway, and a column lineage built on that is confident and
+wrong in a way nothing downstream can detect.
+
+### 3d. Column lineage, and why the object level is not enough
+
+`trace` and `impact` answer at the level of **objects**: this procedure reads
+that table. That is the level a dependency graph is usually drawn at, and it is
+one level too coarse for the question people actually ask. "Which table does
+this report read" has an easy answer and rarely settles anything; "where did
+**this column** come from" is the one that costs a day.
+
+The difference is not cosmetic. `fact_volume` reads `stg_deal`, and that says
+nothing about whether `avail_after_pvr` came from `gross_vol_mmbtu`, from
+`pvr_pct`, from both, or **from a constant** — and a column that turns out to be
+a constant is one of the commonest reasons a number is wrong and nobody can see
+why. So a column with a writer and no sources is reported as a **step with an
+empty source list**, which is a different fact from having no writer at all.
+
+Three things it will not do:
+
+- **It will not guess.** A source column that could belong to two of the objects
+  a statement reads is reported `unresolved`, by name. The wrong attribution is
+  indistinguishable from the right one downstream, and picking one turns a known
+  unknown into an unknown wrong answer.
+- **It will not assume one writer per column.** A restatement is an ordinary
+  thing, and reporting only the first writer hides it.
+- **It will not assume the graph is acyclic.** `update t set x = y * 0.97` reads
+  the very table it writes.
+
+A **view is included as the writer of itself**: a view has no `insert`, and its
+select list is nonetheless the derivation of every column a consumer sees —
+which is the whole reason a report's number can be traced past the view it was
+read from.
+
+**A target that binds to nothing is still a hop.** `select ... into #tmp` then
+`insert ... select ... from #tmp` is how a great deal of real ETL is written,
+and a temp table is never in a catalog — so without this the chain dead-ends at
+the first one, which in T-SQL is most procedures. Nothing is guessed: the
+statement that *fills* the temp table is what says which columns it has, and
+the resolution is confined to the module that wrote it. Such an id carries
+`::`, which no catalog id ever does, and `intermediates` names every local
+object a walk passed through — a caller has to be able to tell a local object
+from a real one.
+
+Two defects in the existing reader were found by building this, both invisible
+until something tried to *resolve* what it had reported:
+
+- **A numeric literal was read as a column name.** Digits are legal inside an
+  identifier, so `0.97` arrived as the three tokens `0` `.` `97` and looked
+  exactly like a qualified column; `_sources_in` had been reporting `1` as a
+  source of `x * (1 - y)` since it was written. Harmless until it became an
+  entry in the `unresolved` list — which is the one field a caller has to be
+  able to trust.
+- **`cast(x as int)` truncated the expression** and named the output column
+  `int`. Only a depth-zero `as` is an alias. With an alias present the last
+  `as` wins and the answer comes out right *by accident*, which is why the
+  first test written for it passed on the broken reader.
+
+An UPDATE and a MERGE now report their target as a **read as well as a write**:
+`set x = y * 0.97 where status = 'A'` takes both `y` and `status` from the
+target itself, and reported as a write alone a restatement looks like a module
+with no inputs. A DELETE is deliberately not in this — it reads the table to
+choose rows and puts no value into anything.
 
 ## 4. What the catalog cannot answer, and must say so
 
@@ -328,6 +451,10 @@ Three decisions worth naming:
   inferred, and therefore comes BEFORE this — it was originally sequenced after
   inference, which was wrong.
 - **NLQ.** It consumes this; it is not part of it.
+- **Column lineage through dynamic SQL.** It is a gap and is reported as one.
+- **The condition a conditional write sits under** (§3b).
+- **Cross-database references.** An estate is several databases; a reference
+  from one to another is not yet bound.
 - **Writing anything.** Discovery reads.
 
 ## 6. How it will be tested
