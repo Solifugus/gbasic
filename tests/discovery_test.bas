@@ -39,6 +39,14 @@ function table_id_for(cat, suffix)
 end function
 
 c = odbc.connect(env("GBASIC_ODBC_CONNECTION"))
+' EVERYTHING THIS FIXTURE CREATES IS DROPPED FIRST, views included. Found by
+' re-running: the views were torn down at the END, so a second run scanned the
+' ones the first had left behind -- and once VIEWS became part of the catalog
+' that turned "both tables are found" into 4. A fixture that passes only on a
+' clean database is a flaky fixture, and it fails in the direction that looks
+' like a defect in the library.
+v1 = odbc.exec(c, "drop view if exists disc_v2")
+v2 = odbc.exec(c, "drop view if exists disc_v1")
 d1 = odbc.exec(c, "drop table if exists disc_orders")
 d2 = odbc.exec(c, "drop table if exists disc_customers")
 m1 = odbc.exec(c, "create table disc_customers (id integer primary key, name varchar(50) not null)")
@@ -180,11 +188,74 @@ check("dynamic SQL is reported as a gap", count(discovery.references("exec ('sel
 check("and ordinary SQL reports none", count(discovery.references("select * from t").gaps), 0)
 
 print ""
+print "-- the projection: which columns an output is built from"
+pj = discovery.projection("select id, sum(amt) as total, a + b as combined from t where x = 1")
+check("every output column is found", count(pj), 3)
+check("a bare column names itself", pj[0].output, "id")
+check("an aliased aggregate takes its alias", pj[1].output, "total")
+check("and is marked as an aggregate", pj[1].aggregate, true)
+check("naming the column it aggregates", join(pj[1].sources, ","), "amt")
+check("an expression names every column it reads", join(pj[2].sources, ","), "a,b")
+check("and a plain column is not an aggregate", pj[0].aggregate, false)
+' `select *` IS NOT EXPANDED. Expanding it needs the shape of something this
+' function was not given, and guessing is how a lineage graph becomes
+' confident and wrong.
+check("select * is reported, not expanded", discovery.projection("select * from t")[0].output, "*")
+
+print ""
+print "-- the predicates, which ARE the lineage"
+' A `where` clause is not metadata about a derivation, it is the reason two
+' numbers differ.
+pr = discovery.predicates("select a from t join u on u.id = t.id where status = 'ACTIVE' group by a having count(*) > 2")
+kinds = []
+for each q in pr
+    append(kinds, q.kind)
+end for
+check("join, where and having are all captured", join(kinds, ","), "join,where,having")
+' Guarded before indexing: with the predicate scan disabled the list is empty,
+' and a crash on pr[1] would hide the mismatch that already named the problem.
+if count(pr) < 2 then
+    check("(cannot check the literal: no predicates were found)", false, true)
+else
+' THE LITERAL IS THE EXPLANATION. "status = 'ACTIVE'" is the answer;
+' "status = '...'" is not -- so string contents are kept, while the token kind
+' still stops them ever being read as an object name.
+check("the literal VALUE survives", contains(pr[1].text, "ACTIVE"), true)
+end if
+check("and a literal is still never a table", join(discovery.references("select 'from ghost' from real_t").reads, ","), "real_t")
+
+print ""
+print "-- explain: why two same-named columns disagree"
+' THE QUESTION THE LIBRARY EXISTS FOR. Two reports show a number by the same
+' name, they differ, and someone spends a day finding out why. Both are
+' correct; what is wanted is where the derivations parted.
+gross = "select d, sum(gross_amt) as total_volume from fact_t group by d"
+net = "select d, sum(net_amt) as total_volume from fact_t where status = 'ACTIVE' group by d"
+ex = discovery.explain({ name: "total_volume", body: gross }, { name: "total_volume", body: net })
+check("the shared ancestor is named", join(ex.shared, ","), "fact_t")
+check("they are not identical", ex.identical, false)
+found_pred = false
+found_expr = false
+for each dd in ex.differences
+    if contains(dd, "ACTIVE") then
+        found_pred = true
+    end if
+    if contains(dd, "gross_amt") and contains(dd, "net_amt") then
+        found_expr = true
+    end if
+end for
+check("the narrowing predicate is reported as the difference", found_pred, true)
+check("and so is the differing expression", found_expr, true)
+' THE CONTROL, and it is what stops the library inventing a distinction so as
+' to have something to say: two identical derivations must report NONE.
+same = discovery.explain({ name: "total_volume", body: gross }, { name: "total_volume", body: gross })
+check("CONTROL: a column compared with itself differs in nothing", same.identical, true)
+check("and reports no differences at all", count(same.differences), 0)
+
+print ""
 print "-- modules, and a traced chain"
 ' A TWO-HOP VIEW CHAIN, which every database has -- SQLite has no stored
 ' procedures at all, so a portable fixture cannot rest on them.
-e1 = odbc.exec(c, "drop view if exists disc_v2")
-e2 = odbc.exec(c, "drop view if exists disc_v1")
 e3 = odbc.exec(c, "create view disc_v1 as select id, total from disc_orders")
 e4 = odbc.exec(c, "create view disc_v2 as select id from disc_v1")
 info = odbc.info(c)

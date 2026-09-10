@@ -239,6 +239,9 @@ therefore part of every identity from the first line of code, not retrofitted.
 | `discovery.references(sql)` | `{reads, writes, gaps}` — the objects a statement touches |
 | `discovery.trace(catalog, modules, dbms)` | `{edges, unresolved, gaps}` — references bound to real objects |
 | `discovery.impact(trace, object_id, "downstream"\|"upstream")` | what a change to that object affects |
+| `discovery.projection(sql)` | each output column, the expression, the columns it reads, whether it aggregates |
+| `discovery.predicates(sql)` | `where` / `having` / join `on` — which **are** the lineage, not metadata about it |
+| `discovery.explain(a, b)` | why two same-named columns disagree |
 
 Named `scan` and not `read`: `read` is a built-in, and a library function
 sharing a built-in's name resolves to itself inside the library and to the
@@ -284,6 +287,39 @@ passes an explicit `"%"`.
 **Not yet built, and each is a separate increment:** column-level lineage
 (cheaper on MariaDB and PostgreSQL, which return views already resolved), the
 predicates that answer §1a's question, and cross-database references.
+
+## 4b. §1a's question, answered
+
+`discovery.explain({name, body}, {name, body})` reports **differences only**,
+and says so when there are none. Against the estate's two `total_volume`
+columns:
+
+```
+shared ancestor: warehouse.fact_volume
+why they differ:
+  - the expression differs: sum ( gross_vol_mmbtu )   versus   sum ( avail_after_pvr )
+  - they are built from different columns: [gross_vol_mmbtu] versus [avail_after_pvr]
+  - only the second narrows on -- where: status = 'ACTIVE'
+```
+
+The estate independently records: *"rpt_volume_net filters status = 'ACTIVE'
+and sums avail_after_pvr; rpt_volume_gross sums gross_vol_mmbtu over every
+row."* That prose was written when the estate was designed; the explanation
+above is derived from the SQL alone. **Agreement between two independently
+written statements is the oracle**, and both fixtures assert it.
+
+Three decisions worth naming:
+
+- **String literals keep their contents.** They are never read as object names
+  — the token kind prevents that — but in a predicate the literal *is* the
+  explanation: `status = 'ACTIVE'` answers the question and `status = '...'`
+  does not.
+- **`select *` is reported, never expanded.** Expanding it needs the shape of
+  something the function was not given.
+- **It reports differences only, and the control is that two identical
+  derivations report none.** Inventing a distinction so as to have something to
+  say is the failure this design is arranged against, and a tool that always
+  finds a reason is indistinguishable from one that guesses.
 
 ## 5. Deliberately not in the first increment
 

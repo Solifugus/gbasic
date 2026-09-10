@@ -54,8 +54,8 @@ elif ! grep -qx 'mismatches: 0' "$work/out"; then
     fail "the fixture did not finish"
 else
     n=$(sed -n 's/^checks: //p' "$work/out")
-    if [ -z "$n" ] || [ "$n" -lt 35 ]; then
-        fail "only ${n:-0} checks ran, wanted at least 35"
+    if [ -z "$n" ] || [ "$n" -lt 42 ]; then
+        fail "only ${n:-0} checks ran, wanted at least 42"
     else
         pass "$n checks (R1, the named decoys, the null region, the declared flows)"
     fi

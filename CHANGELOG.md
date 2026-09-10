@@ -9,6 +9,42 @@ language surface may still change between releases.
 
 ## Unreleased
 
+### Added — `discovery.explain`: why two same-named columns disagree
+
+`discovery.projection`, `discovery.predicates` and `discovery.explain` — the
+increment that answers the question the library exists for. Two reports both
+show a number called `total_volume`, they differ, and today that costs someone
+a day of manual research. Both are correct; what is wanted is where the
+derivations parted.
+
+Against the estate:
+
+```
+shared ancestor: warehouse.fact_volume
+  - the expression differs: sum ( gross_vol_mmbtu ) versus sum ( avail_after_pvr )
+  - only the second narrows on -- where: status = 'ACTIVE'
+```
+
+**The estate records the same answer in prose, written when it was designed;
+the explanation is derived from the SQL alone.** Agreement between two
+independently written statements is the oracle, and both fixtures assert it.
+
+**The predicate is part of the lineage, not metadata about it** — a `where`
+clause is the reason two numbers differ, so `where`, `having` and join `on` are
+all captured.
+
+Three decisions: **string literals keep their contents** (never read as object
+names, but in a predicate the literal *is* the explanation — `status =
+'ACTIVE'` answers the question and `status = '...'` does not); **`select *` is
+reported, never expanded**, since expanding it needs a shape the function was
+not given; and **differences only, with the control that two identical
+derivations report none** — a tool that always finds a reason is
+indistinguishable from one that guesses.
+
+Three perturbations proven red. One made the fixture crash on an index rather
+than report its mismatch, hiding the assertion that had already named the
+problem; it is guarded now.
+
 ### Added — `estate`: a fabricated business estate whose truth is written down
 
 `stdlib/estate.bas`, `tests/run_estate.sh`. Structure and code, not rows —

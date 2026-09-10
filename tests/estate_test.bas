@@ -134,6 +134,31 @@ check("and both read the shared ancestor",
       contains(ga, split(dv.share, ".")[1]) and contains(gb, split(dv.share, ".")[1]), true)
 
 print ""
+print "-- R33 ANSWERED: the tool's explanation against the estate's own"
+' THE ORACLE. The estate declares `because` as prose, written when the estate
+' was designed; `discovery.explain` derives its answer from the SQL alone,
+' having never seen that prose. Agreement between two independently written
+' statements is evidence -- a golden of either alone would be a transcript.
+ex = discovery.explain({ name: "total_volume", body: ga }, { name: "total_volume", body: gb })
+check("the shared ancestor is the one declared", contains(join(ex.shared, ","), split(dv.share, ".")[1]), true)
+check("and the two are not identical", ex.identical, false)
+said_filter = false
+said_columns = false
+for each dd in ex.differences
+    if contains(dd, "ACTIVE") then
+        said_filter = true
+    end if
+    if contains(dd, "gross_vol_mmbtu") and contains(dd, "avail_after_pvr") then
+        said_columns = true
+    end if
+end for
+' The estate's prose says BOTH things; the derived answer must say both too.
+check("the derived answer names the filter the estate recorded",
+      said_filter and contains(dv.because, "ACTIVE"), true)
+check("and the columns the estate recorded",
+      said_columns and contains(dv.because, "avail_after_pvr"), true)
+
+print ""
 print "-- R9: nothing in the null region relates to anything"
 for each r in tr.relationships
     check("no relationship touches " + tr.null_region,

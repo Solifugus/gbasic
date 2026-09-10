@@ -275,19 +275,29 @@ library discovery
                 else
                     if b = 39 then
                         i = i + 1
+                        lit = []
                         while i < n
                             if byte_at(sql, i) = 39 then
                                 if i + 1 < n and byte_at(sql, i + 1) = 39 then
+                                    append(lit, "'")
                                     i = i + 2
                                 else
                                     i = i + 1
                                     break
                                 end if
                             else
+                                append(lit, from_bytes([byte_at(sql, i)]))
                                 i = i + 1
                             end if
                         end while
-                        append(out, { kind: "string", text: "" })
+                        ' THE CONTENTS ARE KEPT, though nothing inside a literal
+                        ' is ever an object reference -- the `string` kind is
+                        ' what prevents that, and the walker only ever reads
+                        ' `word` and `quoted`. They are kept because in a
+                        ' PREDICATE the literal IS the explanation: "status =
+                        ' 'ACTIVE'" is the answer to why two numbers differ,
+                        ' and "status = '...'" is not.
+                        append(out, { kind: "string", text: join(lit, "") })
                     else
                         if b = 91 or b = 34 or b = 96 then
                             closer = 93
@@ -525,6 +535,323 @@ library discovery
             end for
         end for
         return out
+    end function
+
+    ' ---- the projection, and the predicates --------------------------------
+    '
+    ' THIS IS WHAT ANSWERS THE QUESTION PEOPLE ACTUALLY ASK. Two reports both
+    ' show a number called `revenue` and they differ; today that costs someone
+    ' a day of manual research. Both are correct. The answer is never "these
+    ' are unrelated" -- it is "this one excludes cancelled orders", or "this
+    ' one books at order date and that one at ship date".
+    '
+    ' So THE PREDICATE IS PART OF THE LINEAGE, not metadata about it: a `where`
+    ' clause IS the reason two numbers differ. A tool that reports both columns
+    ' derive from the same table has said something true and answered nothing.
+
+    function _kw_at(toks, i, w)
+        return toks[i].kind = "word" and toks[i].text = w
+    end function
+
+    ' Reconstructed rather than sliced from the source: the token stream has no
+    ' byte offsets, and a NORMALISED rendering is better here anyway, because
+    ' two expressions are being COMPARED and formatting differences would read
+    ' as real ones.
+    function _render(toks, from_i, to_i)
+        out = []
+        i = from_i
+        while i < to_i
+            tk = toks[i]
+            txt = tk.text
+            if tk.kind = "string" then
+                txt = "'" + txt + "'"
+            end if
+            if tk.kind = "quoted" then
+                txt = "\"" + txt + "\""
+            end if
+            append(out, txt)
+            i = i + 1
+        end while
+        return join(out, " ")
+    end function
+
+    ' The columns an expression reads: every word that is not a keyword and is
+    ' not the name of a function being called. A qualified `s.amount` yields
+    ' `amount`, because the qualifier is a table alias and aliases are local to
+    ' the statement.
+    function _sources_in(toks, from_i, to_i)
+        out = []
+        i = from_i
+        while i < to_i
+            tk = toks[i]
+            if tk.kind = "word" or tk.kind = "quoted" then
+                is_call = false
+                if i + 1 < to_i then
+                    if toks[i + 1].kind = "punct" and toks[i + 1].text = "(" then
+                        is_call = true
+                    end if
+                end if
+                qualifier = false
+                if i + 1 < to_i then
+                    if toks[i + 1].kind = "punct" and toks[i + 1].text = "." then
+                        qualifier = true
+                    end if
+                end if
+                if not is_call and not qualifier and not _is_keyword(tk.text) then
+                    if not contains(out, tk.text) then
+                        append(out, tk.text)
+                    end if
+                end if
+            end if
+            i = i + 1
+        end while
+        return out
+    end function
+
+    ' discovery.projection(sql) -> array of { output, expression, sources, aggregate }
+    '
+    ' `output` is the column a consumer sees; `sources` are the columns it was
+    ' built from. `select *` is NOT expanded and is reported as such: expanding
+    ' it would require knowing the shape of something this function was not
+    ' given, and guessing is how a lineage graph becomes confident and wrong.
+    function projection(sql)
+        toks = _sql_tokens(sql)
+        out = []
+        ' Find the first top-level SELECT and the FROM that closes its list.
+        depth = 0
+        start = -1
+        list_end = -1
+        i = 0
+        while i < count(toks)
+            tk = toks[i]
+            if tk.kind = "punct" and tk.text = "(" then
+                depth = depth + 1
+            end if
+            if tk.kind = "punct" and tk.text = ")" then
+                depth = depth - 1
+            end if
+            if depth = 0 and tk.kind = "word" then
+                if tk.text = "select" and start < 0 then
+                    start = i + 1
+                end if
+                if tk.text = "from" and start >= 0 and list_end < 0 then
+                    list_end = i
+                end if
+            end if
+            i = i + 1
+        end while
+        if start < 0 then
+            return out
+        end if
+        if list_end < 0 then
+            list_end = count(toks)
+        end if
+        ' Split the list on top-level commas.
+        item_start = start
+        depth = 0
+        i = start
+        while i <= list_end
+            done = i = list_end
+            if not done then
+                tk = toks[i]
+                if tk.kind = "punct" and tk.text = "(" then
+                    depth = depth + 1
+                end if
+                if tk.kind = "punct" and tk.text = ")" then
+                    depth = depth - 1
+                end if
+                if depth = 0 and tk.kind = "punct" and tk.text = "," then
+                    done = true
+                end if
+            end if
+            if done and i > item_start then
+                ' The output name: after `as`, else the last bare word, else
+                ' the expression itself.
+                name = ""
+                expr_end = i
+                j = item_start
+                while j < i
+                    if _kw_at(toks, j, "as") then
+                        if j + 1 < i then
+                            name = toks[j + 1].text
+                        end if
+                        expr_end = j
+                    end if
+                    j = j + 1
+                end while
+                if len(name) = 0 then
+                    last = toks[i - 1]
+                    if last.kind = "word" and not _is_keyword(last.text) then
+                        name = last.text
+                    end if
+                    if last.kind = "quoted" then
+                        name = last.text
+                    end if
+                    if last.kind = "punct" and last.text = "*" then
+                        name = "*"
+                    end if
+                end if
+                agg = false
+                j = item_start
+                while j < expr_end
+                    if toks[j].kind = "word" then
+                        if contains(["sum", "count", "avg", "min", "max", "stdev", "var"], toks[j].text) then
+                            agg = true
+                        end if
+                    end if
+                    j = j + 1
+                end while
+                append(out, { output: name,
+                              expression: _render(toks, item_start, expr_end),
+                              sources: _sources_in(toks, item_start, expr_end),
+                              aggregate: agg })
+                item_start = i + 1
+            end if
+            i = i + 1
+        end while
+        return out
+    end function
+
+    ' discovery.predicates(sql) -> array of { kind, text }
+    '
+    ' `where` and `having` narrow which rows contribute; a join `on` decides
+    ' which rows pair up and can narrow just as effectively. All three belong
+    ' to the derivation, because all three are answers to "why is this number
+    ' different from that one".
+    function predicates(sql)
+        toks = _sql_tokens(sql)
+        out = []
+        i = 0
+        while i < count(toks)
+            tk = toks[i]
+            if tk.kind = "word" and contains(["where", "having", "on"], tk.text) then
+                kind = tk.text
+                if kind = "on" then
+                    kind = "join"
+                end if
+                j = i + 1
+                depth = 0
+                while j < count(toks)
+                    t2 = toks[j]
+                    if t2.kind = "punct" and t2.text = "(" then
+                        depth = depth + 1
+                    end if
+                    if t2.kind = "punct" and t2.text = ")" then
+                        if depth = 0 then
+                            break
+                        end if
+                        depth = depth - 1
+                    end if
+                    if depth = 0 and t2.kind = "word" then
+                        if contains(["where", "group", "order", "having", "join", "union", "select", "inner", "left", "right", "full", "cross"], t2.text) then
+                            break
+                        end if
+                    end if
+                    j = j + 1
+                end while
+                if j > i + 1 then
+                    append(out, { kind: kind, text: _render(toks, i + 1, j) })
+                end if
+                i = j
+            else
+                i = i + 1
+            end if
+        end while
+        return out
+    end function
+
+    ' discovery.explain(a, b) -> why two same-named columns differ.
+    '
+    ' `a` and `b` are { name, body } -- a column name and the SQL of the module
+    ' producing it. THE QUESTION THIS LIBRARY EXISTS FOR: two reports both show
+    ' a number called `total_volume`, they disagree, and someone spends a day
+    ' finding out why. Both are correct. What is wanted is the point at which
+    ' the two derivations parted.
+    '
+    ' It reports DIFFERENCES ONLY, and says so when it can find none: "these
+    ' two are derived identically" is a real answer, and inventing a
+    ' distinction to have something to say would be the failure this whole
+    ' design is arranged against.
+    function explain(a, b)
+        pa = projection(a.body)
+        pb = projection(b.body)
+        ca = { output: "", expression: "", sources: [], aggregate: false }
+        cb = ca
+        found_a = false
+        found_b = false
+        for each c in pa
+            if c.output = a.name then
+                ca = c
+                found_a = true
+            end if
+        end for
+        for each c in pb
+            if c.output = b.name then
+                cb = c
+                found_b = true
+            end if
+        end for
+        if not found_a or not found_b then
+            error "discovery: explain could not find both columns in their modules"
+        end if
+        ra = references(a.body)
+        rb = references(b.body)
+        shared = []
+        for each x in ra.reads
+            if contains(rb.reads, x) then
+                append(shared, x)
+            end if
+        end for
+        qa = predicates(a.body)
+        qb = predicates(b.body)
+        ta = []
+        for each q in qa
+            append(ta, q.kind + ": " + q.text)
+        end for
+        tb = []
+        for each q in qb
+            append(tb, q.kind + ": " + q.text)
+        end for
+        only_a = []
+        for each x in ta
+            if not contains(tb, x) then
+                append(only_a, x)
+            end if
+        end for
+        only_b = []
+        for each x in tb
+            if not contains(ta, x) then
+                append(only_b, x)
+            end if
+        end for
+        differences = []
+        if ca.expression != cb.expression then
+            append(differences, "the expression differs: " + ca.expression + "   versus   " + cb.expression)
+        end if
+        if join(ca.sources, ",") != join(cb.sources, ",") then
+            append(differences, "they are built from different columns: [" + join(ca.sources, ", ") + "] versus [" + join(cb.sources, ", ") + "]")
+        end if
+        for each q in only_a
+            append(differences, "only the first narrows on -- " + q)
+        end for
+        for each q in only_b
+            append(differences, "only the second narrows on -- " + q)
+        end for
+        ' READ SIDES that differ change which rows exist at all, so they belong
+        ' beside the predicates rather than under them.
+        for each x in ra.reads
+            if not contains(rb.reads, x) then
+                append(differences, "only the first reads " + x)
+            end if
+        end for
+        for each x in rb.reads
+            if not contains(ra.reads, x) then
+                append(differences, "only the second reads " + x)
+            end if
+        end for
+        return { shared: shared,
+                 differences: differences,
+                 identical: count(differences) = 0 }
     end function
 
     ' ---- resolution: binding a bare name to a real object ------------------
