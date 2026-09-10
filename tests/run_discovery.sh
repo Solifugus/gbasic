@@ -33,13 +33,14 @@
 # four on 2026-09-08 -- which is the only reason the identity rules above are
 # claims rather than guesses.
 #
-# KNOWN, AND NOT SUPPRESSED: pointed at MariaDB, the valgrind tier reddens on
-# uninitialised reads inside libmaodbc.so's own SQLTables and SQLColumns. It is
-# driver-internal (every frame is in the driver) and pre-dates any of this, but
-# tests/odbc.supp covers only that driver's SQLPrepare path, and the policy in
-# that file is that a suppression is isolated in plain C BEFORE it is written --
-# otherwise it is indistinguishable from hiding our own defect. So this is
-# recorded rather than silenced, and the default hermetic run is clean.
+# THE VALGRIND TIER SHARES tests/odbc.supp with run_odbc.sh. Pointed at MariaDB
+# it would otherwise redden on uninitialised reads inside libmaodbc.so's own
+# SQLTables, SQLColumns, SQLPrimaryKeys and SQLForeignKeys -- driver-internal,
+# every frame in the driver, and reproduced from plain C by
+# tests/odbc_driver_probe.c before a line of the file was written. run_odbc.sh
+# carries the tier that keeps those entries honest in both directions: that
+# they still match the driver, and that they do NOT hide a caller passing
+# uninitialised data in.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -111,7 +112,8 @@ if [ "$have_driver" -eq 0 ]; then
     pass "SKIP (no $driver ODBC driver installed)"
     printf 'TIER valgrind\n'
     if vg_available; then
-        if vg_run ./gbasic tests/discovery_sql_test.bas >/dev/null 2>"$work/vg.err"; then
+        if VG_EXTRA=--suppressions=tests/odbc.supp \
+           vg_run ./gbasic tests/discovery_sql_test.bas >/dev/null 2>"$work/vg.err"; then
             pass "no definite leak or invalid access"
         else
             cat "$work/vg.err"; fail "valgrind"
@@ -156,8 +158,10 @@ fi
 
 printf 'TIER valgrind\n'
 if vg_available; then
-    if vg_run ./gbasic tests/discovery_sql_test.bas >/dev/null 2>"$work/vg1.err" \
-       && vg_run ./gbasic tests/discovery_test.bas >/dev/null 2>"$work/vg.err"; then
+    if VG_EXTRA=--suppressions=tests/odbc.supp \
+       vg_run ./gbasic tests/discovery_sql_test.bas >/dev/null 2>"$work/vg1.err" \
+       && VG_EXTRA=--suppressions=tests/odbc.supp \
+       vg_run ./gbasic tests/discovery_test.bas >/dev/null 2>"$work/vg.err"; then
         pass "no definite leak or invalid access"
     else
         cat "$work/vg.err"; fail "valgrind"

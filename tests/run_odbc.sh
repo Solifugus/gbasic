@@ -399,5 +399,83 @@ else
     printf '  SKIP valgrind (not installed)\n'
 fi
 
+# THE SUPPRESSIONS THEMSELVES, which nothing checked until 2026-09-09.
+#
+# A suppression file has two ways to rot and the tier above sees neither. It
+# can stop MATCHING -- a driver upgrade moves the frames, and every suite
+# sharing the file goes red for a reason that is not a gBASIC defect. And it
+# can start matching TOO MUCH -- the entries name a driver object and an entry
+# point, so the standing worry, written into odbc.supp's own header, is that
+# they would also hide uninitialised data WE passed in.
+#
+# tests/odbc_driver_probe.c settles both by measurement. It performs the same
+# six ODBC calls from plain C with nothing below the driver manager but `main`,
+# passing string literals throughout, and `--dirty` hands SQLTables an unwritten
+# stack buffer -- a caller's defect, deliberately.
+printf '\nTIER the suppression file itself\n'
+if ! vg_available; then
+    printf '  SKIP (valgrind not installed)\n'
+elif ! command -v cc >/dev/null 2>&1; then
+    printf '  SKIP (no C compiler)\n'
+elif ! cc -O0 -g -o "$work/probe" tests/odbc_driver_probe.c -lodbc 2>"$work/cc.err"; then
+    head -5 "$work/cc.err"; fail "the driver probe did not build"
+else
+    # Through the SHARED POLICY, not hand-typed flags: access-only is exactly
+    # the claim here (a driver leaks by design), and the first draft of this
+    # tier typed the flags itself -- which is the state run_valgrind_policy.sh
+    # exists to prevent, and whose tripwire did not catch it because the call
+    # sat inside a shell function. Both were fixed together.
+    vgp() { VG_EXTRA=--suppressions=tests/odbc.supp vg_run_access_only "$@"; }
+    # DOES THE PROBE ITSELF WORK, asked before anything is concluded from its
+    # exit code. Every check below reads a nonzero exit as "valgrind found
+    # something", and the first draft had no way to tell that from "the probe
+    # could not create its fixture tables" -- so an ordinary SQL problem was
+    # reported as "the suppressions no longer match this driver", which is a
+    # confident answer to a question nobody asked.
+    if ! "$work/probe" "$GBASIC_ODBC_CONNECTION" >/dev/null 2>"$work/pbase"; then
+        head -5 "$work/pbase"
+        fail "the driver probe could not run against this connection"
+        probe_ok=0
+    else
+        probe_ok=1
+    fi
+
+    # WHETHER THIS DRIVER HAS ANYTHING TO SUPPRESS AT ALL, asked first,
+    # because on a clean driver the next check passes without asserting
+    # anything and a green line that ran no assertion is how a gate shrinks.
+    if [ "$probe_ok" -eq 0 ]; then
+        dirty_driver=0
+    elif vg_run_access_only "$work/probe" "$GBASIC_ODBC_CONNECTION" >/dev/null 2>"$work/p0"; then
+        dirty_driver=0
+    else
+        dirty_driver=1
+    fi
+    if [ "$probe_ok" -eq 0 ]; then
+        : # already reported; the checks below would only repeat it
+    elif vgp "$work/probe" "$GBASIC_ODBC_CONNECTION" >/dev/null 2>"$work/p1"; then
+        if [ "$dirty_driver" -eq 1 ]; then
+            pass "the driver's own defects are matched (plain C, literal arguments)"
+        else
+            pass "SKIP (this driver reports none, so there is nothing to match)"
+        fi
+    else
+        head -12 "$work/p1"
+        fail "the suppressions no longer match this driver -- they were written for another version"
+    fi
+    # THE LOAD-BEARING HALF. Without it the file is indistinguishable from one
+    # that suppresses everything, which is exactly what its header says it must
+    # not become.
+    if [ "$probe_ok" -eq 0 ]; then
+        : # already reported
+    elif vgp "$work/probe" "$GBASIC_ODBC_CONNECTION" --dirty >/dev/null 2>"$work/p2"; then
+        fail "a CALLER passing uninitialised data was suppressed; the entries are too broad"
+    elif grep -q "uninitialised" "$work/p2"; then
+        pass "CONTROL: a caller's own uninitialised data is still reported"
+    else
+        head -12 "$work/p2"
+        fail "the dirty probe failed for some reason other than the defect it plants"
+    fi
+fi
+
 printf '\n%d checks, %d failed\n' "$checks" "$failures"
 [[ $failures -eq 0 ]]

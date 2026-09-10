@@ -9,6 +9,50 @@ language surface may still change between releases.
 
 ## Unreleased
 
+### Added — the ODBC suppression file is now backed by a committed probe
+
+`tests/odbc_driver_probe.c`, and a tier in `run_odbc.sh` that keeps
+`tests/odbc.supp` honest in both directions.
+
+`discovery` made the four ODBC **catalog** calls the first time anything did,
+and MariaDB's driver reads an uninitialised value on every one of them. The
+file's own rule is that a suppression is reproduced from plain C, with no
+gBASIC in the stack, *before* it is written — but until now that isolation was
+done by hand and thrown away, so the claim was true when made, unverifiable
+afterwards, and unrepeatable on the next driver version.
+
+A suppression file rots two ways and the ordinary valgrind tier sees neither:
+it can stop **matching** (a driver upgrade moves the frames, and every suite
+sharing the file goes red for something that is not a gBASIC defect), or it can
+start matching **too much**.
+
+**The load-bearing half is the second, and it is a control.** The probe's
+`--dirty` mode hands `SQLTables` an unwritten stack buffer — a caller's defect,
+deliberately — and it must **still be reported** with the suppressions in
+force. Measured, and better than expected: a caller's uninitialised data
+surfaces at `strlen (vg_replace_strmem.c)`, valgrind's own interceptor
+*outside* the driver, so an `at: obj:*/odbc/libmaodbc.so` anchor cannot match
+it. A blanket entry is proven red against exactly that.
+
+The "still matches" half **says when it has nothing to match** rather than
+passing vacuously, since on a clean driver it asserts nothing.
+
+Three defects in the probe itself, each measured rather than reasoned:
+`drop table if exists` is refused by FreeTDS; a **failed statement poisons a
+FreeTDS connection**, so speculative cleanup runs on a connection of its own;
+and **`SQL_NO_DATA` is success for DDL**, which FreeTDS returns — treating it
+as failure is what produced "create table failed with no diagnostic", no
+diagnostic because there was no error. Verified on all four drivers, twice each.
+
+### Fixed — `run_valgrind_policy`'s tripwire had a blind spot
+
+Its regex required `valgrind` to follow only `if` and environment assignments
+**from column one**, so the first draft of the tier above — `vgp() { valgrind
+... ; }` — went straight past it. It anchors at any command position now, and
+requires an argument-looking token after the word, because `printf 'SKIP
+(valgrind unavailable)'` appears in a dozen suites and a tripwire that fires on
+prose is one somebody turns off.
+
 ### Added — `discovery.lineage`: where THIS column came from, across hops
 
 `discovery.statements`, `discovery.derivations` and `discovery.lineage`.

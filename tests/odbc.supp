@@ -13,6 +13,16 @@
 # and entry point. A blanket "anything inside a driver .so" rule would also
 # hide uninitialised data that WE passed in, which is precisely the defect
 # class this tier exists to catch.
+#
+# THAT IS NOW MEASURED RATHER THAN ASSERTED. tests/odbc_driver_probe.c is the
+# isolation program, committed, and its --dirty mode hands SQLTables an
+# unwritten stack buffer -- a caller's defect on purpose. A caller's
+# uninitialised data is reported at strlen (vg_replace_strmem.c), valgrind's
+# own interceptor OUTSIDE the driver, while the driver's own defect is reported
+# at a frame inside it; so every entry below requires its INNERMOST frame to be
+# the driver object, and none of them can match the former. run_odbc.sh asserts
+# both directions on every run, and a blanket entry is proven red against the
+# dirty probe.
 
 # MariaDB Connector/ODBC 3.2.6 (libmaodbc.so) reads an uninitialised value in
 # its own SQLPrepare path. Reproduced standalone with:
@@ -26,3 +36,72 @@
    fun:SQLPrepare
    ...
 }
+
+# THE FOUR CATALOG CALLS, added 2026-09-09 when `discovery` became the first
+# thing to make them. The same unsymbolised function inside libmaodbc.so reads
+# an uninitialised value on every one of them, reached from four entry points.
+#
+# Reproduced by tests/odbc_driver_probe.c -- committed this time, because the
+# previous entry's isolation was done by hand and thrown away, which left the
+# claim true when made and unverifiable afterwards. Every argument the probe
+# passes is a string literal or SQL_NTS, so nothing of ours can be
+# uninitialised, and the whole stack below the driver manager is `main`.
+#
+# THE INNERMOST FRAME IS REQUIRED TO BE INSIDE THE DRIVER, and that is what
+# stops these entries hiding a CALLER that passes uninitialised data in.
+# MEASURED, not argued: the probe's `--dirty` mode hands SQLTables an
+# unwritten stack buffer, and valgrind reports that at `strlen
+# (vg_replace_strmem.c)` -- its own interceptor, outside libmaodbc -- so an
+# `at: obj:*/odbc/libmaodbc.so` anchor does not match it. run_odbc.sh asserts
+# exactly that, both ways.
+
+{
+   mariadb-odbc-sqltables-uninitialised
+   Memcheck:Cond
+   obj:*/odbc/libmaodbc.so
+   obj:*/odbc/libmaodbc.so
+   obj:*/odbc/libmaodbc.so
+   fun:SQLTables
+   fun:SQLTables
+   ...
+}
+
+{
+   mariadb-odbc-sqlcolumns-uninitialised
+   Memcheck:Cond
+   obj:*/odbc/libmaodbc.so
+   obj:*/odbc/libmaodbc.so
+   obj:*/odbc/libmaodbc.so
+   fun:SQLColumns
+   fun:SQLColumns
+   ...
+}
+
+{
+   mariadb-odbc-sqlprimarykeys-uninitialised
+   Memcheck:Cond
+   obj:*/odbc/libmaodbc.so
+   obj:*/odbc/libmaodbc.so
+   obj:*/odbc/libmaodbc.so
+   fun:SQLPrimaryKeys
+   fun:SQLPrimaryKeys
+   ...
+}
+
+{
+   mariadb-odbc-sqlforeignkeys-uninitialised
+   Memcheck:Cond
+   obj:*/odbc/libmaodbc.so
+   obj:*/odbc/libmaodbc.so
+   obj:*/odbc/libmaodbc.so
+   fun:SQLForeignKeys
+   fun:SQLForeignKeys
+   ...
+}
+
+# NOT SUPPRESSED: the same driver defect is reachable through SQLExecDirect,
+# which the probe once used to create its own fixture tables. gBASIC does not
+# call SQLExecDirect -- it prepares and executes -- and the probe now takes the
+# library's path too, so nothing here reproduces it any more. An entry the
+# probe cannot produce is an entry with no evidence behind it, which is the one
+# thing this file must not contain.

@@ -106,7 +106,20 @@ printf 'TIER every suite goes through the policy\n'
 # The tripwire that keeps the consolidation from unravelling: a new suite (or
 # an edited old one) calling valgrind directly would run under whatever flags
 # its author happened to type, which is the state this replaced.
-raw=$(grep -lE '^\s*(if\s+)?([A-Za-z_]+=[^ ]+\s+)*valgrind\s' tests/run_*.sh | grep -v run_valgrind_policy.sh || true)
+# ANCHORED AT A COMMAND POSITION RATHER THAN AT THE START OF A LINE. The
+# first version required `valgrind` to follow only optional `if` and env
+# assignments from column one, and MISSED a call inside a shell function --
+# `vgp() { valgrind ... ; }` in run_odbc.sh, found 2026-09-09 by writing
+# exactly that. A tripwire with a blind spot the shape of ordinary shell is
+# not a tripwire; it now looks for the word in any command position (line
+# start, or after `{`, `;`, `&&`, `||`, `|`, `if`, `then`, `else`, `do`) AND
+# followed by something that looks like an ARGUMENT -- a flag, a path or a
+# variable. Both halves are needed: `(` is deliberately not an anchor and the
+# argument test is the backstop, because `printf 'SKIP (valgrind unavailable)'`
+# appears in a dozen suites and a tripwire that fires on prose is one somebody
+# turns off.
+raw=$(grep -lE '(^|[{;&|]|\b(if|then|else|do))[[:space:]]*([A-Za-z_]+=[^ ]+[[:space:]]+)*valgrind[[:space:]]+[-.$/]' \
+      tests/run_*.sh | grep -v run_valgrind_policy.sh || true)
 if [ -z "$raw" ]; then
     pass "no suite invokes valgrind directly"
 else
