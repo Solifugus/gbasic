@@ -1,0 +1,7 @@
+line points: 4
+bar rects:   4
+month labels on the line: 4
+money axis: true
+percent axis: true
+keyed marks: 4
+first bar:   data-series="revenue" data-key="2026-01"

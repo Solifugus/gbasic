@@ -41,10 +41,62 @@ library chart
         return s
     end function
 
+    ' An axis tick label: the number through `_fmt`, with the caller's own
+    ' prefix, suffix, decimals and display scale applied. Everything is
+    ' optional and the default is exactly what `_fmt` did alone.
+    ' A label that is already text -- a date or a category -- takes only the
+    ' affixes, since there is no number to place or scale.
+    function _axis_label_text(t, pre, suf)
+        out = t
+        if not is_unknown(pre) then out = pre + out
+        if not is_unknown(suf) then out = out + suf
+        return out
+    end function
+
+    function _axis_label(v, d, pre, suf, dec, scl)
+        n = v
+        if not is_unknown(scl) then n = n * scl
+        places = d
+        fixed = false
+        if not is_unknown(dec) then
+            places = dec
+            fixed = true
+        end if
+        out = _fmt_x(n, places, true, fixed)
+        if not is_unknown(pre) then out = pre + out
+        if not is_unknown(suf) then out = out + suf
+        return out
+    end function
+
+    ' `data-series` / `data-key` on a DATA mark, or nothing at all when the
+    ' option is off. A LEGEND SWATCH IS NOT A DATA MARK and never gets one:
+    ' matching on DOM order breaks the moment a legend adds rects, which is
+    ' precisely the failure this option removes.
+    function _mark_attrs(opts, series_name, key)
+        if not opts.mark_keys then return ""
+        out = ""
+        if not is_unknown(series_name) then
+            out = out + " data-series=" + chr(34) + _escape(series_name) + chr(34)
+        end if
+        if not is_unknown(key) then
+            out = out + " data-key=" + chr(34) + _escape(key) + chr(34)
+        end if
+        return out
+    end function
+
     ' Fixed-rule number formatting: `d` decimal places (trailing zeros
     ' trimmed), thousands separators only when `sep` is true. All numbers in
     ' the SVG go through here — one formatter, no locale, no drift.
     function _fmt(v, d, sep)
+        return _fmt_x(v, d, sep, false)
+    end function
+
+    ' The same, with the trailing-zero rule as a parameter. TRIMMING IS RIGHT
+    ' FOR A DERIVED NUMBER OF PLACES and wrong for a requested one: a caller
+    ' who writes `y_decimals: 2` on a money axis means two places, and giving
+    ' back `$4,000` is a setting that appears not to work -- which is the class
+    ' of complaint this whole change answers.
+    function _fmt_x(v, d, sep, keep_zeros)
         neg = v < 0
         a = v
         if neg then a = 0 - v
@@ -61,15 +113,17 @@ library chart
             end while
             s = s + grouped
         end if
-        if d > 0 and fp > 0 then
+        if d > 0 and (fp > 0 or keep_zeros) then
             fs = string(fp)
             while len(fs) < d
                 fs = "0" + fs
             end while
-            while ends_with(fs, "0")
-                fs = left(fs, len(fs) - 1)
-            end while
-            s = s + "." + fs
+            if not keep_zeros then
+                while ends_with(fs, "0")
+                    fs = left(fs, len(fs) - 1)
+                end while
+            end if
+            if len(fs) > 0 then s = s + "." + fs
         end if
         if neg and scaled > 0 then s = "-" + s
         return s
@@ -220,6 +274,24 @@ library chart
             heat_lo: "#2166ac", heat_mid: "#f7f7f7", heat_hi: "#b2182b",
             cell_values: true,
             x_min: unknown, x_max: unknown, y_min: unknown, y_max: unknown,
+            ' AXIS LABEL FORMATTING. Without it a money axis reads 5,339.65
+            ' beside a table reading $5,339.65, and a percent axis reads 0.42
+            ' beside a table reading 42% -- so the one place a viewer looks to
+            ' read the scale is the one place the numbers disagree.
+            ' `_scale` is DISPLAY ONLY and moves no geometry: it is what makes
+            ' a fraction readable as a percentage without charting a different
+            ' number.
+            x_prefix: unknown, x_suffix: unknown,
+            x_decimals: unknown, x_scale: unknown,
+            y_prefix: unknown, y_suffix: unknown,
+            y_decimals: unknown, y_scale: unknown,
+            ' MARK IDENTITY, opt-in. Attributes are markup, so the core stays
+            ' static and JS-free (design section 11) and every existing golden
+            ' is byte-identical with this off. On, each DATA mark carries the
+            ' series it belongs to and the point it is -- which is the whole of
+            ' what a caller needs, since tooltips and click-to-filter are
+            ' ordinary DOM work once the element says what it is.
+            mark_keys: false,
             font_size: 12, char_ratio: 0.6,
             margin_left: unknown, margin_right: unknown,
             margin_top: unknown, margin_bottom: unknown,
@@ -276,7 +348,35 @@ library chart
         return out
     end function
 
+    ' AN UNKNOWN OPTION IS REFUSED BY NAME. `options` used to merge whatever
+    ' record it was given, so `ylabel` instead of `y_label` was accepted and
+    ' did nothing -- the same silent shape as a categorical x drawing an empty
+    ' chart, and reported in the same breath. Every call site in this tree
+    ' passes only real keys, so this is a pure tightening.
+    '
+    ' The hint compares names with their underscores removed, because that is
+    ' the mistake actually made: `ylabel`, `xmin`, `markkeys`. Naming the
+    ' intended option is worth more than listing forty.
+    function _check_options(rec)
+        known = _defaults()
+        for each k in keys(rec)
+            if not has(known, k) then
+                flat = replace(k, "_", "")
+                hint = ""
+                for each kk in keys(known)
+                    if replace(kk, "_", "") = flat then hint = kk
+                end for
+                if len(hint) > 0 then
+                    error "chart: no option '" + k + "'; did you mean '" + hint + "'?"
+                end if
+                error "chart: no option '" + k + "' (see chart_design.md section 7 for the option table)"
+            end if
+        end for
+        return nothing
+    end function
+
     function options(s, rec)
+        _check_options(rec)
         out = s
         out.opts = _merge(out.opts, rec)
         return out
@@ -301,6 +401,11 @@ library chart
     ' ---------------------------------------------------------------- render
 
     function render(s)
+        ' CHECKED HERE TOO, so a spec whose `opts` were written directly
+        ' rather than through `options` cannot smuggle a typo past -- the
+        ' structural half, the same treatment `reasoning.decision` gives a
+        ' hand-built record.
+        _check_options(s.opts)
         opts = _merge(_defaults(), s.opts)
 
         if s.kind = "heatmap" then
@@ -334,13 +439,27 @@ library chart
         xcol = s.df[s.x]
         nrows = count(xcol)
 
-        ' X values: numeric, or datetimes reduced to day counts from the
-        ' earliest date (core duration arithmetic — no private tricks).
+        ' X values: numeric, datetimes reduced to day counts from the earliest
+        ' date (core duration arithmetic — no private tricks), or ORDINAL.
+        '
+        ' ORDINAL X EXISTS BECAUSE ITS ABSENCE WAS SILENT. A text x used to
+        ' reach `_plottable`, which answers `unknown` for anything that is not
+        ' a number — so every point became a gap, `have_data` stayed false, and
+        ' the renderer produced a complete, plausible chart of an EMPTY RESULT
+        ' SET from a frame that was full. `bar` handled the same column
+        ' correctly all along, which is what made it a trap rather than a
+        ' documented limit: moving one visual from `bar` to `line` lost the
+        ' data and said nothing. And "revenue by month" — whose x is almost
+        ' always a period LABEL like `2026-01` or `Q3 FY26` — is the commonest
+        ' dashboard chart there is, so this was the default case, not an edge.
         is_date = false
+        is_ordinal = false
         anchor = unknown
+        saw_number = false
         for each v in xcol
             if not is_unknown(v) then
-                if type(v) = "datetime" then
+                t = type(v)
+                if t = "datetime" then
                     is_date = true
                     ' Block form on purpose: an inline `if` immediately before
                     ' an `else` line captures it (nearest-unmatched rule).
@@ -348,12 +467,47 @@ library chart
                         anchor = v
                     end if
                 else
-                    if is_date then
-                        error "chart: column '" + s.x + "' mixes dates and numbers"
+                    if t = "number" or t = "money" then
+                        saw_number = true
+                    else
+                        is_ordinal = true
                     end if
                 end if
             end if
         end for
+        ' A MIXED COLUMN IS STILL REFUSED, in both directions. Ordinal is what
+        ' a column that is ENTIRELY non-numeric becomes; a column holding both
+        ' has no axis that is honest about it, and quietly picking one is how a
+        ' scale comes to mean two things.
+        if is_date and (is_ordinal or saw_number) then
+            error "chart: column '" + s.x + "' mixes dates with other values"
+        end if
+        if is_ordinal and saw_number then
+            error "chart: column '" + s.x + "' mixes categories and numbers; an axis cannot be both"
+        end if
+
+        cats = []
+        catpos = {}
+        if is_ordinal then
+            ' A CATEGORY MAY REPEAT HERE, AND `bar` REFUSES IT — a deliberate
+            ' difference with a reason. A bar would have to INVENT A SUM for
+            ' the second row and the picture would silently misstate it; a
+            ' line, area or scatter invents nothing, it draws both rows at the
+            ' position their category occupies. Refusing would also block a
+            ' categorical scatter, which is an ordinary chart.
+            for each v in xcol
+                if not is_unknown(v) then
+                    key = string(v)
+                    if not has(catpos, key) then
+                        catpos[key] = count(cats)
+                        append(cats, key)
+                    end if
+                end if
+            end for
+            if count(cats) = 0 then
+                error "chart: column '" + s.x + "' has no categories to plot"
+            end if
+        end if
 
         xs = []
         for each v in xcol
@@ -361,13 +515,14 @@ library chart
                 append(xs, unknown)
             else
                 if is_date then
-                    if type(v) != "datetime" then
-                        error "chart: column '" + s.x + "' mixes dates and numbers"
-                    end if
                     dur = v - anchor
                     append(xs, dur.total_seconds / 86400)
                 else
-                    append(xs, _plottable(v))
+                    if is_ordinal then
+                        append(xs, catpos[string(v)])
+                    else
+                        append(xs, _plottable(v))
+                    end if
                 end if
             end if
         end for
@@ -426,26 +581,75 @@ library chart
             if dylo > 0 then dylo = 0
             if dyhi < 0 then dyhi = 0
         end if
-        if not is_unknown(opts.x_min) then dxlo = opts.x_min
-        if not is_unknown(opts.x_max) then dxhi = opts.x_max
+        if not is_ordinal then
+            if not is_unknown(opts.x_min) then
+                dxlo = opts.x_min
+            end if
+            ' Block form on purpose: an inline `if` immediately before an
+            ' `else` line is captured by it (nearest-unmatched rule), which is
+            ' the trap this file already warns about thirty lines up -- and
+            ' which this edit walked straight into.
+            if not is_unknown(opts.x_max) then
+                dxhi = opts.x_max
+            end if
+        else
+            ' REFUSED RATHER THAN IGNORED. A numeric bound on a categorical
+            ' axis is a mistake about what the axis is, and silently dropping
+            ' it leaves the author believing the chart was clipped when it was
+            ' not.
+            if not is_unknown(opts.x_min) or not is_unknown(opts.x_max) then
+                error "chart: x_min/x_max are numeric bounds and column '" + s.x + "' is categorical; drop the rows you do not want"
+            end if
+        end if
         if not is_unknown(opts.y_min) then dylo = opts.y_min
         if not is_unknown(opts.y_max) then dyhi = opts.y_max
 
-        tx = _ticks(dxlo, dxhi, opts.max_ticks_x, is_date)
+        if is_ordinal then
+            ' BAND CENTRES, THE SAME ONES `bar` USES, so a line and a bar of
+            ' the same frame line up column for column -- which matters the
+            ' moment a dashboard shows both. Category i sits at the centre of
+            ' the i-th of `ncat` bands, which is exactly what the ordinary
+            ' linear scale gives for lo = -0.5, hi = ncat - 0.5.
+            ncat = count(cats)
+            keep = 1
+            if ncat > opts.max_ticks_x + 1 then keep = ceil(ncat / (opts.max_ticks_x + 1))
+            oticks = []
+            ci = 0
+            while ci < ncat
+                append(oticks, ci)
+                ci = ci + keep
+            end while
+            tx = { lo: 0 - 0.5, hi: ncat - 0.5, ticks: oticks, stp: 1, decimals: 0 }
+        else
+            tx = _ticks(dxlo, dxhi, opts.max_ticks_x, is_date)
+        end if
         ty = _ticks(dylo, dyhi, opts.max_ticks_y, false)
 
         ' Tick label text (dates label as real dates via anchor + days).
+        ' `x_decimals` and `x_scale` are NUMERIC settings, so on a date or a
+        ' categorical axis they are refused rather than ignored -- the same
+        ' rule x_min follows, and for the same reason: a setting that does
+        ' nothing leaves the author believing it did something.
+        if is_date or is_ordinal then
+            if not is_unknown(opts.x_decimals) or not is_unknown(opts.x_scale) then
+                error "chart: x_decimals/x_scale format numbers and this x axis is not numeric"
+            end if
+        end if
         xlabels = []
         for each t in tx.ticks
             if is_date then
-                append(xlabels, string(anchor + (1 day) * round(t, 0)))
+                append(xlabels, _axis_label_text(string(anchor + (1 day) * round(t, 0)), opts.x_prefix, opts.x_suffix))
             else
-                append(xlabels, _fmt(t, tx.decimals, true))
+                if is_ordinal then
+                    append(xlabels, _axis_label_text(cats[t], opts.x_prefix, opts.x_suffix))
+                else
+                    append(xlabels, _axis_label(t, tx.decimals, opts.x_prefix, opts.x_suffix, opts.x_decimals, opts.x_scale))
+                end if
             end if
         end for
         ylabels = []
         for each t in ty.ticks
-            append(ylabels, _fmt(t, ty.decimals, true))
+            append(ylabels, _axis_label(t, ty.decimals, opts.y_prefix, opts.y_suffix, opts.y_decimals, opts.y_scale))
         end for
 
         ' Margins (§6b): derived from the LONGEST formatted tick label unless
@@ -538,7 +742,7 @@ library chart
                         end if
                         if flush and count(runpts) >= 2 then
                             poly = "M" + runx[0] + " " + base + " L" + join(runpts, " L") + " L" + runx[count(runx) - 1] + " " + base + " Z"
-                            append(parts, "<path d=" + chr(34) + poly + chr(34) + " fill=" + chr(34) + color + chr(34) + " fill-opacity=" + chr(34) + "0.35" + chr(34) + " stroke=" + chr(34) + "none" + chr(34) + "/>")
+                            append(parts, "<path d=" + chr(34) + poly + chr(34) + " fill=" + chr(34) + color + chr(34) + " fill-opacity=" + chr(34) + "0.35" + chr(34) + " stroke=" + chr(34) + "none" + chr(34) + _mark_attrs(opts, ser.name, unknown) + "/>")
                         end if
                         if flush then
                             runx = []
@@ -565,7 +769,7 @@ library chart
                         i = i + 1
                     end while
                     if count(d) > 0 then
-                        append(parts, "<path d=" + chr(34) + join(d, " ") + chr(34) + " fill=" + chr(34) + "none" + chr(34) + " stroke=" + chr(34) + color + chr(34) + " stroke-width=" + chr(34) + "1.5" + chr(34) + "/>")
+                        append(parts, "<path d=" + chr(34) + join(d, " ") + chr(34) + " fill=" + chr(34) + "none" + chr(34) + " stroke=" + chr(34) + color + chr(34) + " stroke-width=" + chr(34) + "1.5" + chr(34) + _mark_attrs(opts, ser.name, unknown) + "/>")
                     end if
                 end if
                 if s.kind = "scatter" or opts.markers then
@@ -574,7 +778,12 @@ library chart
                         xv = xs[i]
                         yv = ser.vals[i]
                         if not is_unknown(xv) and not is_unknown(yv) then
-                            append(parts, "<circle cx=" + chr(34) + _scale_x(xv, tx, px0, px1) + chr(34) + " cy=" + chr(34) + _scale_y(yv, ty, py0, py1) + chr(34) + " r=" + chr(34) + "3" + chr(34) + " fill=" + chr(34) + color + chr(34) + "/>")
+                            ' A POINT'S KEY IS ITS X, whatever kind of axis
+                            ' it sits on -- a category, a date or a number --
+                            ' because that is what a caller means by "which
+                            ' point is this".
+                            pkey = string(xcol[i])
+                            append(parts, "<circle cx=" + chr(34) + _scale_x(xv, tx, px0, px1) + chr(34) + " cy=" + chr(34) + _scale_y(yv, ty, py0, py1) + chr(34) + " r=" + chr(34) + "3" + chr(34) + " fill=" + chr(34) + color + chr(34) + _mark_attrs(opts, ser.name, pkey) + "/>")
                         end if
                         i = i + 1
                     end while
@@ -717,7 +926,7 @@ library chart
 
         ylabels = []
         for each t in ty.ticks
-            append(ylabels, _fmt(t, ty.decimals, true))
+            append(ylabels, _axis_label(t, ty.decimals, opts.y_prefix, opts.y_suffix, opts.y_decimals, opts.y_scale))
         end for
         ywmax = 0
         for each lbl in ylabels
@@ -798,7 +1007,7 @@ library chart
                             ytop = _scale_y(cum + v, ty, py0, py1)
                             ybase = _scale_y(cum, ty, py0, py1)
                             bx = px0 + (ci * band) + pad
-                            append(parts, "<rect x=" + chr(34) + _coord(bx) + chr(34) + " y=" + chr(34) + ytop + chr(34) + " width=" + chr(34) + _coord(inner) + chr(34) + " height=" + chr(34) + _coord(number(ybase) - number(ytop)) + chr(34) + " fill=" + chr(34) + opts.palette[si] + chr(34) + "/>")
+                            append(parts, "<rect x=" + chr(34) + _coord(bx) + chr(34) + " y=" + chr(34) + ytop + chr(34) + " width=" + chr(34) + _coord(inner) + chr(34) + " height=" + chr(34) + _coord(number(ybase) - number(ytop)) + chr(34) + " fill=" + chr(34) + opts.palette[si] + chr(34) + _mark_attrs(opts, series[si].name, cats[ci]) + "/>")
                             cum = cum + v
                         end if
                     end if
@@ -819,7 +1028,7 @@ library chart
                                 rh = 0 - rh
                             end if
                             bx = px0 + (ci * band) + pad + (si * barw)
-                            append(parts, "<rect x=" + chr(34) + _coord(bx) + chr(34) + " y=" + chr(34) + string(ry) + chr(34) + " width=" + chr(34) + _coord(barw) + chr(34) + " height=" + chr(34) + _coord(rh) + chr(34) + " fill=" + chr(34) + opts.palette[si] + chr(34) + "/>")
+                            append(parts, "<rect x=" + chr(34) + _coord(bx) + chr(34) + " y=" + chr(34) + string(ry) + chr(34) + " width=" + chr(34) + _coord(barw) + chr(34) + " height=" + chr(34) + _coord(rh) + chr(34) + " fill=" + chr(34) + opts.palette[si] + chr(34) + _mark_attrs(opts, series[si].name, cats[ci]) + "/>")
                         end if
                     end if
                     si = si + 1
@@ -917,11 +1126,11 @@ library chart
 
         xlabels = []
         for each t in tx.ticks
-            append(xlabels, _fmt(t, tx.decimals, true))
+            append(xlabels, _axis_label(t, tx.decimals, opts.x_prefix, opts.x_suffix, opts.x_decimals, opts.x_scale))
         end for
         ylabels = []
         for each t in ty.ticks
-            append(ylabels, _fmt(t, ty.decimals, true))
+            append(ylabels, _axis_label(t, ty.decimals, opts.y_prefix, opts.y_suffix, opts.y_decimals, opts.y_scale))
         end for
         ywmax = 0
         for each lbl in ylabels
@@ -985,7 +1194,8 @@ library chart
                     xleft = _scale_x(lo + (k * bw), tx, px0, px1)
                     xright = _scale_x(lo + ((k + 1) * bw), tx, px0, px1)
                     ytop = _scale_y(c, ty, py0, py1)
-                    append(parts, "<rect x=" + chr(34) + xleft + chr(34) + " y=" + chr(34) + ytop + chr(34) + " width=" + chr(34) + _coord(number(xright) - number(xleft)) + chr(34) + " height=" + chr(34) + _coord(py1 - number(ytop)) + chr(34) + " fill=" + chr(34) + opts.palette[0] + chr(34) + " stroke=" + chr(34) + "#ffffff" + chr(34) + " stroke-width=" + chr(34) + "1" + chr(34) + "/>")
+                    bkey = _fmt(lo + (k * bw), tx.decimals, false) + ".." + _fmt(lo + ((k + 1) * bw), tx.decimals, false)
+                    append(parts, "<rect x=" + chr(34) + xleft + chr(34) + " y=" + chr(34) + ytop + chr(34) + " width=" + chr(34) + _coord(number(xright) - number(xleft)) + chr(34) + " height=" + chr(34) + _coord(py1 - number(ytop)) + chr(34) + " fill=" + chr(34) + opts.palette[0] + chr(34) + " stroke=" + chr(34) + "#ffffff" + chr(34) + " stroke-width=" + chr(34) + "1" + chr(34) + _mark_attrs(opts, s.x, bkey) + "/>")
                 end if
                 k = k + 1
             end while
@@ -1096,7 +1306,7 @@ library chart
                     large = 0
                     if frac > 0.5 then large = 1
                     d = "M" + _coord(cx) + " " + _coord(cy) + " L" + _coord(x1) + " " + _coord(y1) + " A" + _coord(r) + " " + _coord(r) + " 0 " + string(large) + " 1 " + _coord(x2) + " " + _coord(y2) + " Z"
-                    append(parts, "<path d=" + chr(34) + d + chr(34) + " fill=" + chr(34) + opts.palette[i] + chr(34) + " stroke=" + chr(34) + "#ffffff" + chr(34) + " stroke-width=" + chr(34) + "1" + chr(34) + "/>")
+                    append(parts, "<path d=" + chr(34) + d + chr(34) + " fill=" + chr(34) + opts.palette[i] + chr(34) + " stroke=" + chr(34) + "#ffffff" + chr(34) + " stroke-width=" + chr(34) + "1" + chr(34) + _mark_attrs(opts, s.y[0], cats[i]) + "/>")
                 end if
             end if
             acc = acc + frac
@@ -1242,13 +1452,13 @@ library chart
                 cxp = px0 + (ci * cw)
                 cyp = py0 + (ri * chh)
                 if is_unknown(pv) then
-                    append(parts, "<rect x=" + chr(34) + _coord(cxp) + chr(34) + " y=" + chr(34) + _coord(cyp) + chr(34) + " width=" + chr(34) + _coord(cw) + chr(34) + " height=" + chr(34) + _coord(chh) + chr(34) + " fill=" + chr(34) + "#eeeeee" + chr(34) + " stroke=" + chr(34) + "#ffffff" + chr(34) + "/>")
+                    append(parts, "<rect x=" + chr(34) + _coord(cxp) + chr(34) + " y=" + chr(34) + _coord(cyp) + chr(34) + " width=" + chr(34) + _coord(cw) + chr(34) + " height=" + chr(34) + _coord(chh) + chr(34) + " fill=" + chr(34) + "#eeeeee" + chr(34) + " stroke=" + chr(34) + "#ffffff" + chr(34) + _mark_attrs(opts, cols[ci], rows[ri]) + "/>")
                 else
                     t = (pv - lo) / (hi - lo)
                     if t < 0 then t = 0
                     if t > 1 then t = 1
                     fill = _lerp3(opts.heat_lo, opts.heat_mid, opts.heat_hi, t)
-                    append(parts, "<rect x=" + chr(34) + _coord(cxp) + chr(34) + " y=" + chr(34) + _coord(cyp) + chr(34) + " width=" + chr(34) + _coord(cw) + chr(34) + " height=" + chr(34) + _coord(chh) + chr(34) + " fill=" + chr(34) + fill + chr(34) + " stroke=" + chr(34) + "#ffffff" + chr(34) + "/>")
+                    append(parts, "<rect x=" + chr(34) + _coord(cxp) + chr(34) + " y=" + chr(34) + _coord(cyp) + chr(34) + " width=" + chr(34) + _coord(cw) + chr(34) + " height=" + chr(34) + _coord(chh) + chr(34) + " fill=" + chr(34) + fill + chr(34) + " stroke=" + chr(34) + "#ffffff" + chr(34) + _mark_attrs(opts, cols[ci], rows[ri]) + "/>")
                     if opts.cell_values then
                         tcolor = "#111111"
                         if t < 0.22 or t > 0.78 then tcolor = "#ffffff"

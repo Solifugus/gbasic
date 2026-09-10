@@ -9,6 +9,55 @@ language surface may still change between releases.
 
 ## Unreleased
 
+### Added — `chart`: an ordinal x, formatted axis labels, identifiable marks
+
+The three asks in gdash's chart report, after six phases of using this library
+on a real dashboard.
+
+**A categorical x drew nothing, silently.** A text x column reached
+`_plottable`, which answers `unknown` for anything that is not a number — so
+every point became a gap and the renderer produced a **complete, plausible
+chart of an empty result set** from a frame that was full: axes, gridlines,
+fourteen text elements, and the "no data" note. `bar` handled the same column
+correctly all along, which is what made it a trap rather than a documented
+limit: moving one visual from `bar` to `line` lost the data and said nothing.
+And "revenue by month", whose x is almost always a period *label*, is the
+commonest dashboard chart there is.
+
+`line`, `area` and `scatter` now place a non-numeric x at **the same band
+centres `bar` uses**, so a line and a bar of the same frame line up column for
+column. A mixed column is refused in both directions. A **repeated category is
+allowed here and still refused by `bar`** — a bar would have to invent a sum
+for the second row, a line invents nothing, and refusing would block a
+categorical scatter. `x_min`/`x_max` on a categorical axis are refused rather
+than ignored.
+
+**Axis labels can now agree with the numbers beside them.** `x_prefix` /
+`x_suffix` / `x_decimals` / `x_scale` and the `y_` equivalents. `_scale` is
+display only and moves no geometry — it is what makes a fraction readable as a
+percentage without charting a different number. An explicit `decimals` means
+*fixed* places, since `$4,000` from `y_decimals: 2` is a setting that appears
+not to work.
+
+**`mark_keys: true`** puts `data-series` and `data-key` on each data mark —
+bar rects, pie slices, line and area paths, point circles, heatmap cells,
+histogram bars. Attributes are markup, so the core stays static and JS-free.
+**A legend swatch is not a data mark and never gets one**: matching on DOM
+order is reliable only until a legend adds rects, which is the ambiguity this
+removes. Off by default, so every existing golden is byte-identical.
+
+**An unknown option is now refused by name**, with a near-miss hint: `ylabel`
+reports "did you mean 'y_label'?". `options()` merged whatever record it was
+given, so a misspelling was accepted and did nothing. Every call site in this
+tree passes only real keys, so it is a pure tightening; the check runs in
+`render` too, so a hand-built spec cannot smuggle a typo past.
+
+Tested as differences rather than as pictures, because the defect this starts
+from *was* a plausible picture: the same series over a numeric x and a
+categorical x must draw the same number of marks, and a line's markers must sit
+on the bar's band centres. gdash's own test asserted `contains(svg, "<svg")`,
+which an empty frame satisfies. Ten perturbations proven red.
+
 ### Added — the ODBC suppression file is now backed by a committed probe
 
 `tests/odbc_driver_probe.c`, and a tier in `run_odbc.sh` that keeps

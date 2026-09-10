@@ -15,6 +15,11 @@
 #              (catches escaping bugs generically — the fixture's title is
 #              hostile), circles inside the viewBox, element census. SKIPs
 #              cleanly when the build has no libxml2.
+#   GDASH7     ordinal x, axis label formatting, and identifiable marks --
+#              self-checking, because the defect it starts from was a
+#              plausible picture: a categorical x drew a complete, empty
+#              chart. Asserted as DIFFERENCES (a categorical x draws what a
+#              numeric x draws; a line marker sits on its bar's centre).
 #   VALGRIND   over the golden program (skips if valgrind absent).
 #
 # Negatives (refusals by name) live in run_negative.sh: negative_chart_*.
@@ -109,9 +114,37 @@ heatmap cell texts 3'
     fi
 fi
 
+# ORDINAL X, AXIS LABELS AND MARK IDENTITY -- the three asks in gdash's
+# docs/gdash7_platform_ask_charts.md, and SELF-CHECKING rather than golden
+# because the defect they start from was itself a plausible picture. A
+# categorical x used to produce a complete SVG -- axes, gridlines, fourteen
+# text elements -- containing no data at all, so a golden would have recorded
+# it as expected. gdash's own test asserted `contains(svg, "<svg")`, WHICH AN
+# EMPTY FRAME SATISFIES, and a blank chart survived six phases behind it.
+# The load-bearing check is therefore a DIFFERENCE: the same series over a
+# numeric x and a categorical x must draw the same number of marks.
+printf -- '-- gdash7: ordinal x, axis formatting, identifiable marks\n'
+gout="$(mktemp)"
+if ! GBASIC_PATH=stdlib timeout -k 5 120 ./gbasic tests/chart_gdash_test.bas >"$gout" 2>&1; then
+    cat "$gout"; printf 'FAIL the fixture did not run\n'; status=1
+elif grep -q MISMATCH "$gout"; then
+    grep MISMATCH "$gout"; printf 'FAIL the renderer disagreed with what was asserted\n'; status=1
+else
+    gn=$(sed -n 's/^checks: //p' "$gout")
+    # A coverage floor: a fixture that stops running its checks otherwise
+    # passes by asserting nothing.
+    if [ -z "$gn" ] || [ "$gn" -lt 35 ]; then
+        printf 'FAIL only %s checks ran, wanted at least 35\n' "${gn:-0}"; status=1
+    else
+        printf 'PASS gdash7: %s checks (ordinal x, band alignment, axis labels, mark keys)\n' "$gn"
+    fi
+fi
+rm -f "$gout"
+
 if vg_available; then
     printf -- '-- valgrind over the golden program\n'
-    if vg_run ./gbasic examples/chart_test.bas >/dev/null 2>/tmp/chart_vg.txt; then
+    if vg_run ./gbasic examples/chart_test.bas >/dev/null 2>/tmp/chart_vg.txt \
+       && GBASIC_PATH=stdlib vg_run ./gbasic tests/chart_gdash_test.bas >/dev/null 2>/tmp/chart_vg.txt; then
         printf 'PASS valgrind clean\n'
     else
         printf 'FAIL valgrind\n'

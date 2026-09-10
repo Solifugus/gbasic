@@ -201,6 +201,18 @@ An options record, merged over documented defaults:
 | `char_ratio`      | 0.6                          | estimated glyph width / font_size    |
 | `margin_left` etc.| `unknown` (derive)           | explicit number = you take over      |
 | `max_ticks`       | per-axis budget              | deterministic thinning bound (§6b)   |
+| `y_prefix`/`y_suffix`| `unknown`                 | affixed to every y tick label (§10a) |
+| `y_decimals`      | derived from the tick step   | **fixed** places, not trimmed (§10a) |
+| `y_scale`         | `unknown`                    | label multiplier; **moves no geometry** |
+| `x_prefix` etc.   | as above                     | `x_decimals`/`x_scale` refused on a date or categorical axis |
+| `mark_keys`       | `false`                      | `data-series`/`data-key` on data marks (§10a) |
+
+**An unknown option is refused by name**, and a near-miss names the option
+meant: `ylabel` reports "did you mean 'y_label'?". `options()` merged whatever
+record it was given, so a misspelling was accepted and did nothing — the same
+silent shape as §10a's categorical x, and reported in the same breath. The
+check runs in `render` as well, so a spec whose `opts` were written directly
+cannot smuggle a typo past.
 
 Text is rendered as `<text>` with a generic `font-family: sans-serif`; the
 library never embeds a font (keeps output small and deterministic; the renderer
@@ -298,10 +310,84 @@ but the implementation should still:
 These are the standard idioms already used elsewhere in the stdlib; called out
 here only because a renderer is concatenation-heavy by nature.
 
+## 10a. An ordinal x, formatted axis labels, and identifiable marks (2026-09-09)
+
+Three changes, all reported by gdash after six phases of using this library on
+a real dashboard.
+
+### An ordinal x, because its absence was silent
+
+A text x column reached `_plottable`, which answers `unknown` for anything that
+is not a number — so every point became a gap, `have_data` stayed false, and
+the renderer produced a **complete, plausible chart of an empty result set**
+from a frame that was full: axes, gridlines, fourteen text elements, and the
+"no data" note. Nothing raised.
+
+`bar` handled the same column correctly all along, which is what made it a trap
+rather than a documented limit: **moving one visual from `bar` to `line` lost
+the data and said nothing.** And "revenue by month", whose x is almost always a
+period *label* like `2026-01` or `Q3 FY26`, is the commonest dashboard chart
+there is — so this was the default case, not an edge.
+
+`line`, `area` and `scatter` now place a non-numeric x at **the same band
+centres `bar` uses**, so a line and a bar of the same frame line up column for
+column — which matters the moment a dashboard shows both.
+
+Two rules follow from what the axis *is*:
+
+- **A mixed column is refused in both directions.** Ordinal is what a column
+  that is *entirely* non-numeric becomes; one holding both has no axis that is
+  honest about it, and quietly picking one is how a scale comes to mean two
+  things.
+- **A repeated category is allowed here and still refused by `bar`** — a
+  deliberate difference with a reason. A bar would have to *invent a sum* for
+  the second row and the picture would silently misstate it; a line, area or
+  scatter invents nothing, it draws both rows at the position their category
+  occupies. Refusing would also block a categorical scatter, which is an
+  ordinary chart.
+
+`x_min` / `x_max` on a categorical axis are **refused rather than ignored**: a
+numeric bound is a mistake about what the axis is, and silently dropping it
+leaves the author believing the chart was clipped when it was not.
+
+### Axis labels a caller can make agree with the numbers beside them
+
+A money axis read `5,339.65` where the table beside it read `$5,339.65`, and a
+percent axis read `0.42` where the table read `42%` — the one place a viewer
+looks to read the scale was the one place the numbers disagreed.
+
+`x_prefix` / `x_suffix` / `x_decimals` / `x_scale` and the `y_` equivalents.
+Two details are decisions rather than plumbing:
+
+- **`_scale` is display only and moves no geometry.** It is what makes a
+  fraction readable as a percentage without charting a different number.
+- **An explicit `decimals` means fixed places.** The derived count trims
+  trailing zeros, which is right for a number nobody asked about and wrong for
+  one a caller named: `$4,000` from `y_decimals: 2` is a setting that appears
+  not to work.
+
+`x_decimals` and `x_scale` on a date or categorical axis are refused, for the
+same reason as `x_min`.
+
+### Identifiable marks — §11's opt-in, at its smallest
+
+`mark_keys: true` puts `data-series` and, where a point has one, `data-key` on
+each **data** mark: bar rects, pie slices, line and area paths, point circles,
+heatmap cells, histogram bars. Attributes are markup, so the core stays static
+and JS-free and the JavaScript stays the caller's; given a key on the element,
+tooltips and click-to-filter are ordinary DOM work.
+
+**A legend swatch is not a data mark and never gets one.** Matching on DOM
+order is "true until a legend adds swatch rects", which is precisely the
+ambiguity this removes — a keyed swatch would reintroduce it.
+
+Off by default, so every existing golden is byte-identical.
+
 ## 11. Non-goals (v1)
 
-- interactivity, tooltips, zoom, animation (SVG can host them later via a
-  separate opt-in; the core stays static and JS-free);
+- interactivity beyond an identifying attribute — tooltips, zoom, animation
+  (§10a delivers the opt-in this line anticipated; the core stays static and
+  JS-free);
 - raster/PNG export (would require a C imaging module — deliberately declined);
 - terminal/ASCII rendering (belongs to the unified-UI/TUI track, except inline
   sparklines);
