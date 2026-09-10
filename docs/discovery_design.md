@@ -390,6 +390,13 @@ Table-level lineage, end to end: read the modules, scan their SQL for the
 objects they touch, bind those references against the catalog, and walk the
 result. Verified against **all four** databases, 46 checks each.
 
+**Column-level lineage** (§3b–§3d) on top of it, live-verified 2026-09-09 on
+PostgreSQL 17 and SQL Server 2025 — the two that can carry the estate at all,
+since SQLite has no stored procedures and MariaDB has no schemas. SQL Server
+runs one check more, because the dynamic-SQL module is declared T-SQL only and
+its **gap** is asserted where it exists. The reader itself needs no database and
+is tested without one.
+
 The resolution measured earlier is visible in the output on SQL Server:
 
 ```
