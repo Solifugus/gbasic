@@ -2055,6 +2055,12 @@ schema), and conflating them returns nothing at all on a database that
 qualifies its objects. A field you do not supply is passed as `NULL`; an empty
 string is passed through as written.
 
+**An omitted pattern means "any" — except on SQL Server.** ODBC specifies that
+an absent argument matches anything, and SQLite, MariaDB and PostgreSQL all
+honour that. FreeTDS against SQL Server refuses `odbc.columns` with no table:
+*"sp_columns expects parameter '@table_name', which was not supplied"*. Pass
+`table: "%"`, which says the same thing and is accepted everywhere.
+
 **The qualifier is not in the same place on every database.** Measured
 2026-09-08 across four drivers with the same table:
 

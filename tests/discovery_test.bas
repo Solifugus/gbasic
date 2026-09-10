@@ -143,6 +143,68 @@ check("a source name containing the separator is refused", contains(error.messag
 error.clear()
 check("CONTROL: a legal source name scans", discovery.scan(c, { source: "ok", table: "disc_orders" }).source, "ok")
 
+print ""
+print "-- reading SQL for the objects it touches"
+' PORTABLE AND DIALECT-FREE: these are pure string checks, and they are the
+' bulk of the value. Each case exists because a plausible implementation gets
+' it wrong -- a `from` inside a comment or a string literal, a CTE name, a
+' subquery, a MERGE whose `update set` looks like a table called `set`.
+function refs_of(sql, side)
+    r = discovery.references(sql)
+    return join(r[side], ",")
+end function
+
+check("a plain select reads its table", refs_of("select a from t1", "reads"), "t1")
+check("insert..select reads and writes", refs_of("insert into tgt select * from src", "writes"), "tgt")
+check("and the source is a read", refs_of("insert into tgt select * from src", "reads"), "src")
+' DELETE FROM is the one place `from` does not mean a read.
+check("delete from is a WRITE, not a read", refs_of("delete from gone where 1=1", "writes"), "gone")
+check("and delete reads nothing", refs_of("delete from gone where 1=1", "reads"), "")
+check("a join is a read", refs_of("select 1 from a join b on 1=1", "reads"), "a,b")
+check("merge writes its target", refs_of("merge into d using s on 1=1 when matched then update set d.x = s.x", "writes"), "d")
+check("and USING is the source read", refs_of("merge into d using s on 1=1 when matched then update set d.x = s.x", "reads"), "s")
+' A KEYWORD IS NOT A NAME. Found by testing: MERGE's `update set d.x` emitted a
+' table called `set`, and a phantom object in a lineage graph is reported with
+' exactly the same confidence as a real one.
+check("`set` is never mistaken for a table", contains(refs_of("merge into d using s on 1=1 when matched then update set d.x = s.x", "writes"), "set"), false)
+check("a CTE name is not a table", refs_of("with cte as (select * from real_t) select * from cte", "reads"), "real_t")
+check("a subquery is not a table", refs_of("select * from (select id from inner_t) x", "reads"), "inner_t")
+check("a comment is not SQL", refs_of("-- insert into ghost select * from nowhere" + chr(10) + "select 1 from real_t", "reads"), "real_t")
+check("a string literal is not SQL", refs_of("select 'from ghost' from real_t", "reads"), "real_t")
+check("delimited names survive", refs_of("select * from [Odd Name]", "reads"), "Odd Name")
+check("a qualified name keeps its parts", refs_of("select * from a.b.c", "reads"), "a.b.c")
+' THE GAP IS THE LOAD-BEARING OUTPUT. Dynamic SQL is a hop that CANNOT be read,
+' and a tracer that drops it silently produces a lineage graph that is
+' confidently incomplete -- worse than one naming its own holes.
+check("dynamic SQL is reported as a gap", count(discovery.references("exec ('select * from ' + @t)").gaps) > 0, true)
+check("and ordinary SQL reports none", count(discovery.references("select * from t").gaps), 0)
+
+print ""
+print "-- modules, and a traced chain"
+' A TWO-HOP VIEW CHAIN, which every database has -- SQLite has no stored
+' procedures at all, so a portable fixture cannot rest on them.
+e1 = odbc.exec(c, "drop view if exists disc_v2")
+e2 = odbc.exec(c, "drop view if exists disc_v1")
+e3 = odbc.exec(c, "create view disc_v1 as select id, total from disc_orders")
+e4 = odbc.exec(c, "create view disc_v2 as select id from disc_v1")
+info = odbc.info(c)
+cat2 = discovery.scan(c, { source: "s", table: "disc_%" })
+mods = discovery.modules(c, { source: "s" })
+tr = discovery.trace(cat2, mods, info.dbms_name)
+
+function edge_between(tr, mod_suffix, kind, obj_suffix)
+    for each e in tr.edges
+        if ends_with(e.module, mod_suffix) and e.kind = kind and ends_with(e.object, obj_suffix) then
+            return true
+        end if
+    end for
+    return false
+end function
+
+check("the first view is recorded as reading its table", edge_between(tr, "disc_v1", "reads", "disc_orders"), true)
+check("every edge names a module and an object", len(tr.edges[0].module) > 0 and len(tr.edges[0].object) > 0, true)
+check("the dbms identified itself", len(info.dbms_name) > 0, true)
+
 zz = odbc.close(c)
 print ""
 print "checks: " + string(tally.checks)

@@ -9,6 +9,98 @@ language surface may still change between releases.
 
 ## Unreleased
 
+### Added — `estate`: a fabricated business estate whose truth is written down
+
+`stdlib/estate.bas`, `tests/run_estate.sh`. Structure and code, not rows —
+rows are what *inference* needs, and inference is not built.
+
+**R1 is the property everything rests on: one declaration produces both the
+database and the truth.** A relationship declared `enforced` becomes a
+constraint; one declared otherwise leaves no trace while still appearing in the
+answer key. A hand-written key drifts the first time either side changes, and a
+fixture whose answer key is wrong **teaches the tool to be wrong and then
+certifies it**.
+
+The vocabulary is **real**, taken from the Enron corpus rather than invented —
+`counterparty`, `enron_entity`, `gross_vol_mmbtu`, `pvr_pct`, `ctp` — because
+an author's naming imagination is one of the two blind spots the design admits
+to.
+
+**The offline tier needs no database**, which keeps the gate from going quiet:
+the estate *declares* what each module reads and writes, and
+`discovery.references` *derives* it from the SQL without seeing the
+declaration. Agreement between two independently written statements is
+evidence; a golden of either alone is a transcript.
+
+**The live tier found four defects in `discovery` within minutes**, none of
+which any hermetic test could have shown:
+
+- a view reading **another view** could not be resolved at all — only base
+  tables were kept as resolution targets, so views-on-views simply did not work;
+- keeping views then swept in every `sys.*` and `INFORMATION_SCHEMA.*` object:
+  **23 → 656**, of which 17 were the business estate;
+- **FreeTDS refuses `odbc.columns` with no table pattern**;
+- **psqlODBC with no *schema* pattern silently returns only the `search_path`** —
+  an estate in `trading`/`finance`/`warehouse` came back as 17 `public` tables
+  **with no error**. The worst of the four, because a complete-looking answer
+  missing most of the database is exactly what this library exists not to
+  produce.
+
+Traced end to end on PostgreSQL and SQL Server: four hops, three schemas,
+fanning out at the end —
+
+```
+trading.deal → p_load_stg_deal → stg_deal → p_build_fact → fact_volume
+                                              ├→ p_post_gl → finance.gl_entry
+                                              ├→ rpt_volume_gross
+                                              └→ rpt_volume_net
+```
+
+A false positive in the fixture's own first draft, worth recording: the
+unenforced-relationship check matched `references trading.counterparty(id)`
+anywhere in the DDL — but the *enforced* `contract.counterparty_id` emits that
+same text, so an unenforced relationship was reported as constrained. It checks
+the source side, inside that table's own create statement, now.
+
+### Added — `discovery`: table-level lineage through views and procedures
+
+`discovery.modules`, `discovery.references`, `discovery.trace`,
+`discovery.impact`, plus `odbc.info`. Verified against **all four** databases,
+46 checks each.
+
+**Parse the SQL; do not trust dependency metadata.** Reported from a working
+Python implementation against SQL Server, where the metadata approach failed
+repeatedly and changed between versions — corroborated by
+`sys.sql_dependencies` having been deprecated for exactly that. Source text, by
+contrast, is retrievable everywhere.
+
+**Parsing and resolution are separate phases**, because references are often
+unqualified. `references` produces names as written; `trace` binds them using
+the catalog and the module's **owning schema** — measured on SQL Server as
+`[own schema, dbo]`, and visible in the output: a procedure in `alt` reading
+bare `res_probe` binds to `alt.res_probe` when both exist, and to `dbo` when
+only that does.
+
+**It is not a SQL parser and does not need to be.** It needs not to be fooled:
+a `from` inside a comment or a string literal is not a table, a CTE name is not
+a table, a subquery is not a table, and `delete from t` is a write. Seven
+perturbations proven red, each caught by the case written for it.
+
+**`gaps` is the load-bearing output.** Dynamic SQL is not a parse failure to
+guess past — it is a hop that cannot be read. A tracer that drops it silently
+produces a lineage graph that is *confidently incomplete*, which is worse than
+one naming its own holes.
+
+**A bug found by testing, worth recording because it is the failure mode in
+miniature:** MERGE's `when matched then update set d.x = s.x` emitted a written
+table called **`set`**. A phantom object in a lineage graph is reported with
+exactly the same confidence as a real one. A keyword is now never a name.
+
+**And a driver limitation invisible until a whole-schema scan was attempted:**
+FreeTDS refuses `odbc.columns` with no table pattern, where the other three
+honour ODBC's "absent means any" — so that path was broken on one database and
+green on three. `scan` passes an explicit `"%"`.
+
 ### Added — `discovery`: what a database estate says about itself
 
 `stdlib/discovery.bas`, `tests/run_discovery.sh`, `docs/discovery_design.md`.

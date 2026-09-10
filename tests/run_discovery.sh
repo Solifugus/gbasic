@@ -72,10 +72,10 @@ else
     n=$(sed -n 's/^checks: //p' "$work/out")
     # A coverage floor: a fixture that stops running its checks otherwise
     # passes by asserting nothing.
-    if [ -z "$n" ] || [ "$n" -lt 24 ]; then
-        fail "only ${n:-0} checks ran, wanted at least 24"
+    if [ -z "$n" ] || [ "$n" -lt 45 ]; then
+        fail "only ${n:-0} checks ran, wanted at least 45"
     else
-        pass "$n checks (identity, ordinal order, declared keys, estate keying)"
+        pass "$n checks (identity, ordinal order, declared keys, estate keying, SQL references, traced chain)"
     fi
 fi
 

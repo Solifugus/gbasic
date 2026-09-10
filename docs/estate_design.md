@@ -1,6 +1,6 @@
 # A fabricated business estate: requirements
 
-**Status:** Proposal (2026-09-08). **Nothing here is built.** This is a
+**Status:** Partial (2026-09-09) — §6a is built; the inference-facing parts are not. This began as a
 requirements document, deliberately circulated before code so that the
 difficulties it plants are not only the ones its author thought of.
 
@@ -273,15 +273,66 @@ Add them to §5 with the "what it defeats" column filled in, or raise them
 however is convenient — the column matters more than the formatting, because a
 planted difficulty nobody can say the purpose of is decoration.
 
-## 7. Proposed shape — not settled
+## 6a. Built (2026-09-09)
 
-```basic
-spec  = estate.spec()                       ' databases, tables, relationships
-ddl   = estate.ddl(spec, "sqlite")          ' create statements, per dialect
-rows  = estate.rows(spec, 20260908)         ' data from `fake`, pure in (seed, index)
-truth = estate.truth(spec)                  ' real relationships, and the decoys BY NAME
-n     = estate.materialise(conn, spec, seed, "sqlite")
+`stdlib/estate.bas`, `tests/run_estate.sh`. **Structure and code, not rows** —
+`discovery` reads catalogs and module source; rows matter for inference, which
+is not built and needs a null model first.
+
+| Call | What it does |
+| --- | --- |
+| `estate.spec()` | the declaration: schemas, tables, relationships, decoys, modules, divergences |
+| `estate.ddl(spec, dialect)` | create statements — `postgres` and `sqlserver` |
+| `estate.truth(spec)` | the answer key, derived from the same declaration |
+| `estate.objects(spec)` | every declared object as a flat list |
+
+Covers R1–R4, R6–R13, R19, R21, R31–R35. **SQLite and MariaDB are refused**:
+one has no stored procedures, the other no schemas, and neither can carry this
+estate.
+
+**The offline tier needs no database**, which is what keeps the gate from going
+quiet — `spec`/`ddl`/`truth` are pure, and `discovery.references` is a pure
+function of a string. So the estate *declares* what each module touches and the
+scanner *derives* it from the SQL without seeing the declaration; agreement
+between two independently written statements is evidence, where a golden of
+either alone would be a transcript.
+
+### What the live tier found, which no hermetic test could
+
+Materialising the estate and tracing it exposed **four defects in `discovery`**
+within minutes:
+
+- **a view reading another view could not be resolved at all** — only base
+  tables were kept as resolution targets, so R11/R29 simply did not work;
+- keeping views then swept in every `sys.*` and `INFORMATION_SCHEMA.*` object:
+  **23 → 656**, of which 17 were the business estate;
+- **FreeTDS refuses `odbc.columns` with no table pattern**;
+- **psqlODBC with no *schema* pattern silently returns only the `search_path`**
+  — an estate in `trading`/`finance`/`warehouse` came back as 17 `public`
+  tables **with no error**. A complete-looking answer missing most of the
+  database is precisely the failure this library exists not to produce, and it
+  is the worst of the four because nothing raises.
+
+The traced chain, four hops across three schemas, fanning out at the end:
+
 ```
+trading.deal → p_load_stg_deal → stg_deal → p_build_fact → fact_volume
+                                                         ├→ p_post_gl → finance.gl_entry
+                                                         ├→ rpt_volume_gross
+                                                         └→ rpt_volume_net
+```
+
+## 7. The original proposed shape, kept for the record
+
+*Superseded by §6a. `rows` and `materialise` were **not** built: this increment
+declares structure and code, because that is what `discovery` consumes today.
+They are written below without call syntax, since `run_stdlib_docs` reads a
+documented call as a promise that the function exists.*
+
+Proposed then: `spec`, `ddl` and `truth` — all three built. Plus a `rows`
+generator drawing on `fake`, and a `materialise` helper. Neither was built,
+and the reason is in §6a: rows are what *inference* needs, and materialising is
+three lines in the caller.
 
 **DDL is dialect-specific and ODBC does not normalise it.** That is not a
 retreat from reading the catalog through the driver manager: reading a schema

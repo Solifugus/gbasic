@@ -166,6 +166,11 @@ document list, with a status column, is `docs/README.md`.
   filtering after returns an empty list to a narrowly permitted user whose own
   best matches were never looked at, and an empty list reads as "nothing
   matched".
+- **a fabricated business estate with its truth written down** — `estate`,
+  which exists so discovery can be asked "did you find the right thing" AND
+  "did you invent one where there is none". One declaration produces both the
+  database and the answer key, so they cannot drift. Real column vocabulary
+  from the Enron corpus rather than invented names.
 - **what a database estate says about itself** — `discovery`, reading declared
   facts through the ODBC driver manager: tables, columns, types, nullability,
   primary keys and foreign keys, across several databases at once. It infers

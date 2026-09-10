@@ -20359,6 +20359,61 @@ done:
     return result;
 }
 
+/* odbc.info(connection) -> { dbms_name, dbms_version, driver_name,
+ * driver_version }.
+ *
+ * WHAT IT IS FOR. Reading a database's MODULES -- views and procedures -- has
+ * no portable call: SQLTables and SQLColumns are normalised by the driver
+ * manager, and nothing equivalent exists for source text, so the query is
+ * per-dialect. A layer above must therefore know WHICH database it is talking
+ * to, and guessing from the driver name is wrong in both directions (one
+ * driver reaches several products, and one product has several drivers).
+ * SQL_DBMS_NAME is the database's own answer. */
+static Value odbc_eval_info(AstExpr *expr) {
+    if (expr->as.call.args.count != 1) {
+        odbc_raise_message("odbc.info expects a connection");
+        return value_null();
+    }
+    Value connection_value = eval_expr(expr->as.call.args.items[0]);
+    if (error_action_pending()) {
+        value_free(connection_value);
+        return value_null();
+    }
+    OdbcConnectionValue *connection = odbc_connection_from_value(connection_value);
+    if (!connection) {
+        value_free(connection_value);
+        return value_null();
+    }
+
+    static const struct { SQLUSMALLINT id; const char *field; } wanted[] = {
+        { SQL_DBMS_NAME,      "dbms_name" },
+        { SQL_DBMS_VER,       "dbms_version" },
+        { SQL_DRIVER_NAME,    "driver_name" },
+        { SQL_DRIVER_VER,     "driver_version" },
+    };
+    size_t n = sizeof(wanted) / sizeof(wanted[0]);
+    RecordField *fields = calloc(n, sizeof(RecordField));
+    if (!fields) {
+        abort();
+    }
+    for (size_t i = 0; i < n; i++) {
+        SQLCHAR buf[256] = {0};
+        SQLSMALLINT len = 0;
+        if (!SQL_SUCCEEDED(SQLGetInfo(connection->dbc, wanted[i].id, buf,
+                                      (SQLSMALLINT)sizeof(buf), &len))) {
+            buf[0] = '\0';
+        }
+        fields[i].name = copy_string(wanted[i].field);
+        fields[i].value = cell_alloc();
+        if (!fields[i].value) {
+            abort();
+        }
+        *fields[i].value = value_string((const char *)buf);
+    }
+    value_free(connection_value);
+    return value_record(fields, n);
+}
+
 static Value odbc_eval_call(AstExpr *expr) {
     const char *name = expr->as.call.name;
     if (strcmp(name, "connect") == 0) {
@@ -20393,6 +20448,9 @@ static Value odbc_eval_call(AstExpr *expr) {
     }
     if (strcmp(name, "foreign_keys") == 0) {
         return odbc_eval_schema_call(expr, 3);
+    }
+    if (strcmp(name, "info") == 0) {
+        return odbc_eval_info(expr);
     }
     if (strcmp(name, "drivers") == 0) {
         return odbc_eval_catalog(expr, 1);

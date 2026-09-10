@@ -235,6 +235,10 @@ therefore part of every identity from the first line of code, not retrofitted.
 | `discovery.columns_of(catalog, table_id)` | that table's columns, in **ordinal** order |
 | `discovery.is_primary_key(catalog, column_id)` | is this column part of its table's declared primary key |
 | `discovery.id_of(parts)` | the stable id for a table or column |
+| `discovery.modules(connection, {source})` | views and procedures, **with their owning schema** — per-dialect, chosen from `odbc.info` |
+| `discovery.references(sql)` | `{reads, writes, gaps}` — the objects a statement touches |
+| `discovery.trace(catalog, modules, dbms)` | `{edges, unresolved, gaps}` — references bound to real objects |
+| `discovery.impact(trace, object_id, "downstream"\|"upstream")` | what a change to that object affects |
 
 Named `scan` and not `read`: `read` is a built-in, and a library function
 sharing a built-in's name resolves to itself inside the library and to the
@@ -253,6 +257,33 @@ job; which of `customer`, `customer2`, `customer_new` is live lives in the
 application. The correct answer is **"unanswerable from the catalog"**, not a
 guess — so the value model carries that as an outcome rather than treating
 absence of evidence as evidence.
+
+## 4a. What is built, and what it was measured against
+
+Table-level lineage, end to end: read the modules, scan their SQL for the
+objects they touch, bind those references against the catalog, and walk the
+result. Verified against **all four** databases, 46 checks each.
+
+The resolution measured earlier is visible in the output on SQL Server:
+
+```
+s.alt.p_res  reads  s.gbasic_test.alt.res_probe    ' own schema wins
+s.alt.p_fall reads  s.gbasic_test.dbo.fall_probe   ' falls back to dbo
+```
+
+Both procedure bodies read `from res_probe` / `from fall_probe` — bare. Nothing
+in the text says which table is meant.
+
+**A driver limitation found the same way**, and it had been invisible because
+every earlier test happened to pass a filter: FreeTDS refuses `odbc.columns`
+with no table pattern (*"sp_columns expects parameter '@table_name'"*), where
+the other three honour ODBC's "absent means any". A whole-schema scan was
+therefore broken on one database and green on the other three. `scan` now
+passes an explicit `"%"`.
+
+**Not yet built, and each is a separate increment:** column-level lineage
+(cheaper on MariaDB and PostgreSQL, which return views already resolved), the
+predicates that answer §1a's question, and cross-database references.
 
 ## 5. Deliberately not in the first increment
 
