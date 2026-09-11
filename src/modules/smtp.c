@@ -151,7 +151,7 @@ static int smtp_reject_unknown(Value record,
     for (size_t i = 0; i < record.as.record.count; i++) {
         int known = 0;
         for (size_t j = 0; j < allowed_count; j++) {
-            if (strcmp(record.as.record.fields[i].name, allowed[j]) == 0) {
+            if (record_name_is(&record.as.record.fields[i], allowed[j])) {
                 known = 1;
                 break;
             }

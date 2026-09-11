@@ -1084,6 +1084,36 @@ static size_t string_length(const char *data) {
     return string_header(data)->length;
 }
 
+/* --- Record field names are counted, for the same reason string VALUES are ---
+ *
+ * A gBASIC string is a counted sequence of bytes and NUL is content (PLAT-NUL).
+ * A record field NAME was a plain C string, so the one place a program could
+ * put arbitrary bytes -- a dynamic key, `r[k] = v` -- truncated at the first
+ * NUL. MEASURED: `r["a\0b"] = 1` then `r["a\0z"] = 2` produced a record with
+ * ONE field, named "a", holding 2. Two distinct keys COLLAPSED, the second
+ * silently overwrote the first, and both subscripts read back the survivor.
+ * That is data loss, not an unsupported case.
+ *
+ * The length rides in front of the pointer, which is the trick this file
+ * already uses twice (StringHeader for string values, RecordHeader for the
+ * field array) -- so `name` stays a `char *`, the ~110 sites that read it as
+ * one are untouched, and `string_length(field->name)` is authoritative. A
+ * `size_t name_len` beside it was the obvious alternative and is worse: two
+ * field-construction sites `realloc` their array and set every member by hand,
+ * so a new member would read back as garbage rather than zero, and the defect
+ * that produces is a wrong length rather than a missing one.
+ *
+ * Names are NUL-terminated as well as counted, so an error message or a
+ * `printf("%s")` still works -- it just stops at an interior NUL, which is the
+ * right trade for a diagnostic and the wrong one for a lookup. */
+static char *field_name_new_n(const char *name, size_t length) {
+    return string_new(name, length);
+}
+
+static char *field_name_new(const char *name) {
+    return string_new(name, strlen(name));
+}
+
 /* Take a second reference to an existing buffer. O(1), and the reason
  * `value_copy` on a string no longer touches the bytes at all. */
 static char *string_retain(char *data) {
@@ -1574,10 +1604,11 @@ static RecordHeader *record_header(const RecordField *fields) {
 /* FNV-1a over a NUL-terminated field name. Field names come from copy_string,
  * so they are ordinary C strings; a record key with an interior NUL cannot be
  * expressed. */
-static size_t record_hash(const char *name) {
+static size_t record_hash_n(const char *name, size_t length) {
     size_t hash = (size_t)1469598103934665603ULL;
-    for (const unsigned char *p = (const unsigned char *)name; *p; p++) {
-        hash ^= (size_t)*p;
+    const unsigned char *p = (const unsigned char *)name;
+    for (size_t i = 0; i < length; i++) {
+        hash ^= (size_t)p[i];
         hash *= (size_t)1099511628211ULL;
     }
     return hash;
@@ -2505,16 +2536,16 @@ static Value regex_build_match(const char *subject,
     if (!fields) {
         abort();
     }
-    fields[0].name = copy_string("text");
+    fields[0].name = field_name_new("text");
     fields[0].value = cell_alloc();
     *fields[0].value = value_string_n(subject + so, eo - so);
-    fields[1].name = copy_string("start");
+    fields[1].name = field_name_new("start");
     fields[1].value = cell_alloc();
     *fields[1].value = value_number((double)start_cp);
-    fields[2].name = copy_string("length");
+    fields[2].name = field_name_new("length");
     fields[2].value = cell_alloc();
     *fields[2].value = value_number((double)(end_cp - start_cp));
-    fields[3].name = copy_string("groups");
+    fields[3].name = field_name_new("groups");
     fields[3].value = cell_alloc();
     *fields[3].value = value_array(items, group_count);
     return value_record(fields, 4);
@@ -3100,7 +3131,7 @@ static Value error_capture_trace(void) {
         }
         const char *names[] = {"name", "path", "line", "column"};
         for (size_t j = 0; j < 4; j++) {
-            fields[j].name = copy_string(names[j]);
+            fields[j].name = field_name_new(names[j]);
             fields[j].value = cell_alloc();
             if (!fields[j].value) {
                 abort();
@@ -3456,7 +3487,7 @@ static Value value_error_object(void) {
     const char *names[] = {"message", "line", "column", "code", "source",
                            "path", "details", "trace", "severity"};
     for (size_t i = 0; i < 9; i++) {
-        fields[i].name = copy_string(names[i]);
+        fields[i].name = field_name_new(names[i]);
         fields[i].value = cell_alloc();
         if (!fields[i].value) {
             abort();
@@ -3493,7 +3524,7 @@ static Value value_warning_object(void) {
     const char *names[] = {"message", "line", "column", "code", "source",
                            "path", "details"};
     for (size_t i = 0; i < 7; i++) {
-        fields[i].name = copy_string(names[i]);
+        fields[i].name = field_name_new(names[i]);
         fields[i].value = cell_alloc();
         if (!fields[i].value) {
             abort();
@@ -3630,7 +3661,7 @@ static void value_free(Value value) {
         /* Drop a reference; the fields themselves only die with the last one. */
         if (record_fields_release(value.as.record.fields)) {
             for (size_t i = 0; i < value.as.record.count; i++) {
-                free(value.as.record.fields[i].name);
+                string_free(value.as.record.fields[i].name);
                 cell_release(value.as.record.fields[i].value);
             }
             record_fields_free(value.as.record.fields);
@@ -4798,11 +4829,27 @@ static int unlock_path(const char *path) {
  * entry for the same name that is already present WINS, which is what keeps a
  * duplicate name resolving to its first occurrence exactly as the linear walk
  * did. */
+/* Two names are the same name when they are the same BYTES, which is not what
+ * strcmp answers once a name may contain a NUL. */
+static int record_name_equal(const RecordField *field, const char *name, size_t length) {
+    return string_length(field->name) == length &&
+           memcmp(field->name, name, length) == 0;
+}
+
+/* Compare a field name to a C LITERAL. Not `strcmp`: a field named
+ * "host\0anything" compares equal to "host" up to the NUL, so an option
+ * validator built on strcmp would accept a key it has never heard of as one it
+ * has. The length check is what refuses it. */
+static int record_name_is(const RecordField *field, const char *literal) {
+    return record_name_equal(field, literal, strlen(literal));
+}
+
 static void record_index_insert(RecordHeader *header, const RecordField *fields, size_t slot) {
     size_t mask = header->bucket_count - 1;
-    size_t probe = record_hash(fields[slot].name) & mask;
+    size_t probe = record_hash_n(fields[slot].name, string_length(fields[slot].name)) & mask;
     while (header->buckets[probe] != 0) {
-        if (strcmp(fields[header->buckets[probe] - 1].name, fields[slot].name) == 0) {
+        if (record_name_equal(&fields[header->buckets[probe] - 1], fields[slot].name,
+                              string_length(fields[slot].name))) {
             return;
         }
         probe = (probe + 1) & mask;
@@ -4837,10 +4884,11 @@ static void record_index_build(RecordHeader *header, const RecordField *fields, 
  * hash probe. Note the index is only consulted when it reflects the whole record
  * (`indexed == count`); the append path keeps that true incrementally, and the
  * guard means a stale table can never answer instead of the fields themselves. */
-static size_t record_slot_of(const RecordField *fields, size_t count, const char *name) {
+static size_t record_slot_of_n(const RecordField *fields, size_t count,
+                               const char *name, size_t length) {
     if (count < RECORD_INDEX_MIN_FIELDS) {
         for (size_t i = 0; i < count; i++) {
-            if (strcmp(fields[i].name, name) == 0) {
+            if (record_name_equal(&fields[i], name, length)) {
                 return i;
             }
         }
@@ -4852,10 +4900,10 @@ static size_t record_slot_of(const RecordField *fields, size_t count, const char
         record_index_build(header, fields, count);
     }
     size_t mask = header->bucket_count - 1;
-    size_t probe = record_hash(name) & mask;
+    size_t probe = record_hash_n(name, length) & mask;
     while (header->buckets[probe] != 0) {
         size_t slot = header->buckets[probe] - 1;
-        if (strcmp(fields[slot].name, name) == 0) {
+        if (record_name_equal(&fields[slot], name, length)) {
             return slot;
         }
         probe = (probe + 1) & mask;
@@ -4885,7 +4933,7 @@ static void record_ensure_unique(Value *record) {
         abort();
     }
     for (size_t i = 0; i < count; i++) {
-        copy[i].name = copy_string(shared[i].name);
+        copy[i].name = field_name_new_n(shared[i].name, string_length(shared[i].name));
         /* Preserve PBI policy so it travels with copies/assignments. */
         copy[i].policy = shared[i].policy;
         copy[i].reset_expr = shared[i].reset_expr;
@@ -4916,27 +4964,38 @@ static void record_ensure_unique(Value *record) {
  * arrays follow: `resolve_lvalue_ref`, which by construction walks owned
  * storage, and `record_set`, which is handed a record to mutate. Both call
  * record_ensure_unique explicitly. */
-static RecordField *record_find(Value *record, const char *name) {
+static RecordField *record_find_n(Value *record, const char *name, size_t length) {
     if (record->kind != VALUE_RECORD) {
         return NULL;
     }
-    size_t slot = record_slot_of(record->as.record.fields, record->as.record.count, name);
+    size_t slot = record_slot_of_n(record->as.record.fields, record->as.record.count,
+                                   name, length);
+    return slot < record->as.record.count ? &record->as.record.fields[slot] : NULL;
+}
+
+static RecordField *record_find(Value *record, const char *name) {
+    return record_find_n(record, name, strlen(name));
+}
+
+static const RecordField *record_find_const_n(const Value *record, const char *name,
+                                              size_t length) {
+    if (record->kind != VALUE_RECORD) {
+        return NULL;
+    }
+    size_t slot = record_slot_of_n(record->as.record.fields, record->as.record.count,
+                                   name, length);
     return slot < record->as.record.count ? &record->as.record.fields[slot] : NULL;
 }
 
 static const RecordField *record_find_const(const Value *record, const char *name) {
-    if (record->kind != VALUE_RECORD) {
-        return NULL;
-    }
-    size_t slot = record_slot_of(record->as.record.fields, record->as.record.count, name);
-    return slot < record->as.record.count ? &record->as.record.fields[slot] : NULL;
+    return record_find_const_n(record, name, strlen(name));
 }
 
-static void record_set(Value *record, const char *name, Value value) {
+static void record_set_n(Value *record, const char *name, size_t name_length, Value value) {
     /* About to repoint a field's cell or append a slot, both of which mutate the
      * field array, so detach from a shared one first. */
     record_ensure_unique(record);
-    RecordField *field = record_find(record, name);
+    RecordField *field = record_find_n(record, name, name_length);
     if (field) {
         if (field->policy != AST_FIELD_POLICY_LINK &&
             ((ValueCell *)field->value)->refcount > 1) {
@@ -4959,7 +5018,7 @@ static void record_set(Value *record, const char *name, Value value) {
     record->as.record.fields = record_fields_reserve(record->as.record.fields,
                                                      record->as.record.count + 1);
     field = &record->as.record.fields[record->as.record.count];
-    field->name = copy_string(name);
+    field->name = field_name_new_n(name, name_length);
     field->value = cell_alloc();
     if (!field->value) {
         abort();
@@ -4987,6 +5046,10 @@ static void record_set(Value *record, const char *name, Value value) {
             header->indexed = record->as.record.count;
         }
     }
+}
+
+static void record_set(Value *record, const char *name, Value value) {
+    record_set_n(record, name, strlen(name), value);
 }
 
 static int value_storage_equal(const Value *left, const Value *right) {
@@ -5027,7 +5090,7 @@ static int value_storage_equal(const Value *left, const Value *right) {
         }
         for (size_t i = 0; i < left->as.record.count; i++) {
             const RecordField *left_field = &left->as.record.fields[i];
-            const RecordField *right_field = record_find_const(right, left_field->name);
+            const RecordField *right_field = record_find_const_n(right, left_field->name, string_length(left_field->name));
             if (!right_field || !value_storage_equal(left_field->value, right_field->value)) {
                 return 0;
             }
@@ -6915,17 +6978,17 @@ static Value zone_eval_call(AstExpr *expr) {
     if (!fields) {
         abort();
     }
-    fields[0].name = copy_string("kind");
+    fields[0].name = field_name_new("kind");
     fields[0].value = cell_alloc();
     *fields[0].value = value_string(kind == 0 ? "unique"
                                    : kind == 1 ? "ambiguous" : "nonexistent");
-    fields[1].name = copy_string("utc");
+    fields[1].name = field_name_new("utc");
     fields[1].value = cell_alloc();
     *fields[1].value = value_datetime(zone_civil_from_epoch_utc(chosen, dt.precision));
-    fields[2].name = copy_string("earlier");
+    fields[2].name = field_name_new("earlier");
     fields[2].value = cell_alloc();
     *fields[2].value = value_datetime(zone_civil_from_epoch_utc(earlier, dt.precision));
-    fields[3].name = copy_string("later");
+    fields[3].name = field_name_new("later");
     fields[3].value = cell_alloc();
     *fields[3].value = value_datetime(zone_civil_from_epoch_utc(later, dt.precision));
     return value_record(fields, 4);
@@ -9581,11 +9644,11 @@ static Value make_dir_entry(const char *folder, const char *name, const char *ty
         abort();
     }
 
-    fields[0].name = copy_string("name");
+    fields[0].name = field_name_new("name");
     fields[0].value = cell_alloc();
-    fields[1].name = copy_string("path");
+    fields[1].name = field_name_new("path");
     fields[1].value = cell_alloc();
-    fields[2].name = copy_string("type");
+    fields[2].name = field_name_new("type");
     fields[2].value = cell_alloc();
     if (!fields[0].value || !fields[1].value || !fields[2].value) {
         abort();
@@ -11329,7 +11392,7 @@ static int encode_value_to_builder(StringBuilder *builder, Value value, RenderMo
                 sb_append_char(builder, ',');
             }
             encode_string_literal(builder, value.as.record.fields[i].name,
-                                  strlen(value.as.record.fields[i].name));
+                                  string_length(value.as.record.fields[i].name));
             sb_append_char(builder, ':');
             if (!encode_value_to_builder(builder, *value.as.record.fields[i].value, mode)) {
                 return 0;
@@ -11663,7 +11726,7 @@ static int serialize_value(SerBuf *b, Value v, int depth) {
                 runtime_error_raise(message, 1003, "actor");
                 return 0;
             }
-            serbuf_blob(b, f->name, strlen(f->name));
+            serbuf_blob(b, f->name, string_length(f->name));
             if (!serialize_value(b, *f->value, depth + 1)) {
                 return 0;
             }
@@ -11964,12 +12027,10 @@ static Value deserialize_value(SerReader *r, int depth) {
                 value_free(partial);
                 return value_null();
             }
-            char *name = malloc((size_t)nlen + 1);
-            if (!name) {
-                abort();
-            }
-            memcpy(name, r->data + r->pos, (size_t)nlen);
-            name[nlen] = '\0';
+            /* The wire format has always carried the name's length, so an
+              * actor transmitted the right bytes all along -- it was the local
+              * representation that truncated them on arrival. */
+            char *name = field_name_new_n(r->data + r->pos, (size_t)nlen);
             r->pos += (size_t)nlen;
             fields[i].name = name;
             fields[i].value = cell_alloc();
@@ -13597,7 +13658,10 @@ static Value decode_parse_record(DecodeParser *parser) {
             abort();
         }
         fields = next;
-        fields[count].name = copy_string(key.as.string);
+        /* A JSON key may legally contain an escaped NUL, and this truncated it
+          * there -- so a well-formed document arrived with a corrupted key and
+          * nothing said so. */
+        fields[count].name = field_name_new_n(key.as.string, string_length(key.as.string));
         fields[count].value = cell_alloc();
         if (!fields[count].value) {
             abort();
@@ -13624,7 +13688,7 @@ static Value decode_parse_record(DecodeParser *parser) {
     }
 
     for (size_t i = 0; i < count; i++) {
-        free(fields[i].name);
+        string_free(fields[i].name);
         cell_release(fields[i].value);
     }
     free(fields);
@@ -13820,7 +13884,7 @@ static Value try_decode_result(int ok, Value value, const char *message,
     }
     const char *names[] = {"ok", "value", "message", "offset", "line", "column"};
     for (size_t i = 0; i < 6; i++) {
-        fields[i].name = copy_string(names[i]);
+        fields[i].name = field_name_new(names[i]);
         fields[i].value = cell_alloc();
         if (!fields[i].value) {
             abort();
@@ -14067,18 +14131,29 @@ static int webclient_token_char(unsigned char ch) {
         ch == '^' || ch == '_' || ch == '`' || ch == '|' || ch == '~';
 }
 
-static int webclient_valid_token(const char *text) {
-    if (!text[0]) {
+static int webclient_valid_token_n(const char *text, size_t length) {
+    if (length == 0) {
         return 0;
     }
-    for (const unsigned char *cursor = (const unsigned char *)text;
-         *cursor;
-         cursor++) {
-        if (!webclient_token_char(*cursor)) {
+    const unsigned char *cursor = (const unsigned char *)text;
+    for (size_t i = 0; i < length; i++) {
+        if (!webclient_token_char(cursor[i])) {
             return 0;
         }
     }
     return 1;
+}
+
+/* THE LENGTH IS NOT OPTIONAL WHEN THE TEXT IS A FIELD NAME. A record field
+ * name is now a counted sequence of bytes, so "X\0junk" is a real name --
+ * and a validator that scans to the first NUL would approve it as "X" while
+ * `snprintf("%s")` wrote only "X" to the wire. That is a validator passing
+ * something other than what is stored, which is the same silent shape the
+ * counted names were introduced to remove: the fix would have MOVED the
+ * truncation rather than removing it. NUL is not a token character, so the
+ * counted form refuses such a name by name. */
+static int webclient_valid_token(const char *text) {
+    return webclient_valid_token_n(text, strlen(text));
 }
 
 static char *webclient_upper_method(const char *method) {
@@ -14111,7 +14186,7 @@ static int webclient_append_request_headers(struct curl_slist **headers,
     }
     for (size_t i = 0; i < record.as.record.count; i++) {
         RecordField *field = &record.as.record.fields[i];
-        if (!webclient_valid_token(field->name)) {
+        if (!webclient_valid_token_n(field->name, string_length(field->name))) {
             webclient_raise("webclient request header name is invalid");
             return 0;
         }
@@ -14314,7 +14389,7 @@ static int webclient_request_from_record(Value record, WebclientRequest *request
     for (size_t i = 0; i < record.as.record.count; i++) {
         int known = 0;
         for (size_t j = 0; j < sizeof(allowed) / sizeof(allowed[0]); j++) {
-            if (strcmp(record.as.record.fields[i].name, allowed[j]) == 0) {
+            if (record_name_is(&record.as.record.fields[i], allowed[j])) {
                 known = 1;
                 break;
             }
@@ -14680,7 +14755,7 @@ static int http_append_request_headers(struct curl_slist **headers, Value value)
     }
     for (size_t i = 0; i < value.as.record.count; i++) {
         RecordField *field = &value.as.record.fields[i];
-        if (!webclient_valid_token(field->name)) {
+        if (!webclient_valid_token_n(field->name, string_length(field->name))) {
             http_raise("http.start: request header name is invalid");
             return 0;
         }
@@ -14717,7 +14792,7 @@ static int http_request_from_record(Value record, HttpRequest *request) {
     for (size_t i = 0; i < record.as.record.count; i++) {
         int known = 0;
         for (size_t j = 0; j < sizeof(allowed) / sizeof(allowed[0]); j++) {
-            if (strcmp(record.as.record.fields[i].name, allowed[j]) == 0) {
+            if (record_name_is(&record.as.record.fields[i], allowed[j])) {
                 known = 1;
                 break;
             }
@@ -14891,7 +14966,7 @@ static Value http_make_status(HttpHandle *h) {
         "transport_ok", "error", "bytes"
     };
     for (size_t i = 0; i < 8; i++) {
-        fields[i].name = copy_string(names[i]);
+        fields[i].name = field_name_new(names[i]);
         fields[i].value = cell_alloc();
         if (!fields[i].value) {
             abort();
@@ -14919,7 +14994,7 @@ static Value http_make_chunk(HttpHandle *h) {
     }
     const char *names[] = {"id", "body"};
     for (size_t i = 0; i < 2; i++) {
-        fields[i].name = copy_string(names[i]);
+        fields[i].name = field_name_new(names[i]);
         fields[i].value = cell_alloc();
         if (!fields[i].value) {
             abort();
@@ -15291,7 +15366,7 @@ static void http_bind_events_global(void) {
     if (!fields) {
         abort();
     }
-    fields[0].name = copy_string("events");
+    fields[0].name = field_name_new("events");
     fields[0].value = cell_alloc();
     if (!fields[0].value) {
         abort();
@@ -15422,7 +15497,7 @@ static int http_emit_event(HttpHandle *h, const char *kind) {
     }
     const char *names[] = {"id", "kind", "status", "handle"};
     for (size_t i = 0; i < 4; i++) {
-        fields[i].name = copy_string(names[i]);
+        fields[i].name = field_name_new(names[i]);
         fields[i].value = cell_alloc();
         if (!fields[i].value) {
             abort();
@@ -15570,7 +15645,7 @@ static void inbox_bind_global(void) {
     if (!fields) {
         abort();
     }
-    fields[0].name = copy_string("messages");
+    fields[0].name = field_name_new("messages");
     fields[0].value = cell_alloc();
     if (!fields[0].value) {
         abort();
@@ -15950,14 +16025,17 @@ static int webserver_token_char(unsigned char ch) {
         ch == '^' || ch == '_' || ch == '`' || ch == '|' || ch == '~';
 }
 
-static int webserver_valid_header_name(const char *text) {
-    if (!text || !text[0]) {
+
+/* A response header name must be a token, and it is a record FIELD NAME, so it
+ * is counted -- see webclient_valid_token_n for why scanning to the first NUL
+ * is not good enough. */
+static int webserver_valid_header_name_n(const char *text, size_t length) {
+    if (!text || length == 0) {
         return 0;
     }
-    for (const unsigned char *cursor = (const unsigned char *)text;
-         *cursor;
-         cursor++) {
-        if (!webserver_token_char(*cursor)) {
+    const unsigned char *cursor = (const unsigned char *)text;
+    for (size_t i = 0; i < length; i++) {
+        if (!webserver_token_char(cursor[i])) {
             return 0;
         }
     }
@@ -16052,7 +16130,7 @@ static int webserver_validate_response_value(WebServer *server,
         }
         for (size_t i = 0; i < headers->value->as.record.count; i++) {
             RecordField *field = &headers->value->as.record.fields[i];
-            if (!webserver_valid_header_name(field->name)) {
+            if (!webserver_valid_header_name_n(field->name, string_length(field->name))) {
                 return webserver_response_invalid(
                     err_out, "webserver response header name is invalid");
             }
@@ -17464,7 +17542,7 @@ static int webserver_listen_options(AstExpr *expr, char *address, size_t address
     }
     for (size_t i = 0; i < options.as.record.count; i++) {
         const RecordField *field = &options.as.record.fields[i];
-        if (strcmp(field->name, "address") == 0) {
+        if (record_name_is(field, "address")) {
             if (field->value->kind != VALUE_STRING) {
                 value_free(options);
                 webserver_raise("webserver.listen address must be a string");
@@ -17477,7 +17555,7 @@ static int webserver_listen_options(AstExpr *expr, char *address, size_t address
                 return 0;
             }
             snprintf(address, address_size, "%s", field->value->as.string);
-        } else if (strcmp(field->name, "timeout") == 0) {
+        } else if (record_name_is(field, "timeout")) {
             if (field->value->kind != VALUE_NUMBER || field->value->as.number <= 0 ||
                 !isfinite(field->value->as.number)) {
                 value_free(options);
@@ -17485,7 +17563,7 @@ static int webserver_listen_options(AstExpr *expr, char *address, size_t address
                 return 0;
             }
             *timeout_s = field->value->as.number;
-        } else if (strcmp(field->name, "tls") == 0) {
+        } else if (record_name_is(field, "tls")) {
             if (field->value->kind != VALUE_RECORD) {
                 value_free(options);
                 webserver_raise("webserver.listen tls must be a record: { cert, key } and optionally { certs: [...] }");
@@ -17493,7 +17571,7 @@ static int webserver_listen_options(AstExpr *expr, char *address, size_t address
             }
             value_free(*tls_out);
             *tls_out = value_copy(*field->value);
-        } else if (strcmp(field->name, "hold") == 0) {
+        } else if (record_name_is(field, "hold")) {
             /* PLAT-WEB-2: bind and listen but never accept. This is the
              * supervisor's option — it keeps the privilege of the port and
              * hands the accepting to workers that inherit the fd. A held
@@ -17697,7 +17775,7 @@ static Value webserver_eval_inherited(AstExpr *expr) {
         }
         for (size_t i = 0; i < options.as.record.count; i++) {
             const RecordField *field = &options.as.record.fields[i];
-            if (strcmp(field->name, "timeout") == 0) {
+            if (record_name_is(field, "timeout")) {
                 if (field->value->kind != VALUE_NUMBER || field->value->as.number <= 0 ||
                     !isfinite(field->value->as.number)) {
                     value_free(options);
@@ -17705,7 +17783,7 @@ static Value webserver_eval_inherited(AstExpr *expr) {
                     return value_null();
                 }
                 timeout_s = field->value->as.number;
-            } else if (strcmp(field->name, "tls") == 0) {
+            } else if (record_name_is(field, "tls")) {
                 if (field->value->kind != VALUE_RECORD) {
                     value_free(options);
                     webserver_raise("webserver.inherited tls must be a record");
@@ -18719,7 +18797,7 @@ static Value sqlite_rows_from_statement(sqlite3 *native, sqlite3_stmt *statement
         int completed_fields = 0;
         for (int column = 0; column < columns; column++) {
             int before_error = error_generation;
-            fields[column].name = copy_string(sqlite3_column_name(statement, column));
+            fields[column].name = field_name_new(sqlite3_column_name(statement, column));
             fields[column].value = cell_alloc();
             if (!fields[column].value) {
                 abort();
@@ -18728,7 +18806,7 @@ static Value sqlite_rows_from_statement(sqlite3 *native, sqlite3_stmt *statement
             completed_fields++;
             if (error_generation != before_error) {
                 for (int i = 0; i < completed_fields; i++) {
-                    free(fields[i].name);
+                    string_free(fields[i].name);
                     cell_release(fields[i].value);
                 }
                 free(fields);
@@ -18771,9 +18849,9 @@ static Value sqlite_command_result(sqlite3 *native, const char *sql) {
     if (!fields) {
         abort();
     }
-    fields[0].name = copy_string("command");
+    fields[0].name = field_name_new("command");
     fields[0].value = cell_alloc();
-    fields[1].name = copy_string("rows_affected");
+    fields[1].name = field_name_new("rows_affected");
     fields[1].value = cell_alloc();
     if (!fields[0].value || !fields[1].value) {
         abort();
@@ -19700,7 +19778,7 @@ static Value odbc_rows_from_statement(SQLHSTMT statement) {
         int completed = 0;
         for (SQLSMALLINT column = 0; column < columns; column++) {
             int before_error = error_generation;
-            fields[column].name = copy_string(names[column]);
+            fields[column].name = field_name_new(names[column]);
             fields[column].value = cell_alloc();
             if (!fields[column].value) {
                 abort();
@@ -19710,7 +19788,7 @@ static Value odbc_rows_from_statement(SQLHSTMT statement) {
             completed++;
             if (error_generation != before_error) {
                 for (int i = 0; i < completed; i++) {
-                    free(fields[i].name);
+                    string_free(fields[i].name);
                     cell_release(fields[i].value);
                 }
                 free(fields);
@@ -19788,9 +19866,9 @@ static Value odbc_command_result(SQLHSTMT statement, const char *sql) {
     if (!fields) {
         abort();
     }
-    fields[0].name = copy_string("command");
+    fields[0].name = field_name_new("command");
     fields[0].value = cell_alloc();
-    fields[1].name = copy_string("rows_affected");
+    fields[1].name = field_name_new("rows_affected");
     fields[1].value = cell_alloc();
     if (!fields[0].value || !fields[1].value) {
         abort();
@@ -20078,9 +20156,9 @@ static Value odbc_eval_catalog(AstExpr *expr, int drivers_mode) {
         if (!fields) {
             abort();
         }
-        fields[0].name = copy_string("name");
+        fields[0].name = field_name_new("name");
         fields[0].value = cell_alloc();
-        fields[1].name = copy_string(drivers_mode ? "attributes" : "description");
+        fields[1].name = field_name_new(drivers_mode ? "attributes" : "description");
         fields[1].value = cell_alloc();
         if (!fields[0].value || !fields[1].value) {
             abort();
@@ -20403,7 +20481,7 @@ static Value odbc_eval_info(AstExpr *expr) {
                                       (SQLSMALLINT)sizeof(buf), &len))) {
             buf[0] = '\0';
         }
-        fields[i].name = copy_string(wanted[i].field);
+        fields[i].name = field_name_new(wanted[i].field);
         fields[i].value = cell_alloc();
         if (!fields[i].value) {
             abort();
@@ -21414,7 +21492,7 @@ static Value pg_rows_from_result(PGresult *result) {
         int completed_fields = 0;
         for (int column = 0; column < columns; column++) {
             int before_error = error_generation;
-            fields[column].name = copy_string(PQfname(result, column));
+            fields[column].name = field_name_new(PQfname(result, column));
             fields[column].value = cell_alloc();
             if (!fields[column].value) {
                 abort();
@@ -21423,7 +21501,7 @@ static Value pg_rows_from_result(PGresult *result) {
             completed_fields++;
             if (error_generation != before_error) {
                 for (int i = 0; i < completed_fields; i++) {
-                    free(fields[i].name);
+                    string_free(fields[i].name);
                     cell_release(fields[i].value);
                 }
                 free(fields);
@@ -21454,9 +21532,9 @@ static Value pg_command_result(PGresult *result) {
     if (!fields) {
         abort();
     }
-    fields[0].name = copy_string("command");
+    fields[0].name = field_name_new("command");
     fields[0].value = cell_alloc();
-    fields[1].name = copy_string("rows_affected");
+    fields[1].name = field_name_new("rows_affected");
     fields[1].value = cell_alloc();
     if (!fields[0].value || !fields[1].value) {
         abort();
@@ -21469,7 +21547,7 @@ static Value pg_command_result(PGresult *result) {
         double count = 0.0;
         if (!pg_parse_number_result(tuples, &count)) {
             for (size_t i = 0; i < 2; i++) {
-                free(fields[i].name);
+                string_free(fields[i].name);
                 if (fields[i].value) {
                     cell_release(fields[i].value);
                 }
@@ -24505,7 +24583,7 @@ static int process_reject_unknown(Value *opts, const char *label,
     for (size_t i = 0; i < n; i++) {
         int ok = 0;
         for (size_t j = 0; j < nallowed; j++) {
-            if (strcmp(fields[i].name, allowed[j]) == 0) { ok = 1; break; }
+            if (record_name_is(&fields[i], allowed[j])) { ok = 1; break; }
         }
         if (!ok) {
             char msg[220];
@@ -24538,7 +24616,7 @@ static Value process_make_result_ex(int exit_code, ProcBuf *out, ProcBuf *err,
                            "success", "signal", "timed_out",
                            "launch_failed", "why"};
     for (size_t i = 0; i < n; i++) {
-        fields[i].name = copy_string(names[i]);
+        fields[i].name = field_name_new(names[i]);
         fields[i].value = cell_alloc();
         if (!fields[i].value) {
             abort();
@@ -25261,7 +25339,7 @@ static Value process_make_status(ProcessHandle *h) {
     }
     const char *names[] = {"running", "exit_code", "signal", "success"};
     for (size_t i = 0; i < 4; i++) {
-        fields[i].name = copy_string(names[i]);
+        fields[i].name = field_name_new(names[i]);
         fields[i].value = cell_alloc();
         if (!fields[i].value) {
             abort();
@@ -25285,7 +25363,7 @@ static Value process_make_chunk(ProcessHandle *h) {
     }
     const char *names[] = {"stdout", "stderr"};
     for (size_t i = 0; i < 2; i++) {
-        fields[i].name = copy_string(names[i]);
+        fields[i].name = field_name_new(names[i]);
         fields[i].value = cell_alloc();
         if (!fields[i].value) {
             abort();
@@ -26121,7 +26199,7 @@ static Value reflect_do_field(AstExpr *expr) {
         value_free(rv); value_free(nv);
         return reflect_raise("reflect.field expects a record and a field-name string");
     }
-    RecordField *f = record_find(&rv, nv.as.string);
+    RecordField *f = record_find_n(&rv, nv.as.string, string_length(nv.as.string));
     if (!f) {
         char m[256];
         snprintf(m, sizeof(m), "reflect.field: unknown field: %s", nv.as.string);
@@ -26176,7 +26254,7 @@ static Value reflect_do_inspect(Value v) {
     }
     const char *names[] = {"kind", "type", "category", "serializable", "count"};
     for (size_t i = 0; i < 5; i++) {
-        fields[i].name = copy_string(names[i]);
+        fields[i].name = field_name_new(names[i]);
         fields[i].value = cell_alloc();
         if (!fields[i].value) {
             abort();
@@ -26851,10 +26929,10 @@ static Value money_eval_call(AstExpr *expr) {
         for (size_t i = 0; i < CURRENCY_TABLE_COUNT; i++) {
             RecordField *f = calloc(4, sizeof(RecordField));
             if (!f) abort();
-            f[0].name = copy_string("code");      f[0].value = cell_alloc();
-            f[1].name = copy_string("numeric");   f[1].value = cell_alloc();
-            f[2].name = copy_string("exponent");  f[2].value = cell_alloc();
-            f[3].name = copy_string("historical");f[3].value = cell_alloc();
+            f[0].name = field_name_new("code");      f[0].value = cell_alloc();
+            f[1].name = field_name_new("numeric");   f[1].value = cell_alloc();
+            f[2].name = field_name_new("exponent");  f[2].value = cell_alloc();
+            f[3].name = field_name_new("historical");f[3].value = cell_alloc();
             *f[0].value = value_string(currency_table[i].alpha);
             *f[1].value = value_number((double)currency_table[i].numeric);
             *f[2].value = value_number((double)currency_table[i].exponent);
@@ -26864,10 +26942,10 @@ static Value money_eval_call(AstExpr *expr) {
         for (size_t i = 0; i < currency_registered_count; i++) {
             RecordField *f = calloc(4, sizeof(RecordField));
             if (!f) abort();
-            f[0].name = copy_string("code");      f[0].value = cell_alloc();
-            f[1].name = copy_string("numeric");   f[1].value = cell_alloc();
-            f[2].name = copy_string("exponent");  f[2].value = cell_alloc();
-            f[3].name = copy_string("historical");f[3].value = cell_alloc();
+            f[0].name = field_name_new("code");      f[0].value = cell_alloc();
+            f[1].name = field_name_new("numeric");   f[1].value = cell_alloc();
+            f[2].name = field_name_new("exponent");  f[2].value = cell_alloc();
+            f[3].name = field_name_new("historical");f[3].value = cell_alloc();
             *f[0].value = value_string(currency_registered[i].alpha);
             *f[1].value = value_number((double)currency_registered[i].numeric);
             *f[2].value = value_number((double)currency_registered[i].exponent);
@@ -27378,8 +27456,8 @@ static Value money_eval_call(AstExpr *expr) {
              * applied is the whole point of dating them. */
             RecordField *f = calloc(2, sizeof(RecordField));
             if (!f) abort();
-            f[0].name = copy_string("rate");   f[0].value = cell_alloc();
-            f[1].name = copy_string("as_of");  f[1].value = cell_alloc();
+            f[0].name = field_name_new("rate");   f[0].value = cell_alloc();
+            f[1].name = field_name_new("as_of");  f[1].value = cell_alloc();
             char rbuf[64];
             money_rate_render(r->num, r->dexp, rbuf, sizeof(rbuf));
             *f[0].value = value_string(rbuf);
@@ -27828,10 +27906,10 @@ static Value eval_call(AstExpr *expr) {
                 RecordField *field = &arg.as.record.fields[i];
                 int reserved = 0;
                 for (size_t j = 0; j < sizeof(shape) / sizeof(shape[0]); j++) {
-                    if (strcmp(field->name, shape[j]) == 0) { reserved = 1; break; }
+                    if (record_name_is(field, shape[j])) { reserved = 1; break; }
                 }
                 if (reserved) { continue; }
-                extra[extra_count].name = copy_string(field->name);
+                extra[extra_count].name = field_name_new(field->name);
                 extra[extra_count].value = cell_alloc();
                 if (!extra[extra_count].value) { abort(); }
                 *extra[extra_count].value = value_copy(*field->value);
@@ -28133,8 +28211,8 @@ static Value eval_call(AstExpr *expr) {
             if (lib_count > 1) {
                 RecordField *f = calloc(2, sizeof(RecordField));
                 if (!f) abort();
-                f[0].name = copy_string("name");       f[0].value = cell_alloc();
-                f[1].name = copy_string("libraries");  f[1].value = cell_alloc();
+                f[0].name = field_name_new("name");       f[0].value = cell_alloc();
+                f[1].name = field_name_new("libraries");  f[1].value = cell_alloc();
                 *f[0].value = value_string(a->name);
                 *f[1].value = value_array(libs, lib_count);
                 rows = realloc(rows, sizeof(Value) * (row_count + 1));
@@ -28215,8 +28293,8 @@ static Value eval_call(AstExpr *expr) {
         prefix[p] = '\0';
         RecordField *f = calloc(2, sizeof(RecordField));
         if (!f) abort();
-        f[0].name = copy_string("ms");     f[0].value = cell_alloc();
-        f[1].name = copy_string("prefix"); f[1].value = cell_alloc();
+        f[0].name = field_name_new("ms");     f[0].value = cell_alloc();
+        f[1].name = field_name_new("prefix"); f[1].value = cell_alloc();
         *f[0].value = value_number(ms);
         *f[1].value = value_string(prefix);
         free(salt);
@@ -29121,7 +29199,7 @@ static Value eval_call(AstExpr *expr) {
         }
         const char *names[] = {"public", "private"};
         for (size_t i = 0; i < 2; i++) {
-            fields[i].name = copy_string(names[i]);
+            fields[i].name = field_name_new(names[i]);
             fields[i].value = cell_alloc();
             if (!fields[i].value) {
                 abort();
@@ -29880,7 +29958,9 @@ static Value eval_call(AstExpr *expr) {
         }
 
         for (size_t i = 0; i < key_count; i++) {
-            keys[i] = value_string(record.as.record.fields[i].name);
+            /* value_string stops at the first NUL; a field name is counted. */
+            keys[i] = value_string_n(record.as.record.fields[i].name,
+                                     string_length(record.as.record.fields[i].name));
         }
 
         Value result = value_array(keys, key_count);
@@ -29954,7 +30034,7 @@ static Value eval_call(AstExpr *expr) {
         }
 
         // Check if key exists (read-only: must not detach the shared field array)
-        const RecordField *field = record_find_const(&record, key.as.string);
+        const RecordField *field = record_find_const_n(&record, key.as.string, string_length(key.as.string));
         int result = field != NULL;
 
         value_free(record);
@@ -29999,7 +30079,7 @@ static Value eval_call(AstExpr *expr) {
 
         // Count fields to keep and allocate
         for (size_t i = 0; i < original_count; i++) {
-            if (strcmp(record.as.record.fields[i].name, key.as.string) != 0) {
+            if (!record_name_equal(&record.as.record.fields[i], key.as.string, string_length(key.as.string))) {
                 new_count++;
             }
         }
@@ -30016,9 +30096,10 @@ static Value eval_call(AstExpr *expr) {
             // Copy fields except the one to remove
             size_t new_index = 0;
             for (size_t i = 0; i < original_count; i++) {
-                if (strcmp(record.as.record.fields[i].name, key.as.string) != 0) {
-                    new_fields[new_index].name = malloc(strlen(record.as.record.fields[i].name) + 1);
-                    strcpy(new_fields[new_index].name, record.as.record.fields[i].name);
+                if (!record_name_equal(&record.as.record.fields[i], key.as.string, string_length(key.as.string))) {
+                    new_fields[new_index].name =
+                        field_name_new_n(record.as.record.fields[i].name,
+                                         string_length(record.as.record.fields[i].name));
                     new_fields[new_index].value = cell_alloc();
                     *new_fields[new_index].value = value_copy(*record.as.record.fields[i].value);
                     /* Preserve the kept field's PBI policy. */
@@ -30558,7 +30639,7 @@ static Value eval_call(AstExpr *expr) {
             for (size_t i = 0; i < got; i++) {
                 for (size_t j = 0; j < parts[i].as.record.count; j++) {
                     RecordField *f = &parts[i].as.record.fields[j];
-                    record_set(&result, f->name, value_copy(*f->value));
+                    record_set_n(&result, f->name, string_length(f->name), value_copy(*f->value));
                 }
             }
         }
@@ -31189,7 +31270,7 @@ static Value eval_call(AstExpr *expr) {
             if (item->kind != VALUE_RECORD) {
                 continue;
             }
-            RecordField *field = record_find(item, field_name.as.string);
+            RecordField *field = record_find_n(item, field_name.as.string, string_length(field_name.as.string));
             if (!field) {
                 continue;
             }
@@ -33383,7 +33464,7 @@ static Value derive_record(Value proto) {
         if (src->policy == AST_FIELD_POLICY_EXCLUDE) {
             continue;
         }
-        fields[out].name = copy_string(src->name);
+        fields[out].name = field_name_new(src->name);
         fields[out].policy = src->policy;
         fields[out].reset_expr = src->reset_expr;
         if (src->policy == AST_FIELD_POLICY_LINK) {
@@ -33464,7 +33545,7 @@ static Value eval_expr(AstExpr *expr) {
             }
         }
         for (size_t i = 0; i < expr->as.record.count; i++) {
-            fields[i].name = copy_string(expr->as.record.items[i].name);
+            fields[i].name = field_name_new(expr->as.record.items[i].name);
             fields[i].value = cell_alloc();
             if (!fields[i].value) {
                 abort();
@@ -33508,7 +33589,7 @@ static Value eval_expr(AstExpr *expr) {
              * carries its own declared policy; an unknown name is added. */
             for (size_t i = 0; i < overrides.as.record.count; i++) {
                 RecordField *wf = &overrides.as.record.fields[i];
-                RecordField *existing = record_find(&instance, wf->name);
+                RecordField *existing = record_find_n(&instance, wf->name, string_length(wf->name));
                 if (existing) {
                     cell_release(existing->value);
                     existing->value = cell_alloc();
@@ -33516,8 +33597,8 @@ static Value eval_expr(AstExpr *expr) {
                     existing->policy = wf->policy;
                     existing->reset_expr = wf->reset_expr;
                 } else {
-                    record_set(&instance, wf->name, value_copy(*wf->value));
-                    RecordField *added = record_find(&instance, wf->name);
+                    record_set_n(&instance, wf->name, string_length(wf->name), value_copy(*wf->value));
+                    RecordField *added = record_find_n(&instance, wf->name, string_length(wf->name));
                     if (added) {
                         added->policy = wf->policy;
                         added->reset_expr = wf->reset_expr;
@@ -33563,7 +33644,7 @@ static Value eval_expr(AstExpr *expr) {
         if (array.kind == VALUE_RECORD && index.kind == VALUE_STRING) {
             /* Read-only: the const lookup, so reading `rec[key]` does not detach
              * the record from its shared field array. */
-            const RecordField *field = record_find_const(&array, index.as.string);
+            const RecordField *field = record_find_const_n(&array, index.as.string, string_length(index.as.string));
             if (!field) {
                 value_free(array);
                 value_free(index);
@@ -34223,7 +34304,7 @@ static Value *resolve_lvalue_ref(AstExpr *target) {
             /* See the array branch above: detach before handing out a mutable
              * pointer into this container. */
             record_ensure_unique(container);
-            RecordField *field = record_find(container, index.as.string);
+            RecordField *field = record_find_n(container, index.as.string, string_length(index.as.string));
             if (!field) {
                 char message[256];
                 snprintf(message, sizeof(message), "unknown record field: %s", index.as.string);
@@ -34341,13 +34422,13 @@ static LValueAssignResult assign_lvalue(AstExpr *target, Value value) {
             return LVALUE_ASSIGN_CHANGED;
         }
         if (container->kind == VALUE_RECORD && index.kind == VALUE_STRING) {
-            RecordField *field = record_find(container, index.as.string);
+            RecordField *field = record_find_n(container, index.as.string, string_length(index.as.string));
             if (field && value_storage_equal(field->value, &value)) {
                 value_free(value);
                 value_free(index);
                 return LVALUE_ASSIGN_UNCHANGED;
             }
-            record_set(container, index.as.string, value);
+            record_set_n(container, index.as.string, string_length(index.as.string), value);
             value_free(index);
             return LVALUE_ASSIGN_CHANGED;
         }
@@ -35660,7 +35741,7 @@ static EvalResult eval_stmt(AstStmt *stmt) {
                     RecordField *field = &value.as.record.fields[i];
                     int reserved = 0;
                     for (size_t j = 0; j < sizeof(shape) / sizeof(shape[0]); j++) {
-                        if (strcmp(field->name, shape[j]) == 0) {
+                        if (record_name_is(field, shape[j])) {
                             reserved = 1;
                             break;
                         }
@@ -35668,7 +35749,7 @@ static EvalResult eval_stmt(AstStmt *stmt) {
                     if (reserved) {
                         continue;
                     }
-                    extra[extra_count].name = copy_string(field->name);
+                    extra[extra_count].name = field_name_new(field->name);
                     extra[extra_count].value = cell_alloc();
                     if (!extra[extra_count].value) {
                         abort();

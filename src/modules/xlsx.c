@@ -697,19 +697,19 @@ static Value xlsx_cell_record(XlsxWorkbook *wb, xmlNodePtr c, const XlsxShared *
     if (!fields) {
         abort();
     }
-    fields[0].name = copy_string("ref");
+    fields[0].name = field_name_new("ref");
     fields[0].value = cell_alloc();
     *fields[0].value = value_string(ref ? ref : "");
-    fields[1].name = copy_string("value");
+    fields[1].name = field_name_new("value");
     fields[1].value = cell_alloc();
     *fields[1].value = val;
-    fields[2].name = copy_string("kind");
+    fields[2].name = field_name_new("kind");
     fields[2].value = cell_alloc();
     *fields[2].value = value_string(kind);
-    fields[3].name = copy_string("formula");
+    fields[3].name = field_name_new("formula");
     fields[3].value = cell_alloc();
     *fields[3].value = formula ? value_string(formula) : value_unknown();
-    fields[4].name = copy_string("style");
+    fields[4].name = field_name_new("style");
     fields[4].value = cell_alloc();
     *fields[4].value = style ? value_number(strtod(style, NULL)) : value_number(0);
 
@@ -4280,7 +4280,7 @@ static void xsql_fail(XlsxSql *g, const char *fmt, const char *what) {
 static const Value *xsql_lookup(const Value *rec, const char *key) {
     if (!rec || rec->kind != VALUE_RECORD) return NULL;
     for (size_t i = 0; i < rec->as.record.count; i++) {
-        if (strcmp(rec->as.record.fields[i].name, key) == 0) {
+        if (record_name_is(&rec->as.record.fields[i], key)) {
             return rec->as.record.fields[i].value;
         }
     }
@@ -5136,13 +5136,13 @@ static Value xlsx_try_result(int ok, Value workbook, const char *message) {
     if (!fields) {
         abort();
     }
-    fields[0].name = copy_string("ok");
+    fields[0].name = field_name_new("ok");
     fields[0].value = cell_alloc();
     *fields[0].value = value_bool(ok);
-    fields[1].name = copy_string("workbook");
+    fields[1].name = field_name_new("workbook");
     fields[1].value = cell_alloc();
     *fields[1].value = workbook;
-    fields[2].name = copy_string("message");
+    fields[2].name = field_name_new("message");
     fields[2].value = cell_alloc();
     *fields[2].value = value_string(message);
     return value_record(fields, 3);
@@ -5298,13 +5298,13 @@ static Value xlsx_eval_call(AstExpr *expr) {
             if (!fields) {
                 abort();
             }
-            fields[0].name = copy_string("name");
+            fields[0].name = field_name_new("name");
             fields[0].value = cell_alloc();
             *fields[0].value = value_string(wb->parts[i].name);
-            fields[1].name = copy_string("bytes");
+            fields[1].name = field_name_new("bytes");
             fields[1].value = cell_alloc();
             *fields[1].value = value_number((double)wb->parts[i].length);
-            fields[2].name = copy_string("modelled");
+            fields[2].name = field_name_new("modelled");
             fields[2].value = cell_alloc();
             *fields[2].value = value_bool(wb->parts[i].modelled);
             items[i] = value_record(fields, 3);
@@ -5519,19 +5519,19 @@ static Value xlsx_eval_call(AstExpr *expr) {
         if (!fields) {
             abort();
         }
-        fields[0].name = copy_string("cells");
+        fields[0].name = field_name_new("cells");
         fields[0].value = cell_alloc();
         *fields[0].value = value_bool(seen != 0);
-        fields[1].name = copy_string("first_row");
+        fields[1].name = field_name_new("first_row");
         fields[1].value = cell_alloc();
         *fields[1].value = value_number((double)min_r);
-        fields[2].name = copy_string("last_row");
+        fields[2].name = field_name_new("last_row");
         fields[2].value = cell_alloc();
         *fields[2].value = value_number((double)max_r);
-        fields[3].name = copy_string("first_col");
+        fields[3].name = field_name_new("first_col");
         fields[3].value = cell_alloc();
         *fields[3].value = value_number((double)min_c);
-        fields[4].name = copy_string("last_col");
+        fields[4].name = field_name_new("last_col");
         fields[4].value = cell_alloc();
         *fields[4].value = value_number((double)max_c);
         value_free(wbv);
@@ -5850,25 +5850,25 @@ static Value xlsx_eval_call(AstExpr *expr) {
 
         RecordField *fields = calloc(10, sizeof(RecordField));
         if (!fields) abort();
-        fields[0].name = copy_string("sheet");
+        fields[0].name = field_name_new("sheet");
         fields[0].value = cell_alloc(); *fields[0].value = value_string(shv.as.string);
-        fields[1].name = copy_string("rownos");
+        fields[1].name = field_name_new("rownos");
         fields[1].value = cell_alloc(); *fields[1].value = value_array(rownos, nrows);
-        fields[2].name = copy_string("rcols");
+        fields[2].name = field_name_new("rcols");
         fields[2].value = cell_alloc(); *fields[2].value = value_array(rcols, nrows);
-        fields[3].name = copy_string("rvals");
+        fields[3].name = field_name_new("rvals");
         fields[3].value = cell_alloc(); *fields[3].value = value_array(rvals, nrows);
-        fields[4].name = copy_string("rkinds");
+        fields[4].name = field_name_new("rkinds");
         fields[4].value = cell_alloc(); *fields[4].value = value_array(rkinds, nrows);
-        fields[5].name = copy_string("first_row");
+        fields[5].name = field_name_new("first_row");
         fields[5].value = cell_alloc(); *fields[5].value = value_number((double)min_r);
-        fields[6].name = copy_string("last_row");
+        fields[6].name = field_name_new("last_row");
         fields[6].value = cell_alloc(); *fields[6].value = value_number((double)max_r);
-        fields[7].name = copy_string("first_col");
+        fields[7].name = field_name_new("first_col");
         fields[7].value = cell_alloc(); *fields[7].value = value_number((double)min_c);
-        fields[8].name = copy_string("last_col");
+        fields[8].name = field_name_new("last_col");
         fields[8].value = cell_alloc(); *fields[8].value = value_number((double)max_c);
-        fields[9].name = copy_string("any");
+        fields[9].name = field_name_new("any");
         fields[9].value = cell_alloc(); *fields[9].value = value_bool(any);
         value_free(wbv); value_free(shv);
         return value_record(fields, 10);
@@ -5971,11 +5971,11 @@ static Value xlsx_eval_call(AstExpr *expr) {
 
         RecordField *fields = calloc(3, sizeof(RecordField));
         if (!fields) abort();
-        fields[0].name = copy_string("ok");
+        fields[0].name = field_name_new("ok");
         fields[0].value = cell_alloc(); *fields[0].value = value_bool(!g.failed);
-        fields[1].name = copy_string("sql");
+        fields[1].name = field_name_new("sql");
         fields[1].value = cell_alloc(); *fields[1].value = value_string(g.failed ? "" : g.out);
-        fields[2].name = copy_string("reason");
+        fields[2].name = field_name_new("reason");
         fields[2].value = cell_alloc(); *fields[2].value = value_string(g.failed ? g.reason : "");
         free(g.out);
         value_free(fv); value_free(mv);
@@ -6184,17 +6184,17 @@ static Value xlsx_eval_call(AstExpr *expr) {
                  * roadmap. */
                 RecordField *fields = calloc(6, sizeof(RecordField));
                 if (!fields) abort();
-                fields[0].name = copy_string("ref");
+                fields[0].name = field_name_new("ref");
                 fields[0].value = cell_alloc(); *fields[0].value = value_string(refbuf);
-                fields[1].name = copy_string("verdict");
+                fields[1].name = field_name_new("verdict");
                 fields[1].value = cell_alloc(); *fields[1].value = value_string(verdict);
-                fields[2].name = copy_string("formula");
+                fields[2].name = field_name_new("formula");
                 fields[2].value = cell_alloc(); *fields[2].value = value_string(c->formula);
-                fields[3].name = copy_string("computed");
+                fields[3].name = field_name_new("computed");
                 fields[3].value = cell_alloc(); *fields[3].value = value_string(gotbuf);
-                fields[4].name = copy_string("cached");
+                fields[4].name = field_name_new("cached");
                 fields[4].value = cell_alloc(); *fields[4].value = value_string(wantbuf);
-                fields[5].name = copy_string("blocked_by");
+                fields[5].name = field_name_new("blocked_by");
                 fields[5].value = cell_alloc(); *fields[5].value = value_string(unsup ? un : "");
                 if (rn == rcap) {
                     rcap = rcap ? rcap * 2 : 8;
@@ -6213,15 +6213,15 @@ static Value xlsx_eval_call(AstExpr *expr) {
 
         RecordField *fields = calloc(5, sizeof(RecordField));
         if (!fields) abort();
-        fields[0].name = copy_string("agree");
+        fields[0].name = field_name_new("agree");
         fields[0].value = cell_alloc(); *fields[0].value = value_number((double)agree);
-        fields[1].name = copy_string("disagree");
+        fields[1].name = field_name_new("disagree");
         fields[1].value = cell_alloc(); *fields[1].value = value_number((double)disagree);
-        fields[2].name = copy_string("volatile_skipped");
+        fields[2].name = field_name_new("volatile_skipped");
         fields[2].value = cell_alloc(); *fields[2].value = value_number((double)volatile_n);
-        fields[3].name = copy_string("unsupported");
+        fields[3].name = field_name_new("unsupported");
         fields[3].value = cell_alloc(); *fields[3].value = value_number((double)unsupported_n);
-        fields[4].name = copy_string("notes");
+        fields[4].name = field_name_new("notes");
         fields[4].value = cell_alloc(); *fields[4].value = value_array(rows, rn);
         return value_record(fields, 5);
     }
@@ -6407,13 +6407,13 @@ static Value xlsx_eval_call(AstExpr *expr) {
 
         RecordField *fields = calloc(4, sizeof(RecordField));
         if (!fields) abort();
-        fields[0].name = copy_string("evaluated");
+        fields[0].name = field_name_new("evaluated");
         fields[0].value = cell_alloc(); *fields[0].value = value_number((double)evaluated);
-        fields[1].name = copy_string("changed");
+        fields[1].name = field_name_new("changed");
         fields[1].value = cell_alloc(); *fields[1].value = value_number((double)changed);
-        fields[2].name = copy_string("circular");
+        fields[2].name = field_name_new("circular");
         fields[2].value = cell_alloc(); *fields[2].value = value_number((double)circular);
-        fields[3].name = copy_string("unsupported");
+        fields[3].name = field_name_new("unsupported");
         fields[3].value = cell_alloc(); *fields[3].value = value_number((double)unsupported_n);
         return value_record(fields, 4);
     }
@@ -6496,13 +6496,13 @@ static Value xlsx_eval_call(AstExpr *expr) {
 
         RecordField *fields = calloc(4, sizeof(RecordField));
         if (!fields) abort();
-        fields[0].name = copy_string("evaluated");
+        fields[0].name = field_name_new("evaluated");
         fields[0].value = cell_alloc(); *fields[0].value = value_number((double)evaluated);
-        fields[1].name = copy_string("changed");
+        fields[1].name = field_name_new("changed");
         fields[1].value = cell_alloc(); *fields[1].value = value_number((double)changed);
-        fields[2].name = copy_string("circular");
+        fields[2].name = field_name_new("circular");
         fields[2].value = cell_alloc(); *fields[2].value = value_number((double)circular);
-        fields[3].name = copy_string("unsupported");
+        fields[3].name = field_name_new("unsupported");
         fields[3].value = cell_alloc(); *fields[3].value = value_number((double)unsupported_n);
         return value_record(fields, 4);
     }

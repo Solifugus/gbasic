@@ -874,6 +874,25 @@ starts_with("xy", chr(0))      ' false — a NUL needle is not a wildcard
 count(split(s, chr(0)))        ' 2   a NUL is a usable separator
 ```
 
+**A record field NAME is a string too, and is counted.** A dynamic key is the
+one place a program puts arbitrary bytes into a name, and it holds them:
+
+```basic
+r = {}
+r["a" + chr(0) + "b"] = 1
+r["a" + chr(0) + "z"] = 2
+count(keys(r))                 ' 2   two names, not one
+has(r, "a")                    ' false — the prefix is not the name
+```
+
+Until rc9 a field name was read as a C string, so those two keys **collapsed
+into one field named `a` holding `2`** — the second silently overwrote the
+first and both subscripts read back the survivor. `keys`, `has`, `remove_key`,
+`merge`, `encode`/`decode` and the actor boundary all carry the whole name now.
+Where a name reaches something that genuinely cannot hold a NUL — an HTTP
+header name, a known option name — it is **refused rather than truncated**, so
+the byte the caller wrote is never quietly dropped at the far end.
+
 `replace` and `split` still refuse a needle of **length zero**, which has no
 first occurrence; that is not the same as one that begins with a NUL. Until
 rc9 the matching and byte-preserving families read their arguments as C strings

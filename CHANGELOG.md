@@ -9,6 +9,51 @@ language surface may still change between releases.
 
 ## Unreleased
 
+### Fixed — a record field name is counted bytes, like every other string
+
+`docs/reference.md` has promised since the type was written that "any byte —
+including NUL — is valid content". PLAT-NUL made that true of string *values*
+and stopped there; a field **name** was still a C string, and a dynamic key is
+the one place a program puts arbitrary bytes into one.
+
+**The damage was not truncation but collapse:**
+
+```basic
+r["a" + chr(0) + "b"] = 1
+r["a" + chr(0) + "z"] = 2
+' before: ONE field, named "a", holding 2
+```
+
+Two distinct keys became one, the second silently overwrote the first, and both
+subscripts read back the survivor. A record used as a map keyed by anything
+binary lost data with nothing raised — and `decode` truncated a **legal** JSON
+key containing `\u0000` the same way.
+
+The length rides in front of the pointer, which is the trick this file already
+uses twice (the string-value header, the record-field-array header) — so `name`
+stays a `char *` and the ~110 sites reading it as one are untouched. A
+`size_t name_len` beside it was the obvious alternative and is worse: two
+field-construction sites `realloc` their array and set every member by hand, so
+a new member would read back as garbage rather than zero.
+
+Fixed across every route a name travels: storage and lookup (including the hash
+index, whose hash and compare were both length-blind), `keys`, `has`,
+`remove_key`, `merge`, copy-on-write detach, `encode`/`decode`, and **both ends
+of the actor boundary** — where the wire format had carried the length all
+along, so an actor transmitted the right bytes and truncated them on arrival.
+
+**Where a name reaches something that genuinely cannot hold a NUL it is now
+refused rather than truncated.** An HTTP header name and a known option name
+were validated with `strcmp`/`strlen`, so `"host\0anything"` compared equal to
+`"host"` and was accepted as an option nobody had declared — and the header
+line was then built with `snprintf("%s")`, writing only the part before the
+NUL. Fixing storage alone would have *moved* the truncation rather than
+removing it.
+
+Eleven sites in `src/modules/` were missed by the first sweep and found by a
+crash — `free()` on a header-prefixed pointer — which is the standing lesson of
+PLAT-NUL applied to itself: a sweep that stops at `src/*.c` is not a sweep.
+
 ### Added — `chart`: an ordinal x, formatted axis labels, identifiable marks
 
 The three asks in gdash's chart report, after six phases of using this library

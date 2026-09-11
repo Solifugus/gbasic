@@ -163,6 +163,73 @@ else
     fail "the modifier probe runs ($(GBASIC_PATH=stdlib ./gbasic "$scratch/mods.bas" 2>&1 >/dev/null | head -1))"
 fi
 
+# A RECORD FIELD NAME IS A STRING TOO, and it was the last place in the family
+# reading one as a C string. THE DAMAGE WAS NOT TRUNCATION BUT COLLAPSE: two
+# keys differing only after a NUL became one field, the second silently
+# overwrote the first, and both subscripts read back the survivor -- so a record
+# used as a map keyed by anything binary LOST DATA with nothing raised.
+#
+# This tier lives here rather than in a suite of its own because it is the same
+# defect one level along, and the standing lesson this file records is exactly
+# that: a NUL-truncation found in one place is evidence about EVERY place that
+# reads a string. The sweep that followed the builtins stopped at values and did
+# not ask about names.
+printf 'TIER a record field NAME is counted bytes too\n'
+if GBASIC_PATH=stdlib timeout -k 5 60 ./gbasic tests/record_nul_test.bas \
+        >"$scratch/rec" 2>"$scratch/recerr"; then
+    if grep -q MISMATCH "$scratch/rec"; then
+        grep MISMATCH "$scratch/rec" | head -5
+        fail "a field name disagreed with the bytes that went into it"
+    elif ! grep -q '^mismatches: 0$' "$scratch/rec"; then
+        fail "the record fixture did not finish"
+    elif [ -s "$scratch/recerr" ]; then
+        cat "$scratch/recerr"; fail "the record fixture wrote to stderr"
+    else
+        rn=$(sed -n 's/^checks: //p' "$scratch/rec")
+        # A coverage floor: a fixture that stops running its checks otherwise
+        # passes by asserting nothing.
+        if [ -n "$rn" ] && [ "$rn" -ge 20 ]; then
+            pass "$rn checks (storage, keys, has, delete, merge, copy, hash index, JSON)"
+        else
+            fail "only ${rn:-0} record checks ran, wanted at least 20"
+        fi
+    fi
+else
+    cat "$scratch/recerr"; fail "the record fixture did not run"
+fi
+
+# ACROSS A PROCESS BOUNDARY, which is a different code path and was wrong at
+# BOTH ends: the wire format has always carried the name's length, so an actor
+# transmitted the right bytes all along -- the sender measured them with strlen
+# and the receiver rebuilt them as a C string.
+printf 'TIER a field name survives the actor boundary\n'
+cat >"$scratch/actor.bas" <<'EOF'
+function worker(parent)
+    m = receive()
+    ks = keys(m)
+    send(parent, string(count(ks)) + " " + hex_encode(ks[0]) + " " + string(m[ks[0]]))
+end function
+
+program main(args)
+    me = self()
+    r = {}
+    r["a" + chr(0) + "b"] = 7
+    r["a" + chr(0) + "z"] = 8
+    w = spawn worker(me)
+    send(w, r)
+    print(receive())
+end program
+EOF
+if out=$(GBASIC_PATH=stdlib timeout -k 5 30 ./gbasic "$scratch/actor.bas" 2>&1); then
+    if [ "$out" = "2 610062 7" ]; then
+        pass "both names arrive whole in another process"
+    else
+        fail "both names arrive whole in another process (got '$out', want '2 610062 7')"
+    fi
+else
+    fail "the actor fixture did not run"
+fi
+
 printf 'TIER valgrind\n'
 if vg_available; then
     cat >"$scratch/vg.bas" <<'EOF'
@@ -177,7 +244,8 @@ for i = 1 to 50
 next
 print len(z)
 EOF
-    if GBASIC_PATH=stdlib vg_run ./gbasic "$scratch/vg.bas" >/dev/null 2>"$scratch/vg"; then
+    if GBASIC_PATH=stdlib vg_run ./gbasic "$scratch/vg.bas" >/dev/null 2>"$scratch/vg" \
+       && GBASIC_PATH=stdlib vg_run ./gbasic tests/record_nul_test.bas >/dev/null 2>"$scratch/vg"; then
         pass "no definite leak or invalid access"
     else
         fail "no definite leak or invalid access"
