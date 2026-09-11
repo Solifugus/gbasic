@@ -332,6 +332,31 @@ COMPARISON LENS.**
 if name {caseless} = "joe" then     ' this works today
 ```
 
+**And a comparison lens is legal inside brackets** — measured, not assumed:
+
+```basic
+n = "JOE"
+r = [ n {caseless} = "joe", 1 < 2 ]   ' [true,true]
+q = { flag: n {caseless} = "joe" }    ' true
+```
+
+An array element is a full expression, so it can hold a comparison, and a lens
+is an expression-level construct rather than a statement one. There is no
+bracket-shaped exemption to carve out.
+
+**The position is claimed by the LEXER, not just by the grammar**, which is a
+harder wall than a shift/reduce conflict:
+
+```
+comparison_lens
+    : LBRACE { lexer_begin_lens_content(ctx->active_lexer); } LENS_CONTENT RBRACE
+```
+
+The parser switches the lexer into `lens_content_mode` the instant it sees `{`
+after a value, so the bytes inside are consumed as raw lens content before the
+grammar ever sees an identifier. A suffix type tag there is not a preference
+the parser could be taught — `date` would not arrive as a token at all.
+
 Restricting the suffix to a string literal does not help — still 1 conflict,
 with bison naming the lens as the alternative:
 
