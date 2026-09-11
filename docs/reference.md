@@ -2250,7 +2250,7 @@ response = webclient.post(
 
 Use `json_encode`, **not** `encode`, for anything leaving gBASIC: `encode` emits a
 gBASIC dialect (`nothing`/`unknown` instead of `null`) that other JSON parsers
-reject. See "Three serializers, three jobs".
+reject. See "Four serializers, four jobs".
 
 Use `webclient.request` for custom headers:
 
@@ -4491,13 +4491,63 @@ count({})                      ' 0
 - `serialize(value)` - exact binary round-trip serialization (see below)
 - `deserialize(bytes)` - reconstruct a value from `serialize` output
 
-### Three serializers, three jobs
+### Four serializers, four jobs
 
 | Want | Use | Notes |
 | --- | --- | --- |
 | Send data to a non-gBASIC consumer | `json_encode` | Strict RFC 8259; refuses what JSON can't express |
-| Human-readable gBASIC round-trip | `encode` / `decode` | Dialect: `nothing`/`unknown` survive |
-| Exact typed/binary round-trip | `serialize` / `deserialize` | Dates, money, files, binary content |
+| Human-readable gBASIC round-trip | `encode` / `decode` | Dialect: `nothing`/`unknown` survive; **refuses a date, money, a duration or a file** |
+| Exact typed/binary round-trip | `serialize` / `deserialize` | Dates, money, files, binary content — **opaque binary** |
+| **Human-readable AND typed** | `notation.to_text` / `notation.from_text` | A stdlib library, not a builtin. Open it in an editor, read it, edit it — and a date is still a date |
+
+**`notation` fills the gap the first three leave.** `encode` is readable and
+refuses the typed values a business record is mostly made of; `serialize` keeps
+every type and cannot be read. Neither can be reviewed by eye:
+
+```basic
+load notation
+
+write(f, notation.to_text(invoice))
+invoice = notation.from_text(read(f))
+```
+
+```
+{
+  id: 4471,
+  issued {date}: "2026-03-15",
+  customer: { name: "Ada Lovelace & Co.", account: "ACME-0042" },
+  prices {USD}: [ "19.99", "3.459", {JPY}: "500" ],
+  total {USD}: "47.06",
+  terms {duration}: "30 days",
+  paid_at: nothing
+}
+```
+
+**The type tag goes on the key side**, which is the language's own typed
+assignment with a colon where the equals goes — `issued {date}= "…"` is gBASIC,
+`issued {date}: "…"` is the notation. A tag on an **array** is a **default its
+elements may override**; it cascades into nested arrays and stops at a record,
+because a record's fields are named and each can tag itself.
+
+**The document root is a record or an array.** A bare typed value there has no
+field name to hang a tag on, so it is refused rather than given a spelling
+nobody needs.
+
+`notation.try_from_text(text)` answers `{ok, value, message}` instead of
+raising — the shape `try_decode` already takes for JSON, and for the same
+reason: a program reading a file a person has just edited needs the failure as
+a value.
+
+**Version 1 discards comments.** `'` to end of line is read and dropped, so a
+read-modify-write does not preserve a reviewer's note. Deliberate: preserving
+them is an API fork rather than a detail, and the ordinary loop — generate,
+review, read back — loses nothing.
+
+**The output is not gBASIC source**, and could not be: gBASIC refuses `\u{0}`
+in a literal while a record field name may contain an interior NUL, so this
+notation allows that one escape and can spell every string gBASIC can hold.
+Every control byte is escaped, because a raw one round-trips perfectly and
+makes the file hostile to the editor the format exists to be opened in.
 
 **`encode` is a dialect, not standard JSON.** It writes gBASIC's spellings for the
 empty values — `nothing` and `unknown` rather than `null` — and for the non-finite

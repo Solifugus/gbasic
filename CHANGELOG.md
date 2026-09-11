@@ -9,6 +9,57 @@ language surface may still change between releases.
 
 ## Unreleased
 
+### Added — `notation`: a textual form that keeps every gBASIC type
+
+`notation.to_text(value)` / `notation.from_text(text)` / `try_from_text(text)`,
+a pure-gBASIC library.
+
+**The gap the other three serializers leave.** `encode` is readable and refuses
+a date, money, a duration or a file; `serialize` keeps every type and is opaque
+binary. Neither can be reviewed by eye — and a business record is mostly the
+values `encode` refuses.
+
+```
+{
+  id: 4471,
+  issued {date}: "2026-03-15",
+  customer: { name: "Ada Lovelace & Co.", account: "ACME-0042" },
+  prices {USD}: [ "19.99", "3.459", {JPY}: "500" ],
+  total {USD}: "47.06",
+  terms {duration}: "30 days",
+  paid_at: nothing
+}
+```
+
+**The type tag goes on the key side**, which is not a preference: both brace
+positions already mean something in gBASIC and they differ — before the
+separator is `x {date}= "…"`, *this value is of this type*; after the value is a
+comparison lens. So `issued {date}: "…"` is the language's own typed assignment
+with a colon where the equals goes. Measured, the key-side form also costs **0
+grammar conflicts** where the value-side form costs 1.
+
+**A tag on an array is a default its elements may override**, cascading into
+nested arrays and stopping at a record — because a record's fields are named and
+each can tag itself. The document root is a record or an array.
+
+**Version 1 discards comments**, deliberately: preserving them is an API fork,
+not a detail, and the ordinary loop — generate, review, read back — loses
+nothing.
+
+**Money comes from `money.text`, not `string`.** `string` rounds to the minor
+unit, so a sub-cent price of 3.459 renders 3.46 and an encoder built on it would
+round-trip 3.46 to 3.46 — self-consistently wrong. Only comparing against the
+original catches that, and the fixture does.
+
+Three defects the round-trip tier found while it was being written, none
+visible by reading: a **nested array's default was computed and then dropped**
+(a matrix of dates came back as plain strings); a **re-raise issued while
+`on error goto next` was still armed vanished**, because the frame caught its
+own raise and every refusal silently stopped refusing; and a **raw NUL
+round-trips perfectly**, so nothing forced the escape until the tier asserted
+the file contains no raw control byte rather than merely that the value
+survives.
+
 ### Fixed — a record field name is counted bytes, like every other string
 
 `docs/reference.md` has promised since the type was written that "any byte —

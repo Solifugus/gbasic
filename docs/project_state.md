@@ -185,6 +185,15 @@ document list, with a status column, is `docs/README.md`.
   operational table it originated in. The object level answers "which table
   does this read", which rarely settles anything; the column level answers the
   one that costs a day.
+- **a textual form that keeps every gBASIC type** — `notation`, the gap between
+  the JSON dialect (readable, and refuses a date, money, a duration or a file)
+  and the binary serializer (keeps every type, opaque). Neither can be reviewed by
+  eye, and a business record is mostly the values that dialect refuses. The type
+  tag goes on the KEY side because that is already the language's own typed
+  assignment with a colon where the equals goes; a tag on an array is a default
+  its elements may override, cascading into nested arrays and stopping at a
+  record. Version 1 discards comments, deliberately: preserving them is an API
+  fork rather than a detail.
 - **a second factor** — `otp`, one-time passwords (RFC 4226 HOTP, RFC 6238
   TOTP). gBASIC owns the factor rather than delegating it, so it works whether
   the directory is AD, OpenLDAP, a table or nothing. Replay is made structural:

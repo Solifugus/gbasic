@@ -1,6 +1,8 @@
 # A textual form that keeps every gBASIC type
 
-**Status:** Design (2026-09-10). Nine things decided, four open — one of them blocking. Nothing built.
+**Status:** Shipped (2026-09-11) as `stdlib/notation.bas` —
+`notation.to_text` / `from_text` / `try_from_text`, `tests/run_notation.sh`.
+Version 1 discards comments, by the decision recorded below.
 
 The gap: `encode` is readable and **refuses** dates, money, durations and files;
 `serialize` keeps every type and is **opaque binary**. There is no form a person
@@ -134,19 +136,42 @@ place it. The key-side production is **0 conflicts**, reads as the language's
 own typed assignment, and closes a real ergonomic gap. It is independent of the
 serializer: worth doing whether or not the format's output happens to match it.
 
+## What building it found
+
+Three things, none visible by reading, and each caught by a different tier.
+
+**A nested array's default was computed and then dropped.** `_common_tag` only
+looked one level, so a matrix of dates found no common tag at the top — every
+element being an array — while the tag was computed one level down and never
+written. The values came back as **plain strings**. The round-trip tier caught
+it; the encoder now recurses as deep as the decoder cascades.
+
+**A re-raise issued while `on error goto next` was still armed vanished.** The
+wrapper that attaches a line number to a modifier's message caught the raise,
+cleared it, and raised a better one — *inside the frame that was still
+catching*. PLAT-ERR's frame scoping means the frame caught its own raise, so
+**every refusal in the library silently stopped refusing**: five checks went
+red in one edit. `on error stop` before the re-raise is the fix.
+
+**A raw NUL round-trips perfectly, so nothing forced the escape.** The
+perturbation that deleted `\u{0}` from the encoder passed every test — the byte
+survives as itself. But a text file carrying raw control bytes is hostile to
+the editor this format exists to be opened in, so correctness was not the whole
+requirement: every control byte is escaped now, and the tier asserts the file
+contains **no raw NUL** rather than merely that the value survives.
+
+And a fourth, which is only funny: **the library that writes `\u{0}` cannot
+write it as a literal.** Its escapes are built from `chr(92)`, for exactly the
+reason the format exists.
+
 ## Still open
 
-- **Names.** `text_encode` / `text_decode`? Something better? This is the
-  fourth serializer and the table in `reference.md` needs a one-line job
-  statement for it.
-- **Comment PRESERVATION — the one that blocks a build.** It is not a detail,
-  it is an API fork: if a comment must survive a read-modify-write, `text_decode`
-  cannot return a plain record, and `text_encode` needs somewhere to put them
-  back. Discarding them is one function each; preserving them is a different
-  shape entirely. The recommendation is **discard in the first increment and
-  say so**, because the destructive case is narrow — a program *rewriting* a
-  hand-edited file — where the ordinary one is generate, review, and read back.
-  Original note: The syntax is decided (`'` to end of line); whether
+- **Comment PRESERVATION.** Decided for v1: **discard**, because the
+  destructive case is narrow — a program *rewriting* a hand-edited file — where
+  the ordinary loop is generate, review, read back. Still the open question for
+  a later increment, and it is an API fork rather than a detail: a comment
+  surviving a read-modify-write means `from_text` cannot answer with a plain
+  record. The syntax is decided (`'` to end of line); whether
   a read-modify-write cycle keeps a reviewer's comment is not. Dropping one
   silently is a defect, and preserving them is a much larger commitment than it
   looks — it means the decoder cannot simply discard them.
@@ -177,7 +202,6 @@ composed. That is the only kind needing more than a direct constructor, and it
 is the reason to check rather than assume: had one kind been unreachable, this
 would have had to be a C builtin like the other three serializers.
 
-## Still open
 - **Pretty-printing**: indent width, when a line breaks, and whether a key is
   quoted only when it is not a valid identifier.
 
