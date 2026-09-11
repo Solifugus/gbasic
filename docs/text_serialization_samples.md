@@ -275,6 +275,8 @@ production to a copy of `src/parser.y`:
 | key-side + bare-word in arrays | 0 |
 | value-side `issued: {date}"..."` | **1 shift/reduce** |
 | key-side + nameless `{date}:` in arrays | **1 shift/reduce** |
+| suffix on a string literal `"..."{date}` | **1 shift/reduce** |
+| suffix on any expression `expr{date}` | **2 shift/reduce** |
 
 That matters in this project: `IDENT expression` as a statement form was
 rejected over **4 measured conflicts**, so 1 is not nothing.
@@ -315,6 +317,44 @@ spelling everywhere, and it costs the **1 shift/reduce conflict** back.
 conflicts**, works at top level too, and is the only option with no exception.
 Its cost is a **second spelling** for a typed literal, which is the objection
 this page already raised against variant B.
+
+### The suffix form, measured (2026-09-10)
+
+```
+dates: [ "2026-01-01"{date}, "2026-02-01"{date} ]
+```
+
+**It costs 2 shift/reduce conflicts, and the reason is a shipped feature rather
+than an accident of the grammar: the slot after a value is already taken by the
+COMPARISON LENS.**
+
+```basic
+if name {caseless} = "joe" then     ' this works today
+```
+
+Restricting the suffix to a string literal does not help — still 1 conflict,
+with bison naming the lens as the alternative:
+
+```
+First example:  PRINT STRING • LBRACE IDENT RBRACE
+Second example: PRINT STRING • LBRACE $@1 LENS_CONTENT RBRACE comparison_operator ...
+```
+
+### Which is what makes the key-side form the right one
+
+The two positions already have meanings in this language, and they are not the
+same meaning:
+
+| position | what gBASIC already means by it |
+| --- | --- |
+| **before the separator** — `x {date}= "…"` | **this value is of this type** |
+| **after the value** — `name {caseless} = "joe"` | compare *through this lens* |
+
+So `issued {date}: "2026-03-15"` is not merely conflict-free — it is the
+language's own typed-assignment syntax with `:` where `=` goes. A reader who
+knows `x {date}= "…"` needs to learn nothing. A suffix tag would be a **second
+meaning for a slot that already has one**, which is what the conflict count is
+reporting.
 
 ### Where that leaves it
 
