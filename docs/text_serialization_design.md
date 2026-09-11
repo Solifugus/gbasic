@@ -1,6 +1,6 @@
 # A textual form that keeps every gBASIC type
 
-**Status:** Design (2026-09-10). Seven things decided, five open. Nothing built.
+**Status:** Design (2026-09-10). Nine things decided, four open — one of them blocking. Nothing built.
 
 The gap: `encode` is readable and **refuses** dates, money, durations and files;
 `serialize` keeps every type and is **opaque binary**. There is no form a person
@@ -139,15 +139,45 @@ serializer: worth doing whether or not the format's output happens to match it.
 - **Names.** `text_encode` / `text_decode`? Something better? This is the
   fourth serializer and the table in `reference.md` needs a one-line job
   statement for it.
-- **Comment PRESERVATION.** The syntax is decided (`'` to end of line); whether
+- **Comment PRESERVATION — the one that blocks a build.** It is not a detail,
+  it is an API fork: if a comment must survive a read-modify-write, `text_decode`
+  cannot return a plain record, and `text_encode` needs somewhere to put them
+  back. Discarding them is one function each; preserving them is a different
+  shape entirely. The recommendation is **discard in the first increment and
+  say so**, because the destructive case is narrow — a program *rewriting* a
+  hand-edited file — where the ordinary one is generate, review, and read back.
+  Original note: The syntax is decided (`'` to end of line); whether
   a read-modify-write cycle keeps a reviewer's comment is not. Dropping one
   silently is a defect, and preserving them is a much larger commitment than it
   looks — it means the decoder cannot simply discard them.
 - **Diagnostics.** Hand-edited means the parser's error messages are part of
   the feature: a misspelled currency, a bad date, an unclosed brace.
-- **The tag namespace.** `{date}` is a type and `{USD}` is a currency; gBASIC's
-  own modifiers already mix the two, so the format inherits that and should say
-  so rather than discover it.
+**6. The tag namespace resolves by case, checked against types first.**
+
+`{date}` is a type and `{USD}` is a currency — gBASIC's own modifiers already
+mix the two, so the format inherits it. Measured, the two sets do not actually
+collide: type names are **lowercase** (`date`, `datetime`, `time`, `duration`,
+`file`, `dir`) and `money.of` refuses a lowercase code (`money.of: usd is not a
+known currency`). Worth pinning anyway, because `dir` is three letters like a
+currency code and a length heuristic would misread it — the rule is **the known
+type names first, then the currency table**, never a guess about shape.
+
+**7. It can be written in gBASIC — measured, not assumed.** A decoder has to
+build typed values from a tag known only at run time, and every kind is
+reachable:
+
+| tag | how a gBASIC decoder builds it |
+| --- | --- |
+| `date` `datetime` `time` `file` `dir` | a literal modifier inside a per-tag branch |
+| any of 178 currencies | **`money.of(code, text)`** — takes the code as a *string* |
+| `duration` | composed arithmetically: `(n * (1 days)) + (m * (1 hours))` |
+
+`duration(text)` does **not** exist, so a duration is parsed into components and
+composed. That is the only kind needing more than a direct constructor, and it
+is the reason to check rather than assume: had one kind been unreachable, this
+would have had to be a C builtin like the other three serializers.
+
+## Still open
 - **Pretty-printing**: indent width, when a line breaks, and whether a key is
   quoted only when it is not a valid identifier.
 

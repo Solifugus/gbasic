@@ -169,6 +169,25 @@ that suite's positive control: they must be provably resolved, which is also
 what proves the live probes are running anything at all.
 
 
+- **`\u{0}` is refused in a string literal**, so a program can *hold* an
+  interior NUL but cannot *spell* one: `"a" + chr(0) + "b"` works and
+  `"a\u{0}b"` is a parse error naming `chr(0)` as the remedy. Found while
+  designing the textual serializer (2026-09-10), and **the refusal is
+  load-bearing rather than vestigial** — measured, not assumed. `ast.h` stores
+  a string literal as a plain `char *` (`ast_string(char *value)`, read back
+  with `value_string(expr->as.string)`), so a literal NUL would be **silently
+  truncated at evaluation**. PLAT-NUL made string *values* counted and never
+  touched how a *literal* reaches them. Lifting it means giving AST string
+  literals a length: the bytes are touched in only **five places** (construction
+  and free in `ast.c`, the `--ast` dump, the one `value_string` at
+  `eval.c`, and a server-block head option in `frontend.c`), and `ast.h` has
+  exactly one `char *string`, so there is no sprawl — but `string_new` /
+  `string_length` / `string_free` are `static` in `eval.c` while `ast.c` is a
+  separate object, so they would have to be shared. Not urgent: the payoff is
+  spelling, not capability, and the record-name work is the standing warning
+  that every `free()` on a buffer which has quietly become header-prefixed is a
+  heap corruption rather than a wrong answer.
+
 - `spawn` resolves a bare function **name**, not an expression, so it takes
   neither a qualified name nor a function value: `spawn lib.worker(x)` is a
   parse error and `f = worker` then `spawn f(x)` raises "no function named f".

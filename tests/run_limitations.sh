@@ -94,6 +94,7 @@ callresult_method_stmt|method call on a call-result receiver
 unnormalized_load_path|print the load path unnormalized
 gi_emit|No \`gi.emit\`
 spawn_bare_name|resolves a bare function **name**
+nul_string_literal|is refused in a string literal
 "
 
 # Bullets that no program can decide, each with the reason. This list is the
@@ -108,6 +109,23 @@ NOT_MECHANICAL="
 gi_static|gi cannot call STATIC class functions|needs a live typelib and a display; tests/run_gi.sh owns this surface
 vg_riscv|valgrind does not exist for riscv64|a fact about another architecture, unobservable from this one
 "
+
+probe_nul_string_literal() {
+    # A program can HOLD an interior NUL and cannot SPELL one. Both halves are
+    # asserted: without the chr(0) control, "the literal is refused" would also
+    # be satisfied by a build that could not carry the byte at all.
+    printf 's = "a\\u{0}b"\nprint len(s)\n' > "$WORK/p.bas"
+    printf 't = "a" + chr(0) + "b"\nprint len(t)\n' > "$WORK/q.bas"
+    if run "$WORK/p.bas" | grep -q 'not allowed in a literal'; then
+        if [ "$(run "$WORK/q.bas" | tr -d '\n')" = "3" ]; then
+            ok "\\u{0} is still refused in a literal, and chr(0) still carries the byte"
+        else
+            fixed "chr(0) no longer carries an interior NUL -- the bullet's premise moved"
+        fi
+    else
+        fixed "\\u{0} now parses in a string literal"
+    fi
+}
 
 probe_postfix_modifier() {
     printf 'd = "2026-01-01"{date}\nprint d.year\n' > "$WORK/p.bas"
