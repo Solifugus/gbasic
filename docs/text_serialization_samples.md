@@ -241,6 +241,90 @@ of the type tags — and it is the half `encode` could gain on its own.
 
 ---
 
+---
+
+## Matthew's proposal: put the tag on the KEY side (2026-09-10)
+
+```
+{
+  id: 4471,
+  issued {date}: "2026-03-15",
+  customer: {
+    name: "Ada Lovelace & Co."
+  },
+  total {USD}: "47.06",
+  terms {duration}: "30 days",
+  paid_at: nothing
+}
+```
+
+**It does not conflict with PBI**, and that is a fact rather than a hope: PBI's
+per-field policy uses **parens** — `name (copy): "unnamed"` — so the brace form
+is free. The reference's warning about `cost(USD): 9.99` not being a money field
+is about the paren spelling, which PLAT-BRACE retired for modifiers.
+
+**And it is measurably better than the value-side form this document proposed
+first.** Each row below is the real bison conflict count, from adding the
+production to a copy of `src/parser.y`:
+
+| form | conflicts |
+| --- | --- |
+| baseline (today) | 0 |
+| **key-side** `issued {date}: "..."` | **0** |
+| bare-word `issued: date"..."` | 0 |
+| key-side + bare-word in arrays | 0 |
+| value-side `issued: {date}"..."` | **1 shift/reduce** |
+| key-side + nameless `{date}:` in arrays | **1 shift/reduce** |
+
+That matters in this project: `IDENT expression` as a statement form was
+rejected over **4 measured conflicts**, so 1 is not nothing.
+
+**The conflict is exactly the ambiguity a reader would also feel.** Bison's
+counterexample is `{` followed by `IDENT`: a record literal's field name
+(`{ date: ... }`) and a type tag (`{date}"..."`) are indistinguishable at that
+point, and the PBI production sitting in the same place is what makes the
+lookahead insufficient. The key-side form dissolves it because a `{` in *value*
+position then unambiguously opens a record — which is the whole reason the page
+above flagged the collision as the one thing option A could not argue away.
+
+### The one hole, and it is structural
+
+**An array element and a top-level value have no key to hang a tag on.**
+
+```
+dates: [ ???"2026-01-01", ???"2026-02-01" ]
+text_encode(aDate)          ' no record, no key
+```
+
+This is not hypothetical: a heterogeneous array holding a date, money, a string
+and a number is an ordinary gBASIC value, and `serialize` round-trips one today.
+A textual format that cannot is not a replacement for it.
+
+Three ways to close it, and the choice is a real trade:
+
+**(a) Tag the array, not the element.** `dates {date}: [ "2026-01-01", ... ]` —
+needs **no new grammar at all**, since it is the key-side production with an
+array on the right. Reads well. **Fails on a mixed array**, so the round-trip
+promise would have to carry an exception, and an exception in the one promise
+this format exists to keep is expensive.
+
+**(b) A nameless tag in element position.** `[ {date}: "2026-01-01" ]` — one
+spelling everywhere, and it costs the **1 shift/reduce conflict** back.
+
+**(c) A bare-word tag in element position.** `[ date"2026-01-01" ]` — **0
+conflicts**, works at top level too, and is the only option with no exception.
+Its cost is a **second spelling** for a typed literal, which is the objection
+this page already raised against variant B.
+
+### Where that leaves it
+
+Key-side wins on every count the page asked about — no PBI collision, no reader
+ambiguity, fewer grammar conflicts than the alternative — and inherits one
+question the value-side form did not have: **what a bare typed value looks like
+when there is no field name.** Question 3 below is now narrower and sharper:
+not "should the output be gBASIC source" but "**is a mixed array of typed values
+worth a second spelling, or worth an exception?**"
+
 ## Questions the samples raise
 
 1. **Does the `{` collision bother you on the page?** It is the one thing A
