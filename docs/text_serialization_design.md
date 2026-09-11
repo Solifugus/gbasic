@@ -1,6 +1,6 @@
 # A textual form that keeps every gBASIC type
 
-**Status:** Design (2026-09-10). Four things decided, several open. Nothing built.
+**Status:** Design (2026-09-10). Six things decided, five open. Nothing built.
 
 The gap: `encode` is readable and **refuses** dates, money, durations and files;
 `serialize` keeps every type and is **opaque binary**. There is no form a person
@@ -33,6 +33,46 @@ of them means what a type tag means:
 **2. Array elements use the same tag with the name dropped:
 `[ {date}: "2026-01-01", … ]`.** One spelling everywhere, no exception to the
 round-trip promise.
+
+**2a. A tag on an array is a DEFAULT for its elements, and an element may
+override it.** So the array-level form and the element-level form are not
+alternatives — they compose:
+
+```
+due_dates {date}: [ "2026-04-14", "2026-05-14" ]        ' both are dates
+prices {USD}: [ "19.99", "3.459", {JPY}: "500" ]        ' the third is not
+mixed: [ {date}: "2026-03-15", {USD}: "19.99", "plain" ] ' no default at all
+```
+
+This is the common case written short and the awkward case still writable,
+which is what makes one spelling affordable.
+
+Four sub-rules, because each of them is a place a format quietly does the
+wrong thing:
+
+- **A tag on an array means "default for elements". A tag on anything else
+  means "this value is of this type".** There is no ambiguity to resolve:
+  gBASIC arrays are untyped, so "this array is a date" has no meaning.
+- **The default applies to every element that does not carry its own**, whatever
+  its shape — including a bare number. `prices {USD}: [ 7 ]` is money, not a
+  number. An author who wrote the default said what they meant; silently
+  exempting some elements would make the rule depend on the data.
+- **An element the tag cannot apply to is REFUSED, never skipped.**
+  `{date}: [ { a: 1 } ]` names a record as a date and is an error. Skipping
+  would produce a plausible half-tagged array, which is the failure this whole
+  format is arranged against.
+- **A default does NOT reach into a nested array or record.** A tag applies to
+  the value it is attached to, one level. `rows {date}: [ [ "2026-01-01" ] ]`
+  therefore refuses — the inner *array* is not a date — and the inner array
+  carries its own tag instead: `rows: [ {date}: [ "2026-01-01" ] ]`. Without
+  this a default leaks arbitrarily deep and a reader cannot reason locally.
+
+**2b. The document root is a record or an array.** A bare typed value at the
+root has no field name to hang a tag on, and inventing a spelling for a case
+nobody needs is worse than refusing. `encode(5)` works today, so this is a
+deliberate asymmetry with a stated reason rather than an oversight. A root
+array may carry a default, so a document that is simply a list of dates is
+`{date}: [ "2026-04-14", … ]`.
 
 **3. The format has its own parser, and its output is NOT gBASIC source.**
 
@@ -67,10 +107,6 @@ serializer: worth doing whether or not the format's output happens to match it.
 - **Names.** `text_encode` / `text_decode`? Something better? This is the
   fourth serializer and the table in `reference.md` needs a one-line job
   statement for it.
-- **A bare typed value at the root.** `text_encode(aDate)` has no field name to
-  hang a tag on. Either the document root must be a record or an array (JSON's
-  original rule, but `encode(5)` works today, so it is an asymmetry), or the
-  root gets a spelling of its own.
 - **Comments.** The file is hand-edited, so a read-modify-write cycle that
   silently drops a reviewer's comment is a defect. Preserving them is a much
   larger commitment than it looks.
@@ -532,7 +568,8 @@ worth a second spelling, or worth an exception?**"
     { sku: "GB-100", description: "Widget, large",  qty: 2, unit {USD}: "19.99", total {USD}: "39.98" },
     { sku: "GB-205", description: "Fuel surcharge", qty: 1, unit {USD}: "3.459", total {USD}: "3.459" }
   ],
-  due_dates: [ {date}: "2026-04-14", {date}: "2026-05-14" ],
+  due_dates {date}: [ "2026-04-14", "2026-05-14" ],
+  prices {USD}: [ "19.99", "3.459", {JPY}: "500" ],
   mixed: [ {date}: "2026-03-15", {USD}: "19.99", "plain", 7 ],
   subtotal {USD}: "43.439",
   tax {USD}: "3.62",
@@ -544,5 +581,7 @@ worth a second spelling, or worth an exception?**"
 }
 ```
 
-`due_dates` and `mixed` are the shape decision 2 buys: **one spelling, and a
-heterogeneous array of typed values needs no exception.**
+Those three arrays are what decisions 2 and 2a buy together: the homogeneous
+case written **once** at the array, the same-but-one case written as a default
+with an override, and the genuinely mixed case still writable — **one spelling,
+and no exception to the round-trip promise.**
