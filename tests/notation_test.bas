@@ -172,6 +172,8 @@ edited = replace(pretty, "4471", "4472")
 check("CONTROL: editing a number changes it", notation.from_text(edited).id, 4472)
 check("and the rest of the record is untouched", notation.from_text(edited).total = usd, true)
 
+check("the document ends with a newline", ends_with(pretty, chr(10)), true)
+
 print ""
 print "-- DETERMINISM: the same value writes the same bytes"
 check("two encodings are identical", notation.to_text(big) = notation.to_text(big), true)
@@ -196,6 +198,24 @@ check("and the refusal names the line", contains(error.message, "line 1"), true)
 error.clear()
 notation.from_text("{ a: 1")
 check("an unclosed brace is refused", contains(error.message, "expected"), true)
+error.clear()
+' A MISSING SEPARATOR IS AT LEAST AS LIKELY AS A MISSING BRACKET, so the
+' message names both rather than sending a reader to hunt for a brace that is
+' exactly where they left it.
+notation.from_text("{" + chr(10) + "  a: 1" + chr(10) + "  b: 2" + chr(10) + "}")
+check("a missing comma names the comma too", contains(error.message, "expected ',' or '}'"), true)
+error.clear()
+notation.from_text("{ a: [ 1 2 ] }")
+check("and the same inside an array", contains(error.message, "expected ',' or ']'"), true)
+error.clear()
+' NAME THE COMMA, not what follows it: "expected a field name" sends a reader
+' looking for a missing value where the mistake is punctuation they can see.
+notation.from_text("{ a: 1, }")
+check("a trailing comma is named as one", contains(error.message, "trailing comma"), true)
+check("and located at the COMMA, not at the closer", contains(error.message, "column 7"), true)
+error.clear()
+notation.from_text("{ a: [ 1, ] }")
+check("a trailing comma in an array too", contains(error.message, "trailing comma before ']'"), true)
 error.clear()
 notation.from_text("{ a: 1 } trailing")
 check("trailing content is refused", contains(error.message, "trailing content"), true)

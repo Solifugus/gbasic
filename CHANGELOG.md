@@ -51,6 +51,12 @@ unit, so a sub-cent price of 3.459 renders 3.46 and an encoder built on it would
 round-trip 3.46 to 3.46 — self-consistently wrong. Only comparing against the
 original catches that, and the fixture does.
 
+**Every refusal names a line and a column**, and two name the mistake the way a
+person would describe it: a missing separator reports `expected ',' or '}'`
+rather than sending someone hunting for a brace that is exactly where they left
+it, and a trailing comma is named as one and located at **the comma**, not at
+the closer that tripped over it.
+
 Three defects the round-trip tier found while it was being written, none
 visible by reading: a **nested array's default was computed and then dropped**
 (a matrix of dates came back as plain strings); a **re-raise issued while

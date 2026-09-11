@@ -561,8 +561,11 @@ library notation
     ' asymmetry with a stated reason rather than an oversight.
     function to_text(v)
         t = type(v)
+        ' A DOCUMENT ENDS WITH A NEWLINE. It is a file meant to be opened,
+        ' diffed and edited, and a last line without one is the kind of thing
+        ' every tool downstream complains about.
         if t = "record" then
-            return _record(v, 0)
+            return _record(v, 0) + chr(10)
         end if
         if t = "array" then
             at = _common_tag(v)
@@ -570,9 +573,9 @@ library notation
                 at = _default_tag(v)
             end if
             if len(at) > 0 then
-                return "{" + at + "}: " + _array(v, 0, at)
+                return "{" + at + "}: " + _array(v, 0, at) + chr(10)
             end if
-            return _array(v, 0, "")
+            return _array(v, 0, "") + chr(10)
         end if
         error "notation: the document root must be a record or an array; got " + t
     end function
@@ -582,6 +585,17 @@ library notation
     ' Recursive descent over the token list. gBASIC has no closures and no
     ' references, so the cursor is threaded: every parse function takes an
     ' index and answers `{ v, at }`. That is a language fact, not a style.
+
+    ' The closer of a list, where a MISSING SEPARATOR is at least as likely as
+    ' a missing bracket -- so the message names both rather than sending a
+    ' reader to hunt for a brace that is exactly where they left it.
+    function _want_close(toks, at, text)
+        tk = toks[at]
+        if tk.kind = "punct" and tk.text = text then
+            return at + 1
+        end if
+        error "notation: expected ',' or '" + text + "' at line " + string(tk.line) + ", column " + string(tk.col)
+    end function
 
     function _want(toks, at, text)
         tk = toks[at]
@@ -762,11 +776,19 @@ library notation
             tk = toks[i]
             if tk.kind = "punct" and tk.text = "," then
                 i = i + 1
+                ' NAME THE COMMA, not what follows it. A trailing comma
+                ' reported as "expected a value" sends a reader looking for a
+                ' missing value where the mistake is the punctuation they can
+                ' see.
+                nxt = toks[i]
+                if nxt.kind = "punct" and nxt.text = "]" then
+                    error "notation: a trailing comma before ']' at line " + string(tk.line) + ", column " + string(tk.col)
+                end if
             else
                 looping = false
             end if
         end while
-        i = _want(toks, i, "]")
+        i = _want_close(toks, i, "]")
         return { v: items, at: i }
     end function
 
@@ -799,11 +821,15 @@ library notation
             tk2 = toks[i]
             if tk2.kind = "punct" and tk2.text = "," then
                 i = i + 1
+                nxt = toks[i]
+                if nxt.kind = "punct" and nxt.text = "}" then
+                    error "notation: a trailing comma before '}' at line " + string(tk2.line) + ", column " + string(tk2.col)
+                end if
             else
                 looping = false
             end if
         end while
-        i = _want(toks, i, "}")
+        i = _want_close(toks, i, "}")
         return { v: rec, at: i }
     end function
 

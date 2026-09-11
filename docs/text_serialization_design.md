@@ -164,6 +164,30 @@ And a fourth, which is only funny: **the library that writes `\u{0}` cannot
 write it as a literal.** Its escapes are built from `chr(92)`, for exactly the
 reason the format exists.
 
+## Diagnostics, since the file is hand-edited
+
+Every refusal names a line and a column, and two of them name the mistake the
+way a person would describe it rather than the way a parser meets it:
+
+```
+a missing comma:          expected ',' or '}' at line 3, column 3
+a trailing comma:         a trailing comma before '}' at line 1, column 7
+a misspelled currency:    unknown type tag 'USSD' at line 2, column 17
+an impossible date:       date modifier expects an ISO-like date string at line 2, column 18
+a missing quote:          unterminated string at line 2, column 9
+```
+
+Both improvements are about **where the reader is sent**. A missing separator
+reported as `expected '}'` sends someone hunting for a brace that is exactly
+where they left it; a trailing comma reported as `expected a field name` sends
+them looking for a missing value when the mistake is punctuation they can
+already see. The trailing-comma message points at the **comma**, not at the
+closer that tripped over it.
+
+`{date}` raising "expects an ISO-like date string" is true and useless in a
+two-hundred-line file, so the modifier's raise is caught and re-raised with the
+line and column — which is the whole reason tokens carry them.
+
 ## Still open
 
 - **Comment PRESERVATION.** Decided for v1: **discard**, because the
