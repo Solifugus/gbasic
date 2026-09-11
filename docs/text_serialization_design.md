@@ -1,10 +1,91 @@
-# A textual form that keeps every gBASIC type — worked samples
+# A textual form that keeps every gBASIC type
 
-**Status:** Samples for discussion (2026-09-10). Nothing decided, nothing built.
+**Status:** Design (2026-09-10). Four things decided, several open. Nothing built.
 
 The gap: `encode` is readable and **refuses** dates, money, durations and files;
 `serialize` keeps every type and is **opaque binary**. There is no form a person
 can open in an editor, read, and hand-edit that survives a typed value.
+
+---
+
+## Decided
+
+**1. The type tag goes on the KEY side: `issued {date}: "2026-03-15"`.**
+
+It does not collide with PBI (which uses parens), it costs **0 grammar
+conflicts** where the value-side form costs 1, and — the reason that matters
+more than the count — **it is the language's own typed-assignment syntax with a
+colon where the equals goes**:
+
+```basic
+issued {date}= "2026-03-15"     ' gBASIC, today
+issued {date}: "2026-03-15"     ' the format
+```
+
+The two brace positions already mean different things in gBASIC, and only one
+of them means what a type tag means:
+
+| position | what gBASIC already means by it |
+| --- | --- |
+| **before the separator** — `x {date}= "…"` | **this value is of this type** |
+| **after the value** — `name {caseless} = "joe"` | compare *through this lens* |
+
+**2. Array elements use the same tag with the name dropped:
+`[ {date}: "2026-01-01", … ]`.** One spelling everywhere, no exception to the
+round-trip promise.
+
+**3. The format has its own parser, and its output is NOT gBASIC source.**
+
+This is what makes decision 2 affordable. Every conflict count below matters
+only if *gBASIC itself* must parse the format; a hand-written parser resolves
+`{date}` versus `{date:` with one peek, and bison's LALR(1) limit is the
+obstacle rather than any real ambiguity. Built and measured, adding the
+nameless element form to gBASIC's grammar **breaks `{ x: 1 }` everywhere** —
+so that door is shut for the language and open for the format.
+
+**And pasteability was never reachable anyway.** gBASIC refuses `\u{0}` in a
+string literal and directs the author to `chr(0)` — a *call*, not a literal —
+so a record whose string holds an interior NUL, which field names may now
+contain, cannot be written as gBASIC source at all. "Pasteable except for
+values the language can hold but not spell" is a promise with an asterisk.
+
+**4. Money is written with trailing zeros trimmed.** `string()` is lossy and
+drops the currency (`3.459` prints as `3.46`), so the value comes from
+`money.text()` — but `1234.560000` is not what anyone wants to read, and
+trailing zeros in decimal do not change the value.
+
+## A separate question this raised, worth deciding on its own merits
+
+**Should `{ issued {date}: "…" }` be legal gBASIC?** Today a typed value cannot
+be put in a record literal at all — you must build it on its own line and then
+place it. The key-side production is **0 conflicts**, reads as the language's
+own typed assignment, and closes a real ergonomic gap. It is independent of the
+serializer: worth doing whether or not the format's output happens to match it.
+
+## Still open
+
+- **Names.** `text_encode` / `text_decode`? Something better? This is the
+  fourth serializer and the table in `reference.md` needs a one-line job
+  statement for it.
+- **A bare typed value at the root.** `text_encode(aDate)` has no field name to
+  hang a tag on. Either the document root must be a record or an array (JSON's
+  original rule, but `encode(5)` works today, so it is an asymmetry), or the
+  root gets a spelling of its own.
+- **Comments.** The file is hand-edited, so a read-modify-write cycle that
+  silently drops a reviewer's comment is a defect. Preserving them is a much
+  larger commitment than it looks.
+- **Diagnostics.** Hand-edited means the parser's error messages are part of
+  the feature: a misspelled currency, a bad date, an unclosed brace.
+- **The tag namespace.** `{date}` is a type and `{USD}` is a currency; gBASIC's
+  own modifiers already mix the two, so the format inherits that and should say
+  so rather than discover it.
+- **Escapes**, including the one gBASIC itself refuses: an interior NUL.
+- **Pretty-printing**: indent width, when a line breaks, and whether a key is
+  quoted only when it is not a valid identifier.
+
+---
+
+## The evidence, kept because the decisions rest on it
 
 What follows is the same record written several ways, plus the cases that make
 the choice bite. **The values are real** — every rendering below was produced by
@@ -68,7 +149,7 @@ record. So the only question about keys is *when to quote*, not *whether*.
 A small invoice — money at three precisions, two date kinds, a duration, a
 file, a nested record, an array of records, and both empty values.
 
-### Variant A1 — modifier prefix, unquoted keys (most gBASIC-like)
+### Variant A1 — modifier prefix, unquoted keys (SUPERSEDED by the key-side form; kept because the comparison below refers to it)
 
 ```
 {
@@ -432,3 +513,36 @@ worth a second spelling, or worth an exception?**"
    program changes behaviour. Against: `encode`'s output would then sometimes be
    nearly-JSON and sometimes not, depending on the data, which is worse than a
    clean split.
+
+---
+
+## The decided form, end to end
+
+```
+{
+  id: 4471,
+  issued {date}: "2026-03-15",
+  posted {datetime}: "2026-03-15 14:30:05",
+  customer: {
+    name: "Ada Lovelace & Co.",
+    account: "ACME-0042",
+    contact: unknown
+  },
+  lines: [
+    { sku: "GB-100", description: "Widget, large",  qty: 2, unit {USD}: "19.99", total {USD}: "39.98" },
+    { sku: "GB-205", description: "Fuel surcharge", qty: 1, unit {USD}: "3.459", total {USD}: "3.459" }
+  ],
+  due_dates: [ {date}: "2026-04-14", {date}: "2026-05-14" ],
+  mixed: [ {date}: "2026-03-15", {USD}: "19.99", "plain", 7 ],
+  subtotal {USD}: "43.439",
+  tax {USD}: "3.62",
+  total {USD}: "47.06",
+  terms {duration}: "30 days",
+  attachment {file}: "/var/spool/invoices/4471.pdf",
+  paid_at: nothing,
+  notes: ""
+}
+```
+
+`due_dates` and `mixed` are the shape decision 2 buys: **one spelling, and a
+heterogeneous array of typed values needs no exception.**
