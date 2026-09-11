@@ -274,7 +274,7 @@ production to a copy of `src/parser.y`:
 | bare-word `issued: date"..."` | 0 |
 | key-side + bare-word in arrays | 0 |
 | value-side `issued: {date}"..."` | **1 shift/reduce** |
-| key-side + nameless `{date}:` in arrays | **1 shift/reduce** |
+| key-side + nameless `{date}:` in arrays | **1 shift/reduce — and it breaks `{ x: 1 }`** |
 | suffix on a string literal `"..."{date}` | **1 shift/reduce** |
 | suffix on any expression `expr{date}` | **2 shift/reduce** |
 
@@ -312,6 +312,28 @@ this format exists to keep is expensive.
 
 **(b) A nameless tag in element position.** `[ {date}: "2026-01-01" ]` — one
 spelling everywhere, and it costs the **1 shift/reduce conflict** back.
+
+**MEASURED BY BUILDING IT, AND IT IS NOT VIABLE.** The conflict is not benign:
+bison resolves shift/reduce by shifting, so on `{` then IDENT the parser commits
+to the type tag and expects `}`. An ordinary record literal whose first key is a
+bare identifier then **stops parsing at all**:
+
+```
+a = { x: 1 }            PARSE ERROR: unexpected COLON, expecting RBRACE
+a = [ { date: 1 } ]     PARSE ERROR: unexpected COLON, expecting RBRACE
+a = f({ x: 1 })         PARSE ERROR: unexpected COLON, expecting RBRACE
+a = [ { "x": 1 } ]      ok   -- a QUOTED key survives, since STRING is not IDENT
+a = [ {date}: "..." ]   ok   -- the new form works, at that price
+```
+
+So the cost is not "one conflict on the new syntax" but **the most common
+record literal in the language**. Left-factoring to recover it was tried and is
+worse: sharing the `LBRACE IDENT` prefix with the record production takes the
+grammar from 1 conflict to **32**.
+
+This is the concrete form of the worry that prompted the experiment — *"the
+parser just sees it as a record value"*. The truth turned out to be the mirror
+image and worse: **the parser sees a record value as a type tag.**
 
 **(c) A bare-word tag in element position.** `[ date"2026-01-01" ]` — **0
 conflicts**, works at top level too, and is the only option with no exception.
