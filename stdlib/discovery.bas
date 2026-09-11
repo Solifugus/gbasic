@@ -155,7 +155,48 @@ library discovery
             end if
         end for
 
-        for each c in odbc.columns(conn, filter)
+        ' COLUMNS ARE FETCHED PER SCHEMA WHEN THE TABLES NAMED ANY, and the
+        ' schema list comes from the table scan just done -- so nothing the
+        ' scan found can be missed, by construction.
+        '
+        ' WHY. MEASURED on SQL Server 2025: `%` returns 10,006 columns of which
+        ' 9,927 are `sys` and `INFORMATION_SCHEMA`, every one fetched over the
+        ' wire and then discarded by `_is_system_schema`. PostgreSQL pays it
+        ' too -- 2,278 of 2,679 here -- because psqlODBC filters TABLES
+        ' server-side and not columns. Reported by the estateforge session,
+        ' which measured 9,927 discarded rows against a 550-object estate.
+        '
+        ' THE TABLE SCAN'S `%` IS NOT TOUCHED, deliberately: it is the fix for
+        ' psqlODBC's search-path defect, which silently returned 17 `public`
+        ' tables for a 17-schema estate. Narrowing THAT reintroduces a
+        ' complete-looking answer missing most of the database, which is worse
+        ' than being slow. This narrows only the SECOND call, to schemas the
+        ' first one already reported.
+        col_filters = [filter]
+        if filter.schema = "%" then
+            seen_schemas = []
+            for each tid in keys(cat.tables)
+                sc = cat.tables[tid].schema
+                if len(sc) > 0 and not contains(seen_schemas, sc) then
+                    append(seen_schemas, sc)
+                end if
+            end for
+            ' Only when the database actually qualifies its objects. On SQLite
+            ' and MariaDB every schema is empty, and passing "" is not the same
+            ' question as passing "%" -- ODBC distinguishes them, and
+            ' conflating them returns NOTHING.
+            if count(seen_schemas) > 0 then
+                col_filters = []
+                for each sc in seen_schemas
+                    one = filter
+                    one.schema = sc
+                    append(col_filters, one)
+                end for
+            end if
+        end if
+
+        for each cf in col_filters
+        for each c in odbc.columns(conn, cf)
             rec = { source: src,
                     catalog: _part(c, "TABLE_CAT"),
                     schema: _part(c, "TABLE_SCHEM"),
@@ -177,6 +218,7 @@ library discovery
             if has(cat.tables, owner) then
                 cat.columns[id_of(rec)] = rec
             end if
+        end for
         end for
 
         for each tid in keys(cat.tables)
@@ -537,28 +579,67 @@ library discovery
     ' `dbo` when only that one does. The stored source reads `from res_probe`
     ' either way, so without the owning schema the reference cannot be bound at
     ' all.
-    function _module_sql(dbms)
+    ' A SCHEMA FILTER, BOUND RATHER THAN PASTED. Each query knows which column
+    ' holds its schema, so the clause is appended here with a `?` and the
+    ' pattern travels as a parameter -- the rule `dbframe` follows, and the one
+    ' that makes an estate name with a quote in it a non-event.
+    '
+    ' WHY IT EXISTS. `scan` takes catalog/schema/table patterns and `modules`
+    ' took only `source`, so it returned every routine in the database.
+    ' MEASURED by the estateforge session on a fresh PostgreSQL 17 holding an
+    ' 11-table estate: 119 rows came back, of which 114 were `vector_*` --
+    ' pgvector lives in that machine's `template1`, so every new database
+    ' inherits it into `public`. That is not `_is_system_schema` failing;
+    ' `public` is correctly not a system schema and an extension legitimately
+    ' lives there. It just means every caller re-filters, and one that compares
+    ' counts is green or red for reasons unrelated to what it is testing.
+    '
+    ' ONE PATTERN, NOT A LIST, matching `scan`. "any of these six schemas"
+    ' cannot be expressed and the caller makes several calls -- stated here
+    ' rather than discovered.
+    function _module_sql(dbms, schema)
+        filtered = len(schema) > 0 and schema != "%"
         if contains(dbms, "SQLite") then
-            ' No stored procedures at all, and no schemas.
-            return ["select '' as mod_schema, name as mod_name, 'VIEW' as mod_kind, sql as mod_body from sqlite_master where type = 'view' and sql is not null"]
+            ' No stored procedures at all, and no schemas -- so a schema filter
+            ' is REFUSED rather than ignored: silently answering a question
+            ' that was not asked is how a caller comes to trust a narrower
+            ' answer than it got.
+            if filtered then
+                error "discovery: SQLite has no schemas, so `schema: '" + schema + "'` cannot be honoured"
+            end if
+            return [{ sql: "select '' as mod_schema, name as mod_name, 'VIEW' as mod_kind, sql as mod_body from sqlite_master where type = 'view' and sql is not null", params: [] }]
         end if
         if contains(dbms, "MariaDB") or contains(dbms, "MySQL") then
             ' No schemas -- what information_schema calls table_schema IS the
             ' database, which is why the estate's identity carries a catalog
             ' AND a schema and lets either be empty.
-            return ["select table_schema as mod_schema, table_name as mod_name, 'VIEW' as mod_kind, view_definition as mod_body from information_schema.views where table_schema = database()",
-                    "select routine_schema as mod_schema, routine_name as mod_name, routine_type as mod_kind, routine_definition as mod_body from information_schema.routines where routine_schema = database()"]
+            out = [{ sql: "select table_schema as mod_schema, table_name as mod_name, 'VIEW' as mod_kind, view_definition as mod_body from information_schema.views where table_schema = database()", params: [] },
+                   { sql: "select routine_schema as mod_schema, routine_name as mod_name, routine_type as mod_kind, routine_definition as mod_body from information_schema.routines where routine_schema = database()", params: [] }]
+            if filtered then
+                out[0] = { sql: out[0].sql + " and table_schema like ?", params: [schema] }
+                out[1] = { sql: out[1].sql + " and routine_schema like ?", params: [schema] }
+            end if
+            return out
         end if
         if contains(dbms, "PostgreSQL") then
-            return ["select table_schema as mod_schema, table_name as mod_name, 'VIEW' as mod_kind, view_definition as mod_body from information_schema.views where table_schema not in ('pg_catalog', 'information_schema')",
-                    "select n.nspname as mod_schema, p.proname as mod_name, 'FUNCTION' as mod_kind, p.prosrc as mod_body from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname not in ('pg_catalog', 'information_schema')"]
+            out = [{ sql: "select table_schema as mod_schema, table_name as mod_name, 'VIEW' as mod_kind, view_definition as mod_body from information_schema.views where table_schema not in ('pg_catalog', 'information_schema')", params: [] },
+                   { sql: "select n.nspname as mod_schema, p.proname as mod_name, 'FUNCTION' as mod_kind, p.prosrc as mod_body from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname not in ('pg_catalog', 'information_schema')", params: [] }]
+            if filtered then
+                out[0] = { sql: out[0].sql + " and table_schema like ?", params: [schema] }
+                out[1] = { sql: out[1].sql + " and n.nspname like ?", params: [schema] }
+            end if
+            return out
         end if
         if contains(dbms, "SQL Server") then
             ' sys.sql_modules rather than information_schema.views: the latter
             ' truncates a long definition, and a lineage read that silently
             ' loses the tail of a procedure is the confidently-incomplete
             ' failure this library is arranged against.
-            return ["select schema_name(o.schema_id) as mod_schema, o.name as mod_name, o.type_desc as mod_kind, m.definition as mod_body from sys.sql_modules m join sys.objects o on o.object_id = m.object_id"]
+            q = "select schema_name(o.schema_id) as mod_schema, o.name as mod_name, o.type_desc as mod_kind, m.definition as mod_body from sys.sql_modules m join sys.objects o on o.object_id = m.object_id"
+            if filtered then
+                return [{ sql: q + " where schema_name(o.schema_id) like ?", params: [schema] }]
+            end if
+            return [{ sql: q, params: [] }]
         end if
         error "discovery: no module reader for '" + dbms + "'; views and procedures are read per-dialect and this one is not known"
     end function
@@ -570,10 +651,14 @@ library discovery
             error "discovery: modules needs a `source` naming which database this is"
         end if
         src = options.source
+        schema = ""
+        if has(options, "schema") then
+            schema = options.schema
+        end if
         info = odbc.info(conn)
         out = []
-        for each q in _module_sql(info.dbms_name)
-            for each r in odbc.query(conn, q)
+        for each q in _module_sql(info.dbms_name, schema)
+            for each r in odbc.query(conn, q.sql, q.params)
                 body = r["mod_body"]
                 if is_string(body) and len(trim(body)) > 0 then
                     append(out, { source: src,

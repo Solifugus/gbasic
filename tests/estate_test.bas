@@ -263,6 +263,23 @@ check("nothing is derived in the null region", count(nul.steps), 0)
 check("and it is reported as an origin, not as an answer", join(nul.origins, ","), "wh.staging.tmp_rebate_2019.col_a")
 
 print ""
+print "-- the dialect map must not corrupt arithmetic"
+' `+` is BOTH concatenation and arithmetic, so a map rewriting it for
+' PostgreSQL turns `deal_id + 100000` into `deal_id || 100000`, which the
+' server refuses. The source is ANSI and the map converts TOWARDS T-SQL,
+' because `||` is never arithmetic and so says exactly one thing.
+pg_ddl = join(estate.ddl(sp, "postgres"), " ; ")
+ms_ddl = join(estate.ddl(sp, "sqlserver"), " ; ")
+check("postgres keeps the arithmetic", contains(pg_ddl, "f.deal_id + 100000"), true)
+check("and keeps ANSI concatenation", contains(pg_ddl, "'DEAL-' || cast"), true)
+check("sqlserver keeps the arithmetic too", contains(ms_ddl, "f.deal_id + 100000"), true)
+check("and gets T-SQL concatenation", contains(ms_ddl, "'DEAL-' + cast"), true)
+' THE CONTROL: no `||` may survive into T-SQL, in a PROCEDURE body as well as
+' a view -- the procedure path emitted the raw body and skipped the map.
+check("no ANSI concatenation reaches T-SQL", contains(ms_ddl, " || "), false)
+check("and no arithmetic was rewritten for postgres", contains(pg_ddl, "|| 100000"), false)
+
+print ""
 print "-- refusals"
 on error goto next
 estate.ddl(sp, "mariadb")

@@ -293,6 +293,26 @@ defect the live tier exists to catch. What it buys is that the **column lineage*
 checks — which are about SQL, not about drivers — run with no database at all,
 so the part of this gate that can go quiet stays small.
 
+### The dialect map converts towards T-SQL, not away from it
+
+`ddl` used to rewrite `+` to `||` for PostgreSQL. **`+` is both concatenation
+and arithmetic**, so any module body with spaced arithmetic was corrupted:
+`f.deal_id * 2 + 1` became `f.deal_id * 2 || 1`, which PostgreSQL refuses with
+*operator does not exist: integer || integer*. Guarding on the spaces does not
+help — the arithmetic has spaces too.
+
+The source is now **ANSI** (`||` for concatenation) and the map converts `||` to
+`+` for SQL Server. `||` is never arithmetic in either dialect, so the token
+says exactly one thing and the conversion cannot misread it. Reported by the
+estateforge session, which hit it writing a body with real arithmetic; **no body
+here had any, so the defect was latent and every test passed**.
+
+`p_post_gl.entry_id` now carries `f.deal_id + 100000` on purpose, so the live
+PostgreSQL tier refuses the estate outright if the map is ever turned back. And
+the SQL Server *procedure* path emitted the raw body, skipping the map entirely
+— the mirror of the same defect, in the one branch that had no conversion at
+all.
+
 ### Column lineage is declared, not derived
 
 The module bodies are the SQL; `spec().column_lineage` is what that SQL

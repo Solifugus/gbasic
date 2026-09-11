@@ -152,8 +152,14 @@ library estate
                   reads: ["warehouse.stg_deal", "trading.ctp"],
                   writes: ["warehouse.fact_volume"] },
                 ' R32: FAN-OUT. fact_volume feeds the ledger AND both reports.
+                ' `entry_id` CARRIES REAL ARITHMETIC ON PURPOSE. The dialect
+                ' map used to rewrite `+` to `||` for PostgreSQL, which is
+                ' correct for concatenation and CORRUPTS ARITHMETIC -- and no
+                ' body here had any, so the defect was latent and every test
+                ' passed. Now one does, and the live PostgreSQL tier refuses
+                ' the estate outright if the map ever turns it back.
                 { schema: "warehouse", name: "p_post_gl", kind: "procedure",
-                  body: "insert into finance.gl_entry (entry_id, acct_no, reference, amount, posted) select f.deal_id, '4000', 'DEAL-' + cast(f.deal_id as varchar(20)), f.avail_after_pvr, 0 from warehouse.fact_volume f",
+                  body: "insert into finance.gl_entry (entry_id, acct_no, reference, amount, posted) select f.deal_id + 100000, '4000', 'DEAL-' || cast(f.deal_id as varchar(20)), f.avail_after_pvr, 0 from warehouse.fact_volume f",
                   reads: ["warehouse.fact_volume"],
                   writes: ["finance.gl_entry"] },
                 ' R33: THE HEADLINE. Two views, the same column name, both
@@ -185,7 +191,7 @@ library estate
                 ' A GAP, deliberately: dynamic SQL cannot be read, and a tracer
                 ' that drops it silently is confidently incomplete.
                 { schema: "staging", name: "p_dynamic_rebate", kind: "procedure",
-                  body: "declare @src varchar(60); set @src = 'trading.deal'; exec ('insert into staging.tmp_rebate_2019 select * from ' + @src)",
+                  body: "declare @src varchar(60); set @src = 'trading.deal'; exec ('insert into staging.tmp_rebate_2019 select * from ' || @src)",
                   reads: [], writes: [], gap: true,
                   ' T-SQL only: a PostgreSQL `language sql` function has no
                   ' variables, so the dynamic-SQL case is expressed where it is
@@ -300,10 +306,21 @@ library estate
         return cat
     end function
 
+    ' THE SOURCE IS ANSI AND THE MAP CONVERTS TOWARDS T-SQL, which is the only
+    ' direction that is safe. `+` is BOTH concatenation and arithmetic, so a map
+    ' rewriting `+` to `||` for PostgreSQL corrupts any arithmetic it meets --
+    ' `f.deal_id * 2 + 1` became `f.deal_id * 2 || 1`, which PostgreSQL refuses
+    ' with "operator does not exist: integer || integer". Guarding on the
+    ' spaces does not help: the arithmetic has spaces too.
+    '
+    ' `||` is NEVER arithmetic in either dialect, so a body written with it
+    ' says exactly one thing and the conversion cannot misread it. Reported by
+    ' the estateforge session (EF-2), which hit it writing a module body with
+    ' real arithmetic in it; nothing here did, so it was latent and every test
+    ' passed.
     function _type_for(dialect, decl)
-        ' The dialect map stays deliberately small.
-        if dialect = "postgres" then
-            return replace(decl, " + ", " || ")
+        if dialect = "sqlserver" then
+            return replace(decl, " || ", " + ")
         end if
         return decl
     end function
@@ -354,7 +371,11 @@ library estate
                 append(out, "create view " + m.schema + "." + m.name + " as " + _type_for(dialect, m.body))
             else
                 if dialect = "sqlserver" then
-                    append(out, "create procedure " + m.schema + "." + m.name + " as " + m.body)
+                    ' THROUGH THE MAP LIKE EVERY OTHER PATH. This one emitted
+                    ' the raw body, so an ANSI `||` would have reached T-SQL
+                    ' untranslated -- the mirror of the defect being fixed, in
+                    ' the one branch that skipped the conversion.
+                    append(out, "create procedure " + m.schema + "." + m.name + " as " + _type_for(dialect, m.body))
                 else
                     append(out, "create function " + m.schema + "." + m.name +
                                 "() returns void as $x$ " + _type_for(dialect, m.body) + "; $x$ language sql")

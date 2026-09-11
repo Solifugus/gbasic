@@ -177,6 +177,37 @@ check("and both divergent reports", reaches(reached, ".rpt_volume_gross") and re
 check("CONTROL: the null region is not reachable", reaches(reached, ".staging.tmp_rebate_2019"), false)
 
 print ""
+print "-- the per-schema column fetch must lose nothing ACROSS schemas"
+' `scan` asks for columns one schema at a time when the tables named any, to
+' avoid fetching every system column and discarding it (MEASURED on SQL Server
+' at 9,927 of 10,006 rows). THE RISK IS LOSING A SCHEMA, and only a MULTI-
+' SCHEMA estate can catch that -- discovery's own fixture builds everything in
+' one schema, so its copy of this check passes on a split that keeps just the
+' first. This estate spans four.
+raw = odbc.columns(c, { schema: "%", table: "%", column: "%" })
+expected = 0
+for each rc in raw
+    owner = discovery.id_of({ source: "est",
+                              catalog: default(rc["TABLE_CAT"], ""),
+                              schema: default(rc["TABLE_SCHEM"], ""),
+                              table: default(rc["TABLE_NAME"], ""), column: "" })
+    if has(cat.tables, owner) then
+        expected = expected + 1
+    end if
+end for
+check("every column of a catalogued table is in the catalog", count(keys(cat.columns)), expected)
+schemas_seen = []
+for each tid in keys(cat.tables)
+    sc = cat.tables[tid].schema
+    if len(sc) > 0 and not contains(schemas_seen, sc) then
+        append(schemas_seen, sc)
+    end if
+end for
+' Without this the check above passes on a single-schema estate, where losing
+' "every schema but the first" loses nothing.
+check("and the estate really does span several schemas", count(schemas_seen) > 2, true)
+
+print ""
 print "-- column lineage, against a REAL catalog and REAL stored source"
 ' THE OFFLINE TIER PROVES THE PARSER; THIS PROVES THE BINDING. Everything
 ' between a column name in a module body and a column id in the catalog is a

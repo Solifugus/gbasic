@@ -151,6 +151,7 @@ check("a source name containing the separator is refused", contains(error.messag
 error.clear()
 check("CONTROL: a legal source name scans", discovery.scan(c, { source: "ok", table: "disc_orders" }).source, "ok")
 
+
 print ""
 print "-- modules, and a traced chain"
 ' A TWO-HOP VIEW CHAIN, which every database has -- SQLite has no stored
@@ -159,8 +160,78 @@ e3 = odbc.exec(c, "create view disc_v1 as select id, total from disc_orders")
 e4 = odbc.exec(c, "create view disc_v2 as select id from disc_v1")
 info = odbc.info(c)
 cat2 = discovery.scan(c, { source: "s", table: "disc_%" })
+
+print ""
+print "-- the per-schema column fetch must lose NOTHING"
+' `scan` asks for columns one schema at a time when the tables named any,
+' because a single `%` fetches every system column and discards it -- MEASURED
+' on SQL Server 2025 at 9,927 of 10,006 rows, and PostgreSQL pays it too
+' (2,278 of 2,679), since psqlODBC filters TABLES server-side and not columns.
+'
+' THE RISK IS LOSING A COLUMN, not being slow, so the single-call form is the
+' ORACLE: every column belonging to a table the catalog holds must be in the
+' catalog, and nothing else may be.
+raw = odbc.columns(c, { schema: "%", table: "%", column: "%" })
+expected = 0
+for each rc in raw
+    owner = discovery.id_of({ source: "s",
+                              catalog: default(rc["TABLE_CAT"], ""),
+                              schema: default(rc["TABLE_SCHEM"], ""),
+                              table: default(rc["TABLE_NAME"], ""), column: "" })
+    if has(cat2.tables, owner) then
+        expected = expected + 1
+    end if
+end for
+check("every column of a catalogued table is in the catalog",
+      count(keys(cat2.columns)), expected)
+check("and the catalog is not empty, so that comparison means something",
+      expected > 0, true)
 mods = discovery.modules(c, { source: "s" })
 tr = discovery.trace(cat2, mods, info.dbms_name)
+
+' A SCHEMA FILTER ON `modules`, matching the one `scan` already takes.
+' WITHOUT IT `modules` RETURNS EVERY ROUTINE IN THE DATABASE -- measured by the
+' estateforge session on a fresh PostgreSQL 17 holding an 11-table estate: 119
+' rows, of which 114 were `vector_*`, because pgvector lives in that machine's
+' `template1` and every new database inherits it into `public`. That is not a
+' system-schema failure; an extension legitimately lives there. It just means
+' every caller re-filters, and one that compares counts is green or red for
+' reasons unrelated to what it is testing.
+check("an absent filter and '%' mean the same thing",
+      count(discovery.modules(c, { source: "s", schema: "%" })), count(mods))
+if contains(info.dbms_name, "SQLite") then
+    ' SQLite HAS NO SCHEMAS, so a filter is REFUSED rather than ignored:
+    ' silently answering a question that was not asked is how a caller comes to
+    ' trust a narrower answer than it got.
+    on error goto next
+    discovery.modules(c, { source: "s", schema: "main" })
+    check("SQLite refuses a schema filter by name", contains(error.message, "has no schemas"), true)
+    error.clear()
+    on error stop
+else
+    ' Where schemas exist the filter must NARROW -- asserted as a difference,
+    ' since "it returned some modules" is satisfied by a filter that does
+    ' nothing at all.
+    own = ""
+    for each m in mods
+        if len(m.schema) > 0 and len(own) = 0 then
+            own = m.schema
+        end if
+    end for
+    check("a schema nothing is in returns nothing",
+          count(discovery.modules(c, { source: "s", schema: "no_such_schema_here" })), 0)
+    if len(own) > 0 then
+        narrowed = discovery.modules(c, { source: "s", schema: own })
+        check("a schema filter narrows the answer", count(narrowed) <= count(mods), true)
+        only_own = true
+        for each m in narrowed
+            if m.schema != own then
+                only_own = false
+            end if
+        end for
+        check("and everything it returns is from that schema", only_own, true)
+    end if
+end if
 
 function edge_between(tr, mod_suffix, kind, obj_suffix)
     for each e in tr.edges

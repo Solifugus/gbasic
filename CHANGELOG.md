@@ -9,6 +9,47 @@ language surface may still change between releases.
 
 ## Unreleased
 
+### Fixed — `estate.ddl`'s dialect map corrupted arithmetic
+
+It rewrote `+` to `||` for PostgreSQL. **`+` is both concatenation and
+arithmetic**, so `f.deal_id * 2 + 1` became `f.deal_id * 2 || 1`, which
+PostgreSQL refuses (*operator does not exist: integer || integer*). Guarding on
+the spaces does not help — the arithmetic has spaces too.
+
+The source is now ANSI (`||`) and the map converts **towards** T-SQL, because
+`||` is never arithmetic and so says exactly one thing. Reported by the
+estateforge session; **no module body here had arithmetic, so the defect was
+latent and every test passed**. One now carries `f.deal_id + 100000`, so the
+live PostgreSQL tier refuses the estate outright if the map is turned back.
+
+The SQL Server *procedure* path emitted the raw body, skipping the map — the
+mirror of the same defect, in the one branch with no conversion at all.
+
+### Added — `discovery.modules` takes a schema filter
+
+`scan` took catalog/schema/table patterns; `modules` took only `source` and
+returned every routine in the database. Measured on a fresh PostgreSQL 17 with
+an 11-table estate: **119 rows, 114 of them `vector_*`**, because pgvector lives
+in that machine's `template1`. The pattern is **bound, not pasted**. SQLite
+**refuses** a filter rather than ignoring it.
+
+### Changed — a scan no longer fetches every system column to discard it
+
+Measured on SQL Server 2025: `%` returns **10,006 columns of which 9,927 are
+`sys` and `INFORMATION_SCHEMA`**. **PostgreSQL pays it too** — 2,278 of 2,679
+here — because psqlODBC filters *tables* server-side and not columns.
+
+Columns are now fetched one schema at a time, from the schema list the *table*
+scan just produced, so nothing it found can be missed. **The table scan's `%` is
+untouched**: it is the fix for psqlODBC's search-path defect, and narrowing it
+reintroduces a complete-looking answer missing most of the database. Same
+answer, measured identical before and after on both databases.
+
+The risk is losing a schema, so the single-`%` form is the oracle. Note
+`run_discovery`'s fixture is single-schema and passes on a split keeping only
+the first — the check that bites lives in the estate's live tier, which spans
+four, with a control asserting it does.
+
 ### Added — `notation`: a textual form that keeps every gBASIC type
 
 `notation.to_text(value)` / `notation.from_text(text)` / `try_from_text(text)`,

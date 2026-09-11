@@ -384,6 +384,53 @@ application. The correct answer is **"unanswerable from the catalog"**, not a
 guess — so the value model carries that as an outcome rather than treating
 absence of evidence as evidence.
 
+### 3e. Two costs the estateforge session measured (2026-09-11)
+
+**`modules` took no schema filter** where `scan` takes three, so it returned
+every routine in the database. Measured on a fresh PostgreSQL 17 holding an
+11-table estate: **119 rows, of which 114 were `vector_*`** — pgvector lives in
+that machine's `template1`, so every new database inherits it into `public`.
+That is not `_is_system_schema` failing; `public` is correctly not a system
+schema and an extension legitimately lives there. It meant every caller
+re-filtered, and one comparing counts was green or red for reasons unrelated to
+what it was testing. `modules` now takes `schema` (a LIKE pattern, **bound**
+rather than pasted) and `catalog`, matching `scan`. One pattern, not a list:
+"any of these six schemas" is several calls, stated here rather than
+discovered. SQLite **refuses** a filter rather than ignoring it — silently
+answering a question that was not asked is how a caller comes to trust a
+narrower answer than it got.
+
+**A scan fetched every system column and discarded it.** Measured here on SQL
+Server 2025: `%` returns **10,006 columns of which 9,927 are `sys` and
+`INFORMATION_SCHEMA`**, every one carried over the wire and then dropped by
+`_is_system_schema`. estateforge measured 9,927 against a 550-object estate —
+the same figure, so it is a fixed cost of the catalog, not of the estate.
+
+**And PostgreSQL pays it too**, which corrects the report that raised it:
+psqlODBC filters *tables* server-side and **not columns** — 2,278 of 2,679 here
+are system.
+
+Columns are now fetched **one schema at a time**, from the schema list the
+*table* scan just produced, so nothing that scan found can be missed by
+construction. **The table scan's `%` is untouched**, deliberately: it is the fix
+for psqlODBC's search-path defect, which silently returned 17 `public` tables
+for a 17-schema estate, and narrowing *that* reintroduces a complete-looking
+answer missing most of the database — worse than being slow. Only the second
+call narrows, to schemas the first already reported. Same answer, measured
+identical before and after on both databases.
+
+The risk is losing a schema rather than being slow, so the single-`%` form is
+the **oracle**: every column belonging to a catalogued table must be in the
+catalog and nothing else may be. `run_discovery`'s own fixture builds everything
+in one schema and so passes on a split that keeps only the first — the check
+that bites lives in the estate's live tier, which spans four, with a control
+asserting it really does.
+
+**Times are not quoted here.** estateforge's absolute figures are
+deployment-confounded — PostgreSQL over a unix socket against SQL Server in a
+VM over TCP, a 14x baseline penalty on `select 1` before any query does work —
+so the row counts are the part that transfers and the times are not.
+
 ## 4a. What is built, and what it was measured against
 
 Table-level lineage, end to end: read the modules, scan their SQL for the
