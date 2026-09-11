@@ -1,6 +1,6 @@
 # A textual form that keeps every gBASIC type
 
-**Status:** Design (2026-09-10). Six things decided, five open. Nothing built.
+**Status:** Design (2026-09-10). Seven things decided, five open. Nothing built.
 
 The gap: `encode` is readable and **refuses** dates, money, durations and files;
 `serialize` keeps every type and is **opaque binary**. There is no form a person
@@ -57,15 +57,19 @@ wrong thing:
   its shape — including a bare number. `prices {USD}: [ 7 ]` is money, not a
   number. An author who wrote the default said what they meant; silently
   exempting some elements would make the rule depend on the data.
-- **An element the tag cannot apply to is REFUSED, never skipped.**
-  `{date}: [ { a: 1 } ]` names a record as a date and is an error. Skipping
-  would produce a plausible half-tagged array, which is the failure this whole
-  format is arranged against.
-- **A default does NOT reach into a nested array or record.** A tag applies to
-  the value it is attached to, one level. `rows {date}: [ [ "2026-01-01" ] ]`
-  therefore refuses — the inner *array* is not a date — and the inner array
-  carries its own tag instead: `rows: [ {date}: [ "2026-01-01" ] ]`. Without
-  this a default leaks arbitrarily deep and a reader cannot reason locally.
+- **A scalar the tag cannot parse is REFUSED, never skipped.**
+  `{date}: [ "not-a-date" ]` is an error. Skipping would produce a plausible
+  half-tagged array, which is the failure this whole format is arranged
+  against. (A nested *record* is not a refusal — the default stops there by the
+  rule below, rather than failing to apply.)
+- **A default CASCADES through nested arrays and STOPS at a record.**
+  `rows {date}: [ [ "2026-01-01" ], [ "2026-02-01" ] ]` is a matrix of dates,
+  written once. It stops at a record because a record's fields have *names* and
+  each can tag itself — cascading in would make `{USD}: [ { price: "1.00",
+  name: "Ada" } ]` try to turn a name into money. Arrays are positional and
+  their elements are alike; records are named and theirs are not.
+  An element may override the default at any depth, and its override becomes
+  the default below it.
 
 **2b. The document root is a record or an array.** A bare typed value at the
 root has no field name to hang a tag on, and inventing a spelling for a case
@@ -94,6 +98,34 @@ drops the currency (`3.459` prints as `3.46`), so the value comes from
 `money.text()` — but `1234.560000` is not what anyone wants to read, and
 trailing zeros in decimal do not change the value.
 
+**5. Strings and comments follow gBASIC's own rules, with exactly one
+divergence — and the divergence has a reason rather than a preference.**
+
+Escapes are gBASIC's: `\n`, `\t`, `\"`, `\\`, `\u{...}`. Comments are `'` to
+end of line, which is free because strings are double-quoted; a `'` inside a
+string is content, as it is in gBASIC.
+
+**The divergence is `\u{0}`, which gBASIC refuses and the format must allow.**
+Checking *why* it refuses turned out to matter: gBASIC's AST stores a string
+literal as a plain `char *` (`ast_string(char *value)`, read back with
+`value_string(expr->as.string)`), so a literal NUL would be **silently
+truncated at evaluation**. The refusal is **load-bearing, not vestigial** —
+PLAT-NUL made string *values* counted and did not change how a *literal*
+reaches them.
+
+The format is not affected by that, because its parser builds Values directly
+(`value_string_n`) with no AST hop. So it allows `\u{0}`, and this is the only
+place its string rules part from the language's.
+
+Two consequences worth stating rather than discovering:
+
+- The format can spell **every** string gBASIC can hold, including the interior
+  NUL that field names may now carry. That is what keeps the round-trip
+  promise total.
+- Making gBASIC itself accept `\u{0}` would mean giving AST string literals a
+  length. That is a real change and a separate one; it is what would make the
+  format's string rules *identical* rather than nearly so.
+
 ## A separate question this raised, worth deciding on its own merits
 
 **Should `{ issued {date}: "…" }` be legal gBASIC?** Today a typed value cannot
@@ -107,15 +139,15 @@ serializer: worth doing whether or not the format's output happens to match it.
 - **Names.** `text_encode` / `text_decode`? Something better? This is the
   fourth serializer and the table in `reference.md` needs a one-line job
   statement for it.
-- **Comments.** The file is hand-edited, so a read-modify-write cycle that
-  silently drops a reviewer's comment is a defect. Preserving them is a much
-  larger commitment than it looks.
+- **Comment PRESERVATION.** The syntax is decided (`'` to end of line); whether
+  a read-modify-write cycle keeps a reviewer's comment is not. Dropping one
+  silently is a defect, and preserving them is a much larger commitment than it
+  looks — it means the decoder cannot simply discard them.
 - **Diagnostics.** Hand-edited means the parser's error messages are part of
   the feature: a misspelled currency, a bad date, an unclosed brace.
 - **The tag namespace.** `{date}` is a type and `{USD}` is a currency; gBASIC's
   own modifiers already mix the two, so the format inherits that and should say
   so rather than discover it.
-- **Escapes**, including the one gBASIC itself refuses: an interior NUL.
 - **Pretty-printing**: indent width, when a line breaks, and whether a key is
   quoted only when it is not a valid identifier.
 
