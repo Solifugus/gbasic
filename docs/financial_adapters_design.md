@@ -1063,6 +1063,57 @@ before §4 and §5 are fixed.
 That is the shape `estateforge`'s EF-0 takes for the same reason: a cost
 discovered in Phase 3 is a rewrite.
 
+#### Phase 0 result — measured 2026-09-12
+
+**Status: done.** `examples/finio_lab/provenance_cost.bas` builds all three
+architectures over the same NACHA-shaped fixed-width file and answers an
+identical query workload from each. Fixed width is deliberately the shape
+measured on: every field carries an exact byte offset and length of its own, so
+a number here is an **upper bound** rather than a best case — delimited, JSON
+and spreadsheet locations are all smaller.
+
+100,000 records × 11 fields = **1.1 million source locations**, from a **9.5 MB**
+file. Three repetitions; `/usr/bin/time` for peak RSS; wall clock from outside.
+Query cost is the difference between a run with 100,000 queries and one with
+none.
+
+| architecture | build | 100k queries | peak RSS | vs. source |
+|---|---|---|---|---|
+| reconstructed on demand | 0.40–0.50 s | 0.70–0.80 s | **54 MB** | 5.7× |
+| per record | 3.80–4.60 s | 0.30–0.60 s | 482 MB | 51× |
+| per value | 7.31–7.61 s | 0.70–1.80 s | **2 792 MB** | 294× |
+
+**Per-value provenance is refused.** 2.79 GB to hold the ancestry of a 9.5 MB
+file is not a tuning problem, and it is not even bought with speed: it is the
+slowest to build *and* the slowest and noisiest to answer, because a query walks
+four levels of record and array indirection through a working set that defeats
+the cache. §4 and §5 are therefore specified as **shapes a caller receives**,
+not as objects the framework stores one of per field.
+
+**The framework retains the source and computes locations on demand.** The
+measurement was built expecting a *trade* — that on-demand would buy its memory
+back with a query penalty — and **that expectation was wrong**. Per-record is
+faster to answer by roughly 0.2 s per 100,000 queries, i.e. about **two
+microseconds a query**, and pays 3.8 s of build and 428 MB for it. A consumer
+would need some two million provenance queries before the build cost alone paid
+back, while holding nine times the memory throughout.
+
+Two consequences for the phases below:
+
+- A layout is a property of the **format**, not of the data, so it is held once
+  whatever the record count. That is the whole reason per-record storage buys
+  so little: the per-record location is `record_base + layout_offset`, and the
+  base is already implied by the record index.
+- §5's `sources[]` and `transformations[]` remain **many-to-many and plural**,
+  because a revision may compose one concept from several fields. Nothing above
+  is an argument for a thinner model — only for not *materialising* it a
+  million times over.
+
+The oracle that makes the table mean anything is asserted in
+`tests/run_finio.sh`: all three architectures must answer the identical query
+workload with an **identical checksum**. Without it a mode could look cheap by
+answering a different question.
+
 ### Phase 1: Framework
 
 Implement:

@@ -6075,6 +6075,39 @@ whole program without needing a call site.
   applicants have. Its customary thresholds are returned as a **label and a
   stated rule of thumb**, never as a verdict, and a band empty in one population
   is refused rather than contributing an infinite index.
+- `finio` — financial-format adapters (`docs/financial_adapters_design.md`).
+  **Phase 0 only: the value model and the format registry. There is no adapter
+  yet**, and that is the phase — what it fixes is the shape everything above it
+  is built on. `finio.open_text(text, { format:, revision: [, origin:] })`
+  **retains the source** (Axiom 1) and records where each record begins;
+  `finio.layout(fields)` validates a fixed-width layout of
+  `{ concept:, offset:, length: }` (offsets are **0-based**, as `mid` is), held
+  **once per format** rather than per record. `finio.source_value(src, lay,
+  record, concept)` computes a field's provenance on demand —
+  `{ raw, location { record, byte_offset, byte_length }, format, revision }` —
+  and `finio.semantic_value(concept, value, sources, transformations)` is §5's
+  normalized value, whose `sources` is **plural and required**, because a
+  revision may compose one concept from several fields and a value with no
+  source has no provenance.
+  **Computed, not stored, and that was measured rather than preferred**: holding
+  provenance per value costs 2.79 GB for a 9.5 MB file and is also the slowest
+  to answer, while retaining the source costs 54 MB and about two microseconds a
+  query more than the per-record alternative (§21 records the table).
+  `finio.read_field(src, lay, record, concept, kind)` — kind `"text"` or
+  `"digits"` — answers `{ status, value, raw, source }` where **`status` is
+  `"ok"`, `"unknown"` or `"invalid"` and those are three different answers**
+  (Axiom 7): a blank field is unknown, a present field that fails its own rule
+  is invalid, and an unknown's `value` is `unknown` and never zero.
+  `finio.registry_states()` and `finio.acquisition_classes()` return §9's five
+  states and §10's six classes; `finio.check_registry_entry(entry)` refuses an
+  unknown field **by name**, an invented state or class, a state at or beyond
+  `spec_obtained` that names no `specification_sources`, and an implemented or
+  verified format without `implementation_allowed` (Axiom 12) — finding that a
+  format exists is not the same as being allowed to implement it.
+  `finio.adapter_rule(rule)` is §12's chain (`behavior`, `rule`, `evidence`,
+  `spec_revision`, `authority`, `retrieved`, all required), which answers a
+  **different question** from data provenance: not where a value came from but
+  why the adapter believes that element has that meaning.
 - `accounting` — double-entry bookkeeping, pure gBASIC over exact `money`
   (`docs/accounting_design.md`). `accounting.chart(accounts)` validates a chart
   of accounts and fixes each one's normal balance side from its `kind`
