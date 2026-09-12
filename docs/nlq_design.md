@@ -171,6 +171,46 @@ Two consequences for the increment below:
 
 ---
 
+## 4b. Measured: the context budget is 4096 tokens, and overflow is silent
+
+`qwen3:4b` declares a context length of **262144**. Ollama serves it with a
+default `num_ctx` of **4096**, and the declared figure is not what is used.
+
+Probed by putting a distinctive table name at the *head* of a growing prompt and
+asking for it at the *tail*:
+
+| prompt chars | `prompt_eval_count` | head survived |
+|---|---|---|
+| 572 | 228 | yes |
+| 9 412 | **4095** | no |
+| 28 212 | **4095** | no |
+| 71 012 | **4095** | no |
+
+**The count pins at 4095 and nothing is reported.** A 71 KB prompt is silently
+cut to about 10 KB of text. Worse for this task, it is the **head** that is
+discarded: the question at the tail survives while the schema above it does
+not, so a model handed a large catalog answers with **no schema at all** — and
+a model asked for SQL with no tables in front of it will confidently invent
+table names that look exactly like the real ones.
+
+Three consequences:
+
+- **This is the strongest argument yet for §2.** Retrieval is not an
+  optimisation for a small model, it is the difference between a grounded answer
+  and a confabulated one. The budget is roughly 4096 tokens *total* — question,
+  schema, value vocabulary, instructions and the model's own reply — which at
+  measured density (~2.5 chars/token) is about 30–60 table descriptions, not
+  121 and certainly not 500.
+- **The grounding must carry a size, and the prompt builder must refuse to
+  exceed it** rather than let the transport drop the schema. A refusal names a
+  budget; a truncation names nothing.
+- **`num_ctx` is a deployment decision, not a default to inherit.** Raising it
+  costs memory and speed on hardware that is already the bottleneck; the point
+  is that it must be *stated*, because the failure of leaving it unstated is
+  invisible.
+
+---
+
 ## 5. Scoring, and why not on SQL text
 
 `estateforge_design` §6 settles this and NLQ adopts it unchanged: the output is
