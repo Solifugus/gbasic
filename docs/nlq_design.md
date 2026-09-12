@@ -1,0 +1,127 @@
+# NLQ — a question, over an estate nobody can hold in their head
+
+**Status:** Design. Nothing is built.
+**Consumes:** `discovery` (the catalog and column lineage), `retrieval`,
+`llm`, `tools`, `odbc`. **Scored by:** `estateforge`'s `questions(plan)`.
+
+---
+
+## 1. What it is, and the one thing that can go wrong
+
+A person asks *"what was total volume last quarter?"* and gets a number.
+
+Between the two sits a 500-table estate that does not fit in a context window,
+forty columns named `amount`, two reports that both have a `total_volume` and
+are both correct, and a `customer2` table that is the live one while nothing in
+the schema says so.
+
+**NLQ's defect is never a crash.** It is a syntactically valid query that
+answers a *different question* and returns an ordinary-looking number. Nobody
+downstream can tell: the number has the right units, the right order of
+magnitude, and a confident sentence attached. That is the same shape as the
+decomposition in `automation_reasoning_design` §11 that produced an identical
+three-level causal chain from a real collapse and from pure noise, as the chart
+that drew a complete empty picture from a full frame, and as the ODBC read that
+narrowed a `DECIMAL(19,4)` into a double.
+
+The answer is the same one this tree keeps reaching: **make what can go wrong
+sayable, and refuse where a guess is indistinguishable from knowledge.**
+
+## 2. Why schema retrieval comes first, and is not a model problem
+
+`discovery_design` §2 already states it: *schema retrieval must precede
+prompting, since 500 tables do not fit in a context window.*
+
+That makes retrieval a **search**, and Recipe 1's finding applies without
+change: a search always returns a winner. Hand a model twenty tables chosen
+badly and it will write flawless SQL about the wrong ones — and the SQL will
+run, because the tables it was given are real.
+
+So retrieval is where NLQ is won or lost, and it is the part that **needs no
+model to evaluate**. `estateforge`'s `questions(plan)` records, for every
+question, the `touches[]` it actually needs. Retrieval can therefore be scored
+directly:
+
+> for each question, does the selected subset contain every table the question
+> touches — and how much else did it bring?
+
+Both halves are needed. Recall alone is maximised by selecting everything,
+which is precisely the failure retrieval exists to prevent; precision alone is
+maximised by selecting nothing. A benchmark reporting one of them is
+measuring the wrong thing.
+
+## 3. The first increment: retrieval and grounding, no model at all
+
+Deliberately mirroring `discovery`'s own choice of "declared facts only":
+
+- it has a **correctness criterion that needs no null model and no LLM** —
+  `touches[]` is the answer key, computed by estateforge from the plan;
+- it is what everything above it depends on, so a defect here is invisible and
+  fatal later;
+- it is **deterministic**, so it can be a gate rather than a sampled score.
+
+What it contains: given a catalog from `discovery` and a question in text,
+return a **grounding** — the tables and columns the question is about, each
+carrying why it was selected, plus what was *considered and rejected near the
+boundary*. Nothing is sent to a model and no SQL is written.
+
+Reporting the near-misses is not diagnostics. It is the difference between
+"the answer is `trading.deal`" and "the answer is `trading.deal`, and
+`trading.deal_archive` and `warehouse.fact_deal` were the next two" — which is
+the only form in which a reader can see that a search had a close call.
+
+## 4. What NLQ must refuse
+
+Each of these is a place where answering is worse than declining, because the
+wrong answer is indistinguishable from the right one.
+
+- **R1 — an ambiguous measure is not resolved silently.** A question naming
+  "amount" against forty columns called `amount` is refused with the candidates
+  named. Picking the first, the most common, or the highest-scoring is a guess
+  wearing the clothes of a lookup.
+- **R2 — two lineages are two answers.** Where a measure resolves to columns
+  with *different derivations* (the two `total_volume` reports), NLQ reports
+  both and the derivation that separates them. `discovery.lineage` can already
+  answer this; the failure is not using it.
+- **R3 — SQL may not name what retrieval did not surface.** A generated query
+  touching a table the grounding never selected is a hallucination that happens
+  to be spelled correctly. Refused, not executed.
+- **R4 — read-only, structurally.** Not by asking the model nicely.
+- **R5 — an answer never travels without its query.** The SQL, the tables
+  touched, and the assumptions made are part of the result, not logging. This is
+  Axiom 2 of `financial_adapters_design` one domain over, and for the same
+  reason: "where did this number come from" is the question a business asks
+  second, immediately.
+- **R6 — unanswerable is an outcome.** `discovery_design` §4: some facts are not
+  in the database at all. *Which* `customer` table is live is one of them. NLQ
+  reports the question as unanswerable from the catalog rather than choosing,
+  and names what would settle it.
+
+## 5. Scoring, and why not on SQL text
+
+`estateforge_design` §6 settles this and NLQ adopts it unchanged: the output is
+SQL but the **answer is a number**, and scoring SQL text is weak in both
+directions — many different correct queries answer one question, and a query
+textually close to the reference can be semantically wrong.
+
+So a run is scored on the **value**, against an answer estateforge computed from
+the plan and the rows directly rather than by running the reference SQL. And
+`exercises` is reported per capability — single-table, join, aggregate, column
+disambiguation, lineage-aware, pathology-aware — because a single percentage
+cannot say what to fix.
+
+**The refusals are scored too, and this is the half a benchmark usually
+misses.** A system that answers everything scores well on questions it should
+have declined. Each refusal above needs a question it must refuse *and* its
+nearest legal neighbour it must answer, or "NLQ is careful" is satisfied by a
+system that is merely useless.
+
+## 6. Deliberately not in the first increment
+
+- **Any call to a model.** It comes after retrieval can be trusted.
+- **Writing SQL.** Same reason.
+- **Joins inferred from value overlap.** That is `discovery`'s inference
+  increment, which needs a null model; NLQ consumes it and does not duplicate it.
+- **Conversation.** A follow-up question that refines the previous one is a real
+  requirement and a different problem; `agent` holds the run.
+- **Anything that writes.** R4.

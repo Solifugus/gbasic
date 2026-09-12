@@ -1,0 +1,4358 @@
+{
+ "columns": [
+  {
+   "column": "id",
+   "decl": "id integer primary key",
+   "schema": "trading",
+   "table": "counterparty"
+  },
+  {
+   "column": "counterparty_name",
+   "decl": "counterparty_name varchar(60)",
+   "schema": "trading",
+   "table": "counterparty"
+  },
+  {
+   "column": "enron_entity",
+   "decl": "enron_entity varchar(40)",
+   "schema": "trading",
+   "table": "counterparty"
+  },
+  {
+   "column": "status",
+   "decl": "status varchar(10)",
+   "schema": "trading",
+   "table": "counterparty"
+  },
+  {
+   "column": "id",
+   "decl": "id integer primary key",
+   "schema": "trading",
+   "table": "contract"
+  },
+  {
+   "column": "counterparty_id",
+   "decl": "counterparty_id integer",
+   "schema": "trading",
+   "table": "contract"
+  },
+  {
+   "column": "contract_date",
+   "decl": "contract_date date",
+   "schema": "trading",
+   "table": "contract"
+  },
+  {
+   "column": "contract_price",
+   "decl": "contract_price decimal(19,4)",
+   "schema": "trading",
+   "table": "contract"
+  },
+  {
+   "column": "status",
+   "decl": "status varchar(10)",
+   "schema": "trading",
+   "table": "contract"
+  },
+  {
+   "column": "code",
+   "decl": "code varchar(10) primary key",
+   "schema": "trading",
+   "table": "ctp"
+  },
+  {
+   "column": "ctp_name",
+   "decl": "ctp_name varchar(60)",
+   "schema": "trading",
+   "table": "ctp"
+  },
+  {
+   "column": "is_active",
+   "decl": "is_active integer",
+   "schema": "trading",
+   "table": "ctp"
+  },
+  {
+   "column": "id",
+   "decl": "id integer primary key",
+   "schema": "trading",
+   "table": "deal"
+  },
+  {
+   "column": "contract_ref",
+   "decl": "contract_ref varchar(10)",
+   "schema": "trading",
+   "table": "deal"
+  },
+  {
+   "column": "effective_date",
+   "decl": "effective_date date",
+   "schema": "trading",
+   "table": "deal"
+  },
+  {
+   "column": "gross_vol_mmbtu",
+   "decl": "gross_vol_mmbtu decimal(19,4)",
+   "schema": "trading",
+   "table": "deal"
+  },
+  {
+   "column": "pvr_pct",
+   "decl": "pvr_pct decimal(9,4)",
+   "schema": "trading",
+   "table": "deal"
+  },
+  {
+   "column": "ctp_code",
+   "decl": "ctp_code varchar(10)",
+   "schema": "trading",
+   "table": "deal"
+  },
+  {
+   "column": "deal_status",
+   "decl": "deal_status varchar(10)",
+   "schema": "trading",
+   "table": "deal"
+  },
+  {
+   "column": "acct_no",
+   "decl": "acct_no varchar(12) primary key",
+   "schema": "finance",
+   "table": "gl_account"
+  },
+  {
+   "column": "description",
+   "decl": "description varchar(60)",
+   "schema": "finance",
+   "table": "gl_account"
+  },
+  {
+   "column": "entry_id",
+   "decl": "entry_id integer primary key",
+   "schema": "finance",
+   "table": "gl_entry"
+  },
+  {
+   "column": "acct_no",
+   "decl": "acct_no varchar(12)",
+   "schema": "finance",
+   "table": "gl_entry"
+  },
+  {
+   "column": "reference",
+   "decl": "reference varchar(40)",
+   "schema": "finance",
+   "table": "gl_entry"
+  },
+  {
+   "column": "amount",
+   "decl": "amount decimal(19,4)",
+   "schema": "finance",
+   "table": "gl_entry"
+  },
+  {
+   "column": "posted",
+   "decl": "posted integer",
+   "schema": "finance",
+   "table": "gl_entry"
+  },
+  {
+   "column": "inv_no",
+   "decl": "inv_no integer primary key",
+   "schema": "finance",
+   "table": "ar_invoice"
+  },
+  {
+   "column": "cust_id",
+   "decl": "cust_id integer",
+   "schema": "finance",
+   "table": "ar_invoice"
+  },
+  {
+   "column": "inv_date",
+   "decl": "inv_date date",
+   "schema": "finance",
+   "table": "ar_invoice"
+  },
+  {
+   "column": "amount",
+   "decl": "amount decimal(19,4)",
+   "schema": "finance",
+   "table": "ar_invoice"
+  },
+  {
+   "column": "invoice_status",
+   "decl": "invoice_status varchar(10)",
+   "schema": "finance",
+   "table": "ar_invoice"
+  },
+  {
+   "column": "id",
+   "decl": "id integer primary key",
+   "schema": "procurement",
+   "table": "vendor"
+  },
+  {
+   "column": "vendor_name",
+   "decl": "vendor_name varchar(60)",
+   "schema": "procurement",
+   "table": "vendor"
+  },
+  {
+   "column": "incoterm",
+   "decl": "incoterm varchar(3)",
+   "schema": "procurement",
+   "table": "vendor"
+  },
+  {
+   "column": "vendor_status",
+   "decl": "vendor_status varchar(10)",
+   "schema": "procurement",
+   "table": "vendor"
+  },
+  {
+   "column": "id",
+   "decl": "id integer primary key",
+   "schema": "procurement",
+   "table": "requisition"
+  },
+  {
+   "column": "requested_by",
+   "decl": "requested_by varchar(60)",
+   "schema": "procurement",
+   "table": "requisition"
+  },
+  {
+   "column": "req_date",
+   "decl": "req_date date",
+   "schema": "procurement",
+   "table": "requisition"
+  },
+  {
+   "column": "cost_centre",
+   "decl": "cost_centre varchar(9)",
+   "schema": "procurement",
+   "table": "requisition"
+  },
+  {
+   "column": "req_status",
+   "decl": "req_status varchar(10)",
+   "schema": "procurement",
+   "table": "requisition"
+  },
+  {
+   "column": "id",
+   "decl": "id integer primary key",
+   "schema": "procurement",
+   "table": "purchase_order"
+  },
+  {
+   "column": "vendor_id",
+   "decl": "vendor_id integer",
+   "schema": "procurement",
+   "table": "purchase_order"
+  },
+  {
+   "column": "requisition_id",
+   "decl": "requisition_id integer",
+   "schema": "procurement",
+   "table": "purchase_order"
+  },
+  {
+   "column": "po_date",
+   "decl": "po_date date",
+   "schema": "procurement",
+   "table": "purchase_order"
+  },
+  {
+   "column": "po_status",
+   "decl": "po_status varchar(10)",
+   "schema": "procurement",
+   "table": "purchase_order"
+  },
+  {
+   "column": "id",
+   "decl": "id integer primary key",
+   "schema": "procurement",
+   "table": "po_line"
+  },
+  {
+   "column": "po_id",
+   "decl": "po_id integer",
+   "schema": "procurement",
+   "table": "po_line"
+  },
+  {
+   "column": "unspsc_code",
+   "decl": "unspsc_code varchar(8)",
+   "schema": "procurement",
+   "table": "po_line"
+  },
+  {
+   "column": "qty",
+   "decl": "qty decimal(19,4)",
+   "schema": "procurement",
+   "table": "po_line"
+  },
+  {
+   "column": "unit_price",
+   "decl": "unit_price decimal(19,4)",
+   "schema": "procurement",
+   "table": "po_line"
+  },
+  {
+   "column": "line_status",
+   "decl": "line_status varchar(10)",
+   "schema": "procurement",
+   "table": "po_line"
+  },
+  {
+   "column": "id",
+   "decl": "id integer primary key",
+   "schema": "procurement",
+   "table": "goods_receipt"
+  },
+  {
+   "column": "po_id",
+   "decl": "po_id integer",
+   "schema": "procurement",
+   "table": "goods_receipt"
+  },
+  {
+   "column": "received_date",
+   "decl": "received_date date",
+   "schema": "procurement",
+   "table": "goods_receipt"
+  },
+  {
+   "column": "qty_received",
+   "decl": "qty_received decimal(19,4)",
+   "schema": "procurement",
+   "table": "goods_receipt"
+  },
+  {
+   "column": "gr_status",
+   "decl": "gr_status varchar(10)",
+   "schema": "procurement",
+   "table": "goods_receipt"
+  },
+  {
+   "column": "ci_id",
+   "decl": "ci_id integer primary key",
+   "schema": "support",
+   "table": "ci"
+  },
+  {
+   "column": "ci_name",
+   "decl": "ci_name varchar(60)",
+   "schema": "support",
+   "table": "ci"
+  },
+  {
+   "column": "ci_class",
+   "decl": "ci_class varchar(20)",
+   "schema": "support",
+   "table": "ci"
+  },
+  {
+   "column": "ci_status",
+   "decl": "ci_status varchar(10)",
+   "schema": "support",
+   "table": "ci"
+  },
+  {
+   "column": "sla_code",
+   "decl": "sla_code varchar(10) primary key",
+   "schema": "support",
+   "table": "sla"
+  },
+  {
+   "column": "sla_name",
+   "decl": "sla_name varchar(60)",
+   "schema": "support",
+   "table": "sla"
+  },
+  {
+   "column": "response_mins",
+   "decl": "response_mins integer",
+   "schema": "support",
+   "table": "sla"
+  },
+  {
+   "column": "resolve_mins",
+   "decl": "resolve_mins integer",
+   "schema": "support",
+   "table": "sla"
+  },
+  {
+   "column": "incident_id",
+   "decl": "incident_id integer primary key",
+   "schema": "support",
+   "table": "incident"
+  },
+  {
+   "column": "ci_id",
+   "decl": "ci_id integer",
+   "schema": "support",
+   "table": "incident"
+  },
+  {
+   "column": "sla_code",
+   "decl": "sla_code varchar(10)",
+   "schema": "support",
+   "table": "incident"
+  },
+  {
+   "column": "opened_at",
+   "decl": "opened_at date",
+   "schema": "support",
+   "table": "incident"
+  },
+  {
+   "column": "minutes_to_resolve",
+   "decl": "minutes_to_resolve integer",
+   "schema": "support",
+   "table": "incident"
+  },
+  {
+   "column": "impact",
+   "decl": "impact integer",
+   "schema": "support",
+   "table": "incident"
+  },
+  {
+   "column": "urgency",
+   "decl": "urgency integer",
+   "schema": "support",
+   "table": "incident"
+  },
+  {
+   "column": "incident_status",
+   "decl": "incident_status varchar(10)",
+   "schema": "support",
+   "table": "incident"
+  },
+  {
+   "column": "code",
+   "decl": "code varchar(9) primary key",
+   "schema": "hr",
+   "table": "cost_centre"
+  },
+  {
+   "column": "centre_name",
+   "decl": "centre_name varchar(60)",
+   "schema": "hr",
+   "table": "cost_centre"
+  },
+  {
+   "column": "branch",
+   "decl": "branch varchar(3)",
+   "schema": "hr",
+   "table": "cost_centre"
+  },
+  {
+   "column": "dept_code",
+   "decl": "dept_code varchar(8) primary key",
+   "schema": "hr",
+   "table": "department"
+  },
+  {
+   "column": "dept_name",
+   "decl": "dept_name varchar(60)",
+   "schema": "hr",
+   "table": "department"
+  },
+  {
+   "column": "eeo_category",
+   "decl": "eeo_category varchar(60)",
+   "schema": "hr",
+   "table": "department"
+  },
+  {
+   "column": "burden_pct",
+   "decl": "burden_pct decimal(9,4)",
+   "schema": "hr",
+   "table": "department"
+  },
+  {
+   "column": "id",
+   "decl": "id integer primary key",
+   "schema": "hr",
+   "table": "employee"
+  },
+  {
+   "column": "employee_name",
+   "decl": "employee_name varchar(60)",
+   "schema": "hr",
+   "table": "employee"
+  },
+  {
+   "column": "dept_code",
+   "decl": "dept_code varchar(8)",
+   "schema": "hr",
+   "table": "employee"
+  },
+  {
+   "column": "cost_centre",
+   "decl": "cost_centre varchar(9)",
+   "schema": "hr",
+   "table": "employee"
+  },
+  {
+   "column": "isco_code",
+   "decl": "isco_code varchar(4)",
+   "schema": "hr",
+   "table": "employee"
+  },
+  {
+   "column": "flsa_status",
+   "decl": "flsa_status varchar(3)",
+   "schema": "hr",
+   "table": "employee"
+  },
+  {
+   "column": "hire_date",
+   "decl": "hire_date date",
+   "schema": "hr",
+   "table": "employee"
+  },
+  {
+   "column": "employee_status",
+   "decl": "employee_status varchar(10)",
+   "schema": "hr",
+   "table": "employee"
+  },
+  {
+   "column": "id",
+   "decl": "id integer primary key",
+   "schema": "hr",
+   "table": "pay_run"
+  },
+  {
+   "column": "period_end",
+   "decl": "period_end date",
+   "schema": "hr",
+   "table": "pay_run"
+  },
+  {
+   "column": "run_status",
+   "decl": "run_status varchar(10)",
+   "schema": "hr",
+   "table": "pay_run"
+  },
+  {
+   "column": "id",
+   "decl": "id integer primary key",
+   "schema": "hr",
+   "table": "pay_line"
+  },
+  {
+   "column": "pay_run_id",
+   "decl": "pay_run_id integer",
+   "schema": "hr",
+   "table": "pay_line"
+  },
+  {
+   "column": "employee_id",
+   "decl": "employee_id integer",
+   "schema": "hr",
+   "table": "pay_line"
+  },
+  {
+   "column": "earning_code",
+   "decl": "earning_code varchar(4)",
+   "schema": "hr",
+   "table": "pay_line"
+  },
+  {
+   "column": "amount",
+   "decl": "amount decimal(19,4)",
+   "schema": "hr",
+   "table": "pay_line"
+  },
+  {
+   "column": "id",
+   "decl": "id integer",
+   "schema": "warehouse",
+   "table": "stg_deal"
+  },
+  {
+   "column": "contract_ref",
+   "decl": "contract_ref varchar(10)",
+   "schema": "warehouse",
+   "table": "stg_deal"
+  },
+  {
+   "column": "effective_date",
+   "decl": "effective_date date",
+   "schema": "warehouse",
+   "table": "stg_deal"
+  },
+  {
+   "column": "gross_vol_mmbtu",
+   "decl": "gross_vol_mmbtu decimal(19,4)",
+   "schema": "warehouse",
+   "table": "stg_deal"
+  },
+  {
+   "column": "pvr_pct",
+   "decl": "pvr_pct decimal(9,4)",
+   "schema": "warehouse",
+   "table": "stg_deal"
+  },
+  {
+   "column": "ctp_code",
+   "decl": "ctp_code varchar(10)",
+   "schema": "warehouse",
+   "table": "stg_deal"
+  },
+  {
+   "column": "deal_status",
+   "decl": "deal_status varchar(10)",
+   "schema": "warehouse",
+   "table": "stg_deal"
+  },
+  {
+   "column": "deal_id",
+   "decl": "deal_id integer",
+   "schema": "warehouse",
+   "table": "fact_volume"
+  },
+  {
+   "column": "effective_date",
+   "decl": "effective_date date",
+   "schema": "warehouse",
+   "table": "fact_volume"
+  },
+  {
+   "column": "gross_vol_mmbtu",
+   "decl": "gross_vol_mmbtu decimal(19,4)",
+   "schema": "warehouse",
+   "table": "fact_volume"
+  },
+  {
+   "column": "avail_after_pvr",
+   "decl": "avail_after_pvr decimal(19,4)",
+   "schema": "warehouse",
+   "table": "fact_volume"
+  },
+  {
+   "column": "value_amount",
+   "decl": "value_amount decimal(19,4)",
+   "schema": "warehouse",
+   "table": "fact_volume"
+  },
+  {
+   "column": "deal_status",
+   "decl": "deal_status varchar(10)",
+   "schema": "warehouse",
+   "table": "fact_volume"
+  },
+  {
+   "column": "po_line_id",
+   "decl": "po_line_id integer",
+   "schema": "warehouse",
+   "table": "fact_spend"
+  },
+  {
+   "column": "po_id",
+   "decl": "po_id integer",
+   "schema": "warehouse",
+   "table": "fact_spend"
+  },
+  {
+   "column": "vendor_id",
+   "decl": "vendor_id integer",
+   "schema": "warehouse",
+   "table": "fact_spend"
+  },
+  {
+   "column": "spend_date",
+   "decl": "spend_date date",
+   "schema": "warehouse",
+   "table": "fact_spend"
+  },
+  {
+   "column": "spend_amount",
+   "decl": "spend_amount decimal(19,4)",
+   "schema": "warehouse",
+   "table": "fact_spend"
+  },
+  {
+   "column": "line_status",
+   "decl": "line_status varchar(10)",
+   "schema": "warehouse",
+   "table": "fact_spend"
+  },
+  {
+   "column": "incident_id",
+   "decl": "incident_id integer",
+   "schema": "warehouse",
+   "table": "fact_incident"
+  },
+  {
+   "column": "ci_id",
+   "decl": "ci_id integer",
+   "schema": "warehouse",
+   "table": "fact_incident"
+  },
+  {
+   "column": "opened_at",
+   "decl": "opened_at date",
+   "schema": "warehouse",
+   "table": "fact_incident"
+  },
+  {
+   "column": "minutes_to_resolve",
+   "decl": "minutes_to_resolve integer",
+   "schema": "warehouse",
+   "table": "fact_incident"
+  },
+  {
+   "column": "sla_resolve_mins",
+   "decl": "sla_resolve_mins integer",
+   "schema": "warehouse",
+   "table": "fact_incident"
+  },
+  {
+   "column": "breached",
+   "decl": "breached integer",
+   "schema": "warehouse",
+   "table": "fact_incident"
+  },
+  {
+   "column": "pay_line_id",
+   "decl": "pay_line_id integer",
+   "schema": "warehouse",
+   "table": "fact_payroll"
+  },
+  {
+   "column": "employee_id",
+   "decl": "employee_id integer",
+   "schema": "warehouse",
+   "table": "fact_payroll"
+  },
+  {
+   "column": "dept_code",
+   "decl": "dept_code varchar(8)",
+   "schema": "warehouse",
+   "table": "fact_payroll"
+  },
+  {
+   "column": "cost_centre",
+   "decl": "cost_centre varchar(9)",
+   "schema": "warehouse",
+   "table": "fact_payroll"
+  },
+  {
+   "column": "period_end",
+   "decl": "period_end date",
+   "schema": "warehouse",
+   "table": "fact_payroll"
+  },
+  {
+   "column": "earning_code",
+   "decl": "earning_code varchar(4)",
+   "schema": "warehouse",
+   "table": "fact_payroll"
+  },
+  {
+   "column": "gross_amount",
+   "decl": "gross_amount decimal(19,4)",
+   "schema": "warehouse",
+   "table": "fact_payroll"
+  },
+  {
+   "column": "employer_cost",
+   "decl": "employer_cost decimal(19,4)",
+   "schema": "warehouse",
+   "table": "fact_payroll"
+  },
+  {
+   "column": "code",
+   "decl": "code varchar(12) primary key",
+   "schema": "reference",
+   "table": "currency"
+  },
+  {
+   "column": "description",
+   "decl": "description varchar(80)",
+   "schema": "reference",
+   "table": "currency"
+  },
+  {
+   "column": "sort_order",
+   "decl": "sort_order integer",
+   "schema": "reference",
+   "table": "currency"
+  },
+  {
+   "column": "is_active",
+   "decl": "is_active integer",
+   "schema": "reference",
+   "table": "currency"
+  },
+  {
+   "column": "code",
+   "decl": "code varchar(12) primary key",
+   "schema": "reference",
+   "table": "country"
+  },
+  {
+   "column": "description",
+   "decl": "description varchar(80)",
+   "schema": "reference",
+   "table": "country"
+  },
+  {
+   "column": "sort_order",
+   "decl": "sort_order integer",
+   "schema": "reference",
+   "table": "country"
+  },
+  {
+   "column": "is_active",
+   "decl": "is_active integer",
+   "schema": "reference",
+   "table": "country"
+  },
+  {
+   "column": "code",
+   "decl": "code varchar(12) primary key",
+   "schema": "reference",
+   "table": "region"
+  },
+  {
+   "column": "description",
+   "decl": "description varchar(80)",
+   "schema": "reference",
+   "table": "region"
+  },
+  {
+   "column": "sort_order",
+   "decl": "sort_order integer",
+   "schema": "reference",
+   "table": "region"
+  },
+  {
+   "column": "is_active",
+   "decl": "is_active integer",
+   "schema": "reference",
+   "table": "region"
+  },
+  {
+   "column": "code",
+   "decl": "code varchar(12) primary key",
+   "schema": "reference",
+   "table": "state_province"
+  },
+  {
+   "column": "description",
+   "decl": "description varchar(80)",
+   "schema": "reference",
+   "table": "state_province"
+  },
+  {
+   "column": "sort_order",
+   "decl": "sort_order integer",
+   "schema": "reference",
+   "table": "state_province"
+  },
+  {
+   "column": "is_active",
+   "decl": "is_active integer",
+   "schema": "reference",
+   "table": "state_province"
+  },
+  {
+   "column": "code",
+   "decl": "code varchar(12) primary key",
+   "schema": "reference",
+   "table": "timezone"
+  },
+  {
+   "column": "description",
+   "decl": "description varchar(80)",
+   "schema": "reference",
+   "table": "timezone"
+  },
+  {
+   "column": "sort_order",
+   "decl": "sort_order integer",
+   "schema": "reference",
+   "table": "timezone"
+  },
+  {
+   "column": "is_active",
+   "decl": "is_active integer",
+   "schema": "reference",
+   "table": "timezone"
+  },
+  {
+   "column": "code",
+   "decl": "code varchar(12) primary key",
+   "schema": "reference",
+   "table": "calendar_day"
+  },
+  {
+   "column": "description",
+   "decl": "description varchar(80)",
+   "schema": "reference",
+   "table": "calendar_day"
+  },
+  {
+   "column": "sort_order",
+   "decl": "sort_order integer",
+   "schema": "reference",
+   "table": "calendar_day"
+  },
+  {
+   "column": "is_active",
+   "decl": "is_active integer",
+   "schema": "reference",
+   "table": "calendar_day"
+  },
+  {
+   "column": "code",
+   "decl": "code varchar(12) primary key",
+   "schema": "reference",
+   "table": "calendar_month"
+  },
+  {
+   "column": "description",
+   "decl": "description varchar(80)",
+   "schema": "reference",
+   "table": "calendar_month"
+  },
+  {
+   "column": "sort_order",
+   "decl": "sort_order integer",
+   "schema": "reference",
+   "table": "calendar_month"
+  },
+  {
+   "column": "is_active",
+   "decl": "is_active integer",
+   "schema": "reference",
+   "table": "calendar_month"
+  },
+  {
+   "column": "code",
+   "decl": "code varchar(12) primary key",
+   "schema": "reference",
+   "table": "fiscal_period"
+  },
+  {
+   "column": "description",
+   "decl": "description varchar(80)",
+   "schema": "reference",
+   "table": "fiscal_period"
+  },
+  {
+   "column": "sort_order",
+   "decl": "sort_order integer",
+   "schema": "reference",
+   "table": "fiscal_period"
+  },
+  {
+   "column": "is_active",
+   "decl": "is_active integer",
+   "schema": "reference",
+   "table": "fiscal_period"
+  },
+  {
+   "column": "code",
+   "decl": "code varchar(12) primary key",
+   "schema": "reference",
+   "table": "holiday"
+  },
+  {
+   "column": "description",
+   "decl": "description varchar(80)",
+   "schema": "reference",
+   "table": "holiday"
+  },
+  {
+   "column": "sort_order",
+   "decl": "sort_order integer",
+   "schema": "reference",
+   "table": "holiday"
+  },
+  {
+   "column": "is_active",
+   "decl": "is_active integer",
+   "schema": "reference",
+   "table": "holiday"
+  },
+  {
+   "column": "code",
+   "decl": "code varchar(12) primary key",
+   "schema": "reference",
+   "table": "unit_of_measure"
+  },
+  {
+   "column": "description",
+   "decl": "description varchar(80)",
+   "schema": "reference",
+   "table": "unit_of_measure"
+  },
+  {
+   "column": "sort_order",
+   "decl": "sort_order integer",
+   "schema": "reference",
+   "table": "unit_of_measure"
+  },
+  {
+   "column": "is_active",
+   "decl": "is_active integer",
+   "schema": "reference",
+   "table": "unit_of_measure"
+  },
+  {
+   "column": "code",
+   "decl": "code varchar(12) primary key",
+   "schema": "reference",
+   "table": "uom_conversion"
+  },
+  {
+   "column": "description",
+   "decl": "description varchar(80)",
+   "schema": "reference",
+   "table": "uom_conversion"
+  },
+  {
+   "column": "sort_order",
+   "decl": "sort_order integer",
+   "schema": "reference",
+   "table": "uom_conversion"
+  },
+  {
+   "column": "is_active",
+   "decl": "is_active integer",
+   "schema": "reference",
+   "table": "uom_conversion"
+  },
+  {
+   "column": "code",
+   "decl": "code varchar(12) primary key",
+   "schema": "reference",
+   "table": "language"
+  },
+  {
+   "column": "description",
+   "decl": "description varchar(80)",
+   "schema": "reference",
+   "table": "language"
+  },
+  {
+   "column": "sort_order",
+   "decl": "sort_order integer",
+   "schema": "reference",
+   "table": "language"
+  },
+  {
+   "column": "is_active",
+   "decl": "is_active integer",
+   "schema": "reference",
+   "table": "language"
+  },
+  {
+   "column": "code",
+   "decl": "code varchar(12) primary key",
+   "schema": "reference",
+   "table": "tax_code"
+  },
+  {
+   "column": "description",
+   "decl": "description varchar(80)",
+   "schema": "reference",
+   "table": "tax_code"
+  },
+  {
+   "column": "sort_order",
+   "decl": "sort_order integer",
+   "schema": "reference",
+   "table": "tax_code"
+  },
+  {
+   "column": "is_active",
+   "decl": "is_active integer",
+   "schema": "reference",
+   "table": "tax_code"
+  },
+  {
+   "column": "code",
+   "decl": "code varchar(12) primary key",
+   "schema": "reference",
+   "table": "tax_jurisdiction"
+  },
+  {
+   "column": "description",
+   "decl": "description varchar(80)",
+   "schema": "reference",
+   "table": "tax_jurisdiction"
+  },
+  {
+   "column": "sort_order",
+   "decl": "sort_order integer",
+   "schema": "reference",
+   "table": "tax_jurisdiction"
+  },
+  {
+   "column": "is_active",
+   "decl": "is_active integer",
+   "schema": "reference",
+   "table": "tax_jurisdiction"
+  },
+  {
+   "column": "code",
+   "decl": "code varchar(12) primary key",
+   "schema": "reference",
+   "table": "payment_term"
+  },
+  {
+   "column": "description",
+   "decl": "description varchar(80)",
+   "schema": "reference",
+   "table": "payment_term"
+  },
+  {
+   "column": "sort_order",
+   "decl": "sort_order integer",
+   "schema": "reference",
+   "table": "payment_term"
+  },
+  {
+   "column": "is_active",
+   "decl": "is_active integer",
+   "schema": "reference",
+   "table": "payment_term"
+  },
+  {
+   "column": "code",
+   "decl": "code varchar(12) primary key",
+   "schema": "reference",
+   "table": "incoterm"
+  },
+  {
+   "column": "description",
+   "decl": "description varchar(80)",
+   "schema": "reference",
+   "table": "incoterm"
+  },
+  {
+   "column": "sort_order",
+   "decl": "sort_order integer",
+   "schema": "reference",
+   "table": "incoterm"
+  },
+  {
+   "column": "is_active",
+   "decl": "is_active integer",
+   "schema": "reference",
+   "table": "incoterm"
+  },
+  {
+   "column": "code",
+   "decl": "code varchar(12) primary key",
+   "schema": "reference",
+   "table": "commodity"
+  },
+  {
+   "column": "description",
+   "decl": "description varchar(80)",
+   "schema": "reference",
+   "table": "commodity"
+  },
+  {
+   "column": "sort_order",
+   "decl": "sort_order integer",
+   "schema": "reference",
+   "table": "commodity"
+  },
+  {
+   "column": "is_active",
+   "decl": "is_active integer",
+   "schema": "reference",
+   "table": "commodity"
+  },
+  {
+   "column": "code",
+   "decl": "code varchar(12) primary key",
+   "schema": "reference",
+   "table": "commodity_grade"
+  },
+  {
+   "column": "description",
+   "decl": "description varchar(80)",
+   "schema": "reference",
+   "table": "commodity_grade"
+  },
+  {
+   "column": "sort_order",
+   "decl": "sort_order integer",
+   "schema": "reference",
+   "table": "commodity_grade"
+  },
+  {
+   "column": "is_active",
+   "decl": "is_active integer",
+   "schema": "reference",
+   "table": "commodity_grade"
+  },
+  {
+   "column": "id",
+   "decl": "id integer primary key",
+   "schema": "trading_emea",
+   "table": "counterparty"
+  },
+  {
+   "column": "counterparty_name",
+   "decl": "counterparty_name varchar(60)",
+   "schema": "trading_emea",
+   "table": "counterparty"
+  },
+  {
+   "column": "enron_entity",
+   "decl": "enron_entity varchar(40)",
+   "schema": "trading_emea",
+   "table": "counterparty"
+  },
+  {
+   "column": "counterparty_status",
+   "decl": "counterparty_status varchar(10)",
+   "schema": "trading_emea",
+   "table": "counterparty"
+  },
+  {
+   "column": "id",
+   "decl": "id integer primary key",
+   "schema": "trading_emea",
+   "table": "contract"
+  },
+  {
+   "column": "counterparty_id",
+   "decl": "counterparty_id integer",
+   "schema": "trading_emea",
+   "table": "contract"
+  },
+  {
+   "column": "contract_date",
+   "decl": "contract_date date",
+   "schema": "trading_emea",
+   "table": "contract"
+  },
+  {
+   "column": "contract_price",
+   "decl": "contract_price decimal(19,4)",
+   "schema": "trading_emea",
+   "table": "contract"
+  },
+  {
+   "column": "contract_status",
+   "decl": "contract_status varchar(10)",
+   "schema": "trading_emea",
+   "table": "contract"
+  },
+  {
+   "column": "code",
+   "decl": "code varchar(10) primary key",
+   "schema": "trading_emea",
+   "table": "ctp"
+  },
+  {
+   "column": "ctp_name",
+   "decl": "ctp_name varchar(60)",
+   "schema": "trading_emea",
+   "table": "ctp"
+  },
+  {
+   "column": "is_active",
+   "decl": "is_active integer",
+   "schema": "trading_emea",
+   "table": "ctp"
+  },
+  {
+   "column": "id",
+   "decl": "id integer primary key",
+   "schema": "trading_emea",
+   "table": "deal"
+  },
+  {
+   "column": "contract_id",
+   "decl": "contract_id integer",
+   "schema": "trading_emea",
+   "table": "deal"
+  },
+  {
+   "column": "effective_date",
+   "decl": "effective_date date",
+   "schema": "trading_emea",
+   "table": "deal"
+  },
+  {
+   "column": "gross_vol_mmbtu",
+   "decl": "gross_vol_mmbtu decimal(19,4)",
+   "schema": "trading_emea",
+   "table": "deal"
+  },
+  {
+   "column": "pvr_pct",
+   "decl": "pvr_pct decimal(9,4)",
+   "schema": "trading_emea",
+   "table": "deal"
+  },
+  {
+   "column": "ctp_code",
+   "decl": "ctp_code varchar(10)",
+   "schema": "trading_emea",
+   "table": "deal"
+  },
+  {
+   "column": "deal_status",
+   "decl": "deal_status varchar(10)",
+   "schema": "trading_emea",
+   "table": "deal"
+  },
+  {
+   "column": "id",
+   "decl": "id integer primary key",
+   "schema": "trading_emea",
+   "table": "nomination"
+  },
+  {
+   "column": "deal_id",
+   "decl": "deal_id integer",
+   "schema": "trading_emea",
+   "table": "nomination"
+  },
+  {
+   "column": "nom_date",
+   "decl": "nom_date date",
+   "schema": "trading_emea",
+   "table": "nomination"
+  },
+  {
+   "column": "nom_vol_mmbtu",
+   "decl": "nom_vol_mmbtu decimal(19,4)",
+   "schema": "trading_emea",
+   "table": "nomination"
+  },
+  {
+   "column": "nom_status",
+   "decl": "nom_status varchar(10)",
+   "schema": "trading_emea",
+   "table": "nomination"
+  },
+  {
+   "column": "id",
+   "decl": "id integer primary key",
+   "schema": "trading_emea",
+   "table": "confirmation"
+  },
+  {
+   "column": "deal_id",
+   "decl": "deal_id integer",
+   "schema": "trading_emea",
+   "table": "confirmation"
+  },
+  {
+   "column": "confirmed_at",
+   "decl": "confirmed_at date",
+   "schema": "trading_emea",
+   "table": "confirmation"
+  },
+  {
+   "column": "confirm_status",
+   "decl": "confirm_status varchar(10)",
+   "schema": "trading_emea",
+   "table": "confirmation"
+  },
+  {
+   "column": "id",
+   "decl": "id integer primary key",
+   "schema": "trading_emea",
+   "table": "settlement"
+  },
+  {
+   "column": "deal_id",
+   "decl": "deal_id integer",
+   "schema": "trading_emea",
+   "table": "settlement"
+  },
+  {
+   "column": "settle_date",
+   "decl": "settle_date date",
+   "schema": "trading_emea",
+   "table": "settlement"
+  },
+  {
+   "column": "settle_amount",
+   "decl": "settle_amount decimal(19,4)",
+   "schema": "trading_emea",
+   "table": "settlement"
+  },
+  {
+   "column": "settle_status",
+   "decl": "settle_status varchar(10)",
+   "schema": "trading_emea",
+   "table": "settlement"
+  },
+  {
+   "column": "acct_no",
+   "decl": "acct_no varchar(12) primary key",
+   "schema": "trading_emea",
+   "table": "gl_account"
+  },
+  {
+   "column": "description",
+   "decl": "description varchar(60)",
+   "schema": "trading_emea",
+   "table": "gl_account"
+  },
+  {
+   "column": "entry_id",
+   "decl": "entry_id integer primary key",
+   "schema": "trading_emea",
+   "table": "gl_entry"
+  },
+  {
+   "column": "acct_no",
+   "decl": "acct_no varchar(12)",
+   "schema": "trading_emea",
+   "table": "gl_entry"
+  },
+  {
+   "column": "deal_id",
+   "decl": "deal_id integer",
+   "schema": "trading_emea",
+   "table": "gl_entry"
+  },
+  {
+   "column": "amount",
+   "decl": "amount decimal(19,4)",
+   "schema": "trading_emea",
+   "table": "gl_entry"
+  },
+  {
+   "column": "posted",
+   "decl": "posted integer",
+   "schema": "trading_emea",
+   "table": "gl_entry"
+  },
+  {
+   "column": "inv_no",
+   "decl": "inv_no integer primary key",
+   "schema": "trading_emea",
+   "table": "ar_invoice"
+  },
+  {
+   "column": "counterparty_id",
+   "decl": "counterparty_id integer",
+   "schema": "trading_emea",
+   "table": "ar_invoice"
+  },
+  {
+   "column": "inv_date",
+   "decl": "inv_date date",
+   "schema": "trading_emea",
+   "table": "ar_invoice"
+  },
+  {
+   "column": "amount",
+   "decl": "amount decimal(19,4)",
+   "schema": "trading_emea",
+   "table": "ar_invoice"
+  },
+  {
+   "column": "invoice_status",
+   "decl": "invoice_status varchar(10)",
+   "schema": "trading_emea",
+   "table": "ar_invoice"
+  },
+  {
+   "column": "ci_id",
+   "decl": "ci_id integer primary key",
+   "schema": "trading_emea",
+   "table": "ci"
+  },
+  {
+   "column": "ci_name",
+   "decl": "ci_name varchar(60)",
+   "schema": "trading_emea",
+   "table": "ci"
+  },
+  {
+   "column": "ci_class",
+   "decl": "ci_class varchar(20)",
+   "schema": "trading_emea",
+   "table": "ci"
+  },
+  {
+   "column": "ci_status",
+   "decl": "ci_status varchar(10)",
+   "schema": "trading_emea",
+   "table": "ci"
+  },
+  {
+   "column": "sla_code",
+   "decl": "sla_code varchar(10) primary key",
+   "schema": "trading_emea",
+   "table": "sla"
+  },
+  {
+   "column": "sla_name",
+   "decl": "sla_name varchar(60)",
+   "schema": "trading_emea",
+   "table": "sla"
+  },
+  {
+   "column": "response_mins",
+   "decl": "response_mins integer",
+   "schema": "trading_emea",
+   "table": "sla"
+  },
+  {
+   "column": "resolve_mins",
+   "decl": "resolve_mins integer",
+   "schema": "trading_emea",
+   "table": "sla"
+  },
+  {
+   "column": "incident_id",
+   "decl": "incident_id integer primary key",
+   "schema": "trading_emea",
+   "table": "incident"
+  },
+  {
+   "column": "ci_id",
+   "decl": "ci_id integer",
+   "schema": "trading_emea",
+   "table": "incident"
+  },
+  {
+   "column": "sla_code",
+   "decl": "sla_code varchar(10)",
+   "schema": "trading_emea",
+   "table": "incident"
+  },
+  {
+   "column": "opened_at",
+   "decl": "opened_at date",
+   "schema": "trading_emea",
+   "table": "incident"
+  },
+  {
+   "column": "minutes_to_resolve",
+   "decl": "minutes_to_resolve integer",
+   "schema": "trading_emea",
+   "table": "incident"
+  },
+  {
+   "column": "impact",
+   "decl": "impact integer",
+   "schema": "trading_emea",
+   "table": "incident"
+  },
+  {
+   "column": "urgency",
+   "decl": "urgency integer",
+   "schema": "trading_emea",
+   "table": "incident"
+  },
+  {
+   "column": "incident_status",
+   "decl": "incident_status varchar(10)",
+   "schema": "trading_emea",
+   "table": "incident"
+  },
+  {
+   "column": "id",
+   "decl": "id integer primary key",
+   "schema": "trading_emea",
+   "table": "audit_trail"
+  },
+  {
+   "column": "table_name",
+   "decl": "table_name varchar(60)",
+   "schema": "trading_emea",
+   "table": "audit_trail"
+  },
+  {
+   "column": "row_id",
+   "decl": "row_id integer",
+   "schema": "trading_emea",
+   "table": "audit_trail"
+  },
+  {
+   "column": "changed_at",
+   "decl": "changed_at date",
+   "schema": "trading_emea",
+   "table": "audit_trail"
+  },
+  {
+   "column": "id",
+   "decl": "id integer primary key",
+   "schema": "trading_apac",
+   "table": "counterparty"
+  },
+  {
+   "column": "counterparty_name",
+   "decl": "counterparty_name varchar(60)",
+   "schema": "trading_apac",
+   "table": "counterparty"
+  },
+  {
+   "column": "enron_entity",
+   "decl": "enron_entity varchar(40)",
+   "schema": "trading_apac",
+   "table": "counterparty"
+  },
+  {
+   "column": "counterparty_status",
+   "decl": "counterparty_status varchar(10)",
+   "schema": "trading_apac",
+   "table": "counterparty"
+  },
+  {
+   "column": "id",
+   "decl": "id integer primary key",
+   "schema": "trading_apac",
+   "table": "contract"
+  },
+  {
+   "column": "counterparty_id",
+   "decl": "counterparty_id integer",
+   "schema": "trading_apac",
+   "table": "contract"
+  },
+  {
+   "column": "contract_date",
+   "decl": "contract_date date",
+   "schema": "trading_apac",
+   "table": "contract"
+  },
+  {
+   "column": "contract_price",
+   "decl": "contract_price decimal(19,4)",
+   "schema": "trading_apac",
+   "table": "contract"
+  },
+  {
+   "column": "contract_status",
+   "decl": "contract_status varchar(10)",
+   "schema": "trading_apac",
+   "table": "contract"
+  },
+  {
+   "column": "code",
+   "decl": "code varchar(10) primary key",
+   "schema": "trading_apac",
+   "table": "ctp"
+  },
+  {
+   "column": "ctp_name",
+   "decl": "ctp_name varchar(60)",
+   "schema": "trading_apac",
+   "table": "ctp"
+  },
+  {
+   "column": "is_active",
+   "decl": "is_active integer",
+   "schema": "trading_apac",
+   "table": "ctp"
+  },
+  {
+   "column": "id",
+   "decl": "id integer primary key",
+   "schema": "trading_apac",
+   "table": "deal"
+  },
+  {
+   "column": "contract_id",
+   "decl": "contract_id integer",
+   "schema": "trading_apac",
+   "table": "deal"
+  },
+  {
+   "column": "effective_date",
+   "decl": "effective_date date",
+   "schema": "trading_apac",
+   "table": "deal"
+  },
+  {
+   "column": "gross_vol_mmbtu",
+   "decl": "gross_vol_mmbtu decimal(19,4)",
+   "schema": "trading_apac",
+   "table": "deal"
+  },
+  {
+   "column": "pvr_pct",
+   "decl": "pvr_pct decimal(9,4)",
+   "schema": "trading_apac",
+   "table": "deal"
+  },
+  {
+   "column": "ctp_code",
+   "decl": "ctp_code varchar(10)",
+   "schema": "trading_apac",
+   "table": "deal"
+  },
+  {
+   "column": "deal_status",
+   "decl": "deal_status varchar(10)",
+   "schema": "trading_apac",
+   "table": "deal"
+  },
+  {
+   "column": "id",
+   "decl": "id integer primary key",
+   "schema": "trading_apac",
+   "table": "nomination"
+  },
+  {
+   "column": "deal_id",
+   "decl": "deal_id integer",
+   "schema": "trading_apac",
+   "table": "nomination"
+  },
+  {
+   "column": "nom_date",
+   "decl": "nom_date date",
+   "schema": "trading_apac",
+   "table": "nomination"
+  },
+  {
+   "column": "nom_vol_mmbtu",
+   "decl": "nom_vol_mmbtu decimal(19,4)",
+   "schema": "trading_apac",
+   "table": "nomination"
+  },
+  {
+   "column": "nom_status",
+   "decl": "nom_status varchar(10)",
+   "schema": "trading_apac",
+   "table": "nomination"
+  },
+  {
+   "column": "id",
+   "decl": "id integer primary key",
+   "schema": "trading_apac",
+   "table": "confirmation"
+  },
+  {
+   "column": "deal_id",
+   "decl": "deal_id integer",
+   "schema": "trading_apac",
+   "table": "confirmation"
+  },
+  {
+   "column": "confirmed_at",
+   "decl": "confirmed_at date",
+   "schema": "trading_apac",
+   "table": "confirmation"
+  },
+  {
+   "column": "confirm_status",
+   "decl": "confirm_status varchar(10)",
+   "schema": "trading_apac",
+   "table": "confirmation"
+  },
+  {
+   "column": "id",
+   "decl": "id integer primary key",
+   "schema": "trading_apac",
+   "table": "settlement"
+  },
+  {
+   "column": "deal_id",
+   "decl": "deal_id integer",
+   "schema": "trading_apac",
+   "table": "settlement"
+  },
+  {
+   "column": "settle_date",
+   "decl": "settle_date date",
+   "schema": "trading_apac",
+   "table": "settlement"
+  },
+  {
+   "column": "settle_amount",
+   "decl": "settle_amount decimal(19,4)",
+   "schema": "trading_apac",
+   "table": "settlement"
+  },
+  {
+   "column": "settle_status",
+   "decl": "settle_status varchar(10)",
+   "schema": "trading_apac",
+   "table": "settlement"
+  },
+  {
+   "column": "acct_no",
+   "decl": "acct_no varchar(12) primary key",
+   "schema": "trading_apac",
+   "table": "gl_account"
+  },
+  {
+   "column": "description",
+   "decl": "description varchar(60)",
+   "schema": "trading_apac",
+   "table": "gl_account"
+  },
+  {
+   "column": "entry_id",
+   "decl": "entry_id integer primary key",
+   "schema": "trading_apac",
+   "table": "gl_entry"
+  },
+  {
+   "column": "acct_no",
+   "decl": "acct_no varchar(12)",
+   "schema": "trading_apac",
+   "table": "gl_entry"
+  },
+  {
+   "column": "deal_id",
+   "decl": "deal_id integer",
+   "schema": "trading_apac",
+   "table": "gl_entry"
+  },
+  {
+   "column": "amount",
+   "decl": "amount decimal(19,4)",
+   "schema": "trading_apac",
+   "table": "gl_entry"
+  },
+  {
+   "column": "posted",
+   "decl": "posted integer",
+   "schema": "trading_apac",
+   "table": "gl_entry"
+  },
+  {
+   "column": "inv_no",
+   "decl": "inv_no integer primary key",
+   "schema": "trading_apac",
+   "table": "ar_invoice"
+  },
+  {
+   "column": "counterparty_id",
+   "decl": "counterparty_id integer",
+   "schema": "trading_apac",
+   "table": "ar_invoice"
+  },
+  {
+   "column": "inv_date",
+   "decl": "inv_date date",
+   "schema": "trading_apac",
+   "table": "ar_invoice"
+  },
+  {
+   "column": "amount",
+   "decl": "amount decimal(19,4)",
+   "schema": "trading_apac",
+   "table": "ar_invoice"
+  },
+  {
+   "column": "invoice_status",
+   "decl": "invoice_status varchar(10)",
+   "schema": "trading_apac",
+   "table": "ar_invoice"
+  },
+  {
+   "column": "ci_id",
+   "decl": "ci_id integer primary key",
+   "schema": "trading_apac",
+   "table": "ci"
+  },
+  {
+   "column": "ci_name",
+   "decl": "ci_name varchar(60)",
+   "schema": "trading_apac",
+   "table": "ci"
+  },
+  {
+   "column": "ci_class",
+   "decl": "ci_class varchar(20)",
+   "schema": "trading_apac",
+   "table": "ci"
+  },
+  {
+   "column": "ci_status",
+   "decl": "ci_status varchar(10)",
+   "schema": "trading_apac",
+   "table": "ci"
+  },
+  {
+   "column": "sla_code",
+   "decl": "sla_code varchar(10) primary key",
+   "schema": "trading_apac",
+   "table": "sla"
+  },
+  {
+   "column": "sla_name",
+   "decl": "sla_name varchar(60)",
+   "schema": "trading_apac",
+   "table": "sla"
+  },
+  {
+   "column": "response_mins",
+   "decl": "response_mins integer",
+   "schema": "trading_apac",
+   "table": "sla"
+  },
+  {
+   "column": "resolve_mins",
+   "decl": "resolve_mins integer",
+   "schema": "trading_apac",
+   "table": "sla"
+  },
+  {
+   "column": "incident_id",
+   "decl": "incident_id integer primary key",
+   "schema": "trading_apac",
+   "table": "incident"
+  },
+  {
+   "column": "ci_id",
+   "decl": "ci_id integer",
+   "schema": "trading_apac",
+   "table": "incident"
+  },
+  {
+   "column": "sla_code",
+   "decl": "sla_code varchar(10)",
+   "schema": "trading_apac",
+   "table": "incident"
+  },
+  {
+   "column": "opened_at",
+   "decl": "opened_at date",
+   "schema": "trading_apac",
+   "table": "incident"
+  },
+  {
+   "column": "minutes_to_resolve",
+   "decl": "minutes_to_resolve integer",
+   "schema": "trading_apac",
+   "table": "incident"
+  },
+  {
+   "column": "impact",
+   "decl": "impact integer",
+   "schema": "trading_apac",
+   "table": "incident"
+  },
+  {
+   "column": "urgency",
+   "decl": "urgency integer",
+   "schema": "trading_apac",
+   "table": "incident"
+  },
+  {
+   "column": "incident_status",
+   "decl": "incident_status varchar(10)",
+   "schema": "trading_apac",
+   "table": "incident"
+  },
+  {
+   "column": "id",
+   "decl": "id integer primary key",
+   "schema": "trading_apac",
+   "table": "audit_trail"
+  },
+  {
+   "column": "table_name",
+   "decl": "table_name varchar(60)",
+   "schema": "trading_apac",
+   "table": "audit_trail"
+  },
+  {
+   "column": "row_id",
+   "decl": "row_id integer",
+   "schema": "trading_apac",
+   "table": "audit_trail"
+  },
+  {
+   "column": "changed_at",
+   "decl": "changed_at date",
+   "schema": "trading_apac",
+   "table": "audit_trail"
+  },
+  {
+   "column": "sk",
+   "decl": "sk integer primary key",
+   "schema": "warehouse",
+   "table": "dim_counterparty"
+  },
+  {
+   "column": "business_key",
+   "decl": "business_key varchar(40)",
+   "schema": "warehouse",
+   "table": "dim_counterparty"
+  },
+  {
+   "column": "attr_name",
+   "decl": "attr_name varchar(80)",
+   "schema": "warehouse",
+   "table": "dim_counterparty"
+  },
+  {
+   "column": "valid_from",
+   "decl": "valid_from date",
+   "schema": "warehouse",
+   "table": "dim_counterparty"
+  },
+  {
+   "column": "valid_to",
+   "decl": "valid_to date",
+   "schema": "warehouse",
+   "table": "dim_counterparty"
+  },
+  {
+   "column": "is_current",
+   "decl": "is_current integer",
+   "schema": "warehouse",
+   "table": "dim_counterparty"
+  },
+  {
+   "column": "sk",
+   "decl": "sk integer primary key",
+   "schema": "warehouse",
+   "table": "dim_contract"
+  },
+  {
+   "column": "business_key",
+   "decl": "business_key varchar(40)",
+   "schema": "warehouse",
+   "table": "dim_contract"
+  },
+  {
+   "column": "attr_name",
+   "decl": "attr_name varchar(80)",
+   "schema": "warehouse",
+   "table": "dim_contract"
+  },
+  {
+   "column": "valid_from",
+   "decl": "valid_from date",
+   "schema": "warehouse",
+   "table": "dim_contract"
+  },
+  {
+   "column": "valid_to",
+   "decl": "valid_to date",
+   "schema": "warehouse",
+   "table": "dim_contract"
+  },
+  {
+   "column": "is_current",
+   "decl": "is_current integer",
+   "schema": "warehouse",
+   "table": "dim_contract"
+  },
+  {
+   "column": "sk",
+   "decl": "sk integer primary key",
+   "schema": "warehouse",
+   "table": "dim_deal"
+  },
+  {
+   "column": "business_key",
+   "decl": "business_key varchar(40)",
+   "schema": "warehouse",
+   "table": "dim_deal"
+  },
+  {
+   "column": "attr_name",
+   "decl": "attr_name varchar(80)",
+   "schema": "warehouse",
+   "table": "dim_deal"
+  },
+  {
+   "column": "valid_from",
+   "decl": "valid_from date",
+   "schema": "warehouse",
+   "table": "dim_deal"
+  },
+  {
+   "column": "valid_to",
+   "decl": "valid_to date",
+   "schema": "warehouse",
+   "table": "dim_deal"
+  },
+  {
+   "column": "is_current",
+   "decl": "is_current integer",
+   "schema": "warehouse",
+   "table": "dim_deal"
+  },
+  {
+   "column": "sk",
+   "decl": "sk integer primary key",
+   "schema": "warehouse",
+   "table": "dim_ctp"
+  },
+  {
+   "column": "business_key",
+   "decl": "business_key varchar(40)",
+   "schema": "warehouse",
+   "table": "dim_ctp"
+  },
+  {
+   "column": "attr_name",
+   "decl": "attr_name varchar(80)",
+   "schema": "warehouse",
+   "table": "dim_ctp"
+  },
+  {
+   "column": "valid_from",
+   "decl": "valid_from date",
+   "schema": "warehouse",
+   "table": "dim_ctp"
+  },
+  {
+   "column": "valid_to",
+   "decl": "valid_to date",
+   "schema": "warehouse",
+   "table": "dim_ctp"
+  },
+  {
+   "column": "is_current",
+   "decl": "is_current integer",
+   "schema": "warehouse",
+   "table": "dim_ctp"
+  },
+  {
+   "column": "sk",
+   "decl": "sk integer primary key",
+   "schema": "warehouse",
+   "table": "dim_calendar"
+  },
+  {
+   "column": "business_key",
+   "decl": "business_key varchar(40)",
+   "schema": "warehouse",
+   "table": "dim_calendar"
+  },
+  {
+   "column": "attr_name",
+   "decl": "attr_name varchar(80)",
+   "schema": "warehouse",
+   "table": "dim_calendar"
+  },
+  {
+   "column": "valid_from",
+   "decl": "valid_from date",
+   "schema": "warehouse",
+   "table": "dim_calendar"
+  },
+  {
+   "column": "valid_to",
+   "decl": "valid_to date",
+   "schema": "warehouse",
+   "table": "dim_calendar"
+  },
+  {
+   "column": "is_current",
+   "decl": "is_current integer",
+   "schema": "warehouse",
+   "table": "dim_calendar"
+  },
+  {
+   "column": "sk",
+   "decl": "sk integer primary key",
+   "schema": "warehouse",
+   "table": "dim_currency"
+  },
+  {
+   "column": "business_key",
+   "decl": "business_key varchar(40)",
+   "schema": "warehouse",
+   "table": "dim_currency"
+  },
+  {
+   "column": "attr_name",
+   "decl": "attr_name varchar(80)",
+   "schema": "warehouse",
+   "table": "dim_currency"
+  },
+  {
+   "column": "valid_from",
+   "decl": "valid_from date",
+   "schema": "warehouse",
+   "table": "dim_currency"
+  },
+  {
+   "column": "valid_to",
+   "decl": "valid_to date",
+   "schema": "warehouse",
+   "table": "dim_currency"
+  },
+  {
+   "column": "is_current",
+   "decl": "is_current integer",
+   "schema": "warehouse",
+   "table": "dim_currency"
+  },
+  {
+   "column": "sk",
+   "decl": "sk integer primary key",
+   "schema": "warehouse",
+   "table": "dim_commodity"
+  },
+  {
+   "column": "business_key",
+   "decl": "business_key varchar(40)",
+   "schema": "warehouse",
+   "table": "dim_commodity"
+  },
+  {
+   "column": "attr_name",
+   "decl": "attr_name varchar(80)",
+   "schema": "warehouse",
+   "table": "dim_commodity"
+  },
+  {
+   "column": "valid_from",
+   "decl": "valid_from date",
+   "schema": "warehouse",
+   "table": "dim_commodity"
+  },
+  {
+   "column": "valid_to",
+   "decl": "valid_to date",
+   "schema": "warehouse",
+   "table": "dim_commodity"
+  },
+  {
+   "column": "is_current",
+   "decl": "is_current integer",
+   "schema": "warehouse",
+   "table": "dim_commodity"
+  },
+  {
+   "column": "sk",
+   "decl": "sk integer primary key",
+   "schema": "warehouse",
+   "table": "dim_delivery_point"
+  },
+  {
+   "column": "business_key",
+   "decl": "business_key varchar(40)",
+   "schema": "warehouse",
+   "table": "dim_delivery_point"
+  },
+  {
+   "column": "attr_name",
+   "decl": "attr_name varchar(80)",
+   "schema": "warehouse",
+   "table": "dim_delivery_point"
+  },
+  {
+   "column": "valid_from",
+   "decl": "valid_from date",
+   "schema": "warehouse",
+   "table": "dim_delivery_point"
+  },
+  {
+   "column": "valid_to",
+   "decl": "valid_to date",
+   "schema": "warehouse",
+   "table": "dim_delivery_point"
+  },
+  {
+   "column": "is_current",
+   "decl": "is_current integer",
+   "schema": "warehouse",
+   "table": "dim_delivery_point"
+  },
+  {
+   "column": "sk",
+   "decl": "sk integer primary key",
+   "schema": "warehouse",
+   "table": "dim_pipeline"
+  },
+  {
+   "column": "business_key",
+   "decl": "business_key varchar(40)",
+   "schema": "warehouse",
+   "table": "dim_pipeline"
+  },
+  {
+   "column": "attr_name",
+   "decl": "attr_name varchar(80)",
+   "schema": "warehouse",
+   "table": "dim_pipeline"
+  },
+  {
+   "column": "valid_from",
+   "decl": "valid_from date",
+   "schema": "warehouse",
+   "table": "dim_pipeline"
+  },
+  {
+   "column": "valid_to",
+   "decl": "valid_to date",
+   "schema": "warehouse",
+   "table": "dim_pipeline"
+  },
+  {
+   "column": "is_current",
+   "decl": "is_current integer",
+   "schema": "warehouse",
+   "table": "dim_pipeline"
+  },
+  {
+   "column": "sk",
+   "decl": "sk integer primary key",
+   "schema": "warehouse",
+   "table": "dim_book"
+  },
+  {
+   "column": "business_key",
+   "decl": "business_key varchar(40)",
+   "schema": "warehouse",
+   "table": "dim_book"
+  },
+  {
+   "column": "attr_name",
+   "decl": "attr_name varchar(80)",
+   "schema": "warehouse",
+   "table": "dim_book"
+  },
+  {
+   "column": "valid_from",
+   "decl": "valid_from date",
+   "schema": "warehouse",
+   "table": "dim_book"
+  },
+  {
+   "column": "valid_to",
+   "decl": "valid_to date",
+   "schema": "warehouse",
+   "table": "dim_book"
+  },
+  {
+   "column": "is_current",
+   "decl": "is_current integer",
+   "schema": "warehouse",
+   "table": "dim_book"
+  },
+  {
+   "column": "id",
+   "decl": "id integer primary key",
+   "schema": "warehouse",
+   "table": "fact_volume_daily"
+  },
+  {
+   "column": "period_date",
+   "decl": "period_date date",
+   "schema": "warehouse",
+   "table": "fact_volume_daily"
+  },
+  {
+   "column": "measure_amount",
+   "decl": "measure_amount decimal(19,4)",
+   "schema": "warehouse",
+   "table": "fact_volume_daily"
+  },
+  {
+   "column": "measure_qty",
+   "decl": "measure_qty decimal(19,4)",
+   "schema": "warehouse",
+   "table": "fact_volume_daily"
+  },
+  {
+   "column": "source_system",
+   "decl": "source_system varchar(20)",
+   "schema": "warehouse",
+   "table": "fact_volume_daily"
+  },
+  {
+   "column": "load_status",
+   "decl": "load_status varchar(10)",
+   "schema": "warehouse",
+   "table": "fact_volume_daily"
+  },
+  {
+   "column": "id",
+   "decl": "id integer primary key",
+   "schema": "warehouse",
+   "table": "fact_value_monthly"
+  },
+  {
+   "column": "period_date",
+   "decl": "period_date date",
+   "schema": "warehouse",
+   "table": "fact_value_monthly"
+  },
+  {
+   "column": "measure_amount",
+   "decl": "measure_amount decimal(19,4)",
+   "schema": "warehouse",
+   "table": "fact_value_monthly"
+  },
+  {
+   "column": "measure_qty",
+   "decl": "measure_qty decimal(19,4)",
+   "schema": "warehouse",
+   "table": "fact_value_monthly"
+  },
+  {
+   "column": "source_system",
+   "decl": "source_system varchar(20)",
+   "schema": "warehouse",
+   "table": "fact_value_monthly"
+  },
+  {
+   "column": "load_status",
+   "decl": "load_status varchar(10)",
+   "schema": "warehouse",
+   "table": "fact_value_monthly"
+  },
+  {
+   "column": "id",
+   "decl": "id integer primary key",
+   "schema": "warehouse",
+   "table": "fact_spend_hourly"
+  },
+  {
+   "column": "period_date",
+   "decl": "period_date date",
+   "schema": "warehouse",
+   "table": "fact_spend_hourly"
+  },
+  {
+   "column": "measure_amount",
+   "decl": "measure_amount decimal(19,4)",
+   "schema": "warehouse",
+   "table": "fact_spend_hourly"
+  },
+  {
+   "column": "measure_qty",
+   "decl": "measure_qty decimal(19,4)",
+   "schema": "warehouse",
+   "table": "fact_spend_hourly"
+  },
+  {
+   "column": "source_system",
+   "decl": "source_system varchar(20)",
+   "schema": "warehouse",
+   "table": "fact_spend_hourly"
+  },
+  {
+   "column": "load_status",
+   "decl": "load_status varchar(10)",
+   "schema": "warehouse",
+   "table": "fact_spend_hourly"
+  },
+  {
+   "column": "id",
+   "decl": "id integer primary key",
+   "schema": "warehouse",
+   "table": "fact_payroll_daily"
+  },
+  {
+   "column": "period_date",
+   "decl": "period_date date",
+   "schema": "warehouse",
+   "table": "fact_payroll_daily"
+  },
+  {
+   "column": "measure_amount",
+   "decl": "measure_amount decimal(19,4)",
+   "schema": "warehouse",
+   "table": "fact_payroll_daily"
+  },
+  {
+   "column": "measure_qty",
+   "decl": "measure_qty decimal(19,4)",
+   "schema": "warehouse",
+   "table": "fact_payroll_daily"
+  },
+  {
+   "column": "source_system",
+   "decl": "source_system varchar(20)",
+   "schema": "warehouse",
+   "table": "fact_payroll_daily"
+  },
+  {
+   "column": "load_status",
+   "decl": "load_status varchar(10)",
+   "schema": "warehouse",
+   "table": "fact_payroll_daily"
+  },
+  {
+   "column": "id",
+   "decl": "id integer primary key",
+   "schema": "warehouse",
+   "table": "fact_incident_monthly"
+  },
+  {
+   "column": "period_date",
+   "decl": "period_date date",
+   "schema": "warehouse",
+   "table": "fact_incident_monthly"
+  },
+  {
+   "column": "measure_amount",
+   "decl": "measure_amount decimal(19,4)",
+   "schema": "warehouse",
+   "table": "fact_incident_monthly"
+  },
+  {
+   "column": "measure_qty",
+   "decl": "measure_qty decimal(19,4)",
+   "schema": "warehouse",
+   "table": "fact_incident_monthly"
+  },
+  {
+   "column": "source_system",
+   "decl": "source_system varchar(20)",
+   "schema": "warehouse",
+   "table": "fact_incident_monthly"
+  },
+  {
+   "column": "load_status",
+   "decl": "load_status varchar(10)",
+   "schema": "warehouse",
+   "table": "fact_incident_monthly"
+  },
+  {
+   "column": "id",
+   "decl": "id integer primary key",
+   "schema": "warehouse",
+   "table": "fact_settlement_hourly"
+  },
+  {
+   "column": "period_date",
+   "decl": "period_date date",
+   "schema": "warehouse",
+   "table": "fact_settlement_hourly"
+  },
+  {
+   "column": "measure_amount",
+   "decl": "measure_amount decimal(19,4)",
+   "schema": "warehouse",
+   "table": "fact_settlement_hourly"
+  },
+  {
+   "column": "measure_qty",
+   "decl": "measure_qty decimal(19,4)",
+   "schema": "warehouse",
+   "table": "fact_settlement_hourly"
+  },
+  {
+   "column": "source_system",
+   "decl": "source_system varchar(20)",
+   "schema": "warehouse",
+   "table": "fact_settlement_hourly"
+  },
+  {
+   "column": "load_status",
+   "decl": "load_status varchar(10)",
+   "schema": "warehouse",
+   "table": "fact_settlement_hourly"
+  },
+  {
+   "column": "id",
+   "decl": "id integer primary key",
+   "schema": "warehouse",
+   "table": "fact_position_daily"
+  },
+  {
+   "column": "period_date",
+   "decl": "period_date date",
+   "schema": "warehouse",
+   "table": "fact_position_daily"
+  },
+  {
+   "column": "measure_amount",
+   "decl": "measure_amount decimal(19,4)",
+   "schema": "warehouse",
+   "table": "fact_position_daily"
+  },
+  {
+   "column": "measure_qty",
+   "decl": "measure_qty decimal(19,4)",
+   "schema": "warehouse",
+   "table": "fact_position_daily"
+  },
+  {
+   "column": "source_system",
+   "decl": "source_system varchar(20)",
+   "schema": "warehouse",
+   "table": "fact_position_daily"
+  },
+  {
+   "column": "load_status",
+   "decl": "load_status varchar(10)",
+   "schema": "warehouse",
+   "table": "fact_position_daily"
+  },
+  {
+   "column": "id",
+   "decl": "id integer primary key",
+   "schema": "warehouse",
+   "table": "fact_exposure_monthly"
+  },
+  {
+   "column": "period_date",
+   "decl": "period_date date",
+   "schema": "warehouse",
+   "table": "fact_exposure_monthly"
+  },
+  {
+   "column": "measure_amount",
+   "decl": "measure_amount decimal(19,4)",
+   "schema": "warehouse",
+   "table": "fact_exposure_monthly"
+  },
+  {
+   "column": "measure_qty",
+   "decl": "measure_qty decimal(19,4)",
+   "schema": "warehouse",
+   "table": "fact_exposure_monthly"
+  },
+  {
+   "column": "source_system",
+   "decl": "source_system varchar(20)",
+   "schema": "warehouse",
+   "table": "fact_exposure_monthly"
+  },
+  {
+   "column": "load_status",
+   "decl": "load_status varchar(10)",
+   "schema": "warehouse",
+   "table": "fact_exposure_monthly"
+  },
+  {
+   "column": "id",
+   "decl": "id integer",
+   "schema": "warehouse",
+   "table": "stg_volume_000"
+  },
+  {
+   "column": "natural_key",
+   "decl": "natural_key varchar(40)",
+   "schema": "warehouse",
+   "table": "stg_volume_000"
+  },
+  {
+   "column": "period_date",
+   "decl": "period_date date",
+   "schema": "warehouse",
+   "table": "stg_volume_000"
+  },
+  {
+   "column": "raw_amount",
+   "decl": "raw_amount decimal(19,4)",
+   "schema": "warehouse",
+   "table": "stg_volume_000"
+  },
+  {
+   "column": "source_system",
+   "decl": "source_system varchar(20)",
+   "schema": "warehouse",
+   "table": "stg_volume_000"
+  },
+  {
+   "column": "loaded_at",
+   "decl": "loaded_at date",
+   "schema": "warehouse",
+   "table": "stg_volume_000"
+  },
+  {
+   "column": "id",
+   "decl": "id integer",
+   "schema": "warehouse",
+   "table": "stg_value_001"
+  },
+  {
+   "column": "natural_key",
+   "decl": "natural_key varchar(40)",
+   "schema": "warehouse",
+   "table": "stg_value_001"
+  },
+  {
+   "column": "period_date",
+   "decl": "period_date date",
+   "schema": "warehouse",
+   "table": "stg_value_001"
+  },
+  {
+   "column": "raw_amount",
+   "decl": "raw_amount decimal(19,4)",
+   "schema": "warehouse",
+   "table": "stg_value_001"
+  },
+  {
+   "column": "source_system",
+   "decl": "source_system varchar(20)",
+   "schema": "warehouse",
+   "table": "stg_value_001"
+  },
+  {
+   "column": "loaded_at",
+   "decl": "loaded_at date",
+   "schema": "warehouse",
+   "table": "stg_value_001"
+  },
+  {
+   "column": "id",
+   "decl": "id integer",
+   "schema": "warehouse",
+   "table": "stg_spend_002"
+  },
+  {
+   "column": "natural_key",
+   "decl": "natural_key varchar(40)",
+   "schema": "warehouse",
+   "table": "stg_spend_002"
+  },
+  {
+   "column": "period_date",
+   "decl": "period_date date",
+   "schema": "warehouse",
+   "table": "stg_spend_002"
+  },
+  {
+   "column": "raw_amount",
+   "decl": "raw_amount decimal(19,4)",
+   "schema": "warehouse",
+   "table": "stg_spend_002"
+  },
+  {
+   "column": "source_system",
+   "decl": "source_system varchar(20)",
+   "schema": "warehouse",
+   "table": "stg_spend_002"
+  },
+  {
+   "column": "loaded_at",
+   "decl": "loaded_at date",
+   "schema": "warehouse",
+   "table": "stg_spend_002"
+  },
+  {
+   "column": "id",
+   "decl": "id integer",
+   "schema": "warehouse",
+   "table": "stg_payroll_003"
+  },
+  {
+   "column": "natural_key",
+   "decl": "natural_key varchar(40)",
+   "schema": "warehouse",
+   "table": "stg_payroll_003"
+  },
+  {
+   "column": "period_date",
+   "decl": "period_date date",
+   "schema": "warehouse",
+   "table": "stg_payroll_003"
+  },
+  {
+   "column": "raw_amount",
+   "decl": "raw_amount decimal(19,4)",
+   "schema": "warehouse",
+   "table": "stg_payroll_003"
+  },
+  {
+   "column": "source_system",
+   "decl": "source_system varchar(20)",
+   "schema": "warehouse",
+   "table": "stg_payroll_003"
+  },
+  {
+   "column": "loaded_at",
+   "decl": "loaded_at date",
+   "schema": "warehouse",
+   "table": "stg_payroll_003"
+  },
+  {
+   "column": "id",
+   "decl": "id integer",
+   "schema": "warehouse",
+   "table": "stg_incident_004"
+  },
+  {
+   "column": "natural_key",
+   "decl": "natural_key varchar(40)",
+   "schema": "warehouse",
+   "table": "stg_incident_004"
+  },
+  {
+   "column": "period_date",
+   "decl": "period_date date",
+   "schema": "warehouse",
+   "table": "stg_incident_004"
+  },
+  {
+   "column": "raw_amount",
+   "decl": "raw_amount decimal(19,4)",
+   "schema": "warehouse",
+   "table": "stg_incident_004"
+  },
+  {
+   "column": "source_system",
+   "decl": "source_system varchar(20)",
+   "schema": "warehouse",
+   "table": "stg_incident_004"
+  },
+  {
+   "column": "loaded_at",
+   "decl": "loaded_at date",
+   "schema": "warehouse",
+   "table": "stg_incident_004"
+  },
+  {
+   "column": "id",
+   "decl": "id integer",
+   "schema": "warehouse",
+   "table": "stg_settlement_005"
+  },
+  {
+   "column": "natural_key",
+   "decl": "natural_key varchar(40)",
+   "schema": "warehouse",
+   "table": "stg_settlement_005"
+  },
+  {
+   "column": "period_date",
+   "decl": "period_date date",
+   "schema": "warehouse",
+   "table": "stg_settlement_005"
+  },
+  {
+   "column": "raw_amount",
+   "decl": "raw_amount decimal(19,4)",
+   "schema": "warehouse",
+   "table": "stg_settlement_005"
+  },
+  {
+   "column": "source_system",
+   "decl": "source_system varchar(20)",
+   "schema": "warehouse",
+   "table": "stg_settlement_005"
+  },
+  {
+   "column": "loaded_at",
+   "decl": "loaded_at date",
+   "schema": "warehouse",
+   "table": "stg_settlement_005"
+  },
+  {
+   "column": "id",
+   "decl": "id integer",
+   "schema": "warehouse",
+   "table": "stg_position_006"
+  },
+  {
+   "column": "natural_key",
+   "decl": "natural_key varchar(40)",
+   "schema": "warehouse",
+   "table": "stg_position_006"
+  },
+  {
+   "column": "period_date",
+   "decl": "period_date date",
+   "schema": "warehouse",
+   "table": "stg_position_006"
+  },
+  {
+   "column": "raw_amount",
+   "decl": "raw_amount decimal(19,4)",
+   "schema": "warehouse",
+   "table": "stg_position_006"
+  },
+  {
+   "column": "source_system",
+   "decl": "source_system varchar(20)",
+   "schema": "warehouse",
+   "table": "stg_position_006"
+  },
+  {
+   "column": "loaded_at",
+   "decl": "loaded_at date",
+   "schema": "warehouse",
+   "table": "stg_position_006"
+  },
+  {
+   "column": "id",
+   "decl": "id integer",
+   "schema": "warehouse",
+   "table": "stg_exposure_007"
+  },
+  {
+   "column": "natural_key",
+   "decl": "natural_key varchar(40)",
+   "schema": "warehouse",
+   "table": "stg_exposure_007"
+  },
+  {
+   "column": "period_date",
+   "decl": "period_date date",
+   "schema": "warehouse",
+   "table": "stg_exposure_007"
+  },
+  {
+   "column": "raw_amount",
+   "decl": "raw_amount decimal(19,4)",
+   "schema": "warehouse",
+   "table": "stg_exposure_007"
+  },
+  {
+   "column": "source_system",
+   "decl": "source_system varchar(20)",
+   "schema": "warehouse",
+   "table": "stg_exposure_007"
+  },
+  {
+   "column": "loaded_at",
+   "decl": "loaded_at date",
+   "schema": "warehouse",
+   "table": "stg_exposure_007"
+  },
+  {
+   "column": "id",
+   "decl": "id integer",
+   "schema": "warehouse",
+   "table": "stg_margin_008"
+  },
+  {
+   "column": "natural_key",
+   "decl": "natural_key varchar(40)",
+   "schema": "warehouse",
+   "table": "stg_margin_008"
+  },
+  {
+   "column": "period_date",
+   "decl": "period_date date",
+   "schema": "warehouse",
+   "table": "stg_margin_008"
+  },
+  {
+   "column": "raw_amount",
+   "decl": "raw_amount decimal(19,4)",
+   "schema": "warehouse",
+   "table": "stg_margin_008"
+  },
+  {
+   "column": "source_system",
+   "decl": "source_system varchar(20)",
+   "schema": "warehouse",
+   "table": "stg_margin_008"
+  },
+  {
+   "column": "loaded_at",
+   "decl": "loaded_at date",
+   "schema": "warehouse",
+   "table": "stg_margin_008"
+  },
+  {
+   "column": "id",
+   "decl": "id integer",
+   "schema": "warehouse",
+   "table": "stg_accrual_009"
+  },
+  {
+   "column": "natural_key",
+   "decl": "natural_key varchar(40)",
+   "schema": "warehouse",
+   "table": "stg_accrual_009"
+  },
+  {
+   "column": "period_date",
+   "decl": "period_date date",
+   "schema": "warehouse",
+   "table": "stg_accrual_009"
+  },
+  {
+   "column": "raw_amount",
+   "decl": "raw_amount decimal(19,4)",
+   "schema": "warehouse",
+   "table": "stg_accrual_009"
+  },
+  {
+   "column": "source_system",
+   "decl": "source_system varchar(20)",
+   "schema": "warehouse",
+   "table": "stg_accrual_009"
+  },
+  {
+   "column": "loaded_at",
+   "decl": "loaded_at date",
+   "schema": "warehouse",
+   "table": "stg_accrual_009"
+  },
+  {
+   "column": "id",
+   "decl": "id integer",
+   "schema": "warehouse",
+   "table": "stg_invoice_010"
+  },
+  {
+   "column": "natural_key",
+   "decl": "natural_key varchar(40)",
+   "schema": "warehouse",
+   "table": "stg_invoice_010"
+  },
+  {
+   "column": "period_date",
+   "decl": "period_date date",
+   "schema": "warehouse",
+   "table": "stg_invoice_010"
+  },
+  {
+   "column": "raw_amount",
+   "decl": "raw_amount decimal(19,4)",
+   "schema": "warehouse",
+   "table": "stg_invoice_010"
+  },
+  {
+   "column": "source_system",
+   "decl": "source_system varchar(20)",
+   "schema": "warehouse",
+   "table": "stg_invoice_010"
+  },
+  {
+   "column": "loaded_at",
+   "decl": "loaded_at date",
+   "schema": "warehouse",
+   "table": "stg_invoice_010"
+  },
+  {
+   "column": "id",
+   "decl": "id integer",
+   "schema": "warehouse",
+   "table": "stg_receipt_011"
+  },
+  {
+   "column": "natural_key",
+   "decl": "natural_key varchar(40)",
+   "schema": "warehouse",
+   "table": "stg_receipt_011"
+  },
+  {
+   "column": "period_date",
+   "decl": "period_date date",
+   "schema": "warehouse",
+   "table": "stg_receipt_011"
+  },
+  {
+   "column": "raw_amount",
+   "decl": "raw_amount decimal(19,4)",
+   "schema": "warehouse",
+   "table": "stg_receipt_011"
+  },
+  {
+   "column": "source_system",
+   "decl": "source_system varchar(20)",
+   "schema": "warehouse",
+   "table": "stg_receipt_011"
+  },
+  {
+   "column": "loaded_at",
+   "decl": "loaded_at date",
+   "schema": "warehouse",
+   "table": "stg_receipt_011"
+  },
+  {
+   "column": "id",
+   "decl": "id integer",
+   "schema": "archive",
+   "table": "counterparty_2012"
+  },
+  {
+   "column": "natural_key",
+   "decl": "natural_key varchar(40)",
+   "schema": "archive",
+   "table": "counterparty_2012"
+  },
+  {
+   "column": "archived_at",
+   "decl": "archived_at date",
+   "schema": "archive",
+   "table": "counterparty_2012"
+  },
+  {
+   "column": "payload_amount",
+   "decl": "payload_amount decimal(19,4)",
+   "schema": "archive",
+   "table": "counterparty_2012"
+  },
+  {
+   "column": "source_schema",
+   "decl": "source_schema varchar(30)",
+   "schema": "archive",
+   "table": "counterparty_2012"
+  },
+  {
+   "column": "id",
+   "decl": "id integer",
+   "schema": "archive",
+   "table": "contract_2013"
+  },
+  {
+   "column": "natural_key",
+   "decl": "natural_key varchar(40)",
+   "schema": "archive",
+   "table": "contract_2013"
+  },
+  {
+   "column": "archived_at",
+   "decl": "archived_at date",
+   "schema": "archive",
+   "table": "contract_2013"
+  },
+  {
+   "column": "payload_amount",
+   "decl": "payload_amount decimal(19,4)",
+   "schema": "archive",
+   "table": "contract_2013"
+  },
+  {
+   "column": "source_schema",
+   "decl": "source_schema varchar(30)",
+   "schema": "archive",
+   "table": "contract_2013"
+  },
+  {
+   "column": "id",
+   "decl": "id integer",
+   "schema": "archive",
+   "table": "ctp_2014"
+  },
+  {
+   "column": "natural_key",
+   "decl": "natural_key varchar(40)",
+   "schema": "archive",
+   "table": "ctp_2014"
+  },
+  {
+   "column": "archived_at",
+   "decl": "archived_at date",
+   "schema": "archive",
+   "table": "ctp_2014"
+  },
+  {
+   "column": "payload_amount",
+   "decl": "payload_amount decimal(19,4)",
+   "schema": "archive",
+   "table": "ctp_2014"
+  },
+  {
+   "column": "source_schema",
+   "decl": "source_schema varchar(30)",
+   "schema": "archive",
+   "table": "ctp_2014"
+  },
+  {
+   "column": "id",
+   "decl": "id integer",
+   "schema": "archive",
+   "table": "deal_2015"
+  },
+  {
+   "column": "natural_key",
+   "decl": "natural_key varchar(40)",
+   "schema": "archive",
+   "table": "deal_2015"
+  },
+  {
+   "column": "archived_at",
+   "decl": "archived_at date",
+   "schema": "archive",
+   "table": "deal_2015"
+  },
+  {
+   "column": "payload_amount",
+   "decl": "payload_amount decimal(19,4)",
+   "schema": "archive",
+   "table": "deal_2015"
+  },
+  {
+   "column": "source_schema",
+   "decl": "source_schema varchar(30)",
+   "schema": "archive",
+   "table": "deal_2015"
+  },
+  {
+   "column": "id",
+   "decl": "id integer",
+   "schema": "archive",
+   "table": "nomination_2016"
+  },
+  {
+   "column": "natural_key",
+   "decl": "natural_key varchar(40)",
+   "schema": "archive",
+   "table": "nomination_2016"
+  },
+  {
+   "column": "archived_at",
+   "decl": "archived_at date",
+   "schema": "archive",
+   "table": "nomination_2016"
+  },
+  {
+   "column": "payload_amount",
+   "decl": "payload_amount decimal(19,4)",
+   "schema": "archive",
+   "table": "nomination_2016"
+  },
+  {
+   "column": "source_schema",
+   "decl": "source_schema varchar(30)",
+   "schema": "archive",
+   "table": "nomination_2016"
+  },
+  {
+   "column": "id",
+   "decl": "id integer",
+   "schema": "archive",
+   "table": "confirmation_2017"
+  },
+  {
+   "column": "natural_key",
+   "decl": "natural_key varchar(40)",
+   "schema": "archive",
+   "table": "confirmation_2017"
+  },
+  {
+   "column": "archived_at",
+   "decl": "archived_at date",
+   "schema": "archive",
+   "table": "confirmation_2017"
+  },
+  {
+   "column": "payload_amount",
+   "decl": "payload_amount decimal(19,4)",
+   "schema": "archive",
+   "table": "confirmation_2017"
+  },
+  {
+   "column": "source_schema",
+   "decl": "source_schema varchar(30)",
+   "schema": "archive",
+   "table": "confirmation_2017"
+  },
+  {
+   "column": "id",
+   "decl": "id integer",
+   "schema": "archive",
+   "table": "settlement_2018"
+  },
+  {
+   "column": "natural_key",
+   "decl": "natural_key varchar(40)",
+   "schema": "archive",
+   "table": "settlement_2018"
+  },
+  {
+   "column": "archived_at",
+   "decl": "archived_at date",
+   "schema": "archive",
+   "table": "settlement_2018"
+  },
+  {
+   "column": "payload_amount",
+   "decl": "payload_amount decimal(19,4)",
+   "schema": "archive",
+   "table": "settlement_2018"
+  },
+  {
+   "column": "source_schema",
+   "decl": "source_schema varchar(30)",
+   "schema": "archive",
+   "table": "settlement_2018"
+  },
+  {
+   "column": "id",
+   "decl": "id integer",
+   "schema": "archive",
+   "table": "gl_account_2019"
+  },
+  {
+   "column": "natural_key",
+   "decl": "natural_key varchar(40)",
+   "schema": "archive",
+   "table": "gl_account_2019"
+  },
+  {
+   "column": "archived_at",
+   "decl": "archived_at date",
+   "schema": "archive",
+   "table": "gl_account_2019"
+  },
+  {
+   "column": "payload_amount",
+   "decl": "payload_amount decimal(19,4)",
+   "schema": "archive",
+   "table": "gl_account_2019"
+  },
+  {
+   "column": "source_schema",
+   "decl": "source_schema varchar(30)",
+   "schema": "archive",
+   "table": "gl_account_2019"
+  },
+  {
+   "column": "id",
+   "decl": "id integer",
+   "schema": "archive",
+   "table": "gl_entry_2020"
+  },
+  {
+   "column": "natural_key",
+   "decl": "natural_key varchar(40)",
+   "schema": "archive",
+   "table": "gl_entry_2020"
+  },
+  {
+   "column": "archived_at",
+   "decl": "archived_at date",
+   "schema": "archive",
+   "table": "gl_entry_2020"
+  },
+  {
+   "column": "payload_amount",
+   "decl": "payload_amount decimal(19,4)",
+   "schema": "archive",
+   "table": "gl_entry_2020"
+  },
+  {
+   "column": "source_schema",
+   "decl": "source_schema varchar(30)",
+   "schema": "archive",
+   "table": "gl_entry_2020"
+  },
+  {
+   "column": "id",
+   "decl": "id integer",
+   "schema": "archive",
+   "table": "ar_invoice_2021"
+  },
+  {
+   "column": "natural_key",
+   "decl": "natural_key varchar(40)",
+   "schema": "archive",
+   "table": "ar_invoice_2021"
+  },
+  {
+   "column": "archived_at",
+   "decl": "archived_at date",
+   "schema": "archive",
+   "table": "ar_invoice_2021"
+  },
+  {
+   "column": "payload_amount",
+   "decl": "payload_amount decimal(19,4)",
+   "schema": "archive",
+   "table": "ar_invoice_2021"
+  },
+  {
+   "column": "source_schema",
+   "decl": "source_schema varchar(30)",
+   "schema": "archive",
+   "table": "ar_invoice_2021"
+  },
+  {
+   "column": "id",
+   "decl": "id integer",
+   "schema": "archive",
+   "table": "ci_2022"
+  },
+  {
+   "column": "natural_key",
+   "decl": "natural_key varchar(40)",
+   "schema": "archive",
+   "table": "ci_2022"
+  },
+  {
+   "column": "archived_at",
+   "decl": "archived_at date",
+   "schema": "archive",
+   "table": "ci_2022"
+  },
+  {
+   "column": "payload_amount",
+   "decl": "payload_amount decimal(19,4)",
+   "schema": "archive",
+   "table": "ci_2022"
+  },
+  {
+   "column": "source_schema",
+   "decl": "source_schema varchar(30)",
+   "schema": "archive",
+   "table": "ci_2022"
+  },
+  {
+   "column": "id",
+   "decl": "id integer",
+   "schema": "archive",
+   "table": "sla_2012"
+  },
+  {
+   "column": "natural_key",
+   "decl": "natural_key varchar(40)",
+   "schema": "archive",
+   "table": "sla_2012"
+  },
+  {
+   "column": "archived_at",
+   "decl": "archived_at date",
+   "schema": "archive",
+   "table": "sla_2012"
+  },
+  {
+   "column": "payload_amount",
+   "decl": "payload_amount decimal(19,4)",
+   "schema": "archive",
+   "table": "sla_2012"
+  },
+  {
+   "column": "source_schema",
+   "decl": "source_schema varchar(30)",
+   "schema": "archive",
+   "table": "sla_2012"
+  },
+  {
+   "column": "id",
+   "decl": "id integer",
+   "schema": "archive",
+   "table": "incident_2013"
+  },
+  {
+   "column": "natural_key",
+   "decl": "natural_key varchar(40)",
+   "schema": "archive",
+   "table": "incident_2013"
+  },
+  {
+   "column": "archived_at",
+   "decl": "archived_at date",
+   "schema": "archive",
+   "table": "incident_2013"
+  },
+  {
+   "column": "payload_amount",
+   "decl": "payload_amount decimal(19,4)",
+   "schema": "archive",
+   "table": "incident_2013"
+  },
+  {
+   "column": "source_schema",
+   "decl": "source_schema varchar(30)",
+   "schema": "archive",
+   "table": "incident_2013"
+  },
+  {
+   "column": "id",
+   "decl": "id integer",
+   "schema": "archive",
+   "table": "audit_trail_2014"
+  },
+  {
+   "column": "natural_key",
+   "decl": "natural_key varchar(40)",
+   "schema": "archive",
+   "table": "audit_trail_2014"
+  },
+  {
+   "column": "archived_at",
+   "decl": "archived_at date",
+   "schema": "archive",
+   "table": "audit_trail_2014"
+  },
+  {
+   "column": "payload_amount",
+   "decl": "payload_amount decimal(19,4)",
+   "schema": "archive",
+   "table": "audit_trail_2014"
+  },
+  {
+   "column": "source_schema",
+   "decl": "source_schema varchar(30)",
+   "schema": "archive",
+   "table": "audit_trail_2014"
+  },
+  {
+   "column": "id",
+   "decl": "id integer",
+   "schema": "archive",
+   "table": "invoice_2015"
+  },
+  {
+   "column": "natural_key",
+   "decl": "natural_key varchar(40)",
+   "schema": "archive",
+   "table": "invoice_2015"
+  },
+  {
+   "column": "archived_at",
+   "decl": "archived_at date",
+   "schema": "archive",
+   "table": "invoice_2015"
+  },
+  {
+   "column": "payload_amount",
+   "decl": "payload_amount decimal(19,4)",
+   "schema": "archive",
+   "table": "invoice_2015"
+  },
+  {
+   "column": "source_schema",
+   "decl": "source_schema varchar(30)",
+   "schema": "archive",
+   "table": "invoice_2015"
+  },
+  {
+   "column": "batch",
+   "decl": "batch varchar(20)",
+   "schema": "staging",
+   "table": "tmp_load_notes"
+  },
+  {
+   "column": "note",
+   "decl": "note varchar(200)",
+   "schema": "staging",
+   "table": "tmp_load_notes"
+  },
+  {
+   "column": "loaded_at",
+   "decl": "loaded_at date",
+   "schema": "staging",
+   "table": "tmp_load_notes"
+  },
+  {
+   "column": "id",
+   "decl": "id integer primary key",
+   "schema": "trading",
+   "table": "audit_log"
+  },
+  {
+   "column": "table_name",
+   "decl": "table_name varchar(60)",
+   "schema": "trading",
+   "table": "audit_log"
+  },
+  {
+   "column": "row_id",
+   "decl": "row_id integer",
+   "schema": "trading",
+   "table": "audit_log"
+  },
+  {
+   "column": "changed_at",
+   "decl": "changed_at date",
+   "schema": "trading",
+   "table": "audit_log"
+  },
+  {
+   "column": "batch",
+   "decl": "batch varchar(20)",
+   "schema": "staging",
+   "table": "tmp_rebate_2019"
+  },
+  {
+   "column": "note",
+   "decl": "note varchar(200)",
+   "schema": "staging",
+   "table": "tmp_rebate_2019"
+  },
+  {
+   "column": "loaded_at",
+   "decl": "loaded_at date",
+   "schema": "staging",
+   "table": "tmp_rebate_2019"
+  },
+  {
+   "column": "effective_date",
+   "decl": "effective_date date",
+   "schema": "warehouse",
+   "table": "rpt_volume_gross"
+  },
+  {
+   "column": "total_volume",
+   "decl": "total_volume decimal(19,4)",
+   "schema": "warehouse",
+   "table": "rpt_volume_gross"
+  },
+  {
+   "column": "effective_date",
+   "decl": "effective_date date",
+   "schema": "warehouse",
+   "table": "rpt_volume_net"
+  },
+  {
+   "column": "total_volume",
+   "decl": "total_volume decimal(19,4)",
+   "schema": "warehouse",
+   "table": "rpt_volume_net"
+  }
+ ],
+ "questions": [
+  {
+   "difficulty": 1,
+   "exercises": "single_table",
+   "id": "t_active_deals",
+   "text": "How many deals have a status of ACTIVE?",
+   "touches": [
+    "trading.deal"
+   ]
+  },
+  {
+   "difficulty": 1,
+   "exercises": "single_table",
+   "id": "t_deal_count",
+   "text": "How many deals are there in total?",
+   "touches": [
+    "trading.deal"
+   ]
+  },
+  {
+   "difficulty": 2,
+   "exercises": "aggregate",
+   "id": "t_total_volume",
+   "text": "What is the total gross volume in MMBtu across all deals?",
+   "touches": [
+    "trading.deal"
+   ]
+  },
+  {
+   "difficulty": 2,
+   "exercises": "join",
+   "id": "t_deals_for_contract",
+   "text": "How many deals were booked under contract 1?",
+   "touches": [
+    "trading.deal",
+    "trading.contract"
+   ]
+  },
+  {
+   "difficulty": 3,
+   "exercises": "aggregate",
+   "id": "t_busiest_day",
+   "text": "Which single date had the highest total gross volume?",
+   "touches": [
+    "trading.deal"
+   ]
+  },
+  {
+   "difficulty": 3,
+   "exercises": "column_disambiguation",
+   "id": "t_which_counterparty",
+   "text": "How many counterparties are there in the trading system -- not in any regional system?",
+   "touches": [
+    "trading.counterparty"
+   ]
+  },
+  {
+   "difficulty": 4,
+   "exercises": "lineage_aware",
+   "id": "w_gross_total_volume",
+   "text": "In the gross volume report, what is the total_volume across the whole period?",
+   "touches": [
+    "warehouse.fact_volume",
+    "warehouse.rpt_volume_gross"
+   ]
+  },
+  {
+   "difficulty": 4,
+   "exercises": "lineage_aware",
+   "id": "w_net_total_volume",
+   "text": "In the net volume report, what is the total_volume across the whole period?",
+   "touches": [
+    "warehouse.fact_volume",
+    "warehouse.rpt_volume_net"
+   ]
+  },
+  {
+   "difficulty": 5,
+   "exercises": "lineage_aware",
+   "id": "w_report_gap",
+   "text": "The gross and net volume reports both have a column called total_volume and they disagree. By how much?",
+   "touches": [
+    "warehouse.rpt_volume_gross",
+    "warehouse.rpt_volume_net"
+   ]
+  },
+  {
+   "difficulty": 5,
+   "exercises": "lineage_aware",
+   "id": "w_filtered_out",
+   "text": "How many staged deals never reached the volume fact table?",
+   "touches": [
+    "warehouse.stg_deal",
+    "warehouse.fact_volume",
+    "trading.ctp"
+   ]
+  },
+  {
+   "difficulty": 3,
+   "exercises": "column_disambiguation",
+   "id": "f_ledger_sums_zero",
+   "text": "What is the sum of the amount column in the general ledger -- the finance one, not the warehouse?",
+   "touches": [
+    "finance.gl_entry"
+   ]
+  },
+  {
+   "difficulty": 1,
+   "exercises": "single_table",
+   "id": "f_ledger_lines",
+   "text": "How many lines are in the general ledger?",
+   "touches": [
+    "finance.gl_entry"
+   ]
+  },
+  {
+   "difficulty": 5,
+   "exercises": "pathology_aware",
+   "id": "f_entries_for_deal",
+   "text": "How many general ledger lines relate to deal 1?",
+   "touches": [
+    "finance.gl_entry",
+    "trading.deal"
+   ]
+  },
+  {
+   "difficulty": 4,
+   "exercises": "column_disambiguation",
+   "id": "s_regional_deals",
+   "text": "How many deals are in the EMEA trading system -- not the global one?",
+   "touches": [
+    "trading_emea.deal"
+   ]
+  },
+  {
+   "difficulty": 4,
+   "exercises": "column_disambiguation",
+   "id": "s_deal_tables",
+   "text": "There are several tables called deal. How many deals are in trading.deal specifically?",
+   "touches": [
+    "trading.deal"
+   ]
+  },
+  {
+   "difficulty": 5,
+   "exercises": "pathology_aware",
+   "id": "n_tmp_load_notes",
+   "text": "How many rows in staging.tmp_load_notes belong to a counterparty?",
+   "touches": [
+    "staging.tmp_load_notes"
+   ]
+  }
+ ],
+ "tables": [
+  {
+   "kind": "table",
+   "schema": "trading",
+   "table": "counterparty"
+  },
+  {
+   "kind": "table",
+   "schema": "trading",
+   "table": "contract"
+  },
+  {
+   "kind": "table",
+   "schema": "trading",
+   "table": "ctp"
+  },
+  {
+   "kind": "table",
+   "schema": "trading",
+   "table": "deal"
+  },
+  {
+   "kind": "table",
+   "schema": "finance",
+   "table": "gl_account"
+  },
+  {
+   "kind": "table",
+   "schema": "finance",
+   "table": "gl_entry"
+  },
+  {
+   "kind": "table",
+   "schema": "finance",
+   "table": "ar_invoice"
+  },
+  {
+   "kind": "table",
+   "schema": "procurement",
+   "table": "vendor"
+  },
+  {
+   "kind": "table",
+   "schema": "procurement",
+   "table": "requisition"
+  },
+  {
+   "kind": "table",
+   "schema": "procurement",
+   "table": "purchase_order"
+  },
+  {
+   "kind": "table",
+   "schema": "procurement",
+   "table": "po_line"
+  },
+  {
+   "kind": "table",
+   "schema": "procurement",
+   "table": "goods_receipt"
+  },
+  {
+   "kind": "table",
+   "schema": "support",
+   "table": "ci"
+  },
+  {
+   "kind": "table",
+   "schema": "support",
+   "table": "sla"
+  },
+  {
+   "kind": "table",
+   "schema": "support",
+   "table": "incident"
+  },
+  {
+   "kind": "table",
+   "schema": "hr",
+   "table": "cost_centre"
+  },
+  {
+   "kind": "table",
+   "schema": "hr",
+   "table": "department"
+  },
+  {
+   "kind": "table",
+   "schema": "hr",
+   "table": "employee"
+  },
+  {
+   "kind": "table",
+   "schema": "hr",
+   "table": "pay_run"
+  },
+  {
+   "kind": "table",
+   "schema": "hr",
+   "table": "pay_line"
+  },
+  {
+   "kind": "table",
+   "schema": "warehouse",
+   "table": "stg_deal"
+  },
+  {
+   "kind": "table",
+   "schema": "warehouse",
+   "table": "fact_volume"
+  },
+  {
+   "kind": "table",
+   "schema": "warehouse",
+   "table": "fact_spend"
+  },
+  {
+   "kind": "table",
+   "schema": "warehouse",
+   "table": "fact_incident"
+  },
+  {
+   "kind": "table",
+   "schema": "warehouse",
+   "table": "fact_payroll"
+  },
+  {
+   "kind": "table",
+   "schema": "reference",
+   "table": "currency"
+  },
+  {
+   "kind": "table",
+   "schema": "reference",
+   "table": "country"
+  },
+  {
+   "kind": "table",
+   "schema": "reference",
+   "table": "region"
+  },
+  {
+   "kind": "table",
+   "schema": "reference",
+   "table": "state_province"
+  },
+  {
+   "kind": "table",
+   "schema": "reference",
+   "table": "timezone"
+  },
+  {
+   "kind": "table",
+   "schema": "reference",
+   "table": "calendar_day"
+  },
+  {
+   "kind": "table",
+   "schema": "reference",
+   "table": "calendar_month"
+  },
+  {
+   "kind": "table",
+   "schema": "reference",
+   "table": "fiscal_period"
+  },
+  {
+   "kind": "table",
+   "schema": "reference",
+   "table": "holiday"
+  },
+  {
+   "kind": "table",
+   "schema": "reference",
+   "table": "unit_of_measure"
+  },
+  {
+   "kind": "table",
+   "schema": "reference",
+   "table": "uom_conversion"
+  },
+  {
+   "kind": "table",
+   "schema": "reference",
+   "table": "language"
+  },
+  {
+   "kind": "table",
+   "schema": "reference",
+   "table": "tax_code"
+  },
+  {
+   "kind": "table",
+   "schema": "reference",
+   "table": "tax_jurisdiction"
+  },
+  {
+   "kind": "table",
+   "schema": "reference",
+   "table": "payment_term"
+  },
+  {
+   "kind": "table",
+   "schema": "reference",
+   "table": "incoterm"
+  },
+  {
+   "kind": "table",
+   "schema": "reference",
+   "table": "commodity"
+  },
+  {
+   "kind": "table",
+   "schema": "reference",
+   "table": "commodity_grade"
+  },
+  {
+   "kind": "table",
+   "schema": "trading_emea",
+   "table": "counterparty"
+  },
+  {
+   "kind": "table",
+   "schema": "trading_emea",
+   "table": "contract"
+  },
+  {
+   "kind": "table",
+   "schema": "trading_emea",
+   "table": "ctp"
+  },
+  {
+   "kind": "table",
+   "schema": "trading_emea",
+   "table": "deal"
+  },
+  {
+   "kind": "table",
+   "schema": "trading_emea",
+   "table": "nomination"
+  },
+  {
+   "kind": "table",
+   "schema": "trading_emea",
+   "table": "confirmation"
+  },
+  {
+   "kind": "table",
+   "schema": "trading_emea",
+   "table": "settlement"
+  },
+  {
+   "kind": "table",
+   "schema": "trading_emea",
+   "table": "gl_account"
+  },
+  {
+   "kind": "table",
+   "schema": "trading_emea",
+   "table": "gl_entry"
+  },
+  {
+   "kind": "table",
+   "schema": "trading_emea",
+   "table": "ar_invoice"
+  },
+  {
+   "kind": "table",
+   "schema": "trading_emea",
+   "table": "ci"
+  },
+  {
+   "kind": "table",
+   "schema": "trading_emea",
+   "table": "sla"
+  },
+  {
+   "kind": "table",
+   "schema": "trading_emea",
+   "table": "incident"
+  },
+  {
+   "kind": "table",
+   "schema": "trading_emea",
+   "table": "audit_trail"
+  },
+  {
+   "kind": "table",
+   "schema": "trading_apac",
+   "table": "counterparty"
+  },
+  {
+   "kind": "table",
+   "schema": "trading_apac",
+   "table": "contract"
+  },
+  {
+   "kind": "table",
+   "schema": "trading_apac",
+   "table": "ctp"
+  },
+  {
+   "kind": "table",
+   "schema": "trading_apac",
+   "table": "deal"
+  },
+  {
+   "kind": "table",
+   "schema": "trading_apac",
+   "table": "nomination"
+  },
+  {
+   "kind": "table",
+   "schema": "trading_apac",
+   "table": "confirmation"
+  },
+  {
+   "kind": "table",
+   "schema": "trading_apac",
+   "table": "settlement"
+  },
+  {
+   "kind": "table",
+   "schema": "trading_apac",
+   "table": "gl_account"
+  },
+  {
+   "kind": "table",
+   "schema": "trading_apac",
+   "table": "gl_entry"
+  },
+  {
+   "kind": "table",
+   "schema": "trading_apac",
+   "table": "ar_invoice"
+  },
+  {
+   "kind": "table",
+   "schema": "trading_apac",
+   "table": "ci"
+  },
+  {
+   "kind": "table",
+   "schema": "trading_apac",
+   "table": "sla"
+  },
+  {
+   "kind": "table",
+   "schema": "trading_apac",
+   "table": "incident"
+  },
+  {
+   "kind": "table",
+   "schema": "trading_apac",
+   "table": "audit_trail"
+  },
+  {
+   "kind": "table",
+   "schema": "warehouse",
+   "table": "dim_counterparty"
+  },
+  {
+   "kind": "table",
+   "schema": "warehouse",
+   "table": "dim_contract"
+  },
+  {
+   "kind": "table",
+   "schema": "warehouse",
+   "table": "dim_deal"
+  },
+  {
+   "kind": "table",
+   "schema": "warehouse",
+   "table": "dim_ctp"
+  },
+  {
+   "kind": "table",
+   "schema": "warehouse",
+   "table": "dim_calendar"
+  },
+  {
+   "kind": "table",
+   "schema": "warehouse",
+   "table": "dim_currency"
+  },
+  {
+   "kind": "table",
+   "schema": "warehouse",
+   "table": "dim_commodity"
+  },
+  {
+   "kind": "table",
+   "schema": "warehouse",
+   "table": "dim_delivery_point"
+  },
+  {
+   "kind": "table",
+   "schema": "warehouse",
+   "table": "dim_pipeline"
+  },
+  {
+   "kind": "table",
+   "schema": "warehouse",
+   "table": "dim_book"
+  },
+  {
+   "kind": "table",
+   "schema": "warehouse",
+   "table": "fact_volume_daily"
+  },
+  {
+   "kind": "table",
+   "schema": "warehouse",
+   "table": "fact_value_monthly"
+  },
+  {
+   "kind": "table",
+   "schema": "warehouse",
+   "table": "fact_spend_hourly"
+  },
+  {
+   "kind": "table",
+   "schema": "warehouse",
+   "table": "fact_payroll_daily"
+  },
+  {
+   "kind": "table",
+   "schema": "warehouse",
+   "table": "fact_incident_monthly"
+  },
+  {
+   "kind": "table",
+   "schema": "warehouse",
+   "table": "fact_settlement_hourly"
+  },
+  {
+   "kind": "table",
+   "schema": "warehouse",
+   "table": "fact_position_daily"
+  },
+  {
+   "kind": "table",
+   "schema": "warehouse",
+   "table": "fact_exposure_monthly"
+  },
+  {
+   "kind": "table",
+   "schema": "warehouse",
+   "table": "stg_volume_000"
+  },
+  {
+   "kind": "table",
+   "schema": "warehouse",
+   "table": "stg_value_001"
+  },
+  {
+   "kind": "table",
+   "schema": "warehouse",
+   "table": "stg_spend_002"
+  },
+  {
+   "kind": "table",
+   "schema": "warehouse",
+   "table": "stg_payroll_003"
+  },
+  {
+   "kind": "table",
+   "schema": "warehouse",
+   "table": "stg_incident_004"
+  },
+  {
+   "kind": "table",
+   "schema": "warehouse",
+   "table": "stg_settlement_005"
+  },
+  {
+   "kind": "table",
+   "schema": "warehouse",
+   "table": "stg_position_006"
+  },
+  {
+   "kind": "table",
+   "schema": "warehouse",
+   "table": "stg_exposure_007"
+  },
+  {
+   "kind": "table",
+   "schema": "warehouse",
+   "table": "stg_margin_008"
+  },
+  {
+   "kind": "table",
+   "schema": "warehouse",
+   "table": "stg_accrual_009"
+  },
+  {
+   "kind": "table",
+   "schema": "warehouse",
+   "table": "stg_invoice_010"
+  },
+  {
+   "kind": "table",
+   "schema": "warehouse",
+   "table": "stg_receipt_011"
+  },
+  {
+   "kind": "table",
+   "schema": "archive",
+   "table": "counterparty_2012"
+  },
+  {
+   "kind": "table",
+   "schema": "archive",
+   "table": "contract_2013"
+  },
+  {
+   "kind": "table",
+   "schema": "archive",
+   "table": "ctp_2014"
+  },
+  {
+   "kind": "table",
+   "schema": "archive",
+   "table": "deal_2015"
+  },
+  {
+   "kind": "table",
+   "schema": "archive",
+   "table": "nomination_2016"
+  },
+  {
+   "kind": "table",
+   "schema": "archive",
+   "table": "confirmation_2017"
+  },
+  {
+   "kind": "table",
+   "schema": "archive",
+   "table": "settlement_2018"
+  },
+  {
+   "kind": "table",
+   "schema": "archive",
+   "table": "gl_account_2019"
+  },
+  {
+   "kind": "table",
+   "schema": "archive",
+   "table": "gl_entry_2020"
+  },
+  {
+   "kind": "table",
+   "schema": "archive",
+   "table": "ar_invoice_2021"
+  },
+  {
+   "kind": "table",
+   "schema": "archive",
+   "table": "ci_2022"
+  },
+  {
+   "kind": "table",
+   "schema": "archive",
+   "table": "sla_2012"
+  },
+  {
+   "kind": "table",
+   "schema": "archive",
+   "table": "incident_2013"
+  },
+  {
+   "kind": "table",
+   "schema": "archive",
+   "table": "audit_trail_2014"
+  },
+  {
+   "kind": "table",
+   "schema": "archive",
+   "table": "invoice_2015"
+  },
+  {
+   "kind": "table",
+   "schema": "staging",
+   "table": "tmp_load_notes"
+  },
+  {
+   "kind": "table",
+   "schema": "trading",
+   "table": "audit_log"
+  },
+  {
+   "kind": "table",
+   "schema": "staging",
+   "table": "tmp_rebate_2019"
+  },
+  {
+   "kind": "view",
+   "schema": "warehouse",
+   "table": "rpt_volume_gross"
+  },
+  {
+   "kind": "view",
+   "schema": "warehouse",
+   "table": "rpt_volume_net"
+  }
+ ]
+}

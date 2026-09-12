@@ -185,6 +185,9 @@ document list, with a status column, is `docs/README.md`.
   operational table it originated in. The object level answers "which table
   does this read", which rarely settles anything; the column level answers the
   one that costs a day.
+- **a question over an estate** — `nlq`, first increment (retrieval and grounding,
+  no model). Scored against estateforge's answer key: 13/16 lexical, 14/16 with
+  declared synonyms. See nlq_design.md.
 - **financial-format adapters** — `finio`, Phase 0 (value model + registry only).
   Provenance is reconstructed from a retained source because the alternative was
   measured at 2.79 GB for a 9.5 MB file; see financial_adapters_design.md §21.

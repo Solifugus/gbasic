@@ -6075,6 +6075,38 @@ whole program without needing a call site.
   applicants have. Its customary thresholds are returned as a **label and a
   stated rule of thumb**, never as a verdict, and a band empty in one population
   is refused rather than contributing an infinite index.
+- `nlq` — a question over an estate nobody can hold in their head
+  (`docs/nlq_design.md`). **First increment: retrieval and grounding, with no
+  model and no SQL**, mirroring `discovery`'s own "declared facts only" choice.
+  `nlq.ground(catalog, question [, options])` takes a catalog of
+  `{ tables, columns }` — what `discovery.scan` produces — and returns the
+  objects the question is about: `tables` (ranked, cut at `limit`, default 8),
+  `detail` (each with its `score` and the `why` that earned it),
+  `near_misses`, `unresolved`, and a `search` record carrying `width`,
+  `matched`, `limit` and `cut`.
+  **It reports its own width because it is a search**, and a search always
+  returns a winner: hand a model twenty badly-chosen tables and it writes
+  flawless SQL about the wrong ones, and the SQL runs. `near_misses` is what
+  lets a reader see a close call, and `unresolved` — the question's own words
+  that matched nothing — is the likeliest place a grounding is about to be
+  confidently wrong.
+  `options.synonyms` is a record of term → array of terms, **declared by
+  whoever owns the estate and never derived**: guessing that `rpt` means report
+  is a search over the whole schema with no null model, right often enough to
+  be trusted and wrong silently. `unresolved` names exactly which words to
+  declare, so the loop closes without anything being invented.
+  `nlq.terms(text)` is the tokenizer (stopwords dropped, crude singularisation
+  applied to **both** sides so it need only be consistent, not correct);
+  `nlq.stopwords()` is that list — `total`, `gross` and `net` are deliberately
+  absent, being half the measure names in a warehouse. `nlq.check_catalog(cat)`
+  refuses a catalog missing `tables` or `columns`.
+  A table-name match outweighs a schema-name match, which outweighs a
+  column-name match; ranking is **total** (score, then id), so a driver's row
+  order cannot decide the answer. Scored against `estateforge`'s independently
+  computed `touches[]`: 13 of 16 questions lexically, 14 with declared
+  synonyms — see `tests/run_nlq.sh`, which asserts recall **and** a ceiling on
+  how much was selected, because recall alone is maximised by returning
+  everything.
 - `finio` — financial-format adapters (`docs/financial_adapters_design.md`).
   **Phase 0 only: the value model and the format registry. There is no adapter
   yet**, and that is the phase — what it fixes is the shape everything above it
