@@ -87,8 +87,13 @@ fi
 # vocabulary (accounts, ledgers, ACH, delinquency) that nothing here was written
 # for, and NO SYNONYMS ARE DECLARED FOR IT.
 #
-# BUT RECALL ALONE PROVES LITTLE HERE AND THE TIER SAYS SO: the bank is 14
-# objects and the limit is 8, so a selection is more than half the estate and
+# IT CARRIES THE `legacy_nightmare` PRESET, which is the whole reason to use it:
+# nine planted pathologies, eleven decoys, SIX COLUMNS NAMED `status` across six
+# tables, and three `audit_log*` tables that look like a foreign key to
+# everything. The clean bank has none of that and is a much weaker benchmark.
+#
+# BUT RECALL ALONE PROVES LITTLE HERE AND THE TIER SAYS SO: the bank is 21
+# objects and the limit is 8, so a selection is over a third of the estate and
 # even a poor ranking recalls a lot. The load-bearing number is the RATIO --
 # what was dragged in per table actually needed. On the 121-object estate that
 # ratio is what stops "select everything" from scoring perfectly; here it is
@@ -104,10 +109,11 @@ if [ -z "$b_r" ]; then
 else
     [ "$b_r" = "$b_n" ] && ok "a different domain, no synonyms declared: $b_r/$b_n" \
         || bad "bank recall $b_r/$b_n"
-    # 32 for 7 measured. A ceiling, because on an estate this small recall is
-    # cheap and only the ratio distinguishes a search from a sweep.
+    # 40 for 8 measured, against a theoretical maximum of 56 (7 questions at a
+    # limit of 8). A ceiling, because on an estate this small recall is cheap
+    # and only the ratio distinguishes a search from a sweep.
     if [ "${b_sel:-9999}" -le 48 ]; then
-        ok "and $b_sel table-slots for $b_need needed, on a 14-object estate"
+        ok "and $b_sel table-slots for $b_need needed, on a 21-object estate"
     else
         bad "bank selection ran away: $b_sel for $b_need"
     fi

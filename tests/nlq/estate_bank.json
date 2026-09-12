@@ -79,8 +79,8 @@
    "table": "customer"
   },
   {
-   "column": "customer_status",
-   "decl": "customer_status varchar(10)",
+   "column": "status",
+   "decl": "status varchar(10)",
    "schema": "retail_banking",
    "table": "customer"
   },
@@ -121,8 +121,8 @@
    "table": "account"
   },
   {
-   "column": "account_status",
-   "decl": "account_status varchar(10)",
+   "column": "status",
+   "decl": "status varchar(10)",
    "schema": "retail_banking",
    "table": "account"
   },
@@ -187,8 +187,8 @@
    "table": "ach_batch"
   },
   {
-   "column": "batch_status",
-   "decl": "batch_status varchar(10)",
+   "column": "status",
+   "decl": "status varchar(10)",
    "schema": "payments",
    "table": "ach_batch"
   },
@@ -259,8 +259,8 @@
    "table": "wire"
   },
   {
-   "column": "wire_status",
-   "decl": "wire_status varchar(10)",
+   "column": "status",
+   "decl": "status varchar(10)",
    "schema": "payments",
    "table": "wire"
   },
@@ -271,8 +271,8 @@
    "table": "loan"
   },
   {
-   "column": "customer_id",
-   "decl": "customer_id integer",
+   "column": "borrower_id",
+   "decl": "borrower_id integer",
    "schema": "lending",
    "table": "loan"
   },
@@ -301,8 +301,8 @@
    "table": "loan"
   },
   {
-   "column": "loan_status",
-   "decl": "loan_status varchar(10)",
+   "column": "status",
+   "decl": "status varchar(10)",
    "schema": "lending",
    "table": "loan"
   },
@@ -337,8 +337,8 @@
    "table": "loan_payment"
   },
   {
-   "column": "payment_status",
-   "decl": "payment_status varchar(10)",
+   "column": "status",
+   "decl": "status varchar(10)",
    "schema": "lending",
    "table": "loan_payment"
   },
@@ -349,8 +349,8 @@
    "table": "delinquency"
   },
   {
-   "column": "loan_id",
-   "decl": "loan_id integer",
+   "column": "loan_ref",
+   "decl": "loan_ref varchar(10)",
    "schema": "lending",
    "table": "delinquency"
   },
@@ -403,8 +403,8 @@
    "table": "gl_entry"
   },
   {
-   "column": "txn_id",
-   "decl": "txn_id integer",
+   "column": "source_ref",
+   "decl": "source_ref varchar(40)",
    "schema": "bank_gl",
    "table": "gl_entry"
   },
@@ -455,6 +455,150 @@
    "decl": "is_interest_bearing integer",
    "schema": "warehouse",
    "table": "fact_balance"
+  },
+  {
+   "column": "batch",
+   "decl": "batch varchar(20)",
+   "schema": "staging",
+   "table": "tmp_load_notes"
+  },
+  {
+   "column": "note",
+   "decl": "note varchar(200)",
+   "schema": "staging",
+   "table": "tmp_load_notes"
+  },
+  {
+   "column": "loaded_at",
+   "decl": "loaded_at date",
+   "schema": "staging",
+   "table": "tmp_load_notes"
+  },
+  {
+   "column": "batch",
+   "decl": "batch varchar(20)",
+   "schema": "staging_2",
+   "table": "tmp_load_notes"
+  },
+  {
+   "column": "note",
+   "decl": "note varchar(200)",
+   "schema": "staging_2",
+   "table": "tmp_load_notes"
+  },
+  {
+   "column": "loaded_at",
+   "decl": "loaded_at date",
+   "schema": "staging_2",
+   "table": "tmp_load_notes"
+  },
+  {
+   "column": "batch",
+   "decl": "batch varchar(20)",
+   "schema": "staging_3",
+   "table": "tmp_load_notes"
+  },
+  {
+   "column": "note",
+   "decl": "note varchar(200)",
+   "schema": "staging_3",
+   "table": "tmp_load_notes"
+  },
+  {
+   "column": "loaded_at",
+   "decl": "loaded_at date",
+   "schema": "staging_3",
+   "table": "tmp_load_notes"
+  },
+  {
+   "column": "id",
+   "decl": "id integer primary key",
+   "schema": "retail_banking",
+   "table": "audit_log"
+  },
+  {
+   "column": "table_name",
+   "decl": "table_name varchar(60)",
+   "schema": "retail_banking",
+   "table": "audit_log"
+  },
+  {
+   "column": "row_id",
+   "decl": "row_id integer",
+   "schema": "retail_banking",
+   "table": "audit_log"
+  },
+  {
+   "column": "changed_at",
+   "decl": "changed_at date",
+   "schema": "retail_banking",
+   "table": "audit_log"
+  },
+  {
+   "column": "id",
+   "decl": "id integer primary key",
+   "schema": "bank_gl",
+   "table": "audit_log_2"
+  },
+  {
+   "column": "table_name",
+   "decl": "table_name varchar(60)",
+   "schema": "bank_gl",
+   "table": "audit_log_2"
+  },
+  {
+   "column": "row_id",
+   "decl": "row_id integer",
+   "schema": "bank_gl",
+   "table": "audit_log_2"
+  },
+  {
+   "column": "changed_at",
+   "decl": "changed_at date",
+   "schema": "bank_gl",
+   "table": "audit_log_2"
+  },
+  {
+   "column": "id",
+   "decl": "id integer primary key",
+   "schema": "warehouse",
+   "table": "audit_log_3"
+  },
+  {
+   "column": "table_name",
+   "decl": "table_name varchar(60)",
+   "schema": "warehouse",
+   "table": "audit_log_3"
+  },
+  {
+   "column": "row_id",
+   "decl": "row_id integer",
+   "schema": "warehouse",
+   "table": "audit_log_3"
+  },
+  {
+   "column": "changed_at",
+   "decl": "changed_at date",
+   "schema": "warehouse",
+   "table": "audit_log_3"
+  },
+  {
+   "column": "batch",
+   "decl": "batch varchar(20)",
+   "schema": "staging",
+   "table": "tmp_rebate_2019"
+  },
+  {
+   "column": "note",
+   "decl": "note varchar(200)",
+   "schema": "staging",
+   "table": "tmp_rebate_2019"
+  },
+  {
+   "column": "loaded_at",
+   "decl": "loaded_at date",
+   "schema": "staging",
+   "table": "tmp_rebate_2019"
   }
  ],
  "questions": [
@@ -511,6 +655,15 @@
    "text": "How many distinct counterparty routing numbers appear on ACH entries?",
    "touches": [
     "payments.ach_entry"
+   ]
+  },
+  {
+   "difficulty": 5,
+   "exercises": "pathology_aware",
+   "id": "n_tmp_load_notes",
+   "text": "How many rows in staging.tmp_load_notes belong to a counterparty?",
+   "touches": [
+    "staging.tmp_load_notes"
    ]
   }
  ],
@@ -584,6 +737,41 @@
    "kind": "table",
    "schema": "warehouse",
    "table": "fact_balance"
+  },
+  {
+   "kind": "table",
+   "schema": "staging",
+   "table": "tmp_load_notes"
+  },
+  {
+   "kind": "table",
+   "schema": "staging_2",
+   "table": "tmp_load_notes"
+  },
+  {
+   "kind": "table",
+   "schema": "staging_3",
+   "table": "tmp_load_notes"
+  },
+  {
+   "kind": "table",
+   "schema": "retail_banking",
+   "table": "audit_log"
+  },
+  {
+   "kind": "table",
+   "schema": "bank_gl",
+   "table": "audit_log_2"
+  },
+  {
+   "kind": "table",
+   "schema": "warehouse",
+   "table": "audit_log_3"
+  },
+  {
+   "kind": "table",
+   "schema": "staging",
+   "table": "tmp_rebate_2019"
   }
  ]
 }
