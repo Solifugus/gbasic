@@ -3092,6 +3092,17 @@ And **`web.emit` returns false when the client has gone**, which is the only
 signal a departed reader gives — the reaping loop above is the idiom, and
 without it a dead client holds a slot forever.
 
+**A parked stream belongs to the worker that accepted it.** `workers: N` is
+N separate processes, so `G.streams` is N separate lists and a poke reaches
+only the streams parked in the process that handled the poke. Measured with
+`workers: 2` and four streams open, where the accepts split 3/1: the first
+`POST /notify` answered `poked 3` and reached three of the four clients, and
+the next three answered `poked 1` and reached only the fourth. Nothing is
+wrong there — it is the same process isolation that makes `spawn` a
+fork+exec and stops a principal crossing it — but a broadcast that must
+reach *every* viewer either runs at `workers: 1` or needs a channel between
+the workers, which the pool does not provide.
+
 What the runtime does **not** do is wake a parked stream on a schedule.
 Every event-loop source is request-, reply- or transfer-driven
 (`server.requests`, `inbox.messages`, `http.events`); there is no timer. A
