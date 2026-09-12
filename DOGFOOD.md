@@ -35,6 +35,20 @@ and the stale-looking ones carry a Status line saying what overtook them.
 
 ### Open — worth fixing (ranked)
 
+-2. ~~**No sub-second clock a program can read.**~~ **NOT A GAP — RULED
+   2026-09-12, the same day it was filed.** Second resolution is DELIBERATE:
+   in business data processing it is all that is relevant, and gBASIC's
+   programmer experience is meant to be business-oriented rather than
+   technically distracted (Matthew). The case for changing it is weak on the
+   filer's own evidence — the workaround (timing from OUTSIDE, against the
+   wall clock) is the STRONGER oracle, not a concession, and the question a
+   timer handler actually asks, "am I keeping up", is answered by the tick's
+   `skipped` field with no clock at all. The asymmetry that prompted it — a
+   program may ASK for a 0.5s interval and may not TIMESTAMP one — is now a
+   stated principle in docs/timer_design.md §4 rather than an inconsistency:
+   sub-second is about responsiveness, which is the machine's business, and a
+   timestamp is about data, which is the enterprise's.
+
 -1. ~~**`0 = "stop"` is TRUE, `1 = "1"` is FALSE, and `1 > "stop"` answers.**~~
    **RESOLVED 2026-09-05, same day.** It was a MISSING CASE in a uniform
    chain, not a design choice: `eval_comparison` gives every rich kind a
@@ -4464,3 +4478,29 @@ orders freely.
 - **Suggestion:** let `read`, `write` and `append` take a string the way
   `list`, `bytes` and `file_name` already do, or say in the reference's Files
   section that whole-file I/O is the exception and why.
+
+## 2026-09-12 — CC — while: testing the new `timer` module
+- **Type:** missing-feature
+- **Severity:** medium
+- **What:** gBASIC has **no sub-second clock a program can read**. `now()` is
+  second-resolution and `epoch(now())` returns whole seconds, so
+  `a = epoch(now()) : sleep(0.25) : print epoch(now()) - a` prints `0`. A
+  program cannot measure how long anything took unless it took at least a
+  second, and a test fixture cannot time itself at all.
+- **Workaround:** `tests/run_timer.sh` measures from OUTSIDE, with
+  `date +%s.%N` around the run, and the fixtures report only what they SAW
+  (`DELIVERED n SKIPPED m`). That turned out to be the stronger design — it is
+  the standard `run_core.sh` already holds `sleep` to, and an oracle outside
+  the interpreter beats one inside it — so this is not urgent. But it is a real
+  gap: the new `timer.ticks` event carries `skipped`, which tells a program how
+  many intervals it lost, and there is still no way for it to ask how long its
+  own handler took.
+- **Status: NOT A GAP, ruled 2026-09-12 (Matthew).** Second resolution is a
+  DESIGN POSITION, not an oversight: in business data processing seconds are
+  all that is relevant, and the programmer experience is meant to stay business
+  -oriented rather than technically distracted. Nothing here makes a strong
+  enough case against it — by this entry's own admission the workaround is the
+  better testing practice, and `skipped` already answers the only question a
+  timer handler has. Recorded because the friction was real and the reasoning
+  is worth not rediscovering; struck from the open ledger because it is not
+  something to act on.

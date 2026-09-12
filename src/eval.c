@@ -831,6 +831,11 @@ static int inbox_events_watched(void);
 static void inbox_bind_global(void);
 static int inbox_loop_active(void);
 static int inbox_loop_service(void);
+static void timer_bind_global(void);
+static int timer_loop_active(void);
+static int timer_loop_service(void);
+static long timer_poll_timeout_ms(long tick_ms);
+static void timer_shutdown(void);
 /* Defined with the webserver's globals far below; declared here because
  * http.wait warns when it is called from inside the loop. */
 static int webserver_event_loop_running;
@@ -7201,6 +7206,12 @@ static int watcher_register(AstStmt *stmt) {
     if (watcher_matches_change(stmt, "inbox.messages")) {
         inbox_bind_global();
     }
+    /* Same reason as the inbox: a watch on `timer.ticks` is what declares the
+     * program wants delivery, and the body must not read a name that does not
+     * exist yet. `timer.every` binds it too, since either may come first. */
+    if (watcher_matches_change(stmt, "timer.ticks")) {
+        timer_bind_global();
+    }
     watcher_enqueue(watcher_count - 1);
     return watcher_drain();
 }
@@ -8170,7 +8181,7 @@ static size_t library_name_count = 0;
 static int library_is_native_qualifier(const char *name) {
     static const char *native[] = {
         "gi", "gui", "http", "ldap", "money", "odbc", "pg", "process",
-        "reflect", "rowmodel", "smtp", "sqlite", "this", "webclient",
+        "reflect", "rowmodel", "smtp", "sqlite", "this", "timer", "webclient",
         "webserver", "xlsx", "xml", NULL
     };
     for (size_t i = 0; native[i]; i++) {
@@ -15689,6 +15700,330 @@ static int inbox_loop_service(void) {
     return watcher_trigger_change("inbox.messages");
 }
 
+/* --- the clock in the event loop ------------------------------------------
+ *
+ * Every other source the loop polls is REQUEST-, REPLY- or TRANSFER-DRIVEN:
+ * `server.requests` fires because a client sent something, `inbox.messages`
+ * because an actor replied, `http.events` because a transfer moved. Nothing
+ * fired because time passed, so periodic work had exactly one spelling --
+ * `sleep` in a loop -- which on the event loop means the handler never returns
+ * and its worker never comes back. See docs/timer_design.md.
+ *
+ * It needs no descriptor. The loop already wakes at least every 50ms, so a
+ * timer is a comparison per iteration plus a shortened poll timeout.
+ *
+ * COALESCING, NOT CATCH-UP. At most one tick per timer per iteration, and the
+ * next due time is computed from the DELIVERY rather than from the last due
+ * time. A handler slower than the interval is the ordinary failure, and a
+ * catch-up schedule answers it with a burst -- an unbounded event queue, which
+ * PLAT-HTTP already shipped once and whose symptom was A HANG, NOT A FAILURE.
+ * What is lost is REPORTED instead of hidden: every tick carries `skipped`,
+ * the number of scheduled intervals that were not delivered since the last
+ * one, so a program counting ticks to measure time can see the shortfall. */
+
+typedef struct {
+    unsigned long id;
+    double interval;    /* seconds; > 0, enforced at creation */
+    int repeating;
+    int live;
+    double next_due;    /* CLOCK_MONOTONIC seconds */
+    double delivered;   /* ticks handed to the watcher so far */
+    int line;           /* where it was created, for the 2108 warning */
+    int column;
+} TimerEntry;
+
+static TimerEntry *timers = NULL;
+static size_t timer_count = 0;
+static unsigned long timer_next_id = 1;
+
+#define TIMER_ERROR_CODE 3009
+
+/* CLOCK_MONOTONIC, never the wall clock: an NTP step backwards stalls a
+ * wall-clock timer and a step forwards fires every interval it crossed, both
+ * silently. A test cannot move the system clock, so tests/run_timer.sh asserts
+ * this line by reading it. */
+static double timer_now_seconds(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double)ts.tv_sec + (double)ts.tv_nsec / 1e9;
+}
+
+static Value timer_raise(const char *message) {
+    runtime_error_raise(message, TIMER_ERROR_CODE, "timer");
+    return value_null();
+}
+
+/* The global `timer` record holding `ticks`, bound the same way `http` and
+ * `inbox` bind theirs: a module-owned global needs no scan of the program's
+ * variables and no binding by the program. Left alone if the program bound a
+ * name of its own first. */
+static void timer_bind_global(void) {
+    if (env_find_in_frame(&global_env, "timer")) {
+        return;
+    }
+    RecordField *fields = calloc(1, sizeof(RecordField));
+    if (!fields) {
+        abort();
+    }
+    fields[0].name = field_name_new("ticks");
+    fields[0].value = cell_alloc();
+    if (!fields[0].value) {
+        abort();
+    }
+    *fields[0].value = value_array(NULL, 0);
+    Value record = value_record(fields, 1);
+    Symbol *items = realloc(global_env.items, sizeof(Symbol) * (global_env.count + 1));
+    if (!items) {
+        abort();
+    }
+    global_env.items = items;
+    global_env.items[global_env.count].name = copy_string("timer");
+    global_env.items[global_env.count].value = record;
+    global_env.count++;
+}
+
+static int timer_ticks_watched(void) {
+    for (size_t i = 0; i < watcher_count; i++) {
+        if (watchers[i].active &&
+            watcher_matches_change(watchers[i].stmt, "timer.ticks")) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static size_t timer_live_count(void) {
+    size_t live = 0;
+    for (size_t i = 0; i < timer_count; i++) {
+        if (timers[i].live) {
+            live++;
+        }
+    }
+    return live;
+}
+
+/* Work for the loop only while a watcher wants ticks AND a timer is live. The
+ * second half is what lets a program END: a one-shot removes itself when it
+ * fires, so a program whose only timer is `timer.after(...)` exits by itself,
+ * and cancelling the last repeating timer has the same effect as `unwatch`. */
+static int timer_loop_active(void) {
+    return timer_ticks_watched() && timer_live_count() > 0;
+}
+
+/* The descriptor a caller holds and an event carries. A plain RECORD rather
+ * than a value kind of its own: a timer owns no OS resource, so there is
+ * nothing for a refcount to protect, and PLAT-EQ's thirteenth-kind lesson says
+ * a new kind is a new way into the comparison fallthrough. */
+static Value timer_descriptor(const TimerEntry *t) {
+    Value d = value_record(NULL, 0);
+    record_set(&d, "id", value_number((double)t->id));
+    record_set(&d, "interval", value_number(t->interval));
+    record_set(&d, "repeating", value_bool(t->repeating != 0));
+    return d;
+}
+
+static TimerEntry *timer_find(unsigned long id) {
+    for (size_t i = 0; i < timer_count; i++) {
+        if (timers[i].id == id) {
+            return &timers[i];
+        }
+    }
+    return NULL;
+}
+
+static Value timer_make(AstExpr *expr, const char *label, int repeating) {
+    if (expr->as.call.args.count != 1) {
+        char msg[200];
+        snprintf(msg, sizeof(msg), "%s expects one argument: the interval in seconds", label);
+        return timer_raise(msg);
+    }
+    Value v = eval_expr(expr->as.call.args.items[0]);
+    if (error_action_pending()) {
+        value_free(v);
+        return value_null();
+    }
+    if (v.kind != VALUE_NUMBER) {
+        value_free(v);
+        char msg[200];
+        snprintf(msg, sizeof(msg), "%s expects a number of seconds", label);
+        return timer_raise(msg);
+    }
+    double interval = v.as.number;
+    value_free(v);
+    /* A zero or negative interval is a busy loop wearing a timer's clothes:
+     * every iteration would be due, the poll timeout would fall to nothing and
+     * the program would spin. Refused with the reason, not clamped. */
+    if (!(interval > 0.0)) {
+        char msg[220];
+        snprintf(msg, sizeof(msg),
+                 "%s: the interval must be greater than zero (a zero or negative "
+                 "interval is a busy loop, not a timer)", label);
+        return timer_raise(msg);
+    }
+    TimerEntry *grown = realloc(timers, sizeof(TimerEntry) * (timer_count + 1));
+    if (!grown) {
+        abort();
+    }
+    timers = grown;
+    TimerEntry *t = &timers[timer_count];
+    t->id = timer_next_id++;
+    t->interval = interval;
+    t->repeating = repeating;
+    t->live = 1;
+    t->next_due = timer_now_seconds() + interval;
+    t->delivered = 0.0;
+    /* The CREATION site, not the call site of whatever noticed: the 2108
+     * warning fires after `main` has returned, where there is no current line
+     * at all, and a warning reported at 0:0 names nothing. The same correction
+     * the library-shadow note needed. */
+    t->line = expr->line;
+    t->column = expr->column;
+    timer_count++;
+    /* Bound here as well as at watch registration, because a program may read
+     * or print `timer.ticks` before it registers the watcher. */
+    timer_bind_global();
+    return timer_descriptor(t);
+}
+
+/* timer.cancel(t) -> was it live?
+ *
+ * FALSE RATHER THAN A RAISE for an unknown or already-cancelled id: a timer
+ * going away twice is an ordinary outcome, unlike the refusals above it, which
+ * are mistakes in the program. A non-record argument IS a mistake. */
+static Value timer_do_cancel(AstExpr *expr) {
+    if (expr->as.call.args.count != 1) {
+        return timer_raise("timer.cancel expects one argument: a timer");
+    }
+    Value v = eval_expr(expr->as.call.args.items[0]);
+    if (error_action_pending()) {
+        value_free(v);
+        return value_null();
+    }
+    if (v.kind != VALUE_RECORD) {
+        value_free(v);
+        return timer_raise("timer.cancel expects a timer from timer.every or timer.after");
+    }
+    RecordField *id_field = record_find(&v, "id");
+    if (!id_field || id_field->value->kind != VALUE_NUMBER) {
+        value_free(v);
+        return timer_raise("timer.cancel expects a timer from timer.every or timer.after");
+    }
+    unsigned long id = (unsigned long)id_field->value->as.number;
+    value_free(v);
+    TimerEntry *t = timer_find(id);
+    if (!t || !t->live) {
+        return value_bool(0);
+    }
+    t->live = 0;
+    return value_bool(1);
+}
+
+static Value timer_eval_call(AstExpr *expr) {
+    if (strcmp(expr->as.call.name, "every") == 0) {
+        return timer_make(expr, "timer.every", 1);
+    }
+    if (strcmp(expr->as.call.name, "after") == 0) {
+        return timer_make(expr, "timer.after", 0);
+    }
+    if (strcmp(expr->as.call.name, "cancel") == 0) {
+        return timer_do_cancel(expr);
+    }
+    char message[200];
+    snprintf(message, sizeof(message), "invalid function call: timer.%s",
+             expr->as.call.name);
+    return timer_raise(message);
+}
+
+/* Shorten the loop's poll so it wakes when the next timer is due. Without this
+ * the loop's own 50ms ceiling would be the resolution floor for every timer. */
+static long timer_poll_timeout_ms(long tick_ms) {
+    if (!timer_loop_active()) {
+        return tick_ms;
+    }
+    double now = timer_now_seconds();
+    for (size_t i = 0; i < timer_count; i++) {
+        if (!timers[i].live) {
+            continue;
+        }
+        double wait = (timers[i].next_due - now) * 1000.0;
+        if (wait < 0.0) {
+            wait = 0.0;
+        }
+        if ((long)wait < tick_ms) {
+            tick_ms = (long)wait;
+        }
+    }
+    return tick_ms < 0 ? 0 : tick_ms;
+}
+
+/* Drop the entries nothing can reach again, so a program creating one-shots in
+ * a loop does not grow the array without bound. Done AFTER delivery, since the
+ * event's descriptor is a copy and holds no pointer into it. */
+static void timer_compact(void) {
+    size_t kept = 0;
+    for (size_t i = 0; i < timer_count; i++) {
+        if (timers[i].live) {
+            timers[kept++] = timers[i];
+        }
+    }
+    timer_count = kept;
+}
+
+/* Deliver at most one tick per live timer. Returns 0 when a watcher raised,
+ * which the event loop turns into an exit. */
+static int timer_loop_service(void) {
+    Symbol *symbol = env_find_in_frame(&global_env, "timer");
+    if (!symbol || symbol->value.kind != VALUE_RECORD) {
+        return 1;
+    }
+    RecordField *ticks = record_find(&symbol->value, "ticks");
+    if (!ticks || ticks->value->kind != VALUE_ARRAY) {
+        return 1;
+    }
+    double now = timer_now_seconds();
+    int fired = 0;
+    for (size_t i = 0; i < timer_count; i++) {
+        TimerEntry *t = &timers[i];
+        if (!t->live || now < t->next_due) {
+            continue;
+        }
+        /* How many scheduled intervals went by undelivered. Zero while the
+         * loop keeps up; the honest report of what coalescing dropped. */
+        double overdue = now - t->next_due;
+        double skipped = floor(overdue / t->interval);
+        if (skipped < 0.0) {
+            skipped = 0.0;
+        }
+        t->delivered += 1.0;
+        Value event = value_record(NULL, 0);
+        record_set(&event, "id", value_number((double)t->id));
+        record_set(&event, "kind", value_string("tick"));
+        record_set(&event, "count", value_number(t->delivered));
+        record_set(&event, "skipped", value_number(skipped));
+        record_set(&event, "timer", timer_descriptor(t));
+        Value ignored = append_to_array_ref(ticks->value, event, 0);
+        value_free(ignored);
+        if (t->repeating) {
+            t->next_due = now + t->interval;
+        } else {
+            t->live = 0;
+        }
+        fired = 1;
+    }
+    timer_compact();
+    if (!fired) {
+        return 1;
+    }
+    return watcher_trigger_change("timer.ticks");
+}
+
+static void timer_shutdown(void) {
+    free(timers);
+    timers = NULL;
+    timer_count = 0;
+    timer_next_id = 1;
+}
+
 #define WEBSERVER_ERROR_CODE 4001
 #define WEBSERVER_DEFAULT_TIMEOUT_SECONDS 30.0
 #define WEBSERVER_MAX_REQUEST_SIZE (8u * 1024u * 1024u)
@@ -15800,6 +16135,26 @@ static int webserver_call_handler(WebServer *server, Value request);
  * the pending poll() must return so the flag is seen now, not at the next
  * request. */
 static volatile sig_atomic_t webserver_term_requested = 0;
+
+/* THE THREE SOURCES THAT ARE NOT A SERVER -- a watched inbox, an outstanding
+ * http transfer, a live timer -- each keep the event loop alive on their own,
+ * which is what lets a program with no server bound run after `main`. They must
+ * NOT keep it alive once this process has been asked to stop: a worker told to
+ * drain has to exit, which is the whole of PLAT-WEB-2's rolling reload, and a
+ * server's own drain is covered by `webserver_any_active()` staying true until
+ * the in-flight requests are done.
+ *
+ * PRE-EXISTING and found while building `timer`, which made it trivial to hit:
+ * MEASURED, a program with a server and `watch(inbox.messages)` never exits on
+ * SIGTERM either, and has not since the inbox source was written. The timer
+ * only made the shape ordinary -- a dashboard with a refresh tick is exactly
+ * this program. */
+static int aux_loop_sources_active(void) {
+    if (webserver_term_requested) {
+        return 0;
+    }
+    return http_loop_active() || inbox_loop_active() || timer_loop_active();
+}
 static int webserver_term_installed = 0;
 
 static void webserver_term_handler(int sig) {
@@ -17367,7 +17722,7 @@ static int webserver_event_loop_running = 0;
 
 static int webserver_run_event_loop(void) {
     webserver_event_loop_running = 1;
-    while ((webserver_any_active() || http_loop_active() || inbox_loop_active()) &&
+    while ((webserver_any_active() || aux_loop_sources_active()) &&
            !runtime_stopped) {
         if (webserver_term_requested) {
             for (size_t i = 0; i < webserver_count; i++) {
@@ -17400,15 +17755,20 @@ static int webserver_run_event_loop(void) {
         int http_fds[HTTP_MAX_POLL_FDS];
         short http_events[HTTP_MAX_POLL_FDS];
         size_t http_fd_count = 0;
-        int http_wants_loop = http_loop_active();
+        int aux_ok = !webserver_term_requested;
+        int http_wants_loop = aux_ok && http_loop_active();
         if (http_wants_loop) {
             http_fd_count = http_collect_fds(http_fds, http_events,
                                              HTTP_MAX_POLL_FDS);
         }
         /* The interpreter's ONE inbox, so a pool worker's reply arrives as an
          * event instead of through a `receive` that would stall the loop. */
-        int inbox_wants_loop = inbox_loop_active();
-        if (descriptor_count == 0 && !http_wants_loop && !inbox_wants_loop) {
+        int inbox_wants_loop = aux_ok && inbox_loop_active();
+        /* The clock needs no descriptor -- it rides the poll timeout -- so it
+         * joins the break condition and nothing else until service time. */
+        int timer_wants_loop = aux_ok && timer_loop_active();
+        if (descriptor_count == 0 && !http_wants_loop && !inbox_wants_loop &&
+            !timer_wants_loop) {
             break;
         }
         struct pollfd *pollfds = calloc(descriptor_count + http_fd_count + 2,
@@ -17448,6 +17808,9 @@ static int webserver_run_event_loop(void) {
             polled++;
         }
         long tick_ms = http_wants_loop ? http_poll_timeout_ms(50) : 50;
+        if (timer_wants_loop) {
+            tick_ms = timer_poll_timeout_ms(tick_ms);
+        }
         int ready = poll(pollfds, polled, (int)tick_ms);
         if (ready < 0 && errno != EINTR) {
             free(pollfds);
@@ -17463,6 +17826,12 @@ static int webserver_run_event_loop(void) {
                 free(pollfds);
                 return 1;
             }
+        }
+        /* Serviced unconditionally rather than on a revents bit: a timer has no
+         * descriptor, so what says it is due is the clock and not the poll. */
+        if (timer_wants_loop && !timer_loop_service()) {
+            free(pollfds);
+            return 1;
         }
         cursor = 0;
         for (size_t i = 0; i < webserver_count; i++) {
@@ -27709,6 +28078,12 @@ static Value eval_call(AstExpr *expr) {
 #endif
         }
 
+        if (strcmp(expr->as.call.library, "timer") == 0) {
+            /* No `load`: there is no optional dependency here, only clock
+             * arithmetic -- the `process` precedent. */
+            return timer_eval_call(expr);
+        }
+
         if (strcmp(expr->as.call.library, "http") == 0) {
             if (!http_library_loaded) {
                 runtime_error_raise("library not loaded: http", 3002, "http");
@@ -36182,8 +36557,28 @@ int eval_program(AstStmtList program) {
      * request enters the loop with no server bound at all -- "the loop runs
      * after `main` while there is anything to deliver, and exits when there is
      * not". Before this, a program holding only handles simply exited. */
+    /* A timer nobody watches delivers nothing, and would do so in SILENCE --
+     * the trap class this tree hunts. Said here rather than at creation,
+     * because the `watch` may legitimately come later; by the time `main` has
+     * returned it either exists or it never will. A warning and not a refusal:
+     * the program runs exactly as it did. */
+    if (!exit_status && timer_live_count() > 0 && !timer_ticks_watched()) {
+        /* The FIRST live one, which is the site an author reads first; the
+         * position is also the deduplication key, so naming one site per timer
+         * would report a program's three timers as three warnings. One is
+         * enough to say the watcher is missing. */
+        for (size_t i = 0; i < timer_count; i++) {
+            if (!timers[i].live) {
+                continue;
+            }
+            warn_fmt_at(2108, "timer", timers[i].line, timers[i].column,
+                        "a timer is live and nothing watches `timer.ticks`, so "
+                        "no tick will be delivered -- add `watch(timer.ticks)`");
+            break;
+        }
+    }
     if (!exit_status &&
-        (webserver_any_active() || http_loop_active() || inbox_loop_active())) {
+        (webserver_any_active() || aux_loop_sources_active())) {
         exit_status = webserver_run_event_loop();
         /* A raise inside a WATCHER happens after `main` has returned, so the
          * fatal report above has already run and there is nothing left to
@@ -36233,6 +36628,7 @@ int eval_program(AstStmtList program) {
     actor_mailbox_shutdown();
     http_library_loaded = 0;
     http_shutdown();
+    timer_shutdown();
     if (webclient_curl_initialized) {
 #if HAVE_LIBCURL
         curl_global_cleanup();

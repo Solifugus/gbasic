@@ -2621,6 +2621,96 @@ end watch
 request would cancel the first — two handlers run, one answer arrives, and
 nothing is reported.
 
+## Timer Module
+
+Periodic work on the event loop. Needs no `load` — there is no optional
+dependency, only clock arithmetic — and delivers through a watched global, like
+`http.events` and `inbox.messages`. See `docs/timer_design.md`.
+
+Every other source the loop polls fires because something arrived: a request, a
+reply, a transfer. Nothing fired because **time passed**, so periodic work had
+one spelling — `sleep` in a loop — and on the event loop that means the handler
+never returns and its worker never comes back.
+
+```basic
+t = timer.every(0.5)
+
+watch(timer.ticks)
+    while count(timer.ticks) > 0
+        ev = take_first(timer.ticks)
+        poke_the_streams()
+    end while
+end watch
+```
+
+- `timer.every(seconds) -> timer` — repeating.
+- `timer.after(seconds) -> timer` — one-shot; removes itself when it fires.
+- `timer.cancel(timer) -> boolean` — `true` if it was live, `false` if it had
+  already gone. A timer going away twice is an ordinary outcome, not an error.
+- `timer.ticks` — the delivery queue.
+
+A timer is an ordinary record, `{ id, interval, repeating }`. A tick is
+`{ id, kind: "tick", count, skipped, timer }`.
+
+**`skipped` is the field to read.** Ticks are **coalesced, never caught up**: at
+most one per timer per loop iteration, and the next due time is computed from
+the delivery, so a handler slower than the interval loses ticks instead of
+producing a burst — a burst on the event loop is an unbounded queue, and its
+symptom is a hang rather than a failure. What is lost is reported: `skipped` is
+the number of scheduled intervals not delivered since the previous tick, `0`
+while the loop keeps up. Intervals elapsed is `1 + skipped` per tick, so a
+program measuring time by counting ticks has what it needs.
+
+The clock is `CLOCK_MONOTONIC`. A wall-clock timer stalls on an NTP step
+backwards and fires every interval it crossed on a step forwards, both silently.
+
+**What keeps the program running, and what lets it stop.** The loop runs while a
+watcher on `timer.ticks` exists *and* at least one timer is live. So a program
+whose only timer is `timer.after(...)` **exits by itself** once it fires, and one
+holding a repeating timer runs until `timer.cancel` or `unwatch` — the same
+bargain `watch(inbox.messages)` makes, and for the same reason: a clock has no
+completion of its own, so the program says when it is done.
+
+A live timer with no `watch(timer.ticks)` anywhere delivers nothing, and is
+reported (warning `2108`, at the timer's own creation site) when the program
+would otherwise exit. A warning, not a refusal: the `watch` may legitimately be
+registered later, and the program runs exactly as it did.
+
+**It does not preempt.** A tick is delivered between loop iterations, so a
+handler that blocks delays every timer; `skipped` is how a program sees that.
+And it does not cross workers — `workers: N` is N processes, each running the
+program and registering its own timers.
+
+The shape this exists for is a parked stream poked on a schedule:
+
+```basic
+server app( port: 0 )
+    stream "/events"( req )
+        e = web.emit(req, web.sse_event("open"))
+        append(G.streams, req)
+        return 0
+    end stream
+end server
+
+program main( args )
+    G = { streams: [] }
+    h = web.serve(app)
+    t = timer.every(0.2)
+    watch(timer.ticks)
+        while count(timer.ticks) > 0
+            ev = take_first(timer.ticks)
+            alive = []
+            for each s in G.streams
+                if web.emit(s, web.sse_named("tick", string(ev.count))) then
+                    append(alive, s)
+                end if
+            end for
+            G.streams = alive
+        end while
+    end watch
+end program
+```
+
 ## WebServer Module
 
 WebServer provides an HTTP/1.1 server using live records, ordinary arrays, and
