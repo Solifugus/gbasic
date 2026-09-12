@@ -190,6 +190,27 @@ check("CONTROL: an unrelated question flags nothing",
       count(nlq.check_literals(vg, v, "how many accounts are there")), 0)
 
 print ""
+print "-- R3/R4: what generated SQL may NAME, and may DO"
+' R4 IS STRUCTURAL, NOT A REQUEST. The system prompt asks for a SELECT; that is
+' an instruction, and instructions are not enforcement.
+' R3 CATCHES A CONFIDENT LIE: a query naming a table the grounding never
+' surfaced is a hallucination that happens to be spelled correctly -- and it
+' RUNS, if the name exists, which in an estate holding deal, deal_2015,
+' stg_deal and dim_deal it very well might.
+sg = { tables: [ "trading.deal", "warehouse.stg_deal" ] }
+check("a grounded read-only query is clean",
+      count(nlq.check_sql("SELECT COUNT(*) FROM warehouse.stg_deal", sg, {})), 0)
+un = nlq.check_sql("SELECT * FROM archive.deal_2015 JOIN trading.deal d ON d.id = 1", sg, {})
+check("a table the grounding never surfaced is flagged", un[0].kind, "ungrounded_table")
+check("and it is named", un[0].detail, "archive.deal_2015")
+wr = nlq.check_sql("DELETE FROM trading.deal", sg, {})
+check("a write is refused whatever the prompt asked for", wr[0].kind, "not_read_only")
+' CONTROL: an explicitly allowed table is not flagged, or R3 would make a
+' legitimate widening impossible.
+check("CONTROL: an allowed table passes",
+      count(nlq.check_sql("SELECT 1 FROM archive.deal_2015", sg, { allow: [ "archive.deal_2015" ] })), 0)
+
+print ""
 print "-- refusals, each beside its nearest legal neighbour"
 on error goto next
 nlq.ground({ tables: [] }, "anything", {})

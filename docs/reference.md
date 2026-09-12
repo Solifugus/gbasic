@@ -6123,6 +6123,26 @@ whole program without needing a call site.
   `'OPEN'`. A column that **overflows** `max_values` gets
   no vocabulary rather than a truncated one, because a partial list would report
   a real value as unknown when it is merely unlisted.
+  `nlq.prompt(g, cat, vocab, question, { budget_tokens: 3000 })` builds the
+  messages for a model — the grounded tables with their columns, the value
+  vocabulary for those tables, and the question — and **refuses** when the
+  estimate exceeds the budget. That refusal is the whole point: Ollama serves
+  a model at its own `num_ctx` and silently truncates beyond it, discarding
+  the **head**, so an over-budget prompt loses its schema while keeping its
+  question and the model invents table names. A refusal names a budget; a
+  truncation names nothing. The estimate is characters over a declared
+  `chars_per_token` (2.5 by default, measured) — deliberately crude, because
+  the budget is a safety margin and being approximately right on the
+  conservative side is the whole job.
+  `nlq.check_sql(sql, g, { allow: [...] })` enforces **R3 and R4** on generated
+  SQL and returns the problems rather than raising: `not_read_only` for anything
+  that would change the database (structural — the prompt *asks* for a SELECT,
+  and an instruction is not enforcement), and `ungrounded_table` for a query
+  naming a table the grounding never surfaced. That last one is a hallucination
+  that happens to be spelled correctly, and it **runs** if the name exists —
+  which in an estate holding `deal`, `deal_2015`, `stg_deal` and `dim_deal` it
+  very well might. The check is **lexical and says so**: it reads the
+  identifiers after `from` and `join` and is not a SQL parser.
   A table-name match outweighs a schema-name match, which outweighs a
   column-name match; ranking is **total** (score, then id), so a driver's row
   order cannot decide the answer. Scored against `estateforge`'s independently

@@ -41,7 +41,7 @@ out="$scratch/sem.out"
 if timeout 120 ./gbasic tests/nlq/nlq_test.bas >"$out" 2>&1; then
     mism="$(sed -n 's/^mismatches: //p' "$out")"
     checks="$(sed -n 's/^checks: //p' "$out")"
-    if [ "$mism" = "0" ] && [ "${checks:-0}" -ge 37 ]; then
+    if [ "$mism" = "0" ] && [ "${checks:-0}" -ge 42 ]; then
         ok "$checks checks, 0 mismatches"
     else
         bad "nlq_test: $checks checks, $mism mismatches"; grep MISMATCH "$out" || true
@@ -236,6 +236,40 @@ if [ "${b_amb:-0}" -ge 1 ] && [ "${b_amb:-99}" -lt "$b_n" ]; then
     ok "and fires on $b_amb of $b_n where the null region IS planted"
 else
     bad "R6 fired on $b_amb of $b_n bank questions -- wanted some but not all"
+fi
+
+# --- R3/R4 OVER RECORDED MODEL OUTPUT --------------------------------------
+# The SQL a real 4B model actually wrote, replayed OFFLINE from committed
+# fixtures: no network, no GPU, no database. Recording cost 13 fixtures over a
+# couple of hours on a loaded machine and a driver that was quietly broken;
+# replay costs seconds and cannot go quiet because a GPU did.
+#
+# 13 OF 13 COME BACK CLEAN, AND THAT IS A RESULT ABOUT THE MODEL, NOT A TIER
+# THAT ASSERTS NOTHING. This model stays inside the tables it was handed: it
+# never named an ungrounded one and never wrote a write statement. The proof
+# that the check is not asleep is in the SEMANTICS fixture, which feeds it
+# `archive.deal_2015` (ungrounded) and `DELETE` and requires both refused. A
+# tier that only ever sees clean input needs its teeth demonstrated elsewhere.
+#
+# THE THREE MISSING FIXTURES ARE ALSO A RESULT. Their reasoning exhausted the
+# output budget and returned empty content, so the recorder refused to save
+# them -- an empty answer is an outcome, and about one question in five is
+# unanswerable at this model size.
+printf 'TIER replay\n'
+rp="$(timeout 200 ./gbasic tests/nlq/nlq_replay.bas 2>&1)"
+r_n="$(printf '%s\n' "$rp" | sed -n 's|^REPLAYED \([0-9]*\) .*|\1|p')"
+r_c="$(printf '%s\n' "$rp" | sed -n 's|^CLEAN \([0-9]*\) of \([0-9]*\)|\1|p')"
+r_t="$(printf '%s\n' "$rp" | sed -n 's|^CLEAN [0-9]* of \([0-9]*\)|\1|p')"
+r_missing="$(printf '%s\n' "$rp" | grep -c '^NOFIXTURE' || true)"
+if [ -z "$r_n" ]; then
+    bad "replay produced no summary: $rp"
+else
+    [ "${r_t:-0}" -ge 13 ] && ok "$r_t recorded answers replayed offline" \
+        || bad "only $r_t fixtures replayed, expected 13"
+    [ "$r_c" = "$r_t" ] && ok "and all $r_c name only grounded tables and only read" \
+        || bad "R3/R4 flagged $((r_t - r_c)) of $r_t: $(printf '%s\n' "$rp" | grep '^FLAG' | head -3)"
+    [ "$r_missing" = "3" ] && ok "3 questions have no fixture -- their reasoning ran out of budget, which is an outcome" \
+        || bad "expected 3 unrecorded questions, saw $r_missing"
 fi
 
 # --- FIXTURE PROVENANCE ----------------------------------------------------

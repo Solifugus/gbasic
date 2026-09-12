@@ -289,6 +289,107 @@ library nlq
         return i
     end function
 
+    ' --- R3 and R4: what the generated SQL may name, and may do ---------------
+    '
+    ' R4 IS STRUCTURAL, NOT A REQUEST. The system prompt asks for a SELECT; that
+    ' is an instruction and instructions are not enforcement. A statement that
+    ' writes is refused by inspection before anything executes it.
+    '
+    ' R3 IS THE ONE THAT CATCHES A CONFIDENT LIE. A generated query naming a
+    ' table the grounding never surfaced is a hallucination that happens to be
+    ' spelled correctly -- and it RUNS, if the name exists, which in an estate
+    ' with `deal`, `deal_2015`, `stg_deal` and `dim_deal` it very well might.
+    ' Checked against what the grounding ACTUALLY SELECTED rather than against
+    ' the catalog, because the catalog contains every wrong answer too.
+    '
+    ' THE CHECK IS LEXICAL AND SAYS SO. It reads the identifiers after from and
+    ' join; it is not a SQL parser, and a query that hides a table name inside a
+    ' construct this does not model would pass. That is a stated limit rather
+    ' than a claim -- the remedy is `discovery`'s own statement reader, which
+    ' parses SQL properly, and wiring the two together is work this increment
+    ' does not do.
+    function check_sql(sql, g, options)
+        opts = _options(options, [ "allow" ], "nlq.check_sql")
+        extra = _default(opts, "allow", [])
+        problems = []
+        low = lower(sql)
+
+        ' R4: read-only, by inspection.
+        for each verb in [ "insert ", "update ", "delete ", "drop ", "alter ",
+                           "create ", "truncate ", "grant ", "revoke ", "merge " ]
+            if contains(low, verb) then
+                append(problems, { kind: "not_read_only", detail: trim(verb),
+                                   why: "this statement would change the database" })
+            end if
+        end for
+        if not contains(low, "select") then
+            append(problems, { kind: "not_a_query", detail: "",
+                               why: "no select at all" })
+        end if
+
+        ' R3: every table named must be one the grounding surfaced.
+        allowed = []
+        for each t in g.tables
+            append(allowed, lower(t))
+        end for
+        for each t in extra
+            append(allowed, lower(t))
+        end for
+        for each named in _tables_named(low)
+            if not contains(allowed, named) then
+                append(problems, { kind: "ungrounded_table", detail: named,
+                                   why: ("the grounding never surfaced it; the query names a table " +
+                                         "nobody offered, which runs if the name happens to exist") })
+            end if
+        end for
+        return problems
+    end function
+
+    ' The identifiers following `from` and `join`. Deliberately small: a
+    ' qualified name, up to the first character that cannot be part of one.
+    function _tables_named(low)
+        out = []
+        for each kw in [ "from ", "join " ]
+            rest = low
+            guard = 0
+            while contains(rest, kw) and guard < 64
+                guard = guard + 1
+                at = find(rest, kw)
+                if is_unknown(at) then
+                    rest = ""
+                else
+                    rest = mid(rest, at + len(kw), len(rest))
+                    name = _leading_identifier(rest)
+                    if len(name) > 0 and not contains(out, name) then
+                        ' `from (select ...)` names no table here, and a bare
+                        ' alias after a subquery is not one either.
+                        if not contains(name, "(") then
+                            append(out, name)
+                        end if
+                    end if
+                end if
+            end while
+        end for
+        return out
+    end function
+
+    function _leading_identifier(text)
+        out = ""
+        i = 0
+        while i < len(text)
+            ch = mid(text, i, 1)
+            ok = (ch >= "a" and ch <= "z") or (ch >= "0" and ch <= "9")
+            ok = ok or ch = "_" or ch = "."
+            if not ok then
+                i = len(text)
+            else
+                out = out + ch
+                i = i + 1
+            end if
+        end while
+        return out
+    end function
+
     function check_catalog(cat)
         if type(cat) != "record" then
             error "nlq: a catalog is a record of { tables, columns }"
