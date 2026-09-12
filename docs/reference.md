@@ -6118,7 +6118,9 @@ whole program without needing a call site.
   differs in case from what the column holds. That is a measured failure, not a
   hypothetical: the first real model call produced
   `WHERE account_status = 'open'` against data that says `'OPEN'` — perfect SQL
-  returning 0 rows with no error. A column that **overflows** `max_values` gets
+  returning 0 rows with no error — and supplying the vocabulary is what fixes
+  it, measured on the same model at temperature 0: without it `'open'`, with it
+  `'OPEN'`. A column that **overflows** `max_values` gets
   no vocabulary rather than a truncated one, because a partial list would report
   a real value as unknown when it is merely unlisted.
   A table-name match outweighs a schema-name match, which outweighs a

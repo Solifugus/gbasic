@@ -169,6 +169,26 @@ Two consequences for the increment below:
   was matched to, that is reportable — the same shape as `unresolved`, one
   level down.
 
+### And the remedy was measured, not assumed
+
+The same model, the same question, temperature 0, one variable — whether the
+prompt carries the column's declared values:
+
+```
+WITHOUT: SELECT COUNT(*) FROM retail_banking.account WHERE account_status = 'open';
+WITH:    SELECT COUNT(*) FROM retail_banking.account WHERE account_status = 'OPEN';
+```
+
+Declaring `account_status in (OPEN, CLOSED, FROZEN)` is the whole difference
+between a query that silently returns 0 and one that answers. That is the claim
+this design deliberately declined to make until it had been run: a feature whose
+justification is "the model will probably use it" is decoration until the model
+is observed using it.
+
+Note what the fix is **not**. Nothing was added to the instructions, no
+temperature was tuned and the model was not asked to try harder. A fact the
+database already knew was put in front of it.
+
 ---
 
 ## 4b. Measured: the context budget is 4096 tokens, and overflow is silent
