@@ -3050,6 +3050,57 @@ made the mistake in its own frame and the error can name that line. Handlers
 cannot rebind caller state, so shared state (a broadcast list) lives in
 **fields of a program global** — the one mutation a function makes visible.
 
+**A `stream` handler must return, like any other.** It is not held open for
+the length of the stream: the connection outlives the handler, so the shape
+that keeps a stream alive is to emit whatever opening event the client needs,
+**park the request** in a program global, and return.
+
+```basic
+server app( port: 0 )
+    stream "/events"( req )
+        e = web.emit(req, web.sse_event("open"))
+        append(G.streams, req)
+        return 0
+    end stream
+
+    post "/notify"( req )
+        alive = []
+        for each s in G.streams
+            if web.emit(s, web.sse_event(req.body)) then
+                append(alive, s)
+            end if
+        end for
+        G.streams = alive
+        return { status: 200, body: "ok" }
+    end post
+end server
+
+program main( args )
+    G = { streams: [] }
+    h = web.serve(app)
+    print "PORT " + string(h.port)
+end program
+```
+
+Two consequences follow, and both are properties a scale-minded reader will
+want stated rather than inferred. **Parked streams do not occupy workers**:
+each is a socket the event loop holds, so N open streams on one worker leave
+that worker free to answer ordinary requests (`tests/run_web_stream.sh`'s
+`SSE_BROADCAST` tier pokes a stream parked by one request from a *second*
+connection, which is only possible because the first handler returned).
+And **`web.emit` returns false when the client has gone**, which is the only
+signal a departed reader gives — the reaping loop above is the idiom, and
+without it a dead client holds a slot forever.
+
+What the runtime does **not** do is wake a parked stream on a schedule.
+Every event-loop source is request-, reply- or transfer-driven
+(`server.requests`, `inbox.messages`, `http.events`); there is no timer. A
+stream whose content arrives on a clock rather than from another request has
+to be poked by something — a second process, an actor, or a request from a
+scheduler — because a handler that sleeps to wait for the next tick *is*
+holding its worker, and that is the limit people meet and misattribute to
+streams.
+
 That distinction matters most where it is least visible. Reflecting a query
 parameter into a response header is ordinary handler code; the CRLF refusal is
 what stops it becoming response splitting. While that refusal was fatal, any
