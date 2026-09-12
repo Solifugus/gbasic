@@ -209,6 +209,86 @@ library nlq
         return 0 - 1
     end function
 
+    ' --- the prompt, and the budget it REFUSES to exceed -----------------------
+    '
+    ' MEASURED, AND IT IS WHY THE BUDGET IS A REFUSAL. Ollama serves qwen3:4b at
+    ' a default num_ctx of 4096 while the model declares 262144, and a prompt
+    ' over that is SILENTLY TRUNCATED -- prompt_eval_count pins at 4095 for 9KB,
+    ' 28KB and 71KB alike, with nothing reported. Worse, it is the HEAD that
+    ' goes: the question at the tail survives while the schema above it does
+    ' not, so a model handed a large catalog answers with NO SCHEMA AT ALL and
+    ' confidently invents table names that look exactly like the real ones.
+    '
+    ' A REFUSAL NAMES A BUDGET; A TRUNCATION NAMES NOTHING. So the builder
+    ' measures what it is about to send and raises rather than letting the
+    ' transport decide what to discard.
+    '
+    ' The estimate is deliberately crude -- characters over a declared ratio,
+    ' measured at ~2.5 chars per token on this model. A tokenizer would be more
+    ' accurate and is not worth a dependency: the budget is a SAFETY MARGIN, and
+    ' being approximately right on the conservative side is the whole job.
+    function prompt(g, cat, vocab, question, options)
+        opts = _options(options, [ "budget_tokens", "chars_per_token", "dialect" ], "nlq.prompt")
+        budget = _default(opts, "budget_tokens", 3000)
+        cpt = _default(opts, "chars_per_token", 2.5)
+        dialect = _default(opts, "dialect", "standard SQL")
+
+        by_table = {}
+        for each c in cat.columns
+            tid = _id(c.schema, c.table)
+            if is_unknown(by_table[tid]) then
+                by_table[tid] = []
+            end if
+            by_table[tid] = _append_to(by_table[tid], c.column)
+        end for
+
+        lines = []
+        for each tid in g.tables
+            cols = by_table[tid]
+            if is_unknown(cols) then
+                cols = []
+            end if
+            append(lines, tid + "(" + join(cols, ", ") + ")")
+        end for
+
+        vlines = []
+        for each tid in g.tables
+            for each key in keys(vocab)
+                if starts_with(key, tid + ".") then
+                    append(vlines, key + " in (" + join(vocab[key], ", ") + ")")
+                end if
+            end for
+        end for
+
+        sys = ("You write one " + dialect + " SELECT statement that answers the question. " +
+               "Use ONLY the tables and columns listed. Use the exact column values given. " +
+               "Reply with SQL only: no markdown, no fence, no explanation.")
+        user = "Tables:" + chr(10) + join(lines, chr(10))
+        if count(vlines) > 0 then
+            user = user + chr(10) + "Column values:" + chr(10) + join(vlines, chr(10))
+        end if
+        user = user + chr(10) + chr(10) + "Question: " + question
+
+        est = _estimate_tokens(len(sys) + len(user), cpt)
+        if est > budget then
+            error ("nlq.prompt: this prompt is about " + string(est) + " tokens against a budget of " +
+                   string(budget) + " -- narrow the grounding (limit is " + string(g.search.limit) +
+                   ", " + string(count(g.tables)) + " tables selected). Sending it would be truncated " +
+                   "silently, and it is the SCHEMA that would be dropped, not the question")
+        end if
+        return { system: sys, user: user, estimated_tokens: est, budget: budget,
+                 tables: g.tables }
+    end function
+
+    function _estimate_tokens(chars, cpt)
+        n = chars / cpt
+        i = 0
+        while i < n
+            i = i + 1
+        end while
+        return i
+    end function
+
     function check_catalog(cat)
         if type(cat) != "record" then
             error "nlq: a catalog is a record of { tables, columns }"

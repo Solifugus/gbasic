@@ -231,6 +231,49 @@ Three consequences:
 
 ---
 
+## 4c. Measured: what a 4B thinking model actually writes
+
+Sixteen benchmark questions, grounded at `limit: 6` with value vocabulary,
+recorded against `qwen3-nlq` — `qwen3:4b` with `num_ctx` **stated** at 8192,
+because the stock server's 4096 is not enough for a model that reasons before
+it answers.
+
+**Thirteen of sixteen produced SQL. Three produced nothing at all**, with
+`finish_reason: length`: the reasoning consumed the whole output budget. That
+is an operational property of this model on this task, not a bug to tune away —
+roughly one question in five is unanswerable at this size, and **an empty
+answer is an outcome**, which is why the recorder refuses to save one. A
+fixture built from silence is indistinguishable from a working one until the
+gate is asserting against it.
+
+Three patterns in what it did write, all of which SQL-text scoring rates as
+correct:
+
+**It prefers the warehouse copy to the source table.** `How many deals have a
+status of ACTIVE?` became `SELECT COUNT(*) FROM warehouse.stg_deal`, where the
+answer key says `trading.deal`. Not a hallucination — `stg_deal` *was* in the
+grounding and it *does* have `deal_status`. But estateforge's own truth says
+`stg_deal` is loaded from `trading.deal` through a join to `contract`, so rows
+are filtered on the way and the two counts need not agree. **This is R2 arriving
+on question one**, and it is exactly the case a query inspection cannot see: the
+SQL is well-formed and names real columns.
+
+**It invents literals where the vocabulary does not reach.**
+`WHERE contract_ref = 1` and `WHERE acct_no IN (1100, 4000)` — both columns are
+high-cardinality, so neither qualified for value vocabulary, and the model
+filled the gap with plausible numbers. **Value vocabulary is therefore not a
+complete remedy.** It removes the guess where a column is categorical; a
+question that turns on a specific identifier is a different problem, and one
+the grounding should report rather than let the model solve by invention.
+
+**It is right about reports.** `SUM(total_volume) FROM warehouse.rpt_volume_gross`
+and its `_net` counterpart are what those questions ask for, and the gap
+question produced a correct join between the two. The lineage-aware questions —
+the ones this design worried about most — are the ones it handled best, because
+the grounding gave it exactly the two objects and the question named which.
+
+---
+
 ## 5. Scoring, and why not on SQL text
 
 `estateforge_design` §6 settles this and NLQ adopts it unchanged: the output is
