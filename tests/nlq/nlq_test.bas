@@ -152,6 +152,44 @@ check("CONTROL: an unambiguous grounding is answerable", nlq.check_answerable(go
 check("and it carries no ambiguity", count(gok.ambiguous), 0)
 
 print ""
+print "-- value vocabulary: the literal a catalog cannot supply"
+' MEASURED, AND IT IS WHY THIS EXISTS. The first real model call produced
+'   SELECT COUNT(*) FROM retail_banking.account WHERE account_status = 'open'
+' against data that says 'OPEN'. The SQL is perfect and it returns 0 with no
+' error. A catalog gives column NAMES and not column VALUES.
+vrows = [ { schema: "retail_banking", table: "account", column: "account_status", value: "OPEN" },
+          { schema: "retail_banking", table: "account", column: "account_status", value: "CLOSED" },
+          { schema: "retail_banking", table: "account", column: "account_status", value: "OPEN" },
+          { schema: "retail_banking", table: "account", column: "account_status", value: "FROZEN" } ]
+v = nlq.vocabulary(vrows, {})
+check("a repeated value is listed once", count(v["retail_banking.account.account_status"]), 3)
+' A CEILING IS PART OF THE DEFINITION, and a column that overflows it gets NO
+' vocabulary rather than a truncated one -- a partial list is worse than none,
+' because a literal absent from it would be reported unknown when it is merely
+' unlisted.
+wide = []
+i = 0
+while i < 40
+    append(wide, { schema: "s", table: "t", column: "c", value: "v" + string(i) })
+    i = i + 1
+end while
+vw = nlq.vocabulary(wide, { max_values: 25 })
+check("a high-cardinality column carries NO vocabulary", has(vw, "s.t.c"), false)
+check("CONTROL: under the cap it does", has(nlq.vocabulary(wide, { max_values: 100 }), "s.t.c"), true)
+
+vcat = { tables: [ { schema: "retail_banking", table: "account" } ],
+         columns: [ { schema: "retail_banking", table: "account", column: "account_status" } ] }
+vg = nlq.ground(vcat, "How many accounts are open?", { limit: 4 })
+lits = nlq.check_literals(vg, v, "How many accounts are open?")
+check("the wrong-case literal is caught before any model runs", count(lits), 1)
+check("and it names what the column actually holds", lits[0].means, "OPEN")
+check("and what the question said", lits[0].said, "open")
+' CONTROL: a question whose words are not values of the column reports nothing,
+' or "it catches literals" is satisfied by a check that flags every word.
+check("CONTROL: an unrelated question flags nothing",
+      count(nlq.check_literals(vg, v, "how many accounts are there")), 0)
+
+print ""
 print "-- refusals, each beside its nearest legal neighbour"
 on error goto next
 nlq.ground({ tables: [] }, "anything", {})

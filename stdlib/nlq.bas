@@ -123,6 +123,92 @@ library nlq
         return out
     end function
 
+    ' --- value vocabulary -----------------------------------------------------
+    '
+    ' MEASURED, AND IT IS WHY THIS EXISTS. The first real model call produced
+    '     SELECT COUNT(*) FROM retail_banking.account WHERE account_status = 'open'
+    ' against data that says 'OPEN'. The SQL is perfect -- right table, right
+    ' column, right operator -- and it returns 0 with no error. SQL-text scoring
+    ' rates it correct.
+    '
+    ' A CATALOG GIVES COLUMN NAMES AND NOT COLUMN VALUES, so the literal is a
+    ' guess the model cannot avoid, and asking it to guess better is the wrong
+    ' repair. For a LOW-CARDINALITY column the distinct values are IN THE
+    ' DATABASE and can be read -- declared, certain and cheap, the class
+    ' discovery's first increment is built from. A grounding that carries
+    ' `account_status in (OPEN, CLOSED, FROZEN)` removes the guess instead of
+    ' improving it.
+    '
+    ' A CEILING IS PART OF THE DEFINITION, not a tuning knob: a column with
+    ' thousands of distinct values has no vocabulary worth carrying, and
+    ' attaching one would blow a small model's context for no gain.
+    function vocabulary(rows, options)
+        opts = _options(options, [ "max_values" ], "nlq.vocabulary")
+        cap = _default(opts, "max_values", 25)
+        out = {}
+        for each r in rows
+            key = _id(r.schema, r.table) + "." + r.column
+            if is_unknown(out[key]) then
+                out[key] = []
+            end if
+            vals = out[key]
+            v = string(r.value)
+            if not contains(vals, v) and count(vals) <= cap then
+                out[key] = _append_to(vals, v)
+            end if
+        end for
+        ' A column that overflowed the cap has NO vocabulary rather than a
+        ' truncated one: a partial list is worse than none, because a literal
+        ' absent from it would be reported as unknown when it is merely unlisted.
+        keep = {}
+        for each k in keys(out)
+            if count(out[k]) <= cap then
+                keep[k] = out[k]
+            end if
+        end for
+        return keep
+    end function
+
+    ' Does the question name a literal this column cannot hold? The same shape
+    ' as `unresolved`, one level down: reported, never corrected, because a
+    ' catalog cannot know whether the person or the data is wrong.
+    function check_literals(g, vocab, question)
+        out = []
+        qt = terms(question)
+        for each tid in g.tables
+            for each key in keys(vocab)
+                if starts_with(key, tid + ".") then
+                    known = vocab[key]
+                    lowered = []
+                    for each v in known
+                        append(lowered, lower(v))
+                    end for
+                    for each t in qt
+                        ' A question word that IS a value of this column, but in
+                        ' the wrong case, is the measured failure exactly.
+                        if contains(lowered, t) and not contains(known, t) then
+                            append(out, { column: key, said: t,
+                                          means: known[_index_of(lowered, t)],
+                                          why: "the question's wording differs in case from the stored value" })
+                        end if
+                    end for
+                end if
+            end for
+        end for
+        return out
+    end function
+
+    function _index_of(arr, v)
+        i = 0
+        while i < count(arr)
+            if arr[i] = v then
+                return i
+            end if
+            i = i + 1
+        end while
+        return 0 - 1
+    end function
+
     function check_catalog(cat)
         if type(cat) != "record" then
             error "nlq: a catalog is a record of { tables, columns }"

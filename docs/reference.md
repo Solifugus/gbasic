@@ -6111,6 +6111,16 @@ whole program without needing a call site.
   discriminator the refusal fired on 15 of 16 benchmark questions, which is
   indistinguishable from having no tool. A tie at the cut is disclosure
   (`search.cut_tied`), not a gate, since the needed table is usually inside it.
+  **Value vocabulary** answers the one thing a catalog cannot:
+  `nlq.vocabulary(rows, { max_values: 25 })` folds `{schema, table, column,
+  value}` rows into the distinct values of each low-cardinality column, and
+  `nlq.check_literals(g, vocab, question)` reports where the question's wording
+  differs in case from what the column holds. That is a measured failure, not a
+  hypothetical: the first real model call produced
+  `WHERE account_status = 'open'` against data that says `'OPEN'` — perfect SQL
+  returning 0 rows with no error. A column that **overflows** `max_values` gets
+  no vocabulary rather than a truncated one, because a partial list would report
+  a real value as unknown when it is merely unlisted.
   A table-name match outweighs a schema-name match, which outweighs a
   column-name match; ranking is **total** (score, then id), so a driver's row
   order cannot decide the answer. Scored against `estateforge`'s independently

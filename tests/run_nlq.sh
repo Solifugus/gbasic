@@ -41,7 +41,7 @@ out="$scratch/sem.out"
 if timeout 120 ./gbasic tests/nlq/nlq_test.bas >"$out" 2>&1; then
     mism="$(sed -n 's/^mismatches: //p' "$out")"
     checks="$(sed -n 's/^checks: //p' "$out")"
-    if [ "$mism" = "0" ] && [ "${checks:-0}" -ge 30 ]; then
+    if [ "$mism" = "0" ] && [ "${checks:-0}" -ge 37 ]; then
         ok "$checks checks, 0 mismatches"
     else
         bad "nlq_test: $checks checks, $mism mismatches"; grep MISMATCH "$out" || true
