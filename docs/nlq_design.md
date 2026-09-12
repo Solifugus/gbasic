@@ -127,6 +127,50 @@ always answers or always refuses.
 lineages are two answers, SQL may not name what retrieval never surfaced,
 read-only is structural, and an answer never travels without its query.
 
+## 4a. Measured: the first real model call got the literal wrong
+
+Before writing any of the generation layer, one question was put to
+`qwen3:4b` through Ollama with a hand-built grounding:
+
+> Tables: `retail_banking.account(account_id, account_status, current_balance)`
+> Question: How many accounts are open?
+
+```sql
+SELECT COUNT(*) FROM retail_banking.account WHERE account_status = 'open';
+```
+
+The SQL is perfect. **The data says `'OPEN'`.** The query returns 0, with no
+error, and 0 is a number a dashboard will happily render. Reproduced across
+calls at temperature 0.
+
+This is the failure §1 describes, arriving on the first attempt and from the
+direction least expected: not the wrong table, not the wrong join — **the wrong
+literal**. And it is invisible to every check that looks at the query: the SQL
+names the right table, the right column and the right operator, so SQL-text
+scoring rates it correct. Only running it against data with a known answer
+reveals anything, which is why §5 scores the value.
+
+**The cause is a gap in the grounding, not in the model.** A catalog gives
+column *names* and not column *values*, so `'open'` versus `'OPEN'` versus
+`'A'` versus `'ACTIVE'` is a guess the model has no way to avoid. Asking it to
+guess better is the wrong repair.
+
+**The remedy is a declared fact.** For a low-cardinality column the distinct
+values are *in the database* and can be read — declared, certain and cheap,
+which is exactly the class `discovery`'s first increment is built from. A
+grounding that carries `account_status ∈ {OPEN, CLOSED, FROZEN}` removes the
+guess rather than improving it.
+
+Two consequences for the increment below:
+
+- grounding gains **value vocabulary** for low-cardinality columns, which is a
+  `discovery` read and not an inference;
+- and where a question's literal matches **no** known value of the column it
+  was matched to, that is reportable — the same shape as `unresolved`, one
+  level down.
+
+---
+
 ## 5. Scoring, and why not on SQL text
 
 `estateforge_design` §6 settles this and NLQ adopts it unchanged: the output is
