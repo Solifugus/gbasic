@@ -81,6 +81,38 @@ else
         || bad "selection ran away: $sel"
 fi
 
+# --- A SECOND ESTATE, in a different domain --------------------------------
+# The gas-trading estate is the one the grounding was developed against, so it
+# cannot say whether anything was tuned to it. The bank estate is a different
+# vocabulary (accounts, ledgers, ACH, delinquency) that nothing here was written
+# for, and NO SYNONYMS ARE DECLARED FOR IT.
+#
+# BUT RECALL ALONE PROVES LITTLE HERE AND THE TIER SAYS SO: the bank is 14
+# objects and the limit is 8, so a selection is more than half the estate and
+# even a poor ranking recalls a lot. The load-bearing number is the RATIO --
+# what was dragged in per table actually needed. On the 121-object estate that
+# ratio is what stops "select everything" from scoring perfectly; here it is
+# what stops a small estate from flattering the result.
+printf 'TIER second_estate\n'
+bank="$(timeout 300 ./gbasic tests/nlq/nlq_score.bas tests/nlq/estate_bank.json 2>&1)"
+b_r="$(printf '%s\n' "$bank" | sed -n 's|^RECALL \([0-9]*\)/.*|\1|p')"
+b_n="$(printf '%s\n' "$bank" | sed -n 's|^RECALL [0-9]*/\([0-9]*\)|\1|p')"
+b_sel="$(printf '%s\n' "$bank" | sed -n 's|^SELECTED \([0-9]*\) .*|\1|p')"
+b_need="$(printf '%s\n' "$bank" | sed -n 's|^SELECTED [0-9]* tables for \([0-9]*\) .*|\1|p')"
+if [ -z "$b_r" ]; then
+    bad "the bank estate produced no RECALL line: $bank"
+else
+    [ "$b_r" = "$b_n" ] && ok "a different domain, no synonyms declared: $b_r/$b_n" \
+        || bad "bank recall $b_r/$b_n"
+    # 32 for 7 measured. A ceiling, because on an estate this small recall is
+    # cheap and only the ratio distinguishes a search from a sweep.
+    if [ "${b_sel:-9999}" -le 48 ]; then
+        ok "and $b_sel table-slots for $b_need needed, on a 14-object estate"
+    else
+        bad "bank selection ran away: $b_sel for $b_need"
+    fi
+fi
+
 # --- CAPABILITY: a single percentage cannot say what to fix ----------------
 printf 'TIER capability\n'
 for cap in aggregate join single_table column_disambiguation; do

@@ -1,0 +1,589 @@
+{
+ "columns": [
+  {
+   "column": "rtn",
+   "decl": "rtn varchar(9) primary key",
+   "schema": "retail_banking",
+   "table": "institution"
+  },
+  {
+   "column": "institution_name",
+   "decl": "institution_name varchar(60)",
+   "schema": "retail_banking",
+   "table": "institution"
+  },
+  {
+   "column": "fdic_cert",
+   "decl": "fdic_cert integer",
+   "schema": "retail_banking",
+   "table": "institution"
+  },
+  {
+   "column": "charter_type",
+   "decl": "charter_type varchar(12)",
+   "schema": "retail_banking",
+   "table": "institution"
+  },
+  {
+   "column": "product_code",
+   "decl": "product_code varchar(8) primary key",
+   "schema": "retail_banking",
+   "table": "product"
+  },
+  {
+   "column": "product_name",
+   "decl": "product_name varchar(60)",
+   "schema": "retail_banking",
+   "table": "product"
+  },
+  {
+   "column": "reg_d_limited",
+   "decl": "reg_d_limited integer",
+   "schema": "retail_banking",
+   "table": "product"
+  },
+  {
+   "column": "interest_bearing",
+   "decl": "interest_bearing integer",
+   "schema": "retail_banking",
+   "table": "product"
+  },
+  {
+   "column": "call_report_schedule",
+   "decl": "call_report_schedule varchar(6)",
+   "schema": "retail_banking",
+   "table": "product"
+  },
+  {
+   "column": "id",
+   "decl": "id integer primary key",
+   "schema": "retail_banking",
+   "table": "customer"
+  },
+  {
+   "column": "customer_name",
+   "decl": "customer_name varchar(60)",
+   "schema": "retail_banking",
+   "table": "customer"
+  },
+  {
+   "column": "naics_code",
+   "decl": "naics_code varchar(6)",
+   "schema": "retail_banking",
+   "table": "customer"
+  },
+  {
+   "column": "customer_since",
+   "decl": "customer_since date",
+   "schema": "retail_banking",
+   "table": "customer"
+  },
+  {
+   "column": "customer_status",
+   "decl": "customer_status varchar(10)",
+   "schema": "retail_banking",
+   "table": "customer"
+  },
+  {
+   "column": "account_no",
+   "decl": "account_no varchar(17) primary key",
+   "schema": "retail_banking",
+   "table": "account"
+  },
+  {
+   "column": "customer_id",
+   "decl": "customer_id integer",
+   "schema": "retail_banking",
+   "table": "account"
+  },
+  {
+   "column": "product_code",
+   "decl": "product_code varchar(8)",
+   "schema": "retail_banking",
+   "table": "account"
+  },
+  {
+   "column": "home_rtn",
+   "decl": "home_rtn varchar(9)",
+   "schema": "retail_banking",
+   "table": "account"
+  },
+  {
+   "column": "open_date",
+   "decl": "open_date date",
+   "schema": "retail_banking",
+   "table": "account"
+  },
+  {
+   "column": "current_balance",
+   "decl": "current_balance decimal(19,4)",
+   "schema": "retail_banking",
+   "table": "account"
+  },
+  {
+   "column": "account_status",
+   "decl": "account_status varchar(10)",
+   "schema": "retail_banking",
+   "table": "account"
+  },
+  {
+   "column": "txn_id",
+   "decl": "txn_id integer primary key",
+   "schema": "retail_banking",
+   "table": "txn"
+  },
+  {
+   "column": "account_no",
+   "decl": "account_no varchar(17)",
+   "schema": "retail_banking",
+   "table": "txn"
+  },
+  {
+   "column": "post_date",
+   "decl": "post_date date",
+   "schema": "retail_banking",
+   "table": "txn"
+  },
+  {
+   "column": "amount",
+   "decl": "amount decimal(19,4)",
+   "schema": "retail_banking",
+   "table": "txn"
+  },
+  {
+   "column": "txn_code",
+   "decl": "txn_code varchar(4)",
+   "schema": "retail_banking",
+   "table": "txn"
+  },
+  {
+   "column": "descr",
+   "decl": "descr varchar(80)",
+   "schema": "retail_banking",
+   "table": "txn"
+  },
+  {
+   "column": "batch_id",
+   "decl": "batch_id integer primary key",
+   "schema": "payments",
+   "table": "ach_batch"
+  },
+  {
+   "column": "sec_code",
+   "decl": "sec_code varchar(3)",
+   "schema": "payments",
+   "table": "ach_batch"
+  },
+  {
+   "column": "effective_date",
+   "decl": "effective_date date",
+   "schema": "payments",
+   "table": "ach_batch"
+  },
+  {
+   "column": "entry_count",
+   "decl": "entry_count integer",
+   "schema": "payments",
+   "table": "ach_batch"
+  },
+  {
+   "column": "batch_status",
+   "decl": "batch_status varchar(10)",
+   "schema": "payments",
+   "table": "ach_batch"
+  },
+  {
+   "column": "entry_id",
+   "decl": "entry_id integer primary key",
+   "schema": "payments",
+   "table": "ach_entry"
+  },
+  {
+   "column": "batch_id",
+   "decl": "batch_id integer",
+   "schema": "payments",
+   "table": "ach_entry"
+  },
+  {
+   "column": "account_no",
+   "decl": "account_no varchar(17)",
+   "schema": "payments",
+   "table": "ach_entry"
+  },
+  {
+   "column": "rdfi_rtn",
+   "decl": "rdfi_rtn varchar(9)",
+   "schema": "payments",
+   "table": "ach_entry"
+  },
+  {
+   "column": "amount",
+   "decl": "amount decimal(19,4)",
+   "schema": "payments",
+   "table": "ach_entry"
+  },
+  {
+   "column": "entry_txn_code",
+   "decl": "entry_txn_code varchar(2)",
+   "schema": "payments",
+   "table": "ach_entry"
+  },
+  {
+   "column": "wire_id",
+   "decl": "wire_id integer primary key",
+   "schema": "payments",
+   "table": "wire"
+  },
+  {
+   "column": "account_no",
+   "decl": "account_no varchar(17)",
+   "schema": "payments",
+   "table": "wire"
+  },
+  {
+   "column": "beneficiary_bic",
+   "decl": "beneficiary_bic varchar(11)",
+   "schema": "payments",
+   "table": "wire"
+  },
+  {
+   "column": "amount",
+   "decl": "amount decimal(19,4)",
+   "schema": "payments",
+   "table": "wire"
+  },
+  {
+   "column": "value_date",
+   "decl": "value_date date",
+   "schema": "payments",
+   "table": "wire"
+  },
+  {
+   "column": "wire_status",
+   "decl": "wire_status varchar(10)",
+   "schema": "payments",
+   "table": "wire"
+  },
+  {
+   "column": "loan_id",
+   "decl": "loan_id integer primary key",
+   "schema": "lending",
+   "table": "loan"
+  },
+  {
+   "column": "customer_id",
+   "decl": "customer_id integer",
+   "schema": "lending",
+   "table": "loan"
+  },
+  {
+   "column": "origination_date",
+   "decl": "origination_date date",
+   "schema": "lending",
+   "table": "loan"
+  },
+  {
+   "column": "principal",
+   "decl": "principal decimal(19,4)",
+   "schema": "lending",
+   "table": "loan"
+  },
+  {
+   "column": "rate_pct",
+   "decl": "rate_pct decimal(9,4)",
+   "schema": "lending",
+   "table": "loan"
+  },
+  {
+   "column": "term_months",
+   "decl": "term_months integer",
+   "schema": "lending",
+   "table": "loan"
+  },
+  {
+   "column": "loan_status",
+   "decl": "loan_status varchar(10)",
+   "schema": "lending",
+   "table": "loan"
+  },
+  {
+   "column": "payment_id",
+   "decl": "payment_id integer primary key",
+   "schema": "lending",
+   "table": "loan_payment"
+  },
+  {
+   "column": "loan_id",
+   "decl": "loan_id integer",
+   "schema": "lending",
+   "table": "loan_payment"
+  },
+  {
+   "column": "due_date",
+   "decl": "due_date date",
+   "schema": "lending",
+   "table": "loan_payment"
+  },
+  {
+   "column": "principal_amt",
+   "decl": "principal_amt decimal(19,4)",
+   "schema": "lending",
+   "table": "loan_payment"
+  },
+  {
+   "column": "interest_amt",
+   "decl": "interest_amt decimal(19,4)",
+   "schema": "lending",
+   "table": "loan_payment"
+  },
+  {
+   "column": "payment_status",
+   "decl": "payment_status varchar(10)",
+   "schema": "lending",
+   "table": "loan_payment"
+  },
+  {
+   "column": "id",
+   "decl": "id integer primary key",
+   "schema": "lending",
+   "table": "delinquency"
+  },
+  {
+   "column": "loan_id",
+   "decl": "loan_id integer",
+   "schema": "lending",
+   "table": "delinquency"
+  },
+  {
+   "column": "as_of_date",
+   "decl": "as_of_date date",
+   "schema": "lending",
+   "table": "delinquency"
+  },
+  {
+   "column": "days_past_due",
+   "decl": "days_past_due integer",
+   "schema": "lending",
+   "table": "delinquency"
+  },
+  {
+   "column": "bucket",
+   "decl": "bucket varchar(8)",
+   "schema": "lending",
+   "table": "delinquency"
+  },
+  {
+   "column": "acct_no",
+   "decl": "acct_no varchar(12) primary key",
+   "schema": "bank_gl",
+   "table": "gl_account"
+  },
+  {
+   "column": "description",
+   "decl": "description varchar(60)",
+   "schema": "bank_gl",
+   "table": "gl_account"
+  },
+  {
+   "column": "call_report_schedule",
+   "decl": "call_report_schedule varchar(6)",
+   "schema": "bank_gl",
+   "table": "gl_account"
+  },
+  {
+   "column": "entry_id",
+   "decl": "entry_id integer primary key",
+   "schema": "bank_gl",
+   "table": "gl_entry"
+  },
+  {
+   "column": "acct_no",
+   "decl": "acct_no varchar(12)",
+   "schema": "bank_gl",
+   "table": "gl_entry"
+  },
+  {
+   "column": "txn_id",
+   "decl": "txn_id integer",
+   "schema": "bank_gl",
+   "table": "gl_entry"
+  },
+  {
+   "column": "amount",
+   "decl": "amount decimal(19,4)",
+   "schema": "bank_gl",
+   "table": "gl_entry"
+  },
+  {
+   "column": "posted",
+   "decl": "posted integer",
+   "schema": "bank_gl",
+   "table": "gl_entry"
+  },
+  {
+   "column": "account_no",
+   "decl": "account_no varchar(17)",
+   "schema": "warehouse",
+   "table": "fact_balance"
+  },
+  {
+   "column": "customer_id",
+   "decl": "customer_id integer",
+   "schema": "warehouse",
+   "table": "fact_balance"
+  },
+  {
+   "column": "product_code",
+   "decl": "product_code varchar(8)",
+   "schema": "warehouse",
+   "table": "fact_balance"
+  },
+  {
+   "column": "as_of_date",
+   "decl": "as_of_date date",
+   "schema": "warehouse",
+   "table": "fact_balance"
+  },
+  {
+   "column": "balance_amount",
+   "decl": "balance_amount decimal(19,4)",
+   "schema": "warehouse",
+   "table": "fact_balance"
+  },
+  {
+   "column": "is_interest_bearing",
+   "decl": "is_interest_bearing integer",
+   "schema": "warehouse",
+   "table": "fact_balance"
+  }
+ ],
+ "questions": [
+  {
+   "difficulty": 1,
+   "exercises": "single_table",
+   "id": "b_open_accounts",
+   "text": "How many accounts are open?",
+   "touches": [
+    "retail_banking.account"
+   ]
+  },
+  {
+   "difficulty": 2,
+   "exercises": "aggregate",
+   "id": "b_total_deposits",
+   "text": "What is the total current balance across all accounts?",
+   "touches": [
+    "retail_banking.account"
+   ]
+  },
+  {
+   "difficulty": 2,
+   "exercises": "join",
+   "id": "b_interest_bearing",
+   "text": "How many accounts are on an interest-bearing product?",
+   "touches": [
+    "retail_banking.account",
+    "retail_banking.product"
+   ]
+  },
+  {
+   "difficulty": 3,
+   "exercises": "column_disambiguation",
+   "id": "b_ledger_sums_zero",
+   "text": "What is the sum of the amount column in the bank's general ledger?",
+   "touches": [
+    "bank_gl.gl_entry"
+   ]
+  },
+  {
+   "difficulty": 1,
+   "exercises": "single_table",
+   "id": "b_delinquent_loans",
+   "text": "How many loans are delinquent?",
+   "touches": [
+    "lending.loan"
+   ]
+  },
+  {
+   "difficulty": 2,
+   "exercises": "aggregate",
+   "id": "b_distinct_rdfi",
+   "text": "How many distinct counterparty routing numbers appear on ACH entries?",
+   "touches": [
+    "payments.ach_entry"
+   ]
+  }
+ ],
+ "tables": [
+  {
+   "kind": "table",
+   "schema": "retail_banking",
+   "table": "institution"
+  },
+  {
+   "kind": "table",
+   "schema": "retail_banking",
+   "table": "product"
+  },
+  {
+   "kind": "table",
+   "schema": "retail_banking",
+   "table": "customer"
+  },
+  {
+   "kind": "table",
+   "schema": "retail_banking",
+   "table": "account"
+  },
+  {
+   "kind": "table",
+   "schema": "retail_banking",
+   "table": "txn"
+  },
+  {
+   "kind": "table",
+   "schema": "payments",
+   "table": "ach_batch"
+  },
+  {
+   "kind": "table",
+   "schema": "payments",
+   "table": "ach_entry"
+  },
+  {
+   "kind": "table",
+   "schema": "payments",
+   "table": "wire"
+  },
+  {
+   "kind": "table",
+   "schema": "lending",
+   "table": "loan"
+  },
+  {
+   "kind": "table",
+   "schema": "lending",
+   "table": "loan_payment"
+  },
+  {
+   "kind": "table",
+   "schema": "lending",
+   "table": "delinquency"
+  },
+  {
+   "kind": "table",
+   "schema": "bank_gl",
+   "table": "gl_account"
+  },
+  {
+   "kind": "table",
+   "schema": "bank_gl",
+   "table": "gl_entry"
+  },
+  {
+   "kind": "table",
+   "schema": "warehouse",
+   "table": "fact_balance"
+  }
+ ]
+}
