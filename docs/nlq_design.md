@@ -293,6 +293,46 @@ have declined. Each refusal above needs a question it must refuse *and* its
 nearest legal neighbour it must answer, or "NLQ is careful" is satisfied by a
 system that is merely useless.
 
+## 5a. Measured: the score, and what a disagreement turned out to be
+
+The recorded SQL run against a real estate — `demo_plan()` built into its own
+PostgreSQL database, the **same deterministic plan** the fixture was emitted
+from — and compared to the answer estateforge folds over the generated rows.
+
+**10 scored, 7 agreed, 2 failed to execute at all.**
+
+The two disagreements are both the failure §1 describes, with numbers:
+
+| question | model | answer key |
+|---|---|---|
+| `t_total_volume` | 4 025 053.56 | **6 285 487.93** |
+| `w_report_gap` | 555.44 | **1 637 346.99** |
+
+`t_total_volume` is **R2 measured**. The model summed `gross_vol_mmbtu` from
+`warehouse.fact_volume`; the question is about `trading.deal`. The warehouse
+fact table is built by an ETL that joins to `trading.ctp` and keeps only active
+counterparties, so it holds a *subset* — and the sum of a subset is a perfectly
+good number about a real table, 36% short of the one asked for. Nothing about
+the query says so.
+
+**And a claim this design made and had to withdraw.** When the fixtures were
+first recorded, `t_active_deals` came back as a count over `warehouse.stg_deal`
+instead of `trading.deal`, and that was written up as R2 on the grounds that
+the staging copy is filtered on load so the counts "need not agree". Measured,
+**they agree exactly** — 315 either way. The staging load filters nothing that
+changes an `ACTIVE` count. The R2 failure is real and it landed on a different
+question; the prediction about that one was wrong, and reading the ETL is not
+the same as running it.
+
+**The two that failed to execute are the better outcome.** `contract_ref = 1`
+and `acct_no IN (1100, 4000)` — the invented literals from §4c — hit
+`operator does not exist: character varying = integer` and returned nothing at
+all. A type mismatch is a **loud** failure, and loud is what this whole design
+is trying to convert silent failures into. The invention is still a defect; it
+simply announced itself here rather than returning 0 rows.
+
+---
+
 ## 6. Deliberately not in the first increment
 
 - **Any call to a model.** It comes after retrieval can be trusted.

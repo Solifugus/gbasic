@@ -272,6 +272,59 @@ else
         || bad "expected 3 unrecorded questions, saw $r_missing"
 fi
 
+# --- THE VALUE TIER: the only thing here that produces a SCORE --------------
+# Runs the SQL a model wrote against a real estate and compares the NUMBER to
+# the answer estateforge folded over the generated rows -- a second
+# implementation, not a second call into the thing under test.
+#
+# THE SKIP NAMES A CONSEQUENCE, NOT A TIER. A skip that only says "skipped" is
+# indistinguishable from a pass in scroll-back, and this is the ONLY tier that
+# turns observations into numbers: without it the honest report is not "the
+# other tiers ran", it is "the pipeline was exercised and NOTHING WAS SCORED".
+#
+# AND IT SHRINKS THE GATE AS LITTLE AS POSSIBLE. Everything above needs no
+# database and still runs: the grounding, the refusals, the recorded SQL, R3/R4.
+# The skip costs exactly the comparison. The rule underneath -- estateforge's,
+# adopted here -- is that a database-dependent tier must never be the ONLY thing
+# covering a claim, because it is the one that can go quiet.
+printf 'TIER value\n'
+if [ -z "${NLQ_ODBC_CONNECTION:-}" ]; then
+    printf '  SKIP  NOTHING WAS SCORED. The pipeline was exercised end to end above --\n'
+    printf '        grounding, refusals, recorded SQL, R3/R4 -- and not one answer was\n'
+    printf '        checked against a database.\n'
+    printf '        UNCHECKED without it: that the number a model SQL returns is the\n'
+    printf '        number the question has. Nothing else notices a wrong one: the query\n'
+    printf '        parses, names only grounded tables, reads nothing it should not, and\n'
+    printf '        returns a value of the right type and magnitude.\n'
+    printf '        To run it: createdb nlq_estate; build estateforge demo_plan() into it\n'
+    printf '        (the SAME plan the fixture was emitted from, or the answers are for\n'
+    printf '        other rows and nothing says so); then set NLQ_ODBC_CONNECTION.\n'
+else
+    vout="$(timeout 600 ./gbasic tests/nlq/nlq_score_live.bas 2>&1)"
+    v_s="$(printf '%s\n' "$vout" | sed -n 's|^SCORED \([0-9]*\) .*|\1|p')"
+    v_a="$(printf '%s\n' "$vout" | sed -n 's|^SCORED [0-9]* AGREED \([0-9]*\) .*|\1|p')"
+    if [ -z "$v_s" ]; then
+        bad "the value tier produced no summary: $vout"
+    else
+        # A FLOOR, not an exact figure: this scores a real model over real
+        # questions and pinning it exactly makes every improvement a rebaseline.
+        # Measured 7 of 10 agreeing.
+        [ "${v_s:-0}" -ge 10 ] && ok "$v_s model answers executed against the estate" \
+            || bad "only $v_s answers scored, expected 10"
+        [ "${v_a:-0}" -ge 7 ] && ok "$v_a of $v_s agree with an answer key computed from the rows" \
+            || bad "agreement fell to $v_a of $v_s"
+        # THE DISAGREEMENTS ARE ASSERTED TO EXIST. A run where everything agreed
+        # would mean this tier had stopped discriminating -- and the two that
+        # differ are the ones the design cares about most.
+        if [ "${v_a:-0}" -lt "${v_s:-0}" ]; then
+            ok "and $((v_s - v_a)) disagree -- the tier still tells right from plausible"
+            printf '%s\n' "$vout" | grep '^DIFFER' | sed 's/^/       /'
+        else
+            bad "every answer agreed -- a value tier that never disagrees is not discriminating"
+        fi
+    fi
+fi
+
 # --- FIXTURE PROVENANCE ----------------------------------------------------
 # The fixture must contain VIEWS, not only tables. The first one did not, and
 # every `touches` naming warehouse.rpt_volume_gross was therefore unrecallable
