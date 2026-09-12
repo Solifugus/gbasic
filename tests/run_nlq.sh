@@ -41,7 +41,7 @@ out="$scratch/sem.out"
 if timeout 120 ./gbasic tests/nlq/nlq_test.bas >"$out" 2>&1; then
     mism="$(sed -n 's/^mismatches: //p' "$out")"
     checks="$(sed -n 's/^checks: //p' "$out")"
-    if [ "$mism" = "0" ] && [ "${checks:-0}" -ge 20 ]; then
+    if [ "$mism" = "0" ] && [ "${checks:-0}" -ge 30 ]; then
         ok "$checks checks, 0 mismatches"
     else
         bad "nlq_test: $checks checks, $mism mismatches"; grep MISMATCH "$out" || true
@@ -141,6 +141,101 @@ if [ "${lin%%/*}" -ge 3 ]; then
     ok "lineage_aware ${lin} -- the miss needs discovery.lineage, which is not this increment"
 else
     bad "lineage_aware ${lin}"
+fi
+
+# --- R6 AGAINST THE PLANTED NULL REGION ------------------------------------
+# The fixture's own pathology, end to end. estateforge plants three identically
+# named `tmp_load_notes` tables in staging/staging_2/staging_3 and its truth
+# says any lineage reported there is INVENTED. The grounding must find them and
+# must NOT pick one -- and asking it for an answer must be refused.
+#
+# ASSERTED ON THE REAL FIXTURE, not a hand-built catalog, because the hand-built
+# one in nlq_test.bas is a shape I chose and this is a shape estateforge planted
+# to defeat a tool.
+printf 'TIER null_region\n'
+cat > "$scratch/nr.bas" <<'BEOF'
+program main( args )
+    load nlq
+    f {file}= args[0]
+    c = decode(read(f))
+    cat = { tables: c.tables, columns: c.columns }
+    g = nlq.ground(cat, "notes in the temporary load table", { limit: 8 })
+    print ("AMBIG " + string(count(g.ambiguous)))
+    for each a in g.ambiguous
+        print ("KIND " + a.kind + " " + join(a.candidates, " "))
+    end for
+    on error goto next
+    ok = nlq.check_answerable(g)
+    if error then
+        print "REFUSED"
+        error.clear()
+    else
+        print "ANSWERED"
+    end if
+    on error stop
+end program
+BEOF
+nr="$(timeout 60 ./gbasic "$scratch/nr.bas" tests/nlq/estate_bank.json 2>&1)"
+if printf '%s\n' "$nr" | grep -q 'KIND same_name_different_schema .*staging_2.tmp_load_notes'; then
+    ok "the planted null region is reported, all three candidates named"
+else
+    bad "null region not reported: $nr"
+fi
+if printf '%s\n' "$nr" | grep -q '^REFUSED'; then
+    ok "and producing an ANSWER from it is refused"
+else
+    bad "an answer was produced from the null region: $nr"
+fi
+
+# --- THE FALSE-POSITIVE RATE, which is what keeps R6 honest ----------------
+# MEASURED BEFORE THE DISCRIMINATOR EXISTED: 15 of the 16 demo questions carried
+# an "ambiguity" and answering was refused for nearly all of them. A refusal
+# that fires on everything is indistinguishable from having no tool -- the same
+# failure the blind-shadow warning had at 287 false positives before it was
+# reverted, and the same one `insight`'s first threshold had when it cleared
+# half of all pure-noise populations.
+#
+# Two causes, both fixed: `trading.deal` / `trading_apac.deal` are regional
+# partitions whose SCHEMA NAMES SAY SO, and a tie at the cut does not block an
+# answer (true of 13 of 16 questions, so gating on it refuses almost everything
+# while the needed table sits inside the cut anyway -- it is disclosure in
+# `search.cut_tied` now).
+#
+# ASSERTED AS A DIFFERENCE: silent where nothing is planted, firing where
+# something is. Either half alone is satisfied by a check that always answers or
+# always refuses.
+printf 'TIER refusal_rate\n'
+cat > "$scratch/rate.bas" <<'BEOF'
+program main( args )
+    load nlq
+    f {file}= args[0]
+    c = decode(read(f))
+    cat = { tables: c.tables, columns: c.columns }
+    n = 0
+    amb = 0
+    for each q in c.questions
+        g = nlq.ground(cat, q.text, { limit: 8 })
+        n = n + 1
+        if count(g.ambiguous) > 0 then
+            amb = amb + 1
+        end if
+    end for
+    print ("RATE " + string(amb) + " " + string(n))
+end program
+BEOF
+d_rate="$(timeout 120 ./gbasic "$scratch/rate.bas" tests/nlq/estate_demo.json 2>&1 | sed -n 's/^RATE //p')"
+b_rate="$(timeout 120 ./gbasic "$scratch/rate.bas" tests/nlq/estate_bank.json 2>&1 | sed -n 's/^RATE //p')"
+d_amb="${d_rate%% *}"; d_n="${d_rate##* }"
+b_amb="${b_rate%% *}"; b_n="${b_rate##* }"
+if [ "${d_amb:-99}" -eq 0 ]; then
+    ok "silent on all $d_n questions of the estate with nothing planted for it"
+else
+    bad "R6 fired on $d_amb of $d_n demo questions -- it is noise"
+fi
+if [ "${b_amb:-0}" -ge 1 ] && [ "${b_amb:-99}" -lt "$b_n" ]; then
+    ok "and fires on $b_amb of $b_n where the null region IS planted"
+else
+    bad "R6 fired on $b_amb of $b_n bank questions -- wanted some but not all"
 fi
 
 # --- FIXTURE PROVENANCE ----------------------------------------------------

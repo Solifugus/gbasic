@@ -6100,6 +6100,17 @@ whole program without needing a call site.
   `nlq.stopwords()` is that list — `total`, `gross` and `net` are deliberately
   absent, being half the measure names in a warehouse. `nlq.check_catalog(cat)`
   refuses a catalog missing `tables` or `columns`.
+  `ground` also returns **`ambiguous`** — what the catalog *cannot settle*, which
+  it reports rather than resolves — and `nlq.check_answerable(g)` **refuses** on
+  it. The split is deliberate: a caller may want the grounding in order to show
+  a person the candidates and ask; what must not happen is a number produced
+  from it. The case that fires is **the same object name in schemas that differ
+  only by a number** (`staging` / `staging_2` / `staging_3`), where nothing in
+  the catalog says which is live. `trading.deal` versus `trading_apac.deal` does
+  **not** fire, because `apac` is a word a question can use — without that
+  discriminator the refusal fired on 15 of 16 benchmark questions, which is
+  indistinguishable from having no tool. A tie at the cut is disclosure
+  (`search.cut_tied`), not a gate, since the needed table is usually inside it.
   A table-name match outweighs a schema-name match, which outweighs a
   column-name match; ranking is **total** (score, then id), so a driver's row
   order cannot decide the answer. Scored against `estateforge`'s independently

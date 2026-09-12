@@ -118,6 +118,40 @@ check("the same question over a reordered catalog ranks identically",
       join(ga.tables, ","), join(gb.tables, ","))
 
 print ""
+print "-- R1/R6: what the catalog CANNOT settle is reported, not resolved"
+' `trading.deal` and `archive.deal_2015` are not this case -- different names.
+' The case is the same object name in different schemas, which is estateforge's
+' planted NULL REGION: three `tmp_load_notes` where the truth says any lineage
+' reported is INVENTED, and nothing in the catalog says which is live.
+nullish = { tables: [ { schema: "staging",   table: "tmp_load_notes" },
+                      { schema: "staging_2", table: "tmp_load_notes" },
+                      { schema: "staging_3", table: "tmp_load_notes" },
+                      { schema: "retail_banking", table: "account" } ],
+            columns: [ { schema: "staging",   table: "tmp_load_notes", column: "note" },
+                       { schema: "staging_2", table: "tmp_load_notes", column: "note" },
+                       { schema: "staging_3", table: "tmp_load_notes", column: "note" },
+                       { schema: "retail_banking", table: "account", column: "current_balance" } ] }
+gn = nlq.ground(nullish, "load notes", { limit: 8 })
+check("three identically named tables are reported ambiguous", count(gn.ambiguous) > 0, true)
+check("and the kind names what the catalog cannot do", gn.ambiguous[0].kind, "same_name_different_schema")
+check("and all three candidates are named", count(gn.ambiguous[0].candidates), 3)
+' THE REFUSAL IS AT THE ANSWER, NOT THE GROUNDING. A caller may legitimately
+' want the grounding to show a person the candidates and ask; what must not
+' happen is a NUMBER produced from it, because that number is indistinguishable
+' from a right one.
+on error goto next
+nlq.check_answerable(gn)
+check("answering from it is refused", contains(error.message, "cannot be answered from the catalog alone"), true)
+check("and the refusal names the candidates", contains(error.message, "staging_2.tmp_load_notes"), true)
+error.clear()
+on error stop
+' CONTROL: an unambiguous grounding IS answerable. Without it the refusal is
+' satisfied by a check that refuses everything.
+gok = nlq.ground(nullish, "current balance of the account", { limit: 2 })
+check("CONTROL: an unambiguous grounding is answerable", nlq.check_answerable(gok), true)
+check("and it carries no ambiguity", count(gok.ambiguous), 0)
+
+print ""
 print "-- refusals, each beside its nearest legal neighbour"
 on error goto next
 nlq.ground({ tables: [] }, "anything", {})
@@ -134,6 +168,11 @@ check("a synonym that is not an array is refused", contains(error.message, "must
 error.clear()
 on error stop
 check("CONTROL: a well-formed call is accepted", count(nlq.ground(cat, "deals", {}).tables) > 0, true)
+on error goto next
+nlq.check_answerable({ tables: [ "x" ] })
+check("check_answerable refuses a value that is not a grounding", contains(error.message, "expects a grounding"), true)
+error.clear()
+on error stop
 
 print ""
 print "checks: " + string(tally.checks)

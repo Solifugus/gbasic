@@ -97,6 +97,36 @@ wrong answer is indistinguishable from the right one.
   reports the question as unanswerable from the catalog rather than choosing,
   and names what would settle it.
 
+### R1 and R6 as built — and the rate that nearly sank them
+
+`ground` **reports**; `check_answerable` **refuses**. The split matters: a
+caller may legitimately want the grounding in order to show a person the
+candidates and ask. What must not happen is a *number* produced from it.
+
+The first implementation fired on **15 of 16** questions. A refusal that fires
+on everything is indistinguishable from having no tool — the failure the
+blind-shadow warning had at 287 false positives before it was reverted, and the
+one `insight`'s first threshold had when it cleared half of all pure-noise
+populations. Two causes:
+
+- **Same name, different schema is normal.** `trading.deal`,
+  `trading_apac.deal` and `trading_emea.deal` are regional partitions and the
+  *schema names say so* — `apac` and `emea` are words a question can use. The
+  discriminator is whether the catalog offers a distinction at all: ambiguous
+  only when stripping digits makes the schema names identical, which is exactly
+  `staging` / `staging_2` / `staging_3`, estateforge's planted null region.
+- **A tie at the cut does not block an answer.** True of 13 of 16 questions, and
+  the needed table was inside the cut anyway. It is disclosure now
+  (`search.cut_tied`), not a gate.
+
+Measured after: **0 of 16** where nothing is planted for it, **1 of 7** where it
+is. Both halves are gated, since either alone is satisfied by a check that
+always answers or always refuses.
+
+**R2–R5 arrive with SQL generation**, because each is about a query: two
+lineages are two answers, SQL may not name what retrieval never surfaced,
+read-only is structural, and an answer never travels without its query.
+
 ## 5. Scoring, and why not on SQL text
 
 `estateforge_design` §6 settles this and NLQ adopts it unchanged: the output is

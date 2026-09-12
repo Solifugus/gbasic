@@ -247,7 +247,10 @@ library nlq
             end if
         end for
 
+        amb = _ambiguities(selected, ranked, limit, qterms, by_table)
+
         return { tables: _ids(selected),
+                 ambiguous: amb,
                  detail: selected,
                  near_misses: _ids(near),
                  near_detail: near,
@@ -256,7 +259,14 @@ library nlq
                  search: { width: count(cat.tables),
                            matched: count(scored),
                            limit: limit,
-                           cut: _cut_score(ranked, limit) } }
+                           cut: _cut_score(ranked, limit),
+                           ' A row dropped with the SAME score as the last one kept was
+                           ' dropped by the tie-break and not by the question. Reported
+                           ' here rather than in `ambiguous`, because it does NOT block
+                           ' an answer -- measured, it is true of 13 of 16 demo questions,
+                           ' so gating on it would refuse almost everything while the
+                           ' table actually needed was inside the cut all along.
+                           cut_tied: _cut_tied(ranked, limit) } }
     end function
 
     ' Did any synonym DECLARED for this term reach something? If so the term is
@@ -279,6 +289,119 @@ library nlq
         return false
     end function
 
+    ' --- R1 and R6: what the catalog CANNOT settle ---------------------------
+    '
+    ' THE GROUNDING REPORTS, IT DOES NOT RESOLVE. Two ambiguities are visible
+    ' from a catalog alone and both are live in estateforge's bank:
+    '
+    ' SAME NAME, DIFFERENT SCHEMA (R6). `staging.tmp_load_notes`,
+    ' `staging_2.tmp_load_notes` and `staging_3.tmp_load_notes` are the planted
+    ' NULL REGION, where the truth says any lineage reported is INVENTED.
+    ' NOTHING IN THE CATALOG SAYS WHICH IS LIVE, so ranking one above the others
+    ' is a guess wearing the clothes of a lookup. The same shape covers
+    ' `trading.deal` against `archive.deal_2015`.
+    '
+    ' A TIE AT THE CUT. A row excluded with the SAME SCORE as the last row
+    ' included was dropped by the tie-break, not by the question. That is an
+    ' arbitrary boundary and a reader is entitled to see it.
+    '
+    ' A REFUSAL IS NOT A RAISE HERE, deliberately: a caller may want the
+    ' grounding anyway -- to show a person the candidates and ask. The refusal
+    ' belongs where an ANSWER would be produced, which is `check_answerable`.
+    function _ambiguities(selected, ranked, limit, qterms, by_table)
+        out = []
+        ' same object name in different schemas, among the selected
+        seen = []
+        for each r in selected
+            bare = _bare(r.id)
+            if not contains(seen, bare) then
+                append(seen, bare)
+                same = []
+                for each r2 in selected
+                    if _bare(r2.id) = bare then
+                        append(same, r2.id)
+                    end if
+                end for
+                if count(same) > 1 and _indistinguishable(same) then
+                    append(out, { kind: "same_name_different_schema",
+                                  candidates: same,
+                                  why: ("these schemas differ only by a number, so the catalog " +
+                                        "does not say which is live; ranking one would be a guess") })
+                end if
+            end if
+        end for
+        return out
+    end function
+
+    ' MEASURED BEFORE THIS EXISTED: without it, 15 of estateforge's 16 demo
+    ' questions carried an "ambiguity" and answering was refused for nearly all
+    ' of them. A refusal that fires on everything is indistinguishable from
+    ' having no tool -- the same failure the blind-shadow warning had at 287
+    ' false positives before it was reverted.
+    '
+    ' THE DISCRIMINATOR IS WHETHER THE CATALOG OFFERS A DISTINCTION AT ALL.
+    ' `trading.deal`, `trading_apac.deal` and `trading_emea.deal` are regional
+    ' partitions and the schema names SAY SO -- apac and emea are words a
+    ' question can use. `staging`, `staging_2` and `staging_3` differ by a
+    ' NUMBER, which says nothing about which is live, and that is exactly what
+    ' estateforge plants as the null region. So: ambiguous only when stripping
+    ' the digits makes the schema names identical.
+    function _indistinguishable(ids)
+        base = ""
+        for each id in ids
+            parts = split(id, ".")
+            stripped = _strip_digits(parts[0])
+            if len(base) = 0 then
+                base = stripped
+            else
+                if stripped != base then
+                    return false
+                end if
+            end if
+        end for
+        return true
+    end function
+
+    function _strip_digits(name)
+        out = ""
+        i = 0
+        while i < len(name)
+            ch = mid(name, i, 1)
+            if ch < "0" or ch > "9" then
+                out = out + ch
+            end if
+            i = i + 1
+        end while
+        while len(out) > 1 and ends_with(out, "_")
+            out = left(out, len(out) - 1)
+        end while
+        return out
+    end function
+
+    function _bare(id)
+        parts = split(id, ".")
+        return parts[count(parts) - 1]
+    end function
+
+    ' R1/R6 AS A REFUSAL, for the layer that produces an ANSWER. `ground`
+    ' reports; something that is about to write SQL and hand back a number must
+    ' not proceed on a grounding the catalog could not settle, because the
+    ' number would be indistinguishable from a right one.
+    function check_answerable(g)
+        if type(g) != "record" or not has(g, "ambiguous") then
+            error "nlq.check_answerable expects a grounding from nlq.ground"
+        end if
+        if count(g.ambiguous) > 0 then
+            a = g.ambiguous[0]
+            error ("nlq: this question cannot be answered from the catalog alone -- " +
+                   a.kind + ": " + join(a.candidates, ", ") + " (" + a.why + ")")
+        end if
+        if count(g.tables) = 0 then
+            error "nlq: nothing in this catalog matches the question"
+        end if
+        return true
+    end function
+
     function _ids(rows)
         out = []
         for each r in rows
@@ -290,6 +413,13 @@ library nlq
     ' The score of the LAST selected row -- what a near miss had to beat. A
     ' ranked list without it cannot say whether the cut was decisive or a
     ' coin toss.
+    function _cut_tied(ranked, limit)
+        if count(ranked) <= limit or limit <= 0 then
+            return false
+        end if
+        return ranked[limit - 1].score = ranked[limit].score
+    end function
+
     function _cut_score(ranked, limit)
         if count(ranked) = 0 then
             return 0
