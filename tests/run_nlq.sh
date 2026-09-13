@@ -119,6 +119,69 @@ else
     fi
 fi
 
+# --- ENTERPRISE SCALE: where retrieval is hard rather than merely present ---
+# 517 objects against the demo's 121, from estateforge's own exporter and in its
+# own shape. `id` names 331 columns and seventeen tables have `deal` in the
+# name. THE QUESTIONS ARE THE SAME SIXTEEN -- estateforge flagged that itself:
+# the enterprise estate is harder RETRIEVAL, not harder questions, which is
+# exactly what this tier is for.
+#
+# THE FAILURE AT SCALE IS CROWDING, NOT RANKING, and that was measured before it
+# was fixed. At limit 8 recall fell to 10 of 16, and raising the limit to 16
+# recovered 14 while 32 recovered 15 and 64 recovered nothing -- so the right
+# tables ranked highly enough all along and were simply below the cut. Every
+# miss had one cause: `archive.gl_account_2019`, `_002`, `_003`, `_004`, `_005`
+# score IDENTICALLY, fill six of eight slots and crowd out `finance.gl_entry`.
+# A ranked list spending six slots to say one thing six times has not ranked
+# badly, it has spent its budget on repetition.
+#
+# Collapsing numbered siblings takes limit 8 from 10/16 to 13/16 -- the SAME
+# recall the 121-object estate gets at the same limit, at 4.3x the objects.
+printf 'TIER enterprise\n'
+ent="$(timeout 600 ./gbasic tests/nlq/nlq_score_ef.bas tests/nlq/estate_enterprise.json 8 2>&1)"
+e_r="$(printf '%s\n' "$ent" | sed -n 's|^RECALL \([0-9]*\)/.*|\1|p')"
+e_n="$(printf '%s\n' "$ent" | sed -n 's|^RECALL [0-9]*/\([0-9]*\) .*|\1|p')"
+e_o="$(printf '%s\n' "$ent" | sed -n 's|.*needed, of \([0-9]*\) objects|\1|p')"
+if [ -z "$e_r" ]; then
+    bad "the enterprise tier produced no summary: $ent"
+else
+    [ "${e_o:-0}" -ge 500 ] && ok "$e_o objects, 4x the demo estate" \
+        || bad "enterprise estate has only $e_o objects"
+    [ "${e_r:-0}" -ge 13 ] && ok "recall $e_r/$e_n at limit 8, the same the 121-object estate gets" \
+        || bad "enterprise recall fell to $e_r/$e_n"
+fi
+# THE DIFFERENCE COLLAPSING MAKES, asserted rather than assumed: with siblings
+# left in, the same questions at the same limit must do WORSE. Without this the
+# feature is satisfied by a no-op.
+cat > "$scratch/nocollapse.bas" <<'BEOF'
+program main( args )
+    load nlq
+    f {file}= args[0]
+    c = decode(read(f))
+    cat = { tables: c.objects, columns: c.columns }
+    hit = 0
+    for each q in c.questions
+        g = nlq.ground(cat, q.text, { limit: 8, collapse_siblings: false })
+        ok2 = true
+        for each t in q.touches
+            if not contains(g.tables, t) then
+                ok2 = false
+            end if
+        end for
+        if ok2 then
+            hit = hit + 1
+        end if
+    end for
+    print ("RECALL " + string(hit))
+end program
+BEOF
+nc="$(timeout 600 ./gbasic "$scratch/nocollapse.bas" tests/nlq/estate_enterprise.json 2>&1 | sed -n 's|^RECALL ||p')"
+if [ -n "$nc" ] && [ "${e_r:-0}" -gt "${nc:-99}" ]; then
+    ok "and collapsing numbered siblings is what buys it ($nc without, $e_r with)"
+else
+    bad "collapsing changed nothing: $nc without, $e_r with"
+fi
+
 # --- CAPABILITY: a single percentage cannot say what to fix ----------------
 printf 'TIER capability\n'
 for cap in aggregate join single_table column_disambiguation; do

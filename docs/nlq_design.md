@@ -560,6 +560,47 @@ round-trip needs.
 
 ---
 
+## 5f. At enterprise scale, the failure is crowding — not ranking
+
+517 objects against the demo estate's 121, from `estateforge`'s own exporter.
+`id` names **331 columns** and seventeen tables have `deal` in the name. The
+questions are the same sixteen — estateforge flagged that itself: the enterprise
+estate is harder **retrieval**, not harder questions, which is exactly what it
+is wanted for.
+
+Recall at `limit: 8` fell to **10 of 16**. Raising the limit says why:
+
+| limit | recall | selected |
+|---|---|---|
+| 8 | 10/16 | 128 |
+| 16 | 14/16 | 256 |
+| 32 | 15/16 | 501 |
+| 64 | 15/16 | 914 |
+
+**The right tables ranked highly enough all along.** They were simply below the
+cut, and 64 buys nothing over 32, so this is not a ranking failure. Every miss
+had one cause: `archive.gl_account_2019`, `_002`, `_003`, `_004` and `_005`
+score **identically**, fill six of eight slots, and crowd out `finance.gl_entry`
+entirely. A ranked list spending six slots to say one thing six times has not
+ranked badly — it has spent its budget on repetition.
+
+**Collapsing numbered siblings takes `limit: 8` from 10/16 to 13/16** — the same
+recall the 121-object estate gets at the same limit, at 4.3× the objects. The
+rule is deliberately narrow: same schema, same name but for a trailing `_NNN`.
+`fact_volume_daily`, `_hourly` and `_monthly` are granularity **variants**,
+different tables answering different questions, and folding those would lose a
+real candidate. And the siblings a selection stands for are **reported**, because
+collapsing silently is the same class of defect as truncating a prompt.
+
+Two things this does not claim. Raising the limit was nearly free here — even
+32 cost 1804 tokens against a 3000 budget — but that is a property of this
+estate's narrow tables, and the real price of a larger limit is the **thinking**
+budget it takes from a reasoning model, which is not measured. And "collapse
+numbered siblings" is a rule about one specific naming habit; an estate that
+distinguishes copies some other way gets no help from it.
+
+---
+
 ## 6. Deliberately not in the first increment
 
 - **Any call to a model.** It comes after retrieval can be trusted.

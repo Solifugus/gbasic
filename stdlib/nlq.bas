@@ -688,7 +688,8 @@ library nlq
     ' of the question.
     function ground(cat, question, options)
         ok = check_catalog(cat)
-        opts = _options(options, [ "limit", "near_misses", "synonyms", "derived_from" ], "nlq.ground")
+        opts = _options(options, [ "limit", "near_misses", "synonyms", "derived_from",
+                                   "collapse_siblings" ], "nlq.ground")
         limit = _default(opts, "limit", 8)
         near_n = _default(opts, "near_misses", 3)
         syn = _default(opts, "synonyms", {})
@@ -747,6 +748,33 @@ library nlq
         end for
 
         ranked = _by_score(scored)
+        ' COLLAPSE NUMBERED SIBLINGS BEFORE THE CUT. MEASURED on a 517-object
+        ' estate: recall fell to 10 of 16 at limit 8, and every miss had the
+        ' same cause -- `archive.gl_account_2019`, `_002`, `_003`, `_004`,
+        ' `_005` score IDENTICALLY, fill six of eight slots, and crowd out
+        ' `finance.gl_entry` entirely. A ranked list that spends six slots
+        ' saying one thing six times has not ranked badly; it has spent its
+        ' budget on repetition.
+        '
+        ' ONLY A TRAILING NUMBER COLLAPSES. `fact_volume_daily`, `_hourly` and
+        ' `_monthly` are granularity VARIANTS -- different tables answering
+        ' different questions -- and folding those would lose a real candidate.
+        ' The rule is narrow on purpose: same schema, same name but for a
+        ' trailing `_NNN` or a trailing digit run.
+        families = {}
+        if _default(opts, "collapse_siblings", true) then
+            deduped = []
+            for each r in ranked
+                fam = _family_of(r.id)
+                if is_unknown(families[fam]) then
+                    families[fam] = []
+                    append(deduped, r)
+                else
+                    families[fam] = _append_to(families[fam], r.id)
+                end if
+            end for
+            ranked = deduped
+        end if
         selected = []
         near = []
         i = 0
@@ -802,6 +830,11 @@ library nlq
                  alternatives: alts,
                  detail: selected,
                  near_misses: _ids(near),
+                 ' The siblings a selected object stands for. Reported, because
+                 ' a caller that wanted all five archive copies must be able to
+                 ' see that four were folded away -- collapsing silently would
+                 ' be the same class of defect as truncating a prompt.
+                 siblings: _siblings_of(selected, families),
                  near_detail: near,
                  unresolved: unresolved,
                  terms: qterms,
@@ -1020,21 +1053,48 @@ library nlq
 
     ' Transitive: fact_volume is built from stg_deal is built from deal, and a
     ' question answered from the first is two hops from the one asked about.
+    '
+    ' A SOURCE IS A LIST, NOT ONE OBJECT, and that is the estate's correction
+    ' rather than a generalisation: `p_build_fact` reads the staging table, a
+    ' counterparty lookup AND the contract table, so naming one would have
+    ' looked definite and been wrong for two of the three. Breadth-first over
+    ' the whole set, with a visited guard because a restatement can read the
+    ' very table it writes and this must not spin.
     function _derives_from(derived, a, b)
-        cur = a
+        seen = [ a ]
+        frontier = [ a ]
         hops = 0
-        while hops < 12
-            nxt = derived[cur]
-            if is_unknown(nxt) then
-                return false
-            end if
-            if nxt = b then
-                return true
-            end if
-            cur = nxt
+        while count(frontier) > 0 and hops < 12
+            nxt = []
+            for each cur in frontier
+                srcs = _sources_of(derived, cur)
+                for each sname in srcs
+                    if sname = b then
+                        return true
+                    end if
+                    if not contains(seen, sname) then
+                        append(seen, sname)
+                        append(nxt, sname)
+                    end if
+                end for
+            end for
+            frontier = nxt
             hops = hops + 1
         end while
         return false
+    end function
+
+    ' Tolerates both shapes: a list (what an estate with real ETL emits) and a
+    ' bare name (what a caller writes by hand for one obvious case).
+    function _sources_of(derived, id)
+        v = derived[id]
+        if is_unknown(v) then
+            return []
+        end if
+        if type(v) = "array" then
+            return v
+        end if
+        return [ string(v) ]
     end function
 
     function _bare(id)
@@ -1059,6 +1119,56 @@ library nlq
             error "nlq: nothing in this catalog matches the question"
         end if
         return true
+    end function
+
+    ' `archive.gl_account_2019_002` and `archive.gl_account_2019` are one
+    ' family; `warehouse.fact_volume_daily` and `warehouse.fact_volume` are not.
+    function _family_of(id)
+        parts = split(id, ".")
+        last = parts[count(parts) - 1]
+        base = _strip_numeric_suffix(last)
+        out = ""
+        i = 0
+        while i < count(parts) - 1
+            out = out + parts[i] + "."
+            i = i + 1
+        end while
+        return out + base
+    end function
+
+    function _strip_numeric_suffix(name)
+        s2 = name
+        ' a trailing _NNN
+        at = 0
+        i = len(s2) - 1
+        digits = 0
+        while i >= 0
+            ch = mid(s2, i, 1)
+            if ch >= "0" and ch <= "9" then
+                digits = digits + 1
+                i = i - 1
+            else
+                if ch = "_" and digits > 0 then
+                    return left(s2, i)
+                end if
+                i = 0 - 1
+            end if
+        end while
+        return s2
+    end function
+
+    function _siblings_of(selected, families)
+        out = {}
+        for each r in selected
+            fam = _family_of(r.id)
+            kin = families[fam]
+            if not is_unknown(kin) then
+                if count(kin) > 0 then
+                    out[r.id] = kin
+                end if
+            end if
+        end for
+        return out
     end function
 
     function _ids(rows)
