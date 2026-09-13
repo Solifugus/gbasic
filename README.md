@@ -1,6 +1,6 @@
 # gBASIC
 
-![Byte Beaver, the gBASIC mascot](docs/assets/mascot.png)
+![Byte Beaver, the gBASIC mascot, standing among a ledger, a database, a spreadsheet, a bar chart and a set of service cubes](docs/assets/mascot.png)
 
 gBASIC is a **modern BASIC for business programming**: familiar control flow,
 plus records, first-class functions, watchers, shared-nothing actors, and typed
