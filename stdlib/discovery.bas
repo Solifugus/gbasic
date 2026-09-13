@@ -2149,6 +2149,136 @@ library discovery
     ' of every identity: one organisation commonly runs Postgres, SQL Server
     ' and MySQL at once, and an id that does not name the database cannot tell
     ' two `orders` tables apart.
+    ' --- what a person knows and the database does not -------------------------
+    '
+    ' THIS INCREMENT READS DECLARED FACTS, and "declared" there means DECLARED
+    ' IN THE DATABASE -- a catalog entry, a constraint, a view body. A fact
+    ' declared by a PERSON had no home at all, which is why every consumer had
+    ' started keeping its own list: `nlq` accumulated five options that are all
+    ' the same thing, and documentation and lineage would each have grown their
+    ' own copy of it.
+    '
+    ' THESE ARE PROPERTIES OF THE ESTATE, NOT OF ANY ONE QUESTION, which is the
+    ' whole argument for putting them here: the same note that lets a question
+    ' find `rpt_volume_gross` also belongs in generated documentation and in a
+    ' lineage walk that a manual ETL step would otherwise break.
+    '
+    ' AND THEY ARE MARKED, because §2's rule cuts both ways. An inferred fact
+    ' must never wear the clothes of a declared one -- and a SUPPLIED fact is
+    ' the same hazard from the other direction, worse in one respect: it is the
+    ' only tier nobody can check. So every note carries `known_by: "supplied"`,
+    ' following `edges.kind`, which has distinguished how a fact was known since
+    ' the first increment.
+    function note_kinds()
+        return [ "means", "unit", "owner", "synonyms", "authority",
+                 "derived_from", "not_modelled" ]
+    end function
+
+    function authority_values()
+        return [ "live", "superseded", "archive", "staging", "unknown" ]
+    end function
+
+    ' `annotate(cat, notes)` -> the same catalog carrying `notes`, keyed exactly
+    ' as `tables` and `columns` are, plus an estate-wide entry under "".
+    '
+    ' A NOTE ABOUT SOMETHING NOT IN THE CATALOG IS REFUSED, by name. It is a
+    ' typo or a note left behind by a table that was dropped, and either way
+    ' answering from it would be answering about something that is not there --
+    ' which is the failure this library exists to prevent, arriving through the
+    ' one door that bypasses the database entirely.
+    function annotate(cat, notes)
+        if not is_record(cat) or not has(cat, "columns") then
+            error "discovery: annotate expects a catalog from scan or estate"
+        end if
+        if not is_record(notes) then
+            error "discovery: annotate expects a record of object id -> note"
+        end if
+        out = cat
+        if not has(out, "notes") then
+            out.notes = {}
+        end if
+        for each id in keys(notes)
+            note = notes[id]
+            if not is_record(note) then
+                error "discovery: the note for '" + id + "' must be a record"
+            end if
+            ' "" is the estate itself -- what it does not model is a fact about
+            ' the whole thing and belongs to no object in it.
+            if len(id) > 0 then
+                if not has(cat.tables, id) and not has(cat.columns, id) then
+                    error ("discovery: nothing in this catalog is called '" + id +
+                           "', so a note about it would describe something that is not there")
+                end if
+            end if
+            for each field in keys(note)
+                if not contains(note_kinds(), field) then
+                    error ("discovery: '" + id + "' carries an unknown note '" + field +
+                           "' (known: " + join(note_kinds(), ", ") + ")")
+                end if
+            end for
+            if has(note, "authority") then
+                if not contains(authority_values(), string(note.authority)) then
+                    error ("discovery: '" + id + "' claims authority '" + string(note.authority) +
+                           "', which is not one of " + join(authority_values(), ", "))
+                end if
+            end if
+            for each field in [ "synonyms", "not_modelled", "derived_from" ]
+                if has(note, field) then
+                    if not is_array(note[field]) then
+                        error ("discovery: '" + id + "' gives '" + field + "' as " +
+                               type(note[field]) + "; it is a list")
+                    end if
+                end if
+            end for
+            ' A DERIVATION THE DATABASE ALREADY STATES IS NOT REFUSED AND NOT
+            ' MERGED AWAY: both are kept and stay distinguishable, because a
+            ' person contradicting the SQL is a fact worth seeing rather than
+            ' an error to raise. `trace` reads the SQL; this says what a human
+            ' says, and a consumer can compare them.
+            marked = note
+            marked.known_by = "supplied"
+            out.notes[id] = marked
+        end for
+        return out
+    end function
+
+    ' Every note of one kind, across the estate, as { id -> value }. The shape
+    ' a consumer wants: `nlq` takes synonyms as one record, documentation walks
+    ' `means`, an analysis asks which objects claim to be live.
+    function notes_of(cat, kind)
+        if not contains(note_kinds(), kind) then
+            error ("discovery: '" + string(kind) + "' is not a note kind (known: " +
+                   join(note_kinds(), ", ") + ")")
+        end if
+        out = {}
+        if not has(cat, "notes") then
+            return out
+        end if
+        for each id in keys(cat.notes)
+            n = cat.notes[id]
+            if has(n, kind) then
+                out[id] = n[kind]
+            end if
+        end for
+        return out
+    end function
+
+    ' What a person said this estate does not hold. Estate-wide, so it is the
+    ' one note that hangs off "" rather than an object.
+    function not_modelled(cat)
+        if not has(cat, "notes") then
+            return []
+        end if
+        if not has(cat.notes, "") then
+            return []
+        end if
+        n = cat.notes[""]
+        if not has(n, "not_modelled") then
+            return []
+        end if
+        return n.not_modelled
+    end function
+
     function estate(catalogs)
         if not is_array(catalogs) then
             error "discovery: estate expects an array of catalogs"

@@ -242,6 +242,11 @@ therefore part of every identity from the first line of code, not retrofitted.
 | `discovery.projection(sql)` | each output column, the expression, the columns it reads, whether it aggregates |
 | `discovery.predicates(sql)` | `where` / `having` / join `on` — which **are** the lineage, not metadata about it |
 | `discovery.explain(a, b)` | why two same-named columns disagree |
+| `discovery.annotate(catalog, notes)` | attach what a **person** knows and the database does not; every note is marked `known_by: "supplied"` |
+| `discovery.notes_of(catalog, kind)` | every note of one kind across the estate, as `{ id -> value }` |
+| `discovery.note_kinds()` | the seven kinds an annotation may carry |
+| `discovery.authority_values()` | what `authority` may say — `live`, `superseded`, `archive`, `staging`, `unknown` |
+| `discovery.not_modelled(catalog)` | what a person said the estate holds nothing about |
 | `discovery.statements(sql)` | a body split into statements: `{kind, target, sql}` each |
 | `discovery.derivations(sql)` | per statement, each **output column paired with the expression that fills it** |
 | `discovery.lineage(catalog, modules, dbms, column_id, options)` | `{steps, origins, unresolved, gaps}` — where **this column** came from, across hops |
@@ -497,6 +502,65 @@ Three decisions worth naming:
   derivations report none.** Inventing a distinction so as to have something to
   say is the failure this design is arranged against, and a tool that always
   finds a reason is indistinguishable from one that guesses.
+
+## 4a. The third tier of fact: what a person knows
+
+"Declared facts only" means **declared in the database** — a catalog entry, a
+constraint, a view body. There is a third kind of fact, and until now it had no
+home here at all:
+
+| tier | example | cost | certainty |
+|---|---|---|---|
+| from the **catalog** | tables, columns, types, keys, view SQL | free | certain |
+| from the **data** | a column's distinct values, one exemplar of its format | one query | certain |
+| from a **person** | `rpt` means report; this estate models no jobs; `customer2` is the live one | free | **unverifiable** |
+
+Because it had no home, **every consumer had started keeping its own list**:
+`nlq` accumulated five options that are all this one thing, and documentation
+and lineage would each have grown a copy. They are properties of the **estate**,
+not of any one question — the same note that lets a question find
+`rpt_volume_gross` belongs in generated documentation, and in a lineage walk
+that a manual ETL step would otherwise break.
+
+`discovery.annotate(cat, notes)` returns the catalog carrying them, keyed
+exactly as `tables` and `columns` are, with `""` for the estate itself.
+`notes_of(cat, kind)` returns one kind across the estate, which is the shape
+every consumer wants.
+
+**Seven kinds, chosen by what the four uses need rather than by what NLQ asked
+for:** `means`, `unit` and `owner` (documentation), `authority` and
+`derived_from` (analysis and lineage), `synonyms` and `not_modelled` (a
+question). `authority` is where §4's own example finally has an answer — four
+tables called `customer` and nothing in any schema saying which the business
+uses.
+
+### Marking is the load-bearing part
+
+§2's rule is that an inferred fact must never wear the clothes of a declared
+one. **A supplied fact is the same hazard from the other direction**, and worse
+in one respect: it is the only tier nobody can check. So every note carries
+`known_by: "supplied"`, following `edges.kind`, which has distinguished how a
+fact was known since the first increment — the mechanism already existed and
+did not need inventing.
+
+### Three refusals, and one deliberate non-refusal
+
+A note about an object **not in the catalog** is refused by name: it is a typo,
+or a note left behind by a dropped table, and answering from it would describe
+something that is not there — this library's central failure arriving through
+the one door that bypasses the database. An unknown note kind is refused by
+name, and an invented `authority` is refused with the real ones listed.
+
+But a `derived_from` that **contradicts the SQL** is *not* refused. `trace`
+reads what the database says; a note says what a person says; both are kept and
+stay distinguishable, because a person disagreeing with the SQL is a fact worth
+seeing rather than an error to raise.
+
+And annotating twice **replaces** rather than merges. A half-merged note is the
+worst outcome — an old `means` surviving beside a new `authority` reads as one
+coherent statement nobody made.
+
+---
 
 ## 5. Deliberately not in the first increment
 

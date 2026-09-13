@@ -79,6 +79,36 @@ else
     fi
 fi
 
+printf 'TIER what a person knows and the database does not (no database)\n'
+# The third tier of fact. `scan` reads what the DATABASE declares; this is what
+# a PERSON declares, and it had no home -- so every consumer had started keeping
+# its own list. These are properties of the ESTATE rather than of any one
+# question, which is why documentation, lineage, analysis and a question all
+# want the same notes.
+#
+# THE MARKING IS THE LOAD-BEARING PART. §2's rule is that an inferred fact must
+# never wear the clothes of a declared one, and a SUPPLIED fact is the same
+# hazard from the other direction -- worse in one respect, since it is the only
+# tier nobody can check. Every note carries `known_by: "supplied"`, following
+# `edges.kind`, which has distinguished how a fact was known since the first
+# increment.
+if ! timeout -k 5 120 ./gbasic tests/discovery_notes_test.bas >"$work/notes.out" 2>"$work/notes.err"; then
+    cat "$work/notes.err"; fail "the notes fixture did not run"
+elif grep -q MISMATCH "$work/notes.out"; then
+    grep MISMATCH "$work/notes.out"; fail "a note was not what was supplied"
+elif ! grep -qx 'mismatches: 0' "$work/notes.out"; then
+    fail "the notes fixture did not finish"
+elif [ -s "$work/notes.err" ]; then
+    cat "$work/notes.err"; fail "the notes fixture wrote to stderr"
+else
+    n=$(sed -n 's/^checks: //p' "$work/notes.out")
+    if [ -z "$n" ] || [ "$n" -lt 24 ]; then
+        fail "only ${n:-0} note checks ran, wanted at least 24"
+    else
+        pass "$n checks (means, unit, owner, synonyms, authority, derived_from, not_modelled)"
+    fi
+fi
+
 printf 'TIER nothing is inferred\n'
 # A TRIPWIRE, not a behavioural test. The library must not grow value-overlap
 # or name-similarity matching without a null model arriving at the same time --
