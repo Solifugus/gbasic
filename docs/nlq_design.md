@@ -477,6 +477,63 @@ that from, and the alternative is every consumer re-deriving it from internals.
 
 ---
 
+## 5e. Caching: facilitated, not owned
+
+Nothing in NLQ caches, and nothing should. But a question costs seventeen to
+sixty seconds of model time, and a dashboard asks **the same question every
+refresh** — so not facilitating a cache would make the library unusable for its
+first consumer while pretending to be neutral.
+
+The same split as §5d applies: NLQ supplies the **key**, the application owns
+the **store**.
+
+### What may be cached is the SQL, never the answer
+
+The question-to-SQL mapping is stable. The answer changes every time the data
+does. An application that caches the *number* renders a stale figure that looks
+exactly like a fresh one — which is §1's failure with a timestamp attached. So
+a cache sits between `plan` and `interpret`, and never after `settle`.
+
+### The key must cover everything the SQL depends on
+
+Keying on the question text alone is the trap, because the SQL does not depend
+on the question alone. `gdash` re-imports per dashboard; an import that renames
+a column, drops one, or adds a view that now answers the question *better*
+leaves cached SQL that **still runs** and quietly answers a question about the
+old shape. A cached query surviving a schema change is the silent wrong answer
+one level down from the one this design started with.
+
+So `nlq.plan` returns a `key` over everything that determined its output:
+
+- the question, normalized the way `terms` normalizes it;
+- the **grounded objects and their columns** — not the whole catalog, which
+  would invalidate on every unrelated import, and not the object names alone,
+  which would survive a column being dropped;
+- the **vocabulary those objects contributed**, since a changed value list
+  changes the prompt and can change the literal;
+- the synonyms in force, which are the estate owner's declaration and can be
+  edited.
+
+Canonically rendered with sorted keys, so it cannot depend on the order a
+record was built in — the rule `llm.canonical_request` already follows, and for
+the same reason.
+
+### What the application decides, and NLQ cannot
+
+Whether to keep a store at all, where, for how long, and when to drop it.
+`gdash`'s answer is probably "until the next import" — a moment its importer
+knows exactly and NLQ has no way to observe. An application pointed at a live
+database might re-validate instead; one answering by email might cache nothing,
+having already paid the wait.
+
+**A miss must be indistinguishable from never having cached.** The key changing
+should cost a slower answer, never a different one — so the suite should assert
+that a plan built fresh and a plan whose key was hit produce the **same
+reading**, which is the same difference-shaped assertion the `encode`
+round-trip needs.
+
+---
+
 ## 6. Deliberately not in the first increment
 
 - **Any call to a model.** It comes after retrieval can be trusted.
