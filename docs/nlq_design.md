@@ -258,13 +258,27 @@ are filtered on the way and the two counts need not agree. **This is R2 arriving
 on question one**, and it is exactly the case a query inspection cannot see: the
 SQL is well-formed and names real columns.
 
-**It invents literals where the vocabulary does not reach.**
-`WHERE contract_ref = 1` and `WHERE acct_no IN (1100, 4000)` — both columns are
-high-cardinality, so neither qualified for value vocabulary, and the model
-filled the gap with plausible numbers. **Value vocabulary is therefore not a
-complete remedy.** It removes the guess where a column is categorical; a
-question that turns on a specific identifier is a different problem, and one
-the grounding should report rather than let the model solve by invention.
+**It gets literals wrong where the vocabulary does not reach** — and this was
+written up once already, wrongly, before either query had been run. Both
+`WHERE acct_no IN (1100, 4000)` and `WHERE contract_ref = 1` were called
+inventions. Executed, they are two different things:
+
+- `acct_no IN (1100, 4000)` **is correct.** `1100` and `4000` are the *only two*
+  account numbers in the ledger, they were in the supplied vocabulary, and the
+  model used them. The one flaw is that it wrote them unquoted against a text
+  column — which PostgreSQL refuses and SQLite accepts, so a **semantically
+  right query** was rejected on type strictness by one engine and answered
+  correctly by the other.
+- `contract_ref = 1` **is wrong.** The question asks about "contract 1"; the
+  column stores `'0000000001'`, zero-padded to ten characters. On SQLite it
+  returns 0 where the answer is 4.
+
+The distinction matters because the remedies differ. The second is not a *value*
+problem — `contract_ref` has hundreds of distinct values and enumerating them
+would blow the budget for no gain — it is a **format** problem, and one
+exemplar fixes it. `'0000000001'` tells a model everything it needs about how to
+write a contract reference without listing a single other one. **Value
+vocabulary for categorical columns, one exemplar for the rest.**
 
 **It is right about reports.** `SUM(total_volume) FROM warehouse.rpt_volume_gross`
 and its `_net` counterpart are what those questions ask for, and the gap
@@ -377,6 +391,36 @@ rather than by accident.
 One thing gets easier: the catalog needs no discovery scan against a foreign
 database. The consumer performed the import, so it knows exactly what is there
 and when it changed.
+
+---
+
+## 5c. The same SQL on two engines, and why the higher score is worse
+
+The identical recorded queries, run against the identical rows, on PostgreSQL
+and on SQLite. (SQLite has no schemas; `ATTACH` gives it one per database file,
+so `warehouse.fact_volume` resolves there exactly as it does on PostgreSQL and
+the same SQL runs unchanged — one query, two places to run it, rather than a
+re-recording that would vary the query as well.)
+
+| | scored | agreed | failed to execute |
+|---|---|---|---|
+| PostgreSQL | 10 | 7 | **2** |
+| SQLite | 12 | **8** | 0 |
+
+**SQLite scores higher and is not doing better.** The two queries PostgreSQL
+refused both ran there, and they went opposite ways:
+
+- `f_ledger_sums_zero` was **right all along** — the unquoted `1100, 4000` are
+  the real account numbers — so PostgreSQL's refusal was a false negative and
+  SQLite's answer is a true positive.
+- `t_deals_for_contract` returned **0 where the answer is 4**, silently. On
+  PostgreSQL that same query announced itself with a type error.
+
+So one engine converts a correct answer into an error, and the other converts an
+error into a wrong number. Neither is a property of NLQ, and **the value tier
+cannot be run against only one of them** and still be said to measure what a
+consumer will see. `gdash` runs on SQLite, which is the side where a bad literal
+is silent.
 
 ---
 

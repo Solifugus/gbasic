@@ -43,6 +43,22 @@ program main( args )
 
     conn = odbc.connect(env("NLQ_ODBC_CONNECTION"))
 
+    ' SQLITE HAS NO SCHEMAS, AND ATTACH GIVES IT ONE PER DATABASE FILE -- so
+    ' `warehouse.fact_volume` resolves there exactly as it does on PostgreSQL
+    ' and THE SAME RECORDED SQL RUNS UNCHANGED. That is what makes the two
+    ' engines comparable at all: not a re-recording against a second dialect,
+    ' which would vary the query as well as the database, but one query and two
+    ' places to run it.
+    attach = default(env("NLQ_ODBC_ATTACH"), "")
+    if len(attach) > 0 then
+        for each pair in split(attach, ";")
+            if len(trim(pair)) > 0 then
+                bits = split(pair, "=")
+                a = odbc.exec(conn, "attach '" + bits[1] + "' as " + bits[0])
+            end if
+        end for
+    end if
+
     scored = 0
     agreed = 0
     failed = 0
