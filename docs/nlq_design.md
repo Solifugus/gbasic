@@ -424,6 +424,59 @@ is silent.
 
 ---
 
+## 5d. The library does not get to decide how long is too long
+
+Every question varies in what it costs — the model by a factor of three on the
+same hardware depending on load, the database by whatever the query turns out to
+be. That is the reality, and **a library's job is to let an application be
+graceful about it, not to be graceful on the application's behalf.**
+
+One application will show a spinner and say this will take a moment. Another
+will accept the question, return immediately, and email the answer. A third will
+refuse anything it estimates will take too long. Those are different products,
+and none of them is NLQ's call.
+
+**So there is no `nlq.answer(catalog, conn, question)`.** A single call that
+runs the model and the query and hands back a number has made the decision by
+hiding it: it blocks, and every consumer inherits blocking. This design proposed
+exactly that function and withdraws it.
+
+The shape instead is `agent`'s, which solved the same problem in this tree for
+the same reason — an approval may take a minute and the wait spans HTTP
+requests, so `agent.apply(run, event)` performs **no I/O** and returns the new
+run plus the actions its caller must perform:
+
+```
+plan   = nlq.plan(catalog, vocab, question)   ' pure. grounding + prompt, or a refusal
+                                              ' the application calls the model, however it likes
+reading = nlq.interpret(plan, model_text)     ' pure. the SQL, and R3/R4 on it
+                                              ' the application executes it, however it likes
+answer = nlq.settle(reading, rows)            ' pure. the value, with its provenance
+```
+
+Three steps, none of which performs I/O, with the application owning both waits.
+It may block on them, park a stream, hand them to a worker, put them on a queue,
+or come back tomorrow — and NLQ neither knows nor needs to.
+
+**Two consequences fall out, and both are requirements rather than
+observations.**
+
+A plan must **survive `encode`**, because an application that answers later must
+store it in between. That is the constraint `agent` already discovered from the
+same direction: a run holds `tools.schema` rather than a toolset because `encode`
+refuses function values, and `expires_at` is a number because it refuses a
+datetime. A plan that cannot be stored is a plan no deferring application can
+use, and the suite should assert a plan round-trips and then produces the same
+reading — a difference, since "it encodes" alone is satisfied by a plan that
+encodes and then behaves differently.
+
+And a plan should carry **what it is about to cost**, as far as that is knowable
+— the token estimate is already there, the table count is already there. An
+application that wants to say "this will take a while" needs something to decide
+that from, and the alternative is every consumer re-deriving it from internals.
+
+---
+
 ## 6. Deliberately not in the first increment
 
 - **Any call to a model.** It comes after retrieval can be trusted.
