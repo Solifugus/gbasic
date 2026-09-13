@@ -1,0 +1,5 @@
+shared ancestor: warehouse.fact_volume
+why they differ:
+  - the expression differs: sum(gross_vol_mmbtu)   versus   sum(avail_after_pvr)
+  - they are built from different columns: [gross_vol_mmbtu] versus [avail_after_pvr]
+  - only the second narrows on -- where: deal_status = 'ACTIVE'

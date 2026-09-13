@@ -1,0 +1,3 @@
+reads:  trading.ctp, warehouse.stg_deal
+writes: warehouse.fact_volume
+gaps:   0

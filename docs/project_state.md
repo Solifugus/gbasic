@@ -190,7 +190,8 @@ document list, with a status column, is `docs/README.md`.
   hops** — a report's number traced back through views and procedures to the
   operational table it originated in. The object level answers "which table
   does this read", which rarely settles anything; the column level answers the
-  one that costs a day.
+  one that costs a day. Worked recipes in `discovery_cookbook.md`, none of
+  which needs a database.
 - **a question over an estate** — `nlq`, first increment: grounding, the
   refusals, and three pure steps an application drives — plan, interpret,
   settle — none of which performs I/O. Scored against estateforge's
@@ -199,7 +200,11 @@ document list, with a status column, is `docs/README.md`.
   a real 4B model's SQL against a live estate: 7 of 10 on PostgreSQL, 8 of 12 on
   SQLite. Everything it will not invent is declared — synonyms, value
   vocabulary, format exemplars, derivation, and the terms an estate does not
-  model. See nlq_design.md.
+  model — written once on the catalog through `discovery.annotate`, which is
+  also where writing the cookbook found that the two libraries' catalog shapes
+  did not meet at all (`nlq.from_discovery` is the bridge, and preserving the id
+  exactly is the whole difficulty). Worked recipes in `nlq_cookbook.md`, none of
+  which calls a model or touches a database. See nlq_design.md.
 - **financial-format adapters** — `finio`, Phase 0 (value model + registry only).
   Provenance is reconstructed from a retained source because the alternative was
   measured at 2.79 GB for a 9.5 MB file; see financial_adapters_design.md §21.

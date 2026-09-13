@@ -1,0 +1,10 @@
+synonyms:     counterparty
+derived_from: warehouse.rpt_volume_gross
+not_modelled: forecast
+
+selected:   warehouse.rpt_volume_gross, warehouse.fact_volume, trading.ctp
+unresolved: 0
+alternative: warehouse.rpt_volume_gross and warehouse.fact_volume -- warehouse.rpt_volume_gross is built from warehouse.fact_volume, so it can hold fewer rows and their totals can differ; the query cannot say which was meant
+
+not_in_the_catalog: forecast
+why: this estate holds nothing about forecast; the question asks for a fact that is not in the database, which no query can supply

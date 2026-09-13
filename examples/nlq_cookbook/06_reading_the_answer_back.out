@@ -1,0 +1,14 @@
+planned: trading.deal
+ok:  true
+sql: select sum(gross_vol_mmbtu) from trading.deal where deal_status = 'ACTIVE'
+
+off-plan -- ok: false
+  ungrounded_table (archive.deal_2015): the grounding never surfaced it; the query names a table nobody offered, which runs if the name happens to exist
+
+a write -- ok: false
+  not_read_only (delete): this statement would change the database
+  not_a_query (): no select at all
+
+answer: 41250.5 (total), from 1 row
+asked:  total gross volume of active deals
+by:     select sum(gross_vol_mmbtu) from trading.deal where deal_status = 'ACTIVE'

@@ -1,0 +1,8 @@
+trading.deal.deal_status: ACTIVE, SETTLED, CANCELLED
+trading.deal.deal_ref: D-0001, D-0002, D-0000000917
+
+capped at 2 -- columns with a vocabulary: 0
+deal_ref looks like: D-0000000917
+
+said 'active' but trading.deal.deal_status stores 'ACTIVE'
+why: the question's wording differs in case from the stored value

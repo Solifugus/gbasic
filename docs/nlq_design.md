@@ -724,6 +724,42 @@ than a decision, and noticing that is what makes the next increment obvious.
 
 ---
 
+## 5i. Found by writing the cookbook: the two catalogs did not meet
+
+`discovery.scan` returns objects **keyed by id**; this library takes **rows**.
+`nlq.check_catalog` refused the first shape outright — while its own error
+message said *"`discovery.scan` produces one"*, which was false. The two
+libraries designed to work together could not be handed each other's values,
+and nothing noticed, because every fixture on both sides built its catalog by
+hand in whichever shape that fixture needed.
+
+It surfaced the moment a cookbook recipe tried to do the obvious thing: annotate
+a catalog with `discovery.annotate`, then ask a question about it. That is the
+whole argument for writing worked recipes — a unit suite exercises a library
+against itself, and a recipe exercises it against the way somebody would
+actually reach for it.
+
+`nlq.from_discovery(cat)` is the bridge, and it is **explicit** rather than
+`ground` accepting either shape: a function that guesses which of two shapes it
+was handed will one day guess wrong on a value that is legitimately either.
+
+**The id is preserved exactly, and that is the whole difficulty.** A discovery
+id is `source.catalog.schema.table` with the empty parts dropped, so its depth
+**varies by driver**, where this library composes `schema + "." + table`.
+Splitting at the last separator makes them agree by construction — and they have
+to agree, because `discovery.annotate` writes notes against discovery ids and
+`options_from` hands them to `ground`, which would otherwise look a derivation
+up under a name no grounding ever produces.
+
+That failure would have been **silent**: the disclosure simply stops appearing,
+and an estate with derivations in it looks like one without. So the assertion
+that carries the tier is not the count — a conversion that drops the schema
+still yields a catalog that grounds perfectly well and answers about the wrong
+thing, and passes a count check. It is that **a note written against a discovery
+id reaches the grounding**, with the control that a catalog carrying no note
+discloses nothing. Proven red by dropping the schema in conversion: the count
+check stays green and both id checks go red.
+
 ## 6. Deliberately not in the first increment
 
 - **Any call to a model.** It comes after retrieval can be trusted.

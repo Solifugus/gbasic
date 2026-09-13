@@ -1,0 +1,3 @@
+  raised_on (date) -- the date the invoice was issued
+  ref (varchar) -- (undocumented)
+  total (decimal) -- invoice total, tax included [USD]

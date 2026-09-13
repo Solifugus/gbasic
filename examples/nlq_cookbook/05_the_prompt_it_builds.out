@@ -1,0 +1,13 @@
+You write one SQLite SQL SELECT statement that answers the question. Use ONLY the tables and columns listed. Use the exact column values given. Reply with SQL only: no markdown, no fence, no explanation.
+
+Tables:
+trading.deal(deal_status, ctp_id, gross_vol_mmbtu)
+trading.counterparty(ctp_id, name)
+Column values:
+trading.deal.deal_status in (ACTIVE, SETTLED)
+
+Question: gross volume by counterparty for active deals
+
+about 166 tokens, budget 3000
+
+refused: nlq.prompt: this prompt is about 166 tokens against a budget of 20 -- narrow the grounding (limit is 2, 2 tables selected). Sending it would be truncated silently, and it is the SCHEMA that would be dropped, not the question

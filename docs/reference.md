@@ -6100,6 +6100,16 @@ whole program without needing a call site.
   `nlq.stopwords()` is that list — `total`, `gross` and `net` are deliberately
   absent, being half the measure names in a warehouse. `nlq.check_catalog(cat)`
   refuses a catalog missing `tables` or `columns`.
+  `nlq.from_discovery(cat)` converts a catalog from `discovery.scan` or
+  `discovery.estate` — which keys its objects **by id** — into the rows this
+  library takes, carrying any `notes` across. Conversion is explicit rather
+  than `ground` accepting either shape, because a function that guesses which
+  of two shapes it was handed will one day guess wrong. **The id is preserved
+  exactly**, which is the whole difficulty: a discovery id is
+  `source.catalog.schema.table` with empty parts dropped, so its depth varies
+  by driver, and a note written by `discovery.annotate` against that id must be
+  findable under the name a grounding produces, or the disclosure it exists for
+  silently stops appearing.
   `ground` also returns **`ambiguous`** — what the catalog *cannot settle*, which
   it reports rather than resolves — and `nlq.check_answerable(g)` **refuses** on
   it. The split is deliberate: a caller may want the grounding in order to show

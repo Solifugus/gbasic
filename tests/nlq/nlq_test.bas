@@ -442,6 +442,57 @@ check("CONTROL: an un-annotated catalog adds nothing",
       has(nlq.options_from(acat, { limit: 4 }), "synonyms"), false)
 
 print ""
+print "-- the two catalog shapes meet, and the ID survives the crossing"
+' `discovery.scan` keys objects BY ID, this library takes rows, and the notes
+' `options_from` reads are written against DISCOVERY IDS. So converting is not
+' a reshape -- if the id changed, every derivation note would be looked up
+' under a name no grounding ever produces, silently, and the disclosure would
+' simply stop appearing. THE LOAD-BEARING ASSERTION IS THEREFORE THE ID, not
+' the counts: a conversion that dropped the schema still yields a catalog that
+' grounds perfectly well and answers about the wrong thing.
+dcat = { source: "wh",
+         tables: { "warehouse.rpt_volume_gross": { schema: "warehouse", table: "rpt_volume_gross", column: "" },
+                   "warehouse.fact_volume": { schema: "warehouse", table: "fact_volume", column: "" } },
+         columns: { "warehouse.rpt_volume_gross.total_volume": { schema: "warehouse", table: "rpt_volume_gross", column: "total_volume" },
+                    "warehouse.fact_volume.total_volume": { schema: "warehouse", table: "fact_volume", column: "total_volume" } },
+         primary_keys: [], edges: [] }
+q = nlq.from_discovery(dcat)
+check("every object crosses", count(q.tables), 2)
+check("and every column", count(q.columns), 2)
+gq = nlq.ground(q, "total volume", { limit: 2 })
+check("the id a grounding produces IS the discovery id",
+      contains(gq.tables, "warehouse.rpt_volume_gross"), true)
+' AND THE PROOF THAT MATTERS: a note written against the discovery id reaches
+' the grounding through the conversion. Without the id surviving, this is the
+' check that goes quiet -- the alternative simply never fires and the output
+' looks like an estate with no derivations in it.
+dann = discovery.annotate(dcat,
+        { "warehouse.rpt_volume_gross": { derived_from: [ "warehouse.fact_volume" ] } })
+gd = nlq.ground(nlq.from_discovery(dann), "total volume",
+                nlq.options_from(dann, { limit: 2 }))
+check("a note written against a discovery id reaches the grounding",
+      count(gd.alternatives) > 0, true)
+' CONTROL: the same catalog with NO note reports no alternative, or "it fires"
+' would be satisfied by a library that discloses an alternative for every pair.
+check("CONTROL: with no note there is nothing to disclose", count(gq.alternatives), 0)
+' The notes travel with the conversion, so annotating and asking need ONE
+' catalog rather than two kept in step by hand.
+check("the notes cross too", has(nlq.from_discovery(dann), "notes"), true)
+' AND THE DEPTH VARIES BY DRIVER, which is why the split is at the LAST
+' separator and not at the first. SQLite qualifies nothing, SQL Server
+' qualifies with source, catalog and schema -- a conversion that assumed two
+' segments would produce `src.db` as a schema and lose the rest, silently.
+sqlite_cat = { tables: { "orders": { schema: "", table: "orders", column: "" } },
+               columns: { "orders.status": { schema: "", table: "orders", column: "status" } },
+               primary_keys: [], edges: [] }
+check("an unqualified id survives", nlq.ground(nlq.from_discovery(sqlite_cat), "order status", {}).tables[0], "orders")
+deep_cat = { tables: { "src.db.dbo.orders": { schema: "", table: "orders", column: "" } },
+             columns: { "src.db.dbo.orders.status": { schema: "", table: "orders", column: "status" } },
+             primary_keys: [], edges: [] }
+check("and a four-segment one survives whole",
+      nlq.ground(nlq.from_discovery(deep_cat), "order status", {}).tables[0], "src.db.dbo.orders")
+
+print ""
 print "-- refusals, each beside its nearest legal neighbour"
 on error goto next
 nlq.ground({ tables: [] }, "anything", {})
@@ -461,6 +512,13 @@ check("CONTROL: a well-formed call is accepted", count(nlq.ground(cat, "deals", 
 on error goto next
 nlq.check_answerable({ tables: [ "x" ] })
 check("check_answerable refuses a value that is not a grounding", contains(error.message, "expects a grounding"), true)
+error.clear()
+nlq.from_discovery({ tables: {} })
+check("from_discovery refuses a value that is not a catalog", contains(error.message, "expects a catalog"), true)
+error.clear()
+nlq.ground(dcat, "total volume", {})
+check("and ground names the conversion rather than just refusing",
+      contains(error.message, "from_discovery"), true)
 error.clear()
 on error stop
 

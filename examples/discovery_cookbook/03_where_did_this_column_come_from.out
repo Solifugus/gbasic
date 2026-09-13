@@ -1,0 +1,5 @@
+target: warehouse.fact_volume  (insert)
+  deal_id <- s.id
+    from: id
+  avail_after_pvr <- s.gross_vol_mmbtu * (1 - s.pvr_pct)
+    from: gross_vol_mmbtu, pvr_pct

@@ -1,0 +1,6 @@
+ok: false
+  same_name_different_schema: staging.deal_load, staging_2.deal_load, staging_3.deal_load
+  why: these schemas differ only by a number, so the catalog does not say which is live; ranking one would be a guess
+
+regional partitions -- ok: true
+tables: trading.deal, trading_apac.deal, trading_emea.deal

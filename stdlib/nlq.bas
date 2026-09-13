@@ -758,13 +758,67 @@ library nlq
         end if
         for each field in [ "tables", "columns" ]
             if not has(cat, field) then
-                error ("nlq: this catalog has no '" + field + "' -- `discovery.scan` produces one")
+                error ("nlq: this catalog has no '" + field + "' -- `nlq.from_discovery` " +
+                       "converts one from `discovery.scan`")
             end if
             if type(cat[field]) != "array" then
-                error ("nlq: a catalog's '" + field + "' must be an array")
+                error ("nlq: a catalog's '" + field + "' must be an array of rows; a catalog " +
+                       "from `discovery.scan` keys its objects by id, and " +
+                       "`nlq.from_discovery` converts it")
             end if
         end for
         return true
+    end function
+
+    ' `discovery.scan` keys its objects BY ID and this library takes rows, so
+    ' the two shapes have to meet somewhere. They meet HERE rather than by
+    ' `ground` accepting both, because a function that guesses which of two
+    ' shapes it was handed is a function that will one day guess wrong on a
+    ' value that is legitimately either.
+    '
+    ' THE ID IS PRESERVED EXACTLY, which is the whole difficulty and the reason
+    ' this is not three lines. A discovery id is `source.catalog.schema.table`
+    ' with the empty parts dropped, so its depth VARIES by driver; this library
+    ' composes an id as `schema + "." + table`. Splitting at the LAST separator
+    ' makes the two agree by construction -- and they have to agree, because
+    ' `discovery.annotate` writes its notes against discovery ids and
+    ' `options_from` hands them to `ground`, which would otherwise be looking
+    ' up a derivation under a name no grounding ever produces.
+    function from_discovery(cat)
+        if type(cat) != "record" or not has(cat, "tables") or not has(cat, "columns") then
+            error "nlq.from_discovery expects a catalog from discovery.scan or discovery.estate"
+        end if
+        out = { tables: [], columns: [] }
+        for each tid in keys(cat.tables)
+            parts = split(tid, ".")
+            append(out.tables, { schema: join(_left_of(parts), "."),
+                                 table: parts[count(parts) - 1] })
+        end for
+        for each cid in keys(cat.columns)
+            c = cat.columns[cid]
+            parts = split(cid, ".")
+            owner = join(_left_of(parts), ".")
+            oparts = split(owner, ".")
+            append(out.columns, { schema: join(_left_of(oparts), "."),
+                                  table: oparts[count(oparts) - 1],
+                                  column: parts[count(parts) - 1] })
+        end for
+        ' The notes travel, so a converted catalog is still one `options_from`
+        ' can read -- otherwise annotating and asking would need two catalogs.
+        if has(cat, "notes") then
+            out.notes = cat.notes
+        end if
+        return out
+    end function
+
+    function _left_of(parts)
+        out = []
+        i = 0
+        while i < count(parts) - 1
+            append(out, parts[i])
+            i = i + 1
+        end while
+        return out
     end function
 
     function _id(schema, name)

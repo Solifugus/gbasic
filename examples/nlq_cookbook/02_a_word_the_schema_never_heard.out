@@ -1,0 +1,6 @@
+unresolved: counterparty
+selected:   warehouse.rpt_volume_gross
+
+with the synonym declared --
+unresolved: 0
+selected:   warehouse.rpt_volume_gross, trading.ctp

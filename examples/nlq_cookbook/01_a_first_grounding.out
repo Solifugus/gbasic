@@ -1,0 +1,8 @@
+terms:     gross, volume, counterparty
+selected:  warehouse.rpt_volume_gross, trading.counterparty
+near miss: trading.deal
+
+searched 4 tables, 3 matched, kept 2, cut at score 3
+
+  warehouse.rpt_volume_gross  score 7
+  trading.counterparty  score 3
