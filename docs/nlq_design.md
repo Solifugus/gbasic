@@ -81,8 +81,28 @@ wrong answer is indistinguishable from the right one.
   wearing the clothes of a lookup.
 - **R2 — two lineages are two answers.** Where a measure resolves to columns
   with *different derivations* (the two `total_volume` reports), NLQ reports
-  both and the derivation that separates them. `discovery.lineage` can already
-  answer this; the failure is not using it.
+  both and the derivation that separates them.
+
+  **Built, and it reports rather than refuses — which was a correction.** As a
+  blocker it stopped **8 of 16** benchmark questions, the same failure R6 had at
+  15 of 16 before its discriminator existed. The diagnosis settles the design:
+  for `t_total_volume` the two derivations differ by **36%** and the distinction
+  *is* the answer; for `t_active_deals` they agree exactly (315 either way) and
+  it is noise. **NLQ cannot tell those apart without running both** — which is
+  expensive, and is the application's decision rather than this library's. So
+  the fact travels and the choice does not, the same split as the latency and
+  the cache.
+
+  **Derivation is declared, not inferred.** An application that performed an
+  import knows what it imported and from where; `discovery.lineage` can produce
+  it for anyone holding module bodies. Taking it as input keeps a question
+  grounding from dragging an ODBC catalog reader in behind it, and puts the fact
+  in the hands of whoever actually knows it.
+
+  **The discriminator is derivation, not shared columns.** `trading.deal` and
+  `trading_emea.deal` share *every* column and are peers; `trading.deal` and
+  `warehouse.stg_deal` share every column and are a chain. A check firing on
+  column overlap would flag every regional partition in the estate.
 - **R3 — SQL may not name what retrieval did not surface.** A generated query
   touching a table the grounding never selected is a hallucination that happens
   to be spelled correctly. Refused, not executed.

@@ -6145,6 +6145,20 @@ whole program without needing a call site.
   shape. A refused grounding yields a plan with `ok: false` and
   `refused_because` — a value, not a raise, so a caller can show a person the
   candidates and ask.
+  `options.derived_from` is a record of object → the object it is built from,
+  and produces **`alternatives`** on the grounding: where two grounded objects
+  hold the same measure and one is *derived* from the other, their totals can
+  differ and the query cannot say which was meant. Measured, that is a 36% gap
+  on one benchmark question. **It discloses and does not refuse** — built first
+  as a blocker it stopped 8 of 16 questions, because for one the two
+  derivations differ and the distinction *is* the answer while for another they
+  agree exactly, and NLQ cannot tell those apart without running both. Like
+  everything else here, derivation is **declared**: an application that
+  performed an import knows what it imported and from where, and
+  `discovery.lineage` can produce it for anyone holding module bodies — so
+  grounding a question does not drag an ODBC catalog reader in behind it. The
+  discriminator is derivation and **not** shared columns: `trading.deal` and
+  `trading_emea.deal` share every column and are peers, so they are never named.
   `nlq.exemplars(rows, { min_distinct: 2 })` gives **one sample value** for the
   columns `vocabulary` refuses as too many — its complement, not its fallback: a
   vocabulary says which values exist, an exemplar says what one *looks like*.

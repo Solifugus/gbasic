@@ -299,6 +299,46 @@ error.clear()
 on error stop
 
 print ""
+print "-- R2: two lineages are two answers, REPORTED not refused"
+' MEASURED, WITH A NUMBER: asked for total volume, the model summed
+' warehouse.fact_volume and returned 4,025,053 where the question is about
+' trading.deal and the answer is 6,285,487 -- the fact table is built by an ETL
+' that keeps only active counterparties, so the sum of a subset is a perfectly
+' good number 36% short of the one asked for.
+dcat = { tables: [ { schema: "trading", table: "deal" },
+                   { schema: "warehouse", table: "fact_volume" },
+                   { schema: "trading_emea", table: "deal" } ],
+         columns: [ { schema: "trading", table: "deal", column: "gross_vol_mmbtu" },
+                    { schema: "warehouse", table: "fact_volume", column: "gross_vol_mmbtu" },
+                    { schema: "trading_emea", table: "deal", column: "gross_vol_mmbtu" } ] }
+dg = nlq.ground(dcat, "total gross_vol_mmbtu", { limit: 4,
+        derived_from: { "warehouse.fact_volume": "trading.deal" } })
+check("a derived alternative is reported", count(dg.alternatives), 1)
+check("naming both objects", count(dg.alternatives[0].candidates), 2)
+check("and which is built from which", contains(dg.alternatives[0].why, "is built from"), true)
+' THE CANDIDATES ARE THE TWO IN THE RELATIONSHIP, not everything holding the
+' column. trading_emea.deal shares every column and is derived from NOTHING;
+' naming it would make a regional partition look like a staging copy.
+check("a peer sharing the column is NOT named",
+      contains(dg.alternatives[0].candidates, "trading_emea.deal"), false)
+' IT DISCLOSES, IT DOES NOT REFUSE -- and that is a correction. Built first as a
+' blocker it refused 8 of 16 benchmark questions, the same failure R6 had at 15
+' of 16: for t_total_volume the two derivations differ by 36% and the
+' distinction IS the answer; for t_active_deals they agree exactly (315 either
+' way) and it is noise. NLQ cannot tell those apart without running both, which
+' is the application's decision to make.
+check("it does not block answering", nlq.check_answerable(dg), true)
+check("and carries no blocking ambiguity", count(dg.ambiguous), 0)
+' CONTROL: with no derivation declared there is nothing to disclose, or this
+' would fire on every estate that has two tables with a column in common.
+check("CONTROL: undeclared derivation reports nothing",
+      count(nlq.ground(dcat, "total gross_vol_mmbtu", { limit: 4 }).alternatives), 0)
+' ONE ENTRY PER PAIR, NOT PER WORD: `gross_vol_mmbtu` matches gross, vol AND
+' mmbtu, and three copies of one fact buries it.
+check("and one entry per pair however many words matched",
+      contains(dg.alternatives[0].measure, ","), true)
+
+print ""
 print "-- refusals, each beside its nearest legal neighbour"
 on error goto next
 nlq.ground({ tables: [] }, "anything", {})

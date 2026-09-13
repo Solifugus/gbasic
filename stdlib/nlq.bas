@@ -470,10 +470,11 @@ library nlq
     function plan(cat, vocab, question, options)
         opts = _options(options, [ "limit", "near_misses", "synonyms",
                                    "budget_tokens", "chars_per_token", "dialect",
-                                   "exemplars" ], "nlq.plan")
+                                   "exemplars", "derived_from" ], "nlq.plan")
         g = ground(cat, question, { limit: _default(opts, "limit", 8),
                                     near_misses: _default(opts, "near_misses", 3),
-                                    synonyms: _default(opts, "synonyms", {}) })
+                                    synonyms: _default(opts, "synonyms", {}),
+                                    derived_from: _default(opts, "derived_from", {}) })
         ' R1/R6 stop here: a grounding the catalog could not settle is not a
         ' plan, and the refusal travels as a VALUE so an application can show a
         ' person the candidates and ask.
@@ -687,7 +688,7 @@ library nlq
     ' of the question.
     function ground(cat, question, options)
         ok = check_catalog(cat)
-        opts = _options(options, [ "limit", "near_misses", "synonyms" ], "nlq.ground")
+        opts = _options(options, [ "limit", "near_misses", "synonyms", "derived_from" ], "nlq.ground")
         limit = _default(opts, "limit", 8)
         near_n = _default(opts, "near_misses", 3)
         syn = _default(opts, "synonyms", {})
@@ -781,9 +782,24 @@ library nlq
         end for
 
         amb = _ambiguities(selected, ranked, limit, qterms, by_table)
+        ' DISCLOSURE, NOT A REFUSAL -- see `alternatives` below.
+        alts = _derivation_conflicts(selected, qterms, by_table,
+                                     _default(opts, "derived_from", {}))
 
         return { tables: _ids(selected),
                  ambiguous: amb,
+                 ' R2 IS REPORTED, NOT REFUSED, and that is a correction. Built
+                 ' first as a blocker, it refused 8 OF 16 benchmark questions --
+                 ' the same failure R6 had at 15 of 16 before its discriminator
+                 ' existed. The diagnosis is what settles the design: for
+                 ' `t_total_volume` the two derivations differ by 36% and the
+                 ' distinction is the whole answer; for `t_active_deals` they
+                 ' agree exactly (315 either way) and it is noise. NLQ CANNOT
+                 ' TELL THOSE APART WITHOUT RUNNING BOTH, which is expensive and
+                 ' is the application's decision to make, not this library's.
+                 ' So the fact travels and the choice does not -- the same split
+                 ' as the latency and the cache.
+                 alternatives: alts,
                  detail: selected,
                  near_misses: _ids(near),
                  near_detail: near,
@@ -909,6 +925,116 @@ library nlq
             out = left(out, len(out) - 1)
         end while
         return out
+    end function
+
+    ' --- R2: two lineages are two answers -------------------------------------
+    '
+    ' MEASURED, WITH A NUMBER. Asked for total volume, the model summed
+    ' `gross_vol_mmbtu` from `warehouse.fact_volume` and returned 4,025,053
+    ' where the question is about `trading.deal` and the answer is 6,285,487.
+    ' The fact table is built by an ETL that joins `trading.ctp` and keeps only
+    ' active counterparties, so it holds a SUBSET -- and the sum of a subset is
+    ' a perfectly good number about a real table, 36% short of the one asked
+    ' for, with nothing in the query to say so.
+    '
+    ' THE DISCRIMINATOR IS DERIVATION, NOT NAME OVERLAP. `trading.deal` and
+    ' `trading_emea.deal` share every column and are PEERS -- a question may
+    ' legitimately mean either. `trading.deal` and `warehouse.stg_deal` share
+    ' every column and are a CHAIN, where one is built from the other and can
+    ' hold fewer rows. Only derivation separates those, and a check that fired
+    ' on shared columns alone would flag every regional partition in the estate.
+    '
+    ' DERIVATION IS DECLARED, NOT INFERRED, and by the party that knows it: an
+    ' application that performed an import knows what it imported and from
+    ' where, and `discovery.lineage` can produce it for anyone holding module
+    ' bodies. NLQ takes it as input for the same reason it takes synonyms and
+    ' vocabulary -- and so that grounding a question does not drag an ODBC
+    ' catalog reader in behind it.
+    function _derivation_conflicts(selected, qterms, by_table, derived)
+        out = []
+        if type(derived) != "record" then
+            error "nlq: `derived_from` is a record of object -> the object it is built from"
+        end if
+        if count(keys(derived)) = 0 then
+            return out
+        end if
+        ' ONE CONFLICT PER PAIR, NOT PER WORD. A question naming
+        ' `gross_vol_mmbtu` matches on gross, vol AND mmbtu, and reporting the
+        ' same pair three times is noise that buries the one fact.
+        pairs = []
+        measures = {}
+        for each qt in qterms
+            for each a in selected
+                for each b in selected
+                    if a.id != b.id and _derives_from(derived, a.id, b.id) then
+                        if _holds(by_table, a, qt) and _holds(by_table, b, qt) then
+                            tag = a.id + " <- " + b.id
+                            if not contains(pairs, tag) then
+                                append(pairs, tag)
+                                measures[tag] = []
+                            end if
+                            if not contains(measures[tag], qt) then
+                                measures[tag] = _append_to(measures[tag], qt)
+                            end if
+                        end if
+                    end if
+                end for
+            end for
+        end for
+        for each tag in pairs
+            bits = split(tag, " <- ")
+            ' CANDIDATES ARE THE TWO IN THE RELATIONSHIP, not everything that
+            ' happens to hold the column. `trading_apac.deal` shares every
+            ' column with `trading.deal` and is derived from NOTHING -- naming
+            ' it as a derived alternative would be false, and would make a
+            ' regional partition look like a staging copy.
+            append(out, { kind: "derived_alternatives",
+                          candidates: [ bits[0], bits[1] ],
+                          measure: join(measures[tag], ", "),
+                          why: (bits[0] + " is built from " + bits[1] + ", so it can hold " +
+                                "fewer rows and their totals can differ; the query cannot " +
+                                "say which was meant") })
+        end for
+        return out
+    end function
+
+    function _holds(by_table, row, qt)
+        if contains(row.columns, qt) then
+            return true
+        end if
+        return _has_column_term(by_table, row.id, qt)
+    end function
+
+    function _has_column_term(by_table, tid, qt)
+        cols = by_table[tid]
+        if is_unknown(cols) then
+            return false
+        end if
+        for each c in cols
+            if contains(_ident_terms(c.column), qt) then
+                return true
+            end if
+        end for
+        return false
+    end function
+
+    ' Transitive: fact_volume is built from stg_deal is built from deal, and a
+    ' question answered from the first is two hops from the one asked about.
+    function _derives_from(derived, a, b)
+        cur = a
+        hops = 0
+        while hops < 12
+            nxt = derived[cur]
+            if is_unknown(nxt) then
+                return false
+            end if
+            if nxt = b then
+                return true
+            end if
+            cur = nxt
+            hops = hops + 1
+        end while
+        return false
     end function
 
     function _bare(id)
