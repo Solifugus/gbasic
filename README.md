@@ -196,7 +196,7 @@ are.
   refusals, with three pure steps an application drives. 500 tables do not fit in
   a context window, so choosing which to show is a SEARCH — and a search always
   returns a winner, so a grounding carries its own width, its near misses, and
-  the words it could not match. Scored with no model and no database: 18 of 16
+  the words it could not match. Scored with no model and no database: 18 of
   19 benchmark questions on a 127-object estate and 16 of 19 on a 517-object one,
   scored against an answer key computed from the rows rather than from any SQL.
   Everything it will not invent is declared: synonyms, value vocabulary, format
