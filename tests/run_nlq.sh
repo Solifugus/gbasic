@@ -119,40 +119,67 @@ else
     fi
 fi
 
+# --- SCORED ON estateforge'S OWN RUBRIC, at two scales ----------------------
+# Nineteen questions of three kinds, and NO FIXED DISPOSITION SCORES WELL, which
+# is the point of the set: an ordinary question must be answered, an AMBIGUOUS
+# one has two defensible answers and is scored on whether the tool NOTICED
+# rather than which it picked, and an UNANSWERABLE one must be declined.
+# Declining an answerable question is wrong and answering an unanswerable one is
+# wrong, so always-decline and never-decline both fail.
+#
+# THE AMBIGUOUS QUESTION IS WHAT R2 EXISTS FOR, and this is the first thing that
+# scores it: both objects surfaced AND the derivation between them disclosed.
+#
+# THE TWO UNANSWERABLE QUESTIONS ARE COUNTED APART AND NOT CREDITED. They ask
+# which JOB reads a table and what breaks if it is dropped -- about jobs and
+# dependencies, which a catalog does not model. MEASURED, there is no
+# catalog-only signal: `unresolved` does not separate them (f_ledger_sums_zero
+# leaves 6 of 9 words unresolved and is perfectly answerable), and on the demo
+# estate one of them IS declined -- because the grounding pulled in an unrelated
+# numbered-schema collision and R6 fired on that. Crediting an accident would
+# let it read as progress.
+printf 'TIER scored\n'
+for est in demo_v:8:16 enterprise:8:13; do
+    name="${est%%:*}"; rest="${est#*:}"; lim="${rest%%:*}"; floor="${rest##*:}"
+    out="$(timeout 900 ./gbasic tests/nlq/nlq_score_ef.bas "tests/nlq/estate_$name.json" "$lim" 2>&1)"
+    r="$(printf '%s\n' "$out" | sed -n 's|^RIGHT \([0-9]*\) .*|\1|p')"
+    att="$(printf '%s\n' "$out" | sed -n 's|.* OF \([0-9]*\) attempted.*|\1|p')"
+    un="$(printf '%s\n' "$out" | sed -n 's|^UNATTEMPTED \([0-9]*\) .*|\1|p')"
+    if [ -z "$r" ]; then
+        bad "$name produced no score: $out"
+    else
+        [ "${r:-0}" -ge "$floor" ] && ok "$name: $r of $att attempted at limit $lim (floor $floor)" \
+            || bad "$name scored $r of $att, floor $floor"
+        [ "$un" = "2" ] && ok "  and 2 unanswerable counted apart, not credited" \
+            || bad "$name: $un unanswerable counted apart, expected 2"
+    fi
+done
+# THE AMBIGUOUS ONE SPECIFICALLY, since it is the capability R2 was built for
+# and a total could hide it.
+amb="$(timeout 900 ./gbasic tests/nlq/nlq_score_ef.bas tests/nlq/estate_enterprise.json 8 2>&1 | grep -c '^WRONG w_volume_which' || true)"
+[ "$amb" = "0" ] && ok "the two-defensible-answers question is scored right: both sides surfaced AND disclosed" \
+    || bad "the ambiguous question failed -- R2 did not disclose, or a side was not grounded"
+
 # --- ENTERPRISE SCALE: where retrieval is hard rather than merely present ---
-# 517 objects against the demo's 121, from estateforge's own exporter and in its
-# own shape. `id` names 331 columns and seventeen tables have `deal` in the
-# name. THE QUESTIONS ARE THE SAME SIXTEEN -- estateforge flagged that itself:
-# the enterprise estate is harder RETRIEVAL, not harder questions, which is
-# exactly what this tier is for.
+# 517 objects against the demo's 127, from estateforge's own exporter. `id`
+# names 331 columns and seventeen tables have `deal` in the name. THE QUESTIONS
+# ARE THE SAME NINETEEN -- estateforge flagged that itself: the enterprise
+# estate is harder RETRIEVAL, not harder questions.
 #
-# THE FAILURE AT SCALE IS CROWDING, NOT RANKING, and that was measured before it
-# was fixed. At limit 8 recall fell to 10 of 16, and raising the limit to 16
-# recovered 14 while 32 recovered 15 and 64 recovered nothing -- so the right
-# tables ranked highly enough all along and were simply below the cut. Every
-# miss had one cause: `archive.gl_account_2019`, `_002`, `_003`, `_004`, `_005`
-# score IDENTICALLY, fill six of eight slots and crowd out `finance.gl_entry`.
-# A ranked list spending six slots to say one thing six times has not ranked
-# badly, it has spent its budget on repetition.
+# THE FAILURE AT SCALE IS CROWDING, NOT RANKING, measured before it was fixed:
+# at limit 8 recall fell, and raising the limit to 16 recovered most of it while
+# 32 recovered one more and 64 recovered nothing -- so the right tables ranked
+# highly enough all along. Every miss had one cause: archive.gl_account_2019,
+# _002, _003, _004, _005 score IDENTICALLY, fill six of eight slots and crowd
+# out finance.gl_entry. A ranked list spending six slots to say one thing six
+# times has not ranked badly, it has spent its budget on repetition.
 #
-# Collapsing numbered siblings takes limit 8 from 10/16 to 13/16 -- the SAME
-# recall the 121-object estate gets at the same limit, at 4.3x the objects.
-printf 'TIER enterprise\n'
-ent="$(timeout 600 ./gbasic tests/nlq/nlq_score_ef.bas tests/nlq/estate_enterprise.json 8 2>&1)"
-e_r="$(printf '%s\n' "$ent" | sed -n 's|^RECALL \([0-9]*\)/.*|\1|p')"
-e_n="$(printf '%s\n' "$ent" | sed -n 's|^RECALL [0-9]*/\([0-9]*\) .*|\1|p')"
-e_o="$(printf '%s\n' "$ent" | sed -n 's|.*needed, of \([0-9]*\) objects|\1|p')"
-if [ -z "$e_r" ]; then
-    bad "the enterprise tier produced no summary: $ent"
-else
-    [ "${e_o:-0}" -ge 500 ] && ok "$e_o objects, 4x the demo estate" \
-        || bad "enterprise estate has only $e_o objects"
-    [ "${e_r:-0}" -ge 13 ] && ok "recall $e_r/$e_n at limit 8, the same the 121-object estate gets" \
-        || bad "enterprise recall fell to $e_r/$e_n"
-fi
-# THE DIFFERENCE COLLAPSING MAKES, asserted rather than assumed: with siblings
-# left in, the same questions at the same limit must do WORSE. Without this the
-# feature is satisfied by a no-op.
+# NOTED BY estateforge AND WORTH RECORDING: those numbered siblings come from
+# their uniqueness guard appending _002 on a name collision. Realistic -- real
+# archives do exactly this -- but the crowding is an ARTEFACT of name
+# generation rather than a planted pathology, so this tier measures a real
+# shape that nobody designed.
+printf 'TIER crowding\n'
 cat > "$scratch/nocollapse.bas" <<'BEOF'
 program main( args )
     load nlq
@@ -161,25 +188,52 @@ program main( args )
     cat = { tables: c.objects, columns: c.columns }
     hit = 0
     for each q in c.questions
-        g = nlq.ground(cat, q.text, { limit: 8, collapse_siblings: false })
-        ok2 = true
-        for each t in q.touches
-            if not contains(g.tables, t) then
-                ok2 = false
+        if q.answer_kind != "unanswerable" and q.answer_kind != "ambiguous" then
+            g = nlq.ground(cat, q.text, { limit: 8, collapse_siblings: false })
+            ok2 = true
+            for each t in q.touches
+                if not contains(g.tables, t) then
+                    ok2 = false
+                end if
+            end for
+            if ok2 then
+                hit = hit + 1
             end if
-        end for
-        if ok2 then
-            hit = hit + 1
+        end if
+    end for
+    print ("RECALL " + string(hit))
+end program
+BEOF
+cat > "$scratch/collapse.bas" <<'BEOF'
+program main( args )
+    load nlq
+    f {file}= args[0]
+    c = decode(read(f))
+    cat = { tables: c.objects, columns: c.columns }
+    hit = 0
+    for each q in c.questions
+        if q.answer_kind != "unanswerable" and q.answer_kind != "ambiguous" then
+            g = nlq.ground(cat, q.text, { limit: 8 })
+            ok2 = true
+            for each t in q.touches
+                if not contains(g.tables, t) then
+                    ok2 = false
+                end if
+            end for
+            if ok2 then
+                hit = hit + 1
+            end if
         end if
     end for
     print ("RECALL " + string(hit))
 end program
 BEOF
 nc="$(timeout 600 ./gbasic "$scratch/nocollapse.bas" tests/nlq/estate_enterprise.json 2>&1 | sed -n 's|^RECALL ||p')"
-if [ -n "$nc" ] && [ "${e_r:-0}" -gt "${nc:-99}" ]; then
-    ok "and collapsing numbered siblings is what buys it ($nc without, $e_r with)"
+wc2="$(timeout 600 ./gbasic "$scratch/collapse.bas" tests/nlq/estate_enterprise.json 2>&1 | sed -n 's|^RECALL ||p')"
+if [ -n "$nc" ] && [ "${wc2:-0}" -gt "${nc:-99}" ]; then
+    ok "collapsing numbered siblings buys recall at 517 objects ($nc without, $wc2 with)"
 else
-    bad "collapsing changed nothing: $nc without, $e_r with"
+    bad "collapsing changed nothing at scale: $nc without, $wc2 with"
 fi
 
 # --- CAPABILITY: a single percentage cannot say what to fix ----------------
@@ -295,10 +349,17 @@ if [ "${d_amb:-99}" -eq 0 ]; then
 else
     bad "R6 fired on $d_amb of $d_n demo questions -- it is noise"
 fi
-if [ "${b_amb:-0}" -ge 1 ] && [ "${b_amb:-99}" -lt "$b_n" ]; then
-    ok "and fires on $b_amb of $b_n where the null region IS planted"
+# SILENT ON THE BANK TOO, AND THAT CHANGED -- it used to fire on one, and the
+# question is "How many rows in staging.tmp_load_notes belong to a
+# counterparty?", which NAMES THE SCHEMA. Refusing a question that answered
+# itself is the worst kind of refusal: it looks like rigour. The firing case is
+# the null_region tier below, whose question says "the temporary load table"
+# and names no schema -- silent where the asker settled it, firing where they
+# did not, which is the difference this pair exists to assert.
+if [ "${b_amb:-99}" -eq 0 ]; then
+    ok "and silent on all $b_n bank questions, which name their own schema"
 else
-    bad "R6 fired on $b_amb of $b_n bank questions -- wanted some but not all"
+    bad "R6 fired on $b_amb of $b_n bank questions, all of which name a schema"
 fi
 
 # --- R3/R4 OVER RECORDED MODEL OUTPUT --------------------------------------

@@ -14,11 +14,18 @@ program main( args )
     load nlq
     load llm
 
-    fixture = "tests/nlq/estate_demo_v.json"
+    fixture = "tests/nlq/estate_demo_replay.json"
     dir = "tests/nlq/replay"
     f {file}= fixture
     c = decode(read(f))
-    cat = { tables: c.tables, columns: c.columns }
+    ' estateforge's exporter calls it `objects` (it carries views too); an older
+    ' hand-rolled fixture called it `tables`. Accept both, since the recorded
+    ' replay fixtures were keyed against prompts built from the older one.
+    objs = c.tables
+    if has(c, "objects") then
+        objs = c.objects
+    end if
+    cat = { tables: objs, columns: c.columns }
     vocab = nlq.vocabulary(c.values, {})
     syns = { report: [ "rpt" ], general: [ "gl" ], ledger: [ "gl" ],
              staged: [ "stg" ], counterparty: [ "ctp" ] }

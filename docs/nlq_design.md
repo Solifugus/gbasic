@@ -601,6 +601,62 @@ distinguishes copies some other way gets no help from it.
 
 ---
 
+## 5g. Scored on estateforge's rubric — and two findings about this design
+
+estateforge added what §5f asked for: **ambiguous** questions carrying every
+side with its `via` and `because`, **traits** orthogonal to capability
+(`encoded_literal`, `two_defensible_answers`, `not_in_the_catalog`), and
+**unanswerable** questions drawn from `truth.undiscoverable`. Nineteen
+questions, identical at both scales, scored right / partial / wrong with
+**partial never folded into right** — "answered defensibly without noticing"
+and "got it right" are different results.
+
+| estate | objects | attempted | right |
+|---|---|---|---|
+| demo | 127 | 17 | **16** |
+| enterprise | 517 | 17 | **14** |
+
+**The ambiguous question scores right, and that is the first external check on
+R2.** Both objects surfaced *and* the derivation between them disclosed — which
+is exactly what `alternatives` was built to say and what no test of ours could
+grade, because we wrote both the tool and the expectation.
+
+### R6 was refusing a question that had answered itself
+
+*"How many rows in `staging.tmp_load_notes` belong to a counterparty?"* **names
+the schema.** There was nothing for the catalog to be unable to tell apart, and
+R6 refused it anyway — a refusal of a question that settled itself, which is the
+worst kind because it looks like rigour. Fixed: the same-name check now skips
+when the question names one of the schemas.
+
+### One of the two unanswerable passes was luck, and neither is real
+
+Both unanswerable questions ask *which **job** reads this table, and what breaks
+if it is dropped* — about jobs and dependencies, which a catalog does not model
+at all. **There is no catalog-only signal for that**, and `unresolved` is not
+one: `f_ledger_sums_zero` leaves 6 of 9 words unresolved and is perfectly
+answerable, while the unanswerable pair leaves 4 of 9.
+
+Before the fix above, one of the two *passed* — because the grounding happened
+to pull in an unrelated numbered-schema collision and R6 fired on **that**. A
+pass for the wrong reason.
+
+So they are **counted apart and not credited**. Crediting an accident would let
+it read as progress, and a future real fix would show up as no change at all.
+This is the negative-control shape `run_limitations` uses: the gap is asserted
+so that closing it is visible.
+
+### And a note on the crowding finding
+
+estateforge points out that the numbered siblings which crowded out
+`finance.gl_entry` come from their uniqueness guard appending `_002` on a name
+collision — realistic, since real archives do exactly this, but an **artefact of
+name generation rather than a planted pathology**. The crowding is real and the
+fix is right; what it is not, is a difficulty anyone designed. Worth knowing
+before treating "handles enterprise scale" as a claim about adversarial estates.
+
+---
+
 ## 6. Deliberately not in the first increment
 
 - **Any call to a model.** It comes after retrieval can be trusted.

@@ -28,7 +28,7 @@ program main( args )
     load llm
     load odbc
 
-    fixture = "tests/nlq/estate_demo_v.json"
+    fixture = "tests/nlq/estate_demo_replay.json"
     f {file}= fixture
     c = decode(read(f))
     cat = { tables: c.tables, columns: c.columns }

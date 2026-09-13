@@ -151,11 +151,24 @@ library nlq
             if is_unknown(out[key]) then
                 out[key] = []
             end if
-            vals = out[key]
-            v = string(r.value)
-            if not contains(vals, v) and count(vals) <= cap then
-                out[key] = _append_to(vals, v)
+            ' TWO SHAPES, because a producer that already grouped its values
+            ' should not have to flatten them for us and back again. A flat row
+            ' carries `value`; a grouped one carries `values` and is strictly
+            ' more informative -- it knows the distinct and row counts that
+            ' justified keeping the column at all.
+            incoming = []
+            if has(r, "values") then
+                incoming = r.values
+            else
+                append(incoming, r.value)
             end if
+            for each raw in incoming
+                vals = out[key]
+                v = string(raw)
+                if not contains(vals, v) and count(vals) <= cap then
+                    out[key] = _append_to(vals, v)
+                end if
+            end for
         end for
         ' A column that overflowed the cap has NO vocabulary rather than a
         ' truncated one: a partial list is worse than none, because a literal
@@ -184,16 +197,24 @@ library nlq
         seen = {}
         for each r in rows
             key = _id(r.schema, r.table) + "." + r.column
-            v = string(r.value)
-            if is_unknown(seen[key]) then
-                seen[key] = []
+            incoming = []
+            if has(r, "values") then
+                incoming = r.values
+            else
+                append(incoming, r.value)
             end if
-            if not contains(seen[key], v) then
-                seen[key] = _append_to(seen[key], v)
-            end if
-            if is_unknown(best[key]) or len(v) > len(string(best[key])) then
-                best[key] = v
-            end if
+            for each raw in incoming
+                v = string(raw)
+                if is_unknown(seen[key]) then
+                    seen[key] = []
+                end if
+                if not contains(seen[key], v) then
+                    seen[key] = _append_to(seen[key], v)
+                end if
+                if is_unknown(best[key]) or len(v) > len(string(best[key])) then
+                    best[key] = v
+                end if
+            end for
         end for
         out = {}
         for each k in keys(best)
@@ -904,7 +925,13 @@ library nlq
                         append(same, r2.id)
                     end if
                 end for
-                if count(same) > 1 and _indistinguishable(same) then
+                ' THE QUESTION MAY HAVE SETTLED IT ALREADY. "How many rows in
+                ' staging.tmp_load_notes belong to a counterparty" NAMES the
+                ' schema, so there is nothing for the catalog to be unable to
+                ' tell apart -- measured, R6 refused that question, and a
+                ' refusal of a question that answered itself is the worst kind:
+                ' it looks like rigour.
+                if count(same) > 1 and _indistinguishable(same) and not _named_by_question(same, qterms) then
                     append(out, { kind: "same_name_different_schema",
                                   candidates: same,
                                   why: ("these schemas differ only by a number, so the catalog " +
@@ -1095,6 +1122,23 @@ library nlq
             return v
         end if
         return [ string(v) ]
+    end function
+
+    ' Does the question name one of these schemas outright? If it does, the
+    ' candidates are not indistinguishable to the ASKER, whatever the catalog
+    ' can or cannot say.
+    function _named_by_question(ids, qterms)
+        for each id in ids
+            parts = split(id, ".")
+            if count(parts) > 1 then
+                for each t in _ident_terms(parts[0])
+                    if contains(qterms, t) then
+                        return true
+                    end if
+                end for
+            end if
+        end for
+        return false
     end function
 
     function _bare(id)
