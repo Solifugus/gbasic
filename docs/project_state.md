@@ -1,6 +1,6 @@
 # gBASIC Project State
 
-Last updated: 2026-09-05 (0.1.0)
+Last updated: 2026-09-13 (0.1.0)
 
 This file is the compact source of truth for current implementation status.
 Detailed language behavior belongs in `docs/reference.md`; completed development
@@ -79,6 +79,12 @@ document list, with a status column, is `docs/README.md`.
   installed; `bigint`/`decimal`/`numeric` answer as strings so a double cannot
   quietly eat the cents
 - optional synchronous WebClient module backed by libcurl
+- optional non-blocking `http` module backed by libcurl's multi interface — a
+  request is a handle, and readiness is delivered by the same event loop that
+  serves sockets, so a handler can start one and return
+- a `timer` module: periodic work on the event loop, which nothing else could
+  express. Ticks are coalesced rather than caught up, and what is dropped is
+  reported; CLOCK_MONOTONIC, so an NTP step cannot stall or storm it
 - a built-in WebServer: TLS, routing, streaming, hardening, and a process worker
   pool with listener transfer over `LISTEN_FDS`
 - optional XML module backed by libxml2 (tree parse, navigation, encode,
@@ -185,9 +191,15 @@ document list, with a status column, is `docs/README.md`.
   operational table it originated in. The object level answers "which table
   does this read", which rarely settles anything; the column level answers the
   one that costs a day.
-- **a question over an estate** — `nlq`, first increment (retrieval and grounding,
-  no model). Scored against estateforge's answer key: 13/16 lexical, 14/16 with
-  declared synonyms. See nlq_design.md.
+- **a question over an estate** — `nlq`, first increment: grounding, the
+  refusals, and three pure steps an application drives — plan, interpret,
+  settle — none of which performs I/O. Scored against estateforge's
+  independently computed key — no model, no database, so it is a gate: **18 of
+  19** on a 127-object estate and **16 of 19** on a 517-object one. End to end,
+  a real 4B model's SQL against a live estate: 7 of 10 on PostgreSQL, 8 of 12 on
+  SQLite. Everything it will not invent is declared — synonyms, value
+  vocabulary, format exemplars, derivation, and the terms an estate does not
+  model. See nlq_design.md.
 - **financial-format adapters** — `finio`, Phase 0 (value model + registry only).
   Provenance is reconstructed from a retained source because the alternative was
   measured at 2.79 GB for a 9.5 MB file; see financial_adapters_design.md §21.

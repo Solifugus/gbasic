@@ -9,6 +9,83 @@ language surface may still change between releases.
 
 ## Unreleased
 
+### Added — `nlq`: a question, over an estate nobody can hold in their head
+
+First increment: **retrieval and grounding, with no model and no SQL**, plus the
+refusals. Its defect is never a crash — it is a syntactically valid query that
+answers a *different* question and returns an ordinary-looking number, so the
+design is built around making that sayable.
+
+Scored against `estateforge`'s independently computed answer key, which needs
+neither a model nor a database and so can be a gate:
+
+| estate | objects | attempted | right |
+|---|---|---|---|
+| demo | 127 | 19 | 18 |
+| enterprise | 517 | 19 | 16 |
+
+End to end — a real 4B model's SQL executed against a live estate — 7 of 10 on
+PostgreSQL and 8 of 12 on SQLite.
+
+Three steps an application drives, **none of which performs I/O**: `nlq.plan`,
+`nlq.interpret`, `nlq.settle`. A question costs seventeen to sixty seconds of
+model time plus whatever the query turns out to be, and a library's job is to
+let an application be graceful about that rather than be graceful on its behalf.
+A plan survives `encode` so a deferring application can store it, and carries a
+cache **key** — `nlq` facilitates a cache and does not own one.
+
+Everything it will not invent is **declared**: synonyms, value vocabulary,
+format exemplars, derivation, and the terms an estate does not model. Two of
+those were measured rather than reasoned — supplying a column's values turns
+`status = 'open'` into `'ACTIVE'`, and one exemplar turns `contract_ref = '1'`
+into `'0000000001'`.
+
+R1 and R6 **refuse**; R2 and a tied cut **disclose**, because whether two
+derivations disagree cannot be known without running both and that is the
+application's call. R2 as a blocker refused 8 of 16 questions before that was
+understood.
+
+### Added — `timer`: periodic work on the event loop
+
+There was no way to do it at all. Every source the loop polls is request-,
+reply- or transfer-driven, so nothing fired because *time passed* and periodic
+work had one spelling — `sleep` in a loop — which on the event loop means the
+handler never returns and its worker never comes back.
+
+Ticks are **coalesced, never caught up**: a burst on the event loop is an
+unbounded queue whose symptom is a hang rather than a failure. What is dropped
+is reported, in `skipped`. `CLOCK_MONOTONIC`, because a wall-clock timer stalls
+on an NTP step back and fires every interval it crossed on a step forward, both
+silently.
+
+### Fixed — a server with a watched auxiliary source never exited on SIGTERM
+
+A live timer, an outstanding `http` transfer or a watched `inbox` kept the event
+loop alive after the server had drained, so the process never exited. A worker
+told to drain has to exit — the whole of the pool's rolling reload rests on it.
+**Pre-existing**: measured, a watched `inbox.messages` did the same and had since
+that source was written. Fixed for all three at once.
+
+### Added — `finio` Phase 0: the financial adapter value model
+
+The value model and the format registry, **no adapter** — which is the phase.
+What it fixes is the shape everything above it is built on, and the design says
+that shape is decided by a measurement rather than a preference.
+
+Measured over 1.1 million source locations from a 9.5 MB file: holding
+provenance **per value** costs 2.79 GB and is also the *slowest* to answer, so
+it is refused. The framework retains the source and computes locations on
+demand — 54 MB, and about two microseconds a query more than the per-record
+alternative it replaces.
+
+### Documented — a `stream` handler must return, and a parked stream has a worker
+
+The reference described `emit`/`finish` and never stated that the connection
+outlives the handler, so the way to keep a stream alive is to **park the request
+and return**. A consumer reasonably concluded that streams hold workers and
+worked around it. Also recorded: a parked stream belongs to the worker that
+accepted it, so a broadcast reaching every viewer means `workers: 1`.
+
 ### Fixed — `estate.ddl`'s dialect map corrupted arithmetic
 
 It rewrote `+` to `||` for PostgreSQL. **`+` is both concatenation and

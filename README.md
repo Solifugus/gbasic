@@ -5,8 +5,8 @@
 gBASIC is a **modern BASIC for business programming**: familiar control flow,
 plus records, first-class functions, watchers, shared-nothing actors, and typed
 values for dates, durations and money. Around it sits a working platform —
-databases, a hardened web server, spreadsheets, statistics, charts and native
-GUI — and fifty pure-gBASIC libraries covering double-entry accounting, loan
+databases, a hardened web server, spreadsheets, statistics, charts, native GUI
+and an AI stack — and fifty pure-gBASIC libraries covering double-entry accounting, loan
 servicing, deposits, credit analytics, securities analysis and more. A gBASIC
 program is meant to be a real application, not a demonstration.
 
@@ -111,11 +111,13 @@ records, and no module system beyond `load`.
 | **PostgreSQL** | Shipped | libpq | [reference](docs/reference.md#postgresql-module) |
 | **ODBC** — SQL Server, MySQL, Oracle, DB2, … | Shipped | unixODBC | [cookbook](docs/odbc_cookbook.md) · [reference](docs/reference.md#odbc-module) |
 | **WebClient** — synchronous HTTP/HTTPS | Shipped | libcurl | [reference](docs/reference.md#webclient-module) |
+| **`http`** — the same requests without blocking, readiness delivered by the event loop | Shipped | libcurl | [reference](docs/reference.md#http-module) |
 | **Mail** — RFC 5322 composition, SMTP with TLS and auth | Shipped | libcurl | [design](docs/mail_design.md) |
 | **WebServer** — TLS, routing, static files, streaming, worker pool | Shipped | libssl for TLS | [reference](docs/reference.md#webserver-module) |
 | **XML** — tree, lenient HTML, constant-memory streaming | Shipped | libxml2 | [reference](docs/reference.md#xml-module) |
 | **xlsx** — reads, edits and recalculates real workbooks | Shipped | zlib + libxml2 | [cookbook](docs/xlsx_cookbook.md) |
 | **Process** — run a child, or drive a live one | Shipped | — | [reference](docs/reference.md#process-module) |
+| **`timer`** — periodic work on the event loop | Shipped | — | [design](docs/timer_design.md) · [reference](docs/reference.md#timer-module) |
 | **Actors** — shared-nothing multiprocessing | Shipped | — | [design](docs/multiprocessing_design.md) |
 | **LDAP** — bind and search against a directory | Shipped | libldap | [design](docs/ldap_design.md) |
 | **Cryptography** — hashing, HMAC, AES-GCM, Ed25519, JWT | Shipped | libcrypto | [reference](docs/reference.md#cryptography) |
@@ -135,6 +137,14 @@ Two of these deserve a sentence more than a table row:
   which scores the engine against the results Excel itself cached in the file.
   Measured against 15,871 real Excel workbooks: **97.38%** of formula cells
   agree, with no disagreement at all in 91.1% of workbooks.
+
+- **`timer`** exists because nothing else could make time pass. Every other
+  source the event loop polls is request-, reply- or transfer-driven — a client
+  sent something, an actor replied, a transfer moved — so periodic work had one
+  spelling, `sleep` in a loop, which on the event loop means the handler never
+  returns and its worker never comes back. Ticks are **coalesced, never caught
+  up**, because a burst on the event loop is an unbounded queue whose symptom is
+  a hang rather than a failure; what is dropped is reported instead.
 
 - **WebServer** began as a queue-based toy and is no longer one. It now has
   TLS with SNI, a declarative `server` block with routing and captures, static
@@ -182,13 +192,16 @@ are.
   monitor. [Tutorial](docs/edgar_tutorial.md)
 - **market data** (`market`) — daily price history as a frame: the input the
   finance and event-study code always needed and nothing produced.
-- **a question over an estate** (`nlq`) — first increment: retrieval and
-  grounding, no model and no SQL. 500 tables do not fit in a context window, so
-  choosing which to show is a SEARCH — and a search always returns a winner, so
-  a grounding carries its own width, its near misses, and the words it could not
-  match. Scored against estateforge's independently computed answer key: 13 of 16
-  questions lexically, 14 once the estate's owner declares that the abbreviation rpt means
-  report ([nlq_design.md](docs/nlq_design.md)).
+- **a question over an estate** (`nlq`) — first increment: grounding and the
+  refusals, with three pure steps an application drives. 500 tables do not fit in
+  a context window, so choosing which to show is a SEARCH — and a search always
+  returns a winner, so a grounding carries its own width, its near misses, and
+  the words it could not match. Scored with no model and no database: 18 of 16
+  19 benchmark questions on a 127-object estate and 16 of 19 on a 517-object one,
+  scored against an answer key computed from the rows rather than from any SQL.
+  Everything it will not invent is declared: synonyms, value vocabulary, format
+  exemplars, derivation, and the terms an estate does not model
+  ([nlq_design.md](docs/nlq_design.md)).
 - **financial-format adapters** (`finio`) — Phase 0 only: the value model and
   the format registry, no adapter yet. The framework RETAINS the source and
   computes a value's provenance on demand, which was measured rather than
@@ -469,6 +482,11 @@ Known edges, stated plainly rather than discovered later:
 - the WebServer does not do WebSockets or chunked request bodies
 - the business-automation-reasoning libraries are a design laboratory, and
   every measurement behind them is on generated data
+- `nlq` is a first increment: grounding scores 18 of 19 benchmark questions on a
+  127-object estate and 16 of 19 on a 517-object one, and a real 4B model's SQL
+  answers 7 of 10 correctly. That is **not enough to render a figure
+  unattended** — it is enough to propose a query for a person to confirm, which
+  is what the disclosed alternatives and the returned SQL are for
 - optional modules depend on platform libraries, and a missing one turns its
   module into a clean runtime error rather than a build failure
 - diagnostics and tooling are still developing
