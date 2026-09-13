@@ -681,6 +681,77 @@ library nlq
                  question: reading.question, key: reading.key }
     end function
 
+    ' --- taking the declared facts FROM the catalog ----------------------------
+    '
+    ' `plan` accepts synonyms, derivation and not-modelled as options, and will
+    ' keep doing so -- a caller with facts and no catalog machinery should not
+    ' need `discovery` to ask a question. But a caller that DOES use discovery
+    ' should not maintain a second copy: these are properties of the ESTATE, and
+    ' `discovery.annotate` is where a person writes them down once for the
+    ' question, the documentation and the lineage walk alike.
+    '
+    ' READ, NOT MERGED BEHIND THE CALLER'S BACK: an explicit option always wins,
+    ' because a caller passing one has said something more specific than the
+    ' estate's standing note and silently overriding it would be the surprise.
+    function options_from(cat, options)
+        opts = _options(options, [ "limit", "near_misses", "budget_tokens",
+                                   "chars_per_token", "dialect", "collapse_siblings",
+                                   "synonyms", "derived_from", "not_modelled",
+                                   "exemplars" ], "nlq.options_from")
+        out = opts
+        if not has(cat, "notes") then
+            return out
+        end if
+        if not has(out, "synonyms") then
+            syn = {}
+            for each id in keys(cat.notes)
+                n2 = cat.notes[id]
+                if has(n2, "synonyms") then
+                    ' A synonym note says "this OBJECT is also called that", and
+                    ' a question carries the word rather than the id -- so the
+                    ' map runs word -> the object's own words, which is the
+                    ' direction `ground` expands in.
+                    bare = _bare(id)
+                    for each word in n2.synonyms
+                        key = _singular(lower(word))
+                        if is_unknown(syn[key]) then
+                            syn[key] = []
+                        end if
+                        for each t in _ident_terms(bare)
+                            if not contains(syn[key], t) then
+                                syn[key] = _append_to(syn[key], t)
+                            end if
+                        end for
+                    end for
+                end if
+            end for
+            if count(keys(syn)) > 0 then
+                out.synonyms = syn
+            end if
+        end if
+        if not has(out, "derived_from") then
+            der = {}
+            for each id in keys(cat.notes)
+                n3 = cat.notes[id]
+                if has(n3, "derived_from") then
+                    der[id] = n3.derived_from
+                end if
+            end for
+            if count(keys(der)) > 0 then
+                out.derived_from = der
+            end if
+        end if
+        if not has(out, "not_modelled") then
+            if has(cat.notes, "") then
+                nm = cat.notes[""]
+                if has(nm, "not_modelled") then
+                    out.not_modelled = nm.not_modelled
+                end if
+            end if
+        end if
+        return out
+    end function
+
     function check_catalog(cat)
         if type(cat) != "record" then
             error "nlq: a catalog is a record of { tables, columns }"

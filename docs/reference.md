@@ -6145,6 +6145,13 @@ whole program without needing a call site.
   shape. A refused grounding yields a plan with `ok: false` and
   `refused_because` — a value, not a raise, so a caller can show a person the
   candidates and ask.
+  `nlq.options_from(cat, options)` reads `synonyms`, `derived_from` and
+  `not_modelled` **from an annotated `discovery` catalog**, so a caller using
+  `discovery` keeps one copy of facts that belong to the estate rather than to
+  any one question. An **explicit option always wins** — a caller passing one
+  has said something more specific than a standing note. A catalog with no notes
+  adds nothing. The options below still work unchanged for a caller who has
+  facts and no catalog machinery.
   `options.not_modelled` is an array of terms the estate holds nothing about —
   `job`, `schedule`, `owner`. A question naming one is refused as
   `not_in_the_catalog`, which is R6's other half: some facts are not in the

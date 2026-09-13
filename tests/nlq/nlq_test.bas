@@ -10,6 +10,7 @@
 ' reads exactly like a term that matched everything.
 
 load nlq
+load discovery
 
 tally = { checks: 0, mismatches: 0 }
 function check(label, got, want)
@@ -405,6 +406,40 @@ check("an alias and a join do not confuse it",
                           { tables: [ "account", "product" ] }, {})), 0)
 fa = nlq.settle(fr, [ { n: 79 } ])
 check("and a value settles with its query", fa.value, 79)
+
+print ""
+print "-- the declared facts come FROM the catalog, not beside it"
+' These are properties of the ESTATE, not of any one question, so a caller that
+' uses `discovery` should not keep a second copy -- the same note that lets a
+' question find rpt_volume_gross belongs in generated documentation and in a
+' lineage walk. Five options had accumulated here one measurement at a time
+' before that was noticed.
+acat = { source: "s",
+         tables: { "warehouse.rpt_volume_gross": { name: "rpt_volume_gross" },
+                   "warehouse.fact_volume": { name: "fact_volume" } },
+         columns: { "warehouse.rpt_volume_gross.total_volume": { name: "total_volume" },
+                    "warehouse.fact_volume.total_volume": { name: "total_volume" } },
+         primary_keys: [], edges: [] }
+ann = discovery.annotate(acat, {
+        "warehouse.rpt_volume_gross": { synonyms: [ "report" ] },
+        "warehouse.fact_volume": { derived_from: [ "warehouse.rpt_volume_gross" ] },
+        "": { not_modelled: [ "job" ] } })
+ao = nlq.options_from(ann, { limit: 4 })
+' A synonym note says "this OBJECT is also called that"; a question carries the
+' WORD. So the map must run word -> the object's own words, which is the
+' direction `ground` expands in -- the other way round would never match.
+check("a synonym note becomes a question synonym", contains(keys(ao.synonyms), "report"), true)
+check("pointing at the object's own words", contains(ao.synonyms["report"], "rpt"), true)
+check("a derivation note becomes derived_from", contains(keys(ao.derived_from), "warehouse.fact_volume"), true)
+check("and the estate's not_modelled comes through", contains(ao.not_modelled, "job"), true)
+' READ, NOT MERGED BEHIND THE CALLER'S BACK: an explicit option is more specific
+' than a standing note, and silently overriding it would be the surprise.
+check("an explicit option wins over the note",
+      join(nlq.options_from(ann, { not_modelled: [ "sla" ] }).not_modelled, ","), "sla")
+' CONTROL: a catalog with no notes changes nothing, or this would invent
+' options for every caller that never annotated anything.
+check("CONTROL: an un-annotated catalog adds nothing",
+      has(nlq.options_from(acat, { limit: 4 }), "synonyms"), false)
 
 print ""
 print "-- refusals, each beside its nearest legal neighbour"
