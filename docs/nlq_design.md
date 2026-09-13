@@ -276,9 +276,15 @@ inventions. Executed, they are two different things:
 The distinction matters because the remedies differ. The second is not a *value*
 problem — `contract_ref` has hundreds of distinct values and enumerating them
 would blow the budget for no gain — it is a **format** problem, and one
-exemplar fixes it. `'0000000001'` tells a model everything it needs about how to
-write a contract reference without listing a single other one. **Value
-vocabulary for categorical columns, one exemplar for the rest.**
+exemplar fixes it. **Measured**, same model, temperature 0, one variable:
+
+```
+WITHOUT: WHERE contract_ref = '1'            -- 0 rows, silently, on SQLite
+WITH:    WHERE contract_ref = '0000000001'   -- correct
+```
+
+One sample value, and not one of the other contract references listed.
+**Value vocabulary for categorical columns, one exemplar for the rest.**
 
 **It is right about reports.** `SUM(total_volume) FROM warehouse.rpt_volume_gross`
 and its `_net` counterpart are what those questions ask for, and the gap
@@ -436,7 +442,7 @@ will accept the question, return immediately, and email the answer. A third will
 refuse anything it estimates will take too long. Those are different products,
 and none of them is NLQ's call.
 
-**So there is no `nlq.answer(catalog, conn, question)`.** A single call that
+**So there is no single answer-it-all entry point** — no `nlq` function taking a catalog, a connection and a question and handing back a number. A single call that
 runs the model and the query and hands back a number has made the decision by
 hiding it: it blocks, and every consumer inherits blocking. This design proposed
 exactly that function and withdraws it.

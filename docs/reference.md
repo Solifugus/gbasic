@@ -6123,6 +6123,34 @@ whole program without needing a call site.
   `'OPEN'`. A column that **overflows** `max_values` gets
   no vocabulary rather than a truncated one, because a partial list would report
   a real value as unknown when it is merely unlisted.
+  **The three steps an application drives** — `nlq.plan(cat, vocab, question,
+  options)`, `nlq.interpret(plan, model_text, options)`,
+  `nlq.settle(reading, rows)`. **None performs I/O**, and that is the design:
+  a question costs seventeen to sixty seconds of model time plus whatever the
+  query turns out to be, and a library's job is to let an application be
+  graceful about that rather than be graceful on its behalf. A single
+  `answer(catalog, conn, question)` would have made the decision by hiding it —
+  it blocks, and every consumer inherits blocking. The shape is `agent`'s,
+  which solved the same problem here for the same reason. The application calls
+  the model between `plan` and `interpret`, and runs the SQL between
+  `interpret` and `settle`, however it likes: blocking, on a worker, parked on
+  a stream, or emailed tomorrow.
+  A plan carries `estimated_tokens` so an application can warn before
+  committing, **survives `encode`** so one that answers later can store it, and
+  carries a **`key`** so one that wants a cache has something to key on — NLQ
+  facilitates a cache and does not own one. The key covers the grounded objects
+  **with their columns**, the vocabulary they contributed and the synonyms in
+  force, because keying on the question alone leaves cached SQL that still
+  *runs* after an import drops a column and quietly answers about the old
+  shape. A refused grounding yields a plan with `ok: false` and
+  `refused_because` — a value, not a raise, so a caller can show a person the
+  candidates and ask.
+  `nlq.exemplars(rows, { min_distinct: 2 })` gives **one sample value** for the
+  columns `vocabulary` refuses as too many — its complement, not its fallback: a
+  vocabulary says which values exist, an exemplar says what one *looks like*.
+  The **longest** value is chosen, because a format is best shown by its fullest
+  instance; picking `'1'` from a column that also holds `'0000000001'` teaches
+  exactly the wrong lesson, which is the measured failure it exists for.
   `nlq.prompt(g, cat, vocab, question, { budget_tokens: 3000 })` builds the
   messages for a model — the grounded tables with their columns, the value
   vocabulary for those tables, and the question — and **refuses** when the

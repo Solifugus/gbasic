@@ -211,6 +211,94 @@ check("CONTROL: an allowed table passes",
       count(nlq.check_sql("SELECT 1 FROM archive.deal_2015", sg, { allow: [ "archive.deal_2015" ] })), 0)
 
 print ""
+print "-- plan / interpret / settle: three pure steps an application drives"
+' NONE PERFORMS I/O, and that is the design. A single answer() would have made
+' the latency decision by HIDING it -- it blocks, and every consumer inherits
+' blocking. The shape is `agent`'s, which solved the same problem here.
+pcat = { tables: [ { schema: "retail_banking", table: "account" } ],
+         columns: [ { schema: "retail_banking", table: "account", column: "status" },
+                    { schema: "retail_banking", table: "account", column: "balance" } ] }
+pvoc = { "retail_banking.account.status": [ "ACTIVE", "CLOSED" ] }
+pl = nlq.plan(pcat, pvoc, "How many accounts are active?", { limit: 4 })
+check("a plan is produced", pl.ok, true)
+check("and it carries what it is about to cost", pl.estimated_tokens > 0, true)
+check("and the objects it will be about", contains(pl.tables, "retail_banking.account"), true)
+' A model asked for SQL only will still sometimes fence it; refusing on
+' punctuation when the SQL is right there would be pedantry, not rigour.
+rd = nlq.interpret(pl, "```sql" + chr(10) + "SELECT COUNT(*) FROM retail_banking.account" + chr(10) + "```", {})
+check("a fenced answer is unwrapped", starts_with(rd.sql, "SELECT"), true)
+check("and it passes R3/R4", rd.ok, true)
+an = nlq.settle(rd, [ { n: 42 } ])
+check("the value comes back", an.value, 42)
+' R5: an answer never travels without its query.
+check("with the SQL that produced it", contains(an.sql, "retail_banking.account"), true)
+check("and the tables it touched", count(an.tables) > 0, true)
+
+print ""
+print "-- a plan SURVIVES ENCODE, because an application may answer later"
+' The constraint `agent` found from the same direction: a run that cannot be
+' stored is a run no deferring application can use. An application that emails
+' the answer must keep the plan in between.
+revived = decode(encode(pl))
+check("a plan round-trips through encode", revived.ok, pl.ok)
+' THE DIFFERENCE, not the round trip: "it encodes" alone is satisfied by a plan
+' that encodes and then behaves differently.
+r1 = nlq.interpret(pl, "SELECT COUNT(*) FROM retail_banking.account", {})
+r2 = nlq.interpret(revived, "SELECT COUNT(*) FROM retail_banking.account", {})
+check("and the revived plan produces the SAME reading", r2.sql + "|" + string(r2.ok),
+      r1.sql + "|" + string(r1.ok))
+check("and the same key", revived.key, pl.key)
+
+print ""
+print "-- the cache key covers what the SQL DEPENDS ON, not the question alone"
+' Keying on question text is the trap: an import that drops a column leaves
+' cached SQL that STILL RUNS and answers about the old shape.
+same = nlq.plan(pcat, pvoc, "How many accounts are active?", { limit: 4 })
+check("the same question over the same catalog keys the same", same.key, pl.key)
+dropped = { tables: pcat.tables,
+            columns: [ { schema: "retail_banking", table: "account", column: "status" } ] }
+check("dropping a column changes the key", nlq.plan(dropped, pvoc, "How many accounts are active?", { limit: 4 }).key != pl.key, true)
+voc2 = { "retail_banking.account.status": [ "ACTIVE", "CLOSED", "FROZEN" ] }
+check("changing the vocabulary changes it", nlq.plan(pcat, voc2, "How many accounts are active?", { limit: 4 }).key != pl.key, true)
+check("declaring a synonym changes it",
+      nlq.plan(pcat, pvoc, "How many accounts are active?", { limit: 4, synonyms: { active: [ "open" ] } }).key != pl.key, true)
+' CONTROL: a key that changed on everything would be useless as a cache key.
+check("CONTROL: asking again does not change it", nlq.plan(pcat, pvoc, "How many accounts are active?", { limit: 4 }).key, pl.key)
+
+print ""
+print "-- exemplars: the columns a vocabulary cannot reach"
+' MEASURED: the question said "contract 1", the column holds '0000000001', and
+' the model wrote `contract_ref = 1` -- 0 rows where the answer is 4, silently.
+' Not a VALUE problem (hundreds of distinct values) but a FORMAT one.
+exrows = [ { schema: "trading", table: "deal", column: "contract_ref", value: "1" },
+           { schema: "trading", table: "deal", column: "contract_ref", value: "0000000001" },
+           { schema: "trading", table: "deal", column: "contract_ref", value: "0000000002" } ]
+ex = nlq.exemplars(exrows, {})
+' THE LONGEST, not the first: picking "1" from a column that also holds
+' "0000000001" would teach exactly the wrong lesson.
+check("the fullest instance is chosen", ex["trading.deal.contract_ref"], "0000000001")
+excat = { tables: [ { schema: "trading", table: "deal" } ],
+          columns: [ { schema: "trading", table: "deal", column: "contract_ref" } ] }
+exp = nlq.plan(excat, {}, "deals under contract 1", { limit: 2, exemplars: ex })
+check("and it reaches the prompt", contains(exp.user, "0000000001"), true)
+check("CONTROL: without exemplars it does not", contains(nlq.plan(excat, {}, "deals under contract 1", { limit: 2 }).user, "0000000001"), false)
+
+print ""
+print "-- a refused grounding is a refused plan, and says why"
+refcat = { tables: [ { schema: "staging", table: "tmp_notes" },
+                     { schema: "staging_2", table: "tmp_notes" } ],
+           columns: [ { schema: "staging", table: "tmp_notes", column: "note" },
+                      { schema: "staging_2", table: "tmp_notes", column: "note" } ] }
+rp = nlq.plan(refcat, {}, "the notes", { limit: 4 })
+check("a plan over an unsettleable grounding is not ok", rp.ok, false)
+check("and it carries the reason as a VALUE, not a raise", count(rp.refused_because) > 0, true)
+on error goto next
+nlq.interpret(rp, "SELECT 1", {})
+check("and interpreting it is refused", contains(error.message, "was refused"), true)
+error.clear()
+on error stop
+
+print ""
 print "-- refusals, each beside its nearest legal neighbour"
 on error goto next
 nlq.ground({ tables: [] }, "anything", {})

@@ -169,6 +169,41 @@ library nlq
         return keep
     end function
 
+    ' ONE sample value per column, for the columns `vocabulary` refuses because
+    ' they have too many. The complement of a vocabulary rather than a fallback:
+    ' a vocabulary says WHICH values exist, an exemplar says WHAT ONE LOOKS
+    ' LIKE, and a question that turns on an identifier needs the second.
+    '
+    ' THE LONGEST VALUE IS CHOSEN, not the first, because a format is best shown
+    ' by its fullest instance -- picking `'1'` from a column that also holds
+    ' `'0000000001'` would teach exactly the wrong lesson.
+    function exemplars(rows, options)
+        opts = _options(options, [ "min_distinct" ], "nlq.exemplars")
+        floor = _default(opts, "min_distinct", 2)
+        best = {}
+        seen = {}
+        for each r in rows
+            key = _id(r.schema, r.table) + "." + r.column
+            v = string(r.value)
+            if is_unknown(seen[key]) then
+                seen[key] = []
+            end if
+            if not contains(seen[key], v) then
+                seen[key] = _append_to(seen[key], v)
+            end if
+            if is_unknown(best[key]) or len(v) > len(string(best[key])) then
+                best[key] = v
+            end if
+        end for
+        out = {}
+        for each k in keys(best)
+            if count(seen[k]) >= floor then
+                out[k] = best[k]
+            end if
+        end for
+        return out
+    end function
+
     ' Does the question name a literal this column cannot hold? The same shape
     ' as `unresolved`, one level down: reported, never corrected, because a
     ' catalog cannot know whether the person or the data is wrong.
@@ -228,7 +263,9 @@ library nlq
     ' accurate and is not worth a dependency: the budget is a SAFETY MARGIN, and
     ' being approximately right on the conservative side is the whole job.
     function prompt(g, cat, vocab, question, options)
-        opts = _options(options, [ "budget_tokens", "chars_per_token", "dialect" ], "nlq.prompt")
+        opts = _options(options, [ "budget_tokens", "chars_per_token", "dialect",
+                                   "exemplars" ], "nlq.prompt")
+        exemplars = _default(opts, "exemplars", {})
         budget = _default(opts, "budget_tokens", 3000)
         cpt = _default(opts, "chars_per_token", 2.5)
         dialect = _default(opts, "dialect", "standard SQL")
@@ -260,12 +297,32 @@ library nlq
             end for
         end for
 
+        ' EXEMPLARS, FOR THE COLUMNS A VOCABULARY CANNOT REACH. Measured: the
+        ' question asked about "contract 1", the column stores '0000000001'
+        ' zero-padded to ten characters, and the model wrote `contract_ref = 1`
+        ' -- 0 rows where the answer is 4, silently, on SQLite. That is not a
+        ' VALUE problem: contract_ref has hundreds of distinct values and
+        ' enumerating them would blow the budget for no gain. It is a FORMAT
+        ' problem, and ONE EXAMPLE fixes it -- '0000000001' says how to write a
+        ' contract reference without listing another one.
+        exlines = []
+        for each tid in g.tables
+            for each key in keys(exemplars)
+                if starts_with(key, tid + ".") then
+                    append(exlines, key + " looks like " + string(exemplars[key]))
+                end if
+            end for
+        end for
+
         sys = ("You write one " + dialect + " SELECT statement that answers the question. " +
                "Use ONLY the tables and columns listed. Use the exact column values given. " +
                "Reply with SQL only: no markdown, no fence, no explanation.")
         user = "Tables:" + chr(10) + join(lines, chr(10))
         if count(vlines) > 0 then
             user = user + chr(10) + "Column values:" + chr(10) + join(vlines, chr(10))
+        end if
+        if count(exlines) > 0 then
+            user = user + chr(10) + "Column formats:" + chr(10) + join(exlines, chr(10))
         end if
         user = user + chr(10) + chr(10) + "Question: " + question
 
@@ -388,6 +445,215 @@ library nlq
             end if
         end while
         return out
+    end function
+
+    ' --- the three steps an application drives --------------------------------
+    '
+    ' NONE OF THESE PERFORMS I/O, and that is the whole design. Every question
+    ' varies in what it costs -- the model by a factor of three on the same
+    ' hardware depending on load, the database by whatever the query turns out
+    ' to be -- and A LIBRARY'S JOB IS TO LET AN APPLICATION BE GRACEFUL ABOUT
+    ' THAT RATHER THAN BE GRACEFUL ON ITS BEHALF. One application shows a
+    ' spinner, another returns at once and emails the answer, a third refuses
+    ' what it estimates will take too long. Those are different products and
+    ' none of them is this library's call.
+    '
+    ' So there is no `answer(catalog, conn, question)`. A single call that ran
+    ' the model and the query would have made the decision BY HIDING IT: it
+    ' blocks, and every consumer inherits blocking. The shape is `agent`'s,
+    ' which solved the same problem here for the same reason -- an approval may
+    ' take a minute and the wait spans HTTP requests.
+    '
+    '   plan    -> the application calls the model, however it likes
+    '   interpret -> the application executes the SQL, however it likes
+    '   settle
+    function plan(cat, vocab, question, options)
+        opts = _options(options, [ "limit", "near_misses", "synonyms",
+                                   "budget_tokens", "chars_per_token", "dialect",
+                                   "exemplars" ], "nlq.plan")
+        g = ground(cat, question, { limit: _default(opts, "limit", 8),
+                                    near_misses: _default(opts, "near_misses", 3),
+                                    synonyms: _default(opts, "synonyms", {}) })
+        ' R1/R6 stop here: a grounding the catalog could not settle is not a
+        ' plan, and the refusal travels as a VALUE so an application can show a
+        ' person the candidates and ask.
+        if count(g.ambiguous) > 0 then
+            return { ok: false, refused_because: g.ambiguous, grounding: g,
+                     question: question, key: "", estimated_tokens: 0 }
+        end if
+        ex = _default(opts, "exemplars", {})
+        p = prompt(g, cat, vocab, question, { budget_tokens: _default(opts, "budget_tokens", 3000),
+                                              chars_per_token: _default(opts, "chars_per_token", 2.5),
+                                              dialect: _default(opts, "dialect", "standard SQL"),
+                                              exemplars: ex })
+        return { ok: true,
+                 refused_because: [],
+                 grounding: g,
+                 question: question,
+                 system: p.system,
+                 user: p.user,
+                 ' WHAT IT IS ABOUT TO COST, as far as that is knowable. An
+                 ' application that wants to say "this will take a while" needs
+                 ' something to decide from, and the alternative is every
+                 ' consumer re-deriving it from internals.
+                 estimated_tokens: p.estimated_tokens,
+                 tables: g.tables,
+                 key: _plan_key(g, cat, vocab, question, _default(opts, "synonyms", {})) }
+    end function
+
+    ' THE CACHE KEY. NLQ facilitates a cache and does not own one: a question
+    ' costs 17-60s of model time and a dashboard asks the same one every
+    ' refresh, so not supplying a key would make this unusable while pretending
+    ' to be neutral -- but WHERE the store lives, how long it keeps, and when it
+    ' drops are the application's, and gdash's answer ("until the next import")
+    ' names a moment its importer knows and this library cannot observe.
+    '
+    ' KEYING ON THE QUESTION TEXT ALONE IS THE TRAP. An import that renames a
+    ' column, drops one, or adds a view that now answers better leaves cached
+    ' SQL that STILL RUNS and quietly answers about the old shape. So the key
+    ' covers the grounded objects WITH THEIR COLUMNS -- not the whole catalog,
+    ' which would invalidate on every unrelated import, and not the names alone,
+    ' which would survive a column being dropped -- plus the vocabulary those
+    ' objects contributed and the synonyms in force.
+    function _plan_key(g, cat, vocab, question, syn)
+        parts = []
+        append(parts, "q:" + join(terms(question), " "))
+        for each tid in sort(g.tables)
+            cols = []
+            for each c in cat.columns
+                if _id(c.schema, c.table) = tid then
+                    append(cols, c.column)
+                end if
+            end for
+            append(parts, "t:" + tid + "(" + join(sort(cols), ",") + ")")
+            for each key in sort(keys(vocab))
+                if starts_with(key, tid + ".") then
+                    append(parts, "v:" + key + "=" + join(vocab[key], ","))
+                end if
+            end for
+        end for
+        for each sk in sort(keys(syn))
+            append(parts, "s:" + sk + "=" + join(syn[sk], ","))
+        end for
+        return _fnv1a(join(parts, "|"))
+    end function
+
+    ' 32-bit FNV-1a, written here because `crypto` needs libcrypto and this
+    ' library has no other dependency. The key NAMES a cache entry; a collision
+    ' would serve another question's SQL, so an application that cares stores
+    ' the plan beside it and compares -- the rule llm's keyed replay follows.
+    function _fnv1a(text)
+        h = 2166136261
+        i = 0
+        while i < len(text)
+            h = _xor32(h, byte_at(text, i))
+            h = _mul32(h, 16777619)
+            i = i + 1
+        end while
+        return _hex32(h)
+    end function
+
+    ' 32-bit arithmetic on doubles. `h * 16777619` exceeds 2^53 and loses
+    ' precision, so the multiply is SPLIT -- the technique llm.bas already uses
+    ' for the same hash and the same reason. Copied rather than imported,
+    ' because loading `llm` for a hash would give every program that grounds a
+    ' question a dependency on an HTTP client.
+    function _xor32(a, b)
+        out = 0
+        bit = 1
+        i = 0
+        while i < 32
+            abit = floor(a / bit) - floor(a / (bit * 2)) * 2
+            bbit = floor(b / bit) - floor(b / (bit * 2)) * 2
+            if abit != bbit then
+                out = out + bit
+            end if
+            bit = bit * 2
+            i = i + 1
+        end while
+        return out
+    end function
+
+    function _mul32(a, b)
+        lo = a - floor(a / 65536) * 65536
+        hi = floor(a / 65536)
+        p = lo * b + (hi * b - floor(hi * b / 65536) * 65536) * 65536
+        return p - floor(p / 4294967296) * 4294967296
+    end function
+
+    function _hex32(h)
+        digits = "0123456789abcdef"
+        out = ""
+        i = 7
+        while i >= 0
+            d = floor(h / _pow16(i))
+            d = d - floor(d / 16) * 16
+            out = out + mid(digits, d, 1)
+            i = i - 1
+        end while
+        return out
+    end function
+
+    function _pow16(n)
+        v = 1
+        i = 0
+        while i < n
+            v = v * 16
+            i = i + 1
+        end while
+        return v
+    end function
+
+    ' The model answered. Turn its text into SQL and check it (R3/R4). Pure.
+    function interpret(p, model_text, options)
+        opts = _options(options, [ "allow" ], "nlq.interpret")
+        if not p.ok then
+            error "nlq.interpret: this plan was refused; there is nothing to interpret"
+        end if
+        sql = _strip_fence(string(model_text))
+        problems = check_sql(sql, p.grounding, { allow: _default(opts, "allow", []) })
+        return { ok: count(problems) = 0, sql: sql, problems: problems,
+                 tables: p.tables, question: p.question, key: p.key }
+    end function
+
+    ' A model asked for SQL only will still sometimes fence it. Stripping that
+    ' is not leniency about the instruction -- it is refusing to fail on
+    ' punctuation when the SQL itself is there.
+    function _strip_fence(t)
+        s2 = trim(t)
+        if starts_with(s2, "```") then
+            nl = find(s2, chr(10))
+            if not is_unknown(nl) then
+                s2 = mid(s2, nl + 1, len(s2))
+            end if
+            back = find(s2, "```")
+            if not is_unknown(back) then
+                s2 = left(s2, back)
+            end if
+        end if
+        return trim(s2)
+    end function
+
+    ' The query ran. Give back the value WITH ITS PROVENANCE -- R5: an answer
+    ' never travels without its query, because "where did this number come
+    ' from" is the question a business asks second, immediately.
+    function settle(reading, rows)
+        if not reading.ok then
+            error "nlq.settle: this reading was refused; there is no answer to settle"
+        end if
+        v = unknown
+        col = ""
+        if count(rows) > 0 then
+            for each k in keys(rows[0])
+                if len(col) = 0 then
+                    col = k
+                    v = rows[0][k]
+                end if
+            end for
+        end if
+        return { value: v, column: col, row_count: count(rows),
+                 sql: reading.sql, tables: reading.tables,
+                 question: reading.question, key: reading.key }
     end function
 
     function check_catalog(cat)
