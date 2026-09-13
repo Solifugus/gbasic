@@ -78,6 +78,12 @@ if [[ -s "$server_stderr" ]]; then
     exit 1
 fi
 
-if diff -u tests/webserver_integration.out "$client_stdout"; then
-    printf 'PASS tests/webserver_integration.bas\n'
+# A golden mismatch must FAIL. `if diff ...; then PASS; fi` prints the diff and
+# then exits 0, because `set -e` does not fire on a command in an `if`
+# condition -- so this suite reported OK to run_all.sh on a moved golden, which
+# is a gate that cannot go red.
+if ! diff -u tests/webserver_integration.out "$client_stdout"; then
+    printf 'FAIL tests/webserver_integration.bas (output does not match the golden)\n'
+    exit 1
 fi
+printf 'PASS tests/webserver_integration.bas\n'

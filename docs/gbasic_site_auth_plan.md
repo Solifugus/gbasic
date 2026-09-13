@@ -132,12 +132,15 @@ needs:
 - session expiration is enforced in SQL (`expires_at > now()`); gBASIC now also
   exposes `now()` (current local `datetime`), so expiration/deadline math can be
   done in app code via datetime + duration arithmetic when SQL is not the store,
-- percent-decoding must rebuild raw bytes with `from_bytes([n])`, not `chr(n)`:
-  after Unicode v1 `chr`/`code` are codepoint builtins, so `chr(0xC3)` re-encodes
-  as multi-byte UTF-8 and corrupts multi-byte form input. Standard
-  `form_decode`/`url_decode` and HTML-escaping helpers would remove this
-  per-app byte-assembly boilerplate (and the easy-to-miss `chr` vs `from_bytes`
-  trap) entirely.
+- **ANSWERED (2026-09-13).** This asked for a standard `form_decode`, on the
+  grounds that percent-decoding must rebuild raw bytes with `from_bytes([n])`
+  rather than `chr(n)` — after Unicode v1 `chr`/`code` are codepoint builtins,
+  so `chr(0xC3)` re-encodes as multi-byte UTF-8 and corrupts multi-byte form
+  input. `req.form` (PLAT-WEB, `tests/run_web_form.sh`) decodes the body and
+  shares the query-string parser, so there is one decoder rather than one per
+  application, each wrong in a different place. `site_postgres.bas` carried
+  sixty-nine lines of this and now carries none. HTML-escaping is still the
+  application's.
 
 ## Interim Options
 

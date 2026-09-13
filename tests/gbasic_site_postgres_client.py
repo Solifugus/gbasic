@@ -64,19 +64,19 @@ def main():
     status, headers, body = get(port, "/")
     print(status)
     print(headers.get("content-type", ""))
-    print("Readable programs, practical web experiments." in body)
+    print("modern BASIC for business programming" in body)
 
     status, _, body = get(port, "/docs")
     print(status)
-    print("SQL modules" in body)
+    print("fifteen cookbooks" in body)
 
     status, _, body = get(port, "/examples")
     print(status)
-    print("The site itself is becoming one of those examples." in body)
+    print("This site is one of them." in body)
 
     status, _, body = get(port, "/about")
     print(status)
-    print("takes inspiration from BASIC" in body)
+    print("tree-walking interpreter in C11" in body)
 
     status, _, body = get(port, "/forum")
     print(status)
@@ -445,9 +445,14 @@ def main():
     print(status)
     print(body)
 
-    status, _, body = get(port, "/shutdown")
+    # /logout is declared POST-only, so the ROUTER answers a GET with 405 and
+    # an Allow header. The hand-rolled dispatcher this replaced had to write
+    # that branch by hand in every handler, and the Allow header -- which is
+    # what tells a client what to do instead -- it never sent at all.
+    status, headers, _ = get(port, "/logout")
     print(status)
-    print(body)
+    print(headers.get("allow", ""))
+
 
 
 if __name__ == "__main__":

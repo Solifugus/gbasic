@@ -98,9 +98,12 @@ Public deployment needs structured enough logs to debug abuse and failures:
 - moderation actions with topic/post id and moderator label,
 - startup/shutdown events.
 
-The app emits startup, shutdown, and simple request/status lines to stdout.
-The first deployment can combine those with nginx access logs and captured
-stderr from the gBASIC process.
+The app emits a startup line and a drain line to stdout, and errors to stderr.
+It no longer writes a per-request access line: once routing moved into the
+`server` block there was no single place left that sees both the request and
+the response, and nginx already logs access for the deployment this document
+describes. The first deployment combines nginx access logs with the gBASIC
+process's captured stdout and stderr.
 
 ## Backups
 

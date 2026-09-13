@@ -1,12 +1,25 @@
 # gBASIC Site Sample App
 
-This directory is the planned Postgres-backed sample application for the
-eventual gBASIC home site. It is intentionally local-first while the webserver,
-auth, and deployment story mature.
+This directory is the PostgreSQL-backed sample application for the eventual
+gBASIC home site. It is intentionally local-first while the deployment story
+matures.
+
+Both entry points are **one `server` declaration** each: routing, static files
+and the drain hook are declarations rather than code. They did not start that
+way — `site.bas` was a hand-rolled `if req.path = "/"` chain over
+`webserver.listen`, and `site_postgres.bas` carried sixty-nine lines of
+hand-written percent-decoding that `req.form` now does. A site whose job is to
+show the platform off had stopped using it.
+
+**There is no `/shutdown` route, deliberately.** Both used to carry one, which
+is an unauthenticated remote kill switch in the file people are most likely to
+copy. A block server's supported soft stop is `SIGTERM`: the `on drain` hook
+runs (closing the database handle) and the process exits itself with code 0.
+The test runners assert all three.
 
 ## Current Scope
 
-The app currently includes the project shape and initial Postgres foundation:
+The app currently includes the project shape and the Postgres foundation:
 
 - `site.bas`: loopback webserver entry point
 - `site_postgres.bas`: Postgres-backed loopback webserver entry point
@@ -16,18 +29,22 @@ The app currently includes the project shape and initial Postgres foundation:
 - `deploy/`: example nginx, systemd, and environment-file templates
 - `tests/`: app-specific client/test helpers
 
-The static app serves a small local home page, a stylesheet, a tiny script, and
-a shutdown route used by the test runner. The Postgres-backed app renders the
-home, docs, about, examples, capped forum pages, and narrow local moderation
-tools from Postgres.
+The static app serves the home, docs, examples and about pages plus its
+stylesheet and script, with the page copy in the source. The Postgres-backed app
+renders the same pages from the database, and adds capped forum pages, sessions
+and narrow local moderation tools.
 
 ## Run Locally
 
 Build gBASIC from the repository root, then run:
 
 ```sh
-./gbasic examples/gbasic_site/site.bas
+GBASIC_PATH=stdlib ./gbasic examples/gbasic_site/site.bas
 ```
+
+`GBASIC_PATH` is needed only when running from the source tree: a `server`
+block implies `load web`, and after `make install` the installed stdlib is
+found without it.
 
 The app writes the selected loopback port to `examples/gbasic_site/tmp_port.txt`.
 Open `http://127.0.0.1:<port>/`.
@@ -53,7 +70,7 @@ cp examples/gbasic_site/server_port.example.txt examples/gbasic_site/server_port
 After Postgres setup, run the database-backed entry point:
 
 ```sh
-./gbasic examples/gbasic_site/site_postgres.bas
+GBASIC_PATH=stdlib ./gbasic examples/gbasic_site/site_postgres.bas
 ```
 
 It also writes the selected port to `examples/gbasic_site/tmp_port.txt`.
@@ -124,12 +141,14 @@ From the repository root:
 ```
 
 The runner starts the app on an ephemeral loopback port, performs a few HTTP
-checks, and shuts it down.
+checks, then sends `SIGTERM` and requires the drain hook to run and the process
+to exit 0 by itself.
 
 For the Postgres-backed app:
 
 ```sh
-GBASIC_SITE_POSTGRES_TEST=1 ./tests/run_gbasic_site_postgres.sh
+GBASIC_SITE_POSTGRES_TEST=1 PGDATABASE=gbasic_test PGUSER=$USER \
+    ./tests/run_gbasic_site_postgres.sh
 ```
 
 ## Postgres Setup

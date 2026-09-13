@@ -70,8 +70,6 @@ def main():
     status, _ = post_topic(port, IP_B, "B first")
     print(status)
 
-    status, body = request(port, "GET", "/shutdown")
-    print(status)
 
 
 if __name__ == "__main__":

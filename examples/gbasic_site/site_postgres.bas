@@ -9,75 +9,6 @@ function html_escape(text)
     return replace(escaped, "'", "&#39;")
 end function
 
-function hex_value(ch)
-    b = code(ch)
-    if b >= code("0") and b <= code("9") then
-        return b - code("0")
-    end if
-    if b >= code("A") and b <= code("F") then
-        return b - code("A") + 10
-    end if
-    if b >= code("a") and b <= code("f") then
-        return b - code("a") + 10
-    end if
-    return -1
-end function
-
-function form_decode_text(text)
-    text = replace(text, "+", " ")
-    parts = split(text, "%")
-    result = parts[0]
-    i = 1
-    while i < count(parts)
-        seg = parts[i]
-        decoded = false
-        if len(seg) >= 2 then
-            hi = hex_value(mid(seg, 0, 1))
-            lo = hex_value(mid(seg, 1, 1))
-            if hi >= 0 and lo >= 0 then
-                byte_value = hi * 16 + lo
-                rest_text = ""
-                if len(seg) > 2 then
-                    rest_text = mid(seg, 2, len(seg) - 2)
-                end if
-                if byte_value = 0 then
-                    result = result + "%" + seg
-                else
-                    ' Emit the raw decoded byte. chr() is a codepoint builtin
-                    ' (Unicode v1) and would re-encode bytes >127 as multi-byte
-                    ' UTF-8; from_bytes preserves the exact percent-decoded byte
-                    ' so multi-byte UTF-8 form input reassembles correctly.
-                    result = result + from_bytes([byte_value]) + rest_text
-                end if
-                decoded = true
-            end if
-        end if
-        if not decoded then
-            result = result + "%" + seg
-        end if
-        i = i + 1
-    end while
-    return replace(result, chr(13), "")
-end function
-
-function form_decode(body)
-    form = {}
-    if body = "" then
-        return form
-    end if
-    pairs = split(body, "&")
-    for each pair in pairs
-        parts = split(pair, "=")
-        key = form_decode_text(parts[0])
-        value = ""
-        if len(parts) > 1 then
-            value = form_decode_text(join_from(parts, 1, "="))
-        end if
-        form[key] = value
-    end for
-    return form
-end function
-
 function html_page(title, body)
     return "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>" + html_escape(title) + "</title><link rel=\"stylesheet\" href=\"/static/site.css\"></head><body>" + body + "<script src=\"/static/site.js\"></script></body></html>"
 end function
@@ -103,63 +34,55 @@ function form_value(values, key)
     return trim(values[key])
 end function
 
-function is_integer_text(text)
-    if text = "" then
-        return false
+' A whole number in a string, or `unknown`. `number()` RAISES on text that is
+' not a number rather than answering `unknown` (measured -- the first version of
+' this assumed otherwise, and a request for /topic/not-a-number/reply killed the
+' worker, because a raise in a handler is let-it-crash). Frame-scoped
+' `on error` makes the guard local, which is why this is four lines and not the
+' eleven-`replace` digit strip it replaced.
+function whole_number(text)
+    on error goto next
+    n = number(text)
+    if error then
+        error.clear()
+        return unknown
     end if
-    rest = replace(text, "0", "")
-    rest = replace(rest, "1", "")
-    rest = replace(rest, "2", "")
-    rest = replace(rest, "3", "")
-    rest = replace(rest, "4", "")
-    rest = replace(rest, "5", "")
-    rest = replace(rest, "6", "")
-    rest = replace(rest, "7", "")
-    rest = replace(rest, "8", "")
-    rest = replace(rest, "9", "")
-    return rest = ""
+    on error stop
+    if n != floor(n) then
+        return unknown
+    end if
+    return n
 end function
 
 function configured_port()
     env_port = env("GBASIC_SITE_PORT")
     if not is_unknown(env_port) then
-        port_text = trim(env_port)
-        if port_text = "" then
-            return 0
-        end if
-        if not is_integer_text(port_text) then
-            error "GBASIC_SITE_PORT must contain an integer port"
-        end if
-        port = number(port_text)
-        if port < 0 or port > 65535 then
-            error "GBASIC_SITE_PORT port must be between 0 and 65535"
-        end if
-        return port
+        return port_from(trim(env_port), "GBASIC_SITE_PORT")
     end if
-
     config_file{file}= "examples/gbasic_site/server_port.txt"
     if not exists(config_file) then
         return 0
     end if
-    port_text = trim(read(config_file))
-    if port_text = "" then
+    return port_from(trim(read(config_file)), "server_port.txt")
+end function
+
+function port_from(text, source)
+    if text = "" then
         return 0
     end if
-    if not is_integer_text(port_text) then
-        error "server_port.txt must contain an integer port"
+    n = whole_number(text)
+    if is_unknown(n) or n < 0 or n > 65535 then
+        error source + " must contain a port between 0 and 65535"
     end if
-    port = number(port_text)
-    if port < 0 or port > 65535 then
-        error "server_port.txt port must be between 0 and 65535"
-    end if
-    return port
+    return n
 end function
 
 function topic_id_from_path(text)
-    if not is_integer_text(text) then
+    n = whole_number(text)
+    if is_unknown(n) then
         return -1
     end if
-    return number(text)
+    return n
 end function
 
 function form_id_error(values, key)
@@ -167,7 +90,7 @@ function form_id_error(values, key)
     if value = "" then
         return "missing " + key
     end if
-    if not is_integer_text(value) then
+    if is_unknown(whole_number(value)) then
         return "invalid " + key
     end if
     return ""
@@ -177,15 +100,10 @@ function form_integer_id(values, key)
     return number(form_value(values, key))
 end function
 
-function path_after(path, prefix)
-    return mid(path, len(prefix), len(path) - len(prefix))
-end function
-
-function path_between(path, prefix, suffix)
-    tail = path_after(path, prefix)
-    return left(tail, len(tail) - len(suffix))
-end function
-
+' path_after/path_between are gone: the router does this. "/forum/{slug}/new"
+' names its own capture, and a pattern beats a capture, so "/forum/general/new"
+' cannot be read as a category called "general/new" -- an ordering the chain
+' these replaced had to get right by hand and could get wrong in silence.
 function too_long(text, max_len)
     return len(text) > max_len
 end function
@@ -332,10 +250,11 @@ function post_rate_limit()
     if limit_text = "" then
         return 0
     end if
-    if not is_integer_text(limit_text) then
+    n = whole_number(limit_text)
+    if is_unknown(n) or n < 0 then
         error "GBASIC_SITE_POST_RATE_LIMIT must be a non-negative integer"
     end if
-    return number(limit_text)
+    return n
 end function
 
 function post_rate_window()
@@ -347,10 +266,11 @@ function post_rate_window()
     if window_text = "" then
         return 60
     end if
-    if not is_integer_text(window_text) then
+    n = whole_number(window_text)
+    if is_unknown(n) or n < 0 then
         error "GBASIC_SITE_POST_RATE_WINDOW must be a non-negative integer number of seconds"
     end if
-    return number(window_text)
+    return n
 end function
 
 ' The client IP for rate limiting. Behind a single trusted reverse proxy the
@@ -455,7 +375,7 @@ function login_failed(req)
 end function
 
 function login_submit(db, req)
-    form = form_decode(req.body)
+    form = req.form
     username = trim(form_value(form, "username"))
     password = form_value(form, "password")
     if username = "" or password = "" then
@@ -564,7 +484,7 @@ function create_topic(db, req, slug)
     if len(categories) = 0 then
         return not_found(req)
     end if
-    form = form_decode(req.body)
+    form = req.form
     if not csrf_valid(req, form) then
         return csrf_forbidden(req)
     end if
@@ -637,7 +557,7 @@ function admin_page(db, req)
 end function
 
 function hide_topic(db, req)
-    form = form_decode(req.body)
+    form = req.form
     if not admin_csrf_valid(db, req, form) then
         return csrf_forbidden(req)
     end if
@@ -655,7 +575,7 @@ function hide_topic(db, req)
 end function
 
 function unhide_topic(db, req)
-    form = form_decode(req.body)
+    form = req.form
     if not admin_csrf_valid(db, req, form) then
         return csrf_forbidden(req)
     end if
@@ -673,7 +593,7 @@ function unhide_topic(db, req)
 end function
 
 function hide_post(db, req)
-    form = form_decode(req.body)
+    form = req.form
     if not admin_csrf_valid(db, req, form) then
         return csrf_forbidden(req)
     end if
@@ -691,7 +611,7 @@ function hide_post(db, req)
 end function
 
 function unhide_post(db, req)
-    form = form_decode(req.body)
+    form = req.form
     if not admin_csrf_valid(db, req, form) then
         return csrf_forbidden(req)
     end if
@@ -751,7 +671,7 @@ function create_reply(db, req, topic_id_text)
     if len(topics) = 0 then
         return not_found(req)
     end if
-    form = form_decode(req.body)
+    form = req.form
     if not csrf_valid(req, form) then
         return csrf_forbidden(req)
     end if
@@ -772,19 +692,15 @@ function create_reply(db, req, topic_id_text)
     return shell_response(req, 201, "Reply posted", body)
 end function
 
+' A handler RETURNS its response and the runtime attaches the request id, so
+' the `id: req.id` every one of these used to carry is gone -- and with it the
+' class of bug where a response was built for one request and queued against
+' another. `file_response` went too: static files are `web.static` now, which
+' streams the bytes rather than reading the whole asset into a string.
 function text_response(req, status, content_type, body)
-    headers = {}
-    headers["content-type"] = content_type
-    return {
-        id:req.id,
-        status:status,
-        headers:headers,
-        body:body
-    }
-end function
-
-function file_response(req, content_type, source)
-    return text_response(req, 200, content_type, read(source))
+    return { status: status,
+             headers: { "content-type": content_type },
+             body: body }
 end function
 
 function html_response(req, status, body)
@@ -807,20 +723,12 @@ function forbidden(req)
     return plain_response(req, 403, "forbidden")
 end function
 
+' The router answers an unrouted path with its own 404 ("Not Found"), so this
+' one -- for a path that ROUTED but named a topic or category that is not there
+' -- says the same words. Two spellings of the same status is the sort of
+' difference a reader assumes means something.
 function not_found(req)
-    return plain_response(req, 404, "not found")
-end function
-
-function method_not_allowed(req)
-    return plain_response(req, 405, "method not allowed")
-end function
-
-function posting(req)
-    return req.method = "POST"
-end function
-
-function log_request(req, response)
-    print(req.timestamp + " " + req.remote_ip + " " + req.method + " " + req.path + " " + string(response.status))
+    return plain_response(req, 404, "Not Found")
 end function
 
 function page_response(db, req, slug, include_nav)
@@ -831,117 +739,117 @@ function page_response(db, req, slug, include_nav)
     return html_response(req, 200, html_page(rows[0].title, page_body(rows[0], include_nav)))
 end function
 
-function route_request(db, req)
-    if req.path = "/" then
-        return page_response(db, req, "home", true)
-    end if
-    if req.path = "/docs" then
-        return page_response(db, req, "docs", false)
-    end if
-    if req.path = "/examples" then
-        return page_response(db, req, "examples", false)
-    end if
-    if req.path = "/about" then
-        return page_response(db, req, "about", false)
-    end if
-    if req.path = "/forum" then
-        return forum_categories_page(db, req)
-    end if
-    if req.path = "/login" then
-        if posting(req) then
-            return login_submit(db, req)
-        end if
+server site( port: 0 )
+
+    get "/"( req )
+        return page_response(G.db, req, "home", true)
+    end get
+
+    get "/docs"( req )
+        return page_response(G.db, req, "docs", false)
+    end get
+
+    get "/examples"( req )
+        return page_response(G.db, req, "examples", false)
+    end get
+
+    get "/about"( req )
+        return page_response(G.db, req, "about", false)
+    end get
+
+    get "/forum"( req )
+        return forum_categories_page(G.db, req)
+    end get
+
+    ' A pattern is more specific than a capture, so "/forum/{slug}/new" wins
+    ' over "/forum/{slug}" without either being declared first -- the ordering
+    ' the hand-rolled chain had to get right by hand, and could get wrong
+    ' silently, since a category called "new" would have matched the wrong arm.
+    get "/forum/{slug}"( req )
+        return category_page(G.db, req, req.params.slug)
+    end get
+
+    get "/forum/{slug}/new"( req )
+        return new_topic_form_page(G.db, req, req.params.slug)
+    end get
+
+    post "/forum/{slug}/new"( req )
+        return create_topic(G.db, req, req.params.slug)
+    end post
+
+    get "/topic/{id}"( req )
+        return topic_page(G.db, req, req.params.id)
+    end get
+
+    get "/topic/{id}/reply"( req )
+        return reply_form_page(G.db, req, req.params.id)
+    end get
+
+    post "/topic/{id}/reply"( req )
+        return create_reply(G.db, req, req.params.id)
+    end post
+
+    get "/login"( req )
         return login_page(req)
-    end if
-    if req.path = "/logout" then
-        if posting(req) then
-            return logout(db, req)
-        end if
-        return method_not_allowed(req)
-    end if
-    if req.path = "/admin" then
-        return admin_page(db, req)
-    end if
-    if req.path = "/admin/hide-topic" then
-        if posting(req) then
-            return hide_topic(db, req)
-        end if
-        return method_not_allowed(req)
-    end if
-    if req.path = "/admin/unhide-topic" then
-        if posting(req) then
-            return unhide_topic(db, req)
-        end if
-        return method_not_allowed(req)
-    end if
-    if req.path = "/admin/hide-post" then
-        if posting(req) then
-            return hide_post(db, req)
-        end if
-        return method_not_allowed(req)
-    end if
-    if req.path = "/admin/unhide-post" then
-        if posting(req) then
-            return unhide_post(db, req)
-        end if
-        return method_not_allowed(req)
-    end if
-    if starts_with(req.path, "/forum/") and ends_with(req.path, "/new") then
-        category_slug = path_between(req.path, "/forum/", "/new")
-        if posting(req) then
-            return create_topic(db, req, category_slug)
-        end if
-        return new_topic_form_page(db, req, category_slug)
-    end if
-    if starts_with(req.path, "/forum/") then
-        return category_page(db, req, path_after(req.path, "/forum/"))
-    end if
-    if starts_with(req.path, "/topic/") and ends_with(req.path, "/reply") then
-        topic_id_text = path_between(req.path, "/topic/", "/reply")
-        if posting(req) then
-            return create_reply(db, req, topic_id_text)
-        end if
-        return reply_form_page(db, req, topic_id_text)
-    end if
-    if starts_with(req.path, "/topic/") then
-        return topic_page(db, req, path_after(req.path, "/topic/"))
-    end if
-    if req.path = "/static/site.css" then
-        css_file{file}= "examples/gbasic_site/static/site.css"
-        return file_response(req, "text/css; charset=utf-8", css_file)
-    end if
-    if req.path = "/static/site.js" then
-        js_file{file}= "examples/gbasic_site/static/site.js"
-        return file_response(req, "application/javascript; charset=utf-8", js_file)
-    end if
-    if req.path = "/health" then
+    end get
+
+    post "/login"( req )
+        return login_submit(G.db, req)
+    end post
+
+    ' Declared POST-only, so a GET is answered 405 with an `Allow` header by
+    ' the router rather than by a hand-written branch in every handler.
+    post "/logout"( req )
+        return logout(G.db, req)
+    end post
+
+    get "/admin"( req )
+        return admin_page(G.db, req)
+    end get
+
+    post "/admin/hide-topic"( req )
+        return hide_topic(G.db, req)
+    end post
+
+    post "/admin/unhide-topic"( req )
+        return unhide_topic(G.db, req)
+    end post
+
+    post "/admin/hide-post"( req )
+        return hide_post(G.db, req)
+    end post
+
+    post "/admin/unhide-post"( req )
+        return unhide_post(G.db, req)
+    end post
+
+    get "/health"( req )
         return plain_response(req, 200, "ok")
-    end if
-    return not_found(req)
-end function
+    end get
 
-port_file{file}= "examples/gbasic_site/tmp_port.txt"
-if exists(port_file) then delete(port_file)
+    get "/static/{path...}"( req )
+        return web.static(req.params.path, "examples/gbasic_site/static")
+    end get
 
-db = pg.connect({})
-server = webserver.listen(configured_port())
-write(port_file, string(server.port))
-print("gbasic_site_postgres listening on 127.0.0.1:" + string(server.port))
+    ' The database handle is the one thing that must be released politely, and
+    ' SIGTERM is the only stop this server has -- there is deliberately no
+    ' shutdown route, since an unauthenticated remote kill switch is not
+    ' something to ship in the file people are most likely to copy.
+    on drain
+        pg.close(G.db)
+        print "gbasic_site_postgres draining"
+    end on
 
-watch(server.requests)
-    while count(server.requests) > 0
-        req = take_first(server.requests)
-        if req.path = "/shutdown" then
-            response = plain_response(req, 200, "bye")
-            append(server.responses, response)
-            log_request(req, response)
-            print("gbasic_site_postgres shutdown")
-            pg.close(db)
-            webserver.close(server)
-        else
-            response = route_request(db, req)
-            append(server.responses, response)
-            log_request(req, response)
-        end if
-    end while
-end watch
+end server
+
+program main( args )
+    G = { db: nothing }
+
+    port_file{file}= "examples/gbasic_site/tmp_port.txt"
+    if exists(port_file) then delete(port_file)
+
+    G.db = pg.connect({})
+    h = web.serve(web.configure(site, { port: configured_port() }))
+    write(port_file, string(h.port))
+    print "gbasic_site_postgres listening on 127.0.0.1:" + string(h.port)
+end program

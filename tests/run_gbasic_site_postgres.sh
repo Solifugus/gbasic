@@ -107,8 +107,8 @@ run_site_case() {
     shift 3
 
     rm -f "$port_file"
-    env "$@" GBASIC_SITE_PORT=0 GBASIC_WEBSERVER_TIMEOUT=0.2 \
-        ./gbasic examples/gbasic_site/site_postgres.bas \
+    env "$@" GBASIC_SITE_PORT=0 GBASIC_WEBSERVER_TIMEOUT=0.2 GBASIC_PATH=stdlib \
+        ./gbasic --line-buffered examples/gbasic_site/site_postgres.bas \
         >"$server_stdout" 2>"$server_stderr" &
     server_pid=$!
 
@@ -133,17 +133,26 @@ run_site_case() {
         exit 1
     fi
 
-    for _ in {1..100}; do
-        if ! kill -0 "$server_pid" 2>/dev/null; then
-            wait "$server_pid"
-            server_pid=""
-            break
-        fi
-        sleep 0.05
-    done
+    # THE STOP IS A SIGNAL, NOT A ROUTE. This used to be driven by the client
+    # requesting GET /shutdown -- an unauthenticated remote kill switch in the
+    # file people are most likely to copy. A `server` block's supported soft
+    # stop is SIGTERM: the `on drain` hook runs (closing the database handle)
+    # and the process exits ITSELF with code 0. All three are asserted, because
+    # a server killed by the cleanup trap looks identical to one that drained.
+    kill -TERM "$server_pid"
+    local server_status=0
+    wait "$server_pid" || server_status=$?
+    server_pid=""
 
-    if [[ -n "$server_pid" ]]; then
-        printf 'FAIL %s (server did not shut down)\n' "$label"
+    if [[ "$server_status" != "0" ]]; then
+        printf 'FAIL %s (SIGTERM gave exit %s, want 0)\n' "$label" "$server_status"
+        cat "$server_stderr"
+        exit 1
+    fi
+
+    if ! grep -q 'gbasic_site_postgres draining' "$server_stdout"; then
+        printf 'FAIL %s (the on drain hook did not run)\n' "$label"
+        cat "$server_stdout"
         exit 1
     fi
 

@@ -82,8 +82,6 @@ def main():
     print(status)
     print(returning_form == issued_cookie)
 
-    status, _, _ = request(port, "GET", "/shutdown")
-    print(status)
 
 
 if __name__ == "__main__":

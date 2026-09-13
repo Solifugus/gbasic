@@ -4549,3 +4549,47 @@ orders freely.
   text back with `{datetime}=` at the point of use. Not a bug — logged
   because a record type meant to be persisted must be designed around it
   from the first field, and the cookbook's persist entry does not say so.
+
+## 2026-09-13 — CC — while: moving examples/gbasic_site onto the declarative `server` block
+- **Type:** missing-capability
+- **Severity:** medium
+- **What:** a `server` block application has **no in-language soft stop**. The
+  documented one is `server.draining = true`, and the runtime finds the server
+  record by scanning the **top-level globals** for a value whose record id
+  matches (`webserver_find_record` in `src/eval.c`). A handler is a function
+  with no closures, so it cannot reach a top-level variable at all; the only
+  state it can reach is a field of a program global, and a record NESTED in one
+  is invisible to that scan. Measured:
+  ```basic
+  server app( port: 0 )
+      get "/shutdown"( req )
+          G.h.draining = true        ' accepted; does nothing
+          return { body: "bye" }
+      end get
+  end server
+  program main( args )
+      G = { h: nothing }
+      G.h = web.serve(app)
+      print "PORT " + string(G.h.port)
+  end program
+  ```
+  The response is sent, nothing is raised, and the server runs forever. The
+  assignment writes a field of a copy, which is correct value semantics — the
+  surprise is that the documented mechanism is unreachable from the one place
+  an application would use it, and that it fails silently rather than saying so.
+- **Workaround:** `SIGTERM`, which works exactly as documented: the `on drain`
+  hook runs and the process exits itself with code 0. For this site that is the
+  better design anyway — an unauthenticated HTTP kill switch is not something to
+  ship in an example — so both entry points dropped their `/shutdown` route and
+  the runners send the signal and assert hook, exit code and clean stderr.
+- **Suggestion:** either let `serve` register the live record for the drain
+  scan under a name a handler's `G.<field>` can reach, or give `web` an explicit
+  `web.drain(h)` (or a `{ drain: true }` response field) so an application has
+  a call to make. Failing both, warn when a `draining` field is set on a record
+  the scan cannot see — the silence is the expensive part.
+
+## 2026-09-13 — CC — while: hashing and sizing downloaded PDFs for a FundReturn source manifest
+- **Type:** doc-gap
+- **Severity:** medium
+- **What:** `docs/ai/UNLEARN.md` (Strings) says "Strings are binary-safe and length-counts-bytes", but `len` counts CODEPOINTS, including on binary data read from a file. For a 388,299-byte PDF, `f{file}= p` then `len(read(f))` gives 377,095, while `bytes(f)` gives 388,299 and `sha256(read(f))` matches `sha256sum`, so the content is intact and only the length is off. `len("\u{E9}")` is 1. The reference's byte-oriented section (`byte_count`) is correct. Only the UNLEARN line is wrong, and it is the line an agent reads first. A manifest recorded the wrong byte size and nothing raised.
+- **Workaround:** `bytes(f)` for a file's size (`byte_count(s)` for a string). The UNLEARN line should say that `len` counts codepoints and point at `byte_count`.

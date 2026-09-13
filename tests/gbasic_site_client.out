@@ -1,13 +1,9 @@
-200
-text/plain; charset=utf-8
-ok
-200
-text/html; charset=utf-8
-True
-200
-text/css; charset=utf-8
-True
-404
-not found
-200
-bye
+/health 200 text/plain; charset=utf-8 ok
+/ 200 text/html; charset=utf-8 True
+/docs 200 text/html; charset=utf-8 True
+/examples 200 text/html; charset=utf-8 True
+/about 200 text/html; charset=utf-8 True
+/static/site.css 200 text/css; charset=utf-8 True
+/static/site.js 200 text/javascript; charset=utf-8 True
+/missing 404 Not Found
+/static/escape 404
