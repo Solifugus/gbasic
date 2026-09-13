@@ -680,6 +680,50 @@ before treating "handles enterprise scale" as a claim about adversarial estates.
 
 ---
 
+## 5h. The declared inputs belong to `discovery`, not here
+
+`nlq.plan` has accumulated five options that are all the same kind of thing:
+`synonyms`, `vocabulary`, `exemplars`, `derived_from`, `not_modelled`. Each was
+added when a measurement demanded it, and taken one at a time none looked like
+an architectural decision. Together they are one: **facts about an estate that
+its catalog does not carry.**
+
+They are properties of the **estate**, not of the question. `lineage`, impact
+analysis and documentation want the same facts, and today each consumer would
+have to re-declare them — the same list, maintained in several places, drifting.
+
+### Three tiers, and `discovery` currently does one
+
+| tier | example | cost | certainty |
+|---|---|---|---|
+| from the **catalog** | tables, columns, types, foreign keys, view SQL | free | certain |
+| from the **data** | a column's distinct values; one exemplar of its format | one query | certain |
+| from a **person** | `rpt` means report; this estate models no jobs; this table is built from that one | free | **unverifiable** |
+
+`discovery`'s first increment is tier 1, and its word "declared" means *declared
+in the database*. A fact declared by a **person** has no home in it at all —
+which is the gap, and the reason these options landed on `nlq` instead.
+
+### What that implies, if it is built
+
+- **The tiers must stay distinguishable in the result.** `discovery`'s governing
+  rule is that an inferred fact must never wear the clothes of a declared one;
+  a *supplied* fact is the same hazard from the other direction. A consumer has
+  to be able to ask which tier a fact came from, because tier 3 is the only one
+  nobody can check.
+- **Tier 2 is a read, not an annotation.** Distinct values and exemplars are
+  *discoverable* — `gdash` computes them at import — so they belong to a
+  `discovery` read rather than to a hand-written file. Only tier 3 is genuinely
+  supplied.
+- **`nlq` keeps its options.** A caller who has facts and no catalog machinery
+  should still be able to pass them directly; what changes is that a caller who
+  *does* use `discovery` stops maintaining a second copy.
+
+Not built. Recorded here because the five options were an accumulation rather
+than a decision, and noticing that is what makes the next increment obvious.
+
+---
+
 ## 6. Deliberately not in the first increment
 
 - **Any call to a model.** It comes after retrieval can be trusted.
