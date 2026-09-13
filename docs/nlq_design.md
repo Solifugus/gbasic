@@ -324,12 +324,59 @@ changes an `ACTIVE` count. The R2 failure is real and it landed on a different
 question; the prediction about that one was wrong, and reading the ETL is not
 the same as running it.
 
-**The two that failed to execute are the better outcome.** `contract_ref = 1`
-and `acct_no IN (1100, 4000)` — the invented literals from §4c — hit
-`operator does not exist: character varying = integer` and returned nothing at
-all. A type mismatch is a **loud** failure, and loud is what this whole design
-is trying to convert silent failures into. The invention is still a defect; it
-simply announced itself here rather than returning 0 rows.
+**The two that failed to execute are the better outcome — on PostgreSQL.**
+`contract_ref = 1` and `acct_no IN (1100, 4000)` — the invented literals from
+§4c — hit `operator does not exist: character varying = integer` and returned
+nothing at all. A type mismatch is a **loud** failure, and loud is what this
+whole design is trying to convert silent failures into.
+
+**That loudness is the database's, not ours, and it does not survive a change of
+target.** Measured, the same predicate on the same shape of data:
+
+```
+SQLite      where contract_ref = 1   ->  0 rows, no error
+PostgreSQL  where id = 'x'           ->  ERROR: invalid input syntax for integer
+```
+
+SQLite is dynamically typed and compares the two happily. So on SQLite the
+invented literal is exactly the failure §1 exists to prevent — a well-formed
+query returning a plausible number nobody can check — and the two questions that
+announced themselves here would have returned `0` there instead.
+
+`run_odbc` already carries the standing form of this lesson: *a suite that runs
+only against SQLite cannot see a type error at all.* The inverse is now
+recorded too — **a suite that runs only against PostgreSQL cannot see that
+SQLite hides one.** Which database the value tier runs against is therefore part
+of what it measures, not a deployment detail.
+
+---
+
+## 5b. What a consumer's architecture changes
+
+`gdash` imports the tables and views a dashboard needs into **its own SQLite
+database**, and may add further views over them. It is the first real consumer,
+and it moves the weight of this design in three directions at once.
+
+**Retrieval matters less.** A dashboard imports what it needs — tens of objects,
+not five hundred — so the context budget that drove §2 largely evaporates. The
+grounding still earns its place (it is what R3 checks against, and what keeps a
+prompt honest), but "500 tables do not fit" is not this consumer's problem.
+
+**Literal correctness matters more.** Per §5a, SQLite will not refuse a
+type-mismatched predicate, so the one class of error that announced itself on
+PostgreSQL is silent on the target. Value vocabulary stops being an improvement
+and becomes the main defence — and it is *cheap* here, because the tables are
+small and the consumer owns them, so distinct values are one query away.
+
+**R2 matters more, not less.** A dashboard author creating views over imported
+data is manufacturing the two-reports problem deliberately: several views over
+one import, each a legitimate reshaping, several of them plausibly answering the
+same question with different numbers. That is `t_total_volume` by construction
+rather than by accident.
+
+One thing gets easier: the catalog needs no discovery scan against a foreign
+database. The consumer performed the import, so it knows exactly what is there
+and when it changed.
 
 ---
 
