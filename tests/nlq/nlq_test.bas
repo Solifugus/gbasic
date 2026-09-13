@@ -375,6 +375,38 @@ check("CONTROL: a declared term that reaches a column is not refused",
       nlq.check_answerable(jg), true)
 
 print ""
+print "-- A SCHEMA-LESS CATALOG, which is the first consumer's actual shape"
+' gdash imports the tables a dashboard needs into ONE SQLite file, and SQLite
+' has no schemas. Every estate measured against here has them, so this whole
+' path was untested against the one consumer that exists -- the same blind spot
+' as a fixture without views, and it would have surfaced as "NLQ does not work"
+' rather than as "NLQ was never run this way".
+flat = { tables: [ { schema: "", table: "account" },
+                   { schema: "", table: "product" } ],
+         columns: [ { schema: "", table: "account", column: "status" },
+                    { schema: "", table: "account", column: "balance" },
+                    { schema: "", table: "product", column: "product_code" } ] }
+fv = nlq.vocabulary([ { schema: "", table: "account", column: "status", value: "ACTIVE" },
+                      { schema: "", table: "account", column: "status", value: "CLOSED" } ], {})
+check("a column keys without a leading dot", contains(keys(fv), "account.status"), true)
+fp = nlq.plan(flat, fv, "How many accounts are active?", { limit: 2 })
+check("a plan is produced without schemas", fp.ok, true)
+check("and the object is named bare", contains(fp.tables, "account"), true)
+check("and the prompt carries it", contains(fp.user, "account(status, balance)"), true)
+check("and the vocabulary reaches it", contains(fp.user, "ACTIVE"), true)
+fr = nlq.interpret(fp, "SELECT COUNT(*) FROM account WHERE status = 'ACTIVE'", {})
+check("R3 accepts an unqualified grounded table", fr.ok, true)
+' AND STILL REFUSES ONE IT NEVER SURFACED -- without this, "it works flat" is
+' satisfied by a check that stopped checking once the dots went away.
+fbad = nlq.check_sql("SELECT * FROM customers", { tables: [ "account" ] }, {})
+check("and refuses one it never surfaced", fbad[0].kind, "ungrounded_table")
+check("an alias and a join do not confuse it",
+      count(nlq.check_sql("SELECT a.x FROM account a JOIN product p ON p.id = a.id",
+                          { tables: [ "account", "product" ] }, {})), 0)
+fa = nlq.settle(fr, [ { n: 79 } ])
+check("and a value settles with its query", fa.value, 79)
+
+print ""
 print "-- refusals, each beside its nearest legal neighbour"
 on error goto next
 nlq.ground({ tables: [] }, "anything", {})
