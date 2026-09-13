@@ -6145,6 +6145,16 @@ whole program without needing a call site.
   shape. A refused grounding yields a plan with `ok: false` and
   `refused_because` — a value, not a raise, so a caller can show a person the
   candidates and ask.
+  `options.not_modelled` is an array of terms the estate holds nothing about —
+  `job`, `schedule`, `owner`. A question naming one is refused as
+  `not_in_the_catalog`, which is R6's other half: some facts are not in the
+  database at all, and no query can supply them. **Declared**, because there is
+  no catalog-only signal — measured, counting unmatched words does not separate
+  the cases, since an answerable question can leave more of them unmatched than
+  an unanswerable one. **The guard matters as much as the list**: a term counts
+  only when it also reaches nothing, so an estate with a real `job` column
+  models jobs whatever the list says. Fires on 2 of 2 unanswerable benchmark
+  questions and 0 of 17 answerable ones.
   `options.collapse_siblings` (default **true**) folds objects whose names differ
   only by a trailing `_NNN` into one candidate, reporting the rest under
   `siblings`. Measured on a 517-object estate: without it, recall at `limit: 8`

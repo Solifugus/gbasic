@@ -41,7 +41,7 @@ out="$scratch/sem.out"
 if timeout 120 ./gbasic tests/nlq/nlq_test.bas >"$out" 2>&1; then
     mism="$(sed -n 's/^mismatches: //p' "$out")"
     checks="$(sed -n 's/^checks: //p' "$out")"
-    if [ "$mism" = "0" ] && [ "${checks:-0}" -ge 72 ]; then
+    if [ "$mism" = "0" ] && [ "${checks:-0}" -ge 76 ]; then
         ok "$checks checks, 0 mismatches"
     else
         bad "nlq_test: $checks checks, $mism mismatches"; grep MISMATCH "$out" || true
@@ -130,28 +130,34 @@ fi
 # THE AMBIGUOUS QUESTION IS WHAT R2 EXISTS FOR, and this is the first thing that
 # scores it: both objects surfaced AND the derivation between them disclosed.
 #
-# THE TWO UNANSWERABLE QUESTIONS ARE COUNTED APART AND NOT CREDITED. They ask
-# which JOB reads a table and what breaks if it is dropped -- about jobs and
-# dependencies, which a catalog does not model. MEASURED, there is no
-# catalog-only signal: `unresolved` does not separate them (f_ledger_sums_zero
-# leaves 6 of 9 words unresolved and is perfectly answerable), and on the demo
-# estate one of them IS declined -- because the grounding pulled in an unrelated
-# numbered-schema collision and R6 fired on that. Crediting an accident would
-# let it read as progress.
+# THE TWO UNANSWERABLE QUESTIONS ARE NOW ANSWERED CORRECTLY -- declined -- AND
+# CREDITED ONLY FOR THE RIGHT REASON. They ask which JOB reads a table and what
+# breaks if it is dropped, about jobs and dependencies a catalog does not model.
+# THERE IS NO CATALOG-ONLY SIGNAL and `unresolved` is not one: those leave 4 of
+# 9 words unmatched while f_ledger_sums_zero leaves 6 of 9 and is perfectly
+# answerable, so counting unmatched words measures verbosity. It is DECLARED
+# instead -- `not_modelled`, from whoever owns the estate -- which fires on 2 of
+# 2 unanswerable and 0 of 17 answerable on both estates.
+#
+# CREDITED ONLY FOR THE RIGHT REASON, because before the list existed one of
+# these passed by ACCIDENT: the grounding pulled in an unrelated numbered-schema
+# collision and R6 fired on that. The scorer checks the refusal names
+# not_in_the_catalog, and checks ANY of the reasons rather than the first, since
+# a question can be unanswerable twice over.
 printf 'TIER scored\n'
-for est in demo_v:8:16 enterprise:8:13; do
+for est in demo_v:8:18 enterprise:8:16; do
     name="${est%%:*}"; rest="${est#*:}"; lim="${rest%%:*}"; floor="${rest##*:}"
     out="$(timeout 900 ./gbasic tests/nlq/nlq_score_ef.bas "tests/nlq/estate_$name.json" "$lim" 2>&1)"
     r="$(printf '%s\n' "$out" | sed -n 's|^RIGHT \([0-9]*\) .*|\1|p')"
     att="$(printf '%s\n' "$out" | sed -n 's|.* OF \([0-9]*\) attempted.*|\1|p')"
-    un="$(printf '%s\n' "$out" | sed -n 's|^UNATTEMPTED \([0-9]*\) .*|\1|p')"
+    dec="$(printf '%s\n' "$out" | sed -n 's|^DECLINED \([0-9]*\) .*|\1|p')"
     if [ -z "$r" ]; then
         bad "$name produced no score: $out"
     else
         [ "${r:-0}" -ge "$floor" ] && ok "$name: $r of $att attempted at limit $lim (floor $floor)" \
             || bad "$name scored $r of $att, floor $floor"
-        [ "$un" = "2" ] && ok "  and 2 unanswerable counted apart, not credited" \
-            || bad "$name: $un unanswerable counted apart, expected 2"
+        [ "$dec" = "2" ] && ok "  and both unanswerable declined FOR THE DECLARED REASON" \
+            || bad "$name: $dec unanswerable declined for the right reason, expected 2"
     fi
 done
 # THE AMBIGUOUS ONE SPECIFICALLY, since it is the capability R2 was built for

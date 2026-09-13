@@ -491,11 +491,14 @@ library nlq
     function plan(cat, vocab, question, options)
         opts = _options(options, [ "limit", "near_misses", "synonyms",
                                    "budget_tokens", "chars_per_token", "dialect",
-                                   "exemplars", "derived_from" ], "nlq.plan")
+                                   "exemplars", "derived_from", "not_modelled",
+                                   "collapse_siblings" ], "nlq.plan")
         g = ground(cat, question, { limit: _default(opts, "limit", 8),
                                     near_misses: _default(opts, "near_misses", 3),
                                     synonyms: _default(opts, "synonyms", {}),
-                                    derived_from: _default(opts, "derived_from", {}) })
+                                    derived_from: _default(opts, "derived_from", {}),
+                                    not_modelled: _default(opts, "not_modelled", []),
+                                    collapse_siblings: _default(opts, "collapse_siblings", true) })
         ' R1/R6 stop here: a grounding the catalog could not settle is not a
         ' plan, and the refusal travels as a VALUE so an application can show a
         ' person the candidates and ask.
@@ -710,7 +713,7 @@ library nlq
     function ground(cat, question, options)
         ok = check_catalog(cat)
         opts = _options(options, [ "limit", "near_misses", "synonyms", "derived_from",
-                                   "collapse_siblings" ], "nlq.ground")
+                                   "collapse_siblings", "not_modelled" ], "nlq.ground")
         limit = _default(opts, "limit", 8)
         near_n = _default(opts, "near_misses", 3)
         syn = _default(opts, "synonyms", {})
@@ -834,6 +837,14 @@ library nlq
         ' DISCLOSURE, NOT A REFUSAL -- see `alternatives` below.
         alts = _derivation_conflicts(selected, qterms, by_table,
                                      _default(opts, "derived_from", {}))
+
+        ' R6's OTHER HALF: a question about something the catalog does not hold
+        ' at all. `discovery_design` §4 -- some facts are not in the database,
+        ' and "unanswerable from the catalog" is an outcome the model carries
+        ' rather than a guess.
+        for each u in _out_of_catalog(qterms, scored, _default(opts, "not_modelled", []))
+            append(amb, u)
+        end for
 
         return { tables: _ids(selected),
                  ambiguous: amb,
@@ -1137,6 +1148,65 @@ library nlq
                     end if
                 end for
             end if
+        end for
+        return false
+    end function
+
+    ' --- what the catalog does not model at all --------------------------------
+    '
+    ' MEASURED FIRST, AND THE OBVIOUS SIGNAL DOES NOT WORK. "Which job reads
+    ' staging.tmp_rebate_2019, and what breaks if it is dropped?" is
+    ' unanswerable because a catalog has tables and columns and no notion of a
+    ' JOB -- but `unresolved` does not separate it: that question leaves 4 of 9
+    ' words unmatched while `f_ledger_sums_zero` leaves 6 of 9 and is perfectly
+    ' answerable. Unmatched words are mostly qualifiers, and counting them
+    ' measures verbosity rather than answerability.
+    '
+    ' SO IT IS DECLARED, like every other fact this library refuses to invent.
+    ' Whoever owns the estate knows what it does not model -- an application
+    ' that performed an import knows its import carried no job metadata -- and
+    ' `discovery` already carries "not in the database at all" as an outcome
+    ' (§4). NLQ takes the list and does not guess it.
+    '
+    ' THE GUARD MATTERS AS MUCH AS THE LIST: a term is only out-of-catalog when
+    ' it ALSO reaches nothing. An estate with a real `job` table declares
+    ' nothing, and even one that declared `job` would still answer a question
+    ' about a column called `job_id` -- the word resolved, so the catalog does
+    ' model it, whatever the list says.
+    function _out_of_catalog(qterms, scored, not_modelled)
+        out = []
+        if type(not_modelled) != "array" then
+            error "nlq: `not_modelled` is an array of terms the catalog does not hold"
+        end if
+        if count(not_modelled) = 0 then
+            return out
+        end if
+        absent = []
+        for each raw in not_modelled
+            term = _singular(lower(raw))
+            if contains(qterms, term) and not _reached_anything(scored, term) then
+                if not contains(absent, term) then
+                    append(absent, term)
+                end if
+            end if
+        end for
+        if count(absent) > 0 then
+            append(out, { kind: "not_in_the_catalog",
+                          candidates: absent,
+                          why: ("this estate holds nothing about " + join(absent, ", ") +
+                                "; the question asks for a fact that is not in the " +
+                                "database, which no query can supply") })
+        end if
+        return out
+    end function
+
+    function _reached_anything(scored, term)
+        for each sc in scored
+            for each h in sc.why
+                if h.term = term then
+                    return true
+                end if
+            end for
         end for
         return false
     end function

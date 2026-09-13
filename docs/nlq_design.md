@@ -629,7 +629,9 @@ R6 refused it anyway — a refusal of a question that settled itself, which is t
 worst kind because it looks like rigour. Fixed: the same-name check now skips
 when the question names one of the schemas.
 
-### One of the two unanswerable passes was luck, and neither is real
+### One of the two unanswerable passes was luck — and the gap is now closed
+
+**First, the finding.**
 
 Both unanswerable questions ask *which **job** reads this table, and what breaks
 if it is dropped* — about jobs and dependencies, which a catalog does not model
@@ -641,10 +643,31 @@ Before the fix above, one of the two *passed* — because the grounding happened
 to pull in an unrelated numbered-schema collision and R6 fired on **that**. A
 pass for the wrong reason.
 
-So they are **counted apart and not credited**. Crediting an accident would let
-it read as progress, and a future real fix would show up as no change at all.
-This is the negative-control shape `run_limitations` uses: the gap is asserted
-so that closing it is visible.
+**Then the fix, which is the same one everything else here uses.** "No
+catalog-only signal" is true and is *not* the same as "no way". Whoever owns the
+estate knows what it does not model — an application that performed an import
+knows its import carried no job metadata — and `discovery_design` §4 already
+carries "not in the database at all" as an outcome. So `not_modelled` is
+**declared**, exactly as synonyms, vocabulary, exemplars and derivation are.
+
+**The guard matters as much as the list.** A term counts as out-of-catalog only
+when it *also reaches nothing*. An estate with a real `job` column models jobs
+whatever a list says — the word resolved, so the catalog holds it — and that is
+asserted as a control beside the refusal.
+
+Measured on both estates: fires on **2 of 2** unanswerable and **0 of 17**
+answerable.
+
+| estate | attempted | right | unanswerable declined |
+|---|---|---|---|
+| demo | 19 | **18** | 2 for the declared reason |
+| enterprise | 19 | **16** | 2 for the declared reason |
+
+And the scorer credits a decline **only when the refusal names
+`not_in_the_catalog`**, checking *any* of the reasons rather than the first,
+since a question can be unanswerable twice over — on the demo estate one of
+these also collides with the numbered staging schemas. Without that, the
+accident described above would still be scoring.
 
 ### And a note on the crowding finding
 

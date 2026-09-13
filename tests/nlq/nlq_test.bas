@@ -339,6 +339,42 @@ check("and one entry per pair however many words matched",
       contains(dg.alternatives[0].measure, ","), true)
 
 print ""
+print "-- R6's other half: a fact the catalog does not hold at all"
+' MEASURED FIRST, AND THE OBVIOUS SIGNAL DOES NOT WORK. "Which job reads X, and
+' what breaks if it is dropped?" is unanswerable because a catalog has tables
+' and columns and no notion of a JOB -- but `unresolved` does not separate it:
+' that question leaves 4 of 9 words unmatched while an answerable one leaves 6
+' of 9. Counting unmatched words measures verbosity, not answerability.
+nmcat = { tables: [ { schema: "staging", table: "tmp_rebate_2019" } ],
+          columns: [ { schema: "staging", table: "tmp_rebate_2019", column: "amount" } ] }
+nmq = "Which job reads staging.tmp_rebate_2019, and what breaks if it is dropped?"
+ng = nlq.ground(nmcat, nmq, { limit: 4, not_modelled: [ "job", "breaks", "dropped" ] })
+found = false
+for each a2 in ng.ambiguous
+    if a2.kind = "not_in_the_catalog" then
+        found = true
+    end if
+end for
+check("a question about something the catalog does not model is refused", found, true)
+on error goto next
+nlq.check_answerable(ng)
+check("and answering it is refused", contains(error.message, "not_in_the_catalog"), true)
+error.clear()
+on error stop
+' CONTROL 1: the SAME question with nothing declared is answerable. Without it
+' this is satisfied by a library that refuses any question mentioning a word.
+check("CONTROL: undeclared, the same question is answerable",
+      nlq.check_answerable(nlq.ground(nmcat, nmq, { limit: 4 })), true)
+' CONTROL 2, AND IT IS THE GUARD THAT MATTERS: a declared term that DOES reach a
+' column is not out-of-catalog. An estate with a real `job` column models jobs,
+' whatever a list says -- the word resolved, so the catalog holds it.
+jobcat = { tables: [ { schema: "ops", table: "run" } ],
+           columns: [ { schema: "ops", table: "run", column: "job_name" } ] }
+jg = nlq.ground(jobcat, "which job ran last", { limit: 4, not_modelled: [ "job" ] })
+check("CONTROL: a declared term that reaches a column is not refused",
+      nlq.check_answerable(jg), true)
+
+print ""
 print "-- refusals, each beside its nearest legal neighbour"
 on error goto next
 nlq.ground({ tables: [] }, "anything", {})

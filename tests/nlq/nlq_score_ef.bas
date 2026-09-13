@@ -34,6 +34,10 @@ program main( args )
     vocab = nlq.vocabulary(vrows, {})
     syns = { report: [ "rpt" ], general: [ "gl" ], ledger: [ "gl" ],
              staged: [ "stg" ], counterparty: [ "ctp" ] }
+    ' DECLARED BY WHOEVER OWNS THE ESTATE. This one holds tables and columns and
+    ' nothing about the jobs that move data between them, so a question asking
+    ' which job reads a table is asking for a fact no query can supply.
+    not_modelled = [ "job", "schedule", "owner", "sla", "breaks", "dropped" ]
     lim = 8
     if count(args) > 1 then
         lim = number(args[1])
@@ -48,7 +52,8 @@ program main( args )
     per = {}
     for each q in c.questions
         g = nlq.ground(cat, q.text, { limit: lim, synonyms: syns,
-                                      derived_from: c.derivation })
+                                      derived_from: c.derivation,
+                                      not_modelled: not_modelled })
         n = n + 1
         verdict = "wrong"
 
@@ -63,14 +68,27 @@ program main( args )
             ' happened to pull in an unrelated numbered-schema collision and R6
             ' fired on that. Crediting it would let an accident read as
             ' progress. Counted apart so a real fix shows up as a change.
-            on error goto next
-            ok2 = nlq.check_answerable(g)
-            if error then
+            ' NOW ATTEMPTED, and credited only when it declines for the RIGHT
+            ' reason -- `not_in_the_catalog`, not some unrelated collision that
+            ' happened to make the grounding unsettleable. Before the declared
+            ' list existed one of these passed by exactly that accident, and a
+            ' scorer that could not tell them apart would have called it a win.
+            ' ANY of the reasons, not the first: a question can be
+            ' unanswerable twice over, and on the demo estate u_2 collides with
+            ' the numbered staging schemas AS WELL as asking about jobs. Taking
+            ' the first reason marked a correct refusal wrong.
+            right_reason = false
+            for each a in g.ambiguous
+                if a.kind = "not_in_the_catalog" then
+                    right_reason = true
+                end if
+            end for
+            if right_reason then
+                verdict = "right"
                 declined = declined + 1
-                error.clear()
+            else
+                verdict = "wrong"
             end if
-            on error stop
-            verdict = "unattempted"
         else
             if q.answer_kind = "ambiguous" then
                 ' BOTH sides surfaced AND the ambiguity disclosed -> right.
@@ -142,8 +160,7 @@ program main( args )
     end for
     print ("RIGHT " + string(right) + " PARTIAL " + string(partial) + " WRONG " + string(wrong) +
            " OF " + string(n - unattempted) + " attempted at limit " + string(lim))
-    print ("UNATTEMPTED " + string(unattempted) + " unanswerable (declined " + string(declined) +
-           ", INCIDENTALLY -- not detected from a catalog)")
+    print ("DECLINED " + string(declined) + " unanswerable, for the declared reason")
     for each cap in sort(keys(per))
         print ("CAP " + cap + " " + string(per[cap].ok) + "/" + string(per[cap].n))
     end for
