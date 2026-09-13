@@ -16,6 +16,9 @@
 #include <poll.h>
 #include <regex.h>
 #include <signal.h>
+#if HAVE_ZLIB
+#include <zlib.h>
+#endif
 #if HAVE_LIBSSL
 #include <openssl/ssl.h>
 #include <openssl/err.h>
@@ -29202,6 +29205,196 @@ static Value eval_call(AstExpr *expr) {
         free(dec);
         return r;
     }
+    /* --- compress / uncompress -------------------------------------------
+     *
+     * zlib was linked from the day the xlsx engine shipped and was reachable
+     * ONLY from inside it, so a pure-gBASIC program could not deflate a byte.
+     * That is what a PDF writer needs for /FlateDecode, and what anything
+     * storing a large value needs generally.
+     *
+     * THE FORMAT IS DECLARED, NOT ASSUMED, because the three that zlib speaks
+     * are not interchangeable and the difference is silent: PDF's
+     * /FlateDecode wants a ZLIB stream (RFC 1950, two header bytes and an
+     * Adler-32), a ZIP member wants RAW deflate with no header at all, and a
+     * .gz file wants the gzip wrapper. Handing a raw stream to a reader
+     * expecting zlib does not fail cleanly -- it reads the first byte as a
+     * compression method and goes wrong from there. Default is `zlib`, which
+     * is what its own `uncompress` reads back and what PDF wants.
+     *
+     * `uncompress` CAPS ITS OUTPUT. A compressed stream carries no trustworthy
+     * statement of its own size, and a few kilobytes can expand to gigabytes,
+     * so a program reading a file it did not write needs a bound rather than
+     * an out-of-memory. The cap is generous and can be raised by name; the
+     * refusal says which limit was hit rather than reporting corruption.
+     */
+#if HAVE_ZLIB
+    if (strcmp(expr->as.call.name, "compress") == 0 ||
+        strcmp(expr->as.call.name, "uncompress") == 0) {
+        const char *fname = expr->as.call.name;
+        int is_compress = (strcmp(fname, "compress") == 0);
+        char m[192];
+        if (expr->as.call.args.count < 1 || expr->as.call.args.count > 2) {
+            snprintf(m, sizeof(m), "%s expects a string and an optional options record", fname);
+            runtime_error_raise(m, 1003, "invalid function call");
+            return value_null();
+        }
+        Value src = eval_expr(expr->as.call.args.items[0]);
+        if (error_action_pending()) { value_free(src); return value_null(); }
+        if (src.kind != VALUE_STRING) {
+            value_free(src);
+            snprintf(m, sizeof(m), "%s expects a string", fname);
+            runtime_error_raise(m, 1003, "invalid argument type");
+            return value_null();
+        }
+
+        int level = Z_DEFAULT_COMPRESSION;
+        int window = 15;                 /* zlib wrapper */
+        size_t max_bytes = (size_t)256 * 1024 * 1024;
+        if (expr->as.call.args.count == 2) {
+            Value opts = eval_expr(expr->as.call.args.items[1]);
+            if (error_action_pending()) { value_free(src); value_free(opts); return value_null(); }
+            if (opts.kind != VALUE_RECORD) {
+                value_free(src); value_free(opts);
+                snprintf(m, sizeof(m), "%s expects its options as a record", fname);
+                runtime_error_raise(m, 1003, "invalid argument type");
+                return value_null();
+            }
+            /* Unknown option refused BY NAME: a misspelled `fromat:` that was
+             * ignored would silently produce a stream in the wrong one. */
+            for (size_t i = 0; i < opts.as.record.count; i++) {
+                const char *k = opts.as.record.fields[i].name;
+                int known = (strcmp(k, "format") == 0) ||
+                            (is_compress && strcmp(k, "level") == 0) ||
+                            (!is_compress && strcmp(k, "max_bytes") == 0);
+                if (!known) {
+                    /* The message is BUILT BEFORE the record is freed: `k`
+                     * points into it, and formatting after the free is a
+                     * use-after-free that still prints the right words --
+                     * which is why valgrind caught this and no functional
+                     * check could. */
+                    snprintf(m, sizeof(m), "%s: unknown option '%s' (known: format%s)",
+                             fname, k, is_compress ? ", level" : ", max_bytes");
+                    value_free(src); value_free(opts);
+                    runtime_error_raise(m, 1003, "invalid argument");
+                    return value_null();
+                }
+            }
+            RecordField *f = record_find(&opts, "format");
+            if (f && f->value->kind == VALUE_STRING) {
+                const char *fmt = f->value->as.string;
+                if (strcmp(fmt, "zlib") == 0)      { window = 15;      }
+                else if (strcmp(fmt, "raw") == 0)  { window = -15;     }
+                else if (strcmp(fmt, "gzip") == 0) { window = 15 + 16; }
+                else {
+                    value_free(src); value_free(opts);
+                    snprintf(m, sizeof(m), "%s: format must be zlib, raw or gzip", fname);
+                    runtime_error_raise(m, 1003, "invalid argument");
+                    return value_null();
+                }
+            } else if (f) {
+                value_free(src); value_free(opts);
+                snprintf(m, sizeof(m), "%s: format must be a string", fname);
+                runtime_error_raise(m, 1003, "invalid argument type");
+                return value_null();
+            }
+            if (is_compress) {
+                RecordField *lv = record_find(&opts, "level");
+                if (lv) {
+                    if (lv->value->kind != VALUE_NUMBER ||
+                        lv->value->as.number < 0 || lv->value->as.number > 9 ||
+                        lv->value->as.number != floor(lv->value->as.number)) {
+                        value_free(src); value_free(opts);
+                        snprintf(m, sizeof(m), "compress: level must be a whole number from 0 to 9");
+                        runtime_error_raise(m, 1003, "invalid argument");
+                        return value_null();
+                    }
+                    level = (int)lv->value->as.number;
+                }
+            } else {
+                RecordField *mb = record_find(&opts, "max_bytes");
+                if (mb) {
+                    if (mb->value->kind != VALUE_NUMBER || mb->value->as.number < 1) {
+                        value_free(src); value_free(opts);
+                        snprintf(m, sizeof(m), "uncompress: max_bytes must be a positive number");
+                        runtime_error_raise(m, 1003, "invalid argument");
+                        return value_null();
+                    }
+                    max_bytes = (size_t)mb->value->as.number;
+                }
+            }
+            value_free(opts);
+        }
+
+        /* The counted length, never strlen: compressed data is full of NULs
+         * and a length-blind read here is PLAT-NUL's defect exactly. */
+        size_t in_len = string_length(src.as.string);
+        const unsigned char *in = (const unsigned char *)src.as.string;
+
+        z_stream zs;
+        memset(&zs, 0, sizeof(zs));
+        int zrc = is_compress
+            ? deflateInit2(&zs, level, Z_DEFLATED, window, 8, Z_DEFAULT_STRATEGY)
+            : inflateInit2(&zs, window);
+        if (zrc != Z_OK) {
+            value_free(src);
+            snprintf(m, sizeof(m), "%s: could not start zlib", fname);
+            runtime_error_raise(m, 1003, "compression");
+            return value_null();
+        }
+
+        size_t cap = is_compress ? (in_len / 2 + 1024) : (in_len * 4 + 1024);
+        if (cap > max_bytes) cap = max_bytes;
+        if (cap < 1024) cap = 1024;
+        unsigned char *out = malloc(cap);
+        if (!out) { abort(); }
+        size_t have = 0;
+
+        zs.next_in = (Bytef *)in;
+        zs.avail_in = (uInt)in_len;
+        int done = 0, failed = 0, too_big = 0;
+        while (!done && !failed) {
+            if (have == cap) {
+                if (cap >= max_bytes) { too_big = 1; failed = 1; break; }
+                size_t next = cap * 2;
+                if (next > max_bytes) next = max_bytes;
+                unsigned char *grown = realloc(out, next);
+                if (!grown) { abort(); }
+                out = grown; cap = next;
+            }
+            zs.next_out = out + have;
+            zs.avail_out = (uInt)(cap - have);
+            zrc = is_compress ? deflate(&zs, Z_FINISH) : inflate(&zs, Z_NO_FLUSH);
+            have = cap - zs.avail_out;
+            if (zrc == Z_STREAM_END) { done = 1; }
+            else if (zrc == Z_OK || zrc == Z_BUF_ERROR) { /* grow and continue */ }
+            else { failed = 1; }
+            if (!is_compress && zrc == Z_OK && zs.avail_in == 0 && zs.avail_out != 0) {
+                /* input exhausted without Z_STREAM_END: the stream is truncated */
+                failed = 1;
+            }
+        }
+        if (is_compress) { deflateEnd(&zs); } else { inflateEnd(&zs); }
+        value_free(src);
+
+        if (failed) {
+            free(out);
+            if (too_big) {
+                snprintf(m, sizeof(m),
+                         "uncompress: the stream expands past max_bytes (%zu); raise it by name if that is expected",
+                         max_bytes);
+                runtime_error_raise(m, 1003, "compression");
+            } else {
+                snprintf(m, sizeof(m), "%s: the input is not a valid %s stream", fname,
+                         window < 0 ? "raw deflate" : (window > 15 ? "gzip" : "zlib"));
+                runtime_error_raise(m, 1003, "compression");
+            }
+            return value_null();
+        }
+        Value r = value_string_n((char *)out, have);
+        free(out);
+        return r;
+    }
+#endif
     if (strcmp(expr->as.call.name, "hex_encode") == 0) {
         Value s;
         if (!crypto_one_string(expr, "hex_encode", &s)) return value_null();

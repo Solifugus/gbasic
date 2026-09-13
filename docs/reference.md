@@ -3663,6 +3663,51 @@ and not when the main loop runs. Reset the counters before building the widget
 tree; resetting afterwards zeroes work already done and makes a healthy grid look
 inert. Worked demo: `examples/native_ui/datagrid_demo.bas`.
 
+## Compression
+
+Built with zlib (`HAVE_ZLIB`), two builtins — no `load` required. They take and
+return **binary strings**, so every byte value including NUL is content.
+
+- `compress(s [, { format:, level: }])`
+- `uncompress(s [, { format:, max_bytes: }])`
+
+**The container is declared, not assumed**, because the three zlib speaks are
+not interchangeable and the difference is silent:
+
+| `format` | what it is | who wants it |
+|---|---|---|
+| `zlib` (default) | RFC 1950 — two header bytes and an Adler-32 | PDF `/FlateDecode` |
+| `raw` | RFC 1951 — deflate with no wrapper at all | a ZIP member |
+| `gzip` | RFC 1952 — the `.gz` wrapper | a `.gz` file |
+
+Handing a raw stream to a reader expecting zlib does not fail cleanly in C: it
+reads the first byte as a compression method and goes wrong from there. Here it
+is **refused by name** — `the input is not a valid zlib stream` — and the three
+are distinguishable on the wire (`0x78`, `1f8b`, and raw being shortest for
+carrying no header).
+
+`level` is 0–9 (0 stores, so the output is slightly *larger* than the input);
+the default is zlib's own. `level` is a `compress` option and `max_bytes` an
+`uncompress` one, and passing either to the wrong side is refused, as is an
+unknown option — **by name**, since a misspelled `fromat:` that was ignored
+would quietly produce a stream in the wrong container.
+
+**`uncompress` caps its output.** A compressed stream carries no trustworthy
+statement of its own size and a few kilobytes can expand to gigabytes, so a
+program reading a file it did not write gets a bound rather than an
+out-of-memory. The default is 256 MB and `max_bytes:` raises it; the refusal
+names the limit that was hit rather than reporting corruption.
+
+```basic
+z = compress(report_text)                  ' zlib, for PDF /FlateDecode
+raw = compress(part, { format: "raw" })    ' for a ZIP member
+back = uncompress(z)
+```
+
+zlib had been linked since the xlsx engine shipped and was reachable **only**
+from inside it, so no gBASIC program could deflate a byte. Found while checking
+whether a PDF writer was feasible. See `tests/run_compress.sh`.
+
 ## Cryptography
 
 When gBASIC is built with libcrypto (OpenSSL), a family of cryptographic builtins

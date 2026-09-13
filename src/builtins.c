@@ -27,6 +27,8 @@ int gbasic_builtin_function(const char *name) {
         "base64url_decode",
         "hex_encode",
         "hex_decode",
+        "compress",
+        "uncompress",
         "random_bytes",
         "bytes_equal",
         "sha256",
