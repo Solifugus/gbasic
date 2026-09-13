@@ -4504,3 +4504,48 @@ orders freely.
   timer handler has. Recorded because the friction was real and the reasoning
   is worth not rediscovering; struck from the open ledger because it is not
   something to act on.
+
+## 2026-09-13 — CC — while: encoding FundReturn's operating mode (research vs production) as executable config in a library
+- **Type:** language-surprise
+- **Severity:** medium
+- **What:** a statement at LIBRARY level — outside any function — is parsed
+  and then silently never executed. Measured on 112b290b:
+  ```basic
+  library st
+      mode = "research"          ' accepted; never runs
+      print "library-level"      ' accepted; never prints
+      function current()
+          return mode            ' runtime error: undefined variable: mode
+      end function
+  end library
+  ```
+  The `print` produces nothing, a `write` at the same position creates no
+  file, and the program exits 0 with no warning; the only symptom is
+  `undefined variable` the first time a function reads the name. So a
+  library cannot hold a value such as "the current mode" with a default, and
+  the shape an application author reaches for first fails at a distance from
+  the line that is wrong.
+- **Workaround:** `modes.current()` is a constant function returning
+  `"research"`, and `switch_to` can only raise or return that constant. For a
+  mode that must be impossible to change this is the better design (there is
+  nothing to poke), and stdlib's own idiom — every stateful library takes its
+  state as an argument and returns the new one — covers the case where state
+  is wanted.
+- **Suggestion:** refuse a non-declaration statement inside `library … end
+  library` at parse time (the way `dim x` is refused with advice), or warn
+  that library bodies hold only functions, modifiers and `load`.
+
+## 2026-09-13 — CC — while: persisting a FundReturn study case whose fields include timestamps
+- **Type:** language-surprise
+- **Severity:** low
+- **What:** a record holding a `datetime` (`created_at: now("UTC")`) cannot be
+  written with `persist.write_atomic`: `json_encode`/`encode` refuse the value,
+  as UNLEARN documents ("display is total, encoding is not"). So a record
+  that prints fine is unpersistable, and the refusal surfaces at the write,
+  not where the datetime was put in.
+- **Workaround:** the case stores timestamps as text (`string(now("UTC"))`)
+  and the clock is INJECTED as a string argument to `create`/`transition`,
+  which also makes the goldens deterministic. Date arithmetic will parse the
+  text back with `{datetime}=` at the point of use. Not a bug — logged
+  because a record type meant to be persisted must be designed around it
+  from the first field, and the cookbook's persist entry does not say so.
