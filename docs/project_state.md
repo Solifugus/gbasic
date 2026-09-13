@@ -205,6 +205,20 @@ document list, with a status column, is `docs/README.md`.
   did not meet at all (`nlq.from_discovery` is the bridge, and preserving the id
   exactly is the whole difficulty). Worked recipes in `nlq_cookbook.md`, none of
   which calls a model or touches a database. See nlq_design.md.
+- **PDF documents** — `gpdf` with its generated metric table `gpdf_metrics`.
+  Phase 1: the document, the core-14 fonts, text measured against the
+  published Adobe widths, and word wrap that measures rather than counting
+  characters. Written clean from ISO 32000 rather than ported, so the licence
+  is ours to set. Output is byte-deterministic (no clock; an undated document
+  carries no CreationDate), and an unrepresentable character is refused by
+  name rather than substituted, because a wrong customer name on a posted
+  invoice is worse than a refusal. THE ORACLE IS NOT US: four documents are
+  handed to mupdf, ghostscript and poppler on every run. That oracle earned
+  its place before a line existed -- pointed at the Node library that inspired
+  the shape, it found `startxref 753` for an xref beginning at byte 799, plus
+  a bad flate checksum, on freshly generated output. Still to come: tables
+  that flow across pages, chart SVG as PDF vectors, images, and embedded fonts
+  for Unicode.
 - **financial-format adapters** — `finio`, Phase 0 (value model + registry only).
   Provenance is reconstructed from a retained source because the alternative was
   measured at 2.79 GB for a 9.5 MB file; see financial_adapters_design.md §21.

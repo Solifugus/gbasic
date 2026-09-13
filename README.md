@@ -6,13 +6,13 @@ gBASIC is a **modern BASIC for business programming**: familiar control flow,
 plus records, first-class functions, watchers, shared-nothing actors, and typed
 values for dates, durations and money. Around it sits a working platform —
 databases, a hardened web server, spreadsheets, statistics, charts, native GUI
-and an AI stack — and fifty pure-gBASIC libraries covering double-entry accounting, loan
+and an AI stack — and fifty-two pure-gBASIC libraries covering double-entry accounting, loan
 servicing, deposits, credit analytics, securities analysis and more. A gBASIC
 program is meant to be a real application, not a demonstration.
 
 This repository holds the C implementation of gBASIC `0.1.0`. It is an **early
 release** and the version number is honest about that — but it is not a sketch:
-**128 test suites** gate every change, goldens are byte-exact, and the claims in
+**129 test suites** gate every change, goldens are byte-exact, and the claims in
 this file that can be measured have been. Until 1.0.0 the language surface may
 still move between releases; [CHANGELOG.md](CHANGELOG.md) records what changed
 and why, and the [documentation index](docs/README.md) marks every document
@@ -155,7 +155,7 @@ Two of these deserve a sentence more than a table row:
 
 ### The standard library
 
-Fifty pure-gBASIC libraries in `stdlib/`. Each bullet says what backs it,
+Fifty-two pure-gBASIC libraries in `stdlib/`. Each bullet says what backs it,
 because they are not at the same maturity and a uniform list would imply they
 are.
 
@@ -258,6 +258,17 @@ are.
   [tools](docs/tools_design.md) · [agent](docs/agent_design.md) ·
   [llm](docs/llm_design.md) · [mcp](docs/mcp_design.md) ·
   [retrieval](docs/retrieval_design.md)
+- **PDF documents** (`gpdf`, `gpdf_metrics`) — phase 1: the document, the
+  core-14 fonts, text measured against the published Adobe widths, and word
+  wrap that is a *measurement* rather than a character count. Written clean
+  from ISO 32000. The output is **byte-deterministic** — a PDF carries a
+  CreationDate and an `/ID`, and taking either from the clock would make a
+  golden impossible, so a document given no creation date carries none at all.
+  An unrepresentable character is **refused by name, never substituted**:
+  phase 1 is WinAnsi, and putting a wrong customer name on a posted invoice is
+  worse than refusing to write it. Validated by three independent readers —
+  mupdf, ghostscript and poppler — because a PDF writer checked by its own
+  reader proves only self-consistency.
 - **odds and ends** — `web` (routing), `frame` (data frames), `matrix`,
   `persist` (crash-safe versioned storage), `filetree`, `crypto`, `mail`,
   `ari` (anchor-relative report parsing).
@@ -370,7 +381,7 @@ default target: build it with `make dev` and install it with
 ./tests/run_all.sh web              # or filter by substring
 ```
 
-**Use `run_all.sh` rather than naming suites.** It discovers all 128 suites by
+**Use `run_all.sh` rather than naming suites.** It discovers all 129 suites by
 glob, and that is the whole point: a hand-maintained list is a gate that
 silently shrinks. Four suites in this repository sat broken across two releases
 because every list anyone ran happened not to name them. It reports a suite
