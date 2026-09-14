@@ -646,6 +646,402 @@ library gpdf
         return running + v
     end function
 
+    ' ---- charts, as vectors ----------------------------------------------
+    '
+    ' `chart` already renders to SVG, so a report wants that chart IN the PDF.
+    ' This is not an SVG renderer and does not pretend to be one: it translates
+    ' the SUBSET `chart` emits -- line, rect, circle, path, text -- into PDF
+    ' vector operators, and REFUSES anything else BY NAME. We own both ends, so
+    ' the day `chart` grows an element this says so instead of quietly dropping
+    ' it, which is the only reason a subset translator is honest.
+    '
+    ' The result is real vectors: it scales, prints and selects as text, where
+    ' a rasterised chart is a picture of a chart.
+    '
+    ' TWO COORDINATE SYSTEMS. SVG's y grows DOWNWARD from the top-left, PDF's
+    ' grows UPWARD from the bottom-left. The flip is arithmetic per coordinate
+    ' rather than a negative-y transform, because a negative-y CTM would mirror
+    ' the TEXT as well and the labels would come out backwards.
+    '
+    ' NO TRIGONOMETRY. PDF has no arc operator, so a pie's elliptical arcs
+    ' become cubic Béziers -- and the control points for a circular arc follow
+    ' from its endpoints with nothing but `sqrt`, while splitting a wide arc is
+    ' vector bisection. gBASIC has no trig builtins and `chart` carries its own
+    ' Taylor sine; a second copy here would be a second thing to drift.
+
+    function svg(doc, svg_text, x, y, options)
+        opts = _options(options, [ "width", "height" ], "gpdf.svg")
+        src = string(svg_text)
+        head = match(src, "<svg[^>]*>")
+        if is_unknown(head) then
+            error "gpdf.svg: this does not start with an <svg> element"
+        end if
+        battrs = _attrs(head.text)
+        native_w = _numattr(battrs, "width", 0)
+        native_h = _numattr(battrs, "height", 0)
+        if native_w <= 0 or native_h <= 0 then
+            error "gpdf.svg: the <svg> element declares no usable width and height"
+        end if
+        w = _default(opts, "width", native_w)
+        h = _default(opts, "height", native_h)
+        sx = w / native_w
+        sy = h / native_h
+
+        out = doc
+        if count(out.pages) = 0 then
+            error "gpdf.svg: there is no page yet -- call gpdf.add_page first"
+        end if
+        ' `y` is the BOTTOM-left of the box, as everywhere else in this library.
+        top = y + h
+        body = mid(src, len(head.text), len(src) - len(head.text))
+
+        for each m in match_all(body, "<([a-z]+)([^>]*)>")
+            kind = m.groups[0]
+            a = _attrs(m.groups[1])
+            if kind = "line" then
+                out = _svg_line(out, a, x, top, sx, sy)
+            end if
+            if kind = "rect" then
+                out = _svg_rect(out, a, x, top, sx, sy)
+            end if
+            if kind = "circle" then
+                out = _svg_circle(out, a, x, top, sx, sy)
+            end if
+            if kind = "path" then
+                out = _svg_path(out, a, x, top, sx, sy)
+            end if
+            if kind = "text" then
+                label = _svg_text_of(body, m)
+                out = _svg_text(out, a, label, x, top, sx, sy, battrs)
+            end if
+            if not contains([ "line", "rect", "circle", "path", "text", "svg" ], kind) then
+                error ("gpdf.svg: <" + kind + "> is outside the subset this translates " +
+                       "(line, rect, circle, path, text). It is refused rather than dropped, " +
+                       "so a chart that grew a new element says so instead of losing part of itself.")
+            end if
+        end for
+        return out
+    end function
+
+    ' ---- the pieces ------------------------------------------------------
+
+    function _svg_line(doc, a, ox, top, sx, sy)
+        col = _default(a, "stroke", "#000000")
+        if col = "none" then return doc
+        out = _stroke_colour(doc, col)
+        out = _append(out, (_num(_numattr(a, "stroke-width", 1) * sx) + " w " +
+                            _pt(ox + _numattr(a, "x1", 0) * sx, top - _numattr(a, "y1", 0) * sy) + " m " +
+                            _pt(ox + _numattr(a, "x2", 0) * sx, top - _numattr(a, "y2", 0) * sy) + " l S"))
+        return out
+    end function
+
+    function _svg_rect(doc, a, ox, top, sx, sy)
+        rx = ox + _numattr(a, "x", 0) * sx
+        rw = _numattr(a, "width", 0) * sx
+        rh = _numattr(a, "height", 0) * sy
+        ' SVG gives the TOP edge; PDF's rectangle operator takes the bottom.
+        ry = top - _numattr(a, "y", 0) * sy - rh
+        fill = _default(a, "fill", "#000000")
+        if fill = "none" then return doc
+        out = _fill_colour(doc, fill)
+        return _append(out, _pt(rx, ry) + " " + _num(rw) + " " + _num(rh) + " re f")
+    end function
+
+    ' A circle is four Béziers. 0.5523 is the standard control-point ratio for
+    ' a quarter turn, 4/3 * (sqrt(2) - 1), and is written out rather than
+    ' derived so the constant is visible.
+    function _svg_circle(doc, a, ox, top, sx, sy)
+        fill = _default(a, "fill", "#000000")
+        if fill = "none" then return doc
+        cx = ox + _numattr(a, "cx", 0) * sx
+        cy = top - _numattr(a, "cy", 0) * sy
+        r = _numattr(a, "r", 0) * sx
+        k = r * 0.5522847498307936
+        out = _fill_colour(doc, fill)
+        out = _append(out, _pt(cx + r, cy) + " m")
+        out = _append(out, _pt(cx + r, cy + k) + " " + _pt(cx + k, cy + r) + " " + _pt(cx, cy + r) + " c")
+        out = _append(out, _pt(cx - k, cy + r) + " " + _pt(cx - r, cy + k) + " " + _pt(cx - r, cy) + " c")
+        out = _append(out, _pt(cx - r, cy - k) + " " + _pt(cx - k, cy - r) + " " + _pt(cx, cy - r) + " c")
+        out = _append(out, _pt(cx + k, cy - r) + " " + _pt(cx + r, cy - k) + " " + _pt(cx + r, cy) + " c f")
+        return out
+    end function
+
+    function _svg_text(doc, a, label, ox, top, sx, sy, battrs)
+        if label = "" then return doc
+        size = _numattr(a, "font-size", _numattr(battrs, "font-size", 12)) * sy
+        font = doc.font
+        if _default(a, "font-weight", "") = "bold" then
+            font = _bold_of(font)
+        end if
+        out = set_font(doc, font, size)
+        out = _fill_colour(out, _default(a, "fill", "#000000"))
+        tx = ox + _numattr(a, "x", 0) * sx
+        ty = top - _numattr(a, "y", 0) * sy
+        ' SVG anchors text; PDF does not. The offset is MEASURED with the same
+        ' core-14 widths everything else uses -- which is why the metrics layer
+        ' had to come first for this to be possible at all.
+        anchor = _default(a, "text-anchor", "start")
+        w = text_width(font, size, label)
+        if anchor = "middle" then tx = tx - w / 2
+        if anchor = "end" then tx = tx - w
+        ' `dominant-baseline: middle` centres on the x-height; 0.36em is the
+        ' usual approximation and is what a viewer does with these charts.
+        if _default(a, "dominant-baseline", "") = "middle" then
+            ty = ty - size * 0.36
+        end if
+        out = _draw(out, tx, ty, label)
+        return set_font(out, doc.font, doc.font_size)
+    end function
+
+    ' The text between <text ...> and </text>, unescaped. `chart` escapes its
+    ' labels, so a title containing `R&D <script>` arrives here as entities.
+    function _svg_text_of(body, m)
+        after = m.start + m.length
+        close = find(mid(body, after, len(body) - after), "</text>")
+        if is_unknown(close) then return ""
+        raw = mid(body, after, close)
+        raw = replace(raw, "&lt;", "<")
+        raw = replace(raw, "&gt;", ">")
+        raw = replace(raw, "&quot;", chr(34))
+        raw = replace(raw, "&#39;", "'")
+        return replace(raw, "&amp;", "&")
+    end function
+
+    ' ---- paths -----------------------------------------------------------
+
+    ' The subset `chart` emits: M, L and A, absolute, plus Z. Anything else is
+    ' refused by name for the same reason an unknown element is.
+    function _svg_path(doc, a, ox, top, sx, sy)
+        d = _default(a, "d", "")
+        if d = "" then return doc
+        stroke = _default(a, "stroke", "none")
+        fill = _default(a, "fill", "none")
+        out = doc
+        if fill != "none" then out = _fill_colour(out, fill)
+        if stroke != "none" then
+            out = _stroke_colour(out, stroke)
+            out = _append(out, _num(_numattr(a, "stroke-width", 1) * sx) + " w")
+        end if
+
+        ' TOKENIZED, NOT SPLIT ON SPACES. SVG lets a command letter sit hard
+        ' against its first number -- `M31.6 196.4` is what `chart` actually
+        ' emits -- so splitting on whitespace yields the token `M31.6`, which
+        ' is neither a command nor a number.
+        toks = []
+        ' ANY letter is a token, not just the supported ones: a regex that
+        ' matched only M/L/A/Z would skip a `C` silently and then blame the
+        ' number after it, reporting the wrong cause for the right problem.
+        for each tk in match_all(d, "[A-Za-z]|-?[0-9]+\\.?[0-9]*")
+            append(toks, tk.text)
+        end for
+        i = 0
+        cur = [ 0, 0 ]
+        closed = false
+        ops = 0
+        while i < count(toks)
+            t = toks[i]
+            if t = "M" or t = "L" then
+                px = ox + number(toks[i + 1]) * sx
+                py = top - number(toks[i + 2]) * sy
+                verb = " m"
+                if t = "L" then verb = " l"
+                out = _append(out, _pt(px, py) + verb)
+                cur = [ px, py ]
+                ops = ops + 1
+                i = i + 3
+            else
+                if t = "A" then
+                    r = number(toks[i + 1]) * sx
+                    large = number(toks[i + 4])
+                    sweep = number(toks[i + 5])
+                    ex = ox + number(toks[i + 6]) * sx
+                    ey = top - number(toks[i + 7]) * sy
+                    out = _arc(out, cur, [ ex, ey ], r, large, sweep)
+                    cur = [ ex, ey ]
+                    ops = ops + 1
+                    i = i + 8
+                else
+                    if t = "Z" or t = "z" then
+                        closed = true
+                        i = i + 1
+                    else
+                        if t = "" then
+                            i = i + 1
+                        else
+                            error ("gpdf.svg: path command '" + t + "' is outside the subset " +
+                                   "this translates (M, L, A, Z)")
+                        end if
+                    end if
+                end if
+            end if
+        end while
+        if closed then out = _append(out, "h")
+        paint = "S"
+        if fill != "none" and stroke != "none" then paint = "B"
+        if fill != "none" and stroke = "none" then paint = "f"
+        if ops > 0 then out = _append(out, paint)
+        return out
+    end function
+
+    ' A circular arc as cubic Béziers, WITH NO TRIGONOMETRY.
+    '
+    ' The centre is found from the two endpoints and the radius; the control
+    ' points from the half-angle, whose sine and cosine come out of the DOT
+    ' PRODUCT of the two unit radii by the half-angle identities -- so `sqrt`
+    ' is the only function needed. A span wider than 90 degrees is BISECTED,
+    ' and bisecting is vector arithmetic: the midpoint of an arc is the
+    ' normalised sum of its endpoints (negated for the long way round).
+    function _arc(doc, p0, p1, r, large, sweep)
+        dx = p1[0] - p0[0]
+        dy = p1[1] - p0[1]
+        chord = sqrt(dx * dx + dy * dy)
+        if chord = 0 or r <= 0 then
+            return _append(doc, _pt(p1[0], p1[1]) + " l")
+        end if
+        if r < chord / 2 then r = chord / 2
+        ' Distance from the chord's midpoint to the centre.
+        hh = r * r - (chord / 2) * (chord / 2)
+        if hh < 0 then hh = 0
+        hd = sqrt(hh)
+        mx = (p0[0] + p1[0]) / 2
+        my = (p0[1] + p1[1]) / 2
+        ' Perpendicular to the chord. Which side the centre sits on is decided
+        ' by the two flags together -- in PDF's y-up space the SVG sweep is
+        ' reversed, which is the one place the coordinate flip is visible in
+        ' logic rather than arithmetic.
+        ux = -dy / chord
+        uy = dx / chord
+        side = -1
+        if large = sweep then side = 1
+        cx = mx + side * hd * ux
+        cy = my + side * hd * uy
+        v1 = [ (p0[0] - cx) / r, (p0[1] - cy) / r ]
+        v2 = [ (p1[0] - cx) / r, (p1[1] - cy) / r ]
+        return _arc_span(doc, cx, cy, r, v1, v2, sweep, large)
+    end function
+
+    function _arc_span(doc, cx, cy, r, v1, v2, sweep, large)
+        dot = v1[0] * v2[0] + v1[1] * v2[1]
+        if large = 1 or dot < 0 then
+            m = _arc_mid(v1, v2, sweep, large)
+            out = _arc_span(doc, cx, cy, r, v1, m, sweep, 0)
+            return _arc_span(out, cx, cy, r, m, v2, sweep, 0)
+        end if
+        return _arc_one(doc, cx, cy, r, v1, v2, sweep)
+    end function
+
+    ' The midpoint of the arc from v1 to v2. For the short way it is the
+    ' normalised sum; for the long way, the opposite point. When the two are
+    ' exactly opposed the sum is zero and the perpendicular is used instead.
+    function _arc_mid(v1, v2, sweep, large)
+        sx = v1[0] + v2[0]
+        sy = v1[1] + v2[1]
+        n = sqrt(sx * sx + sy * sy)
+        if n < 0.000001 then
+            px = 0 - v1[1]
+            py = v1[0]
+            if sweep = 1 then
+                px = v1[1]
+                py = 0 - v1[0]
+            end if
+            return [ px, py ]
+        end if
+        s = 1
+        if large = 1 then s = -1
+        return [ s * sx / n, s * sy / n ]
+    end function
+
+    ' One Bézier for a span of at most 90 degrees. k = 4/3 * (1 - cos t) / sin t
+    ' at the HALF angle t, and both come from the dot product by the half-angle
+    ' identities -- no trigonometry anywhere.
+    function _arc_one(doc, cx, cy, r, v1, v2, sweep)
+        dot = v1[0] * v2[0] + v1[1] * v2[1]
+        if dot > 1 then dot = 1
+        if dot < 0 - 1 then dot = 0 - 1
+        cos_half = sqrt((1 + dot) / 2)
+        sin_half = sqrt((1 - dot) / 2)
+        if sin_half < 0.000001 then
+            return _append(doc, _pt(cx + v2[0] * r, cy + v2[1] * r) + " l")
+        end if
+        k = (4 / 3) * (1 - cos_half) / sin_half
+        ' The tangent direction at each end, turned the way the arc sweeps.
+        dir = 1
+        cross = v1[0] * v2[1] - v1[1] * v2[0]
+        if cross < 0 then dir = 0 - 1
+        p1x = cx + r * (v1[0] - dir * k * v1[1])
+        p1y = cy + r * (v1[1] + dir * k * v1[0])
+        p2x = cx + r * (v2[0] + dir * k * v2[1])
+        p2y = cy + r * (v2[1] - dir * k * v2[0])
+        ex = cx + v2[0] * r
+        ey = cy + v2[1] * r
+        return _append(doc, _pt(p1x, p1y) + " " + _pt(p2x, p2y) + " " + _pt(ex, ey) + " c")
+    end function
+
+    ' ---- small helpers ---------------------------------------------------
+
+    function _append(doc, op)
+        out = doc
+        i = count(out.pages) - 1
+        out.pages[i].content = out.pages[i].content + op + chr(10)
+        return out
+    end function
+
+    function _pt(x, y)
+        return _num(x) + " " + _num(y)
+    end function
+
+    function _attrs(text)
+        a = {}
+        for each m in match_all(text, "([a-zA-Z0-9-]+)=\"([^\"]*)\"")
+            a[m.groups[0]] = m.groups[1]
+        end for
+        return a
+    end function
+
+    function _numattr(a, name, fallback)
+        if not has(a, name) then return fallback
+        v = trim(string(a[name]))
+        if v = "" then return fallback
+        on error goto next
+        n = number(v)
+        if error then
+            error.clear()
+            return fallback
+        end if
+        on error stop
+        return n
+    end function
+
+    ' "#rrggbb" -> a PDF colour operator. PDF takes components in 0..1.
+    function _colour_ops(c, op)
+        h = replace(string(c), "#", "")
+        if len(h) = 3 then
+            h = mid(h, 0, 1) + mid(h, 0, 1) + mid(h, 1, 1) + mid(h, 1, 1) + mid(h, 2, 1) + mid(h, 2, 1)
+        end if
+        if len(h) != 6 then
+            error "gpdf.svg: '" + string(c) + "' is not a #rrggbb colour"
+        end if
+        b = hex_decode(h)
+        return (_num3(byte_at(b, 0) / 255) + " " + _num3(byte_at(b, 1) / 255) + " " +
+                _num3(byte_at(b, 2) / 255) + " " + op)
+    end function
+
+    function _fill_colour(doc, c)
+        return _append(doc, _colour_ops(c, "rg"))
+    end function
+
+    function _stroke_colour(doc, c)
+        return _append(doc, _colour_ops(c, "RG"))
+    end function
+
+    ' Colours need more places than coordinates: 1/255 rounded to two decimals
+    ' banks visibly on a gradient.
+    function _num3(n)
+        r = floor(n * 1000 + 0.5) / 1000
+        if r = floor(r) then return string(floor(r))
+        return string(r)
+    end function
+
     ' ---- page numbers ----------------------------------------------------
 
     ' "Page 3 of 7" needs a total nobody knows until the document is finished,

@@ -233,6 +233,51 @@ program main(args)
           contains(gpdf.number_pages(t2, { format: "Sheet {n}/{total}" }).pages[0].content, "Sheet 1/1"), true)
 
     print ""
+    print "-- charts become PDF VECTORS, and the arcs land on the circle"
+    ' PDF has no arc operator, so a pie's arcs become cubic Beziers. THE
+    ' PICTURE IS NOT THE TEST: with the centre chosen on the wrong side every
+    ' slice bowed INWARD into a four-pointed star, and the file was
+    ' structurally perfect, ghostscript was happy and the text extracted fine.
+    ' Only geometry catches it -- so the curve is SAMPLED and every point must
+    ' lie on the circle it claims to be part of.
+    arc_svg = ("<svg width=\"200\" height=\"200\">" +
+               "<path d=\"M150 100 A50 50 0 0 1 100 150 Z\" fill=\"#000000\"/></svg>")
+    av = gpdf.svg(gpdf.set_font(gpdf.add_page(gpdf.document({ compress: false })), "Helvetica", 10),
+                  arc_svg, 0, 0, {})
+    ' The SVG circle is centred at (100,100) r=50; placed at y=0 with height
+    ' 200, PDF y = 200 - svg y, so the centre is (100, 100) again.
+    check("every sampled point of the arc is on the circle",
+          _arc_on_circle(av.pages[0].content, 100, 100, 50), true)
+    ' THE CONTROL: the same check against a deliberately wrong radius must
+    ' FAIL, or "points are on the circle" is satisfied by a test that always
+    ' says yes.
+    check("CONTROL: and it does not say yes to the wrong circle",
+          _arc_on_circle(av.pages[0].content, 100, 100, 70), false)
+
+    ' A chart's text survives as TEXT, which is the whole point of vectors
+    ' over a bitmap -- it is searchable, selectable and scales.
+    line_svg = "<svg width=\"100\" height=\"50\" font-size=\"12\"><text x=\"10\" y=\"20\">Revenue</text></svg>"
+    lv = gpdf.svg(gpdf.set_font(gpdf.add_page(gpdf.document({ compress: false })), "Helvetica", 10),
+                  line_svg, 0, 0, {})
+    check("a chart label is drawn as text", _count_drawn(lv, "Revenue"), 1)
+
+    ' AND AN ELEMENT OUTSIDE THE SUBSET IS REFUSED BY NAME rather than
+    ' dropped, so the day `chart` grows one we are told instead of losing part
+    ' of the picture.
+    on error goto next
+    gpdf.svg(lv, "<svg width=\"10\" height=\"10\"><ellipse cx=\"1\" cy=\"1\"/></svg>", 0, 0, {})
+    check("an unknown element is refused by name", contains(error.message, "<ellipse>"), true)
+    error.clear()
+    gpdf.svg(lv, "<svg width=\"10\" height=\"10\"><path d=\"M1 1 C2 2 3 3 4 4\"/></svg>", 0, 0, {})
+    check("an unknown path command is refused by name", contains(error.message, "'C'"), true)
+    error.clear()
+    gpdf.svg(lv, "<p>not svg</p>", 0, 0, {})
+    check("something that is not svg at all is refused", contains(error.message, "does not start with an <svg>"), true)
+    error.clear()
+    on error stop
+    check("CONTROL: the subset itself still translates", _count_drawn(lv, "Revenue"), 1)
+
+    print ""
     print "-- refusals, each beside its nearest legal neighbour"
     on error goto next
     gpdf.set_font(d, "Comic Sans", 12)
@@ -275,6 +320,54 @@ program main(args)
     print "checks: " + string(G.checks)
     print "mismatches: " + string(G.mismatches)
 end program
+
+' Walk the `c` operators of a content stream and sample each cubic. Every
+' point on an arc must sit on the circle the arc claims -- within a tenth of a
+' point, which is far tighter than a Bezier's own approximation error over 90
+' degrees and far looser than the arithmetic's noise.
+function _arc_on_circle(content, cx, cy, r)
+    cur = [ 0, 0 ]
+    seen = 0
+    for each line in split(content, chr(10))
+        parts = split(trim(line), " ")
+        n = count(parts)
+        if n >= 3 and parts[n - 1] = "m" then
+            cur = [ number(parts[n - 3]), number(parts[n - 2]) ]
+        end if
+        if n >= 7 and parts[n - 1] = "c" then
+            p1 = [ number(parts[n - 7]), number(parts[n - 6]) ]
+            p2 = [ number(parts[n - 5]), number(parts[n - 4]) ]
+            p3 = [ number(parts[n - 3]), number(parts[n - 2]) ]
+            ' A cubic starting ON the circle: sample it and measure.
+            if _near_circle(cur, cx, cy, r) then
+                for each t in [ 0.25, 0.5, 0.75 ]
+                    pt = _bezier(cur, p1, p2, p3, t)
+                    if not _near_circle(pt, cx, cy, r) then return false
+                    seen = seen + 1
+                end for
+            end if
+            cur = p3
+        end if
+    end for
+    ' The check must have had something to check.
+    return seen >= 3
+end function
+
+function _bezier(p0, p1, p2, p3, t)
+    u = 1 - t
+    a = u * u * u
+    b = 3 * u * u * t
+    c = 3 * u * t * t
+    d = t * t * t
+    return [ a * p0[0] + b * p1[0] + c * p2[0] + d * p3[0],
+             a * p0[1] + b * p1[1] + c * p2[1] + d * p3[1] ]
+end function
+
+function _near_circle(p, cx, cy, r)
+    dx = p[0] - cx
+    dy = p[1] - cy
+    return abs(sqrt(dx * dx + dy * dy) - r) < 0.1
+end function
 
 ' How many times a string was DRAWN -- content shows text as `(...) Tj`, so
 ' counting the parenthesised occurrences counts placements rather than

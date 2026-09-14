@@ -4,6 +4,7 @@
 ' and not.
 program main(args)
     load gpdf
+    load chart
     dir = args[0]
     when {datetime}= "2026-01-01 12:00:00"
 
@@ -74,4 +75,28 @@ program main(args)
     t = gpdf.number_pages(t, {})
     print string(gpdf.page_count(t))
     print string(gpdf.save(t, dir + "/table.pdf"))
+
+    ' A chart, as VECTORS. The readers check it parses; the text tier checks
+    ' its labels come back as TEXT, which is the difference between a chart and
+    ' a picture of one.
+    cs = chart.spec("line", { quarter: [1,2,3,4,5,6,7,8],
+                              revenue: [310,345,unknown,420,462,501,548,610],
+                              costs:   [270,280,285,300,315,330,355,370] })
+    cs = chart.x(cs, "quarter")
+    cs = chart.y(cs, ["revenue", "costs"])
+    cs = chart.title(cs, "Revenue and costs")
+    cs = chart.size(cs, 460, 220)
+    cs = chart.options(cs, { markers: true })
+    c = gpdf.document({ created: when, title: "Report with a chart" })
+    c = gpdf.add_page(c)
+    c = gpdf.set_font(c, "Helvetica-Bold", 16)
+    c = gpdf.text(c, "Quarterly report")
+    c = gpdf.svg(c, chart.render(cs), 72, 480, {})
+    ' And a pie, which is the arc path.
+    ps = chart.spec("pie", { label: ["big","small","tiny"], share: [0.7,0.2,0.1] })
+    ps = chart.x(ps, "label")
+    ps = chart.y(ps, ["share"])
+    ps = chart.size(ps, 240, 240)
+    c = gpdf.svg(c, chart.render(ps), 72, 200, {})
+    print string(gpdf.save(c, dir + "/chart.pdf"))
 end program
