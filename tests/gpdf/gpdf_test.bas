@@ -133,6 +133,106 @@ program main(args)
     check("a dated one does", contains(a, "CreationDate"), true)
 
     print ""
+    print "-- tables: the thing every business document is"
+    money_rows = []
+    ti = 1
+    while ti <= 5
+        amt {USD}= 10.00 * ti
+        append(money_rows, { item: "Item " + string(ti), amount: amt })
+        ti = ti + 1
+    end while
+    tspec = { columns: [ { name: "item", heading: "Item", width: 200 },
+                         { name: "amount", heading: "Amount", width: 80, align: "right", total: true } ] }
+    t = gpdf.set_font(gpdf.add_page(gpdf.document({})), "Helvetica", 10)
+    t2 = gpdf.table(t, money_rows, tspec)
+    check("a short table stays on one page", gpdf.page_count(t2), 1)
+    check("and the cursor has moved down the page", t2.cursor.y < t.cursor.y, true)
+
+    ' A FRAME is accepted as well as rows, because that is what the
+    ' spreadsheet, accounting and statistics layers produce.
+    fr = { item: [ "a", "b" ], amount: [ 1, 2 ] }
+    fspec = { columns: [ { name: "item", heading: "Item", width: 100 },
+                         { name: "amount", heading: "N", width: 60, align: "right" } ] }
+    check("a frame is accepted like rows",
+          gpdf.page_count(gpdf.table(t, fr, fspec)), 1)
+
+    ' TOTALS ADD WITH THE VALUE'S OWN ARITHMETIC, so two currencies are refused
+    ' by `money` rather than silently producing a number that means nothing.
+    ' The table never learns what a currency is.
+    usd {USD}= 100.00
+    eur {EUR}= 50.00
+    on error goto next
+    gpdf.table(t, [ { item: "a", amount: usd }, { item: "b", amount: eur } ], tspec)
+    check("a total across two currencies is refused", contains(error.message, "different currencies"), true)
+    error.clear()
+    on error stop
+    check("CONTROL: one currency totals fine", gpdf.page_count(t2), 1)
+
+    print ""
+    print "-- the totals row carries its label ONCE"
+    ' "Have we passed a total column yet" writes the label into every column
+    ' before the first total, so a three-column table reads `Total   Total`.
+    ' Counted rather than merely looked for, because `contains(page, "Total")`
+    ' is true either way.
+    three = { columns: [ { name: "a", heading: "A", width: 90 },
+                         { name: "b", heading: "B", width: 90 },
+                         { name: "amount", heading: "Amount", width: 80, align: "right", total: true } ] }
+    tot = gpdf.table(gpdf.set_font(gpdf.add_page(gpdf.document({ compress: false })), "Helvetica", 10),
+                     [ { a: "x", b: "y", amount: 1 }, { a: "p", b: "q", amount: 2 } ], three)
+    check("the label is drawn exactly once", _count_drawn(tot, "Total"), 1)
+    check("and the total is the sum", _count_drawn(tot, "3"), 1)
+
+    print ""
+    print "-- a tall row moves WHOLE, and the heading follows it"
+    ' Splitting a row would put a description on one page and its amount on the
+    ' next, which reads as two different transactions. Asserted as a DIFFERENCE:
+    ' the same row count with TALL rows must take more pages than with short
+    ' ones, which is only true if a row is an indivisible unit.
+    short_rows = []
+    tall_rows = []
+    ri = 1
+    while ri <= 40
+        append(short_rows, { item: "Item " + string(ri), amount: ri })
+        append(tall_rows, { item: "Item " + string(ri) + ": a description long enough to wrap onto several lines inside a narrow column, making this row much taller than one line", amount: ri })
+        ri = ri + 1
+    end while
+    narrow = { columns: [ { name: "item", heading: "Item", width: 200 },
+                          { name: "amount", heading: "N", width: 60, align: "right" } ] }
+    p_short = gpdf.page_count(gpdf.table(t, short_rows, narrow))
+    p_tall  = gpdf.page_count(gpdf.table(t, tall_rows, narrow))
+    check("tall rows need more pages than short ones", p_tall > p_short, true)
+    check("and short ones still fit on few", p_short <= 2, true)
+
+    print ""
+    print "-- nothing a table draws falls below the bottom margin"
+    ' A page break measured on ONE LINE rather than the row's real height does
+    ' not split the row -- the row stays whole and runs off the bottom of the
+    ' page, into the footer. Nothing errors, the file is structurally perfect,
+    ' and the page number has a sentence written through it. So the assertion
+    ' is about DRAWN POSITIONS: every text placement a table makes must sit at
+    ' or above the margin.
+    overflow = gpdf.table(t, tall_rows, narrow)
+    check("every drawn line is above the bottom margin",
+          _lowest_text(overflow) >= overflow.margin, true)
+    ' The CONTROL, without which the check is satisfied by a table that draws
+    ' nothing at all.
+    check("CONTROL: and the table did draw something",
+          _lowest_text(overflow) < overflow.size.height, true)
+
+    print ""
+    print "-- page numbers, which need a total nobody knows until the end"
+    many = gpdf.table(t, tall_rows, narrow)
+    numbered = gpdf.number_pages(many, {})
+    check("numbering does not change the page count", gpdf.page_count(numbered), gpdf.page_count(many))
+    check("and every page grew some content",
+          _all_pages_nonempty(numbered), true)
+    ' Asserted on the PAGE CONTENT, not the rendered bytes: with compression on
+    ' (the default) the text is inside a deflate stream and `contains` on the
+    ' file would be false for a working library.
+    check("the format is a caller's to choose",
+          contains(gpdf.number_pages(t2, { format: "Sheet {n}/{total}" }).pages[0].content, "Sheet 1/1"), true)
+
+    print ""
     print "-- refusals, each beside its nearest legal neighbour"
     on error goto next
     gpdf.set_font(d, "Comic Sans", 12)
@@ -156,6 +256,18 @@ program main(args)
     gpdf.wrap("Helvetica", 12, 0, "x")
     check("a zero wrap width is refused", contains(error.message, "positive number of points"), true)
     error.clear()
+    gpdf.table(d, [], { columns: [] })
+    check("a table with no columns is refused", contains(error.message, "`columns` array"), true)
+    error.clear()
+    gpdf.table(d, [], { columns: [ { heading: "x", width: 10 } ] })
+    check("a column with no name is refused", contains(error.message, "has no `name`"), true)
+    error.clear()
+    gpdf.table(d, [], { columns: [ { name: "x" } ] })
+    check("a column with no width is refused", contains(error.message, "positive `width`"), true)
+    error.clear()
+    gpdf.table(d, [], { colunms: [] })
+    check("a misspelled spec key is refused BY NAME", contains(error.message, "unknown option 'colunms'"), true)
+    error.clear()
     on error stop
     check("CONTROL: a well-formed document still renders", byte_count(a) > 400, true)
 
@@ -163,6 +275,53 @@ program main(args)
     print "checks: " + string(G.checks)
     print "mismatches: " + string(G.mismatches)
 end program
+
+' How many times a string was DRAWN -- content shows text as `(...) Tj`, so
+' counting the parenthesised occurrences counts placements rather than
+' substring hits anywhere in the stream.
+function _count_drawn(doc, needle)
+    n = 0
+    for each p in doc.pages
+        for each piece in split(p.content, "(" + needle + ") Tj")
+            n = n + 1
+        end for
+    end for
+    return n - count(doc.pages)
+end function
+
+' The lowest y any text was placed at, across every page. Content is built as
+' `... 1 0 0 1 X Y Tm (text) Tj ...`, so the y is the token before `Tm`.
+function _lowest_text(doc)
+    low = doc.size.height
+    for each p in doc.pages
+        for each piece in split(p.content, " Tm ")
+            parts = split(piece, " ")
+            if count(parts) >= 1 then
+                y = number_or(parts[count(parts) - 1])
+                if not is_unknown(y) and y < low then low = y
+            end if
+        end for
+    end for
+    return low
+end function
+
+function number_or(t)
+    on error goto next
+    n = number(t)
+    if error then
+        error.clear()
+        return unknown
+    end if
+    on error stop
+    return n
+end function
+
+function _all_pages_nonempty(doc)
+    for each p in doc.pages
+        if len(p.content) = 0 then return false
+    end for
+    return true
+end function
 
 function _all_fit(font, size, width, lines)
     for each l in lines

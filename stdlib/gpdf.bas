@@ -274,6 +274,14 @@ library gpdf
     end function
 
     function text_at(doc, x, y, s)
+        out = _draw(doc, x, y, s)
+        out.cursor = { x: doc.cursor.x, y: y - out.font_size * 1.2 }
+        return out
+    end function
+
+    ' Put text on the page and move NOTHING. A table positions every cell
+    ' itself and must not have the cursor dragged along behind it.
+    function _draw(doc, x, y, s)
         if count(doc.pages) = 0 then
             error "gpdf.text: there is no page yet -- call gpdf.add_page first"
         end if
@@ -283,7 +291,20 @@ library gpdf
         body = ("BT /F" + string(_font_index(out, out.font)) + " " + _num(out.font_size) +
                 " Tf 1 0 0 1 " + _num(x) + " " + _num(y) + " Tm (" + _escape(enc) + ") Tj ET" + chr(10))
         out.pages[i].content = out.pages[i].content + body
-        out.cursor = { x: doc.cursor.x, y: y - out.font_size * 1.2 }
+        return out
+    end function
+
+    ' A horizontal rule. Tables use it for the line under a heading and above a
+    ' total; it is public because a caller drawing its own layout wants it too.
+    function rule(doc, x1, y, x2, thickness)
+        if count(doc.pages) = 0 then
+            error "gpdf.rule: there is no page yet -- call gpdf.add_page first"
+        end if
+        out = doc
+        i = count(out.pages) - 1
+        out.pages[i].content = (out.pages[i].content + _num(thickness) + " w " +
+                                _num(x1) + " " + _num(y) + " m " + _num(x2) + " " + _num(y) +
+                                " l S" + chr(10))
         return out
     end function
 
@@ -361,6 +382,314 @@ library gpdf
             end if
         end for
         return out
+    end function
+
+    ' ---- tables ----------------------------------------------------------
+    '
+    ' The thing every business document is: a table that does not fit on one
+    ' page. Invoices, statements, ledgers and reports are all this problem
+    ' wearing different headings, and in a cursor API you write the page-break
+    ' arithmetic by hand every time -- which is where the header stops
+    ' repeating and a row lands half on each page.
+    '
+    ' A ROW IS NEVER SPLIT. A cell that wraps to three lines makes its row
+    ' three lines tall, and the whole row moves to the next page if it does not
+    ' fit. Splitting would put the first line of a description on one page and
+    ' its amount on the next, which reads as two different transactions.
+
+    ' gpdf.table(doc, rows, spec) -> the document, with the table drawn.
+    '
+    ' `rows` is an array of records, or a `frame` (a record of column ->
+    ' array), so the spreadsheet, accounting and statistics layers feed it
+    ' directly. A spec column is { name, heading, width, align, format, total }.
+    function table(doc, rows, spec)
+        data = _as_rows(rows)
+        sp = _options(spec, [ "columns", "heading_font", "heading_size", "padding",
+                              "rules", "totals_label", "x" ], "gpdf.table")
+        cols = _default(sp, "columns", [])
+        if not is_array(cols) or count(cols) = 0 then
+            error "gpdf.table: the spec needs a `columns` array of { name, width }"
+        end if
+        i = 0
+        while i < count(cols)
+            c = _options(cols[i], [ "name", "heading", "width", "align", "format", "total" ],
+                         "gpdf.table column " + string(i + 1))
+            if not has(c, "name") then
+                error "gpdf.table: column " + string(i + 1) + " has no `name` -- it must name a field of the data"
+            end if
+            if not has(c, "width") or not is_number(c.width) or c.width <= 0 then
+                error "gpdf.table: column '" + string(c.name) + "' needs a positive `width` in points"
+            end if
+            i = i + 1
+        end while
+
+        head_font = _default(sp, "heading_font", _bold_of(doc.font))
+        head_size = _default(sp, "heading_size", doc.font_size)
+        pad = _default(sp, "padding", 4)
+        rules = _default(sp, "rules", true)
+        x0 = _default(sp, "x", doc.margin)
+
+        body_font = doc.font
+        body_size = doc.font_size
+        leading = body_size * 1.2
+
+        out = doc
+        if count(out.pages) = 0 then
+            out = add_page(out)
+        end if
+        out = _table_header(out, cols, x0, head_font, head_size, pad, rules)
+
+        totals = {}
+        for each c in cols
+            if _default(c, "total", false) then
+                totals[c.name] = unknown
+            end if
+        end for
+
+        for each row in data
+            cells = []
+            height = leading
+            for each c in cols
+                txt = _cell_text(row, c)
+                lines = wrap(body_font, body_size, c.width - 2 * pad, txt)
+                append(cells, lines)
+                if count(lines) * leading > height then
+                    height = count(lines) * leading
+                end if
+            end for
+            ' The row moves WHOLE, and the heading follows it.
+            if out.cursor.y - height < out.margin then
+                out = add_page(out)
+                out = set_font(out, body_font, body_size)
+                out = _table_header(out, cols, x0, head_font, head_size, pad, rules)
+            end if
+            out = set_font(out, body_font, body_size)
+            out = _table_row(out, cols, cells, x0, pad, leading)
+            out.cursor = { x: out.cursor.x, y: out.cursor.y - height }
+            for each c in cols
+                if has(totals, c.name) then
+                    totals[c.name] = _add_total(totals[c.name], row[c.name], c.name)
+                end if
+            end for
+        end for
+
+        if count(keys(totals)) > 0 then
+            if out.cursor.y - leading * 2 < out.margin then
+                out = add_page(out)
+                out = _table_header(out, cols, x0, head_font, head_size, pad, rules)
+            end if
+            if rules then
+                out = rule(out, x0, out.cursor.y + leading * 0.25, x0 + _total_width(cols), 0.5)
+            end if
+            out = set_font(out, head_font, head_size)
+            label = _default(sp, "totals_label", "Total")
+            ' The label goes in the FIRST column and nowhere else. Putting it
+            ' in every column before the first total -- which is what "have we
+            ' seen a total yet" does -- writes `Total` two or three times
+            ' across the row.
+            cells = []
+            ci = 0
+            for each c in cols
+                if has(totals, c.name) then
+                    append(cells, [ _format_value(totals[c.name], _default(c, "format", "")) ])
+                else
+                    if ci = 0 then
+                        append(cells, [ label ])
+                    else
+                        append(cells, [ "" ])
+                    end if
+                end if
+                ci = ci + 1
+            end for
+            out = _table_row(out, cols, cells, x0, pad, leading)
+            out.cursor = { x: out.cursor.x, y: out.cursor.y - leading }
+            out = set_font(out, body_font, body_size)
+        end if
+        return out
+    end function
+
+    function _table_header(doc, cols, x0, font, size, pad, rules)
+        out = set_font(doc, font, size)
+        cells = []
+        for each c in cols
+            append(cells, [ string(_default(c, "heading", c.name)) ])
+        end for
+        out = _table_row(out, cols, cells, x0, pad, size * 1.2)
+        out.cursor = { x: out.cursor.x, y: out.cursor.y - size * 1.2 }
+        if rules then
+            out = rule(out, x0, out.cursor.y + size * 0.3, x0 + _total_width(cols), 0.5)
+        end if
+        out.cursor = { x: out.cursor.x, y: out.cursor.y - size * 0.4 }
+        return out
+    end function
+
+    ' One row of already-wrapped cells, each aligned in its own column.
+    function _table_row(doc, cols, cells, x0, pad, leading)
+        out = doc
+        x = x0
+        i = 0
+        while i < count(cols)
+            c = cols[i]
+            lines = cells[i]
+            align = _default(c, "align", "left")
+            j = 0
+            while j < count(lines)
+                line = lines[j]
+                w = text_width(out.font, out.font_size, line)
+                tx = x + pad
+                if align = "right" then
+                    tx = x + c.width - pad - w
+                end if
+                if align = "center" then
+                    tx = x + (c.width - w) / 2
+                end if
+                out = _draw(out, tx, out.cursor.y - j * leading, line)
+                j = j + 1
+            end while
+            x = x + c.width
+            i = i + 1
+        end while
+        return out
+    end function
+
+    function _total_width(cols)
+        w = 0
+        for each c in cols
+            w = w + c.width
+        end for
+        return w
+    end function
+
+    function _bold_of(font)
+        if font = "Helvetica" then return "Helvetica-Bold"
+        if font = "Times-Roman" then return "Times-Bold"
+        if font = "Courier" then return "Courier-Bold"
+        return font
+    end function
+
+    ' Rows in, rows out -- accepting a `frame` (column -> array) as well, since
+    ' that is what the spreadsheet and statistics layers produce.
+    function _as_rows(rows)
+        if is_array(rows) then
+            return rows
+        end if
+        if not is_record(rows) then
+            error "gpdf.table: the data must be an array of records or a frame"
+        end if
+        names = keys(rows)
+        if count(names) = 0 then
+            return []
+        end if
+        n = count(rows[names[0]])
+        out = []
+        i = 0
+        while i < n
+            r = {}
+            for each nm in names
+                r[nm] = rows[nm][i]
+            end for
+            append(out, r)
+            i = i + 1
+        end while
+        return out
+    end function
+
+    ' A cell as text. `money` renders with its own currency and decimals and a
+    ' date in its own form -- the whole reason those are value kinds rather
+    ' than floats and strings somebody remembered to format.
+    function _cell_text(row, c)
+        if not has(row, c.name) then
+            return ""
+        end if
+        return _format_value(row[c.name], _default(c, "format", ""))
+    end function
+
+    function _format_value(v, fmt)
+        if is_unknown(v) then
+            return ""
+        end if
+        if fmt != "" and is_number(v) then
+            return _fixed(v, number(fmt))
+        end if
+        return string(v)
+    end function
+
+    function _fixed(n, places)
+        p = 1
+        i = 0
+        while i < places
+            p = p * 10
+            i = i + 1
+        end while
+        r = floor(n * p + 0.5) / p
+        s = string(r)
+        if places > 0 then
+            if not contains(s, ".") then s = s + "."
+            after = len(s) - find(s, ".") - 1
+            while after < places
+                s = s + "0"
+                after = after + 1
+            end while
+        end if
+        return s
+    end function
+
+    ' Totals add with the value's OWN arithmetic, so money refuses to add two
+    ' currencies rather than producing a number that means nothing.
+    function _add_total(running, v, name)
+        if is_unknown(v) then
+            return running
+        end if
+        if is_unknown(running) then
+            return v
+        end if
+        return running + v
+    end function
+
+    ' ---- page numbers ----------------------------------------------------
+
+    ' "Page 3 of 7" needs a total nobody knows until the document is finished,
+    ' which in a streaming writer means two passes or patching bytes. Here the
+    ' pages are VALUES in an array, so stamping them at the end is exact and
+    ' costs nothing.
+    function number_pages(doc, options)
+        opts = _options(options, [ "format", "font", "size", "y", "align" ], "gpdf.number_pages")
+        fmt = _default(opts, "format", "Page {n} of {total}")
+        font = _default(opts, "font", doc.font)
+        size = _default(opts, "size", 9)
+        align = _default(opts, "align", "center")
+        total = count(doc.pages)
+        if total = 0 then
+            error "gpdf.number_pages: this document has no pages"
+        end if
+        out = set_font(doc, font, size)
+        saved = out.cursor
+        i = 0
+        while i < total
+            label = replace(replace(fmt, "{n}", string(i + 1)), "{total}", string(total))
+            w = text_width(font, size, label)
+            pg = out.pages[i]
+            y = _default(opts, "y", out.margin / 2)
+            x = out.margin
+            if align = "center" then
+                x = (pg.size.width - w) / 2
+            end if
+            if align = "right" then
+                x = pg.size.width - out.margin - w
+            end if
+            ' _draw appends to the LAST page, so the target page is moved to
+            ' the end, stamped, and put back -- pages are values, so this is a
+            ' swap rather than a mutation anything else can see.
+            keep = out.pages
+            out.pages = [ pg ]
+            out = _draw(out, x, y, label)
+            stamped = out.pages[0]
+            keep[i] = stamped
+            out.pages = keep
+            i = i + 1
+        end while
+        out.cursor = saved
+        return set_font(out, doc.font, doc.font_size)
     end function
 
     ' ---- serialization ---------------------------------------------------

@@ -3715,7 +3715,50 @@ has to repair it.
 | `gpdf.wrap(font, size, width, s)` | the lines, without drawing them |
 | `gpdf.text_width(font, size, s)` | points — what wrapping and alignment are built on |
 | `gpdf.representable(s)` / `gpdf.to_winansi(s, whose)` | encoding |
+| `gpdf.table(doc, rows, spec)` | a table that flows across pages — see below |
+| `gpdf.number_pages(doc, options)` | `Page 3 of 7` on every page |
+| `gpdf.rule(doc, x1, y, x2, thickness)` | a horizontal line |
+| `gpdf.sizes()` | the named page sizes |
 | `gpdf.render(doc)` / `gpdf.save(doc, path)` | bytes, or bytes written |
+
+### Tables that flow across pages
+
+The shape every business document takes — invoices, statements, ledgers,
+reports. In a cursor API you write the page-break arithmetic by hand each time,
+which is where the header stops repeating and a row lands half on each page.
+
+```basic
+spec = { columns: [ { name: "line",        heading: "#",           width: 30, align: "right" },
+                    { name: "description", heading: "Description", width: 300 },
+                    { name: "amount",      heading: "Amount",      width: 90, align: "right", total: true } ] }
+d = gpdf.table(d, rows, spec)
+d = gpdf.number_pages(d, {})
+```
+
+`rows` is an array of records **or a frame** (a record of column → array), so
+the spreadsheet, accounting and statistics layers feed it directly. Spec
+options: `columns`, `heading_font`, `heading_size`, `padding`, `rules`,
+`totals_label`, `x`. A column takes `name`, `heading`, `width` (points, and
+required), `align` (`left`/`right`/`center`), `format` (decimal places for a
+number) and `total`.
+
+**A row is never split.** A cell that wraps to three lines makes its row three
+lines tall, and the whole row moves to the next page if it does not fit —
+splitting would put a description on one page and its amount on the next, which
+reads as two different transactions. The heading is redrawn after every break.
+
+**Totals add with the value's own arithmetic**, so a column of `money` in two
+currencies is refused by `money` itself rather than producing a number that
+means nothing. The table never learns what a currency is.
+
+**`gpdf.number_pages(doc, options)`** stamps `Page {n} of {total}` on every
+page. That total is not known until the document is finished, which in a
+streaming writer means a second pass or patching bytes; here the pages are
+values in an array, so stamping them at the end is exact and costs nothing.
+Options: `format` (with `{n}` and `{total}`), `font`, `size`, `y`, `align`.
+
+**`gpdf.rule(doc, x1, y, x2, thickness)`** draws a horizontal line, for a
+caller doing its own layout.
 
 Wrapping is a **measurement**, not a character count: `iiiii iiiii` and
 `MMMMM MMMMM` occupy very different widths at the same length. A word wider

@@ -50,4 +50,28 @@ program main(args)
     m = gpdf.paragraph(m, 450, body)
     print string(gpdf.page_count(m))
     print string(gpdf.save(m, dir + "/multipage.pdf"))
+
+    ' A table that spans pages, with a row every seventh line tall enough to
+    ' wrap. The runner asks poppler whether the heading repeats on every page
+    ' and whether a tall row kept its lines together.
+    t = gpdf.document({ created: when })
+    t = gpdf.add_page(t)
+    t = gpdf.set_font(t, "Helvetica", 10)
+    rows = []
+    k = 1
+    while k <= 45
+        amt {USD}= 99.99 + k
+        desc = "Item " + string(k)
+        if mod(k, 7) = 0 then
+            desc = desc + ": a much longer description that has to wrap onto more than one line inside its own column, which makes this row taller than its neighbours"
+        end if
+        append(rows, { line: string(k), description: desc, amount: amt })
+        k = k + 1
+    end while
+    t = gpdf.table(t, rows, { columns: [ { name: "line", heading: "#", width: 30, align: "right" },
+                                         { name: "description", heading: "Description", width: 300 },
+                                         { name: "amount", heading: "Amount", width: 90, align: "right", total: true } ] })
+    t = gpdf.number_pages(t, {})
+    print string(gpdf.page_count(t))
+    print string(gpdf.save(t, dir + "/table.pdf"))
 end program
