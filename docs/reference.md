@@ -841,8 +841,9 @@ codepoints.
   and concatenation move bytes without interpreting them, so multibyte
   characters pass through unchanged. `trim` treats **ASCII whitespace only** —
   `U+00A0` and other Unicode spaces are content, not padding.
-- **Byte-oriented (raw).** `byte_count`, `byte_at` (0-based), `from_bytes` and
-  `hex_encode` work on raw bytes for binary and protocol work.
+- **Byte-oriented (raw).** `byte_count`, `byte_at` (0-based), `byte_slice`,
+  `byte_find`, `to_bytes`, `from_bytes` and `hex_encode` work on raw bytes for
+  binary and protocol work.
 
 ```basic
 len("café")                    ' 4   codepoints
@@ -850,6 +851,35 @@ byte_count("café")             ' 5   UTF-8 bytes
 mid("café", 3, 1)              ' "é" never splits a codepoint
 from_bytes([0, 255])           ' a two-byte binary string
 ```
+
+**The two families do not mix indexes, and that is the thing to know.** A
+codepoint index and a byte index are different numbers the moment a string
+holds anything above ASCII:
+
+```basic
+s = "é" + "MARK"
+find(s, "MARK")                ' 1   a CODEPOINT index
+byte_find(s, "MARK")           ' 2   a BYTE index
+byte_at(s, find(s, "MARK"))    ' 169 — the tail of the é, not "M"
+byte_at(s, byte_find(s, "MARK"))  ' 77 — "M"
+```
+
+So when you are reading a binary format, locate with `byte_find` and read with
+`byte_slice` or `byte_at`; the index one returns is the index the others take.
+Mixing them yields the wrong bytes with nothing raised, which is why the byte
+family has its own search rather than sharing `find`.
+
+- `byte_slice(s, at [, count])` — bytes from `at`, to the end if no count.
+  Past the end is empty and an over-long count is trimmed, the same forgiving
+  shape `mid` has; a negative start is refused, since that is a mistake rather
+  than an edge. It is a **slice**, not a loop: building the same bytes with
+  `byte_at` and `from_bytes` copies the accumulator each time and is quadratic
+  — measured at 8.3× the cost for 4× the bytes, where this is flat
+  (`tests/run_byte_family.sh`).
+- `byte_find(s, needle [, from])` — the byte index of `needle`, or `nothing`
+  on a miss, as `find` answers. An **empty needle is refused**: it matches
+  everywhere and answering 0 invites a scan that never advances.
+- `to_bytes(s)` — an array of byte values 0–255, the inverse of `from_bytes`.
 
 **Comparison** is by byte sequence (binary-safe, and correct codepoint order for
 valid UTF-8). **Case folding** (`upper`, `lower`, and the `{caseless}` comparison
@@ -3715,6 +3745,7 @@ has to repair it.
 | `gpdf.wrap(font, size, width, s)` | the lines, without drawing them |
 | `gpdf.text_width(font, size, s)` | points — what wrapping and alignment are built on |
 | `gpdf.representable(s)` / `gpdf.to_winansi(s, whose)` | encoding |
+| `gpdf.image(doc, path, x, y, options)` | a PNG or JPEG, copied not re-encoded — see below |
 | `gpdf.svg(doc, svg, x, y, options)` | a `chart` SVG as PDF vectors — see below |
 | `gpdf.table(doc, rows, spec)` | a table that flows across pages — see below |
 | `gpdf.number_pages(doc, options)` | `Page 3 of 7` on every page |
@@ -3765,6 +3796,36 @@ Wrapping is a **measurement**, not a character count: `iiiii iiiii` and
 `MMMMM MMMMM` occupy very different widths at the same length. A word wider
 than the whole column is **broken** rather than allowed to overflow into the
 next one.
+
+### Images
+
+`gpdf.image(doc, path, x, y, options)` places a PNG or JPEG, with `x, y` the
+bottom-left corner. `width`/`height` scale it; giving **one** keeps the aspect
+ratio, and giving neither uses the pixel count as points.
+
+```basic
+d = gpdf.image(d, "logo.png", 72, 700, { width: 160 })
+```
+
+**The bytes are copied, not re-encoded.** A non-interlaced PNG's pixel data is
+already a zlib stream and a JPEG is already DCT, and PDF speaks both —
+`/FlateDecode` with a PNG predictor, and `/DCTDecode`. So nothing is decoded,
+nothing is recompressed, and a photograph costs in the document what it costs
+on disk. Palette PNGs carry their `PLTE` into an `/Indexed` colour space, which
+is what makes the pass-through work for the commonest kind of logo.
+
+Every `IDAT` chunk is concatenated: a PNG of any size has several — the
+project's own mascot has six — and taking only the first yields a truncated
+stream that still produces a structurally perfect PDF with the picture cut off.
+
+The same file placed twice is stored **once**, so a logo on forty pages is one
+stream.
+
+Two things are **refused by name**: an **interlaced** PNG (Adam7 stores the
+pixels in seven passes, which PDF cannot read directly) and one with an **alpha
+channel** (carrying it means decoding the pixels and splitting the alpha into a
+soft mask, which this phase does not do — and dropping it silently would put a
+black box where the transparency was).
 
 ### Charts, as vectors
 

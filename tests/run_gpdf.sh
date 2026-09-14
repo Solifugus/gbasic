@@ -38,8 +38,8 @@ else
     if grep -q '^MISMATCH' "$out"; then grep '^MISMATCH' "$out"; fail "gpdf_test.bas"; tier_ok=0; fi
     checks="$(grep -oE '^checks: [0-9]+' "$out" | grep -oE '[0-9]+' || echo 0)"
     # A tier that stops running its checks otherwise passes by saying nothing.
-    if [ "${checks:-0}" -lt 65 ]; then
-        fail "gpdf_test.bas (only $checks checks ran; the file should run at least 65)"
+    if [ "${checks:-0}" -lt 84 ]; then
+        fail "gpdf_test.bas (only $checks checks ran; the file should run at least 84)"
         tier_ok=0
     fi
     # PASS is CONDITIONAL. Printed unconditionally after the checks, a tier
@@ -62,7 +62,7 @@ if [ "$((have_mutool + have_gs + have_poppler))" -eq 0 ]; then
     printf 'SKIP readers (no mutool, ghostscript or poppler)\n'
 else
     readers_ok=1
-    for name in basic accents escapes multipage table chart; do
+    for name in basic accents escapes multipage table chart logo; do
         pdf="$docs/$name.pdf"
         [ -s "$pdf" ] || { fail "$name.pdf was not written"; continue; }
 
@@ -82,7 +82,7 @@ else
             fi
         fi
     done
-    [ "$readers_ok" = 1 ] && printf 'PASS readers (mupdf=%s ghostscript=%s, 6 documents, no repairs)\n' "$have_mutool" "$have_gs"
+    [ "$readers_ok" = 1 ] && printf 'PASS readers (mupdf=%s ghostscript=%s, 7 documents, no repairs)\n' "$have_mutool" "$have_gs"
 fi
 
 # --- Tier 3: the text means what was written ---------------------------------
@@ -149,6 +149,20 @@ if [ "$have_poppler" = 1 ]; then
             || { fail "chart.pdf: '$want' did not survive as text"; text_ok=0; }
     done
 
+    # THE IMAGES MUST ARRIVE AS IMAGES. mupdf lists what a document actually
+    # carries, so this asks an outside reader rather than trusting our record:
+    # two of them, at the pixel sizes of the files on disk, one indexed (the
+    # palette PNG passed through whole) and one DCT (the JPEG copied whole).
+    if [ "$have_mutool" = 1 ]; then
+        mutool info "$docs/logo.pdf" >"$work/logo.txt" 2>/dev/null || true
+        grep -qE 'Images \(2\)' "$work/logo.txt" \
+            || { fail "logo.pdf: mupdf does not report 2 images"; text_ok=0; }
+        grep -qE '1629x543 .*Idx' "$work/logo.txt" \
+            || { fail "logo.pdf: the palette PNG did not arrive indexed at its own size"; text_ok=0; }
+        grep -qE 'DCT' "$work/logo.txt" \
+            || { fail "logo.pdf: the JPEG did not arrive as DCT"; text_ok=0; }
+    fi
+
     grep -q 'Total' "$work/tp${tpages}.txt" || { fail "table.pdf: no totals row on the last page"; text_ok=0; }
     [ "$text_ok" = 1 ] && printf 'PASS text (poppler extracts exactly what was written, %s pages)\n' "$pages"
 else
@@ -178,7 +192,7 @@ GBASIC_PATH=stdlib ./gbasic tests/gpdf/gpdf_emit.bas "$b" >/dev/null 2>&1
 for name in basic accents escapes multipage; do
     cmp -s "$a/$name.pdf" "$b/$name.pdf" || fail "$name.pdf differs between runs"
 done
-printf 'PASS determinism (6 documents byte-identical across runs)\n'
+printf 'PASS determinism (7 documents byte-identical across runs)\n'
 
 # --- Tier 6: the metrics table has not drifted from its generator ------------
 # A committed table whose generator produces something else is a table nobody

@@ -78,6 +78,7 @@ library gpdf
                  created: _default(opts, "created", unknown),
                  compress: _default(opts, "compress", true),
                  pages: [],
+                 images: [],
                  font: "Helvetica",
                  font_size: 12,
                  fonts_used: [] }
@@ -90,7 +91,7 @@ library gpdf
     ' silently do nothing.
     function add_page(doc)
         out = doc
-        append(out.pages, { content: "", size: doc.size })
+        append(out.pages, { content: "", size: doc.size, images: [] })
         out.cursor = { x: doc.margin, y: doc.size.height - doc.margin }
         return out
     end function
@@ -646,6 +647,195 @@ library gpdf
         return running + v
     end function
 
+    ' ---- images ----------------------------------------------------------
+    '
+    ' A logo on an invoice, which is the whole requirement. PNG and JPEG are
+    ' embedded BY COPYING THEIR BYTES: a non-interlaced PNG's pixel data is
+    ' already a zlib stream and a JPEG is already DCT, and PDF speaks both --
+    ' /FlateDecode with a PNG predictor, and /DCTDecode. So nothing is decoded,
+    ' nothing is re-encoded, and a photograph costs what it costs on disk.
+    '
+    ' WHAT IS REFUSED IS REFUSED BY NAME: an interlaced PNG and one with an
+    ' alpha channel. Both need the pixels actually decoded -- Adam7 is a
+    ' different layout, and alpha has to be split into a separate soft mask --
+    ' and a library that quietly dropped the transparency would put a black box
+    ' where a logo should be.
+
+    function image(doc, path, x, y, options)
+        opts = _options(options, [ "width", "height" ], "gpdf.image")
+        f {file}= path
+        if not exists(f) then
+            error "gpdf.image: there is no file at '" + string(path) + "'"
+        end if
+        raw = read(f)
+        info = _image_info(raw, path)
+
+        w = _default(opts, "width", unknown)
+        h = _default(opts, "height", unknown)
+        ' Natural size is the pixel count as points, and giving one dimension
+        ' keeps the aspect ratio -- a logo squashed because only its width was
+        ' set is the commonest thing to get wrong here.
+        if is_unknown(w) and is_unknown(h) then
+            w = info.width
+            h = info.height
+        end if
+        if is_unknown(w) then w = h * info.width / info.height
+        if is_unknown(h) then h = w * info.height / info.width
+
+        out = doc
+        if count(out.pages) = 0 then
+            error "gpdf.image: there is no page yet -- call gpdf.add_page first"
+        end if
+        ' One entry per distinct file, so the same logo on forty pages is
+        ' stored once.
+        idx = -1
+        i = 0
+        while i < count(out.images)
+            if out.images[i].key = string(path) then idx = i
+            i = i + 1
+        end while
+        if idx < 0 then
+            info.key = string(path)
+            append(out.images, info)
+            idx = count(out.images) - 1
+        end if
+        pi = count(out.pages) - 1
+        if not contains(out.pages[pi].images, idx) then
+            append(out.pages[pi].images, idx)
+        end if
+        ' `cm` scales the unit square the image is drawn into, so the matrix is
+        ' the size and the position together.
+        out = _append(out, "q " + _num(w) + " 0 0 " + _num(h) + " " + _pt(x, y) +
+                           " cm /Im" + string(idx + 1) + " Do Q")
+        return out
+    end function
+
+    function _image_info(raw, path)
+        if byte_count(raw) > 8 and hex_encode(byte_slice(raw, 0, 8)) = "89504e470d0a1a0a" then
+            return _png_info(raw, path)
+        end if
+        if byte_count(raw) > 3 and hex_encode(byte_slice(raw, 0, 2)) = "ffd8" then
+            return _jpeg_info(raw, path)
+        end if
+        error ("gpdf.image: '" + string(path) + "' is neither a PNG nor a JPEG. Those are " +
+               "the two formats PDF can carry without decoding, which is why they are the two this takes.")
+    end function
+
+
+
+    function _be32(s, at)
+        return (byte_at(s, at) * 16777216 + byte_at(s, at + 1) * 65536 +
+                byte_at(s, at + 2) * 256 + byte_at(s, at + 3))
+    end function
+
+    function _png_info(raw, path)
+        n = byte_count(raw)
+        i = 8
+        width = 0
+        height = 0
+        bits = 8
+        ctype = 0
+        palette = ""
+        data = ""
+        while i + 8 <= n
+            ln = _be32(raw, i)
+            typ = ""
+            k = 0
+            while k < 4
+                typ = typ + from_bytes([ byte_at(raw, i + 4 + k) ])
+                k = k + 1
+            end while
+            body_at = i + 8
+            if typ = "IHDR" then
+                width = _be32(raw, body_at)
+                height = _be32(raw, body_at + 4)
+                bits = byte_at(raw, body_at + 8)
+                ctype = byte_at(raw, body_at + 9)
+                if byte_at(raw, body_at + 12) != 0 then
+                    error ("gpdf.image: '" + string(path) + "' is an INTERLACED PNG. Adam7 stores " +
+                           "the pixels in seven passes, which PDF cannot read directly; save it " +
+                           "without interlacing.")
+                end if
+                if ctype = 4 or ctype = 6 then
+                    error ("gpdf.image: '" + string(path) + "' has an ALPHA CHANNEL (PNG colour " +
+                           "type " + string(ctype) + "). Carrying it needs the pixels decoded and " +
+                           "the alpha split into a soft mask, which this phase does not do -- and " +
+                           "dropping it silently would put a black box where the transparency was.")
+                end if
+            end if
+            if typ = "PLTE" then
+                palette = byte_slice(raw, body_at, ln)
+            end if
+            if typ = "IDAT" then
+                ' EVERY IDAT, concatenated. A PNG of any size has several --
+                ' the gBASIC mascot has six -- and taking only the first gives
+                ' a truncated zlib stream that fails at the reader, not here.
+                data = data + byte_slice(raw, body_at, ln)
+            end if
+            if typ = "IEND" then
+                i = n
+            else
+                i = body_at + ln + 4
+            end if
+        end while
+        if width = 0 or height = 0 or data = "" then
+            error "gpdf.image: '" + string(path) + "' is not a PNG this can read (no IHDR or no IDAT)"
+        end if
+        colours = 1
+        space = "/DeviceGray"
+        if ctype = 2 then
+            colours = 3
+            space = "/DeviceRGB"
+        end if
+        if ctype = 3 then
+            if palette = "" then
+                error "gpdf.image: '" + string(path) + "' is a palette PNG with no PLTE chunk"
+            end if
+            hival = floor(byte_count(palette) / 3) - 1
+            space = "[/Indexed /DeviceRGB " + string(hival) + " <" + hex_encode(palette) + ">]"
+        end if
+        return { kind: "png", width: width, height: height, bits: bits,
+                 space: space, colours: colours, data: data,
+                 filter: "/FlateDecode",
+                 parms: ("<< /Predictor 15 /Colors " + string(colours) + " /BitsPerComponent " +
+                         string(bits) + " /Columns " + string(width) + " >>") }
+    end function
+
+
+
+    ' JPEG: walk the markers to the frame header, which carries the size and
+    ' the component count. The entropy-coded data is copied whole.
+    function _jpeg_info(raw, path)
+        n = byte_count(raw)
+        i = 2
+        while i + 4 <= n
+            if byte_at(raw, i) != 255 then
+                error "gpdf.image: '" + string(path) + "' is a malformed JPEG (expected a marker)"
+            end if
+            m = byte_at(raw, i + 1)
+            ' SOF0/1/2/3 and the arithmetic-coded variants all lay the frame
+            ' header out the same way; SOF2 is PROGRESSIVE, which PDF readers
+            ' do accept, so it is allowed through.
+            if (m >= 192 and m <= 195) or (m >= 197 and m <= 199) or (m >= 201 and m <= 203) then
+                h = byte_at(raw, i + 5) * 256 + byte_at(raw, i + 6)
+                w = byte_at(raw, i + 7) * 256 + byte_at(raw, i + 8)
+                comps = byte_at(raw, i + 9)
+                space = "/DeviceRGB"
+                if comps = 1 then space = "/DeviceGray"
+                if comps = 4 then space = "/DeviceCMYK"
+                if comps != 1 and comps != 3 and comps != 4 then
+                    error "gpdf.image: '" + string(path) + "' has " + string(comps) + " colour components"
+                end if
+                return { kind: "jpeg", width: w, height: h, bits: 8,
+                         space: space, colours: comps, data: raw,
+                         filter: "/DCTDecode", parms: "" }
+            end if
+            seg = byte_at(raw, i + 2) * 256 + byte_at(raw, i + 3)
+            i = i + 2 + seg
+        end while
+        error "gpdf.image: '" + string(path) + "' is a JPEG with no frame header"
+    end function
+
     ' ---- charts, as vectors ----------------------------------------------
     '
     ' `chart` already renders to SVG, so a report wants that chart IN the PDF.
@@ -1135,10 +1325,11 @@ library gpdf
 
         npages = count(doc.pages)
         ' Object numbering: 1 catalog, 2 pages, then per page a page object and
-        ' a contents object, then the fonts, then info.
+        ' a contents object, then the fonts, then the images, then info.
         first_page_obj = 3
         font_obj = first_page_obj + npages * 2
-        info_obj = font_obj + count(fonts)
+        image_obj = font_obj + count(fonts)
+        info_obj = image_obj + count(doc.images)
 
         objs = []
         append(objs, "<< /Type /Catalog /Pages 2 0 R >>")
@@ -1162,9 +1353,18 @@ library gpdf
                 if j < count(fonts) - 1 then fres = fres + " "
                 j = j + 1
             end while
+            ' Only the images THIS page uses are named in its resources; a
+            ' page that names one it never draws still makes a reader load it.
+            xres = ""
+            for each ix in pg.images
+                xres = xres + "/Im" + string(ix + 1) + " " + string(image_obj + ix) + " 0 R "
+            end for
+            if xres != "" then
+                xres = " /XObject << " + trim(xres) + " >>"
+            end if
             append(objs, "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 " +
                          _num(pg.size.width) + " " + _num(pg.size.height) + "]" +
-                         " /Resources << /Font << " + fres + " >> >>" +
+                         " /Resources << /Font << " + fres + " >>" + xres + " >>" +
                          " /Contents " + string(first_page_obj + i * 2 + 1) + " 0 R >>")
             stream = pg.content
             filter = ""
@@ -1180,6 +1380,18 @@ library gpdf
         for each f in fonts
             append(objs, "<< /Type /Font /Subtype /Type1 /BaseFont /" + f +
                          " /Encoding /WinAnsiEncoding >>")
+        end for
+
+        ' Each image is an XObject whose stream is the file's own compressed
+        ' pixel data, copied rather than re-encoded.
+        for each im in doc.images
+            parms = ""
+            if im.parms != "" then parms = " /DecodeParms " + im.parms
+            append(objs, "<< /Type /XObject /Subtype /Image /Width " + string(im.width) +
+                         " /Height " + string(im.height) + " /ColorSpace " + im.space +
+                         " /BitsPerComponent " + string(im.bits) + " /Filter " + im.filter +
+                         parms + " /Length " + string(byte_count(im.data)) + " >>" + chr(10) +
+                         "stream" + chr(10) + im.data + chr(10) + "endstream")
         end for
 
         info = "<< /Producer (gBASIC gpdf)"

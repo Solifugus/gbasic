@@ -30419,6 +30419,143 @@ static Value eval_call(AstExpr *expr) {
         return value_number(count);
     }
 
+    /* --- the byte-oriented family ------------------------------------------
+     *
+     * `byte_at` and `byte_count` shipped alone, and the string builtins around
+     * them are all CODEPOINT-oriented, so the two families did not compose.
+     * MEASURED: for a string beginning with a two-byte `é`, `find(s, "MARK")`
+     * answers 1 -- a codepoint index -- while the bytes of MARK start at 2, so
+     * `byte_at(s, find(s, "MARK"))` reads the tail of the é and a binary-format
+     * reader gets silently wrong data with nothing raised.
+     *
+     * So: `byte_slice` to take bytes, `byte_find` to locate them with an index
+     * the other two accept, and `to_bytes` as the inverse of `from_bytes`.
+     * Written for gpdf's PNG and JPEG readers, where the alternative was a loop
+     * over `byte_at` reassembling with `from_bytes` one byte at a time -- which
+     * is correct and QUADRATIC, since every `+` copies the whole accumulator.
+     */
+    if (strcmp(expr->as.call.name, "byte_slice") == 0) {
+        if (expr->as.call.args.count < 2 || expr->as.call.args.count > 3) {
+            runtime_error_raise("byte_slice expects a string, a start and an optional count",
+                                1003, "invalid function call");
+            return value_null();
+        }
+        Value text = eval_expr(expr->as.call.args.items[0]);
+        if (error_action_pending()) { value_free(text); return value_null(); }
+        Value at_val = eval_expr(expr->as.call.args.items[1]);
+        if (error_action_pending()) { value_free(text); value_free(at_val); return value_null(); }
+        Value n_val = value_null();
+        if (expr->as.call.args.count == 3) {
+            n_val = eval_expr(expr->as.call.args.items[2]);
+            if (error_action_pending()) {
+                value_free(text); value_free(at_val); value_free(n_val);
+                return value_null();
+            }
+        }
+        if (text.kind != VALUE_STRING || at_val.kind != VALUE_NUMBER ||
+            (expr->as.call.args.count == 3 && n_val.kind != VALUE_NUMBER)) {
+            value_free(text); value_free(at_val); value_free(n_val);
+            runtime_error_raise("byte_slice: expects a string, a number and an optional number",
+                                1003, "invalid argument type");
+            return value_null();
+        }
+        double at_d = at_val.as.number;
+        double n_d = (expr->as.call.args.count == 3) ? n_val.as.number : -1;
+        value_free(at_val); value_free(n_val);
+        if (at_d != floor(at_d) || (n_d >= 0 && n_d != floor(n_d))) {
+            value_free(text);
+            runtime_error_raise("byte_slice: the start and count must be whole numbers",
+                                1003, "invalid argument");
+            return value_null();
+        }
+        if (at_d < 0) {
+            value_free(text);
+            runtime_error_raise("byte_slice: the start may not be negative", 1003, "invalid argument");
+            return value_null();
+        }
+        size_t len = string_length(text.as.string);
+        /* Past the end is an EMPTY slice, and a count running off the end is
+         * TRIMMED -- the same forgiving shape `mid` already has, so the two
+         * behave alike where they are analogous. A negative start is still
+         * refused, because that is a mistake rather than an edge. */
+        size_t at = (size_t)at_d;
+        if (at > len) { at = len; }
+        size_t avail = len - at;
+        size_t take = (n_d < 0) ? avail : (size_t)n_d;
+        if (take > avail) { take = avail; }
+        Value r = value_string_n(text.as.string + at, take);
+        value_free(text);
+        return r;
+    }
+    if (strcmp(expr->as.call.name, "byte_find") == 0) {
+        if (expr->as.call.args.count < 2 || expr->as.call.args.count > 3) {
+            runtime_error_raise("byte_find expects a string, a needle and an optional start",
+                                1003, "invalid function call");
+            return value_null();
+        }
+        Value hay = eval_expr(expr->as.call.args.items[0]);
+        if (error_action_pending()) { value_free(hay); return value_null(); }
+        Value needle = eval_expr(expr->as.call.args.items[1]);
+        if (error_action_pending()) { value_free(hay); value_free(needle); return value_null(); }
+        Value from_val = value_null();
+        if (expr->as.call.args.count == 3) {
+            from_val = eval_expr(expr->as.call.args.items[2]);
+            if (error_action_pending()) {
+                value_free(hay); value_free(needle); value_free(from_val);
+                return value_null();
+            }
+        }
+        if (hay.kind != VALUE_STRING || needle.kind != VALUE_STRING ||
+            (expr->as.call.args.count == 3 && from_val.kind != VALUE_NUMBER)) {
+            value_free(hay); value_free(needle); value_free(from_val);
+            runtime_error_raise("byte_find: expects two strings and an optional number",
+                                1003, "invalid argument type");
+            return value_null();
+        }
+        double from_d = (expr->as.call.args.count == 3) ? from_val.as.number : 0;
+        value_free(from_val);
+        if (from_d < 0 || from_d != floor(from_d)) {
+            value_free(hay); value_free(needle);
+            runtime_error_raise("byte_find: the start must be a whole number and not negative",
+                                1003, "invalid argument");
+            return value_null();
+        }
+        size_t hlen = string_length(hay.as.string);
+        size_t nlen = string_length(needle.as.string);
+        size_t start = (size_t)from_d;
+        /* An EMPTY needle is refused rather than answered, the rule PLAT-NUL
+         * settled for the codepoint family: "empty" means length zero, it
+         * matches everywhere, and answering 0 invites a scan that never
+         * advances. */
+        if (nlen == 0) {
+            value_free(hay); value_free(needle);
+            runtime_error_raise("byte_find: the needle is empty", 1003, "invalid argument");
+            return value_null();
+        }
+        Value r = value_null();  /* `nothing` on a miss, as `find` answers */
+        if (start <= hlen && nlen <= hlen) {
+            for (size_t i = start; i + nlen <= hlen; i++) {
+                if (memcmp(hay.as.string + i, needle.as.string, nlen) == 0) {
+                    r = value_number((double)i);
+                    break;
+                }
+            }
+        }
+        value_free(hay); value_free(needle);
+        return r;
+    }
+    if (strcmp(expr->as.call.name, "to_bytes") == 0) {
+        Value text;
+        if (!crypto_one_string(expr, "to_bytes", &text)) return value_null();
+        size_t len = string_length(text.as.string);
+        Value *items = len ? malloc(sizeof(Value) * len) : NULL;
+        if (len && !items) { abort(); }
+        for (size_t i = 0; i < len; i++) {
+            items[i] = value_number((double)(unsigned char)text.as.string[i]);
+        }
+        value_free(text);
+        return value_array(items, len);
+    }
     if (strcmp(expr->as.call.name, "byte_at") == 0) {
         if (expr->as.call.args.count != 2) {
             runtime_error_raise("byte_at expects a string and an index", 1003, "invalid function call");

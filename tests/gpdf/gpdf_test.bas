@@ -278,6 +278,73 @@ program main(args)
     check("CONTROL: the subset itself still translates", _count_drawn(lv, "Revenue"), 1)
 
     print ""
+    print "-- images are COPIED, not re-encoded"
+    img = gpdf.set_font(gpdf.add_page(gpdf.document({})), "Helvetica", 10)
+    rgb = gpdf.image(img, "tests/gpdf/images/rgb.png", 50, 50, {})
+    check("a PNG embeds", count(rgb.images), 1)
+    check("with its own pixel dimensions", rgb.images[0].width, 60)
+    check("and its own colour space", rgb.images[0].space, "/DeviceRGB")
+    check("grey PNGs too", gpdf.image(img, "tests/gpdf/images/gray.png", 0, 0, {}).images[0].space, "/DeviceGray")
+    ' A palette PNG carries its PLTE into an /Indexed space -- that is what
+    ' makes the pass-through possible for the commonest kind of logo.
+    pal = gpdf.image(img, "tests/gpdf/images/palette.png", 0, 0, {})
+    check("a palette PNG becomes /Indexed", contains(pal.images[0].space, "/Indexed"), true)
+    jpg = gpdf.image(img, "tests/gpdf/images/photo.jpg", 0, 0, {})
+    check("a JPEG embeds as DCT", jpg.images[0].filter, "/DCTDecode")
+    check("with its size read from the frame header", jpg.images[0].width, 80)
+
+    ' THE CLAIM IS THAT NOTHING IS DECODED. A JPEG's stream is the FILE, byte
+    ' for byte -- so the embedded data must be exactly as long as the file on
+    ' disk. Re-encoding would still produce a valid PDF showing the right
+    ' picture, at a different size and quality, and nothing would say so.
+    jf {file}= "tests/gpdf/images/photo.jpg"
+    check("the JPEG stream is the file itself", byte_count(jpg.images[0].data), bytes(jf))
+
+    ' AND EVERY IDAT CHUNK, not just the first. A PNG of any size has several
+    ' -- the mascot has six -- and taking one gives a truncated zlib stream
+    ' that still produces a structurally perfect PDF: the dictionary declares
+    ' the right dimensions, mupdf lists the image at the right size, and the
+    ' picture is simply cut off. So the assertion is that the embedded stream
+    ' is nearly the whole FILE, which is false the moment a chunk is dropped
+    ' (the mascot's first IDAT is under a fifth of it).
+    big = gpdf.image(img, "docs/assets/mascot.png", 0, 0, {})
+    mf {file}= "docs/assets/mascot.png"
+    check("every IDAT chunk is concatenated, not just the first",
+          byte_count(big.images[0].data) > bytes(mf) * 0.9, true)
+    ' The CONTROL: it is also not MORE than the file, which would mean chunk
+    ' headers or trailing bytes had been swept in with the pixel data.
+    check("and no more than the file itself", byte_count(big.images[0].data) < bytes(mf), true)
+
+    ' The same file twice is stored ONCE -- a logo on forty pages is one
+    ' stream, not forty.
+    twice = gpdf.image(gpdf.image(img, "tests/gpdf/images/rgb.png", 0, 0, {}),
+                       "tests/gpdf/images/rgb.png", 0, 100, {})
+    check("the same image twice is stored once", count(twice.images), 1)
+    check("and drawn twice", _count_op(twice, "/Im1 Do"), 2)
+
+    ' Aspect ratio is kept when only one dimension is given, because a squashed
+    ' logo is the commonest way to get this wrong.
+    wide = gpdf.image(img, "tests/gpdf/images/rgb.png", 0, 0, { width: 120 })
+    check("giving only a width keeps the aspect ratio", contains(wide.pages[0].content, "120 0 0 80"), true)
+    check("and natural size is the pixel count", contains(rgb.pages[0].content, "60 0 0 40"), true)
+
+    on error goto next
+    gpdf.image(img, "tests/gpdf/images/interlaced.png", 0, 0, {})
+    check("an interlaced PNG is refused by name", contains(error.message, "INTERLACED"), true)
+    error.clear()
+    gpdf.image(img, "tests/gpdf/images/alpha.png", 0, 0, {})
+    check("an alpha channel is refused rather than dropped", contains(error.message, "ALPHA CHANNEL"), true)
+    error.clear()
+    gpdf.image(img, "tests/gpdf/images/nope.png", 0, 0, {})
+    check("a missing file is refused", contains(error.message, "there is no file"), true)
+    error.clear()
+    gpdf.image(img, "stdlib/gpdf.bas", 0, 0, {})
+    check("something that is not an image is refused", contains(error.message, "neither a PNG nor a JPEG"), true)
+    error.clear()
+    on error stop
+    check("CONTROL: a supported image still embeds", count(rgb.images), 1)
+
+    print ""
     print "-- refusals, each beside its nearest legal neighbour"
     on error goto next
     gpdf.set_font(d, "Comic Sans", 12)
@@ -367,6 +434,15 @@ function _near_circle(p, cx, cy, r)
     dx = p[0] - cx
     dy = p[1] - cy
     return abs(sqrt(dx * dx + dy * dy) - r) < 0.1
+end function
+
+' How many times an operator appears in the content.
+function _count_op(doc, op)
+    n = 0
+    for each p in doc.pages
+        n = n + count(split(p.content, op)) - 1
+    end for
+    return n
 end function
 
 ' How many times a string was DRAWN -- content shows text as `(...) Tj`, so

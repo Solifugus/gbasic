@@ -99,4 +99,14 @@ program main(args)
     ps = chart.size(ps, 240, 240)
     c = gpdf.svg(c, chart.render(ps), 72, 200, {})
     print string(gpdf.save(c, dir + "/chart.pdf"))
+
+    ' A letterhead: a real palette PNG with six IDAT chunks, scaled by width.
+    ' The readers check it parses AND that the image survived as an image.
+    l = gpdf.document({ created: when, title: "Letterhead" })
+    l = gpdf.add_page(l)
+    l = gpdf.image(l, "docs/assets/mascot.png", 72, 620, { width: 300 })
+    l = gpdf.set_font(l, "Helvetica-Bold", 16)
+    l = gpdf.text_at(l, 72, 590, "gBASIC Consulting")
+    l = gpdf.image(l, "tests/gpdf/images/photo.jpg", 72, 480, { width: 160 })
+    print string(gpdf.save(l, dir + "/logo.pdf"))
 end program

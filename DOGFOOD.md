@@ -4593,3 +4593,66 @@ orders freely.
 - **Severity:** medium
 - **What:** `docs/ai/UNLEARN.md` (Strings) says "Strings are binary-safe and length-counts-bytes", but `len` counts CODEPOINTS, including on binary data read from a file. For a 388,299-byte PDF, `f{file}= p` then `len(read(f))` gives 377,095, while `bytes(f)` gives 388,299 and `sha256(read(f))` matches `sha256sum`, so the content is intact and only the length is off. `len("\u{E9}")` is 1. The reference's byte-oriented section (`byte_count`) is correct. Only the UNLEARN line is wrong, and it is the line an agent reads first. A manifest recorded the wrong byte size and nothing raised.
 - **Workaround:** `bytes(f)` for a file's size (`byte_count(s)` for a string). The UNLEARN line should say that `len` counts codepoints and point at `byte_count`.
+
+## 2026-09-14 — CC — while: embedding PNG and JPEG data in gpdf
+- **RESOLVED the same day.** `byte_slice(s, at [, count])`, `byte_find(s,
+  needle [, from])` and `to_bytes(s)` shipped (`tests/run_byte_family.sh`).
+  Measuring the gap turned up a second and worse one, recorded below: the two
+  families did not compose, so a reader that located a marker with `find` and
+  read it with `byte_at` got the wrong bytes SILENTLY. gpdf's PNG reader went
+  from 0.599s to 0.025s on a letterhead with a 183KB logo, with byte-identical
+  output.
+- **Type:** missing-capability
+- **Severity:** low
+- **What:** there is **no byte-oriented slice**. `byte_at(s, i)` and
+  `byte_count(s)` exist, and `len`/`left`/`mid`/`right` are all
+  CODEPOINT-oriented, so taking "the first 8 bytes" of binary data — a PNG
+  signature, a chunk body, a JPEG segment — has no direct spelling. Measured:
+  `left(raw, 8)` on a PNG returns 8 CODEPOINTS, which for `\x89PNG\r\n\x1a\n`
+  is a different number of bytes, and the file is then misidentified.
+- **Workaround:** a private helper that loops `byte_at` and reassembles with
+  `from_bytes([b])` one byte at a time:
+  ```basic
+  function _bytes_at(s, at, n)
+      out = ""
+      i = 0
+      while i < n
+          out = out + from_bytes([ byte_at(s, at + i) ])
+          i = i + 1
+      end while
+      return out
+  end function
+  ```
+  Correct, and O(n²) in the slice length because each `+` copies — which for a
+  180KB PNG chunk is the difference between instant and noticeable. Acceptable
+  here only because image chunks are read once per document.
+- **Suggestion:** `byte_slice(s, at, count)` (or a `{bytes}` modifier on `mid`)
+  returning a counted byte string. It is the natural companion to `byte_at`
+  and `byte_count`, both of which already exist, and it removes the one place
+  a binary-format reader has to choose between correctness and speed.
+
+## 2026-09-14 — CC — while: building the byte-oriented family
+- **Type:** language-surprise
+- **Severity:** medium
+- **RESOLVED the same day** by `byte_find`, and recorded because the *shape*
+  of it is worth not rediscovering.
+- **What:** the byte-oriented builtins and the codepoint-oriented ones **did
+  not compose**, and nothing said so. `find` answers a CODEPOINT index;
+  `byte_at` takes a BYTE index. For any string holding a character above
+  ASCII those are different numbers, so the natural way to read a binary
+  format — locate a marker, then read from it — silently returns the wrong
+  bytes. Measured:
+  ```basic
+  s = "é" + "MARK"
+  find(s, "MARK")                   ' 1
+  byte_at(s, find(s, "MARK"))       ' 169 -- the tail of the é, not "M"
+  ```
+  Nothing raises. The bytes are real bytes, the program continues, and a PNG
+  chunk or a JPEG marker is read from one byte inside where it starts.
+- **Workaround:** none was needed once `byte_find` existed; before that, the
+  only safe way was to avoid `find` entirely on binary data and walk with
+  `byte_at`, which is what gpdf's JPEG marker scan does.
+- **Suggestion (done):** the byte family needs its own search, not a shared
+  one. The general lesson is that two index spaces over the same value want
+  *paired* operations — a search that answers in the units the readers take —
+  and that shipping half a family invites exactly this.

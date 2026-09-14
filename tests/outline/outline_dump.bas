@@ -1,19 +1,12 @@
 ' PLAT-OUTLINE test driver. Dispatches on args[0] to a named inline source
 ' fixture, runs source_outline(text), and prints a deterministic, path-free
-' canonical dump. Every node's slice is extracted by BYTE offset (byte_at +
-' from_bytes) because the outline's offsets are absolute byte offsets, so the
-' slice proves the range under the platform's byte convention. Newlines/tabs are
+' canonical dump. Every node's slice is extracted by BYTE offset
+' (`byte_slice`) because the outline's offsets are absolute byte offsets, so
+' the slice proves the range under the platform's byte convention. This file
+' used to hand-roll `byte_slice` out of `byte_at` and `from_bytes`, which is
+' where the builtin came from -- and once it existed the local copy shadowed
+' it and the shadow NOTE broke every golden here. Newlines/tabs are
 ' escaped so each record stays on one line for golden comparison.
-
-function byte_slice(s, start, length)
-  arr = []
-  i = start
-  while i < start + length
-    arr = append(arr, byte_at(s, i))
-    i = i + 1
-  end while
-  return from_bytes(arr)
-end function
 
 function node_by_id(nodes, id)
   for each n in nodes
