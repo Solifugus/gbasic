@@ -1367,6 +1367,82 @@ Classify each discovered format according to availability, authority,
 licensing, implementation feasibility, and human acquisition
 requirements.
 
+#### Phase 4 first tranche — the registry, 2026-09-15
+
+**Status: started, and the honest answer to "has a full survey been done" is
+no.** Before this date the registry held **two** entries and both lived inside
+the adapter that implemented them, so it recorded only what had already been
+built — which is the one thing §9 says a registry is not for. §14's twenty-two
+candidate domains had not been surveyed at all.
+
+**Two things were wrong before anything could be populated.**
+
+First, **five of the fields §9 itself specifies were refused by name** by
+`finio.check_registry_entry` — `source_type`, `source_url_or_reference`,
+`date_retrieved`, `spec_acquisition_method` and `implementation_status` — so a
+discovery pass could not have recorded what it found, which is exactly what §14
+asks of one. A specification source is now a **record**, as §9's own
+indentation always implied, requiring a reference *and a retrieval date*: a URL
+with no date is a claim about a page as it is today, and §13's whole
+maintenance story is that specifications move. `implementation_status` is
+deliberately **not** added — it names the same fact as `state`, whose five
+values §9 then enumerates, and two fields for one fact is drift rather than
+completeness.
+
+Second, **both existing entries overclaimed, and one was downgraded.** NACHA
+said `researched` on no retrievable evidence; camt said `spec_obtained` when no
+schema had ever been downloaded. camt is now `discovered` — the specification
+genuinely is public and free, which is `spec_public: true` and
+`acquisition_class: OPEN`, and that is a **different claim from holding it**.
+
+**And the correction produced something better than a citation.** A freely
+published bank ACH layout guide turned out to carry a complete field-position
+table, so `finio_nacha`'s six layouts were checked against it: **61 fields, all
+matching**, in `tests/finio/nacha_positions_test.bas`. Every other check on
+those layouts compares the adapter against fixtures this project generated from
+the same understanding the adapter reads them with — a layout wrong in both
+places agrees with itself perfectly and every suite stays green. This is the
+first statement of those positions that did not originate here. The table is
+transcribed 1-based and inclusive **as printed**, and the conversion to
+0-based-offset-and-length happens in the checker, because moving it into the
+fixture would move the off-by-one out of the code under test.
+
+**The first tranche: 10 formats across 6 families**, chosen to sit in
+*different* acquisition classes so the classification means something rather
+than being a constant with a type.
+
+| class | formats |
+|---|---|
+| OPEN | BAI2, ISO 20022 pain.001, ISO 20022 camt.053, FIX, OFX |
+| DE_FACTO | NACHA, Swift MT940 |
+| CONTROLLED | X12 820, X12 835, ISO 8583 |
+
+**The finding is the shape of that table, not its length.** The formats a small
+business most needs are **open**: BAI2 is no longer charged for and several
+banks publish complete field-level guides; OFX carries an explicit
+royalty-free, worldwide, perpetual implementation licence, which is Axiom 12
+answered outright rather than inferred and is rare; FIX is free from its own
+standards body; the ISO 20022 family downloads without registration. The ones
+behind a licence are the **interchange** standards: X12 licenses its
+transaction sets per tier, ISO 8583 must be purchased *and* its useful content
+is per-scheme anyway, and Swift's Category 9 reference guide is not freely
+published. A suite asserts that split, so a later tranche reversing it has to
+say so.
+
+**What this is not.** Six families against §14's twenty-two domains.
+`finio_registry.coverage()` reports the gap **as a value**, and the note says
+outright that absent formats are absent because nobody has looked — a registry
+that knows what it does not know is worth something, one that merely looks
+short is not. Checks, image exchange, wires, mortgage, market data, regulatory
+and tax reporting, credit reporting, KYC, insurance, accounting interchange,
+open banking and the legacy archival formats have had no pass at all.
+
+**Next, on the registry's own evidence rather than on preference:** BAI2 is the
+best-supported unbuilt format in the table — open, abundantly documented,
+record-oriented, and the format US banks still hand to businesses that camt has
+not replaced.
+
+
 ### Phase 5 and Beyond: Continuous Maintenance
 
 Continue:

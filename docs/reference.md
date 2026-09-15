@@ -6725,6 +6725,52 @@ whole program without needing a call site.
   of those revisions and a file does not say which produced it, so naming a
   year would put it in every document the adapter ever wrote on no evidence at
   all.
+- `finio_registry` — the **format registry** as §9 describes it: not a list of
+  what has been built but a record of what **exists**, how its specification can
+  lawfully be obtained, and therefore what could be built next. §9's own words:
+  *"The registry should include formats even when implementation is presently
+  impossible. Such entries become a research and acquisition queue."*
+  Until it was written the registry held **two** entries and both lived inside
+  the adapter that implemented them — so it recorded only what had already been
+  done, which is the one thing a registry is not for. Worse, and measured: five
+  of the fields §9 itself specifies were **refused by name** by
+  `finio.check_registry_entry`, including `source_url_or_reference` and
+  `date_retrieved`, so a discovery pass could not have recorded what it found.
+  A specification source is now a **record**, not a sentence —
+  `finio.source_types()` names the seven kinds a survey can honestly cite, and
+  `finio.check_specification_source` requires a reference **and a retrieval
+  date**, since a URL with no date is a claim about a page as it is today and
+  §13's whole maintenance story is that specifications move.
+  `finio_registry.queue()` is the formats **nobody has built**, each classified
+  and evidenced; `finio_registry.all(adapters)` merges it with each adapter's
+  own entry and **refuses an id that appears in both**, because two records of
+  one format is where a registry starts lying and it is cheaper to make that
+  unrepresentable than to test for it. `finio_registry.implementable(entries)`
+  answers the question the registry exists for — what could be built without
+  asking anyone for anything — and is deliberately **not** the same as "what is
+  public": a format can be publicly documented and still be one nobody may
+  implement (Axiom 12), and one whose specification costs money may be
+  perfectly lawful to implement from de-facto evidence.
+  `finio_registry.blocked(entries)` is §10's stopping point *with content* —
+  an `INSUFFICIENT` or `HUMAN_REQUIRED` entry must name what is missing, which
+  the validator enforces, because *"Format discovered. Implementation blocked.
+  Human acquisition required."* is a shrug otherwise.
+  `finio_registry.by_acquisition_class(entries)` groups them, and
+  `finio_registry.coverage(entries)` **reports the gap as a value**:
+  `finio_registry.design_domains()` is §14's list of twenty-two candidate
+  domains, and the note says outright that formats absent from the registry are
+  absent *because nobody has looked*, not because they were ruled out.
+  **What the first tranche found**, and it is the shape of the answer rather
+  than its length: the formats a small business most needs are **open** — BAI2
+  is no longer charged for and several banks publish field-level guides, OFX
+  carries an explicit royalty-free implementation licence, FIX is free from its
+  own standards body, and the whole ISO 20022 family downloads without
+  registration — while the ones behind a licence are the **interchange**
+  standards: the X12 transaction sets are licensed per tier, ISO 8583 must be
+  purchased and its useful content is per-scheme anyway, and Swift's MT
+  reference guide is not freely published (though public implementation
+  documentation for MT940 is abundant enough to be `DE_FACTO`). A suite asserts
+  that split, so a later tranche that reverses it has to say so.
 - `finio_camt` — ISO 20022 **camt.053** bank statements, and the **second**
   `finio` adapter (§20's proving set). The first of a different
   *representation*, which is the whole reason it was built second: §20 argues

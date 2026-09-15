@@ -57,6 +57,31 @@ else
     bad "nacha_test exited nonzero"; cat "$out"
 fi
 
+# --- EXTERNAL LAYOUT ORACLE ------------------------------------------------
+# THE ONLY CHECK IN THIS TREE ON THE LAYOUTS THEMSELVES THAT DID NOT COME FROM
+# THIS TREE. Every other tier compares the adapter against fixtures this
+# project generated from the same understanding of the format the adapter reads
+# them with, so a layout wrong in both places agrees with itself perfectly and
+# every suite stays green. tests/finio/nacha_positions.txt is a
+# field-position table transcribed from a bank's own freely published ACH
+# layout guide, 1-based and inclusive as printed; the checker does the
+# conversion, because published guides number from 1 and `finio` counts from 0
+# and that is the likeliest way to get a fixed-width layout wrong.
+printf 'TIER published_layout\n'
+pout="$scratch/pos.out"
+if timeout 120 ./gbasic tests/finio/nacha_positions_test.bas >"$pout" 2>&1; then
+    pm="$(sed -n 's/^mismatches: //p' "$pout")"
+    pc="$(sed -n 's/^checks: //p' "$pout")"
+    if [ "$pm" = "0" ] && [ "${pc:-0}" -ge 140 ]; then
+        ok "$pc checks: every field of all six layouts matches an independently published table"
+    else
+        bad "published layout: $pc checks, $pm mismatches"
+        grep MISMATCH "$pout" || true
+    fi
+else
+    bad "nacha_positions_test exited nonzero"; cat "$pout"
+fi
+
 # --- EXTERNAL ORACLE: awk, the control records, and finio ------------------
 # awk has never seen this adapter or the generator. It reads the bytes, applies
 # the format's own arithmetic, and the three answers must be one answer.

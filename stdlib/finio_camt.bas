@@ -674,24 +674,43 @@ function registry_entry()
              description: "XML statement: a group header, then one statement per account carrying the account's identification and currency, opening and closing balances, an optional transaction summary, and one entry per booked movement with its amount, currency, direction and dates.",
              representation: "hierarchical XML, namespaced by message version",
              transport: "file or message, delivered by the account servicer",
-             known_revisions: [ "camt.053.001.08" ],
-             specification_sources: [ "ISO 20022 message definitions and schemas published at iso20022.org" ],
+             ' WHAT THE CATALOGUE ACTUALLY LISTS, not what this adapter
+             ' implements. Retrieved 2026-09-15: camt.053 runs from 001.02 to
+             ' 001.14. Recording only the one implemented would make the
+             ' registry agree with the code about the world, which is the
+             ' opposite of what a registry is for -- an archive holding 001.04
+             ' is a fact about the industry whether or not we can read it.
+             known_revisions: [ "camt.053.001.02", "camt.053.001.03", "camt.053.001.04",
+                                "camt.053.001.05", "camt.053.001.06", "camt.053.001.07",
+                                "camt.053.001.08", "camt.053.001.09", "camt.053.001.10",
+                                "camt.053.001.11", "camt.053.001.12", "camt.053.001.13",
+                                "camt.053.001.14" ],
+             specification_sources: [
+               { source_type: "standards_body",
+                 source_url_or_reference: "ISO 20022 message definitions catalogue: https://www.iso20022.org/iso-20022-message-definitions?search=camt.053",
+                 date_retrieved: "2026-09-15",
+                 note: "confirms the message definitions and XSDs are published without charge, and lists camt.053 versions 001.02 through 001.14. THE CATALOGUE WAS RETRIEVED; NO SCHEMA WAS DOWNLOADED, and nothing in this adapter has been checked against one." } ],
              ' OPEN, WHERE NACHA HAD TO SAY DE_FACTO. ISO 20022 publishes its
              ' message definitions and schemas without charge, so there is a
              ' specification to name -- which is the first time an entry in
              ' this tree can honestly claim one.
              acquisition_class: "OPEN",
              spec_public: true,
+             spec_acquisition_method: "Free download from the ISO 20022 catalogue; no registration, purchase or membership. Not yet done.",
              implementation_allowed: true,
              spec_redistribution_allowed: false,
              sample_redistribution_allowed: false,
-             ' `spec_obtained` AND NOT FURTHER. The specification is public and
-             ' citable; this adapter was nonetheless written from the message
-             ' structure rather than against a schema validator, and it has
-             ' never met a statement produced by a bank. `verified` is what
-             ' that last fact rules out, and the distinction is the entire
-             ' reason §9 has five states rather than a boolean.
-             state: "spec_obtained",
+             ' DOWNGRADED FROM `spec_obtained` ON 2026-09-15, AND THE
+             ' DOWNGRADE IS THE REGISTRY WORKING. `spec_obtained` says a
+             ' specification is IN HAND. It is not: the catalogue confirming
+             ' the schemas are free was retrieved, no XSD was downloaded, and
+             ' this adapter was written from the message structure rather than
+             ' against one. What was true when the entry was written was that
+             ' the specification is PUBLIC -- which is `spec_public: true` and
+             ' `acquisition_class: OPEN`, both of which stand -- and those are
+             ' a different claim from holding it. Obtaining and validating
+             ' against an XSD is the queue item this entry now carries.
+             state: "discovered",
              recognition_status: "implemented",
              read_status: "implemented",
              write_status: "re-serialization only; this adapter does not originate a statement",

@@ -372,15 +372,50 @@ function acquisition_classes()
     return [ "OPEN", "CONTROLLED", "PUBLIC_VENDOR", "DE_FACTO", "HUMAN_REQUIRED", "INSUFFICIENT" ]
 end function
 
+' A SOURCE IS A RECORD, NOT A SENTENCE, and that is §9 read as it is written:
+' `source_type`, `source_url_or_reference` and `date_retrieved` are indented
+' UNDER `specification_sources[]`, so they are the fields of each source rather
+' than three more top-level strings. Phase 1 accepted a bare sentence and the
+' validator refused all three names, so a discovery pass could not have
+' recorded what evidence it used -- which is precisely what §14 asks of it
+' ("record exactly what evidence was used").
+'
+' A RETRIEVAL DATE IS REQUIRED, and it is the field that makes the rest
+' falsifiable: a URL with no date is a claim about a page as it is today, and
+' §13's whole maintenance story is that specifications move.
+
+function source_types()
+    return [ "specification", "vendor_documentation", "standards_body",
+             "regulator", "public_sample", "implementation_guide",
+             "observed_production_data" ]
+end function
+
+function check_specification_source(src, label)
+    checked = _options(src, [ "source_type", "source_url_or_reference",
+                              "date_retrieved", "note" ], label)
+    t = _required(src, "source_type", label)
+    if not contains(source_types(), t) then
+        error (label + ": source_type '" + string(t) + "' is not one of " + join(source_types(), ", "))
+    end if
+    r = _required(src, "source_url_or_reference", label)
+    d = _required(src, "date_retrieved", label)
+    return src
+end function
+
 function check_registry_entry(entry)
     known = [ "id", "name", "family", "domain", "authority", "description",
               "representation", "transport", "known_revisions", "effective_dates",
               "specification_sources", "acquisition_class", "spec_public",
+              "spec_acquisition_method",
               "implementation_allowed", "spec_redistribution_allowed",
               "sample_redistribution_allowed", "state", "recognition_status",
               "read_status", "write_status", "validation_status",
               "test_vectors", "known_variants", "known_extensions",
-              "last_reviewed", "next_review_due" ]
+              "blocked_by", "last_reviewed", "next_review_due" ]
+    ' §9 ALSO LISTS `implementation_status`, AND IT IS NOT ADDED. It names the
+    ' same fact as `state`, whose five values §9 itself then enumerates, and two
+    ' fields for one fact is the drift this tree keeps finding rather than a
+    ' completeness win. `state` IS §9's implementation_status, renamed once.
     checked = _options(entry, known, "finio.check_registry_entry")
     id = _required(entry, "id", "finio.check_registry_entry")
     st = _required(entry, "state", "finio.check_registry_entry")
@@ -393,10 +428,28 @@ function check_registry_entry(entry)
     end if
     ' A state BEYOND spec_obtained claims a specification is in hand.
     needs_spec = [ "spec_obtained", "researched", "implemented", "verified" ]
+    srcs = _default(entry, "specification_sources", [])
+    if type(srcs) != "array" then
+        error ("finio.check_registry_entry: '" + id + "' gives a " + type(srcs) + " for specification_sources, which must be an array")
+    end if
+    n = 0
+    for each src in srcs
+        checked_src = check_specification_source(src, "finio.check_registry_entry: '" + id + "' specification_source " + string(n))
+        n = n + 1
+    end for
     if contains(needs_spec, st) then
-        srcs = _default(entry, "specification_sources", [])
         if count(srcs) = 0 then
             error ("finio.check_registry_entry: '" + id + "' is '" + st + "' and names no specification_sources -- the state claims a spec is held")
+        end if
+    end if
+    ' AN ENTRY THAT CANNOT BE IMPLEMENTED MUST SAY WHY, because §10's whole
+    ' point is that automated research has "a clear stopping point" and can
+    ' report `Format discovered. Implementation blocked. Human acquisition
+    ' required.` An INSUFFICIENT or HUMAN_REQUIRED entry with no reason is
+    ' indistinguishable from one nobody has looked at.
+    if contains([ "INSUFFICIENT", "HUMAN_REQUIRED" ], ac) then
+        if byte_count(string(_default(entry, "blocked_by", ""))) = 0 then
+            error ("finio.check_registry_entry: '" + id + "' is " + ac + " and says nothing in blocked_by -- §10 requires a stopping point that names what is missing")
         end if
     end if
     ' §12/Axiom 12: implementing a format nobody is allowed to implement is a

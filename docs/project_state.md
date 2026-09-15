@@ -219,6 +219,12 @@ document list, with a status column, is `docs/README.md`.
   a bad flate checksum, on freshly generated output. Still to come: tables
   that flow across pages, chart SVG as PDF vectors, images, and embedded fonts
   for Unicode.
+- **a registry of financial formats** — `finio_registry`, the §9 research and
+  acquisition queue. First tranche 2026-09-15: 10 formats, 6 families, against
+  §14's 22 candidate domains, with the gap reported as a value. The open/licensed
+  split is asserted by a suite, and both implemented entries were corrected
+  against retrieved evidence -- camt DOWNGRADED from spec_obtained to discovered,
+  because no schema was ever downloaded.
 - **financial-format adapters** — `finio` (framework), `finio_nacha` (ACH,
   fixed-width) and `finio_camt` (ISO 20022 camt.053, hierarchical XML). The
   second adapter is a different REPRESENTATION on purpose (§20), and it is what

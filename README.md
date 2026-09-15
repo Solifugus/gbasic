@@ -6,14 +6,14 @@ gBASIC is a **modern BASIC for business programming**: familiar control flow,
 plus records, first-class functions, watchers, shared-nothing actors, and typed
 values for dates, durations and money. Around it sits a working platform —
 databases, a hardened web server, spreadsheets, statistics, charts, PDF
-documents, native GUI and an AI stack — and fifty-four pure-gBASIC libraries
+documents, native GUI and an AI stack — and fifty-five pure-gBASIC libraries
 covering double-entry accounting, loan servicing, deposits, credit analytics,
 securities analysis and more. A gBASIC program is meant to be a real
 application, not a demonstration.
 
 This repository holds the C implementation of gBASIC `0.1.0`. It is an **early
 release** and the version number is honest about that — but it is not a sketch:
-**133 test suites** gate every change, goldens are byte-exact, and the claims in
+**134 test suites** gate every change, goldens are byte-exact, and the claims in
 this file that can be measured have been. Until 1.0.0 the language surface may
 still move between releases; [CHANGELOG.md](CHANGELOG.md) records what changed
 and why, and the [documentation index](docs/README.md) marks every document
@@ -156,7 +156,7 @@ Two of these deserve a sentence more than a table row:
 
 ### The standard library
 
-Fifty-four pure-gBASIC libraries in `stdlib/`. Each bullet says what backs it,
+Fifty-five pure-gBASIC libraries in `stdlib/`. Each bullet says what backs it,
 because they are not at the same maturity and a uniform list would imply they
 are.
 
@@ -203,6 +203,19 @@ are.
   Everything it will not invent is declared: synonyms, value vocabulary, format
   exemplars, derivation, and the terms an estate does not model
   ([nlq_design.md](docs/nlq_design.md)).
+- **a registry of financial formats** (`finio_registry`) — what **exists**,
+  how each specification can lawfully be obtained, and therefore what could be
+  built next. §9 of the design asks for a *research and acquisition queue*, and
+  until this the registry held two entries, both inside the adapter that
+  implemented them — it recorded only what had been done. The first tranche's
+  finding is the shape of the answer rather than its length: **the formats a
+  small business most needs are open** (BAI2 is no longer charged for, OFX
+  carries an explicit royalty-free implementation licence, FIX is free from its
+  standards body, the ISO 20022 family downloads without registration) **while
+  the ones behind a licence are the interchange standards** (the X12
+  transaction sets, ISO 8583, Swift's MT reference guide). A blocked format
+  must name what is in the way, and every claim carries a source and the date
+  it was retrieved.
 - **financial-format adapters** (`finio`, `finio_nacha`, `finio_camt`) — the
   framework and two adapters of deliberately different shape: the ACH file
   format (94-byte fixed-width records) and ISO 20022 camt.053 bank statements
@@ -396,7 +409,7 @@ default target: build it with `make dev` and install it with
 ./tests/run_all.sh web              # or filter by substring
 ```
 
-**Use `run_all.sh` rather than naming suites.** It discovers all 133 suites by
+**Use `run_all.sh` rather than naming suites.** It discovers all 134 suites by
 glob, and that is the whole point: a hand-maintained list is a gate that
 silently shrinks. Four suites in this repository sat broken across two releases
 because every list anyone ran happened not to name them. It reports a suite

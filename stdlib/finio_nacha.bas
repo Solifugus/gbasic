@@ -895,12 +895,32 @@ function registry_entry()
              representation: "fixed-width, record-oriented, ASCII",
              transport: "file, usually delivered to or from an originating depository financial institution",
              known_revisions: [ "unresolved" ],
-             specification_sources: [ "ACH origination file specifications published by US financial institutions to their originating customers" ],
+             specification_sources: [
+               { source_type: "implementation_guide",
+                 source_url_or_reference: "NACHA File Format - Formatting Guide, Regions Bank, dated 6/20/2019: https://www.regions.com/-/media/pdfs/treasury-management/NACHA_File_Layout_Guide.pdf",
+                 date_retrieved: "2026-09-15",
+                 note: "field-level positions for all six record types, 1-based inclusive. EVERY LAYOUT IN THIS ADAPTER WAS CHECKED AGAINST IT -- 61 fields, tests/finio/nacha_positions_test.bas -- which is the first statement of those positions that did not come from this project." } ],
              acquisition_class: "DE_FACTO",
-             spec_public: false,
+             ' DE_FACTO AND NOT OPEN, conservatively. Nacha itself publishes an
+             ' ACH Guide for Developers, which would make the file format OPEN
+             ' by §10's definition -- but it answered HTTP 403 to an automated
+             ' fetch on 2026-09-15 and nothing here rests on it, and claiming
+             ' OPEN on a document that was not opened is the kind of
+             ' unevidenced claim this registry exists to prevent. What WAS
+             ' retrieved is several independent bank guides that agree, which
+             ' is exactly §10's DE_FACTO: "sufficient lawful public evidence
+             ' exists to characterize the format". Upgrading this entry is a
+             ' queue item, not a judgement call.
+             spec_public: true,
+             spec_acquisition_method: "The RECORD LAYOUTS are freely published, both in bank ACH origination guides (retrieved, above) and in Nacha's own ACH Guide for Developers at achdevguide.nacha.org (found 2026-09-15, HTTP 403 to an automated fetch, not used). The NACHA OPERATING RULES are a different artefact: they govern participation in the ACH network rather than the file layout, they are a paid publication, and they are NOT held.",
              implementation_allowed: true,
              spec_redistribution_allowed: false,
              sample_redistribution_allowed: false,
+             ' `researched` IS NOW EVIDENCED, where before it was asserted. The
+             ' claim is not that a specification was obtained -- it is that
+             ' enough is understood to implement, and a retrieved field-level
+             ' guide that all six layouts agree with is what makes that
+             ' checkable rather than a statement about my own confidence.
              state: "researched",
              recognition_status: "implemented",
              read_status: "implemented",
@@ -915,7 +935,8 @@ function registry_entry()
              ' "implemented" here would read as "you can originate with this".
              write_status: "re-emission only; this adapter does not originate a file",
              validation_status: "implemented",
-             test_vectors: [ "tests/finio/nacha/*.ach -- written here, not produced by a bank" ],
+             test_vectors: [ "tests/finio/nacha/*.ach -- written here, not produced by a bank",
+                             "tests/finio/nacha_positions.txt -- field positions transcribed from the guide above, the one check on the layouts that did not originate here" ],
              known_variants: [],
              known_extensions: [],
              last_reviewed: "2026-09-14",

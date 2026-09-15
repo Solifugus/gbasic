@@ -159,7 +159,14 @@ check("but `implemented` with no specification_sources is refused",
       contains(error.message, "names no specification_sources"), true)
 error.clear()
 withspec = claimed
-withspec.specification_sources = [ { source_type: "purchased", reference: "Nacha Operating Rules 2021" } ]
+' §9 INDENTS source_type / source_url_or_reference / date_retrieved UNDER
+' specification_sources[], so a source is a RECORD and not a sentence -- and
+' the retrieval DATE is what makes the rest falsifiable, since a URL with no
+' date is a claim about a page as it is today and §13's whole maintenance story
+' is that specifications move.
+withspec.specification_sources = [ { source_type: "specification",
+                                     source_url_or_reference: "Nacha Operating Rules 2021",
+                                     date_retrieved: "2026-09-15" } ]
 finio.check_registry_entry(withspec)
 check("and still refused without implementation_allowed (Axiom 12)",
       contains(error.message, "implementation_allowed"), true)
@@ -188,6 +195,59 @@ good = withspec
 good.implementation_allowed = true
 check("CONTROL: a fully evidenced `implemented` entry is accepted",
       finio.check_registry_entry(good), true)
+print ""
+print "-- §9's EVIDENCE FIELDS, which the registry could not hold until now"
+' A discovery pass is asked to "record exactly what evidence was used" (§14),
+' and Phase 1's validator refused `source_type`, `source_url_or_reference` and
+' `date_retrieved` BY NAME -- three of the five fields §9 lists -- so a survey
+' could not have written down what it found. Measured on 2026-09-15 by offering
+' every §9 field to the validator one at a time.
+on error goto next
+bad_src = { id: "x", state: "spec_obtained", acquisition_class: "OPEN",
+            specification_sources: [ { source_type: "specification",
+                                       source_url_or_reference: "somewhere" } ] }
+finio.check_registry_entry(bad_src)
+check("a source with no retrieval date is refused", contains(error.message, "requires 'date_retrieved'"), true)
+error.clear()
+
+bad_type = { id: "x", state: "spec_obtained", acquisition_class: "OPEN",
+             specification_sources: [ { source_type: "hearsay",
+                                        source_url_or_reference: "somewhere",
+                                        date_retrieved: "2026-09-15" } ] }
+finio.check_registry_entry(bad_type)
+check("an invented source_type is refused and the real ones named",
+      contains(error.message, "observed_production_data"), true)
+error.clear()
+
+' §10 says automated research must have "a clear stopping point" and be able to
+' report `Format discovered. Implementation blocked. Human acquisition
+' required.` An entry that is blocked and says nothing about why is
+' indistinguishable from one nobody has looked at, which is the state a
+' research queue exists to make visible.
+finio.check_registry_entry({ id: "x", state: "discovered", acquisition_class: "INSUFFICIENT" })
+check("a blocked entry that says nothing is refused (§10)",
+      contains(error.message, "blocked_by"), true)
+error.clear()
+
+' §9 ALSO LISTS `implementation_status`, AND IT IS DELIBERATELY NOT A FIELD: it
+' names the same fact as `state`, whose five values §9 then enumerates, and two
+' fields for one fact is drift rather than completeness. Asserted so the
+' omission is a decision on record rather than an oversight.
+finio.check_registry_entry({ id: "x", state: "discovered", acquisition_class: "OPEN",
+                             implementation_status: "implemented" })
+check("`implementation_status` is refused; `state` is that fact",
+      contains(error.message, "unknown field 'implementation_status'"), true)
+error.clear()
+on error stop
+blocked = finio.check_registry_entry({ id: "x", state: "discovered",
+                                       acquisition_class: "HUMAN_REQUIRED",
+                                       blocked_by: "the specification is sold only to members" })
+check("CONTROL: a blocked entry that names what is missing is accepted", blocked, true)
+open_ok = finio.check_registry_entry({ id: "y", state: "discovered", acquisition_class: "OPEN" })
+check("CONTROL: an OPEN entry needs no blocked_by", open_ok, true)
+check("and the seven source types are the ones a survey can actually cite",
+      count(finio.source_types()), 7)
+
 check("the five states are the design's five", count(finio.registry_states()), 5)
 check("and the six acquisition classes are the design's six", count(finio.acquisition_classes()), 6)
 

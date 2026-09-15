@@ -1,0 +1,40 @@
+# ACH record field positions, TRANSCRIBED from an independently published,
+# freely retrievable field-level layout guide:
+#
+#   "NACHA File Format — Formatting Guide", Regions Bank, dated 6/20/2019
+#   https://www.regions.com/-/media/pdfs/treasury-management/NACHA_File_Layout_Guide.pdf
+#   retrieved 2026-09-15
+#
+# WHY THIS FILE EXISTS. Every check on stdlib/finio_nacha.bas's layouts before
+# this one was SELF-CONSISTENCY: the fixtures were generated from the same
+# understanding of the format that the adapter reads them with, so a layout
+# that was wrong in both places would have agreed with itself perfectly. This
+# is the first statement of those positions that did not come from this
+# project.
+#
+# THE POSITIONS BELOW ARE 1-BASED AND INCLUSIVE, exactly as the guide prints
+# them, and are NOT converted here. Converting on the way in would move the
+# off-by-one this tier exists to catch from the library into the fixture --
+# published guides number from 1 and `finio` counts from 0, which is the single
+# likeliest way to get a fixed-width layout wrong. The conversion happens in
+# the checker, once, where it can be read.
+#
+# Only the positions are reproduced. The document itself is not redistributed
+# (the registry entry records spec_redistribution_allowed: false); a table of
+# byte offsets is a statement of fact about a wire format, which is what
+# `test_vectors` is for.
+#
+# THIS FILE LIVES BESIDE tests/finio/nacha/ AND NOT IN IT, because that
+# directory is the archive-scan fixture whose contents a tier COUNTS and which
+# tools/make_nacha_fixture.py owns byte for byte. Dropping a hand-written file
+# into it broke both invariants at once, and both tiers said so -- which is the
+# same correction nacha_test.bas needed for the same reason.
+#
+# format: <record_kind> <1-based-start>-<1-based-end> ...
+
+file_header    01-01 02-03 04-13 14-23 24-29 30-33 34-34 35-37 38-39 40-40 41-63 64-86 87-94
+batch_header   01-01 02-04 05-20 21-40 41-50 51-53 54-63 64-69 70-75 76-78 79-79 80-87 88-94
+entry_detail   01-01 02-03 04-11 12-12 13-29 30-39 40-54 55-76 77-78 79-79 80-94
+addenda        01-01 02-03 04-83 84-87 88-94
+batch_control  01-01 02-04 05-10 11-20 21-32 33-44 45-54 55-73 74-79 80-87 88-94
+file_control   01-01 02-07 08-13 14-21 22-31 32-43 44-55 56-94
