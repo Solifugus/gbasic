@@ -6513,19 +6513,41 @@ whole program without needing a call site.
   how much was selected, because recall alone is maximised by returning
   everything.
 - `finio` — financial-format adapters (`docs/financial_adapters_design.md`).
-  **Phase 0 only: the value model and the format registry. There is no adapter
-  yet**, and that is the phase — what it fixes is the shape everything above it
-  is built on. `finio.open_text(text, { format:, revision: [, origin:] })`
-  **retains the source** (Axiom 1) and records where each record begins;
+  **Phase 0 fixed the value model and the format registry; Phase 1 is the
+  framework — adapters, recognition, resolution, validation and loss — and
+  `finio_nacha` below is the first adapter it carries.**
+  `finio.open_text(text, { format:, revision: [, origin:, framing:,
+  record_length: ] })` **retains the source** (Axiom 1) and records where each
+  record begins. **Offsets and slices are BYTES, never codepoints**, which is a
+  correction to Phase 0 rather than a refinement of it: Phase 0 accumulated
+  offsets with `len` and sliced with `mid`, so the field it called
+  `byte_offset` stopped being one as soon as a record carried a non-ASCII byte,
+  and in a fixed-width format the extraction itself moved — one UTF-8 É inside
+  a 22-byte name field shifts every later field one place left, and a 15-digit
+  trace number comes back as an ordinary-looking 13-digit one. Its own suite
+  could not see it, because its fixture is pure ASCII.
+  **`framing` is evidence, not a setting.** `"lines"` (the default) splits on LF
+  and remembers whether each record ended CRLF or LF; `"fixed"` with a
+  `record_length` cuts a source with **no separator at all** — how a great many
+  real fixed-width files arrive off a mainframe, and which a newline-assuming
+  reader sees as one enormous record. Each record's terminator is retained, so
+  `finio.source_text(src)` gives back exactly what arrived and a writer can
+  reproduce the file it read rather than a normalised version (§17).
   `finio.layout(fields)` validates a fixed-width layout of
-  `{ concept:, offset:, length: }` (offsets are **0-based**, as `mid` is), held
-  **once per format** rather than per record. `finio.source_value(src, lay,
-  record, concept)` computes a field's provenance on demand —
-  `{ raw, location { record, byte_offset, byte_length }, format, revision }` —
-  and `finio.semantic_value(concept, value, sources, transformations)` is §5's
-  normalized value, whose `sources` is **plural and required**, because a
-  revision may compose one concept from several fields and a value with no
-  source has no provenance.
+  `{ concept:, offset:, length: }` (offsets are **0-based**; published format
+  guides number the same positions from 1, so a layout transcribed straight out
+  of one is off by one everywhere), held **once per format** rather than per
+  record, and `finio.concepts(lay)` lists its names.
+  `finio.coverage(lay, record_length)` reports the `gaps` and `overlaps` a
+  layout leaves — **a dropped field is silent loss (Axiom 8) and looks like
+  nothing**, since the other fields still read correctly and the record still
+  validates; it shows up here as arithmetic.
+  `finio.source_value(src, lay, record, concept)` computes a field's provenance
+  on demand — `{ raw, location { record, byte_offset, byte_length }, format,
+  revision }` — and `finio.semantic_value(concept, value, sources,
+  transformations)` is §5's normalized value, whose `sources` is **plural and
+  required**, because a revision may compose one concept from several fields and
+  a value with no source has no provenance.
   **Computed, not stored, and that was measured rather than preferred**: holding
   provenance per value costs 2.79 GB for a 9.5 MB file and is also the slowest
   to answer, while retaining the source costs 54 MB and about two microseconds a
@@ -6535,6 +6557,71 @@ whole program without needing a call site.
   `"ok"`, `"unknown"` or `"invalid"` and those are three different answers**
   (Axiom 7): a blank field is unknown, a present field that fails its own rule
   is invalid, and an unknown's `value` is `unknown` and never zero.
+
+  **An adapter is a value, and so is the set of them.**
+  `finio.adapter({ id:, revisions:, recognise:, read: [, validate:, write: ],
+  registry_entry:, byte_fidelity: [, semantic_fidelity: ] })` checks the shape
+  — `recognise` and `read` must be **function values** (`lib.fn` is one), at
+  least one revision must be named, the registry entry is checked where it is
+  declared rather than where it is first doubted, and **`byte_fidelity` must be
+  stated** because §17 says every adapter documents which round-trip guarantee
+  it can provide and leaving it unsaid is how a consumer comes to assume the
+  stronger one. `finio.registry(adapters)` is the set, and
+  `finio.find_adapter(reg, id)` names what the registry holds when it misses.
+  **The registry is a value the caller holds, not a global** — gBASIC's actors
+  are fork+exec, so a registration performed in a parent is not the child's, and
+  a global would work in a script and quietly hold nothing in a worker; a value
+  also lets two coexist, one pinned to the adapters an archive was imported
+  under and one carrying today's. The cost is that §7's one-argument
+  read takes a registry argument, and that is the whole cost.
+  `finio.identify(reg, text)` reports `{ classification, candidates, why }`
+  where `finio.classifications()` gives §7's ordinal vocabulary — `exact`,
+  `strong`, `possible`, `ambiguous`, `unknown`. **Deliberately not numeric**:
+  where the evidence is a fingerprint a file either carries or does not,
+  dressing that as a confidence claims a measurement nobody made. **Two
+  adapters claiming one source is `ambiguous`, never the stronger claim** —
+  they disagree about a fact and the resolution is evidence the framework does
+  not have.
+  `finio.read_text(reg, text, options)` and `finio.read_file(reg, path,
+  options)` resolve in §7's order — an explicit `adapter`, then recognition —
+  and **raise where they cannot**, because a document is what every consumer
+  downstream trusts and a guessed one is indistinguishable from a read one. The
+  document carries the `adapter`, the `revision`, the `classification`, the
+  `reasons` it was resolved that way, the retained `source`, the `records`, the
+  adapter's `entities`, and `loss`. **An adapter may honestly not know its
+  revision**: §7's diagram assumes one can always be settled from evidence, and
+  for a format whose record layout has outlived twenty rule books it cannot —
+  the adapter's first declared revision is used and the reason says the source
+  carried none, rather than a year being invented that would then travel in
+  every document written. (`read_file`, not `read`: `read` is a built-in, and a
+  library function of that name shadows it for every unqualified call inside
+  the library, so `finio.read` would call itself and `scan` could not read a
+  file at all — `discovery` made the same choice for the same reason.)
+  `finio.validate(reg, doc)` is **a different operation from reading** (§15).
+  Reading preserves and explains; validation judges. A file whose control
+  totals disagree with its entries is the most operationally important thing an
+  ACH shop can be told and is **not** a reason to refuse to read it. An issue
+  carries `code`, `severity` and `message`, and severity is `error`, `warning`
+  or `note` — **a format-conformance vocabulary with no "critical" in it**,
+  because whether a mismatch is worth stopping a payment run for is the
+  consuming application's judgement (Axiom 9).
+  `finio.write_text(reg, doc)` and `finio.write_file(reg, doc, path)` dispatch
+  the other way, so a consumer holding a document **never has to name the
+  adapter it happens to be holding**. The result carries the `text`, the
+  `loss`, and the `byte_fidelity` the adapter declared — travelling *with* the
+  output rather than sitting somewhere a caller may not think to look. An
+  adapter with no writer is **refused**, because handing back the bytes that
+  arrived would be a perfect round trip that serialised nothing; an adapter
+  with no validator is refused by `validate` for the same reason, since an
+  empty issue list is the strongest conformance claim there is.
+  `finio.loss_note(kind, detail)` records Axiom 8's explicit loss, where
+  `finio.loss_kinds()` are the three ways a transformation actually loses:
+  `uninterpreted` (it did not claim the bytes), `unrepresentable` (it cannot
+  hold the value at all) and `narrowed` (it holds less of it than arrived).
+  `finio.scan(reg, directory)` is §8's archive report — `{ examined, files,
+  counts, unknown, ambiguous, unreadable }`, where **a file nothing claims and
+  a file an adapter claimed and could not read are different facts** about an
+  archive.
   `finio.registry_states()` and `finio.acquisition_classes()` return §9's five
   states and §10's six classes; `finio.check_registry_entry(entry)` refuses an
   unknown field **by name**, an invented state or class, a state at or beyond
@@ -6545,6 +6632,85 @@ whole program without needing a call site.
   `spec_revision`, `authority`, `retrieved`, all required), which answers a
   **different question** from data provenance: not where a value came from but
   why the adapter believes that element has that meaning.
+- `finio_nacha` — the ACH file format, and the **first `finio` adapter**
+  (§20's proving set). 94-byte fixed-width records: a file header, batches of
+  entry details with optional addenda, and control records.
+  **A NACHA file checks itself, and that is why it was chosen first.** Every
+  batch ends with a control record stating its entry count, a hash of the
+  routing numbers it touched and its debit and credit totals, and the file ends
+  with one saying the same across batches — numbers computed by whoever
+  produced the file, so a reader can be held to arithmetic it did not supply.
+  `finio_nacha.adapter()` is the value to register;
+  `finio_nacha.registry_entry()` is its §9 entry, which says **`researched`,
+  not `verified`, and `DE_FACTO`, not `OPEN`**: the layouts come from the ACH
+  origination guides US banks publish to their own originating customers, the
+  Nacha Operating Rules themselves are a paid publication that was not held,
+  and **this adapter has never met a file produced by a bank** — everything it
+  has been run against was written here.
+  `finio_nacha.recognise(text)` uses deterministic evidence only: every record
+  94 bytes, a valid record-type sequence, and the file header's record size
+  `094`, blocking factor `10` and format code `1` — that triple is a
+  fingerprint, so its presence is `exact` and its absence is `strong` **by
+  name** rather than by a number. It also decides `framing`, because a file
+  with no line feed whose length divides by 94 is a blocked file and that is a
+  fact about the source rather than a setting.
+  `finio_nacha.read_source(src, revision)` preserves and explains (§15): an
+  unrecognised record type is kept with its bytes and reported as
+  `uninterpreted` loss rather than dropped, and a batch missing its control
+  record is kept for `validate_doc` to report. **Padding is not a file control
+  record** — both are type 9 and they are told apart by content, and reading 94
+  nines as a file control gives a batch count of 999999 and a hash of nines,
+  every number ordinary-looking and wrong.
+  `finio_nacha.validate_doc(doc)` checks the file against its own arithmetic —
+  record lengths, blocking, the record-type **sequence**, the header's own
+  declarations, and every batch and file control's count, hash and totals. The
+  sequence is checked here *as well as* in `recognise`, and that is not
+  duplication: recognition asks whether a file is plausibly ACH and answers
+  `possible` for one whose records are the right width and whose types run in
+  an impossible order — which is right, since it may well be an ACH file that
+  was damaged, and refusing to read it destroys the only thing an operator can
+  work from. Validation asks §15's different question, *does this source
+  conform*; without it such a file reads, validates clean, and reports nothing
+  about the one thing wrong with it. `finio_nacha.batch_totals(records,
+  batch)` is that recomputation on its own, which is what a writer needs. **The
+  entry hash keeps only the rightmost ten digits** of the sum of the routing
+  numbers; keeping the whole sum agrees with the file for every small batch and
+  parts company exactly when a file is large.
+  `finio_nacha.credit_codes()`, `finio_nacha.debit_codes()` and
+  `finio_nacha.direction_of(code)` are **an explicit table, not a rule about
+  the second digit**. The digit rule — 2, 3 and 4 credit, 7, 8 and 9 debit —
+  holds for checking, savings and general ledger and **breaks for loans, where
+  55 is a debit**; a reader that derived the direction would put loan debits on
+  the credit side and the file's own control totals would then disagree with it
+  for a reason nothing names. A code the table does not hold has direction
+  `unknown`, is left out of both totals, and is **reported** (Axiom 7), never
+  defaulted to a side.
+  `finio_nacha.write_doc(doc)` is **re-emission, not origination** — the
+  registry entry's `write_status` says so, because "implemented" would read as
+  *you can originate ACH files with this*, and building one from nothing means
+  deciding a company identification, an ODFI, an effective entry date and a
+  service class, which are the consumer's judgements rather than the format's
+  (Axiom 9). It re-emits each record's retained bytes joined by
+  the separator that record actually carried, so **an unchanged document
+  reproduces its source exactly** — including CRLF where the source had CRLF
+  and no separator where the source was blocked. It is reconstructed rather
+  than returned, which is what makes the guarantee checkable.
+  `finio_nacha.set_field(doc, record, concept, text)` rewrites one field in
+  place and **refuses a value of the wrong width rather than truncating**,
+  because a truncated account number or amount is a perfectly well-formed
+  record that means something else.
+  `finio_nacha.layout_for(kind)` gives the layout for a
+  `finio_nacha.record_kinds()` member, and the six are also reachable directly
+  as `finio_nacha.layout_file_header()`, `layout_batch_header()`,
+  `layout_entry_detail()`, `layout_addenda()`, `layout_batch_control()` and
+  `layout_file_control()`; `finio_nacha.record_length()` is 94. Each covers all
+  94 bytes with no gap and no overlap, which `finio.coverage` asserts rather
+  than the addition being trusted.
+  **One revision, named `unresolved`, and that is the honest answer.** The
+  Operating Rules are revised every year; the record layout has outlived twenty
+  of those revisions and a file does not say which produced it, so naming a
+  year would put it in every document the adapter ever wrote on no evidence at
+  all.
 - `accounting` — double-entry bookkeeping, pure gBASIC over exact `money`
   (`docs/accounting_design.md`). `accounting.chart(accounts)` validates a chart
   of accounts and fixes each one's normal balance side from its `kind`

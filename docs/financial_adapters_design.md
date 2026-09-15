@@ -316,17 +316,32 @@ themselves be versioned even when the physical layout does not change.
 
 ## 7. Public API Philosophy
 
+> **Corrected by Phase 1 (see §21).** The entry points are
+> `finio.read_text(reg, text, options)` and `finio.read_file(reg, path,
+> options)`, and they take a **registry** as their first argument. `read` is a
+> gBASIC built-in, so a `finio` function of that name would shadow it for every
+> unqualified call inside the library and call itself; and the registry is a
+> value rather than a global because gBASIC's actors are fork+exec, so a
+> registration performed in a parent is not the child's. The samples below keep
+> the original spelling to show what was proposed. The rest of this section
+> stands unchanged.
+
 The ordinary API should remain small and stable.
 
 For example:
 
 ``` basic
 load finio
+load finio_nacha
 
-doc = finio.read("payments.ach")
+reg = finio.registry([ finio_nacha.adapter() ])
+doc = finio.read_file(reg, "payments.ach", {})
 ```
 
-Resolution should proceed using evidence in roughly this order:
+Resolution should proceed using evidence in roughly this order — but see
+§21's Phase 1 result for the step this diagram assumes and a real format does
+not supply: **an adapter may honestly be unable to determine a revision**, and
+the honest answer is to say so rather than to name one.
 
 ``` text
 explicit adapter/revision
@@ -991,7 +1006,7 @@ directions.
 Candidates include:
 
 ``` text
-NACHA
+NACHA                                       [done -- stdlib/finio_nacha.bas]
     fixed-width, record-oriented
 
 ISO 20022 camt
@@ -1125,6 +1140,121 @@ Implement:
 -   adapter resolver;
 -   provenance relationships;
 -   loss-reporting primitives.
+
+#### Phase 1 result — built 2026-09-14
+
+**Status: done, with the first adapter beside it.** `stdlib/finio.bas` carries
+the adapter interface, the recognition API, the resolver, validation and the
+loss primitives; `stdlib/finio_nacha.bas` is the first adapter (§20's
+fixed-width entry). Phase 1 and the first of Phase 2 shipped together
+deliberately: a framework whose only consumer is imaginary cannot be tested at
+all, and the tiers that matter here are the ones an adapter makes possible.
+
+**NACHA was chosen first because a NACHA file checks itself.** Every batch ends
+with a control record stating its entry count, a hash of the routing numbers it
+touched and its debit and credit totals, and the file ends with one saying the
+same across batches. Those numbers were computed by whoever produced the file,
+so the reader is held to arithmetic it did not supply — which is what separates
+a test from a transcript, and is the same property that makes `accounting`'s
+balance identity and `credit`'s reconciliation good tests rather than goldens.
+`tests/run_finio_nacha.sh` makes it three-way: `awk` recomputes the totals from
+the bytes, the control records declare them, and `finio` reports them, and all
+three must agree batch by batch — with the negative control that the corrupted
+fixture must make awk and the control records **differ**, and `finio` must side
+with the bytes.
+
+Five things building it corrected, none of them visible by reading.
+
+**1. Phase 0's offsets were codepoints, and its own suite could not see it.**
+`open_text` accumulated offsets with `len` and `source_value` sliced with
+`mid`, both of which count codepoints, so the field named `byte_offset` stopped
+being one the moment a record carried a non-ASCII byte — and in a fixed-width
+format the *extraction* moves with it: one UTF-8 É inside a 22-byte name field
+shifts every later field one place left, and a 15-digit trace number comes back
+as an ordinary-looking 13-digit one with nothing raised. Phase 0's fixture is
+pure ASCII, so every check passed either way. Both are bytes now, and both
+suites assert it as a **difference** — the two slicings must disagree on the
+accented record and `finio` must give the byte one, because asserting only that
+it returns the right digits passes on a codepoint reader whenever the fixture
+happens to be ASCII. That is PLAT-NUL's standing lesson one library along: a
+defect in how one place reads a string is evidence about every place that does.
+
+**2. Framing is evidence, not a setting.** A great many real fixed-width files
+— NACHA among them — arrive with **no record separator at all**, as one blocked
+run of 94-byte records straight off a mainframe, and a newline-assuming reader
+sees a single enormous record. `open_text` is told the framing and retains each
+record's actual terminator, so a source can be re-emitted as it arrived; the
+adapter's `recognise` decides which framing a file has. The suite asserts the
+same logical file in three physical framings — LF, CRLF and blocked — reads
+identically, and the runner separately asserts the three are genuinely
+different bytes, since "they agree" is otherwise satisfied by three copies of
+one file.
+
+**3. §7's resolution diagram assumes a revision can always be settled, and for
+this format it cannot.** The Nacha Operating Rules are revised annually; the
+record layout has outlived twenty of those revisions and **a file does not say
+which produced it**. The adapter therefore declares one revision named
+`unresolved` and `recognise` reports no revision at all, rather than naming a
+year that would then travel in every document written. The framework uses the
+adapter's first declared revision and **records in `reasons` that the source
+carried no evidence**. §8's archive report keys on the adapter alone for the
+same reason: its example counts "NACHA 2020 82", and a key naming a year here
+would be an invention repeated once per file.
+
+**4. `read` could not be spelled `read`.** It is a built-in, and a library
+function of that name shadows it for every unqualified call inside the library,
+so the §7 spelling would have called itself and `scan` could not have read a
+file at all. The entry points are `finio.read_text(reg, text, options)` and
+`finio.read_file(reg, path, options)`; `discovery` made the same choice for the
+same reason. **The registry is also an argument rather than a global**, which
+is the other deviation from §7's one-argument shape: gBASIC's actors are
+fork+exec, so a registration performed in a parent is not the child's and a
+global would work in a script while quietly holding nothing in a worker.
+
+**5. A claim in the adapter was withdrawn because the perturbation written to
+prove it did not go red.** The amount reader carried a comment saying that
+dividing cents by 100 in floating point is "wrong in the last cent for values a
+test does not try". Measured over every shape a NACHA amount field can hold
+plus 300,000 random twelve-digit values, the two agree on **all** of them: a
+twelve-digit count of cents is under 10¹², doubles carry integers exactly to
+2⁵³, and the quotient's shortest round-trip decimal is the exact one. The exact
+path is still the one written — it is exact by construction rather than by the
+field width happening to stay inside a range — but the stronger claim was false
+and a tier asserting the two differ would have asserted something false.
+
+**6. Two checks never fired, because `/` is float division.** `n - (n / 10) *
+10 != 0` is always false in gBASIC: division is not integer division, so the
+product reconstructs the dividend exactly. Written that way, the blocking check
+(is the record count a multiple of ten) and the blocked-framing length check
+(does the byte count divide by 94) both passed everything handed to them. The
+first was found by a probe on a deliberately damaged file — **not by reading,
+and not by any tier, because every fixture happened to be the right length** —
+and the second by sweeping the tree for the same *shape*, which is the standing
+rule that a defect found in one place is evidence about every place with the
+same form. Both are `floor(...)` now and both are proven red.
+
+Eleven perturbations were proven red, each caught by the tier written for it:
+cents read as dollars (**not red — see 5 above**), the direction derived from
+the second digit, the entry hash left untruncated, addenda left out of the
+count, padding read as a file control, a layout transcribed 1-based as
+published guides number it, framing detection guarded with `is_unknown` rather
+than `is_nothing`, a write that returns the source instead of reconstructing
+it, Phase 0's codepoint slicing restored, validation no longer checking the
+record-type sequence, and each of the two float-division checks put back. The
+hash tier is the one worth
+naming: with two small batches the rightmost-ten-digits rule never fires, so
+the fixture carries a **third batch of 120 entries** whose routing numbers sum
+past 10¹⁰ — without it the rule would be dead code the suite asserted nothing
+about.
+
+**Deliberately not built, and why.** §7's `compare` (interpreting a source
+under each candidate and reporting where the readings differ) needs at least
+two adapters or two revisions that genuinely disagree; with one of each it
+could only be exercised against an invented difference, which is a tier that
+asserts nothing. §8's `readall` is `scan` plus a loop and adds no decision.
+Both wait for Phase 2's second adapter, which is also what §20 says the
+abstraction must not be declared stable without.
+
 
 ### Phase 2: Diverse Adapters
 

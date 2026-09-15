@@ -54,9 +54,43 @@ check("the second record's offset includes its own base", sv2.location.byte_offs
 ' Without this the two checks above are satisfied by a location that is
 ' self-consistently wrong.
 check("the source text at that offset is the raw value",
-      mid(src.text, sv2.location.byte_offset, sv2.location.byte_length), sv2.raw)
+      byte_slice(src.text, sv2.location.byte_offset, sv2.location.byte_length), sv2.raw)
 check("and for the first record too",
-      mid(src.text, sv.location.byte_offset, sv.location.byte_length), sv.raw)
+      byte_slice(src.text, sv.location.byte_offset, sv.location.byte_length), sv.raw)
+
+print ""
+print "-- BYTES, NOT CODEPOINTS -- and both records above are ASCII, which is"
+print "   why they could not see it"
+' PHASE 0 WAS WRONG HERE AND ITS OWN SUITE COULD NOT TELL. Offsets were
+' accumulated with `len` and fields sliced with `mid`, both of which count
+' CODEPOINTS, so the field called `byte_offset` stopped being one the moment a
+' record carried a non-ASCII byte -- and in a FIXED-WIDTH format the extraction
+' itself moves. Every check above passes either way, because every byte in
+' those two records is one codepoint.
+'
+' THE ASSERTION IS A DIFFERENCE, not a value: the two slicings must DISAGREE on
+' this record, and finio must give the byte one. Asserting only that finio
+' returns "0000012500" passes on a codepoint reader whenever the fixture
+' happens to be ASCII, which is exactly how this survived Phase 0.
+' `from_bytes`, NOT `chr`. `chr(n)` takes a Unicode CODEPOINT and returns its
+' UTF-8 ENCODING, so `chr(195) + chr(137)` is FOUR bytes, not the two this
+' needs -- which quietly makes the record two bytes longer than the layout and
+' turns a test about byte offsets into a test of a malformed fixture. It is
+' documented; it is still the easiest way to get this wrong.
+e_acute = from_bytes([ 195, 137 ])                  ' the two bytes of U+00C9
+' COUNTED, not eyeballed -- the same way the two records above are, and for
+' the same reason: type 1, account 11 ("ACC" + 2 bytes + "T00001"), amount 8,
+' name 9.
+wide1 = "6ACC" + e_acute + "T00001" + "00012500" + "JOE      "
+check("the record is 29 bytes", byte_count(wide1), 29)
+check("and 28 codepoints, which is what makes it a test", len(wide1), 28)
+wsrc = finio.open_text(wide1 + chr(10), { format: "demo", revision: "2026" })
+wamt = finio.source_value(wsrc, lay, 0, "amount")
+check("finio slices the amount by BYTE", wamt.raw, "00012500")
+check("CONTROL: a codepoint slice of the same range gives something else",
+      mid(wide1, 12, 8) != wamt.raw, true)
+check("and the location still names the bytes it returned",
+      byte_slice(wsrc.text, wamt.location.byte_offset, wamt.location.byte_length), wamt.raw)
 
 print ""
 print "-- Axiom 7: unknown is DIFFERENT from invalid"
@@ -72,6 +106,12 @@ check("and its value is unknown, never zero", is_unknown(blank.value), true)
 bad = finio.read_field(src, lay, 0, "name", "digits")
 check("a field that cannot be what it claims is INVALID", bad.status, "invalid")
 check("and the refusal says what it found", contains(bad.reason, "expected digits"), true)
+' A NON-ASCII BYTE IS ALSO NOT A DIGIT, and the loop that decides so counts
+' BYTES like everything else here. It reports the position rather than the
+' character, because one byte of a multi-byte character is not a character.
+wbad = finio.read_field(wsrc, lay, 0, "account", "digits")
+check("a multi-byte character in a digits field is invalid", wbad.status, "invalid")
+check("and the reason names a byte position", contains(wbad.reason, "byte "), true)
 ' EVERY answer carries its own provenance, which is Axiom 2.
 check("an unknown still names where it came from", blank.source.location.byte_offset, 30 + 20)
 

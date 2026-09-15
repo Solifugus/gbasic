@@ -219,9 +219,12 @@ document list, with a status column, is `docs/README.md`.
   a bad flate checksum, on freshly generated output. Still to come: tables
   that flow across pages, chart SVG as PDF vectors, images, and embedded fonts
   for Unicode.
-- **financial-format adapters** — `finio`, Phase 0 (value model + registry only).
-  Provenance is reconstructed from a retained source because the alternative was
-  measured at 2.79 GB for a 9.5 MB file; see financial_adapters_design.md §21.
+- **financial-format adapters** — `finio` (framework) and `finio_nacha` (the
+  ACH file format, the first adapter). Provenance is reconstructed from a
+  retained source because the alternative was measured at 2.79 GB for a 9.5 MB
+  file; see financial_adapters_design.md §21. Phase 1 corrected five things
+  invisible by reading, the sharpest being that Phase 0's byte offsets were
+  codepoints and its own ASCII fixture could not tell.
 - **a textual form that keeps every gBASIC type** — `notation`, the gap between
   the JSON dialect (readable, and refuses a date, money, a duration or a file)
   and the binary serializer (keeps every type, opaque). Neither can be reviewed by

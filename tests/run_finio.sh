@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
-# finio PHASE 0 -- the financial adapter framework's VALUE MODEL, and the ONE
+# finio -- the financial adapter framework's VALUE MODEL, and the ONE
 # MEASUREMENT that chose its architecture (docs/financial_adapters_design.md
-# §21).
+# §21). The FRAMEWORK on top of it -- adapters, recognition, resolution,
+# validation, loss -- and its first adapter are run by run_finio_nacha.sh,
+# because the tiers that matter there are the ones an adapter makes possible.
 #
-# NO ADAPTER EXISTS YET AND THAT IS THE PHASE. What Phase 0 fixes is the shape
-# everything above it is built on, and the design says that shape is decided by
-# a measurement rather than by preference: Axiom 2 makes every interpreted value
-# traceable, a 100,000-record file at eleven fields is 1.1 MILLION source
-# locations, and whether gBASIC carries that is not knowable by reading.
+# THE SHAPE HERE WAS DECIDED BY A MEASUREMENT rather than by preference: Axiom 2
+# makes every interpreted value traceable, a 100,000-record file at eleven
+# fields is 1.1 MILLION source locations, and whether gBASIC carries that is not
+# knowable by reading.
 #
 # SELF-CHECKING RATHER THAN GOLDEN, and forced: every defect this layer can have
 # is a PLAUSIBLE RECORD -- a location one byte off yields an ordinary-looking
@@ -41,7 +42,7 @@ out="$scratch/sem.out"
 if timeout 120 ./gbasic tests/finio/finio_test.bas >"$out" 2>&1; then
     mism="$(sed -n 's/^mismatches: //p' "$out")"
     checks="$(sed -n 's/^checks: //p' "$out")"
-    if [ "$mism" = "0" ] && [ "${checks:-0}" -ge 35 ]; then
+    if [ "$mism" = "0" ] && [ "${checks:-0}" -ge 42 ]; then
         ok "$checks checks, 0 mismatches"
     else
         bad "finio_test: $checks checks, $mism mismatches"
@@ -80,9 +81,13 @@ fi
 # --- LOCATION ORACLE: the bytes a location NAMES are the bytes it RETURNED --
 # Checked against the FILE with an outside tool, not against ourselves: the
 # fixture's own version of this compares finio to finio, which is satisfied by
-# a reader that is self-consistently one byte out. (gBASIC's `mid` is 0-BASED,
-# and the first draft of this library was one byte late everywhere because of
-# it -- an ordinary-looking raw field from the neighbouring column.)
+# a reader that is self-consistently one byte out. (Offsets are 0-BASED, and
+# the first draft of this library was one byte late everywhere because of it --
+# an ordinary-looking raw field from the neighbouring column. head/tail count
+# BYTES, which is the other half of why this tier is outside: Phase 0 computed
+# offsets in CODEPOINTS and this tier could not see it, because the fixture it
+# reads is pure ASCII. The fixture's own accented record is where that is
+# asserted.)
 printf 'TIER location\n'
 if [ -s "$scratch/n.txt" ]; then
     cat > "$scratch/loc.bas" <<'BEOF'
