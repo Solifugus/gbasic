@@ -5,10 +5,11 @@
 gBASIC is a **modern BASIC for business programming**: familiar control flow,
 plus records, first-class functions, watchers, shared-nothing actors, and typed
 values for dates, durations and money. Around it sits a working platform —
-databases, a hardened web server, spreadsheets, statistics, charts, native GUI
-and an AI stack — and fifty-two pure-gBASIC libraries covering double-entry accounting, loan
-servicing, deposits, credit analytics, securities analysis and more. A gBASIC
-program is meant to be a real application, not a demonstration.
+databases, a hardened web server, spreadsheets, statistics, charts, PDF
+documents, native GUI and an AI stack — and fifty-two pure-gBASIC libraries
+covering double-entry accounting, loan servicing, deposits, credit analytics,
+securities analysis and more. A gBASIC program is meant to be a real
+application, not a demonstration.
 
 This repository holds the C implementation of gBASIC `0.1.0`. It is an **early
 release** and the version number is honest about that — but it is not a sketch:
@@ -298,7 +299,7 @@ On Linux, with a C11 compiler, `make` and `bison`. Everything else is optional:
 | libcurl | `load webclient`, `load smtp` |
 | libldap | `load ldap` |
 | libxml2 | `load xml` (and, with zlib, `xlsx`) |
-| zlib | `xlsx` |
+| zlib | `compress` / `uncompress` builtins, `xlsx`, compressed PDF streams |
 | libcrypto (OpenSSL) | cryptography builtins, `load crypto` |
 | libssl | TLS in the WebServer |
 | libxcrypt | `password_hash` / `password_verify` |
