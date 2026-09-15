@@ -364,6 +364,15 @@ end function
 ' without a specification source is refused, because that claim is exactly the
 ' one a registry exists to keep honest.
 
+' §13: "An actively changing payment standard or regulatory format may require
+' frequent monitoring. A historical format whose final revision is decades old
+' may require little or no routine monitoring." `dormant` is that last case and
+' is a DECLARATION rather than neglect -- an entry nobody has classified is not
+' dormant, it is unreviewed, and only a named value tells the two apart.
+function maintenance_priorities()
+    return [ "active", "periodic", "dormant" ]
+end function
+
 function registry_states()
     return [ "discovered", "spec_obtained", "researched", "implemented", "verified" ]
 end function
@@ -411,7 +420,16 @@ function check_registry_entry(entry)
               "sample_redistribution_allowed", "state", "recognition_status",
               "read_status", "write_status", "validation_status",
               "test_vectors", "known_variants", "known_extensions",
-              "blocked_by", "last_reviewed", "next_review_due" ]
+              "blocked_by", "last_reviewed", "next_review_due",
+              ' §13's MAINTENANCE BLOCK, which this validator refused in full
+              ' until 2026-09-15 -- all five fields, by name. That is the same
+              ' defect as §9's five, one section along, and it survived the fix
+              ' to §9 by a day because that fix was applied where the problem
+              ' was reported instead of being swept for. A registry that cannot
+              ' record a watch source cannot be maintained, which is the
+              ' capability §13 exists to describe.
+              "last_checked", "current_known_revision", "next_expected_revision",
+              "watch_sources", "maintenance_priority" ]
     ' §9 ALSO LISTS `implementation_status`, AND IT IS NOT ADDED. It names the
     ' same fact as `state`, whose five values §9 itself then enumerates, and two
     ' fields for one fact is the drift this tree keeps finding rather than a
@@ -441,6 +459,18 @@ function check_registry_entry(entry)
         if count(srcs) = 0 then
             error ("finio.check_registry_entry: '" + id + "' is '" + st + "' and names no specification_sources -- the state claims a spec is held")
         end if
+    end if
+    ' §13: different formats warrant different cadences, and the priority is
+    ' what `finio_watch.due` reads to decide. An invented one would silently
+    ' never come due.
+    if has(entry, "maintenance_priority") then
+        if not contains(maintenance_priorities(), entry.maintenance_priority) then
+            error ("finio.check_registry_entry: '" + id + "' has maintenance_priority '" + string(entry.maintenance_priority) + "', which is not one of " + join(maintenance_priorities(), ", "))
+        end if
+    end if
+    ws = _default(entry, "watch_sources", [])
+    if type(ws) != "array" then
+        error ("finio.check_registry_entry: '" + id + "' gives a " + type(ws) + " for watch_sources, which must be an array")
     end if
     ' AN ENTRY THAT CANNOT BE IMPLEMENTED MUST SAY WHY, because §10's whole
     ' point is that automated research has "a clear stopping point" and can

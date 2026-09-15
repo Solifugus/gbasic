@@ -219,6 +219,10 @@ document list, with a status column, is `docs/README.md`.
   a bad flate checksum, on freshly generated output. Still to come: tables
   that flow across pages, chart SVG as PDF vectors, images, and embedded fonts
   for Unicode.
+- **maintenance for the adapters** — `finio_watch`: watch sources, the four
+  findings (unreachable is its own), §9's ObservationLog with counting, derivable
+  staleness, and a review queue combining both halves. DETECTS, NEVER UPDATES
+  (Axiom 4), enforced by a source tripwire; no I/O, so it tests without network.
 - **a registry of financial formats** — `finio_registry`, the §9 research and
   acquisition queue. First tranche 2026-09-15: 10 formats, 6 families, against
   §14's 22 candidate domains, with the gap reported as a value. The open/licensed

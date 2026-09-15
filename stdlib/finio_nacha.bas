@@ -939,6 +939,14 @@ function registry_entry()
                              "tests/finio/nacha_positions.txt -- field positions transcribed from the guide above, the one check on the layouts that did not originate here" ],
              known_variants: [],
              known_extensions: [],
+             maintenance_priority: "active",
+             watch_sources: [
+               { kind: "document",
+                 reference: "https://achdevguide.nacha.org/ach-file-overview",
+                 watching: "Nacha's own developer guide becoming retrievable, which would move this entry from DE_FACTO to OPEN" },
+               { kind: "document",
+                 reference: "https://www.regions.com/-/media/pdfs/treasury-management/NACHA_File_Layout_Guide.pdf",
+                 watching: "a change to the published field positions, which would mean the record layout itself moved" } ],
              last_reviewed: "2026-09-14",
              next_review_due: "2027-09-14" }
 end function

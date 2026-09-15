@@ -6725,6 +6725,70 @@ whole program without needing a call site.
   of those revisions and a file does not say which produced it, so naming a
   year would put it in every document the adapter ever wrote on no evidence at
   all.
+- `finio_watch` — the **monitoring mechanism** (`docs/financial_adapters_design.md`
+  §13 *"The monitoring mechanism"*, and §9's ObservationLog). §13 said what to
+  **record** and what to do **once a revision is discovered**, and never said
+  what a watch source *is*, what checking one *does*, what **triggers** a check
+  or what it **emits** — without which "continually maintained" is an intention.
+  Measured before this shipped: **all five of §13's own maintenance fields were
+  refused by name** by `finio.check_registry_entry`, exactly as §9's five had
+  been one section along. They are accepted now, and
+  `finio.maintenance_priorities()` gives §13's three cadences — `active`,
+  `periodic`, `dormant`.
+  **It detects; it never updates.** That is the load-bearing decision and it
+  follows from Axiom 4 and §13's step 7: a process that modified an adapter
+  would silently change how a file written in 2019 is read, which is the one
+  thing this framework exists to prevent. A check produces **work** — an entry
+  in a review queue naming what moved and what says so — never a patch, and
+  there is deliberately no function here that returns a modified adapter. A
+  source tripwire asserts it, because a function returning a patched adapter
+  would look exactly like one returning a finding until the day it was used.
+  **And it performs no I/O.** `finio_watch.check(source, observed, today)` is a
+  pure function of what the **caller** fetched — the shape `agent.apply` and
+  `nlq`'s three steps already use — which is what lets a maintenance process be
+  tested with no network. A gate that needs the internet goes red when somebody
+  else's site is down, and then gets turned off.
+  `finio_watch.source(kind, { reference, watching })` declares one, over
+  `finio_watch.source_kinds()` — `version_catalogue`, `document`, `changelog`,
+  `registry_page`. **`watching` is required and is not decoration**: a
+  catalogue page changes when its footer year changes, and recording what a
+  change would *mean* is what separates a signal from a diff. A finding is one
+  of `finio_watch.finding_kinds()` — `first_sight`, `unchanged`, `changed`,
+  `unreachable` — and **`unreachable` is its own answer, not a quiet
+  `unchanged`**: a source that has 403'd for six months is not a stable format,
+  it is a watch that stopped working, and reporting it as "no change" is how a
+  monitoring process comes to assert the world is still by observing nothing.
+  That is not hypothetical — Nacha's own developer guide returned 403 to an
+  automated fetch during the first survey. What is retained between checks is a
+  **fingerprint, not the content**: keeping the page would make the registry a
+  cache of other people's documents, which is a redistribution question as well
+  as a storage one.
+  `finio_watch.observe(log, observation)` is §9's **ObservationLog**, the
+  bottom-up half: top-down watching finds a revision when a standards body
+  publishes it, observation finds one when files start arriving the adapter
+  cannot fully explain — usually sooner, and always more specific. The adapters
+  already emit `loss_note("uninterpreted", …)` on every read; **nothing counted
+  them**, and §9 is explicit that *"preserving an unknown value is only half the
+  benefit; counting it is what turns it into work"*. Three hundred sightings of
+  one token are **one entry with a count** and a **bounded sample** of where,
+  not three hundred paths. `finio_watch.observations_for(log, adapter)` reads back
+  what one adapter has been surprised by; `finio_watch.observation_kinds()`
+  names the five kinds, and **privacy is enforced rather than asked for**: an observation
+  records a token and a location, the permitted fields carry no amount, name or
+  account, and a `detail` longer than `finio_watch.max_detail_bytes()` is
+  refused — because a whole record passed as a "token" is a customer record in
+  a log.
+  `finio_watch.due(entries, today)` makes staleness **derivable, not
+  remembered**, and a `dormant` format is never due however old its date —
+  §13's *"a historical format whose final revision is decades old may require
+  little or no routine monitoring"*. Without that the queue fills with formats
+  nobody expects to move and the ones that do are buried.
+  `finio_watch.review_queue(entries, log, today)` is the two halves together,
+  which is §13's own claim and what nothing implemented: *"an adapter with old
+  evidence and no observations may be perfectly healthy… an adapter with recent
+  evidence and a rising observation count is the interesting case, and only the
+  two together say so."* A not-due adapter that production keeps surprising is
+  in the queue; a dormant one nothing has surprised is not.
 - `finio_registry` — the **format registry** as §9 describes it: not a list of
   what has been built but a record of what **exists**, how its specification can
   lawfully be obtained, and therefore what could be built next. §9's own words:

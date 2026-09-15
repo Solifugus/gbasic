@@ -763,6 +763,100 @@ When a new revision is discovered:
 The old adapter is not "upgraded." A new historical branch of meaning is
 added.
 
+### The monitoring mechanism
+
+§13 above says what to **record** and what to do **once a revision is
+discovered**. It does not say what a watch source *is*, what checking one
+*does*, what **triggers** a check, or what a check **emits** — and without
+those, "continually maintained" is an intention. This subsection specifies
+them.
+
+**The mechanism detects. It never updates.** This is the load-bearing decision
+and it follows from Axiom 4 and from step 7 of the procedure above ("preserve
+the old revision unchanged"). An automated process that modified an adapter
+would silently change how a file written in 2019 is read, which is the one
+thing this framework exists to prevent. So a check produces **work**, never a
+patch: its output is an entry in a review queue naming what moved and what
+evidence says so. A person acquires the documentation, compares the revisions
+and adds a new branch of meaning.
+
+#### What a watch source is
+
+A watch source must be checkable **without a human**, which rules out "the
+standards body's newsletter" and rules in anything whose state can be observed
+and compared:
+
+``` text
+WatchSource
+    kind        version_catalogue | document | changelog | registry_page
+    reference   a URL or other retrievable address
+    watching    what a change in it would MEAN
+```
+
+`watching` is required and is not decoration. A catalogue page changes when its
+footer year changes; that is not evidence a message definition moved. Recording
+what a change would *mean* is what separates a signal from a diff.
+
+#### What a check does, and what it may not do
+
+**Checking is a pure function of what the caller fetched.** The framework does
+no I/O: `finio_watch.check(source, observed)` takes the content (or the failure)
+the caller obtained and returns a finding. That is the shape `agent.apply` and
+`nlq`'s three steps already use in this tree, and it is what makes the
+mechanism testable with no network — which matters, because a maintenance
+process whose tests need the internet is one that goes red when somebody else's
+site is down, and gets turned off.
+
+A finding is one of:
+
+``` text
+first_sight   nothing was known before; this becomes the baseline
+unchanged     the source is as last seen
+changed       the source differs, and the finding carries what `watching` said it would mean
+unreachable   the source could not be retrieved
+```
+
+**`unreachable` is its own outcome and not a quiet `unchanged`.** A source that
+has 403'd for six months is not a stable format; it is a watch that stopped
+working, and reporting it as "no change" is how a monitoring process comes to
+assert the world is still by observing nothing. (Nacha's own developer guide
+returned 403 to an automated fetch during the first survey — this is not a
+hypothetical.)
+
+#### What triggers a check
+
+Staleness is **derivable, not remembered**, as §13 already requires.
+`finio_watch.due(entries, today)` answers it from `next_review_due` and
+`maintenance_priority`, so nothing has to keep a schedule in its head, and a
+format whose final revision is decades old is not asked about monthly.
+
+#### The other half: what production has seen
+
+Top-down watching finds a revision when a standards body publishes it.
+**Bottom-up observation finds one when files start arriving that the adapter
+cannot fully explain**, which is usually sooner and is always more specific.
+§9's `ObservationLog` is that half.
+
+The adapters already produce the raw material: every `loss_note("uninterpreted",
+…)` is a token the adapter preserved and could not account for. What was
+missing is that **nothing counted them**. §9 puts it exactly: *"Preserving an
+unknown value is only half the benefit; counting it is what turns it into
+work."*
+
+An observation records a **token and a location, never content**. That is not a
+guideline — it is enforced: the permitted fields carry no amount, name or
+account, and a `detail` longer than a token is refused, because a whole record
+passed as a "token" is a customer record in a log.
+
+#### The signal is the two together
+
+Neither half decides alone, and §13 already says why: an adapter with old
+evidence and no observations may be perfectly healthy, because a stable format
+is not moving. `finio_watch.review_queue(entries, log, today)` combines them and
+ranks, so the output is a short list of formats to go and read about rather
+than a report.
+
+
 ------------------------------------------------------------------------
 
 ## 14. Discovery Process

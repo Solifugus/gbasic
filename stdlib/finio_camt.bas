@@ -718,6 +718,11 @@ function registry_entry()
              test_vectors: [ "tests/finio/camt/*.xml -- written here, not produced by a bank" ],
              known_variants: [],
              known_extensions: [],
+             maintenance_priority: "active",
+             watch_sources: [
+               { kind: "version_catalogue",
+                 reference: "https://www.iso20022.org/iso-20022-message-definitions",
+                 watching: "a camt.053 version beyond 001.14, or a change to the versions this adapter refuses by name" } ],
              last_reviewed: "2026-09-14",
              next_review_due: "2027-09-14" }
 end function

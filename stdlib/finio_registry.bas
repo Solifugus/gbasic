@@ -95,6 +95,11 @@ function queue()
         test_vectors: [],
         known_variants: [ "banks differ in which type codes they populate and in whether transaction detail is included at all" ],
         known_extensions: [],
+        maintenance_priority: "periodic",
+        watch_sources: [
+          { kind: "registry_page",
+            reference: "https://webstore.ansi.org/preview-pages/ASCX9/preview_X9+BAI+Version+2-2009.pdf",
+            watching: "a version beyond 2 appearing, or the specification ceasing to be free" } ],
         last_reviewed: "2026-09-15",
         next_review_due: "2027-09-15" })
 
@@ -126,6 +131,11 @@ function queue()
         test_vectors: [],
         known_variants: [ ":86: narrative is structured differently by country and by bank, and that is where most real parsing effort goes" ],
         known_extensions: [],
+        maintenance_priority: "periodic",
+        watch_sources: [
+          { kind: "document",
+            reference: "https://developer.huntington.com/enterprisepayments/docs/swift-mt-940",
+            watching: "a change to the :61:/:86: field definitions, which is where MT940 parsing effort lives" } ],
         last_reviewed: "2026-09-15",
         next_review_due: "2027-09-15" })
 
@@ -155,6 +165,11 @@ function queue()
         test_vectors: [],
         known_variants: [ "every bank publishes its own implementation guideline narrowing which optional elements it accepts, so a document valid against the schema is routinely rejected by a bank" ],
         known_extensions: [],
+        maintenance_priority: "active",
+        watch_sources: [
+          { kind: "version_catalogue",
+            reference: "https://www.iso20022.org/iso-20022-message-definitions",
+            watching: "a new pain.001 version, which arrives yearly and changes which elements banks accept" } ],
         last_reviewed: "2026-09-15",
         next_review_due: "2027-09-15" })
 
@@ -187,6 +202,11 @@ function queue()
         known_variants: [],
         known_extensions: [],
         blocked_by: "the transaction-set specification is licensed rather than published; a licence must be acquired by a person before an adapter can be written from the specification rather than from guesswork",
+        maintenance_priority: "periodic",
+        watch_sources: [
+          { kind: "registry_page",
+            reference: "https://x12.org/products/licensing-program",
+            watching: "the licensing terms changing, which is the only thing that would unblock this format" } ],
         last_reviewed: "2026-09-15",
         next_review_due: "2027-09-15" })
 
@@ -217,6 +237,13 @@ function queue()
         known_variants: [ "the standard defines the frame and every scheme defines its own data elements, so an ISO 8583 adapter is really one adapter per scheme" ],
         known_extensions: [],
         blocked_by: "the standard must be purchased, and beyond it each card scheme's own element definitions are issued under agreement to participants -- so even a purchased copy does not make a usable adapter",
+        ' DORMANT IS A DECLARATION, NOT NEGLECT. The revisions are 1987,
+        ' 1993 and 2003; a format whose last revision is over twenty years
+        ' old does not warrant a monthly question, and §13 says so. An entry
+        ' nobody has classified is UNREVIEWED rather than dormant, and only a
+        ' named value tells the two apart.
+        maintenance_priority: "dormant",
+        watch_sources: [],
         last_reviewed: "2026-09-15",
         next_review_due: "2027-09-15" })
 
@@ -250,6 +277,11 @@ function queue()
         test_vectors: [],
         known_variants: [ "counterparties negotiate which fields are used, so a FIX adapter is a session and a dictionary rather than a fixed layout" ],
         known_extensions: [],
+        maintenance_priority: "periodic",
+        watch_sources: [
+          { kind: "changelog",
+            reference: "https://fixtrading.org/standards/fix-protocol/",
+            watching: "a new FIX version or extension pack" } ],
         last_reviewed: "2026-09-15",
         next_review_due: "2027-09-15" })
 
@@ -284,6 +316,11 @@ function queue()
         known_variants: [],
         known_extensions: [],
         blocked_by: "the implementation guide is licensed; free examples permit recognition but not interpretation",
+        maintenance_priority: "periodic",
+        watch_sources: [
+          { kind: "registry_page",
+            reference: "https://x12.org/products/licensing-program",
+            watching: "the licensing terms changing, which is the only thing that would unblock this format" } ],
         last_reviewed: "2026-09-15",
         next_review_due: "2027-09-15" })
 
@@ -317,6 +354,11 @@ function queue()
         test_vectors: [],
         known_variants: [ "1.x is SGML-like and not well-formed XML, so a 2.x parser cannot read it -- §20's schema-drift case occurring inside one format" ],
         known_extensions: [],
+        maintenance_priority: "periodic",
+        watch_sources: [
+          { kind: "document",
+            reference: "https://financialdataexchange.org/wp-content/uploads/2025/12/OFX-2.2.pdf",
+            watching: "a version beyond 2.2, or a change to the royalty-free implementation licence" } ],
         last_reviewed: "2026-09-15",
         next_review_due: "2027-09-15" })
 
