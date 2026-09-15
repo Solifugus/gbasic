@@ -1009,7 +1009,7 @@ Candidates include:
 NACHA                                       [done -- stdlib/finio_nacha.bas]
     fixed-width, record-oriented
 
-ISO 20022 camt
+ISO 20022 camt                              [done -- stdlib/finio_camt.bas]
     hierarchical XML
 
 OFX
@@ -1267,6 +1267,85 @@ preferably including:
 
 Use the results to revise the abstraction before treating the API as
 stable.
+
+#### Phase 2 first result — camt.053, built 2026-09-14
+
+**Status: the second adapter is built.** `stdlib/finio_camt.bas` reads ISO
+20022 camt.053 bank-to-customer statements, and it was chosen over BAI2
+deliberately: BAI2 is record-oriented and legacy-heavy, the **same family** as
+NACHA, so it would have exercised the identical layout-and-record path and
+settled nothing. §20's argument is that an abstraction surviving only one
+representation is a generalized parser rather than a description of the
+problem, and only a different representation can ask that question.
+
+**It pushed back at once, in the place that mattered.** A hierarchical source
+has no byte range. `xml.parse` builds nodes carrying a name, a namespace,
+attributes and children and **no position**; the streaming reader carries a
+*line*, not an offset. So `finio.source_value`'s
+`{ record, byte_offset, byte_length }` could not serve this adapter, and §4's
+own sentence — "a universal byte-offset model is too representation-specific.
+The framework should instead provide a generic source-location abstraction" —
+became `finio.location(kind, detail)` over §4's own list, with the fields
+checked **per kind**. An `xml` location requires a `path` *and* an
+`occurrence`, because a statement with four hundred entries has four hundred
+elements at the same path.
+
+**The document shape survived. The record did not, and should not.** Both
+adapters produce a flat `records` list of `{ kind, fields }` and an `entities`
+hierarchy of indices, and the suite walks an ACH file and an XML statement in
+one program requiring the same fields by the same names. What differs is the
+record: a fixed-width record carries `raw` and a byte range because it **has**
+them, and a re-serialization put there under that name would be a lie about
+where those bytes came from. **The uniform part is the field and its location;
+the record is representation-shaped** — which is true, and was worth
+discovering rather than deciding.
+
+Four further results, none of them reachable with one adapter:
+
+**1. The revision is the opposite answer.** A NACHA file does not say which
+rule book produced it. A camt document declares its version in the namespace,
+so the revision is *determined from the source* and a document declaring one
+this adapter does not implement is refused by name. Between them the two
+adapters cover both branches of §7's resolution diagram, and §8's archive
+report keys on the revision for camt and cannot for NACHA — which is §8's own
+example ("NACHA 2020 82") working as written for the first time, and only for
+a format whose files declare a version.
+
+**2. `byte_fidelity` stopped being a constant.** Every adapter said `true`
+until one could not: re-serializing a parsed XML document cannot reproduce its
+bytes, so camt declares `false` and has to earn §17's weaker claim instead —
+reparsing the output must yield equivalent financial meaning, and the
+difference is reported as `narrowed` loss. The suite asserts both halves and
+the contrast between the two adapters.
+
+**3. A document that cannot be stored is not a document.** The writer's first
+draft carried the parsed tree on the document; the framework keeps only
+`records`, `entities` and `loss` and drops the rest, and it is right to. A live
+libxml2 tree is a handle, not a value — `encode` refuses one, it cannot cross
+`spawn`, and a document held between two HTTP requests would come back holding
+nothing. Axiom 1 makes the fix free: the source is retained, so the writer
+reparses. That is the rule `agent` reached from the other direction when its
+run had to keep `tools.schema` rather than a toolset.
+
+**4. A correct language-level guard still has to be caught.** An entry
+denominated in a currency the account is not held in made `money` refuse the
+addition — which is the right guard, and is why this defect cannot silently
+produce a nonsense total — but a validator that let the refusal propagate
+**died on the malformed statement instead of describing it**, which is exactly
+what §15 forbids. Such an entry is now excluded from the totals and reported.
+
+Seven perturbations proven red, each caught by the tier written for it, and one
+of them found a hole rather than confirming a tier: dropping the **record's**
+occurrence went uncaught, because every location check read a *field's*
+occurrence and the record's is a second place the same fact lives. Both are
+asserted now and both are proven red separately.
+
+Still deferred, and now for a narrower reason: §7's `compare` needs two
+revisions whose differences are **in hand**. camt makes revisions determinable,
+which is half of what `compare` needs, and the other half is a second
+implemented version — which would mean writing one from memory, the same
+invention the NACHA adapter declined to make about rule-book years.
+
 
 ### Phase 3: Historical and Translation Support
 

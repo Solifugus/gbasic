@@ -6538,6 +6538,20 @@ whole program without needing a call site.
   guides number the same positions from 1, so a layout transcribed straight out
   of one is off by one everywhere), held **once per format** rather than per
   record, and `finio.concepts(lay)` lists its names.
+  **A location is a value with a `kind`**, and that is a correction Phase 1
+  shipped without: §4 asked for "a generic source-location abstraction" from the
+  beginning, and every location `finio` could make was
+  `{ record, byte_offset, byte_length }`, because the only adapter was
+  fixed-width and nothing pushed back. `finio.location(kind, detail)` builds one
+  over §4's own list — `finio.location_kinds()` gives `fixed_width`,
+  `delimited`, `spreadsheet`, `xml` and `json` — and **checks the fields per
+  kind**, because a location whose shape depends on who built it is one a
+  consumer has to guess at. An `xml` location requires a `path` **and an
+  `occurrence`**: the path alone names every element at it. A `line` is optional
+  there, since the streaming reader has one and the DOM parser does not, and an
+  adapter without one is not made to invent it. `finio.describe_location(loc)`
+  renders any of them, so a report mixing representations reads consistently
+  rather than each adapter inventing a phrasing.
   `finio.coverage(lay, record_length)` reports the `gaps` and `overlaps` a
   layout leaves — **a dropped field is silent loss (Axiom 8) and looks like
   nothing**, since the other fields still read correctly and the record still
@@ -6711,6 +6725,76 @@ whole program without needing a call site.
   of those revisions and a file does not say which produced it, so naming a
   year would put it in every document the adapter ever wrote on no evidence at
   all.
+- `finio_camt` — ISO 20022 **camt.053** bank statements, and the **second**
+  `finio` adapter (§20's proving set). The first of a different
+  *representation*, which is the whole reason it was built second: §20 argues
+  that an abstraction surviving only one representation is a generalized parser
+  rather than a description of the problem, and **BAI2 would not have asked the
+  question** — it is record-oriented and legacy-heavy, the same family as
+  NACHA, and would have exercised the identical layout-and-record path.
+  **It pushed back immediately, in the place that mattered.** A hierarchical
+  source has no byte range: `xml.parse` builds nodes carrying a name, a
+  namespace, attributes and children and **no position**, and the streaming
+  reader carries a *line*, not an offset. So `finio.source_value`'s
+  `{ record, byte_offset, byte_length }` could not serve it, and §4's "a
+  universal byte-offset model is too representation-specific" stopped being a
+  sentence and became `finio.location(kind, detail)`. What this adapter supplies
+  is an **xml** location — a `path` and **which `occurrence`** of it, because a
+  statement with four hundred entries has four hundred elements at the same
+  path and *"it came from Ntry/Amt"* identifies none of them.
+  **The revision is the opposite answer from NACHA's**, and that is why a
+  second adapter was needed to test §7's resolution at all.
+  `finio_camt.recognise(text)` reads the version out of the document namespace
+  (`finio_camt.namespace_prefix()` plus digits), so the revision is *determined
+  from the source*; `finio_camt.revisions()` names the one implemented, and a
+  document declaring another is **refused by name** rather than read under the
+  nearest. Recognition performs **no parse** — an archive sweep would otherwise
+  pay a full parse per file to discover it is a purchase order — and the root
+  element is the second half of the fingerprint, so a document merely
+  *mentioning* the namespace is `possible`, never `exact`.
+  `finio_camt.read_source(src, revision)` produces the **same document shape**
+  `finio_nacha` does — a flat `records` list of `{ kind, fields }` and an
+  `entities` hierarchy of indices — which is §20's actual question answered.
+  What does *not* survive is the record: a fixed-width record carries `raw` and
+  a byte range because it **has** them, and a re-serialization put there under
+  that name would be a lie about where those bytes came from, so a camt record
+  carries its `path` and `occurrence` instead. **The uniform part is the field
+  and its location; the record is representation-shaped.**
+  `finio_camt.validate_doc(doc)` holds the statement to **its own arithmetic**:
+  the opening balance plus what was credited less what was debited is the
+  closing balance, per statement and **never across** — the fixture carries a
+  second statement in another currency precisely because a reader totalling
+  across them produces the sum of dollars and euros, which `money` refuses to
+  compute. The optional `<TxsSummry>` is a second statement of the same facts
+  and is checked too, so a reader that summed the entries wrongly and a file
+  whose summary is wrong are told apart. `finio_camt.entry_totals(records,
+  statement)` and `finio_camt.balance_of(records, statement, code)` are those
+  two readings on their own.
+  **Two amount-shaped things, denominated differently**, which a fixed-width
+  format cannot express: an `<Amt>` carries its currency in a `Ccy` **attribute**
+  and one without is a number in no currency, which is a defect; a summary
+  `<Sum>` carries no attribute and is not meant to, its currency being the
+  account's by definition of the element. Reading the second with the first's
+  rule reports every well-formed summary as unreadable. An entry in a currency
+  the account is not held in is **reported and excluded from the totals, never
+  added** — `money` would refuse the addition, and a validator that let that
+  refusal propagate would die on the malformed statement instead of describing
+  it (§15).
+  `finio_camt.write_doc(doc)` declares **`byte_fidelity: false`**, the first
+  honest `false` in this tree and what makes that field a distinction rather
+  than a constant: re-serializing a parsed XML document cannot reproduce its
+  bytes, so §17's weaker guarantee is the one available and the adapter has to
+  earn it instead — reparsing the output must yield equivalent financial
+  meaning, and the loss is reported as `narrowed`. It re-parses from the
+  **retained source** rather than from a tree the document carried, because the
+  framework keeps only `records`, `entities` and `loss` and is right to: a live
+  parse tree is a handle, not a value, and **a document that cannot be stored
+  is not a document** — the rule `agent` reached from the other direction.
+  `finio_camt.registry_entry()` says **`OPEN`** and `spec_obtained` where NACHA
+  had to say `DE_FACTO` and `researched`, because ISO 20022 publishes its
+  message definitions without charge, so there is a specification to name. It
+  does **not** say `verified`: this adapter has never met a statement produced
+  by a bank.
 - `accounting` — double-entry bookkeeping, pure gBASIC over exact `money`
   (`docs/accounting_design.md`). `accounting.chart(accounts)` validates a chart
   of accounts and fixes each one's normal balance side from its `kind`

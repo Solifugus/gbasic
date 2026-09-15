@@ -219,8 +219,10 @@ document list, with a status column, is `docs/README.md`.
   a bad flate checksum, on freshly generated output. Still to come: tables
   that flow across pages, chart SVG as PDF vectors, images, and embedded fonts
   for Unicode.
-- **financial-format adapters** — `finio` (framework) and `finio_nacha` (the
-  ACH file format, the first adapter). Provenance is reconstructed from a
+- **financial-format adapters** — `finio` (framework), `finio_nacha` (ACH,
+  fixed-width) and `finio_camt` (ISO 20022 camt.053, hierarchical XML). The
+  second adapter is a different REPRESENTATION on purpose (§20), and it is what
+  turned a location from a byte range into a value with a kind. Provenance is reconstructed from a
   retained source because the alternative was measured at 2.79 GB for a 9.5 MB
   file; see financial_adapters_design.md §21. Phase 1 corrected five things
   invisible by reading, the sharpest being that Phase 0's byte offsets were

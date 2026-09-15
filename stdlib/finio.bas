@@ -164,6 +164,116 @@ function concepts(lay)
     return out
 end function
 
+' --- §4: a location is a VALUE WITH A KIND ---------------------------------
+'
+' "A universal byte-offset model is too representation-specific. The framework
+' should instead provide a generic source-location abstraction." §4 said that
+' from the beginning and Phase 1 did not honour it: every location this library
+' could make was `{ record, byte_offset, byte_length }`, because the only
+' adapter was fixed-width and nothing pushed back.
+'
+' MEASURED, AND THAT IS WHY THIS IS HERE NOW: a hierarchical source cannot
+' supply a byte range at all. `xml.parse` builds nodes carrying name, namespace,
+' attributes and children and NO POSITION; the streaming reader carries a LINE,
+' not an offset. So an XML adapter asked for `byte_offset` has three choices --
+' invent one, answer `unknown`, or say where it really is -- and only the third
+' is provenance. The kinds below are §4's own list.
+'
+' THE KIND IS REQUIRED AND THE FIELDS ARE CHECKED PER KIND, because a location
+' whose shape depends on who built it is one a consumer has to guess at, and a
+' guess about where a value came from is the thing this framework exists not to
+' produce.
+
+function location_kinds()
+    return [ "fixed_width", "delimited", "spreadsheet", "xml", "json" ]
+end function
+
+function _location_required(kind)
+    if kind = "fixed_width" then
+        return [ "record", "byte_offset", "byte_length" ]
+    end if
+    if kind = "delimited" then
+        return [ "row", "column" ]
+    end if
+    if kind = "spreadsheet" then
+        return [ "sheet", "row", "column" ]
+    end if
+    if kind = "xml" then
+        ' A path and WHICH OCCURRENCE of it. The path alone is not a location:
+        ' a statement with four hundred entries has four hundred elements at
+        ' the same path, and "it came from Ntry/Amt" identifies none of them.
+        return [ "path", "occurrence" ]
+    end if
+    if kind = "json" then
+        return [ "json_pointer" ]
+    end if
+    error ("finio.location: '" + string(kind) + "' is not one of " + join(location_kinds(), ", "))
+end function
+
+function _location_optional(kind)
+    if kind = "spreadsheet" then
+        return [ "cell" ]
+    end if
+    if kind = "xml" then
+        ' A line is what the streaming reader can give and the DOM parser
+        ' cannot, so it is optional rather than required -- an adapter that has
+        ' one says so, and one that does not is not made to invent it.
+        return [ "line", "byte_offset", "byte_length" ]
+    end if
+    return []
+end function
+
+function location(kind, detail)
+    req = _location_required(kind)
+    known = req
+    for each o in _location_optional(kind)
+        append(known, o)
+    end for
+    checked = _options(detail, known, "finio.location(" + string(kind) + ")")
+    out = { kind: kind }
+    for each f in req
+        out[f] = _required(detail, f, "finio.location(" + string(kind) + ")")
+    end for
+    for each f in _location_optional(kind)
+        if has(detail, f) then
+            out[f] = detail[f]
+        end if
+    end for
+    return out
+end function
+
+' §18 wants provenance a consumer can act on, and a location it cannot print is
+' harder to act on than one it can. One renderer, so a report mixing sources of
+' different representations reads consistently rather than each adapter
+' inventing a phrasing.
+function describe_location(loc)
+    k = _required(loc, "kind", "finio.describe_location")
+    if k = "fixed_width" then
+        return ("record " + string(loc.record) + ", bytes " + string(loc.byte_offset)
+                + ".." + string(loc.byte_offset + loc.byte_length - 1))
+    end if
+    if k = "delimited" then
+        return "row " + string(loc.row) + ", column " + string(loc.column)
+    end if
+    if k = "spreadsheet" then
+        if has(loc, "cell") then
+            return string(loc.sheet) + "!" + string(loc.cell)
+        end if
+        return string(loc.sheet) + " row " + string(loc.row) + ", column " + string(loc.column)
+    end if
+    if k = "xml" then
+        out = string(loc.path) + "[" + string(loc.occurrence) + "]"
+        if has(loc, "line") then
+            out = out + " (line " + string(loc.line) + ")"
+        end if
+        return out
+    end if
+    if k = "json" then
+        return string(loc.json_pointer)
+    end if
+    error ("finio.describe_location: unknown location kind '" + string(k) + "'")
+end function
+
 ' --- §4 + §5: provenance, computed ----------------------------------------
 '
 ' AXIOM 6, NEVER SILENTLY GUESS: a concept the layout does not define is
@@ -178,9 +288,10 @@ function source_value(src, lay, record_index, concept)
     ln = src.records[record_index]
     raw = byte_slice(ln, spec.offset, spec.length)
     return { raw: raw,
-             location: { record: record_index,
-                         byte_offset: src.offsets[record_index] + spec.offset,
-                         byte_length: spec.length },
+             location: location("fixed_width",
+                                { record: record_index,
+                                  byte_offset: src.offsets[record_index] + spec.offset,
+                                  byte_length: spec.length }),
              format: src.format,
              revision: src.revision }
 end function
