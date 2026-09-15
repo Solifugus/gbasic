@@ -493,6 +493,54 @@ check("and a four-segment one survives whole",
       nlq.ground(nlq.from_discovery(deep_cat), "order status", {}).tables[0], "src.db.dbo.orders")
 
 print ""
+print "-- gdash-12: a plan that cannot be answered is NOT ok"
+' `plan` refused on AMBIGUITY and not on UNANSWERABILITY, so a question with
+' nothing to ground against came back `ok: true` with a prompt naming no
+' tables. Reported by gdash, who measured five such questions against a real
+' dashboard and found all five planned fine. It fails SAFE -- `check_sql` then
+' refuses whatever the model invents -- and EXPENSIVELY, because the model was
+' paid for first, and it reports a SQL problem for something never about SQL.
+empty_q = nlq.plan(cat, {}, "what is the share price?", {})
+check("a question that grounds nothing is refused", empty_q.ok, false)
+check("and says which words reached nothing",
+      contains(empty_q.refused_because[0].candidates, "share"), true)
+check("naming the kind", empty_q.refused_because[0].kind, "nothing_grounded")
+' THE CONTROL, without which "refuses" is satisfied by refusing everything.
+check("CONTROL: a question that grounds something still plans",
+      nlq.plan(cat, {}, "how many deals are active?", {}).ok, true)
+' A refused plan has the SAME SHAPE as an accepted one, so a caller can read a
+' field without checking `ok` first -- true of the ambiguity refusal too now.
+check("a refused plan still carries tables", count(empty_q.tables), 0)
+
+print ""
+print "-- gdash-12: what a column MEANS reaches the prompt"
+' Reported with a measurement: money materialised as INTEGER minor units, so
+' `amount` holds 125075 meaning 1250.75, and "over 1000 dollars" produced valid
+' read-only SQL against the right table that was WRONG BY A FACTOR OF A HUNDRED.
+' Vocabulary shows 125075 is a real value; an exemplar shows what an integer
+' looks like; neither states a SCALE. `discovery.annotate` had `means` and
+' `unit` all along and NEITHER REACHED `prompt`.
+ncat = { source: "main",
+         tables: { "main.orders": { schema: "main", table: "orders", column: "" } },
+         columns: { "main.orders.amount": { schema: "main", table: "orders", column: "amount" } },
+         primary_keys: [], edges: [] }
+nann = discovery.annotate(ncat, { "main.orders.amount": { means: "stored in US cents", unit: "cents" } })
+nopts = nlq.options_from(nann, {})
+check("options_from carries the note", has(nopts, "notes"), true)
+check("means and unit both arrive", contains(nopts.notes["main.orders.amount"], "cents"), true)
+np = nlq.plan(nlq.from_discovery(nann), {}, "how many orders were over 1000 dollars?", nopts)
+check("and the prompt states it", contains(np.user, "stored in US cents"), true)
+check("under a heading a model can read", contains(np.user, "What the columns mean"), true)
+' THE CONTROL: without the note the prompt says nothing about units, which is
+' the state gdash measured -- so this pair is the difference, not a claim.
+nplain = nlq.plan(nlq.from_discovery(ncat), {}, "how many orders were over 1000 dollars?", {})
+check("CONTROL: with no note, nothing is stated", contains(nplain.user, "What the columns mean"), false)
+' A note for a column of a table the grounding did NOT select must not be
+' dragged in -- the prompt budget is the thing being protected.
+check("only notes for grounded objects appear",
+      contains(nlq.plan(nlq.from_discovery(nann), {}, "how many orders?", nopts).user, "cents"), true)
+
+print ""
 print "-- refusals, each beside its nearest legal neighbour"
 on error goto next
 nlq.ground({ tables: [] }, "anything", {})

@@ -8514,10 +8514,23 @@ static void library_import(const char *name, const char *path, const char *alias
     const char *base = current_import_path ? current_import_path : root_source_path;
     char *base_dir = dirname_copy(base ? base : ".");
 
+    /* A LIBRARY BESIDE THE LOADING FILE MAY OVERRIDE; ONE BELOW IT MAY NOT.
+     *
+     * The local directory used to be searched RECURSIVELY and to win, so a
+     * stray `chart.bas` three directories under the file issuing `load chart`
+     * replaced the standard library -- reported by gdash, for whom the exposed
+     * names include `crypto` (every password hash) and `web` (the server).
+     * A file BESIDE the loader is a project layout somebody designed; one in
+     * an arbitrary subdirectory is not, and it is the depth that makes a
+     * directory listing an inadequate review.
+     *
+     * The deep matches are still FOUND, into a separate list, so that dropping
+     * them is not a silent behaviour change for anyone who relied on it: if one
+     * exists and was not used, it is named along with the remedy. */
+    LibraryMatch *deep = NULL;
+    size_t deep_count = 0;
+
     search_directory_for_library(base_dir, name, 0, 1, &matches, &match_count);
-    if (!error_action_pending()) {
-        search_directory_for_library(base_dir, name, 1, 1, &matches, &match_count);
-    }
     if (!error_action_pending()) {
         search_gbasic_path_for_library(name, 1, &matches, &match_count);
     }
@@ -8525,17 +8538,47 @@ static void library_import(const char *name, const char *path, const char *alias
         search_directory_for_library(base_dir, name, 0, 0, &matches, &match_count);
     }
     if (!error_action_pending() && match_count == 0) {
-        search_directory_for_library(base_dir, name, 1, 0, &matches, &match_count);
-    }
-    if (!error_action_pending() && match_count == 0) {
         search_gbasic_path_for_library(name, 0, &matches, &match_count);
     }
-    free(base_dir);
+    /* BY FILENAME ONLY. The non-exact search PARSES every .bas file under the
+     * directory looking for a `library` block, which the original code ran
+     * only as a last resort when nothing else had matched. Collecting it
+     * unconditionally for the report made that scan happen on every load: 33
+     * suites went red because it parsed the deliberately malformed fixtures in
+     * tests/ and reported their parse errors.
+     *
+     * A stray `chart.bas` is the case reported and the realistic one; a library
+     * declared inside a differently-named file several directories down is not
+     * worth scanning the whole tree on every load to warn about. */
+    if (!error_action_pending()) {
+        search_directory_for_library(base_dir, name, 1, 1, &deep, &deep_count);
+    }
 
     if (error_action_pending()) {
         library_matches_clear(matches, match_count);
+        library_matches_clear(deep, deep_count);
+        free(base_dir);
         return;
     }
+
+    /* Named rather than dropped in silence, and the message carries the fix:
+     * a deep file was almost certainly meant to override, and moving it beside
+     * the loader is how that is said now. Reported even when nothing else
+     * matched, because "library not found" while a copy sits two directories
+     * down is the most confusing answer available. */
+    for (size_t i = 0; i < deep_count; i++) {
+        int already = 0;
+        for (size_t j = 0; j < match_count; j++) {
+            if (strcmp(matches[j].path, deep[i].path) == 0) { already = 1; break; }
+        }
+        if (already) { continue; }
+        warn_fmt(2103, "library-match",
+                "library '%s' at %s was NOT used: it is below the file that loaded it, "
+                "not beside it. Move it into %s for that file to see it.",
+                name, deep[i].path, base_dir);
+    }
+    library_matches_clear(deep, deep_count);
+    free(base_dir);
 
     if (match_count == 0) {
         char message[256];
@@ -8561,10 +8604,21 @@ static void library_import(const char *name, const char *path, const char *alias
         return;
     }
 
+    /* NAME BOTH SIDES. This used to say only which match was IGNORED, so the
+     * one line a reader gets on stderr named the stdlib path beside the word
+     * "ignored" and never said which file was actually in force -- readable
+     * either way round, and wrong either way round for the reader in a hurry.
+     *
+     * It matters because the local file WINS: reported by gdash, who measured
+     * that a stray library three directories BELOW the file issuing the `load`
+     * replaces a stdlib one, which for them would mean `crypto` (every password
+     * hash) or `web` (the server). A warning about that has to say which copy
+     * the program is running. */
     for (size_t i = 1; i < match_count; i++) {
         warn_fmt(2103, "library-match",
-                "additional library '%s' match ignored: %s",
+                "library '%s' resolved to %s; ALSO FOUND and not used: %s",
                 name,
+                matches[0].path,
                 matches[i].path);
     }
 

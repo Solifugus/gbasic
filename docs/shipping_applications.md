@@ -79,25 +79,41 @@ of the following applies to them.
 `matrix`, and the rest — are `.bas` files, and `load NAME` searches, in order:
 
 1. the **source file's own directory**, for `NAME.bas`
-2. the **source file's own directory, recursively**, for `NAME.bas`
-3. each directory in `GBASIC_PATH`
-4. the compiled-in `GBASIC_DEFAULT_STDLIB`
-5. …then the same places again, reading *file contents* for a matching
+2. each directory in `GBASIC_PATH`
+3. the compiled-in `GBASIC_DEFAULT_STDLIB`
+4. …then the same places again, reading *file contents* for a matching
    `library NAME` block regardless of filename
 
-Step 2 is the hazard. **Anything named `NAME.bas` anywhere beneath the
-application directory silently takes precedence over the shipped stdlib** —
-ahead of both `GBASIC_PATH` and the compiled-in path. Demonstrated:
+Step 1 is the hazard. **A file named `NAME.bas` beside the source file that
+issues the `load` takes precedence over the shipped stdlib** — ahead of both
+`GBASIC_PATH` and the compiled-in path. Demonstrated:
 
 ```
 app/main.bas                       load stats  →  sharpe_ratio(...) = 999
-app/vendor/thirdparty/stats.bas    a three-line fake
+app/stats.bas                      a three-line fake
 ```
 
-The warning you get says the *correct* library was "additional … match
-ignored", which reads backwards unless you already know the precedence. For a
-product where one writable file under the app directory can replace a library,
+For a product where one writable file beside the program can replace a library,
 that is a supply-chain problem, not a style question.
+
+**Changed 2026-09-14, and it used to be worse.** The source file's directory was
+also searched **recursively**, so anything named `NAME.bas` *anywhere beneath*
+the application directory won — which made a directory listing an inadequate
+review. Reported by the `gdash` session, whose exposed names included `crypto`
+(every password hash) and `web` (the server). A library **beside** the loading
+file may still override; one **below** it may not, and the demoted file is named
+with the remedy rather than dropped in silence:
+
+```
+warning: library 'stats' at app/vendor/deep/stats.bas was NOT used: it is
+         below the file that loaded it, not beside it. Move it into app/vendor
+         for that file to see it.
+```
+
+The warning for the case that *does* override also used to name only the
+ignored path — so the one line on stderr showed the stdlib path beside the word
+"ignored" and never said which file was in force. It now names both, the one
+that won first.
 
 **Two defences, use both:**
 

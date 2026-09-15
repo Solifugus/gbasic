@@ -206,9 +206,18 @@ done
 svc_pid=""
 
 printf 'TIER library-shadowing defence\n'
-# The hazard, demonstrated: a bare `load` searches the app's own directory tree
-# recursively and FIRST, so a stray file wins. Then the defence: the same
-# program loading by absolute path is unaffected by the same stray file.
+# THE HAZARD IS NARROWER THAN IT WAS, and this tier is where that was recorded.
+# It used to assert that a stray `stats.bas` ANYWHERE under the app's tree won
+# over the shipped one, because a bare `load` searched the loading file's
+# directory RECURSIVELY and first. gdash reported the consequence -- for them
+# the exposed names include `crypto` and `web` -- and the recursive half was
+# removed on 2026-09-14: a library BESIDE the loading file may still override,
+# one BELOW it may not, and the demoted file is named rather than dropped in
+# silence.
+#
+# So this tier now asserts BOTH halves, because either alone is misleading: the
+# hazard that remains is real and worth packaging against, and the one that is
+# gone must not go on being advertised.
 mkdir -p "$work/shadow/app/vendor/deep"
 cat > "$work/shadow/app/vendor/deep/stats.bas" <<'EOF'
 library stats
@@ -225,13 +234,31 @@ cat > "$work/shadow/app/pinned.bas" <<EOF
 load stats from "$RT/stdlib/stats.bas"
 print string(stats.sharpe_ratio([0.01, 0.02, -0.01], 0, 252))
 EOF
-bare="$(cd / && "$RT/gbasic" "$work/shadow/app/bare.bas" 2>/dev/null)"
-pinned="$(cd / && "$RT/gbasic" "$work/shadow/app/pinned.bas" 2>/dev/null)"
-if [ "$bare" = "999" ]; then
-    pass 'the hazard is real: a stray stats.bas under the app wins over the shipped one'
+deep_out="$(cd / && "$RT/gbasic" "$work/shadow/app/bare.bas" 2>"$work/shadow/deep.err")"
+if [ "$deep_out" != "999" ] && [ -n "$deep_out" ]; then
+    pass "a stray in a SUBDIRECTORY no longer wins (got $deep_out, not the stray's 999)"
 else
-    fail "the hazard is real (bare load returned '$bare', expected the stray's 999)"
+    fail "a stray in a subdirectory still won (got '$deep_out')"
 fi
+# And it is NAMED rather than dropped quietly, so an app that relied on it is
+# told rather than served a different library.
+if grep -q 'below the file that loaded it' "$work/shadow/deep.err"; then
+    pass 'and the demoted file is named, with the remedy'
+else
+    cat "$work/shadow/deep.err"
+    fail 'the demoted file was dropped without a word'
+fi
+# THE HAZARD THAT REMAINS: beside the loading file, a stray still wins. This is
+# the half packaging must still defend against, so it is asserted rather than
+# assumed gone.
+cp "$work/shadow/app/vendor/deep/stats.bas" "$work/shadow/app/stats.bas"
+beside="$(cd / && "$RT/gbasic" "$work/shadow/app/bare.bas" 2>/dev/null)"
+if [ "$beside" = "999" ]; then
+    pass 'the hazard is real: a stray stats.bas BESIDE the program wins over the shipped one'
+else
+    fail "the hazard is real (bare load returned '$beside', expected the stray's 999)"
+fi
+pinned="$(cd / && "$RT/gbasic" "$work/shadow/app/pinned.bas" 2>/dev/null)"
 if [ "$pinned" != "999" ] && [ -n "$pinned" ]; then
     pass "loading by absolute path is immune (got $pinned, not the stray's 999)"
 else

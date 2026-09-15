@@ -285,8 +285,9 @@ library nlq
     ' being approximately right on the conservative side is the whole job.
     function prompt(g, cat, vocab, question, options)
         opts = _options(options, [ "budget_tokens", "chars_per_token", "dialect",
-                                   "exemplars" ], "nlq.prompt")
+                                   "exemplars", "notes" ], "nlq.prompt")
         exemplars = _default(opts, "exemplars", {})
+        notes = _default(opts, "notes", {})
         budget = _default(opts, "budget_tokens", 3000)
         cpt = _default(opts, "chars_per_token", 2.5)
         dialect = _default(opts, "dialect", "standard SQL")
@@ -335,6 +336,26 @@ library nlq
             end for
         end for
 
+        ' WHAT A COLUMN MEANS, which neither a vocabulary nor an exemplar can
+        ' say. REPORTED BY gdash WITH A MEASUREMENT: money materialised as
+        ' INTEGER minor units, so `amount` holds 125075 meaning $1250.75, and
+        ' "orders over 1000 dollars" produced valid read-only SQL against the
+        ' right table that was WRONG BY A FACTOR OF A HUNDRED. Vocabulary shows
+        ' 125075 is a real value; an exemplar shows what an integer looks like;
+        ' neither states a SCALE. And on SQLite there is no type error to catch
+        ' it -- the same engine the brief already singles out for that.
+        '
+        ' This is R2's shape reached by another road: not two objects that both
+        ' answer, but ONE object answering in units nobody stated.
+        nlines = []
+        for each tid in g.tables
+            for each key in keys(notes)
+                if key = tid or starts_with(key, tid + ".") then
+                    append(nlines, key + ": " + string(notes[key]))
+                end if
+            end for
+        end for
+
         sys = ("You write one " + dialect + " SELECT statement that answers the question. " +
                "Use ONLY the tables and columns listed. Use the exact column values given. " +
                "Reply with SQL only: no markdown, no fence, no explanation.")
@@ -344,6 +365,9 @@ library nlq
         end if
         if count(exlines) > 0 then
             user = user + chr(10) + "Column formats:" + chr(10) + join(exlines, chr(10))
+        end if
+        if count(nlines) > 0 then
+            user = user + chr(10) + "What the columns mean:" + chr(10) + join(nlines, chr(10))
         end if
         user = user + chr(10) + chr(10) + "Question: " + question
 
@@ -492,7 +516,7 @@ library nlq
         opts = _options(options, [ "limit", "near_misses", "synonyms",
                                    "budget_tokens", "chars_per_token", "dialect",
                                    "exemplars", "derived_from", "not_modelled",
-                                   "collapse_siblings" ], "nlq.plan")
+                                   "collapse_siblings", "notes" ], "nlq.plan")
         g = ground(cat, question, { limit: _default(opts, "limit", 8),
                                     near_misses: _default(opts, "near_misses", 3),
                                     synonyms: _default(opts, "synonyms", {}),
@@ -504,13 +528,37 @@ library nlq
         ' person the candidates and ask.
         if count(g.ambiguous) > 0 then
             return { ok: false, refused_because: g.ambiguous, grounding: g,
-                     question: question, key: "", estimated_tokens: 0 }
+                     question: question, key: "", estimated_tokens: 0,
+                     tables: g.tables }
+        end if
+        ' AND A QUESTION THAT GROUNDED NOTHING IS NOT A PLAN EITHER. This used
+        ' to answer `ok: true` with a prompt naming no tables -- reported by
+        ' gdash, who measured five such questions against a real dashboard and
+        ' found all five planned fine. It fails safe, because `check_sql` then
+        ' refuses whatever the model invents for `ungrounded_table`; it fails
+        ' EXPENSIVELY, because the model was paid for first, and it reports a
+        ' SQL problem for something that was never about SQL.
+        '
+        ' `ok` on a plan that cannot be answered is the shape most likely to be
+        ' believed: `if plan.ok then call_the_model()` is the obvious thing to
+        ' write. So `ok` now means WORTH ASKING A MODEL, which is the question
+        ' being asked at that call site.
+        if count(g.tables) = 0 then
+            return { ok: false,
+                     refused_because: [ { kind: "nothing_grounded",
+                                          candidates: g.unresolved,
+                                          why: ("nothing in this catalog matches the question, so " +
+                                                "there is no schema to ask a model about; the words " +
+                                                "that reached nothing are named here") } ],
+                     grounding: g, question: question, key: "", estimated_tokens: 0,
+                     tables: g.tables }
         end if
         ex = _default(opts, "exemplars", {})
         p = prompt(g, cat, vocab, question, { budget_tokens: _default(opts, "budget_tokens", 3000),
                                               chars_per_token: _default(opts, "chars_per_token", 2.5),
                                               dialect: _default(opts, "dialect", "standard SQL"),
-                                              exemplars: ex })
+                                              exemplars: ex,
+                                              notes: _default(opts, "notes", {}) })
         return { ok: true,
                  refused_because: [],
                  grounding: g,
@@ -697,7 +745,7 @@ library nlq
         opts = _options(options, [ "limit", "near_misses", "budget_tokens",
                                    "chars_per_token", "dialect", "collapse_siblings",
                                    "synonyms", "derived_from", "not_modelled",
-                                   "exemplars" ], "nlq.options_from")
+                                   "exemplars", "notes" ], "nlq.options_from")
         out = opts
         if not has(cat, "notes") then
             return out
@@ -727,6 +775,29 @@ library nlq
             end for
             if count(keys(syn)) > 0 then
                 out.synonyms = syn
+            end if
+        end if
+        ' `means` and `unit` become the prompt's notes. gdash's preference, and
+        ' the right one: the note already lives on the catalog where it also
+        ' serves documentation and a lineage walk, so carrying it here adds no
+        ' new surface for a caller to maintain a second copy of.
+        if not has(out, "notes") then
+            nts = {}
+            for each id in keys(cat.notes)
+                n4 = cat.notes[id]
+                parts = []
+                if has(n4, "means") then
+                    append(parts, string(n4.means))
+                end if
+                if has(n4, "unit") then
+                    append(parts, "unit: " + string(n4.unit))
+                end if
+                if count(parts) > 0 then
+                    nts[id] = join(parts, "; ")
+                end if
+            end for
+            if count(keys(nts)) > 0 then
+                out.notes = nts
             end if
         end if
         if not has(out, "derived_from") then
@@ -837,8 +908,14 @@ library nlq
     ' of the question.
     function ground(cat, question, options)
         ok = check_catalog(cat)
+        ' `notes` is accepted here and used by `prompt`, not by grounding. It is
+        ' in the list because `options_from` produces ONE bag of the estate's
+        ' declared facts and a caller hands that same bag to `ground` or to
+        ' `plan` -- so anything that bag can carry has to be acceptable to
+        ' both, or the convenience becomes a trap. The unknown-option refusal
+        ' still catches a typo, which is what it is for.
         opts = _options(options, [ "limit", "near_misses", "synonyms", "derived_from",
-                                   "collapse_siblings", "not_modelled" ], "nlq.ground")
+                                   "collapse_siblings", "not_modelled", "notes" ], "nlq.ground")
         limit = _default(opts, "limit", 8)
         near_n = _default(opts, "near_misses", 3)
         syn = _default(opts, "synonyms", {})

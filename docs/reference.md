@@ -6377,7 +6377,13 @@ whole program without needing a call site.
   silently stops appearing.
   `ground` also returns **`ambiguous`** — what the catalog *cannot settle*, which
   it reports rather than resolves — and `nlq.check_answerable(g)` **refuses** on
-  it. The split is deliberate: a caller may want the grounding in order to show
+  it. **`plan` refuses on both ambiguity and a grounding that found nothing**,
+  so `plan.ok` means *worth asking a model*: it used to answer `ok` with a
+  prompt naming no tables, which fails safe (`check_sql` refuses whatever the
+  model invents) but fails **expensively**, after the model was paid for, and
+  reports a SQL problem for something that was never about SQL. A refused plan
+  carries the same fields as an accepted one, so a caller can read `tables`
+  without checking `ok` first. The split is deliberate: a caller may want the grounding in order to show
   a person the candidates and ask; what must not happen is a number produced
   from it. The case that fires is **the same object name in schemas that differ
   only by a number** (`staging` / `staging_2` / `staging_3`), where nothing in
@@ -6420,13 +6426,27 @@ whole program without needing a call site.
   shape. A refused grounding yields a plan with `ok: false` and
   `refused_because` — a value, not a raise, so a caller can show a person the
   candidates and ask.
-  `nlq.options_from(cat, options)` reads `synonyms`, `derived_from` and
-  `not_modelled` **from an annotated `discovery` catalog**, so a caller using
+  `nlq.options_from(cat, options)` reads `synonyms`, `derived_from`,
+  `not_modelled` and **`notes`** (built from each object's `means` and `unit`)
+  **from an annotated `discovery` catalog**, so a caller using
   `discovery` keeps one copy of facts that belong to the estate rather than to
   any one question. An **explicit option always wins** — a caller passing one
   has said something more specific than a standing note. A catalog with no notes
   adds nothing. The options below still work unchanged for a caller who has
   facts and no catalog machinery.
+  **`options.notes`** is a record of object id → a sentence about what a column
+  *means*, rendered into the prompt under *"What the columns mean"*. It exists
+  because neither a vocabulary nor an exemplar can state a **unit**. Reported by
+  `gdash` with a measurement: money materialised as integer minor units, so
+  `amount` holds `125075` meaning `$1250.75`, and *"orders over 1000 dollars"*
+  produced valid read-only SQL against the right table that was **wrong by a
+  factor of a hundred**. Vocabulary shows `125075` is a real value; an exemplar
+  shows what an integer looks like; neither says the scale — and on SQLite there
+  is no type error to catch it. This is R2's shape by another road: not two
+  objects that both answer, but **one object answering in units nobody stated**.
+  `discovery.annotate`'s `means` and `unit` are the place to write it, so the
+  note also serves documentation and a lineage walk.
+
   `options.not_modelled` is an array of terms the estate holds nothing about —
   `job`, `schedule`, `owner`. A question naming one is refused as
   `not_in_the_catalog`, which is R6's other half: some facts are not in the

@@ -150,6 +150,43 @@ in front of a person.
 | `interpret` problems `not_read_only` | the statement would write | do not run it |
 | `nlq.prompt` raising over budget | the schema will not fit | narrow the grounding — **never** truncate, because it is the schema that gets dropped, not the question |
 
+**Updated 2026-09-14, from your step-0 report.** Two of the three findings are
+fixed in the platform:
+
+- **`plan` now refuses a question that grounds nothing**, with
+  `refused_because` naming the words that reached nothing. `plan.ok` means
+  *worth asking a model*. Your `check_answerable` call between `plan` and the
+  wire is now belt and braces rather than the only guard — keep it; your suite
+  asserting the premise is the right shape.
+- **`options_from` carries `notes`**, built from `discovery.annotate`'s `means`
+  and `unit`, and `plan` forwards them into the prompt under *"What the columns
+  mean"*. That is your preferred option and it needed no new surface. Generate
+  the note from `_gdash_meta` and hand it over:
+
+  ```basic
+  ann = discovery.annotate(cat, {
+      "main.orders.amount": { means: "stored in US cents; 125075 means 1250.75",
+                              unit: "cents" } })
+  p = nlq.plan(nlq.from_discovery(ann), vocab, question, nlq.options_from(ann, {}))
+  ```
+
+  Worse than you reported, as it happens: `options_from` carried **nothing**
+  at all, so `means` and `unit` reached no consumer despite both being note
+  kinds `annotate` had always accepted.
+
+  The stronger version you offered — `check_sql` testing a literal's magnitude
+  against a stated scale — is **not** built. It is the right idea and it is the
+  same sentence as `check_literals`; it is also the kind of rule that is easy
+  to make fire on correct queries, so it wants its own measurement first.
+
+- **The library-shadowing finding is not closed**, and is with Matthew, since
+  precedence is a language decision rather than a library one. What did change
+  is the warning, which named only the *ignored* path and never said which file
+  was in force: it now reads `library 'x' resolved to A; ALSO FOUND and not
+  used: B`. Measured here in support of your case: across this repository's
+  whole gate, **zero** libraries resolve via the recursive search below the
+  loading file — so restricting it would cost this tree nothing.
+
 The refusal that fires on everything is worth knowing about: built without a
 discriminator, the ambiguity refusal fired on **15 of 16** benchmark questions,
 which is indistinguishable from having no tool. The current rule refuses only
