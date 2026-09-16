@@ -35,12 +35,34 @@ fails=0
 ok()  { printf '  ok   %s\n' "$1"; }
 bad() { printf '  FAIL %s\n' "$1"; fails=$((fails + 1)); }
 
+# --- THE ONE LIST IS THE ONLY LIST -----------------------------------------
+# `finio_all` exists because the adapter list was built by hand at every call
+# site and was missed THREE TIMES in one day. That only helps while nothing
+# rebuilds it privately, so this fails if any finio suite or library hand-rolls
+# the list again -- and it counts the adapters against the libraries on disk,
+# so adding a fifth adapter and forgetting to wire it goes RED here rather than
+# surfacing later as a count that is one short.
+printf 'TIER one_list\n'
+declared="$(grep -c '\.adapter()' stdlib/finio_all.bas)"
+onDisk="$(grep -l '^function adapter()' stdlib/finio_*.bas | wc -l)"
+if [ "$declared" = "$onDisk" ]; then
+    ok "finio_all lists all $onDisk adapters on disk"
+else
+    bad "finio_all lists $declared adapters and stdlib holds $onDisk -- wire the new one into stdlib/finio_all.bas"
+fi
+handrolled="$(grep -ln 'finio_nacha\.adapter()' tests/run_finio_registry.sh tests/run_finio_watch.sh tests/finio/registry_test.bas 2>/dev/null | wc -l)"
+if [ "$handrolled" = "0" ]; then
+    ok "and no registry or watch suite rebuilds the list privately"
+else
+    bad "$handrolled suite(s) still hand-build the adapter list; use finio_all.adapters()"
+fi
+
 printf 'TIER semantics\n'
 out="$scratch/reg.out"
 if timeout 120 ./gbasic tests/finio/registry_test.bas >"$out" 2>&1; then
     mism="$(sed -n 's/^mismatches: //p' "$out")"
     checks="$(sed -n 's/^checks: //p' "$out")"
-    if [ "$mism" = "0" ] && [ "${checks:-0}" -ge 27 ]; then
+    if [ "$mism" = "0" ] && [ "${checks:-0}" -ge 28 ]; then
         ok "$checks checks, 0 mismatches"
     else
         bad "registry_test: $checks checks, $mism mismatches"
@@ -58,11 +80,10 @@ fi
 printf 'TIER citations\n'
 cat > "$scratch/cite.bas" <<'BEOF'
 load finio
-load finio_nacha
-load finio_camt
+load finio_all
 load finio_registry
 program main( args )
-    all = finio_registry.all([ finio_nacha.adapter(), finio_camt.adapter() ])
+    all = finio_registry.all(finio_all.adapters())
     urls = 0
     dated = 0
     srcs = 0
@@ -84,10 +105,15 @@ end program
 BEOF
 cite="$(timeout 60 ./gbasic "$scratch/cite.bas" 2>&1 | sed -n 's/^sources //p')"
 set -- $cite
-if [ "${1:-0}" -ge 8 ] && [ "${3:-0}" = "$1" ] && [ "${5:-0}" -ge 7 ]; then
-    ok "$1 sources, all dated, $5 carrying a retrievable https reference"
+# $1 sources, $3 with an https reference, $5 dated. EVERY source must be dated
+# -- that is the falsifiability rule -- while one legitimately cites a file in
+# this repository rather than a URL, so the URL count is a floor and not an
+# equality. Written the other way round first, comparing the URL count to the
+# source count, which failed on a source that was perfectly well evidenced.
+if [ "${1:-0}" -ge 11 ] && [ "${5:-0}" = "$1" ] && [ "${3:-0}" -ge 10 ]; then
+    ok "$1 sources, all $5 dated, $3 carrying a retrievable https reference"
 else
-    bad "citations: got [$cite], wanted at least 8 sources, every one dated, at least 7 with an https reference"
+    bad "citations: got [$cite], wanted at least 11 sources, EVERY one dated, at least 10 carrying an https reference"
 fi
 
 # --- THE SURVEY IS REPORTED, NOT JUST STORED -------------------------------
@@ -96,11 +122,10 @@ fi
 printf 'TIER report\n'
 cat > "$scratch/rep.bas" <<'BEOF'
 load finio
-load finio_nacha
-load finio_camt
+load finio_all
 load finio_registry
 program main( args )
-    all = finio_registry.all([ finio_nacha.adapter(), finio_camt.adapter() ])
+    all = finio_registry.all(finio_all.adapters())
     byc = finio_registry.by_acquisition_class(all)
     for each c in finio.acquisition_classes()
         if count(byc[c]) > 0 then

@@ -35,6 +35,28 @@ and the stale-looking ones carry a Status line saying what overtook them.
 
 ### Open — worth fixing (ranked)
 
+-3. **`xml.parse` gives a node no POSITION, so a value read from XML cannot
+   say where in the document it came from.** A node is `name`, `qname`, `ns`,
+   `attrs`, `children` — and nothing else. Only the streaming reader reports a
+   position, and what it reports is a LINE
+   (`xmlTextReaderGetParserLineNumber`), not a byte offset.
+   **Cost, twice, in one week.** `finio_camt` interprets ISO 20022 statements
+   and its provenance locations therefore carry a path and an occurrence and
+   **no byte range** — shipped as a documented limitation, and the reason §4's
+   location model had to make a byte range optional for the `xml` kind at all.
+   Then `finio_ofx` needed positions into the ORIGINAL bytes (so that reading
+   an OFX 1.x file could not be done by converting it to XML first, which would
+   put every location into text the bank never sent) and had to carry its own
+   tag scanner rather than reuse anything.
+   **libxml2 already has what is missing and we do not expose it:**
+   `xmlGetLineNo(node)` for a DOM node, `xmlTextReaderByteConsumed()` for the
+   reader. So this is a module change rather than a new capability.
+   **Not to be confused with wanting an SGML library**, which was the first
+   instinct and is the wrong target: what OFX 1.x needs is omitted end tags,
+   whether an end tag may be omitted depends on the DTD's content model, and a
+   library called `sgml` that implemented OMITTAG alone would overclaim a
+   standard in the direction that mis-parses silently.
+
 -2. ~~**No sub-second clock a program can read.**~~ **NOT A GAP — RULED
    2026-09-12, the same day it was filed.** Second resolution is DELIBERATE:
    in business data processing it is all that is relevant, and gBASIC's
@@ -4656,3 +4678,45 @@ orders freely.
   one. The general lesson is that two index spaces over the same value want
   *paired* operations — a search that answers in the units the readers take —
   and that shipping half a family invites exactly this.
+
+## 2026-09-15 — CC — while: building the finio camt.053 and OFX adapters
+- **Type:** missing-feature
+- **Severity:** medium
+- **What:** `xml.parse` builds a node carrying `name`, `qname`, `ns`, `attrs`
+  and `children` and **no position at all**, so a value interpreted out of an
+  XML document cannot say where in that document it came from. The streaming
+  reader reports a LINE and not a byte offset.
+
+  That is Axiom 2's problem in `finio`: an interpreted value is supposed to be
+  traceable to its source. `finio_camt`'s locations are a path and an
+  occurrence with no byte range, which is why `finio.location`'s `xml` kind has
+  `byte_offset` and `byte_length` as OPTIONAL fields — an adapter that has one
+  says so, and one that does not is not made to invent it. That was the right
+  shape to give the model and it exists because of this gap.
+
+  A week later `finio_ofx` hit the same wall from the other side. OFX 1.x is
+  SGML-like and not well-formed XML, so the obvious route is to insert the
+  missing closing tags and hand the result to `xml.parse` — which more than one
+  public tool does. It is refused in `finio_ofx` precisely because the
+  locations would then point into text the bank never sent, and a byte offset
+  into a document the library invented is not provenance.
+- **Workaround:** `finio_camt` reports path-plus-occurrence and documents the
+  absent byte range. `finio_ofx` carries its own ~60-line tag scanner over the
+  original bytes, which is not reusable as written (its "text present means
+  leaf" rule is true for OFX and false for SGML and HTML generally).
+- **Suggestion:** expose what libxml2 already tracks — `xmlGetLineNo(node)` on
+  a parsed node, and `xmlTextReaderByteConsumed()` on the reader — so an
+  `xml.parse` node can carry at least a line and the reader a byte offset. This
+  is a module change, not a new capability.
+
+  **And explicitly NOT an SGML library**, which was the first instinct when the
+  OFX work exposed this. What OFX 1.x needs from SGML is one feature, OMITTAG,
+  and whether an end tag may be omitted depends on the content model declared
+  in the DTD — so a real implementation needs DTD parsing, entity declarations,
+  marked sections and the SGML declaration, and a library named `sgml` that
+  shipped OMITTAG alone would overclaim a standard in the direction that
+  mis-parses real input silently rather than refusing it. The population that
+  would call one is also small: nothing in the finio format registry's queue is
+  SGML (FIX is tag=value, X12 and EDIFACT are segment-delimited, MT940 is
+  `:20:` style, pain.001 and camt are XML), and legacy HTML is already served
+  by `xml.parse_html`.

@@ -1106,7 +1106,7 @@ NACHA                                       [done -- stdlib/finio_nacha.bas]
 ISO 20022 camt                              [done -- stdlib/finio_camt.bas]
     hierarchical XML
 
-OFX
+OFX                                         [done -- stdlib/finio_ofx.bas]
     tagged/document-oriented with historical variants
 
 BAI2                                        [done -- stdlib/finio_bai2.bas]
@@ -1608,6 +1608,69 @@ duplicate-id rule made that compulsory rather than tidy** — `finio_registry.al
 refuses an id that appears in both and would not run until the queue entry was
 removed. The registry suite then failed for the other half of the same move,
 which is the rule working in both directions.
+
+
+#### Phase 2 third result — OFX, built 2026-09-15
+
+**§20's schema-drift case, occurring inside a single format.** OFX 1.x is
+SGML-like and *not well-formed XML* — a leaf element is `<CODE>0` with no
+closing tag — while 2.x is proper XML. Same element tree, two serializations,
+and a file of each kind is ordinary. Until this, the drift §20 describes had
+only ever arrived *between* formats.
+
+**Conversion was rejected, and that is the decision worth recording.** The
+obvious approach is to insert the missing closing tags and hand the result to
+an XML parser, which is what more than one public tool does. It is refused here
+because **the locations would point into text the bank never sent**: Axiom 2
+says an interpreted value is traceable to its source, and a byte offset into a
+document this library invented is not provenance. One reader walks the tag
+stream of the original bytes, and the single rule that makes that possible is
+that a closing tag whose name does not match the innermost open aggregate is a
+*leaf's* — which 2.x writes and 1.x does not. Both dialects close aggregates;
+the difference is about leaves alone, and a tripwire written without knowing
+that failed on its first run.
+
+**OFX states no control total, and the three formats before it all did.** NACHA
+states hashes and totals, camt an opening and closing balance, BAI2 a
+three-level checksum — it would have been easy to generalise from three. An OFX
+ledger balance is a *balance*, not a sum of anything in the file. So validation
+here cannot reconcile arithmetic, and checks what consumers actually depend on
+instead:
+
+- **the response is not an error.** Two corpus files are error responses (codes
+  15500 and 2000), and one carries a zero status at signon with the failure
+  further in — so the check cannot stop at the first. A reader that walks past
+  a failed response finds no transactions and reports a balance of nothing,
+  which looks exactly like an account with no activity.
+- **FITIDs are unique.** The FITID exists so a consumer can recognise a
+  transaction it has already imported, and every piece of accounting software
+  that reads OFX keys on it. A duplicate silently drops or doubles a
+  transaction and nothing anywhere reports it.
+- **a transaction belonging to no statement is reported**, which catches a
+  structure the adapter does not model rather than a file that is wrong. One
+  fixture carries four transactions inside an `INVSTMTRS` investment statement;
+  without the check it reads as a clean bank statement with no activity.
+
+**One defect found by the corpus and worth naming, because it produced silence
+rather than an error.** Containment was written as close order — attach each
+record to "the current statement" — and a transaction closes *before* the
+statement holding it, so every transaction attached to nothing. Ten real files
+read with **zero transactions and validated clean**. An empty statement and a
+healthy one are indistinguishable, which is the failure this library exists to
+prevent; containment is an index range now, known at close time.
+
+**Evidence.** Ten files published by real financial institutions (ANZ, Suncorp,
+Fidelity and others) from the ofxparse project's MIT-licensed corpus, read
+**before the adapter was written** — it carries both dialects, two error
+responses, an entirely empty document, one file opening with twelve blank lines
+before its header, and vendor extension tags with a dot in the name. The
+controlled fixtures supply what the corpus cannot: **the same logical statement
+in both dialects**, since every real file is one or the other, and a duplicate
+FITID, which no publisher ships on purpose. Six perturbations proven red.
+
+**OFX is the only format in this registry whose specification grants an
+explicit royalty-free, worldwide, perpetual implementation licence** — Axiom 12
+answered in writing rather than inferred.
 
 
 #### Verification against foreign files — 2026-09-15

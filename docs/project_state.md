@@ -223,6 +223,9 @@ document list, with a status column, is `docs/README.md`.
   findings (unreachable is its own), §9's ObservationLog with counting, derivable
   staleness, and a review queue combining both halves. DETECTS, NEVER UPDATES
   (Axiom 4), enforced by a source tripwire; no I/O, so it tests without network.
+- **one list of every finio adapter** — `finio_all`, after the hand-built list
+  was missed three times in one day; a tripwire counts it against the adapter
+  libraries on disk.
 - **a registry of financial formats** — `finio_registry`, the §9 research and
   acquisition queue. First tranche 2026-09-15: 10 formats, 6 families, against
   §14's 22 candidate domains, with the gap reported as a value. The open/licensed
@@ -230,8 +233,9 @@ document list, with a status column, is `docs/README.md`.
   against retrieved evidence -- camt DOWNGRADED from spec_obtained to discovered,
   because no schema was ever downloaded.
 - **financial-format adapters** — `finio` (framework), `finio_nacha` (ACH,
-  fixed-width) `finio_camt` (ISO 20022 camt.053, hierarchical XML) and `finio_bai2` (BAI2,
-  delimited and variable-length, with continuation records). The
+  fixed-width) `finio_camt` (ISO 20022 camt.053, hierarchical XML) `finio_bai2` (BAI2,
+  delimited and variable-length, with continuation records) and `finio_ofx`
+  (OFX, SGML-like 1.x and XML 2.x -- schema drift inside one format). The
   second adapter is a different REPRESENTATION on purpose (§20), and it is what
   turned a location from a byte range into a value with a kind. Provenance is reconstructed from a
   retained source because the alternative was measured at 2.79 GB for a 9.5 MB
@@ -361,9 +365,13 @@ points at, so it doubles as an integration suite for this repository.
   mutation; the `gi`/GTK 4 path does not share that limit
 - there is no dedicated map type; a record serves as one (hash-indexed since
   PLAT-RECIDX, so lookup is not linear, but the ergonomics are a record's)
-- `DOGFOOD.md`'s "Open — worth fixing" list is **empty** as of 0.1.0-rc8; what
-  remains there is the "accepted as documented limitations" section, which is
-  doctrine rather than a to-do list
+- `xml.parse` gives a node **no position**, so a value interpreted out of an
+  XML document cannot say where it came from; libxml2 tracks it and the module
+  does not expose it. Cost `finio_camt` its byte ranges and `finio_ofx` a
+  private tag scanner — `DOGFOOD.md` entry -3
+- `DOGFOOD.md`'s "Open — worth fixing" list holds **one** entry as of
+  0.1.0-rc9 (the one above); the rest of that file is the "accepted as
+  documented limitations" section, which is doctrine rather than a to-do list
 
 ## Current Documents
 

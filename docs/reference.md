@@ -6846,6 +6846,71 @@ whole program without needing a call site.
   rest, one carries block padding and two are **internally inconsistent**,
   which an independent Python reading confirms — it reaches the same totals this
   adapter does, where both disagree with the file.
+- `finio_ofx` — **OFX (Open Financial Exchange)**, the fourth `finio` adapter
+  and **§20's schema-drift case occurring inside a single format**. OFX 1.x is
+  SGML-like and *not well-formed XML* — a leaf is `<CODE>0` with no closing tag
+  — while 2.x is proper XML. Same element tree, two serializations, and a file
+  of each kind is ordinary; until this, schema drift had only arrived *between*
+  formats.
+  **One reader serves both, and conversion was rejected.** Inserting the missing
+  closing tags and handing the result to `xml.parse` is what more than one
+  public tool does, and it would put every **location** into text the bank never
+  sent — Axiom 2 says a value is traceable to its source, and a byte offset into
+  a document this library invented is not provenance. `finio_ofx.scan(text)`
+  walks the tag stream of the original bytes; the single rule that makes one
+  reader possible is that **a closing tag whose name does not match the
+  innermost open aggregate is a leaf's**, which 2.x writes and 1.x does not.
+  Both dialects close *aggregates*, so the difference is about leaves alone.
+  `finio_ofx.recognise` reports the `dialect` (`sgml` or `xml`) alongside the
+  classification, reading the version from an `OFXHEADER:` block or an
+  `<?OFX?>` processing instruction. Nothing depends on the header being first:
+  one real fixture opens with **twelve blank lines**.
+  `finio_ofx.dialects()` names the two, `finio_ofx.revisions()` the versions
+  actually read (102, 200, 203, 211 — a file declaring another is refused by
+  name rather than read under the nearest), and `finio_ofx.read_source` builds
+  the same document shape the other three adapters produce. Containment is an
+  **index range, not close order**: a transaction closes *before* the statement
+  holding it, so a single pass attaching each record to "the current statement"
+  attaches every transaction to nothing — which the first draft did, reading
+  ten real files with **zero transactions and reporting every one of them
+  clean**.
+  **OFX states no control total**, and that is worth naming because the three
+  formats before it all did — NACHA states hashes and totals, camt an opening
+  and closing balance, BAI2 a three-level checksum. An OFX ledger balance is a
+  *balance*, not a sum of anything in the file. So `finio_ofx.validate_doc`
+  cannot reconcile arithmetic and checks what consumers actually depend on
+  instead: that the response is **not an error**, and that **FITIDs are
+  unique**. The FITID is the whole of OFX deduplication — every piece of
+  accounting software that imports OFX keys on it, so a duplicate silently
+  drops or doubles a transaction. The status check cannot stop at the first
+  status either: one corpus file carries a zero at signon and a `2000` inside.
+  **A transaction belonging to no statement is reported**, which catches a
+  structure the adapter does not model rather than a file that is wrong: one
+  fixture carries four transactions inside an `INVSTMTRS` investment statement,
+  and without the check it reads as a clean bank statement with no activity —
+  indistinguishable from an account that had none.
+  `finio_ofx.write_doc` re-emits the **retained source**, so a 1.x document
+  stays 1.x; re-serializing a parsed one would produce 2.x and hand a
+  downstream reader something the bank did not send.
+  `finio_ofx.registry_entry()` is the only entry in this registry whose
+  specification grants an **explicit royalty-free, worldwide, perpetual
+  implementation licence** — Axiom 12 answered in writing rather than inferred.
+- `finio_all` — **every `finio` adapter this build carries, in one list**.
+  `finio_all.adapters()`, `finio_all.registry()` and `finio_all.ids()`. It
+  exists for a measured reason rather than convenience: the adapter list was
+  built by hand at every call site and **was missed three times in one day**
+  when a new adapter arrived — the registry fixture, the registry runner's two
+  embedded programs, and the watch runner's — each failing later and separately
+  and each reporting a count rather than a cause. A tripwire counts what it
+  lists against the adapter libraries on disk, so a fifth adapter that is not
+  wired in goes red at once.
+  **It is also what an application wants**: §8's archive sweep asks which of a
+  directory's files are recognisable, and that needs *every* adapter — naming
+  them by hand is friction at exactly the call site where the answer depends on
+  forgetting none. **The coupling is real and is why there is a choice**:
+  loading this loads every adapter, so a program that reads only ACH files
+  should `load finio_nacha` and build its own one-element registry, which is
+  the same argument `tools` made for refusing `via: {mcp:}`.
 - `finio_registry` — the **format registry** as §9 describes it: not a list of
   what has been built but a record of what **exists**, how its specification can
   lawfully be obtained, and therefore what could be built next. §9's own words:

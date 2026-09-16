@@ -19,10 +19,20 @@
 ' with a named reason.
 
 load finio
-load finio_nacha
-load finio_camt
-load finio_bai2
+load finio_all
 load finio_registry
+
+' A bogus adapter for the duplicate-id probe, with stubs of its own: reaching
+' into a real adapter's internals for a function value made this fixture break
+' when the adapter list moved behind `finio_all`, and the probe is not about
+' any particular adapter anyway.
+function stub_recognise(text)
+    return { classification: "unknown", reasons: [ "a stub" ] }
+end function
+
+function stub_read(src, revision)
+    return { records: [], entities: {}, loss: [] }
+end function
 
 tally = { checks: 0, mismatches: 0 }
 
@@ -42,7 +52,7 @@ end function
 ' and the implementable check fail for a format that had just been built. The
 ' merge is what forced the removal -- it refuses an id in both places -- and
 ' this is the other half of that move.
-adapters = [ finio_nacha.adapter(), finio_camt.adapter(), finio_bai2.adapter() ]
+adapters = finio_all.adapters()
 all = finio_registry.all(adapters)
 
 print "-- every entry is a valid registry entry"
@@ -82,6 +92,7 @@ check("and those two sets do not overlap",
 check("BAI2, OFX, FIX and the ISO 20022 family are all implementable",
       contains(impl, "bai2") and contains(impl, "ofx") and contains(impl, "fix")
       and contains(impl, "iso20022.pain001"), true)
+
 check("and the X12 transaction sets and ISO 8583 are not",
       contains(impl, "x12.835") or contains(impl, "x12.820") or contains(impl, "iso8583"), false)
 
@@ -139,7 +150,8 @@ for each e in all
 end for
 check("no id appears twice", dupes, 0)
 check("the implemented formats are present",
-      contains(ids, "aba.nacha") and contains(ids, "iso20022.camt053") and contains(ids, "bai2"), true)
+      contains(ids, "aba.nacha") and contains(ids, "iso20022.camt053")
+      and contains(ids, "bai2") and contains(ids, "ofx"), true)
 ' THE IDS, NOT THE RECORDS. `contains(queue(), "aba.nacha")` compares a RECORD
 ' to a STRING, which PLAT-EQ makes false always -- so written that way this
 ' check passes whatever the queue holds, which is the vacuous-assertion class
@@ -153,15 +165,15 @@ check("and an implemented format is NOT in it", contains(qids, "aba.nacha"), fal
 check("nor the second", contains(qids, "iso20022.camt053"), false)
 check("nor the third, which was in the queue until its adapter was built",
       contains(qids, "bai2"), false)
+check("nor the fourth, for the same reason", contains(qids, "ofx"), false)
 ' AND THE REFUSAL, proven rather than described: putting one in both must raise.
 on error goto next
-finio_registry.all([ finio_nacha.adapter(), finio_camt.adapter(),
-                     finio.adapter({ id: "ofx", revisions: [ "1" ],
-                                     recognise: finio_nacha.recognise,
-                                     read: finio_nacha.read_source,
-                                     byte_fidelity: false,
-                                     registry_entry: { id: "ofx", state: "discovered",
-                                                       acquisition_class: "OPEN" } }) ])
+clash = finio.adapter({ id: "fix", revisions: [ "1" ],
+                        recognise: stub_recognise, read: stub_read,
+                        byte_fidelity: false,
+                        registry_entry: { id: "fix", state: "discovered",
+                                          acquisition_class: "OPEN" } })
+finio_registry.all(concat(finio_all.adapters(), [ clash ]))
 check("a format in the queue AND with an adapter is refused",
       contains(error.message, "two copies drift"), true)
 error.clear()

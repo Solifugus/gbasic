@@ -483,5 +483,24 @@ if [ "$bad_struck" = 0 ]; then
     ok "COVER: all $struck_n struck bullets have a control and no live probe"
 fi
 
+# --- THE "WORTH FIXING" LIST IS GUARDED TOO ---------------------------------
+# Everything above probes the ACCEPTED-limitations section, whose semantic is
+# "this will not change". The ranked "Open -- worth fixing" list has the
+# opposite semantic and the SAME failure mode: an entry that has quietly come
+# true is as misleading as an accepted limitation that has, and nothing was
+# checking it. One probe per live entry, going RED when the gap closes, so the
+# entry gets struck rather than left standing.
+printf 'TIER open_worth_fixing\n'
+probe="$(timeout 60 ./gbasic tests/limitations/xml_no_position.bas 2>&1)"
+if printf '%s' "$probe" | grep -q '^HOLDS:'; then
+    ok "DOGFOOD -3 still holds: ${probe#HOLDS: }"
+elif printf '%s' "$probe" | grep -q '^FIXED:'; then
+    fail "DOGFOOD entry -3 (xml.parse carries no position) IS NOW FIXED -- ${probe#FIXED: }"
+    printf '       Strike it from the ranked open list, add a RESOLVED note at the\n'
+    printf '       chronological entry, and give finio_camt its byte ranges.\n'
+else
+    fail "the -3 probe did not run: $probe"
+fi
+
 printf '\nrun_limitations: PASS=%d SKIP=%d\n' "$pass" "$skip"
 exit "$status"

@@ -94,12 +94,11 @@ fi
 printf 'TIER wired_up\n'
 cat > "$scratch/wired.bas" <<'BEOF'
 load finio
-load finio_nacha
-load finio_camt
+load finio_all
 load finio_registry
 load finio_watch
 program main( args )
-    all = finio_registry.all([ finio_nacha.adapter(), finio_camt.adapter() ])
+    all = finio_registry.all(finio_all.adapters())
     unpriced = 0
     unwatched = 0
     sources = 0

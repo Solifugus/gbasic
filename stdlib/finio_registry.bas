@@ -291,41 +291,9 @@ function queue()
 
     ' --- consumer aggregation ----------------------------------------------
 
-    append(out, { id: "ofx",
-        name: "OFX (Open Financial Exchange)",
-        family: "account aggregation",
-        domain: "consumer and small-business statement download and bank aggregation",
-        authority: "Financial Data Exchange (FDX), which took over the OFX consortium's specification in 2019",
-        description: "SGML in version 1 and XML in version 2, carrying statement, investment and bill-payment messages inside a signon wrapper.",
-        representation: "tagged document; SGML-like in 1.x, XML in 2.x",
-        transport: "HTTP request/response, or a downloaded file",
-        known_revisions: [ "1.0.2", "2.1.1", "2.2" ],
-        specification_sources: [
-          { source_type: "specification",
-            source_url_or_reference: "OFX 2.2 specification (https://financialdataexchange.org/wp-content/uploads/2025/12/OFX-2.2.pdf) and the OFX downloads page (https://ofxorg.ocg-prod.a.intuit.com/downloads.html)",
-            date_retrieved: "2026-09-15",
-            note: "A ROYALTY-FREE, WORLDWIDE, PERPETUAL LICENCE is granted to any party to use the specification to make, use and sell products -- which is Axiom 12 answered explicitly rather than inferred, and is rare. The download PAGES were seen; the PDF was not retrieved." } ],
-        acquisition_class: "OPEN",
-        spec_public: true,
-        spec_acquisition_method: "Free download; the specification carries an explicit royalty-free implementation licence.",
-        implementation_allowed: true,
-        spec_redistribution_allowed: false,
-        sample_redistribution_allowed: false,
-        state: "discovered",
-        recognition_status: "not_started",
-        read_status: "not_started",
-        write_status: "not_started",
-        validation_status: "not_started",
-        test_vectors: [],
-        known_variants: [ "1.x is SGML-like and not well-formed XML, so a 2.x parser cannot read it -- §20's schema-drift case occurring inside one format" ],
-        known_extensions: [],
-        maintenance_priority: "periodic",
-        watch_sources: [
-          { kind: "document",
-            reference: "https://financialdataexchange.org/wp-content/uploads/2025/12/OFX-2.2.pdf",
-            watching: "a version beyond 2.2, or a change to the royalty-free implementation licence" } ],
-        last_reviewed: "2026-09-15",
-        next_review_due: "2027-09-15" })
+    ' OFX IS NOT IN THE QUEUE ANY MORE: it has an adapter, and an implemented
+    ' format's entry lives WITH its adapter. The merge refuses an id in both
+    ' places, which is what made this removal compulsory rather than tidy.
 
     return out
 end function
