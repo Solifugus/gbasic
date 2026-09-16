@@ -1,0 +1,34 @@
+BRANCH ACTIVITY REGISTER                                PAGE    1
+MIDLAND MUTUAL CREDIT UNION                             RUN 09/16/2026 06:12
+========================================================================
+
+BRANCH  92  HARBOUR
+
+  ACCOUNT     MEMBER NAME                    POSTED             AMOUNT
+  ----------  ----------------------------   ----------   ------------
+  00148438    CHAUDHRY, NADIA                02/28/2026       1,829.10
+  00145755    ROSSI, IRINA                   01/27/2026       4,233.49
+  00147970    CHAUDHRY, ALICE                11/16/2026         863.11
+  00141316    NAKAMURA, WINIFRED             02/27/2026       3,058.17
+  00140046    ANDERSSON, EVA                 06/27/2026         122.25
+  00140743    LINDQVIST, CHIARA              07/28/2026        -462.17
+
+  BRANCH TOTALS                                               9,643.95
+
+  REMARKS:
+    branch closed early for maintenance
+
+BRANCH  32  CEDAR PARK
+
+  ACCOUNT     MEMBER NAME                    POSTED             AMOUNT
+  ----------  ----------------------------   ----------   ------------
+  00147065    KOVACS, DIEGO                  04/22/2026      -2,531.54
+  00149328    KOVACS, CHIARA                 09/26/2026       4,767.87
+  00148800    ABIODUN, GUNNAR                09/20/2026       4,187.81
+  00140333    CHAUDHRY, GUNNAR               08/27/2026       1,728.76
+
+  BRANCH TOTALS                                               8,152.90
+
+  REMARKS:
+    reconciled against the general ledger
+

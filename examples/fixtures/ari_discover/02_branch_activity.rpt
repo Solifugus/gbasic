@@ -1,0 +1,34 @@
+BRANCH ACTIVITY REGISTER                                PAGE    1
+MIDLAND MUTUAL CREDIT UNION                             RUN 09/16/2026 06:12
+========================================================================
+
+BRANCH  21  WESTFIELD
+
+  ACCT        MEMBER NAME              POSTED             AMOUNT
+  ----------  ----------------------   ----------   ------------
+  00144077    ANDERSSON, MARGARET      03/25/2026       1,049.35
+  00142294    ANDERSSON, FEMI          04/23/2026       4,755.03
+  00142255    THORNBURY, FEMI          06/16/2026       3,225.63
+  00144197    NAKAMURA, YUKI           04/19/2026       2,480.46
+  00141447    LINDQVIST, EVA           08/26/2026         870.63
+
+  BRANCH TOTAL                                         12,381.10
+
+  REMARKS:
+    reconciled against the general ledger
+
+BRANCH  72  HARBOUR
+
+  ACCT        MEMBER NAME              POSTED             AMOUNT
+  ----------  ----------------------   ----------   ------------
+  00147218    MERCER, GUNNAR           02/17/2026       1,368.61
+  00148979    ANDERSSON, YUKI          12/16/2026       4,230.82
+  00145766    KOVACS, DIEGO            11/21/2026         990.19
+  00140375    NAKAMURA, BRENDAN        12/17/2026      3,668.72-
+  00142296    REYES, MARGARET          10/23/2026       1,901.69
+
+  BRANCH TOTAL                                          4,822.59
+
+  REMARKS:
+    posted late by operations
+

@@ -1,0 +1,78 @@
+BRANCH ACTIVITY REGISTER                                PAGE    1
+MIDLAND MUTUAL CREDIT UNION                             RUN 09/16/2026 06:12
+========================================================================
+
+BRANCH  46  HARBOUR
+
+  ACCT        MEMBER NAME              POSTED             AMOUNT
+  ----------  ----------------------   ----------   ------------
+  00147454    REYES, YUKI              03/19/2026         947.08
+  00149767    PETROVA, BRENDAN         03/13/2026       1,183.54
+  00142599    KOVACS, ALICE            07/22/2026       3,611.18
+  00149931    THORNBURY, CHIARA        02/26/2026       2,789.05
+  00143151    LINDQVIST, EVA           03/24/2026         349.41
+  00144037    ABIODUN, IRINA           10/17/2026         851.35
+  00149768    NAKAMURA, DIEGO          07/21/2026       4,816.21
+  00142214    ANDERSSON, CHIARA        01/19/2026       1,857.47
+
+  BRANCH TOTAL                                         16,405.29
+
+  REMARKS:
+    reconciled against the general ledger
+
+BRANCH  83  WESTFIELD
+
+  ACCT        MEMBER NAME              POSTED             AMOUNT
+  ----------  ----------------------   ----------   ------------
+  00140301    WHITFIELD, MARGARET      02/15/2026         101.27
+  00144222    CHAUDHRY, ALICE          10/28/2026      -1,044.14
+  00144565    NAKAMURA, MARGARET       06/25/2026          86.45
+  00146129    REYES, GUNNAR            10/20/2026       4,119.46
+  00146532    ABIODUN, PHILIPPE        10/16/2026        -404.76
+  00144931    KOVACS, FEMI             10/14/2026       3,505.93
+  00146386    THORNBURY, DIEGO         07/24/2026         313.44
+  00143072    ROSSI, DIEGO             07/25/2026       1,203.08
+  00140360    REYES, WINIFRED          02/23/2026         823.48
+
+  BRANCH TOTAL                                          8,704.21
+
+  REMARKS:
+    branch closed early for maintenance
+
+BRANCH  25  OLD MILL
+
+  ACCT        MEMBER NAME              POSTED             AMOUNT
+  ----------  ----------------------   ----------   ------------
+  00140767    LINDQVIST, DIEGO         09/16/2026          44.90
+  00147038    OKAFOR, BRENDAN          10/21/2026       2,776.69
+  00141159    CHAUDHRY, ESTHER         09/23/2026       2,787.05
+  00144505    MWANGI, GUNNAR           11/24/2026      -1,929.67
+  00141108    KOVACS, IRINA            06/13/2026         806.26
+
+BRANCH ACTIVITY REGISTER                                PAGE    2
+MIDLAND MUTUAL CREDIT UNION                             RUN 09/16/2026 06:12
+========================================================================
+
+
+  BRANCH TOTAL                                          4,485.23
+
+  REMARKS:
+    reconciled against the general ledger
+
+BRANCH  50  NORTHGATE
+
+  ACCT        MEMBER NAME              POSTED             AMOUNT
+  ----------  ----------------------   ----------   ------------
+  00141037    CHAUDHRY, LASZLO         07/20/2026       1,419.94
+  00148991    SANTOS, ALICE            06/23/2026       1,249.33
+  00147999    LINDQVIST, MARGARET      02/23/2026       3,352.10
+  00147023    MERCER, MARGARET         03/13/2026        -296.20
+  00143530    ANDERSSON, PHILIPPE      07/27/2026       2,996.57
+  00140628    SANTOS, PHILIPPE         12/13/2026      -3,978.17
+  00141380    ABIODUN, WINIFRED        11/15/2026       1,525.28
+
+  BRANCH TOTAL                                          6,268.85
+
+  REMARKS:
+    branch closed early for maintenance
+

@@ -257,6 +257,23 @@ document list, with a status column, is `docs/README.md`.
   and perturbing the library shows it produces a REFUSAL instead, because
   framing is decided once and recognition and reading go through that one
   decision.
+- **a corpus for ARI Discover, before the library** — `examples/fixtures/ari_discover/`
+  (24 branch-activity reports across nine declared drift axes with a PLANTED
+  answer key, plus a NULL corpus of 12 structureless sources) and the two
+  generators that emit them. `docs/ari_discover_design.md` is revised to fit
+  gBASIC as MEASURED rather than as described: four premises did not hold, the
+  costliest being arity-strictness (default parameters shipped, so the proposed
+  `*_default` twins would have permanently doubled the API -- the trade
+  finance_design §6 made and struck a day later), and the subtlest being that
+  the draft located in BYTES while `ari` locates in CODEPOINTS (it slices with
+  the codepoint-indexed string builtins),
+  a rule correct on every ASCII line and silently wrong on the first accented
+  description, which is the defect finio Phase 0 shipped one library over and
+  which THIS CORPUS CANNOT CATCH because every file in it is ASCII. The null
+  corpus is the load-bearing addition: recipe 1 already measured that a search
+  returns a winner whether or not there is anything there, so acceptance
+  criteria 1-9 are all satisfiable by a confident guesser and criterion 10 is
+  the only one that is not.
 - **a textual form that keeps every gBASIC type** — `notation`, the gap between
   the JSON dialect (readable, and refuses a date, money, a duration or a file)
   and the binary serializer (keeps every type, opaque). Neither can be reviewed by

@@ -1,9 +1,33 @@
 # ARI Discover: Automatic ARI Specification Inference
 
-Status: Initial design draft  
+Status: Design draft — **revised 2026-09-16 to fit gBASIC as it now is.**
+Unbuilt.  
 Target library: `stdlib/ari_discover.bas`  
 Companion runtime: `stdlib/ari.bas`  
-Proposed public name: **ARI Discover**
+Proposed public name: **ARI Discover**  
+Corpus: `examples/fixtures/ari_discover/` (built; see its MANIFEST)
+
+> **What the revision changed.** The draft was written against gBASIC as
+> described rather than as measured, and four of its premises were checked
+> against the tree and did not hold. Each correction is marked in place with a
+> `> **Corrected**` note so the original reasoning stays legible:
+>
+> 1. **§9 — gBASIC is no longer arity-strict.** Literal default parameter
+>    values shipped (PLAT-OPTPARAM), so the proposed `*_default` convenience
+>    twins would permanently double the public API to work around a limitation
+>    that no longer exists.
+> 2. **§6.1 — the index space disagrees with the engine.** The draft proposes
+>    byte offsets; `ari` locates with `len`/`mid`, which are **codepoints**.
+>    Mixing them yields a rule that is correct until a description contains a
+>    non-ASCII character.
+> 3. **§20 — the "prerequisite" is half built.** `ari.inspect` and
+>    `ari.clean_grid` already exist; only span-level claimed/unclaimed is
+>    missing.
+> 4. **§2 — `load "ari.bas"` is not gBASIC syntax.**
+>
+> Added: **§5.3** (the language constraints an implementer will actually hit),
+> **§15.5** (the null corpus, and why it is load-bearing), and a corpus that
+> exists rather than one assumed.
 
 ## 1. Purpose
 
@@ -31,13 +55,22 @@ result = ari.import(path, spec_text)
 Discovery belongs in a companion library:
 
 ```basic
-load "ari.bas"
-load "ari_discover.bas"
+load ari
+load ari_discover
 
-profile = ari_discover.profile(report_text, options)
-proposal = ari_discover.infer(report_texts, options)
-validation = ari_discover.validate(report_texts, proposal.spec, options)
+profile = ari_discover.profile(report_text)
+proposal = ari_discover.infer(sources)
+validation = ari_discover.validate(sources, proposal.spec)
 ```
+
+> **Corrected.** The draft wrote `load "ari.bas"`, which is not gBASIC: `load`
+> takes a library **name**, optionally with `as` to bind a different local name
+> or `from` to name a file. Inside `ari_discover.bas` itself the sibling form is
+> `load ari from "ari.bas"`, which is what every stdlib library that depends on
+> another already uses.
+>
+> The calls above also drop the trailing `options` argument, because it now has
+> a default — see §9.
 
 This separation preserves several useful properties:
 
@@ -112,6 +145,88 @@ options = {
 
 Defaults should favor resilient anchor-relative rules over positional rules.
 
+**The record must be validated by name, and an unrecognised field refused.**
+This is the rule `webserver.listen`, `odbc.connect`, `discovery.scan` and
+`finio.open_text` already follow, and the reason is not tidiness: a misspelled
+`minimum_suport` that is silently ignored leaves the caller believing they
+raised the threshold when they did not, and the run that follows looks like a
+successful one. The same decision cost `reasoning.check_context` a whole
+increment to retrofit — a `Context` written with the singular `objective`
+produced `materiality: unknown`, which is *also* the designed honest answer when
+no threshold was declared, so a typo was indistinguishable from a deliberate
+omission.
+
+`llm: nothing` is deliberate and is not the same as `unknown`. `nothing` is "no
+advisor supplied"; `unknown` is the answer to a question nobody asked. A caller
+reading back `options.llm` must be able to tell "I chose to run without one"
+from "this field was never set".
+
+**`minimum_support` is meaningless below about ten sources**, and the design
+should say so rather than let a caller discover it. With three sources, `0.80`
+means "3 of 3" because 2/3 is 0.67 — so `0.80` and `0.95` are the same
+threshold and neither can be calibrated. §15 sizes the corpus for this.
+
+### 5.3 gBASIC constraints this design has to live inside
+
+Added by the 2026-09-16 revision. None of these is a limitation to route
+around; each one changes a shape the draft proposes, and each has already cost
+another library in this tree a defect. They are listed here so an implementer
+meets them on the page rather than in a debugger.
+
+**Arrays and records are values, and `append` inside a function mutates a
+local copy.** A helper written as `add_family(families, f)` does nothing to the
+caller's array. Every pipeline stage must **return** its accumulator. This cost
+`accounting` its whole API shape — `post` returns the new ledger — and it is why
+`fake`'s generators are pure functions of `(seed, index)` rather than streams:
+a record is a value, so `s.n = s.n + 1` inside a function cannot advance a
+stream object, measured.
+
+**`for each item in list` does not write back.** `item.type = "money"` inside
+the loop is discarded silently. Since 2026 the index form exists —
+`for each item, i in list` — and the idiom is `list[i] = item`, because that is
+an lvalue path and paths write in place. A write to the element that nothing
+reads afterwards raises warning 2107 (`discarded write`).
+
+**There are no closures.** `map` cannot capture, so a per-model or per-corpus
+callback needs one named function per instance. This bites §11.1's advisor
+contract directly: an adapter cannot be a closure over a configured endpoint, so
+it must be a function value taking everything it needs as arguments, or a record
+carrying a function value plus its configuration. It also bites `spawn`, which
+resolves a **bare function name** — neither a library function nor a function
+value — so a parallel inference pass cannot be spawned over a lambda.
+
+**String concatenation in a loop is quadratic.** Building a signature or a
+generated specification by `s = s + part` over thousands of lines is the trap
+`UNLEARN.md` names. Collect into an array and `join` once. Indexing and `append`
+are linear (PLAT-STRIDX, PLAT-ARRIDX), so an array accumulator is cheap.
+
+**`keys()` is insertion order**, which is what makes §17's determinism criterion
+achievable at all — but only if every tally is built in a deterministic order.
+A cluster map keyed by signature is deterministic; one keyed by an id drawn from
+a hash is not.
+
+**`new` and `step` are reserved words and cannot be function names.** `chart`
+had to be `chart.spec` rather than `chart.new` for exactly this, and
+`agent.apply` is named that because `step` is taken by `for ... step`. If a
+constructor is wanted here, `ari_discover.spec(...)` or `.candidate(...)` works
+and `.new(...)` will not parse.
+
+**Comparison of two compound values is deep, and ordering them is refused.**
+`=` on two records compares field by field, by name; `<` on two records raises.
+That is what makes "have I seen this signature before?" writable as
+`contains(seen, sig)` — but a `find` that misses returns `nothing`, and
+`is_unknown(nothing)` is **false**, so an `is_unknown` guard on `find`'s result
+reads as "found at index nothing". Use `contains`.
+
+**A raise can be caught, and `on error` is frame-scoped.** A candidate
+specification that fails to parse is an ordinary outcome here, not a crash, so
+Phase 8 runs each candidate under `on error goto next` and records the failure
+as evidence. Note the anti-silence rules: a second raise while one is pending
+escapes the frame, and returning with an unacknowledged pending error re-raises
+— so a scoring loop must claim each error before moving to the next candidate.
+
+------------------------------------------------------------------------
+
 ## 6. Intermediate representation
 
 Discovery should not operate directly on raw strings after ingestion. It should build an intermediate representation that preserves both content and provenance.
@@ -121,11 +236,46 @@ Discovery should not operate directly on raw strings after ingestion. It should 
 Each physical line becomes a record containing at least:
 
 ```text
-source_id, physical_line, page_guess, text, byte_start, byte_length,
+source_id, physical_line, page_guess, text,
+byte_start, byte_length,          ' provenance, into the file
+cp_start,   cp_length,            ' rules, into ARI's own index space
 indent, trimmed_length, blank, separator_score
 ```
 
 No preprocessing step may destroy the mapping back to the original bytes.
+
+> **Corrected — and this is the subtle one.** The draft carried `byte_start`
+> and `byte_length` alone. **`ari` does not locate in bytes.** Its
+> `_apply_columns`, `_locate_in_line` and every recognizer use `len` and `mid`,
+> which count **codepoints**, so `columns 12 34` in a generated specification
+> means codepoints 12..34 and not bytes.
+>
+> A discovery engine that measured in bytes and emitted a `columns` rule would
+> produce a specification that is correct on every ASCII line and silently wrong
+> on the first line containing a non-ASCII description — one UTF-8 `É` shifts
+> every later field one place left, and the extracted value is an
+> ordinary-looking shorter string with nothing raised.
+>
+> **This exact defect has already been shipped in this tree, one library over.**
+> `finio` Phase 0 accumulated offsets with `len` and sliced with `mid`, called
+> the result `byte_offset`, and its own fixture could not see it because the
+> fixture was pure ASCII. It took a foreign corpus carrying one 95-byte,
+> 94-codepoint record to expose it.
+>
+> So **both are carried and they are never mixed.** The rule is:
+>
+> - **codepoints** are what a generated ARI rule may contain, because ARI is
+>   the judge and that is ARI's space;
+> - **bytes** are what provenance reports (§12, principle 6), because that is
+>   what maps back to the file a person will open;
+> - a field name says which, always. No field called `offset`, `start` or
+>   `position` without a `byte_`/`cp_` prefix.
+>
+> The two coincide on ASCII, which is precisely why this cannot be left to
+> be noticed later: every fixture in `examples/fixtures/ari_discover/` is
+> ASCII today, so the corpus **cannot** catch it. §15.3 therefore requires a
+> non-ASCII adversarial source, and it is the one adversarial case that must
+> exist before Phase 1 rather than after.
 
 ### 6.2 Token spans
 
@@ -309,7 +459,7 @@ With a sufficiently large corpus, reserve one or more reports from inference and
 
 ## 9. Public API proposal
 
-The exact API must follow established gBASIC conventions and arity rules. A preliminary surface is:
+The exact API must follow established gBASIC conventions. A preliminary surface is:
 
 ```basic
 ' Analyze one report without producing a final spec.
@@ -328,13 +478,70 @@ revised = ari_discover.refine(sources, proposal, decisions, options)
 text = ari_discover.explain(proposal, options)
 ```
 
-Because gBASIC functions are arity-strict, convenience functions may be preferable to simulated optional arguments:
-
-```basic
-profile = ari_discover.profile_default(report_text)
-proposal = ari_discover.infer_default(sources)
-validation = ari_discover.validate_default(sources, spec_text)
-```
+> **Corrected, and this was the costliest premise in the draft.** gBASIC
+> functions are **no longer arity-strict**: literal default parameter values
+> shipped as PLAT-OPTPARAM. Measured —
+>
+> ```basic
+> function f(a, b = 10)
+>     return a + b
+> end function
+> ' f(1) is 11; f(1, 2) is 3
+> ```
+>
+> So the `profile_default` / `infer_default` / `validate_default` twins above
+> are **struck**. They would have permanently doubled the public surface to work
+> around a limitation that no longer exists, and every caller would have had to
+> know which of two names to reach for.
+>
+> This is not a hypothetical cost. `docs/finance_design.md` §6 made exactly this
+> trade — it settled on a two-form API to work around the missing feature — and
+> was **superseded one day later** when default parameters were built. That
+> section is still in the tree marked superseded, as a record: had Phase 1
+> shipped first, its first deliverable would have been a workaround for a
+> limitation that then disappeared.
+>
+> **Defaults must be literals**, which is the whole of the feature and is
+> exactly right here: an options record cannot be a default value, so the
+> signature is `options = nothing` and the function substitutes
+> `default_options()` when it sees `nothing`. That also gives the caller a way
+> to ask what the defaults *are*, which a buried literal does not.
+>
+> ```basic
+> function profile(report_text, options = nothing)
+> function infer(sources, options = nothing)
+> function validate(sources, spec_text, options = nothing)
+> function refine(sources, proposal, decisions, options = nothing)
+> function explain(proposal, options = nothing)
+>
+> function default_options()      ' the record §5.2 shows, as a value
+> ```
+>
+> Verified to work as written:
+>
+> ```basic
+> function profile(text, options = nothing)
+>     o = options
+>     if is_nothing(o) then
+>         o = default_options()
+>     end if
+>     ...
+> ' profile("rpt")                            -> uses 0.80
+> ' profile("rpt", { minimum_support: 0.95 }) -> uses 0.95
+> ```
+>
+> Note `is_nothing`, not `is_unknown`. They are different values and the
+> distinction is load-bearing here — see §5.2.
+>
+> **A note on names.** `validate` collides with `finio.validate` and `explain`
+> with `discovery.explain`. Both are benign and neither needs renaming: since
+> the 2026 scope change an unqualified call reaches only the library whose code
+> is running plus the root program's own functions, so a cross-library call must
+> be qualified and cannot resolve by load order. `library_collisions()` will
+> report both, which is expected — stdlib already carries seven such shared
+> names (`at`, `create`, `merge`, `offline`, `select`, `series`,
+> `with_transport`) and a program loading `dates` and `frame` legitimately
+> reports `select`.
 
 ### 9.1 Source record
 
@@ -478,9 +685,53 @@ LLM failure never prevents deterministic discovery. When evidence is insufficien
 
 ## 15. Testing strategy
 
-### 15.1 Golden fixtures
+### 15.1 The corpus, and why the existing ARI fixtures are not it
 
-Use existing ARI teller and delinquency fixtures as the initial known-answer corpus. The expected result should focus first on structural equivalence and successful extraction, not byte-identical generated formatting.
+> **Corrected — the draft's starting corpus cannot measure what Phase 0
+> measures.** `examples/fixtures/ari/` holds **three files, two of which are the
+> same report**. §5.1 says variation across files is what separates a true
+> constant from an accidental one, and three sources cannot supply it: at that
+> size `minimum_support: 0.80` means "3 of 3", so 0.80 and 0.95 are the same
+> threshold, and §8.2's holdout would leave two sources for inference.
+>
+> Starting there would test Phase 0 against data that cannot distinguish the
+> thing Phase 0 exists to distinguish — which is the lesson `finio` delivered
+> twice: a fixture written by the same author shares the author's
+> misunderstandings, and it took a foreign corpus to find defects in three of
+> four adapters that every green suite had missed.
+
+**Built 2026-09-16: `examples/fixtures/ari_discover/`** — 24 branch-activity
+reports across nine declared drift axes, plus `truth.json`. See that
+directory's `MANIFEST.md`; the generator is
+`tools/gen_discover_corpus.bas` and both are pure functions of their arguments.
+
+**One declaration produces both the report and the truth.** `truth.json` is
+written by the same program that writes the reports, from the values it
+*planted* — never read back out of the text it printed. That is R1 of
+`stdlib/estate.bas`, and the reason is that a hand-written answer key drifts the
+first time either side changes: **a fixture whose answer key is wrong teaches
+the tool to be wrong and then certifies it.**
+
+The key carries what §8's scorecard needs to be *measured* rather than reported:
+
+| field | makes measurable |
+|---|---|
+| `furniture_lines` | §7 Phase 3, as precision **and** recall by line number |
+| `families` | §7 Phase 4 row-family recall, including a minority family absorbed into the dominant one |
+| `branches[].accounts[]` | **the planted values** — the strong oracle §15.4 asks for. A coverage percentage cannot substitute: a specification can claim every line and extract the wrong number |
+| `variant` | which of the nine axes a source exercises, so a failure is attributable rather than merely noticed |
+
+Verified on generation: 480 detail rows, every planted account, name and amount
+appearing exactly once in its own file, every branch total equal to the sum of
+its accounts, every declared furniture line really furniture — 0 mismatches.
+
+The three existing ARI fixtures keep a job and it is a different one: they are
+the **irregularity** corpus, hand-authored to be inconsistent with themselves in
+the ways a real report is. They belong in §15.3's adversarial set, not as the
+known-answer corpus.
+
+The expected result should focus first on structural equivalence and successful
+extraction, not byte-identical generated formatting.
 
 ### 15.2 Synthetic report generator
 
@@ -498,6 +749,26 @@ Generate controlled report families varying:
 
 Because the generating schema is known, recall and false-positive rates can be measured exactly.
 
+**Built: `tools/gen_discover_corpus.bas`.** Nine of those axes are implemented —
+money notation, account-column heading, total label, date dialect, table indent,
+name-column width, page length, form feeds versus header-only pagination, and an
+optional `REMARKS:` section. Three are **not yet**: missing values, continuation
+lines and reordered subsections. Each needs a decision about what the *truth*
+records, which is why they were left rather than guessed:
+
+- a **missing value** must be distinguishable in the key from a value the
+  generator planted and discovery failed to find — Axiom 7's split one library
+  over, and the direction that hurts is a gap read as zero;
+- a **continuation line** belongs to the record above it, so the key has to say
+  which, or a family count cannot be scored;
+- a **reordered subsection** changes what "the same family" means across
+  sources, which is the one axis that could make a family count ambiguous rather
+  than merely harder.
+
+Variants are chosen **by index, not at random**, so each axis is covered evenly.
+A randomly drawn corpus can leave an axis with one sample or none, and a
+discovery failure on that axis then looks like luck rather than like a finding.
+
 ### 15.3 Adversarial cases
 
 Include:
@@ -511,19 +782,104 @@ Include:
 - a trailing-minus value wider than neighboring positives;
 - tabs, form feeds, CRLF, and non-ASCII descriptions.
 
+**The non-ASCII case is required before Phase 1, not after**, and it is the only
+one with that status. Every file in the generated corpus is ASCII, so the corpus
+*cannot* catch the byte-versus-codepoint confusion §6.1 corrects — the two index
+spaces coincide exactly until a multi-byte character appears. A source with an
+accented description inside a column-aligned table is what separates a discovery
+engine that measured in ARI's own space from one that measured in bytes and got
+the right answer by luck.
+
+The three existing fixtures in `examples/fixtures/ari/` belong here too. They
+are hand-authored to be inconsistent with themselves — the same field spelled
+`Teller #:` and `Teller#:`, summary fields in a different order per teller,
+column headings shifted between tables, identifiers glued into prose columns,
+some amounts malformed on purpose. That is an adversarial set, and a better one
+than a generator produces, because a template cannot invent its own
+inconsistencies.
+
 ### 15.4 Regression requirement
 
 An accepted generated specification must parse the discovery corpus through the normal `ari` runtime. Tests should preserve both the generated proposal's scorecard and the parsed values that establish correctness.
+
+------------------------------------------------------------------------
+
+### 15.5 The null corpus
+
+**Added by the 2026-09-16 revision, and it is the load-bearing tier.**
+
+Inference is a search, and a search always returns a winner. This project has
+measured that once already, at cost. `examples/automation_lab` recipe 1 ran the
+same decomposition over a population with a real 45% collapse planted in a known
+cell, and over one holding nothing but lognormal noise. **The output could not
+tell them apart**: both produced a confident three-level causal chain, both
+declined 1.8%, top-region share 82.6% against 80.3%. The finding was not that
+the decomposition was buggy. It was that a drill-down *only ever pointed at data
+with a known answer* always looks like it works.
+
+ARI Discover is the same shape of machine. It proposes families, anchors and
+field rules from a corpus and scores them. Any token that recurs is a candidate
+anchor, and at `minimum_support: 0.80` on a small corpus, coincidences clear.
+**A scorecard full of high numbers on a corpus that has structure is not
+evidence that discovery found the structure** — it is equally consistent with a
+tool that always finds something.
+
+The only thing separating those two is running it where the right answer is
+nothing.
+
+**Built: `examples/fixtures/ari_discover/null/`** — 12 sources, generated by
+`tools/gen_discover_null.bas`.
+
+**What makes it a fair null** is the whole difficulty, and getting it wrong is
+easy in the direction that flatters the tool. Random letters would measure
+nothing: discovery would reject them for reasons — no money, no dates, no
+report-like density — unrelated to structure. So the null is deliberately
+indistinguishable from the real corpus **at the token level**: the same token
+kinds from the same vocabularies, the same three money notations and two date
+dialects, comparable line lengths, plausible indentation, blank lines at
+irregular intervals. It differs in exactly one respect — token order, token
+count and indentation are drawn per line, no literal recurs at a stable
+position, and there is no page furniture, heading, total or repeating family.
+
+Measured over the two corpora, on the features an inference engine keys on:
+
+| | structured | null |
+|---|---|---|
+| non-blank lines | 921 | 679 |
+| distinct structural signatures | **9** | **389** |
+| share covered by the top 3 signatures | **73.8 %** | **6.5 %** |
+| most common (indent, first token) pair | `BRANCH` at column 0, 100× (**10.9 %**) | 4× (**0.6 %**) |
+
+Same tokens; structure absent by two orders of magnitude on exactly the measures
+that matter.
+
+**The expected result is a refusal, not a low score.** §14 already lists
+"insufficient variation to distinguish constants from variables" and "no stable
+anchors" as outcomes; this corpus is what turns them from a listed possibility
+into a **measured false-positive rate**. That rate belongs in the scorecard as a
+number, not as a box to tick — and §17 makes it an acceptance criterion.
+
 
 ## 16. Phased implementation
 
 ### Phase 0: Profiling foundation
 
-- Source grid and provenance.
+- Source grid and provenance, carrying **both index spaces** (§6.1).
 - Typed-span recognition.
 - Line signatures.
 - Repetition and page-furniture report.
 - Human-readable profile; no spec generation.
+
+> **Ready to start (2026-09-16).** The corpus exists, its answer key exists, and
+> the null corpus exists. Phase 0's first measurable claim is already scoreable
+> without writing a line of inference: `furniture_lines` in `truth.json` gives
+> page-furniture detection as precision **and** recall by line number, against
+> 24 sources whose pagination was generated blind to content.
+>
+> The one thing to settle before writing code is §6.1's index-space rule, since
+> it decides the shape of the source grid and cannot be retrofitted cheaply —
+> and the corpus cannot catch it, because every file in it is ASCII. Write the
+> non-ASCII adversarial source first (§15.3).
 
 ### Phase 1: Single-section inference
 
@@ -565,7 +921,27 @@ The first useful release should demonstrate that it can:
 6. validate the candidate using `ari.parse`;
 7. report coverage, collisions, unknown values, assumptions, and unclaimed content;
 8. work entirely without an LLM;
-9. produce the same proposal from the same ordered corpus and options.
+9. produce the same proposal from the same ordered corpus and options;
+10. **propose no specification at or above the default confidence over
+    `examples/fixtures/ari_discover/null/`, and report the false-positive rate
+    it measured there as a number.**
+
+> **Criterion 10 added by the 2026-09-16 revision, and criteria 1–9 are all
+> satisfiable by a tool that always finds something.** Every one of them is
+> scored on a corpus that *has* structure; none can distinguish a discovery
+> engine from a confident guesser. §15.5 is the corpus that can, and the reason
+> to believe it is necessary is that this project has already shipped the
+> failure once — a decomposition that gave the same confident answer on a real
+> planted effect and on pure noise, undetected until somebody ran the null.
+>
+> Stated as a **rate** rather than a pass/fail on purpose. "It refused all
+> twelve" is a fact about twelve sources; the rate is what can be tracked as the
+> engine changes and what a caller can weigh against `minimum_confidence`.
+>
+> **Criterion 9 (determinism) is achievable and has one requirement**: gBASIC's
+> `keys()` returns **insertion order**, so any tally built in a deterministic
+> order iterates deterministically. A map keyed by signature is fine; one keyed
+> by an id drawn from a hash is not. See §5.3.
 
 ## 18. Design principles
 
@@ -582,15 +958,29 @@ The first useful release should demonstrate that it can:
 
 ```text
 stdlib/ari.bas                         existing deterministic parser
-stdlib/ari_discover.bas                discovery and inference library
+stdlib/ari_discover.bas                discovery and inference library        [to build]
 docs/ari_spec_language.md              existing ARI language reference
-docs/ari_discover_design.md            this design
-docs/ari_discover_reference.md         eventual public API/reference
-examples/ari_discover_profile.bas      profiling example
-examples/ari_discover_infer.bas        multi-report inference example
-tests/run_ari_discover.sh              discovery test entry point
-examples/fixtures/ari_discover/        multi-sample and synthetic corpora
+docs/ari_discover_design.md            this design                            [exists]
+docs/ari_discover_reference.md         eventual public API/reference          [to write]
+examples/ari_discover_profile.bas      profiling example                      [to build]
+examples/ari_discover_infer.bas        multi-report inference example         [to build]
+tests/run_ari_discover.sh              discovery test entry point             [to build]
+
+examples/fixtures/ari_discover/        [BUILT 2026-09-16 -- see its MANIFEST.md]
+  MANIFEST.md                          what these are, and that they are synthetic
+  NN_branch_activity.rpt  x24          the structured corpus, nine drift axes
+  truth.json                           the planted answer key
+  null/null_NN_noise.rpt  x12          the null corpus (§15.5)
+  null/truth.json                      "there is nothing here to find"
+tools/gen_discover_corpus.bas          [BUILT] structured corpus + its truth
+tools/gen_discover_null.bas            [BUILT] null corpus
 ```
+
+Per-function documentation is **not optional**: `tests/run_stdlib_docs.sh`
+requires every public function in `stdlib/*.bas` — every name not starting with
+`_` — to appear in some document. There is no export list in gBASIC, so the
+leading underscore is the entire privacy contract, and a helper that should not
+be called is a function that should be renamed rather than an exception.
 
 If the implementation becomes too large for one pure-gBASIC library, internal helpers may be split by responsibility, but `ari_discover` should remain the public facade.
 
@@ -606,3 +996,31 @@ If the implementation becomes too large for one pure-gBASIC library, internal he
 - Should generated specifications embed their discovery provenance or store it in a sidecar record?
 
 The most consequential likely prerequisite is a diagnostic execution surface in `ari`: discovery benefits greatly if ARI can report which source spans each rule claimed, which lines remained unclaimed, and where candidate rules collided. That capability would improve both automatic inference and ordinary hand-written ARI debugging.
+
+> **Corrected — it is half built, and the remaining half is smaller than this
+> paragraph implies.** Two of the three things named already exist:
+>
+> - **`ari.inspect(report_text, spec_text)`** returns everything `parse` does
+>   plus `findings` — the parse diagnostics grouped by reason, with a field
+>   path and a remedial hint, instance indices collapsed so
+>   `branches[0].opened` and `branches[1].opened` report as one field. It was
+>   built for exactly this shape of problem: looking across instances to settle
+>   a DD/MM column, done at authoring time so a guess never enters the parse
+>   path.
+> - **`ari.clean_grid(report_text, spec_text)`** exposes the page-furniture pass
+>   on its own, independent of any spec — which is Phase 3's oracle, already
+>   available.
+>
+> What is genuinely missing is only the **span level**: which source span each
+> rule claimed, and what stayed unclaimed. That is one addition, it benefits
+> hand-written ARI debugging as much as discovery, and it is the right thing to
+> build first because §8's *content coverage* and *collision rate* cannot be
+> measured without it — they would otherwise be estimated by the inference
+> engine from its own model, which is the tool grading its own homework.
+>
+> The design note in `ari.bas` beside `_build_record` is worth reading before
+> adding it: diagnostics are deliberately collected **out of band** rather than
+> attached to the value, because gBASIC's `unknown` is a bare singleton with no
+> payload and giving it one would change equality and serialization for every
+> existing user. A span report should follow that precedent — a parallel
+> structure, not a richer value.
