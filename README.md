@@ -6,14 +6,14 @@ gBASIC is a **modern BASIC for business programming**: familiar control flow,
 plus records, first-class functions, watchers, shared-nothing actors, and typed
 values for dates, durations and money. Around it sits a working platform —
 databases, a hardened web server, spreadsheets, statistics, charts, PDF
-documents, native GUI and an AI stack — and fifty-nine pure-gBASIC libraries
+documents, native GUI and an AI stack — and sixty-one pure-gBASIC libraries
 covering double-entry accounting, loan servicing, deposits, credit analytics,
 securities analysis and more. A gBASIC program is meant to be a real
 application, not a demonstration.
 
 This repository holds the C implementation of gBASIC `0.1.0`. It is an **early
 release** and the version number is honest about that — but it is not a sketch:
-**137 test suites** gate every change, goldens are byte-exact, and the claims in
+**138 test suites** gate every change, goldens are byte-exact, and the claims in
 this file that can be measured have been. Until 1.0.0 the language surface may
 still move between releases; [CHANGELOG.md](CHANGELOG.md) records what changed
 and why, and the [documentation index](docs/README.md) marks every document
@@ -156,7 +156,7 @@ Two of these deserve a sentence more than a table row:
 
 ### The standard library
 
-Fifty-nine pure-gBASIC libraries in `stdlib/`. Each bullet says what backs it,
+Sixty-one pure-gBASIC libraries in `stdlib/`. Each bullet says what backs it,
 because they are not at the same maturity and a uniform list would imply they
 are.
 
@@ -234,8 +234,8 @@ are.
   must name what is in the way, and every claim carries a source and the date
   it was retrieved.
 - **financial-format adapters** (`finio`, `finio_nacha`, `finio_camt`,
-  `finio_bai2`, `finio_ofx`) — the framework and four adapters of deliberately
-  different shape: the ACH file
+  `finio_bai2`, `finio_ofx`, `finio_pain001`, `finio_iso20022`) — the framework
+  and five adapters of deliberately different shape: the ACH file
   format (94-byte fixed-width records) and ISO 20022 camt.053 bank statements
   (hierarchical XML). The second exists because §20 argues an abstraction
   surviving only one representation is a generalized parser — and it pushed
@@ -248,7 +248,14 @@ are.
   retrofitted. The fourth is OFX, whose 1.x is SGML-like and *not well-formed
   XML* while its 2.x is: **schema drift inside one format**, read by one reader
   over the original bytes because converting 1.x to XML would put every
-  location into text the bank never sent. The framework RETAINS the source and
+  location into text the bank never sent. The fifth, pain.001, is **the first
+  for a file you send** — an instruction to a bank rather than a report from
+  one — which is what finally put weight on §16: a write is classified
+  **representable, lossy or impossible** before anything is serialized, a lossy
+  one is refused unless the caller says otherwise, and an impossible one has no
+  override. The limits checked are the **scheme's, not the schema's**, because
+  a file that validates is exactly the one that gets sent and comes back
+  refused. The framework RETAINS the source and
   computes a value's provenance on demand, which was measured rather than
   chosen: holding it per value costs 2.79 GB for a 9.5 MB file and is also the
   slowest to answer ([financial_adapters_design.md](docs/financial_adapters_design.md) §21).
@@ -433,7 +440,7 @@ default target: build it with `make dev` and install it with
 ./tests/run_all.sh web              # or filter by substring
 ```
 
-**Use `run_all.sh` rather than naming suites.** It discovers all 137 suites by
+**Use `run_all.sh` rather than naming suites.** It discovers all 138 suites by
 glob, and that is the whole point: a hand-maintained list is a gate that
 silently shrinks. Four suites in this repository sat broken across two releases
 because every list anyone ran happened not to name them. It reports a suite

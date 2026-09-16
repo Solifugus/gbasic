@@ -106,37 +106,11 @@ function queue()
 
     ' --- payments ----------------------------------------------------------
 
-    append(out, { id: "iso20022.pain001",
-        name: "ISO 20022 pain.001 customer credit transfer initiation",
-        family: "payments",
-        domain: "corporate-to-bank payment instruction",
-        authority: "ISO 20022 Registration Management Group",
-        description: "XML payment initiation: a group header, payment information blocks carrying the debtor and execution date, and one credit transfer transaction per beneficiary.",
-        representation: "hierarchical XML, namespaced by message version",
-        transport: "file or message, delivered to the executing bank",
-        known_revisions: [],
-        specification_sources: [ _iso20022_catalogue() ],
-        acquisition_class: "OPEN",
-        spec_public: true,
-        spec_acquisition_method: "Free download from the ISO 20022 catalogue; no registration, purchase or membership.",
-        implementation_allowed: true,
-        spec_redistribution_allowed: false,
-        sample_redistribution_allowed: false,
-        state: "discovered",
-        recognition_status: "not_started",
-        read_status: "not_started",
-        write_status: "not_started",
-        validation_status: "not_started",
-        test_vectors: [],
-        known_variants: [ "every bank publishes its own implementation guideline narrowing which optional elements it accepts, so a document valid against the schema is routinely rejected by a bank" ],
-        known_extensions: [],
-        maintenance_priority: "active",
-        watch_sources: [
-          { kind: "version_catalogue",
-            reference: "https://www.iso20022.org/iso-20022-message-definitions",
-            watching: "a new pain.001 version, which arrives yearly and changes which elements banks accept" } ],
-        last_reviewed: "2026-09-15",
-        next_review_due: "2027-09-15" })
+    ' pain.001 IS NOT IN THE QUEUE ANY MORE: it has an adapter. The merge
+    ' refuses an id in both places, and `finio_all`'s tripwire caught the other
+    ' half of the move the moment the adapter landed -- which is the first time
+    ' that guard has fired on a real occasion, one day after it was built
+    ' because the same omission had happened three times.
 
     append(out, { id: "x12.820",
         name: "ASC X12 820 payment order / remittance advice",

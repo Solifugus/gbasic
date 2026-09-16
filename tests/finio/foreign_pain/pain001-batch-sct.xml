@@ -1,0 +1,154 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Document xmlns="urn:iso:std:iso:20022:tech:xsd:pain.001.001.03"
+          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+          xsi:schemaLocation="urn:iso:std:iso:20022:tech:xsd:pain.001.001.03 pain.001.001.03.xsd">
+  <CstmrCdtTrfInitn>
+    <GrpHdr>
+      <MsgId>ESEMPIO-BATCH-20260315-001</MsgId>
+      <CreDtTm>2026-03-15T11:00:00</CreDtTm>
+      <NbOfTxs>3</NbOfTxs>
+      <CtrlSum>8750.00</CtrlSum>
+      <InitgPty>
+        <Nm>Esempio SRL</Nm>
+        <Id>
+          <OrgId>
+            <Othr>
+              <Id>12345678901</Id>
+              <SchmeNm>
+                <Cd>TXID</Cd>
+              </SchmeNm>
+            </Othr>
+          </OrgId>
+        </Id>
+      </InitgPty>
+    </GrpHdr>
+    <PmtInf>
+      <PmtInfId>BATCH-20260315-001</PmtInfId>
+      <PmtMtd>TRF</PmtMtd>
+      <BtchBookg>true</BtchBookg>
+      <NbOfTxs>3</NbOfTxs>
+      <CtrlSum>8750.00</CtrlSum>
+      <PmtTpInf>
+        <SvcLvl>
+          <Cd>SEPA</Cd>
+        </SvcLvl>
+      </PmtTpInf>
+      <ReqdExctnDt>2026-03-20</ReqdExctnDt>
+      <Dbtr>
+        <Nm>Esempio SRL</Nm>
+        <PstlAdr>
+          <Ctry>IT</Ctry>
+          <AdrLine>Via Roma 42</AdrLine>
+          <AdrLine>20121 Milano MI</AdrLine>
+        </PstlAdr>
+      </Dbtr>
+      <DbtrAcct>
+        <Id>
+          <IBAN>IT60X0542811101000000123456</IBAN>
+        </Id>
+      </DbtrAcct>
+      <DbtrAgt>
+        <FinInstnId>
+          <BIC>BLOPIT22</BIC>
+        </FinInstnId>
+      </DbtrAgt>
+      <ChrgBr>SLEV</ChrgBr>
+
+      <!-- Transaction 1: Payment to Fornitore SpA -->
+      <CdtTrfTxInf>
+        <PmtId>
+          <InstrId>INSTR-20260315-B01</InstrId>
+          <EndToEndId>E2E-20260315-B01</EndToEndId>
+        </PmtId>
+        <Amt>
+          <InstdAmt Ccy="EUR">3200.00</InstdAmt>
+        </Amt>
+        <CdtrAgt>
+          <FinInstnId>
+            <BIC>UNCRITM1Z70</BIC>
+          </FinInstnId>
+        </CdtrAgt>
+        <Cdtr>
+          <Nm>Fornitore SpA</Nm>
+          <PstlAdr>
+            <Ctry>IT</Ctry>
+            <AdrLine>Corso Buenos Aires 15</AdrLine>
+            <AdrLine>20124 Milano MI</AdrLine>
+          </PstlAdr>
+        </Cdtr>
+        <CdtrAcct>
+          <Id>
+            <IBAN>IT40S0300203280794663214789</IBAN>
+          </Id>
+        </CdtrAcct>
+        <RmtInf>
+          <Ustrd>Pagamento fattura FT-2026/0087 del 10/03/2026</Ustrd>
+        </RmtInf>
+      </CdtTrfTxInf>
+
+      <!-- Transaction 2: Payment to Tecnologia Italia SRL -->
+      <CdtTrfTxInf>
+        <PmtId>
+          <InstrId>INSTR-20260315-B02</InstrId>
+          <EndToEndId>E2E-20260315-B02</EndToEndId>
+        </PmtId>
+        <Amt>
+          <InstdAmt Ccy="EUR">4300.00</InstdAmt>
+        </Amt>
+        <CdtrAgt>
+          <FinInstnId>
+            <BIC>BCITITMM</BIC>
+          </FinInstnId>
+        </CdtrAgt>
+        <Cdtr>
+          <Nm>Tecnologia Italia SRL</Nm>
+          <PstlAdr>
+            <Ctry>IT</Ctry>
+            <AdrLine>Via Torino 88</AdrLine>
+            <AdrLine>10123 Torino TO</AdrLine>
+          </PstlAdr>
+        </Cdtr>
+        <CdtrAcct>
+          <Id>
+            <IBAN>IT15V0306909606100000012345</IBAN>
+          </Id>
+        </CdtrAcct>
+        <RmtInf>
+          <Ustrd>Canone licenza software Q1 2026 - Contratto CT-2024/156</Ustrd>
+        </RmtInf>
+      </CdtTrfTxInf>
+
+      <!-- Transaction 3: Payment to Studio Rossi & Associati -->
+      <CdtTrfTxInf>
+        <PmtId>
+          <InstrId>INSTR-20260315-B03</InstrId>
+          <EndToEndId>E2E-20260315-B03</EndToEndId>
+        </PmtId>
+        <Amt>
+          <InstdAmt Ccy="EUR">1250.00</InstdAmt>
+        </Amt>
+        <CdtrAgt>
+          <FinInstnId>
+            <BIC>BPPIITRRXXX</BIC>
+          </FinInstnId>
+        </CdtrAgt>
+        <Cdtr>
+          <Nm>Studio Rossi e Associati</Nm>
+          <PstlAdr>
+            <Ctry>IT</Ctry>
+            <AdrLine>Piazza Duomo 3</AdrLine>
+            <AdrLine>50122 Firenze FI</AdrLine>
+          </PstlAdr>
+        </Cdtr>
+        <CdtrAcct>
+          <Id>
+            <IBAN>IT28W0623002813000040219876</IBAN>
+          </Id>
+        </CdtrAcct>
+        <RmtInf>
+          <Ustrd>Consulenza legale pratica PRA-2026/003 - Febbraio 2026</Ustrd>
+        </RmtInf>
+      </CdtTrfTxInf>
+    </PmtInf>
+  </CstmrCdtTrfInitn>
+</Document>

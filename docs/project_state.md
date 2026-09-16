@@ -235,7 +235,10 @@ document list, with a status column, is `docs/README.md`.
 - **financial-format adapters** — `finio` (framework), `finio_nacha` (ACH,
   fixed-width) `finio_camt` (ISO 20022 camt.053, hierarchical XML) `finio_bai2` (BAI2,
   delimited and variable-length, with continuation records) and `finio_ofx`
-  (OFX, SGML-like 1.x and XML 2.x -- schema drift inside one format). The
+  (OFX, SGML-like 1.x and XML 2.x -- schema drift inside one format) and
+  `finio_pain001` (ISO 20022 pain.001, THE FIRST FOR A FILE YOU SEND, which is
+  what put weight on Sec 16's write classification); `finio_iso20022` holds the
+  mechanics camt and pain.001 share. The
   second adapter is a different REPRESENTATION on purpose (§20), and it is what
   turned a location from a byte range into a value with a kind. Provenance is reconstructed from a
   retained source because the alternative was measured at 2.79 GB for a 9.5 MB

@@ -1104,6 +1104,7 @@ NACHA                                       [done -- stdlib/finio_nacha.bas]
     fixed-width, record-oriented
 
 ISO 20022 camt                              [done -- stdlib/finio_camt.bas]
+ISO 20022 pain.001                          [done -- stdlib/finio_pain001.bas]
     hierarchical XML
 
 OFX                                         [done -- stdlib/finio_ofx.bas]
@@ -1671,6 +1672,78 @@ FITID, which no publisher ships on purpose. Six perturbations proven red.
 **OFX is the only format in this registry whose specification grants an
 explicit royalty-free, worldwide, perpetual implementation licence** — Axiom 12
 answered in writing rather than inferred.
+
+
+#### Phase 2 fourth result — pain.001, and §16 implemented, 2026-09-15
+
+**The first adapter in this tree for a file you SEND.** Every previous one
+reads a report — an ACH file, a statement, a balance report, an OFX download —
+and all four say some version of "re-emission only" for `write_status`. A
+pain.001 is an instruction: the message a business sends its bank to say *make
+these payments*. That inverts where the risk lives. Reading a statement wrongly
+gives a wrong number on a screen; writing a pain.001 wrongly gives a payment
+run the bank rejects, or executes.
+
+**Which is why §16 had never been implemented.** Its sentence — "writing
+requires stronger guarantees than reading… classify the requested conversion as
+representable, lossy or impossible… the default should favor refusal when
+semantic information would be silently lost" — had four read-only adapters
+under it and no weight at all. It is real now:
+
+- `finio.classify_write(reg, doc)` asks **before** anything is serialized. An
+  adapter that can answer declares `classify_write`; one that cannot is
+  `representable`, which is the honest reading of *this adapter knows no reason
+  the target cannot hold it*.
+- `finio.write_text(reg, doc, allow_lossy = false)` **refuses a lossy write by
+  default** and refuses an impossible one **with no override**. The difference
+  is the point: one is a cost a caller may accept having been told, the other
+  is a fact about the target format.
+- The refusal is enforced **twice**, at the framework boundary and again in the
+  adapter's own writer, so a caller reaching the writer directly cannot get
+  past it. That is R9's treatment in `reasoning` and it was measured rather
+  than assumed: removing the framework check alone still refused.
+
+**The limits checked are the SCHEME's, not the SCHEMA's**, and that distinction
+is the whole reason this is worth doing. An XSD accepts a 200-character
+creditor name; the SEPA credit transfer scheme carries 70. An adapter that
+serialized it would produce a file that **validates**, gets sent, and comes
+back refused — or pays the right amount to a name nobody can match. A non-EUR
+amount is `impossible` rather than lossy, because no truncation makes it
+representable.
+
+**The control totals point the other way from every previous format.** A
+pain.001 states `NbOfTxs` and `CtrlSum` at two levels, per payment block and
+per message. Reading a file, those are somebody else's arithmetic to check;
+writing one, they are arithmetic **you must get right**. The same numbers that
+were a test oracle in four adapters are, here, most of what the adapter is for.
+
+**Two things the corpus could not supply, and both mattered.** Every real SEPA
+sample has a *single* payment-information block, so its group control sum is a
+copy of the block's rather than a total — a two-level checksum tested only
+where the two levels are equal tests one level. And no publisher ships a scheme
+violation on purpose. The generated fixtures supply both, and the suite asserts
+the two levels are caught **independently**.
+
+**`finio_iso20022` was extracted at the second caller, not the first.**
+`finio_camt` held the namespace-version rule, the `Ccy`-attribute amount and
+Axiom 7's absent-versus-invalid field privately, which was right while it was
+alone. pain.001 needs all three. The same argument says **not** to extract
+`finio_ofx`'s tag scanner, which still has one caller.
+
+**Two defects worth recording, both found by running rather than reading.** The
+write classification returned `representable` for a document with a
+73-character creditor name, because `_check_length` appended to an array passed
+as a parameter — and `append` inside a function mutates a **local copy**. The
+failure was in the permissive direction: a file that would be truncated or
+rejected, declared fit to send. And a "corrupted" fixture whose block control
+sum was set to 1337.45 corrupted nothing, because that is exactly the correct
+total for that block — a number picked by hand from the same arithmetic the
+block already had.
+
+Six perturbations proven red. **And the `finio_all` tripwire fired on its first
+real occasion**, one day after it was built: a fifth adapter on disk, not wired
+into the one list, caught immediately rather than surfacing later as a count
+that was one short.
 
 
 #### Verification against foreign files — 2026-09-15

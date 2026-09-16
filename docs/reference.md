@@ -6911,6 +6911,68 @@ whole program without needing a call site.
   loading this loads every adapter, so a program that reads only ACH files
   should `load finio_nacha` and build its own one-element registry, which is
   the same argument `tools` made for refusing `via: {mcp:}`.
+- `finio_pain001` — ISO 20022 **pain.001** customer credit transfer initiation:
+  the fifth adapter, and **the first for a file you send**. Every adapter before
+  it reads a report and says some version of *"re-emission only"* for
+  `write_status`. A pain.001 is an **instruction** — the message a business
+  sends its bank to say *make these payments* — and that inverts where the risk
+  lives: reading a statement wrongly gives a wrong number on a screen; writing
+  a pain.001 wrongly gives a payment run the bank rejects, or executes.
+  **Which is why §16 had never been implemented.** Four read-only adapters put
+  no weight on *"writing requires stronger guarantees than reading… classify
+  the requested conversion as representable, lossy or impossible… the default
+  should favor refusal when semantic information would be silently lost"*.
+  `finio.classify_write(reg, doc)` now asks that question **before** anything
+  is serialized, over `finio.write_classifications()`; an adapter that can
+  answer declares `classify_write`, and one that cannot is `representable`,
+  which is the honest reading of *this adapter knows no reason the target
+  cannot hold it*. `finio.write_text(reg, doc, allow_lossy = false)` **refuses
+  a lossy write by default** and refuses an impossible one **with no
+  override** — the difference being that one is a cost a caller may accept
+  having been told, and the other is a fact about the target format.
+  **The limits `finio_pain001.classify_write` checks are the scheme's, not the
+  schema's**, and that distinction is the whole point: an XSD accepts a
+  200-character creditor name, the SEPA credit transfer scheme carries 70
+  (`finio_pain001.scheme_limits()`), and a file that *validates* is exactly the
+  one that gets sent and comes back refused. A non-EUR amount is `impossible`
+  rather than lossy, because no truncation makes it representable.
+  `finio_pain001.validate_doc` holds the message to **two levels of control
+  total** — `NbOfTxs` and `CtrlSum` per payment block and again for the
+  message. For a file you receive those are somebody else's arithmetic to
+  check; for one you send they are arithmetic **you must get right**, and a
+  bank that finds them disagreeing rejects the file.
+  `finio_pain001.block_total(records, block)` is that sum on its own. **A
+  control sum carries no currency of its own**, so it is meaningful only if
+  every amount it totals is in one — a block mixing EUR and USD is **reported**
+  and excluded rather than allowed to raise, since `money` refuses the addition
+  and §15 says a malformed source is described rather than died on.
+  `finio_pain001.revisions()` names the one version implemented
+  (`pain.001.001.03`, the one the corpus carries) and a document declaring
+  another is refused by name; `finio_pain001.read_source` builds the same
+  document shape the other four adapters produce; `finio_pain001.write_doc`
+  re-emits the retained source after classifying, and refuses an impossible
+  document **again** at the adapter — a second guard so a caller reaching the
+  writer directly cannot get past §16, the same treatment `reasoning`'s R9
+  gets. `finio_pain001.registry_entry()` records the format as **OPEN** and the
+  adapter as `researched`: no schema was downloaded and no bank has ever
+  accepted a file it wrote, which is what `verified` would mean.
+  A **pain.008 direct debit** is a sibling in the same family and the same
+  namespace scheme, so *is this pain.001* cannot be answered by finding an ISO
+  20022 namespace; it is refused by name rather than read as a credit transfer
+  with no transactions.
+- `finio_iso20022` — the mechanics every ISO 20022 adapter needs, **extracted
+  at the second caller and not the first**: `declared_message(text)` reads the
+  version out of the namespace without parsing, `is_family(message, family)`
+  tells pain.001 from pain.008, and `text_field` / `number_field` /
+  `amount_field` / `decimal_field` carry Axiom 7's absent-versus-invalid
+  distinction and the `Ccy`-attribute rule. `finio_camt` held all of it
+  privately while it was alone, which was right; the same argument says **not**
+  to extract `finio_ofx`'s tag scanner, which still has one caller.
+  `finio_iso20022.namespace_prefix()` is the URN every ISO 20022 message shares,
+  `is_decimal(s)` and `all_digits(s)` are the two shape tests those fields need,
+  and `money_of(ccy, text)` builds money from a currency held in a variable
+  without raising on one this build does not know — answering `unknown` instead,
+  so a reader can report an unrecognised currency rather than dying on it.
 - `finio_registry` — the **format registry** as §9 describes it: not a list of
   what has been built but a record of what **exists**, how its specification can
   lawfully be obtained, and therefore what could be built next. §9's own words:

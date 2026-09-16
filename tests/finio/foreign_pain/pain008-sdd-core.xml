@@ -1,0 +1,107 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Document xmlns="urn:iso:std:iso:20022:tech:xsd:pain.008.001.02"
+          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+          xsi:schemaLocation="urn:iso:std:iso:20022:tech:xsd:pain.008.001.02 pain.008.001.02.xsd">
+  <CstmrDrctDbtInitn>
+    <GrpHdr>
+      <MsgId>ESEMPIO-SDD-20260315-001</MsgId>
+      <CreDtTm>2026-03-15T14:00:00</CreDtTm>
+      <NbOfTxs>1</NbOfTxs>
+      <CtrlSum>250.00</CtrlSum>
+      <InitgPty>
+        <Nm>Servizi Cloud Italia SRL</Nm>
+        <Id>
+          <OrgId>
+            <Othr>
+              <Id>98765432109</Id>
+              <SchmeNm>
+                <Cd>TXID</Cd>
+              </SchmeNm>
+            </Othr>
+          </OrgId>
+        </Id>
+      </InitgPty>
+    </GrpHdr>
+    <PmtInf>
+      <PmtInfId>SDD-20260315-001</PmtInfId>
+      <PmtMtd>DD</PmtMtd>
+      <BtchBookg>false</BtchBookg>
+      <NbOfTxs>1</NbOfTxs>
+      <CtrlSum>250.00</CtrlSum>
+      <PmtTpInf>
+        <SvcLvl>
+          <Cd>SEPA</Cd>
+        </SvcLvl>
+        <LclInstrm>
+          <Cd>CORE</Cd>
+        </LclInstrm>
+        <SeqTp>RCUR</SeqTp>
+      </PmtTpInf>
+      <ReqdColltnDt>2026-04-01</ReqdColltnDt>
+      <Cdtr>
+        <Nm>Servizi Cloud Italia SRL</Nm>
+        <PstlAdr>
+          <Ctry>IT</Ctry>
+          <AdrLine>Via della Spiga 26</AdrLine>
+          <AdrLine>20121 Milano MI</AdrLine>
+        </PstlAdr>
+      </Cdtr>
+      <CdtrAcct>
+        <Id>
+          <IBAN>IT76P0300203280112233445566</IBAN>
+        </Id>
+      </CdtrAcct>
+      <CdtrAgt>
+        <FinInstnId>
+          <BIC>UNCRITM1Z70</BIC>
+        </FinInstnId>
+      </CdtrAgt>
+      <CdtrSchmeId>
+        <Id>
+          <PrvtId>
+            <Othr>
+              <Id>IT98ZZZ0000000987654321</Id>
+              <SchmeNm>
+                <Prtry>SEPA</Prtry>
+              </SchmeNm>
+            </Othr>
+          </PrvtId>
+        </Id>
+      </CdtrSchmeId>
+      <DrctDbtTxInf>
+        <PmtId>
+          <InstrId>INSTR-SDD-20260315-001</InstrId>
+          <EndToEndId>E2E-SDD-20260315-001</EndToEndId>
+        </PmtId>
+        <InstdAmt Ccy="EUR">250.00</InstdAmt>
+        <DrctDbtTx>
+          <MndtRltdInf>
+            <MndtId>MNDT-2025-004721</MndtId>
+            <DtOfSgntr>2025-06-15</DtOfSgntr>
+          </MndtRltdInf>
+        </DrctDbtTx>
+        <DbtrAgt>
+          <FinInstnId>
+            <BIC>BLOPIT22</BIC>
+          </FinInstnId>
+        </DbtrAgt>
+        <Dbtr>
+          <Nm>Mario Bianchi</Nm>
+          <PstlAdr>
+            <Ctry>IT</Ctry>
+            <AdrLine>Via Garibaldi 7</AdrLine>
+            <AdrLine>00186 Roma RM</AdrLine>
+          </PstlAdr>
+        </Dbtr>
+        <DbtrAcct>
+          <Id>
+            <IBAN>IT23A0335901600100000013579</IBAN>
+          </Id>
+        </DbtrAcct>
+        <RmtInf>
+          <Ustrd>Abbonamento servizio cloud - Aprile 2026 - Contratto ABB-2025/472</Ustrd>
+        </RmtInf>
+      </DrctDbtTxInf>
+    </PmtInf>
+  </CstmrDrctDbtInitn>
+</Document>

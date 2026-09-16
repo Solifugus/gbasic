@@ -636,6 +636,7 @@ end function
 
 function adapter(spec)
     known = [ "id", "revisions", "recognise", "read", "validate", "write",
+              "classify_write",
               "registry_entry", "byte_fidelity", "semantic_fidelity" ]
     checked = _options(spec, known, "finio.adapter")
     for each field in [ "id", "revisions", "recognise", "read", "registry_entry", "byte_fidelity" ]
@@ -901,10 +902,52 @@ end function
 ' THE LOSS REPORT COMES BACK BESIDE THE TEXT, never instead of it (Axiom 8).
 ' Lossy output may be permitted; what may not happen is it being silent.
 
-function write_text(reg, doc)
+' §16's THREE CLASSIFICATIONS, asked BEFORE anything is serialized. An adapter
+' that can answer declares `classify_write`; one that cannot is `representable`
+' by default, which is the honest reading of "this adapter knows no reason the
+' target cannot hold it".
+function write_classifications()
+    return [ "representable", "lossy", "impossible" ]
+end function
+
+function classify_write(reg, doc)
+    a = find_adapter(reg, doc.adapter)
+    if not has(a, "classify_write") then
+        return { classification: "representable", losses: [], impossible: [],
+                 why: ("adapter '" + doc.adapter + "' does not classify writes, so nothing is known to be lost") }
+    end if
+    fn = a.classify_write
+    c = fn(doc)
+    if not contains(write_classifications(), c.classification) then
+        error ("finio.classify_write: adapter '" + doc.adapter + "' answered '" + string(c.classification) + "', which is not one of " + join(write_classifications(), ", "))
+    end if
+    return c
+end function
+
+' §16: "The default should favor refusal when semantic information would be
+' silently lost." So a LOSSY write is REFUSED unless the caller says otherwise,
+' and an IMPOSSIBLE one has no override at all -- the difference being that one
+' is a cost a caller may accept having been told, and the other is a fact about
+' the target format.
+'
+' `allow_lossy` IS A LITERAL DEFAULT rather than an options record, because
+' gBASIC's default parameter values are literals only -- and that turns out to
+' be the right shape here anyway: there is exactly one decision, and it is a
+' yes or no that the caller has to type.
+function write_text(reg, doc, allow_lossy = false)
     a = find_adapter(reg, doc.adapter)
     if not has(a, "write") then
         error ("finio.write_text: adapter '" + doc.adapter + "' declares no writer")
+    end if
+    c = classify_write(reg, doc)
+    if c.classification = "impossible" then
+        error ("finio.write_text: this document CANNOT be written as " + doc.adapter
+               + " -- " + string(c.why) + ". There is no override: the target format does not carry it.")
+    end if
+    if c.classification = "lossy" and allow_lossy != true then
+        error ("finio.write_text: writing this document as " + doc.adapter
+               + " would LOSE information -- " + string(c.why)
+               + ". Pass allow_lossy to write it anyway; the loss is reported either way.")
     end if
     fn = a.write
     out = fn(doc)
@@ -913,6 +956,7 @@ function write_text(reg, doc)
     end if
     return { text: out.text,
              loss: _default(out, "loss", []),
+             classification: c.classification,
              adapter: doc.adapter,
              revision: doc.revision,
              ' §17: an adapter states which guarantee it can provide, and the
@@ -921,8 +965,8 @@ function write_text(reg, doc)
              byte_fidelity: a.byte_fidelity }
 end function
 
-function write_file(reg, doc, path)
-    out = write_text(reg, doc)
+function write_file(reg, doc, path, allow_lossy = false)
+    out = write_text(reg, doc, allow_lossy)
     f {file}= path
     write(f, out.text)
     return out

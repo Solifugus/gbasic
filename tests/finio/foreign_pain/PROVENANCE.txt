@@ -1,0 +1,34 @@
+# Test vectors produced by somebody else: SEPA credit transfer examples.
+#
+# ATTRIBUTION. From the sepa-pain001-examples project
+# (https://github.com/SynapticaSolution/sepa-pain001-examples), licensed under
+# the MIT License. Redistributed here unmodified; the licence is beside them in
+# LICENSE-synaptica.
+#
+# READ BEFORE THE ADAPTER WAS WRITTEN. What they established:
+#   - this family's revision lives in the NAMESPACE exactly as camt's does
+#     (pain.001.001.03), so the same rule serves both and is now shared in
+#     stdlib/finio_iso20022.bas;
+#   - pain.001 carries NbOfTxs and CtrlSum at TWO levels, per payment block and
+#     per message -- which for a file you SEND is not a test oracle but the
+#     thing a bank checks before it does anything else;
+#   - a pain.008 direct debit is a sibling in the same family and the same
+#     namespace scheme, so "is this pain.001" cannot be answered by looking for
+#     an ISO 20022 namespace alone.
+#
+# WHAT THEY DO NOT SUPPLY, and why tools/make_pain001_fixture.py exists: every
+# one of them has a SINGLE payment-information block, so its group control sum
+# is a copy of the block's rather than a total -- a two-level checksum tested
+# only where the two levels are equal tests one level. Nor does any publisher
+# ship a scheme violation on purpose.
+#
+# name	sha256	bytes	retrieved	licence	use	redistribute	source
+pain001-batch-sct.xml	7e6796de54775fdb1f438f38ec6b32d40b522c1afb5bfe2f0c8b43a5a62fed37	4274	2026-09-15	MIT	yes	yes	https://raw.githubusercontent.com/SynapticaSolution/sepa-pain001-examples/main/examples/pain001-batch-sct.xml
+pain001-single-sct.xml	c1e02f19af9838e28177b47b7980604fd7ace564e102245263c311920a46b082	2397	2026-09-15	MIT	yes	yes	https://raw.githubusercontent.com/SynapticaSolution/sepa-pain001-examples/main/examples/pain001-single-sct.xml
+pain008-sdd-core.xml	cce79f14af2646663b1b00d54646bf85e7f89a1c71a4d91b3855df4f73fbeecf	2946	2026-09-15	MIT	yes	yes	https://raw.githubusercontent.com/SynapticaSolution/sepa-pain001-examples/main/examples/pain008-sdd-core.xml
+#
+# EXCLUDED, and why:
+#   the pain.001 XSD schemas themselves -- the ISO 20022 catalogue was
+#     retrieved and no schema was downloaded, so nothing here has been
+#     validated against one. Not a prohibition: they are free, and a person can
+#     obtain them. This is the same queue item camt.053 carries.

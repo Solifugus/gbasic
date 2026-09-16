@@ -30,12 +30,14 @@ load finio_nacha from "finio_nacha.bas"
 load finio_camt from "finio_camt.bas"
 load finio_bai2 from "finio_bai2.bas"
 load finio_ofx from "finio_ofx.bas"
+load finio_pain001 from "finio_pain001.bas"
 
 function adapters()
     return [ finio_nacha.adapter(),
              finio_camt.adapter(),
              finio_bai2.adapter(),
-             finio_ofx.adapter() ]
+             finio_ofx.adapter(),
+             finio_pain001.adapter() ]
 end function
 
 function registry()
