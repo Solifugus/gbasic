@@ -28,7 +28,8 @@
 #
 # CONTRACT. Set before sourcing:
 #
-#   COOKBOOK      the name: money, xlsx, ... (DOC and DIR derive from it)
+#   COOKBOOK      the name: money, xlsx, ... (DOC, DIR, SYNC and the suite name
+#                 derive from it)
 #   RECIPE_GLOB   the glob, spelled LITERALLY -- e.g.
 #                 examples/money_cookbook/*.bas. It has to be a literal in a
 #                 tests/*.sh file because run_docs_gate.sh greps for exactly
@@ -46,6 +47,10 @@
 #                              meaning "this machine, not the cookbook".
 #   COOKBOOK_SKIP_REASON       the parenthesised reason printed for it.
 #   COOKBOOK_CLEANUP           files to remove on exit.
+#   COOKBOOK_DOC / _DIR /      override the derived page, recipe directory,
+#   _SYNC / _SUITE             sync tool and reported suite name -- for a page
+#                              that is not named `<lib>_cookbook.md`, such as a
+#                              tutorial.
 
 set -u
 
@@ -54,10 +59,17 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 : "${COOKBOOK:?cookbook_harness: COOKBOOK must be set}"
 : "${RECIPE_GLOB:?cookbook_harness: RECIPE_GLOB must be set}"
 
-SUITE="run_${COOKBOOK}_cookbook"
-DOC="docs/${COOKBOOK}_cookbook.md"
-DIR="examples/${COOKBOOK}_cookbook"
-SYNC="tools/sync_${COOKBOOK}_cookbook.sh"
+# THE FOUR PATHS DERIVE FROM THE NAME, and three of them may be overridden.
+# That is not a convenience: a TUTORIAL is a page that teaches, and the code on
+# one is copied by readers exactly as a cookbook's is, so it has to be held to
+# the same four tiers. Before this, `docs/gui_tutorial.md` and
+# `docs/edgar_tutorial.md` were verified by NOTHING -- their code blocks were
+# prose. Giving the harness three overrides is a smaller change than a second
+# harness, and a second harness is the drift this file was written to end.
+SUITE="${COOKBOOK_SUITE:-run_${COOKBOOK}_cookbook}"
+DOC="${COOKBOOK_DOC:-docs/${COOKBOOK}_cookbook.md}"
+DIR="${COOKBOOK_DIR:-examples/${COOKBOOK}_cookbook}"
+SYNC="${COOKBOOK_SYNC:-tools/sync_${COOKBOOK}_cookbook.sh}"
 
 status=0
 pass=0

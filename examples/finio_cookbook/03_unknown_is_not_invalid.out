@@ -1,0 +1,12 @@
+-- the file as it arrived
+  reference_code   status unknown, value is unknown: true, raw [        ]
+  individual_name  status ok, value [ALICE MERCER], raw [ALICE MERCER          ]
+
+-- the same file with one character changed
+  amount           status invalid
+  value is unknown: true   (and NOT zero: false)
+  raw [00001X5000]  — the bytes are kept, so you can see what was there
+  why: an amount field must be digits
+
+records read: 140
+issues found by validate: 2

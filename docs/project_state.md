@@ -244,7 +244,19 @@ document list, with a status column, is `docs/README.md`.
   retained source because the alternative was measured at 2.79 GB for a 9.5 MB
   file; see financial_adapters_design.md §21. Phase 1 corrected five things
   invisible by reading, the sharpest being that Phase 0's byte offsets were
-  codepoints and its own ASCII fixture could not tell.
+  codepoints and its own ASCII fixture could not tell. **Documented
+  2026-09-16**: `docs/finio_tutorial.md` (one continuous problem -- a
+  counterparty's drop directory scanned, read, validated, counted, and one file
+  sent back with a field corrected) and `docs/finio_cookbook.md` (10 task
+  recipes), both on the cannot-lie harness. The tutorial is the FIRST in this
+  tree whose code blocks are verified at all -- `gui_tutorial.md` and
+  `edgar_tutorial.md` are checked by nothing -- which took three path overrides
+  in `tests/cookbook_harness.sh` rather than a second harness. Writing the
+  cookbook CORRECTED a claim it was itself making: recipe 5 said a reader that
+  assumed newlines would report one record and zero cents for a blocked file,
+  and perturbing the library shows it produces a REFUSAL instead, because
+  framing is decided once and recognition and reading go through that one
+  decision.
 - **a textual form that keeps every gBASIC type** — `notation`, the gap between
   the JSON dialect (readable, and refuses a date, money, a duration or a file)
   and the binary serializer (keeps every type, opaque). Neither can be reviewed by

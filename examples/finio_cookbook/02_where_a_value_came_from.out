@@ -1,0 +1,17 @@
+record 2 is a entry_detail, 94 bytes at offset 190
+
+individual_name:
+  value  ALICE MERCER
+  raw    [ALICE MERCER          ]
+  where  record 2, bytes 244..265
+amount:
+  value  1250.00
+  raw    [0000125000]
+  where  record 2, bytes 219..228
+trace_number:
+  value  021000021000001
+  raw    [021000021000001]
+  where  record 2, bytes 269..283
+
+slicing the whole file at that range gives [0000125000]
+which is the bytes the field reported: true

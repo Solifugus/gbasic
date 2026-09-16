@@ -1,0 +1,40 @@
+payroll.ach
+  adapter        aba.nacha (exact)
+  revision       unresolved
+  records        140
+  record kinds   file_header, batch_header, entry_detail, addenda, batch_control, file_control, padding
+  entities       header, batches, control, padding_records
+  byte fidelity  true
+
+statement.bai
+  adapter        bai2 (exact)
+  revision       2
+  records        12
+  record kinds   file_header, group_header, account_identifier, transaction_detail, account_trailer, group_trailer, file_trailer
+  entities       header, groups, trailer
+  byte fidelity  true
+
+statement.xml
+  adapter        iso20022.camt053 (exact)
+  revision       camt.053.001.08
+  records        16
+  record kinds   group_header, statement, balance, summary, entry
+  entities       header, statements
+  byte fidelity  false
+
+statement_v1.ofx
+  adapter        ofx (exact)
+  revision       102
+  records        10
+  record kinds   status, signon, account, transaction, transaction_list, balance, statement
+  entities       signon, statements
+  byte fidelity  true
+
+payments.xml
+  adapter        iso20022.pain001 (exact)
+  revision       pain.001.001.03
+  records        7
+  record kinds   group_header, payment_info, transaction
+  entities       header, blocks
+  byte fidelity  true
+

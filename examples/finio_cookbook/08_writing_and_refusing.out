@@ -1,0 +1,17 @@
+the scheme's limits: {"creditor_name":70,"debtor_name":70,"remittance":140,"end_to_end_id":35,"instruction_id":35,"payment_info_id":35,"message_id":35}
+
+payments.xml  ->  representable
+  every value fits what the scheme carries
+  written: 3155 bytes, byte fidelity true
+
+long_name.xml  ->  lossy
+  creditor is 73 characters and the scheme carries 70; writing it would truncate 3
+  refused: finio.write_text: writing this document as iso20022.pain001 would LOSE information -- creditor is 73 characters and the scheme carries 70; writing it would truncate 3. Pass allow_lossy to write it anyway; the loss is reported either way.
+
+mixed_currency.xml  ->  impossible
+  the SEPA credit transfer scheme carries EUR and this amount is in USD; no truncation makes it representable
+  refused: finio.write_text: this document CANNOT be written as iso20022.pain001 -- the SEPA credit transfer scheme carries EUR and this amount is in USD; no truncation makes it representable. There is no override: the target format does not carry it.
+
+long_name.xml written with allow_lossy: 1833 bytes
+  classification stays lossy, loss notes 1
+mixed_currency.xml with allow_lossy: still refused

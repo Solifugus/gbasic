@@ -1,0 +1,35 @@
+-- what the queue holds
+  formats:   10
+  families:  cash management, payments, cards, securities, healthcare remittance, account aggregation
+  §14 names 22 candidate domains
+
+-- by acquisition class
+  OPEN: fix, iso20022.camt053, bai2, ofx, iso20022.pain001
+  CONTROLLED: x12.820, iso8583, x12.835
+  DE_FACTO: swift.mt940, aba.nacha
+
+-- what can be built from what we legitimately hold
+  implementable: 7
+  blocked:       3
+    x12.820 (CONTROLLED)
+      the transaction-set specification is licensed rather than published; a licence must be acquired by a person before an adapter can be written from the specification rather than from guesswork
+    iso8583 (CONTROLLED)
+      the standard must be purchased, and beyond it each card scheme's own element definitions are issued under agreement to participants -- so even a purchased copy does not make a usable adapter
+    x12.835 (CONTROLLED)
+      the implementation guide is licensed; free examples permit recognition but not interpretation
+
+-- the evidence behind one shipped adapter
+  standards_body, retrieved 2026-09-15
+  implementation_guide, retrieved 2026-09-15
+  public_sample, retrieved 2026-09-15
+  implementation allowed:       true
+  spec may be redistributed:    false
+  samples may be redistributed: false
+
+-- one entry, two axes
+  state              researched
+  acquisition class  DE_FACTO
+  recognition        verified
+  read               verified
+  validation         implemented
+  write              re-emission only; this adapter does not originate a file

@@ -13,7 +13,7 @@ application, not a demonstration.
 
 This repository holds the C implementation of gBASIC `0.1.0`. It is an **early
 release** and the version number is honest about that — but it is not a sketch:
-**138 test suites** gate every change, goldens are byte-exact, and the claims in
+**140 test suites** gate every change, goldens are byte-exact, and the claims in
 this file that can be measured have been. Until 1.0.0 the language surface may
 still move between releases; [CHANGELOG.md](CHANGELOG.md) records what changed
 and why, and the [documentation index](docs/README.md) marks every document
@@ -170,11 +170,12 @@ are.
   `credit`, `scoring`) — time value of money in Excel's argument order,
   double-entry books that refuse to balance wrongly, loan servicing as an
   auditable fold, deposit interest and certificates, portfolio roll rates and
-  vintage curves, and credit scorecards. Five cookbooks, each on a harness that
+  vintage curves, and credit scorecards. Seven cookbooks, each on a harness that
   fails if the page and the code disagree: [finance](docs/finance_cookbook.md) ·
   [money](docs/money_cookbook.md) · [accounting](docs/accounting_cookbook.md) ·
   [lending](docs/lending_cookbook.md) · [deposits](docs/deposits_cookbook.md) ·
-  [credit](docs/credit_cookbook.md)
+  [credit](docs/credit_cookbook.md) · [file formats](docs/finio_cookbook.md)
+  and its [tutorial](docs/finio_tutorial.md)
 - **charts** (`chart`) — line, scatter, area, bar, histogram, pie, heatmap and
   sparkline as deterministic SVG text, in pure gBASIC.
   [Cookbook](docs/chart_cookbook.md)
@@ -440,7 +441,7 @@ default target: build it with `make dev` and install it with
 ./tests/run_all.sh web              # or filter by substring
 ```
 
-**Use `run_all.sh` rather than naming suites.** It discovers all 138 suites by
+**Use `run_all.sh` rather than naming suites.** It discovers all 140 suites by
 glob, and that is the whole point: a hand-maintained list is a gate that
 silently shrinks. Four suites in this repository sat broken across two releases
 because every list anyone ran happened not to name them. It reports a suite
@@ -483,7 +484,7 @@ index, or if the index links to something that is not there.
 **Cookbooks** — task-oriented, with runnable examples. Every code block and
 every output block on these pages is owned by a file that is executed by the
 test suite and compared byte for byte, so a page cannot drift from the product
-without a test going red. Fifteen of them:
+without a test going red. Sixteen of them:
 
 *Money and business*
 
@@ -499,6 +500,11 @@ without a test going red. Fifteen of them:
   three balance methods, tiered rates, certificates
 - [Credit analytics](docs/credit_cookbook.md) — delinquency, roll rates,
   vintage triangles, charge-offs and recoveries
+- [Financial file formats](docs/finio_tutorial.md) — a morning's files from a
+  counterparty, worked end to end — and its
+  [cookbook](docs/finio_cookbook.md): ACH, BAI2, ISO 20022 and OFX through one
+  framework — what a value came from, what was not claimed, and why a write is
+  refused
 
 *Data and presentation*
 

@@ -1,0 +1,24 @@
+payroll.ach
+  newlines in the file:  140
+  framing recognised:    lines
+  records read:          140
+  credits, in cents:     452890
+
+blocked.ach
+  newlines in the file:  0
+  framing recognised:    fixed
+  records read:          140
+  credits, in cents:     452890
+
+crlf.ach
+  newlines in the file:  140
+  framing recognised:    lines
+  records read:          140
+  credits, in cents:     452890
+
+
+Same file, three framings, one answer.
+A reader that assumed newlines would read the blocked file as one
+94*140-byte record. Here it would not get that far: framing is
+decided once, and recognition goes through the same decision, so
+such a reader refuses the file rather than misreading it.

@@ -1,0 +1,18 @@
+registered: aba.nacha, iso20022.camt053, bai2, ofx, iso20022.pain001
+
+classification: exact
+  aba.nacha
+    - 140 records, every one 94 bytes
+    - the record-type sequence is well formed
+    - the file header carries record size 094, blocking factor 10, format code 1
+
+read as aba.nacha, 140 records
+the document says WHY it read it that way:
+  - recognised as aba.nacha (exact)
+  - 140 records, every one 94 bytes
+  - the record-type sequence is well formed
+  - the file header carries record size 094, blocking factor 10, format code 1
+  - the source carries no revision evidence; read under 'unresolved', the adapter's default
+
+not_ach.txt:
+  finio.read_text: no registered adapter recognised this source -- the registry holds aba.nacha, iso20022.camt053, bai2, ofx, iso20022.pain001. Pin one with { adapter: ... } if you know what it is.

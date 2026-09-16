@@ -1,0 +1,36 @@
+-- the four findings
+  first_sight: nothing was known about this source before; this is the baseline
+  unchanged (nothing to report)
+  changed: a change to the record-code table
+  unreachable (HTTP 403): this watch is not working; it says nothing about whether https://example.invalid/bai2-guide.pdf has moved
+
+-- what production could not explain
+  aba.nacha: unknown_code service class 280, seen 4 times
+    examples: batch 1, batch 2, batch 3, batch 4
+
+-- a whole record offered as a token
+  refused: finio_watch.observation: the detail is 70 bytes and an observation records a TOKEN, not content (limit 64). §9: observations record tokens and locations, never the content of a customer record.
+
+-- the review queue, a year from now
+  aba.nacha  (rank 3, active)
+    review is due, and 1 kind(s) of thing this adapter could not explain have been seen 4 time(s)
+  bai2  (rank 3, periodic)
+    review is due, and 1 kind(s) of thing this adapter could not explain have been seen 1 time(s)
+  swift.mt940  (rank 1, periodic)
+    review is due
+  x12.820  (rank 1, periodic)
+    review is due
+  fix  (rank 1, periodic)
+    review is due
+  x12.835  (rank 1, periodic)
+    review is due
+  iso20022.camt053  (rank 1, active)
+    review is due
+  ofx  (rank 1, periodic)
+    review is due
+  iso20022.pain001  (rank 1, active)
+    review is due
+
+  formats in the registry: 10
+  formats in the queue:    9
+  absent: iso8583 (dormant)

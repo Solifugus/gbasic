@@ -1,8 +1,9 @@
 # gBASIC Financial Adapter Framework
 
-**Status:** Proposal\
-**Suggested path:** `docs/financial_adapters_design.md`\
-**Working library name:** `finio`\
+**Status:** Partial — Phases 0–4 built; see §21 and the sections marked with a
+phase result. Worked recipes: [finio_cookbook.md](finio_cookbook.md).\
+**Path:** `docs/financial_adapters_design.md`\
+**Library name:** `finio`\
 **Scope:** Import, interpretation, normalization, provenance, validation
 primitives, and export for financial-services data formats.
 
@@ -322,8 +323,17 @@ themselves be versioned even when the physical layout does not change.
 > gBASIC built-in, so a `finio` function of that name would shadow it for every
 > unqualified call inside the library and call itself; and the registry is a
 > value rather than a global because gBASIC's actors are fork+exec, so a
-> registration performed in a parent is not the child's. The samples below keep
-> the original spelling to show what was proposed. The rest of this section
+> registration performed in a parent is not the child's.
+>
+> **The samples throughout this document were rewritten to the shipped
+> spelling on 2026-09-16**, having kept the proposed one (`finio.read`,
+> `finio.readall`, `finio.write`) until then. What forced it is worth
+> recording: this document was exempt from `tests/run_stdlib_docs.sh`'s
+> removed-function tier *because the index marked it **Proposal***, and the
+> moment that status became `Partial` the suite named all three. A document
+> that teaches a function which does not exist is worse than one missing a
+> function that does — and the exemption that hid it was load-bearing on a
+> status line nobody thought of as a test input. The prose of each section
 > stands unchanged.
 
 The ordinary API should remain small and stable.
@@ -367,7 +377,7 @@ information travels as an options record — the shape `discovery.scan`,
 ``` basic
 asof {date}= "2023-06-01"
 
-doc = finio.read("payments.ach", { format: "nacha", asof: asof })
+doc = finio.read_file(reg, "payments.ach", { adapter: "aba.nacha", asof: asof })
 ```
 
 An options record also gives the framework somewhere to **refuse an
@@ -378,13 +388,13 @@ adapter they did not.
 A caller that requires reproducibility can fully pin the adapter:
 
 ``` basic
-doc = finio.read("payments.ach", { adapter: "aba.nacha", revision: "2023" })
+doc = finio.read_file(reg, "payments.ach", { adapter: "aba.nacha", revision: "2023" })
 ```
 
 Recognition should also be available independently:
 
 ``` basic
-r = finio.identify("mystery.dat")
+r = finio.identify(reg, text)
 ```
 
 A recognition result should report candidate adapter, revision,
@@ -439,7 +449,7 @@ Historical archives are a first-class use case.
 For example:
 
 ``` basic
-report = finio.scan("archive/")
+report = finio.scan(reg, "archive/")
 ```
 
 A report might produce:
@@ -458,7 +468,7 @@ ambiguous         3
 Import can then operate across the archive:
 
 ``` basic
-docs = finio.readall("archive/")
+found = finio.scan(reg, "archive/")
 ```
 
 Every resulting document records which adapter and revision interpreted
@@ -906,8 +916,8 @@ Reading and validation should remain distinct.
 For example:
 
 ``` basic
-doc = finio.read(file)
-issues = finio.validate(doc)
+doc = finio.read_file(reg, path, {})
+issues = finio.validate(reg, doc)
 ```
 
 Reading attempts to preserve and explain what is present.
@@ -932,7 +942,7 @@ Writing requires stronger guarantees than reading.
 For example:
 
 ``` basic
-result = finio.write(doc, "output.ach", { adapter: "aba.nacha", revision: "2026" })
+result = finio.write_file(reg, doc, "output.ach")
 ```
 
 Before serialization, the framework should be able to classify the

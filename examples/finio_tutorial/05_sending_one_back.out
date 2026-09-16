@@ -1,0 +1,12 @@
+read and re-emitted unchanged: byte-identical to the file that arrived: true
+
+record 2 individual_name before: [ALICE MERCER          ]
+record 2 individual_name after:  [ALICE MERCER-OKONJO   ]
+                         value:  ALICE MERCER-OKONJO
+
+the emitted file is the same length: true
+and differs from the original:       true
+records that changed:                1
+
+a 12-byte value for a 22-byte field:
+  finio_nacha.set_field: 'individual_name' is 22 bytes and the value given is 12 -- pad or refuse, never truncate

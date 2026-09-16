@@ -1,0 +1,14 @@
+-- coverage: does each layout account for all 94 bytes?
+  file_header: complete true, gaps 0, overlaps 0
+  entry_detail: complete true, gaps 0, overlaps 0
+  batch_control: complete true, gaps 0, overlaps 0
+
+-- and a layout with a field removed reports the hole it left
+  complete false, gaps 1
+  gap at byte 54 for 22 bytes
+
+-- a record type the adapter does not interpret
+  records read: 140   (nothing was dropped)
+  loss notes:   1
+    uninterpreted, record 4, bytes 380 + 94
+    record type '4' is not one this adapter interprets; the bytes are kept

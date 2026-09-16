@@ -1,0 +1,14 @@
+what this adapter could not explain, across the whole drop:
+  unsupported_batch_kind 280   seen 1x in adv.ach
+  unknown_transaction_code 81   seen 1x in adv.ach
+  unknown_transaction_code 82   seen 1x in adv.ach
+  unknown_transaction_code 21   seen 1x in cor-example.ach
+  non_ascii 95   seen 1x in extended-ascii.ach
+
+the review queue a year from now, ranked:
+  aba.nacha  rank 7
+    review is due, and 5 kind(s) of thing this adapter could not explain have been seen 5 time(s)
+
+Nothing here modifies an adapter. A check produces WORK, never a
+patch: a process that edited the reader would silently change how a
+file written in 2019 is read, and a source tripwire enforces that.

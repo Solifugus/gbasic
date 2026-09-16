@@ -6512,7 +6512,8 @@ whole program without needing a call site.
   synonyms — see `tests/run_nlq.sh`, which asserts recall **and** a ceiling on
   how much was selected, because recall alone is maximised by returning
   everything.
-- `finio` — financial-format adapters (`docs/financial_adapters_design.md`).
+- `finio` — financial-format adapters (`docs/financial_adapters_design.md`;
+  worked recipes in `docs/finio_cookbook.md`).
   **Phase 0 fixed the value model and the format registry; Phase 1 is the
   framework — adapters, recognition, resolution, validation and loss — and
   `finio_nacha` below is the first adapter it carries.**

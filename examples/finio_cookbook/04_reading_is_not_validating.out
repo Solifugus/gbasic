@@ -1,0 +1,11 @@
+payroll.ach
+  records read:  140
+  issues found:  0
+
+bad_total.ach
+  records read:  140
+  issues found:  1
+    error batch_credit_total (record 6)
+      the batch control's credit total is 4347.50; the entries give 4337.50
+
+aba.nacha declares a validator: true

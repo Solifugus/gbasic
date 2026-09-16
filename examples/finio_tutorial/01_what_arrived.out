@@ -1,0 +1,15 @@
+files examined: 12
+
+recognised:
+  aba.nacha   10 files
+
+not recognised as anything in the registry:
+  LICENSE-moov-io-ach
+  PROVENANCE.txt
+
+ambiguous (two adapters both claim it): 0
+unreadable:                             0
+
+The two unknowns are a licence and a provenance manifest. That is the
+right answer: they are not payment files, and a scan that had found a
+format for them would be telling you something false.

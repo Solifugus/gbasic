@@ -1,0 +1,25 @@
+record lengths actually seen:
+-> 20110729A-invalid.ach   93 x1, 94 x292
+   20110805A.ach   94 x93
+-> 20180713-IAT.ach   94 x29, 55 x1
+-> FISERV-ZEROFILE.ach   69 x1, 55 x1, 94 x8
+   NACHA_SAMPLE_TEL_REVERSAL.ach   94 x10
+   adv.ach   94 x10
+   cor-example.ach   94 x10
+-> extended-ascii.ach   94 x19, 95 x1
+   gl-debit.ach   94 x10
+-> ppd-debit.ach   75 x1, 94 x8, 55 x1
+
+ppd-debit.ach, the file_control record: 55 bytes where the format says 94
+  record_type: ok  9
+  batch_count: ok  1
+  block_count: ok  1
+  entry_addenda_count: ok  1
+  entry_hash: ok  23138010
+  total_debit_amount: ok  1000000.00
+  total_credit_amount: ok  0.00
+  reserved: unknown  unknown  (the record ends at byte 55, before this field begins)
+
+The fields the record actually carries read correctly. The ones past
+its end are `unknown` — the source said nothing — rather than blank
+or zero, which are claims the file never made.
