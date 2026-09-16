@@ -937,6 +937,36 @@ information to disappear.
 
 ## 16. Export and Translation
 
+> **Only EXPORT is built. TRANSLATION is future work, and it is the largest
+> remaining question in this design** (annotated 2026-09-16).
+>
+> What exists: `finio.write_text`/`write_file` serialize a document back to
+> **the format it was read as** — `write_text` resolves `doc.adapter` and
+> nothing else — with the three classifications below asked first and a lossy
+> write refused by default. `finio_nacha.write_doc` is re-emission byte for
+> byte; `finio_pain001` classifies against the scheme's limits.
+>
+> What does not exist: **any path from a document read as one format to bytes
+> written as another.** There is no shared concept vocabulary across adapters —
+> NACHA names a field `individual_name`, camt.053 names its counterpart
+> something else, and nothing maps between them. Reading a camt.053 statement
+> and writing a BAI2 one has never been attempted, and the three
+> classifications have therefore only ever judged a document against its own
+> format, where "representable" is nearly free.
+>
+> **This is the remaining item that could still move the architecture**, and
+> the reason to think so is that two of the five adapters already did. camt.053
+> turned a location from a byte range into a value with a kind (§4); pain.001
+> put weight on this section, which was prose until an outbound format leaned
+> on it. A cross-format write would ask whether the value model carries enough
+> to state a concept independently of the adapter that read it, and that
+> question is not answerable by reading.
+>
+> It should wait for a real requirement. A concept vocabulary built with no
+> consumer asking for a specific conversion is an ontology nobody uses, and
+> the failure would be invisible: every adapter still works, and the shared
+> layer is simply never right for the next format.
+
 Writing requires stronger guarantees than reading.
 
 For example:
@@ -1123,12 +1153,33 @@ OFX                                         [done -- stdlib/finio_ofx.bas]
 BAI2                                        [done -- stdlib/finio_bai2.bas]
     record-oriented and legacy-heavy
 
-FIX
+FIX                                         [NOT BUILT -- future work]
     tag/value stream
 
-Synthetic vendor spreadsheet
+Synthetic vendor spreadsheet                [NOT BUILT -- future work]
     deliberately drifting tabular schema
 ```
+
+> **Proving set status 2026-09-16: five of seven.** The two that remain are not
+> arbitrary leftovers; each is the only candidate stressing something the other
+> five do not.
+>
+> **FIX** is the one remaining *shape*. The five built adapters cover
+> fixed-width, delimited, hierarchical XML and tagged-document; a tag/value
+> stream is the fifth, and it is `OPEN` in the registry, so it is implementable
+> now rather than blocked.
+>
+> **The synthetic vendor spreadsheet** is the only candidate that stresses
+> **drift within one format** rather than difference between formats, and it is
+> why §4's `spreadsheet` location kind still has no caller. It is also the only
+> proving-set item that is deliberately not a real format — which makes it the
+> one whose answer key is exactly known, so recall and false-positive rates can
+> be measured rather than judged.
+>
+> Until both are built, §20's own conclusion — "if the same architecture
+> survives radically different representations, the abstraction is more likely
+> to describe the problem itself" — is supported by five representations and
+> four shapes, not seven and five.
 
 The synthetic spreadsheet is not intended to reproduce a particular
 proprietary vendor format. It exists to test general schema-drift
@@ -1829,6 +1880,40 @@ four per-capability statuses rather than one flag. **camt.053 remains
 unverified**: no bank's statement has been read, because the published samples
 could not be fetched.
 
+
+### What is NOT built, as of 2026-09-16
+
+Consolidated here so a reader does not have to reconstruct it from five
+sections. The framework itself is complete: every mechanism §21's phases name
+exists and carries a suite. What remains is listed in the order it could still
+change the design.
+
+**1. Translation (§16).** Every write re-emits the format it was read as.
+There is no cross-format path and no shared concept vocabulary. This is the
+only remaining item that could still move the architecture — see the note at
+§16 — and it should wait for a real requirement rather than be invented.
+
+**2. Two of §20's seven proving formats.** `FIX` (tag/value stream, the one
+remaining *shape*, and `OPEN` so implementable now) and the **synthetic vendor
+spreadsheet** (the only candidate stressing drift *within* one format, and the
+reason §4's `spreadsheet` location kind has no caller).
+
+**3. Two registered formats that could be built today.** `fix` (`OPEN`) and
+`swift.mt940` (`DE_FACTO` — the authoritative Category 9 guide is not freely
+published, but public implementation documentation is abundant and consistent).
+Three more — `x12.820`, `x12.835`, `iso8583` — are `CONTROLLED` and blocked on
+a **licence purchase by a person**, which is a purchase order and not work.
+
+**4. camt.053 has never met a bank's statement**, and pain.001 rests on two
+foreign files. ACH, BAI2 and OFX each have a foreign corpus and those corpora
+found defects in three of the four adapters they touched, so the evidence base
+is **not uniform across adapters** and the registry's per-capability statuses
+are where to read which is which.
+
+**5. The `json` location kind has no caller.** `spreadsheet` is covered by item
+2; `json` awaits a format that is natively JSON.
+
+------------------------------------------------------------------------
 
 ### Phase 5 and Beyond: Continuous Maintenance
 
