@@ -230,7 +230,8 @@ document list, with a status column, is `docs/README.md`.
   against retrieved evidence -- camt DOWNGRADED from spec_obtained to discovered,
   because no schema was ever downloaded.
 - **financial-format adapters** — `finio` (framework), `finio_nacha` (ACH,
-  fixed-width) and `finio_camt` (ISO 20022 camt.053, hierarchical XML). The
+  fixed-width) `finio_camt` (ISO 20022 camt.053, hierarchical XML) and `finio_bai2` (BAI2,
+  delimited and variable-length, with continuation records). The
   second adapter is a different REPRESENTATION on purpose (§20), and it is what
   turned a location from a byte range into a value with a kind. Provenance is reconstructed from a
   retained source because the alternative was measured at 2.79 GB for a 9.5 MB

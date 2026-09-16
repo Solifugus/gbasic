@@ -63,45 +63,10 @@ function queue()
 
     ' --- cash management and statements ------------------------------------
 
-    append(out, { id: "bai2",
-        name: "BAI2 cash management balance reporting",
-        family: "cash management",
-        domain: "US bank balance and transaction reporting to corporate customers",
-        authority: "originally the Bank Administration Institute; the technical reference is now associated with ASC X9",
-        description: "Record-oriented, comma-delimited, hierarchical by file/group/account/transaction, with a numeric type-code vocabulary identifying each balance and activity kind.",
-        representation: "record-oriented text, comma-delimited free-format fields",
-        transport: "file, delivered by the account servicer",
-        known_revisions: [ "version 2" ],
-        specification_sources: [
-          { source_type: "standards_body",
-            source_url_or_reference: "ASC X9 / BAI, Cash Management Balance Reporting Specifications Version 2 Technical Reference Manual (preview: https://webstore.ansi.org/preview-pages/ASCX9/preview_X9+BAI+Version+2-2009.pdf)",
-            date_retrieved: "2026-09-15",
-            note: "BAI no longer charges for the format specifications; they are described as freely available. The PREVIEW page was seen; the full manual was not retrieved." },
-          { source_type: "implementation_guide",
-            source_url_or_reference: "Bank implementation guides published openly, e.g. HSBC (https://www.hsbcnet.com/-/media/hsbcnet/client-transition/bai2-ir-specs.pdf), East West Bank, Scotiabank, Bendigo Bank",
-            date_retrieved: "2026-09-15",
-            note: "several independent, freely downloadable field-level guides that agree -- the same class of evidence the NACHA layouts were checked against." } ],
-        acquisition_class: "OPEN",
-        spec_public: true,
-        spec_acquisition_method: "Free. The format specifications are no longer charged for, and multiple banks publish complete field-level implementation guides.",
-        implementation_allowed: true,
-        spec_redistribution_allowed: false,
-        sample_redistribution_allowed: false,
-        state: "discovered",
-        recognition_status: "not_started",
-        read_status: "not_started",
-        write_status: "not_started",
-        validation_status: "not_started",
-        test_vectors: [],
-        known_variants: [ "banks differ in which type codes they populate and in whether transaction detail is included at all" ],
-        known_extensions: [],
-        maintenance_priority: "periodic",
-        watch_sources: [
-          { kind: "registry_page",
-            reference: "https://webstore.ansi.org/preview-pages/ASCX9/preview_X9+BAI+Version+2-2009.pdf",
-            watching: "a version beyond 2 appearing, or the specification ceasing to be free" } ],
-        last_reviewed: "2026-09-15",
-        next_review_due: "2027-09-15" })
+    ' BAI2 IS NOT IN THE QUEUE ANY MORE: it has an adapter, and an implemented
+    ' format's entry lives WITH its adapter. `all(adapters)` refuses an id that
+    ' appears in both, which is what made this removal compulsory rather than
+    ' tidy -- the merge would not run until it was done.
 
     append(out, { id: "swift.mt940",
         name: "SWIFT MT940 customer statement message",

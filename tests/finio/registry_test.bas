@@ -21,6 +21,7 @@
 load finio
 load finio_nacha
 load finio_camt
+load finio_bai2
 load finio_registry
 
 tally = { checks: 0, mismatches: 0 }
@@ -36,7 +37,12 @@ function check(label, got, want)
     return nothing
 end function
 
-adapters = [ finio_nacha.adapter(), finio_camt.adapter() ]
+' ALL THREE ADAPTERS. BAI2 moved out of the queue and into an adapter on
+' 2026-09-15; leaving it out here made the registry ten entries short of itself
+' and the implementable check fail for a format that had just been built. The
+' merge is what forced the removal -- it refuses an id in both places -- and
+' this is the other half of that move.
+adapters = [ finio_nacha.adapter(), finio_camt.adapter(), finio_bai2.adapter() ]
 all = finio_registry.all(adapters)
 
 print "-- every entry is a valid registry entry"
@@ -132,7 +138,8 @@ for each e in all
     append(ids, e.id)
 end for
 check("no id appears twice", dupes, 0)
-check("the implemented formats are present", contains(ids, "aba.nacha") and contains(ids, "iso20022.camt053"), true)
+check("the implemented formats are present",
+      contains(ids, "aba.nacha") and contains(ids, "iso20022.camt053") and contains(ids, "bai2"), true)
 ' THE IDS, NOT THE RECORDS. `contains(queue(), "aba.nacha")` compares a RECORD
 ' to a STRING, which PLAT-EQ makes false always -- so written that way this
 ' check passes whatever the queue holds, which is the vacuous-assertion class
@@ -143,15 +150,17 @@ for each q in finio_registry.queue()
 end for
 check("the queue is not empty, so the next check is not vacuous", count(qids) > 0, true)
 check("and an implemented format is NOT in it", contains(qids, "aba.nacha"), false)
-check("nor the other one", contains(qids, "iso20022.camt053"), false)
+check("nor the second", contains(qids, "iso20022.camt053"), false)
+check("nor the third, which was in the queue until its adapter was built",
+      contains(qids, "bai2"), false)
 ' AND THE REFUSAL, proven rather than described: putting one in both must raise.
 on error goto next
 finio_registry.all([ finio_nacha.adapter(), finio_camt.adapter(),
-                     finio.adapter({ id: "bai2", revisions: [ "1" ],
+                     finio.adapter({ id: "ofx", revisions: [ "1" ],
                                      recognise: finio_nacha.recognise,
                                      read: finio_nacha.read_source,
                                      byte_fidelity: false,
-                                     registry_entry: { id: "bai2", state: "discovered",
+                                     registry_entry: { id: "ofx", state: "discovered",
                                                        acquisition_class: "OPEN" } }) ])
 check("a format in the queue AND with an adapter is refused",
       contains(error.message, "two copies drift"), true)

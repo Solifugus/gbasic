@@ -40,7 +40,7 @@ out="$scratch/reg.out"
 if timeout 120 ./gbasic tests/finio/registry_test.bas >"$out" 2>&1; then
     mism="$(sed -n 's/^mismatches: //p' "$out")"
     checks="$(sed -n 's/^checks: //p' "$out")"
-    if [ "$mism" = "0" ] && [ "${checks:-0}" -ge 26 ]; then
+    if [ "$mism" = "0" ] && [ "${checks:-0}" -ge 27 ]; then
         ok "$checks checks, 0 mismatches"
     else
         bad "registry_test: $checks checks, $mism mismatches"

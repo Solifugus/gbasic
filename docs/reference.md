@@ -6527,7 +6527,10 @@ whole program without needing a call site.
   trace number comes back as an ordinary-looking 13-digit one. Its own suite
   could not see it, because its fixture is pure ASCII.
   **`framing` is evidence, not a setting.** `"lines"` (the default) splits on LF
-  and remembers whether each record ended CRLF or LF; `"fixed"` with a
+  and remembers whether each record ended CRLF or LF; `"terminated"` with a one-byte
+  `record_terminator` ends a record at that byte **or** at a newline, whichever
+  comes first — BAI2's slash, where a line may carry two whole records and a
+  text-bearing record may carry no terminator at all. `"fixed"` with a
   `record_length` cuts a source with **no separator at all** — how a great many
   real fixed-width files arrive off a mainframe, and which a newline-assuming
   reader sees as one enormous record. Each record's terminator is retained, so
@@ -6789,6 +6792,60 @@ whole program without needing a call site.
   evidence and a rising observation count is the interesting case, and only the
   two together say so."* A not-due adapter that production keeps surprising is
   in the queue; a dormant one nothing has surprised is not.
+- `finio_bai2` — **BAI2** cash management balance reporting, the **third**
+  `finio` adapter and the third structural shape. NACHA is fixed-width, camt is
+  hierarchical XML, and this is **delimited and variable-length with a logical
+  record that can span several physical ones** — the first caller of §4's
+  `delimited` location kind, which had sat in the enum with nothing using it.
+  **The foreign corpus was read before a line of the adapter was written**,
+  which is the correction from the NACHA work where real files arrived last and
+  found three defects that had already shipped. Four facts came out of that
+  reading, none of which a fixture written here would have contained: **the
+  record separator is a slash, not a newline** (one real file packs two whole
+  records onto a line); a record whose last field is free text often has **no
+  terminator at all**, running to end of line (102 of 116 records in one
+  sample); **that text contains slashes**, which shatters a reader splitting on
+  each one; and **an `88` continues the previous record's *field list*, not its
+  text** — the defining feature of the format, and the thing this adapter got
+  wrong first. `finio.open_text` gained a `"terminated"` framing with a
+  `record_terminator` for the first; the fold that reassembles text containing
+  the terminator is format knowledge and lives in the adapter, which restores
+  the slash to any fragment that does not begin with a record code it knows.
+  Only a fragment that came from a slash split can be folded — one that begins
+  a **line** is a record however odd its code, since one real sample carries a
+  line of fifteen 1s as block padding.
+  `finio_bai2.record_codes()` and `finio_bai2.record_kind(code)` map the eight
+  codes; `finio_bai2.read_source` merges each record's continuations into one
+  field list before reading it, and `finio_bai2.account_total(records, account)`
+  is the arithmetic on its own — **the summary groups plus the transactions**,
+  which is the one sum a reader can get wrong in a way that still looks like a
+  number.
+  **A summary group is not four fields**, and neither is the tail of a
+  transaction: the funds type carries its own fields after it — `S` three
+  availability amounts, `V` a value date and time, `D` a count and that many
+  pairs — so stepping a fixed four lands the next group on a value date, reads
+  it as a type code, and displaces everything after it. One rule, written once,
+  used by both.
+  `finio_bai2.validate_doc` holds the file to **a three-level control total**,
+  the strongest self-checking property of the three formats here: each account
+  trailer sums its own account, each group trailer its accounts, the file
+  trailer its groups, and every level also states a record count. A record whose
+  code the format does not define is **reported once and left out of those
+  counts** — counting it turns one cause into four findings, three of them
+  pointing away from it.
+  `finio_bai2.write_doc` re-emits each record with the terminator it actually
+  carried — a slash, a newline, or **nothing at all** where a text field ran to
+  the end of the file — so `byte_fidelity` is `true` here where camt's is
+  `false`. `finio_bai2.registry_entry()` records the format as **OPEN**: the
+  BAI specifications are no longer charged for and several banks publish
+  field-level guides.
+  Verified against **the specification's own worked example**, which
+  `moov-io/bai2` ships and whose arithmetic can be checked by hand —
+  500000 + 70000000 + 1500000 = 72000000, exactly what its account trailer
+  declares. Three of the six foreign files validate completely clean; of the
+  rest, one carries block padding and two are **internally inconsistent**,
+  which an independent Python reading confirms — it reaches the same totals this
+  adapter does, where both disagree with the file.
 - `finio_registry` — the **format registry** as §9 describes it: not a list of
   what has been built but a record of what **exists**, how its specification can
   lawfully be obtained, and therefore what could be built next. §9's own words:

@@ -1109,7 +1109,7 @@ ISO 20022 camt                              [done -- stdlib/finio_camt.bas]
 OFX
     tagged/document-oriented with historical variants
 
-BAI2
+BAI2                                        [done -- stdlib/finio_bai2.bas]
     record-oriented and legacy-heavy
 
 FIX
@@ -1535,6 +1535,79 @@ open banking and the legacy archival formats have had no pass at all.
 best-supported unbuilt format in the table — open, abundantly documented,
 record-oriented, and the format US banks still hand to businesses that camt has
 not replaced.
+
+
+#### Phase 2 second result — BAI2, built 2026-09-15
+
+**The third adapter and the third structural shape.** NACHA is fixed-width,
+camt is hierarchical XML, and BAI2 is **delimited and variable-length with a
+logical record that can span several physical ones** — the first caller of §4's
+`delimited` location kind, which had sat in the enum with nothing using it.
+§21's Phase 2 asked for "at least two or three structurally different formats";
+this is the third, and the abstraction now carries all three location kinds it
+has adapters for.
+
+**The foreign corpus was read before a line of the adapter was written.** That
+is the correction from the verification work above, where real files arrived
+last and found three defects that had already shipped. Six files from
+`moov-io/bai2` (Apache-2.0), including **the specification's own worked
+example**, produced four facts no fixture written here would have contained:
+
+- **the record separator is a slash, not a newline** — one real file packs two
+  whole records onto a line, and a newline-per-record reader merges them;
+- a record whose last field is free text often has **no terminator at all**,
+  running to end of line: 102 of 116 records in one sample;
+- **that text contains slashes**, which shatters a reader splitting on each
+  one — one sample in the corpus is a bug report about exactly this;
+- **an `88` continues the previous record's *field list*, not its text.**
+
+The last is the defining feature of the format and the thing this adapter got
+wrong first, at a cost that is an ordinary-looking number: read as text, one
+sample's first account totals 3,280,000 where its own trailer says 9,150,000,
+with four summary amounts simply absent. Verified by hand against that file:
+4350000 + 2830000 + 1020000 + 500000 + 450000 = 9150000.
+
+Two more the corpus forced. **A summary group is not four fields** — the funds
+type carries its own (`S` three availability amounts, `V` a value date and
+time, `D` a count and that many pairs), so stepping a fixed four lands the next
+group on a value date, reads it as a type code, and displaces everything after
+it. And **`+4350000` is a signed amount**, which the first reader rejected as
+non-numeric, losing 4.35 million from a control total.
+
+`finio.open_text` gained a **`"terminated"`** framing with a
+`record_terminator`. The fold that reassembles text containing the terminator
+is format knowledge and lives in the adapter: it restores the slash to any
+fragment that does not begin with a record code it knows. **Only a fragment
+that came from a slash split may be folded** — one that begins a *line* is a
+record however odd its code, since one real sample carries a line of fifteen 1s
+as block padding, and folding that appends it to a transaction's text and loses
+a record from the count the file's own trailer states.
+
+**BAI2's self-checking property is the strongest of the three formats here**: a
+three-level control total, each account trailer summing its own account, each
+group trailer its accounts, the file trailer its groups, with a record count at
+every level. A record whose code the format does not define is **reported once
+and left out of those counts**; counting it turned one cause into four
+findings, three of them pointing away from it.
+
+**Evidence, strongest first.** The specification's own example validates clean
+and its arithmetic checks by hand: 500000 + 70000000 + 1500000 = 72000000.
+Three of the six foreign files validate clean. An independent Python reading
+agrees with this adapter on every controlled file **and on one where both
+disagree with the file**: sample4 declares an account total of
+−1,260,161,341,762 against 666,917,818 computed twice independently, and claims
+four accounts while containing five, which `grep` confirms. That file is
+internally inconsistent and the adapter is right about it.
+
+Six perturbations proven red, and **one only after being noticed**: disabling
+the fold broke nothing, because the fixtures generated here had no slash inside
+a text field. There is now a controlled one.
+
+**BAI2 moved out of the registry queue into its own adapter entry, and the
+duplicate-id rule made that compulsory rather than tidy** — `finio_registry.all`
+refuses an id that appears in both and would not run until the queue entry was
+removed. The registry suite then failed for the other half of the same move,
+which is the rule working in both directions.
 
 
 #### Verification against foreign files — 2026-09-15

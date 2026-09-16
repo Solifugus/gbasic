@@ -50,9 +50,11 @@ library finio
 ' version of it.
 
 function open_text(text, options)
-    opts = _options(options, [ "format", "revision", "origin", "framing", "record_length" ], "finio.open_text")
+    opts = _options(options, [ "format", "revision", "origin", "framing",
+                               "record_length", "record_terminator" ], "finio.open_text")
     framing = _default(opts, "framing", "lines")
     record_length = _default(opts, "record_length", 0)
+    terminator = _default(opts, "record_terminator", "")
     records = []
     offsets = []
     terminators = []
@@ -73,8 +75,51 @@ function open_text(text, options)
             pos = pos + take
         end while
     else
+    if framing = "terminated" then
+        ' A THIRD FRAMING, AND A REAL FILE IS WHY. In BAI2 the record separator
+        ' is a SLASH, not a newline: a physical line may carry two whole
+        ' records (`01,...,2/   02,...,2/`) and a record whose last field is
+        ' free text often carries no terminator at all and simply runs to the
+        ' end of the line. So a record ends at the terminator OR at a newline,
+        ' whichever comes first -- which is neither "lines" nor "fixed", and a
+        ' newline-per-record reader silently merges two records into one on
+        ' files that are otherwise perfectly ordinary.
+        if byte_count(terminator) != 1 then
+            error "finio.open_text: framing 'terminated' requires a one-byte record_terminator"
+        end if
+        pos = 0
+        while pos < total
+            stop_at = total
+            term = ""
+            t = byte_find(text, terminator, pos)
+            nl = byte_find(text, chr(10), pos)
+            if not is_nothing(t) then
+                stop_at = t
+                term = terminator
+            end if
+            if not is_nothing(nl) and nl < stop_at then
+                stop_at = nl
+                term = chr(10)
+            end if
+            body = byte_slice(text, pos, stop_at - pos)
+            ' Leading whitespace belongs to the packing, not to the record: the
+            ' second record on a line is preceded by the spaces that separated
+            ' it from the first.
+            lead = 0
+            while lead < byte_count(body) and (byte_slice(body, lead, 1) = " " or byte_slice(body, lead, 1) = chr(9) or byte_slice(body, lead, 1) = chr(13))
+                lead = lead + 1
+            end while
+            trimmed = byte_slice(body, lead, byte_count(body) - lead)
+            if byte_count(trimmed) > 0 then
+                append(records, trimmed)
+                append(offsets, pos + lead)
+                append(terminators, term)
+            end if
+            pos = stop_at + 1
+        end while
+    else
         if framing != "lines" then
-            error ("finio.open_text: framing '" + string(framing) + "' is not one of lines, fixed")
+            error ("finio.open_text: framing '" + string(framing) + "' is not one of lines, fixed, terminated")
         end if
         pos = 0
         while pos < total
@@ -103,12 +148,14 @@ function open_text(text, options)
             end if
         end while
     end if
+    end if
     return { text: text,
              records: records,
              offsets: offsets,
              terminators: terminators,
              framing: framing,
              record_length: record_length,
+             record_terminator: terminator,
              format: _required(opts, "format", "finio.open_text"),
              revision: _required(opts, "revision", "finio.open_text"),
              origin: _default(opts, "origin", "") }
@@ -662,6 +709,7 @@ function identify(reg, text)
                                  classification: r.classification,
                                  framing: _default(r, "framing", "lines"),
                                  record_length: _default(r, "record_length", 0),
+                                 record_terminator: _default(r, "record_terminator", ""),
                                  reasons: _default(r, "reasons", []) })
         end if
     end for
@@ -699,13 +747,15 @@ end function
 ' trusts and a guessed one is indistinguishable from a read one.
 
 function read_text(reg, text, options)
-    opts = _options(options, [ "adapter", "revision", "asof", "framing", "record_length", "origin" ], "finio.read_text")
+    opts = _options(options, [ "adapter", "revision", "asof", "framing", "record_length",
+                               "record_terminator", "origin" ], "finio.read_text")
     chosen = unknown
     revision = _default(opts, "revision", unknown)
     classification = "exact"
     reasons = []
     framing = _default(opts, "framing", unknown)
     record_length = _default(opts, "record_length", unknown)
+    terminator = _default(opts, "record_terminator", unknown)
     if has(opts, "adapter") then
         chosen = find_adapter(reg, opts.adapter)
         append(reasons, "the caller pinned adapter '" + opts.adapter + "'")
@@ -714,6 +764,7 @@ function read_text(reg, text, options)
             r = fn(text)
             framing = _default(r, "framing", "lines")
             record_length = _default(r, "record_length", 0)
+            terminator = _default(r, "record_terminator", "")
         end if
     else
         ident = identify(reg, text)
@@ -736,6 +787,7 @@ function read_text(reg, text, options)
         if is_unknown(framing) then
             framing = c.framing
             record_length = c.record_length
+            terminator = c.record_terminator
         end if
     end if
     if is_unknown(revision) then
@@ -757,8 +809,12 @@ function read_text(reg, text, options)
     if is_unknown(record_length) then
         record_length = 0
     end if
+    if is_unknown(terminator) then
+        terminator = ""
+    end if
     src = open_text(text, { format: chosen.id, revision: revision,
                             framing: framing, record_length: record_length,
+                            record_terminator: terminator,
                             origin: _default(opts, "origin", "") })
     fn = chosen.read
     body = fn(src, revision)
