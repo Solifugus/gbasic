@@ -411,6 +411,58 @@ function check_specification_source(src, label)
     return src
 end function
 
+' --- §9: a TEST VECTOR needs the same evidence chain a specification does ---
+'
+' `test_vectors[]` was an array of bare strings, which records that a file was
+' used and nothing about where it came from or whether it may be. A vector is
+' the thing most likely to be somebody else's property -- a bank's published
+' sample, another implementation's corpus -- so it carries its source, the date
+' it was retrieved, and what its terms permit.
+'
+' THE RULE IS THE OPERATOR'S AND IT HAS THREE ARMS, not two:
+'
+'   an EXPLICIT PROHIBITION on use   -> REFUSED here, by name
+'   an EXPLICIT PERMISSION           -> used; redistributed only if it says so
+'   SILENCE                          -> may be used, may NOT be redistributed
+'
+' Silence is the common case and the conservative one: a bank publishing a
+' sample statement in its developer documentation has granted nothing in
+' writing, so the sample may be read and must not be committed. Encoding that
+' as a REFUSAL rather than a guideline is the difference between a rule and an
+' intention -- a guideline is what the first hurried contributor ignores.
+
+function usage_permissions()
+    return [ "permitted", "prohibited", "unstated" ]
+end function
+
+function check_test_vector(v, label)
+    if type(v) != "record" then
+        error (label + ": a test vector is a record carrying where it came from, not a bare string")
+    end if
+    checked = _options(v, [ "name", "source_url_or_reference", "date_retrieved",
+                            "licence", "usage", "redistribution", "note" ], label)
+    for each f in [ "name", "source_url_or_reference", "date_retrieved", "usage", "redistribution" ]
+        x = _required(v, f, label)
+    end for
+    for each pair in [ [ "usage", v.usage ], [ "redistribution", v.redistribution ] ]
+        if not contains(usage_permissions(), pair[1]) then
+            error (label + ": " + pair[0] + " is '" + string(pair[1]) + "', which is not one of " + join(usage_permissions(), ", "))
+        end if
+    end for
+    ' THE EXCLUSION, ENFORCED. A vector whose terms prohibit use may not be in
+    ' the registry at all -- not listed with a flag to be checked later, because
+    ' a flag is something a caller can forget to read.
+    if v.usage = "prohibited" then
+        error (label + ": '" + string(v.name) + "' carries terms PROHIBITING use, so it may not be a test vector. Remove it; do not record it with a flag.")
+    end if
+    ' And redistribution cannot exceed usage: a vector nobody may use is not one
+    ' anybody may pass on.
+    if v.redistribution = "permitted" and v.usage != "permitted" then
+        error (label + ": '" + string(v.name) + "' claims redistribution is permitted while usage is '" + string(v.usage) + "'")
+    end if
+    return v
+end function
+
 function check_registry_entry(entry)
     known = [ "id", "name", "family", "domain", "authority", "description",
               "representation", "transport", "known_revisions", "effective_dates",
@@ -472,6 +524,15 @@ function check_registry_entry(entry)
     if type(ws) != "array" then
         error ("finio.check_registry_entry: '" + id + "' gives a " + type(ws) + " for watch_sources, which must be an array")
     end if
+    tv = _default(entry, "test_vectors", [])
+    if type(tv) != "array" then
+        error ("finio.check_registry_entry: '" + id + "' gives a " + type(tv) + " for test_vectors, which must be an array")
+    end if
+    ti = 0
+    for each v in tv
+        checked_v = check_test_vector(v, "finio.check_registry_entry: '" + id + "' test_vector " + string(ti))
+        ti = ti + 1
+    end for
     ' AN ENTRY THAT CANNOT BE IMPLEMENTED MUST SAY WHY, because §10's whole
     ' point is that automated research has "a clear stopping point" and can
     ' report `Format discovered. Implementation blocked. Human acquisition

@@ -1,0 +1,33 @@
+# Test vectors produced by implementations OTHER THAN THIS ONE.
+#
+# Written by tools/fetch_foreign_vectors.sh. Every line records where a
+# file came from, when it was retrieved, the licence it carries, and
+# whether that licence permits USE and REDISTRIBUTION. A file whose terms
+# prohibit use is not fetched at all; a file whose terms are SILENT may be
+# used and may NOT be committed, so it will not appear here.
+#
+# ATTRIBUTION. The ACH files below come from the moov-io/ach project
+# (https://github.com/moov-io/ach), Copyright The Moov Authors, licensed
+# under the Apache License, Version 2.0. They are redistributed here
+# unmodified under section 4 of that licence; see tests/finio/foreign/LICENSE-moov-io-ach.
+#
+# EXCLUDED, and why -- recorded because an absent source that is merely
+# forgotten and one that was deliberately not used look identical later:
+#   Goldman Sachs camt.053 samples (developer.gs.com) -- HTTP 403 to an
+#     automated fetch on 2026-09-15. NOT a prohibition: unavailable, which is a
+#     different fact and is why finio_watch has `unreachable` as its own
+#     finding. A person may retrieve these by hand.
+#   Nacha ACH Guide for Developers (achdevguide.nacha.org) -- HTTP 403,
+#     same reason.
+#
+# name	sha256	bytes	retrieved	licence	use	redistribute	source
+ppd-debit.ach	2b997ca29231ca65bbf95f785e6f1ffff5705f2fed31ff32f4158a5b85f7ca77	891	2026-09-15	Apache-2.0	yes	yes	https://raw.githubusercontent.com/moov-io/ach/master/test/testdata/ppd-debit.ach
+extended-ascii.ach	ad12b50aa3a094d8a08aa20e0e29376b1c78dcc38930a419e8da45096acc6e6a	1901	2026-09-15	Apache-2.0	yes	yes	https://raw.githubusercontent.com/moov-io/ach/master/test/testdata/extended-ascii.ach
+cor-example.ach	57070e8b5da5140b873ac1fcc9e345f1665bab6c93a6ada59b32fb0ea44f4f2f	950	2026-09-15	Apache-2.0	yes	yes	https://raw.githubusercontent.com/moov-io/ach/master/test/testdata/cor-example.ach
+adv.ach	a1323a400d27705916e3aed0a441b25b47b95550dc85e605e2c8b3f45cddb712	950	2026-09-15	Apache-2.0	yes	yes	https://raw.githubusercontent.com/moov-io/ach/master/test/testdata/adv.ach
+gl-debit.ach	670f268989a6bba8894e971ec5dc9241a4e86647125fce6a283b709527811ab3	951	2026-09-15	Apache-2.0	yes	yes	https://raw.githubusercontent.com/moov-io/ach/master/test/testdata/gl-debit.ach
+20180713-IAT.ach	14c1cedde14ed1d58b211dacf6b2469e1a92749ce805cfa0a7c87eb86aea01ad	2810	2026-09-15	Apache-2.0	yes	yes	https://raw.githubusercontent.com/moov-io/ach/master/test/testdata/20180713-IAT.ach
+NACHA_SAMPLE_TEL_REVERSAL.ach	fcd81614152122c7710ae67a1b2f381dd07bdb60eebb57916b495cd5595823c4	949	2026-09-15	Apache-2.0	yes	yes	https://raw.githubusercontent.com/moov-io/ach/master/test/testdata/NACHA_SAMPLE_TEL_REVERSAL.ach
+20110805A.ach	cce535bde0e63c81bb70ae6136a414063acc01e41f2a3c09e57809e54492d21f	8835	2026-09-15	Apache-2.0	yes	yes	https://raw.githubusercontent.com/moov-io/ach/master/test/testdata/20110805A.ach
+FISERV-ZEROFILE.ach	94049299e028a1ed74f06b8a8916f165e2a14f5b993c1f378cbc31199649431e	896	2026-09-15	Apache-2.0	yes	yes	https://raw.githubusercontent.com/moov-io/ach/master/test/testdata/FISERV-ZEROFILE-PIMRET825324_032720_110221.ach
+20110729A-invalid.ach	72c7f25854aa215918913b35f2771358b60eea72a1f2b74362d5f9764911bf0f	27833	2026-09-15	Apache-2.0	yes	yes	https://raw.githubusercontent.com/moov-io/ach/master/test/testdata/20110729A-invalid.ach

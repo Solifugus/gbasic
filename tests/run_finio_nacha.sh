@@ -57,6 +57,75 @@ else
     bad "nacha_test exited nonzero"; cat "$out"
 fi
 
+# --- FILES THIS PROJECT DID NOT WRITE --------------------------------------
+# Every other fixture here was generated from this project's model of the
+# format, so the arithmetic oracles check our reader against our generator's
+# SHARED understanding. Ten files from moov-io/ach (Apache-2.0) embody somebody
+# else's model, and they found three things no fixture of ours could: trailing
+# blanks stripped (4 of 10 were refused outright), non-ASCII in an ASCII format,
+# and a block count computed as a floor where the field is a ceiling.
+printf 'TIER foreign\n'
+fout="$scratch/foreign.out"
+if timeout 180 ./gbasic tests/finio/foreign_test.bas >"$fout" 2>&1; then
+    fm="$(sed -n 's/^mismatches: //p' "$fout")"
+    fc="$(sed -n 's/^checks: //p' "$fout")"
+    if [ "$fm" = "0" ] && [ "${fc:-0}" -ge 21 ]; then
+        ok "$fc checks over 10 files written by a different implementation"
+    else
+        bad "foreign_test: $fc checks, $fm mismatches"
+        grep MISMATCH "$fout" || true
+    fi
+else
+    bad "foreign_test exited nonzero"; cat "$fout"
+fi
+
+# --- PROVENANCE AND RIGHTS ARE RECORDED FOR EVERY COMMITTED VECTOR ---------
+# The operator's rule: know where each file came from, when, and exclude
+# anything whose terms prohibit use. Checked rather than documented, because a
+# committed file whose origin nobody recorded is exactly what this guards.
+printf 'TIER provenance\n'
+man=tests/finio/foreign/PROVENANCE.txt
+if [ ! -f "$man" ]; then
+    bad "no PROVENANCE.txt beside the foreign vectors"
+elif [ ! -f tests/finio/foreign/LICENSE-moov-io-ach ]; then
+    bad "the vectors are redistributed without the licence beside them (Apache-2.0 section 4)"
+else
+    missing=0
+    badsum=0
+    n=0
+    for f in tests/finio/foreign/*.ach; do
+        n=$((n + 1))
+        base="$(basename "$f")"
+        line="$(grep -F "	$base	" "$man" 2>/dev/null || grep "^$base	" "$man" 2>/dev/null || true)"
+        if [ -z "$line" ]; then
+            bad "  $base is committed and appears nowhere in PROVENANCE.txt"
+            missing=$((missing + 1))
+        else
+            want="$(printf '%s' "$line" | cut -f2)"
+            got="$(sha256sum "$f" | cut -d' ' -f1)"
+            [ "$want" = "$got" ] || { bad "  $base does not match its recorded hash"; badsum=$((badsum + 1)); }
+        fi
+    done
+    if [ "$missing" = "0" ] && [ "$badsum" = "0" ] && [ "$n" -ge 10 ]; then
+        ok "all $n committed vectors carry a source, a date, a licence and a matching hash"
+    fi
+    # EVERY RECORDED VECTOR MUST PERMIT REDISTRIBUTION, or it should not be
+    # here. A file whose terms are silent may be USED and must not be committed.
+    notok="$(awk -F'\t' '/^[^#]/ && NF>=7 && $7 != "yes" { print $1 }' "$man" | tr '\n' ' ')"
+    if [ -z "$notok" ]; then
+        ok "and every one of them permits redistribution"
+    else
+        bad "committed without redistribution rights: $notok"
+    fi
+    # And the exclusions are RECORDED, not merely absent -- a source nobody
+    # fetched and one deliberately not used look identical later.
+    if grep -q 'EXCLUDED' "$man"; then
+        ok "and the sources that were NOT used say why"
+    else
+        bad "PROVENANCE.txt records no exclusions, so a source that was deliberately skipped is indistinguishable from one nobody tried"
+    fi
+fi
+
 # --- EXTERNAL LAYOUT ORACLE ------------------------------------------------
 # THE ONLY CHECK IN THIS TREE ON THE LAYOUTS THEMSELVES THAT DID NOT COME FROM
 # THIS TREE. Every other tier compares the adapter against fixtures this

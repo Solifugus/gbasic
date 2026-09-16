@@ -1537,6 +1537,80 @@ record-oriented, and the format US banks still hand to businesses that camt has
 not replaced.
 
 
+#### Verification against foreign files — 2026-09-15
+
+**Nothing in `finio` had ever met a file it did not write.** Both registry
+entries said so, and §9's `verified` state had never been reached by anything.
+Every fixture was generated here from this project's model of each format, so
+the arithmetic oracles — strong as they are — check our reader against our
+generator's **shared** understanding. A layout wrong in both places agrees with
+itself perfectly and the whole gate stays green.
+
+Ten ACH files were taken from the **moov-io/ach** project — files produced by a
+different implementation, in a different language — under Apache-2.0, which
+permits use and redistribution with attribution. They are committed with the
+licence beside them and a provenance manifest recording, for each file, its
+source, the date it was retrieved, its terms, and a hash.
+
+**The rule applied, and it has three arms rather than two:** an explicit
+prohibition on use means the file is **excluded and the exclusion recorded**; an
+explicit permission means it may be used and redistributed only if it says so;
+and **silence** — the common case, a bank publishing a sample in its developer
+documentation having granted nothing in writing — means the file may be **read
+and not committed**. `finio.check_test_vector` enforces this, refusing a
+prohibited vector **by name** rather than recording it with a flag a caller can
+forget to read. Two sources were excluded for a fourth reason that is neither
+permission nor prohibition: the Goldman Sachs camt.053 samples and Nacha's own
+developer guide both returned **HTTP 403** to an automated fetch. That is
+unavailability, it is recorded as such, and it is precisely why `finio_watch`
+has `unreachable` as a finding distinct from `unchanged`.
+
+**Three defects, none of which our own testing could have found.**
+
+**1. Four of ten files were refused outright.** Their producer strips trailing
+blanks, so a file header arrives at 75 bytes and a file control at **exactly
+55** — 94 less the 39-byte blank reserved field. Nothing is lost; the missing
+tail is the blank part. A strict 94-byte rule rejected the file entirely, which
+is what §15 forbids: refusing destroys the only thing an operator can work
+from. Short records are now read and **reported**, recognition answers `strong`
+rather than `exact` because the widths do not match what the header itself
+declares, and a field beyond the end of a record is **`unknown`** under Axiom 7
+— not blank, not zero, because padding the record would turn *absent* into
+*blank*, which is the distinction Axiom 7 exists for. A partially present field
+is `invalid`: the first six digits of a truncated ten-digit amount are an
+ordinary number a hundred times too small.
+
+**2. One file carries non-ASCII** — a record of 94 codepoints and 95 bytes, in
+a format the specification says is ASCII. It is read by byte and **reported**,
+rather than the reader silently switching to counting codepoints: doing that
+would choose one producer's interpretation of a fixed-width format over
+another's with nothing to go on. An overlong record that is over in *both*
+measures is still fatal to recognition, because that is wrong framing rather
+than a trimmed blank.
+
+**3. `block_count` was computed as a floor** where the field counts the blocks
+the file **occupies**, which is a ceiling. A conforming file is a multiple of
+ten records so the two agree — and every fixture generated here is conforming,
+which is why it survived until a real file arrived with its trailing 9-filler
+stripped. 93 records occupy 10 blocks; the file says 10 and we said 9.
+
+**What the corpus also established.** Two of the ten validate with **zero
+issues** — our reading of somebody else's file, reconciling against control
+records we did not compute. The other eight each produce a precisely diagnosed
+finding: two real defects in the files themselves (one declares five batches
+and holds four; one has lost its padding), and two honest limitations here —
+ADV batches use an entry layout this adapter does not implement, now **named**
+rather than silently mis-read, and several real transaction codes are absent
+from the direction table and are **reported rather than guessed**.
+
+`recognition_status` and `read_status` are therefore `verified`, while `state`
+stays `researched` and `validation_status` stays `implemented`. Those are
+different axes and the distinction is the entire reason §9 has five states and
+four per-capability statuses rather than one flag. **camt.053 remains
+unverified**: no bank's statement has been read, because the published samples
+could not be fetched.
+
+
 ### Phase 5 and Beyond: Continuous Maintenance
 
 Continue:

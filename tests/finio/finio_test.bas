@@ -248,6 +248,65 @@ check("CONTROL: an OPEN entry needs no blocked_by", open_ok, true)
 check("and the seven source types are the ones a survey can actually cite",
       count(finio.source_types()), 7)
 
+print ""
+print "-- A TEST VECTOR CARRIES ITS RIGHTS, AND A PROHIBITED ONE IS REFUSED"
+' `test_vectors[]` was an array of bare strings: it recorded that a file was
+' used and nothing about where it came from or whether it may be. A vector is
+' the thing most likely to be somebody else's property -- a bank's published
+' sample, another implementation's corpus -- so it carries a source, a date and
+' its terms, the same chain a specification source carries.
+'
+' THE RULE HAS THREE ARMS, NOT TWO, and the third is the common one: silence.
+on error goto next
+finio.check_registry_entry({ id: "x", state: "discovered", acquisition_class: "OPEN",
+                             test_vectors: [ "some/file.ach" ] })
+check("a bare string is no longer a test vector",
+      contains(error.message, "not a bare string"), true)
+error.clear()
+
+finio.check_registry_entry({ id: "x", state: "discovered", acquisition_class: "OPEN",
+    test_vectors: [ { name: "v", source_url_or_reference: "https://example.invalid/v",
+                      date_retrieved: "2026-09-15", usage: "prohibited",
+                      redistribution: "prohibited" } ] })
+check("a vector whose terms PROHIBIT use is refused by name",
+      contains(error.message, "PROHIBITING use"), true)
+check("and the message says to remove it rather than flag it",
+      contains(error.message, "do not record it with a flag"), true)
+error.clear()
+
+finio.check_registry_entry({ id: "x", state: "discovered", acquisition_class: "OPEN",
+    test_vectors: [ { name: "v", source_url_or_reference: "https://example.invalid/v",
+                      date_retrieved: "2026-09-15", usage: "unstated",
+                      redistribution: "permitted" } ] })
+check("redistribution cannot exceed usage",
+      contains(error.message, "claims redistribution is permitted"), true)
+error.clear()
+
+finio.check_registry_entry({ id: "x", state: "discovered", acquisition_class: "OPEN",
+    test_vectors: [ { name: "v", source_url_or_reference: "https://example.invalid/v",
+                      usage: "permitted", redistribution: "permitted" } ] })
+check("a vector with no retrieval date is refused",
+      contains(error.message, "requires 'date_retrieved'"), true)
+error.clear()
+on error stop
+' TWO CONTROLS, because the three arms must be distinguishable: a permitted
+' vector is accepted, and so is one whose terms are SILENT -- silence means it
+' may be read and must not be committed, which is a different thing from being
+' forbidden and would be lost if the check simply demanded permission.
+okv = finio.check_registry_entry({ id: "x", state: "discovered", acquisition_class: "OPEN",
+    test_vectors: [ { name: "v", source_url_or_reference: "https://example.invalid/v",
+                      date_retrieved: "2026-09-15", licence: "Apache-2.0",
+                      usage: "permitted", redistribution: "permitted" } ] })
+check("CONTROL: a fully evidenced vector is accepted", okv, true)
+silent = finio.check_registry_entry({ id: "x", state: "discovered", acquisition_class: "OPEN",
+    test_vectors: [ { name: "v", source_url_or_reference: "a bank's developer portal",
+                      date_retrieved: "2026-09-15", usage: "unstated",
+                      redistribution: "unstated",
+                      note: "may be read; must not be committed" } ] })
+check("CONTROL: and so is one whose terms are SILENT", silent, true)
+check("the three permissions are the three the rule needs",
+      join(finio.usage_permissions(), ","), "permitted,prohibited,unstated")
+
 check("the five states are the design's five", count(finio.registry_states()), 5)
 check("and the six acquisition classes are the design's six", count(finio.acquisition_classes()), 6)
 

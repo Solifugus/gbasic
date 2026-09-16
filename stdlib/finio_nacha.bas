@@ -251,19 +251,60 @@ function recognise(text)
         return { classification: "unknown", framing: framing, record_length: reclen,
                  reasons: [ "the source holds no records" ] }
     end if
-    wrong = 0
+    ' A SHORT RECORD IS NOT AN UNRECOGNISABLE FILE, and finding that out cost a
+    ' corpus written by somebody else. FOUR OF TEN real ACH files fetched from
+    ' the moov-io/ach project are refused by a strict 94-byte rule, and the
+    ' cause is the same in every one: THE PRODUCER STRIPPED TRAILING BLANKS.
+    ' A file header whose reference code is blank comes out at 75 bytes; a file
+    ' control whose 39-byte reserved field is blank comes out at exactly 55.
+    ' Nothing is lost -- the missing tail is the blank part -- and refusing the
+    ' file outright destroys the only thing an operator can work from, which is
+    ' what §15 forbids. Every fixture this project generates pads to 94 because
+    ' its generator pads to 94, so no amount of our own testing could have shown
+    ' this.
+    '
+    ' OVERLONG IS A DIFFERENT MATTER and stays fatal to recognition: a record
+    ' PAST 94 bytes means the framing is wrong, not that a blank was trimmed.
+    short = 0
+    over = 0
     i = 0
     while i < n
-        if byte_count(recs[i]) != 94 then
-            wrong = wrong + 1
+        w = byte_count(recs[i])
+        if w > 94 then
+            over = over + 1
+        end if
+        if w < 94 then
+            short = short + 1
         end if
         i = i + 1
     end while
-    if wrong > 0 then
+    ' AN OVERLONG RECORD HAS TWO CAUSES AND THEY ARE NOT THE SAME FILE. If it
+    ' is longer in BYTES and exactly 94 in CODEPOINTS, the producer wrote
+    ' non-ASCII into a format the specification says is ASCII -- the record is
+    ' still a record and the file is still an ACH file, it is simply not
+    ' conforming. If it is over in both, the framing is wrong and this is not a
+    ' 94-byte file at all. Found in moov-io/ach's `extended-ascii.ach`, which no
+    ' fixture written here could contain because our generator emits ASCII.
+    wide = 0
+    j = 0
+    while j < n
+        if byte_count(recs[j]) > 94 and len(recs[j]) = 94 then
+            wide = wide + 1
+        end if
+        j = j + 1
+    end while
+    if over - wide > 0 then
         return { classification: "unknown", framing: framing, record_length: reclen,
-                 reasons: [ string(wrong) + " of " + string(n) + " records are not 94 bytes long" ] }
+                 reasons: [ string(over - wide) + " of " + string(n) + " records are LONGER than 94 bytes and 94 codepoints, so this is not 94-byte framing" ] }
     end if
-    append(reasons, string(n) + " records, every one 94 bytes")
+    if wide > 0 then
+        append(reasons, (string(wide) + " record(s) hold non-ASCII bytes -- 94 codepoints but more than 94 bytes, which this format does not permit"))
+    end if
+    if short > 0 then
+        append(reasons, (string(n) + " records, " + string(short) + " of them short of 94 bytes -- trailing blanks appear to have been stripped"))
+    else
+        append(reasons, string(n) + " records, every one 94 bytes")
+    end if
     first = recs[0]
     if byte_slice(first, 0, 1) != "1" then
         return { classification: "unknown", framing: framing, record_length: reclen,
@@ -281,6 +322,13 @@ function recognise(text)
     fmt = byte_slice(first, 39, 1)
     if size = "094" and blocking = "10" and fmt = "1" then
         append(reasons, "the file header carries record size 094, blocking factor 10, format code 1")
+        if short > 0 or wide > 0 then
+            ' NOT `exact`, because the widths do not match what the header
+            ' itself declares. The file is readable and it is not conforming,
+            ' and those are different statements -- which is the whole of §15.
+            return { classification: "strong", revision: unknown,
+                     framing: framing, record_length: reclen, reasons: reasons }
+        end if
         return { classification: "exact", revision: unknown,
                  framing: framing, record_length: reclen, reasons: reasons }
     end if
@@ -443,6 +491,27 @@ end function
 ' requirement: an institution that uses a code slightly differently needs what
 ' was written, not only this adapter's reading of it.
 function _field(raw, spec, kind)
+    ' AXIOM 7 DECIDES THIS AND NO PADDING IS INVOLVED. Where a record has been
+    ' trimmed, a field beyond its end is one THE SOURCE SAID NOTHING ABOUT,
+    ' which is `unknown` -- not blank, not zero. Padding the record to 94 would
+    ' turn "absent" into "blank", and those are the two things Axiom 7 exists to
+    ' keep apart.
+    '
+    ' A PARTIALLY PRESENT FIELD IS `invalid`, NOT A SHORTER VALUE. Reading the
+    ' first six digits of a truncated ten-digit amount yields a perfectly
+    ' ordinary number that is a hundred times too small, which is the exact
+    ' shape of defect this adapter exists to prevent.
+    have = byte_count(raw)
+    if spec.offset >= have then
+        return { status: "unknown", value: unknown, raw: "",
+                 why: "the record ends at byte " + string(have) + ", before this field begins" }
+    end if
+    if spec.offset + spec.length > have then
+        return { status: "invalid", value: unknown,
+                 raw: byte_slice(raw, spec.offset, have - spec.offset),
+                 why: ("the record ends at byte " + string(have) + ", " + string(spec.offset + spec.length - have)
+                       + " bytes into this field -- a partial value is not a shorter value") }
+    end if
     text = byte_slice(raw, spec.offset, spec.length)
     body = trim(text)
     if byte_count(body) = 0 then
@@ -601,9 +670,21 @@ function validate_doc(doc)
     i = 0
     while i < n
         r = recs[i]
-        if r.byte_length != 94 then
+        if r.byte_length != 94 and not (r.byte_length > 94 and len(r.raw) = 94) then
             append(issues, { code: "record_length", severity: "error", record: i,
                              message: "record " + string(i) + " is " + string(r.byte_length) + " bytes, not 94",
+                             expected: "94", found: string(r.byte_length) })
+        end if
+        if r.byte_length > 94 and len(r.raw) = 94 then
+            ' THE SPECIFICATION SAYS ASCII. A record of 94 codepoints and more
+            ' than 94 bytes carries non-ASCII, and the fields after it cannot be
+            ' located by byte offset -- so this is reported rather than silently
+            ' worked around, because a reader that quietly switched to counting
+            ' codepoints would be choosing one producer's interpretation of a
+            ' fixed-width format over another's with nothing to go on.
+            append(issues, { code: "non_ascii", severity: "error", record: i,
+                             message: ("record " + string(i) + " is 94 codepoints but "
+                                       + string(r.byte_length) + " bytes: it holds non-ASCII, which this format does not permit, and the fields after it cannot be located by byte offset"),
                              expected: "94", found: string(r.byte_length) })
         end if
         if r.kind = "unknown" then
@@ -698,6 +779,24 @@ function validate_doc(doc)
                                  found: string(c.service_class_code.value) })
             end if
         end if
+        ' AN ADV BATCH USES A DIFFERENT ENTRY DETAIL LAYOUT, and this adapter
+        ' does not implement it. Service class 280 is Automated Accounting
+        ' Advice, whose entry detail carries a twelve-digit amount and
+        ' differently placed fields -- so reading one with the ordinary layout
+        ' produces an ordinary-looking number from the wrong columns. Found in
+        ' moov-io/ach's `adv.ach`, where it surfaced as a credit total of 0.00
+        ' against a declared 25,000,000.00. THE DISAGREEMENT WAS ALREADY LOUD;
+        ' what was missing was the CAUSE, and a reader who cannot see why a
+        ' total is wrong will look for the defect in the wrong place.
+        if not is_unknown(b.header) then
+            sc = recs[b.header].fields.service_class_code
+            if sc.status = "ok" and sc.value = "280" then
+                append(issues, { code: "unsupported_batch_kind", severity: "error",
+                                 record: b.header, concept: "service_class_code",
+                                 message: ("service class 280 is an ADV (automated accounting advice) batch, whose entry detail layout differs from the one this adapter implements -- its entries are read with the ordinary layout and any total derived from them is unreliable"),
+                                 found: "280" })
+            end if
+        end if
         for each e in b.entries
             code = recs[e.entry].fields.transaction_code
             if has(code, "direction") then
@@ -723,7 +822,12 @@ function validate_doc(doc)
             "the file control's debit total is"))
         append(issues, _compare_amount(fc, "total_credit_amount", file_credit, ent.control, "file_credit_total",
             "the file control's credit total is"))
-        append(issues, _compare_count(fc, "block_count", floor(n / 10), ent.control, "block_count",
+        ' BLOCKS OCCUPIED, WHICH IS A CEILING AND NOT A FLOOR. A conforming file
+        ' is a multiple of ten records so the two agree, and every fixture this
+        ' project generates is conforming -- which is why `floor` survived until
+        ' a real file arrived with its trailing 9-filler stripped. 93 records
+        ' occupy 10 blocks, and the file says 10.
+        append(issues, _compare_count(fc, "block_count", floor((n + 9) / 10), ent.control, "block_count",
             "the file control counts"))
     end if
     return _flatten(issues)
@@ -922,8 +1026,16 @@ function registry_entry()
              ' guide that all six layouts agree with is what makes that
              ' checkable rather than a statement about my own confidence.
              state: "researched",
-             recognition_status: "implemented",
-             read_status: "implemented",
+             ' VERIFIED AGAINST FILES THIS PROJECT DID NOT WRITE, which is what
+             ' these two fields can say and `state` cannot: `state` is the
+             ' SPECIFICATION axis and no specification was ever obtained, so it
+             ' stays `researched`. Ten files from another implementation: all
+             ' ten are recognised and read, two validate completely clean, and
+             ' every other finding is either a real defect in the file or a
+             ' limitation named above. That is the first evidence in this
+             ' project that the adapter works on anything but its own fixtures.
+             recognition_status: "verified",
+             read_status: "verified",
              ' RE-EMISSION, NOT ORIGINATION, and the distinction matters to
              ' anyone reading this entry to decide whether they can use it.
              ' This adapter reproduces a file it read -- byte for byte if
@@ -934,11 +1046,39 @@ function registry_entry()
              ' consumer's judgements (Axiom 9), not the format's. Saying
              ' "implemented" here would read as "you can originate with this".
              write_status: "re-emission only; this adapter does not originate a file",
+             ' NOT verified, and the corpus is why: ADV batches use an entry
+             ' layout this adapter does not implement, and transaction codes
+             ' real files carry -- 21 among them -- are not in its direction
+             ' table. Both are REPORTED rather than guessed, which is correct
+             ' behaviour and is not the same as being able to validate those
+             ' files.
              validation_status: "implemented",
-             test_vectors: [ "tests/finio/nacha/*.ach -- written here, not produced by a bank",
-                             "tests/finio/nacha_positions.txt -- field positions transcribed from the guide above, the one check on the layouts that did not originate here" ],
-             known_variants: [],
-             known_extensions: [],
+             test_vectors: [
+               { name: "tests/finio/nacha/*.ach",
+                 source_url_or_reference: "generated by tools/make_nacha_fixture.py in this repository",
+                 date_retrieved: "2026-09-14",
+                 licence: "Apache-2.0 (this project)",
+                 usage: "permitted", redistribution: "permitted",
+                 note: "written here, from this project's own model of the format -- which is exactly why the foreign vectors below were needed" },
+               { name: "tests/finio/nacha_positions.txt",
+                 source_url_or_reference: "field positions transcribed from the Regions Bank ACH layout guide cited in specification_sources",
+                 date_retrieved: "2026-09-15",
+                 licence: "not stated by the publisher",
+                 usage: "unstated", redistribution: "unstated",
+                 note: "the DOCUMENT is not redistributed; what is kept is a table of byte offsets, which is a statement of fact about a wire format" },
+               { name: "tests/finio/foreign/*.ach",
+                 source_url_or_reference: "https://github.com/moov-io/ach test/testdata -- files produced by a DIFFERENT implementation of this format",
+                 date_retrieved: "2026-09-15",
+                 licence: "Apache-2.0, Copyright The Moov Authors",
+                 usage: "permitted", redistribution: "permitted",
+                 note: "redistributed unmodified under section 4 with the licence alongside; provenance in tests/finio/foreign/PROVENANCE.txt. TEN FILES: two validate CLEAN, four read only once trailing-blank stripping was accommodated, one carries non-ASCII, one is an ADV batch this adapter does not interpret, and one declares five batches while holding four." } ],
+             known_variants: [
+               "trailing blanks stripped -- a file header at 75 bytes and a file control at exactly 55 are common, and nothing is lost because the missing tail is the blank part (4 of 10 foreign files)",
+               "not blocked -- real files arrive without their trailing 9-filler, so the record count is not a multiple of ten while the declared block count still counts the blocks the original occupied",
+               "non-ASCII in an ASCII format -- a record of 94 codepoints and 95 bytes, which the specification does not permit and which real producers emit anyway" ],
+             known_extensions: [
+               "ADV (service class 280) -- a different entry detail layout, NOT implemented; its entries are read with the ordinary layout and any total from them is unreliable, which validate now says",
+               "IAT -- addenda types 10 to 18 carry structured content this adapter keeps as opaque payment_related_information" ],
              maintenance_priority: "active",
              watch_sources: [
                { kind: "document",

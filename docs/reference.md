@@ -6800,6 +6800,18 @@ whole program without needing a call site.
   of the fields §9 itself specifies were **refused by name** by
   `finio.check_registry_entry`, including `source_url_or_reference` and
   `date_retrieved`, so a discovery pass could not have recorded what it found.
+  **A test vector carries its rights, and a prohibited one is refused.**
+  `test_vectors[]` was an array of bare strings: it recorded that a file was
+  used and nothing about where it came from or whether it may be — and a vector
+  is the thing most likely to be somebody else's property. `finio.check_test_vector`
+  requires a source, a retrieval date, and a `usage` and `redistribution` drawn
+  from `finio.usage_permissions()`. **The rule has three arms, not two**: an
+  explicit prohibition on use is **refused by name** (removed, never recorded
+  with a flag a caller can forget to read); an explicit permission is used, and
+  redistributed only if it says so; and **silence** — the common case, a bank
+  publishing a sample in its developer documentation having granted nothing in
+  writing — means the file may be read and **must not be committed**.
+  Redistribution may not exceed usage.
   A specification source is now a **record**, not a sentence —
   `finio.source_types()` names the seven kinds a survey can honestly cite, and
   `finio.check_specification_source` requires a reference **and a retrieval
@@ -6835,6 +6847,26 @@ whole program without needing a call site.
   reference guide is not freely published (though public implementation
   documentation for MT940 is abundant enough to be `DE_FACTO`). A suite asserts
   that split, so a later tranche that reverses it has to say so.
+  **Verified against files this project did not write.** Ten ACH files from
+  `moov-io/ach` (Apache-2.0, redistributed with its licence and a provenance
+  manifest) found three things no fixture written here could, because our
+  generator shares our misunderstandings: **four of the ten were refused
+  outright** by a strict 94-byte rule, their producer having stripped trailing
+  blanks so a file header arrives at 75 bytes and a file control at exactly 55
+  — nothing lost, the missing tail being the blank part, and a field past the
+  end now reads `unknown` under Axiom 7 rather than blank; **one carries
+  non-ASCII**, 94 codepoints in 95 bytes, which the specification does not
+  permit and which real producers emit anyway; and **`block_count` was computed
+  as a floor** where the field counts the blocks the file occupies, which is a
+  ceiling — the two agree on every conforming file, and every fixture here is
+  conforming. Two of the ten now validate completely clean, which is what moved
+  `recognition_status` and `read_status` to `verified` while `state` stays
+  `researched`: those are different axes, and no specification was ever
+  obtained. `validation_status` stays `implemented`, because ADV batches
+  (service class 280) use an entry layout this adapter does not implement and
+  several real transaction codes are not in its direction table — both
+  **reported rather than guessed**, which is correct and is not the same as
+  being able to validate those files.
 - `finio_camt` — ISO 20022 **camt.053** bank statements, and the **second**
   `finio` adapter (§20's proving set). The first of a different
   *representation*, which is the whole reason it was built second: §20 argues
