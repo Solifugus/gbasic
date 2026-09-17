@@ -257,6 +257,31 @@ document list, with a status column, is `docs/README.md`.
   and perturbing the library shows it produces a REFUSAL instead, because
   framing is decided once and recognition and reading go through that one
   decision.
+- **an ARI limitations register, deliberately NOT a set of fixes** —
+  `docs/ari_limitations.md` plus executable probes in `tests/run_ari.sh`.
+  Matthew's call, and it is a methodology decision rather than a feature:
+  `ari_discover` is built against a corpus THIS PROJECT GENERATED, so every
+  form discovery trips on is a temptation to reshape `ari` around one invented
+  corpus -- TEACHING TO THE TEST. The rule is record now, require evidence from
+  OUTSIDE the discovery corpus, test any addition where `ari` is tested, and
+  sweep generally at the end.
+  MEASURED rather than guessed, 14 entries split by what matters. CLASS A IS
+  SILENT WRONG ANSWERS and dwarfs the rest: `1.234,56` (European grouping) reads
+  as **1.23**, a thousandfold error with no diagnostic; three decimals are
+  truncated to two; a `DR` suffix reads POSITIVE while `CR` reads negative, so
+  a DR/CR report gets HALF ITS SIGNS RIGHT, which is worse than none. Class B
+  is honest misses, which correctly answer with the unknown value and a
+  diagnostic rather than a guess; class C is capability gaps.
+  EVERY ENTRY IS A NEGATIVE CONTROL that goes red WHEN THE LIMITATION IS FIXED
+  (the run_limitations.sh pattern, for the reason measured there -- five of
+  fourteen DOGFOOD entries were false), plus a coverage tripwire on an entry
+  with no probe. Four perturbations proven red, and one of them TAUGHT
+  SOMETHING: adding the two-digit-year pattern alone does not produce a wrong
+  date, it produces a RAISE that ends the parse -- so a class-B entry is a
+  question to answer, never a regex to paste. RECORDED HONESTLY: the
+  DD-MMM-YYYY addition was prompted by the corpus, is sanctioned by
+  text_design 5.1's "union of common forms" independent of it, and its
+  SELECTION was corpus-led, which is the part to be careful about.
 - **ARI Discover Phase 0** — `ari_discover`: profiling for
   print-image reports, which PROPOSES NOTHING (no specification generation --
   a layer that also guessed would make the guess impossible to evaluate apart

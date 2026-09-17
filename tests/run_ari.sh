@@ -188,6 +188,87 @@ for page in 0 20 45 66; do
     fi
 done
 
+# --- Tier 3b: the limitations register, held to the truth by RUNNING it --------
+#
+# docs/ari_limitations.md records what `ari` does NOT do, or does wrongly. Every
+# entry is a NEGATIVE CONTROL: the probe asserts the limitation still holds and
+# goes RED WHEN IT IS FIXED, naming the entry to strike.
+#
+# WHY A REGISTER RATHER THAN FIXES. `ari_discover` is being built against a
+# corpus this project generated, so every form discovery trips on is a
+# temptation to change `ari` -- and after enough of those, `ari` is shaped to one
+# invented corpus rather than to real reports. The register is what lets a
+# deficiency be RECORDED without being reactively fixed, and swept generally at
+# the end.
+#
+# WHY IT MUST BE EXECUTABLE. Five of fourteen entries in DOGFOOD.md were FALSE
+# when run_limitations.sh was written -- fixed by shipped work, still cited as
+# design justification, and not catchable by reading. A register that is only
+# prose rots the same way.
+#
+# THE COVERAGE TRIPWIRE below is the other half: an entry added to the document
+# and not probed is an entry that can quietly become false, which is the exact
+# failure this tier exists to prevent.
+if GBASIC_PATH=stdlib ./gbasic tests/ari_limitations_test.bas >"$out" 2>"$err"; then
+    mism="$(sed -n 's/^mismatches: //p' "$out")"
+    checks="$(sed -n 's/^checks: //p' "$out")"
+    if [ "$mism" = "0" ] && [ "${checks:-0}" -ge 30 ]; then
+        printf 'PASS limitations   %s probes, every recorded limitation still holds\n' "$checks"
+    else
+        printf 'FAIL limitations   %s checks, %s mismatches\n' "$checks" "$mism"
+        grep MISMATCH "$out" | sed 's/^/     /'
+        printf '     A limitation that no longer holds is FIXED -- strike its entry\n'
+        printf '     from docs/ari_limitations.md and remove its probe.\n'
+        status=1
+    fi
+else
+    printf 'FAIL limitations   probe program exited nonzero\n'
+    tail -10 "$err"
+    status=1
+fi
+
+# PROBE L0 -- "no corpus of real print-image reports exists".
+#
+# NOT A BEHAVIOUR, so it cannot be probed by running `ari`; it is a fact about
+# what this project HOLDS. Asserted structurally instead, and it is a real
+# negative control: examples/fixtures/ari/MANIFEST.md opens by declaring every
+# file in it SYNTHETIC, so this check goes RED the day somebody adds a report
+# produced by a real system -- which is exactly when L0 should be struck.
+if grep -q 'Every file in this directory is SYNTHETIC' examples/fixtures/ari/MANIFEST.md    && grep -q 'Every file in this directory is SYNTHETIC' examples/fixtures/ari_discover/MANIFEST.md; then
+    printf 'PASS limitations   L0 still holds: every ARI fixture is declared synthetic
+'
+else
+    printf 'FAIL limitations   an ARI fixture corpus no longer declares itself synthetic --
+'
+    printf '                   if a real report has been added, strike L0 from
+'
+    printf '                   docs/ari_limitations.md and remove this probe.
+'
+    status=1
+fi
+
+# COVERAGE, both directions: every id in the register must have a probe, and
+# every probe must name an id that is in the register.
+reg_ids=$(grep -oE '^\| \*\*[A-Z][0-9]\*\*' docs/ari_limitations.md | tr -d '|* ' | sort -u)
+if [ -z "$reg_ids" ]; then
+    printf 'FAIL limitations   docs/ari_limitations.md lists no entries -- has it been emptied?\n'
+    status=1
+else
+    missing=""
+    for id in $reg_ids; do
+        if ! grep -qE "\"$id " tests/ari_limitations_test.bas \
+           && ! grep -qE "^# PROBE $id\b" "$0"; then
+            missing="$missing $id"
+        fi
+    done
+    if [ -n "$missing" ]; then
+        printf 'FAIL limitations   recorded but never probed:%s\n' "$missing"
+        status=1
+    else
+        printf 'PASS limitations   all %s recorded entries are probed\n' "$(printf '%s\n' $reg_ids | wc -l)"
+    fi
+fi
+
 # --- Tier 4: valgrind ----------------------------------------------------------
 if vg_available; then
     if GBASIC_PATH=stdlib vg_run ./gbasic examples/ari_teller_test.bas \

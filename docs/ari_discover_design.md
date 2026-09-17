@@ -685,6 +685,39 @@ LLM failure never prevents deterministic discovery. When evidence is insufficien
 
 ## 15. Testing strategy
 
+> ### A rule about changing `ari`
+>
+> **Added 2026-09-16, after the first change to `ari` that this project
+> prompted.** Discovery is being built against a corpus this project generated.
+> That creates a hazard with a name: every time discovery meets a form `ari`
+> cannot parse, the cheapest response is to change `ari` — and after enough of
+> those, the parser is shaped to one invented corpus rather than to the
+> population of real reports. **Teaching to the test.**
+>
+> So:
+>
+> 1. A deficiency found while building discovery is **recorded** in
+>    [ari_limitations.md](ari_limitations.md), not fixed on the spot.
+> 2. A change to `ari` needs evidence from **outside** the discovery corpus —
+>    the format literature, a real report, or `ari`'s own hand-authored
+>    fixtures. "Our corpus needs it" is not evidence, because we wrote the
+>    corpus.
+> 3. Any capability that is added is tested **where `ari` is tested**, against
+>    `examples/fixtures/ari/`, not only in `run_ari_discover.sh`.
+> 4. The sweep happens **at the end and in one pass**, against the whole
+>    register, so the result generalises rather than accumulating the order in
+>    which discovery happened to trip.
+> 5. When discovery meets a form `ari` cannot read, **it reports it as
+>    unrecognised.** That is the honest profile, and it is information a person
+>    can act on — a profile that silently agreed with a parser that would fail
+>    later is worse than one that says so now.
+>
+> The register is executable: every entry carries a probe in `run_ari.sh` that
+> asserts the limitation *still holds*, so a fixed-but-still-recorded entry goes
+> red. That rule already earned itself once — measured over `DOGFOOD.md`, five
+> of fourteen entries were false.
+
+
 ### 15.1 The corpus, and why the existing ARI fixtures are not it
 
 > **Corrected — the draft's starting corpus cannot measure what Phase 0
