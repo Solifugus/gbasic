@@ -721,7 +721,7 @@ The key carries what §8's scorecard needs to be *measured* rather than reported
 | `branches[].accounts[]` | **the planted values** — the strong oracle §15.4 asks for. A coverage percentage cannot substitute: a specification can claim every line and extract the wrong number |
 | `variant` | which of the nine axes a source exercises, so a failure is attributable rather than merely noticed |
 
-Verified on generation: 480 detail rows, every planted account, name and amount
+Verified on generation: 808 detail rows, every planted account, name and amount
 appearing exactly once in its own file, every branch total equal to the sum of
 its accounts, every declared furniture line really furniture — 0 mismatches.
 
@@ -845,10 +845,10 @@ Measured over the two corpora, on the features an inference engine keys on:
 
 | | structured | null |
 |---|---|---|
-| non-blank lines | 921 | 679 |
+| non-blank lines | 1,564 | 679 |
 | distinct structural signatures | **9** | **389** |
 | share covered by the top 3 signatures | **73.8 %** | **6.5 %** |
-| most common (indent, first token) pair | `BRANCH` at column 0, 100× (**10.9 %**) | 4× (**0.6 %**) |
+| most common (indent, first token) pair | `BRANCH` at column 0, 169× (**10.8 %**) | 4× (**0.6 %**) |
 
 Same tokens; structure absent by two orders of magnitude on exactly the measures
 that matter.
@@ -870,16 +870,43 @@ number, not as a box to tick — and §17 makes it an acceptance criterion.
 - Repetition and page-furniture report.
 - Human-readable profile; no spec generation.
 
-> **Ready to start (2026-09-16).** The corpus exists, its answer key exists, and
-> the null corpus exists. Phase 0's first measurable claim is already scoreable
-> without writing a line of inference: `furniture_lines` in `truth.json` gives
-> page-furniture detection as precision **and** recall by line number, against
-> 24 sources whose pagination was generated blind to content.
+> **BUILT 2026-09-16** — `stdlib/ari_discover.bas`, `tests/run_ari_discover.sh`,
+> `examples/ari_discover_profile.bas`, `examples/ari_discover_infer.bas`.
 >
-> The one thing to settle before writing code is §6.1's index-space rule, since
-> it decides the shape of the source grid and cannot be retrofitted cheaply —
-> and the corpus cannot catch it, because every file in it is ASCII. Write the
-> non-ASCII adversarial source first (§15.3).
+> **Measured, against the corpus's own planted answer key**: furniture
+> precision and recall are both **1.0** over the 20 multi-page sources (190
+> lines planted, 190 claimed), and all 4 single-page sources **refuse with a
+> reason** rather than guessing. Over the 12 structureless sources, **0**
+> furniture lines are claimed.
+>
+> **Four things were wrong on the first working version, and every one produced
+> a plausible profile rather than an error.** They are recorded in the source
+> beside the rule that fixes each, because the rules are not obvious and a
+> later reader will be tempted to simplify them back:
+>
+> 1. **Every word taken as a literal.** A member name is a word, so each detail
+>    row became its own family — 39 families in a report with 8. Stability is
+>    decided **by the group**, not by one line.
+> 2. **A single recurring line shape taken as a page period.** It invented
+>    pages in 14 of 18 single-page sources and claimed 18 furniture lines across
+>    the null corpus. A header is a **block**, it starts at the **top of the
+>    file**, and **page one defines it** — three separate constraints, each of
+>    which was needed.
+> 3. **Shape agreement without literal agreement.** A page break that fell just
+>    before a section heading made page two open with the same eight *shapes* as
+>    page one, so the whole window agreed: 17 lines claimed where 9 were
+>    planted. §7 Phase 3's own words — "variable slots such as page number or
+>    run date" — are the fix: a furniture line's **words** are stable.
+> 4. **A period search bounded at half the document.** A 55-line report with a
+>    50-line page has two pages; the second is a five-line tail. Bounding the
+>    search at `n/2` found no period at all on most sources.
+>
+> **The null corpus earned its place immediately**: it is what caught defect 2's
+> 18 false positives, and nothing else in the suite could have.
+>
+> **And building it found a gap in `ari` itself** — see §20 and the note in
+> `ari.bas`: the engine could not read `DD-MMM-YYYY`, the classic mainframe
+> print-image date, at all.
 
 ### Phase 1: Single-section inference
 
@@ -988,7 +1015,16 @@ If the implementation becomes too large for one pure-gBASIC library, internal he
 
 - What exact subset of ARI syntax should the first generator emit?
 - Should inference return only source text, or also a structured specification AST?
-- Which existing type recognizers can be shared directly rather than duplicated?
+- ~~Which existing type recognizers can be shared directly rather than duplicated?~~
+  **Answered by Phase 0.** The **pattern tables** are shared and the
+  **functions** are not: `ari.money_patterns()` and `ari.date_patterns()` are
+  public and `ari_discover` consumes them, while `_money_in` and `_date_in`
+  stay private. That split is not a compromise — those two are built for
+  *conversion* and throw their spans away (`_money_in` computes `beg`/`fin` and
+  returns `best.val`; `_date_in` never has a position at all), whereas
+  discovery needs *location* and no value. One table, two jobs, and a tripwire
+  in `tests/run_ari_discover.sh` fails if discovery grows a money pattern of
+  its own.
 - Does ARI need a diagnostic parse mode that reports claimed and unclaimed spans?
 - How should an accepted human decision file be represented and versioned?
 - What minimum corpus size should trigger holdout validation automatically?

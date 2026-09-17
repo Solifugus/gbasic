@@ -7209,6 +7209,84 @@ whole program without needing a call site.
   `ari_parse_spec(spec_text)` parses a spec on its own, and
   `clean_grid(report_text, spec_text)` exposes the page-furniture pass
   independently of any spec — useful, and testable, without parsing anything.
+  `inspect(report_text, spec_text)` is `parse` plus `findings`: the parse
+  diagnostics grouped by reason, each with a field path and a remedial hint,
+  and instance indices collapsed so `branches[0].opened` and
+  `branches[1].opened` report as one field — an authoring-time summary, so a
+  guess never enters the parse path.
+
+  **The recognizer tables are public**, and that is a decision rather than an
+  accident of scope: `money_patterns()` and `date_patterns()` are the same
+  tables `_money_in` and `_date_in` consume, and `ari_discover` reads them
+  rather than keeping its own. Two copies of *what money looks like* drift, and
+  the failure would be silent — a profile reporting a `date` in a column the
+  engine answers `no-date-found` for. The split is that the **tables** are
+  shared and the **functions** are not: `_money_in` and `_date_in` are built
+  for conversion and throw their spans away, while discovery needs location and
+  no value. `date_patterns()` is ordered most-specific first and **the order is
+  semantic**; each entry carries `needs_dialect`, true only for the numeric
+  form, which is the residue `using date:` exists for.
+
+  **Dates**: ISO `YYYY-MM-DD`, the numeric `d/m/y` family, and — added
+  2026-09-16 — the alphabetic-month forms `DD-MMM-YYYY` and `MMM-DD-YYYY`,
+  separated by `-`, `/`, `.` or a space, in any case. **An alphabetic month
+  needs no dialect**: `16-OCT-2026` cannot be misread, so it is the one date
+  form that can never produce an `ambiguous-date` diagnostic. The gap was found
+  by building something else — the ARI Discover corpus emits that format because
+  it is the classic mainframe print-image date, and `ari` answered
+  `no-date-found` for every one of them.
+
+- `ari_discover` — **Phase 0: profiling** (`docs/ari_discover_design.md`).
+  Measures what repeats, varies and collides in a corpus of print-image
+  reports, and **proposes nothing**: there is no specification generation here,
+  because a layer that also guessed would make the guess impossible to evaluate
+  apart from the measurement under it. It depends on `ari`; `ari` never depends
+  on it, so a caller with a known specification pays for none of this.
+
+  `default_options()` is the options record as a value —
+  `minimum_support`, `minimum_confidence`, `maximum_section_depth`,
+  `allow_fixed_columns`, `redact_examples`, `llm` — and `option_names()` lists
+  the field names. Every entry point takes `options = nothing` and substitutes
+  the defaults, so the record is never a default parameter value (gBASIC
+  defaults are literals). An unrecognised field is **refused by name**.
+
+  `profile(report_text [, options])` and
+  `profile_source({id:, text:} [, options])` return one source's profile:
+  `physical_lines`, `bytes`, `blank_lines`, `content_lines`, `furniture`,
+  `families` and the `grid`. `profile_corpus(sources [, options])` adds
+  `shared_signatures`, `single_source_signatures` and a `support_warning` —
+  because below about ten sources `minimum_support` cannot be calibrated at
+  all: with three, `0.80` *means* "3 of 3", since 2/3 is 0.67.
+  `explain(profile [, options])` renders a profile as text.
+
+  `grid(source_id, report_text)` is the source grid, one row per physical line,
+  carrying **both index spaces**: `byte_start`/`byte_length` into the file for
+  provenance, and `cp_length`/`indent` in codepoints. `spans(line_text)`
+  returns the typed spans of one line with `cp_start`/`cp_length` **and**
+  `byte_start`/`byte_length`, plus `alternatives` and `needs_dialect`.
+  `token_kinds()` lists what a span may be.
+
+  **The two index spaces are never mixed.** `ari` locates in codepoints — its
+  `columns` rule, `len`, `mid` — so anything that could become part of a
+  generated rule is in codepoints, while provenance back to the file is in
+  bytes. Every position field says which; there is no bare `offset` or `start`.
+  This is the defect `finio` Phase 0 shipped one library over, and an ASCII
+  fixture cannot see it, because the two coincide exactly until a multi-byte
+  character appears.
+
+  `signature(line_text)` replaces typed spans with placeholders and keeps
+  literals; `shape(line_text)` blanks the literals too. `families(rows,
+  exclude_lines [, options])` groups lines and decides **from the group** which
+  words are literals: a word holding `minimum_support` of its group is an
+  anchor, anything else is `<TEXT>`. One line cannot decide that, and taking
+  every word as a literal makes each detail row its own family.
+
+  `page_starts(rows [, options])` reports where pages begin —
+  stated by form feeds, or inferred from a repeating block that **page one
+  begins with**. `furniture(rows [, options])` returns the header lines,
+  `pages`, the `evidence`, and `why` when it **refuses**: a single-page report's
+  header is indistinguishable from its first heading, so one page is not
+  evidence of furniture and the honest answer names what is missing.
 - `llm` — a chat-completion client (`docs/llm_design.md`).
 - `gui` — the declarative layer for the experimental GTK 3 `gui` module
   (`docs/gui_design.md`).

@@ -2,82 +2,127 @@ BRANCH ACTIVITY REGISTER                                PAGE    1
 MIDLAND MUTUAL CREDIT UNION                             RUN 09/16/2026 06:12
 ========================================================================
 
-BRANCH  72  CEDAR PARK
+BRANCH  64  RIVERSIDE
 
     ACCT NO     MEMBER NAME              POSTED             AMOUNT
     ----------  ----------------------   ----------   ------------
-    00144364    OKAFOR, WINIFRED         17-APR-2026     -3,608.44
-    00143028    PETROVA, IRINA           28-MAY-2026     -4,671.81
-    00145074    THORNBURY, LASZLO        22-JUL-2026      1,329.13
-    00144091    CHAUDHRY, YUKI           18-JAN-2026      2,822.06
-    00145629    MERCER, PHILIPPE         24-AUG-2026      3,288.77
-    00146281    LINDQVIST, BRENDAN       28-SEP-2026      2,701.23
-    00142684    KOVACS, ALICE            22-JUN-2026      2,057.70
-    00142548    REYES, EVA               16-OCT-2026        567.86
+    00141935    CHAUDHRY, MARGARET       16-JUL-2026       -200.01
+    00140994    ABIODUN, GUNNAR          28-FEB-2026      2,818.30
+    00144222    MWANGI, ALICE            22-JAN-2026        -80.49
+    00140295    SANTOS, BRENDAN          19-NOV-2026      3,517.29
 
-    TOTAL FOR BRANCH                                      4,486.50
+    TOTAL FOR BRANCH                                      6,055.09
 
     REMARKS:
       reconciled against the general ledger
 
-BRANCH  29  WESTFIELD
+BRANCH  28  OLD MILL
 
     ACCT NO     MEMBER NAME              POSTED             AMOUNT
     ----------  ----------------------   ----------   ------------
-    00144240    OKAFOR, DIEGO            14-OCT-2026      4,613.74
-    00144560    CHAUDHRY, CHIARA         20-MAY-2026      1,630.34
-    00141591    MWANGI, CHIARA           22-SEP-2026     -1,228.93
-    00140662    MERCER, GUNNAR           21-JAN-2026        104.57
-    00144424    PETROVA, CARMEN          15-JAN-2026        932.42
-    00148089    REYES, CHIARA            19-FEB-2026     -3,243.91
-    00143307    WHITFIELD, WINIFRED      13-JUN-2026      1,383.90
-    00140544    MWANGI, MARGARET         19-AUG-2026     -2,010.21
-    00143777    ABIODUN, FEMI            22-FEB-2026     -2,431.02
+    00146578    PETROVA, CARMEN          16-OCT-2026        515.19
+    00149967    DELACROIX, ALICE         21-AUG-2026      2,217.63
+    00141841    REYES, ALICE             19-JUN-2026        471.82
+    00149704    PETROVA, FEMI            22-MAR-2026      2,394.07
+    00146527    KOVACS, YUKI             21-AUG-2026      4,160.15
 
-    TOTAL FOR BRANCH                                       -249.10
+    TOTAL FOR BRANCH                                      9,758.86
 
     REMARKS:
-      branch closed early for maintenance
+      posted late by operations
 
-BRANCH  53  NORTHGATE
+BRANCH  87  RIVERSIDE
 
     ACCT NO     MEMBER NAME              POSTED             AMOUNT
     ----------  ----------------------   ----------   ------------
-    00149630    WHITFIELD, CHIARA        14-NOV-2026        643.67
-    00148608    PETROVA, NADIA           22-NOV-2026      3,165.23
-    00142256    WHITFIELD, FEMI          16-DEC-2026      1,142.87
-    00142518    ABIODUN, MARGARET        13-NOV-2026      2,472.93
-    00146677    ANDERSSON, NADIA         16-MAY-2026      1,158.83
-    00143288    OKAFOR, BRENDAN          24-JAN-2026      3,709.48
-    00147560    ABIODUN, ESTHER          16-APR-2026      2,892.80
-    00146107    KOVACS, YUKI             16-JUN-2026      2,541.74
-    00141619    MERCER, YUKI             27-MAR-2026      2,214.35
+    00148017    SANTOS, GUNNAR           22-JUL-2026        397.95
+    00141580    ROSSI, CHIARA            15-JUN-2026      1,832.97
+    00145589    NAKAMURA, CHIARA         22-MAR-2026     -1,403.75
+    00145477    ABIODUN, CARMEN          16-JUN-2026      4,490.50
+    00149794    WHITFIELD, IRINA         13-SEP-2026      1,813.55
+    00141391    KOVACS, IRINA            23-AUG-2026        -25.05
+    00143159    LINDQVIST, BRENDAN       13-SEP-2026      2,002.72
+    00144104    LINDQVIST, YUKI          18-JUL-2026     -1,836.71
+    00149211    CHAUDHRY, EVA            20-MAY-2026     -1,058.80
 
-    TOTAL FOR BRANCH                                     19,941.90
+    TOTAL FOR BRANCH                                      6,213.38
 
     REMARKS:
-      branch closed early for maintenance
+      posted late by operations
 
+BRANCH  88  RIVERSIDE
+
+    ACCT NO     MEMBER NAME              POSTED             AMOUNT
+    ----------  ----------------------   ----------   ------------
+    00143489    DELACROIX, LASZLO        23-JAN-2026     -4,223.90
+    00142287    MERCER, LASZLO           16-APR-2026      2,263.41
+    00143673    REYES, EVA               15-JUL-2026      4,512.28
+    00148956    LINDQVIST, CARMEN        24-JUN-2026      1,021.86
 
 BRANCH ACTIVITY REGISTER                                PAGE    2
 MIDLAND MUTUAL CREDIT UNION                             RUN 09/16/2026 06:12
 ========================================================================
 
-BRANCH  85  NORTHGATE
+    00146521    DELACROIX, CHIARA        24-FEB-2026     -1,748.18
+    00149267    ABIODUN, FEMI            27-APR-2026      2,219.12
+    00148489    SANTOS, GUNNAR           16-JUL-2026     -1,278.37
+    00141731    MERCER, EVA              28-DEC-2026      4,026.94
+    00148776    MWANGI, PHILIPPE         28-JUN-2026      2,864.28
+
+    TOTAL FOR BRANCH                                      9,657.44
+
+    REMARKS:
+      two items held for review
+
+BRANCH  15  WESTFIELD
 
     ACCT NO     MEMBER NAME              POSTED             AMOUNT
     ----------  ----------------------   ----------   ------------
-    00148087    MERCER, ALICE            14-JUL-2026      1,625.15
-    00148551    ANDERSSON, PHILIPPE      13-AUG-2026     -3,689.90
-    00143553    CHAUDHRY, ALICE          18-NOV-2026      2,011.52
-    00141781    REYES, YUKI              17-NOV-2026      3,975.16
-    00146786    MERCER, IRINA            21-OCT-2026     -1,984.15
-    00148392    THORNBURY, BRENDAN       26-MAR-2026        711.36
-    00144594    REYES, WINIFRED          26-JAN-2026      1,290.47
-    00144533    ABIODUN, MARGARET        15-NOV-2026     -3,001.27
-    00149569    ANDERSSON, ESTHER        27-JUL-2026      3,706.22
+    00146228    ANDERSSON, YUKI          27-JUN-2026      1,879.50
+    00142875    THORNBURY, MARGARET      14-JUN-2026      3,646.38
+    00142850    MWANGI, ALICE            27-NOV-2026      2,781.83
+    00141830    MWANGI, ALICE            17-MAR-2026     -2,203.91
+    00146522    DELACROIX, CARMEN        13-SEP-2026      4,803.57
+    00145566    KOVACS, GUNNAR           17-APR-2026        817.91
+    00149274    ANDERSSON, ALICE         19-APR-2026      3,571.69
+    00141467    LINDQVIST, LASZLO        14-APR-2026      1,884.56
 
-    TOTAL FOR BRANCH                                      4,644.56
+    TOTAL FOR BRANCH                                     17,181.53
+
+    REMARKS:
+      reconciled against the general ledger
+
+BRANCH  86  HARBOUR
+
+    ACCT NO     MEMBER NAME              POSTED             AMOUNT
+    ----------  ----------------------   ----------   ------------
+    00145921    DELACROIX, BRENDAN       21-FEB-2026      3,353.07
+    00143827    LINDQVIST, DIEGO         18-JUN-2026      2,544.91
+    00147719    DELACROIX, PHILIPPE      25-JUL-2026      3,708.74
+    00145307    MWANGI, ALICE            28-OCT-2026      4,145.80
+    00145775    CHAUDHRY, IRINA          19-JUN-2026      4,670.82
+    00149858    MERCER, NADIA            22-MAR-2026     -3,653.78
+
+    TOTAL FOR BRANCH                                     14,769.56
+
+    REMARKS:
+      posted late by operations
+
+BRANCH  18  RIVERSIDE
+
+    ACCT NO     MEMBER NAME              POSTED             AMOUNT
+    ----------  ----------------------   ----------   ------------
+    00142600    REYES, CHIARA            22-FEB-2026      2,203.41
+    00146172    CHAUDHRY, PHILIPPE       22-DEC-2026     -1,506.03
+    00149718    THORNBURY, DIEGO         13-APR-2026      2,180.51
+    00149702    KOVACS, EVA              28-AUG-2026      4,328.50
+
+    TOTAL FOR BRANCH                                      7,206.39
+
+
+BRANCH ACTIVITY REGISTER                                PAGE    3
+MIDLAND MUTUAL CREDIT UNION                             RUN 09/16/2026 06:12
+========================================================================
 
     REMARKS:
       reconciled against the general ledger

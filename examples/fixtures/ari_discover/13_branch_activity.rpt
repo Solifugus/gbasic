@@ -2,33 +2,93 @@ BRANCH ACTIVITY REGISTER                                PAGE    1
 MIDLAND MUTUAL CREDIT UNION                             RUN 09/16/2026 06:12
 ========================================================================
 
-BRANCH  92  HARBOUR
+BRANCH  10  HARBOUR
 
   ACCOUNT     MEMBER NAME                    POSTED             AMOUNT
   ----------  ----------------------------   ----------   ------------
-  00148438    CHAUDHRY, NADIA                02/28/2026       1,829.10
-  00145755    ROSSI, IRINA                   01/27/2026       4,233.49
-  00147970    CHAUDHRY, ALICE                11/16/2026         863.11
-  00141316    NAKAMURA, WINIFRED             02/27/2026       3,058.17
-  00140046    ANDERSSON, EVA                 06/27/2026         122.25
-  00140743    LINDQVIST, CHIARA              07/28/2026        -462.17
+  00144755    CHAUDHRY, PHILIPPE             12/19/2026      -2,725.04
+  00146887    ABIODUN, YUKI                  03/13/2026       2,934.57
+  00142478    MERCER, MARGARET               07/24/2026         648.97
+  00143423    NAKAMURA, CARMEN               11/23/2026      -4,300.91
+  00142500    CHAUDHRY, NADIA                01/25/2026       3,024.38
 
-  BRANCH TOTALS                                               9,643.95
+  BRANCH TOTALS                                                -418.03
+
+  REMARKS:
+    posted late by operations
+
+BRANCH  42  STONEBRIDGE
+
+  ACCOUNT     MEMBER NAME                    POSTED             AMOUNT
+  ----------  ----------------------------   ----------   ------------
+  00149850    CHAUDHRY, CHIARA               04/26/2026         600.50
+  00145174    ABIODUN, WINIFRED              01/26/2026         351.70
+  00148053    ROSSI, ALICE                   04/27/2026       3,561.37
+  00141794    LINDQVIST, BRENDAN             03/22/2026       1,782.80
+
+  BRANCH TOTALS                                               6,296.37
+
+  REMARKS:
+    reconciled against the general ledger
+
+BRANCH  21  HARBOUR
+
+  ACCOUNT     MEMBER NAME                    POSTED             AMOUNT
+  ----------  ----------------------------   ----------   ------------
+  00143405    THORNBURY, ALICE               02/16/2026       1,107.79
+  00140388    DELACROIX, MARGARET            01/13/2026       1,531.83
+  00145060    SANTOS, IRINA                  12/22/2026       4,624.77
+  00143282    KOVACS, CARMEN                 09/20/2026        -682.12
+  00147754    KOVACS, MARGARET               04/16/2026      -2,137.85
+  00140562    CHAUDHRY, EVA                  06/22/2026       3,161.39
+  00145916    ABIODUN, CARMEN                03/15/2026       3,485.42
+  00141877    ABIODUN, BRENDAN               03/28/2026       3,329.28
+  00146595    ROSSI, GUNNAR                  09/18/2026       1,850.52
+
+  BRANCH TOTALS                                              16,271.03
 
   REMARKS:
     branch closed early for maintenance
 
-BRANCH  32  CEDAR PARK
+BRANCH  98  OLD MILL
 
   ACCOUNT     MEMBER NAME                    POSTED             AMOUNT
   ----------  ----------------------------   ----------   ------------
-  00147065    KOVACS, DIEGO                  04/22/2026      -2,531.54
-  00149328    KOVACS, CHIARA                 09/26/2026       4,767.87
-  00148800    ABIODUN, GUNNAR                09/20/2026       4,187.81
-  00140333    CHAUDHRY, GUNNAR               08/27/2026       1,728.76
+  00148172    REYES, GUNNAR                  12/25/2026       3,778.74
+  00140064    ANDERSSON, GUNNAR              05/20/2026       3,868.80
+  00145815    LINDQVIST, DIEGO               09/16/2026         991.68
+  00148537    ANDERSSON, FEMI                06/16/2026       3,084.46
+  00141034    OKAFOR, ALICE                  05/26/2026       4,209.38
+  00141200    ANDERSSON, IRINA               08/23/2026       4,782.14
+  00141321    THORNBURY, IRINA               05/26/2026       2,569.99
+  00147703    ABIODUN, NADIA                 05/19/2026       1,736.42
+  00146367    DELACROIX, PHILIPPE            06/13/2026         773.53
 
-  BRANCH TOTALS                                               8,152.90
+
+BRANCH ACTIVITY REGISTER                                PAGE    2
+MIDLAND MUTUAL CREDIT UNION                             RUN 09/16/2026 06:12
+========================================================================
+
+  BRANCH TOTALS                                              25,795.14
 
   REMARKS:
     reconciled against the general ledger
+
+BRANCH  74  OLD MILL
+
+  ACCOUNT     MEMBER NAME                    POSTED             AMOUNT
+  ----------  ----------------------------   ----------   ------------
+  00140779    CHAUDHRY, DIEGO                09/16/2026       2,907.14
+  00140023    LINDQVIST, ESTHER              06/16/2026         414.87
+  00147754    ANDERSSON, BRENDAN             03/13/2026       3,053.56
+  00146818    DELACROIX, CHIARA              01/23/2026         758.12
+  00147496    THORNBURY, EVA                 12/14/2026          99.78
+  00141563    ABIODUN, CHIARA                09/19/2026       4,421.13
+  00149154    MERCER, YUKI                   07/22/2026       4,160.88
+  00144892    OKAFOR, LASZLO                 03/23/2026       2,459.29
+
+  BRANCH TOTALS                                              18,274.77
+
+  REMARKS:
+    branch closed early for maintenance
 

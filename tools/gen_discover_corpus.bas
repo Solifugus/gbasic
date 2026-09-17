@@ -340,7 +340,12 @@ program main( args )
   k = 0
   while k < count_n
     v = variant_for(k)
-    nbranches = 2 + random_int(0, 2)
+    ' ENOUGH BRANCHES THAT MOST SOURCES PAGINATE. Measured with 2-4: only 6 of
+    ' 24 sources ran to a second page, so the furniture tier -- the one thing
+    ' Phase 0 can be scored on exactly -- had six samples and eighteen sources
+    ' on which the right answer is a refusal. Both cases are wanted; a corpus
+    ' three-quarters weighted to the refusal is not.
+    nbranches = 3 + random_int(0, 4)
 
     content = []
     branches = []

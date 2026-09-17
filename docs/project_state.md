@@ -257,6 +257,26 @@ document list, with a status column, is `docs/README.md`.
   and perturbing the library shows it produces a REFUSAL instead, because
   framing is decided once and recognition and reading go through that one
   decision.
+- **ARI Discover Phase 0** — `ari_discover`: profiling for
+  print-image reports, which PROPOSES NOTHING (no specification generation --
+  a layer that also guessed would make the guess impossible to evaluate apart
+  from the measurement under it). Furniture precision and recall are both 1.0
+  against the planted answer key over 20 multi-page sources, and the 4
+  single-page sources REFUSE WITH A REASON, since a header appearing once
+  cannot be told from a first heading. FOUR DEFECTS, each of which produced a
+  PLAUSIBLE PROFILE rather than an error: every word taken as a literal (39
+  families in a report with 8); a single recurring line shape taken as a page
+  period (invented pages in 14 of 18 single-page sources, and 18 furniture
+  lines across the NULL corpus); shape agreement without literal agreement (a
+  page break falling before a section heading made page two open with the same
+  eight shapes, 17 claimed where 9 were planted); and a period search bounded
+  at half the document, which cannot find a 50-line page in a 55-line report.
+  THE NULL CORPUS CAUGHT THE SECOND AND NOTHING ELSE COULD. Building it also
+  found that `ari` could not read DD-MMM-YYYY -- the classic mainframe date --
+  at all, in a library whose whole subject is print-image reports; nothing in
+  the tree used the format, so nothing could see it. The recognizer TABLES are
+  now shared (`ari.money_patterns()`, `ari.date_patterns()`) rather than
+  copied, which is Sec 20's open decision answered and a tripwire enforces it.
 - **a corpus for ARI Discover, before the library** — `examples/fixtures/ari_discover/`
   (24 branch-activity reports across nine declared drift axes with a PLANTED
   answer key, plus a NULL corpus of 12 structureless sources) and the two

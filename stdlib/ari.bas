@@ -130,6 +130,42 @@ library ari
     ' Ordered most-specific first: the bracket, paren, CR and trailing-minus
     ' forms must be tried before the plain one, or the plain pattern matches
     ' their digits and drops the sign.
+    ' --- THE RECOGNIZER TABLES ARE PUBLIC, AND THAT IS §20's ANSWER ---------
+    '
+    ' `ari_discover` has to find the same money and date spans this parser
+    ' will later extract, or a profile reports a DATE in a column the engine
+    ' cannot read and the specification generated from it is wrong before it
+    ' is executed. Two copies of "what money looks like" drift -- which is the
+    ' defect a tripwire guards in three other places in this tree.
+    '
+    ' So the PATTERN TABLES are shared and the FUNCTIONS are not. That split is
+    ' not a compromise, it is the right shape: `_money_in` and `_date_in` are
+    ' built for CONVERSION and throw their spans away (`_money_in` computes
+    ' `beg`/`fin` and returns `best.val`; `_date_in` never has a position at
+    ' all), while discovery needs LOCATION and no value. One table, two jobs.
+    function money_patterns()
+        return _money_patterns()
+    end function
+
+    ' Ordered most-specific first, and the ORDER IS SEMANTIC: `_date_in` tries
+    ' them in this sequence, so ISO wins over an alphabetic month and both win
+    ' over the numeric form that may need a declared dialect. A consumer that
+    ' reordered them would recognise the same tokens and settle some of them
+    ' differently.
+    '
+    ' `needs_dialect` is what a profile has to know: a token matching a pattern
+    ' marked true CANNOT be settled from the token alone, which is the residue
+    ' `using date:` exists for -- and is a QUESTION for §10's human review, not
+    ' a failure.
+    function date_patterns()
+        return [
+            { re: "([0-9]{4})-([0-9]{2})-([0-9]{2})", kind: "iso", needs_dialect: false },
+            { re: "([0-9]{1,2})[-/. ]([A-Za-z]{3})[-/. ]([0-9]{4})", kind: "dmy_name", needs_dialect: false },
+            { re: "([A-Za-z]{3})[-/. ]([0-9]{1,2})[-/. ]([0-9]{4})", kind: "mdy_name", needs_dialect: false },
+            { re: "([0-9]{1,2})[/.-]([0-9]{1,2})[/.-]([0-9]{4})", kind: "numeric", needs_dialect: true }
+        ]
+    end function
+
     function _money_patterns()
         return [
             { re: "<[ ]*\\$?[ ]*([0-9,]+\\.[0-9]{2})[ ]*>", neg: true },
@@ -314,51 +350,90 @@ library ari
     ' timezone-free runtime constructor from year/month/day (only `now` and a
     ' shifting `from_epoch`), so a native value could not be produced without
     ' inventing a timezone. See /DOGFOOD.md 2026-08-01.
+    ' Month name to number, or 0. Three letters, any case: the abbreviations are
+    ' fixed by every report generator that emits them and do not vary by locale
+    ' in this format's population.
+    function _month_no(abbr)
+        names = [ "JAN", "FEB", "MAR", "APR", "MAY", "JUN",
+                  "JUL", "AUG", "SEP", "OCT", "NOV", "DEC" ]
+        up = upper(abbr)
+        i = 0
+        while i < 12
+            if names[i] = up then
+                return i + 1
+            end if
+            i = i + 1
+        end while
+        return 0
+    end function
+
+    ' ONE TABLE, CONSUMED HERE. `date_patterns()` is public because
+    ' `ari_discover` must find the same date spans this function will extract;
+    ' if the table were a second copy the two would drift, and the failure is
+    ' silent -- a profile reporting a DATE in a column the engine answers
+    ' `no-date-found` for. The loop returns on the FIRST pattern that matches,
+    ' which is what makes the table's order semantic.
     function _date_in(text, dialect)
-        iso = match(text, regex("([0-9]{4})-([0-9]{2})-([0-9]{2})"))
-        if not is_unknown(iso) then
-            return { val: iso.groups[0] + "-" + iso.groups[1] + "-" + iso.groups[2], why: "" }
-        end if
+        for each p in date_patterns()
+            m = match(text, regex(p.re))
+            if not is_unknown(m) then
+                if p.kind = "iso" then
+                    return { val: m.groups[0] + "-" + m.groups[1] + "-" + m.groups[2], why: "" }
+                end if
+                if p.kind = "dmy_name" then
+                    mm = _month_no(m.groups[1])
+                    if mm = 0 then
+                        return { val: unknown, why: "unknown-month-name" }
+                    end if
+                    if not _valid_ymd(m.groups[2], mm, number(m.groups[0])) then
+                        return { val: unknown, why: "invalid-date" }
+                    end if
+                    return { val: m.groups[2] + "-" + _pad2(mm) + "-" + _pad2(number(m.groups[0])), why: "" }
+                end if
+                if p.kind = "mdy_name" then
+                    mn = _month_no(m.groups[0])
+                    if mn = 0 then
+                        return { val: unknown, why: "unknown-month-name" }
+                    end if
+                    if not _valid_ymd(m.groups[2], mn, number(m.groups[1])) then
+                        return { val: unknown, why: "invalid-date" }
+                    end if
+                    return { val: m.groups[2] + "-" + _pad2(mn) + "-" + _pad2(number(m.groups[1])), why: "" }
+                end if
 
-        m = match(text, regex("([0-9]{1,2})[/.-]([0-9]{1,2})[/.-]([0-9]{4})"))
-        if is_unknown(m) then
-            return { val: unknown, why: "no-date-found" }
-        end if
-        a = number(m.groups[0])
-        b = number(m.groups[1])
-        y = m.groups[2]
-
-        if dialect = "dmy" then
-            ok1 = _valid_ymd(y, b, a)
-            if not ok1 then
-                return { val: unknown, why: "invalid-date" }
+                ' numeric: the only form that may need a declared dialect.
+                a = number(m.groups[0])
+                b = number(m.groups[1])
+                y = m.groups[2]
+                if dialect = "dmy" then
+                    if not _valid_ymd(y, b, a) then
+                        return { val: unknown, why: "invalid-date" }
+                    end if
+                    return { val: y + "-" + _pad2(b) + "-" + _pad2(a), why: "" }
+                end if
+                if dialect = "mdy" then
+                    if not _valid_ymd(y, a, b) then
+                        return { val: unknown, why: "invalid-date" }
+                    end if
+                    return { val: y + "-" + _pad2(a) + "-" + _pad2(b), why: "" }
+                end if
+                ' No declared dialect: settle it from the token alone, or refuse.
+                if a > 12 then
+                    if not _valid_ymd(y, b, a) then
+                        return { val: unknown, why: "invalid-date" }
+                    end if
+                    return { val: y + "-" + _pad2(b) + "-" + _pad2(a), why: "" }
+                end if
+                if b > 12 then
+                    if not _valid_ymd(y, a, b) then
+                        return { val: unknown, why: "invalid-date" }
+                    end if
+                    return { val: y + "-" + _pad2(a) + "-" + _pad2(b), why: "" }
+                end if
+                return { val: unknown, why: "ambiguous-date" }
             end if
-            return { val: y + "-" + _pad2(b) + "-" + _pad2(a), why: "" }
-        end if
-        if dialect = "mdy" then
-            ok2 = _valid_ymd(y, a, b)
-            if not ok2 then
-                return { val: unknown, why: "invalid-date" }
-            end if
-            return { val: y + "-" + _pad2(a) + "-" + _pad2(b), why: "" }
-        end if
-
-        ' No declared dialect: settle it from the token alone, or refuse.
-        if a > 12 then
-            ok3 = _valid_ymd(y, b, a)
-            if not ok3 then
-                return { val: unknown, why: "invalid-date" }
-            end if
-            return { val: y + "-" + _pad2(b) + "-" + _pad2(a), why: "" }
-        end if
-        if b > 12 then
-            ok4 = _valid_ymd(y, a, b)
-            if not ok4 then
-                return { val: unknown, why: "invalid-date" }
-            end if
-            return { val: y + "-" + _pad2(a) + "-" + _pad2(b), why: "" }
-        end if
-        return { val: unknown, why: "ambiguous-date" }
+        end for
+        return { val: unknown, why: "no-date-found" }
     end function
 
     ' Convert an extracted span according to its declared type. `as <type>`

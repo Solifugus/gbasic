@@ -2,42 +2,64 @@ BRANCH ACTIVITY REGISTER                                PAGE    1
 MIDLAND MUTUAL CREDIT UNION                             RUN 09/16/2026 06:12
 ========================================================================
 
-BRANCH  28  STONEBRIDGE
+BRANCH  43  OLD MILL
 
     ACCOUNT     MEMBER NAME              POSTED             AMOUNT
     ----------  ----------------------   ----------   ------------
-    00146545    REYES, GUNNAR            07/27/2026     (1,486.86)
-    00144646    NAKAMURA, CHIARA         10/20/2026       3,736.05
-    00143064    KOVACS, ALICE            12/20/2026       1,768.42
-    00146247    MERCER, ALICE            11/15/2026       1,098.70
-    00144750    THORNBURY, CARMEN        12/19/2026         706.70
-    00141141    NAKAMURA, ESTHER         12/18/2026          89.23
-    00142782    PETROVA, CHIARA          03/16/2026       2,505.54
-
-    TOTAL FOR BRANCH                                      8,417.78
-
-BRANCH  23  STONEBRIDGE
-
-    ACCOUNT     MEMBER NAME              POSTED             AMOUNT
-    ----------  ----------------------   ----------   ------------
-    00141467    KOVACS, CARMEN           07/20/2026         798.80
     00146330    MERCER, ESTHER           02/19/2026       3,016.24
     00140002    CHAUDHRY, GUNNAR         08/15/2026       1,154.82
     00142725    LINDQVIST, YUKI          06/19/2026       4,544.54
     00141351    CHAUDHRY, GUNNAR         04/21/2026       1,846.62
+    00145716    MERCER, NADIA            07/23/2026         783.66
 
-    TOTAL FOR BRANCH                                     11,361.02
+    TOTAL FOR BRANCH                                     11,345.88
 
-BRANCH  96  RIVERSIDE
+BRANCH  13  HARBOUR
 
     ACCOUNT     MEMBER NAME              POSTED             AMOUNT
     ----------  ----------------------   ----------   ------------
-    00149438    DELACROIX, CHIARA        09/24/2026     (4,617.64)
     00148768    PETROVA, ESTHER          12/19/2026       (138.97)
     00142184    THORNBURY, DIEGO         09/19/2026       3,840.81
     00149808    SANTOS, ALICE            10/18/2026       2,656.90
     00148763    ROSSI, LASZLO            01/15/2026       2,049.29
-    00141804    DELACROIX, ESTHER        02/16/2026       4,389.70
 
-    TOTAL FOR BRANCH                                      8,180.09
+    TOTAL FOR BRANCH                                      8,408.03
+
+BRANCH  94  NORTHGATE
+
+    ACCOUNT     MEMBER NAME              POSTED             AMOUNT
+    ----------  ----------------------   ----------   ------------
+    00147797    ROSSI, CHIARA            03/15/2026     (2,775.80)
+    00147278    MWANGI, BRENDAN          08/20/2026       4,636.60
+    00140618    SANTOS, IRINA            08/17/2026       3,822.99
+    00149088    LINDQVIST, WINIFRED      02/15/2026       4,127.50
+
+    TOTAL FOR BRANCH                                      9,811.29
+
+BRANCH  53  OLD MILL
+
+    ACCOUNT     MEMBER NAME              POSTED             AMOUNT
+    ----------  ----------------------   ----------   ------------
+    00146085    MWANGI, YUKI             11/14/2026     (3,808.81)
+    00148330    PETROVA, GUNNAR          10/24/2026       1,374.33
+    00143265    CHAUDHRY, WINIFRED       02/27/2026       2,985.52
+    00149840    OKAFOR, MARGARET         05/17/2026       1,574.47
+
+    TOTAL FOR BRANCH                                      2,125.51
+
+BRANCH  94  HARBOUR
+BRANCH ACTIVITY REGISTER                                PAGE    2
+MIDLAND MUTUAL CREDIT UNION                             RUN 09/16/2026 06:12
+========================================================================
+
+
+    ACCOUNT     MEMBER NAME              POSTED             AMOUNT
+    ----------  ----------------------   ----------   ------------
+    00142346    ANDERSSON, YUKI          02/28/2026     (2,031.50)
+    00142801    SANTOS, LASZLO           06/28/2026       2,512.22
+    00143608    ROSSI, ESTHER            12/21/2026         881.59
+    00149260    ROSSI, ALICE             02/19/2026       3,831.16
+    00148016    ANDERSSON, ESTHER        09/28/2026       3,332.78
+
+    TOTAL FOR BRANCH                                      8,526.25
 

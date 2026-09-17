@@ -2,60 +2,75 @@ BRANCH ACTIVITY REGISTER                                PAGE    1
 MIDLAND MUTUAL CREDIT UNION                             RUN 09/16/2026 06:12
 ========================================================================
 
-BRANCH  15  STONEBRIDGE
+BRANCH  97  STONEBRIDGE
 
     ACCT NO     MEMBER NAME              POSTED             AMOUNT
     ----------  ----------------------   ----------   ------------
-    00141886    SANTOS, GUNNAR           10/18/2026       2,155.54
-    00142146    OKAFOR, LASZLO           04/16/2026       3,671.50
-    00146894    MERCER, EVA              09/26/2026       4,186.95
-    00146105    PETROVA, ESTHER          12/19/2026       4,527.54
-    00143074    PETROVA, WINIFRED        12/25/2026       1,493.61
-    00141320    WHITFIELD, GUNNAR        02/21/2026       2,139.89
+    00141912    LINDQVIST, PHILIPPE      07/13/2026       2,634.47
+    00144123    CHAUDHRY, YUKI           02/26/2026       4,521.63
+    00146321    ABIODUN, IRINA           07/18/2026     (1,114.48)
+    00144084    THORNBURY, GUNNAR        09/28/2026       1,989.52
+    00141536    ANDERSSON, YUKI          01/25/2026         913.88
 
-    BRANCH TOTAL                                         18,175.03
+    BRANCH TOTAL                                          8,945.02
 
-BRANCH  94  HARBOUR
-
-    ACCT NO     MEMBER NAME              POSTED             AMOUNT
-    ----------  ----------------------   ----------   ------------
-    00149131    SANTOS, FEMI             01/22/2026       4,183.51
-    00145137    ROSSI, IRINA             03/16/2026         340.31
-    00148970    ANDERSSON, NADIA         08/20/2026       2,642.27
-    00147644    NAKAMURA, DIEGO          03/26/2026     (1,733.15)
-    00147180    LINDQVIST, MARGARET      07/14/2026       3,786.53
-    00149587    THORNBURY, CARMEN        12/26/2026       4,281.34
-    00149141    THORNBURY, PHILIPPE      07/25/2026     (2,526.26)
-    00144172    KOVACS, PHILIPPE         10/19/2026       (362.46)
-    00148899    NAKAMURA, LASZLO         08/27/2026       3,120.74
-
-    BRANCH TOTAL                                         13,732.83
-
-BRANCH  57  CEDAR PARK
+BRANCH  62  CEDAR PARK
 
     ACCT NO     MEMBER NAME              POSTED             AMOUNT
     ----------  ----------------------   ----------   ------------
-    00146943    MWANGI, FEMI             09/19/2026       2,182.70
-    00144467    DELACROIX, ALICE         11/15/2026       2,559.56
-    00141105    KOVACS, GUNNAR           07/17/2026         286.11
-    00145876    CHAUDHRY, CHIARA         05/25/2026       (757.96)
-    00144533    WHITFIELD, PHILIPPE      12/23/2026       1,285.90
-    00145687    MWANGI, NADIA            12/18/2026       1,529.72
-    00147322    REYES, NADIA             04/27/2026     (4,143.19)
-    00148547    THORNBURY, LASZLO        09/21/2026       2,749.90
+    00149193    WHITFIELD, GUNNAR        01/27/2026     (4,008.59)
+    00141058    MWANGI, LASZLO           11/26/2026       2,858.09
+    00146356    THORNBURY, FEMI          07/16/2026         950.78
+    00141478    OKAFOR, WINIFRED         03/25/2026       3,406.87
+    00149102    ROSSI, IRINA             04/26/2026       1,730.58
+    00140901    KOVACS, CHIARA           07/27/2026       2,459.85
+    00142649    ANDERSSON, DIEGO         04/15/2026       1,038.42
+    00146735    THORNBURY, WINIFRED      11/21/2026         886.08
+    00147230    NAKAMURA, CHIARA         12/26/2026       3,104.31
 
-    BRANCH TOTAL                                          5,692.74
+    BRANCH TOTAL                                         12,426.39
 
-BRANCH  87  WESTFIELD
+BRANCH  76  OLD MILL
 
     ACCT NO     MEMBER NAME              POSTED             AMOUNT
     ----------  ----------------------   ----------   ------------
-    00143396    PETROVA, CARMEN          12/13/2026       2,406.77
-    00140783    SANTOS, NADIA            06/22/2026       1,797.87
-    00143347    REYES, ALICE             07/18/2026         168.09
-    00147197    OKAFOR, CARMEN           10/18/2026     (4,423.88)
-    00144715    OKAFOR, ESTHER           08/26/2026       3,659.61
-    00144740    WHITFIELD, CHIARA        06/20/2026       2,495.06
+    00143026    MERCER, BRENDAN          11/24/2026       3,253.44
+    00143677    KOVACS, FEMI             07/27/2026       3,332.88
+    00149438    LINDQVIST, ALICE         12/25/2026       3,716.44
+    00145608    PETROVA, LASZLO          01/25/2026     (2,930.77)
 
-    BRANCH TOTAL                                          6,103.52
+    BRANCH TOTAL                                          7,371.99
+
+BRANCH  98  RIVERSIDE
+
+    ACCT NO     MEMBER NAME              POSTED             AMOUNT
+    ----------  ----------------------   ----------   ------------
+    00141093    THORNBURY, PHILIPPE      08/26/2026       3,860.81
+    00140749    CHAUDHRY, DIEGO          03/27/2026       2,133.93
+    00140899    ROSSI, LASZLO            10/21/2026       2,599.92
+    00147868    PETROVA, CHIARA          01/13/2026         775.01
+    00149202    THORNBURY, PHILIPPE      12/16/2026         480.57
+    00141300    REYES, CHIARA            11/13/2026       3,638.81
+    00143437    KOVACS, NADIA            11/26/2026         602.95
+
+    BRANCH TOTAL                                         14,092.00
+
+BRANCH  31  WESTFIELD
+
+    ACCT NO     MEMBER NAME              POSTED             AMOUNT
+    ----------  ----------------------   ----------   ------------
+    00149629    MWANGI, CARMEN           02/17/2026       3,958.08
+    00144658    PETROVA, NADIA           07/27/2026       3,381.69
+    00141982    CHAUDHRY, ALICE          04/16/2026       2,074.19
+    00147895    DELACROIX, ALICE         05/26/2026       2,155.88
+    00142607    THORNBURY, CARMEN        05/22/2026       3,413.59
+BRANCH ACTIVITY REGISTER                                PAGE    2
+MIDLAND MUTUAL CREDIT UNION                             RUN 09/16/2026 06:12
+========================================================================
+
+    00140801    THORNBURY, FEMI          06/18/2026     (4,104.06)
+    00140066    SANTOS, WINIFRED         10/27/2026       (160.60)
+    00149200    NAKAMURA, ALICE          08/20/2026       4,508.98
+
+    BRANCH TOTAL                                         15,227.75
 

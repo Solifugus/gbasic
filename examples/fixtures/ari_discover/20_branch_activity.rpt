@@ -2,33 +2,135 @@ BRANCH ACTIVITY REGISTER                                PAGE    1
 MIDLAND MUTUAL CREDIT UNION                             RUN 09/16/2026 06:12
 ========================================================================
 
-BRANCH  48  HARBOUR
+BRANCH  71  RIVERSIDE
 
     ACCT        MEMBER NAME              POSTED             AMOUNT
     ----------  ----------------------   ----------   ------------
-    00141794    LINDQVIST, BRENDAN       22-MAR-2026      1,782.80
-    00144877    OKAFOR, YUKI             26-DEC-2026        64.98-
-    00142821    ROSSI, EVA               17-JUN-2026      2,717.59
-    00141264    MERCER, ALICE            17-MAY-2026      4,487.66
-    00143983    WHITFIELD, BRENDAN       15-APR-2026      3,435.08
-    00149748    PETROVA, YUKI            23-JUL-2026      4,682.82
+    00149398    MWANGI, DIEGO            14-JAN-2026      1,775.85
+    00145851    MWANGI, GUNNAR           28-APR-2026      2,552.80
+    00148426    REYES, FEMI              24-SEP-2026     3,926.01-
+    00142573    MERCER, PHILIPPE         26-AUG-2026     1,791.40-
+    00140257    ANDERSSON, IRINA         16-SEP-2026      4,017.31
+    00145150    MERCER, WINIFRED         16-NOV-2026     2,779.14-
 
-    BRANCH TOTAL                                         17,040.97
+    BRANCH TOTAL                                           150.59-
 
     REMARKS:
-      branch closed early for maintenance
+      two items held for review
 
-BRANCH  23  CEDAR PARK
+BRANCH  12  RIVERSIDE
 
     ACCT        MEMBER NAME              POSTED             AMOUNT
     ----------  ----------------------   ----------   ------------
-    00140562    CHAUDHRY, EVA            22-JUN-2026      3,161.39
-    00145916    ABIODUN, CARMEN          15-MAR-2026      3,485.42
-    00141877    ABIODUN, BRENDAN         28-MAR-2026      3,329.28
-    00146595    ROSSI, GUNNAR            18-SEP-2026      1,850.52
+    00141986    ANDERSSON, LASZLO        26-AUG-2026      2,893.61
+    00145068    LINDQVIST, CHIARA        14-AUG-2026      3,209.33
+    00142402    ROSSI, GUNNAR            20-DEC-2026     1,768.80-
+    00145409    MERCER, GUNNAR           25-OCT-2026      2,885.57
+    00141065    OKAFOR, GUNNAR           21-MAY-2026      2,447.58
+    00147567    MERCER, MARGARET         18-MAY-2026      1,231.08
+    00142469    MWANGI, MARGARET         13-AUG-2026        543.76
+    00145322    DELACROIX, CHIARA        13-NOV-2026      1,774.20
+    00148920    SANTOS, MARGARET         13-JUN-2026      2,235.99
 
-    BRANCH TOTAL                                         11,826.61
+    BRANCH TOTAL                                         15,452.32
 
     REMARKS:
-      branch closed early for maintenance
+      two items held for review
+
+BRANCH  85  CEDAR PARK
+
+    ACCT        MEMBER NAME              POSTED             AMOUNT
+    ----------  ----------------------   ----------   ------------
+    00146432    THORNBURY, LASZLO        21-OCT-2026      1,165.79
+    00146573    CHAUDHRY, CHIARA         17-FEB-2026      4,797.01
+    00142757    LINDQVIST, CARMEN        25-SEP-2026        511.48
+    00146934    KOVACS, WINIFRED         20-APR-2026        587.10
+    00149457    DELACROIX, LASZLO        13-JAN-2026         63.06
+    00144615    NAKAMURA, IRINA          19-JUL-2026      2,497.91
+
+BRANCH ACTIVITY REGISTER                                PAGE    2
+MIDLAND MUTUAL CREDIT UNION                             RUN 09/16/2026 06:12
+========================================================================
+
+    BRANCH TOTAL                                          9,622.35
+
+    REMARKS:
+      posted late by operations
+
+BRANCH  14  CEDAR PARK
+
+    ACCT        MEMBER NAME              POSTED             AMOUNT
+    ----------  ----------------------   ----------   ------------
+    00140608    NAKAMURA, ESTHER         14-MAR-2026      2,749.80
+    00144929    REYES, DIEGO             21-FEB-2026      1,692.20
+    00146536    DELACROIX, IRINA         28-AUG-2026       138.74-
+    00140813    MWANGI, LASZLO           20-JUL-2026        964.71
+    00140245    WHITFIELD, ESTHER        14-APR-2026      4,322.67
+    00141938    MERCER, GUNNAR           14-AUG-2026      1,951.70
+    00146724    DELACROIX, WINIFRED      15-AUG-2026     3,036.96-
+
+    BRANCH TOTAL                                          8,505.38
+
+    REMARKS:
+      reconciled against the general ledger
+
+BRANCH  40  RIVERSIDE
+
+    ACCT        MEMBER NAME              POSTED             AMOUNT
+    ----------  ----------------------   ----------   ------------
+    00149665    CHAUDHRY, WINIFRED       24-JAN-2026      4,758.09
+    00142022    OKAFOR, FEMI             13-MAR-2026      1,831.03
+    00146309    ABIODUN, IRINA           13-DEC-2026        989.82
+    00143617    WHITFIELD, BRENDAN       19-FEB-2026      1,421.28
+    00148825    OKAFOR, YUKI             14-APR-2026     3,643.38-
+    00142941    ABIODUN, MARGARET        16-MAY-2026        358.10
+    00148517    MWANGI, CHIARA           18-JUL-2026      4,059.73
+    00143020    REYES, CARMEN            24-SEP-2026      3,288.74
+
+    BRANCH TOTAL                                         13,063.41
+
+    REMARKS:
+      posted late by operations
+
+BRANCH  42  HARBOUR
+
+    ACCT        MEMBER NAME              POSTED             AMOUNT
+    ----------  ----------------------   ----------   ------------
+    00143723    MERCER, LASZLO           14-JUL-2026      4,626.45
+    00145773    WHITFIELD, ALICE         16-SEP-2026      1,281.28
+BRANCH ACTIVITY REGISTER                                PAGE    3
+MIDLAND MUTUAL CREDIT UNION                             RUN 09/16/2026 06:12
+========================================================================
+
+    00148174    MWANGI, EVA              19-FEB-2026        300.68
+    00141450    REYES, WINIFRED          28-FEB-2026      3,442.63
+    00143142    DELACROIX, NADIA         19-JAN-2026      2,160.46
+    00144649    KOVACS, FEMI             23-JUN-2026      2,322.24
+    00142856    LINDQVIST, YUKI          14-DEC-2026      2,135.84
+    00142048    PETROVA, CARMEN          22-OCT-2026      1,702.79
+    00144240    LINDQVIST, MARGARET      15-MAR-2026      2,748.45
+
+    BRANCH TOTAL                                         20,720.82
+
+    REMARKS:
+      two items held for review
+
+BRANCH  85  WESTFIELD
+
+    ACCT        MEMBER NAME              POSTED             AMOUNT
+    ----------  ----------------------   ----------   ------------
+    00149518    MWANGI, PHILIPPE         13-JUN-2026      1,518.58
+    00149683    DELACROIX, BRENDAN       28-OCT-2026      4,553.25
+    00143367    OKAFOR, NADIA            18-MAY-2026      3,750.10
+    00145138    SANTOS, FEMI             14-JUL-2026     1,787.13-
+    00143135    OKAFOR, FEMI             23-DEC-2026      2,028.38
+    00141816    ANDERSSON, MARGARET      20-MAR-2026        686.53
+    00143839    NAKAMURA, NADIA          23-NOV-2026      2,735.78
+    00140701    OKAFOR, WINIFRED         14-DEC-2026      2,578.49
+    00147953    ANDERSSON, WINIFRED      20-MAY-2026      3,422.63
+
+    BRANCH TOTAL                                         19,486.61
+
+    REMARKS:
+      posted late by operations
 

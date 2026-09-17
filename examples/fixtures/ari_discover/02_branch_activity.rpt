@@ -2,6 +2,23 @@ BRANCH ACTIVITY REGISTER                                PAGE    1
 MIDLAND MUTUAL CREDIT UNION                             RUN 09/16/2026 06:12
 ========================================================================
 
+BRANCH  58  WESTFIELD
+
+  ACCT        MEMBER NAME              POSTED             AMOUNT
+  ----------  ----------------------   ----------   ------------
+  00149128    KOVACS, FEMI             08/18/2026       3,020.30
+  00148564    MERCER, BRENDAN          07/20/2026       3,076.85
+  00148098    WHITFIELD, MARGARET      03/17/2026       3,451.47
+  00140416    WHITFIELD, CARMEN        05/18/2026         258.80
+  00143339    DELACROIX, FEMI          03/28/2026       4,234.31
+  00143492    DELACROIX, IRINA         05/20/2026      1,384.82-
+  00148470    THORNBURY, EVA           03/24/2026       1,791.46
+
+  BRANCH TOTAL                                         14,448.37
+
+  REMARKS:
+    reconciled against the general ledger
+
 BRANCH  21  WESTFIELD
 
   ACCT        MEMBER NAME              POSTED             AMOUNT
@@ -31,4 +48,8 @@ BRANCH  72  HARBOUR
 
   REMARKS:
     posted late by operations
+BRANCH ACTIVITY REGISTER                                PAGE    2
+MIDLAND MUTUAL CREDIT UNION                             RUN 09/16/2026 06:12
+========================================================================
+
 

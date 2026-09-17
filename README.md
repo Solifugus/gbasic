@@ -6,14 +6,14 @@ gBASIC is a **modern BASIC for business programming**: familiar control flow,
 plus records, first-class functions, watchers, shared-nothing actors, and typed
 values for dates, durations and money. Around it sits a working platform —
 databases, a hardened web server, spreadsheets, statistics, charts, PDF
-documents, native GUI and an AI stack — and sixty-one pure-gBASIC libraries
+documents, native GUI and an AI stack — and sixty-two pure-gBASIC libraries
 covering double-entry accounting, loan servicing, deposits, credit analytics,
 securities analysis and more. A gBASIC program is meant to be a real
 application, not a demonstration.
 
 This repository holds the C implementation of gBASIC `0.1.0`. It is an **early
 release** and the version number is honest about that — but it is not a sketch:
-**140 test suites** gate every change, goldens are byte-exact, and the claims in
+**141 test suites** gate every change, goldens are byte-exact, and the claims in
 this file that can be measured have been. Until 1.0.0 the language surface may
 still move between releases; [CHANGELOG.md](CHANGELOG.md) records what changed
 and why, and the [documentation index](docs/README.md) marks every document
@@ -156,7 +156,7 @@ Two of these deserve a sentence more than a table row:
 
 ### The standard library
 
-Sixty-one pure-gBASIC libraries in `stdlib/`. Each bullet says what backs it,
+Sixty-two pure-gBASIC libraries in `stdlib/`. Each bullet says what backs it,
 because they are not at the same maturity and a uniform list would imply they
 are.
 
@@ -329,9 +329,18 @@ are.
   worse than refusing to write it. Validated by three independent readers —
   mupdf, ghostscript and poppler — because a PDF writer checked by its own
   reader proves only self-consistency.
+- **print-image reports** — `ari` parses them against a hand-written
+  anchor-relative specification; `ari_discover` is the other direction, and its
+  **Phase 0** measures a corpus so a person can see whether a specification can
+  be written for it at all. It proposes nothing: inference is a search, and a
+  search always returns a winner, so the load-bearing check is a **null corpus**
+  of structureless-but-report-shaped text where the right answer is a refusal —
+  it caught 18 false positives on the first working version. Furniture detection
+  scores precision and recall **1.0** against an answer key the generator
+  planted, and **refuses with a reason** on a single-page report, where a header
+  cannot be told from a first heading.
 - **odds and ends** — `web` (routing), `frame` (data frames), `matrix`,
-  `persist` (crash-safe versioned storage), `filetree`, `crypto`, `mail`,
-  `ari` (anchor-relative report parsing).
+  `persist` (crash-safe versioned storage), `filetree`, `crypto`, `mail`.
 
 A worked AI application lives in
 [examples/steward](examples/steward/steward.bas): one route per thing a user
@@ -441,7 +450,7 @@ default target: build it with `make dev` and install it with
 ./tests/run_all.sh web              # or filter by substring
 ```
 
-**Use `run_all.sh` rather than naming suites.** It discovers all 140 suites by
+**Use `run_all.sh` rather than naming suites.** It discovers all 141 suites by
 glob, and that is the whole point: a hand-maintained list is a gate that
 silently shrinks. Four suites in this repository sat broken across two releases
 because every list anyone ran happened not to name them. It reports a suite

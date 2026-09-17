@@ -2,51 +2,87 @@ BRANCH ACTIVITY REGISTER                                PAGE    1
 MIDLAND MUTUAL CREDIT UNION                             RUN 09/16/2026 06:12
 ========================================================================
 
-BRANCH  90  NORTHGATE
+BRANCH  57  NORTHGATE
 
   ACCOUNT     MEMBER NAME              POSTED             AMOUNT
   ----------  ----------------------   ----------   ------------
-  00149595    PETROVA, ALICE           28-APR-2026      4,594.89
-  00148996    CHAUDHRY, YUKI           23-DEC-2026      (254.62)
-  00142362    THORNBURY, CARMEN        19-AUG-2026      1,811.14
-  00144736    LINDQVIST, PHILIPPE      14-JUL-2026      2,124.42
-  00144439    THORNBURY, PHILIPPE      17-JUN-2026      3,192.77
-  00143380    REYES, PHILIPPE          26-FEB-2026      3,816.05
-  00147443    THORNBURY, CARMEN        24-FEB-2026      2,358.59
+  00141284    LINDQVIST, PHILIPPE      24-DEC-2026      1,136.38
+  00143015    REYES, LASZLO            25-JUL-2026      1,073.38
+  00147222    CHAUDHRY, FEMI           15-OCT-2026      3,893.49
+  00140956    MERCER, ALICE            17-NOV-2026      2,495.95
 
-  BRANCH TOTALS                                        17,643.24
-
-  REMARKS:
-    two items held for review
-
-BRANCH  90  LAKESIDE
-
-  ACCOUNT     MEMBER NAME              POSTED             AMOUNT
-  ----------  ----------------------   ----------   ------------
-  00147209    ANDERSSON, BRENDAN       14-NOV-2026      4,405.89
-  00148812    NAKAMURA, ESTHER         24-MAY-2026      4,282.12
-  00144028    PETROVA, NADIA           27-JUL-2026      2,027.48
-  00142104    DELACROIX, LASZLO        25-SEP-2026      4,139.33
-
-  BRANCH TOTALS                                        14,854.82
+  BRANCH TOTALS                                         8,599.20
 
   REMARKS:
     posted late by operations
 
-BRANCH  97  STONEBRIDGE
+BRANCH  86  RIVERSIDE
 
   ACCOUNT     MEMBER NAME              POSTED             AMOUNT
   ----------  ----------------------   ----------   ------------
-  00140146    OKAFOR, NADIA            14-NOV-2026    (1,024.74)
-  00144091    CHAUDHRY, WINIFRED       27-MAY-2026    (3,512.95)
-  00141260    KOVACS, YUKI             14-MAR-2026      1,610.59
-  00149709    LINDQVIST, PHILIPPE      17-SEP-2026      1,423.20
-  00140600    NAKAMURA, CHIARA         26-APR-2026      1,157.51
-  00142855    MERCER, CARMEN           16-MAY-2026        257.79
-  00145862    REYES, CHIARA            14-MAR-2026    (4,132.59)
+  00141877    DELACROIX, CHIARA        23-FEB-2026      3,924.15
+  00144070    SANTOS, NADIA            17-MAY-2026      2,902.32
+  00149191    REYES, LASZLO            19-OCT-2026      2,854.28
+  00144664    MWANGI, YUKI             20-OCT-2026        984.01
+  00147998    MWANGI, GUNNAR           17-MAY-2026      1,243.11
 
-  BRANCH TOTALS                                       (4,221.19)
+  BRANCH TOTALS                                        11,907.87
 
   REMARKS:
-    reconciled against the general ledger
+    branch closed early for maintenance
+
+BRANCH  72  NORTHGATE
+
+  ACCOUNT     MEMBER NAME              POSTED             AMOUNT
+  ----------  ----------------------   ----------   ------------
+  00149208    PETROVA, GUNNAR          17-AUG-2026    (4,162.57)
+  00143328    THORNBURY, YUKI          27-AUG-2026      4,589.79
+  00141474    THORNBURY, LASZLO        25-SEP-2026      1,887.76
+  00147666    ROSSI, WINIFRED          20-MAR-2026        228.65
+  00146213    ROSSI, WINIFRED          18-OCT-2026        493.05
+  00149437    ABIODUN, LASZLO          20-DEC-2026      1,280.53
+
+  BRANCH TOTALS                                         4,317.21
+
+  REMARKS:
+    posted late by operations
+
+BRANCH  70  HARBOUR
+
+  ACCOUNT     MEMBER NAME              POSTED             AMOUNT
+  ----------  ----------------------   ----------   ------------
+  00147669    PETROVA, CHIARA          23-JUL-2026      4,628.13
+  00145754    SANTOS, LASZLO           25-MAY-2026      4,800.68
+  00149930    ABIODUN, IRINA           24-MAY-2026        713.70
+  00143047    NAKAMURA, GUNNAR         20-JAN-2026        229.54
+  00143673    REYES, ESTHER            20-NOV-2026      1,545.00
+  00144021    REYES, BRENDAN           26-JAN-2026      1,761.67
+  00141364    ROSSI, CHIARA            21-OCT-2026      3,861.93
+
+  BRANCH TOTALS                                        17,540.65
+
+  REMARKS:
+    two items held for review
+
+
+BRANCH ACTIVITY REGISTER                                PAGE    2
+MIDLAND MUTUAL CREDIT UNION                             RUN 09/16/2026 06:12
+========================================================================
+
+BRANCH  13  LAKESIDE
+
+  ACCOUNT     MEMBER NAME              POSTED             AMOUNT
+  ----------  ----------------------   ----------   ------------
+  00148267    KOVACS, FEMI             20-FEB-2026      1,220.35
+  00147803    CHAUDHRY, ESTHER         27-SEP-2026      4,482.16
+  00141565    DELACROIX, NADIA         16-APR-2026      3,429.66
+  00142868    DELACROIX, NADIA         22-APR-2026    (4,529.99)
+  00142851    THORNBURY, PHILIPPE      28-JUN-2026        899.65
+  00143142    ROSSI, CARMEN            21-OCT-2026      4,425.30
+  00140083    LINDQVIST, NADIA         14-APR-2026      2,718.05
+
+  BRANCH TOTALS                                        12,645.18
+
+  REMARKS:
+    posted late by operations
 

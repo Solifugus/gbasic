@@ -46,7 +46,7 @@ What the key carries, and what each part exists to score (design §8):
 | `branches[].accounts[]` | **the planted values.** The strong oracle §15.4 asks for: an accepted specification, run through ordinary `ari.parse`, must recover these. A coverage percentage cannot substitute — a specification can claim every line and extract the wrong number |
 | `variant` | the nine drift axes this source was generated under, so a failure is attributable to an axis rather than merely noticed |
 
-Verified when generated: 480 detail rows, every planted account/name/amount
+Verified when generated: 808 detail rows, every planted account/name/amount
 appearing exactly once in its own file, every branch total equal to the sum of
 its accounts, every furniture line really furniture, 0 mismatches.
 
@@ -58,7 +58,14 @@ the same report — and at that size a `minimum_support` of `0.80` means "3 of 3
 because 2/3 is 0.67. Every support question is binary, so 0.80 and 0.95 are the
 same threshold and neither can be calibrated. §8.2's holdout would leave two.
 
-Twenty-four sources across nine declared axes:
+Twenty-four sources across nine declared axes, **20 of them multi-page**. That
+balance is deliberate and was corrected once: with 2–4 branches per source only
+6 of 24 ran to a second page, so the furniture tier — the one thing Phase 0 can
+be scored on exactly — had six samples and eighteen sources on which the right
+answer is a refusal. Both cases are wanted; a corpus three-quarters weighted to
+the refusal is not.
+
+The axes:
 
 | axis | values |
 |---|---|
@@ -113,10 +120,10 @@ Measured over the two corpora, on the features an inference engine keys on:
 
 | | structured | null |
 |---|---|---|
-| non-blank lines | 921 | 679 |
+| non-blank lines | 1,564 | 679 |
 | distinct structural signatures | **9** | **389** |
 | share covered by the top 3 signatures | **73.8 %** | **6.5 %** |
-| most common (indent, first token) pair | `BRANCH` at column 0, 100× (**10.9 %**) | 4× (**0.6 %**) |
+| most common (indent, first token) pair | `BRANCH` at column 0, 169× (**10.8 %**) | 4× (**0.6 %**) |
 
 Same tokens, structure absent by two orders of magnitude on exactly the measures
 that matter.

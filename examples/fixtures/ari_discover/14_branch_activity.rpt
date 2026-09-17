@@ -2,57 +2,108 @@ BRANCH ACTIVITY REGISTER                                PAGE    1
 MIDLAND MUTUAL CREDIT UNION                             RUN 09/16/2026 06:12
 ========================================================================
 
-BRANCH  18  RIVERSIDE
+BRANCH  75  NORTHGATE
 
   ACCOUNT     MEMBER NAME                    POSTED             AMOUNT
   ----------  ----------------------------   ----------   ------------
-  00143558    ANDERSSON, EVA                 01/16/2026      2,994.73-
-  00142237    ABIODUN, GUNNAR                10/14/2026       3,208.79
-  00148042    SANTOS, CARMEN                 11/13/2026         346.84
-  00142442    NAKAMURA, CHIARA               08/18/2026         610.04
-  00144195    ABIODUN, DIEGO                 02/26/2026      2,408.18-
-  00145101    MERCER, CHIARA                 09/28/2026       1,221.14
-  00145371    WHITFIELD, NADIA               01/28/2026       3,671.37
-  00144573    OKAFOR, LASZLO                 09/14/2026       4,186.13
+  00143822    CHAUDHRY, DIEGO                01/27/2026       1,134.33
+  00147178    NAKAMURA, GUNNAR               03/19/2026       2,887.08
+  00145032    DELACROIX, CHIARA              01/24/2026       4,355.67
+  00143244    OKAFOR, IRINA                  03/19/2026      3,543.26-
+  00149060    MERCER, FEMI                   03/20/2026       3,090.93
+  00143261    OKAFOR, EVA                    09/28/2026       2,441.11
+  00146950    MWANGI, ALICE                  03/25/2026       3,992.19
+  00148934    PETROVA, EVA                   11/21/2026       2,217.31
 
-  BRANCH TOTALS                                               7,841.40
+  BRANCH TOTALS                                              16,575.36
 
   REMARKS:
-    two items held for review
+    posted late by operations
 
-BRANCH  73  CEDAR PARK
+BRANCH  74  LAKESIDE
 
   ACCOUNT     MEMBER NAME                    POSTED             AMOUNT
   ----------  ----------------------------   ----------   ------------
-  00143553    DELACROIX, CHIARA              09/25/2026         379.62
-  00143330    NAKAMURA, ALICE                01/15/2026         449.03
-  00148561    MERCER, WINIFRED               07/27/2026         564.89
-  00149515    DELACROIX, BRENDAN             06/18/2026         787.90
-  00143760    PETROVA, CARMEN                08/27/2026         486.21
-  00148255    ANDERSSON, LASZLO              01/15/2026       2,384.79
-  00149083    REYES, MARGARET                02/17/2026       1,006.71
-  00146277    LINDQVIST, PHILIPPE            11/19/2026       4,304.26
+  00149608    ANDERSSON, ALICE               05/20/2026       2,094.85
+  00148585    MERCER, CHIARA                 11/24/2026       2,760.18
+  00145285    ABIODUN, EVA                   05/23/2026         749.50
+  00144560    WHITFIELD, IRINA               11/17/2026         173.87
+  00140178    THORNBURY, YUKI                04/24/2026       3,654.77
+  00140264    DELACROIX, CARMEN              06/23/2026         909.19
+  00148516    ROSSI, NADIA                   07/16/2026       3,508.68
+  00146964    SANTOS, DIEGO                  03/20/2026       4,171.89
+  00149847    SANTOS, LASZLO                 07/15/2026       1,969.94
 
-  BRANCH TOTALS                                              10,363.41
+  BRANCH TOTALS                                              19,992.87
 
   REMARKS:
     reconciled against the general ledger
 
-BRANCH  30  HARBOUR
+BRANCH  88  RIVERSIDE
 
   ACCOUNT     MEMBER NAME                    POSTED             AMOUNT
   ----------  ----------------------------   ----------   ------------
-  00147755    KOVACS, NADIA                  09/28/2026       1,061.57
-  00149384    ROSSI, CHIARA                  02/17/2026       2,378.94
-  00147553    KOVACS, FEMI                   09/15/2026       3,002.43
-  00148343    ABIODUN, CARMEN                08/15/2026       2,809.04
-  00145470    CHAUDHRY, CHIARA               11/18/2026        256.33-
-  00144448    WHITFIELD, CARMEN              11/25/2026       4,596.99
-  00148881    OKAFOR, DIEGO                  07/18/2026       3,434.07
-  00148668    ANDERSSON, ESTHER              05/13/2026       3,088.04
+  00142453    MWANGI, BRENDAN                03/14/2026       3,340.41
+  00143478    ANDERSSON, ALICE               02/27/2026      2,265.01-
+  00141109    ABIODUN, CARMEN                06/14/2026       2,970.60
+  00144330    ABIODUN, WINIFRED              01/24/2026          67.41
+  00149319    REYES, ALICE                   06/28/2026          65.56
+  00148133    SANTOS, ALICE                  07/21/2026       2,676.66
 
-  BRANCH TOTALS                                              20,114.75
+  BRANCH TOTALS                                               6,855.63
 
   REMARKS:
     two items held for review
+
+BRANCH  24  LAKESIDE
+
+  ACCOUNT     MEMBER NAME                    POSTED             AMOUNT
+  ----------  ----------------------------   ----------   ------------
+  00145227    ANDERSSON, EVA                 11/22/2026       3,318.30
+  00148245    ROSSI, PHILIPPE                06/25/2026         826.52
+  00145865    MWANGI, ALICE                  04/17/2026       1,617.85
+  00140070    CHAUDHRY, IRINA                11/19/2026       3,384.96
+  00142217    ROSSI, DIEGO                   05/21/2026      4,510.38-
+BRANCH ACTIVITY REGISTER                                PAGE    2
+MIDLAND MUTUAL CREDIT UNION                             RUN 09/16/2026 06:12
+========================================================================
+
+  00148108    KOVACS, ESTHER                 12/24/2026       3,212.50
+
+  BRANCH TOTALS                                               7,849.75
+
+  REMARKS:
+    reconciled against the general ledger
+
+BRANCH  36  RIVERSIDE
+
+  ACCOUNT     MEMBER NAME                    POSTED             AMOUNT
+  ----------  ----------------------------   ----------   ------------
+  00146316    REYES, IRINA                   12/19/2026       2,448.85
+  00140766    KOVACS, YUKI                   12/17/2026       4,137.20
+  00140372    NAKAMURA, GUNNAR               03/15/2026       1,357.45
+  00144642    LINDQVIST, CARMEN              10/23/2026      1,665.12-
+  00140597    OKAFOR, FEMI                   03/17/2026       4,651.19
+
+  BRANCH TOTALS                                              10,929.57
+
+  REMARKS:
+    branch closed early for maintenance
+
+BRANCH  75  LAKESIDE
+
+  ACCOUNT     MEMBER NAME                    POSTED             AMOUNT
+  ----------  ----------------------------   ----------   ------------
+  00146187    ABIODUN, FEMI                  08/28/2026       3,261.05
+  00141777    WHITFIELD, WINIFRED            01/23/2026       3,760.00
+  00141156    DELACROIX, EVA                 03/15/2026          97.49
+  00145079    ROSSI, NADIA                   06/22/2026      2,332.14-
+  00143655    NAKAMURA, LASZLO               04/15/2026         592.83
+  00148885    SANTOS, LASZLO                 12/23/2026       1,884.27
+  00145429    THORNBURY, FEMI                01/13/2026       3,595.71
+
+  BRANCH TOTALS                                              10,859.21
+
+  REMARKS:
+    reconciled against the general ledger
 

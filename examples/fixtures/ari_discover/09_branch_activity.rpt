@@ -2,53 +2,101 @@ BRANCH ACTIVITY REGISTER                                PAGE    1
 MIDLAND MUTUAL CREDIT UNION                             RUN 09/16/2026 06:12
 ========================================================================
 
-BRANCH  59  RIVERSIDE
+BRANCH  36  WESTFIELD
 
       ACCT NO     MEMBER NAME                    POSTED             AMOUNT
       ----------  ----------------------------   ----------   ------------
-      00148428    CHAUDHRY, PHILIPPE             01/27/2026       2,072.65
-      00141817    DELACROIX, MARGARET            01/21/2026       4,284.32
-      00140457    DELACROIX, ALICE               07/28/2026       2,376.61
-      00141568    WHITFIELD, CHIARA              11/26/2026       2,669.82
-      00147375    WHITFIELD, IRINA               02/26/2026       (622.37)
-      00140183    ABIODUN, CHIARA                07/20/2026       2,330.00
+      00141143    SANTOS, BRENDAN                10/25/2026         156.54
+      00142748    THORNBURY, CARMEN              11/27/2026         634.39
+      00148515    WHITFIELD, CHIARA              01/18/2026       4,367.91
+      00148207    ANDERSSON, FEMI                01/23/2026       1,708.73
+      00144806    PETROVA, ESTHER                10/17/2026     (3,456.13)
+      00146414    KOVACS, MARGARET               09/27/2026       1,799.93
+      00143121    CHAUDHRY, MARGARET             04/14/2026     (4,738.66)
+      00145285    MERCER, BRENDAN                06/25/2026       1,706.71
+      00140399    CHAUDHRY, LASZLO               03/19/2026         292.87
 
-      TOTAL FOR BRANCH                                           13,111.03
+      TOTAL FOR BRANCH                                            2,472.29
+
+      REMARKS:
+        reconciled against the general ledger
+
+BRANCH  13  CEDAR PARK
+
+      ACCT NO     MEMBER NAME                    POSTED             AMOUNT
+      ----------  ----------------------------   ----------   ------------
+      00145755    ROSSI, IRINA                   01/27/2026       4,233.49
+      00147970    CHAUDHRY, ALICE                11/16/2026         863.11
+      00141316    NAKAMURA, WINIFRED             02/27/2026       3,058.17
+      00140046    ANDERSSON, EVA                 06/27/2026         122.25
+      00140743    LINDQVIST, CHIARA              07/28/2026       (462.17)
+
+      TOTAL FOR BRANCH                                            7,814.85
 
       REMARKS:
         branch closed early for maintenance
 
-BRANCH  66  STONEBRIDGE
+BRANCH  32  CEDAR PARK
 
       ACCT NO     MEMBER NAME                    POSTED             AMOUNT
       ----------  ----------------------------   ----------   ------------
-      00142121    LINDQVIST, GUNNAR              11/20/2026       1,081.51
-      00148068    ROSSI, CARMEN                  02/14/2026       1,046.80
-      00141582    OKAFOR, GUNNAR                 06/22/2026       2,893.93
-      00142442    KOVACS, ESTHER                 03/13/2026         698.03
-      00149255    PETROVA, LASZLO                10/26/2026     (2,483.84)
-      00141140    DELACROIX, LASZLO              06/14/2026         576.87
-      00140451    DELACROIX, DIEGO               01/18/2026       3,067.99
-      00144721    THORNBURY, MARGARET            08/20/2026       1,864.82
-      00146392    ABIODUN, CARMEN                11/13/2026     (2,167.52)
+      00147065    KOVACS, DIEGO                  04/22/2026     (2,531.54)
+      00149328    KOVACS, CHIARA                 09/26/2026       4,767.87
+      00148800    ABIODUN, GUNNAR                09/20/2026       4,187.81
+      00140333    CHAUDHRY, GUNNAR               08/27/2026       1,728.76
 
-      TOTAL FOR BRANCH                                            6,578.59
+      TOTAL FOR BRANCH                                            8,152.90
+
+      REMARKS:
+        reconciled against the general ledger
+
+BRANCH  35  RIVERSIDE
+
+      ACCT NO     MEMBER NAME                    POSTED             AMOUNT
+      ----------  ----------------------------   ----------   ------------
+      00146976    ABIODUN, GUNNAR                11/25/2026       4,024.79
+      00146720    KOVACS, FEMI                   12/26/2026          87.65
+      00140884    DELACROIX, DIEGO               11/15/2026       3,089.24
+      00147371    DELACROIX, YUKI                04/28/2026       1,861.81
+
+BRANCH ACTIVITY REGISTER                                PAGE    2
+MIDLAND MUTUAL CREDIT UNION                             RUN 09/16/2026 06:12
+========================================================================
+
+
+      TOTAL FOR BRANCH                                            9,063.49
 
       REMARKS:
         two items held for review
 
-BRANCH  18  NORTHGATE
+BRANCH  45  STONEBRIDGE
 
       ACCT NO     MEMBER NAME                    POSTED             AMOUNT
       ----------  ----------------------------   ----------   ------------
-      00147258    THORNBURY, FEMI                03/16/2026       1,989.42
-      00146956    KOVACS, BRENDAN                09/21/2026       1,037.54
-      00141614    ANDERSSON, GUNNAR              02/18/2026       2,553.91
-      00149862    PETROVA, YUKI                  03/25/2026       (422.76)
-      00145508    KOVACS, FEMI                   02/22/2026       1,838.01
-      00144442    ABIODUN, LASZLO                02/22/2026         174.96
+      00141765    KOVACS, NADIA                  01/26/2026         494.08
+      00141068    THORNBURY, MARGARET            11/24/2026       3,305.63
+      00146112    THORNBURY, NADIA               12/26/2026       2,447.57
+      00149740    OKAFOR, MARGARET               03/15/2026       2,870.47
+      00148734    OKAFOR, PHILIPPE               04/17/2026       4,177.09
+      00141290    LINDQVIST, YUKI                01/21/2026       2,323.67
+      00148131    OKAFOR, ALICE                  08/15/2026       1,582.73
+      00141573    ANDERSSON, PHILIPPE            02/14/2026         342.57
 
-      TOTAL FOR BRANCH                                            7,171.08
+      TOTAL FOR BRANCH                                           17,543.81
+
+      REMARKS:
+        branch closed early for maintenance
+
+BRANCH  30  WESTFIELD
+
+      ACCT NO     MEMBER NAME                    POSTED             AMOUNT
+      ----------  ----------------------------   ----------   ------------
+      00148155    REYES, PHILIPPE                06/28/2026       3,764.07
+      00149188    LINDQVIST, BRENDAN             09/24/2026       3,556.29
+      00148281    SANTOS, BRENDAN                06/18/2026     (3,438.66)
+      00149562    ABIODUN, CARMEN                05/14/2026       1,571.48
+
+      TOTAL FOR BRANCH                                            5,453.18
 
       REMARKS:
         posted late by operations

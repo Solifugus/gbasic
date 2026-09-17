@@ -2,44 +2,61 @@ BRANCH ACTIVITY REGISTER                                PAGE    1
 MIDLAND MUTUAL CREDIT UNION                             RUN 09/16/2026 06:12
 ========================================================================
 
-BRANCH  97  STONEBRIDGE
+BRANCH  95  NORTHGATE
 
   ACCT NO     MEMBER NAME              POSTED             AMOUNT
   ----------  ----------------------   ----------   ------------
-  00144533    SANTOS, PHILIPPE         25-OCT-2026      1,084.47
-  00144575    REYES, ESTHER            25-SEP-2026      4,408.83
-  00145000    ROSSI, ESTHER            18-JUL-2026       -955.83
-  00144458    ANDERSSON, PHILIPPE      24-MAR-2026      3,045.55
-  00143390    ROSSI, MARGARET          26-JUL-2026      1,749.05
-  00144233    ANDERSSON, BRENDAN       14-SEP-2026      3,410.84
+  00147430    ANDERSSON, IRINA         27-NOV-2026     -3,327.89
+  00149395    ROSSI, IRINA             21-JAN-2026        606.28
+  00145685    KOVACS, MARGARET         13-JUL-2026      1,602.23
+  00142277    PETROVA, ALICE           24-JUL-2026      4,547.75
+  00147229    PETROVA, WINIFRED        22-OCT-2026      3,551.90
+  00145682    THORNBURY, CARMEN        19-OCT-2026      4,580.60
+  00147560    PETROVA, ESTHER          25-NOV-2026      2,076.31
+  00141318    MERCER, BRENDAN          28-MAY-2026      4,344.78
+  00141256    ROSSI, NADIA             18-DEC-2026        912.93
 
-  BRANCH TOTAL                                         12,742.91
+  BRANCH TOTAL                                         18,894.89
 
-BRANCH  60  STONEBRIDGE
-
-  ACCT NO     MEMBER NAME              POSTED             AMOUNT
-  ----------  ----------------------   ----------   ------------
-  00149623    ABIODUN, CARMEN          27-MAY-2026     -2,226.68
-  00140872    KOVACS, FEMI             23-APR-2026        580.59
-  00147068    LINDQVIST, GUNNAR        28-JUN-2026      1,542.76
-  00149697    ROSSI, MARGARET          27-JUN-2026      1,678.72
-  00142096    KOVACS, CHIARA           20-MAR-2026     -4,788.35
-  00144021    MERCER, EVA              14-MAR-2026      3,990.70
-  00145494    LINDQVIST, ESTHER        27-JUN-2026        952.17
-  00149716    PETROVA, CARMEN          22-JUN-2026     -1,674.06
-
-  BRANCH TOTAL                                             55.85
-
-BRANCH  73  STONEBRIDGE
+BRANCH  37  WESTFIELD
 
   ACCT NO     MEMBER NAME              POSTED             AMOUNT
   ----------  ----------------------   ----------   ------------
-  00147189    SANTOS, EVA              19-SEP-2026      1,322.38
-  00146521    ANDERSSON, WINIFRED      21-FEB-2026      2,572.69
-  00147112    ROSSI, EVA               23-MAR-2026      2,656.21
-  00143459    OKAFOR, PHILIPPE         17-APR-2026        -76.26
-  00146506    SANTOS, MARGARET         22-MAR-2026      1,731.02
-  00142198    CHAUDHRY, DIEGO          19-MAR-2026     -3,971.77
+  00145821    PETROVA, MARGARET        20-OCT-2026      4,062.38
+  00143456    CHAUDHRY, ALICE          15-NOV-2026      4,754.84
+  00148743    CHAUDHRY, MARGARET       26-OCT-2026       -897.02
+  00148751    ANDERSSON, PHILIPPE      14-SEP-2026      1,380.37
+  00144827    KOVACS, IRINA            24-JUN-2026      2,471.19
+  00146000    LINDQVIST, ALICE         18-SEP-2026      1,819.60
 
-  BRANCH TOTAL                                          4,234.27
+  BRANCH TOTAL                                         13,591.36
+
+BRANCH  99  WESTFIELD
+
+  ACCT NO     MEMBER NAME              POSTED             AMOUNT
+  ----------  ----------------------   ----------   ------------
+  00145357    CHAUDHRY, MARGARET       22-MAY-2026        778.81
+  00142813    LINDQVIST, PHILIPPE      19-APR-2026     -1,988.43
+  00141339    SANTOS, CARMEN           23-JUL-2026      1,767.51
+  00141256    OKAFOR, EVA              28-DEC-2026      4,709.81
+  00149375    ANDERSSON, GUNNAR        18-JAN-2026       -486.33
+  00148198    CHAUDHRY, PHILIPPE       20-FEB-2026      1,672.66
+  00142497    MWANGI, IRINA            14-MAY-2026      1,497.29
+  00142438    KOVACS, GUNNAR           15-APR-2026     -2,770.26
+  00142424    PETROVA, MARGARET        18-APR-2026      3,398.92
+
+  BRANCH TOTAL                                          8,579.98
+
+BRANCH  24  RIVERSIDE
+
+  ACCT NO     MEMBER NAME              POSTED             AMOUNT
+  ----------  ----------------------   ----------   ------------
+  00140240    KOVACS, MARGARET         20-APR-2026      1,001.05
+  00145716    WHITFIELD, DIEGO         13-DEC-2026      3,536.61
+  00142351    WHITFIELD, WINIFRED      26-NOV-2026     -4,320.17
+  00141192    NAKAMURA, PHILIPPE       27-JUL-2026      2,057.80
+  00141401    KOVACS, GUNNAR           28-FEB-2026     -3,518.75
+  00148452    WHITFIELD, MARGARET      13-NOV-2026      2,137.84
+
+  BRANCH TOTAL                                            894.38
 

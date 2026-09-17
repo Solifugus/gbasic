@@ -2,60 +2,94 @@ BRANCH ACTIVITY REGISTER                                PAGE    1
 MIDLAND MUTUAL CREDIT UNION                             RUN 09/16/2026 06:12
 ========================================================================
 
-BRANCH  47  LAKESIDE
+BRANCH  46  HARBOUR
 
       ACCT        MEMBER NAME              POSTED             AMOUNT
       ----------  ----------------------   ----------   ------------
-      00140606    ANDERSSON, GUNNAR        09/21/2026     (2,694.04)
-      00149275    ANDERSSON, ESTHER        12/25/2026       1,970.67
-      00142914    SANTOS, ESTHER           12/18/2026       2,291.00
-      00144331    ABIODUN, MARGARET        04/27/2026       (437.06)
-      00143121    MERCER, DIEGO            10/24/2026     (2,678.73)
-      00148523    PETROVA, IRINA           11/20/2026       2,079.42
+      00141802    REYES, YUKI              05/28/2026         917.90
+      00141621    THORNBURY, GUNNAR        09/14/2026       1,062.08
+      00141143    SANTOS, PHILIPPE         10/19/2026       4,523.78
+      00140495    NAKAMURA, CARMEN         12/16/2026       3,505.99
+      00143992    NAKAMURA, NADIA          12/20/2026       4,735.12
+      00146507    ROSSI, LASZLO            11/23/2026       4,492.14
+      00146600    MWANGI, EVA              07/18/2026         936.39
 
-      TOTAL FOR BRANCH                                        531.26
+      TOTAL FOR BRANCH                                     20,173.40
 
       REMARKS:
-        branch closed early for maintenance
+        two items held for review
 
-BRANCH  33  RIVERSIDE
+BRANCH  79  CEDAR PARK
 
       ACCT        MEMBER NAME              POSTED             AMOUNT
       ----------  ----------------------   ----------   ------------
-      00146600    KOVACS, IRINA            03/21/2026       (132.72)
-      00145780    CHAUDHRY, WINIFRED       03/23/2026     (3,491.05)
-      00143418    MWANGI, MARGARET         05/16/2026       2,417.47
-      00144680    SANTOS, ESTHER           12/24/2026       2,345.29
-      00144882    MWANGI, MARGARET         04/14/2026     (3,606.04)
-      00147867    OKAFOR, FEMI             09/17/2026       (105.79)
-      00149834    ROSSI, NADIA             07/21/2026         977.26
-      00145983    LINDQVIST, IRINA         02/28/2026       4,690.73
-      00142998    ROSSI, NADIA             11/20/2026         959.38
+      00146833    DELACROIX, WINIFRED      03/15/2026       2,428.02
+      00149144    ABIODUN, IRINA           10/15/2026       1,030.26
+      00146234    WHITFIELD, CHIARA        02/19/2026       4,547.40
+      00141697    WHITFIELD, FEMI          06/15/2026       2,470.36
+      00146649    REYES, BRENDAN           09/14/2026       2,042.14
+      00147346    MERCER, ESTHER           03/16/2026       1,746.10
 
-      TOTAL FOR BRANCH                                      4,054.53
+      TOTAL FOR BRANCH                                     14,264.28
 
       REMARKS:
         posted late by operations
 
-BRANCH  15  NORTHGATE
+BRANCH  26  NORTHGATE
 
       ACCT        MEMBER NAME              POSTED             AMOUNT
       ----------  ----------------------   ----------   ------------
-      00146073    MWANGI, ESTHER           06/26/2026       1,182.46
-      00141579    ABIODUN, GUNNAR          02/14/2026       3,555.62
-      00143822    CHAUDHRY, DIEGO          01/27/2026       1,134.33
-      00147178    NAKAMURA, GUNNAR         03/19/2026       2,887.08
-      00145032    DELACROIX, CHIARA        01/24/2026       4,355.67
-      00143244    OKAFOR, IRINA            03/19/2026     (3,543.26)
-      00149060    MERCER, FEMI             03/20/2026       3,090.93
+      00146760    REYES, LASZLO            11/25/2026       2,717.32
+      00146094    OKAFOR, IRINA            03/24/2026       3,356.98
+      00145720    ROSSI, BRENDAN           02/25/2026         601.06
+      00140068    MERCER, ESTHER           09/23/2026       2,006.85
+      00142485    OKAFOR, EVA              06/13/2026       1,911.93
+      00149278    CHAUDHRY, LASZLO         08/17/2026          71.75
+      00140608    REYES, CHIARA            11/22/2026       (498.41)
+      00148627    MERCER, PHILIPPE         02/15/2026         773.23
+
 
 BRANCH ACTIVITY REGISTER                                PAGE    2
 MIDLAND MUTUAL CREDIT UNION                             RUN 09/16/2026 06:12
 ========================================================================
 
-
-      TOTAL FOR BRANCH                                     12,662.83
+      TOTAL FOR BRANCH                                     10,940.71
 
       REMARKS:
-        reconciled against the general ledger
+        two items held for review
+
+BRANCH  89  NORTHGATE
+
+      ACCT        MEMBER NAME              POSTED             AMOUNT
+      ----------  ----------------------   ----------   ------------
+      00146263    MERCER, ESTHER           03/23/2026       1,233.14
+      00145870    CHAUDHRY, GUNNAR         02/22/2026       1,908.14
+      00145190    THORNBURY, CARMEN        01/15/2026       4,079.16
+      00146268    SANTOS, CARMEN           10/21/2026     (4,280.68)
+      00141980    MWANGI, NADIA            11/19/2026       4,482.74
+      00141841    ABIODUN, WINIFRED        03/23/2026       1,696.67
+      00144396    SANTOS, FEMI             07/17/2026     (1,131.84)
+      00144659    ABIODUN, ALICE           08/15/2026          47.06
+      00142549    OKAFOR, BRENDAN          11/23/2026     (2,356.77)
+
+      TOTAL FOR BRANCH                                      5,677.62
+
+      REMARKS:
+        branch closed early for maintenance
+
+BRANCH  78  LAKESIDE
+
+      ACCT        MEMBER NAME              POSTED             AMOUNT
+      ----------  ----------------------   ----------   ------------
+      00140918    OKAFOR, FEMI             06/25/2026       1,849.86
+      00147073    REYES, YUKI              06/17/2026       4,434.41
+      00146062    ROSSI, BRENDAN           04/24/2026       1,679.44
+      00145269    ANDERSSON, DIEGO         07/18/2026       2,102.43
+      00146830    ABIODUN, YUKI            11/27/2026       3,082.44
+      00141869    WHITFIELD, CHIARA        02/19/2026       3,612.09
+
+      TOTAL FOR BRANCH                                     16,760.67
+
+      REMARKS:
+        posted late by operations
 
