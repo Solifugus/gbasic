@@ -7281,6 +7281,40 @@ whole program without needing a call site.
   anchor, anything else is `<TEXT>`. One line cannot decide that, and taking
   every word as a literal makes each detail row its own family.
 
+  **Phase 1** — `infer(sources [, options])` proposes a specification for the
+  dominant repeating family and **has `ari` judge it**: the returned
+  `scorecard` comes from running the candidate through `ari.parse`, never from
+  the model that produced it. The proposal carries `spec`, `fields` (each with
+  its locator and the evidence for it), `questions`, `built_from` (the source
+  the column boundaries and heading were read from — without it a positional
+  rule cannot be audited), and `family_share`. `validate(sources, spec_text
+  [, options])` scores any specification the same way.
+
+  **The dominant family must be dominant, not merely recurring.** A candidate
+  has to hold `minimum_family_share` (default 0.15) of its source's content
+  lines *and* appear in `minimum_support` of the sources. Measured: the real
+  corpus's detail family holds 55%, and requiring recurrence alone made `infer`
+  propose a specification for **structureless** text — a one-line
+  `<MONEY> <DATE>` family recurring in 11 of 12 null sources by chance.
+
+  `gutters(rows, lines)` finds a fixed-width family's column boundaries from
+  whitespace present on **every** row, and a run of one space is not a gutter.
+  `infer_fields(rows, family, furniture_lines [, options])` makes one column one
+  field, and `spec_text(family, inferred [, options])` renders them as ARI
+  source — with the evidence for each rule as a comment beside it, because a
+  person has to maintain the result **without** `ari_discover` (design
+  principle 8). `anchor_stability(sources, signature [, options])` is the measure
+  without which the scorecard lies: a `columns` rule built from one source
+  parses every other one, produces the right row count and no unknowns, **and
+  reads the wrong columns**. It is computed without an answer key, from whether
+  the family's column structure is the same in every source.
+
+  **Measured over 8 sources carrying 230 planted rows**: an anchor-relative
+  field recovers **230/230**; a positional one recovers **147/230** and is
+  silent about the rest. That is the design's "relative structure before
+  columns" as a number, and it is why `allow_fixed_columns` defaults to false
+  and what it cannot locate becomes a question rather than a column.
+
   `page_starts(rows [, options])` reports where pages begin —
   stated by form feeds, or inferred from a repeating block that **page one
   begins with**. `furniture(rows [, options])` returns the header lines,

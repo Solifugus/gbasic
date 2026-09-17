@@ -1,28 +1,27 @@
-' Profile a CORPUS rather than one report.
+' PHASE 1: infer a specification from a corpus, and let `ari` judge it.
 '
-' §5.1: variation across files is what separates a true constant from an
-' accidental one. A signature that appears in one source is a fact about that
-' source; one that appears in most of them is a fact about the report FAMILY,
-' and only the second is something to build a specification on.
+' Run twice, with one thing different: whether positional (`columns`) rules are
+' permitted. The difference is the design's own principle -- relative structure
+' before columns -- as a measurement rather than an admonition.
 '
-' Note what this prints when the corpus is too small. Below about ten sources
-' `minimum_support` cannot be calibrated at all -- with three, 0.80 MEANS
-' "3 of 3", because 2/3 is 0.67 -- and saying so beats reporting a support
-' figure that can only take three values.
+' Anchor-relative fields survive layout drift. Positional ones do not, and they
+' fail SILENTLY: every source still parses, nothing is unknown, and the values
+' are ordinary-looking account numbers from the wrong columns. `anchor_stability`
+' is the only measure that catches it, and it needs no answer key -- it asks
+' whether the family's column structure is the same in every source.
 '
 '   GBASIC_PATH=stdlib ./gbasic examples/ari_discover_infer.bas [count]
 program main( args )
     load ari_discover
 
     dir = "examples/fixtures/ari_discover/"
-    want = 12
+    want = 8
     if count(args) > 0 then
         want = number(args[0])
     end if
 
     t {file}= dir + "truth.json"
     truth = decode(read(t))
-
     sources = []
     i = 0
     while i < want
@@ -33,33 +32,30 @@ program main( args )
         i = i + 1
     end while
 
-    c = ari_discover.profile_corpus(sources)
-    print ("corpus: " + string(c.sources) + " sources")
-    if c.support_warning != "" then
-        print ("  WARNING: " + c.support_warning)
-    end if
-    print ""
-
-    print "signatures present in most sources -- candidates to build a rule on:"
-    for each e in c.shared_signatures
-        print ("  " + string(e.sources) + "/" + string(c.sources) + "  " + e.signature)
-    end for
-    print ""
-
-    ' The other half, and the one a reader skips at their peril: a signature
-    ' seen in exactly one source is either a genuine local variant or a
-    ' mis-grouping, and Phase 0 does not claim to know which. It reports them
-    ' so a person can look.
-    print ("signatures seen in ONE source only: "
-           + string(count(c.single_source_signatures)))
-    shown = 0
-    for each e in c.single_source_signatures
-        if shown < 5 then
-            print ("  " + e.signature)
-            shown = shown + 1
+    for each allow in [ false, true ]
+        p = ari_discover.infer(sources, { allow_fixed_columns: allow })
+        print ("=== allow_fixed_columns: " + string(allow) + " ===")
+        if not p.ok then
+            print ("  refused: " + p.why)
+            print ""
+            continue
         end if
+        print p.spec
+        print ""
+        print ("  sources parsed        " + string(p.scorecard.parsed)
+               + "/" + string(p.scorecard.sources))
+        print ("  rows extracted        " + string(p.scorecard.rows))
+        print ("  unknown rate          " + string(p.scorecard.unknown_rate))
+        print ("  positional dependence " + string(p.scorecard.positional_dependence))
+        print ("  anchor stability      " + string(p.scorecard.anchor_stability)
+               + "   (" + string(p.scorecard.layouts) + " distinct column layouts)")
+        print ("  not computable        " + join(p.scorecard.not_computable, ", "))
+        for each q in p.questions
+            print ("  QUESTION [" + q.field + "] " + q.why)
+            for each opt in q.options
+                print ("      - " + opt)
+            end for
+        end for
+        print ""
     end for
-    if count(c.single_source_signatures) > 5 then
-        print ("  ... " + string(count(c.single_source_signatures) - 5) + " more")
-    end if
 end program

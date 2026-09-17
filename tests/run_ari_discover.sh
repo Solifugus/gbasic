@@ -34,6 +34,26 @@
 #     claims nothing anywhere -- which is exactly what an earlier draft did on
 #     14 of 18 sources while reporting a clean result.
 #
+# PHASE 1'S HEADLINE IS A DIFFERENCE, and it is the design's own principle --
+# "relative structure before columns" -- turned into a number. Over 8 sources
+# carrying 230 planted rows, a generated specification recovers:
+#
+#     anchor-relative `amount`   230 / 230
+#     positional     `acct_no`   147 / 230
+#
+# and the second is SILENT: source_coverage is 1.0, unknown_rate is 0, every
+# extracted value is an ordinary-looking account number. Only `anchor_stability`
+# catches it, and it is computed WITHOUT the answer key -- from whether the
+# family's column structure is the same in every source (it is not: 7 distinct
+# layouts across 8, because the corpus varies its table indent).
+#
+# THE NULL CORPUS CAUGHT PHASE 1 TOO. `infer` proposed a specification for
+# structureless text: the family `<MONEY> <DATE>`, ONE LINE in its source,
+# recurring in 11 of 12 sources by chance because a two-token shape recurs
+# whenever tokens are drawn at random. §16 asks for one DOMINANT repeating
+# family and the first version implemented only "repeating" -- 55% of content
+# lines in the real corpus against 1.5% in the null.
+#
 # NULL is the tier that is not satisfied by a confident guesser (§15.5). Every
 # other measure here runs on a corpus that HAS structure, and inference is a
 # search -- recipe 1 in examples/automation_lab measured that the same
@@ -77,12 +97,12 @@ scratch="$(mktemp -d)"
 trap 'rm -rf "$scratch"' EXIT
 
 # --- SEMANTICS -------------------------------------------------------------
-printf 'TIER semantics (furniture, families, index spaces, dates, null)\n'
+printf 'TIER semantics (furniture, families, index spaces, dates, null, PHASE 1)\n'
 out="$scratch/sem.out"
 if timeout 180 ./gbasic tests/ari_discover/discover_test.bas >"$out" 2>&1; then
     mism="$(sed -n 's/^mismatches: //p' "$out")"
     checks="$(sed -n 's/^checks: //p' "$out")"
-    if [ "$mism" = "0" ] && [ "${checks:-0}" -ge 35 ]; then
+    if [ "$mism" = "0" ] && [ "${checks:-0}" -ge 64 ]; then
         ok "$checks checks, 0 mismatches"
         sed -n 's/^     /       /p' "$out"
     else

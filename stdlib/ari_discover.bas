@@ -50,6 +50,7 @@ load ari from "ari.bas"
 function default_options()
     return { minimum_support: 0.80,
              minimum_confidence: 0.70,
+             minimum_family_share: 0.15,
              maximum_section_depth: 4,
              allow_fixed_columns: false,
              redact_examples: false,
@@ -990,6 +991,724 @@ function profile_corpus(sources, options = nothing)
              shared_signatures: shared,
              single_source_signatures: only_one,
              support_warning: warn }
+end function
+
+' --- §16 PHASE 1: infer a specification, and let `ari` judge it -------------
+'
+' Design principle 4: THE RUNTIME IS THE JUDGE. A proposed rule is not
+' successful until ordinary `ari.parse` executes it against the corpus. Nothing
+' below scores a candidate from the inference model that produced it -- the
+' model's opinion of its own work is the one number that cannot be evidence.
+'
+' WHAT PHASE 1 CAN AND CANNOT LOCATE, and the limit is the REPORT's, not a
+' shortcoming here. A detail row carries no literal anchors:
+'
+'     00147454    REYES, YUKI              03/19/2026         947.08
+'
+' so `right of "..."` and `between ... and ...` have nothing to attach to. What
+' remains anchor-relative is `first`/`last <type>`, which reaches the money and
+' the date and nothing else. The identifier and the name are reachable ONLY by
+' column.
+'
+' THAT COST IS REPORTED, NEVER PAID SILENTLY. §5.2 defaults `allow_fixed_columns`
+' to false because a column rule breaks the moment the report drifts, which is
+' the whole reason ARI is anchor-relative. So by default those fields become
+' QUESTIONS carrying their evidence (§10), and turning columns on answers them
+' at a price the scorecard states as `positional_dependence`.
+
+function _kind_locator(kind)
+    ' Which kinds `first`/`last` can reach at all. `identifier` is deliberately
+    ' absent: `first integer` on `00147454` answers 147454 -- LEADING ZEROS
+    ' GONE, and a number where the source had a code. An account number that
+    ' reads back shorter is exactly the ordinary-looking wrong value this
+    ' library exists to refuse.
+    if kind = "money" then
+        return "money"
+    end if
+    if kind = "date" then
+        return "date"
+    end if
+    return ""
+end function
+
+' Name a field from the column heading above it, when the heading's word
+' overlaps the field's own column range. §3: "likely field names derived from
+' headings or adjacent labels".
+'
+' OVERLAP, NOT ORDER. Matching the nth heading word to the nth field assumes
+' both have the same count, and a two-word heading over a one-value column
+' ("MEMBER NAME") breaks it silently, naming everything after it wrongly.
+function _name_from_heading(heading_text, cp_start, cp_length)
+    if heading_text = "" then
+        return ""
+    end if
+    parts = []
+    lo = cp_start
+    hi = cp_start + cp_length
+    for each sp in spans(heading_text)
+        a = sp.cp_start
+        b = sp.cp_start + sp.cp_length
+        if a < hi then
+            if lo < b then
+                append(parts, lower(sp.text))
+            end if
+        end if
+    end for
+    if count(parts) = 0 then
+        return ""
+    end if
+    return join(parts, "_")
+end function
+
+function _safe_name(n, used, idx)
+    base = n
+    if base = "" then
+        base = "field_" + string(idx + 1)
+    end if
+    base = replace(base, " ", "_")
+    if contains(used, base) then
+        return base + "_" + string(idx + 1)
+    end if
+    return base
+end function
+
+' The heading line for a family: the nearest line ABOVE its first member that is
+' itself a family of words and is not part of this family.
+function _heading_for(rows, fam, furniture_lines)
+    first = fam.lines[0]
+    ln = first - 1
+    seen = 0
+    while ln >= 1
+        if seen > 3 then
+            return ""
+        end if
+        r = rows[ln - 1]
+        if not contains(furniture_lines, ln) then
+            if not r.blank then
+                if shape(r.text) != fam.shape then
+                    if _is_rule(trim(r.text)) then
+                        ln = ln - 1
+                        seen = seen + 1
+                        continue
+                    end if
+                    ' A heading is all words. A line carrying money or a date is
+                    ' a data row, not a caption for one.
+                    allwords = true
+                    for each sp in spans(r.text)
+                        if sp.kind != "word" then
+                            allwords = false
+                        end if
+                    end for
+                    if allwords then
+                        return r.text
+                    end if
+                    return ""
+                end if
+            end if
+        end if
+        ln = ln - 1
+        seen = seen + 1
+    end while
+    return ""
+end function
+
+' The fields of one family, with a locator each and the evidence for it.
+' THE COLUMNS OF A FIXED-WIDTH FAMILY ARE ITS GUTTERS, not the extent of the
+' values that happened to be in it.
+'
+' The first version took each span's min..max across the family. MEASURED, that
+' is wrong twice over and both failures are silent:
+'
+'   * `columns 4-11` on an account column starting at 2 returned `147454` --
+'     THE LEADING ZEROS GONE, a number where the source had a code;
+'   * a member name came back as `YES, YUKI`, because the widest observed
+'     surname still did not reach the column's real right edge.
+'
+' A column is bounded by whitespace that is present on EVERY row of the family,
+' which is what a person reads by eye and what the report generator actually
+' emitted. A run of one space is not a gutter -- `REYES, YUKI` has one inside a
+' single value, and the position of that space MOVES with the surname's length,
+' which is precisely why the all-rows test settles it.
+'
+' This also merges spans correctly without a rule about merging: a surname and a
+' forename separated by one space fall in ONE column and become ONE field, while
+' an account and a name separated by a four-space gutter stay two.
+function gutters(rows, lines)
+    width = 0
+    for each ln in lines
+        w = len(rows[ln - 1].text)
+        if w > width then
+            width = w
+        end if
+    end for
+    ' A position is a gutter if EVERY row of the family has a space there (or
+    ' ends before it).
+    isgap = []
+    i = 0
+    while i < width
+        allspace = true
+        for each ln in lines
+            t = rows[ln - 1].text
+            if i < len(t) then
+                if mid(t, i, 1) != " " then
+                    allspace = false
+                end if
+            end if
+        end for
+        append(isgap, allspace)
+        i = i + 1
+    end while
+
+    ' Columns are the runs BETWEEN gutters of two or more positions. A
+    ' single-space gap is inside a value, not between columns.
+    cols = []
+    i = 0
+    start = -1
+    while i <= width
+        gap = true
+        if i < width then
+            gap = isgap[i]
+        end if
+        runlen = 0
+        if gap then
+            j = i
+            while j < width
+                if not isgap[j] then
+                    break
+                end if
+                runlen = runlen + 1
+                j = j + 1
+            end while
+        end if
+        if gap and runlen >= 2 then
+            if start >= 0 then
+                append(cols, { cp_start: start, cp_end: i - 1 })
+                start = -1
+            end if
+            i = i + runlen
+        else
+            if i < width then
+                if start < 0 then
+                    start = i
+                end if
+            end if
+            i = i + 1
+        end if
+    end while
+    if start >= 0 then
+        append(cols, { cp_start: start, cp_end: width - 1 })
+    end if
+    return cols
+end function
+
+function _column_of(cols, cp)
+    i = 0
+    while i < count(cols)
+        if cp >= cols[i].cp_start then
+            if cp <= cols[i].cp_end then
+                return i
+            end if
+        end if
+        i = i + 1
+    end while
+    return -1
+end function
+
+' The fields of one family: ONE COLUMN IS ONE FIELD, with a locator each and
+' the evidence for it.
+function infer_fields(rows, fam, furniture_lines, options = nothing)
+    o = _options(options)
+    heading = _heading_for(rows, fam, furniture_lines)
+    cols = gutters(rows, fam.lines)
+
+    ' What kind lives in each column, decided across the WHOLE family rather
+    ' than from one row: a column is typed only if every row agrees, because a
+    ' column that is money on most rows and text on one is not a money column,
+    ' it is a column with a problem in it.
+    kinds = []
+    consistent = []
+    ci = 0
+    while ci < count(cols)
+        tally = {}
+        rowsseen = 0
+        for each ln in fam.lines
+            rowsseen = rowsseen + 1
+            here = []
+            for each sp in spans(rows[ln - 1].text)
+                if _column_of(cols, sp.cp_start) = ci then
+                    append(here, sp.kind)
+                end if
+            end for
+            k = "text"
+            if count(here) = 1 then
+                k = here[0]
+            end if
+            if has(tally, k) then
+                tally[k] = tally[k] + 1
+            else
+                tally[k] = 1
+            end if
+        end for
+        top = 0
+        topk = "text"
+        for each k in keys(tally)
+            if tally[k] > top then
+                top = tally[k]
+                topk = k
+            end if
+        end for
+        append(kinds, topk)
+        append(consistent, top / rowsseen)
+        ci = ci + 1
+    end while
+
+    ' How many columns carry each typed kind decides whether `first`/`last` is
+    ' unambiguous.
+    counts = {}
+    for each k in kinds
+        if has(counts, k) then
+            counts[k] = counts[k] + 1
+        else
+            counts[k] = 1
+        end if
+    end for
+
+    fields = []
+    questions = []
+    used = []
+    seen_kind = {}
+    ci = 0
+    while ci < count(cols)
+        c = cols[ci]
+        k = kinds[ci]
+        if has(seen_kind, k) then
+            seen_kind[k] = seen_kind[k] + 1
+        else
+            seen_kind[k] = 1
+        end if
+        nth = seen_kind[k]
+
+        nm = _safe_name(_name_from_heading(heading, c.cp_start, c.cp_end - c.cp_start + 1),
+                        used, ci)
+        append(used, nm)
+        sample = trim(mid(rows[fam.lines[0] - 1].text, c.cp_start, c.cp_end - c.cp_start + 1))
+
+        ty = _kind_locator(k)
+        loc = ""
+        why = ""
+        positional = false
+        if ty != "" then
+            if counts[k] = 1 then
+                loc = "first " + ty
+                why = "the only " + ty + " column on the row"
+            else
+                if nth = 1 then
+                    loc = "first " + ty
+                    why = "the first of " + string(counts[k]) + " " + ty + " columns"
+                else
+                    if nth = counts[k] then
+                        loc = "last " + ty
+                        why = "the last of " + string(counts[k]) + " " + ty + " columns"
+                    end if
+                end if
+            end if
+        end if
+
+        if loc = "" then
+            if o.allow_fixed_columns then
+                loc = "columns " + string(c.cp_start) + "-" + string(c.cp_end)
+                why = ("no anchor-relative locator reaches a " + k + " column, so"
+                       + " this is POSITIONAL and breaks if the report drifts")
+                positional = true
+            else
+                append(questions, { field: nm, kind: k,
+                                    cp_start: c.cp_start,
+                                    cp_length: c.cp_end - c.cp_start + 1,
+                                    example: sample,
+                                    why: ("a " + k + " column at " + string(c.cp_start)
+                                          + "-" + string(c.cp_end)
+                                          + " that no anchor-relative rule can reach:"
+                                          + " the row carries no literal to anchor to,"
+                                          + " and `first`/`last` reaches only money and date."),
+                                    options: [ "enable allow_fixed_columns and accept a positional rule",
+                                               "supply an anchor this adapter cannot see",
+                                               "leave the field out" ] })
+            end if
+        end if
+
+        if loc != "" then
+            as_type = ""
+            if k = "money" then
+                as_type = " as money"
+            end if
+            if k = "date" then
+                as_type = " as date"
+            end if
+            append(fields, { name: nm, locator: loc, type: k,
+                             as_type: as_type, positional: positional,
+                             cp_start: c.cp_start, cp_length: c.cp_end - c.cp_start + 1,
+                             example: sample, consistency: consistent[ci],
+                             why: why })
+        end if
+        ci = ci + 1
+    end while
+    return { fields: fields, questions: questions, heading: heading,
+             columns: cols }
+end function
+
+' The generated specification. Comments carry the evidence (§7 Phase 7), because
+' a person has to maintain this afterwards WITHOUT ari_discover -- design
+' principle 8.
+function spec_text(fam, inferred, options = nothing)
+    o = _options(options)
+    out = []
+    append(out, "' Generated by ari_discover Phase 0/1.")
+    append(out, "' Family: " + fam.signature)
+    append(out, "'   " + string(fam.count) + " lines, examples at "
+                + join(_strs(fam.examples), ", "))
+    if inferred.heading != "" then
+        append(out, "' Field names taken from the column heading above it.")
+    else
+        append(out, "' NO column heading was found: field names are positional.")
+    end if
+    append(out, "section report:")
+    append(out, "    section rows repeats starts(/" + _start_regex(fam) + "/):")
+    for each f in inferred.fields
+        append(out, "        ' " + f.why)
+        append(out, "        field " + f.name + ": " + f.locator + f.as_type)
+    end for
+    return join(out, "\n")
+end function
+
+function _strs(a)
+    out = []
+    for each x in a
+        append(out, string(x))
+    end for
+    return out
+end function
+
+' A `starts(...)` pattern for the family, built from what its first span IS
+' rather than from the literal text of one row.
+function _start_regex(fam)
+    parts = [ "^" ]
+    ' Leading indent is part of the family key, so it is evidence.
+    return "^[ ]*" + _first_span_regex(fam)
+end function
+
+function _first_span_regex(fam)
+    sg = fam.signature
+    if starts_with(sg, "<IDENTIFIER>") then
+        return "[0-9]{5,}"
+    end if
+    if starts_with(sg, "<MONEY>") then
+        return "[0-9,]+\\.[0-9]{2}"
+    end if
+    if starts_with(sg, "<DATE>") then
+        return "[0-9]"
+    end if
+    if starts_with(sg, "<NUMBER>") then
+        return "[0-9]"
+    end if
+    if starts_with(sg, "<TEXT>") then
+        return "[A-Za-z]"
+    end if
+    ' A literal first token is the strongest start pattern available.
+    w = sg
+    sp = find(sg, " ")
+    if not is_nothing(sp) then
+        w = mid(sg, 0, sp)
+    end if
+    return w
+end function
+
+' --- §8 scoring: the runtime is the judge ----------------------------------
+'
+' Every number here comes from RUNNING the candidate, never from the model that
+' produced it.
+'
+' TWO OF §8'S NINE MEASURES ARE NOT COMPUTABLE YET and are reported as
+' `unknown` rather than estimated: `content_coverage` and `collision_rate` both
+' need to know WHICH SOURCE SPANS A RULE CLAIMED, and `ari` has no span-level
+' diagnostic surface -- entry C1 in docs/ari_limitations.md. Estimating them
+' from the inference model would be the tool grading its own homework, which is
+' the one thing design principle 4 forbids.
+function validate(sources, spec, options = nothing)
+    o = _options(options)
+    if type(sources) != "array" then
+        error "ari_discover.validate expects an array of sources"
+    end if
+    parsed_ok = 0
+    rows_total = 0
+    cells_total = 0
+    cells_unknown = 0
+    failures = []
+    for each s in sources
+        on error goto next
+        r = ari.parse(s.text, spec)
+        if error then
+            append(failures, { id: s.id, why: error.message })
+            error.clear()
+            on error stop
+            continue
+        end if
+        on error stop
+        if not r.ok then
+            append(failures, { id: s.id, why: r.message })
+            continue
+        end if
+        parsed_ok = parsed_ok + 1
+        if has(r.value, "rows") then
+            for each row in r.value.rows
+                rows_total = rows_total + 1
+                for each k in keys(row)
+                    cells_total = cells_total + 1
+                    if is_unknown(row[k]) then
+                        cells_unknown = cells_unknown + 1
+                    end if
+                end for
+            end for
+        end if
+    end for
+    ur = 0
+    if cells_total > 0 then
+        ur = cells_unknown / cells_total
+    end if
+    return { source_coverage: parsed_ok / count(sources),
+             sources: count(sources),
+             parsed: parsed_ok,
+             rows: rows_total,
+             cells: cells_total,
+             unknown_rate: ur,
+             failures: failures,
+             content_coverage: unknown,
+             collision_rate: unknown,
+             not_computable: [ "content_coverage", "collision_rate" ],
+             not_computable_why: ("both need to know which source spans each rule"
+                 + " claimed; `ari` has no span-level diagnostic surface"
+                 + " (docs/ari_limitations.md C1). Estimating them from the"
+                 + " inference model would be the tool grading its own homework.") }
+end function
+
+' --- §8 anchor stability --------------------------------------------------
+'
+' THE MEASURE WITHOUT WHICH THE SCORECARD LIES, and it lied: a specification
+' whose `columns` came from one source parsed all eight, produced exactly the
+' 230 rows the generator planted, and reported `source_coverage 1.0` and
+' `unknown_rate 0` -- while 104 of those 230 rows carried THE WRONG VALUES,
+' because the corpus varies its table indent and a column rule cannot follow.
+' Every value was an ordinary-looking account number and an ordinary-looking
+' name. Nothing was unknown; nothing failed.
+'
+' So stability is checked WITHOUT the answer key, and directly rather than by
+' comparing extracted values: a positional rule can only be stable if the
+' family's COLUMN STRUCTURE is the same in every source. `gutters` already
+' computes that from whitespace every row shares, so the check is to compute it
+' per source and compare. It needs no extraction and cannot be fooled by a
+' value that happens to look plausible in the wrong column.
+function anchor_stability(sources, fam_signature, options = nothing)
+    o = _options(options)
+    layouts = {}
+    per = []
+    for each s in sources
+        g = grid(s.id, s.text)
+        f = furniture(g, o)
+        fams = families(g, f.lines, o)
+        found = unknown
+        for each fm in fams
+            if fm.signature = fam_signature then
+                found = fm
+            end if
+        end for
+        if is_unknown(found) then
+            append(per, { id: s.id, layout: "(family absent)" })
+            continue
+        end if
+        cols = gutters(g, found.lines)
+        key = []
+        for each c in cols
+            append(key, string(c.cp_start) + "-" + string(c.cp_end))
+        end for
+        k = join(key, ",")
+        append(per, { id: s.id, layout: k })
+        if has(layouts, k) then
+            layouts[k] = layouts[k] + 1
+        else
+            layouts[k] = 1
+        end if
+    end for
+    top = 0
+    topk = ""
+    for each k in keys(layouts)
+        if layouts[k] > top then
+            top = layouts[k]
+            topk = k
+        end if
+    end for
+    n = count(sources)
+    return { stability: top / n,
+             layouts: count(layouts),
+             dominant: topk,
+             dominant_sources: top,
+             sources: n,
+             per_source: per }
+end function
+
+' --- the Phase 1 entry point ----------------------------------------------
+
+function infer(sources, options = nothing)
+    o = _options(options)
+    c = profile_corpus(sources, o)
+
+    ' The dominant family, across the corpus rather than within one source.
+    ' §5.1: variation between files is what separates a true constant from an
+    ' accidental one, so a family present in one source is not a candidate
+    ' however many lines it holds there.
+    best = unknown
+    best_n = 0
+    for each p in c.profiles
+        ' The candidate must be DOMINANT within its own source, not merely
+        ' recurring across the corpus.
+        '
+        ' MEASURED: requiring recurrence alone, `infer` proposed a
+        ' specification for the NULL corpus. The family it chose was
+        ' `<MONEY> <DATE>` -- ONE LINE in its source -- which appeared in 11 of
+        ' 12 structureless sources by pure chance, because a two-token shape
+        ' recurs whenever tokens are drawn at random. It cleared
+        ' `minimum_support` and was the largest of the shared families, so it
+        ' won.
+        '
+        ' §16 Phase 1 asks for "one DOMINANT repeating row family" and the first
+        ' version implemented only "repeating". The share separates them by a
+        ' wide margin: the real corpus's detail family holds 55% of its source's
+        ' content lines, the null corpus's best holds 1.5%. The default sits
+        ' between with room on both sides, and is an OPTION rather than a
+        ' constant so a report whose detail rows are a genuinely small minority
+        ' can say so.
+        content = 0
+        for each r in p.grid
+            if not r.blank then
+                if not contains(p.furniture.lines, r.physical_line) then
+                    content = content + 1
+                end if
+            end if
+        end for
+        for each fm in p.families
+            share = 0
+            if content > 0 then
+                share = fm.count / content
+            end if
+            if share >= o.minimum_family_share then
+                shared = 0
+                for each q in c.profiles
+                    for each g in q.families
+                        if g.signature = fm.signature then
+                            shared = shared + 1
+                        end if
+                    end for
+                end for
+                if shared / c.sources >= o.minimum_support then
+                    if fm.count > best_n then
+                        best_n = fm.count
+                        best = { family: fm, profile: p, shared: shared,
+                                 share: share }
+                    end if
+                end if
+            end if
+        end for
+    end for
+
+    if is_unknown(best) then
+        ' A REFUSAL, not an empty proposal. Nothing recurs across the corpus, so
+        ' there is nothing a specification could be written against -- which is
+        ' §14's "insufficient variation" outcome, and is the RIGHT answer on a
+        ' corpus with no structure in it.
+        return { ok: false,
+                 why: ("no row family is both DOMINANT within a source (at least "
+                       + string(floor(o.minimum_family_share * 100))
+                       + "% of its content lines) and present in at least "
+                       + string(floor(o.minimum_support * 100)) + "% of the "
+                       + string(c.sources) + " sources, so there is no repeating"
+                       + " structure to write a specification against"),
+                 spec: "", fields: [], questions: [], corpus: c }
+    end if
+
+    inf = infer_fields(best.profile.grid, best.family,
+                       best.profile.furniture.lines, o)
+    sp = spec_text(best.family, inf, o)
+    sc = validate(sources, sp, o)
+    st = anchor_stability(sources, best.family.signature, o)
+
+    positional = 0
+    for each f in inf.fields
+        if f.positional then
+            positional = positional + 1
+        end if
+    end for
+    pd = 0
+    if count(inf.fields) > 0 then
+        pd = positional / count(inf.fields)
+    end if
+
+    ' A POSITIONAL FIELD ON AN UNSTABLE LAYOUT IS THE HEADLINE, not a footnote.
+    ' Every other number on the scorecard says the specification is fine, so
+    ' this one has to be loud enough to be read first -- and it is a QUESTION
+    ' (§10), because the remedy is a decision nobody here can make: fewer
+    ' fields, or several specifications (§13 variants), or an anchor the report
+    ' does not currently carry.
+    qs = inf.questions
+    if positional > 0 then
+        if st.stability < 1 then
+            append(qs, { field: "(all positional fields)",
+                         kind: "layout",
+                         example: st.dominant,
+                         why: ("this specification uses " + string(positional)
+                               + " positional field(s), and the corpus does NOT"
+                               + " have one layout: " + string(st.layouts)
+                               + " distinct column structures across "
+                               + string(st.sources) + " sources, the commonest"
+                               + " covering only " + string(st.dominant_sources)
+                               + ". A `columns` rule built from one of them"
+                               + " reads the WRONG COLUMNS on the others, and"
+                               + " does so silently -- the values are still"
+                               + " plausible and nothing is unknown."),
+                         options: [ "keep only the anchor-relative fields, and accept fewer",
+                                    "split the corpus into variants and generate one specification each (design §13)",
+                                    "supply an anchor so the field stops needing a column" ] })
+        end if
+    end if
+
+    return { ok: true,
+             spec: sp,
+             ' §12: WHICH SOURCE THE RULES CAME FROM. The family is chosen
+             ' across the corpus but the column boundaries and the heading are
+             ' read from ONE source, so a caller checking a positional rule has
+             ' to know which -- and without it the proposal cannot be audited
+             ' at all.
+             built_from: best.profile.id,
+             family_share: best.share,
+             family: best.family,
+             shared_by: best.shared,
+             fields: inf.fields,
+             questions: qs,
+             heading: inf.heading,
+             scorecard: { source_coverage: sc.source_coverage,
+                          sources: sc.sources,
+                          parsed: sc.parsed,
+                          rows: sc.rows,
+                          cells: sc.cells,
+                          unknown_rate: sc.unknown_rate,
+                          positional_dependence: pd,
+                          anchor_stability: st.stability,
+                          layouts: st.layouts,
+                          fields_located: count(inf.fields),
+                          fields_unlocatable: count(inf.questions),
+                          failures: sc.failures,
+                          content_coverage: sc.content_coverage,
+                          collision_rate: sc.collision_rate,
+                          not_computable: sc.not_computable,
+                          not_computable_why: sc.not_computable_why },
+             corpus: c }
 end function
 
 ' --- §12 a human-readable profile ----------------------------------------

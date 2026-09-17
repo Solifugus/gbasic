@@ -330,9 +330,13 @@ are.
   mupdf, ghostscript and poppler — because a PDF writer checked by its own
   reader proves only self-consistency.
 - **print-image reports** — `ari` parses them against a hand-written
-  anchor-relative specification; `ari_discover` is the other direction, and its
+  anchor-relative specification; `ari_discover` is the other direction: its
   **Phase 0** measures a corpus so a person can see whether a specification can
-  be written for it at all. It proposes nothing: inference is a search, and a
+  be written for it at all, and **Phase 1** generates one and lets `ari` judge
+  it — over 230 planted rows an anchor-relative field recovers **230/230** while
+  a positional one recovers **147/230** and says nothing, which is the design's
+  "relative structure before columns" as a measurement. Phase 0 proposes
+  nothing: inference is a search, and a
   search always returns a winner, so the load-bearing check is a **null corpus**
   of structureless-but-report-shaped text where the right answer is a refusal —
   it caught 18 false positives on the first working version. Furniture detection

@@ -970,6 +970,54 @@ number, not as a box to tick — and §17 makes it an acceptance criterion.
 - Generate and execute a minimal candidate spec.
 - Report coverage, collisions, unknowns, and unclaimed lines.
 
+> **BUILT 2026-09-17.** `ari_discover.infer` / `validate` / `gutters` /
+> `anchor_stability`, with `examples/ari_discover_infer.bas`.
+>
+> **THE RESULT IS §18 PRINCIPLE 2 AS A NUMBER.** Over 8 sources carrying 230
+> planted rows, a generated specification recovers:
+>
+> | field | locator | recovered |
+> |---|---|---|
+> | `amount` | `first money` | **230 / 230** |
+> | `acct_no` | `columns 4-11` | **147 / 230** |
+>
+> and the second is **silent**: `source_coverage` 1.0, `unknown_rate` 0, every
+> extracted value an ordinary-looking account number from the wrong column. The
+> corpus varies its table indent, and a `columns` rule cannot follow.
+>
+> So `allow_fixed_columns` stays false by default and what cannot be located
+> anchor-relatively becomes a **question with its options** (§10) rather than a
+> column. A detail row carries no literal anchors, so `first`/`last <type>`
+> reaches the money and the date and nothing else — that limit is the report's,
+> and reporting it is the honest profile.
+>
+> **Three defects, each of which produced a plausible specification:**
+>
+> 1. **Columns inferred from the extent of observed values.** `columns 4-11` on
+>    an account column starting at 2 returned `147454` — leading zeros gone,
+>    a number where the source had a code — and a name came back `YES, YUKI`.
+>    A fixed-width column is bounded by **gutters**: whitespace present on every
+>    row. A one-space gap is not one, and that rule needed its own adversarial
+>    source to prove, because in the main corpus a space inside a value moves
+>    with the surname's length and the all-rows test rejects it for free.
+> 2. **The scorecard reported success while a third of the values were wrong.**
+>    Nothing measured §8's *anchor stability*. It is now computed without the
+>    answer key, by asking whether the family's column structure is the same in
+>    every source — 7 distinct layouts across 8 here.
+> 3. **THE NULL CORPUS CAUGHT PHASE 1 TOO.** `infer` proposed a specification
+>    for structureless text: a `<MONEY> <DATE>` family of **one line**,
+>    recurring in 11 of 12 sources by chance, because a two-token shape recurs
+>    whenever tokens are drawn at random. §16 asks for one **dominant**
+>    repeating family and the first version implemented only *repeating* — 55%
+>    of content lines in the real corpus against 1.5% in the null.
+>
+> **Two of §8's nine measures are reported `unknown` rather than estimated** —
+> `content_coverage` and `collision_rate` both need to know which source spans a
+> rule claimed, which is limitation C1. Estimating them from the inference model
+> would be the tool grading its own homework, which principle 4 forbids.
+>
+> Five perturbations proven red, each caught by the tier written for it.
+
 ### Phase 2: Sections and pagination
 
 - Page-furniture stripping proposals.

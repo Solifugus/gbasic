@@ -291,6 +291,30 @@ document list, with a status column, is `docs/README.md`.
   DD-MMM-YYYY addition was prompted by the corpus, is sanctioned by
   text_design 5.1's "union of common forms" independent of it, and its
   SELECTION was corpus-led, which is the part to be careful about.
+- **ARI Discover Phase 1** — `ari_discover` gains inference: a GENERATED specification,
+  judged by `ari` itself (design principle 4 -- every number comes from running the
+  candidate, never from the model that produced it). THE RESULT IS THE DESIGN'S
+  OWN PRINCIPLE AS A NUMBER: over 8 sources carrying 230 planted rows, an
+  anchor-relative field recovers 230/230 and a positional one recovers 147/230
+  -- AND THE SECOND IS SILENT, since source_coverage is 1.0, unknown_rate is 0,
+  and every value is an ordinary-looking account number from the wrong column.
+  So positional rules stay OFF BY DEFAULT and what cannot be located becomes a
+  QUESTION WITH ITS OPTIONS. THREE DEFECTS, each a plausible specification:
+  columns inferred from the extent of observed VALUES rather than from GUTTERS
+  (leading zeros gone, a name truncated to `YES, YUKI`); a scorecard that
+  reported success while a third of the values were wrong, because nothing
+  measured anchor stability (now computed WITHOUT the answer key, from whether
+  the family's column structure is the same in every source -- 7 layouts across
+  8); and THE NULL CORPUS CAUGHT PHASE 1 TOO, since inference proposed a spec for
+  structureless text from a ONE-LINE family recurring in 11 of 12 sources by
+  chance -- Sec 16 asks for a DOMINANT family and the first version required
+  only recurrence (55% of content lines against 1.5%). Two of Sec 8's nine
+  measures are reported UNKNOWN rather than estimated, since both need ari's
+  absent span-level surface (limitation C1) and estimating them from the
+  inference model would be the tool grading its own homework. Five perturbations
+  proven red -- and the gutter rule needed ITS OWN adversarial source, because
+  in the main corpus a space inside a value moves with the surname's length and
+  the all-rows test rejects it for free.
 - **ARI Discover Phase 0** — `ari_discover`: profiling for
   print-image reports, which PROPOSES NOTHING (no specification generation --
   a layer that also guessed would make the guess impossible to evaluate apart

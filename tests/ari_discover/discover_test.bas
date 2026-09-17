@@ -411,6 +411,227 @@ check("twelve can", cp2.support_warning, "")
 check_at_least("and a shared signature is found across them",
                count(cp2.shared_signatures), 1)
 
+' ===========================================================================
+print ""
+print "-- PHASE 1: a generated specification, judged by `ari` (§18 principle 4)"
+' ===========================================================================
+' Nothing here scores a candidate from the model that produced it. Every number
+' comes from running the spec through ordinary `ari.parse`.
+
+corpus = []
+planted_rows = 0
+ci = 0
+while ci < 8
+    append(corpus, { id: truth.sources[ci].id, text: slurp(dir + truth.sources[ci].file) })
+    for each b in truth.sources[ci].branches
+        planted_rows = planted_rows + count(b.accounts)
+    end for
+    ci = ci + 1
+end while
+
+rel = ari_discover.infer(corpus)
+pos = ari_discover.infer(corpus, { allow_fixed_columns: true })
+
+check("a specification is proposed", rel.ok, true)
+check("and `ari` parses every source with it", rel.scorecard.source_coverage, 1)
+check("the same, with positional fields permitted", pos.scorecard.source_coverage, 1)
+
+' THE STRONG ORACLE (§15.4): an accepted specification, run through ordinary
+' `ari`, must recover THE PLANTED VALUES. A coverage percentage cannot
+' substitute -- a specification can claim every line and extract the wrong
+' number, which is exactly what the positional half does below.
+function recovered(spec, corpus, truth, field, want_cents)
+    ok = 0
+    k = 0
+    while k < count(corpus)
+        r = ari.parse(corpus[k].text, spec)
+        idx = 0
+        for each b in truth.sources[k].branches
+            for each a in b.accounts
+                if idx < count(r.value.rows) then
+                    g = r.value.rows[idx]
+                    if has(g, field) then
+                        if not is_unknown(g[field]) then
+                            if want_cents then
+                                ' Compared in CENTS: exact, and free of how
+                                ' money renders (44.90 against 44.9 is a
+                                ' rendering difference, not a wrong value).
+                                if floor(number(string(g[field])) * 100 + 0.5) = a.amount_cents then
+                                    ok = ok + 1
+                                end if
+                            else
+                                if string(g[field]) = a.account then
+                                    ok = ok + 1
+                                end if
+                            end if
+                        end if
+                    end if
+                end if
+                idx = idx + 1
+            end for
+        end for
+        k = k + 1
+    end while
+    return ok
+end function
+
+amt_rel = recovered(rel.spec, corpus, truth, "amount", true)
+amt_pos = recovered(pos.spec, corpus, truth, "amount", true)
+acct_pos = recovered(pos.spec, corpus, truth, "acct_no", false)
+
+print ("     " + string(planted_rows) + " planted rows across " + string(count(corpus)) + " sources")
+print ("     anchor-relative `amount`: " + string(amt_rel)
+       + "   positional `acct_no`: " + string(acct_pos))
+
+check("an anchor-relative field recovers EVERY planted value", amt_rel, planted_rows)
+check("and does so whether or not positional rules are permitted", amt_pos, planted_rows)
+
+' THE LOAD-BEARING PAIR, and it is a DIFFERENCE. "The generated spec works" is
+' satisfied by the anchor-relative half alone; "positional rules are fragile" is
+' a claim nobody measured until now. The corpus varies its table indent across
+' nine declared axes, so a `columns` rule built from one source reads the wrong
+' columns on the others -- and does it SILENTLY: source_coverage is 1.0 and
+' unknown_rate is 0 while a third of the values are wrong.
+check_at_most("a positional field recovers materially FEWER",
+              acct_pos, planted_rows - 50)
+check_at_least("but not none, or the comparison would be about something else",
+               acct_pos, 1)
+check("and the scorecard does not flag it as a failure -- coverage is still 1.0",
+      pos.scorecard.source_coverage, 1)
+check("nor as unknowns", pos.scorecard.unknown_rate, 0)
+
+' WHICH IS WHY anchor_stability EXISTS. It is the one measure that catches it,
+' and it is computed WITHOUT the answer key -- from whether the family's column
+' structure is the same in every source.
+check_at_most("anchor_stability sees it", round3(pos.scorecard.anchor_stability), 0.5)
+check_at_least("and names how many distinct layouts there are", pos.scorecard.layouts, 2)
+
+' A CONTROL: a corpus of ONE source has one layout, so stability is 1. Without
+' this, "stability is low" is satisfied by a measure that is always low.
+one = [ corpus[0] ]
+st1 = ari_discover.anchor_stability(one, rel.family.signature)
+check("a single-source corpus is perfectly stable", st1.stability, 1)
+
+' THE COLUMN BOUNDARIES ARE GUTTERS, and this is what asserts it. Checked on
+' the ONE source the specification was built from, which isolates the gutter
+' question from the layout-drift question above: on that source a positional
+' rule is exactly right, so any shortfall is the column boundary being wrong.
+'
+' Two defects were measured here before the gutter rule existed, and BOTH were
+' silent: `columns 4-11` on an account column starting at 2 returned `147454`,
+' the leading zeros gone; and a member name came back `YES, YUKI` because the
+' widest observed surname still did not reach the column's right edge. A single
+' space is NOT a gutter -- `REYES, YUKI` has one inside one value, and its
+' position moves with the surname's length, which is what the all-rows test
+' settles.
+' The specification's column boundaries and heading come from ONE source, and
+' the proposal says which. Using the wrong one here would test the drift rather
+' than the gutters.
+built_from = corpus[0]
+for each cs in corpus
+    if cs.id = pos.built_from then
+        built_from = cs
+    end if
+end for
+check("the proposal names the source its rules came from",
+      pos.built_from != "", true)
+r0 = ari.parse(built_from.text, pos.spec)
+name_ok = 0
+acct_ok0 = 0
+n0 = 0
+idx0 = 0
+ti = 0
+tsrc = truth.sources[0]
+for each ts in truth.sources
+    if ts.id = pos.built_from then
+        tsrc = ts
+    end if
+end for
+for each b in tsrc.branches
+    for each a in b.accounts
+        n0 = n0 + 1
+        if idx0 < count(r0.value.rows) then
+            g0 = r0.value.rows[idx0]
+            if string(g0.member_name) = a.name then
+                name_ok = name_ok + 1
+            end if
+            if string(g0.acct_no) = a.account then
+                acct_ok0 = acct_ok0 + 1
+            end if
+        end if
+        idx0 = idx0 + 1
+    end for
+end for
+print ("     on the source it was built from: " + string(n0) + " rows")
+check("the text column is WHOLE -- surname and forename in one field",
+      name_ok, n0)
+check("and the identifier keeps its leading zeros", acct_ok0, n0)
+
+' A ONE-SPACE GAP IS NOT A GUTTER, and this is the only shape that can show it.
+' In the main corpus a space inside a value moves with the surname's length, so
+' the all-rows test rejects it for free and the `>= 2` rule never bites --
+' measured, by perturbing it and watching nothing change. It bites when every
+' value in a column is THE SAME WIDTH, because then the interior space is at a
+' constant position and is indistinguishable from a gutter by recurrence alone.
+'
+' `adversarial/fixed_width_gap.rpt` is that case: operator codes `AB 1234`, all
+' seven characters. With the rule, one column; without it, the code splits in
+' two and a caller gets `AB` where the source said `AB 1234`.
+fw = ari_discover.grid("fw", slurp(dir + "adversarial/fixed_width_gap.rpt"))
+fwf = ari_discover.furniture(fw)
+fwfam = unknown
+for each fm in ari_discover.families(fw, fwf.lines)
+    if fm.count >= 5 then
+        fwfam = fm
+    end if
+end for
+check("the fixed-width family is found", is_unknown(fwfam), false)
+fwcols = ari_discover.gutters(fw, fwfam.lines)
+check("a constant interior space does not split the column", count(fwcols), 4)
+whole = trim(mid(fw[fwfam.lines[0] - 1].text, fwcols[1].cp_start,
+                 fwcols[1].cp_end - fwcols[1].cp_start + 1))
+check("and the value survives whole", whole, "AB 1234")
+
+' §10: what cannot be located is a QUESTION with evidence, never a silent
+' omission.
+check_at_least("the default mode asks about what it cannot locate",
+               count(rel.questions), 2)
+check("each question carries its options", count(rel.questions[0].options) > 0, true)
+check("and the positional run asks about the LAYOUT instead",
+      contains(string(pos.questions), "distinct column structures"), true)
+
+' Field names come from the column heading above the family (§3).
+names = []
+for each f in rel.fields
+    append(names, f.name)
+end for
+check("fields are named from the heading, not positionally",
+      contains(names, "amount"), true)
+check("and the date column too", contains(names, "posted"), true)
+
+' §8: two measures are NOT COMPUTABLE without ari's span-level surface, and are
+' reported as unknown rather than estimated from the model that produced the
+' spec -- which would be the tool grading its own homework.
+check("content_coverage is reported unknown", is_unknown(rel.scorecard.content_coverage), true)
+check("collision_rate is reported unknown", is_unknown(rel.scorecard.collision_rate), true)
+check("and the reason names the limitation",
+      contains(rel.scorecard.not_computable_why, "span-level"), true)
+
+' ===========================================================================
+print ""
+print "-- PHASE 1 ON THE NULL CORPUS: the right answer is a refusal"
+' ===========================================================================
+' The tier that a confident guesser cannot pass. Phase 0 claims no furniture
+' there; Phase 1 must decline to propose a specification at all.
+nulls = []
+for each src in ntruth.sources
+    append(nulls, { id: src.id, text: slurp(ndir + src.file) })
+end for
+nres = ari_discover.infer(nulls)
+check("no specification is proposed for structureless sources", nres.ok, false)
+check("and it says why", contains(nres.why, "no row family"), true)
+check("the spec is empty rather than a plausible-looking one", nres.spec, "")
+
 print ""
 print ("checks: " + string(tally.checks))
 print ("mismatches: " + string(tally.mismatches))
