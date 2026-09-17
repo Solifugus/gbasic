@@ -291,6 +291,27 @@ document list, with a status column, is `docs/README.md`.
   DD-MMM-YYYY addition was prompted by the corpus, is sanctioned by
   text_design 5.1's "union of common forms" independent of it, and its
   SELECTION was corpus-led, which is the part to be careful about.
+- **ARI Discover Phase 2** — sections, nesting and the furniture directive.
+  THE HEADLINE IS A DIFFERENCE BETWEEN TWO MEASURES OF ONE RUN: source coverage
+  1.0 against REGION COVERAGE 0.125 -- a nested specification that parses every
+  source without error and finds the WRONG NUMBER OF SECTIONS in seven of eight
+  (4 where there are 3, 10 where there are 7). Three things in it are
+  source-specific and NONE MAKES A PARSE FAIL: `break: formfeed` does nothing on
+  a source paginated by a header line, so the page header matches the section
+  pattern and becomes a section; the total's label differs; the columns differ.
+  The CONTROL is that on the source it was built from the section count is
+  EXACT, without which the finding would be about incompetence rather than
+  heterogeneity. Sections are found BY POSITION relative to the detail runs, not
+  by vocabulary (keying on the word TOTAL works here and on no report that says
+  SUMMARY), and candidates are grouped by LITERAL PREFIX not by family --
+  keyed by family no heading was found at all, since two-word branch names form
+  a different family and eight headings split across three. TWO RULES ARE
+  RECORDED AS UNPROVEN in the source and the suite: removing BOTH the
+  must-vary rule and the outermost-indent preference changes no answer here,
+  because the branch heading happens to precede the column caption and insertion
+  order then picks it; separating them needs a caption-first report or two
+  levels of nesting, which the delinquency fixture has and this corpus does not.
+  Kept rather than removed -- a rule with a reason is not dead code.
 - **ARI Discover Phase 1** — `ari_discover` gains inference: a GENERATED specification,
   judged by `ari` itself (design principle 4 -- every number comes from running the
   candidate, never from the model that produced it). THE RESULT IS THE DESIGN'S

@@ -7315,6 +7315,27 @@ whole program without needing a call site.
   columns" as a number, and it is why `allow_fixed_columns` defaults to false
   and what it cannot locate becomes a question rather than a column.
 
+  **Phase 2** nests it. `sections(rows, families, detail [, options])` finds the
+  family that heads each run of detail rows and the one that closes it —
+  decided by **position relative to the runs**, not by what the text says, since
+  keying on the word "TOTAL" works on one corpus and no report that says
+  "SUMMARY". Candidates are grouped by **literal prefix** rather than by family,
+  because that is what a `starts(...)` pattern is built from and a two-word
+  branch name otherwise forms a different family.
+  `furniture_directive(furniture)` turns Phase 0's measurement into the
+  `page:` / `break:` / `drop:` block, and without it the page header
+  `BRANCH ACTIVITY REGISTER` matches `^BRANCH ` and becomes a section.
+  `spec_text_nested(...)` renders the result.
+
+  `region_coverage(sources, spec, signature [, options, profiles])` is the
+  measure `source_coverage` cannot substitute for: it compares the sections the
+  specification found against the runs Phase 0 measured, needing no answer key.
+  **Measured: `source_coverage` 1.0 against `region_coverage` 0.125** — a
+  specification that parses every source without error and is structurally
+  wrong in seven of eight, because pagination style, the total's label and the
+  column layout all differ and none of those makes a parse fail. The proposal
+  reports it per source and raises a question pointing at §13 variants.
+
   `page_starts(rows [, options])` reports where pages begin —
   stated by form feeds, or inferred from a repeating block that **page one
   begins with**. `furniture(rows [, options])` returns the header lines,

@@ -445,11 +445,29 @@ function recovered(spec, corpus, truth, field, want_cents)
     k = 0
     while k < count(corpus)
         r = ari.parse(corpus[k].text, spec)
+        ' The specification is NESTED now, so the detail rows live under the
+        ' sections. Flattened in source order, which is what the planted rows
+        ' are in.
+        flat = []
+        if has(r.value, "rows") then
+            for each x in r.value.rows
+                append(flat, x)
+            end for
+        end if
+        if has(r.value, "groups") then
+            for each gp in r.value.groups
+                if has(gp, "rows") then
+                    for each x in gp.rows
+                        append(flat, x)
+                    end for
+                end if
+            end for
+        end if
         idx = 0
         for each b in truth.sources[k].branches
             for each a in b.accounts
-                if idx < count(r.value.rows) then
-                    g = r.value.rows[idx]
+                if idx < count(flat) then
+                    g = flat[idx]
                     if has(g, field) then
                         if not is_unknown(g[field]) then
                             if want_cents then
@@ -536,6 +554,21 @@ end for
 check("the proposal names the source its rules came from",
       pos.built_from != "", true)
 r0 = ari.parse(built_from.text, pos.spec)
+flat0 = []
+if has(r0.value, "rows") then
+    for each x in r0.value.rows
+        append(flat0, x)
+    end for
+end if
+if has(r0.value, "groups") then
+    for each gp in r0.value.groups
+        if has(gp, "rows") then
+            for each x in gp.rows
+                append(flat0, x)
+            end for
+        end if
+    end for
+end if
 name_ok = 0
 acct_ok0 = 0
 n0 = 0
@@ -550,8 +583,8 @@ end for
 for each b in tsrc.branches
     for each a in b.accounts
         n0 = n0 + 1
-        if idx0 < count(r0.value.rows) then
-            g0 = r0.value.rows[idx0]
+        if idx0 < count(flat0) then
+            g0 = flat0[idx0]
             if string(g0.member_name) = a.name then
                 name_ok = name_ok + 1
             end if
@@ -616,6 +649,53 @@ check("content_coverage is reported unknown", is_unknown(rel.scorecard.content_c
 check("collision_rate is reported unknown", is_unknown(rel.scorecard.collision_rate), true)
 check("and the reason names the limitation",
       contains(rel.scorecard.not_computable_why, "span-level"), true)
+
+' ===========================================================================
+print ""
+print "-- PHASE 2: sections, nesting, and the furniture directive"
+' ===========================================================================
+check("the proposal is nested", rel.nested, true)
+check("it found one section per run of detail rows",
+      rel.sections.runs > 1, true)
+check("the section heading is the one that VARIES, not the column caption",
+      rel.sections.heading.literal, "BRANCH")
+check("and a `page:` directive was generated from what Phase 0 measured",
+      count(rel.page_directive) > 0, true)
+check("the spec carries it", contains(rel.spec, "page:"), true)
+check("and it nests the rows inside the section",
+      contains(rel.spec, "section groups repeats"), true)
+
+' ON THE SOURCE IT WAS BUILT FROM the structure is exactly right. This is the
+' CONTROL for everything below: without it, "region coverage is low" is
+' satisfied by a specification that is simply wrong, and the finding would be
+' about incompetence rather than about heterogeneity.
+bt = unknown
+for each r in rel.scorecard.regions_per_source
+    if r.id = rel.built_from then
+        bt = r
+    end if
+end for
+check("on its own source the section count is exact", bt.found, bt.wanted)
+
+' THE PHASE 2 HEADLINE, and it is a DIFFERENCE between two measures of the same
+' run. A specification can parse EVERY source without error and be structurally
+' wrong in nearly all of them: pagination style, the total's label and the
+' column layout each differ across the corpus, and none of those differences
+' makes a parse fail.
+print ("     source_coverage " + string(rel.scorecard.source_coverage)
+       + "   region_coverage " + string(rel.scorecard.region_coverage))
+check("every source parses", rel.scorecard.source_coverage, 1)
+check_at_most("while the section count is right in a minority of them",
+              round3(rel.scorecard.region_coverage), 0.5)
+check("and a question names the cause",
+      contains(string(rel.questions), "not uniform"), true)
+check("which points at variants rather than at a cleverer rule",
+      contains(string(rel.questions), "variants"), true)
+
+' The per-source detail is reported, not just the fraction: an operator has to
+' know WHICH sources disagree.
+check("every source is accounted for individually",
+      count(rel.scorecard.regions_per_source), count(corpus))
 
 ' ===========================================================================
 print ""

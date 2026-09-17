@@ -1025,6 +1025,47 @@ number, not as a box to tick — and §17 makes it an acceptance criterion.
 - Detail, total, and continuation row families.
 - Multi-source refinement and holdout validation.
 
+> **BUILT 2026-09-17** (the first three; multi-source refinement and holdout
+> validation remain). `sections`, `furniture_directive`, `region_coverage`,
+> `spec_text_nested`.
+>
+> **THE HEADLINE IS A DIFFERENCE BETWEEN TWO MEASURES OF THE SAME RUN:**
+> `source_coverage` **1.0** against `region_coverage` **0.125**. A nested
+> specification parses every source without error and finds the **wrong number
+> of sections in seven of eight** — 4 where there are 3, 10 where there are 7.
+> Three things in it are source-specific and **none of them makes a parse
+> fail**: `break: formfeed` does nothing on a source paginated by a header line,
+> so the page header matches `^BRANCH ` and becomes a section; the total's label
+> differs (`BRANCH TOTAL` / `TOTAL FOR BRANCH`); and the columns differ.
+>
+> The control is that **on the source it was built from the section count is
+> exact** — without it the finding would be about incompetence rather than
+> about heterogeneity, and the remedy would look like a cleverer rule instead of
+> §13 variants.
+>
+> Two further decisions worth recording:
+>
+> - **The section heading is found by position, not by vocabulary.** A heading
+>   is whatever consistently appears above a run and a total is whatever appears
+>   below one. Keying on "TOTAL" would work here and on no report that calls it
+>   "SUMMARY".
+> - **Candidates are grouped by literal prefix, not by family.** Keyed by
+>   family, no heading was found at all: `BRANCH 46 HARBOUR` and
+>   `BRANCH 25 OLD MILL` are different families, so eight headings split across
+>   three and none cleared support alone.
+>
+> **Two rules are recorded as UNPROVEN**, in the source and in the suite: "a
+> section heading must vary" and the outermost-indent preference. Each is
+> justified — the first semantically, the second for nested sections — and
+> removing **both** changes no answer here, because the branch heading happens
+> to precede the column caption and insertion order then picks it. Separating
+> them needs a caption-first report or two levels of nesting, which
+> `examples/fixtures/ari/delinquency.rpt` has and this corpus does not. Kept
+> rather than removed: a rule with a reason is not dead code.
+>
+> Four perturbations run; **two proved red and two did not**, which is how the
+> unproven pair was found.
+
 ### Phase 3: Interactive refinement
 
 - Serializable human decisions.

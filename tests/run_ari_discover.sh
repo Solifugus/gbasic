@@ -54,6 +54,26 @@
 # family and the first version implemented only "repeating" -- 55% of content
 # lines in the real corpus against 1.5% in the null.
 #
+# PHASE 2'S HEADLINE IS A SHARPER VERSION OF PHASE 1'S, and it is a difference
+# between two measures OF THE SAME RUN: `source_coverage` is 1.0 while
+# `region_coverage` is 0.125. A nested specification parses every source without
+# error and finds the WRONG NUMBER OF SECTIONS in seven of eight -- 4 where there
+# are 3, 10 where there are 7. Three things in it are source-specific and none
+# fails loudly: `break: formfeed` does nothing on a source paginated by a header
+# line, so the page header matches `^BRANCH ` and becomes a section; the total's
+# label differs between sources; and the columns differ. The CONTROL is that on
+# the source it was built from the section count is exact, without which the
+# finding would be about incompetence rather than heterogeneity.
+#
+# TWO PHASE 2 RULES ARE RECORDED AS UNPROVEN, deliberately and in the source:
+# the "a section heading must VARY" rule and the outermost-indent preference are
+# each justified, and removing BOTH changes no answer here, because the branch
+# heading happens to appear before the column caption and insertion order then
+# picks it. Separating them needs a report whose caption comes first, or two
+# levels of nesting -- which `examples/fixtures/ari/delinquency.rpt` has and this
+# corpus does not. Recorded rather than proven; kept rather than removed, since a
+# rule with a reason is not dead code.
+#
 # NULL is the tier that is not satisfied by a confident guesser (§15.5). Every
 # other measure here runs on a corpus that HAS structure, and inference is a
 # search -- recipe 1 in examples/automation_lab measured that the same
@@ -102,7 +122,7 @@ out="$scratch/sem.out"
 if timeout 180 ./gbasic tests/ari_discover/discover_test.bas >"$out" 2>&1; then
     mism="$(sed -n 's/^mismatches: //p' "$out")"
     checks="$(sed -n 's/^checks: //p' "$out")"
-    if [ "$mism" = "0" ] && [ "${checks:-0}" -ge 64 ]; then
+    if [ "$mism" = "0" ] && [ "${checks:-0}" -ge 76 ]; then
         ok "$checks checks, 0 mismatches"
         sed -n 's/^     /       /p' "$out"
     else
