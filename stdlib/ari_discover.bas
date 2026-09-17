@@ -51,6 +51,7 @@ function default_options()
     return { minimum_support: 0.80,
              minimum_confidence: 0.70,
              minimum_family_share: 0.15,
+             holdout: 0,
              maximum_section_depth: 4,
              allow_fixed_columns: false,
              redact_examples: false,
@@ -1393,7 +1394,7 @@ function spec_text_nested(fam, inferred, sect, page, options = nothing)
     else
         append(out, ind + "' one section per run of detail rows, headed by "
                     + "\"" + sect.heading.literal + "\"")
-        append(out, ind + "section groups repeats starts(/^" + sect.heading.literal + " /):")
+        append(out, ind + "section groups repeats starts(/^" + sect.heading_pattern + " /):")
         ind = ind + "    "
         for each hf in sect.heading_fields
             append(out, ind + "' " + hf.why)
@@ -1401,7 +1402,7 @@ function spec_text_nested(fam, inferred, sect, page, options = nothing)
         end for
         if not is_unknown(sect.total) then
             append(out, ind + "' the closing amount of the run, by its own label")
-            append(out, ind + "field group_total: right of \"" + sect.total.literal + "\" as money")
+            append(out, ind + "field group_total: right of " + sect.total_token + " as money")
         end if
         append(out, ind + "section rows repeats starts(/" + _start_regex(fam) + "/):")
         ind = ind + "    "
@@ -1496,14 +1497,17 @@ function region_coverage(sources, spec, detail_signature, options = nothing, pro
             g = grid(s.id, s.text)
             f = furniture(g, o)
             fams = families(g, f.lines, o)
+            fl = f.lines
         else
+            g = profiles[si].grid
             fams = profiles[si].families
+            fl = profiles[si].furniture.lines
         end if
         si = si + 1
         want = 0
         for each fm in fams
             if fm.signature = detail_signature then
-                want = count(_runs_of(fm.lines))
+                want = count(_runs_of(fm.lines, fl, g))
             end if
         end for
         got = 0
@@ -1627,17 +1631,51 @@ function _literal_prefix(sg)
     return join(out, " ")
 end function
 
-function _runs_of(lines)
-    ' Maximal consecutive blocks of a family's lines. A section contains one
-    ' run, so the number of runs is how many sections there should be.
+' Maximal blocks of a family's lines. A section contains one run, so the number
+' of runs is how many sections there should be.
+'
+' A GAP OF FURNITURE DOES NOT BREAK A RUN, and getting that wrong made the
+' measure disagree with the engine it is measuring. A branch whose detail rows
+' straddle a page boundary has a page header in the middle of them, so by raw
+' line numbers it is TWO runs -- but `page:` strips that header before any
+' section is located, so `ari` sees one. MEASURED: region coverage reported
+' `wanted 8, found 7` on the two sources with the most branches, and the SEVEN
+' was right: the specification had found every section and the proxy had
+' counted one too many.
+'
+' `skippable` is the furniture; a blank line between rows of one table is
+' likewise not a section boundary.
+function _runs_of(lines, skippable = nothing, rows = nothing)
     runs = []
     i = 0
     while i < count(lines)
         lo = lines[i]
         hi = lines[i]
         while i + 1 < count(lines)
-            if lines[i + 1] = hi + 1 then
-                hi = lines[i + 1]
+            nxt = lines[i + 1]
+            joined = nxt = hi + 1
+            if not joined then
+                if not is_nothing(skippable) then
+                    ' Everything between must be furniture or blank.
+                    ok = true
+                    j = hi + 1
+                    while j < nxt
+                        if not contains(skippable, j) then
+                            if is_nothing(rows) then
+                                ok = false
+                            else
+                                if not rows[j - 1].blank then
+                                    ok = false
+                                end if
+                            end if
+                        end if
+                        j = j + 1
+                    end while
+                    joined = ok
+                end if
+            end if
+            if joined then
+                hi = nxt
                 i = i + 1
             else
                 break
@@ -1655,9 +1693,9 @@ end function
 ' heading is whatever consistently appears above a run, a total is whatever
 ' consistently appears below one. Keying on words like "TOTAL" would work on
 ' this corpus and on no report that called it "SUMMARY".
-function sections(rows, fams, detail, options = nothing)
+function sections(rows, fams, detail, furniture_lines, options = nothing)
     o = _options(options)
-    runs = _runs_of(detail.lines)
+    runs = _runs_of(detail.lines, furniture_lines, rows)
 
     ' CANDIDATES ARE GROUPED BY LITERAL PREFIX, NOT BY FAMILY, because that is
     ' what a `starts(...)` pattern is built from.
@@ -1770,27 +1808,203 @@ function sections(rows, fams, detail, options = nothing)
     return { runs: count(runs), heading: heading, total: total }
 end function
 
-' The `page:` block, from what Phase 0 measured rather than from a guess.
+' §16 Phase 2, multi-source refinement: the section and total labels ACROSS the
+' corpus rather than from the one source the rest was built from.
+'
+' MEASURED: with the label taken from one source, the generated
+' `right of "TOTAL FOR BRANCH"` recovered 19 of 37 branch totals -- exactly the
+' three sources that happen to use that wording. The other five say
+' `BRANCH TOTAL`, and the field came back `unknown` with nothing to say why.
+'
+' `ari` takes a REGEX token in a locator, so the remedy is one specification
+' carrying the alternation rather than two specifications or a lost field. That
+' is §13's "one specification with alternate sections", reached from evidence
+' instead of from a guess about which wording is canonical.
+function corpus_labels(profiles, detail_signature, options = nothing)
+    o = _options(options)
+    headings = []
+    totals = []
+    per = 0
+    for each p in profiles
+        det = unknown
+        for each fm in p.families
+            if fm.signature = detail_signature then
+                det = fm
+            end if
+        end for
+        if is_unknown(det) then
+            continue
+        end if
+        per = per + 1
+        sc = sections(p.grid, p.families, det, p.furniture.lines, o)
+        if not is_unknown(sc.heading) then
+            if not contains(headings, sc.heading.literal) then
+                append(headings, sc.heading.literal)
+            end if
+        end if
+        if not is_unknown(sc.total) then
+            if not contains(totals, sc.total.literal) then
+                append(totals, sc.total.literal)
+            end if
+        end if
+    end for
+    return { headings: headings, totals: totals, sources: per }
+end function
+
+' A locator token for a set of observed literals: a quoted string when the
+' corpus agrees, a regex alternation when it does not.
+'
+' Joined with `[ ]+` for the same reason the page break is: a print-image label
+' is column-aligned and the literal recorded in a signature has its gaps
+' normalised away.
+function label_token(literals)
+    if count(literals) = 0 then
+        return ""
+    end if
+    if count(literals) = 1 then
+        return "\"" + literals[0] + "\""
+    end if
+    alts = []
+    for each lit in literals
+        parts = []
+        okall = true
+        for each w in split(lit, " ")
+            if is_unknown(match(w, regex("^[A-Za-z0-9]+$"))) then
+                okall = false
+            end if
+            append(parts, w)
+        end for
+        if okall then
+            append(alts, join(parts, "[ ]+"))
+        end if
+    end for
+    if count(alts) = 0 then
+        return ""
+    end if
+    return "/" + join(alts, "|") + "/"
+end function
+
+' The `page:` block, from what Phase 0 measured rather than from a guess --
+' and from what the WHOLE CORPUS shares rather than what one source happens to
+' be.
+'
+' MEASURED, and the difference is the entire result of multi-source refinement:
+'
+'     break: formfeed                      0 / 8 sources with the right
+'                                              section count
+'     break: /^BRANCH ACTIVITY REGISTER/   8 / 8
+'
+' Both describe the source the specification was built from. Only one describes
+' the others. The form feed is present in half the corpus; THE HEADER LINE IS
+' PRESENT IN ALL OF IT, including the sources that also carry a form feed -- so
+' the regex is evidence the corpus shares and `formfeed` is evidence one source
+' happens to have.
+'
+' THE RULE IS NOT "PREFER REGEX". It is prefer the directive every source
+' supports, and when they all carry form feeds `formfeed` is the better answer:
+' it cannot be defeated by a header whose wording drifts.
 function furniture_directive(f)
+    return _page_block(f, true)
+end function
+
+function _page_block(f, allow_formfeed)
     if count(f.offsets) = 0 then
         return []
     end if
     out = [ "page:" ]
-    if f.evidence = "form feeds" then
-        append(out, "    break: formfeed")
-    else
-        ' The first furniture line's own literal words, anchored. Its typed
-        ' spans (page number, run stamp) are exactly what varies between pages,
-        ' so a pattern built from the whole line would match page one only.
-        lit = f.offsets[0].words
-        if lit = "" then
-            return []
+    if allow_formfeed then
+        if f.evidence = "form feeds" then
+            append(out, "    break: formfeed")
+            append(out, "    drop: " + string(count(f.offsets)))
+            append(out, "")
+            return out
         end if
-        append(out, "    break: /^" + lit + "/")
     end if
+    ' The first furniture line's own LITERAL words, anchored. Its typed spans --
+    ' the page number and the run stamp -- are exactly what varies between
+    ' pages, so a pattern built from the whole line would match page one only.
+    lit = f.offsets[0].words
+    if lit = "" then
+        return []
+    end if
+    ' JOINED WITH `[ ]+`, NOT WITH A SPACE. `_words_of` normalises the gaps
+    ' away, and a print-image header is column-aligned:
+    ' `BRANCH ACTIVITY REGISTER                    PAGE    1`. A pattern built
+    ' from the normalised words matched NOTHING, and the failure was silent --
+    ' no furniture was stripped, so the page header became a section and every
+    ' source reported more sections than it has.
+    parts = []
+    for each w in split(lit, " ")
+        ' Alphanumeric words only: anything else would have to be escaped, and
+        ' a header word that needs escaping is not a good anchor anyway.
+        if is_unknown(match(w, regex("^[A-Za-z0-9]+$"))) then
+            break
+        end if
+        append(parts, w)
+    end for
+    if count(parts) = 0 then
+        return []
+    end if
+    append(out, "    break: /^" + join(parts, "[ ]+") + "/")
     append(out, "    drop: " + string(count(f.offsets)))
     append(out, "")
     return out
+end function
+
+' §16 Phase 2, multi-source refinement: the `page:` block for a CORPUS.
+'
+' Returns the directive plus what it had to give up, because a caller deciding
+' whether to trust a specification needs to know that the corpus disagreed and
+' how it was resolved -- silently picking the portable form would hide a real
+' fact about the data.
+function corpus_furniture(profiles)
+    styles = {}
+    heights = {}
+    for each p in profiles
+        if count(p.furniture.offsets) > 0 then
+            k = p.furniture.evidence
+            if has(styles, k) then
+                styles[k] = styles[k] + 1
+            else
+                styles[k] = 1
+            end if
+            h = string(count(p.furniture.offsets))
+            if has(heights, h) then
+                heights[h] = heights[h] + 1
+            else
+                heights[h] = 1
+            end if
+        end if
+    end for
+    if count(keys(styles)) = 0 then
+        return { directive: [], styles: 0, heights: 0,
+                 why: "no source has identifiable page furniture" }
+    end if
+    ' A source with furniture to describe it from. Any will do for the literal,
+    ' because the literal is what they share; the style is what they do not.
+    pick = unknown
+    for each p in profiles
+        if is_unknown(pick) then
+            if count(p.furniture.offsets) > 0 then
+                pick = p
+            end if
+        end if
+    end for
+    uniform = count(keys(styles)) = 1
+    d = _page_block(pick.furniture, uniform)
+    note = ""
+    if not uniform then
+        note = ("the corpus paginates two ways (" + join(keys(styles), ", ")
+                + "), so the break is matched on the header LINE, which every"
+                + " source carries, rather than on a form feed, which only some do")
+    end if
+    if count(keys(heights)) > 1 then
+        note = (note + ". The furniture block is not the same height in every"
+                + " source (" + join(keys(heights), ", ") + " lines), and `drop:`"
+                + " takes one value")
+    end if
+    return { directive: d, styles: count(keys(styles)),
+             heights: count(keys(heights)), why: note }
 end function
 
 ' --- §8 anchor stability --------------------------------------------------
@@ -1870,7 +2084,43 @@ end function
 
 ' --- the Phase 1 entry point ----------------------------------------------
 
+' §8.2 HOLDOUT VALIDATION. `holdout: n` reserves the LAST n sources from
+' inference and scores them separately.
+'
+' RESERVED FROM THE END, NOT AT RANDOM, because §17 criterion 9 requires the
+' same proposal from the same ordered corpus: a random split would make the
+' result depend on a seed nobody passed. A caller who wants a different split
+' orders the corpus differently, which is a decision they can see.
+'
+' WHAT IT IS FOR is not reassurance. A specification inferred from a corpus and
+' scored on the same corpus is scored on the data that shaped it, and the two
+' numbers only part company when something has been fitted to the training set
+' -- which is exactly when a reader needs to know.
 function infer(sources, options = nothing)
+    o = _options(options)
+    train = sources
+    held = []
+    if o.holdout > 0 then
+        if o.holdout >= count(sources) then
+            error ("ari_discover.infer: holdout of " + string(o.holdout)
+                   + " leaves nothing to infer from (" + string(count(sources))
+                   + " sources)")
+        end if
+        train = []
+        i = 0
+        while i < count(sources)
+            if i < count(sources) - o.holdout then
+                append(train, sources[i])
+            else
+                append(held, sources[i])
+            end if
+            i = i + 1
+        end while
+    end if
+    return _infer_from(train, held, o)
+end function
+
+function _infer_from(sources, held, options = nothing)
     o = _options(options)
     c = profile_corpus(sources, o)
 
@@ -1944,7 +2194,8 @@ function infer(sources, options = nothing)
                        + string(floor(o.minimum_support * 100)) + "% of the "
                        + string(c.sources) + " sources, so there is no repeating"
                        + " structure to write a specification against"),
-                 spec: "", fields: [], questions: [], corpus: c }
+                 spec: "", fields: [], questions: [],
+                 trained_on: count(sources), holdout: unknown, corpus: c }
     end if
 
     inf = infer_fields(best.profile.grid, best.family,
@@ -1952,8 +2203,11 @@ function infer(sources, options = nothing)
 
     ' PHASE 2: the section that contains the rows, and the furniture directive
     ' that keeps the page header out of it.
-    sc2 = sections(best.profile.grid, best.profile.families, best.family, o)
-    pagedir = furniture_directive(best.profile.furniture)
+    sc2 = sections(best.profile.grid, best.profile.families, best.family,
+                   best.profile.furniture.lines, o)
+    cl = corpus_labels(c.profiles, best.family.signature, o)
+    cf = corpus_furniture(c.profiles)
+    pagedir = cf.directive
     sect = unknown
     if not is_unknown(sc2.heading) then
         ' Fields of the heading line itself: its typed spans, located by their
@@ -1973,8 +2227,20 @@ function infer(sources, options = nothing)
                 end if
             end if
         end for
+        ' The patterns come from the CORPUS, the rest from the one source that
+        ' supplied the columns. Which is which is recorded in the proposal.
+        hp = sc2.heading.literal
+        if count(cl.headings) > 1 then
+            hp = label_token(cl.headings)
+            hp = mid(hp, 1, len(hp) - 2)
+        end if
+        tt = label_token(cl.totals)
+        if tt = "" then
+            tt = "\"" + string(sc2.total.literal) + "\""
+        end if
         sect = { heading: sc2.heading, total: sc2.total, heading_fields: hfs,
-                 runs: sc2.runs }
+                 heading_pattern: hp, total_token: tt, runs: sc2.runs,
+                 labels: cl }
     end if
     sp = spec_text_nested(best.family, inf, sect, pagedir, o)
     sc = validate(sources, sp, o)
@@ -2036,8 +2302,22 @@ function infer(sources, options = nothing)
         end if
     end if
 
+    hs = unknown
+    if count(held) > 0 then
+        hv = validate(held, sp, o)
+        hr = region_coverage(held, sp, best.family.signature, o)
+        hs = { sources: count(held),
+               source_coverage: hv.source_coverage,
+               region_coverage: hr.coverage,
+               rows: hv.rows,
+               unknown_rate: hv.unknown_rate,
+               regions_per_source: hr.per_source }
+    end if
+
     return { ok: true,
              spec: sp,
+             trained_on: count(sources),
+             holdout: hs,
              ' §12: WHICH SOURCE THE RULES CAME FROM. The family is chosen
              ' across the corpus but the column boundaries and the heading are
              ' read from ONE source, so a caller checking a positional rule has
@@ -2048,6 +2328,8 @@ function infer(sources, options = nothing)
              nested: not is_unknown(sect),
              sections: sc2,
              page_directive: pagedir,
+             furniture_note: cf.why,
+             labels: cl,
              family: best.family,
              shared_by: best.shared,
              fields: inf.fields,

@@ -1065,6 +1065,41 @@ number, not as a box to tick — and §17 makes it an acceptance criterion.
 >
 > Four perturbations run; **two proved red and two did not**, which is how the
 > unproven pair was found.
+>
+> **MULTI-SOURCE REFINEMENT AND HOLDOUT VALIDATION BUILT the same day**, and
+> each half is a measured difference rather than a tidier implementation.
+>
+> | | built from one source | refined from the corpus |
+> |---|---|---|
+> | sources with the right section count | **0 / 8** | **8 / 8** |
+> | branch totals recovered | 19 / 37 | **37 / 37** |
+>
+> - **The pagination directive.** `break: formfeed` describes the source the
+>   rules came from and no other; the form feed is in half the corpus and **the
+>   header line is in all of it**, including the sources that also carry a form
+>   feed. The rule is not "prefer regex" — it is prefer the directive every
+>   source supports, and where all of them paginate by form feed that is the
+>   better answer, since it cannot be defeated by a header whose wording drifts.
+> - **The label alternation.** The corpus says `BRANCH TOTAL` and
+>   `TOTAL FOR BRANCH` for one concept. `ari` takes a regex in a locator, so
+>   one specification carries the alternation — §13's "one specification with
+>   alternate sections", reached from evidence rather than from a guess about
+>   which wording is canonical.
+> - **Both patterns join words with `[ ]+`.** A print-image label is
+>   column-aligned and a signature's gaps are normalised away; joined with
+>   single spaces the break matched **nothing**, no furniture was stripped, and
+>   every source reported more sections than it has. Silent, as usual.
+> - **A gap of furniture does not break a run.** A section whose rows straddle a
+>   page boundary is one section, because `page:` strips the header before any
+>   section is located. Getting this wrong made region coverage report
+>   `wanted 8, found 7` on the two largest sources — and the **seven was right**.
+>
+> **Result: one generated specification recovers 121/121 branch numbers, totals
+> and row counts across all 24 sources**, including the 16 inference never read.
+> `holdout: n` makes that explicit (§8.2), reserving from the end rather than at
+> random so the proposal stays reproducible from an ordered corpus.
+>
+> Four further perturbations, all proven red.
 
 ### Phase 3: Interactive refinement
 

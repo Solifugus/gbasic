@@ -122,7 +122,7 @@ out="$scratch/sem.out"
 if timeout 180 ./gbasic tests/ari_discover/discover_test.bas >"$out" 2>&1; then
     mism="$(sed -n 's/^mismatches: //p' "$out")"
     checks="$(sed -n 's/^checks: //p' "$out")"
-    if [ "$mism" = "0" ] && [ "${checks:-0}" -ge 76 ]; then
+    if [ "$mism" = "0" ] && [ "${checks:-0}" -ge 85 ]; then
         ok "$checks checks, 0 mismatches"
         sed -n 's/^     /       /p' "$out"
     else

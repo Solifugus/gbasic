@@ -7330,11 +7330,34 @@ whole program without needing a call site.
   `region_coverage(sources, spec, signature [, options, profiles])` is the
   measure `source_coverage` cannot substitute for: it compares the sections the
   specification found against the runs Phase 0 measured, needing no answer key.
-  **Measured: `source_coverage` 1.0 against `region_coverage` 0.125** — a
-  specification that parses every source without error and is structurally
-  wrong in seven of eight, because pagination style, the total's label and the
-  column layout all differ and none of those makes a parse fail. The proposal
-  reports it per source and raises a question pointing at §13 variants.
+  Built from one source it read **1.0 against 0.125** — parsing every source
+  without error while structurally wrong in seven of eight.
+
+  **Multi-source refinement** closes that, and each half is a measured
+  difference. `corpus_furniture(profiles)` picks the pagination directive the
+  whole corpus supports: `break: formfeed` describes the source the rules came
+  from and **0 of 8 others**, while a pattern on the header line — which every
+  source carries, including the ones that also have a form feed — describes
+  **8 of 8**. `corpus_labels(profiles, signature [, options])` collects each
+  label the corpus uses for one concept and `label_token(literals)` renders them
+  as a regex alternation, because `ari` takes a regex in a locator: with one
+  source's wording, `right of "TOTAL FOR BRANCH"` recovered **19 of 37** branch
+  totals and returned `unknown` for the rest. Both patterns join words with
+  `[ ]+`, since a print-image label is column-aligned and a signature's gaps are
+  normalised away — joined with single spaces the break matched nothing, and
+  silently.
+
+  A **gap of furniture does not break a run**: a section whose rows straddle a
+  page boundary is one section, because `page:` strips the header before any
+  section is located. Getting that wrong made the measure disagree with the
+  engine it measures.
+
+  **Measured after refinement**: over all 24 sources, one generated
+  specification recovers **121/121** branch numbers, totals and row counts —
+  including the 16 that inference never read. `options.holdout: n` reserves the
+  last *n* sources and scores them separately (§8.2); reserved from the end
+  rather than at random, because §17 criterion 9 requires the same proposal from
+  the same ordered corpus.
 
   `page_starts(rows [, options])` reports where pages begin —
   stated by form feeds, or inferred from a repeating block that **page one

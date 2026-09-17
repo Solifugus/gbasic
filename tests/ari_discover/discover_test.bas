@@ -652,45 +652,152 @@ check("and the reason names the limitation",
 
 ' ===========================================================================
 print ""
-print "-- PHASE 2: sections, nesting, and the furniture directive"
+print "-- PHASE 2: sections, nesting, and multi-source refinement"
 ' ===========================================================================
 check("the proposal is nested", rel.nested, true)
-check("it found one section per run of detail rows",
-      rel.sections.runs > 1, true)
 check("the section heading is the one that VARIES, not the column caption",
       rel.sections.heading.literal, "BRANCH")
-check("and a `page:` directive was generated from what Phase 0 measured",
+check("a `page:` directive was generated from what Phase 0 measured",
       count(rel.page_directive) > 0, true)
 check("the spec carries it", contains(rel.spec, "page:"), true)
 check("and it nests the rows inside the section",
       contains(rel.spec, "section groups repeats"), true)
 
-' ON THE SOURCE IT WAS BUILT FROM the structure is exactly right. This is the
-' CONTROL for everything below: without it, "region coverage is low" is
-' satisfied by a specification that is simply wrong, and the finding would be
-' about incompetence rather than about heterogeneity.
-bt = unknown
-for each r in rel.scorecard.regions_per_source
-    if r.id = rel.built_from then
-        bt = r
-    end if
-end for
-check("on its own source the section count is exact", bt.found, bt.wanted)
+' MULTI-SOURCE REFINEMENT, AND IT IS A DIFFERENCE. Both directives below
+' describe the source the specification was built from; only one describes the
+' others. The form feed is in half the corpus, THE HEADER LINE IS IN ALL OF IT.
+function sections_right(spec, corpus, truth)
+    n = 0
+    k = 0
+    while k < count(corpus)
+        r = ari.parse(corpus[k].text, spec)
+        got = 0
+        if r.ok then
+            if has(r.value, "groups") then
+                got = count(r.value.groups)
+            end if
+        end if
+        if got = count(truth.sources[k].branches) then
+            n = n + 1
+        end if
+        k = k + 1
+    end while
+    return n
+end function
 
-' THE PHASE 2 HEADLINE, and it is a DIFFERENCE between two measures of the same
-' run. A specification can parse EVERY source without error and be structurally
-' wrong in nearly all of them: pagination style, the total's label and the
-' column layout each differ across the corpus, and none of those differences
-' makes a parse fail.
-print ("     source_coverage " + string(rel.scorecard.source_coverage)
-       + "   region_coverage " + string(rel.scorecard.region_coverage))
-check("every source parses", rel.scorecard.source_coverage, 1)
-check_at_most("while the section count is right in a minority of them",
-              round3(rel.scorecard.region_coverage), 0.5)
-check("and a question names the cause",
-      contains(string(rel.questions), "not uniform"), true)
-check("which points at variants rather than at a cleverer rule",
-      contains(string(rel.questions), "variants"), true)
+single = []
+append(single, "page:")
+append(single, "    break: formfeed")
+append(single, "    drop: 4")
+append(single, "")
+append(single, "section report:")
+append(single, "    section groups repeats starts(/^BRANCH /):")
+append(single, "        field branch_no: right of \"BRANCH\" as integer")
+append(single, "        section rows repeats starts(/^[ ]*[0-9]{5,}/):")
+append(single, "            field amount: first money as money")
+one_src = sections_right(join(single, "\n"), corpus, truth)
+refined = sections_right(rel.spec, corpus, truth)
+print ("     sections right: one-source directive " + string(one_src)
+       + "/" + string(count(corpus)) + "   corpus-refined " + string(refined)
+       + "/" + string(count(corpus)))
+check("a directive taken from ONE source describes only that source", one_src, 0)
+check("one refined from the corpus describes all of them", refined, count(corpus))
+check("region_coverage agrees", round3(rel.scorecard.region_coverage), 1)
+
+' THE LABEL ALTERNATION, the other half of refinement. The corpus says
+' `BRANCH TOTAL` and `TOTAL FOR BRANCH` for one concept; a specification built
+' from one source recovers the totals of the sources that share its wording and
+' returns `unknown` for the rest, with nothing to say why.
+check_at_least("more than one total label is observed",
+               count(rel.labels.totals), 2)
+check("so the locator is an alternation, not one of them",
+      contains(rel.spec, "|"), true)
+
+' THE STRONG ORACLE AT SECTION LEVEL: branch numbers, totals and row counts
+' against what the generator planted. Coverage cannot substitute -- a
+' specification can find the right number of sections and put the wrong values
+' in them, which is exactly what the single-label version did.
+function section_recovery(spec, corpus, truth)
+    bn = 0
+    tt = 0
+    rc = 0
+    tot = 0
+    k = 0
+    while k < count(corpus)
+        r = ari.parse(corpus[k].text, spec)
+        got = []
+        if r.ok then
+            if has(r.value, "groups") then
+                got = r.value.groups
+            end if
+        end if
+        j = 0
+        for each b in truth.sources[k].branches
+            tot = tot + 1
+            if j < count(got) then
+                g = got[j]
+                if string(g.branch_no) = string(b.number) then
+                    bn = bn + 1
+                end if
+                if has(g, "group_total") then
+                    if not is_unknown(g.group_total) then
+                        if floor(number(string(g.group_total)) * 100 + 0.5) = b.total_cents then
+                            tt = tt + 1
+                        end if
+                    end if
+                end if
+                if has(g, "rows") then
+                    if count(g.rows) = count(b.accounts) then
+                        rc = rc + 1
+                    end if
+                end if
+            end if
+            j = j + 1
+        end for
+        k = k + 1
+    end while
+    return { numbers: bn, totals: tt, rows: rc, branches: tot }
+end function
+
+sr = section_recovery(rel.spec, corpus, truth)
+print ("     branches " + string(sr.branches) + ": numbers " + string(sr.numbers)
+       + ", totals " + string(sr.totals) + ", row counts " + string(sr.rows))
+check("every branch number is recovered", sr.numbers, sr.branches)
+check("every branch total is recovered", sr.totals, sr.branches)
+check("every branch's row count is right", sr.rows, sr.branches)
+
+' AND ON THE WHOLE CORPUS, including the 16 sources inference never saw.
+allsrc = []
+ai = 0
+while ai < count(truth.sources)
+    append(allsrc, { id: truth.sources[ai].id, text: slurp(dir + truth.sources[ai].file) })
+    ai = ai + 1
+end while
+sa = section_recovery(rel.spec, allsrc, truth)
+print ("     over all " + string(count(allsrc)) + " sources: " + string(sa.branches)
+       + " branches, numbers " + string(sa.numbers) + ", totals " + string(sa.totals))
+check("it generalises to sources inference never read", sa.totals, sa.branches)
+check_at_least("and there were materially more of them", sa.branches, sr.branches + 40)
+
+' §8.2 HOLDOUT, reported separately. Reserved from the END rather than at
+' random, because §17 criterion 9 requires the same proposal from the same
+' ordered corpus and a random split would depend on a seed nobody passed.
+hp = ari_discover.infer(allsrc, { holdout: 8 })
+check("the holdout is reserved from inference", hp.trained_on, count(allsrc) - 8)
+check("and scored separately", hp.holdout.sources, 8)
+check("training region coverage", round3(hp.scorecard.region_coverage), 1)
+check("holdout region coverage", round3(hp.holdout.region_coverage), 1)
+' A holdout bigger than the corpus leaves nothing to infer from.
+on error goto next
+bad_h = ari_discover.infer(allsrc, { holdout: count(allsrc) })
+if error then
+    check("a holdout that leaves nothing is refused",
+          contains(error.message, "leaves nothing"), true)
+    error.clear()
+else
+    check("a holdout that leaves nothing is refused", "accepted", "refused")
+end if
+on error stop
 
 ' The per-source detail is reported, not just the fraction: an operator has to
 ' know WHICH sources disagree.

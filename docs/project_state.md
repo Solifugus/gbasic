@@ -291,7 +291,27 @@ document list, with a status column, is `docs/README.md`.
   DD-MMM-YYYY addition was prompted by the corpus, is sanctioned by
   text_design 5.1's "union of common forms" independent of it, and its
   SELECTION was corpus-led, which is the part to be careful about.
-- **ARI Discover Phase 2** — sections, nesting and the furniture directive.
+- **ARI Discover Phase 2 COMPLETE** — multi-source refinement and holdout
+  validation close what the section work opened, and EACH HALF IS A MEASURED
+  DIFFERENCE. Built from one source: 0 of 8 sources get the right section count.
+  Refined from the corpus: 8 of 8. Branch totals go 19/37 to 37/37. THE
+  PAGINATION DIRECTIVE is the sharper one -- `break: formfeed` describes the
+  source the rules came from AND NO OTHER, because the form feed is in half the
+  corpus while THE HEADER LINE IS IN ALL OF IT; the rule is not "prefer regex"
+  but prefer the directive every source supports. THE LABEL ALTERNATION is
+  Sec 13 reached from evidence: the corpus says BRANCH TOTAL and TOTAL FOR
+  BRANCH for one concept, `ari` takes a regex in a locator, so one spec carries
+  both rather than two specs or a lost field. BOTH PATTERNS JOIN WORDS WITH
+  `[ ]+` -- a print-image label is column-aligned and a signature normalises the
+  gaps away, so joined with single spaces the break matched NOTHING, silently.
+  And A GAP OF FURNITURE DOES NOT BREAK A RUN: a section straddling a page
+  boundary is one section, and getting that wrong made region coverage report
+  `wanted 8 found 7` where SEVEN WAS RIGHT. RESULT: one generated specification
+  recovers 121/121 branch numbers, totals and row counts across all 24 sources,
+  including the 16 inference never read; `holdout: n` makes that explicit,
+  reserved from the END rather than at random so the proposal stays reproducible
+  from an ordered corpus. Four more perturbations proven red.
+- **ARI Discover Phase 2 (sections)** — sections, nesting and the furniture directive.
   THE HEADLINE IS A DIFFERENCE BETWEEN TWO MEASURES OF ONE RUN: source coverage
   1.0 against REGION COVERAGE 0.125 -- a nested specification that parses every
   source without error and finds the WRONG NUMBER OF SECTIONS in seven of eight
