@@ -689,10 +689,28 @@ LLM failure never prevents deterministic discovery. When evidence is insufficien
 >
 > **Added 2026-09-16, after the first change to `ari` that this project
 > prompted.** Discovery is being built against a corpus this project generated.
-> That creates a hazard with a name: every time discovery meets a form `ari`
-> cannot parse, the cheapest response is to change `ari` — and after enough of
-> those, the parser is shaped to one invented corpus rather than to the
-> population of real reports. **Teaching to the test.**
+>
+> **The hazard is not that the corpus is generated** — a corrected framing, and
+> the correction matters because the wrong one points at the wrong remedy.
+> Generating the corpus is what makes most of §15 possible: an answer key that
+> cannot drift, nine axes covered evenly rather than however a sample happened
+> to fall, one-variable-at-a-time attribution, an adversarial non-ASCII source
+> the generator itself could not supply, and a **null corpus**, which is
+> obtainable no other way and is the tier that caught 18 false positives nothing
+> else could.
+>
+> **The hazard is the feedback loop.** A corpus is a good *measurement
+> instrument* and a poor *requirements source*. When one corpus both tells you
+> whether the engine works and tells you what the engine should support, the
+> engine converges on the corpus rather than on the world — and since we wrote
+> the corpus, that convergence looks like progress. **Teaching to the test.**
+> The second arrow is what gets broken, not the first.
+>
+> The complement is real: a generator shares its author's blind spots, so a
+> corpus we wrote can only confirm them. `finio` measured the cost — ten ACH
+> files from another project found defects in **three of four adapters** while
+> every suite was green. That is what a real corpus is *for*, and it is a
+> different job from the one this corpus does.
 >
 > So:
 >
@@ -711,6 +729,10 @@ LLM failure never prevents deterministic discovery. When evidence is insufficien
 >    unrecognised.** That is the honest profile, and it is information a person
 >    can act on — a profile that silently agreed with a parser that would fail
 >    later is worse than one that says so now.
+> 6. **Keep using the corpus after the sweep**, as the instrument it is: a
+>    change that fixes a register entry and also moves a discovery score has
+>    done something nobody intended, and noticing that is exactly what a
+>    corpus with a known answer key is good for.
 >
 > The register is executable: every entry carries a probe in `run_ari.sh` that
 > asserts the limitation *still holds*, so a fixed-but-still-recorded entry goes

@@ -5,13 +5,63 @@ rather than reactively fixed**.
 
 ## Why this file exists
 
-`ari_discover` is being built against a corpus this project generated. That
-creates a specific hazard: every time discovery meets something `ari` cannot
-parse, the cheapest response is to change `ari` — and after enough of those,
-`ari` is shaped to one invented corpus rather than to the population of real
-reports. **Teaching to the test.**
+`ari_discover` is being built against a corpus this project generated.
 
-So the discipline is:
+**The hazard is not that the corpus is generated.** An earlier draft of this
+file said it was, and that was wrong in a way worth correcting rather than
+quietly editing out, because it points at the wrong remedy: it suggests the fix
+is to obtain real reports and stop generating, and that would throw away most of
+what the corpus is good for.
+
+**The hazard is the feedback loop.** A corpus is a fine *measurement
+instrument* and a poor *requirements source*. When the same corpus both tells
+you whether the engine works AND tells you what the engine should support, the
+engine converges on the corpus instead of on the world — and because we wrote
+the corpus, that convergence looks like progress. **Teaching to the test.** What
+has to be broken is the second arrow, not the first.
+
+### The two corpora answer different questions
+
+Neither substitutes for the other, and this project has measured both sides.
+
+**A generated corpus can do things a real one structurally cannot:**
+
+- **Carry its own answer key.** One declaration produces the report *and* the
+  truth, so precision and recall are computable rather than reported. A real
+  report arrives with no truth attached, and a hand-written answer key drifts —
+  `stdlib/estate.bas` exists for exactly this reason.
+- **Span the space rather than a sample.** A real corpus is one draw from an
+  unknown distribution: it contains what one organisation's systems happened to
+  emit. `examples/fixtures/ari_discover/` varies nine axes *chosen by index*, so
+  none is left with one sample — which a real corpus cannot promise and a
+  randomly drawn one does not deliver.
+- **Vary one thing at a time.** Attribution needs ablation. A failure on a
+  generated source names the axis that caused it; a failure on a real report is
+  merely noticed.
+- **Supply cases that are rare or absent in any real sample.** The non-ASCII
+  adversarial source was hand-built precisely because the generated corpus is
+  all ASCII — and without it the byte-versus-codepoint defect ships, because the
+  two index spaces coincide exactly until a multi-byte character appears.
+- **Supply a null.** There is no such thing as "a real report with no structure
+  in it". The null corpus is only obtainable by construction, and it is the
+  load-bearing tier: it caught 18 false positives that nothing else could.
+
+**A real corpus does the one thing generation structurally cannot:**
+
+- **It contains what we did not think of.** A generator shares its author's
+  blind spots, so a corpus we wrote can only ever confirm them. `finio`
+  measured the cost: ten ACH files from another project found defects in
+  **three of four adapters** while every suite was green — including a strict
+  94-byte rule that refused four of the ten outright, and a record carrying 94
+  codepoints in 95 bytes.
+- **It calibrates what is common.** The "note" column below says which forms
+  matter; no population stands behind that, and none can until real reports
+  exist (**L0**).
+
+So the discipline below is not "prefer real data". It is: use the generated
+corpus to *measure*, and require something outside it to *decide*.
+
+The rules:
 
 1. **Record the deficiency here** when it is found, with what it actually does.
 2. **Do not fix it because discovery tripped on it.** A change to `ari` needs
@@ -52,11 +102,22 @@ building the discovery corpus. Stated plainly, so a reader can judge it:
 Every form below was run through `ari.parse` with `as money` / `as date` on
 2026-09-16. This is behaviour, not reading.
 
-**No population measurement stands behind the "how common" column.** This
+**No population measurement stands behind the "how common" notes.** This
 project holds no corpus of real print-image reports — the Enron corpus is
 spreadsheets, and `examples/fixtures/ari/` is three hand-authored files. That
-absence is itself limitation **L0**, and it is the one that most limits what
-the end-of-project sweep can claim.
+absence is limitation **L0**.
+
+**It blocks less than an earlier draft of this file claimed.** Two different
+questions get conflated under "evidence", and only one of them needs a
+population:
+
+- *Is this a legitimate form?* — answerable now, from the format literature and
+  from `ari`'s own stated intent (§5.1's "union of common forms"). This is the
+  question that decides **correctness**, and it is the one the sweep turns on.
+- *How often does it occur?* — needs L0, and decides only **priority**.
+
+So the sweep is not blocked on L0. What L0 costs is the ordering, and the
+ability to say a form is rare enough to leave out.
 
 ---
 
@@ -103,7 +164,7 @@ these are *gaps to decide about*, not defects.
 | id | gap | note |
 |---|---|---|
 | **C1** | No span-level diagnostic surface | `ari.inspect` reports diagnostics by reason with field paths, and `ari.clean_grid` exposes the furniture pass — but nothing reports **which source span each rule claimed** or **what stayed unclaimed**. `docs/ari_discover_design.md` §20 names this as discovery's most consequential prerequisite, and it improves hand-written spec debugging as much as it does inference. |
-| **L0** | **No corpus of real print-image reports** | Everything `ari` has ever been run against was written here. The three fixtures in `examples/fixtures/ari/` are hand-authored to be awkward, which is valuable and is not the same as being real. Until a real population exists, "how common is this form" cannot be answered, and the sweep below can only be justified by the format literature. This is the same gap `finio` records for `camt.053`, and it has the same remedy: files somebody else produced. |
+| **L0** | **No corpus of real print-image reports** | Everything `ari` has ever been run against was written here. The three fixtures in `examples/fixtures/ari/` are hand-authored to be awkward, which is valuable and is not the same as being real. What this costs is **the unknown unknowns and the frequencies** — not correctness, which the format literature settles. `finio` measured the first cost precisely: ten ACH files from another project found defects in three of four adapters while every suite was green. Same gap `finio` records for `camt.053`, same remedy: files somebody else produced. **Striking L0 does not retire the generated corpus** — the two answer different questions, and the null corpus in particular is obtainable no other way. |
 
 ---
 
@@ -124,9 +185,17 @@ Rules for it, so it generalises rather than accumulating one-off fixes:
   than mis-read — measured, not predicted — so an entry here is a question to
   answer, never a regex to paste. B6 needs a judgement about
   identifier-versus-date that the built-in union may be the wrong place for.
+- **Separate the two questions before arguing about evidence.** Whether a form
+  is legitimate is settled by the literature and is answerable today; how common
+  it is needs L0 and decides only what gets done first. Conflating them makes
+  the sweep look blocked when it is not.
 - **Every addition gets a fixture in `examples/fixtures/ari/`**, not only a
   probe here, so the capability is exercised by the report parser's own suite
   against its own corpus.
+- **The discovery corpus stays a measurement instrument throughout.** After the
+  sweep, re-run it — a change that fixes a register entry and moves a discovery
+  score has done something nobody intended, and that is what the corpus is good
+  at telling you.
 - **Nothing is added because `ari_discover` tripped on it.** If discovery meets
   a form `ari` cannot read, the entry goes in this register and discovery
   reports it as unrecognised — which is the honest profile, and is information

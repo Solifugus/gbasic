@@ -259,12 +259,21 @@ document list, with a status column, is `docs/README.md`.
   decision.
 - **an ARI limitations register, deliberately NOT a set of fixes** —
   `docs/ari_limitations.md` plus executable probes in `tests/run_ari.sh`.
-  Matthew's call, and it is a methodology decision rather than a feature:
-  `ari_discover` is built against a corpus THIS PROJECT GENERATED, so every
-  form discovery trips on is a temptation to reshape `ari` around one invented
-  corpus -- TEACHING TO THE TEST. The rule is record now, require evidence from
-  OUTSIDE the discovery corpus, test any addition where `ari` is tested, and
-  sweep generally at the end.
+  Matthew's call, and it is a methodology decision rather than a feature.
+  THE HAZARD IS NOT THAT THE CORPUS IS GENERATED -- a first draft said it was
+  and that was CORRECTED, because it points at the wrong remedy. Generating it
+  is what buys an answer key that cannot drift, nine axes covered EVENLY rather
+  than however a sample fell, one-variable-at-a-time attribution, and a NULL
+  CORPUS obtainable no other way, which is the tier that caught 18 false
+  positives nothing else could. The hazard is THE FEEDBACK LOOP: a corpus is a
+  good MEASUREMENT INSTRUMENT and a poor REQUIREMENTS SOURCE, and when one
+  corpus does both, the engine converges on the corpus rather than the world --
+  and since we wrote it, that looks like progress. The rule is record now,
+  require evidence from OUTSIDE the corpus to DECIDE, test any addition where
+  `ari` is tested, and sweep generally at the end. A real corpus does the one
+  thing generation cannot -- contain what nobody thought of, which finio
+  measured at three defects in four adapters while every suite was green -- so
+  the two answer DIFFERENT QUESTIONS and neither replaces the other.
   MEASURED rather than guessed, 14 entries split by what matters. CLASS A IS
   SILENT WRONG ANSWERS and dwarfs the rest: `1.234,56` (European grouping) reads
   as **1.23**, a thousandfold error with no diagnostic; three decimals are
