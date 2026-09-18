@@ -1,0 +1,50 @@
+TELLER SESSION JOURNAL                                  PAGE    1
+MIDLAND MUTUAL CREDIT UNION                             RUN 09/17/2026 07:40
+========================================================================
+
+TELLER  24  DRAWER 2
+
+    SEQ   TRAN   ACCT NO               AMOUNT        BALANCE
+    ----  -----  ------------    ------------  -------------
+       1  WDL    00147265           -2,401.02       6,466.91
+       2  WDL    00144134           -1,019.10       5,447.81
+       3  WDL    00140798           -1,330.95       4,116.86
+       4  DEP    00144145               94.57       4,211.43
+
+    TOTAL FOR TELLER                -4,656.50
+
+    OVERRIDE:
+      cash drawer recount agreed
+
+TELLER  63  DRAWER 4
+
+    SEQ   TRAN   ACCT NO               AMOUNT        BALANCE
+    ----  -----  ------------    ------------  -------------
+       1  DEP    00149821              829.24       4,992.98
+       2  LOAN   00142370            2,291.93       7,284.91
+       3  DEP    00143056            4,213.31      11,498.22
+       4  XFR    00145609            1,531.20      13,029.42
+       5  DEP    00146284           -1,152.44      11,876.98
+
+    TOTAL FOR TELLER                 7,713.24
+
+    OVERRIDE:
+      cash drawer recount agreed
+
+TELLER  87  DRAWER 2
+
+    SEQ   TRAN   ACCT NO               AMOUNT        BALANCE
+    ----  -----  ------------    ------------  -------------
+       1  DEP    00140708            1,729.84       5,938.41
+       2  CHK    00145675            4,099.14      10,037.55
+       3  CHK    00140886            3,486.94      13,524.49
+       4  DEP    00147686            4,104.26      17,628.75
+       5  XFR    00148208            1,306.62      18,935.37
+       6  DEP    00148193            4,254.31      23,189.68
+       7  DEP    00149144            1,257.88      24,447.56
+
+    TOTAL FOR TELLER                20,238.99
+
+    OVERRIDE:
+      signature verified by second officer
+

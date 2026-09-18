@@ -669,6 +669,22 @@ The result may recommend:
 
 Variant detection should integrate later with ARI or FinIO-style format detection, but that integration is outside the first implementation.
 
+> **Corrected by building it (2026-09-17).** The illustrative example above is
+> the wrong shape, and in a way that matters: *anchor "TELLER TOTALS"* versus
+> *anchor "BRANCH TOTALS"* is a difference in **vocabulary**, and Phase 2
+> measured that one specification carries exactly that — the branch corpus says
+> both `BRANCH TOTAL` and `TOTAL FOR BRANCH` and one alternation serves all 24
+> sources. A detector that split on it would be splitting on a difference a
+> single specification demonstrably carries. What cannot be carried is a
+> difference in the **detail row's grammar**, because a field that does not
+> exist in one form cannot be written into a rule shared with it.
+>
+> The three remedies stand, and all three are returned — with the addition
+> that **which one applies is measured, not inferred from the grouping.** The
+> grouping is a hypothesis; the answer is whichever arrangement serves more
+> sources when both are actually run. That distinction is not academic: a
+> corpus can hold two grammars that one specification still serves.
+
 ## 14. Failure behavior
 
 Discovery must fail visibly and diagnostically. Important outcomes include:
@@ -823,6 +839,31 @@ records, which is why they were left rather than guessed:
 Variants are chosen **by index, not at random**, so each axis is covered evenly.
 A randomly drawn corpus can leave an axis with one sample or none, and a
 discovery failure on that axis then looks like luck rather than like a finding.
+
+**A SECOND REPORT FORM, for §13** — `tools/gen_discover_variants.bas`, five
+teller session journals in `examples/fixtures/ari_discover/variants/`. None of
+the nine axes above is a *variant*: they are drift, and Phase 2 measured that
+one specification carries all of them. This form changes the thing they do not
+— the detail row's own grammar, `<NUMBER> <WORD> <IDENTIFIER> <MONEY> <MONEY>`
+against `<IDENTIFIER> <WORD> <WORD> <DATE> <MONEY>`: different arity, different
+types, two money spans rather than one, and no date at all, so a `posted` field
+cannot exist here however the rule is worded.
+
+Two rules govern it and both are about not making the fixture easier than the
+question:
+
+- **The branch half is not regenerated.** The variant corpus is the first eight
+  `NN_branch_activity.rpt` read from where they already live. A second copy of
+  the branch form would be a second thing that can drift, and a variant test
+  whose two halves came from two generators could report a difference that
+  neither form actually has.
+- **This half drifts too**, on five axes of its own. A variant group that was
+  internally uniform would be strictly easier than the group it is compared
+  against, and a tool that split the corpus for the wrong reason would pass.
+
+Its first day found a Phase 2 defect the branch corpus structurally could not:
+the branch corpus is never uniform in pagination style, so `corpus_furniture`'s
+form-feed branch had never once been taken (§16 Phase 3).
 
 ### 15.3 Adversarial cases
 
@@ -1078,8 +1119,23 @@ number, not as a box to tick — and §17 makes it an acceptance criterion.
 >   rules came from and no other; the form feed is in half the corpus and **the
 >   header line is in all of it**, including the sources that also carry a form
 >   feed. The rule is not "prefer regex" — it is prefer the directive every
->   source supports, and where all of them paginate by form feed that is the
->   better answer, since it cannot be defeated by a header whose wording drifts.
+>   source supports. ~~And where all of them paginate by form feed, that is the
+>   better answer, since it cannot be defeated by a header whose wording
+>   drifts.~~
+>
+>   > **That second clause is struck: it was wrong, and it was wrong for a
+>   > reason no argument about drift could reach.** A form feed separates page
+>   > *n* from page *n+1* and **does not precede page one**, so `break:
+>   > formfeed` leaves the first page's header block in the document. Phase 3's
+>   > variant corpus is uniformly form-fed, took that branch for the first time,
+>   > and every one of its five sources then reported exactly one section too
+>   > many — an off-by-one that looks like a defect in section detection and is
+>   > not. **Measured: region coverage 0/5 with `break: formfeed`, 5/5 with the
+>   > header pattern**, same corpus and same inference either way. The form feed
+>   > is a fallback now, used only where no page carries a stable literal, and
+>   > the caller is told that page one is uncovered when it is. The branch
+>   > corpus is never uniform in pagination style, which is exactly why the
+>   > claim survived being written down.
 > - **The label alternation.** The corpus says `BRANCH TOTAL` and
 >   `TOTAL FOR BRANCH` for one concept. `ari` takes a regex in a locator, so
 >   one specification carries the alternation — §13's "one specification with
@@ -1107,6 +1163,146 @@ number, not as a box to tick — and §17 makes it an acceptance criterion.
 - Alternatives and concrete questions.
 - Rule-by-rule explanations.
 - Variant detection.
+
+> **BUILT 2026-09-17.** `ari_discover.variants`, `grammar_key`, the
+> `minimum_variant_sources` option, and a second report form in the corpus
+> (`tools/gen_discover_variants.bas`,
+> `examples/fixtures/ari_discover/variants/`).
+>
+> **THE HAZARD IS THE ONE RECIPE 1 NAMED AND THIS LIBRARY HAS NOW MET THREE
+> TIMES**: a search always returns a winner, so a variant detector pointed at a
+> corpus that merely *drifts* will report variants, and the split looks exactly
+> like a discovery. So the negative control was measured first and it is the
+> corpus this project already had: **24 sources varying nine axes come back as
+> ONE grammar**, and one specification serves 24 of 24.
+>
+> **WHAT MAKES A DIFFERENCE MATERIAL IS DERIVABLE RATHER THAN CHOSEN.** It is
+> whether the difference changes what the specification must *say*. The
+> generator reads three things from a source: the pagination directive, the
+> section labels, and the detail row's grammar. The first two are values inside
+> locators and a regex alternation carries them — which Phase 2 measured, not
+> assumed. The third is the rule's **shape**, and no alternation carries that,
+> because a field that does not exist in one form cannot be written into a rule
+> shared with it.
+>
+> | | detail row grammar |
+> |---|---|
+> | branch activity register | `<IDENTIFIER> <WORD> <WORD> <DATE> <MONEY>` |
+> | teller session journal | `<NUMBER> <WORD> <IDENTIFIER> <MONEY> <MONEY>` |
+>
+> **Column layout is deliberately not a grouping axis.** The default
+> specification is anchor-relative and encodes no column, so two sources whose
+> columns differ need no different specification — and the corpus has seven
+> distinct layouts across eight sources, which a layout-keyed grouper would
+> report as seven variants. That difference is real and is reported by
+> `anchor_stability`, as a **question** (§10), because the remedy is a decision.
+>
+> **AND THE GROUPING IS ONLY A HYPOTHESIS. The recommendation is decided by
+> running both arrangements and counting how many sources each serves** — a
+> difference between two measured runs, not a property of the grouping:
+>
+> | corpus | grammars | one spec serves | one spec per grammar serves | answer |
+> |---|---|---|---|---|
+> | 24 branch | 1 | **24 / 24** | — | `one` |
+> | 8 branch + 5 teller | 2 | **0 / 13** | **13 / 13** | `split` |
+> | 12 structureless | 10 | 0 / 12 | — | `none` |
+>
+> The same mixed corpus with `minimum_variant_sources: 6` answers
+> `more_samples` instead, which is §13's third remedy and the control that
+> stops `split` being what this returns for any corpus with two grammars
+> however thin the evidence. A specification generated from one or two samples
+> cannot be distinguished from one fitted to them.
+>
+> **The teller half of the corpus found a defect in Phase 2 within minutes of
+> existing**, recorded above: `break: formfeed` cannot strip page one.
+>
+> ---
+>
+> **THE REST OF PHASE 3 BUILT THE SAME DAY.** `refine`, `check_decisions`,
+> `decision_kinds`/`decision_fields`/`conversion_names`, the `alternatives` list
+> on a proposal, and `explain` over a proposal rather than only a profile.
+>
+> **A decision is an ordinary record and nothing else** — nothing `encode`
+> refuses — so a review round-trips through a file and a later run reproduces
+> the same specification from the same corpus and the same decisions. That is
+> §17 criterion 9 extended to the interactive path, and it is why a decision
+> cannot be "a predicate the caller supplies": a predicate cannot be written
+> down, so a proposal built with one could never be audited or reproduced. The
+> suite asserts the round trip, not merely that decisions work.
+>
+> **THE CONTROL IS THE FIRST CHECK AND IT HAD TO BE**: `refine` with no
+> decisions must produce byte-for-byte what `infer` produces. Every other check
+> about decisions is satisfied by a `refine` that quietly re-infers from scratch
+> and ignores what it was told.
+>
+> **A DECISION THAT MATCHES NOTHING IS REFUSED, NEVER IGNORED.** A rename of a
+> field that does not exist, silently dropped, leaves the reviewer believing
+> they made a change they did not — and the next thing they do is trust the
+> specification. The message names the field and lists the fields that do exist.
+>
+> Five decision kinds. `variant` is how a reviewer acts on what §13
+> recommended: it names the sources that form one, and inference runs over
+> those alone. Functionally that narrows the corpus and a caller could narrow it
+> by hand — but a subset passed by hand is not written down anywhere, and being
+> written down is the whole of what §10 asks for. A variant of one source is
+> refused, because §5.1's argument is that variation across files is what
+> separates a true constant from an accidental one.
+>
+> Two of the boundaries are worth recording because each was a choice:
+>
+> - **`allow_fixed_columns` stays an OPTION, not a decision.** §10 lists "prefer
+>   or forbid positional extraction" among the decisions, but it already has a
+>   spelling, and two ways to say one thing is two things that can disagree.
+>   `refine` takes the options record beside the decisions; a caller serialising
+>   a review serialises both.
+> - **`field_type` changes the conversion, not the location.** §10's "choose a
+>   type" is about a span that is plausibly two things — `20260916` is a date
+>   and an identifier — and in a generated rule that choice is the `as` clause.
+>   Pretending one decision did both would let a reviewer relocate a field by
+>   renaming its type.
+>
+> **AND ONE RULE CAME OUT OF BUILDING IT: a threshold that exists to stop the
+> tool guessing must not stop a person deciding.** `row_family` was first bound
+> to the candidates that cleared `minimum_family_share` and `minimum_support` —
+> and on the eight-source corpus **exactly one family clears both**, so the
+> decision could name nothing at all. That makes the commonest reason for
+> overriding, *you picked the wrong family*, unsayable precisely when the tool
+> picked wrongly. It reaches any family the corpus carries now, and what it is
+> refused for is naming one that is not there.
+>
+> **§12'S TRIPWIRE IS THAT EVERY RULE IS EXPLAINED**, checked by reading the
+> generated specification back and requiring each `field` line to appear in the
+> account of it. It found two on its first run: the section's own heading number
+> and group total, which `explain` never rendered. A rule nobody can trace is a
+> rule nobody can safely change, which is design principle 8.
+>
+> **`alternatives` records what was rejected and why** — and its first entry is
+> the page-break directive that was the *winner* until the variant corpus
+> measured it. The list is only worth anything if the chosen candidate is absent
+> from it, so that is asserted: otherwise it is a list of candidates and says
+> nothing about what was rejected.
+>
+> **A defect the explanation work exposed, and it is the plausible-number
+> class**: `validate` counted only a top-level `rows`, so from the moment Phase
+> 2 began generating a **nested** specification every proposal reported
+> `rows: 0`, `cells: 0` and therefore `unknown_rate: 0` — an absence of
+> measurement rendered as a clean 0%. The scorecard now counts through groups,
+> and the suite asserts it against the **planted** row count rather than a
+> floor.
+>
+> **The valgrind tier moved to a small path-complete fixture**
+> (`tests/ari_discover/discover_vg.bas`), because the semantics fixture grows
+> with the corpus and valgrind costs 20–40×: at 45 seconds native the tier
+> passed **ten minutes**, against the gate's 1800-second per-suite cap. A
+> tripwire in the runner requires every public function to be called there, so
+> the small fixture cannot silently stop covering what was added last.
+>
+> **Still open in Phase 3**: decisions over page furniture and section
+> relationships. Both are in §10's list and neither has a corpus that would make
+> it falsifiable yet — furniture decisions are per-source line numbers, which is
+> awkward to state about a corpus, and a section relationship needs two levels of
+> nesting, which `examples/fixtures/ari/delinquency.rpt` has and this corpus does
+> not. Recorded rather than guessed at.
 
 ### Phase 4: Optional LLM advisor
 

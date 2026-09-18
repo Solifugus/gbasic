@@ -51,6 +51,7 @@ function default_options()
     return { minimum_support: 0.80,
              minimum_confidence: 0.70,
              minimum_family_share: 0.15,
+             minimum_variant_sources: 3,
              holdout: 0,
              maximum_section_depth: 4,
              allow_fixed_columns: false,
@@ -935,7 +936,13 @@ end function
 ' constant from an accidental one, so a signature seen in ONE source is
 ' reported with the count of sources that carry it and not merely its
 ' frequency -- which is the number `minimum_support` is about.
-function profile_corpus(sources, options = nothing)
+' `profiles_in` may be supplied when the caller has already profiled these
+' sources. Profiling is the expensive half -- `furniture` searches for a period
+' and `shape` is regex-heavy -- and `variants` profiles a corpus once and then
+' asks about it several ways, so re-profiling would be the same answer at
+' several times the cost. It is the treatment `anchor_stability` and
+' `region_coverage` already take.
+function profile_corpus(sources, options = nothing, profiles_in = nothing)
     o = _options(options)
     if type(sources) != "array" then
         error "ari_discover.profile_corpus expects an array of sources"
@@ -945,8 +952,14 @@ function profile_corpus(sources, options = nothing)
     end if
     profiles = []
     across = {}
+    pi = 0
     for each s in sources
-        p = profile_source(s, o)
+        if is_nothing(profiles_in) then
+            p = profile_source(s, o)
+        else
+            p = profiles_in[pi]
+        end if
+        pi = pi + 1
         append(profiles, p)
         seen = []
         for each fm in p.families
@@ -1401,8 +1414,10 @@ function spec_text_nested(fam, inferred, sect, page, options = nothing)
             append(out, ind + "field " + hf.name + ": " + hf.locator + hf.as_type)
         end for
         if not is_unknown(sect.total) then
+          if sect.total_token != "" then
             append(out, ind + "' the closing amount of the run, by its own label")
             append(out, ind + "field group_total: right of " + sect.total_token + " as money")
+          end if
         end if
         append(out, ind + "section rows repeats starts(/" + _start_regex(fam) + "/):")
         ind = ind + "    "
@@ -1540,6 +1555,57 @@ function region_coverage(sources, spec, detail_signature, options = nothing, pro
              agreeing: agree, per_source: per }
 end function
 
+' Rows and cells in a parse result, FLAT OR NESTED.
+'
+' It used to look only at a top-level `rows`, so once Phase 2 started
+' generating a nested specification every proposal reported `rows: 0` and
+' `cells: 0` -- and therefore `unknown_rate: 0`, which reads as "nothing is
+' unknown" when what happened is that nothing was counted. An absence of
+' measurement rendered as a clean 0% is exactly the shape of defect this
+' library exists to report rather than produce.
+function _count_rows(v)
+    rows = 0
+    cells = 0
+    unk = 0
+    if type(v) != "record" then
+        return { rows: 0, cells: 0, unknown: 0 }
+    end if
+    if has(v, "rows") then
+        for each row in v.rows
+            rows = rows + 1
+            for each k in keys(row)
+                cells = cells + 1
+                if is_unknown(row[k]) then
+                    unk = unk + 1
+                end if
+            end for
+        end for
+    end if
+    if has(v, "groups") then
+        for each grp in v.groups
+            ' A group carries its own fields (the section heading's number, the
+            ' total) as well as its rows. Those are cells too: a section total
+            ' that came back unknown is the failure `corpus_labels` exists to
+            ' prevent, and it must show up in the rate.
+            for each k in keys(grp)
+                if k != "rows" then
+                    if k != "groups" then
+                        cells = cells + 1
+                        if is_unknown(grp[k]) then
+                            unk = unk + 1
+                        end if
+                    end if
+                end if
+            end for
+            inner = _count_rows(grp)
+            rows = rows + inner.rows
+            cells = cells + inner.cells
+            unk = unk + inner.unknown
+        end for
+    end if
+    return { rows: rows, cells: cells, unknown: unk }
+end function
+
 function validate(sources, spec, options = nothing)
     o = _options(options)
     if type(sources) != "array" then
@@ -1565,17 +1631,10 @@ function validate(sources, spec, options = nothing)
             continue
         end if
         parsed_ok = parsed_ok + 1
-        if has(r.value, "rows") then
-            for each row in r.value.rows
-                rows_total = rows_total + 1
-                for each k in keys(row)
-                    cells_total = cells_total + 1
-                    if is_unknown(row[k]) then
-                        cells_unknown = cells_unknown + 1
-                    end if
-                end for
-            end for
-        end if
+        tal = _count_rows(r.value)
+        rows_total = rows_total + tal.rows
+        cells_total = cells_total + tal.cells
+        cells_unknown = cells_unknown + tal.unknown
     end for
     ur = 0
     if cells_total > 0 then
@@ -1907,25 +1966,39 @@ function furniture_directive(f)
     return _page_block(f, true)
 end function
 
-function _page_block(f, allow_formfeed)
+' A FORM FEED IS A FALLBACK, NEVER A PREFERENCE, and this was the other way
+' round until the variant corpus measured it.
+'
+' A form feed separates page n from page n+1. It does not precede page ONE, so
+' `break: formfeed` leaves the first page's header block in the document --
+' every source then reports exactly one section too many, which looks like an
+' off-by-one in section detection and is not. MEASURED on the five teller
+' journals, whose pagination style IS uniform and so took the form-feed branch:
+' region coverage 0/5 with `break: formfeed`, 5/5 with the header pattern, the
+' same corpus and the same inference either way.
+'
+' Phase 2 recorded the opposite rule -- "where all of them paginate by form
+' feed, formfeed is the better answer, since it cannot be defeated by a header
+' whose wording drifts". The concern is real and the conclusion was wrong, and
+' it went untested because the branch corpus is never uniform in pagination
+' style, so the form-feed branch had never once been taken.
+'
+' So the header LINE is matched whenever there is a stable literal to match,
+' which is every report that prints a title on each page. The form feed is used
+' only when there is no such literal -- a report separated by form feeds alone
+' -- and the caller is told that page one is not covered, because that is a
+' fact about the specification and not an implementation detail.
+function _page_block(f, formfeed_fallback)
     if count(f.offsets) = 0 then
         return []
     end if
     out = [ "page:" ]
-    if allow_formfeed then
-        if f.evidence = "form feeds" then
-            append(out, "    break: formfeed")
-            append(out, "    drop: " + string(count(f.offsets)))
-            append(out, "")
-            return out
-        end if
-    end if
     ' The first furniture line's own LITERAL words, anchored. Its typed spans --
     ' the page number and the run stamp -- are exactly what varies between
     ' pages, so a pattern built from the whole line would match page one only.
     lit = f.offsets[0].words
     if lit = "" then
-        return []
+        return _formfeed_block(f, formfeed_fallback)
     end if
     ' JOINED WITH `[ ]+`, NOT WITH A SPACE. `_words_of` normalises the gaps
     ' away, and a print-image header is column-aligned:
@@ -1943,12 +2016,23 @@ function _page_block(f, allow_formfeed)
         append(parts, w)
     end for
     if count(parts) = 0 then
-        return []
+        return _formfeed_block(f, formfeed_fallback)
     end if
     append(out, "    break: /^" + join(parts, "[ ]+") + "/")
     append(out, "    drop: " + string(count(f.offsets)))
     append(out, "")
     return out
+end function
+
+function _formfeed_block(f, allowed)
+    if not allowed then
+        return []
+    end if
+    if f.evidence != "form feeds" then
+        return []
+    end if
+    return [ "page:", "    break: formfeed",
+             "    drop: " + string(count(f.offsets)), "" ]
 end function
 
 ' §16 Phase 2, multi-source refinement: the `page:` block for a CORPUS.
@@ -1977,7 +2061,7 @@ function corpus_furniture(profiles)
         end if
     end for
     if count(keys(styles)) = 0 then
-        return { directive: [], styles: 0, heights: 0,
+        return { directive: [], styles: 0, heights: 0, alternatives: [],
                  why: "no source has identifiable page furniture" }
     end if
     ' A source with furniture to describe it from. Any will do for the literal,
@@ -1993,18 +2077,50 @@ function corpus_furniture(profiles)
     uniform = count(keys(styles)) = 1
     d = _page_block(pick.furniture, uniform)
     note = ""
-    if not uniform then
-        note = ("the corpus paginates two ways (" + join(keys(styles), ", ")
-                + "), so the break is matched on the header LINE, which every"
-                + " source carries, rather than on a form feed, which only some do")
+    ff = false
+    for each ln in d
+        if contains(ln, "break: formfeed") then
+            ff = true
+        end if
+    end for
+    if ff then
+        note = ("no page carries a stable literal to break on, so the break is a"
+                + " FORM FEED -- which separates page n from page n+1 and does"
+                + " not precede page one, so the first page's furniture is NOT"
+                + " stripped")
+    else
+        note = ("the break is matched on the header LINE rather than on a form"
+                + " feed: a form feed does not precede page one, so a form-feed"
+                + " break leaves the first page's furniture in the document")
+        if not uniform then
+            note = (note + ", and this corpus paginates two ways ("
+                    + join(keys(styles), ", ") + ") in any case")
+        end if
     end if
     if count(keys(heights)) > 1 then
         note = (note + ". The furniture block is not the same height in every"
                 + " source (" + join(keys(heights), ", ") + " lines), and `drop:`"
                 + " takes one value")
     end if
+    ' §12: WHICH ALTERNATIVES WERE CONSIDERED. The form-feed directive is a real
+    ' candidate whenever a source carries one, and recording why it lost is the
+    ' difference between a rule and a rule a reader can audit -- this
+    ' particular loser was the WINNER until the variant corpus measured it.
+    alts = []
+    if not ff then
+        if has(styles, "form feeds") then
+            append(alts, { kind: "page_break",
+                           candidate: "break: formfeed",
+                           supported_by: styles["form feeds"],
+                           why_not: ("a form feed separates page n from page n+1"
+                                     + " and does not precede page ONE, so the"
+                                     + " first page's furniture would not be"
+                                     + " stripped and every source would report"
+                                     + " one section too many") })
+        end if
+    end if
     return { directive: d, styles: count(keys(styles)),
-             heights: count(keys(heights)), why: note }
+             heights: count(keys(heights)), why: note, alternatives: alts }
 end function
 
 ' --- §8 anchor stability --------------------------------------------------
@@ -2096,6 +2212,496 @@ end function
 ' scored on the same corpus is scored on the data that shaped it, and the two
 ' numbers only part company when something has been fitted to the training set
 ' -- which is exactly when a reader needs to know.
+' --- §10 PHASE 3: serializable decisions -----------------------------------
+'
+' §10: "Review decisions become explicit constraints for the next refinement
+' pass. They should be serializable so inference can be reproduced." Both
+' halves are load-bearing and the second is the harder one.
+'
+' A DECISION IS AN ORDINARY RECORD AND NOTHING ELSE -- no function values, no
+' datetimes, nothing `encode` refuses -- so a decision list round-trips through
+' a file and a later run reproduces the same proposal from the same corpus and
+' the same decisions. That is §17 criterion 9 extended to the interactive path,
+' and it is why a decision cannot be "a predicate the caller supplies": a
+' predicate cannot be written down, so a proposal built with one could never be
+' audited or reproduced.
+'
+' A DECISION THAT MATCHES NOTHING IS REFUSED, NEVER IGNORED, and this is the
+' rule that matters most. A rename of a field that does not exist, silently
+' dropped, leaves the reviewer believing they made a change they did not -- and
+' the next thing they do is trust the specification. The message names the
+' field and lists the fields that DO exist, because "which did you mean" is the
+' reviewer's next question.
+'
+' WHAT IS DELIBERATELY NOT A DECISION. `allow_fixed_columns` is an OPTION and
+' stays one: §10 lists "prefer or forbid positional extraction" among the
+' decisions, but it already has a spelling, and two ways to say one thing is
+' two things that can disagree. `refine` takes the options record beside the
+' decisions, and a caller serialising a review serialises both.
+'
+' `field_type` CHANGES THE CONVERSION, NOT THE LOCATION. §10's "choose a type"
+' is about a span that is plausibly two things -- `20260916` is a date and an
+' identifier -- and in a generated rule that choice is the `as` clause. Moving a
+' field is a different act with different evidence behind it, and pretending one
+' decision does both would let a reviewer relocate a field by renaming its type.
+
+function decision_kinds()
+    return [ "variant", "row_family", "rename_field", "drop_field",
+             "field_type" ]
+end function
+
+function decision_fields(kind)
+    if kind = "variant" then
+        return [ "decision", "sources" ]
+    end if
+    if kind = "row_family" then
+        return [ "decision", "signature" ]
+    end if
+    if kind = "rename_field" then
+        return [ "decision", "field", "to" ]
+    end if
+    if kind = "drop_field" then
+        return [ "decision", "field" ]
+    end if
+    if kind = "field_type" then
+        return [ "decision", "field", "as" ]
+    end if
+    return [ "decision" ]
+end function
+
+function conversion_names()
+    return [ "text", "money", "date", "integer", "number" ]
+end function
+
+' Validated BY NAME, like the options record, and for the same reason: a
+' misspelled key that were silently ignored would leave the reviewer believing
+' they made a decision they did not.
+function check_decisions(decisions)
+    if is_nothing(decisions) then
+        return []
+    end if
+    if type(decisions) != "array" then
+        error ("ari_discover: decisions must be an array of records, not a "
+               + type(decisions))
+    end if
+    kinds = decision_kinds()
+    for each d in decisions
+        if type(d) != "record" then
+            error ("ari_discover: a decision must be a record, not a " + type(d))
+        end if
+        if not has(d, "decision") then
+            error ("ari_discover: a decision must carry a `decision` field -- "
+                   + "the kinds are " + join(kinds, ", "))
+        end if
+        if not contains(kinds, d.decision) then
+            error ("ari_discover: '" + string(d.decision) + "' is not a decision"
+                   + " -- the kinds are " + join(kinds, ", "))
+        end if
+        want = decision_fields(d.decision)
+        for each k in keys(d)
+            if not contains(want, k) then
+                error ("ari_discover: '" + string(k) + "' is not a field of a "
+                       + d.decision + " decision -- its fields are "
+                       + join(want, ", "))
+            end if
+        end for
+        for each k in want
+            if not has(d, k) then
+                error ("ari_discover: a " + d.decision + " decision needs `" + k
+                       + "` -- its fields are " + join(want, ", "))
+            end if
+        end for
+        if d.decision = "variant" then
+            if type(d.sources) != "array" then
+                error ("ari_discover: a variant decision names the SOURCES that"
+                       + " form it, as an array of ids, not a " + type(d.sources))
+            end if
+            if count(d.sources) < 2 then
+                error ("ari_discover: a variant of "
+                       + string(count(d.sources)) + " source(s) is not a form,"
+                       + " it is a sample -- §5.1: variation across files is"
+                       + " what separates a true constant from an accidental"
+                       + " one, so a specification from one source is a"
+                       + " specification fitted to it")
+            end if
+        end if
+        if d.decision = "field_type" then
+            if not contains(conversion_names(), d.as) then
+                error ("ari_discover: '" + string(d.as) + "' is not a conversion"
+                       + " -- they are " + join(conversion_names(), ", "))
+            end if
+        end if
+    end for
+    return decisions
+end function
+
+' §9: revise a candidate using validation evidence and human decisions.
+'
+' It RE-INFERS rather than editing the proposal in place, deliberately. A
+' decision changes what the evidence supports -- choose a different row family
+' and the heading, the sections and every field change with it -- so patching
+' the old proposal would leave a specification whose scorecard described a
+' different one. `proposal` is accepted and not required, because the reviewer
+' reached their decisions by reading it and the provenance should say so.
+function refine(sources, proposal, decisions, options = nothing)
+    o = _options(options)
+    ' The proposal is CHECKED rather than merely accepted. Nothing below reads
+    ' it -- a decision is applied to the evidence, not to the old record -- so
+    ' an unchecked parameter would be decorative, and the mistake it exists to
+    ' catch is a real one: `refine(sources, decisions, options)`, three
+    ' arguments in the wrong places, would otherwise return a perfectly valid
+    ' UNREFINED specification with nothing said.
+    if not is_nothing(proposal) then
+        if type(proposal) != "record" then
+            error ("ari_discover.refine: the second argument is the proposal"
+                   + " being revised, not a " + type(proposal)
+                   + " -- refine(sources, proposal, decisions [, options])")
+        end if
+        if not has(proposal, "spec") then
+            error ("ari_discover.refine: the second argument is the proposal"
+                   + " being revised (a record from `infer`), and this one"
+                   + " carries no `spec`"
+                   + " -- refine(sources, proposal, decisions [, options])")
+        end if
+    end if
+    ds = check_decisions(decisions)
+
+    ' §10's "declare two apparent report forms to be distinct variants", which
+    ' `variants` recommends and this is how a reviewer ACTS on. Functionally it
+    ' narrows the corpus, and a caller could narrow it by hand -- but a subset
+    ' passed by hand is not written down anywhere, and being written down is the
+    ' whole of what §10 asks for. Order is preserved from the corpus so the
+    ' proposal stays reproducible (§17 criterion 9).
+    train = sources
+    for each d in ds
+        if d.decision = "variant" then
+            kept = []
+            for each sc in train
+                if contains(d.sources, sc.id) then
+                    append(kept, sc)
+                end if
+            end for
+            if count(kept) != count(d.sources) then
+                have = []
+                for each sc in train
+                    append(have, string(sc.id))
+                end for
+                missed = []
+                for each want in d.sources
+                    if not contains(have, string(want)) then
+                        append(missed, string(want))
+                    end if
+                end for
+                error ("ari_discover.refine: the variant names source(s) this"
+                       + " corpus does not contain: " + join(missed, ", ")
+                       + " -- it holds " + join(have, ", "))
+            end if
+            train = kept
+        end if
+    end for
+    return _infer_from(train, [], o, nothing, ds)
+end function
+
+' --- §13 PHASE 3: variants ------------------------------------------------
+'
+' §13 asks whether a corpus holds several legitimate report GRAMMARS rather
+' than one brittle specification. The hazard is the one Recipe 1 named and this
+' library has already met twice: a search always returns a winner, so a
+' variant detector pointed at a corpus that merely DRIFTS will happily report
+' variants, and the split looks exactly like a discovery.
+'
+' THE EXISTING CORPUS IS THE NEGATIVE CONTROL AND IT WAS MEASURED FIRST. Its 24
+' sources vary nine axes -- money notation, indent, date dialect, description
+' width, the total's label, pagination style -- and Phase 2 measured that ONE
+' refined specification recovers 121/121 branch numbers, totals and row counts
+' across all of them. So a detector that split that corpus would be splitting
+' on differences a single specification demonstrably carries.
+'
+' WHAT MAKES A DIFFERENCE MATERIAL IS NOT HOW BIG IT LOOKS. It is whether it
+' changes what the specification must SAY, and that is derivable rather than
+' chosen: the generator reads the pagination directive, the section labels and
+' the detail row's own grammar. Of those, the first two are values inside
+' locators -- a regex alternation carries them, which Phase 2 proved -- and the
+' third is the rule's SHAPE, which no alternation can carry, because a field
+' that does not exist in one form cannot be written into a rule shared with it.
+'
+'     branch detail   <IDENTIFIER> <WORD> <WORD> <DATE> <MONEY>
+'     teller detail   <NUMBER> <WORD> <IDENTIFIER> <MONEY> <MONEY>
+'
+' Column layout is deliberately NOT a grouping axis: the default specification
+' is anchor-relative and encodes no column, so two sources whose columns differ
+' need no different specification. `anchor_stability` is where that difference
+' is reported, and it is reported as a QUESTION rather than a split precisely
+' because the remedy is a decision (§10).
+'
+' AND THE GROUPING IS ONLY A HYPOTHESIS. The recommendation is decided by
+' RUNNING both arrangements and counting how many sources each serves -- a
+' difference between two measured runs, not a property of the grouping. A
+' corpus can hold two grammars that one specification still serves, and it can
+' hold two groups neither of which has enough sources to support a
+' specification worth believing; both are answers this returns, and neither is
+' visible from the grouping alone.
+
+function _dominant_family(p)
+    best = unknown
+    for each fm in p.families
+        if is_unknown(best) then
+            best = fm
+        else
+            if fm.count > best.count then
+                best = fm
+            end if
+        end if
+    end for
+    return best
+end function
+
+' The source's grammar, as a string. The family key carries indentation
+' (`families` needs it to separate a column heading from a remark note) and
+' indentation is exactly what must NOT decide a variant, so it is stripped
+' here.
+function grammar_key(p)
+    fm = _dominant_family(p)
+    if is_unknown(fm) then
+        return "<NONE>"
+    end if
+    parts = split(fm.shape, "|")
+    if count(parts) < 2 then
+        return fm.shape
+    end if
+    return parts[1]
+end function
+
+' How many of `srcs` a specification actually serves: it must parse the source
+' AND find the number of sections the source's own detail rows say are there.
+' Parsing alone is not service -- Phase 2 measured a specification with
+' source_coverage 1.0 and region_coverage 0.125.
+function _served(srcs, prop, options, profiles)
+    if not prop.ok then
+        return 0
+    end if
+    rc = region_coverage(srcs, prop.spec, prop.family.signature, options,
+                         profiles)
+    return rc.agreeing
+end function
+
+function variants(sources, options = nothing)
+    o = _options(options)
+    if type(sources) != "array" then
+        error "ari_discover.variants expects an array of sources"
+    end if
+    if count(sources) = 0 then
+        error "ari_discover.variants: the corpus is empty"
+    end if
+    c = profile_corpus(sources, o)
+
+    keyed = {}
+    order = []
+    i = 0
+    for each p in c.profiles
+        k = grammar_key(p)
+        if not has(keyed, k) then
+            keyed[k] = []
+            append(order, k)
+        end if
+        a = keyed[k]
+        append(a, i)
+        keyed[k] = a
+        i = i + 1
+    end for
+
+    ' The group records carry the source IDS and not the sources. A returned
+    ' record holding every source's text is a second copy of the corpus, which
+    ' makes the answer expensive to keep, awkward to print and impossible to
+    ' write down beside a decision. The members travel alongside, locally.
+    groups = []
+    group_members = []
+    group_profiles = []
+    for each k in order
+        idxs = keyed[k]
+        ids = []
+        members = []
+        profs = []
+        for each ix in idxs
+            append(ids, sources[ix].id)
+            append(members, sources[ix])
+            append(profs, c.profiles[ix])
+        end for
+        append(groups, { grammar: k, n: count(idxs), sources: ids })
+        append(group_members, members)
+        append(group_profiles, profs)
+    end for
+
+    ' The single-specification arrangement, measured rather than assumed.
+    one = _infer_from(sources, [], o, c)
+    one_served = _served(sources, one, o, c.profiles)
+
+    small = []
+    for each g in groups
+        if g.n < o.minimum_variant_sources then
+            append(small, g.grammar)
+        end if
+    end for
+
+    if count(groups) = 1 then
+        return { ok: true,
+                 recommendation: "one",
+                 groups: groups,
+                 one: { served: one_served, sources: count(sources),
+                        ok: one.ok, spec: _spec_or_blank(one) },
+                 split: unknown,
+                 why: ("every source in this corpus has the same detail row"
+                       + " grammar (" + groups[0].grammar + "), so there is only"
+                       + " one report form here. The differences between sources"
+                       + " -- notation, layout, label wording, pagination -- are"
+                       + " carried by one specification, which serves "
+                       + string(one_served) + " of " + string(count(sources))
+                       + " sources.") }
+    end if
+
+    ' BOTH ARRANGEMENTS ARE RUN BEFORE ANYTHING IS RECOMMENDED, including when
+    ' the groups look too thin. The first version decided `none` versus
+    ' `more_samples` by comparing group sizes to the floor, and that is a
+    ' threshold answering a question only a measurement can: a corpus of six
+    ' sources in two grammars of three, with the floor raised to four, came back
+    ' `none` -- "no specification can be written against this corpus" -- when in
+    ' fact each grammar supports one perfectly well and all the caller had said
+    ' was that three samples is too few to CALL something a variant.
+    '
+    ' A group of ONE is not inferred from at all: §5.1's whole argument is that
+    ' variation across files is what separates a true constant from an
+    ' accidental one, so a specification from a single source is a specification
+    ' fitted to it. Those groups are named and contribute nothing.
+    per = []
+    split_served = 0
+    gi = 0
+    for each g in groups
+        if g.n < 2 then
+            append(per, { grammar: g.grammar, sources: g.n, served: 0,
+                          ok: false, spec: "" })
+        else
+            gm = group_members[gi]
+            gc = profile_corpus(gm, o, group_profiles[gi])
+            gp = _infer_from(gm, [], o, gc)
+            gs = _served(gm, gp, o, group_profiles[gi])
+            split_served = split_served + gs
+            append(per, { grammar: g.grammar, sources: g.n, served: gs,
+                          ok: gp.ok, spec: _spec_or_blank(gp) })
+        end if
+        gi = gi + 1
+    end for
+
+    if split_served = 0 then
+        if one_served = 0 then
+            ' NOTHING SERVES ANYTHING, which is a measured claim rather than an
+            ' inference from how the sources grouped. This is what the null
+            ' corpus produces: its sources do fall into grammars, and none of
+            ' those grammars supports a specification either.
+            return { ok: false,
+                     recommendation: "none",
+                     groups: groups,
+                     one: { served: 0, sources: count(sources), ok: one.ok,
+                            spec: _spec_or_blank(one) },
+                     split: { served: 0, sources: count(sources),
+                              per_group: per },
+                     why: ("there is nothing here to split. "
+                           + string(count(groups)) + " distinct detail grammars"
+                           + " across " + string(count(sources)) + " sources, and"
+                           + " NO arrangement serves a single source -- neither"
+                           + " one specification for the corpus nor one per"
+                           + " grammar. " + one.why) }
+        end if
+    end if
+
+    if count(small) > 0 then
+        return { ok: true,
+                 recommendation: "more_samples",
+                 groups: groups,
+                 one: { served: one_served, sources: count(sources),
+                        ok: one.ok, spec: _spec_or_blank(one) },
+                 split: { served: split_served, sources: count(sources),
+                          per_group: per },
+                 why: ("this corpus holds " + string(count(groups))
+                       + " distinct detail row grammars, but "
+                       + string(count(small)) + " of them "
+                       + _is_are(count(small)) + " carried by fewer"
+                       + " than " + string(o.minimum_variant_sources)
+                       + " sources (" + join(small, "; ") + "). Splitting would"
+                       + " serve " + string(split_served) + " of "
+                       + string(count(sources)) + " sources against "
+                       + string(one_served) + ", so the split may well be right"
+                       + " -- but a specification generated from one or two"
+                       + " samples cannot be distinguished from one fitted to"
+                       + " them, so what is needed is more samples of those"
+                       + " forms rather than a decision (design §13).") }
+    end if
+
+    rec = "one"
+    why = ("one specification serves " + string(one_served) + " of "
+           + string(count(sources)) + " sources and "
+           + string(count(groups)) + " separate ones serve "
+           + string(split_served) + ", so the difference between these grammars"
+           + " is one a single specification already carries. §13's first"
+           + " remedy -- one specification with alternate sections -- applies.")
+    if split_served > one_served then
+        rec = "split"
+        why = ("one specification serves " + string(one_served) + " of "
+               + string(count(sources)) + " sources; one specification per"
+               + " grammar serves " + string(split_served) + ". These are"
+               + " materially different report forms, not one form with"
+               + " variation in it, and the detail rows are where they differ:"
+               + " " + join(_strs(_grammars_of(groups)), "  vs  "))
+    end if
+
+    return { ok: true,
+             recommendation: rec,
+             groups: groups,
+             one: { served: one_served, sources: count(sources),
+                    ok: one.ok, spec: _spec_or_blank(one) },
+             split: { served: split_served, sources: count(sources),
+                      per_group: per },
+             why: why }
+end function
+
+function _section_pattern(sect)
+    if is_unknown(sect) then
+        return ""
+    end if
+    return sect.heading_pattern
+end function
+
+function _verb_of(kind)
+    if kind = "rename_field" then
+        return "rename"
+    end if
+    if kind = "drop_field" then
+        return "drop"
+    end if
+    return "convert"
+end function
+
+function _is_are(n)
+    if n = 1 then
+        return "is"
+    end if
+    return "are"
+end function
+
+function _spec_or_blank(p)
+    if p.ok then
+        return p.spec
+    end if
+    return ""
+end function
+
+function _grammars_of(groups)
+    out = []
+    for each g in groups
+        append(out, g.grammar)
+    end for
+    return out
+end function
+
 function infer(sources, options = nothing)
     o = _options(options)
     train = sources
@@ -2120,9 +2726,13 @@ function infer(sources, options = nothing)
     return _infer_from(train, held, o)
 end function
 
-function _infer_from(sources, held, options = nothing)
+function _infer_from(sources, held, options = nothing, corpus_in = nothing, decisions = nothing)
     o = _options(options)
-    c = profile_corpus(sources, o)
+    ds = check_decisions(decisions)
+    c = corpus_in
+    if is_nothing(c) then
+        c = profile_corpus(sources, o)
+    end if
 
     ' The dominant family, across the corpus rather than within one source.
     ' §5.1: variation between files is what separates a true constant from an
@@ -2130,6 +2740,7 @@ function _infer_from(sources, held, options = nothing)
     ' however many lines it holds there.
     best = unknown
     best_n = 0
+    cands = []
     for each p in c.profiles
         ' The candidate must be DOMINANT within its own source, not merely
         ' recurring across the corpus.
@@ -2172,6 +2783,12 @@ function _infer_from(sources, held, options = nothing)
                     end for
                 end for
                 if shared / c.sources >= o.minimum_support then
+                    ' EVERY qualifying candidate is kept, not just the winner.
+                    ' §12 asks which alternatives were considered, and a
+                    ' `row_family` decision (§10) can only name one that was
+                    ' recorded.
+                    append(cands, { family: fm, profile: p, shared: shared,
+                                    share: share })
                     if fm.count > best_n then
                         best_n = fm.count
                         best = { family: fm, profile: p, shared: shared,
@@ -2194,12 +2811,140 @@ function _infer_from(sources, held, options = nothing)
                        + string(floor(o.minimum_support * 100)) + "% of the "
                        + string(c.sources) + " sources, so there is no repeating"
                        + " structure to write a specification against"),
-                 spec: "", fields: [], questions: [],
+                 spec: "", fields: [], questions: [], alternatives: [],
+                 decisions: ds, section_fields: [], section_pattern: "",
                  trained_on: count(sources), holdout: unknown, corpus: c }
     end if
 
+    ' §10: the reviewer may choose a different row family. Refused if it names
+    ' a family no source carries, with the candidates listed -- silently
+    ' falling back to the dominant one would produce exactly the specification
+    ' the reviewer asked not to have.
+    ' A THRESHOLD THAT EXISTS TO STOP THE TOOL GUESSING MUST NOT STOP A PERSON
+    ' DECIDING. `minimum_family_share` and `minimum_support` are how automatic
+    ' choice declines to guess; a reviewer naming a family has not guessed, and
+    ' binding them to the candidate list would make the commonest reason for
+    ' overriding -- "you picked the wrong family" -- unsayable exactly when the
+    ' tool picked wrongly. So the decision reaches ANY family the corpus
+    ' carries, and what it is refused for is naming one that is not there.
+    chosen_by = "dominance"
+    for each d in ds
+        if d.decision = "row_family" then
+            pick = unknown
+            hits = 0
+            for each p in c.profiles
+                for each fm in p.families
+                    if fm.signature = d.signature then
+                        hits = hits + 1
+                        if is_unknown(pick) then
+                            pick = { family: fm, profile: p, shared: 0,
+                                     share: 0 }
+                        end if
+                    end if
+                end for
+            end for
+            if is_unknown(pick) then
+                names = []
+                for each p in c.profiles
+                    for each fm in p.families
+                        if not contains(names, fm.signature) then
+                            append(names, fm.signature)
+                        end if
+                    end for
+                end for
+                error ("ari_discover.refine: no row family with signature '"
+                       + string(d.signature) + "' appears anywhere in this"
+                       + " corpus -- the families are: " + join(names, " | "))
+            end if
+            content2 = 0
+            for each r in pick.profile.grid
+                if not r.blank then
+                    if not contains(pick.profile.furniture.lines, r.physical_line) then
+                        content2 = content2 + 1
+                    end if
+                end if
+            end for
+            sh2 = 0
+            if content2 > 0 then
+                sh2 = pick.family.count / content2
+            end if
+            best = { family: pick.family, profile: pick.profile,
+                     shared: hits, share: sh2 }
+            chosen_by = "decision"
+        end if
+    end for
+
+    ' §12: the candidates that were NOT chosen, deduplicated by signature.
+    alternatives = []
+    alt_seen = []
+    for each cd in cands
+        if cd.family.signature != best.family.signature then
+            if not contains(alt_seen, cd.family.signature) then
+                append(alt_seen, cd.family.signature)
+                append(alternatives, { kind: "row_family",
+                                       signature: cd.family.signature,
+                                       lines: cd.family.count,
+                                       share: cd.share,
+                                       sources: cd.shared,
+                                       why_not: ("it clears both thresholds but"
+                                           + " holds " + string(cd.family.count)
+                                           + " lines against the chosen family's "
+                                           + string(best.family.count)) })
+            end if
+        end if
+    end for
+
     inf = infer_fields(best.profile.grid, best.family,
                        best.profile.furniture.lines, o)
+
+    ' §10: rename, drop and re-convert, applied AFTER the fields are inferred
+    ' so a decision is made against the evidence the reviewer actually read.
+    '
+    ' APPLIED IN THE ORDER GIVEN, and that is what makes a review reproducible:
+    ' a rename followed by a conversion must name the NEW name, and a rename
+    ' after a drop is refused because the field is gone. Both follow from the
+    ' list being a sequence rather than a set, which is also why the list is the
+    ' serializable form -- a set would have to define its own ordering somewhere
+    ' the reviewer cannot see.
+    inf_fields = inf.fields
+    for each d in ds
+        if d.decision != "row_family" and d.decision != "variant" then
+            hit = false
+            out_f = []
+            for each fl in inf_fields
+                if fl.name = d.field then
+                    hit = true
+                    if d.decision = "rename_field" then
+                        fl.name = d.to
+                        append(out_f, fl)
+                    end if
+                    if d.decision = "field_type" then
+                        if d.as = "text" then
+                            fl.as_type = ""
+                        else
+                            fl.as_type = " as " + d.as
+                        end if
+                        append(out_f, fl)
+                    end if
+                    ' drop_field appends nothing.
+                else
+                    append(out_f, fl)
+                end if
+            end for
+            if not hit then
+                have = []
+                for each fl in inf_fields
+                    append(have, fl.name)
+                end for
+                error ("ari_discover.refine: this specification has no field '"
+                       + string(d.field) + "' to " + _verb_of(d.decision)
+                       + " -- its fields are " + join(have, ", "))
+            end if
+            inf_fields = out_f
+        end if
+    end for
+    inf = { fields: inf_fields, questions: inf.questions,
+            heading: inf.heading, columns: inf.columns }
 
     ' PHASE 2: the section that contains the rows, and the furniture directive
     ' that keeps the page header out of it.
@@ -2234,13 +2979,61 @@ function _infer_from(sources, held, options = nothing)
             hp = label_token(cl.headings)
             hp = mid(hp, 1, len(hp) - 2)
         end if
+        ' A SECTION NEED NOT HAVE A TOTAL. `sections` answers `unknown` when
+        ' nothing consistently closes a run, and `spec_text_nested` already
+        ' omits the field in that case -- but this line reached into it for a
+        ' literal regardless, which only ever ran when the corpus had no total
+        ' label at all. A `row_family` decision naming a family with no totals
+        ' under it is the first thing that reaches it.
         tt = label_token(cl.totals)
         if tt = "" then
-            tt = "\"" + string(sc2.total.literal) + "\""
+            if is_unknown(sc2.total) then
+                tt = ""
+            else
+                tt = "\"" + string(sc2.total.literal) + "\""
+            end if
         end if
         sect = { heading: sc2.heading, total: sc2.total, heading_fields: hfs,
                  heading_pattern: hp, total_token: tt, runs: sc2.runs,
                  labels: cl }
+    end if
+    ' THE SECTION'S OWN FIELDS, in the same shape as a detail field, so §12's
+    ' account of the specification can reach every rule in it. They were
+    ' invisible to `explain` until the tripwire that requires every `field`
+    ' line to be explained found two that were not.
+    section_fields = []
+    if not is_unknown(sect) then
+        for each hf in sect.heading_fields
+            append(section_fields, { name: hf.name, locator: hf.locator,
+                                     as_type: hf.as_type, why: hf.why,
+                                     positional: false, type: "integer",
+                                     consistency: 1,
+                                     example: sect.heading.literal })
+        end for
+        if not is_unknown(sect.total) then
+            if sect.total_token != "" then
+                append(section_fields,
+                       { name: "group_total",
+                         locator: "right of " + sect.total_token,
+                         as_type: " as money",
+                         why: "the closing amount of the run, by its own label",
+                         positional: false, type: "money", consistency: 1,
+                         example: string(sect.total.literal) })
+            end if
+        end if
+    end if
+    for each a in cf.alternatives
+        append(alternatives, a)
+    end for
+    if count(cl.totals) > 1 then
+        append(alternatives, { kind: "section_total_label",
+                               candidate: "\"" + string(cl.totals[0]) + "\"",
+                               supported_by: 1,
+                               why_not: ("the corpus uses "
+                                   + string(count(cl.totals)) + " wordings for"
+                                   + " this label, so a single literal describes"
+                                   + " only some sources; the locator is an"
+                                   + " alternation of all of them") })
     end if
     sp = spec_text_nested(best.family, inf, sect, pagedir, o)
     sc = validate(sources, sp, o)
@@ -2324,9 +3117,14 @@ function _infer_from(sources, held, options = nothing)
              ' to know which -- and without it the proposal cannot be audited
              ' at all.
              built_from: best.profile.id,
+             family_chosen_by: chosen_by,
+             decisions: ds,
+             alternatives: alternatives,
              family_share: best.share,
              nested: not is_unknown(sect),
              sections: sc2,
+             section_fields: section_fields,
+             section_pattern: _section_pattern(sect),
              page_directive: pagedir,
              furniture_note: cf.why,
              labels: cl,
@@ -2356,10 +3154,32 @@ function _infer_from(sources, held, options = nothing)
              corpus: c }
 end function
 
-' --- §12 a human-readable profile ----------------------------------------
-
+' --- §12 a human-readable profile, or a rule-by-rule account of a proposal --
+'
+' ONE FUNCTION, dispatching on whether it was handed a proposal or a profile.
+' §9's API names one `explain`, the two records are disjoint in shape (only a
+' proposal carries a `spec`), and "the thing to explain" is genuinely one idea:
+' the alternative is two names a caller has to choose between for no reason
+' they can see from the call site.
+'
+' WHAT A RULE EXPLANATION HAS TO ANSWER is §12's list, and the list is not
+' decorative -- a generated specification is handed to somebody who will
+' maintain it WITHOUT this library (design principle 8), so every rule has to
+' carry which sources support it, what it anchors to, how often it succeeded,
+' what was considered instead, whether an LLM proposed any of it, and whether it
+' depends on a fixed column. A rule that cannot answer those is a rule nobody
+' can safely change.
 function explain(p, options = nothing)
     o = _options(options)
+    if has(p, "spec") then
+        return _explain_proposal(p, o)
+    end if
+    if not has(p, "id") then
+        error ("ari_discover.explain takes a PROPOSAL (from `infer` or `refine`)"
+               + " or a PROFILE (from `profile`, `profile_source`, or one of"
+               + " `profile_corpus`'s), and this record is neither. A `variants`"
+               + " result explains itself: read its `why`.")
+    end if
     out = []
     append(out, "source: " + string(p.id))
     append(out, "  physical lines   " + string(p.physical_lines)
@@ -2385,6 +3205,179 @@ function explain(p, options = nothing)
         append(out, "    ...   " + string(count(ranked) - 8) + " more")
     end if
     return join(out, "\n")
+end function
+
+function _explain_proposal(p, o)
+    out = []
+    if not p.ok then
+        append(out, "NO SPECIFICATION WAS PROPOSED")
+        append(out, "  " + p.why)
+        return join(out, "\n")
+    end if
+
+    append(out, "specification inferred from " + string(p.trained_on) + " source(s)")
+    append(out, "  built from    " + string(p.built_from)
+                + "   (the column boundaries and the section heading are read"
+                + " from this one source; the family and the label patterns come"
+                + " from the corpus)")
+    append(out, "  row family    " + p.family.signature)
+    append(out, "                " + string(p.family.count) + " lines there, "
+                + string(p.shared_by) + " of " + string(p.corpus.sources)
+                + " sources carry it, " + string(floor(p.family_share * 100))
+                + "% of its source's content lines")
+    append(out, "  chosen by     " + p.family_chosen_by)
+    ' §12 asks outright whether any part was proposed by an LLM. Answering it
+    ' every time, including when the answer is no, is what makes the field
+    ' worth reading -- a note that appears only sometimes is one a reader stops
+    ' looking for.
+    if is_nothing(o.llm) then
+        append(out, "  llm           not used; every rule below is deterministic")
+    else
+        append(out, "  llm           an advisor was supplied")
+    end if
+    if count(p.decisions) > 0 then
+        append(out, "  decisions     " + string(count(p.decisions)) + " applied")
+        for each d in p.decisions
+            append(out, "                " + _decision_text(d))
+        end for
+    end if
+
+    append(out, "")
+    append(out, "RULES")
+
+    if count(p.page_directive) > 0 then
+        append(out, "")
+        append(out, "  " + trim(p.page_directive[1]))
+        append(out, "      what      page furniture, stripped before anything else"
+                    + " is located")
+        append(out, "      evidence  " + string(p.corpus.sources)
+                    + " source(s) profiled; " + p.furniture_note)
+    end if
+
+    if p.nested then
+        append(out, "")
+        append(out, "  section groups repeats starts(/^" + p.section_pattern + " /)")
+        append(out, "      what      one section per run of detail rows")
+        append(out, "      anchor    the literal \"" + p.sections.heading.literal
+                    + "\", found by POSITION (what consistently precedes a run),"
+                    + " never by vocabulary")
+        append(out, "      evidence  " + string(p.sections.runs)
+                    + " run(s) in the source it was built from; the heading"
+                    + " literal was read from " + string(p.labels.sources)
+                    + " source(s) carrying this family")
+        append(out, "      succeeded " + string(p.scorecard.region_coverage * p.scorecard.sources)
+                    + " of " + string(p.scorecard.sources)
+                    + " sources report the number of sections their own detail"
+                    + " rows say are there")
+    end if
+
+    allf = []
+    for each f in p.section_fields
+        append(allf, f)
+    end for
+    for each f in p.fields
+        append(allf, f)
+    end for
+    for each f in allf
+        append(out, "")
+        append(out, "  field " + f.name + ": " + f.locator + f.as_type)
+        append(out, "      what      " + f.why)
+        append(out, "      anchor    " + _anchor_text(f))
+        append(out, "      evidence  every row of the family agrees on the type"
+                    + " (" + string(floor(f.consistency * 100)) + "% consistent);"
+                    + " example " + f.example)
+        append(out, "      columns   " + _positional_text(f))
+    end for
+
+    if count(p.questions) > 0 then
+        append(out, "")
+        append(out, "OPEN QUESTIONS (§10) -- " + string(count(p.questions)))
+        for each q in p.questions
+            append(out, "")
+            append(out, "  " + string(q.field) + "   [" + string(q.kind) + "]")
+            append(out, "      " + q.why)
+            for each opt in q.options
+                append(out, "      - " + opt)
+            end for
+        end for
+    end if
+
+    append(out, "")
+    append(out, "ALTERNATIVES CONSIDERED (§12) -- " + string(count(p.alternatives)))
+    if count(p.alternatives) = 0 then
+        append(out, "  none: no other candidate cleared the thresholds")
+    end if
+    for each a in p.alternatives
+        append(out, "")
+        append(out, "  [" + a.kind + "] " + _alt_text(a))
+        append(out, "      rejected: " + a.why_not)
+    end for
+
+    append(out, "")
+    append(out, "SCORED BY `ari` ITSELF, never by the model that proposed it")
+    append(out, "  sources parsed      " + string(p.scorecard.parsed) + " / "
+                + string(p.scorecard.sources))
+    append(out, "  sections right in   "
+                + string(p.scorecard.region_coverage * p.scorecard.sources)
+                + " / " + string(p.scorecard.sources))
+    append(out, "  rows extracted      " + string(p.scorecard.rows))
+    append(out, "  unknown cells       " + string(floor(p.scorecard.unknown_rate * 1000) / 10) + "%")
+    append(out, "  anchor stability    "
+                + string(floor(p.scorecard.anchor_stability * 100) / 100)
+                + "   (" + string(p.scorecard.layouts) + " distinct column layouts)")
+    append(out, "  positional fields   "
+                + string(floor(p.scorecard.positional_dependence * 100)) + "%")
+    for each nc in p.scorecard.not_computable
+        append(out, "  " + _pad_right(nc, 20) + "not computable")
+    end for
+    append(out, "                      " + p.scorecard.not_computable_why)
+    return join(out, "\n")
+end function
+
+function _decision_text(d)
+    if d.decision = "row_family" then
+        return "use the row family " + string(d.signature)
+    end if
+    if d.decision = "rename_field" then
+        return "rename " + string(d.field) + " to " + string(d.to)
+    end if
+    if d.decision = "drop_field" then
+        return "drop the field " + string(d.field)
+    end if
+    return "convert " + string(d.field) + " as " + string(d.as)
+end function
+
+function _anchor_text(f)
+    if f.positional then
+        return ("none -- this field is located by COLUMN " + string(f.cp_start)
+                + "-" + string(f.cp_start + f.cp_length - 1))
+    end if
+    return ("the " + f.type + " span itself; the row carries no literal to"
+            + " anchor to, so the locator counts spans of a type")
+end function
+
+function _positional_text(f)
+    if f.positional then
+        return ("YES -- it breaks silently if the report drifts, which is why"
+                + " allow_fixed_columns defaults to false")
+    end if
+    return "no -- it survives a change of indent or column width"
+end function
+
+function _alt_text(a)
+    if has(a, "signature") then
+        return (string(a.signature) + "   " + string(a.lines) + " lines, "
+                + string(a.sources) + " source(s)")
+    end if
+    return string(a.candidate)
+end function
+
+function _pad_right(s, w)
+    n = w - len(s)
+    if n <= 0 then
+        return s
+    end if
+    return s + repeat(" ", n)
 end function
 
 function _pad(s, w)

@@ -14,10 +14,11 @@ fixtures must never become a route by which real data enters the repository.
 |---|---|---|---|
 | **structured corpus** | `NN_branch_activity.rpt` × 24, `truth.json` | `tools/gen_discover_corpus.bas` | `gbasic tools/gen_discover_corpus.bas examples/fixtures/ari_discover 24 20260916` |
 | **null corpus** | `null/null_NN_noise.rpt` × 12, `null/truth.json` | `tools/gen_discover_null.bas` | `gbasic tools/gen_discover_null.bas examples/fixtures/ari_discover/null 12 90210` |
+| **second report form** | `variants/tNN_teller_session.rpt` × 5, `variants/truth.json` | `tools/gen_discover_variants.bas` | `gbasic tools/gen_discover_variants.bas examples/fixtures/ari_discover/variants 5 20260917` |
 
-Both generators are pure functions of their arguments — seeded RNG, no clock, a
-fixed run stamp — so the same arguments produce byte-identical files and these
-can back a golden.
+All three generators are pure functions of their arguments — seeded RNG, no
+clock, a fixed run stamp — so the same arguments produce byte-identical files
+and these can back a golden.
 
 ## Why this is not `examples/fixtures/ari/`
 
@@ -127,3 +128,47 @@ Measured over the two corpora, on the features an inference engine keys on:
 
 Same tokens, structure absent by two orders of magnitude on exactly the measures
 that matter.
+
+## The second report form, and why it is not a tenth axis
+
+`variants/` holds five **teller session journals**. They exist for design §13,
+and the distinction they carry is the one §13 turns on: the nine axes above are
+**drift**, and Phase 2 measured that one specification carries all of them —
+121/121 branch numbers, totals and row counts across all 24 sources. A detector
+that split the corpus on money notation or on `BRANCH TOTAL` versus
+`TOTAL FOR BRANCH` would be splitting on a difference a single specification
+demonstrably carries.
+
+This form changes the one thing those axes do not: **the detail row's own
+grammar**.
+
+| | detail row |
+|---|---|
+| branch activity register | `<IDENTIFIER> <WORD> <WORD> <DATE> <MONEY>` |
+| teller session journal | `<NUMBER> <WORD> <IDENTIFIER> <MONEY> <MONEY>` |
+
+Different arity, different types, two money spans rather than one, and no date
+at all — so a `posted` field cannot exist here however the rule is worded. An
+alternation cannot absorb that.
+
+Two rules govern the fixture, both about not making it easier than the question.
+
+**The branch half is not regenerated.** The variant corpus is these five files
+plus the first eight `NN_branch_activity.rpt`, read from where they already
+live. A second copy of the branch form would be a second thing that can drift,
+and a variant test whose two halves came from two generators could report a
+difference that neither form actually has.
+
+**This half drifts too**, on five axes of its own — money notation, total label
+(`TELLER TOTAL` · `TOTAL FOR TELLER`), account-column heading, table indent and
+page length, with form feeds on three of the five. A variant group that was
+internally uniform would be strictly easier than the group it is compared
+against, and a tool that split the corpus for the wrong reason would pass.
+
+It earned its place on its first day. The branch corpus is never uniform in
+pagination style, so the form-feed branch of the page directive had **never once
+been taken**; these five are uniform, took it, and each then reported exactly one
+section too many — because a form feed separates page *n* from page *n+1* and
+does not precede page one, so `break: formfeed` leaves the first page's header
+block in the document. Measured: region coverage **0/5** with the form feed,
+**5/5** with the header pattern.

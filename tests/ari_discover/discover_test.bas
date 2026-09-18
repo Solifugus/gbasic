@@ -804,6 +804,18 @@ on error stop
 check("every source is accounted for individually",
       count(rel.scorecard.regions_per_source), count(corpus))
 
+' THE SCORECARD MUST HAVE COUNTED SOMETHING. `validate` used to look only at a
+' top-level `rows`, so from the moment Phase 2 started generating a NESTED
+' specification every proposal reported `rows: 0` and `cells: 0` -- and
+' therefore `unknown_rate: 0`, which reads as "nothing is unknown" when what
+' happened is that nothing was counted. An absence of measurement rendered as a
+' clean 0% is exactly the defect this library exists to report rather than
+' produce. Asserted against the PLANTED row count, not against a floor.
+check("the scorecard counts the rows the generator planted",
+      rel.scorecard.rows, planted_rows)
+check_at_least("and counted cells, so a 0% unknown rate is a measurement",
+               rel.scorecard.cells, planted_rows)
+
 ' ===========================================================================
 print ""
 print "-- PHASE 1 ON THE NULL CORPUS: the right answer is a refusal"
@@ -818,6 +830,476 @@ nres = ari_discover.infer(nulls)
 check("no specification is proposed for structureless sources", nres.ok, false)
 check("and it says why", contains(nres.why, "no row family"), true)
 check("the spec is empty rather than a plausible-looking one", nres.spec, "")
+
+' ===========================================================================
+print ""
+print "-- §13 VARIANTS: one form with drift in it, or two forms?"
+' ===========================================================================
+' THE HAZARD IS THE ONE RECIPE 1 NAMED: a search always returns a winner, so a
+' variant detector pointed at a corpus that merely DRIFTS will report variants,
+' and the split looks exactly like a discovery. The 24-source branch corpus is
+' therefore the NEGATIVE CONTROL and it is asserted first -- and asserted
+' together with the fact that it really does differ, because "it found one
+' group" is otherwise equally satisfied by a detector that always finds one.
+
+vdir = dir + "variants/"
+vtruth = decode(slurp(vdir + "truth.json"))
+
+' The differences the branch corpus actually carries, read from the answer key
+' rather than from anything the tool said.
+tlabels = []
+ffstyles = []
+for each src in truth.sources
+    if not contains(tlabels, src.variant.total_label) then
+        append(tlabels, src.variant.total_label)
+    end if
+    if not contains(ffstyles, string(src.variant.form_feed)) then
+        append(ffstyles, string(src.variant.form_feed))
+    end if
+end for
+check_at_least("the branch corpus uses several total labels", count(tlabels), 2)
+check_at_least("and paginates more than one way", count(ffstyles), 2)
+
+bv = ari_discover.variants(allsrc)
+print ("     branch corpus: " + string(count(bv.groups)) + " grammar(s), "
+       + bv.recommendation + ", one spec serves " + string(bv.one.served)
+       + "/" + string(bv.one.sources))
+check("drift across 24 sources is ONE grammar, not several", count(bv.groups), 1)
+check("so the recommendation is one specification", bv.recommendation, "one")
+check("and that specification serves every source", bv.one.served, count(allsrc))
+' The layout differences are real and are NOT a grouping axis: the default
+' specification encodes no column, so two sources whose columns differ need no
+' different specification. That difference is reported by anchor_stability, as a
+' QUESTION, which is where a decision belongs (§10).
+check_at_least("even though the column layouts genuinely differ",
+               rel.scorecard.layouts, 2)
+
+' --- the positive case: a corpus with two report forms in it -----------------
+mixed = []
+mi = 0
+while mi < 8
+    append(mixed, { id: truth.sources[mi].id, text: slurp(dir + truth.sources[mi].file) })
+    mi = mi + 1
+end while
+for each src in vtruth.sources
+    append(mixed, { id: src.id, text: slurp(vdir + src.file) })
+end for
+
+mv = ari_discover.variants(mixed)
+print ("     mixed corpus:  " + string(count(mv.groups)) + " grammar(s), "
+       + mv.recommendation)
+check("two report forms are two grammars", count(mv.groups), 2)
+check("and the recommendation is to split", mv.recommendation, "split")
+
+' THE GROUPING IS SCORED AGAINST THE ANSWER KEY, not merely counted. A detector
+' that split 13 sources into two groups of the wrong sources would pass a count.
+branch_right = 0
+teller_right = 0
+for each g in mv.groups
+    for each sid in g.sources
+        if starts_with(sid, "t0") then
+            if g.grammar = "<NUMBER> <WORD> <IDENTIFIER> <MONEY> <MONEY>" then
+                teller_right = teller_right + 1
+            end if
+        else
+            if g.grammar = "<IDENTIFIER> <WORD> <WORD> <DATE> <MONEY>" then
+                branch_right = branch_right + 1
+            end if
+        end if
+    end for
+end for
+check("every branch source is in the branch grammar", branch_right, 8)
+check("every teller source is in the teller grammar", teller_right,
+      count(vtruth.sources))
+
+' THE RECOMMENDATION IS A DIFFERENCE BETWEEN TWO MEASURED RUNS, and that is
+' what is asserted. "It recommended split" is satisfied by a rule that splits
+' whenever the grammars differ -- which is the confident guesser again. What
+' must be true is that splitting SERVES MORE SOURCES.
+print ("     one spec serves " + string(mv.one.served) + "/" + string(mv.one.sources)
+       + ", one per grammar serves " + string(mv.split.served))
+check_at_least("splitting serves materially more sources",
+               mv.split.served - mv.one.served, 8)
+check("and the split specifications serve every source",
+      mv.split.served, count(mixed))
+check("while one specification cannot even be inferred for the mixed corpus",
+      mv.one.ok, false)
+
+' THE FLOOR IS A CONTROL on the same corpus: raise the number of sources a
+' variant needs above what the smaller form has, and the answer becomes "more
+' samples" rather than a split. Without it, `split` could be what this returns
+' for any corpus with two grammars however thin the evidence.
+mv6 = ari_discover.variants(mixed, { minimum_variant_sources: 6 })
+check("a form with too few samples is not declared a variant",
+      mv6.recommendation, "more_samples")
+check("and the reason names the shortfall",
+      contains(mv6.why, "fewer than 6"), true)
+
+' --- the null corpus: there is nothing to split ------------------------------
+nv = ari_discover.variants(nulls)
+check("structureless sources are not variants of anything",
+      nv.recommendation, "none")
+check("and it is reported as a refusal", nv.ok, false)
+check_at_least("even though they group into many distinct shapes",
+               count(nv.groups), 6)
+
+' ===========================================================================
+print ""
+print "-- PAGE BREAK: a form feed does not precede page one"
+' ===========================================================================
+' FOUND BY THE VARIANT CORPUS AND BY NOTHING ELSE. The branch corpus is never
+' uniform in pagination style, so `corpus_furniture`'s form-feed branch had
+' never once been taken; the teller journals ARE uniform, took it, and every one
+' of the five then reported exactly one section too many -- an off-by-one that
+' looks like a defect in section detection and is not. A form feed separates
+' page n from page n+1 and does not precede page ONE, so `break: formfeed`
+' leaves the first page's header block in the document.
+'
+' Asserted as a DIFFERENCE: the directive must be the header line AND the
+' region coverage must be exact. Either alone is weak -- the first is a fact
+' about a string, and the second passes on any corpus whose sources happen to
+' be single-page.
+tellers = []
+for each src in vtruth.sources
+    append(tellers, { id: src.id, text: slurp(vdir + src.file) })
+end for
+tv = ari_discover.infer(tellers)
+check("a specification is inferred for the teller form", tv.ok, true)
+check("its page break is the header LINE, not a form feed",
+      contains(join(tv.page_directive, "\n"), "break: formfeed"), false)
+check("and it finds the right number of sections in every source",
+      round3(tv.scorecard.region_coverage), 1)
+check("the reason the form feed was not used is recorded",
+      contains(tv.furniture_note, "does not precede page one"), true)
+ffcount = 0
+for each src in vtruth.sources
+    if src.variant.form_feed then
+        ffcount = ffcount + 1
+    end if
+end for
+check_at_least("and there really are form feeds to have been tempted by",
+               ffcount, 2)
+
+' ===========================================================================
+print ""
+print "-- §10 DECISIONS: a review that can be written down and replayed"
+' ===========================================================================
+' THE CONTROL COMES FIRST, because every check below is otherwise satisfied by
+' a `refine` that quietly re-infers from scratch and ignores what it was told:
+' with NO decisions it must produce the specification `infer` produces, byte
+' for byte.
+none_ref = ari_discover.refine(corpus, rel, [])
+check("refine with no decisions changes nothing", none_ref.spec, rel.spec)
+check("and the family is still chosen by dominance",
+      none_ref.family_chosen_by, "dominance")
+
+' A field to work on, taken from the proposal rather than named here, so the
+' tier cannot go stale against a change in how fields are named.
+f0 = rel.fields[0].name
+ren = ari_discover.refine(corpus, rel,
+                          [ { decision: "rename_field", field: f0, to: "when_posted" } ])
+check("a rename reaches the generated specification",
+      contains(ren.spec, "field when_posted:"), true)
+check("and the old name is gone",
+      contains(ren.spec, "field " + f0 + ":"), false)
+check("the decision is recorded in the proposal", count(ren.decisions), 1)
+check("and the family is unchanged by it", ren.family.signature,
+      rel.family.signature)
+
+' SERIALIZABLE IS THE HALF §10 ASKS FOR AND THE HALF A TEST USUALLY SKIPS. A
+' decision list that survives `encode` and `decode` and then reproduces the
+' SAME specification is what makes a review reproducible; one that merely
+' worked in memory is a function call.
+wire = encode([ { decision: "rename_field", field: f0, to: "when_posted" } ])
+revived = ari_discover.refine(corpus, rel, decode(wire))
+check("decisions round-trip through text and give the same specification",
+      revived.spec, ren.spec)
+check("and the same specification twice from the same input",
+      ari_discover.refine(corpus, rel,
+          [ { decision: "rename_field", field: f0, to: "when_posted" } ]).spec,
+      ren.spec)
+
+drop = ari_discover.refine(corpus, rel, [ { decision: "drop_field", field: f0 } ])
+check("a dropped field leaves the specification",
+      contains(drop.spec, "field " + f0 + ":"), false)
+check_at_least("and the others stay", count(drop.fields), count(rel.fields) - 1)
+check("exactly one fewer", count(rel.fields) - count(drop.fields), 1)
+
+' A CONVERSION DECISION MOVES THE `as` CLAUSE AND NOTHING ELSE. §10's "choose a
+' type" is about how a span is converted, not about where it is; asserting both
+' halves is what keeps the two apart, since a decision that silently relocated
+' a field would still produce a specification that parses.
+money_field = unknown
+for each fl in rel.fields
+    if fl.type = "money" then
+        if is_unknown(money_field) then
+            money_field = fl
+        end if
+    end if
+end for
+conv = ari_discover.refine(corpus, rel,
+                           [ { decision: "field_type", field: money_field.name,
+                               as: "text" } ])
+check("a conversion decision removes the `as money`",
+      contains(conv.spec, "field " + money_field.name + ": "
+               + money_field.locator + " as money"), false)
+check("while the locator survives it",
+      contains(conv.spec, "field " + money_field.name + ": "
+               + money_field.locator), true)
+check("and no other field moved",
+      conv.fields[0].locator = rel.fields[0].locator, true)
+
+' CHOOSING A DIFFERENT ROW FAMILY is the most consequential decision there is,
+' because the heading, the sections and every field hang off it. Asserted as a
+' DIFFERENCE: the chosen family must change AND the fields must change with it,
+' since a `refine` that recorded the decision and re-inferred the dominant
+' family anyway would satisfy the first alone.
+' A THRESHOLD THAT STOPS THE TOOL GUESSING MUST NOT STOP A PERSON DECIDING,
+' and this corpus is what makes the point testable: exactly ONE family clears
+' both thresholds here, so if the decision were bound to the candidate list it
+' could name nothing at all -- which would make the commonest reason for
+' overriding, "you picked the wrong family", unsayable precisely when the tool
+' picked wrongly. The family named below is a real one the corpus carries and
+' one dominance rejected.
+alt_sig = unknown
+for each fm in rel.corpus.profiles[0].families
+    if fm.signature != rel.family.signature then
+        if is_unknown(alt_sig) then
+            if fm.count >= 3 then
+                alt_sig = fm.signature
+            end if
+        end if
+    end if
+end for
+check("the corpus carries a family dominance did not choose",
+      is_unknown(alt_sig), false)
+fam_ref = ari_discover.refine(corpus, rel,
+                              [ { decision: "row_family",
+                                  signature: alt_sig } ])
+check("the decision picks it", fam_ref.family.signature, alt_sig)
+check("it is not the one dominance chose",
+      fam_ref.family.signature = rel.family.signature, false)
+check("and the provenance says a decision chose it",
+      fam_ref.family_chosen_by, "decision")
+check("the specification really is a different one",
+      fam_ref.spec = rel.spec, false)
+
+' --- REFUSALS, each beside its nearest legal neighbour ----------------------
+' A refusal suite with no controls is satisfied by refusing everything, and the
+' rule that matters here is the opposite one: a decision that matches nothing
+' must be REFUSED rather than ignored, because a silently dropped rename leaves
+' the reviewer believing they made a change they did not.
+function refuses(label, sources, prop, ds, needle)
+    on error goto next
+    r = ari_discover.refine(sources, prop, ds)
+    if error then
+        msg = error.message
+        error.clear()
+        on error stop
+        check(label, contains(msg, needle), true)
+        return nothing
+    end if
+    on error stop
+    check(label, "accepted", "refused: " + needle)
+    return nothing
+end function
+
+refuses("an unknown decision kind is refused by name", corpus, rel,
+        [ { decision: "reorder_fields", field: "x" } ], "'reorder_fields' is not a decision")
+refuses("an unknown field on a decision is refused by name", corpus, rel,
+        [ { decision: "drop_field", field: f0, to: "x" } ], "'to' is not a field")
+refuses("a missing required field is refused", corpus, rel,
+        [ { decision: "rename_field", field: f0 } ], "needs `to`")
+refuses("an unknown conversion is refused", corpus, rel,
+        [ { decision: "field_type", field: f0, as: "currency" } ],
+        "'currency' is not a conversion")
+refuses("renaming a field that does not exist is refused, not ignored", corpus, rel,
+        [ { decision: "rename_field", field: "no_such_field", to: "x" } ],
+        "no field 'no_such_field'")
+refuses("and the message lists the fields that do exist", corpus, rel,
+        [ { decision: "rename_field", field: "no_such_field", to: "x" } ], f0)
+refuses("a row family nothing carries is refused", corpus, rel,
+        [ { decision: "row_family", signature: "<MONEY> <MONEY> <MONEY>" } ],
+        "no row family with signature")
+refuses("and the message lists the families that ARE there", corpus, rel,
+        [ { decision: "row_family", signature: "<MONEY> <MONEY> <MONEY>" } ],
+        rel.family.signature)
+refuses("decisions must be an array", corpus, rel,
+        { decision: "drop_field", field: f0 }, "must be an array")
+
+' --- §10's variant decision: acting on what §13 recommended ------------------
+' `variants` says a corpus holds two forms; this is how a reviewer says so in a
+' record. Functionally it narrows the corpus -- and a caller could narrow it by
+' hand, which is exactly why the CONTROL below matters: the decision must
+' produce what inferring from that subset produces, or it is doing something
+' else under a reassuring name.
+half = []
+half_ids = []
+hi = 0
+while hi < 4
+    append(half, corpus[hi])
+    append(half_ids, corpus[hi].id)
+    hi = hi + 1
+end while
+var_ref = ari_discover.refine(corpus, rel,
+                              [ { decision: "variant", sources: half_ids } ])
+check("a variant decision restricts inference to the sources it names",
+      var_ref.trained_on, 4)
+check("and gives what inferring from those sources gives",
+      var_ref.spec, ari_discover.infer(half).spec)
+check("while the whole corpus still trains on all of it", rel.trained_on,
+      count(corpus))
+refuses("a variant naming a source the corpus lacks is refused by name", corpus, rel,
+        [ { decision: "variant", sources: [ corpus[0].id, "99_not_here" ] } ],
+        "99_not_here")
+refuses("a variant of one source is refused", corpus, rel,
+        [ { decision: "variant", sources: [ corpus[0].id ] } ],
+        "is not a form")
+
+' THE ARGUMENT-ORDER MISTAKE, which is the one that costs most: three arguments
+' in the wrong places returns a perfectly valid UNREFINED specification, and
+' nothing about it looks wrong. The proposal parameter is checked precisely so
+' that cannot happen quietly.
+on error goto next
+slipped = ari_discover.refine(corpus,
+                              [ { decision: "drop_field", field: f0 } ],
+                              nothing)
+if error then
+    check("passing the decisions where the proposal goes is refused",
+          contains(error.message, "the second argument is the proposal"), true)
+    error.clear()
+else
+    check("passing the decisions where the proposal goes is refused",
+          "accepted", "refused")
+end if
+' ...and the CONTROL: a caller who genuinely has no proposal to hand may say so.
+noprop = ari_discover.refine(corpus, nothing, [])
+if error then
+    check("refine without a proposal is allowed", error.message, "allowed")
+    error.clear()
+else
+    check("refine without a proposal is allowed", noprop.spec, rel.spec)
+end if
+' `explain` says what it takes when handed something else.
+bad_explain = ari_discover.explain(ari_discover.variants(corpus))
+if error then
+    check("explain names what it accepts when handed neither",
+          contains(error.message, "read its `why`"), true)
+    error.clear()
+else
+    check("explain names what it accepts when handed neither",
+          "accepted", "refused")
+end if
+on error stop
+
+' ===========================================================================
+print ""
+print "-- §12 ALTERNATIVES AND RULE EXPLANATIONS"
+' ===========================================================================
+' §12 asks which alternatives were considered. The list is only worth anything
+' if the CHOSEN candidate is absent from it -- otherwise it is a list of
+' candidates and says nothing about what was rejected -- and if every entry is
+' a real one.
+check_at_least("the proposal records what it did not choose",
+               count(rel.alternatives), 2)
+' AND THE HONEST FACT ABOUT THIS CORPUS, asserted so it cannot drift silently:
+' only one row family clears both thresholds here, so the alternatives are the
+' page break and the label wording -- not a row family. A tier expecting a
+' rejected family would be expecting something this corpus does not produce.
+fam_alts = 0
+for each a in rel.alternatives
+    if a.kind = "row_family" then
+        fam_alts = fam_alts + 1
+    end if
+end for
+check("only one row family clears the thresholds in this corpus", fam_alts, 0)
+chosen_listed = 0
+unreal = 0
+no_reason = 0
+corpus_sigs = []
+for each pr in rel.corpus.profiles
+    for each fm in pr.families
+        if not contains(corpus_sigs, fm.signature) then
+            append(corpus_sigs, fm.signature)
+        end if
+    end for
+end for
+for each a in rel.alternatives
+    if a.why_not = "" then
+        no_reason = no_reason + 1
+    end if
+    if a.kind = "row_family" then
+        if a.signature = rel.family.signature then
+            chosen_listed = chosen_listed + 1
+        end if
+        if not contains(corpus_sigs, a.signature) then
+            unreal = unreal + 1
+        end if
+    end if
+end for
+check("the chosen family is not listed as an alternative to itself", chosen_listed, 0)
+check("every alternative family is one the corpus really has", unreal, 0)
+check("and every alternative carries a reason", no_reason, 0)
+
+' THE PAGE BREAK THAT WAS NOT TAKEN is recorded, which is the entry that
+' matters most here: it was the WINNER until the variant corpus measured it.
+ff_alt = 0
+for each a in rel.alternatives
+    if a.kind = "page_break" then
+        ff_alt = ff_alt + 1
+        check("the rejected page break says why it loses",
+              contains(a.why_not, "does not precede page ONE"), true)
+    end if
+end for
+check("the form-feed directive is recorded as considered", ff_alt, 1)
+
+' --- the explanation -------------------------------------------------------
+' THE TRIPWIRE, and it is what keeps explanation from becoming decoration:
+' EVERY rule in the generated specification must appear in the account of it.
+' A rule nobody can trace is a rule nobody can safely change, which is design
+' principle 8.
+acct = ari_discover.explain(rel)
+missing = 0
+rules = 0
+for each ln in split(rel.spec, "\n")
+    t = trim(ln)
+    if starts_with(t, "field ") then
+        rules = rules + 1
+        if not contains(acct, t) then
+            missing = missing + 1
+        end if
+    end if
+end for
+check_at_least("the specification has rules to explain", rules, 3)
+check("every field rule is explained", missing, 0)
+check("the account names the source the columns came from",
+      contains(acct, rel.built_from), true)
+check("it answers §12's LLM question even when the answer is no",
+      contains(acct, "llm"), true)
+check("it carries the rejected alternatives",
+      contains(acct, "rejected:"), true)
+check("and the open questions", contains(acct, "OPEN QUESTIONS"), true)
+
+' POSITIONAL DEPENDENCE IS ASSERTED AS A DIFFERENCE between two runs, because
+' "the explanation mentions columns" is satisfied by text that always does.
+pos_acct = ari_discover.explain(pos)
+check("a positional specification says so, field by field",
+      contains(pos_acct, "located by COLUMN"), true)
+check("an anchor-relative one does not",
+      contains(acct, "located by COLUMN"), false)
+
+' A REFUSED PROPOSAL IS EXPLAINED, NOT RAISED ON. The null corpus's answer is a
+' refusal, and a reviewer asking why deserves the reason rather than an error.
+null_acct = ari_discover.explain(nres)
+check("a refusal is explained rather than raised on",
+      contains(null_acct, "NO SPECIFICATION WAS PROPOSED"), true)
+check("and the reason travels with it",
+      contains(null_acct, "no row family"), true)
+
+' `explain` still answers about a PROFILE, which is what every existing caller
+' hands it -- the dispatch must not have taken that away.
+prof_acct = ari_discover.explain(rel.corpus.profiles[0])
+check("explain still describes a profile", contains(prof_acct, "row families"), true)
 
 print ""
 print ("checks: " + string(tally.checks))

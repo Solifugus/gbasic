@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# ARI Discover PHASE 0 -- profiling (stdlib/ari_discover.bas,
-# docs/ari_discover_design.md §16 Phase 0).
+# ARI Discover -- profiling, inference, sections, variants and review
+# (stdlib/ari_discover.bas, docs/ari_discover_design.md §16 Phases 0-3).
 #
 # WHAT PHASE 0 CLAIMS AND WHAT IT DOES NOT. It measures what repeats, varies
 # and collides in a corpus of print-image reports, and it PROPOSES NOTHING --
@@ -95,6 +95,47 @@
 # with `mid`, called `byte_offset` -- and its own ASCII fixture could not see
 # it either.
 #
+# VARIANTS is §13, and the hazard is the one recipe 1 named: a search always
+# returns a winner, so a detector pointed at a corpus that merely DRIFTS will
+# report variants and the split looks exactly like a discovery. The negative
+# control is therefore the corpus this project already had -- 24 sources across
+# nine axes come back as ONE grammar -- and the recommendation is decided by
+# RUNNING both arrangements rather than by how the sources grouped:
+#
+#     24 branch                1 grammar    one spec serves 24/24   -> one
+#     8 branch + 5 teller      2 grammars   0/13 against 13/13      -> split
+#     the same, floor raised   2 grammars                           -> more_samples
+#     12 structureless        10 grammars   nothing serves anything -> none
+#
+# Column layout is deliberately NOT a grouping axis: the default specification
+# encodes no column, so sources whose columns differ need no different
+# specification -- and there are 7 layouts across 8 sources here, which a
+# layout-keyed grouper would call 7 variants.
+#
+# PAGE BREAK is the defect the variant corpus found on its first day, and it is
+# the kind only a new fixture can find. The branch corpus is never uniform in
+# pagination style, so the form-feed branch of the page directive had NEVER ONCE
+# BEEN TAKEN; the teller journals are uniform, took it, and each then reported
+# exactly one section too many -- because a form feed separates page n from page
+# n+1 and does not precede page ONE. Measured: region coverage 0/5 with
+# `break: formfeed`, 5/5 with the header pattern. Phase 2 had recorded the
+# opposite rule in the design document.
+#
+# DECISIONS is §10, and the half a test usually skips is the half asserted
+# hardest: a decision list that survives `encode`/`decode` and then reproduces
+# the SAME specification. Its CONTROL comes first -- `refine` with no decisions
+# must produce byte-for-byte what `infer` produces -- because every other check
+# is satisfied by a `refine` that quietly re-infers and ignores what it was
+# told. The rule that matters most is that A DECISION MATCHING NOTHING IS
+# REFUSED RATHER THAN IGNORED: a silently dropped rename leaves the reviewer
+# believing they made a change they did not, and the next thing they do is trust
+# the specification.
+#
+# EXPLANATIONS carries the tripwire that keeps §12 from becoming decoration:
+# EVERY `field` rule in the generated specification must appear in the account
+# of it. It found two the first time it ran -- the section's own heading number
+# and group total, which `explain` never rendered.
+#
 # DATE DIALECTS exists because building the corpus found a gap in `ari`
 # itself: it could not read DD-MMM-YYYY, the classic mainframe date, at all --
 # `no-date-found` on every one. Nothing in the tree used the format, so nothing
@@ -122,7 +163,7 @@ out="$scratch/sem.out"
 if timeout 180 ./gbasic tests/ari_discover/discover_test.bas >"$out" 2>&1; then
     mism="$(sed -n 's/^mismatches: //p' "$out")"
     checks="$(sed -n 's/^checks: //p' "$out")"
-    if [ "$mism" = "0" ] && [ "${checks:-0}" -ge 85 ]; then
+    if [ "$mism" = "0" ] && [ "${checks:-0}" -ge 145 ]; then
         ok "$checks checks, 0 mismatches"
         sed -n 's/^     /       /p' "$out"
     else
@@ -135,13 +176,14 @@ fi
 
 # --- CORPUS DRIFT ----------------------------------------------------------
 # A corpus whose generator can no longer reproduce it is a corpus testing
-# itself. Both generators are pure functions of their arguments.
+# itself. All three generators are pure functions of their arguments.
 printf 'TIER corpus_drift\n'
 cp -r examples/fixtures/ari_discover "$scratch/before"
 if ./gbasic tools/gen_discover_corpus.bas >/dev/null 2>&1 \
-   && ./gbasic tools/gen_discover_null.bas >/dev/null 2>&1; then
+   && ./gbasic tools/gen_discover_null.bas >/dev/null 2>&1 \
+   && ./gbasic tools/gen_discover_variants.bas >/dev/null 2>&1; then
     if diff -r "$scratch/before" examples/fixtures/ari_discover >/dev/null 2>&1; then
-        ok "both generators reproduce the committed corpus byte for byte"
+        ok "all three generators reproduce the committed corpus byte for byte"
     else
         bad "regenerating the corpus changed it"
         diff -r "$scratch/before" examples/fixtures/ari_discover | head -5
@@ -280,7 +322,8 @@ fi
 # §19 lists both, so both must run. An example named in a design document and
 # executed by nothing is the rot run_docs_gate exists for, one directory over.
 printf 'TIER examples\n'
-for ex in examples/ari_discover_profile.bas examples/ari_discover_infer.bas; do
+for ex in examples/ari_discover_profile.bas examples/ari_discover_infer.bas \
+          examples/ari_discover_review.bas; do
     if timeout 120 ./gbasic "$ex" >"$scratch/ex.out" 2>&1; then
         if [ -s "$scratch/ex.out" ]; then
             ok "$ex runs and produces output"
@@ -293,9 +336,41 @@ for ex in examples/ari_discover_profile.bas examples/ari_discover_infer.bas; do
 done
 
 # --- VALGRIND --------------------------------------------------------------
+# POINTED AT A SMALL PATH-COMPLETE FIXTURE, NOT AT THE SEMANTICS ONE, and the
+# reason is a measurement: discover_test.bas grows with the corpus (41 sources
+# now, each profiled several times) and valgrind costs 20-40x, so at 45 seconds
+# native the tier passed TEN MINUTES -- a tier whose runtime grows with the
+# fixture will eventually blow the gate's 1800-second per-suite cap however fast
+# the interpreter gets.
+#
+# What is lost is nothing this tier could catch. The library is pure gBASIC: it
+# introduces no value kind and no allocation of its own, so what valgrind can
+# find here is the INTERPRETER mishandling the paths the library drives -- deep
+# record and array copies, copy-on-write detaches, regex values, string slicing
+# -- and those are exercised by one pass through each public function, not by
+# the twenty-fourth source.
+#
+# THE TRIPWIRE BELOW IS WHAT MAKES THAT TRADE SAFE. Without it the small fixture
+# silently stops covering whatever was added last, and a valgrind tier that has
+# stopped covering the new code is exactly the kind of green line this project
+# distrusts.
+printf 'TIER valgrind_fixture_is_complete\n'
+missing=""
+for fn in $(grep -oE '^function [a-z][a-z0-9_]*\(' stdlib/ari_discover.bas \
+            | sed 's/^function //; s/($//; s/(//' | sort -u); do
+    if ! grep -q "ari_discover\.$fn(" tests/ari_discover/discover_vg.bas; then
+        missing="$missing $fn"
+    fi
+done
+if [ -z "$missing" ]; then
+    ok "every public function is exercised by the valgrind fixture"
+else
+    bad "the valgrind fixture never calls:$missing"
+fi
+
 printf 'TIER valgrind\n'
 if vg_available; then
-    if vg_run ./gbasic tests/ari_discover/discover_test.bas >/dev/null 2>&1; then
+    if vg_run ./gbasic tests/ari_discover/discover_vg.bas >/dev/null 2>&1; then
         ok "no definite leak or invalid access"
     else
         bad "valgrind"
