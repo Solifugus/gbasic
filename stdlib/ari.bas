@@ -196,27 +196,96 @@ library ari
         return [ "date", "money", "integer", "decimal", "text" ]
     end function
 
+    ' THE NUMERIC CORE, shared by every money pattern.
+    '
+    ' Two alternatives, and POSIX ERE is leftmost-LONGEST, so the grouped
+    ' continental form wins over the prefix of it the plain form would match --
+    ' which is exactly the infix defect the boundary check refuses, settled here
+    ' instead of rejected.
+    '
+    '   [0-9]{1,3}(\.[0-9]{3})+,[0-9]{2}    1.234,56   12.345.678,90
+    '   [0-9,]+\.[0-9]{2}                    1,234.56   1234.56
+    '
+    ' WHAT MAKES THIS DECIDABLE WITHOUT A DECLARATION, and it is the whole of
+    ' B10's admissible half: each convention uses THE OTHER CHARACTER for
+    ' grouping, so where both appear the LAST one is the decimal mark. That is a
+    ' fact about the two notations, not a guess about this report.
+    '
+    ' WHAT IS DELIBERATELY NOT ADMITTED: a single separator. `1.234` is one
+    ' thousand two hundred thirty-four continental and one-point-two-three-four
+    ' decimal, and `123,45` is 123.45 continental and malformed in the other --
+    ' reading either would be choosing a convention the token does not state.
+    ' They stay `malformed-money`, recorded as B10's residue and B11.
+    function _num_core()
+        return "([0-9]{1,3}(\\.[0-9]{3})+,[0-9]{2}|[0-9,]+\\.[0-9]{2})"
+    end function
+
     function _money_patterns()
+        c = _num_core()
         return [
-            { re: "<[ ]*\\$?[ ]*([0-9,]+\\.[0-9]{2})[ ]*>", neg: true, sense: "" },
-            { re: "\\([ ]*\\$?[ ]*([0-9,]+\\.[0-9]{2})[ ]*\\)", neg: true, sense: "" },
-            { re: "\\$?[ ]*([0-9,]+\\.[0-9]{2})[ ]*CR", neg: true, sense: "credit" },
-            { re: "\\$?[ ]*([0-9,]+\\.[0-9]{2})[ ]*DR", neg: false, sense: "debit" },
-            { re: "\\$?[ ]*([0-9,]+\\.[0-9]{2})[ ]*-", neg: true, sense: "" },
-            { re: "-[ ]*\\$[ ]*([0-9,]+\\.[0-9]{2})", neg: true, sense: "" },
-            { re: "\\$[ ]*-[ ]*([0-9,]+\\.[0-9]{2})", neg: true, sense: "" },
-            { re: "-[ ]*([0-9,]+\\.[0-9]{2})", neg: true, sense: "" },
-            { re: "\\$[ ]*([0-9,]+\\.[0-9]{2})", neg: false, sense: "" },
-            { re: "([0-9,]+\\.[0-9]{2})", neg: false, sense: "" }
+            { re: "<[ ]*\\$?[ ]*" + c + "[ ]*>", neg: true, sense: "" },
+            { re: "\\([ ]*\\$?[ ]*" + c + "[ ]*\\)", neg: true, sense: "" },
+            { re: "\\$?[ ]*" + c + "[ ]*CR", neg: true, sense: "credit" },
+            { re: "\\$?[ ]*" + c + "[ ]*DR", neg: false, sense: "debit" },
+            { re: "\\$?[ ]*" + c + "[ ]*-", neg: true, sense: "" },
+            { re: "-[ ]*\\$[ ]*" + c, neg: true, sense: "" },
+            { re: "\\$[ ]*-[ ]*" + c, neg: true, sense: "" },
+            { re: "-[ ]*" + c, neg: true, sense: "" },
+            { re: "\\$[ ]*" + c, neg: false, sense: "" },
+            { re: c, neg: false, sense: "" }
         ]
     end function
 
     ' Strip grouping separators and convert. Returns unknown when the digits do
     ' not form a well-shaped amount — §8: a bad cell becomes unknown, never a
     ' silent zero and never a raise that sinks the import.
+    ' THE LAST SEPARATOR IS THE DECIMAL MARK, and everything before it is
+    ' grouping. That one rule reads both conventions without being told which,
+    ' because each uses the other character to group -- so it is a fact about
+    ' the notations rather than a guess about the report.
+    '
+    ' It used to strip commas and nothing else, which is the US reading asserted
+    ' as the only one.
     function _to_amount(digits, negate)
-        clean = replace(digits, ",", "")
+        last_dot = -1
+        last_comma = -1
+        i = 0
+        while i < len(digits)
+            ch = mid(digits, i, 1)
+            if ch = "." then
+                last_dot = i
+            end if
+            if ch = "," then
+                last_comma = i
+            end if
+            i = i + 1
+        end while
+        clean = digits
+        if last_comma > last_dot then
+            clean = replace(replace(digits, ".", ""), ",", ".")
+        else
+            clean = replace(digits, ",", "")
+        end if
+        ' `number()` RAISES on a string it cannot convert -- it does not answer
+        ' `unknown` -- so the guard that used to stand here was dead from the day
+        ' it was written, and the comment above this function promised behaviour
+        ' it did not have: "never a raise that sinks the import".
+        '
+        ' It is reachable from the CUSTOM TYPE path, where `raw` is whatever the
+        ' author's own regex captured. MEASURED: a `type` whose rule captures
+        ' `12.345.678` took the whole parse down with
+        ' `number conversion failed`, rather than answering `unknown` with
+        ' `no-rule-matched` beside it. Found by a PERTURBATION of the
+        ' last-separator rule, not by reading -- the built-in patterns never
+        ' produce a string `number` rejects, so nothing in the tree reached it.
+        on error goto next
         n = number(clean)
+        if error then
+            error.clear()
+            on error stop
+            return unknown
+        end if
+        on error stop
         if is_unknown(n) then
             return unknown
         end if
@@ -397,29 +466,76 @@ library ari
         return best.val
     end function
 
-    function _integer_in(text, want_last)
-        ms = match_all(text, regex("-?[0-9]+"))
-        if count(ms) = 0 then
+    ' Pick the first or last match that is a WHOLE numeric token, not an infix
+    ' of a longer one. Returns unknown when every match is an infix.
+    '
+    ' THE SAME DEFECT AS A1/A2, ONE LEVEL OVER, and no entry in the register had
+    ' ever probed it because every entry was written about `as money`. Measured:
+    '
+    '     1,234       as integer  ->  1        as decimal  ->  1
+    '     1,234.56    as integer  ->  1
+    '     1.234,56    as decimal  ->  1.234
+    '
+    ' A count of 1,234 reading as 1 is the same silent, plausible, catastrophic
+    ' shape, and `as integer` is the commonest conversion in a generated spec --
+    ' it is what a section's own number is read with.
+    function _whole_match(text, ms, want_last)
+        keep = []
+        for each m in ms
+            if not _inside_longer_number(text, m.start, m.start + m.length) then
+                append(keep, m)
+            end if
+        end for
+        if count(keep) = 0 then
             return unknown
         end if
         idx = 0
         if want_last then
-            idx = count(ms) - 1
+            idx = count(keep) - 1
         end if
-        return number(ms[idx].text)
+        return keep[idx]
     end function
 
+    ' A GROUPED INTEGER IS UNAMBIGUOUS in a way a grouped decimal is not: an
+    ' integer has no decimal part, so `1,234` and `1.234` are both 1234 whatever
+    ' convention the report uses. That is why this admits a separator the money
+    ' core refuses to guess at -- the ambiguity that stops B10's single-separator
+    ' case does not arise here.
+    '
+    ' A token carrying a DECIMAL part is not an integer and is refused rather
+    ' than truncated: `1.23` used to answer 1, which is a value the caller did
+    ' not ask for and cannot tell from a real one.
+    function _integer_in(text, want_last)
+        ' ONE SEPARATOR KIND THROUGHOUT. Written as `[.,]` inside the group it
+        ' accepts a MIXTURE, and `1,234.567` then matched entirely -- `.567`
+        ' read as a third group -- and came back as the integer 1234567. That
+        ' was introduced by this very fix and caught by running it: a number
+        ' with a decimal part is not an integer, and the two alternatives keep
+        ' the grouping character consistent so it cannot become one.
+        ms = match_all(text, regex("-?[0-9]{1,3}(,[0-9]{3})+|-?[0-9]{1,3}(\\.[0-9]{3})+|-?[0-9]+"))
+        m = _whole_match(text, ms, want_last)
+        if is_unknown(m) then
+            return unknown
+        end if
+        return number(replace(replace(m.text, ",", ""), ".", ""))
+    end function
+
+    ' Same two rules as money: the match must be a whole token, and the LAST
+    ' separator is the decimal mark. A decimal may carry any number of places,
+    ' which is the one way it differs from `as money`.
     function _decimal_in(text, want_last)
-        ms = match_all(text, regex("-?[0-9,]+\\.[0-9]+"))
-        if count(ms) = 0 then
+        ms = match_all(text, regex("-?[0-9]{1,3}(\\.[0-9]{3})+,[0-9]+|-?[0-9,]+\\.[0-9]+"))
+        m = _whole_match(text, ms, want_last)
+        if is_unknown(m) then
             return _integer_in(text, want_last)
         end if
-        idx = 0
-        if want_last then
-            idx = count(ms) - 1
+        neg = starts_with(m.text, "-")
+        body = m.text
+        if neg then
+            body = mid(body, 1, len(body) - 1)
         end if
-        cleaned = replace(ms[idx].text, ",", "")
-        return number(cleaned)
+        v = _to_amount(body, neg)
+        return v
     end function
 
     function _pad2(n)

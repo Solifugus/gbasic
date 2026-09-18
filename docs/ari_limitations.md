@@ -197,11 +197,73 @@ these are *gaps to decide about*, not defects.
 | **B6** | `20261016` | `no-date-found` | Compact `YYYYMMDD`. **Deliberately contentious**: it is also a plausible identifier and a plausible integer, so recognising it as a date by default would be exactly the silent guess §8 forbids. Probably belongs in a declared `type` block rather than the built-in union. |
 | **B7** | `OCTOBER 16, 2026` | `no-date-found` | Full month name. |
 | **B8** | `2026/10/16` | `no-date-found` | ISO order with slashes. |
-| **B10** | `1.234,56`, `12.345.678,90` | `malformed-money` | **European grouping**, the remainder of A1 once the silent read was removed. It cannot be settled by a tenth pattern: `1.234` is one-thousand-two-hundred-thirty-four continental and one-point-two-three-four decimal, and nothing in the token says which. Where BOTH separators appear the **last one is the decimal mark** — true of either convention and settled by the format literature — so those forms are decidable; the single-separator ones need §5.1's declared convention, which is exactly the shape `using date: dmy` has. |
+| **B12** | `1.234`, `1,234` | `malformed-money` | **A single separator is genuinely ambiguous and stays refused.** `1.234` is one-thousand-two-hundred-thirty-four continental and one-point-two-three-four decimal; `1,234` is 1234 in one convention and malformed in the other. Nothing in the token says which, so reading either would be choosing a convention the report did not state. This is the residue of B10, and unlike B10 it is **not** decidable from the notations — it needs a declared convention, and none has been added because no report has yet needed one. (`as integer` reads both, which is not an inconsistency: an integer has no decimal part, so the ambiguity does not arise.) |
 | **B11** | `1,234.567` | `malformed-money` | **More than two decimals**, the remainder of A2. Representable: `money` carries four guard digits below the minor unit, which is why `money.text(amount, places)` exists — sub-cent prices are ordinary (fuel at $3.459 a gallon). Same family as B2 (one decimal place), and the same decision: how many places `as money` should admit is a question about the type, not a pattern to paste. |
 | **B9** | a custom `date` type whose rule **captures** its components — `/([0-9]{2})\/([0-9]{2})\/([0-9]{4})/ -> dmy` | `no-date-found` | With no `/re/repl/` and at least one capture, `_convert` takes `groups[0]` as the value. That is right for money — a capture is how the digits are pulled out of the symbols and the sign — and never right for a date, where the captures are the components and the first is a two-digit day. **The control is the same rule without parentheses, which works**, so the difference is the capture and nothing else. Found writing `tests/ari_using_test.bas` (2026-09-17) and recorded rather than fixed, because the sweep rule below is *Class A first, and on its own*. It is Class B by this file's own definition — an honest `unknown` with a diagnostic — but note the diagnostic **misattributes**: `no-date-found` points at the data when the spec is what is wrong. |
 
 ---
+
+#### B10 — struck 2026-09-17
+
+European grouping is **read**, not merely refused: `1.234,56` is 1234.56 and
+`12.345.678,90` is 12345678.90, sign and all. That discharges what A1 asked for
+in the first place — the entry said *"`1234.56`, or `unknown`"*, and the sweep
+delivered `unknown` first and then the number.
+
+**It needs no declaration, and that is the point.** Each convention uses the
+other character to group, so **where both separators appear the last one is the
+decimal mark**. That is a fact about the two notations, not a guess about this
+report, which is why it belongs in the built-in union rather than behind a
+`using`. The single-separator residue is B12 and stays refused.
+
+#### `as integer` and `as decimal` — the same defect, one level over
+
+Found by measuring rather than by reading, and **no entry in this register had
+ever probed them**: every entry was written about `as money`.
+
+| input | as integer | as decimal |
+|---|---|---|
+| `1,234` | **1** | **1** |
+| `1,234.56` | **1** | 1234.56 |
+| `1.234,56` | **1** | **1.234** |
+
+A count of 1,234 reading as **1** is the same silent, plausible, catastrophic
+shape as A1 — and `as integer` is the commonest conversion a *generated* spec
+contains, since it is what a section's own number is read with.
+
+Both recognizers take a **whole token** now, sharing the boundary rule, and
+`as decimal` shares the last-separator rule. `as integer` additionally admits a
+grouping separator that the money core refuses to guess at, and the reason is
+not inconsistency: **an integer has no decimal part**, so `1,234` and `1.234`
+are both 1234 whatever the convention, and B12's ambiguity cannot arise. A token
+that *does* carry a decimal part is now **refused rather than truncated** —
+`1.23 as integer` answered `1`, a value the caller did not ask for and could not
+tell from a real one.
+
+**A defect this fix introduced and running it caught**: written as
+`[0-9]{1,3}([.,][0-9]{3})+`, the group accepts a *mixture*, so `1,234.567`
+matched entirely — `.567` read as a third group — and came back as the integer
+**1234567**. The two alternatives keep the separator consistent.
+
+#### A raise where the contract promises `unknown`
+
+`_to_amount`'s own comment reads *"Returns unknown when the digits do not form a
+well-shaped amount — §8: a bad cell becomes unknown, never a silent zero and
+**never a raise that sinks the import**."* It did not hold. gBASIC's `number()`
+**raises** on a string it cannot convert rather than answering `unknown`, so the
+`is_unknown` guard beneath it was dead from the day it was written.
+
+It is reachable from the **custom type** path, where the converted text is
+whatever the author's own regex captured. Measured: a `type` whose rule captures
+`12.345.678` took the **whole parse down** with `number conversion failed`,
+where the contract promises that cell comes back `unknown` and the rest of the
+report still parses.
+
+**Found by a perturbation, not by reading.** The built-in patterns never produce
+a string `number` rejects, so nothing in the tree reached it; removing the
+last-separator rule to check that its tier bit was what pushed a malformed
+string through. A perturbation that fails *differently* from how it was expected
+to fail is worth reading rather than merely restoring.
 
 #### A3 — struck 2026-09-17, and this register had it backwards
 

@@ -115,6 +115,82 @@ check("A3 control: parentheses too",
 check("A3 control: and an unsuffixed amount is unaffected",
       money_using("1,234.56", "using money: statement"), 1234.56)
 
+' --- `as integer` and `as decimal` read a WHOLE token ----------------------
+' The same defect as A1/A2 one level over, and NO ENTRY IN THE REGISTER HAD EVER
+' PROBED IT, because every entry was written about `as money`. Measured before
+' the fix:
+'
+'     1,234      as integer -> 1        as decimal -> 1
+'     1,234.56   as integer -> 1
+'     1.234,56   as decimal -> 1.234
+'
+' A count of 1,234 reading as 1 is the same silent, plausible shape -- and
+' `as integer` is the commonest conversion a generated spec contains, since it
+' is what a section's own number is read with.
+function read_int(t)
+    r = ari.parse("X " + t, join([ "section report:",
+                                   "    field v: right of \"X\" as integer" ], "\n"))
+    return r.value.v
+end function
+
+function read_dec(t)
+    r = ari.parse("X " + t, join([ "section report:",
+                                   "    field v: right of \"X\" as decimal" ], "\n"))
+    return r.value.v
+end function
+
+check("a grouped integer is no longer read as its first group", read_int("1,234"), 1234)
+check("and the continental grouping too", read_int("1.234"), 1234)
+check("a grouped decimal likewise", read_dec("1,234"), 1234)
+check("and a continental decimal reads correctly", read_dec("1.234,56"), 1234.56)
+
+' A GROUPED INTEGER IS UNAMBIGUOUS where a grouped decimal is not: an integer
+' has no decimal part, so `1,234` and `1.234` are both 1234 whatever convention
+' the report uses. That is why this admits a separator the money core refuses to
+' guess at, and the control is that a token WITH a decimal part is refused
+' rather than truncated.
+check("a value with a decimal part is not an integer", read_int("1.23"), unknown)
+check("nor is a grouped one", read_int("1,234.56"), unknown)
+check("and a mixed-separator token is refused rather than stripped",
+      read_int("1,234.567"), unknown)
+check("control: a plain integer still reads", read_int("42"), 42)
+check("control: a negative one too", read_int("-42"), -42)
+check("control: one inside prose still reads", read_int("PAGE 7"), 7)
+check("control: and a deeply grouped one", read_int("1,234,567"), 1234567)
+
+' --- a bad cell is `unknown`, NEVER a raise that sinks the import -----------
+' §8's contract, written verbatim above `_to_amount` and not held: `number()`
+' RAISES on a string it cannot convert rather than answering `unknown`, so the
+' guard there was dead from the day it was written. Reachable from the CUSTOM
+' TYPE path, where the captured text is whatever the author's own regex took.
+' Found by PERTURBING the last-separator rule, not by reading -- the built-in
+' patterns never produce a string `number` rejects.
+function custom_money(text, rule)
+    sp = []
+    append(sp, "type odd_money:")
+    append(sp, "    " + rule)
+    append(sp, "    output: money")
+    append(sp, "section report:")
+    append(sp, "    using money: odd_money")
+    append(sp, "    field v: right of \"X\" as money")
+    on error goto next
+    r = ari.parse("X " + text, join(sp, "\n"))
+    if error then
+        error.clear()
+        on error stop
+        return "RAISED"
+    end if
+    on error stop
+    return r.value.v
+end function
+
+check("a custom type capturing unconvertible text answers unknown",
+      custom_money("12.345.678", "/([0-9.,]+)/ -> as decimal"), unknown)
+check("it does not raise and sink the parse",
+      custom_money("12.345.678", "/([0-9.,]+)/ -> as decimal") = "RAISED", false)
+check("control: a custom type capturing a real amount still converts",
+      string(custom_money("1,234.56", "/([0-9.,]+)/ -> as decimal")), "1234.56")
+
 ' --- A4: a date is checked against the LENGTH OF ITS MONTH ------------------
 check("A4 struck: 31-FEB is refused", read_date("31-FEB-2026"), unknown)
 check("A4 struck: and so is the numeric spelling, so the two paths still agree",
@@ -141,16 +217,20 @@ print "-- STRUCK: A1 and A2, which were ONE defect. Now controls."
 '
 ' Both entries said "or `unknown`", and `unknown` is what these now answer.
 ' Reading these forms is B10/B11 and is a different question.
-check("A1 struck: European grouping is no longer read as 1.23",
-      read_money("1.234,56"), unknown)
+' A1 is discharged TWICE OVER: the silent 1.23 went first, and the form is read
+' correctly now -- which is what the entry asked for in the first place
+' ("`1234.56`, or `unknown`"). Both separators appear, so the LAST is the
+' decimal mark, which is a fact about the two notations rather than a guess
+' about this report.
+check("A1 struck: European grouping reads correctly", read_money("1.234,56"), 1234.56)
+' Asserted as TEXT, not against a number literal: `money` renders its minor
+' units so this is "12345678.90", while the gBASIC number 12345678.90 renders as
+' "12345678.9". Comparing them would fail on a correct answer.
+check("A1 struck: and so does a deeply grouped one",
+      string(read_money("12.345.678,90")), "12345678.90")
+check("A1 struck: with the sign kept", read_money("1.234,56-"), -1234.56)
 check("A2 struck: three decimals are no longer truncated to two",
       read_money("1,234.567"), unknown)
-
-' TWO FORMS THE REGISTER NEVER RECORDED, found by measuring rather than reading.
-' A1 was recorded at ONE separator; the error grows with every further group,
-' and the sign is lost along with it.
-check("a millionfold error is gone too", read_money("12.345.678,90"), unknown)
-check("and the sign is no longer lost with it", read_money("1.234,56-"), unknown)
 
 ' THE CONTROLS THAT KEEP THE FIX FROM BEING "REFUSE EVERYTHING", which is the
 ' failure mode a boundary rule invites. Every form the recognizer read before
@@ -198,8 +278,9 @@ check("B5 control: the four-digit form still works", read_date("16-OCT-2026"), "
 check("B6 compact YYYYMMDD is still refused", read_date("20261016"), unknown)
 check("B7 a full month name is still refused", read_date("OCTOBER 16, 2026"), unknown)
 check("B8 ISO order with slashes is still refused", read_date("2026/10/16"), unknown)
-check("B10 European grouping is not READ, only refused", read_money("1.234,56"), unknown)
-check("B10 control: the same digits in the other convention read", read_money("1,234.56"), 1234.56)
+check("B12 a SINGLE separator stays ambiguous and is refused", read_money("1.234"), unknown)
+check("B12 control: two separators settle it", read_money("1.234,56"), 1234.56)
+check("B12 control: and the other convention too", read_money("1,234.56"), 1234.56)
 check("B11 more than two decimals is not read", read_money("1,234.567"), unknown)
 check("B11 control: exactly two decimals read", read_money("1,234.56"), 1234.56)
 
