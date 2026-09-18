@@ -103,6 +103,36 @@ check("B8 ISO order with slashes is still refused", read_date("2026/10/16"), unk
 check("B1 says why", why_of("1,234", money_spec()), "malformed-money")
 check("B4 says why", why_of("10/16/26", date_spec()), "no-date-found")
 
+' B9 -- a custom DATE type whose rule CAPTURES its components. Found while
+' writing tests/ari_using_test.bas, and recorded rather than fixed because the
+' register's sweep rule is Class A first and on its own.
+'
+' With no replacement and at least one capture, `_convert` takes groups[0] as
+' the value -- which is right for money, where a capture is how the digits are
+' pulled out of the symbols and the sign, and never right for a date, where the
+' captures are the components and the first of them is a two-digit day. The
+' control beside it is the SAME rule without captures, which works: the
+' difference is the parentheses and nothing else.
+function typed_date(rule)
+    sp = []
+    append(sp, "type d1:")
+    append(sp, "    " + rule)
+    append(sp, "    output: date")
+    append(sp, "section report:")
+    append(sp, "    using date: d1")
+    append(sp, "    field v: right of \"X\" as date")
+    r = ari.parse("X 16/10/2026", join(sp, "\n"))
+    if not r.ok then
+        return "spec refused"
+    end if
+    return r.value.v
+end function
+
+check("B9 a date rule that captures its components is not read",
+      typed_date("/([0-9]{2})\\/([0-9]{2})\\/([0-9]{4})/ -> dmy"), unknown)
+check("B9 control: the same rule without captures works",
+      typed_date("/[0-9]{2}\\/[0-9]{2}\\/[0-9]{4}/ -> dmy"), "2026-10-16")
+
 ' ===========================================================================
 print ""
 print "-- CLASS C: capability gaps"

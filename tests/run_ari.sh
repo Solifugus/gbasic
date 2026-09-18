@@ -247,6 +247,28 @@ else
     status=1
 fi
 
+# --- Tier 3c: `using`, the scoped override, and the remedy `ari` itself prints -
+#
+# SEPARATE FROM THE REGISTER TIER because these are struck, not recorded: the
+# probes above assert a limitation STILL HOLDS, and these assert three that no
+# longer do. A struck entry with nothing behind it is just a deleted one.
+out2=$(mktemp)
+if GBASIC_PATH=stdlib ./gbasic tests/ari_using_test.bas >"$out2" 2>&1; then
+    mism2="$(sed -n 's/^mismatches: //p' "$out2")"
+    checks2="$(sed -n 's/^checks: //p' "$out2")"
+    if [ "$mism2" = "0" ] && [ "${checks2:-0}" -ge 24 ]; then
+        printf 'PASS using         %s checks, 0 mismatches\n' "$checks2"
+    else
+        printf 'FAIL using         %s checks, %s mismatches\n' "$checks2" "$mism2"
+        grep MISMATCH "$out2" || true
+        status=1
+    fi
+else
+    printf 'FAIL using         probe program exited nonzero\n'
+    tail -10 "$out2"
+    status=1
+fi
+
 # COVERAGE, both directions: every id in the register must have a probe, and
 # every probe must name an id that is in the register.
 reg_ids=$(grep -oE '^\| \*\*[A-Z][0-9]\*\*' docs/ari_limitations.md | tr -d '|* ' | sort -u)

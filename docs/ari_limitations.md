@@ -156,6 +156,47 @@ these are *gaps to decide about*, not defects.
 | **B6** | `20261016` | `no-date-found` | Compact `YYYYMMDD`. **Deliberately contentious**: it is also a plausible identifier and a plausible integer, so recognising it as a date by default would be exactly the silent guess §8 forbids. Probably belongs in a declared `type` block rather than the built-in union. |
 | **B7** | `OCTOBER 16, 2026` | `no-date-found` | Full month name. |
 | **B8** | `2026/10/16` | `no-date-found` | ISO order with slashes. |
+| **B9** | a custom `date` type whose rule **captures** its components — `/([0-9]{2})\/([0-9]{2})\/([0-9]{4})/ -> dmy` | `no-date-found` | With no `/re/repl/` and at least one capture, `_convert` takes `groups[0]` as the value. That is right for money — a capture is how the digits are pulled out of the symbols and the sign — and never right for a date, where the captures are the components and the first is a two-digit day. **The control is the same rule without parentheses, which works**, so the difference is the capture and nothing else. Found writing `tests/ari_using_test.bas` (2026-09-17) and recorded rather than fixed, because the sweep rule below is *Class A first, and on its own*. It is Class B by this file's own definition — an honest `unknown` with a diagnostic — but note the diagnostic **misattributes**: `no-date-found` points at the data when the spec is what is wrong. |
+
+---
+
+### Struck by the sweep — 2026-09-17
+
+**Three defects in `using`**, all silent, all found in the first hour of the
+sweep, and all in *the remedy for another entry*. They were never in this
+register because nothing had run the mechanism: the only exercised form is
+`using date: <custom type>`, which works and is covered by
+`examples/ari_delinquency_test.bas`.
+
+| what | did | now |
+|---|---|---|
+| `using date: dmy` in a section | returned **the whole raw line as text** | binds the dialect |
+| `using date: dmy` at file scope | **silently ignored** | refused, naming where a binding belongs |
+| `using colour: x`, `using date: nonsense` | **silently ignored / raw text** | refused, naming the built-in types and the dialects |
+
+**The first is the one that matters, and it is Class A in the worst place.**
+`ari.inspect` prints, verbatim, *"declare `using date: dmy` (or mdy) on the
+enclosing section"* for an `ambiguous-date` finding — and writing exactly that
+produced a date column of ordinary-looking strings, with nothing raised and no
+diagnostic. The mechanism only ever resolved a binding to a **declared custom
+type**; a dialect word matched no branch and fell through to the final
+`return trim(span)`. So the remedy for one silent wrong answer was itself a
+silent wrong answer.
+
+`tests/ari_using_test.bas` is the control that keeps all three struck. Its
+load-bearing tier **builds its spec out of the hint `ari` prints**, lifting the
+backticked fragment from `inspect`'s own output — because the defect was neither
+the hint nor the converter but the **drift between them**, and asserting either
+half alone would have caught neither.
+
+**One claim that fixture made and then corrected.** Its first control asserted
+that an unambiguous date reads the same under either dialect — the natural shape
+for a tie-break, and false. `27/12/2026` under `using date: mdy` is
+`unknown` + `invalid-date`, because month 27 does not exist and the author has
+stated the column is month-first. Silently re-reading it day-first would be
+guessing against an explicit declaration, which is the one thing this library
+refuses to do anywhere else. **A declaration is authoritative, not a hint**, and
+the three readings of that one token are what say so.
 
 ---
 

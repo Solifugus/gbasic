@@ -166,6 +166,18 @@ library ari
         ]
     end function
 
+    ' THE DIALECT WORDS A `using` MAY NAME, per builtin type. Public for the
+    ' same reason the pattern tables are: a refusal that lists what IS accepted
+    ' has to derive the list rather than restate it, or the message and the code
+    ' drift and the message is what an author believes.
+    function type_dialects()
+        return { date: [ "dmy", "mdy" ] }
+    end function
+
+    function builtin_types()
+        return [ "date", "money", "integer", "decimal", "text" ]
+    end function
+
     function _money_patterns()
         return [
             { re: "<[ ]*\\$?[ ]*([0-9,]+\\.[0-9]{2})[ ]*>", neg: true },
@@ -452,12 +464,33 @@ library ari
             return { val: trim(span), why: "" }
         end if
 
-        ' A `using <builtin>: <name>` binding in scope redirects the builtin to
-        ' a custom type; a field naming a custom type directly beats any binding.
+        ' A `using <builtin>: <name>` binding in scope either names a DIALECT
+        ' of that builtin or redirects it to a custom type; a field naming a
+        ' custom type directly beats any binding.
+        '
+        ' THE DIALECT CASE DID NOT EXIST AND THE LIBRARY TOLD AUTHORS TO USE IT.
+        ' `inspect`'s hint for `ambiguous-date` says, verbatim, "declare `using
+        ' date: dmy` (or mdy) on the enclosing section" -- and that is what a
+        ' reader of the source is told too. Measured before changing anything:
+        ' `using date: dmy` set eff to "dmy", found no custom type of that name,
+        ' matched none of the builtin branches below, and fell through to the
+        ' final `return trim(span)` -- SO THE FIELD CAME BACK AS THE WHOLE RAW
+        ' LINE, as text, with nothing raised and no diagnostic. The remedy for
+        ' one silent wrong answer was itself a silent wrong answer, which is the
+        ' worst place for this defect to live.
         eff = ty
+        dialect = ""
         bound = ctx.usings[ty]
         if not is_unknown(bound) then
-            eff = bound
+            known = type_dialects()[ty]
+            if is_unknown(known) then
+                known = []
+            end if
+            if contains(known, bound) then
+                dialect = bound
+            else
+                eff = bound
+            end if
         end if
 
         custom = ctx.types[eff]
@@ -540,7 +573,7 @@ library ari
             return { val: v, why: "" }
         end if
         if eff = "date" then
-            dr = _date_in(span, "")
+            dr = _date_in(span, dialect)
             if is_unknown(dr.val) then
                 return dr
             end if
@@ -794,6 +827,7 @@ library ari
         page = { kind: "none", pattern: "", drop: 0 }
         types = { }
         root = unknown
+        stray = []
 
         i = 0
         while i < count(lines)
@@ -907,10 +941,95 @@ library ari
                 continue
             end if
 
+            ' A `using` OUTSIDE ANY SECTION was silently dropped. §5 scopes a
+            ' binding to "the declaring section and everything nested inside
+            ' it", so there is no file scope to attach one to -- but an author
+            ' who writes it at the top of the file has said something, and
+            ' saying nothing back is how a spec comes to mean something other
+            ' than it reads. Captured here and refused by _check_spec.
+            if starts_with(t, "using ") then
+                append(stray, t)
+                i = i + 1
+                continue
+            end if
+
             i = i + 1
         end while
 
-        return { page: page, root: root, types: types }
+        return { page: page, root: root, types: types, stray_usings: stray }
+    end function
+
+    ' ---------------------------------------------------------- spec checking
+    '
+    ' A `using` that names nothing is refused AT LOAD TIME, which is the only
+    ' place it can be caught usefully: at conversion time the binding has
+    ' already decided what every cell in the column means, and the failure it
+    ' produced was a field silently coming back as the raw line.
+    '
+    ' The messages NAME WHAT IS ACCEPTED and derive it rather than restate it,
+    ' because a list written into a message is a second copy of the truth and
+    ' the message is the copy an author believes.
+    function _check_spec(spec)
+        errs = []
+        for each t in spec.stray_usings
+            append(errs, ("`" + t + "` is outside any section. A `using`"
+                + " binding applies to the section that declares it and"
+                + " everything nested inside it, so it has to be written"
+                + " inside one."))
+        end for
+        if not is_unknown(spec.root) then
+            ' RETURNED, not accumulated through a parameter: inside a function
+            ' `append` mutates a LOCAL COPY of an array argument, so a
+            ' collect-into-the-caller's-array walk silently reports nothing --
+            ' which is how the first version of this check passed every case it
+            ' was written to refuse.
+            for each e in _check_usings(spec.root, spec.types, spec.root.name)
+                append(errs, e)
+            end for
+        end if
+        return errs
+    end function
+
+    function _check_usings(sec, types, path)
+        errs = []
+        dialects = type_dialects()
+        builtins = builtin_types()
+        for each k in keys(sec.usings)
+            v = sec.usings[k]
+            if not contains(builtins, k) then
+                append(errs, ("`using " + k + ": " + v + "` in section `" + path
+                    + "` rebinds `" + k + "`, which is not a built-in type."
+                    + " The built-in types are " + join(builtins, ", ") + "."))
+                continue
+            end if
+            known = dialects[k]
+            if is_unknown(known) then
+                known = []
+            end if
+            if contains(known, v) then
+                continue
+            end if
+            if not is_unknown(types[v]) then
+                continue
+            end if
+            declared = keys(types)
+            what = "no type named `" + v + "` is declared"
+            if count(declared) > 0 then
+                what = (what + " -- the spec declares " + join(declared, ", "))
+            end if
+            if count(known) > 0 then
+                what = (what + ", and the dialects of `" + k + "` are "
+                        + join(known, ", "))
+            end if
+            append(errs, ("`using " + k + ": " + v + "` in section `" + path
+                + "`: " + what + "."))
+        end for
+        for each child in sec.sections
+            for each e in _check_usings(child, types, path + "." + child.name)
+                append(errs, e)
+            end for
+        end for
+        return errs
     end function
 
     ' -------------------------------------------------------------- locators
@@ -1343,6 +1462,11 @@ library ari
         spec = ari_parse_spec(spec_text)
         if is_unknown(spec.root) then
             return { ok: false, message: "spec has no root section", value: unknown, diagnostics: [] }
+        end if
+        bad = _check_spec(spec)
+        if count(bad) > 0 then
+            return { ok: false, message: join(bad, " "), value: unknown,
+                     diagnostics: [] }
         end if
         grid = _build_grid(report_text, spec.page)
         spans = _find_instances(grid, 0, count(grid), spec.root)
