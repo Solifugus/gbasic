@@ -642,13 +642,34 @@ check("fields are named from the heading, not positionally",
       contains(names, "amount"), true)
 check("and the date column too", contains(names, "posted"), true)
 
-' §8: two measures are NOT COMPUTABLE without ari's span-level surface, and are
-' reported as unknown rather than estimated from the model that produced the
-' spec -- which would be the tool grading its own homework.
-check("content_coverage is reported unknown", is_unknown(rel.scorecard.content_coverage), true)
-check("collision_rate is reported unknown", is_unknown(rel.scorecard.collision_rate), true)
-check("and the reason names the limitation",
-      contains(rel.scorecard.not_computable_why, "span-level"), true)
+' §8: the two measures that were reported `unknown` until `ari.trace` shipped
+' (limitation C1, struck 2026-09-18). They are MEASURED BY RUNNING the candidate
+' over the corpus, like every other number in the scorecard; estimating them
+' from the model that produced the specification would be the tool grading its
+' own homework, which is what `unknown` was protecting against.
+check("content_coverage is measured, not unknown",
+      is_unknown(rel.scorecard.content_coverage), false)
+check("collision_rate is measured, not unknown",
+      is_unknown(rel.scorecard.collision_rate), false)
+check("nothing is left not-computable", count(rel.scorecard.not_computable), 0)
+' A FRACTION, and one whose ends are both wrong answers: a spec explaining
+' nothing and a spec explaining a page of running commentary are both impossible
+' here, so a 0 or a 1 means the measure broke rather than that the corpus is
+' unusual.
+check("coverage is a real fraction", rel.scorecard.content_coverage > 0, true)
+check("and not everything", rel.scorecard.content_coverage < 1, true)
+' The corpus is generated from one grammar and the specification is inferred
+' from it, so two rules reading the same characters would be a defect in
+' inference, not a property of the report.
+check("an inferred specification collides with itself nowhere",
+      rel.scorecard.collision_rate, 0)
+check("and there were claims for it to be a rate OF", rel.scorecard.claims > 100, true)
+' The definitions travel, for the same reason `ari.trace` attaches them: a bare
+' fraction printed beside a specification reads as a grade.
+check("coverage carries its definition",
+      contains(rel.scorecard.content_coverage_is, "non-blank"), true)
+check("and says it is pooled rather than averaged",
+      contains(rel.scorecard.content_coverage_is, "pooled"), true)
 
 ' ===========================================================================
 print ""

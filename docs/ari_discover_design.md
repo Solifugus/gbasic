@@ -20,8 +20,9 @@ Corpus: `examples/fixtures/ari_discover/` (built; see its MANIFEST)
 >    byte offsets; `ari` locates with `len`/`mid`, which are **codepoints**.
 >    Mixing them yields a rule that is correct until a description contains a
 >    non-ASCII character.
-> 3. **§20 — the "prerequisite" is half built.** `ari.inspect` and
->    `ari.clean_grid` already exist; only span-level claimed/unclaimed is
+> 3. **§20 — the "prerequisite" was half built, and is now whole.**
+>    `ari.inspect` and `ari.clean_grid` already existed; span-level
+>    claimed/unclaimed shipped 2026-09-18 as `ari.trace`. What was
 >    missing.
 > 4. **§2 — `load "ari.bas"` is not gBASIC syntax.**
 >
@@ -1052,10 +1053,13 @@ number, not as a box to tick — and §17 makes it an acceptance criterion.
 >    repeating family and the first version implemented only *repeating* — 55%
 >    of content lines in the real corpus against 1.5% in the null.
 >
-> **Two of §8's nine measures are reported `unknown` rather than estimated** —
+> **Two of §8's nine measures were reported `unknown` rather than estimated** —
 > `content_coverage` and `collision_rate` both need to know which source spans a
-> rule claimed, which is limitation C1. Estimating them from the inference model
-> would be the tool grading its own homework, which principle 4 forbids.
+> rule claimed, which was limitation C1. Estimating them from the inference model
+> would have been the tool grading its own homework, which principle 4 forbids.
+> **Closed 2026-09-18** by `ari.trace`; both are measured by running the
+> candidate over the corpus, pooled rather than averaged so a short source that
+> happens to be fully explained cannot offset a long one that is not.
 >
 > Five perturbations proven red, each caught by the tier written for it.
 
@@ -1400,7 +1404,11 @@ If the implementation becomes too large for one pure-gBASIC library, internal he
   discovery needs *location* and no value. One table, two jobs, and a tripwire
   in `tests/run_ari_discover.sh` fails if discovery grows a money pattern of
   its own.
-- Does ARI need a diagnostic parse mode that reports claimed and unclaimed spans?
+- ~~Does ARI need a diagnostic parse mode that reports claimed and unclaimed
+  spans?~~ **Answered 2026-09-18: yes, and it was cheap.** `ari.trace` is a flag
+  on the existing walk rather than a second walker, and threading the offsets out
+  changed no behaviour anywhere — every position it reports was already computed
+  and discarded. See `docs/ari_limitations.md`, C1 struck.
 - How should an accepted human decision file be represented and versioned?
 - What minimum corpus size should trigger holdout validation automatically?
 - Should fixed-column rules require explicit caller permission in all cases?
@@ -1422,12 +1430,20 @@ The most consequential likely prerequisite is a diagnostic execution surface in 
 >   on its own, independent of any spec — which is Phase 3's oracle, already
 >   available.
 >
-> What is genuinely missing is only the **span level**: which source span each
-> rule claimed, and what stayed unclaimed. That is one addition, it benefits
-> hand-written ARI debugging as much as discovery, and it is the right thing to
-> build first because §8's *content coverage* and *collision rate* cannot be
-> measured without it — they would otherwise be estimated by the inference
-> engine from its own model, which is the tool grading its own homework.
+> What was genuinely missing was only the **span level**: which source span each
+> rule claimed, and what stayed unclaimed. **Built 2026-09-18 as `ari.trace`**,
+> and it was the right thing to build first: §8's *content coverage* and
+> *collision rate* could not be measured without it, and estimating them from the
+> inference engine's own model is the tool grading its own homework.
+>
+> Two things the measurement decided that reading could not. An **anchor is a
+> claim** — a literal the specification names is the most spec-relevant text on
+> the page, and leaving it out put it in the unclaimed list and depressed
+> coverage by exactly the literals the author wrote. And a **collision needs a
+> value on at least one side** — counted without that condition, a section
+> declared `starts(/^Branch: /)` beside a field read `right of "Branch:"`, which
+> is the commonest correct shape in the language, reported three collisions on a
+> specification with nothing wrong with it.
 >
 > The design note in `ari.bas` beside `_build_record` is worth reading before
 > adding it: diagnostics are deliberately collected **out of band** rather than

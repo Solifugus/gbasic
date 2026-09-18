@@ -350,8 +350,58 @@ the three readings of that one token are what say so.
 
 | id | gap | note |
 |---|---|---|
-| **C1** | No span-level diagnostic surface | `ari.inspect` reports diagnostics by reason with field paths, and `ari.clean_grid` exposes the furniture pass — but nothing reports **which source span each rule claimed** or **what stayed unclaimed**. `docs/ari_discover_design.md` §20 names this as discovery's most consequential prerequisite, and it improves hand-written spec debugging as much as it does inference. |
 | **L0** | **No corpus of real print-image reports** | Everything `ari` has ever been run against was written here. The three fixtures in `examples/fixtures/ari/` are hand-authored to be awkward, which is valuable and is not the same as being real. What this costs is **the unknown unknowns and the frequencies** — not correctness, which the format literature settles. `finio` measured the first cost precisely: ten ACH files from another project found defects in three of four adapters while every suite was green. Same gap `finio` records for `camt.053`, same remedy: files somebody else produced. **Striking L0 does not retire the generated corpus** — the two answer different questions, and the null corpus in particular is obtainable no other way. |
+
+#### C1 — struck 2026-09-18
+
+`ari.trace(report_text, spec_text)` reports, for one parse, **which source span
+each rule claimed** and **what stayed unclaimed**: a claim per field that
+produced a value and per section heading, carrying the physical line, the
+character extent and the text taken; the maximal runs of non-blank text no rule
+claimed; `content_coverage`; and the spans two rules both explained.
+
+**The gap was never that the positions were hard to compute — every one of them
+was already computed and thrown away.** `_locate_in_line` knew exactly where it
+cut and returned only the text; `_money_in` computed `beg`/`fin` for its own
+overlap rule and returned `best.val`; `_whole_match` held the match object and
+returned a number. Threading them out changed no behaviour anywhere — the four
+`ari` fixtures and both cookbooks were byte-identical before the claims
+machinery existed — which is what says the offsets were facts the library
+already had rather than a new inference about the report.
+
+**`parse` and `trace` share one walk.** Tracing is a flag on the existing
+recursion, never a second walker, because a trace describing a program other
+than the one `parse` runs would be worse than no trace; the fixture asserts the
+two return the same value and the same diagnostics.
+
+**Two decisions the measurement forced, both made after running it rather than
+before.** An **anchor is a claim**: a literal the specification names is the
+most spec-relevant text on the page, and left out of the claims it landed in the
+unclaimed list and depressed coverage by exactly the literals the author wrote.
+And a **collision needs a value on at least one side**: counted as written, a
+section declared `starts(/^Branch: /)` beside a field read `right of "Branch:"`
+— the commonest correct shape in the language — reported three collisions on a
+specification with nothing wrong with it, which is a number that fires on
+correct code and therefore noise with a name.
+
+**What the fixture had to be told about itself.** Its first source oracle
+compared `claim.text` against `mid(raw_line, start, length)`, which is the
+library agreeing with itself: `text` is cut from the same row the offset
+indexes, so an offset one column out passes. The tier now establishes only the
+**line number** (that the furniture pass's physical line still addresses the
+same bytes), and the offset is established twice independently — against the
+**specification**, since an anchor claim must reproduce a literal written in its
+own rule, and against the **value**, since re-reading the claimed span on its
+own must give what the whole parse gave. The perturbation that moves a locator
+by one column is caught by the second and not by the first.
+
+`tests/ari_trace_test.bas` is the control that keeps this struck, 35 checks,
+seven perturbations proven red. It also closes the two §8 measures
+`ari_discover.validate` had reported `unknown` since Phase 1 — pooled over the
+corpus rather than averaged over sources, so a short source that happens to be
+fully explained cannot offset a long one that is not.
+
+---
 
 ---
 

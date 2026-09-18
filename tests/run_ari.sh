@@ -24,6 +24,11 @@
 #      that, because any single pagination looks fine on its own.
 #   4. VALGRIND -- the golden under valgrind.
 #
+# Plus two tiers that are not about a fixture: the LIMITATIONS register held to
+# the truth by running it, and `ari.trace` -- the span-level claimed/unclaimed
+# surface (tests/ari_trace_test.bas), which is what closed C1 and with it the
+# two §8 scoring measures `ari_discover` had reported `unknown` since Phase 1.
+#
 # Headless, GI-independent, no display, no network. Never skips (bar valgrind).
 set -u
 
@@ -269,6 +274,30 @@ else
     status=1
 fi
 
+# --- Tier 3d: the span report ---------------------------------------------------
+#
+# `ari.trace` -- which source spans the specification claimed, and what stayed
+# unclaimed. Limitation C1, struck 2026-09-18. Self-checking rather than golden,
+# and here that is forced: every defect this surface can have is a PLAUSIBLE
+# SUBSTRING, so a golden would record an offset one column out as expected.
+out3=$(mktemp)
+if GBASIC_PATH=stdlib timeout 300 ./gbasic tests/ari_trace_test.bas >"$out3" 2>&1; then
+    mism3="$(grep -c '^MISMATCH' "$out3")"
+    checks3="$(grep -c '^ok' "$out3")"
+    if [ "$mism3" = "0" ] && [ "${checks3:-0}" -ge 36 ]; then
+        printf 'PASS trace         %s checks, 0 mismatches\n' "$checks3"
+    else
+        printf 'FAIL trace         %s checks, %s mismatches\n' "$checks3" "$mism3"
+        grep MISMATCH "$out3" || true
+        status=1
+    fi
+else
+    printf 'FAIL trace         probe program exited nonzero\n'
+    tail -10 "$out3"
+    status=1
+fi
+rm -f "$out3"
+
 # COVERAGE, both directions: every id in the register must have a probe, and
 # every probe must name an id that is in the register.
 # `[0-9]+`, not `[0-9]`: with a single digit, B10 reads as `B1` followed by `0`
@@ -295,7 +324,24 @@ else
 fi
 
 # --- Tier 4: valgrind ----------------------------------------------------------
+#
+# The trace fixture goes through it as well as the golden, because the claims
+# machinery is the only part of this library that allocates per FIELD PER ROW
+# and the golden never calls it. It costs almost nothing -- 0.18s native.
 if vg_available; then
+    if GBASIC_PATH=stdlib vg_run ./gbasic tests/ari_trace_test.bas \
+            >"$out" 2>"$err" </dev/null; then
+        if [ "$(grep -c '^MISMATCH' "$out")" = "0" ]; then
+            printf 'PASS valgrind tests/ari_trace_test.bas\n'
+        else
+            printf 'FAIL valgrind trace fixture mismatched under valgrind\n'
+            status=1
+        fi
+    else
+        printf 'FAIL valgrind tests/ari_trace_test.bas\n'
+        tail -20 "$err"
+        status=1
+    fi
     if GBASIC_PATH=stdlib vg_run ./gbasic examples/ari_teller_test.bas \
             >"$out" 2>"$err" </dev/null; then
         if diff -q examples/ari_teller_test.out "$out" >/dev/null; then

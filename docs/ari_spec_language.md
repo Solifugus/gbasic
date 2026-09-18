@@ -361,6 +361,50 @@ Per-instance dialect detection (a section discriminating its own dialect at
 runtime) is **not** built. It is held in reserve for a report that proves the
 union insufficient, and should not be added speculatively.
 
+## 7.1 Reading a spec back: what it claimed and what it missed
+
+`ari.trace(report_text, spec_text)` returns everything `ari.parse` does, plus an
+account of the specification against the report's own bytes:
+
+| field | meaning |
+| --- | --- |
+| `claims` | one per field that produced a value, one per literal **anchor** a locator matched, and one per section heading, each carrying `path`, `kind`, `rule`, `type`, the physical `line`, the `start`/`length` within it, and the `text` taken |
+| `unclaimed` | maximal runs of non-blank text no rule claimed, as `{ line, start, length, text }` |
+| `content_chars`, `claimed_chars`, `content_coverage` | non-blank characters on non-furniture lines, and the claimed share of them |
+| `collisions`, `collision_rate` | spans two rules both explained, naming both paths |
+
+```
+t = ari.trace(report, spec)
+for each u in t.unclaimed
+    print u.line + ": " + u.text        ' what the spec does not account for
+end for
+```
+
+**Blanks are not content.** A print image is largely column padding, and
+counting it would put every specification's coverage near 1.0. The denominator
+is non-blank characters on the lines the page-furniture pass kept, so a page
+header costs a specification nothing.
+
+**An anchor is a claim.** A literal the spec names is the most spec-relevant
+text on the page; left out, it would sit in the unclaimed list and depress
+coverage by exactly the literals the author wrote.
+
+**A collision needs a value on at least one side.** A section declared
+`starts(/^Branch: /)` beside a field read `right of "Branch:"` names the same
+characters twice *on purpose*, and counting that would make the rate fire on the
+commonest correct shape in the language. What is reported is a span where at
+least one of the two explanations must be wrong.
+
+`content_coverage` is **not a grade**. A report carrying commentary, totals a
+spec does not read, or rule lines can never reach 1.0, and should not. It is
+useful as a *difference* — between two candidate specifications over the same
+corpus, or between one specification before and after a field is added. Both
+fractions carry their own definition in `content_coverage_is` and
+`collision_rate_is` for that reason.
+
+`ari.trace` and `ari.parse` share one walk, so a trace cannot describe a
+different program from the one that ran.
+
 ## 8. Open
 
 **RESOLVED — `columns` is a first-class capability, not an embarrassment.** §0

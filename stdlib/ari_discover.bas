@@ -1476,12 +1476,19 @@ end function
 ' Every number here comes from RUNNING the candidate, never from the model that
 ' produced it.
 '
-' TWO OF §8'S NINE MEASURES ARE NOT COMPUTABLE YET and are reported as
-' `unknown` rather than estimated: `content_coverage` and `collision_rate` both
-' need to know WHICH SOURCE SPANS A RULE CLAIMED, and `ari` has no span-level
-' diagnostic surface -- entry C1 in docs/ari_limitations.md. Estimating them
-' from the inference model would be the tool grading its own homework, which is
-' the one thing design principle 4 forbids.
+' TWO OF §8'S NINE MEASURES WERE REPORTED `unknown` UNTIL 2026-09-18, and the
+' reason was a capability gap rather than a judgement: `content_coverage` and
+' `collision_rate` both need to know WHICH SOURCE SPANS A RULE CLAIMED, and
+' `ari` had no span-level surface -- entry C1 in docs/ari_limitations.md, struck
+' when `ari.trace` shipped. They come from RUNNING the candidate over the
+' corpus, like every other number here; estimating them from the inference model
+' would have been the tool grading its own homework, which is the one thing
+' design principle 4 forbids, and is exactly what an estimate would have been.
+'
+' COVERAGE IS POOLED OVER THE CORPUS, not averaged over the sources: a per-source
+' mean lets a short source that happens to be fully explained offset a long one
+' that is not, and what is being asked is how much of the ESTATE OF TEXT the
+' specification accounts for.
 ' §8 REGION COVERAGE, and it is the measure that catches what
 ' `source_coverage` cannot.
 '
@@ -1615,6 +1622,10 @@ function validate(sources, spec, options = nothing)
     rows_total = 0
     cells_total = 0
     cells_unknown = 0
+    content_chars = 0
+    claimed_chars = 0
+    claims_total = 0
+    value_claims = 0
     failures = []
     for each s in sources
         on error goto next
@@ -1635,10 +1646,33 @@ function validate(sources, spec, options = nothing)
         rows_total = rows_total + tal.rows
         cells_total = cells_total + tal.cells
         cells_unknown = cells_unknown + tal.unknown
+
+        tr = ari.trace(s.text, spec)
+        if tr.ok then
+            content_chars = content_chars + tr.content_chars
+            claimed_chars = claimed_chars + tr.claimed_chars
+            value_claims = value_claims + tr.collisions_involved
+            for each c in tr.claims
+                if c.kind = "field" then
+                    claims_total = claims_total + 1
+                end if
+            end for
+        end if
     end for
     ur = 0
     if cells_total > 0 then
         ur = cells_unknown / cells_total
+    end if
+    ' `unknown`, never 0. Nothing parsed means nothing was measured, and a 0
+    ' there reads as a specification that explained none of the text -- a
+    ' different claim, and one a reader would act on.
+    cc = unknown
+    if content_chars > 0 then
+        cc = claimed_chars / content_chars
+    end if
+    cr = unknown
+    if claims_total > 0 then
+        cr = value_claims / claims_total
     end if
     return { source_coverage: parsed_ok / count(sources),
              sources: count(sources),
@@ -1647,13 +1681,21 @@ function validate(sources, spec, options = nothing)
              cells: cells_total,
              unknown_rate: ur,
              failures: failures,
-             content_coverage: unknown,
-             collision_rate: unknown,
-             not_computable: [ "content_coverage", "collision_rate" ],
-             not_computable_why: ("both need to know which source spans each rule"
-                 + " claimed; `ari` has no span-level diagnostic surface"
-                 + " (docs/ari_limitations.md C1). Estimating them from the"
-                 + " inference model would be the tool grading its own homework.") }
+             content_chars: content_chars,
+             claimed_chars: claimed_chars,
+             content_coverage: cc,
+             content_coverage_is: ("non-blank characters on non-furniture lines"
+                 + " claimed by a field rule or a section heading, pooled over"
+                 + " every source that parsed, over all non-blank characters on"
+                 + " those lines"),
+             claims: claims_total,
+             collisions_involved: value_claims,
+             collision_rate: cr,
+             collision_rate_is: ("value claims whose character extent overlaps"
+                 + " another rule's claim, over all value claims, pooled over"
+                 + " every source that parsed"),
+             not_computable: [ ],
+             not_computable_why: "" }
 end function
 
 ' --- §16 PHASE 2: sections, and the furniture directive ---------------------
@@ -3147,8 +3189,14 @@ function _infer_from(sources, held, options = nothing, corpus_in = nothing, deci
                           fields_located: count(inf.fields),
                           fields_unlocatable: count(inf.questions),
                           failures: sc.failures,
+                          content_chars: sc.content_chars,
+                          claimed_chars: sc.claimed_chars,
                           content_coverage: sc.content_coverage,
+                          content_coverage_is: sc.content_coverage_is,
+                          claims: sc.claims,
+                          collisions_involved: sc.collisions_involved,
                           collision_rate: sc.collision_rate,
+                          collision_rate_is: sc.collision_rate_is,
                           not_computable: sc.not_computable,
                           not_computable_why: sc.not_computable_why },
              corpus: c }

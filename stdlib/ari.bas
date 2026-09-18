@@ -140,9 +140,14 @@ library ari
     '
     ' So the PATTERN TABLES are shared and the FUNCTIONS are not. That split is
     ' not a compromise, it is the right shape: `_money_in` and `_date_in` are
-    ' built for CONVERSION and throw their spans away (`_money_in` computes
-    ' `beg`/`fin` and returns `best.val`; `_date_in` never has a position at
-    ' all), while discovery needs LOCATION and no value. One table, two jobs.
+    ' built for CONVERSION and answer with ONE span -- the token they decided on
+    ' -- where discovery has to see EVERY candidate on the line, and no value.
+    ' One table, two jobs.
+    '
+    ' CORRECTED 2026-09-18: this note used to say those two "throw their spans
+    ' away", which was true and was the reason limitation C1 stood. They report
+    ' them now (`ari.trace`), and the split survives unchanged, because reporting
+    ' where the winner was is still not the same as enumerating the field.
     function money_patterns()
         return _money_patterns()
     end function
@@ -463,7 +468,7 @@ library ari
                 end if
             end if
         end for
-        return best.val
+        return { val: best.val, at: best.beg, length: best.fin - best.beg }
     end function
 
     ' Pick the first or last match that is a WHOLE numeric token, not an infix
@@ -517,7 +522,8 @@ library ari
         if is_unknown(m) then
             return unknown
         end if
-        return number(replace(replace(m.text, ",", ""), ".", ""))
+        return { val: number(replace(replace(m.text, ",", ""), ".", "")),
+                 at: m.start, length: m.length }
     end function
 
     ' Same two rules as money: the match must be a whole token, and the LAST
@@ -535,7 +541,10 @@ library ari
             body = mid(body, 1, len(body) - 1)
         end if
         v = _to_amount(body, neg)
-        return v
+        if is_unknown(v) then
+            return unknown
+        end if
+        return { val: v, at: m.start, length: m.length }
     end function
 
     function _pad2(n)
@@ -674,27 +683,27 @@ library ari
             m = match(text, regex(p.re))
             if not is_unknown(m) then
                 if p.kind = "iso" then
-                    return { val: m.groups[0] + "-" + m.groups[1] + "-" + m.groups[2], why: "" }
+                    return { val: m.groups[0] + "-" + m.groups[1] + "-" + m.groups[2], why: "", at: m.start, length: m.length }
                 end if
                 if p.kind = "dmy_name" then
                     mm = _month_no(m.groups[1])
                     if mm = 0 then
-                        return { val: unknown, why: "unknown-month-name" }
+                        return { val: unknown, why: "unknown-month-name", at: m.start, length: m.length }
                     end if
                     if not _valid_ymd(m.groups[2], mm, number(m.groups[0])) then
-                        return { val: unknown, why: "invalid-date" }
+                        return { val: unknown, why: "invalid-date", at: m.start, length: m.length }
                     end if
-                    return { val: m.groups[2] + "-" + _pad2(mm) + "-" + _pad2(number(m.groups[0])), why: "" }
+                    return { val: m.groups[2] + "-" + _pad2(mm) + "-" + _pad2(number(m.groups[0])), why: "", at: m.start, length: m.length }
                 end if
                 if p.kind = "mdy_name" then
                     mn = _month_no(m.groups[0])
                     if mn = 0 then
-                        return { val: unknown, why: "unknown-month-name" }
+                        return { val: unknown, why: "unknown-month-name", at: m.start, length: m.length }
                     end if
                     if not _valid_ymd(m.groups[2], mn, number(m.groups[1])) then
-                        return { val: unknown, why: "invalid-date" }
+                        return { val: unknown, why: "invalid-date", at: m.start, length: m.length }
                     end if
-                    return { val: m.groups[2] + "-" + _pad2(mn) + "-" + _pad2(number(m.groups[1])), why: "" }
+                    return { val: m.groups[2] + "-" + _pad2(mn) + "-" + _pad2(number(m.groups[1])), why: "", at: m.start, length: m.length }
                 end if
 
                 ' numeric: the only form that may need a declared dialect.
@@ -703,33 +712,49 @@ library ari
                 y = m.groups[2]
                 if dialect = "dmy" then
                     if not _valid_ymd(y, b, a) then
-                        return { val: unknown, why: "invalid-date" }
+                        return { val: unknown, why: "invalid-date", at: m.start, length: m.length }
                     end if
-                    return { val: y + "-" + _pad2(b) + "-" + _pad2(a), why: "" }
+                    return { val: y + "-" + _pad2(b) + "-" + _pad2(a), why: "", at: m.start, length: m.length }
                 end if
                 if dialect = "mdy" then
                     if not _valid_ymd(y, a, b) then
-                        return { val: unknown, why: "invalid-date" }
+                        return { val: unknown, why: "invalid-date", at: m.start, length: m.length }
                     end if
-                    return { val: y + "-" + _pad2(a) + "-" + _pad2(b), why: "" }
+                    return { val: y + "-" + _pad2(a) + "-" + _pad2(b), why: "", at: m.start, length: m.length }
                 end if
                 ' No declared dialect: settle it from the token alone, or refuse.
                 if a > 12 then
                     if not _valid_ymd(y, b, a) then
-                        return { val: unknown, why: "invalid-date" }
+                        return { val: unknown, why: "invalid-date", at: m.start, length: m.length }
                     end if
-                    return { val: y + "-" + _pad2(b) + "-" + _pad2(a), why: "" }
+                    return { val: y + "-" + _pad2(b) + "-" + _pad2(a), why: "", at: m.start, length: m.length }
                 end if
                 if b > 12 then
                     if not _valid_ymd(y, a, b) then
-                        return { val: unknown, why: "invalid-date" }
+                        return { val: unknown, why: "invalid-date", at: m.start, length: m.length }
                     end if
-                    return { val: y + "-" + _pad2(a) + "-" + _pad2(b), why: "" }
+                    return { val: y + "-" + _pad2(a) + "-" + _pad2(b), why: "", at: m.start, length: m.length }
                 end if
-                return { val: unknown, why: "ambiguous-date" }
+                return { val: unknown, why: "ambiguous-date", at: m.start, length: m.length }
             end if
         end for
-        return { val: unknown, why: "no-date-found" }
+        return { val: unknown, why: "no-date-found", at: 0, length: 0 }
+    end function
+
+    ' The extent of a span's trimmed content, so an untyped field claims the
+    ' text it returned rather than the whitespace around it. `trim` begins at the
+    ' first non-blank character, so the first occurrence of the trimmed text in
+    ' the span IS the offset -- no second scanner, and no rule to drift.
+    function _trim_extent(span)
+        t = trim(span)
+        if t = "" then
+            return { at: 0, length: 0 }
+        end if
+        a = find(span, t)
+        if is_unknown(a) then
+            return { at: 0, length: len(t) }
+        end if
+        return { at: a, length: len(t) }
     end function
 
     ' Convert an extracted span according to its declared type. `as <type>`
@@ -742,10 +767,12 @@ library ari
     ' Returns { val, why }.
     function _convert(span, ty, want_last, ctx)
         if ty = "" then
-            return { val: trim(span), why: "" }
+            te = _trim_extent(span)
+            return { val: trim(span), why: "", at: te.at, length: te.length }
         end if
         if ty = "text" then
-            return { val: trim(span), why: "" }
+            te = _trim_extent(span)
+            return { val: trim(span), why: "", at: te.at, length: te.length }
         end if
 
         ' A `using <builtin>: <name>` binding in scope either names a DIALECT
@@ -812,19 +839,25 @@ library ari
                         raw = replace(raw, regex(rule.re), rule.repl)
                     end if
 
+                    ' The claimed span is the RULE's match against the span,
+                    ' never the rewrite's own offsets: with a transform in play
+                    ' `raw` is a string that does not exist in the source, so a
+                    ' position inside it points at nothing a reader could find.
                     if custom.base = "date" then
                         dr = _date_in(raw, rule.dialect)
                         if is_unknown(dr.val) then
                             return dr
                         end if
-                        return { val: _to_date(dr.val), why: "" }
+                        return { val: _to_date(dr.val), why: "",
+                                 at: mm.start, length: mm.length }
                     end if
                     v = _to_amount(raw, rule.neg)
                     if not is_unknown(v) then
                         if custom.base = "money" then
-                            return { val: _to_money(v), why: "" }
+                            return { val: _to_money(v), why: "",
+                                     at: mm.start, length: mm.length }
                         end if
-                        return { val: v, why: "" }
+                        return { val: v, why: "", at: mm.start, length: mm.length }
                     end if
                 end if
             end for
@@ -832,38 +865,39 @@ library ari
         end if
 
         if eff = "money" then
-            v = _money_in(span, want_last, dialect)
-            if is_unknown(v) then
+            mv = _money_in(span, want_last, dialect)
+            if is_unknown(mv) then
                 return { val: unknown, why: "malformed-money" }
             end if
             ' A native money value, not a bare number: that is what §4 promised
             ' and what makes the output flow into frame/stats as designed. It
             ' also prints its cents correctly, which a number above $9,999.99
             ' does not (/DOGFOOD.md 2026-08-01).
-            return { val: _to_money(v), why: "" }
+            return { val: _to_money(mv.val), why: "", at: mv.at, length: mv.length }
         end if
         if eff = "integer" then
-            v = _integer_in(span, want_last)
-            if is_unknown(v) then
+            iv = _integer_in(span, want_last)
+            if is_unknown(iv) then
                 return { val: unknown, why: "no-integer-found" }
             end if
-            return { val: v, why: "" }
+            return { val: iv.val, why: "", at: iv.at, length: iv.length }
         end if
         if eff = "decimal" then
-            v = _decimal_in(span, want_last)
-            if is_unknown(v) then
+            dv = _decimal_in(span, want_last)
+            if is_unknown(dv) then
                 return { val: unknown, why: "no-decimal-found" }
             end if
-            return { val: v, why: "" }
+            return { val: dv.val, why: "", at: dv.at, length: dv.length }
         end if
         if eff = "date" then
             dr = _date_in(span, dialect)
             if is_unknown(dr.val) then
                 return dr
             end if
-            return { val: _to_date(dr.val), why: "" }
+            return { val: _to_date(dr.val), why: "", at: dr.at, length: dr.length }
         end if
-        return { val: trim(span), why: "" }
+        te = _trim_extent(span)
+        return { val: trim(span), why: "", at: te.at, length: te.length }
     end function
 
     ' ------------------------------------------------------- the page-furniture
@@ -1333,7 +1367,10 @@ library ari
         return mid(line, a, last_col - a + 1)
     end function
 
-    ' Returns { ok, span } for one locator against one line.
+    ' Returns { ok, span, at } for one locator against one line, where `at` is
+    ' the offset of `span` within `line`. The offset is what limitation C1 was
+    ' about: every branch below already knew where it cut, and every one of them
+    ' threw the position away with the text it returned.
     function _locate_in_line(line, loc)
         work = line
         lo = 0
@@ -1351,7 +1388,8 @@ library ari
         if not is_unknown(cm) then
             a = number(cm.groups[0])
             b = number(cm.groups[1])
-            return { ok: true, span: _apply_columns(work, a, b) }
+            return { ok: true, span: _apply_columns(work, a, b), at: lo + a,
+                     anchors: [] }
         end if
 
         rm = match(loc, regex("^right[ ]+of[ ]+(.*)$"))
@@ -1359,10 +1397,11 @@ library ari
             tok = trim(rm.groups[0])
             m = _find_token(work, tok)
             if is_unknown(m) then
-                return { ok: false, span: "" }
+                return { ok: false, span: "", at: 0, anchors: [] }
             end if
             after = m.start + m.length
-            return { ok: true, span: mid(work, after, len(work) - after) }
+            return { ok: true, span: mid(work, after, len(work) - after), at: lo + after,
+                     anchors: [ { at: lo + m.start, length: m.length } ] }
         end if
 
         lm = match(loc, regex("^left[ ]+of[ ]+(.*)$"))
@@ -1370,34 +1409,38 @@ library ari
             tok = trim(lm.groups[0])
             m = _find_token(work, tok)
             if is_unknown(m) then
-                return { ok: false, span: "" }
+                return { ok: false, span: "", at: 0, anchors: [] }
             end if
-            return { ok: true, span: mid(work, 0, m.start) }
+            return { ok: true, span: mid(work, 0, m.start), at: lo,
+                     anchors: [ { at: lo + m.start, length: m.length } ] }
         end if
 
         bm = match(loc, regex("^between[ ]+(.*)[ ]+and[ ]+(.*)$"))
         if not is_unknown(bm) then
             m1 = _find_token(work, trim(bm.groups[0]))
             if is_unknown(m1) then
-                return { ok: false, span: "" }
+                return { ok: false, span: "", at: 0, anchors: [] }
             end if
             a = m1.start + m1.length
             tail = mid(work, a, len(work) - a)
             m2 = _find_token(tail, trim(bm.groups[1]))
             if is_unknown(m2) then
-                return { ok: false, span: "" }
+                return { ok: false, span: "", at: 0, anchors: [] }
             end if
-            return { ok: true, span: mid(tail, 0, m2.start) }
+            return { ok: true, span: mid(tail, 0, m2.start), at: lo + a,
+                     anchors: [ { at: lo + m1.start, length: m1.length },
+                                { at: lo + a + m2.start, length: m2.length } ] }
         end if
 
         ' `first <type>` / `last <type>` — the whole line is the span and the
         ' type recognizer does the delimiting (§1.3).
         fm = match(loc, regex("^(first|last)[ ]+([A-Za-z_]+)[ ]*$"))
         if not is_unknown(fm) then
-            return { ok: true, span: work, scan: fm.groups[0], ty: fm.groups[1] }
+            return { ok: true, span: work, scan: fm.groups[0], ty: fm.groups[1], at: lo,
+                     anchors: [] }
         end if
 
-        return { ok: false, span: "" }
+        return { ok: false, span: "", at: 0, anchors: [] }
     end function
 
     ' Parse a vertical locator: `down <dist> of <pat> [<inner locator>]`, where
@@ -1460,6 +1503,11 @@ library ari
     end function
 
     ' Resolve one field against a block of grid lines. Returns { val, why }.
+    ' Returns { val, why, line, at, length }. `line` is the PHYSICAL source line
+    ' the value came off and `at`/`length` its character extent within it -- the
+    ' claim. Composing them is the whole of it: the locator says where in the
+    ' line it cut, the converter says where in that cut the token was, and until
+    ' now both halves were computed and discarded (limitation C1).
     function _resolve_field(block, f, ctx)
         ' `first`/`last <type>` carries its own type; otherwise use `as <type>`.
         want_last = false
@@ -1507,11 +1555,36 @@ library ari
                                         span = r2.span
                                     end if
                                 end if
+                                base = 0
+                                if v.inner != "" then
+                                    if r2.ok then
+                                        base = r2.at
+                                    end if
+                                end if
                                 blank = _is_blank(span)
                                 if not blank then
                                     got = _convert(span, ty, want_last, ctx)
                                     if not is_unknown(got.val) then
-                                        return got
+                                        anchors = [ { line: block[i].line,
+                                                      src: block[i].text,
+                                                      at: hit.start,
+                                                      length: hit.length } ]
+                                        if v.inner != "" then
+                                            if r2.ok then
+                                                for each an in r2.anchors
+                                                    append(anchors, { line: block[j].line,
+                                                                      src: block[j].text,
+                                                                      at: an.at,
+                                                                      length: an.length })
+                                                end for
+                                            end if
+                                        end if
+                                        return { val: got.val, why: got.why,
+                                                 line: block[j].line,
+                                                 src: block[j].text,
+                                                 at: base + got.at,
+                                                 length: got.length,
+                                                 type: ty, anchors: anchors }
                                     end if
                                 end if
                             end if
@@ -1521,7 +1594,7 @@ library ari
                 end if
                 i = i + 1
             end while
-            return { val: unknown, why: "anchor-not-found" }
+            return { val: unknown, why: "anchor-not-found", line: 0, src: "", at: 0, length: 0, type: ty, anchors: [] }
         end if
 
         why = "not-found"
@@ -1530,7 +1603,14 @@ library ari
             if r.ok then
                 got = _convert(r.span, ty, want_last, ctx)
                 if not is_unknown(got.val) then
-                    return got
+                    anchors = []
+                    for each an in r.anchors
+                        append(anchors, { line: row.line, src: row.text,
+                                          at: an.at, length: an.length })
+                    end for
+                    return { val: got.val, why: got.why, line: row.line,
+                             src: row.text, at: r.at + got.at,
+                             length: got.length, type: ty, anchors: anchors }
                 end if
                 if got.why != "" then
                     why = got.why
@@ -1538,7 +1618,7 @@ library ari
             end if
         end for
         ' Not found anywhere in the block: unknown, never a guess (§8).
-        return { val: unknown, why: why }
+        return { val: unknown, why: why, line: 0, src: "", at: 0, length: 0, type: ty, anchors: [] }
     end function
 
     ' ------------------------------------------------------------- the walker
@@ -1620,7 +1700,36 @@ library ari
         return merged
     end function
 
-    ' Build one record for one instance of a section. Returns { rec, diags }.
+    ' One claim: the source span a field rule consumed. `_resolve_field` has
+    ' already composed the offset; this only names it.
+    ' The value claim plus one per literal ANCHOR the locator matched. An anchor
+    ' is text the specification NAMES, so leaving it out of the claims would put
+    ' the most spec-relevant characters on the page into the unclaimed list and
+    ' depress coverage by exactly the literals the author wrote.
+    function _claims_for(path, f, got)
+        ' A ZERO-LENGTH CLAIM IS NOT A CLAIM. `columns 90-95` on a 79-column line
+        ' legitimately yields the empty string -- a value, not an `unknown` -- and
+        ' its offset is then past the end of the line it names. It covers no
+        ' character, cannot collide, and contributes nothing to either fraction,
+        ' so recording it would only produce a span a reader cannot find.
+        out = []
+        if got.length > 0 then
+            append(out, { path: path, field: f.name, kind: "field", rule: f.locator,
+                          type: got.type, text: mid(got.src, got.at, got.length),
+                          line: got.line, start: got.at, length: got.length })
+        end if
+        for each an in got.anchors
+            if an.length > 0 then
+                append(out, { path: path, field: f.name, kind: "anchor", rule: f.locator, type: "",
+                              text: mid(an.src, an.at, an.length),
+                              line: an.line, start: an.at, length: an.length })
+            end if
+        end for
+        return out
+    end function
+
+    ' Build one record for one instance of a section.
+    ' Returns { rec, diags, claims }.
     '
     ' Diagnostics are collected OUT OF BAND rather than attached to the value:
     ' gBASIC's `unknown` is a bare singleton with no payload, and giving it one
@@ -1632,15 +1741,39 @@ library ari
     function _build_record(grid, lo, hi, sec, ctx, path)
         rec = { }
         diags = []
+        claims = []
         block = _slice(grid, lo, hi)
 
-        local_ctx = { types: ctx.types, usings: _extend_usings(ctx.usings, sec.usings) }
+        local_ctx = { types: ctx.types, usings: _extend_usings(ctx.usings, sec.usings),
+                      trace: ctx.trace }
+
+        ' A section's own `starts` line is EXPLAINED by the specification even
+        ' though no field read it -- it is what located the section. Recording it
+        ' as a claim is what keeps a heading out of the unclaimed list, where it
+        ' would read as text the spec had missed.
+        if ctx.trace then
+            if sec.starts != "" then
+                hm = _find_token(grid[lo].text, sec.starts)
+                if not is_unknown(hm) then
+                    append(claims, { path: path, field: "", kind: "section", type: "",
+                                     rule: sec.starts, line: grid[lo].line,
+                                     start: hm.start, length: hm.length,
+                                     text: mid(grid[lo].text, hm.start, hm.length) })
+                end if
+            end if
+        end if
 
         for each f in sec.fields
             got = _resolve_field(block, f, local_ctx)
             rec[f.name] = got.val
             if is_unknown(got.val) then
                 append(diags, { path: path + "." + f.name, reason: got.why, line: grid[lo].line })
+            else
+                if ctx.trace then
+                    for each c in _claims_for(path + "." + f.name, f, got)
+                        append(claims, c)
+                    end for
+                end if
             end if
         end for
 
@@ -1694,9 +1827,15 @@ library ari
                 for each rf in sec.rows
                     got = _resolve_field(one, rf, local_ctx)
                     append(cols[rf.name], got.val)
+                    rp = path + ".rows[" + ridx + "]." + rf.name
                     if is_unknown(got.val) then
-                        rp = path + ".rows[" + ridx + "]." + rf.name
                         append(diags, { path: rp, reason: got.why, line: first_line })
+                    else
+                        if ctx.trace then
+                            for each c in _claims_for(rp, rf, got)
+                                append(claims, c)
+                            end for
+                        end if
                     end if
                 end for
                 ridx = ridx + 1
@@ -1716,6 +1855,9 @@ library ari
                     for each d in sub.diags
                         append(diags, d)
                     end for
+                    for each c in sub.claims
+                        append(claims, c)
+                    end for
                     idx = idx + 1
                 end for
                 rec[child.name] = items
@@ -1731,11 +1873,193 @@ library ari
                     for each d in sub.diags
                         append(diags, d)
                     end for
+                    for each c in sub.claims
+                        append(claims, c)
+                    end for
                 end if
             end if
         end for
 
-        return { rec: rec, diags: diags }
+        return { rec: rec, diags: diags, claims: claims }
+    end function
+
+    ' ------------------------------------------- the span report (limitation C1)
+    '
+    ' What a specification EXPLAINED, measured against the source rather than
+    ' against the inference that produced it. Two of the design's nine scoring
+    ' measures (`docs/ari_discover_design.md` §8) could not be computed without
+    ' this, and estimating them from the model that generated the spec would be
+    ' the tool grading its own homework.
+    '
+    ' Blank characters are not counted on either side of the fraction. A report
+    ' is mostly whitespace -- column padding is most of a print image -- so
+    ' counting it would put content coverage near 1.0 for any spec at all, which
+    ' is the flattering-and-useless direction.
+
+    function _blank_char(c)
+        if c = " " then
+            return true
+        end if
+        if c = chr(9) then
+            return true
+        end if
+        if c = chr(13) then
+            return true
+        end if
+        return false
+    end function
+
+    ' Claims indexed by physical line. A record keyed by the line number, since a
+    ' report's lines are sparse in the grid once furniture is stripped.
+    function _claims_by_line(claims)
+        byline = { }
+        for each c in claims
+            k = string(c.line)
+            cur = byline[k]
+            if is_unknown(cur) then
+                cur = []
+            end if
+            append(cur, c)
+            byline[k] = cur
+        end for
+        return byline
+    end function
+
+    function _covered_at(cs, i)
+        for each c in cs
+            if i >= c.start then
+                if i < c.start + c.length then
+                    return true
+                end if
+            end if
+        end for
+        return false
+    end function
+
+    ' Coverage plus the unclaimed runs. An unclaimed run BEGINS AND ENDS on a
+    ' non-blank character and may contain blanks inside it, so `TOTAL FOR BRANCH`
+    ' is reported as one thing a person can read rather than as three fragments.
+    function _coverage(grid, claims)
+        byline = _claims_by_line(claims)
+        total = 0
+        covered = 0
+        runs = []
+        for each g in grid
+            cs = byline[string(g.line)]
+            if is_unknown(cs) then
+                cs = []
+            end if
+            n = len(g.text)
+            i = 0
+            rs = -1
+            re = -1
+            while i < n
+                ch = mid(g.text, i, 1)
+                if not _blank_char(ch) then
+                    total = total + 1
+                    hit = _covered_at(cs, i)
+                    if hit then
+                        covered = covered + 1
+                        if rs >= 0 then
+                            append(runs, { line: g.line, start: rs, length: re - rs,
+                                           text: mid(g.text, rs, re - rs) })
+                            rs = -1
+                        end if
+                    else
+                        if rs < 0 then
+                            rs = i
+                        end if
+                        re = i + 1
+                    end if
+                end if
+                i = i + 1
+            end while
+            if rs >= 0 then
+                append(runs, { line: g.line, start: rs, length: re - rs,
+                               text: mid(g.text, rs, re - rs) })
+            end if
+        end for
+        frac = unknown
+        if total > 0 then
+            frac = covered / total
+        end if
+        return { content_chars: total, claimed_chars: covered,
+                 fraction: frac, unclaimed: runs }
+    end function
+
+    ' Two claims covering the same characters, where AT LEAST ONE CARRIES A
+    ' VALUE. §8 calls this a collision and §20 asks where candidate rules
+    ' collided; both are about a span explained twice, which means at least one
+    ' of the two explanations is wrong and the parse cannot say which.
+    '
+    ' THE VALUE CONDITION IS WHAT MAKES THE MEASURE MEAN ANYTHING, and it was
+    ' put in after measuring: structural markers overlapping each other is
+    ' ORDINARY. A section declared `starts(/^Branch: /)` with a field read
+    ' `right of "Branch:"` names the same seven characters twice ON PURPOSE,
+    ' and counted as collisions those three headings were the entire reported
+    ' rate on a specification with nothing wrong with it -- a number that fires
+    ' on the commonest correct spec in the language is noise with a name.
+    function _collisions(claims)
+        byline = _claims_by_line(claims)
+        out = []
+        hit = { }
+        for each k in keys(byline)
+            cs = byline[k]
+            i = 0
+            while i < count(cs)
+                j = i + 1
+                while j < count(cs)
+                    a = cs[i]
+                    b = cs[j]
+                    values = false
+                    if a.kind = "field" then
+                        values = true
+                    end if
+                    if b.kind = "field" then
+                        values = true
+                    end if
+                    if a.path = b.path then
+                        values = false
+                    end if
+                    if values then
+                    if a.start < b.start + b.length then
+                        if b.start < a.start + a.length then
+                            lo = a.start
+                            if b.start > lo then
+                                lo = b.start
+                            end if
+                            hi = a.start + a.length
+                            if b.start + b.length < hi then
+                                hi = b.start + b.length
+                            end if
+                            append(out, { line: a.line, start: lo, length: hi - lo,
+                                          text: mid(a.text, lo - a.start, hi - lo),
+                                          paths: [ a.path, b.path ] })
+                            hit[a.path] = true
+                            hit[b.path] = true
+                        end if
+                    end if
+                    end if
+                    j = j + 1
+                end while
+                i = i + 1
+            end while
+        end for
+        n = 0
+        vals = 0
+        for each c in claims
+            if c.kind = "field" then
+                vals = vals + 1
+                if not is_unknown(hit[c.path]) then
+                    n = n + 1
+                end if
+            end if
+        end for
+        rate = unknown
+        if vals > 0 then
+            rate = n / vals
+        end if
+        return { collisions: out, involved: n, values: vals, rate: rate }
     end function
 
     ' ------------------------------------------------------------ public API
@@ -1743,23 +2067,36 @@ library ari
     ' Parse `report_text` against `spec_text`. Returns a record; a section with
     ' `repeats` becomes a list of records, and `rows:` becomes a frame.
     function parse(report_text, spec_text)
+        r = _parse_with(report_text, spec_text, false)
+        return { ok: r.ok, message: r.message, value: r.value, lines: r.lines,
+                 diagnostics: r.diagnostics }
+    end function
+
+    ' One parse path, two callers. `parse` and `trace` must not be able to
+    ' disagree about what a specification does -- a trace describing a different
+    ' program is worse than no trace -- so tracing is a flag on the walk, never
+    ' a second walker.
+    function _parse_with(report_text, spec_text, trace)
         spec = ari_parse_spec(spec_text)
         if is_unknown(spec.root) then
-            return { ok: false, message: "spec has no root section", value: unknown, diagnostics: [] }
+            return { ok: false, message: "spec has no root section", value: unknown,
+                     lines: 0, diagnostics: [], claims: [], grid: [] }
         end if
         bad = _check_spec(spec)
         if count(bad) > 0 then
             return { ok: false, message: join(bad, " "), value: unknown,
-                     diagnostics: [] }
+                     lines: 0, diagnostics: [], claims: [], grid: [] }
         end if
         grid = _build_grid(report_text, spec.page)
         spans = _find_instances(grid, 0, count(grid), spec.root)
         if count(spans) = 0 then
-            return { ok: false, message: "root section not found in report", value: unknown, diagnostics: [] }
+            return { ok: false, message: "root section not found in report", value: unknown,
+                     lines: count(grid), diagnostics: [], claims: [], grid: grid }
         end if
-        ctx = { types: spec.types, usings: { } }
+        ctx = { types: spec.types, usings: { }, trace: trace }
         out = _build_record(grid, spans[0].lo, spans[0].hi, spec.root, ctx, spec.root.name)
-        return { ok: true, message: "", value: out.rec, lines: count(grid), diagnostics: out.diags }
+        return { ok: true, message: "", value: out.rec, lines: count(grid),
+                 diagnostics: out.diags, claims: out.claims, grid: grid }
     end function
 
     ' Authoring-time advisory: summarize the diagnostics by reason so a spec
@@ -1798,6 +2135,47 @@ library ari
             append(findings, { what: k, count: tally[k], hint: hint })
         end for
         return { ok: true, message: "", value: r.value, lines: r.lines, diagnostics: r.diagnostics, findings: findings }
+    end function
+
+    ' WHICH SOURCE SPANS THE SPECIFICATION CLAIMED, AND WHAT STAYED UNCLAIMED.
+    '
+    ' Everything `parse` returns, plus:
+    '
+    '   claims            one per field that produced a value, and one per
+    '                     section heading, carrying the physical line, the
+    '                     character extent and the text it took
+    '   unclaimed         maximal runs of non-blank text no rule claimed
+    '   content_coverage  claimed non-blank characters over all of them
+    '   collisions        spans claimed twice, naming both paths
+    '   collision_rate    claims involved in one, over all claims
+    '
+    ' The two fractions travel with their DEFINITIONS attached, because a bare
+    ' number in [0,1] printed beside a specification reads as a grade, and
+    ' neither of these is one: coverage says how much of the page the spec
+    ' accounts for, which a report carrying commentary can never take to 1.0.
+    function trace(report_text, spec_text)
+        r = _parse_with(report_text, spec_text, true)
+        if not r.ok then
+            return { ok: false, message: r.message, value: unknown, lines: r.lines,
+                     diagnostics: r.diagnostics, claims: [], unclaimed: [],
+                     content_chars: 0, claimed_chars: 0,
+                     content_coverage: unknown, collisions: [],
+                     collision_rate: unknown }
+        end if
+        cov = _coverage(r.grid, r.claims)
+        col = _collisions(r.claims)
+        return { ok: true, message: "", value: r.value, lines: r.lines,
+                 diagnostics: r.diagnostics,
+                 claims: r.claims,
+                 unclaimed: cov.unclaimed,
+                 content_chars: cov.content_chars,
+                 claimed_chars: cov.claimed_chars,
+                 content_coverage: cov.fraction,
+                 content_coverage_is: "non-blank characters on non-furniture lines claimed by a field rule or a section heading, over all non-blank characters on those lines; a value converted to `unknown` claims nothing",
+                 collisions: col.collisions,
+                 collisions_involved: col.involved,
+                 collision_rate: col.rate,
+                 collision_rate_is: "value claims whose character extent overlaps another rule's claim, over all value claims; two structural markers naming the same literal do not count, since a section heading and a field anchored on it name it deliberately" }
     end function
 
     ' Read a file and parse it. The read is deliberately plain: a missing file

@@ -323,14 +323,35 @@ check("B9 control: the same rule without captures works",
 print ""
 print "-- CLASS C: capability gaps"
 ' ===========================================================================
-' C1 -- no span-level claimed/unclaimed surface. Probed STRUCTURALLY, by asking
-' what `parse` returns, because there is no behaviour to observe for something
-' that does not exist. The two things that DO exist are asserted beside it, so
-' this probe cannot be read as "ari reports nothing".
+' CLASS C IS EMPTY OF CAPABILITY GAPS. C1 was struck 2026-09-18 when `ari.trace`
+' shipped, so this probe is INVERTED: it asserts the surface is provably THERE.
+' A struck entry with nothing behind it is just a deleted one.
+'
+' The behaviour lives in tests/ari_trace_test.bas; what is asserted here is only
+' that the entry may stay struck -- the span surface exists, answers, and points
+' at the source.
 r = ari.parse("X 1,234.56", money_spec())
-check("C1 parse reports no claimed spans", has(r, "claimed"), false)
-check("C1 parse reports no unclaimed lines", has(r, "unclaimed"), false)
-check("C1 control: diagnostics DO exist", has(r, "diagnostics"), true)
+check("C1 control: `parse` itself is unchanged, no claims", has(r, "claims"), false)
+t = ari.trace("X 1,234.56", money_spec())
+check("C1 struck: trace reports claimed spans", has(t, "claims"), true)
+check("C1 struck: and what stayed unclaimed", has(t, "unclaimed"), true)
+check("C1 struck: and a content coverage figure", is_unknown(t.content_coverage), false)
+check("C1 struck: and where two rules collided", has(t, "collisions"), true)
+' The claim must point AT THE SOURCE, not merely exist: `1,234.56` begins at
+' column 2 of `X 1,234.56`, which is a fact about the string and not about ari.
+found = false
+for each c in t.claims
+    if c.kind = "field" then
+        if c.line = 1 then
+            if c.start = 2 then
+                if c.text = "1,234.56" then
+                    found = true
+                end if
+            end if
+        end if
+    end if
+end for
+check("C1 struck: and the span is where the value really is", found, true)
 i = ari.inspect("X 1,234.56", money_spec())
 check("C1 control: inspect DOES summarise findings", has(i, "findings"), true)
 
