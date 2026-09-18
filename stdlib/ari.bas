@@ -170,8 +170,26 @@ library ari
     ' same reason the pattern tables are: a refusal that lists what IS accepted
     ' has to derive the list rather than restate it, or the message and the code
     ' drift and the message is what an author believes.
+    ' A3: THE DR/CR SENSE IS A CONVENTION, AND IT RUNS BOTH WAYS.
+    '
+    ' `ledger` is the trial-balance reading -- debits positive, credits negative
+    ' -- and is what `ari` has always done, so it stays the default and no
+    ' existing spec moves. `statement` is the customer-facing one, where a
+    ' credit to the account INCREASES the balance: `1,234.56 CR` is money in.
+    '
+    ' Both are standard and neither is rarer than the other; which one a report
+    ' uses is not visible in the token, so §5.1's rule applies -- prefer the more
+    ' common reading and let the ambiguity be declarable, rather than pick
+    ' silently. Until now it was picked silently, and a customer statement read
+    ' through `ari` had EVERY SIGNED AMOUNT INVERTED with nothing raised.
+    '
+    ' The register had this backwards. It recorded `1,234.56 DR` as "should be
+    ' -1234.56", which is one convention asserted as the truth; measuring it
+    ' showed the current answer is the internally consistent one for a LEDGER
+    ' and the wrong one for a STATEMENT. The defect is not the sign, it is that
+    ' there was no way to say which kind of report this is.
     function type_dialects()
-        return { date: [ "dmy", "mdy" ] }
+        return { date: [ "dmy", "mdy" ], money: [ "ledger", "statement" ] }
     end function
 
     function builtin_types()
@@ -180,15 +198,16 @@ library ari
 
     function _money_patterns()
         return [
-            { re: "<[ ]*\\$?[ ]*([0-9,]+\\.[0-9]{2})[ ]*>", neg: true },
-            { re: "\\([ ]*\\$?[ ]*([0-9,]+\\.[0-9]{2})[ ]*\\)", neg: true },
-            { re: "\\$?[ ]*([0-9,]+\\.[0-9]{2})[ ]*CR", neg: true },
-            { re: "\\$?[ ]*([0-9,]+\\.[0-9]{2})[ ]*-", neg: true },
-            { re: "-[ ]*\\$[ ]*([0-9,]+\\.[0-9]{2})", neg: true },
-            { re: "\\$[ ]*-[ ]*([0-9,]+\\.[0-9]{2})", neg: true },
-            { re: "-[ ]*([0-9,]+\\.[0-9]{2})", neg: true },
-            { re: "\\$[ ]*([0-9,]+\\.[0-9]{2})", neg: false },
-            { re: "([0-9,]+\\.[0-9]{2})", neg: false }
+            { re: "<[ ]*\\$?[ ]*([0-9,]+\\.[0-9]{2})[ ]*>", neg: true, sense: "" },
+            { re: "\\([ ]*\\$?[ ]*([0-9,]+\\.[0-9]{2})[ ]*\\)", neg: true, sense: "" },
+            { re: "\\$?[ ]*([0-9,]+\\.[0-9]{2})[ ]*CR", neg: true, sense: "credit" },
+            { re: "\\$?[ ]*([0-9,]+\\.[0-9]{2})[ ]*DR", neg: false, sense: "debit" },
+            { re: "\\$?[ ]*([0-9,]+\\.[0-9]{2})[ ]*-", neg: true, sense: "" },
+            { re: "-[ ]*\\$[ ]*([0-9,]+\\.[0-9]{2})", neg: true, sense: "" },
+            { re: "\\$[ ]*-[ ]*([0-9,]+\\.[0-9]{2})", neg: true, sense: "" },
+            { re: "-[ ]*([0-9,]+\\.[0-9]{2})", neg: true, sense: "" },
+            { re: "\\$[ ]*([0-9,]+\\.[0-9]{2})", neg: false, sense: "" },
+            { re: "([0-9,]+\\.[0-9]{2})", neg: false, sense: "" }
         ]
     end function
 
@@ -207,9 +226,108 @@ library ari
         return n
     end function
 
+    ' Is there a DIGIT at codepoint `i` of `text`? Out of range is not a digit.
+    function _digit_at(text, i)
+        if i < 0 then
+            return false
+        end if
+        if i >= len(text) then
+            return false
+        end if
+        c = mid(text, i, 1)
+        return c >= "0" and c <= "9"
+    end function
+
+    ' Where the DIGITS of a money match begin, within the match itself.
+    '
+    ' THE BOUNDARY TEST IS ABOUT THE NUMBER, NOT ABOUT THE MATCH, and the first
+    ' version confused the two. Every pattern carries decoration -- `\$?[ ]*`,
+    ' a leading `<` or `(` or `-` -- so the match can START ON A SPACE, and the
+    ' character before THAT is whatever the line happens to hold. Measured:
+    ' `6 1,384.82-` lost its sign while `ALICE 1,384.82-` kept it, because in
+    ' the first the trailing-minus pattern's match began at the space and the
+    ' `6` before it read as "this number continues".
+    '
+    ' No pattern's decoration contains a digit, so the first digit inside the
+    ' match is where the captured number starts, and the capture has no spaces,
+    ' so its length finishes it.
+    '
+    ' FOUND BY THE DISCOVERY CORPUS AND BY NOTHING ELSE. `run_ari`'s own goldens
+    ' passed: its trailing-minus amounts do not happen to share a line with an
+    ' earlier digit. 18 of 230 planted amounts came back positive, an
+    ' ordinary-looking number in every case, and the only reason it was caught
+    ' at all is the register's rule that a fix to `ari` must be re-run against
+    ' the discovery corpus.
+    function _digits_begin(text, a, b)
+        i = a
+        while i < b
+            if _digit_at(text, i) then
+                return i
+            end if
+            i = i + 1
+        end while
+        return a
+    end function
+
+    ' Does the match at [a,b) sit INSIDE a longer numeric token?
+    '
+    ' THIS IS THE ROOT OF A1 AND A2 AND THEY ARE ONE DEFECT. Every money pattern
+    ' ends in `\.[0-9]{2}` and none of them required the match to be the WHOLE
+    ' number, so a pattern could match an infix and return it as the value.
+    ' Measured before the check existed:
+    '
+    '     1,234.567       -> 1234.56      a third decimal silently dropped
+    '     1.234,56        -> 1.23         a THOUSANDFOLD error (European grouping)
+    '     12.345.678,90   -> 12.34        a MILLIONFOLD one
+    '     1.234,56-       -> 1.23         and the sign lost with it
+    '
+    ' Not one of them raised, and each returns a number a reader would accept.
+    ' The last two are not in the register: it recorded A1 at one separator, and
+    ' the error grows with every further group.
+    '
+    ' THE TEST IS ADJACENCY THROUGH AT MOST ONE SEPARATOR, not merely adjacency.
+    ' A digit touching the match means the token continues; a `.` or `,` means it
+    ' continues only if a digit follows it. That distinction is what keeps
+    ' ordinary punctuation working -- `Ending Cash 1,234.56.` ends a sentence,
+    ' and refusing it would trade one wrong answer for a different one.
+    '
+    ' gBASIC regex is POSIX ERE, which has no lookaround, so this is a check on
+    ' the text either side rather than a cleverer pattern. That is also the
+    ' honest place for it: it is a statement about the TOKEN, not about any one
+    ' of the nine patterns.
+    function _inside_longer_number(text, a, b)
+        if _digit_at(text, a - 1) then
+            return true
+        end if
+        before = ""
+        if a - 1 >= 0 then
+            before = mid(text, a - 1, 1)
+        end if
+        if before = "." or before = "," then
+            if _digit_at(text, a - 2) then
+                return true
+            end if
+        end if
+        if _digit_at(text, b) then
+            return true
+        end if
+        after = ""
+        if b < len(text) then
+            after = mid(text, b, 1)
+        end if
+        if after = "." or after = "," then
+            if _digit_at(text, b + 1) then
+                return true
+            end if
+        end if
+        return false
+    end function
+
     ' Scan `text` for a money value. `want_last` picks the rightmost rather than
     ' the leftmost, which is what a detail row needs (§1.3).
-    function _money_in(text, want_last)
+    ' `sense` is the DR/CR convention in force: "" or "ledger" for the
+    ' trial-balance reading, "statement" for the customer-facing one.
+    function _money_in(text, want_last, sense)
         pats = _money_patterns()
         chosen = []
 
@@ -237,7 +355,23 @@ library ari
                     end if
                 end for
                 if not clash then
-                    v = _to_amount(m.groups[0], p.neg)
+                    nb = _digits_begin(text, a1, b1)
+                    if _inside_longer_number(text, nb, nb + len(m.groups[0])) then
+                        continue
+                    end if
+                    ' A DR/CR-suffixed amount takes its sign from the
+                    ' declared convention rather than from the pattern's own
+                    ' default, which is the ledger one.
+                    negate = p.neg
+                    if sense = "statement" then
+                        if p.sense = "credit" then
+                            negate = false
+                        end if
+                        if p.sense = "debit" then
+                            negate = true
+                        end if
+                    end if
+                    v = _to_amount(m.groups[0], negate)
                     if not is_unknown(v) then
                         append(chosen, { beg: a1, fin: b1, val: v })
                     end if
@@ -318,6 +452,43 @@ library ari
         return d
     end function
 
+    ' A4: a date is checked against the LENGTH OF ITS MONTH, not against 31.
+    '
+    ' It used to range-check only, so `31-FEB-2026` came back as the date
+    ' `2026-02-31` -- a value that does not exist, returned as if it did, with
+    ' no diagnostic. §8 says a bad cell becomes `unknown`, never a silent value,
+    ' and a day that is not in its month is exactly a bad cell.
+    '
+    ' The register called this "a deliberate looseness to revisit" because the
+    ' two paths AGREED -- `31/02/2026` was accepted the same way -- and
+    ' consistency is what made it a policy rather than a bug. Both paths go
+    ' through here, so both tighten together and the consistency is kept.
+    '
+    ' The leap rule is the Gregorian one in full: every fourth year, except
+    ' centuries, except every fourth century. 1900 is not a leap year and 2000
+    ' is, and the shortcut that gets 2000 wrong is the commonest date bug there
+    ' is -- so both are asserted rather than assumed.
+    function _leap(y)
+        if y - floor(y / 4) * 4 != 0 then
+            return false
+        end if
+        if y - floor(y / 100) * 100 != 0 then
+            return true
+        end if
+        return y - floor(y / 400) * 400 = 0
+    end function
+
+    function _days_in_month(y, mo)
+        lens = [ 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 ]
+        if mo = 2 then
+            if _leap(y) then
+                return 29
+            end if
+            return 28
+        end if
+        return lens[mo - 1]
+    end function
+
     function _valid_ymd(y, mo, da)
         if mo < 1 then
             return false
@@ -328,10 +499,7 @@ library ari
         if da < 1 then
             return false
         end if
-        if da > 31 then
-            return false
-        end if
-        return true
+        return da <= _days_in_month(number(y), mo)
     end function
 
     ' Dates. Returns { val, why } — `why` is "" on success, otherwise a reason
@@ -548,7 +716,7 @@ library ari
         end if
 
         if eff = "money" then
-            v = _money_in(span, want_last)
+            v = _money_in(span, want_last, dialect)
             if is_unknown(v) then
                 return { val: unknown, why: "malformed-money" }
             end if

@@ -67,17 +67,118 @@ print "-- CLASS A: silent wrong answers (these matter most)"
 ' said "the answer is wrong" would stay green if the answer became a DIFFERENT
 ' wrong value, and would tell a reader nothing about what to expect.
 
-check("A1 European grouping still reads 1.234,56 as 1.23", read_money("1.234,56"), 1.23)
-check("A2 three decimals are still truncated to two", read_money("1,234.567"), 1234.56)
-check("A3 a DR suffix is still read as POSITIVE", read_money("1,234.56 DR"), 1234.56)
-check("A4 31-FEB is still accepted", read_date("31-FEB-2026"), "2026-02-31")
-check("A4 and the numeric path agrees, so it is consistent rather than a regression",
-      read_date("31/02/2026"), "2026-02-31")
+' CLASS A IS EMPTY. All four entries were discharged by the 2026-09-17 sweep,
+' so every probe here is INVERTED: it asserts the defect is provably GONE. A
+' struck entry with nothing behind it is just a deleted one.
 
-' THE CONTROL for A3, and it is the whole reason A3 is a defect rather than a
-' gap: the OTHER half of the pair IS recognised, so a report using DR/CR gets
-' half its signs right.
-check("A3 control: CR is recognised as negative", read_money("1,234.56CR"), -1234.56)
+' --- A3: the DR/CR sense is a CONVENTION, and it runs both ways -------------
+' The register recorded `DR` as "should be -1234.56", which is the statement
+' reading asserted as the truth. The real defect was the other way round: on a
+' CUSTOMER STATEMENT a credit increases the balance, and `ari` read every one as
+' negative -- silently, for half the report population. Asserted as a DIFFERENCE
+' between the two declared conventions, because either alone is satisfied by a
+' library that hardcodes it.
+function money_using(t, using_line)
+    sp = []
+    append(sp, "section report:")
+    if using_line != "" then
+        append(sp, "    " + using_line)
+    end if
+    append(sp, "    field v: right of \"X\" as money")
+    r = ari.parse("X " + t, join(sp, "\n"))
+    if not r.ok then
+        return "spec refused"
+    end if
+    return r.value.v
+end function
+
+check("A3 struck: the ledger reading has DR positive",
+      money_using("1,234.56 DR", "using money: ledger"), 1234.56)
+check("A3 struck: and CR negative",
+      money_using("1,234.56 CR", "using money: ledger"), -1234.56)
+check("A3 struck: the statement reading inverts both -- DR",
+      money_using("1,234.56 DR", "using money: statement"), -1234.56)
+check("A3 struck: and CR",
+      money_using("1,234.56 CR", "using money: statement"), 1234.56)
+check("A3 the default is the ledger reading, so no existing spec moves",
+      read_money("1,234.56 CR"), -1234.56)
+check("A3 and DR is now READ rather than ignored",
+      read_money("1,234.56 DR"), 1234.56)
+
+' THE CONTROL that keeps the convention from being "flip everything": a
+' trailing minus, parentheses and angle brackets are NOTATION, not a DR/CR
+' sense, and the declaration must not touch them.
+check("A3 control: a trailing minus is notation, not a sense",
+      money_using("1,234.56-", "using money: statement"), -1234.56)
+check("A3 control: parentheses too",
+      money_using("(1,234.56)", "using money: statement"), -1234.56)
+check("A3 control: and an unsuffixed amount is unaffected",
+      money_using("1,234.56", "using money: statement"), 1234.56)
+
+' --- A4: a date is checked against the LENGTH OF ITS MONTH ------------------
+check("A4 struck: 31-FEB is refused", read_date("31-FEB-2026"), unknown)
+check("A4 struck: and so is the numeric spelling, so the two paths still agree",
+      read_date("31/02/2026"), unknown)
+check("A4 struck: it says why", why_of("31-FEB-2026", date_spec()), "invalid-date")
+check("A4 30-APR is valid and 31-APR is not", read_date("30-APR-2026"), "2026-04-30")
+check("A4 31-APR is refused", read_date("31-APR-2026"), unknown)
+check("A4 31-JAN is a real date", read_date("31-JAN-2026"), "2026-01-31")
+
+' THE LEAP RULE IN FULL. The shortcut that gets 2000 wrong is the commonest date
+' bug there is, so the two century cases are asserted rather than assumed.
+check("A4 29 February is refused in a common year", read_date("29-FEB-2026"), unknown)
+check("A4 and accepted in a leap year", read_date("29-FEB-2024"), "2024-02-29")
+check("A4 1900 was not a leap year", read_date("29-FEB-1900"), unknown)
+check("A4 2000 was", read_date("29-FEB-2000"), "2000-02-29")
+
+' ===========================================================================
+print ""
+print "-- STRUCK: A1 and A2, which were ONE defect. Now controls."
+' ===========================================================================
+' A struck entry with nothing behind it is just a deleted one, so the probes are
+' inverted rather than removed: each must be provably GONE. This is the shape
+' run_limitations.sh uses for the language ledger and for the same reason.
+'
+' Both entries said "or `unknown`", and `unknown` is what these now answer.
+' Reading these forms is B10/B11 and is a different question.
+check("A1 struck: European grouping is no longer read as 1.23",
+      read_money("1.234,56"), unknown)
+check("A2 struck: three decimals are no longer truncated to two",
+      read_money("1,234.567"), unknown)
+
+' TWO FORMS THE REGISTER NEVER RECORDED, found by measuring rather than reading.
+' A1 was recorded at ONE separator; the error grows with every further group,
+' and the sign is lost along with it.
+check("a millionfold error is gone too", read_money("12.345.678,90"), unknown)
+check("and the sign is no longer lost with it", read_money("1.234,56-"), unknown)
+
+' THE CONTROLS THAT KEEP THE FIX FROM BEING "REFUSE EVERYTHING", which is the
+' failure mode a boundary rule invites. Every form the recognizer read before
+' must still read, and the last one is the one the rule was written around:
+' ordinary punctuation after a value is not a longer number.
+check("plain grouped money still reads", read_money("1,234.56"), 1234.56)
+check("a dollar sign still reads", read_money("$1,234.56"), 1234.56)
+check("parentheses still read as negative", read_money("(1,234.56)"), -1234.56)
+check("a trailing minus still reads as negative", read_money("1,234.56-"), -1234.56)
+check("an ungrouped amount still reads", read_money("1234.56"), 1234.56)
+check("a small amount still reads", read_money("0.99"), 0.99)
+check("and a value ending a sentence is not read as a longer number",
+      read_money("1,234.56."), 1234.56)
+
+' THE CASE THE DISCOVERY CORPUS CAUGHT AND run_ari's OWN GOLDENS DID NOT.
+' A money pattern carries decoration -- `\$?[ ]*`, a leading `<`, `(` or `-` --
+' so its match can BEGIN ON A SPACE, and the first version of the boundary test
+' looked at the character before the MATCH rather than before the NUMBER. Any
+' earlier digit on the line then read as "this number continues", and the sign
+' was dropped: 18 of 230 planted amounts came back positive, each an ordinary
+' number. The two lines below differ only in whether what precedes the amount
+' contains a digit.
+check("a trailing minus survives a digit earlier on the line",
+      read_money("00147454 MERCER, ALICE 03/19/2026 1,384.82-"), -1384.82)
+check("and its control, the same line with no digits before it",
+      read_money("MERCER, ALICE 1,384.82-"), -1384.82)
+check("parentheses too", read_money("00147454 ALICE (1,384.82)"), -1384.82)
+check("and a dollar sign", read_money("00147454 ALICE $1,384.82"), 1384.82)
 
 ' ===========================================================================
 print ""
@@ -97,6 +198,10 @@ check("B5 control: the four-digit form still works", read_date("16-OCT-2026"), "
 check("B6 compact YYYYMMDD is still refused", read_date("20261016"), unknown)
 check("B7 a full month name is still refused", read_date("OCTOBER 16, 2026"), unknown)
 check("B8 ISO order with slashes is still refused", read_date("2026/10/16"), unknown)
+check("B10 European grouping is not READ, only refused", read_money("1.234,56"), unknown)
+check("B10 control: the same digits in the other convention read", read_money("1,234.56"), 1234.56)
+check("B11 more than two decimals is not read", read_money("1,234.567"), unknown)
+check("B11 control: exactly two decimals read", read_money("1,234.56"), 1234.56)
 
 ' The diagnostics are part of the contract: a refusal that said nothing would be
 ' a different and worse limitation than the one recorded.

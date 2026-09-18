@@ -271,7 +271,10 @@ fi
 
 # COVERAGE, both directions: every id in the register must have a probe, and
 # every probe must name an id that is in the register.
-reg_ids=$(grep -oE '^\| \*\*[A-Z][0-9]\*\*' docs/ari_limitations.md | tr -d '|* ' | sort -u)
+# `[0-9]+`, not `[0-9]`: with a single digit, B10 reads as `B1` followed by `0`
+# and the row never matches, so a two-digit entry would escape coverage
+# entirely -- found adding B10 and B11.
+reg_ids=$(grep -oE '^\| \*\*[A-Z][0-9]+\*\*' docs/ari_limitations.md | tr -d '|* ' | sort -u)
 if [ -z "$reg_ids" ]; then
     printf 'FAIL limitations   docs/ari_limitations.md lists no entries -- has it been emptied?\n'
     status=1

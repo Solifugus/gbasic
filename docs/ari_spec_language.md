@@ -182,8 +182,44 @@ using money: usd_bracketed
 ```
 
 The binding applies to the declaring section and everything nested inside it,
-and can be overridden further down. A field may also name a type directly,
-which beats any `using` in scope:
+and can be overridden further down. **It must be written inside a section** —
+there is no file scope for it to attach to, and one written above the first
+section is refused rather than ignored.
+
+A binding may also name a **dialect** of the built-in rather than a custom type.
+A dialect settles an ambiguity the token itself cannot:
+
+| built-in | dialects | what it settles |
+|---|---|---|
+| `date` | `dmy`, `mdy` | `03/04/2026` is 3 April or 4 March and nothing in the value says which. `27/12/2026` needs no declaration — 27 cannot be a month. |
+| `money` | `ledger` *(default)*, `statement` | which sign a `DR`/`CR` suffix carries. |
+
+```
+section rows repeats starts(/^ROW /):
+    using date: dmy
+    field posted: first date as date
+```
+
+**A declaration is authoritative, not a hint.** Under `using date: mdy`,
+`27/12/2026` is `unknown` with `invalid-date` — month 27 does not exist, and the
+author has stated this column is month-first. Silently re-reading it day-first
+would be guessing against an explicit declaration.
+
+**The `money` dialects are the DR/CR sense and nothing else.** `ledger` is the
+trial-balance reading (debits positive, credits negative) and is the default, so
+no existing spec changes. `statement` is the customer-facing one, where a credit
+*increases* the balance. Both are standard and nothing in the token says which a
+report uses. Notational negatives — a trailing minus, parentheses, angle
+brackets — are **not** affected by the dialect: they are notation, not a sense.
+
+`ari.type_dialects()` and `ari.builtin_types()` return these lists, so a tool
+(or a refusal message) can name them rather than restate them.
+
+A `using` that names neither a declared type nor a dialect of that built-in is
+**refused when the spec is read**, naming both lists. It used to fall through
+silently and hand the field back the raw line as text.
+
+A field may also name a type directly, which beats any `using` in scope:
 
 ```
 field ending_cash: right of "Ending Cash" as usd_bracketed

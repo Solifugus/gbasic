@@ -128,15 +128,56 @@ plausible number that is wrong, with no diagnostic. A caller cannot tell them
 from a correct read, and `ari`'s own contract (§8: a bad cell becomes `unknown`,
 never a silent value) is what they violate.
 
-| id | input | `ari` answers | should be | note |
-|---|---|---|---|---|
-| **A1** | `1.234,56` | **1.23** | `1234.56`, or `unknown` | European grouping. A continental report read by this parser yields a number **a thousand times too small**, silently. The generic pattern matches `1.23` inside it and stops. |
-| **A2** | `1,234.567` | **1234.56** | `1234.567`, or `unknown` | Three decimals silently truncated to two. Rates, FX and unit prices carry more than two. |
-| **A3** | `1,234.56 DR` | **1234.56** | `-1234.56` | `CR` is recognised as negative; `DR` is not recognised at all. A report using the DR/CR pair gets **half its signs right**, which is worse than getting none right, because the total looks nearly plausible. |
-| **A4** | `31-FEB-2026` | `2026-02-31` | `unknown` + `invalid-date` | `_valid_ymd` range-checks only (`1..12`, `1..31`) and does not know month lengths. **Pre-existing and consistent** — the numeric path accepts `31/02/2026` the same way — so this is a deliberate looseness to revisit, not a regression. |
+**Class A is empty as of 2026-09-17.** All four entries were discharged by the
+sweep; each is recorded below with what it did, and each has a **control** in
+`tests/ari_limitations_test.bas` asserting it is provably gone rather than
+merely deleted.
 
-A1 is the sharpest: it is the failure mode this whole library exists to
-prevent, in the recognizer itself.
+#### A1 and A2 — struck 2026-09-17, and they were one defect
+
+They read as two entries and they were one: **every money pattern ends in
+`\.[0-9]{2}` and none of them required the match to be the whole number**, so a
+pattern could match an *infix* of a longer numeric token and return it as the
+value.
+
+Measuring it before fixing it found two forms worse than either recorded entry:
+
+| input | was | now |
+|---|---|---|
+| `1,234.567` | **1234.56** | `unknown` + `malformed-money` |
+| `1.234,56` | **1.23** — a **thousandfold** error | `unknown` + `malformed-money` |
+| `12.345.678,90` | **12.34** — a **millionfold** one | `unknown` + `malformed-money` |
+| `1.234,56-` | **1.23**, sign lost as well | `unknown` + `malformed-money` |
+
+The register had A1 at one separator; the error grows with every further group,
+and nothing said so.
+
+**The fix is a statement about the token, not a tenth pattern**: a match is
+rejected when a digit touches it, or when a `.` or `,` touches it *and a digit
+follows that*. The second half is what keeps ordinary punctuation working —
+`Ending Cash 1,234.56.` ends a sentence, and refusing it would trade one wrong
+answer for a different one. gBASIC regex is POSIX ERE with no lookaround, so it
+is a check on the text either side, which is also the honest place for it.
+
+**What this discharges and what it does not.** Both entries said *"or
+`unknown`"*, and `unknown` is what they now answer — the silent wrong answer is
+gone. **Reading** the continental and three-decimal forms is a different and
+smaller question, recorded below as B10 and B11.
+
+> **And the fix broke something, which the discovery corpus caught and
+> `run_ari`'s own goldens did not.** The boundary test was written about the
+> *match* when it is about the *number*: every pattern carries decoration —
+> `\$?[ ]*`, a leading `<`, `(` or `-` — so a match can **begin on a space**,
+> and any earlier digit on the line then read as *this number continues*.
+> **18 of 230 planted amounts lost their sign**, each coming back as an ordinary
+> positive figure. `run_ari` passed throughout: its trailing-minus amounts do
+> not happen to share a line with an earlier digit.
+>
+> This is the register's own rule doing its work — *after the sweep, re-run the
+> discovery corpus; a change that fixes a register entry and moves a discovery
+> score has done something nobody intended*. It moved the score, and the reason
+> was a defect nothing else in the tree could see. The two lines now in the
+> probe differ only in whether what precedes the amount contains a digit.
 
 ---
 
@@ -156,9 +197,52 @@ these are *gaps to decide about*, not defects.
 | **B6** | `20261016` | `no-date-found` | Compact `YYYYMMDD`. **Deliberately contentious**: it is also a plausible identifier and a plausible integer, so recognising it as a date by default would be exactly the silent guess §8 forbids. Probably belongs in a declared `type` block rather than the built-in union. |
 | **B7** | `OCTOBER 16, 2026` | `no-date-found` | Full month name. |
 | **B8** | `2026/10/16` | `no-date-found` | ISO order with slashes. |
+| **B10** | `1.234,56`, `12.345.678,90` | `malformed-money` | **European grouping**, the remainder of A1 once the silent read was removed. It cannot be settled by a tenth pattern: `1.234` is one-thousand-two-hundred-thirty-four continental and one-point-two-three-four decimal, and nothing in the token says which. Where BOTH separators appear the **last one is the decimal mark** — true of either convention and settled by the format literature — so those forms are decidable; the single-separator ones need §5.1's declared convention, which is exactly the shape `using date: dmy` has. |
+| **B11** | `1,234.567` | `malformed-money` | **More than two decimals**, the remainder of A2. Representable: `money` carries four guard digits below the minor unit, which is why `money.text(amount, places)` exists — sub-cent prices are ordinary (fuel at $3.459 a gallon). Same family as B2 (one decimal place), and the same decision: how many places `as money` should admit is a question about the type, not a pattern to paste. |
 | **B9** | a custom `date` type whose rule **captures** its components — `/([0-9]{2})\/([0-9]{2})\/([0-9]{4})/ -> dmy` | `no-date-found` | With no `/re/repl/` and at least one capture, `_convert` takes `groups[0]` as the value. That is right for money — a capture is how the digits are pulled out of the symbols and the sign — and never right for a date, where the captures are the components and the first is a two-digit day. **The control is the same rule without parentheses, which works**, so the difference is the capture and nothing else. Found writing `tests/ari_using_test.bas` (2026-09-17) and recorded rather than fixed, because the sweep rule below is *Class A first, and on its own*. It is Class B by this file's own definition — an honest `unknown` with a diagnostic — but note the diagnostic **misattributes**: `no-date-found` points at the data when the spec is what is wrong. |
 
 ---
+
+#### A3 — struck 2026-09-17, and this register had it backwards
+
+This file recorded `1,234.56 DR` as **should be `-1234.56`**. That is one
+convention asserted as the truth, and measuring it showed the opposite of what
+the entry claimed.
+
+`CR` is read as negative, so `DR` being positive is *internally consistent* — it
+is the **trial-balance** reading, where debits are the positive column. The
+recorded "should be" would have inverted a correct answer.
+
+**The real defect is larger than the entry and points the other way.** On a
+**customer statement** a credit *increases* the balance: `1,234.56 CR` is money
+in, and `ari` read it as **negative**. Both conventions are standard, neither is
+rarer, and nothing in the token says which a report uses — so a statement read
+through `ari` had **every signed amount inverted, silently**. That is Class A,
+and it is the sign it got right by accident that hid it.
+
+§5.1's own rule applies: *prefer the more common reading and record the
+ambiguity, rather than pick silently*. `ledger` stays the default, so no
+existing spec moves, and `using money: statement` declares the other — the same
+mechanism `using date: dmy` uses, which is why stage 1 had to come first.
+
+**The control that keeps this from being "flip everything":** the *notational*
+negatives — a trailing minus, parentheses, angle brackets — are untouched by the
+convention. They are notation, not a DR/CR sense, and a version that flipped
+them too would pass every check that only looked at `CR`.
+
+#### A4 — struck 2026-09-17
+
+`_valid_ymd` range-checked `1..12` and `1..31` and did not know month lengths,
+so `31-FEB-2026` came back as the date `2026-02-31` — a value that does not
+exist, returned as if it did. It is checked against the length of its month now,
+with the **full** Gregorian leap rule: 1900 is not a leap year and 2000 is, and
+the shortcut that gets 2000 wrong is the commonest date bug there is, so both
+are asserted rather than assumed.
+
+The entry called this "a deliberate looseness to revisit" because the two paths
+**agreed** — `31/02/2026` was accepted the same way — and that consistency was
+what made it a policy rather than a bug. Both paths go through `_valid_ymd`, so
+both tightened together and the consistency is kept.
 
 ### Struck by the sweep — 2026-09-17
 
