@@ -1,6 +1,8 @@
 #ifndef GBASIC_EVAL_H
 #define GBASIC_EVAL_H
 
+#include <stdio.h>
+
 #include "ast.h"
 
 int eval_program(AstStmtList program);
@@ -17,5 +19,35 @@ void eval_set_program_args(char *const *items, size_t count);
  * (docs/multiprocessing_design.md §3). Returns a process exit status. */
 int eval_run_actor(AstStmtList program, const char *entry,
                    int inbox_fd, int self_fd, int control_fd);
+
+/* ---- REPL session -----------------------------------------------------------
+ *
+ * `eval_program` opens an environment, runs one root and releases everything.
+ * A prompt needs the middle of that repeated: open once, run many chunks
+ * against ONE environment, close once. The session OWNS every chunk's AST until
+ * it closes (a function declared on one line is called on the next, and the
+ * registration stores the AST node, not a copy), so the caller must NOT free a
+ * chunk it has handed to gb_session_run.
+ *
+ * gb_session_run returns 0 when the chunk ran to the end, non-zero when it
+ * raised, stopped or escaped a loop -- reported on stderr exactly as a script's
+ * failure is. Either way the next chunk starts clean: a prompt whose next line
+ * is dead because the previous one failed is not a prompt. */
+void gb_session_open(void);
+int  gb_session_run(AstStmtList chunk);
+/* Whether the chunk just run ANSWERED rather than acted: a single expression
+ * statement that produced a value, which the session printed. A call returning
+ * `nothing` is not an answer and is not reported as one. */
+/* Ask the chunk currently running to stop, as Ctrl-C does at a prompt. Safe to
+ * call from a signal handler: it sets one flag, and the evaluator unwinds
+ * through the ordinary raise path so locks are released and frames unwound. */
+void gb_session_interrupt(void);
+int  gb_session_echoed(void);
+int  gb_session_exit_code(void);
+void gb_session_close(void);
+
+/* The session's global names and their values, one per line -- the REPL's
+ * `vars`. Rendered in display mode, so it cannot raise. */
+void gb_session_list_vars(FILE *out);
 
 #endif

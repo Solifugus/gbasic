@@ -458,6 +458,23 @@ static void report_syntax_error(gb_parse_ctx *ctx, int line, int column,
                                 int end_line, int end_column, const char *message);
 }
 
+/* A FAILED PARSE USED TO LEAK THE STATEMENTS IT HAD ALREADY BUILT. Bison drops
+ * the semantic values left on its stack when a syntax error ends the parse, and
+ * without a destructor "drops" means forgets: `gbasic bad.bas` leaked the whole
+ * prefix before the bad token, and so did every rejected import.
+ *
+ * Harmless-looking at a few hundred bytes per process, and not harmless at a
+ * PROMPT, where a failed parse is an ordinary event -- every question the
+ * session answers (`1 + 2` is not a statement) goes through one, so the leak is
+ * per line rather than per process and grows for as long as the session lasts.
+ *
+ * `program` is deliberately NOT in this list: its value is the one handed out
+ * to the caller (ctx->parsed_program), and by the time bison accepts, every
+ * statement_list has already been popped by its own reduction, so nothing here
+ * can run on a value someone still owns. The other stmt_list nonterminals are
+ * consumed by their parent rule on success and reachable only on failure. */
+%destructor { ast_free_program($$); } statement_list consider_statement_list consider_else_opt if_block_tail if_inline_tail
+
 %type <stmt_list> program statement_list consider_statement_list consider_else_opt if_block_tail if_inline_tail
 %type <text> for_end
 %type <op_char> compound_op
@@ -1594,6 +1611,10 @@ int parse_source_reentrant(const char *source, const char *path,
 
     int result = yyparse(&ctx);
     if (result != 0) {
+        /* Empty unless `program` itself reduced, which a syntax error prevents;
+         * non-empty on the YYABORT paths, where the root is built and then
+         * refused. Freed either way rather than reasoned about per path. */
+        ast_free_program(ctx.parsed_program);
         return result;
     }
     /* A diagnostic reported from yylex must fail the parse even when bison
@@ -1603,6 +1624,9 @@ int parse_source_reentrant(const char *source, const char *path,
      * reports success. The file then ran up to the bad token and exited 0.
      * lexer_error_reported is the only evidence that the EOF was synthetic. */
     if (ctx.lexer_error_reported) {
+        /* Accepted by the grammar and rejected by us: the root IS built, and
+         * nobody is going to be handed it. */
+        ast_free_program(ctx.parsed_program);
         return 1;
     }
 

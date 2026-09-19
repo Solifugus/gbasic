@@ -2,6 +2,7 @@
 #include "builtins.h"
 #include "eval.h"
 #include "gbasic.h"
+#include "repl.h"
 #include "lexer.h"
 
 #include <dirent.h>
@@ -16,6 +17,8 @@ void parse_set_source_path(const char *path);
 static void print_help(const char *argv0) {
     printf("usage:\n");
     printf("  %s FILE [args...]\n", argv0);
+    printf("  %s              (no arguments: the interactive prompt)\n", argv0);
+    printf("  %s --repl\n", argv0);
     printf("  %s --tokens FILE\n", argv0);
     printf("  %s --ast FILE\n", argv0);
     printf("  %s --add-loads FILE\n", argv0);
@@ -25,6 +28,7 @@ static void print_help(const char *argv0) {
     printf("\n");
     printf("flags:\n");
     printf("  --help          show this help\n");
+    printf("  --repl          the interactive prompt; also what no arguments does\n");
     printf("  --version       show version\n");
     printf("  --tokens FILE   print lexer tokens\n");
     printf("  --ast FILE      parse and print AST\n");
@@ -869,6 +873,21 @@ int main(int argc, char **argv) {
      * output surface prompt. Must run before any output. */
     if (extract_flag(&argc, argv, "--line-buffered")) {
         setvbuf(stdout, NULL, _IOLBF, BUFSIZ);
+    }
+
+    /* The prompt, which is also what `gbasic` with no arguments does: a
+     * language whose bare name prints a usage message has nothing to try. It is
+     * dispatched here, above the mode table, because a prompt takes no FILE and
+     * every shape below is built around having one. */
+    int repl_mode = extract_flag(&argc, argv, "--repl");
+    if (repl_mode || argc == 1) {
+        if (argc >= 2 && strcmp(argv[1], "--json-diagnostics") == 0) {
+            json_diagnostics = 1;
+        } else if (argc > 1) {
+            fprintf(stderr, "usage: %s [--line-buffered] [--json-diagnostics] --repl\n", argv[0]);
+            return 2;
+        }
+        return repl_main(json_diagnostics);
     }
 
     if (argc == 2 && strcmp(argv[1], "--help") == 0) {

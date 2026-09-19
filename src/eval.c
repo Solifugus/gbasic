@@ -728,6 +728,27 @@ typedef struct {
     char *library;
 } FunctionDef;
 
+/* Ctrl-C while a chunk is running. Set from a signal handler, so it is
+ * `volatile sig_atomic_t` and the handler does NOTHING else -- the unwinding is
+ * done by the evaluator, on its own thread, through the ordinary raise path.
+ *
+ * Checked at the entry of eval_stmt_list, which is once per loop ITERATION
+ * (every loop body is a statement list) and once per call, so a runaway loop
+ * and a runaway recursion are both interruptible, including a loop whose body
+ * is empty -- where a per-statement check would never fire. One volatile read
+ * per statement list is the whole cost.
+ *
+ * Armed ONLY by a prompt session: a script's Ctrl-C still means what it always
+ * meant, which is that the process ends. */
+static volatile sig_atomic_t interrupt_requested = 0;
+
+/* A REPL session is open (gb_session_open). The one thing it changes about
+ * evaluation: redefining a local function REPLACES rather than refuses, because
+ * at a prompt that is an edit and not a paste that went wrong. Set here rather
+ * than passed down because function_register is reached from four paths and a
+ * parameter on all of them would say nothing at three of them. */
+static int session_redefines_allowed = 0;
+
 typedef struct {
     char *name;
     char *context;
@@ -7569,10 +7590,19 @@ static void function_register_def(AstStmt *stmt, int imported, const char *libra
      * comparison removed. It is kept because the asymmetry favours it: a
      * spurious "defined twice" on valid code is a worse failure than a silent
      * re-registration, and the cost is one comparison. */
+    /* AT A PROMPT, A REDEFINITION IS AN EDIT. The refusal above is about a
+     * FILE, where the first of two definitions becomes unreachable and the
+     * author cannot see which one runs; typing a function again at a session
+     * prompt is how you fix it, and there is nothing left to be unreachable --
+     * the earlier text is gone from the screen and from the resident program,
+     * which replaces by name for the same reason. LOCAL definitions only: a
+     * library loaded at the prompt is still a file, and two definitions inside
+     * it are still the mistake this refuses. */
     FunctionDef *same_scope = imported
         ? function_find_in_library(stmt->as.function.name, library)
         : function_find_local(stmt->as.function.name);
-    if (same_scope && same_scope->stmt && same_scope->stmt != stmt) {
+    if (same_scope && same_scope->stmt && same_scope->stmt != stmt &&
+        !(session_redefines_allowed && !imported)) {
         char message[320];
         if (imported) {
             snprintf(message, sizeof(message),
@@ -36741,6 +36771,16 @@ static EvalResult eval_stmt(AstStmt *stmt) {
 }
 
 static EvalResult eval_stmt_list(AstStmtList statements) {
+    if (interrupt_requested) {
+        interrupt_requested = 0;
+        /* An ordinary raise, so it unwinds through every `with lock`, every
+         * `with principal` and every open frame exactly as a real failure
+         * does -- an interrupt that skipped the unwinding would leave a lock
+         * held and a file open. It is catchable for the same reason: a program
+         * that wants to tidy up after being stopped should be able to. */
+        runtime_error_raise("interrupted", 1003, "interrupted");
+        return eval_error_result();
+    }
     size_t pc = 0;
     while (pc < statements.count) {
         EvalResult result = eval_stmt(statements.items[pc]);
@@ -36799,8 +36839,78 @@ static EvalResult eval_stmt_list(AstStmtList statements) {
     return eval_no_result();
 }
 
-int eval_program(AstStmtList program) {
-    active_root = program;
+/* Everything a finished run releases: the error frame, the import and
+ * declaration tables, every module that holds a process-wide handle, and
+ * finally the global environment and the root AST reference.
+ *
+ * Extracted from eval_program so the REPL can run many chunks against ONE
+ * environment and release it once, at the end of the session. Sharing the
+ * teardown rather than writing a second one is the point: a module added
+ * here is released by both callers, and a REPL that forgot one would leak or
+ * -- worse -- leave a listener bound after the session ended. */
+static void runtime_teardown(void) {
+    free(base_error_frame.label);
+    memset(&base_error_frame, 0, sizeof(base_error_frame));
+    current_error_frame = &base_error_frame;
+    call_stack_depth = 0;
+    error_clear_state();
+    raise_in_flight = 0;
+    runtime_stopped = 0;
+    loop_depth = 0;
+    consider_depth = 0;
+    actor_cleanup_children();
+    proc_orphans_clear();
+    retain_clear();
+    monitor_clear();
+    lock_clear();
+    watcher_clear();
+    modifier_clear();
+    function_clear();
+    loaded_files_clear();
+    use_pairs_clear(&used_pairs, &used_pair_count);
+    use_pairs_clear(&use_stack, &use_stack_count);
+    /* Reset with the rest of the import state: a second program run in one
+     * process would otherwise meet the first run's claims and report a
+     * collision against a library nothing had loaded yet. */
+    library_names_clear();
+    gui_clear_native_windows();
+    gui_library_loaded = 0;
+    pg_library_loaded = 0;
+    webclient_library_loaded = 0;
+    smtp_library_loaded = 0;
+    webserver_library_loaded = 0;
+    gi_library_loaded = 0;
+    webserver_clear();
+    principal_clear();
+    actor_mailbox_shutdown();
+    http_library_loaded = 0;
+    http_shutdown();
+    timer_shutdown();
+    if (webclient_curl_initialized) {
+#if HAVE_LIBCURL
+        curl_global_cleanup();
+#endif
+        webclient_curl_initialized = 0;
+    }
+    free(current_import_path);
+    current_import_path = NULL;
+    free(root_source_path);
+    root_source_path = NULL;
+    env_clear(&global_env);
+    active_root = ast_stmt_list_empty();
+}
+
+/* Find and prepare the `program` block, if the root declares one: refuse a
+ * second, warn about dead top-level statements beside it, hoist the
+ * declarations it would otherwise never reach, and bind its argument.
+ * Returns the block, or NULL when the root has none and the top level itself
+ * is what runs.
+ *
+ * Extracted from eval_program so a REPL session prepares a chunk exactly as a
+ * file is prepared -- `load "prog.bas"` at the prompt must reach the same
+ * hoisting a script gets, and two copies of this would be two things that can
+ * disagree about what a program declares. */
+static AstStmt *program_block_prepare(AstStmtList program) {
     AstStmt *program_block = NULL;
     for (size_t i = 0; i < program.count; i++) {
         if (program.items[i]->kind == AST_STMT_PROGRAM) {
@@ -36888,6 +36998,12 @@ int eval_program(AstStmtList program) {
                     value_array(items, program_arg_count));
         }
     }
+    return program_block;
+}
+
+int eval_program(AstStmtList program) {
+    active_root = program;
+    AstStmt *program_block = program_block_prepare(program);
 
     /* `raise_in_flight` as well as `runtime_stopped`: a refusal from the
      * PRE-REGISTRATION pass above -- a malformed parameter list, say -- is
@@ -36976,6 +37092,62 @@ int eval_program(AstStmtList program) {
             raise_report_fatal();
         }
     }
+    runtime_teardown();
+    /* An explicit `exit(n)` wins over everything above, including the
+     * webserver loop's status: the program said what it meant. */
+    if (exit_code_requested >= 0) {
+        exit_status = exit_code_requested;
+        exit_code_requested = -1;
+    }
+    return exit_status;
+}
+
+/* ---- REPL session: one environment, many chunks --------------------------
+ *
+ * `eval_program` opens an environment, runs one root, and releases everything.
+ * A prompt needs the middle of that repeated: `x = 5` on one line and `print x`
+ * on the next are two roots against ONE environment. The split is here rather
+ * than in the REPL because the state it walks -- the global env, the function
+ * and modifier tables, `active_root`, the error frame -- is all file-local to
+ * this translation unit, and a second copy of the teardown in another file is a
+ * second thing that can forget a module.
+ *
+ * Two things a session must hold that a single run need not. The chunk ASTs are
+ * OWNED for the session's lifetime: `function_register` stores the AstStmt*, so
+ * freeing the chunk that declared a function leaves every later call reading
+ * freed memory. And `active_root` spans EVERY line typed so far, not the
+ * current one -- `library util ... end library` entered at the prompt must
+ * still be found by a call on the next line, and `spawn worker` must find a
+ * function declared earlier. */
+
+typedef struct {
+    AstStmtList *chunks;      /* owned; every chunk's AST outlives its run */
+    size_t       chunk_count;
+    AstStmt    **root;        /* BORROWED into the chunks; the session's root  */
+    size_t       root_count;
+    size_t       root_cap;
+    int          open;
+} ReplSession;
+
+static ReplSession repl_session = {0};
+
+/* Did the last chunk ANSWER rather than act? Set when a single expression
+ * statement produced a value worth showing. The prompt uses it to decide what
+ * belongs in the resident program: an answer is a question you asked, and a
+ * question is not part of your program. */
+static int repl_last_echoed = 0;
+
+void gb_session_open(void) {
+    memset(&repl_session, 0, sizeof(repl_session));
+    repl_session.open = 1;
+    session_redefines_allowed = 1;
+}
+
+/* Everything a finished CHUNK must put back so the next line starts clean. A
+ * raise is reported and then forgotten -- a prompt whose next line is dead
+ * because the previous one failed is not a prompt. Deliberately NOT the
+ * environment: that is the whole point of a session. */
+static void session_reset_after_chunk(void) {
     free(base_error_frame.label);
     memset(&base_error_frame, 0, sizeof(base_error_frame));
     current_error_frame = &base_error_frame;
@@ -36985,51 +37157,163 @@ int eval_program(AstStmtList program) {
     runtime_stopped = 0;
     loop_depth = 0;
     consider_depth = 0;
-    actor_cleanup_children();
-    proc_orphans_clear();
-    retain_clear();
-    monitor_clear();
-    lock_clear();
-    watcher_clear();
-    modifier_clear();
-    function_clear();
-    loaded_files_clear();
-    use_pairs_clear(&used_pairs, &used_pair_count);
-    use_pairs_clear(&use_stack, &use_stack_count);
-    /* Reset with the rest of the import state: a second program run in one
-     * process would otherwise meet the first run's claims and report a
-     * collision against a library nothing had loaded yet. */
-    library_names_clear();
-    gui_clear_native_windows();
-    gui_library_loaded = 0;
-    pg_library_loaded = 0;
-    webclient_library_loaded = 0;
-    smtp_library_loaded = 0;
-    webserver_library_loaded = 0;
-    gi_library_loaded = 0;
-    webserver_clear();
-    principal_clear();
-    actor_mailbox_shutdown();
-    http_library_loaded = 0;
-    http_shutdown();
-    timer_shutdown();
-    if (webclient_curl_initialized) {
-#if HAVE_LIBCURL
-        curl_global_cleanup();
-#endif
-        webclient_curl_initialized = 0;
+}
+
+int gb_session_run(AstStmtList chunk) {
+    if (!repl_session.open) {
+        return 1;
     }
-    free(current_import_path);
-    current_import_path = NULL;
-    free(root_source_path);
-    root_source_path = NULL;
-    env_clear(&global_env);
-    active_root = ast_stmt_list_empty();
-    /* An explicit `exit(n)` wins over everything above, including the
-     * webserver loop's status: the program said what it meant. */
-    if (exit_code_requested >= 0) {
-        exit_status = exit_code_requested;
-        exit_code_requested = -1;
+
+    AstStmtList *grown = realloc(repl_session.chunks,
+                                 sizeof(AstStmtList) * (repl_session.chunk_count + 1));
+    if (!grown) {
+        abort();
     }
-    return exit_status;
+    repl_session.chunks = grown;
+    repl_session.chunks[repl_session.chunk_count++] = chunk;
+
+    if (repl_session.root_count + chunk.count > repl_session.root_cap) {
+        size_t want = repl_session.root_count + chunk.count;
+        size_t cap = repl_session.root_cap ? repl_session.root_cap * 2 : 16;
+        while (cap < want) {
+            cap *= 2;
+        }
+        AstStmt **items = realloc(repl_session.root, sizeof(AstStmt *) * cap);
+        if (!items) {
+            abort();
+        }
+        repl_session.root = items;
+        repl_session.root_cap = cap;
+    }
+    for (size_t i = 0; i < chunk.count; i++) {
+        repl_session.root[repl_session.root_count++] = chunk.items[i];
+    }
+    active_root.items = repl_session.root;
+    active_root.count = repl_session.root_count;
+
+    AstStmt *program_block = program_block_prepare(chunk);
+    repl_last_echoed = 0;
+    /* A Ctrl-C that arrived while the prompt was WAITING for input must not
+     * kill the next line the author types. */
+    interrupt_requested = 0;
+
+    EvalResult result;
+    /* A chunk that is exactly one expression statement is ECHOED, which is what
+     * separates a prompt from a script: `len("abc")` typed at a prompt is a
+     * question, and the same line in a file is a discarded result. Done here,
+     * on the AST, rather than by rewriting the text to `print (...)`: the
+     * rewrite would also echo `nothing` for the many calls that return it
+     * (`write(f, text)` answering with the word for nothing is noise), and it
+     * would move every diagnostic's column. */
+    if (!program_block && chunk.count == 1 &&
+        chunk.items[0]->kind == AST_STMT_EXPR &&
+        !runtime_stopped && !raise_in_flight) {
+        Value value = eval_expr(chunk.items[0]->as.expr_stmt);
+        if (!runtime_stopped && !raise_in_flight && value.kind != VALUE_NULL) {
+            value_print_to(stdout, value);
+            repl_last_echoed = 1;
+        }
+        value_free(value);
+        result = eval_no_result();
+    } else {
+        result = (runtime_stopped || raise_in_flight)
+            ? eval_stop()
+            : eval_stmt_list(program_block ? program_block->as.program.body : chunk);
+    }
+
+    if (result.did_break || result.did_continue) {
+        char flow_message[128];
+        loop_flow_message(result, flow_message, sizeof(flow_message));
+        if (result.flow_line > 0) {
+            current_line = result.flow_line;
+            current_column = result.flow_column;
+        }
+        runtime_error_raise(flow_message, 1003, "invalid control flow");
+    }
+    int failed = 0;
+    if (result.did_raise || raise_in_flight || base_error_frame.pending) {
+        raise_report_fatal();
+        failed = 1;
+    }
+    if (result.did_stop || runtime_stopped) {
+        failed = 1;
+    }
+    if (result.did_return) {
+        value_free(result.value);
+    }
+    if (result.did_goto) {
+        free(result.goto_label);
+    }
+    if (result.did_gosub) {
+        free(result.gosub_label);
+    }
+    if (result.did_break || result.did_continue) {
+        value_free(result.value);
+        failed = 1;
+    }
+
+    session_reset_after_chunk();
+
+    /* A `server` block or a live timer entered at the prompt runs the same
+     * event loop a script runs, for the same reason: the program said to serve.
+     * It returns when the loop runs out of work, and the prompt comes back. */
+    if (!failed && (webserver_any_active() || aux_loop_sources_active())) {
+        if (webserver_run_event_loop()) {
+            failed = 1;
+        }
+        if (raise_in_flight || base_error_frame.pending) {
+            raise_report_fatal();
+            failed = 1;
+        }
+        session_reset_after_chunk();
+    }
+    return failed;
+}
+
+/* Ask the running chunk to stop. Signal-handler safe: it sets one flag and the
+ * evaluator does the rest. Calling it when nothing is running is harmless --
+ * the flag is cleared by the next statement list, which is the prompt's own. */
+void gb_session_interrupt(void) {
+    interrupt_requested = 1;
+}
+
+int gb_session_echoed(void) {
+    return repl_last_echoed;
+}
+
+/* -1 when the session has not been told to end; otherwise the status `exit(n)`
+ * asked for. Read after each chunk: `exit(0)` at a prompt means leave. */
+int gb_session_exit_code(void) {
+    return exit_code_requested;
+}
+
+void gb_session_close(void) {
+    if (!repl_session.open) {
+        return;
+    }
+    runtime_teardown();
+    for (size_t i = 0; i < repl_session.chunk_count; i++) {
+        ast_free_program(repl_session.chunks[i]);
+    }
+    free(repl_session.chunks);
+    free(repl_session.root);
+    memset(&repl_session, 0, sizeof(repl_session));
+    session_redefines_allowed = 0;
+    interrupt_requested = 0;
+    exit_code_requested = -1;
+}
+
+/* Every name the session's global frame holds, one per line, with a short
+ * rendering of its value. The REPL's `vars`. Display mode, so this cannot
+ * raise: listing what you have must never end the session. */
+void gb_session_list_vars(FILE *out) {
+    for (size_t i = 0; i < global_env.count; i++) {
+        Value text = builtin_string_value(value_copy(global_env.items[i].value));
+        fprintf(out, "%s = ", global_env.items[i].name);
+        if (text.kind == VALUE_STRING) {
+            fwrite(text.as.string, 1, string_length(text.as.string), out);
+        }
+        fputc('\n', out);
+        value_free(text);
+    }
 }

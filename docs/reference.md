@@ -7390,6 +7390,160 @@ EDGAR / SEC-filings suite (governed by `docs/edgar_design.md`, with
 - `examples/adventure/adventure.bas` is a small text adventure using current input, print, modifiers, arrays, functions, `if`/`else`, `while`, and `break`.
 - `examples/adventure/NOTES.md` records design-friction notes from that example.
 
+## The Prompt
+
+`gbasic` with no arguments (or `gbasic --repl`) opens an interactive prompt. It
+is the same interpreter with its lifetime turned inside out: a file opens an
+environment, runs once and releases it, while the prompt opens one environment
+and runs a root per line against it. A variable assigned on one line is there on
+the next; so is a function, a modifier and a library.
+
+```text
+$ gbasic
+gBASIC. `help` for prompt commands, `quit` to leave.
+> x = 5
+> print x
+5
+```
+
+### A line that is not a statement is a question
+
+`1 + 2` is not a gBASIC statement, and at the prompt it does not have to be.
+Anything that is an expression rather than an instruction is evaluated and its
+answer shown:
+
+```text
+> 1 + 2
+3
+> len("abc")
+3
+> x
+5
+```
+
+A call whose answer is `nothing` shows nothing — it did something rather than
+answered something, and printing the word would be noise:
+
+```text
+> write(f, "hello")
+>
+```
+
+### Unfinished lines
+
+A block or an open bracket asks for the rest of itself. The decision is the
+parser's, not a list of keywords, so it is right for every block form the
+language has:
+
+```text
+> for i = 1 to 3
+... print i
+... next
+1
+2
+3
+```
+
+A blank line submits what you have anyway, which is how you get the diagnostic
+out of a line that merely *looks* unfinished.
+
+### Interrupting
+
+Ctrl-C ends the line that is running and gives the prompt back; it does not end
+the session, and the resident program and every variable survive. The
+interruption travels the ordinary failure path, so locks are released and open
+blocks unwound exactly as a real error unwinds them:
+
+```text
+> while true
+... end while
+^C
+runtime error at <prompt>:1:1: interrupted
+> print "still here"
+still here
+```
+
+Ctrl-C at an idle prompt does nothing. This is the prompt's behaviour only — for
+a program run from a file, Ctrl-C still ends the process, as it always has.
+
+### The resident program
+
+Every line that **acts** is kept, in the order typed; every line that merely
+**answers** is not, because a question you asked is not part of your program.
+Re-entering a declaration replaces the earlier one **in place**, which is how
+you fix a function and try again without line numbers to manage:
+
+```text
+> function sq(n)
+... return n * n
+... end function
+> sq(3)
+9
+> function sq(n)
+... return n * n * n
+... end function
+> sq(3)
+27
+> list
+function sq(n)
+return n * n * n
+end function
+```
+
+Note that `sq(3)` is not in the listing: it was a question. `print sq(3)` would
+be, because printing is something the program does.
+
+Redefining a function is refused in a *file* — the first of two definitions
+becomes unreachable and you cannot see which one runs — and accepted at the
+prompt, where there is nothing left to be unreachable and typing it again is
+how you edit it.
+
+### Prompt commands
+
+| command | what it does |
+| --- | --- |
+| `list` | show the resident program |
+| `run` | start a fresh session and run the resident program |
+| `new` | forget the resident program and the session |
+| `vars` | show the names this session holds |
+| `save "file"` | write the resident program to a file |
+| `load "file"` | read a file into the prompt and run it |
+| `help` | the command list |
+| `quit`, `bye` | leave (so does end-of-input, and `exit(n)`) |
+
+A session that saw a failure exits with status 1, so a piped session can be used
+in a script and a run that reported three errors is not mistaken for success. An
+explicit `exit(n)` still wins.
+
+`load` is the one that needs care, and the rule is the argument's shape: a
+**quoted path** is a file the prompt reads, a **bare name** is still gBASIC's
+own `load` statement. `load "report.bas"` opens a file; `load sqlite` loads the
+module.
+
+`run` starts a fresh session, so the resident program begins exactly as it would
+from a file. A program that only works because of something you typed earlier
+fails at the prompt, which is where you want to find out.
+
+### Piped input
+
+With input coming from a pipe rather than a terminal, the banner and the prompts
+are suppressed and the output is exactly the program's — so a prompt session can
+be scripted and its output compared:
+
+```sh
+printf 'x = 2\nprint x * 3\nquit\n' | gbasic --repl
+```
+
+Diagnostics go to stderr and are reported as they happen, so a failure on one
+line does not end the session:
+
+```text
+> print nosuchname
+runtime error at <prompt>:1:1: undefined variable: nosuchname
+> print "still here"
+still here
+```
+
 ## CLI Flags
 
 Run a program, optionally passing it arguments:
@@ -7400,6 +7554,13 @@ gbasic FILE [args...]
 
 Any arguments after `FILE` bind to the program block's first parameter as a
 0-based string array.
+
+Open the interactive prompt (see [The Prompt](#the-prompt)); this is also what
+`gbasic` with no arguments does:
+
+```sh
+gbasic --repl
+```
 
 Show help:
 
