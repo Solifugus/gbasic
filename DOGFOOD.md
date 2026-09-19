@@ -193,6 +193,26 @@ and the stale-looking ones carry a Status line saying what overtook them.
     library. Four defects were reported and nine were fixed — each phase made
     the next one reachable, which is the pattern worth remembering.
 
+14. **`if unknown then` raises, then runs the `else` anyway, exits 1, and
+    cannot be caught.** The truthiness switch raises and returns 0, so the
+    branch is taken after the error, the program ends with status 1, and
+    `on error goto next` does not see it. Undocumented. See the 2026-09-18
+    book-planning entry.
+
+15. **`not` binds tighter than `=`.** `not a = b` evaluates `(not a) = b`
+    and prints `false` with no complaint. `reference.md` has no precedence
+    table for anyone to check against.
+
+16. **Two smaller surprises:** `round(x)` with one argument raises (two are
+    required), and `--add-loads` did not add `load sqlite` to a program that
+    needed it — it may cover only `.bas` libraries, not native modules.
+
+17. **A doc-gap cluster found by reading the documentation as a reader
+    would**, including `reference.md` still saying a raise cannot be caught,
+    two different answers for `file_type` on a missing path, `gpdf` missing
+    from the documentation index, and a stale datetime status row. Listed in
+    full in the 2026-09-18 book-planning entry.
+
 ### Open — accepted as documented limitations (no action planned)
 
 **Every live bullet below is EXECUTABLE.** `tests/run_limitations.sh` runs one
@@ -4720,3 +4740,113 @@ orders freely.
   SGML (FIX is tag=value, X12 and EDIFACT are segment-delimited, MT940 is
   `:20:` style, pain.001 and camt are XML), and legacy HTML is already served
   by `xml.parse_html`.
+
+
+## 2026-09-18 — CC — while: planning the 14 chapters of *gBASIC Volume 1: Learning Programming*
+
+Four sessions planned Volume 1 chapter by chapter, verifying every feature
+claim by RUNNING 0.1.0 rather than by reading. That is an unusual angle on the
+language — a beginner's path through it, in order, with nothing skipped — and
+it found things ordinary use does not, because a book cannot route around a
+surprise the way a program can. Plans and the full list live in
+`~/development/gbasic-books/docs/volume-1/README.md`.
+
+- **Type:** bug | language-surprise | doc-gap
+- **Severity:** high (the first), medium, low
+
+### 1. `if unknown then` raises, continues into the `else`, exits 1, and is not catchable (bug, high)
+
+```basic
+x = unknown
+on error goto next
+if x then
+  print("yes")
+else
+  print("no")        ' <- this RUNS, after the raise
+end if
+```
+
+The truthiness switch raises and then returns 0, so the `else` branch is taken
+*after* the error was reported, the process exits 1, and `on error goto next`
+does not intercept it. Verified twice, independently.
+
+It is documented nowhere: not `tutorial.md`, not `reference.md`, not
+`UNLEARN.md`. It also looks like exactly the silent-trap class
+`warning_model_design.md` says has been systematically eliminated — an error
+that is announced and then stepped over — so the shape may not be intended.
+
+**Cost:** Chapter 7 of the book teaches `nothing` and `unknown` through the
+game ("I'm not sure" *is* `unknown`), and its opening program's printed output
+depends on what happens after the raise. The chapter cannot be written until
+this is specified, and it is written around `is_unknown` regardless.
+
+**Workaround:** guard with `is_unknown`/`is_nothing` (or `default(v, f)`)
+before any truthiness test. What the book does; what the language should
+probably make unnecessary.
+
+### 2. `not` binds tighter than `=` (language-surprise, medium)
+
+`not a = b` evaluates `(not a) = b` and prints `false`. No error, no warning.
+`reference.md` lists the operators but gives **no precedence table**, so a
+reader has nothing to check against, and `UNLEARN.md` does not mention it.
+
+**Cost:** a beginner chapter on conditions has to teach around a construct
+that reads like English and answers wrongly.
+
+**Suggestion:** write the precedence table into `reference.md`, and consider a
+warning for `not <expr> = <expr>` — the pattern has no sensible intended
+meaning in the form people write it.
+
+### 3. Two smaller ones (low)
+
+- **`round(x)` with one argument raises**; two arguments are required. Common
+  in other BASICs, and the first thing a reader tries.
+- **`--add-loads` did not add `load sqlite`** to a program that used the
+  module. It may handle only `.bas` libraries and not native modules. Not
+  chased down; noted so it is not described as a fix-my-loads button.
+
+### 4. Doc gaps found by reading as a reader (doc-gap, medium)
+
+Each verified against the binary:
+
+1. **`reference.md`'s `try_decode` section still says "gBASIC has no way to
+   catch a raise."** Contradicted by the Errors section of the same file, and
+   disproved by running `on error goto next`. Two chapters depend on catching.
+2. **`reference.md` says records are reached by reference.** True of a record
+   reached by name from an enclosing scope; a record **parameter** is a copy.
+   As written it will mislead.
+3. **`reference.md` gives two answers for `file_type` on a missing path** —
+   `"missing"` in one place, `unknown` in another. The binary says `unknown`.
+4. **`UNLEARN.md` contradicts `reference.md` on quoted record-literal keys.**
+   The quoted form works.
+5. **Script-mode ordering — "define before you call" — is real but stated
+   nowhere.** In a `program` block, functions hoist; in script mode they do
+   not. Verified by running.
+6. **`docs/README.md` has no row for `gpdf`**, and `reference.md`'s gpdf
+   section lists `gpdf.image`, `gpdf.svg` and `gpdf.table` while its own
+   opening text calls those later phases.
+7. **`docs/README.md`'s datetime row is stale in the safe direction** — it
+   calls timezones and business-hours arithmetic deferred, but
+   `datetime_design.md` §9 and `stdlib/dates.bas` show both shipped
+   2026-08-18 (`add_business_hours`, `business_hours_between`,
+   `is_business_time`).
+8. **`docs/ai/COOKBOOK.md` has no LLM entry at all** — no `llm`, no
+   `ask_json`. `examples/llm_ask_json_test.bas` would fit its
+   references-code-never-contains-it rule.
+9. **`llm.local`'s documented base URL looks wrong.** `llm_design.md` and
+   `examples/llm/smoke_ask.bas` both write `http://localhost:11434/v1`, but
+   `_endpoint` in `stdlib/llm.bas` appends `/v1/chat/completions`, which would
+   produce a doubled `/v1`. Not tested against a real Ollama.
+
+- **Workaround:** the book states what it verified by running and cites the
+  design documents rather than the stale passages; each gap above is quoted in
+  the relevant chapter plan's Risks section so it cannot be silently inherited.
+
+### What this says about the exercise
+
+The book needs something the repository does not have: **a machine-readable
+description of the language.** `reference.md` is 7,500 lines of prose, so
+Volume 1's condensed reference appendix has to be extracted from it with
+fragile rules and an anchor gate. A generated inventory of builtins and their
+signatures would replace all of that, and would also give the docs gate
+something to check status claims against.
