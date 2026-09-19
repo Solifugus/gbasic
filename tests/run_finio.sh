@@ -52,6 +52,38 @@ else
     bad "finio_test exited nonzero"; cat "$out"
 fi
 
+# --- AMOUNT KIND: the cross-adapter contract ------------------------------
+#
+# WHAT KIND OF THING IS AN AMOUNT? Three adapters answered `money` and the OFX
+# one answered TEXT, for the life of that adapter, with nothing noticing. The
+# reason it survived is the reason this tier is HERE and not in any one
+# adapter's suite: every assertion about an amount anywhere in this tree went
+# through `string(...)`, and `string(money)` and the decimal text it was parsed
+# from are the same characters. Only ARITHMETIC tells them apart, and only a
+# check that spans the adapters can see that one of them is the odd one out.
+#
+# Found by pointing the OFX adapter at a real credit union's download -- the
+# first file from that institution it had ever seen -- and adding three amounts
+# up: "-28.00-5.00-28.00", type string, no raise.
+#
+# The table is DECLARED and every adapter must be in it, so a new adapter
+# picking a third representation fails here rather than in the first program
+# that tries to total its amounts.
+printf 'TIER amount_kind\n'
+out="$scratch/amt.out"
+if timeout 120 ./gbasic tests/finio/amount_kind_test.bas >"$out" 2>&1; then
+    mism="$(sed -n 's/^mismatches: //p' "$out")"
+    checks="$(sed -n 's/^checks: //p' "$out")"
+    if [ "$mism" = "0" ] && [ "${checks:-0}" -ge 18 ]; then
+        ok "$checks checks, 0 mismatches -- every adapter's amount is the declared kind"
+    else
+        bad "amount_kind: $checks checks, $mism mismatches"
+        grep MISMATCH "$out" || true
+    fi
+else
+    bad "amount_kind exited nonzero"; cat "$out"
+fi
+
 # --- LAB: the three architectures must AGREE ------------------------------
 # The oracle for §21's measurement. A mode that is fast because it answers a
 # different question would otherwise be indistinguishable from a cheap one.

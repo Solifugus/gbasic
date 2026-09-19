@@ -51,6 +51,38 @@ function codes_of(reg, doc)
     return out
 end function
 
+' A document whose containment collapsed has NO statements, and reaching into
+' one is an index error that kills the fixture BEFORE the tier that would have
+' named the problem. Reported as a mismatch instead -- the failure class this
+' project has now hit twice.
+function first_txn_field(doc, name)
+    if count(doc.entities.statements) = 0 then
+        return { status: "NO-STATEMENTS", value: "NO-STATEMENTS", raw: "NO-STATEMENTS",
+                 why: "the document produced no statements at all" }
+    end if
+    st = doc.entities.statements[0]
+    if count(st.transactions) = 0 then
+        return { status: "NO-TRANSACTIONS", value: "NO-TRANSACTIONS", raw: "NO-TRANSACTIONS",
+                 why: "the statement produced no transactions at all" }
+    end if
+    flds = doc.records[st.transactions[0]].fields
+    ' AND A MISSING FIELD IS AN ANSWER, not an index error. A classification
+    ' defect that turns a leaf into an aggregate removes the field entirely, and
+    ' reaching for it kills the fixture at the exact check written to report it.
+    if not has(flds, name) then
+        return { status: "NO-SUCH-FIELD", value: "NO-SUCH-FIELD", raw: "NO-SUCH-FIELD",
+                 why: ("no field `" + name + "` -- was it read as an aggregate?") }
+    end if
+    return flds[name]
+end function
+
+function txn_count(doc)
+    if count(doc.entities.statements) = 0 then
+        return -1
+    end if
+    return count(doc.entities.statements[0].transactions)
+end function
+
 function shape_of(reg, path)
     doc = finio.read_file(reg, path, {})
     nt = 0
@@ -208,6 +240,102 @@ out = finio.write_text(reg, v1)
 check("a 1.x document re-emits byte-identically", out.text = slurp(dir + "statement_v1.ofx"), true)
 check("and the adapter declares that guarantee", out.byte_fidelity, true)
 check("and it is still 1.x", contains(out.text, "</TRNAMT>"), false)
+
+print ""
+print "-- AN AMOUNT IS `money`, AND THIS TIER EXISTS BECAUSE A REAL FILE FOUND IT"
+' Every value this adapter produced used to be TEXT, and it was the only one of
+' the five adapters that did -- NACHA, camt.053 and pain.001 all hand an amount
+' back as `money`. Nothing here caught it, and the reason is worth recording:
+' the checks above all go through `string(...)`, and `string(money)` and the
+' text it was parsed from are THE SAME CHARACTERS. A suite written by the hands
+' that wrote the reader cannot see a defect that only shows when somebody does
+' arithmetic.
+tv1 = finio.read_file(reg, dir + "statement_v1.ofx", {})
+amt = tv1.records[tv1.entities.statements[0].transactions[0]].fields.TRNAMT
+check("a transaction amount is money, not text", type(amt.value), "money")
+check("and it is denominated by the statement's own CURDEF", amt.currency, "USD")
+check("a balance is money too", type(tv1.records[tv1.entities.statements[0].balances[0]].fields.BALAMT.value), "money")
+' THE LOAD-BEARING CHECK, and it is the failure itself rather than the type:
+' added as text these gave "1250.00-87.45", a plausible-looking string, with
+' nothing raised. Asserted as the ARITHMETIC so it cannot pass on a value that
+' merely reports the right `type`.
+t0 = tv1.records[tv1.entities.statements[0].transactions[0]].fields.TRNAMT.value
+t1 = tv1.records[tv1.entities.statements[0].transactions[1]].fields.TRNAMT.value
+check("two amounts ADD rather than concatenate", string(t0 + t1), "1162.55")
+' THE CONTROL: the bank's characters are still there for a caller that wants
+' them, which is Axiom 2 and is what `raw` is for. Without this, "it is money"
+' would be satisfied by a reader that had thrown the source text away.
+check("and the bank's own characters are kept", trim(amt.raw), "1250.00")
+' `raw` is the SOURCE BYTES and is deliberately NOT trimmed -- an SGML leaf runs
+' to the next `<`, so it carries the line break and the indentation after it.
+' That is Axiom 2 working: the trimmed form is a reading, the raw form is what
+' arrived. Asserted because a reader "helpfully" trimming raw would lose the one
+' thing raw is for.
+check("and raw really is untrimmed source, not a second reading",
+      amt.raw = trim(amt.raw), false)
+' A NON-AMOUNT IS UNTOUCHED. Dates stay text on purpose -- camt leaves
+' `BookgDt` and `CreDtTm` as text and so does every other adapter -- and an OFX
+' date additionally carries a bank-stated zone, which this adapter has no
+' business resolving. Without this check, "amounts are typed" would be
+' indistinguishable from "everything is typed".
+dtp = tv1.records[tv1.entities.statements[0].transactions[0]].fields.DTPOSTED
+check("a date is still the bank's text", type(dtp.value), "string")
+
+print ""
+print "-- AN AMOUNT IN NO CURRENCY IS `invalid`, NOT A NUMBER"
+' camt already refuses an `<Amt>` with no Ccy for this reason: a figure with no
+' currency is not an amount, and answering with the digits alone invents one.
+' THE LINE IS REMOVED, not emptied. Emptying it would make this tier depend on
+' how an EMPTY ELEMENT is classified, which is a different question tested
+' below -- and when that classification broke, this tier died on an index
+' before the one written for it could speak.
+nocur = replace(slurp(dir + "statement_v1.ofx"), chr(9) + chr(9) + chr(9) + chr(9) + "<CURDEF>USD" + chr(10), "")
+nd = finio.read_text(reg, nocur, {})
+na = first_txn_field(nd, "TRNAMT")
+check("with no CURDEF the amount is invalid", na.status, "invalid")
+check("and it says why", contains(na.why, "no CURDEF"), true)
+check("and the raw text survives for a reader to see", trim(na.raw), "1250.00")
+check("validation reports it", contains(codes_of(reg, nd), "amount_not_decimal"), true)
+' THE CONTROL: the same file WITH its CURDEF is fine, or "invalid" would be
+' satisfied by an adapter that refused every amount there is.
+check("the same statement with its CURDEF is ok", amt.status, "ok")
+check("and reports nothing", contains(codes_of(reg, tv1), "amount_not_decimal"), false)
+
+print ""
+print "-- AN ELEMENT WITH NO CONTENT, WHICH IS A LEAF AND NOT AN AGGREGATE"
+' SGML cannot tell the two apart without a DTD. The rule used to be "empty means
+' aggregate", and in 1.x -- where a leaf has NO closing tag -- that pushes a name
+' nothing will ever pop: every close after it mismatches, containment collapses,
+' and the document comes back with ZERO STATEMENTS AND NO ERROR. Measured before
+' the fix: 9 records, 0 statements, nothing raised.
+'
+' NO FILE IN THIS CORPUS HAS ONE -- not the ten foreign vectors, not the real
+' credit-union download that led here -- so this was found by CONSTRUCTION. It
+' is asserted anyway, because an empty `<MEMO>` or `<CHECKNUM>` is ordinary in
+' 1.x and the failure is silent and total.
+e1 = replace(slurp(dir + "statement_v1.ofx"), "<TRNAMT>", "<CHECKNUM>" + chr(10) + "<TRNAMT>")
+e2 = replace(slurp(dir + "statement_v2.ofx"), "<TRNAMT>", "<CHECKNUM></CHECKNUM>" + chr(10) + "<TRNAMT>")
+d1 = finio.read_text(reg, e1, {})
+d2 = finio.read_text(reg, e2, {})
+base = finio.read_text(reg, slurp(dir + "statement_v1.ofx"), {})
+nb = txn_count(base)
+check("an empty element does not cost the 1.x file its transactions",
+      txn_count(d1), nb)
+check("nor the 2.x file", txn_count(d2), nb)
+' THE LOAD-BEARING HALF, and it is this adapter's whole claim: the two
+' serializations of ONE logical statement must give ONE answer. Asserting either
+' alone passes on a reader that handles that dialect and mangles the other.
+check("and both dialects agree about the empty element",
+      first_txn_field(d1, "CHECKNUM").status,
+      first_txn_field(d2, "CHECKNUM").status)
+check("which is `ok` with nothing in it, not a missing field",
+      first_txn_field(d1, "CHECKNUM").value, "")
+' THE CONTROL: a genuinely empty AGGREGATE is still an aggregate. Without it the
+' fix would be satisfied by a reader that had stopped nesting altogether.
+agg = finio.read_text(reg, replace(slurp(dir + "statement_v1.ofx"),
+        "<BANKACCTFROM>", "<SECLIST>" + chr(10) + "</SECLIST>" + chr(10) + "<BANKACCTFROM>"), {})
+check("an empty aggregate is still nested, not flattened into a field",
+      txn_count(agg), nb)
 
 print ""
 print "-- REFUSALS"

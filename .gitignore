@@ -24,3 +24,12 @@ examples/tmp_*.db
 # directory, so it should never reappear -- this is the belt to that braces.
 app.db
 examples/tmp_*.xml
+
+# REAL BANK STATEMENTS -- a personal account, dropped here 2026-09-18 as the
+# first non-synthetic corpus `ari` has ever been pointed at (limitation L0 in
+# docs/ari_limitations.md). NEVER COMMITTED: they carry an account number, a
+# balance history and a name. What may leave this directory is a FINDING --
+# "this format writes a trailing CR", "this date form is unread" -- never a
+# line of the file, and never a fixture derived from one without rewriting
+# every figure and identifier in it.
+examples/statements/

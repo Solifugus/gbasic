@@ -1734,6 +1734,83 @@ FITID, which no publisher ships on purpose. Six perturbations proven red.
 explicit royalty-free, worldwide, perpetual implementation licence** — Axiom 12
 answered in writing rather than inferred.
 
+##### 2026-09-18 — a file from an institution nobody here had seen
+
+A real credit-union download, in the four formats its online banking offers:
+`.CSV`, `.OFX`, `.QBO` and `.QFX`. The last three are all **OFX 1.0.2 SGML** —
+QBO and QFX add Intuit's `<FI>`, `<INTU.BID>` and `<INTU.USER>` and differ from
+each other only in the BID value. The adapter recognised all three `exact`,
+read 13 transactions from each, kept the extension tags as ordinary fields, and
+reported nothing. That is a fifth institution confirming the reader.
+
+**The CSV was the most valuable of the four, and not because of CSV.** It is an
+*independent second rendering of the same statement*, which is the one thing a
+corpus written here can never supply. Against it the OFX read was checked rather
+than observed: 13 ↔ 13, every amount and every date agreeing, the CSV's running
+balance reconciling end to end, and OFX's stated `LEDGERBAL` equal to the CSV's
+newest balance. Agreement between two files neither of us produced is evidence;
+one file alone is a transcript.
+
+**IT FOUND A DEFECT, AND IT WAS IN OUR CODE.** Every value this adapter produced
+was TEXT — it was the only one of the five that did. Measured:
+
+``` text
+summing three transaction amounts the obvious way gives
+"-28.00-5.00-28.00", type string
+```
+
+No raise, no diagnostic, a plausible-looking answer of the wrong kind. It
+survived the adapter's whole life because **every assertion about an amount in
+this tree goes through `string(...)`, and `string(money)` and the decimal text it
+was parsed from are the same characters.** Only arithmetic tells them apart, and
+every fixture was written by the hands that wrote the reader. `TRNAMT` and
+`BALAMT` are now `money`, denominated by the statement's own `CURDEF`, with the
+not-a-decimal check moved from validation to construction so an unreadable
+amount is `invalid` where it is built — the rule camt already followed.
+
+**Dates are deliberately NOT typed**, because *that* is the consistent choice:
+camt leaves `BookgDt` and `CreDtTm` as text and so does every other adapter. An
+OFX date additionally carries a bank-stated zone, and this file states
+`[-8:PST]` on `DTPOSTED` while stating `[-5:EST]` inside every `FITID`, so
+choosing one and calling it the instant would be an invention.
+
+**The generalisable outcome is `tests/finio/amount_kind_test.bas`**, a declared
+table of what kind of thing each adapter's transaction amount is, wired into
+`run_finio.sh`. It sits above the adapters because no single adapter's suite can
+see that one of them is the odd one out. Every adapter must appear in it, so a
+new one picking a third representation fails there rather than in the first
+program that totals its amounts. Two exceptions are recorded **with their
+arguments**, because an exception nobody wrote down is indistinguishable from
+the defect: BAI2 amounts are in minor units with no currency, and pain.001's
+`CtrlSum` carries no currency of its own. *The first draft of that tripwire
+reported pain.001 as broken* — it had scanned for the first field whose name
+contained "amount" or "sum" and found `control_sum`. A tripwire whose false
+positives look exactly like its true ones is not a tripwire.
+
+**A second defect, found by construction rather than by a bank, fixed anyway.**
+The scanner classified **any element with no content as an aggregate**. In 1.x —
+where a leaf has no closing tag — that pushes a name nothing will ever pop:
+every close after it mismatches, containment collapses, and the document comes
+back with **zero statements and no error**. Measured at 9 records and 0
+statements. That is the same shape this adapter already shipped once from a
+different cause, and an empty `<MEMO>` or `<CHECKNUM>` is ordinary enough in 1.x
+to reach it. No file in the corpus has one — not the ten foreign vectors, not
+the credit-union download — but the rule is the format's own convention rather
+than a guess about data: an element whose closing tag never appears after it is
+a leaf, and one whose closing tag is the *very next* tag is the 2.x spelling of
+the same thing. One answer in both dialects, which is this adapter's whole claim.
+
+**What these files could not give.** Nothing here is a print image, so `ari`'s
+L0 is untouched. And one month cannot establish a recurring charge's *pattern* —
+only that the charge exists.
+
+**Two lessons about the fixtures themselves**, both the same class and both hit
+in one session: a perturbation that collapses the record tree made the suite die
+on an **index** at the exact check written to report it, and a second one made
+it die on a **missing field**. Both are guarded now — a collapsed document and
+an absent field are answers, not crashes — because a red tier that reports
+nothing is the failure mode this suite exists to prevent, one level up.
+
 
 #### Phase 2 fourth result — pain.001, and §16 implemented, 2026-09-15
 

@@ -207,9 +207,15 @@ function scan(text)
                                              occurrence: occ, value: trim(value),
                                              raw: value, at: lt })
                         else
-                            append(events, { kind: "open", name: name, path: path,
-                                             occurrence: occ, at: lt })
-                            append(stack, name)
+                            if _empty_is_leaf(text, name, stop_at) then
+                                append(events, { kind: "leaf", name: name, path: path,
+                                                 occurrence: occ, value: "",
+                                                 raw: value, at: lt })
+                            else
+                                append(events, { kind: "open", name: name, path: path,
+                                                 occurrence: occ, at: lt })
+                                append(stack, name)
+                            end if
                         end if
                         i = gt + 1
                     end if
@@ -218,6 +224,46 @@ function scan(text)
         end if
     end while
     return events
+end function
+
+' AN ELEMENT WITH NO CONTENT: A LEAF, OR AN AGGREGATE WITH NOTHING IN IT?
+'
+' SGML CANNOT TELL YOU WITHOUT A DTD, which is why this needs a rule at all. The
+' rule used to be "empty means aggregate", and in 1.x -- where a leaf has NO
+' closing tag -- that pushes a name nothing will ever pop. Every close after it
+' then mismatches, containment collapses, and the document comes back with ZERO
+' STATEMENTS AND NO ERROR. That is the same shape this adapter already shipped
+' once from a different cause ("read ten real files with zero transactions,
+' reporting every one of them CLEAN"), and an empty `<MEMO>` or `<CHECKNUM>` is
+' ordinary enough in 1.x to reach it.
+'
+' HONEST PROVENANCE: no file in this corpus has one -- not the ten foreign
+' vectors and not the real credit-union download that led here -- so this was
+' found by CONSTRUCTION rather than by a bank. It is fixed anyway because the
+' rule below is the format's own convention rather than a guess about data, and
+' because the failure is silent and total.
+'
+' THE RULE, and it gives ONE ANSWER IN BOTH DIALECTS, which is this adapter's
+' whole claim:
+'
+'   * `<X></X>` -- the very next tag closes it. 2.x writes an empty element this
+'     way, and it is a leaf.
+'   * `<X>` with `</X>` somewhere later -- an aggregate that happens to be empty
+'     of leaves, e.g. `<FI>` carrying only children in another branch.
+'   * `<X>` with no `</X>` anywhere after it -- a 1.x leaf. 1.x closes aggregates
+'     and never closes elements, so the absence IS the evidence.
+function _empty_is_leaf(text, name, from)
+    closer = "</" + name + ">"
+    at = byte_find(text, closer, from)
+    if is_nothing(at) then
+        return true
+    end if
+    ' Is that closer the NEXT tag, or is there something between?
+    nxt = byte_find(text, "<", from)
+    if is_nothing(nxt) then
+        return true
+    end if
+    return nxt = at
 end function
 
 function _path(stack)
@@ -248,6 +294,7 @@ function read_source(src, revision)
     records = []
     loss = []
     collecting = []
+    ccy = ""
     for each e in events
         if e.kind = "open" then
             if _starts_collector(e.name) then
@@ -261,11 +308,16 @@ function read_source(src, revision)
             end if
         end if
         if e.kind = "leaf" then
+            ' The statement declares its own currency and declares it FIRST --
+            ' `CURDEF` is a child of `STMTRS` and OFX orders it before
+            ' `BANKTRANLIST`, so one forward pass has it in hand by the time an
+            ' amount arrives. A second statement in the same file rebinds it.
+            if e.name = "CURDEF" then
+                ccy = trim(e.value)
+            end if
             if count(collecting) > 0 then
                 k = count(collecting) - 1
-                collecting[k].fields[e.name] = { status: "ok", value: e.value, raw: e.raw,
-                                                 location: finio.location("xml",
-                                                     { path: e.path, occurrence: e.occurrence }) }
+                collecting[k].fields[e.name] = _leaf_field(e, ccy)
             end if
         end if
         if e.kind = "close" then
@@ -283,6 +335,76 @@ function read_source(src, revision)
         end if
     end for
     return { records: records, entities: _entities(records), loss: loss }
+end function
+
+' AN AMOUNT IS `money`, AND THAT IS NOT A PREFERENCE -- IT IS WHAT THE OTHER
+' ADAPTERS DO. NACHA, camt.053 and pain.001 all hand an amount back as a
+' `money` value; this adapter handed back the TEXT, and it was the only one of
+' the five that did. MEASURED on a real credit union's OFX download:
+'
+'     summing three transaction amounts the obvious way gives
+'     "-28.00-5.00-28.00", type string
+'
+' No raise, no diagnostic, a plausible-looking answer of the wrong kind. It
+' survived because every fixture here was written by somebody who knew to call
+' `number()` first, which is exactly the shape a corpus written by the same
+' hands cannot catch.
+'
+' A DATE IS STILL TEXT, deliberately, because that IS consistent: camt leaves
+' `BookgDt` and `CreDtTm` as text, and so does every other adapter. OFX dates
+' additionally carry a bank-stated zone in brackets (`[-8:PST]`) -- and the same
+' real file states `[-5:EST]` inside every FITID while `DTPOSTED` says
+' `[-8:PST]`, so choosing one and calling it the instant would be an invention.
+'
+' `raw` keeps the bank's characters either way, which is what a caller wanting
+' the text should read (Axiom 2), and is the rule camt already follows.
+function _leaf_field(e, ccy)
+    loc = finio.location("xml", { path: e.path, occurrence: e.occurrence })
+    if not _is_amount(e.name) then
+        return { status: "ok", value: e.value, raw: e.raw, location: loc }
+    end if
+    t = trim(e.value)
+    if byte_count(t) = 0 then
+        return { status: "unknown", value: unknown, raw: e.raw, location: loc,
+                 currency: unknown }
+    end if
+    if not _is_decimal(t) then
+        return { status: "invalid", value: unknown, raw: e.raw, location: loc,
+                 currency: unknown,
+                 why: "'" + t + "' is not a signed decimal amount" }
+    end if
+    if byte_count(ccy) = 0 then
+        return { status: "invalid", value: unknown, raw: e.raw, location: loc,
+                 currency: unknown,
+                 why: "the statement declares no CURDEF, so this is a number in no currency" }
+    end if
+    m = _money(t, ccy)
+    if is_unknown(m) then
+        return { status: "invalid", value: unknown, raw: e.raw, location: loc,
+                 currency: ccy,
+                 why: "'" + ccy + "' is not a currency this build knows" }
+    end if
+    return { status: "ok", value: m, raw: e.raw, location: loc, currency: ccy }
+end function
+
+' THE ELEMENTS TYPED, and no more than the corpus justifies (Axiom 11). These
+' are the two amount-valued elements the bank-statement message set defines:
+' a transaction's amount and a balance's amount. `TOTAL`, `BALLIST` entries and
+' the investment message set carry others, and typing them on the strength of
+' the specification alone -- with no file here that has one -- would be the
+' invention this registry refuses everywhere else.
+function _is_amount(name)
+    return contains([ "TRNAMT", "BALAMT" ], name)
+end function
+
+function _money(text, ccy)
+    on error goto next
+    m = money.of(ccy, text)
+    if error then
+        error.clear()
+        return unknown
+    end if
+    return m
 end function
 
 ' CONTAINMENT IS AN INDEX RANGE, NOT CLOSE ORDER. A transaction closes BEFORE
@@ -478,11 +600,17 @@ function validate_doc(doc)
                 append(issues, { code: "missing_amount", severity: "error", record: ti,
                                  message: "a transaction carries no TRNAMT" })
             else
-                if not _is_decimal(f.TRNAMT.value) then
+                ' THE CHECK MOVED TO WHERE THE VALUE IS BUILT. It used to
+                ' test the text here, which is the only place it could be while
+                ' the value WAS the text; now an unreadable amount is `invalid`
+                ' at construction and carries its own reason, so a consumer sees
+                ' it without running validation -- the rule camt follows.
+                if f.TRNAMT.status != "ok" then
                     append(issues, { code: "amount_not_decimal", severity: "error", record: ti,
                                      concept: "TRNAMT",
-                                     message: ("'" + string(f.TRNAMT.value) + "' is not a signed decimal amount"),
-                                     found: string(f.TRNAMT.value) })
+                                     message: ("'" + string(f.TRNAMT.raw) + "' is not a usable amount: "
+                                               + string(_why_of(f.TRNAMT))),
+                                     found: string(f.TRNAMT.raw) })
                 end if
             end if
             ' DTPOSTED MUST FALL INSIDE THE PERIOD THE LIST DECLARES. A
@@ -510,6 +638,13 @@ function validate_doc(doc)
         end for
     end for
     return issues
+end function
+
+function _why_of(f)
+    if has(f, "why") then
+        return f.why
+    end if
+    return "the field is absent or empty"
 end function
 
 function _date8(v)
