@@ -125,6 +125,12 @@ typedef struct {
     StringList local_compare_modifiers;
     StringList existing_uses;
     StringList insert_uses;
+    /* When set, a scan matches a library by its own NAME rather than by a
+     * function it provides -- what a QUALIFIED call needs, since the call
+     * already names the library and there is nothing to search for. Threaded
+     * on the context because every scan function already carries it, where a
+     * sixth parameter would have to be added to five of them. */
+    int match_library_name;
     const char *root_path;
     AstStmtList root_program;
 } AddUsesContext;
@@ -338,9 +344,11 @@ static void scan_program_for_provider(AddUsesContext *ctx,
         if (require_provider_filename && !provider_file_matches_library(path, stmt->as.library.name)) {
             continue;
         }
-        int provides = is_modifier
-            ? library_provides_modifier(stmt, name, context)
-            : library_provides_function(stmt, name);
+        int provides = ctx->match_library_name
+            ? (stmt->as.library.name && strcmp(stmt->as.library.name, name) == 0)
+            : (is_modifier
+               ? library_provides_modifier(stmt, name, context)
+               : library_provides_function(stmt, name));
         if (provides) {
             provider_add(ctx, stmt->as.library.name, path);
         }
@@ -494,6 +502,55 @@ static void maybe_add_use(AddUsesContext *ctx, const char *library) {
     string_list_add(&ctx->insert_uses, library);
 }
 
+/* Is there a `library <name>` block on the search path? Uses the same scan as
+ * the unqualified case so both answers come from one walk of one set of
+ * directories -- a second search would be a second thing that can disagree
+ * about where a library lives. */
+static int library_block_exists(AddUsesContext *ctx, const char *name) {
+    ctx->provider_count = 0;
+    ctx->match_library_name = 1;
+    scan_program_for_provider(ctx, ctx->root_program, ctx->root_path, name, NULL, 0, 0);
+    char *base_dir = dirname_copy_main(ctx->root_path);
+    if (ctx->provider_count == 0) {
+        scan_library_dirs_for_provider(ctx, base_dir, name, NULL, 0, 0);
+    }
+    if (ctx->provider_count == 0) {
+        scan_dir_for_provider(ctx, base_dir, name, NULL, 0, 0);
+    }
+    free(base_dir);
+    ctx->match_library_name = 0;
+    int found = ctx->provider_count > 0;
+    clear_providers(ctx);
+    return found;
+}
+
+/* A library named by a qualified call. Added when it is a native module that
+ * a `load` must name, or when a `library <name>` block can be found on the
+ * search path -- and NOT otherwise, because an unknown qualifier is more
+ * likely a typo or a record field than a library nobody installed, and a
+ * confident `load wibble` on the first line is worse than silence. */
+static void maybe_add_qualified(AddUsesContext *ctx, const char *library) {
+    if (!library ||
+        string_list_contains(&ctx->existing_uses, library) ||
+        string_list_contains(&ctx->insert_uses, library)) {
+        return;
+    }
+    if (eval_module_needs_load(library)) {
+        string_list_add(&ctx->insert_uses, library);
+        return;
+    }
+    if (eval_is_native_module(library)) {
+        /* A native qualifier that answers without a `load` -- `money.rate`,
+         * `process.run`, `timer.every`. Nothing to add and nothing wrong. */
+        return;
+    }
+    if (library_block_exists(ctx, library)) {
+        string_list_add(&ctx->insert_uses, library);
+        return;
+    }
+    fprintf(stderr, "warning: unresolved library: %s\n", library);
+}
+
 static int local_modifier_contains(StringList *list, const char *name) {
     for (size_t i = 0; i < list->count; i++) {
         if (modifier_phrase_matches_main(name, list->items[i])) {
@@ -548,8 +605,16 @@ static void analyze_expr(AddUsesContext *ctx, AstExpr *expr) {
             analyze_expr(ctx, expr->as.call.receiver);
             break;
         }
-        if (!expr->as.call.library &&
-            !builtin_function(expr->as.call.name) &&
+        if (expr->as.call.library) {
+            /* A QUALIFIED call names its library outright, so there is nothing
+             * to search for -- and since the scope rules made a cross-library
+             * call qualified BY REQUIREMENT, this is now the ordinary shape
+             * rather than an alternative to the unqualified one below. Without
+             * this branch `--add-loads` had nothing left to find: a file of
+             * `stats.mean` and `sqlite.open` came back unchanged, which reads
+             * exactly like "you already have every load you need". */
+            maybe_add_qualified(ctx, expr->as.call.library);
+        } else if (!builtin_function(expr->as.call.name) &&
             !string_list_contains(&ctx->local_functions, expr->as.call.name)) {
             const char *library = resolve_provider(ctx, expr->as.call.name, NULL, 0);
             maybe_add_use(ctx, library);
@@ -694,6 +759,13 @@ static void collect_defs(AddUsesContext *ctx, AstStmtList list) {
             }
         } else if (stmt->kind == AST_STMT_USE) {
             string_list_add(&ctx->existing_uses, stmt->as.use_stmt.name);
+            /* An alias is the name THIS FILE calls the library by, so it is
+             * what a qualified call is written with. Recorded too, or a file
+             * carrying `load stats as st` and calling `st.mean` would be told
+             * to `load st`. */
+            if (stmt->as.use_stmt.alias) {
+                string_list_add(&ctx->existing_uses, stmt->as.use_stmt.alias);
+            }
         }
     }
 }

@@ -8295,6 +8295,41 @@ static int library_is_native_qualifier(const char *name) {
     return 0;
 }
 
+/* The same question from outside the evaluator, for --add-loads: a native
+ * qualifier that needs no `load` (`money`, `process`, `timer`, ...) must be
+ * left ALONE rather than reported unresolved, and telling the two apart needs
+ * both lists. */
+int eval_is_native_module(const char *name) {
+    return name && library_is_native_qualifier(name);
+}
+
+/* The native qualifiers that a `load` must name before their dispatch works.
+ * NOT every native qualifier: `money`, `process`, `reflect`, `rowmodel`,
+ * `timer` and `this` carry no optional dependency and answer without one.
+ *
+ * The members are exactly the modules holding a `<name>_library_loaded` flag
+ * above, which is what makes this list checkable rather than remembered --
+ * tests/run_add_loads.sh reads both out of this file and requires them to
+ * agree, because a module added with a flag and not here would simply never be
+ * suggested, and nothing would say so. Exported for `--add-loads`, which has
+ * no other way to tell `sqlite.open` (needs a load) from `money.rate` (does
+ * not). */
+int eval_module_needs_load(const char *name) {
+    static const char *loadable[] = {
+        "gi", "gui", "http", "ldap", "odbc", "pg", "smtp", "sqlite",
+        "webclient", "webserver", "xml", NULL
+    };
+    if (!name) {
+        return 0;
+    }
+    for (size_t i = 0; loadable[i]; i++) {
+        if (strcmp(name, loadable[i]) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 /* Claim `effective` for the library `declared` in `path`. Returns 1 when the
  * name is free or already held by this same library, 0 (having raised) when it
  * answers for a different one. */
@@ -31387,13 +31422,23 @@ static Value eval_call(AstExpr *expr) {
     }
 
     if (strcmp(expr->as.call.name, "round") == 0) {
-        if (expr->as.call.args.count != 2) {
-            runtime_error_raise("round expects two arguments", 1003, "invalid function call");
+        /* PLACES IS OPTIONAL AND DEFAULTS TO 0. It was REQUIRED, so `round(3.7)`
+         * -- the form every other BASIC has, and the first thing a reader tries
+         * -- raised. The refusal was not a decision about rounding: `floor`,
+         * `ceil`, `abs` and `sqrt` all take one argument beside it, and nothing
+         * chose to make the commonest call of the family the one that fails.
+         * Zero places is also the only default that could be meant, so there is
+         * nothing for a caller to guess wrong about. */
+        if (expr->as.call.args.count != 1 && expr->as.call.args.count != 2) {
+            runtime_error_raise("round expects a number and optionally a number of places",
+                                1003, "invalid function call");
             return value_null();
         }
         Value value = eval_expr(expr->as.call.args.items[0]);
         if (error_action_pending()) { value_free(value); return value_null(); }
-        Value places = eval_expr(expr->as.call.args.items[1]);
+        Value places = expr->as.call.args.count == 2
+            ? eval_expr(expr->as.call.args.items[1])
+            : value_number(0);
         if (error_action_pending()) {
             value_free(value); value_free(places); return value_null();
         }

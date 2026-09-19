@@ -19,7 +19,7 @@ program main(args)
         m = llm.openai("gpt-4o", unknown)          ' key from OPENAI_API_KEY
     else
         if which = "local" then
-            m = llm.local("http://localhost:11434/v1", "llama3.3:70b")
+            m = llm.local("http://localhost:11434", "llama3.3:70b")
         else
             m = llm.anthropic("claude-sonnet-4-6", unknown)   ' key from ANTHROPIC_API_KEY
         end if

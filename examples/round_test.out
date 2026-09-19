@@ -1,0 +1,12 @@
+ok   round up
+ok   round down
+ok   negative rounds away from zero
+ok   a half rounds away from zero
+ok   and so does a negative half
+ok   a whole number is itself
+ok   the default is zero places
+ok   two arguments still round to places
+ok   and to more places
+ok   zero places asked for explicitly
+ok   the forms agree
+ok   the forms agree on a negative

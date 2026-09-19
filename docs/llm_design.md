@@ -43,7 +43,7 @@ load llm
 
 m1 = llm.anthropic("claude-sonnet-4-6", key)
 m2 = llm.openai("gpt-4o", key)
-m3 = llm.local("http://localhost:11434/v1", "llama3.3:70b")   ' Ollama
+m3 = llm.local("http://localhost:11434", "llama3.3:70b")       ' Ollama
 m4 = llm.local("http://gpubox:8000/v1", "qwen2.5-72b")        ' vLLM
 
 m1.temperature = 0        ' fields: format, base_url, model, key,

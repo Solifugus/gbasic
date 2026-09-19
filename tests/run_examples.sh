@@ -86,6 +86,7 @@ examples=(
     stats_frame_test.bas
     type_builtin_test.bas
     conversion_builtin_test.bas
+    round_test.bas
     path_builtins_test.bas
     loop_syntax_test.bas
     else_if_test.bas

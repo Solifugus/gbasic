@@ -64,7 +64,11 @@ library llm
     end function
 
     ' Local inference (Ollama / vLLM): the openai wire format at your base_url,
-    ' no API key.
+    ' no API key. `base_url` is an ORIGIN with no path -- the path is the
+    ' adapter's ("/v1/chat/completions"), exactly as for openai() and
+    ' anthropic() above -- so Ollama is "http://localhost:11434", NOT
+    ' ".../v1", which would put the /v1 in twice. Both llm_design.md and
+    ' examples/llm/smoke_ask.bas had the doubled form until 2026-09-19.
     function local(base_url, model)
         return _handle("openai", base_url, model, "", true, "")
     end function

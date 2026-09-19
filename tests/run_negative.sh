@@ -137,6 +137,8 @@ cases=(
     negative_round_array
     negative_round_string
     negative_round_places
+    negative_round_arity
+    negative_round_arity3
     negative_next_name_mismatch
     negative_until_as_name
     negative_do_loop_until

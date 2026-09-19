@@ -21,6 +21,15 @@ void gb_set_reexec_path(const char *path);
  * does). Call before eval_program; unset (count 0) if never called. */
 void eval_set_program_args(char *const *items, size_t count);
 
+/* True for a native module qualifier that a `load` must name before its
+ * dispatch works (`sqlite`, `pg`, `xml`, ...), false for one that answers
+ * without one (`money`, `process`, `timer`, ...). Used by --add-loads. */
+int eval_module_needs_load(const char *name);
+
+/* True for ANY qualifier the evaluator intercepts by string before user
+ * function resolution -- including the ones that need no `load`. */
+int eval_is_native_module(const char *name);
+
 /* Run this process as a spawned actor: register the program's top-level
  * definitions, adopt the inherited mailbox/control fds, and run `entry`
  * (docs/multiprocessing_design.md §3). Returns a process exit status. */

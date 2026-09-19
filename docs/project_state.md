@@ -520,9 +520,19 @@ points at, so it doubles as an integration suite for this repository.
   XML document cannot say where it came from; libxml2 tracks it and the module
   does not expose it. Cost `finio_camt` its byte ranges and `finio_ofx` a
   private tag scanner — `DOGFOOD.md` entry -3
-- `DOGFOOD.md`'s "Open — worth fixing" list holds **one** entry as of
-  0.1.0-rc9 (the one above); the rest of that file is the "accepted as
-  documented limitations" section, which is doctrine rather than a to-do list
+- a question at the prompt with no statement reading is run by wrapping it as
+  `print (\n<text>\n)`, which reports its diagnostics one line LOW — `age > 12`
+  says `<prompt>:2:5` for a one-line entry. The column is exact; only the line
+  is wrong, and it names a line that does not exist. The honest fix is a LINE
+  ORIGIN on `gb_parse` ("this buffer is an excerpt starting at line L"), which
+  the LSP would share — `DOGFOOD.md` 2026-09-19 entry, item 3
+- `DOGFOOD.md`'s "Open — worth fixing" list holds **two** entries as of
+  0.1.0-rc9 (the two above). It held four more until 2026-09-19 — a condition
+  that could not be judged raised and then stepped into the `else`, `not` bound
+  tighter than `=`, `round(x)` refused one argument, `--add-loads` had silently
+  become a no-op, and `? x = 5` at the prompt silently ASSIGNED — all closed
+  with suites. The rest of that file is the "accepted as documented
+  limitations" section, which is doctrine rather than a to-do list
 
 ## Current Documents
 

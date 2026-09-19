@@ -571,13 +571,46 @@ typedef struct {
 } ReplState;
 
 /* Parse and run one finished chunk. Returns 0 always -- a chunk that fails is
- * reported and the prompt continues; only `quit` and EOF end a session. */
-static void run_chunk(ReplState *st, const char *text, int record) {
+ * reported and the prompt continues; only `quit` and EOF end a session.
+ *
+ * `asked` says the author wrote `?`, which DECLARES the line a question, so the
+ * question reading is tried FIRST rather than as a fallback. The two readings
+ * are not always the same text: `x = 5` is a perfectly good ASSIGNMENT, so the
+ * ordinary path took it, acted, and answered nothing -- and `? x = 5` therefore
+ * SET x TO 5 while the reader believed they had asked whether it was. Worse
+ * than the silence reported, because the session and the resident program then
+ * disagree: the assignment is not recorded, so `run` rebuilds a different x. */
+static void run_chunk(ReplState *st, const char *text, int record, int asked) {
     gb_diagnostics diags;
     gb_diagnostics_init(&diags);
     AstStmtList program = ast_stmt_list_empty();
+    int parses = gb_parse(text, REPL_SOURCE_NAME, &program, &diags) == 0;
 
-    if (gb_parse(text, REPL_SOURCE_NAME, &program, &diags) == 0) {
+    if (parses && asked) {
+        /* It parses as a statement AND the author asked for an answer. Prefer
+         * the answer. If the text has no expression reading (`? print("hi")`)
+         * this falls through and the statement runs, so `?` never costs the
+         * author a line that would otherwise have worked. */
+        char *wrapped = wrap_as_print(text);
+        gb_diagnostics question_diags;
+        gb_diagnostics_init(&question_diags);
+        AstStmtList question = ast_stmt_list_empty();
+        if (gb_parse(wrapped, REPL_SOURCE_NAME, &question, &question_diags) == 0) {
+            ast_free_program(program);
+            free(wrapped);
+            gb_diagnostics_free(&question_diags);
+            gb_diagnostics_free(&diags);
+            repl_running = 1;
+            st->failed |= gb_session_run(question) != 0;
+            repl_running = 0;
+            return;
+        }
+        ast_free_program(question);
+        gb_diagnostics_free(&question_diags);
+        free(wrapped);
+    }
+
+    if (parses) {
         int kind; const char *name;
         chunk_declaration(program, &kind, &name);
         gb_diagnostics_free(&diags);
@@ -1053,7 +1086,7 @@ int repl_main(int json_diagnostics) {
                  * run, so recording it would append the whole program to
                  * itself every time `run` is typed. */
                 if (*src) {
-                    run_chunk(&st, src, 0);
+                    run_chunk(&st, src, 0, 0);
                 }
                 free(src);
                 free(line);
@@ -1096,7 +1129,7 @@ int repl_main(int json_diagnostics) {
                     fprintf(stderr, "cannot read %s\n", path);
                     status = 1;
                 } else {
-                    run_chunk(&st, src, 1);
+                    run_chunk(&st, src, 1, 0);
                     free(src);
                 }
                 free(path);
@@ -1115,7 +1148,7 @@ int repl_main(int json_diagnostics) {
                         abort();
                     }
                     sprintf(asked, "%s\n", q + 1);
-                    run_chunk(&st, asked, 0);
+                    run_chunk(&st, asked, 0, 1);
                     free(asked);
                     free(line);
                     continue;
@@ -1158,7 +1191,7 @@ int repl_main(int json_diagnostics) {
             }
         }
 
-        run_chunk(&st, joined, 1);
+        run_chunk(&st, joined, 1, 0);
         free(joined);
 
         int requested = gb_session_exit_code();

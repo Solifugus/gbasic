@@ -964,8 +964,11 @@ and check validity yourself.
 rebind them — an assignment to a name that is not already local creates a **new
 function-local**, and the outer variable keeps its value. To share mutable
 state with a function or a handler, keep it in a record and mutate its fields
-(`state.count = state.count + 1`), which persists because records are reached
-by reference. Because the broken form *looks* right and fails silently, the
+(`state.count = state.count + 1`), which persists because the record is reached
+**by name** from the enclosing scope. This is about the *name*, not the record:
+a record passed as an **argument** is a copy, so `function bump(r)` assigning
+`r.count` changes the caller's record not at all. Return the modified record and
+assign it, or reach the record by name. Because the broken form *looks* right and fails silently, the
 interpreter warns when a function **reads a name from an enclosing scope and
 then assigns it** — the read-compute-store-back shape is almost always an
 attempt to write the outer variable:
@@ -1509,6 +1512,25 @@ modifier declarations, `library` declarations, `server` declarations, `load`,
 and dotted-def method bodies. That set is pinned by
 `tests/run_pre_registration.sh`, and gBASIC Studio's declaration-hoisting rule is
 defined as the same set.
+
+**Hoisting is what a `program` block buys, and a file without one does not get
+it.** In script mode — statements at the top level, no `program` block — a
+function must be *declared before it is called*, because the statements run in
+the order they are written and a declaration is one of them:
+
+```basic
+print sq(3)             ' script mode: fails -- sq is not declared yet
+function sq(n)
+    return n * n
+end function
+```
+
+The same two declarations inside a `program` block work in either order, since
+the block's declarations are registered before its body runs. The diagnostic for
+the script-mode case is `invalid function call: sq`, which names the call rather
+than the ordering — if you see it for a function you are certain exists, check
+whether it is declared *below* the line that calls it in a file with no
+`program` block.
 
 **A library's own dependencies are declared INSIDE its `library` block.**
 Declaring one beside the library rather than inside it is not a scoping error —
@@ -3703,9 +3725,10 @@ inert. Worked demo: `examples/native_ui/datagrid_demo.bas`.
 
 ## PDF documents (`gpdf`)
 
-`load gpdf` — pure gBASIC, written from ISO 32000. **Phase 1**: the document,
-the core-14 fonts, measured text and word wrap. Tables that flow across pages,
-charts as PDF vectors, images and embedded fonts are later phases.
+`load gpdf` — pure gBASIC, written from ISO 32000. The document, the core-14
+fonts, measured text and word wrap; then tables that flow across pages
+(`gpdf.table`), images copied rather than re-encoded (`gpdf.image`) and a
+`chart` SVG placed as PDF vectors (`gpdf.svg`). Embedded fonts are not built.
 
 ```basic
 when {datetime}= "2026-01-01 12:00:00"
@@ -4991,10 +5014,11 @@ body cannot carry `inf`, `nan`, `nothing` or `unknown`, because RFC 8259 has no
 syntax for them. `json_encode` refuses non-finite values for the same reason,
 and `json_encodable` answers `false` for them.
 
-**`try_decode(text)` — decode that cannot raise.** `decode` raises on malformed
-input, and gBASIC has no way to catch a raise, so any program reading a file it did
-not write has to decide what to do *before* parsing. `try_decode` answers with a
-record instead:
+**`try_decode(text)` — decode that reports failure as a value.** `decode` raises
+on malformed input. That raise *is* catchable — see **Errors** — but a raise
+tells you only that the JSON was bad; `try_decode` also tells you **where**,
+which is what a program reading a file it did not write usually needs to report.
+It answers with a record instead:
 
 ```basic
 r = try_decode(text)
@@ -5203,7 +5227,9 @@ or out-of-range input:
   depend on it (`stdlib/forensics.bas`'s civil-date algorithm is correct for
   negative years only under floored semantics). `mod(a, 0)` raises. There is no
   infix `%`; and `7 mod 2` is duration syntax, not modulo — `mod` is a call.
-- `round(number, places)` — round to a number of decimal places.
+- `round(number [, places])` — round to a number of decimal places. `places`
+  is optional and defaults to 0, so `round(3.7)` is `4`. Halves round away from
+  zero: `round(2.5)` is `3` and `round(-2.5)` is `-3`.
 - `compare(a, operator, b)` — compare two values using an operator named as a
   string (the general form behind the comparison operators and modifiers).
 
@@ -5390,7 +5416,8 @@ plain string alike, so a value straight out of a listing needs no conversion:
 - `real_path(p)` — the canonical absolute path, resolving `.`, `..` and
   symlinks. The path must exist. To validate a path you are about to *create*,
   resolve `directory_name(p)` instead.
-- `file_type(p)` — `"file"`, `"folder"`, or `"missing"`.
+- `file_type(p)` — `"file"`, `"folder"` or `"other"`, and `unknown` when
+  nothing is there.
 
 Listing a directory — two functions, and the difference matters:
 
@@ -7700,6 +7727,22 @@ gbasic --add-loads FILE
 
 `--add-loads` prints modified source to stdout. It does not overwrite the input file.
 Compatibility note: `--add-uses` remains an alias that emits `use` statements.
+
+It reads both shapes a call can take. A **qualified** call names its library
+outright (`sqlite.open(...)`, `stats.zscore(...)`), so the `load` follows from the
+qualifier; this is the ordinary shape, because a call into another library must
+be qualified. An **unqualified** call is resolved by searching the libraries on
+the path for one that provides that function, which is what a library's calls to
+its own helpers look like.
+
+What it deliberately does **not** add:
+
+- a library already loaded, under its own name or under an `as` alias;
+- a native module that needs no `load` at all (`money`, `process`, `reflect`,
+  `rowmodel`, `timer`, `this`);
+- anything for a qualifier it cannot find. An unknown qualifier is reported on
+  stderr (`warning: unresolved library: wibble`) and nothing is inserted — it is
+  far more often a typo or a record field than a library nobody installed.
 
 Emit diagnostics as JSON:
 

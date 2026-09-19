@@ -4791,6 +4791,17 @@ this is specified, and it is written around `is_unknown` regardless.
 before any truthiness test. What the book does; what the language should
 probably make unnecessary.
 
+- **Status: RESOLVED 2026-09-19** (`71e7b03`). The shape was NOT intended: it
+  is exactly the silent-trap class, and the report was right to say so. A
+  condition that cannot be judged now RAISES AND STOPS, and is CATCHABLE.
+  The cause was one signature: `value_truthy` returned 0 both for "false" and
+  for "I refused", and the six refusing kinds had no way to say which. It takes
+  an out-parameter now, so the compiler found the two call sites that had never
+  checked. The `else` branch no longer runs after the raise.
+  Asserted in `tests/run_silent_traps.sh` (three cases: it stops, it is
+  catchable, and the CONTROL that an ordinary false condition still takes its
+  `else` — without which "it stops" is satisfied by a build where no `if` works).
+
 ### 2. `not` binds tighter than `=` (language-surprise, medium)
 
 `not a = b` evaluates `(not a) = b` and prints `false`. No error, no warning.
@@ -4804,6 +4815,21 @@ that reads like English and answers wrongly.
 warning for `not <expr> = <expr>` — the pattern has no sensible intended
 meaning in the form people write it.
 
+- **Status: RESOLVED 2026-09-19** (`3335495`), and **this entry's own second
+  claim was wrong**: `reference.md` DID have a precedence table (line 699) and
+  it was ACCURATE. So this was never doc-rot — the documentation correctly
+  described the behaviour that was itself the surprise, and a reader who must
+  consult a precedence table to learn that the obvious reading is wrong has
+  already been caught. Fixed in the grammar instead: `not` now sits between
+  comparison and `and`, where every BASIC in the family puts it. One new level,
+  ZERO bison conflicts. MEASURED FIRST: 3,760 uses of `not` in the tree, ZERO
+  of them `not X = Y` in code position — nothing depended on the old reading,
+  which is why it survived, since the shape that exposes it is the shape people
+  wrote once, got a wrong answer from, and rearranged. The suggested warning is
+  therefore unnecessary. Consequence, asserted: `- not x` is now a parse error.
+  `tests/run_precedence.sh`, whose CONTROLS outnumber the positive case because
+  moving one level is only safe if every other stayed put.
+
 ### 3. Two smaller ones (low)
 
 - **`round(x)` with one argument raises**; two arguments are required. Common
@@ -4811,6 +4837,47 @@ meaning in the form people write it.
 - **`--add-loads` did not add `load sqlite`** to a program that used the
   module. It may handle only `.bas` libraries and not native modules. Not
   chased down; noted so it is not described as a fix-my-loads button.
+
+- **Both RESOLVED 2026-09-19**, and the second was sharper than reported.
+  `round(x)` now takes one argument, places defaulting to 0 — the refusal was
+  never a decision about rounding, since `floor`, `ceil`, `abs` and `sqrt` all
+  take one argument beside it, and nothing chose to make the commonest call of
+  the family the one that fails. Three-argument and zero-argument calls are
+  still refused, with the message rewritten to name the optional second
+  argument (`expects two arguments` would now be false).
+  `--add-loads` was NOT "only .bas libraries": MEASURED, it added **nothing at
+  all** — not for `sqlite.open`, and not for `stats.zscore` either. It only ever
+  looked at UNQUALIFIED calls, and THE LANGUAGE MOVED UNDERNEATH IT: the scope
+  rules (`554e22e`) made a call into another library qualified BY REQUIREMENT,
+  so the shape the tool understood is the shape a correct program can no longer
+  contain, and the shape every correct program does contain was invisible. It
+  did not fail — it returned the source unchanged, which reads exactly like
+  "you already have every load you need". A tool that is silently a no-op is
+  worse than one that is missing, and that is the general lesson worth keeping:
+  a language change can retire a tool's entire input without touching a line of
+  it.
+  `tests/run_add_loads.sh`, whose CONTROLS outnumber its positive cases because
+  the risk in teaching a tool to suggest `load X` is that it suggests one for
+  everything. Four perturbations proven red — and one of them, the alias, was
+  caught by NO check in the first draft: both `lacks "load st"` assertions
+  passed on the broken tool, because an unrecorded alias falls through to the
+  unresolved path, which also adds nothing. What actually changes is that a
+  file which is already correct is told its library does not exist, so the
+  tier asserts stderr is SILENT. My recurring weakness, once more: the
+  assertion that passes on the broken implementation.
+
+  AND THE GATE CAUGHT ME WRITING A FUNCTION THAT DOES NOT EXIST.
+  `run_stdlib_docs.sh` went red on the very documentation added here: I used
+  `stats.mean(...)` as the example of a qualified call, and `mean` is a
+  BUILTIN, not a stats function — `stats.mean([1,2,3])` raises
+  `invalid function call`. The tripwire is "no documentation for a function
+  that was removed", and it reads every `library.function(` written in the
+  reference; it has now also caught one that was never there. Worth recording
+  because the example ran perfectly well through `--add-loads`: the tool trusts
+  the qualifier for the LIBRARY and does not check the function, which is the
+  right behaviour (a missing function has its own diagnostic, and a library may
+  provide a name through a dotted-def the scanner does not model) but means my
+  own fixture could not have told me.
 
 ### 4. Doc gaps found by reading as a reader (doc-gap, medium)
 
@@ -4848,6 +4915,47 @@ Each verified against the binary:
 - **Workaround:** the book states what it verified by running and cites the
   design documents rather than the stale passages; each gap above is quoted in
   the relevant chapter plan's Risks section so it cannot be silently inherited.
+
+- **Status: RESOLVED 2026-09-19**, all nine re-measured against the binary
+  before being changed, and two of them were not what the report said.
+
+  1. Rewritten. `try_decode`'s value is not that a raise cannot be caught — it
+     is that `decode` tells you only *that* the JSON is bad while `try_decode`
+     tells you **where**, which is what a program reporting on a file it did
+     not write actually needs.
+  2. Rewritten, and the distinction is now stated as being about the **name**:
+     a record reached by name from an enclosing scope persists, a record passed
+     as an **argument** is a copy. MEASURED — `function bump(r)` assigning
+     `r.count` leaves the caller's record at 0.
+  3. Fixed: the binary answers `unknown`, and the `"missing"` spelling appeared
+     nowhere else. (The other of the two passages was already right.)
+  4. **NOT PRESENT.** The word "quoted" does not appear anywhere in `docs/ai/`,
+     so either it was fixed earlier or the contradiction was elsewhere.
+     Recorded rather than invented — quoted record keys do work.
+  5. Written down, in the hoisting section where the `program`-block rule
+     already lives, with the script-mode failure shown. Its diagnostic is
+     `invalid function call: sq`, which names the call and not the ordering, so
+     the paragraph says to check for a declaration below the call in a file
+     with no `program` block. A better message would be a code change and is
+     left alone.
+  6. **HALF STALE.** `gpdf` IS in `docs/project_state.md`'s roster (and
+     `docs/README.md` is a DESIGN-document index, which gpdf has none of, so
+     the absence there was correct). The real defect was the second half: the
+     reference's own opening text called images, tables and charts "later
+     phases" while its API table three paragraphs down listed all three —
+     and `stdlib/gpdf.bas` has `table`, `image` and `svg`. Fixed.
+  7. Fixed in BOTH places, and the source was `datetime_design.md`'s own
+     STATUS LINE, which listed the §9 deferrals as remaining while §9 itself
+     said each was IMPLEMENTED 2026-08-18. `docs/README.md` had copied it.
+     Timezones, business-hours arithmetic and observed holidays all shipped.
+  8. Added: an `llm` entry and a `tools` entry, both pointing at wired files.
+  9. **CONFIRMED AND FIXED IN THREE PLACES.** `base_url` is an ORIGIN — it is
+     `https://api.openai.com` for `openai()` and `https://api.anthropic.com`
+     for `anthropic()`, and `_endpoint` appends `/v1/chat/completions` — so the
+     documented `http://localhost:11434/v1` really would produce `/v1/v1/...`.
+     Corrected in `llm_design.md`, in `examples/llm/smoke_ask.bas`, and with a
+     comment on `local()` itself so the next reader of the code sees the rule
+     rather than rediscovering it from a 404.
 
 ### What this says about the exercise
 
@@ -4887,6 +4995,20 @@ teaches them that they typed something meaningless when they did not.
 **Cost:** Chapter 3 teaches comparisons, and `?` is the natural way to try one
 at the prompt (`? age > 12`). The chapter cannot use it until this answers.
 
+- **Status: RESOLVED 2026-09-19**, and **the report understated it**. The
+  silence was the symptom; the damage was a WRITE. `x = 5` is a perfectly good
+  assignment, so the ordinary path took it, acted, and answered nothing — the
+  reader asked whether x was 5 and the prompt MADE it 5. The assignment is not
+  recorded either (a question never is), so the session and the resident
+  program then disagree and `run` rebuilds a different x.
+  `?` DECLARES the line a question, so the question reading is now tried FIRST
+  rather than as a fallback, and falls through to the statement reading only
+  when the text has no expression form — `? print "hi"` still prints, so `?`
+  never costs a line that would otherwise have worked. Two perturbations proven
+  red in `tests/run_repl.sh`, each caught by the check written for it; the
+  load-bearing one reads x back, because "it answered false" is satisfied by a
+  prompt that answers AND assigns.
+
 ### 2. `recover` restores the program as ONE numbered entry
 
 After a killed session, `recover` brings the program back — but `list` shows
@@ -4900,11 +5022,32 @@ and then removes one line loses everything they recovered, with no warning.
 beat, and column 0 of line 0 is the one part of that message a reader cannot
 learn to use.
 
+- **Status: PARTLY RESOLVED 2026-09-19** (`27dd275`), and the remainder is
+  recorded rather than fixed. The ECHO path — a chunk that parses as one
+  expression statement — now stamps its position and agrees with a file. THE
+  WRAP PATH STILL DOES NOT: a question with no statement reading is run by
+  wrapping it as `print (\n<text>\n)`, which puts the author's text on line 2
+  of a buffer they typed one line of. MEASURED: `age > 12` at the prompt
+  reports `<prompt>:2:5` where the same expression in a file reports `1:12` —
+  the COLUMN is exact (both name the `>`), only the LINE is +1, and it is a
+  line that does not exist.
+  Not fixed here because there is no cheap correct wrapper: the leading newline
+  is what keeps the column exact and lets a trailing comment stay a comment,
+  and every shorter opener (`print (` on the same line, a bare `(...)`, which
+  is not a legal statement at all) trades the wrong line for a wrong column.
+  The honest fix is a LINE ORIGIN on `gb_parse` — "this buffer is an excerpt
+  that starts at line L" — which is a front-end API change the LSP also shares,
+  and is a bigger decision than a prompt cosmetic. Left for whoever takes that
+  up.
+
 ### Smaller, for the reference
 
 - `save PATH` unquoted is a parse error; the quoted form is required.
 - `save` is silent on success. Worth one line in the reference, since a
   beginner will wonder whether it worked.
+
+- **Both RESOLVED 2026-09-19** (`27dd275`): `save` answers
+  `saved 6 lines to greeter.bas`, and the reference documents the quoted form.
 
 **Workaround in the book:** Chapter 3 uses the parenthesised form or a full
 `print`; Chapter 1 says `save "name.bas"` with the quotes from the first

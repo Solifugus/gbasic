@@ -2,7 +2,10 @@
 
 Status: **§3, §4, §5, §7 and §8 IMPLEMENTED 2026-08-17 — every planned v1
 layer is built** (§7 extended 2026-08-18: `when:` without `nth:` emits every
-candidate per period). Remaining: the §9 deferrals (timezones, business-hours arithmetic, observed holidays), each a recorded decision. — §3 behind `examples/datetime_fields_test.bas` (31 self-checks)
+candidate per period). §9's three deferrals — timezones, business-hours
+arithmetic and observed holidays — were all IMPLEMENTED 2026-08-18 and §9 says
+so per item; this line said they were remaining for three weeks after, and
+`docs/README.md` copied it. — §3 behind `examples/datetime_fields_test.bas` (31 self-checks)
 with three pinned negatives; §4 — accountant's
 month rule, datetime subtraction, duration algebra, and the comparison respec,
 behind `examples/datetime_arithmetic_test.bas` (36 self-checks, proven red

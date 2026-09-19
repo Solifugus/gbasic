@@ -394,6 +394,47 @@ check "? reaches a name a command would claim" "5" "$(repl 'list = 5
 ? list
 quit
 ')"
+
+# `? x = 5` IS A QUESTION ABOUT x, NOT AN ASSIGNMENT TO IT. The two readings
+# are both legal gBASIC -- `x = 5` is a perfectly good assignment -- so the
+# ordinary path took it, acted, and answered nothing. THE REPORTED SYMPTOM WAS
+# SILENCE AND THE REAL DAMAGE WAS THE WRITE: the reader asked whether x was 5
+# and the prompt MADE it 5. The assignment is not recorded either, so the
+# session and the resident program then disagree and `run` rebuilds a
+# different x -- an ordinary-looking program that no longer matches the
+# session it was typed in.
+check "? with a comparison answers" "false" "$(repl 'x = 1
+? x = 5
+quit
+')"
+# THE LOAD-BEARING HALF. "It printed false" is satisfied by a prompt that
+# answers AND assigns; only reading x back afterwards catches the write.
+check "and does not assign" "false
+1" "$(repl 'x = 1
+? x = 5
+? x
+quit
+')"
+# THE CONTROL, without which the fix is indistinguishable from a prompt where
+# assignment stopped working: the SAME text with no `?` must still assign, and
+# must still be recorded as program text.
+check "while the same line without ? still assigns" "5
+  1  x = 1
+  2  x = 5" "$(repl 'x = 1
+x = 5
+? x
+list
+quit
+')"
+# THE OTHER CONTROL: `?` must never cost a line that would otherwise have
+# worked. A statement with no expression reading still runs as a statement.
+check "? in front of a statement still runs it" "hi" "$(repl '? print "hi"
+quit
+')"
+check "? answers a comparison of two names" "true" "$(repl 'age = 13
+? age > 12
+quit
+')"
 check "list names one declaration" "  1  function sq(n)
      return n*n
      end function" "$(repl 'function sq(n)

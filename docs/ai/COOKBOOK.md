@@ -337,6 +337,23 @@ for error handling, `ERRORS.md`.
   `adjusted` reports what the provider supplies rather than being assumed,
   because unadjusted prices across a split read as a -50% day. Use
   `market.offline(m, dir)` in tests — never the network. → `tests/market_test.bas`
+- **Language models (`load llm`)** — `llm.anthropic(model, key)` /
+  `llm.openai(...)` / `llm.local(base_url, model)` build a handle, and
+  `llm.ask(m, prompt)` returns `{ok, text, message}` — failure is a VALUE, not
+  a raise, because a rate limit and a bad key are ordinary outcomes. `base_url`
+  is an ORIGIN with no path (Ollama is `http://localhost:11434`, not
+  `.../v1` — the adapter appends the path, and the doubled form was in the
+  design doc until 2026-09-19). `llm.ask_json(m, prompt, shape)` is the one to
+  reach for when you want a RECORD back: it asks for JSON, parses it, and
+  reports a parse failure rather than handing you prose.
+  NEVER the network in a test — `llm.offline(m, file)` replays one fixed
+  response for every request, and `llm.replay(m, dir)` keys each recording by a
+  canonical hash of the request, so a two-turn conversation gets two different
+  answers. → `examples/llm_ask_json_test.bas`, `tests/llm_transcript_test.bas`
+- **A tool a model may call (`load tools`)** — one declaration produces BOTH
+  the schema the model sees and the validation `tools.dispatch` performs, so
+  they cannot disagree; a tool body that raises is caught and returned as an
+  error result rather than ending the run. → `tests/tools_test.bas`
 - **Cryptography (builtins)** — password hashing and random tokens.
   → `examples/password_hash_test.bas`, `examples/secure_token_test.bas`
 - **Cryptography (`load crypto`)** — signed cookies, CSRF, JWT/HS256, flat JSON.
