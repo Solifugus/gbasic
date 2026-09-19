@@ -17,6 +17,14 @@ load ari
 
 tally = { checks: 0, mismatches: 0 }
 
+function _total_runs(groups)
+    n = 0
+    for each g in groups
+        n = n + g.runs
+    end for
+    return n
+end function
+
 function check(label, got, want)
     tally.checks = tally.checks + 1
     if string(got) = string(want) then
@@ -1321,6 +1329,143 @@ check("and the reason travels with it",
 ' hands it -- the dispatch must not have taken that away.
 prof_acct = ari_discover.explain(rel.corpus.profiles[0])
 check("explain still describes a profile", contains(prof_acct, "row families"), true)
+
+' ===========================================================================
+print ""
+print "-- WHAT THE SPECIFICATION NEVER SAW (`unexplained`, over ari.trace)"
+' ===========================================================================
+' `explain` accounts for every rule a specification HAS; this is the inverse,
+' and it is the half a reviewer needs. It REPORTS -- nothing here proposes a
+' field or changes a specification, because a search over unclaimed text is how
+' a tool starts inventing rules.
+
+' THE THIN SPECIFICATION CARRIES THE SAME `page:` DIRECTIVE AS THE INFERRED
+' ONE, and that is not incidental: coverage's DENOMINATOR is the non-blank text
+' on the lines the furniture pass KEPT, so two specifications that strip
+' different furniture are not measuring the same page. Asserted below in both
+' directions, because comparing coverage across specifications is the thing
+' this function is for and the caveat is easy to walk into.
+page = join(rel.page_directive, "\n")
+body = join([ "section report starts(/^BRANCH /):",
+              "    field branch: right of \"BRANCH\" as integer" ], "\n")
+thin = page + "\n\n" + body
+un_thin = ari_discover.unexplained(corpus, thin)
+un_full = ari_discover.unexplained(corpus, rel.spec)
+
+check("it reads every source in the corpus", un_thin.parsed, un_thin.sources)
+check("declaring the same furniture, both see the same page",
+      un_thin.content_chars, un_full.content_chars)
+' THE CAVEAT, ASSERTED: the SAME rules with NO page directive see MORE text,
+' because the page headers are no longer furniture. A reader comparing two
+' specifications' coverage has to be told this, and a check is how it stays
+' true.
+un_nopage = ari_discover.unexplained(corpus, body)
+check("and with no page directive the same rules see MORE of it",
+      un_nopage.content_chars > un_full.content_chars, true)
+
+' THE LOAD-BEARING CHECK IS A DIFFERENCE. "It reported some unread text" is
+' satisfied by a function that reports the whole report every time; what says
+' the measure is about the SPECIFICATION is that the inferred one leaves
+' materially less unread than a one-field one over the same bytes.
+check("the inferred specification explains more than a one-field one",
+      un_full.coverage > un_thin.coverage, true)
+check("and by a wide margin, not a rounding",
+      un_full.coverage > un_thin.coverage * 3, true)
+check("so it leaves fewer unread shapes",
+      count(un_full.groups) < count(un_thin.groups), true)
+
+' GROUPED BY THE PROFILER'S OWN SIGNATURE, not by a second notion of "what
+' shape is this line" -- two would drift and describe one report differently.
+' Asserted by requiring every reported shape to be one `signature` really
+' produces for the example line it named.
+bad_sig = 0
+for each g in un_thin.groups
+    if ari_discover.signature(g.example) != g.signature then
+        bad_sig = bad_sig + 1
+    end if
+end for
+check("every group's shape is what `signature` says of its own example", bad_sig, 0)
+
+' RANKED BY TEXT, so the first thing a reviewer reads is the largest gap.
+desc = true
+i = 1
+while i < count(un_thin.groups)
+    if un_thin.groups[i].chars > un_thin.groups[i - 1].chars then
+        desc = false
+    end if
+    i = i + 1
+end while
+check("groups are ranked by how much text each accounts for", desc, true)
+
+' A WHOLE UNREAD LINE AND A LEFTOVER WORD ARE DIFFERENT FINDINGS, and the first
+' version of this conflated them -- it compared a run's LENGTH, which carries
+' the blanks inside it, against a line's NON-BLANK width, and reported every
+' whole unread detail row as a remainder. That is the quiet direction: it reads
+' exactly like a specification doing better than it is.
+whole = 0
+partial = 0
+for each g in un_thin.groups
+    whole = whole + g.whole_lines
+    partial = partial + (g.runs - g.whole_lines)
+end for
+check("whole unread lines are found", whole > 0, true)
+' AND THE DISCRIMINATOR, because `whole > 0` is satisfied by the conflated
+' version too: a `<RULE>` line is solid punctuation with NO interior blanks, so
+' its run length and its non-blank width agree by accident and it is counted
+' whole either way. What separates the two readings is a MULTI-TOKEN line --
+' a detail row entirely unread, whose run spans the gaps between its columns.
+multi = 0
+for each g in un_thin.groups
+    if contains(g.signature, " ") then
+        multi = multi + g.whole_lines
+    end if
+end for
+check("including lines with gaps in them, not just solid rules", multi > 0, true)
+' THE CONTROL: remainders exist too, or "whole line" would be satisfied by
+' calling every run a whole line. The corpus carries a heading whose number is
+' read and whose caption is not.
+check("and so are remainders on lines that WERE read", partial > 0, true)
+check("and the two account for every run",
+      whole + partial, _total_runs(un_thin.groups))
+
+' THE ARITHMETIC, which catches a group double-counting or losing a run.
+gchars = 0
+for each g in un_thin.groups
+    gchars = gchars + g.chars
+end for
+check("the groups account for exactly the unclaimed characters",
+      gchars, un_thin.content_chars - un_thin.claimed_chars)
+
+' IT REPORTS, IT DOES NOT PROPOSE. Asserted on the rendered account, because
+' that is what a reviewer reads -- and a later increment that starts suggesting
+' fields must move this check rather than quietly outgrow it.
+' GUARDED, because `explain` REFUSES a record it does not recognise -- so a
+' dispatch that stopped routing this shape would kill the fixture at the check
+' written to report it rather than failing it. Third time this session.
+acct = "explain REFUSED the report"
+on error goto next
+acct = ari_discover.explain(un_thin)
+if error then
+    acct = "explain REFUSED the report: " + error.message
+    error.clear()
+end if
+on error stop
+check("the account says outright that nothing here is a proposal",
+      contains(acct, "NOTHING HERE IS A PROPOSAL"), true)
+check("it names the shapes", contains(acct, "UNREAD, most text first"), true)
+check("and carries the coverage definition",
+      contains(un_thin.coverage_is, "non-blank"), true)
+
+' A SPECIFICATION THAT PARSES NOTHING SAYS SO rather than reporting a clean
+' page. An empty group list and an unparsed corpus are opposite findings and
+' must not render the same.
+un_bad = ari_discover.unexplained(corpus,
+    "section nope starts(/^NOTHING HERE EVER/):" + "\n" + "    field x: columns 0-1")
+check("a specification that parses nothing reports ok false", un_bad.ok, false)
+check("and names the sources it could not read", count(un_bad.failures) > 0, true)
+check("and its coverage is unknown, never 0", is_unknown(un_bad.coverage), true)
+check("and the account says nothing was read",
+      contains(ari_discover.explain(un_bad), "NOTHING WAS READ"), true)
 
 print ""
 print ("checks: " + string(tally.checks))

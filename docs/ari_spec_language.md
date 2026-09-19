@@ -405,6 +405,13 @@ fractions carry their own definition in `content_coverage_is` and
 `ari.trace` and `ari.parse` share one walk, so a trace cannot describe a
 different program from the one that ran.
 
+For a whole corpus rather than one report, `ari_discover.unexplained(sources,
+spec)` groups the unclaimed runs by line shape and ranks them by how much text
+each accounts for — 189 individual runs is the report again, a dozen shapes is a
+review. `ari_discover.explain` renders it. Note that coverage's denominator is
+the text the `page:` directive KEPT, so two specifications are only comparable
+when they strip the same furniture.
+
 ## 8. Open
 
 **RESOLVED — `columns` is a first-class capability, not an embarrassment.** §0

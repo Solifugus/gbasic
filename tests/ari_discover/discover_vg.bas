@@ -125,6 +125,18 @@ print ("scored  parsed=" + string(v.parsed) + "  regions=" + string(rc.agreeing)
 hp = ari_discover.infer(branches, { holdout: 1 })
 print ("holdout " + string(hp.holdout.sources))
 
+' --- what the specification never saw --------------------------------------
+' Both branches of the report: a specification that reads something, and one
+' that reads nothing at all, since the second allocates a different shape.
+un = ari_discover.unexplained(branches, prop.spec)
+print ("unread  shapes=" + string(count(un.groups))
+       + "  explained=" + string(floor(un.coverage * 100)) + "%")
+print (ari_discover.explain(un))
+un0 = ari_discover.unexplained(branches,
+    "section nope starts(/^NOTHING HERE EVER/):" + "\n" + "    field x: columns 0-1")
+print ("unread  ok=" + string(un0.ok) + "  failures=" + string(count(un0.failures)))
+print (ari_discover.explain(un0))
+
 ' --- §13 variants: both recommendation branches and both refusals ----------
 mixed = []
 for each s in branches

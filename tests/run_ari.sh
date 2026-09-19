@@ -284,7 +284,7 @@ out3=$(mktemp)
 if GBASIC_PATH=stdlib timeout 300 ./gbasic tests/ari_trace_test.bas >"$out3" 2>&1; then
     mism3="$(grep -c '^MISMATCH' "$out3")"
     checks3="$(grep -c '^ok' "$out3")"
-    if [ "$mism3" = "0" ] && [ "${checks3:-0}" -ge 36 ]; then
+    if [ "$mism3" = "0" ] && [ "${checks3:-0}" -ge 39 ]; then
         printf 'PASS trace         %s checks, 0 mismatches\n' "$checks3"
     else
         printf 'FAIL trace         %s checks, %s mismatches\n' "$checks3" "$mism3"

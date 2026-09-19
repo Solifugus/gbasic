@@ -3202,6 +3202,132 @@ function _infer_from(sources, held, options = nothing, corpus_in = nothing, deci
              corpus: c }
 end function
 
+' --- WHAT THE SPECIFICATION NEVER SAW -------------------------------------
+'
+' `explain` accounts for every rule a specification HAS. The more useful half
+' for a reviewer is the inverse -- what is on the page that no rule reads -- and
+' until `ari.trace` shipped there was no way to ask (limitation C1). This is
+' that question, and it REPORTS rather than infers: nothing here proposes a
+' field, guesses a type, or changes a specification. A search over unclaimed
+' text is how a tool starts inventing rules, and that is a separate increment
+' with its own null-corpus control.
+'
+' THE RAW ANSWER IS UNREADABLE AND THAT IS THE WHOLE DESIGN PROBLEM. One thin
+' specification over one 222-line report leaves 189 unclaimed runs, which is not
+' a review -- it is the report again. So runs are GROUPED BY `signature`, THE
+' PROFILER''S OWN TOKEN SHAPE, and ranked by how much text each group accounts
+' for. A reviewer then reads a handful of shapes instead of a page of
+' fragments, and the shapes are in the same vocabulary `profile` already speaks.
+' Sharing that function is not tidiness: a second notion of "what shape is this
+' line" would drift from the one the family detector uses, and the two would
+' describe the same report differently.
+'
+' A WHOLE UNREAD LINE AND A LEFTOVER WORD ARE DIFFERENT FINDINGS and are counted
+' separately. A line no rule touched at all is a gap; `Summary` left at the end
+' of a line whose name, number and heading were all read is a remainder. Merging
+' them would put the interesting case and the ordinary one in one number.
+function unexplained(sources, spec, options = nothing)
+    o = _options(options)
+    if type(sources) != "array" then
+        error "ari_discover.unexplained expects an array of sources"
+    end if
+    groups = { }
+    order = []
+    failures = []
+    content = 0
+    claimed = 0
+    parsed = 0
+    for each s in sources
+        on error goto next
+        t = ari.trace(s.text, spec)
+        if error then
+            append(failures, { id: s.id, why: error.message })
+            error.clear()
+            on error stop
+            continue
+        end if
+        on error stop
+        if not t.ok then
+            append(failures, { id: s.id, why: t.message })
+            continue
+        end if
+        parsed = parsed + 1
+        content = content + t.content_chars
+        claimed = claimed + t.claimed_chars
+        for each u in t.unclaimed
+            sg = signature(u.text)
+            ' `ari` REPORTS BOTH SIZES and this library derives neither. A run's
+            ' `length` carries the blanks between the columns it spans, so it is
+            ' not comparable with a line's non-blank width -- the first version
+            ' compared exactly those two and reported every wholly-unread detail
+            ' row as a remainder, which is the quieter direction and reads like
+            ' a specification doing better than it is. Counting them here would
+            ' need a second notion of what a blank is, and the two would
+            ' disagree about a FORM FEED, which `trim` removes and a naive
+            ' counter does not -- that produced a `<BLANK>` shape holding
+            ' characters, a finding about the printer.
+            nb = u.chars
+            whole = nb = u.line_chars
+            g = groups[sg]
+            if is_unknown(g) then
+                g = { signature: sg, runs: 0, chars: 0, whole_lines: 0,
+                      example: trim(u.text), source: s.id, line: u.line }
+                append(order, sg)
+            end if
+            g.runs = g.runs + 1
+            g.chars = g.chars + nb
+            if whole then
+                g.whole_lines = g.whole_lines + 1
+            end if
+            groups[sg] = g
+        end for
+    end for
+    out = []
+    for each sg in order
+        append(out, groups[sg])
+    end for
+    cov = unknown
+    if content > 0 then
+        cov = claimed / content
+    end if
+    return { report: "unexplained",
+             ok: parsed > 0, sources: count(sources), parsed: parsed,
+             content_chars: content, claimed_chars: claimed,
+             coverage: cov,
+             coverage_is: ("non-blank characters on non-furniture lines claimed"
+                 + " by a field rule or a section heading, pooled over every"
+                 + " source that parsed, over all non-blank characters on those"
+                 + " lines"),
+             groups: _by_chars_desc(out),
+             failures: failures }
+end function
+
+function _by_chars_desc(items)
+    out = []
+    left = items
+    while count(left) > 0
+        best = 0
+        i = 1
+        while i < count(left)
+            if left[i].chars > left[best].chars then
+                best = i
+            end if
+            i = i + 1
+        end while
+        append(out, left[best])
+        nxt = []
+        i = 0
+        while i < count(left)
+            if i != best then
+                append(nxt, left[i])
+            end if
+            i = i + 1
+        end while
+        left = nxt
+    end while
+    return out
+end function
+
 ' --- §12 a human-readable profile, or a rule-by-rule account of a proposal --
 '
 ' ONE FUNCTION, dispatching on whether it was handed a proposal or a profile.
@@ -3222,10 +3348,21 @@ function explain(p, options = nothing)
     if has(p, "spec") then
         return _explain_proposal(p, o)
     end if
+    ' TAGGED, NOT SHAPE-SNIFFED. The first version dispatched on `groups`, and
+    ' a `variants` result HAS a `groups` field -- so asking about variants
+    ' silently rendered an unexplained report instead of refusing, which is the
+    ' wrong-answer direction. The other two branches sniff shapes that predate
+    ' this one; a new branch pays for itself by being explicit.
+    if has(p, "report") then
+        if p.report = "unexplained" then
+            return _explain_unexplained(p)
+        end if
+    end if
     if not has(p, "id") then
         error ("ari_discover.explain takes a PROPOSAL (from `infer` or `refine`)"
-               + " or a PROFILE (from `profile`, `profile_source`, or one of"
-               + " `profile_corpus`'s), and this record is neither. A `variants`"
+               + ", a PROFILE (from `profile`, `profile_source`, or one of"
+               + " `profile_corpus`'s), or an UNEXPLAINED report (from"
+               + " `unexplained`), and this record is none of them. A `variants`"
                + " result explains itself: read its `why`.")
     end if
     out = []
@@ -3375,10 +3512,70 @@ function _explain_proposal(p, o)
                 + "   (" + string(p.scorecard.layouts) + " distinct column layouts)")
     append(out, "  positional fields   "
                 + string(floor(p.scorecard.positional_dependence * 100)) + "%")
+    append(out, "  content coverage    "
+                + string(floor(p.scorecard.content_coverage * 1000) / 10) + "%"
+                + "   (" + string(p.scorecard.claimed_chars) + " of "
+                + string(p.scorecard.content_chars)
+                + " non-blank characters on non-furniture lines)")
+    append(out, "  rule collisions     "
+                + string(floor(p.scorecard.collision_rate * 1000) / 10) + "%"
+                + "   of " + string(p.scorecard.claims) + " value claims")
+    ' THE NUMBER IS NOT A GRADE AND SAYING SO IS PART OF THE ANSWER. A report
+    ' carrying commentary, totals nobody reads or rule lines can never reach
+    ' 100%, and should not. `unexplained` is what turns the figure into
+    ' something a reviewer can act on.
+    append(out, "                      coverage is not a grade: a report carries"
+                + " text no specification should read. Run"
+                + " `ari_discover.unexplained` to see WHAT is unread.")
     for each nc in p.scorecard.not_computable
         append(out, "  " + _pad_right(nc, 20) + "not computable")
     end for
-    append(out, "                      " + p.scorecard.not_computable_why)
+    return join(out, "\n")
+end function
+
+' §12's account, pointed the other way: not what the rules DO, but what is on
+' the page that none of them reads.
+function _explain_unexplained(p)
+    out = []
+    if not p.ok then
+        append(out, "NOTHING WAS READ")
+        for each f in p.failures
+            append(out, "  " + string(f.id) + ": " + f.why)
+        end for
+        return join(out, "\n")
+    end if
+    append(out, "what the specification never saw -- " + string(p.parsed)
+                + " of " + string(p.sources) + " source(s)")
+    append(out, "  explained     " + string(floor(p.coverage * 1000) / 10) + "%"
+                + "   (" + string(p.claimed_chars) + " of "
+                + string(p.content_chars) + " non-blank characters)")
+    append(out, "  unread shapes " + string(count(p.groups)))
+    if count(p.failures) > 0 then
+        append(out, "  UNPARSED      " + string(count(p.failures)) + " source(s)")
+        for each f in p.failures
+            append(out, "                " + string(f.id) + ": " + f.why)
+        end for
+    end if
+    append(out, "")
+    append(out, "UNREAD, most text first")
+    if count(p.groups) = 0 then
+        append(out, "  nothing: every non-blank character is claimed by a rule")
+    end if
+    for each g in p.groups
+        append(out, "")
+        append(out, "  " + g.signature)
+        ' WHOLE LINES AND REMAINDERS ARE DIFFERENT FINDINGS. A line no rule
+        ' touched is a gap; a word left over on a line that WAS read is a
+        ' remainder, and a reviewer treats them differently.
+        append(out, "      " + string(g.chars) + " characters over "
+                    + string(g.runs) + " run(s), "
+                    + string(g.whole_lines) + " of them a whole unread line")
+        append(out, "      e.g. " + string(g.source) + ":" + string(g.line)
+                    + "  " + quote(g.example))
+    end for
+    append(out, "")
+    append(out, "NOTHING HERE IS A PROPOSAL. These are spans no rule claimed;"
+                + " whether any of them SHOULD be read is the reviewer's call.")
     return join(out, "\n")
 end function
 

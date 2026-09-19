@@ -1896,17 +1896,17 @@ library ari
     ' counting it would put content coverage near 1.0 for any spec at all, which
     ' is the flattering-and-useless direction.
 
+    ' A CONTROL CHARACTER IS NOT CONTENT. Space and tab are the obvious cases;
+    ' the one that mattered is the FORM FEED, which is page furniture by
+    ' definition and survives into the grid whenever a report is paginated by a
+    ' header line rather than by the feed itself. Counted as content it gave a
+    ' `<BLANK>` shape holding characters -- a run whose text trims to nothing
+    ' and whose size is one -- which is not a finding, it is the printer.
     function _blank_char(c)
         if c = " " then
             return true
         end if
-        if c = chr(9) then
-            return true
-        end if
-        if c = chr(13) then
-            return true
-        end if
-        return false
+        return code(c) < 32
     end function
 
     ' Claims indexed by physical line. A record keyed by the line number, since a
@@ -1923,6 +1923,18 @@ library ari
             byline[k] = cur
         end for
         return byline
+    end function
+
+    function _nonblank_in(text, a, b)
+        n = 0
+        i = a
+        while i < b
+            if not _blank_char(mid(text, i, 1)) then
+                n = n + 1
+            end if
+            i = i + 1
+        end while
+        return n
     end function
 
     function _covered_at(cs, i)
@@ -1944,6 +1956,10 @@ library ari
         total = 0
         covered = 0
         runs = []
+        ' EACH RUN CARRIES ITS OWN SIZE AND ITS LINE'S, both counted by the rule
+        ' above. A caller asking "is this the whole line?" then needs no second
+        ' notion of what a blank is -- and a second notion is exactly what would
+        ' drift, since the two would disagree about a form feed.
         for each g in grid
             cs = byline[string(g.line)]
             if is_unknown(cs) then
@@ -1953,16 +1969,22 @@ library ari
             i = 0
             rs = -1
             re = -1
+            line_nb = 0
+            mine = []
             while i < n
                 ch = mid(g.text, i, 1)
                 if not _blank_char(ch) then
                     total = total + 1
+                    line_nb = line_nb + 1
                     hit = _covered_at(cs, i)
                     if hit then
                         covered = covered + 1
                         if rs >= 0 then
+                            append(mine, count(runs))
                             append(runs, { line: g.line, start: rs, length: re - rs,
-                                           text: mid(g.text, rs, re - rs) })
+                                           text: mid(g.text, rs, re - rs),
+                                           chars: _nonblank_in(g.text, rs, re),
+                                           line_chars: 0 })
                             rs = -1
                         end if
                     else
@@ -1975,9 +1997,16 @@ library ari
                 i = i + 1
             end while
             if rs >= 0 then
+                append(mine, count(runs))
                 append(runs, { line: g.line, start: rs, length: re - rs,
-                               text: mid(g.text, rs, re - rs) })
+                               text: mid(g.text, rs, re - rs),
+                               chars: _nonblank_in(g.text, rs, re),
+                               line_chars: 0 })
             end if
+            ' The line's own size is only known once the line is walked.
+            for each ri in mine
+                runs[ri].line_chars = line_nb
+            end for
         end for
         frac = unknown
         if total > 0 then

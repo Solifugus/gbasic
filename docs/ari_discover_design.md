@@ -1436,6 +1436,43 @@ The most consequential likely prerequisite is a diagnostic execution surface in 
 > *collision rate* could not be measured without it, and estimating them from the
 > inference engine's own model is the tool grading its own homework.
 >
+> **`ari_discover.unexplained(sources, spec)` is what that surface is FOR**, and
+> it shipped the same day. `explain` accounts for every rule a specification
+> HAS; this is the inverse — what is on the page that no rule reads — and it is
+> the half a reviewer needs. It **reports and does not propose**: nothing in it
+> suggests a field or changes a specification, because a search over unclaimed
+> text is how a tool starts inventing rules, and that is a separate increment
+> with its own null-corpus control. The rendered account says so in as many
+> words, so an increment that starts suggesting has to move that line rather
+> than quietly outgrow it.
+>
+> **The raw answer is unreadable, and that is the design problem.** One thin
+> specification over one 222-line report leaves 189 unclaimed runs, which is not
+> a review — it is the report again. Runs are therefore grouped by `signature`,
+> **the profiler's own token shape**, and ranked by how much text each group
+> accounts for; a reviewer reads a handful of shapes in the vocabulary
+> `profile` already speaks. Sharing that function is not tidiness: a second
+> notion of "what shape is this line" would drift from the one the family
+> detector uses, and the two would describe one report differently.
+>
+> **A whole unread line and a leftover word are different findings** and are
+> counted separately. A line no rule touched is a gap; `Summary` left at the end
+> of a line whose name, number and heading were all read is a remainder. The
+> first version conflated them by comparing a run's LENGTH — which carries the
+> blanks between its columns — against a line's NON-BLANK width, and reported
+> every wholly-unread detail row as a remainder. That is the quiet direction: it
+> reads exactly like a specification doing better than it is. **And the check
+> written for it did not catch it**, because a `<RULE>` line is solid
+> punctuation with no interior blanks and is counted whole either way; the tier
+> asserts a MULTI-TOKEN line now, which is the only shape that separates the two
+> readings.
+>
+> **Coverage's denominator is the furniture directive**, so two specifications
+> that strip different furniture are not measuring the same page. Asserted both
+> ways — the same rules with no `page:` block see materially more text — because
+> comparing coverage across candidates is what this is for and the caveat is
+> easy to walk into.
+>
 > Two things the measurement decided that reading could not. An **anchor is a
 > claim** — a literal the specification names is the most spec-relevant text on
 > the page, and leaving it out put it in the unclaimed list and depressed

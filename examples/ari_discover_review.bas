@@ -160,4 +160,16 @@ program main( args )
     print "=========================================================="
     print ""
     print ari_discover.explain(p)
+    print ""
+
+    print "=========================================================="
+    print " AND THE INVERSE: WHAT DID IT NEVER SEE?"
+    print "=========================================================="
+    ' `explain` accounts for every rule the specification HAS. This is the other
+    ' half, and it is the one a reviewer acts on: text on the page that no rule
+    ' reads. It REPORTS -- nothing here proposes a field. Whether any of these
+    ' shapes SHOULD be read is the reviewer's call, which is the whole point of
+    ' showing them.
+    print ""
+    print ari_discover.explain(ari_discover.unexplained(eight, p.spec))
 end program

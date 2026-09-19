@@ -268,6 +268,40 @@ program main(args)
   want_true("the fixture really is half padding", blanks * 3 > allchars)
 
   print ""
+  print "TIER a control character is not content"
+  ' A FORM FEED IS PAGE FURNITURE BY DEFINITION, and it survives into the grid
+  ' whenever a report is paginated by a HEADER LINE rather than by the feed
+  ' itself -- which is most of the discovery corpus. Counted as content it gave
+  ' an unclaimed run whose text trims to nothing and whose size is one: a
+  ' `<BLANK>` shape holding characters, which is not a finding about the
+  ' specification, it is the printer.
+  ff = "HDR" + chr(10) + "A 1" + chr(10) + chr(12) + chr(10) + "A 2"
+  fsp = "section r starts(/^HDR/):" + chr(10) + "    field x: right of \"A\""
+  ft = ari.trace(ff, fsp)
+  ffchars = 0
+  for each u in ft.unclaimed
+    if contains(u.text, chr(12)) then
+      ffchars = ffchars + 1
+    end if
+  end for
+  check("a form feed is never reported as unclaimed content", ffchars, 0)
+  ' THE CONTROL: the ordinary text on the same report IS counted, or "not
+  ' content" would be satisfied by a rule that counted nothing.
+  want_true("while ordinary characters still are", ft.content_chars > 5)
+  ' AND THE RUNS CARRY THEIR OWN SIZES, so a caller never needs a second notion
+  ' of what a blank is -- which is where the form-feed disagreement came from.
+  sized = true
+  for each u in t.unclaimed
+    if u.chars > u.length then
+      sized = false
+    end if
+    if u.line_chars < u.chars then
+      sized = false
+    end if
+  end for
+  want_true("every run reports its own size and its line's, consistently", sized)
+
+  print ""
   print "TIER difference (coverage measures the SPECIFICATION)"
   ' A coverage number that reads the same for a spec taking one field and a spec
   ' taking twenty is measuring the report, not the specification. The margin is
