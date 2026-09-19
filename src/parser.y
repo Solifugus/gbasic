@@ -475,6 +475,7 @@ static void report_syntax_error(gb_parse_ctx *ctx, int line, int column,
  * consumed by their parent rule on success and reachable only on failure. */
 %destructor { ast_free_program($$); } statement_list consider_statement_list consider_else_opt if_block_tail if_inline_tail
 
+%type <expr> not_expression
 %type <stmt_list> program statement_list consider_statement_list consider_else_opt if_block_tail if_inline_tail
 %type <text> for_end
 %type <op_char> compound_op
@@ -1232,8 +1233,31 @@ or_expression
     ;
 
 and_expression
+    : not_expression { $$ = $1; }
+    | and_expression AND not_expression { $$ = expr_at(ast_binary(copy_const("and"), ast_modifier_none(), $1, $3), @2.first_line, @2.first_column); }
+    ;
+
+/* `not` SITS BETWEEN COMPARISON AND `and`, which is where every BASIC puts it
+ * -- QBasic, VB, VB.NET and FreeBASIC, and also Python, SQL, Pascal and Ada.
+ *
+ * It used to sit at the UNARY level beside `-`, which is C's `!` precedence, so
+ * `not a = b` meant `(not a) = b` and answered a perfectly plausible `false`.
+ * Silent, and the opposite of what the author wrote. The reference documented
+ * it accurately, which did not help: a reader who has to consult a precedence
+ * table to find out that the obvious reading is wrong has already been caught.
+ *
+ * MEASURED BEFORE CHANGING IT: of 3,760 uses of `not` across stdlib, examples
+ * and tests, ZERO are `not X = Y` in code position, so nothing in the tree
+ * depended on the old reading -- which is the evidence that this is a pure fix
+ * rather than a migration. `not a and b` is unchanged, because a
+ * comparison_expression cannot contain `and`.
+ *
+ * The one thing it removes is `-not x`, which was legal and is now a parse
+ * error. Nothing writes it (every `-not` in the tree is prose in a comment).
+ * DOGFOOD 15. */
+not_expression
     : comparison_expression { $$ = $1; }
-    | and_expression AND comparison_expression { $$ = expr_at(ast_binary(copy_const("and"), ast_modifier_none(), $1, $3), @2.first_line, @2.first_column); }
+    | NOT not_expression { $$ = expr_at(ast_unary(copy_const("not"), $2), @1.first_line, @1.first_column); }
     ;
 
 comparison_expression
@@ -1258,7 +1282,6 @@ multiplicative_expression
 
 unary_expression
     : postfix_expression { $$ = $1; }
-    | NOT unary_expression { $$ = expr_at(ast_unary(copy_const("not"), $2), @1.first_line, @1.first_column); }
     | MINUS unary_expression { $$ = expr_at(ast_unary(copy_const("-"), $2), @1.first_line, @1.first_column); }
     | NEW postfix_expression { $$ = expr_at(ast_new($2, NULL), @1.first_line, @1.first_column); }
     | NEW postfix_expression WITH record_literal { $$ = expr_at(ast_new($2, $4), @1.first_line, @1.first_column); }

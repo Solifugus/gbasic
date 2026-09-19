@@ -698,12 +698,20 @@ a or b
 
 Precedence, high to low:
 
-1. `not`, unary `-`
+1. unary `-`
 2. `*`, `/`
 3. `+`, `-`
-4. comparisons
-5. `and`
-6. `or`
+4. comparisons — `=` `!=` `<` `>` `<=` `>=` (and the negated spellings `!<` `!>` `!<=` `!>=`)
+5. `not`
+6. `and`
+7. `or`
+
+`not` binds **looser than a comparison**, so `not a = b` means `not (a = b)` —
+the same as in every other BASIC, and in Python, SQL and Pascal. It binds
+tighter than `and`, so `not a and b` means `(not a) and b`.
+
+Because `not` is not a unary operator, `- not x` does not parse. Write
+`not -x`, or parenthesise.
 
 Assignment is not an expression.
 
