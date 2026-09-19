@@ -439,6 +439,166 @@ quit
 ')"
 
 echo
+echo "== SESSION CACHE: there is always a file =="
+# What you type is written to a cache file as you go. Two things come of it, and
+# the second is what motivated it: `spawn` needs a SOURCE FILE to re-exec (the
+# child re-parses it) and a session had none, and a killed session used to lose
+# everything typed.
+cache="$work/state"
+rm -rf "$cache"; mkdir -p "$cache"
+cached() { printf '%s' "$1" | GBASIC_SESSION_DIR="$cache" "$GB" --repl 2>&1; }
+# BOUNDED, because the spawn tier below WAITS FOR A REPLY: if the child never
+# starts, `receive()` blocks and the suite does not fail, it HANGS -- the third
+# way this gate can go quiet, and the one run_string_nul.sh already had to
+# defend against. -k because the interpreter installs a SIGTERM handler for pool
+# drain, and a bound that might not fire is not a bound.
+cached_bounded() { printf '%s' "$2" | GBASIC_SESSION_DIR="$cache" timeout -k 5 "$1" "$GB" --repl 2>&1; }
+
+# The cache holds the PROGRAM, not the transcript -- the same rule `list` and
+# `save` follow. A question is not program text, and the literal transcript is
+# what history is for.
+cfifo="$work/c.fifo"; rm -f "$cfifo"; mkfifo "$cfifo"
+GBASIC_SESSION_DIR="$cache" "$GB" --repl < "$cfifo" >/dev/null 2>&1 &
+cpid=$!
+exec 4>"$cfifo"
+# `dbl(x)` and not `1 + 1`: a bare call PARSES, so it is the recording rule's
+# real subject -- `1 + 1` does not parse at all and takes the wrapper path,
+# which records nothing either way, so a check using it is vacuous. Measured:
+# with the rule removed it stayed green.
+printf 'x = 2\nfunction dbl(n)\nreturn n*2\nend function\nprint dbl(x)\ndbl(x)\n' >&4
+wait_for_file() { local i=0; while [ "$i" -lt 100 ]; do [ -s "$1" ] && return 0; sleep 0.1; i=$((i+1)); done; return 1; }
+wait_for_file "$cache/session-$cpid.bas" || true
+sleep 0.5
+live="$(cat "$cache"/session-*.bas 2>/dev/null)"
+check "the cache holds the program while you type" "x = 2
+function dbl(n)
+return n*2
+end function
+print dbl(x)" "$live"
+lacks "and not the questions asked along the way" "
+dbl(x)" "$live"
+check "and only its owner can read it" "-rw-------" \
+    "$(ls -l "$cache"/session-*.bas 2>/dev/null | head -1 | awk '{print $1}')"
+
+# SIGKILL: the case the whole thing exists for.
+kill -9 "$cpid" 2>/dev/null; wait "$cpid" 2>/dev/null
+exec 4>&-; rm -f "$cfifo"
+check "a killed session leaves its program behind" "1" \
+    "$(ls "$cache" 2>/dev/null | grep -c '^session-')"
+contains "the next session says so" "ended without saving" \
+    "$(printf 'quit\n' | GBASIC_SESSION_DIR="$cache" GBASIC_REPL_PROMPT=1 "$GB" --repl 2>&1)"
+
+# RECOVER RESTORES, AND DOES NOT RUN. Asserted as a DIFFERENCE, because "the
+# program came back" is equally satisfied by a recovery that executed it -- and
+# executing yesterday's half-finished work on someone's behalf is the one
+# behaviour here that could destroy something.
+rec="$(cached 'recover
+list
+quit
+')"
+contains "recover brings the program back" "print dbl(x)" "$rec"
+# Asserted against the OUTPUT LINES. A `lacks` on the raw text missed it: with
+# recovery made to run the program the `4` lands as the FIRST thing printed, so
+# a needle written with a leading newline never matched. Third time in this file
+# that a contains/lacks wanted a line-exact match instead.
+check "and does not run it" "" "$(printf '%s\n' "$rec" | grep -x '4')"
+check "and recovering consumes it" "0" \
+    "$(ls "$cache" 2>/dev/null | grep -c '^session-')"
+# ... with the control that `run` DOES produce the answer, or "does not run" is
+# satisfied by a recovery that brought back nothing at all. A fresh orphan is
+# made the same way -- by killing a session -- rather than by writing the file
+# by hand, which would test the reader and not the thing that writes it.
+make_orphan() {
+    local f="$work/o.fifo"; rm -f "$f"; mkfifo "$f"
+    GBASIC_SESSION_DIR="$cache" "$GB" --repl < "$f" >/dev/null 2>&1 &
+    local p=$!
+    exec 5>"$f"
+    printf '%s' "$1" >&5
+    local i=0
+    while [ "$i" -lt 100 ] && [ ! -s "$cache/session-$p.bas" ]; do sleep 0.1; i=$((i+1)); done
+    kill -9 "$p" 2>/dev/null; wait "$p" 2>/dev/null
+    exec 5>&-; rm -f "$f"
+}
+make_orphan 'x = 2
+function dbl(n)
+return n*2
+end function
+print dbl(x)
+'
+rec2="$(cached 'recover
+run
+quit
+')"
+contains "run then produces its answer" "4" "$rec2"
+
+# Leaving deliberately with unsaved work keeps it too: that loses the program
+# just as completely as a crash, and is the commoner way to lose it.
+rm -rf "$cache"; mkdir -p "$cache"
+cached 'y = 9
+quit
+' >/dev/null
+check "quitting with unsaved work keeps it" "1" \
+    "$(ls "$cache" 2>/dev/null | grep -c '^session-')"
+# THE CONTROL: having saved, there is nothing to warn about, so the next start
+# must be silent -- a notice that fires every time is one nobody reads.
+rm -rf "$cache"; mkdir -p "$cache"
+cached "z = 1
+save \"$work/kept.bas\"
+quit
+" >/dev/null
+check "and after save it does not" "0" \
+    "$(ls "$cache" 2>/dev/null | grep -c '^session-')"
+
+# `discard` is the other answer to the notice.
+rm -rf "$cache"; mkdir -p "$cache"
+cached 'w = 1
+quit
+' >/dev/null
+cached 'discard
+quit
+' >/dev/null
+check "discard forgets it" "0" "$(ls "$cache" 2>/dev/null | grep -c '^session-')"
+
+echo
+echo "== SPAWN: the cache is the file a child re-execs =="
+# A spawned actor is fork+exec and the child re-parses the SOURCE FILE, so a
+# session had nothing for a child to run -- docs/multiprocessing_design.md §3
+# predicted this would need "a clear error at spawn", and nothing could reach
+# the case until the prompt existed. The cache dissolves it: there IS a file.
+rm -rf "$cache"; mkdir -p "$cache"
+# THE CHILD MUST PROVE IT RAN. A weak version of this check -- `print "spawn
+# works"` on the line after the spawn -- passes on the REFUSAL too, because the
+# session survives an error and runs the next line either way; measured, it did.
+# So the assertion is a REPLY that only a real child process can send.
+contains "spawn works at the prompt" "A got: hello" "$(cached_bounded 30 'function worker(parent, name)
+msg = receive()
+send(parent, name + " got: " + msg)
+end function
+me = self()
+a = spawn worker(me, "A")
+send(a, "hello")
+print(receive())
+quit
+')"
+# AND THE REFUSAL IS STILL THERE as the fallback, for a machine with nowhere to
+# write a cache. Without this the error would have become unreachable and would
+# rot; with it, both the ordinary path and the fallback are asserted.
+nofile="$(printf 'function worker()
+return 1
+end function
+h = spawn worker()
+print "session survives"
+quit
+' | GBASIC_SESSION_DIR=/proc/nonexistent/nope "$GB" --repl 2>&1)"
+contains "and without a cache it refuses, naming the cause" \
+    "nothing for the child actor to run" "$nofile"
+lacks "rather than leaking the child's own complaint" "No such file or directory" "$nofile"
+contains "the session survives either way" "session survives" "$nofile"
+# THE CONTROL on all of it: spawn from a real file is untouched.
+printf 'function worker()\n  return 1\nend function\nprogram main()\n  h = spawn worker()\n  print "spawned ok"\nend program\n' > "$work/spawn.bas"
+contains "and spawn from a file still works" "spawned ok" "$("$GB" "$work/spawn.bas" 2>&1)"
+
+echo
 echo "== EDITING: the pty tier =="
 # The line editor runs ONLY when stdin and stdout are both terminals, so a pipe
 # cannot exercise a single key of it -- tests/repl_pty.py gives it a real

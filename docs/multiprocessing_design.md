@@ -184,10 +184,28 @@ is **coarse** — a handful of long-lived workers, a pipeline, a request fan-out
 not millions of tiny actors — that startup cost amortizes to nothing. This is the
 right granularity for BASIC anyway.
 
-Constraint (document this): because the child re-execs the program **from its
-file path**, `spawn` requires a program loaded from a file. A program run from
-stdin or a future REPL cannot be re-exec'd and must raise a clear error at
-`spawn`.
+Constraint: because the child re-execs the program **from its file path**,
+`spawn` requires a program loaded from a file. A program that has no file — at
+the **prompt** (`gbasic --repl`), which is the case that made this reachable —
+cannot be re-exec'd. SHIPPED 2026-09-19, and then **dissolved the same day**:
+the prompt writes what you type to a **session cache**, so there IS a file, and
+`spawn` works at the prompt. The refusal remains as the FALLBACK, for a machine
+with nowhere to write one — and both halves are asserted, so the error cannot
+become unreachable and rot.
+
+What the refusal replaced is worth recording: the failure surfaced as the
+CHILD's own complaint, a bare unlocated `<prompt>: No such file or directory`
+followed by `spawn: child actor failed to start` — neither the cause nor
+anything the author could act on.
+
+The file a child re-execs is now **separate from the source path**
+(`gb_set_reexec_path`). That name has four jobs and they diverged: it is also
+the DIAGNOSTIC name, where `<prompt>` reads better than a cache path in every
+error message, and the base a relative `load` resolves against — MEASURED,
+`load rel from "./rel.bas"` at the prompt resolves against the CWD, and pointing
+the one variable at the cache would silently have resolved it against the cache
+directory instead. `process.self()` reports the re-exec path, since that is what
+would actually re-run.
 
 **The root is an actor too.** `main` calls `self()` and `receive()` in the §2
 example even though nothing spawned it, so the root interpreter **bootstraps its

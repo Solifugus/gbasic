@@ -832,6 +832,24 @@ static int current_line = 0;
 static int current_column = 0;
 static AstStmtList active_root = {0};
 static char *root_source_path = NULL;
+
+/* THE FILE A CHILD PROCESS RE-EXECS TO *BE* THIS PROGRAM. Normally that is the
+ * source path and this stays NULL; at the prompt it is the session cache, a
+ * real file holding exactly what has been typed.
+ *
+ * Kept APART from root_source_path because that name has four jobs and they now
+ * want different answers: it is the DIAGNOSTIC name (`<prompt>` reads better
+ * than a cache path in every error message) and the base a relative `load`
+ * resolves against -- MEASURED: `load rel from "./rel.bas"` at the prompt
+ * resolves against the CWD today, and pointing the one variable at the cache
+ * would silently start resolving against the cache directory instead. */
+static char *reexec_source_path = NULL;
+
+void gb_set_reexec_path(const char *path);
+
+/* What a child must open to run this program: the re-exec file when one was
+ * declared, else the source we were started from. */
+static const char *program_reexec_path(void);
 static char *current_import_path = NULL;
 /* The library whose function is executing, or NULL in the root source. Saved
  * and restored by invoke_function exactly like current_import_path, and read by
@@ -1423,6 +1441,18 @@ void eval_set_source_path(const char *path) {
     free(root_source_path);
     root_source_path = path ? copy_string(path) : NULL;
 }
+void gb_set_reexec_path(const char *path) {
+    free(reexec_source_path);
+    reexec_source_path = path ? copy_string(path) : NULL;
+}
+
+static const char *program_reexec_path(void) {
+    if (reexec_source_path && reexec_source_path[0]) {
+        return reexec_source_path;
+    }
+    return root_source_path;
+}
+
 
 /* Command-line arguments after the script path, bound to a `program` block's
  * declared parameter. Borrowed from argv; not owned/freed here. */
@@ -13108,6 +13138,41 @@ static Value eval_spawn(AstExpr *expr) {
         return value_null();
     }
 
+    /* A SPAWNED ACTOR IS FORK+EXEC AND THE CHILD RE-PARSES THE SOURCE FILE, so
+     * a root that did not come from a file cannot be spawned from at all. The
+     * design doc said this would need "a clear error at spawn"
+     * (docs/multiprocessing_design.md §3) and until the prompt existed there
+     * was nothing that could reach the case; what it actually produced was the
+     * CHILD's own complaint -- a bare, unlocated `<prompt>: No such file or
+     * directory` on stderr followed by "child actor failed to start", which
+     * names neither the cause nor anything the author can do.
+     *
+     * Checked by opening the path rather than by comparing it to the prompt's
+     * name: what matters is whether a child could read it, and a deleted or
+     * unreadable source fails for the same reason and deserves the same
+     * sentence. */
+    const char *reexec = program_reexec_path();
+    if (!reexec || !*reexec) {
+        runtime_error_raise("spawn: this program has no source file, so there is "
+                            "nothing for the child actor to run -- save it and "
+                            "run the file", 1004, "actor");
+        return value_null();
+    }
+    {
+        FILE *probe = fopen(reexec, "rb");
+        if (!probe) {
+            char message[512];
+            snprintf(message, sizeof message,
+                     "spawn: cannot read this program's source (%s), so there is "
+                     "nothing for the child actor to run -- save it and "
+                     "run the file",
+                     reexec);
+            runtime_error_raise(message, 1004, "actor");
+            return value_null();
+        }
+        fclose(probe);
+    }
+
     char *exe = actor_self_exe_path();
     if (!exe) {
         runtime_error_raise("spawn: could not locate the interpreter executable",
@@ -13287,8 +13352,9 @@ static Value eval_spawn(AstExpr *expr) {
         snprintf(inbox_s, sizeof inbox_s, "%d", child_box.read_fd);
         snprintf(self_s, sizeof self_s, "%d", child_self_fd);
         snprintf(ctrl_s, sizeof ctrl_s, "%d", ctrl[1]);
+        char *reexec_argv = (char *)program_reexec_path();
         char *child_argv[] = {
-            exe, "--actor", entry, root_source_path,
+            exe, "--actor", entry, reexec_argv,
             "--actor-inbox", inbox_s,
             "--actor-self", self_s,
             "--actor-control", ctrl_s,
@@ -26320,12 +26386,13 @@ static Value process_do_self(AstExpr *expr) {
         return process_raise("process.self: could not read /proc/self/exe");
     }
     exe[n] = '\0';
-    if (!root_source_path) {
+    const char *self_source = program_reexec_path();
+    if (!self_source) {
         return process_raise("process.self: no script path (embedded evaluation)");
     }
     char script[4096];
-    if (!realpath(root_source_path, script)) {
-        snprintf(script, sizeof(script), "%s", root_source_path);
+    if (!realpath(self_source, script)) {
+        snprintf(script, sizeof(script), "%s", self_source);
     }
     Value result = value_record(NULL, 0);
     record_set(&result, "interpreter", value_string(exe));
@@ -36896,6 +36963,8 @@ static void runtime_teardown(void) {
     current_import_path = NULL;
     free(root_source_path);
     root_source_path = NULL;
+    free(reexec_source_path);
+    reexec_source_path = NULL;
     env_clear(&global_env);
     active_root = ast_stmt_list_empty();
 }

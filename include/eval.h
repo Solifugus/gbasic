@@ -8,6 +8,13 @@
 int eval_program(AstStmtList program);
 void eval_set_source_path(const char *path);
 
+/* The file a child process re-execs to BE this program -- what `spawn` hands an
+ * actor, and what `process.self` reports as the script. Defaults to the source
+ * path; the prompt points it at its session cache, which is a real file holding
+ * exactly what has been typed. Separate from the source path because that is
+ * also the DIAGNOSTIC name and the base a relative `load` resolves against. */
+void gb_set_reexec_path(const char *path);
+
 /* Command-line arguments that follow the script path. When the program declares
  * a `program NAME(param)` block, its first parameter binds to these as a 0-based
  * array of strings. `items` must remain valid for the program's lifetime (argv

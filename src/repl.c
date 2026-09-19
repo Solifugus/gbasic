@@ -54,11 +54,15 @@
 #define _POSIX_C_SOURCE 200809L
 
 #include <ctype.h>
+#include <errno.h>
+#include <fcntl.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <dirent.h>
+#include <sys/stat.h>
 
 #include "ast.h"
 #include "diagnostics.h"
@@ -258,6 +262,185 @@ static void chunk_declaration(AstStmtList program, int *kind, const char **name)
     }
 }
 
+/* ---- the session cache ---------------------------------------------------
+ *
+ * WHAT YOU HAVE TYPED IS ALWAYS IN A FILE, whether or not you have saved it.
+ * Two things fall out, and the second is the one that motivated it.
+ *
+ * `spawn` WORKS AT THE PROMPT. A spawned actor is fork+exec and the child
+ * re-parses the SOURCE FILE; a session had none, so `spawn` could only refuse.
+ * The cache IS that file, so the refusal is now a fallback for the case where
+ * no cache could be written at all rather than the ordinary answer.
+ *
+ * AND A KILLED SESSION LOSES NOTHING. The file is removed on a CLEAN exit, so
+ * one left behind is by definition a session that did not get to finish -- no
+ * flag to keep in sync, and the absence of the file is the proof.
+ *
+ * IT HOLDS THE PROGRAM, NOT THE TRANSCRIPT, which is the same rule `list` and
+ * `save` follow: a line that ACTED is program text, a line that merely ANSWERED
+ * was a question. The literal transcript is what HISTORY is for, and that
+ * persists too -- so between them nothing typed is lost, filed under what it
+ * actually was.
+ *
+ * RECOVERY NEVER RUNS ANYTHING. Coming back to a prompt and having yesterday's
+ * half-finished program execute itself is a surprise, and it can be a
+ * destructive one. `recover` restores the PROGRAM; `run` is still what makes it
+ * live, exactly as for a program you typed. */
+
+static char session_cache[5120];   /* empty when there is nowhere to write one */
+
+/* Whether the resident program has been written somewhere the user chose. Not
+ * a crash flag: leaving deliberately with work you never saved loses it just as
+ * completely as being killed, so the cache is kept for BOTH and the notice says
+ * "ended without saving" rather than "crashed", which is true of each. */
+static int program_saved = 1;
+
+static void cache_dir(char *out, size_t n) {
+    const char *dir = getenv("GBASIC_SESSION_DIR");
+    if (dir && *dir) {
+        snprintf(out, n, "%s", dir);
+        return;
+    }
+    const char *xdg = getenv("XDG_STATE_HOME");
+    if (xdg && *xdg) {
+        snprintf(out, n, "%s/gbasic", xdg);
+        return;
+    }
+    const char *home = getenv("HOME");
+    if (home && *home) {
+        snprintf(out, n, "%s/.local/state/gbasic", home);
+        return;
+    }
+    out[0] = '\0';
+}
+
+/* mkdir -p, for the two or three levels a state directory needs. */
+static int make_dirs(const char *path) {
+    char buf[4096];
+    snprintf(buf, sizeof(buf), "%s", path);
+    for (char *p = buf + 1; *p; p++) {
+        if (*p != '/') {
+            continue;
+        }
+        *p = '\0';
+        mkdir(buf, 0700);
+        *p = '/';
+    }
+    return mkdir(buf, 0700) == 0 || errno == EEXIST ? 0 : -1;
+}
+
+static void cache_open(void) {
+    char dir[4096];
+    cache_dir(dir, sizeof(dir));
+    if (!*dir || make_dirs(dir) != 0) {
+        session_cache[0] = '\0';
+        return;
+    }
+    snprintf(session_cache, sizeof(session_cache), "%s/session-%ld.bas",
+             dir, (long)getpid());
+}
+
+/* Written through a temporary and renamed, so a crash during the write cannot
+ * leave a half-file where a whole one was -- the point of the cache is that
+ * what is there is always something that ran. 0600 because a session can hold
+ * a connection string, the same reason the history file has it. */
+static void cache_write(const ReplBuffer *b) {
+    if (!*session_cache) {
+        return;
+    }
+    char tmp[5200];
+    snprintf(tmp, sizeof(tmp), "%s.tmp", session_cache);
+    int fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    if (fd < 0) {
+        return;
+    }
+    FILE *f = fdopen(fd, "w");
+    if (!f) {
+        close(fd);
+        unlink(tmp);
+        return;
+    }
+    char *src = buffer_source(b);
+    fputs(src, f);
+    free(src);
+    if (fflush(f) != 0 || fsync(fileno(f)) != 0) {
+        fclose(f);
+        unlink(tmp);
+        return;
+    }
+    fclose(f);
+    if (rename(tmp, session_cache) != 0) {
+        unlink(tmp);
+    }
+}
+
+static void cache_remove(void) {
+    if (*session_cache) {
+        unlink(session_cache);
+    }
+}
+
+/* A cache left by a session that is no longer running. The pid is in the name,
+ * so "did it finish" is a question the kernel answers -- and a recycled pid can
+ * only make us MISS one, never invent one, which is the safe direction. */
+static char *orphan_find(size_t *count) {
+    char dir[4096];
+    cache_dir(dir, sizeof(dir));
+    *count = 0;
+    if (!*dir) {
+        return NULL;
+    }
+    DIR *d = opendir(dir);
+    if (!d) {
+        return NULL;
+    }
+    char *newest = NULL;
+    time_t newest_at = 0;
+    struct dirent *e;
+    while ((e = readdir(d))) {
+        long pid;
+        if (sscanf(e->d_name, "session-%ld.bas", &pid) != 1) {
+            continue;
+        }
+        char path[4600];
+        snprintf(path, sizeof(path), "%s/%s", dir, e->d_name);
+        if (*session_cache && strcmp(path, session_cache) == 0) {
+            continue;
+        }
+        if (kill((pid_t)pid, 0) == 0 || errno == EPERM) {
+            continue;                      /* still running: not an orphan */
+        }
+        struct stat st;
+        if (stat(path, &st) != 0 || st.st_size == 0) {
+            unlink(path);                  /* empty: nothing was lost */
+            continue;
+        }
+        (*count)++;
+        if (!newest || st.st_mtime >= newest_at) {
+            free(newest);
+            newest = repl_dup(path);
+            newest_at = st.st_mtime;
+        }
+    }
+    closedir(d);
+    return newest;
+}
+
+static void orphan_discard(void) {
+    for (;;) {
+        size_t n = 0;
+        char *p = orphan_find(&n);
+        if (!p) {
+            return;
+        }
+        unlink(p);
+        free(p);
+        if (n <= 1) {
+            return;
+        }
+    }
+}
+
 /* ---- input --------------------------------------------------------------- */
 
 static char *read_line(FILE *in) {
@@ -410,6 +593,8 @@ static void run_chunk(ReplState *st, const char *text, int record) {
          * discarded result into `run`, which warns about exactly that. */
         if (record && !gb_session_echoed()) {
             buffer_add(st->buffer, text, kind, name);
+            program_saved = 0;
+            cache_write(st->buffer);
         }
         return;
     }
@@ -546,6 +731,8 @@ static void print_help(FILE *out) {
         "  new             forget the resident program and start a fresh session\n"
         "  vars            show the names this session holds\n"
         "  cls             clear the screen\n"
+        "  recover         bring back a program a previous session did not save\n"
+        "  discard         forget it instead\n"
         "  save \"file\"     write the resident program to a file, exactly as typed\n"
         "  load \"file\"     read a file into the prompt and run it\n"
         "                  (`load sqlite`, with no quotes, is still the gBASIC statement)\n"
@@ -557,7 +744,12 @@ static void print_help(FILE *out) {
         "A command name is only a command as a whole word: `run()` still calls your\n"
         "own function, and `? list` shows a variable you called `list`.\n"
         "`list` numbers its lines so `delete` has something to name; those numbers\n"
-        "shift the text, so use `save` when you want the program itself.\n");
+        "shift the text, so use `save` when you want the program itself.\n"
+        "\n"
+        "What you type is kept in a file as you go, so a session that is killed --\n"
+        "or left without saving -- can be brought back with `recover` next time.\n"
+        "That is a safety net, not a substitute for `save`: it holds one program,\n"
+        "and `new` replaces it.\n");
 }
 
 static char *read_whole_file(const char *path) {
@@ -639,9 +831,28 @@ int repl_main(int json_diagnostics) {
     ReplState st = { &buffer, json_diagnostics, 0 };
 
     session_start();
+    cache_open();
+    /* The cache IS the file a spawned actor re-execs. Without one, `spawn` at
+     * the prompt still refuses -- which is now the fallback for a machine with
+     * nowhere to write, rather than the ordinary answer. */
+    if (*session_cache) {
+        gb_set_reexec_path(session_cache);
+        cache_write(&buffer);
+    }
+
+    size_t orphan_count = 0;
+    char *orphan = orphan_find(&orphan_count);
 
     if (interactive) {
         printf("gBASIC. `help` for prompt commands, `quit` to leave.\n");
+        if (orphan) {
+            if (orphan_count == 1) {
+                printf("A previous session ended without saving. `recover` brings it back, `discard` forgets it.\n");
+            } else {
+                printf("%zu previous sessions ended without saving. `recover` brings the most recent back, `discard` forgets them all.\n",
+                       orphan_count);
+            }
+        }
     }
 
     char *pending = NULL;   /* an unfinished chunk, awaiting more lines */
@@ -694,6 +905,44 @@ int repl_main(int json_diagnostics) {
                 free(line);
                 continue;
             }
+            if (command_word(line, "recover", &arg) && !*arg) {
+                if (!orphan) {
+                    fprintf(stderr, "nothing to recover\n");
+                    status = 1;
+                } else {
+                    char *src = read_whole_file(orphan);
+                    if (!src) {
+                        fprintf(stderr, "cannot read %s\n", orphan);
+                        status = 1;
+                    } else {
+                        /* RESTORED, NOT RUN. `run` is still what makes a
+                         * program live, exactly as for one you typed -- a
+                         * prompt that executed yesterday's half-finished work
+                         * on your behalf would be a surprise, and could be a
+                         * destructive one. Recorded as ONE entry, as typed. */
+                        if (*src) {
+                            buffer_add(&buffer, src, -1, NULL);
+                            cache_write(&buffer);
+                        }
+                        free(src);
+                        unlink(orphan);
+                        free(orphan);
+                        orphan = NULL;
+                        orphan_count = 0;
+                        printf("recovered; `list` to see it, `run` to run it\n");
+                    }
+                }
+                free(line);
+                continue;
+            }
+            if (command_word(line, "discard", &arg) && !*arg) {
+                orphan_discard();
+                free(orphan);
+                orphan = NULL;
+                orphan_count = 0;
+                free(line);
+                continue;
+            }
             if (command_word(line, "cls", &arg) && !*arg) {
                 /* The two escapes every terminal since the VT100 understands:
                  * home the cursor, erase the screen. Emitted whether or not a
@@ -714,6 +963,9 @@ int repl_main(int json_diagnostics) {
                 } else if (!buffer_delete(&buffer, arg)) {
                     fprintf(stderr, "nothing to delete: %s\n", arg);
                     status = 1;
+                } else {
+                    program_saved = 0;
+                    cache_write(&buffer);
                 }
                 free(line);
                 continue;
@@ -727,6 +979,8 @@ int repl_main(int json_diagnostics) {
                 buffer_free(&buffer);
                 gb_session_close();
                 session_start();
+                program_saved = 1;
+                cache_write(&buffer);
                 free(line);
                 continue;
             }
@@ -755,6 +1009,7 @@ int repl_main(int json_diagnostics) {
                     fputs(src, f);
                     free(src);
                     fclose(f);
+                    program_saved = 1;
                 }
                 free(path);
                 free(line);
@@ -841,6 +1096,17 @@ int repl_main(int json_diagnostics) {
     }
 
     free(pending);
+    free(orphan);
+    /* KEPT when there is unsaved work, however the session ended. Removing it
+     * on a clean exit would make "nothing is lost" true only of a crash, which
+     * is the smaller half of the promise -- typing a program, quitting, and
+     * wanting it tomorrow is the commoner one. Removed when the program is
+     * empty or has been saved, so the notice on the next start is never noise. */
+    if (buffer.count == 0 || program_saved) {
+        cache_remove();
+    } else if (interactive && *session_cache) {
+        printf("Your program was not saved; `recover` will bring it back next time.\n");
+    }
     if (editing && hist_path && *hist_path) {
         line_history_save(hist_path);
     }

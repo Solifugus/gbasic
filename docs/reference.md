@@ -7392,7 +7392,13 @@ EDGAR / SEC-filings suite (governed by `docs/edgar_design.md`, with
 
 ## The Prompt
 
-`gbasic` with no arguments (or `gbasic --repl`) opens an interactive prompt. It
+`gbasic` with no arguments (or `gbasic --repl`) opens an interactive prompt.
+
+The commands below — `list`, `run`, `new`, `delete`, `vars`, `cls`, `save`,
+`load`, `help`, `quit`, and `?` — are **not gBASIC statements**. They are read by
+the prompt before the text reaches the parser; the grammar does not contain them,
+and every one of them is a syntax error in a `.bas` file. That is also why a
+command name only counts as a command when it stands as a whole word. It
 is the same interpreter with its lifetime turned inside out: a file opens an
 environment, runs once and releases it, while the prompt opens one environment
 and runs a root per line against it. A variable assigned on one line is there on
@@ -7473,6 +7479,39 @@ editing off.
 History holds one line at a time, so recalling a multi-line block walks it a
 line at a time. To bring a whole function back, `list` it and type it again —
 which is the resident program's job, and re-entering a declaration replaces it.
+
+### Nothing you type is lost
+
+What you type is written to a **session cache** as you go, so there is always a
+file holding your program whether or not you have saved it. Two things follow.
+
+A session that is **killed**, or **left without saving**, can be brought back:
+
+```text
+$ gbasic
+gBASIC. `help` for prompt commands, `quit` to leave.
+A previous session ended without saving. `recover` brings it back, `discard` forgets it.
+> recover
+recovered; `list` to see it, `run` to run it
+```
+
+`recover` restores the **program**; it does not run it. `run` is still what
+makes a program live, exactly as for one you typed — a prompt that executed
+yesterday's half-finished work on your behalf would be a surprise, and could be
+a destructive one.
+
+The cache holds the program, not the transcript — the same rule `list` and
+`save` follow, so a question you asked is not in it. The literal transcript is
+what history is for, and that persists too.
+
+It is a **safety net, not a substitute for `save`**: it holds one program, `new`
+replaces it, and saving clears it. The file lives under `$XDG_STATE_HOME/gbasic`
+(or `~/.local/state/gbasic`), readable only by you; `GBASIC_SESSION_DIR` names a
+different place.
+
+And because there is always a file, **`spawn` works at the prompt**. A spawned
+actor is fork+exec and the child re-parses the source file; the cache is that
+file. On a machine where no cache can be written, `spawn` refuses and says why.
 
 ### Interrupting
 
