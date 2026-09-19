@@ -199,10 +199,11 @@ else
 CFLAGS += -DHAVE_GIO=0
 endif
 
-# libgbasic is every object except the CLI entry points (src/main.o, src/repl.o). The CLI is
+# libgbasic is every object except the CLI entry points (src/main.o, src/repl.o,
+# src/lineedit.o). The CLI is
 # its first consumer; the archive is the seam a future embedder links against.
 LIB_OBJS := src/lexer.o src/parser.tab.o src/ast.o src/eval.o src/builtins.o src/actor.o src/diagnostics.o src/frontend.o
-OBJS := src/main.o src/repl.o $(LIB_OBJS)
+OBJS := src/main.o src/repl.o src/lineedit.o $(LIB_OBJS)
 
 # gbasic-lsp: the Language Server, first external consumer of libgbasic. Kept out
 # of the default `all` target so a plain `make` stays lean; build it with
@@ -225,8 +226,8 @@ dev: all gbasic-lsp
 libgbasic.a: $(LIB_OBJS)
 	$(AR) rcs $@ $(LIB_OBJS)
 
-gbasic: src/main.o src/repl.o libgbasic.a
-	$(CC) $(CFLAGS) -o $@ src/main.o src/repl.o libgbasic.a $(LDLIBS)
+gbasic: src/main.o src/repl.o src/lineedit.o libgbasic.a
+	$(CC) $(CFLAGS) -o $@ src/main.o src/repl.o src/lineedit.o libgbasic.a $(LDLIBS)
 
 gbasic-lsp: $(LSP_OBJS) libgbasic.a
 	$(CC) $(LSP_CFLAGS) -o $@ $(LSP_OBJS) libgbasic.a $(LDLIBS)
@@ -258,7 +259,9 @@ FORCE:
 
 src/main.o: src/main.c include/ast.h include/eval.h include/lexer.h include/builtins.h include/gbasic.h include/diagnostics.h include/repl.h .stdlibdir-stamp
 
-src/repl.o: src/repl.c include/ast.h include/eval.h include/gbasic.h include/diagnostics.h include/repl.h
+src/repl.o: src/repl.c include/ast.h include/eval.h include/gbasic.h include/diagnostics.h include/repl.h include/lineedit.h
+
+src/lineedit.o: src/lineedit.c include/lineedit.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
 src/lexer.o: src/lexer.c include/lexer.h

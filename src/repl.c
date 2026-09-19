@@ -64,6 +64,7 @@
 #include "diagnostics.h"
 #include "eval.h"
 #include "gbasic.h"
+#include "lineedit.h"
 
 #define REPL_SOURCE_NAME "<prompt>"
 
@@ -130,6 +131,82 @@ static void buffer_add(ReplBuffer *b, const char *text, int kind, const char *na
     b->items[b->count].kind = kind;
     b->items[b->count].name = name ? repl_dup(name) : NULL;
     b->count++;
+}
+
+/* The listing. Numbered, because a resident program with no line numbers still
+ * needs a way to say WHICH line to remove, and `[n]` is the question `delete`
+ * answers -- the Tandy loop with the numbering moved out of the language and
+ * into the display. The gutter shifts every line by five columns, so a listing
+ * is for READING: `save` is what writes the program verbatim, and `consider`,
+ * which recognises its branches by column, would not survive a copy-paste from
+ * here. Said in `help` rather than left to be discovered. */
+static void buffer_list(const ReplBuffer *b, const char *only, FILE *out) {
+    int found = 0;
+    for (size_t i = 0; i < b->count; i++) {
+        if (only && !(b->items[i].name && strcmp(b->items[i].name, only) == 0)) {
+            continue;
+        }
+        found = 1;
+        const char *t = b->items[i].text;
+        int first = 1;
+        while (*t) {
+            const char *nl = strchr(t, '\n');
+            size_t len = nl ? (size_t)(nl - t) : strlen(t);
+            if (first) {
+                fprintf(out, "%3zu  ", i + 1);
+                first = 0;
+            } else {
+                fputs("     ", out);
+            }
+            fwrite(t, 1, len, out);
+            fputc('\n', out);
+            if (!nl) {
+                break;
+            }
+            t = nl + 1;
+        }
+    }
+    if (only && !found) {
+        fprintf(out, "nothing named '%s' in the program\n", only);
+    }
+}
+
+/* Remove one entry: `delete 2` by its listed number, `delete sq` by the name it
+ * declares. Returns 0 when there is nothing of that description, so the prompt
+ * can say so rather than silently doing nothing -- the commonest way a delete
+ * command lies. */
+static int buffer_delete(ReplBuffer *b, const char *what) {
+    size_t index = b->count;
+    int all_digits = *what != '\0';
+    for (const char *c = what; *c; c++) {
+        if (!isdigit((unsigned char)*c)) {
+            all_digits = 0;
+            break;
+        }
+    }
+    if (all_digits) {
+        long n = strtol(what, NULL, 10);
+        if (n < 1 || (size_t)n > b->count) {
+            return 0;
+        }
+        index = (size_t)n - 1;
+    } else {
+        for (size_t i = 0; i < b->count; i++) {
+            if (b->items[i].name && strcmp(b->items[i].name, what) == 0) {
+                index = i;
+                break;
+            }
+        }
+        if (index == b->count) {
+            return 0;
+        }
+    }
+    free(b->items[index].text);
+    free(b->items[index].name);
+    memmove(&b->items[index], &b->items[index + 1],
+            sizeof(ReplEntry) * (b->count - index - 1));
+    b->count--;
+    return 1;
 }
 
 static char *buffer_source(const ReplBuffer *b) {
@@ -384,6 +461,52 @@ static int word_is(const char *line, const char *word) {
     return blank_line(s + n);
 }
 
+/* The line's first WORD, when it is `word` and is followed by whitespace or by
+ * nothing. THE DELIMITER IS THE WHOLE POINT: `run` is a prompt command and
+ * `run()` is a call to the author's own function, and the character after the
+ * word is the only thing that tells them apart. `*rest` is left pointing at the
+ * argument, already stripped of leading space. */
+/* The argument a `list` or `delete` takes: a bare name, or a number. Anything
+ * else means this was never the command -- `list = 5` is an assignment to a
+ * variable somebody called `list`, and reading it as a command would make that
+ * variable unreachable while reporting a puzzle about a program it never saw.
+ * (`? list` is then how you read it back, since the bare word IS the command.) */
+static int command_arg_ok(const char *arg) {
+    if (!*arg) {
+        return 1;
+    }
+    if (isdigit((unsigned char)*arg)) {
+        for (const char *c = arg; *c; c++) {
+            if (!isdigit((unsigned char)*c)) {
+                return 0;
+            }
+        }
+        return 1;
+    }
+    if (!isalpha((unsigned char)*arg) && *arg != '_') {
+        return 0;
+    }
+    for (const char *c = arg; *c; c++) {
+        if (!isalnum((unsigned char)*c) && *c != '_') {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int command_word(const char *line, const char *word, const char **rest) {
+    const char *s = skip_space(line);
+    size_t n = strlen(word);
+    if (strncmp(s, word, n) != 0) {
+        return 0;
+    }
+    if (s[n] != '\0' && !isspace((unsigned char)s[n])) {
+        return 0;
+    }
+    *rest = skip_space(s + n);
+    return 1;
+}
+
 /* `save "path"` / `load "path"`: the argument is a STRING literal, which is
  * what keeps `load "lib.bas"` (read this file into the prompt) apart from
  * `load sqlite` (the gBASIC statement). A quoted path is a file; a bare word is
@@ -416,18 +539,25 @@ static char *command_path(const char *line, const char *word) {
 static void print_help(FILE *out) {
     fprintf(out,
         "gBASIC prompt commands (everything else is gBASIC):\n"
-        "  list            show the resident program\n"
+        "  ? expr          show the value of expr\n"
+        "  list [name]     show the resident program, or one declaration\n"
+        "  delete n|name   remove entry n (the number `list` shows), or a declaration\n"
         "  run             start a fresh session and run the resident program\n"
         "  new             forget the resident program and start a fresh session\n"
         "  vars            show the names this session holds\n"
-        "  save \"file\"     write the resident program to a file\n"
+        "  cls             clear the screen\n"
+        "  save \"file\"     write the resident program to a file, exactly as typed\n"
         "  load \"file\"     read a file into the prompt and run it\n"
         "                  (`load sqlite`, with no quotes, is still the gBASIC statement)\n"
         "  help            this list\n"
         "  quit            leave (so does `bye`, and end-of-input)\n"
         "\n"
         "A line that is not a statement is treated as a question: `1 + 2` answers 3.\n"
-        "An unfinished block or bracket asks for the rest; a blank line submits anyway.\n");
+        "An unfinished block or bracket asks for the rest; a blank line submits anyway.\n"
+        "A command name is only a command as a whole word: `run()` still calls your\n"
+        "own function, and `? list` shows a variable you called `list`.\n"
+        "`list` numbers its lines so `delete` has something to name; those numbers\n"
+        "shift the text, so use `save` when you want the program itself.\n");
 }
 
 static char *read_whole_file(const char *path) {
@@ -464,7 +594,27 @@ int repl_main(int json_diagnostics) {
      * possible; GBASIC_REPL_PROMPT=1 forces them so the prompting itself can be
      * tested without a pseudo-terminal. */
     const char *force = getenv("GBASIC_REPL_PROMPT");
-    int interactive = isatty(STDIN_FILENO) || (force && strcmp(force, "1") == 0);
+    /* `editing` is the stricter of the two: prompts can be forced on for a
+     * test, but the line editor needs a REAL terminal -- it puts one in raw
+     * mode and reads escape sequences back. */
+    int editing = isatty(STDIN_FILENO) && isatty(STDOUT_FILENO);
+    int interactive = editing || (force && strcmp(force, "1") == 0);
+
+    /* History lives between sessions, because the line you want back is often
+     * from yesterday. GBASIC_HISTORY overrides the path; setting it to an empty
+     * string turns persistence off without turning editing off. */
+    const char *hist_path = getenv("GBASIC_HISTORY");
+    char hist_default[4096] = {0};
+    if (!hist_path) {
+        const char *home = getenv("HOME");
+        if (home) {
+            snprintf(hist_default, sizeof(hist_default), "%s/.gbasic_history", home);
+            hist_path = hist_default;
+        }
+    }
+    if (editing && hist_path && *hist_path) {
+        line_history_load(hist_path);
+    }
 
     /* Line-buffered unconditionally. Interleaving is the whole readability of a
      * prompt: a diagnostic on stderr must land between the lines that produced
@@ -502,11 +652,26 @@ int repl_main(int json_diagnostics) {
     int exit_requested = 0;
 
     for (;;) {
-        if (interactive) {
-            fputs(pending ? "... " : "> ", stdout);
-            fflush(stdout);
+        /* Two readers, and the split is the same one the prompts follow: a
+         * person at a terminal gets editing and history, a pipe gets a plain
+         * read. Pointing the editor at a pipe would write escape sequences into
+         * whatever is reading the output. */
+        char *line;
+        if (editing) {
+            line = line_edit(pending ? "... " : "> ");
+            /* Everything but the line that ends the session: pressing Up and
+             * finding `quit` waiting under your finger is the one recall
+             * nobody wants, and it would be the FIRST one every time. */
+            if (line && !word_is(line, "quit") && !word_is(line, "bye")) {
+                line_history_add(line);
+            }
+        } else {
+            if (interactive) {
+                fputs(pending ? "... " : "> ", stdout);
+                fflush(stdout);
+            }
+            line = read_line(stdin);
         }
-        char *line = read_line(stdin);
         if (!line) {
             if (interactive) {
                 fputc('\n', stdout);
@@ -519,7 +684,8 @@ int repl_main(int json_diagnostics) {
                 free(line);
                 continue;
             }
-            if (word_is(line, "quit") || word_is(line, "bye")) {
+            const char *arg = NULL;
+            if (command_word(line, "quit", &arg) || command_word(line, "bye", &arg)) {
                 free(line);
                 break;
             }
@@ -528,26 +694,43 @@ int repl_main(int json_diagnostics) {
                 free(line);
                 continue;
             }
-            if (word_is(line, "list")) {
-                char *src = buffer_source(&buffer);
-                fputs(src, stdout);
-                free(src);
+            if (command_word(line, "cls", &arg) && !*arg) {
+                /* The two escapes every terminal since the VT100 understands:
+                 * home the cursor, erase the screen. Emitted whether or not a
+                 * person is typing -- the line asked for it. */
+                fputs("\033[H\033[2J", stdout);
                 free(line);
                 continue;
             }
-            if (word_is(line, "vars")) {
+            if (command_word(line, "list", &arg) && command_arg_ok(arg)) {
+                buffer_list(&buffer, *arg ? arg : NULL, stdout);
+                free(line);
+                continue;
+            }
+            if (command_word(line, "delete", &arg) && command_arg_ok(arg)) {
+                if (!*arg) {
+                    fprintf(stderr, "delete needs a number from `list`, or a name\n");
+                    status = 1;
+                } else if (!buffer_delete(&buffer, arg)) {
+                    fprintf(stderr, "nothing to delete: %s\n", arg);
+                    status = 1;
+                }
+                free(line);
+                continue;
+            }
+            if (command_word(line, "vars", &arg) && !*arg) {
                 gb_session_list_vars(stdout);
                 free(line);
                 continue;
             }
-            if (word_is(line, "new")) {
+            if (command_word(line, "new", &arg) && !*arg) {
                 buffer_free(&buffer);
                 gb_session_close();
                 session_start();
                 free(line);
                 continue;
             }
-            if (word_is(line, "run")) {
+            if (command_word(line, "run", &arg) && !*arg) {
                 char *src = buffer_source(&buffer);
                 gb_session_close();
                 session_start();
@@ -590,6 +773,24 @@ int repl_main(int json_diagnostics) {
                 free(path);
                 free(line);
                 continue;
+            }
+            /* `? expr` -- BASIC's own shorthand, and the reason it is a
+             * QUESTION rather than sugar for `print`: at a prompt it is how you
+             * ask for something whose bare name a command would otherwise
+             * claim. `? list` shows a variable called `list`. */
+            {
+                const char *q = skip_space(line);
+                if (*q == '?' && !blank_line(q + 1)) {
+                    char *asked = malloc(strlen(q + 1) + 2);
+                    if (!asked) {
+                        abort();
+                    }
+                    sprintf(asked, "%s\n", q + 1);
+                    run_chunk(&st, asked, 0);
+                    free(asked);
+                    free(line);
+                    continue;
+                }
             }
         }
 
@@ -640,6 +841,10 @@ int repl_main(int json_diagnostics) {
     }
 
     free(pending);
+    if (editing && hist_path && *hist_path) {
+        line_history_save(hist_path);
+    }
+    line_history_free();
     gb_session_close();
     buffer_free(&buffer);
     /* A SESSION THAT SAW A FAILURE EXITS NONZERO. Interactively that costs

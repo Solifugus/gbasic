@@ -7447,6 +7447,33 @@ language has:
 A blank line submits what you have anyway, which is how you get the diagnostic
 out of a line that merely *looks* unfinished.
 
+### Editing and history
+
+At a terminal the prompt gives you a line editor. It is written into gBASIC
+rather than linked, so it is there on every system with no extra package.
+
+| key | what it does |
+| --- | --- |
+| ← → | move by one character |
+| ↑ ↓ | walk back and forward through history |
+| Home / End, Ctrl-A / Ctrl-E | start and end of the line |
+| Backspace, Delete | remove a character (one character, not one byte) |
+| Ctrl-K / Ctrl-U | delete to the end / to the start |
+| Ctrl-W | delete the word before the cursor |
+| Ctrl-L | clear the screen, keep the line |
+| Tab | two spaces, for indenting a block |
+| Ctrl-C | throw this line away |
+| Ctrl-D | end the session, when the line is empty |
+
+History is kept between sessions in `~/.gbasic_history`, readable only by you
+because a session can contain a connection string. `GBASIC_HISTORY` names a
+different file; setting it to an empty string turns the file off without turning
+editing off.
+
+History holds one line at a time, so recalling a multi-line block walks it a
+line at a time. To bring a whole function back, `list` it and type it again —
+which is the resident program's job, and re-entering a declaration replaces it.
+
 ### Interrupting
 
 Ctrl-C ends the line that is running and gives the prompt back; it does not end
@@ -7502,11 +7529,14 @@ how you edit it.
 
 | command | what it does |
 | --- | --- |
-| `list` | show the resident program |
+| `? expr` | show the value of `expr` |
+| `list [name]` | show the resident program, or one declaration |
+| `delete n\|name` | remove entry `n` (the number `list` shows), or a declaration |
 | `run` | start a fresh session and run the resident program |
 | `new` | forget the resident program and the session |
 | `vars` | show the names this session holds |
-| `save "file"` | write the resident program to a file |
+| `cls` | clear the screen |
+| `save "file"` | write the resident program to a file, exactly as typed |
 | `load "file"` | read a file into the prompt and run it |
 | `help` | the command list |
 | `quit`, `bye` | leave (so does end-of-input, and `exit(n)`) |
@@ -7514,6 +7544,16 @@ how you edit it.
 A session that saw a failure exits with status 1, so a piped session can be used
 in a script and a run that reported three errors is not mistaken for success. An
 explicit `exit(n)` still wins.
+
+A command name is only a command when it stands as a **whole word**: `run()`
+still calls a function you wrote, `listing` is still a variable you named, and
+`list = 5` is still an assignment. `? name` is how you read back a variable
+whose name a command has taken.
+
+`list` numbers its lines so `delete` has something to name. Those numbers shift
+the text, so a listing is for reading — `save` writes the program itself.
+`delete` edits the program, not the session: what you already defined is still
+defined, and `run` is what starts clean.
 
 `load` is the one that needs care, and the rule is the argument's shape: a
 **quoted path** is a file the prompt reads, a **bare name** is still gBASIC's

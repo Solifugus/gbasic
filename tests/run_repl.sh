@@ -210,7 +210,7 @@ quit
 # STRUCTURAL, AND THE REASON IS THE HONEST PART -- see the header. A behavioural
 # check here would pass on a `run` that simply continued the session, so what is
 # asserted is that the close is still there.
-if grep -A4 'if (word_is(line, "run"))' "$root/src/repl.c" | grep -q 'gb_session_close'; then
+if grep -A4 'command_word(line, "run"' "$root/src/repl.c" | grep -q 'gb_session_close'; then
     printf 'ok   run closes the session before replaying (structural)\n'; pass=$((pass+1))
 else
     printf 'FAIL run no longer closes the session before replaying -- the resident\n'
@@ -261,10 +261,10 @@ quit
 # The listing keeps the declaration WHERE IT WAS: dropping and appending would
 # move a function you just fixed to the bottom of a program you are reading.
 check "and it is replaced in place" "9
-function sq(n)
-return n * n * n
-end function
-print sq(3)" "$(repl 'function sq(n)
+  1  function sq(n)
+     return n * n * n
+     end function
+  2  print sq(3)" "$(repl 'function sq(n)
 return n * n
 end function
 print sq(3)
@@ -366,6 +366,234 @@ out="$(printf 'print 5\nquit\n' | GBASIC_REPL_PROMPT=1 "$GB" --repl 2>/dev/null)
 contains "and a prompt appears when asked for" "> " "$out"
 contains "with a banner" "help" "$out"
 check "no arguments is the prompt" "7" "$(printf 'print 7\nquit\n' | "$GB" 2>/dev/null)"
+
+echo
+echo "== COMMANDS: what a curious person reaches for =="
+check "? is BASIC's shorthand" "3" "$(repl '? 1 + 2
+quit
+')"
+# And the reason `?` is a QUESTION rather than sugar for `print`: it is how you
+# ask for a name a COMMAND would otherwise claim.
+check "? reaches a name a command would claim" "5" "$(repl 'list = 5
+? list
+quit
+')"
+check "list names one declaration" "  1  function sq(n)
+     return n*n
+     end function" "$(repl 'function sq(n)
+return n*n
+end function
+function dbl(n)
+return n*2
+end function
+list sq
+quit
+')"
+check "delete by the number list shows" "3
+  1  x = 1
+  2  print 3" "$(repl 'x = 1
+y = 2
+print 3
+delete 2
+list
+quit
+')"
+check "delete by declaration name" "  1  x = 1" "$(repl 'x = 1
+function sq(n)
+return n*n
+end function
+delete sq
+list
+quit
+')"
+# A delete that matched nothing SAYS SO. Silently doing nothing is the
+# commonest way a delete command lies, and the listing afterwards looks
+# perfectly ordinary.
+contains "a delete that matches nothing says so" "nothing to delete: 9" \
+    "$(repl_err 'x = 1
+delete 9
+quit
+')"
+contains "cls clears the screen" "$(printf '\033[H\033[2J')" "$(repl 'cls
+quit
+')"
+# THE CONTROL ON EVERY COMMAND ABOVE: a command name is only a command as a
+# WHOLE WORD. Without the delimiter rule, declaring `function run()` would make
+# the author's own function unreachable -- and `list` was reported as a syntax
+# error about a missing LPAREN, which names neither the command nor the call.
+# A NAME THAT MERELY STARTS WITH A COMMAND WORD IS NOT THAT COMMAND. Without
+# the delimiter, a variable called `listing` is read as `list ing` and answers
+# "nothing named 'ing' in the program" -- a puzzle about a program the author
+# never mentioned. `run()` does NOT catch this, because the parenthesis already
+# makes its argument non-empty; only a command that TAKES an argument can be
+# fooled, which is why the case is spelled with `list`.
+check "a name that starts with a command word is a name" "7" "$(repl 'listing = 7
+listing
+quit
+')"
+check "run() is still the author's own function" "called" "$(repl 'function run()
+return "called"
+end function
+print run()
+quit
+')"
+
+echo
+echo "== EDITING: the pty tier =="
+# The line editor runs ONLY when stdin and stdout are both terminals, so a pipe
+# cannot exercise a single key of it -- tests/repl_pty.py gives it a real
+# pseudo-terminal and types one byte at a time, because the editor reads a byte
+# at a time and redraws after each.
+if command -v python3 >/dev/null 2>&1; then
+    # Strip the redraw: every keystroke repaints the row, so what a tier wants
+    # is the program's output, not the repainting.
+    # Keystrokes are written with ANSI-C quoting ($'...') at the call sites, so
+    # an escape byte is a byte here and printf does no interpreting of its own.
+    pty() { printf '%s' "$1" | GBASIC_HISTORY="${2:-}" python3 "$root/tests/repl_pty.py" "$GB" --repl 2>/dev/null | tr -d '\r' | sed $'s/\033\\[[0-9]*[A-Za-z]//g'; }
+
+    # HISTORY IS A DIFFERENCE. "the output contains 1" is satisfied by a prompt
+    # with no history at all, since the first line already printed it -- so the
+    # assertion is that Up makes it happen TWICE, against a control that runs
+    # the same keys without the Up and gets it once.
+    up_twice="$(pty $'print 1\n\033[A\nquit\n')"
+    check "Up recalls the last line" "2" "$(printf '%s\n' "$up_twice" | grep -c '^1$')"
+    once="$(pty $'print 1\nquit\n')"
+    check "and without it, once" "1" "$(printf '%s\n' "$once" | grep -c '^1$')"
+
+    # EDITING A RECALLED LINE. Recall `print 99`, move left one, type 8: the
+    # answer must be 989, which no amount of recalling alone produces.
+    edited="$(pty $'print 99\n\033[A\033[D8\nquit\n')"
+    contains "a recalled line can be edited" "989" "$edited"
+
+    kills="$(pty $'print "keep"\n\033[A\001\013print "new"\nquit\n')"
+    contains "Ctrl-A and Ctrl-K rewrite the line" "new" "$kills"
+
+    # ONE BACKSPACE DELETES ONE CHARACTER, not one byte: `é` is two bytes, and
+    # a byte-wise delete leaves half a character behind and a broken string.
+    # Type print "café", then TWO backspaces -- the first takes the quote, the
+    # second must take the whole `é`, which is two bytes. A byte-wise delete
+    # leaves half a character behind and a string that will not lex.
+    utf="$(pty $'print "caf\303\251"\177\177"\nquit\n')"
+    check "one backspace deletes a whole multi-byte character" "caf" \
+        "$(printf '%s\n' "$utf" | grep -x 'caf')"
+
+    # Ctrl-C WHILE EDITING throws the line away; Ctrl-C while a chunk RUNS
+    # interrupts it (the tier above). Same key, two meanings, decided by which
+    # of the two the prompt is doing -- so the assertion is that the cancelled
+    # line did NOT run and the session did.
+    cancel="$(pty $'x = 5\nprint 999\003print x\nquit\n')"
+    # Asserted against the OUTPUT LINES, not the text: every keystroke is
+    # echoed by the redraw, so `999` appears in the transcript however the tier
+    # comes out. What must not exist is a line that IS 999 -- the program's
+    # answer -- and the first draft of this check did not distinguish them.
+    check "Ctrl-C while editing does not run the line" "" \
+        "$(printf '%s\n' "$cancel" | grep -x '999')"
+    contains "and the session is untouched" "5" "$cancel"
+
+    hist="$work/hist"
+    rm -f "$hist"
+    pty $'print 42\nquit\n' "$hist" >/dev/null
+    contains "history is kept between sessions" "print 42" "$(cat "$hist" 2>/dev/null)"
+    # A prompt session can contain a connection string with a password in it, so
+    # the file it is written to may not be readable by everyone on the machine.
+    check "and only its owner can read it" "-rw-------" \
+        "$(ls -l "$hist" 2>/dev/null | awk '{print $1}')"
+    back="$(pty $'\033[A\nquit\n' "$hist")"
+    contains "and a new session can recall it" "42" "$back"
+
+    # A BARE ESCAPE MUST NOT HANG THE PROMPT. An arrow key is three bytes that
+    # arrive together and Escape is one byte that arrives alone, and the only
+    # thing telling them apart is whether more is waiting -- so reading the
+    # second byte unconditionally leaves the prompt frozen until the user
+    # presses something else, which reads as a crash. Typed at a HUMAN pace
+    # here, deliberately: at the driver's default the following keystroke
+    # arrives inside the 50ms window and is legitimately taken as part of a
+    # sequence, which is what Alt+key is and is not a defect.
+    esc="$(printf '%s' $'\033print 5\nquit\n' \
+        | GBASIC_HISTORY= GBASIC_PTY_DELAY=0.2 python3 "$root/tests/repl_pty.py" \
+          "$GB" --repl 2>/dev/null | tr -d '\r' | sed $'s/\033\\[[0-9]*[A-Za-z]//g')"
+    check "a bare Escape is swallowed and the line still runs" "5" \
+        "$(printf '%s\n' "$esc" | grep -x 5)"
+
+    # A LINE LONGER THAN THE TERMINAL is scrolled horizontally, not wrapped --
+    # a wrapped redraw has no idea how many rows it used and paints over the
+    # wrong ones. The oracle is the RESULT: 300 characters must survive being
+    # typed, recalled from history and run again, which a garbled redraw and a
+    # mis-tracked cursor both break.
+    longline="print \"$(printf 'y%.0s' $(seq 1 300))\""
+    scrolled="$(pty "$longline"$'\n\033[A\n quit\n')"
+    check "a line longer than the terminal survives an edit and a recall" "2" \
+        "$(printf '%s\n' "$scrolled" | grep -c 'y\{300\}')"
+
+    # AND THE COST OF THAT SCROLLING IS LINEAR, asserted as a RATIO across a 4x
+    # size step (gate 8x; linear is ~4x and the quadratic version this replaced
+    # measured 8.44s against 1.48s for one 3000-character line). The obvious
+    # scroll search recomputes the column count from the start of the line on
+    # every step, which is invisible at 80 characters and a stutter at 3000.
+    # GBASIC_PTY_DELAY=0 because the driver's own pacing would otherwise be what
+    # is being measured.
+    shape_ms() {
+        local n="$1" t0 t1
+        local text; text="print \"$(printf 'z%.0s' $(seq 1 "$n"))\""
+        t0=$(date +%s%N)
+        printf '%s' "$text"$'\nquit\n' \
+            | GBASIC_PTY_DELAY=0 GBASIC_PTY_TOTAL=200 python3 "$root/tests/repl_pty.py" \
+              "$GB" --repl >/dev/null 2>&1
+        t1=$(date +%s%N)
+        echo $(( (t1 - t0) / 1000000 ))
+    }
+    small=$(shape_ms 1000)
+    large=$(shape_ms 4000)
+    if [ "$small" -lt 30 ]; then
+        small=30      # a floor, so a fast machine does not divide by noise
+    fi
+    ratio=$(( large * 100 / small ))
+    if [ "$ratio" -le 800 ]; then
+        printf 'ok   redrawing a long line is linear (%sms -> %sms, %d.%02dx over a 4x step)\n' \
+            "$small" "$large" "$((ratio / 100))" "$((ratio % 100))"; pass=$((pass+1))
+    else
+        printf 'FAIL redrawing a long line is not linear: %sms -> %sms is %d.%02dx over a 4x step\n' \
+            "$small" "$large" "$((ratio / 100))" "$((ratio % 100))"; fail=$((fail+1))
+    fi
+
+    # THE EDITOR ALSO NEEDS VALGRIND, and the piped tier below cannot reach it:
+    # a pipe never enters raw mode, so the history list, the edit buffer and the
+    # saved not-yet-submitted line are all allocated on a path nothing else
+    # runs. Through the shared policy, in a shell, so the flags stay in one
+    # place. The exit status is the child's, so this cannot pass by reading a
+    # report that was never produced.
+    if vg_available; then
+        printf '%s' $'print 12\n\033[A\033[D3\n\033[A\001\013print "x"\nquit\n' \
+            | GBASIC_HISTORY="$work/vghist" python3 "$root/tests/repl_pty.py" \
+              /bin/bash -c ". \"$root/tests/valgrind_tier.sh\"; vg_run \"$GB\" --repl" \
+              > "$work/vgpty.out" 2>&1
+        vgst=$?
+        if [ "$vgst" = "$VG_EXIT" ]; then
+            tr -d '\r' < "$work/vgpty.out" | grep -E "definitely lost|Invalid" | head -3
+            printf 'FAIL valgrind over the editor\n'; fail=$((fail+1))
+        else
+            printf 'ok   the editor leaks nothing and reads nothing invalid\n'; pass=$((pass+1))
+        fi
+        # AND THE CONTROL THAT THE RUN ACTUALLY HAPPENED. It earned its place
+        # immediately: the first draft used `/bin/sh -c "... exec vg_run ..."`,
+        # and dash cannot exec a shell function, so the prompt never started --
+        # the valgrind check reported `ok` over `exec: vg_run: not found`,
+        # which is the silence of a clean run and the silence of no run at all.
+        contains "and that run really edited a line" "132" \
+            "$(tr -d '\r' < "$work/vgpty.out" | sed $'s/\033\\[[0-9]*[A-Za-z]//g')"
+    else
+        printf 'ok   SKIP (valgrind unavailable)\n'; pass=$((pass+1))
+    fi
+else
+    echo "SKIP editing tier (no python3 for the pty)"
+fi
+
+# LOAD-BEARING FOR EVERY OTHER TIER IN THIS FILE: the editor must be OFF for a
+# pipe. It writes escape sequences to repaint the row, and one of those in the
+# output would be in every comparison above.
+lacks "a pipe gets no escape sequences" "$(printf '\033')" "$(repl 'print 1
+quit
+')"
 
 echo
 echo "== INTERRUPT: Ctrl-C ends the chunk, not the session =="
