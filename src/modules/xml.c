@@ -1011,8 +1011,13 @@ static Value xml_eval_call(AstExpr *expr) {
                 value_free(ks);
                 return value_null();
             }
-            keep_space = value_truthy(ks);
+            int refused = 0;
+            keep_space = value_truthy(ks, &refused);
             value_free(ks);
+            if (refused) {
+                value_free(text);
+                return value_null();
+            }
         }
         Value result = xml_parse_memory(text.as.string, strlen(text.as.string), keep_space);
         value_free(text);
@@ -1178,8 +1183,13 @@ static Value xml_eval_call(AstExpr *expr) {
                 value_free(p);
                 return value_null();
             }
-            pretty = value_truthy(p);
+            int refused = 0;
+            pretty = value_truthy(p, &refused);
             value_free(p);
+            if (refused) {
+                value_free(node);
+                return value_null();
+            }
         }
         Value result = xml_do_encode(&node, pretty);
         value_free(node);

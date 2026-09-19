@@ -108,4 +108,64 @@ grep -qF "USD modifier expects a number or decimal text" "$scratch/err" \
     || fail "USD type refusal (message changed: $(cat "$scratch/err"))"
 ok usd_unchanged
 
+# A REFUSAL THAT WAS REPORTED AND THEN IGNORED -- the same family as the two
+# above with one extra failure: this one HAD its diagnostic and still had no
+# consequence. Six value kinds refuse to be a condition (`unknown`, and the five
+# live connection handles), and refusing is right: silently reading an absent
+# value as false makes a missing answer indistinguishable from a negative one.
+# But `value_truthy` raised and returned 0, and every caller checked for a raise
+# BEFORE calling it and never after -- so `if unknown then` printed the error
+# and RAN THE ELSE BRANCH, `while unknown` printed it and carried on past the
+# loop, and none of it could be caught.
+#
+# `do ... until unknown` did not merely continue: it HUNG, because a condition
+# that can never become true is an infinite loop. Measured before the fix at
+# 5.18 million iterations in three seconds. A hang is not a failure, which is
+# why that case is bounded here.
+#
+# Found by planning Chapter 1 of the book against the language (DOGFOOD 14).
+for form in if while until; do
+    case "$form" in
+        if)    body='if x then\n        print("BRANCH")\n    else\n        print("BRANCH")\n    end if' ;;
+        while) body='while x\n        print("BRANCH")\n    end while' ;;
+        until) body='do\n        print("BODY")\n    until x' ;;
+    esac
+    printf "program main( args )\n    x = unknown\n    $body\n    print(\"CONTINUED\")\nend program\n" >"$scratch/c.bas"
+    if timeout -k 5 20 ./gbasic "$scratch/c.bas" >"$scratch/out" 2>"$scratch/err"; then
+        fail "condition/$form (a refused condition must not exit 0)"
+    fi
+    grep -qF "cannot be used as a condition" "$scratch/err" \
+        || fail "condition/$form (no diagnostic: $(cat "$scratch/err"))"
+    # THE LOAD-BEARING HALF. The diagnostic was always there; what was missing
+    # was the consequence, so what must be asserted is that nothing ran after
+    # it -- and for `if`, that the ELSE branch did not stand in for a condition
+    # nobody could evaluate.
+    grep -qF "CONTINUED" "$scratch/out" \
+        && fail "condition/$form (execution continued past the refusal)"
+    if [ "$form" = "if" ]; then
+        grep -qF "BRANCH" "$scratch/out" && fail "condition/if (a branch ran anyway)"
+    fi
+done
+ok condition_refusal_stops
+
+# AND IT IS CATCHABLE, which is what a printed line never was -- the property
+# every case in this file exists to establish.
+printf 'program main( args )\n    on error goto next\n    x = unknown\n    if x then\n        print("THEN")\n    end if\n    if error then\n        print("CAUGHT")\n    end if\nend program\n' >"$scratch/c2.bas"
+timeout -k 5 20 ./gbasic "$scratch/c2.bas" >"$scratch/out" 2>"$scratch/err" \
+    || fail "condition (catching it should leave exit 0)"
+grep -qF "CAUGHT" "$scratch/out" || fail "condition (on error goto next did not see it)"
+ok condition_refusal_catchable
+
+# THE CONTROL, and without it every assertion above is satisfied by a build that
+# refuses every condition there is. An ordinary condition still works, and
+# `nothing` -- which is a value rather than an absence of one -- is still false.
+printf 'program main( args )\n    if 1 = 1 then\n        print("YES")\n    end if\n    if nothing then\n        print("NO")\n    else\n        print("NOTHING IS FALSE")\n    end if\n    n = 0\n    do\n        n = n + 1\n    until n = 3\n    print("LOOPED " + string(n))\nend program\n' >"$scratch/c3.bas"
+timeout -k 5 20 ./gbasic "$scratch/c3.bas" >"$scratch/out" 2>"$scratch/err" \
+    || fail "condition control (ordinary conditions must still work: $(cat "$scratch/err"))"
+grep -qF "YES" "$scratch/out" || fail "condition control (a true condition did not run)"
+grep -qF "NOTHING IS FALSE" "$scratch/out" || fail "condition control (nothing should be false)"
+grep -qF "LOOPED 3" "$scratch/out" || fail "condition control (do-until stopped working)"
+ok condition_ordinary_unchanged
+
 printf 'run_silent_traps: %d cases passed\n' "$cases"
+
